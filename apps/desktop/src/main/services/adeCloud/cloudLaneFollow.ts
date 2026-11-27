@@ -35,6 +35,7 @@ import { redirectGoneTargets } from "../machines/goneTargets";
 import { getErrorMessage, safeJsonParse, writeTextAtomic } from "../shared/utils";
 import { CLOUD_MACHINE_KEY_METADATA } from "./cloudMachines";
 import type { CloudInstance } from "./cloudProvider";
+import { BRAND } from "../../../shared/brand";
 
 /** A read this recent answers a lane question without another read. */
 const FRESH_READ_MS = 30_000;
@@ -248,13 +249,13 @@ export function createLaneFollower(deps: LaneFollowerDeps): LaneFollower {
 
   const follow = async (laneId: string, options?: { connect?: boolean }): Promise<LaneFollowResult> => {
     const { computer, unreadable } = await lookup(laneId);
-    if (unreadable) return { ok: false, reason: "unreadable", computer: null, message: "ADE couldn't read your cloud computers. Try again in a moment." };
+    if (unreadable) return { ok: false, reason: "unreadable", computer: null, message: `${BRAND.NAME} couldn't read your cloud computers. Try again in a moment.` };
     if (!computer) return { ok: false, reason: "no_lane", computer: null, message: "This lane has no cloud computer right now." };
     if (!computer.machineKey) {
       return { ok: false, reason: "joining", computer, message: `${computer.laneName || "The lane"}'s computer is still joining your account.` };
     }
     const connector = deps.connector();
-    if (!connector) return { ok: false, reason: "unreachable", computer, message: "ADE isn't ready to reach your computers yet. Try again in a moment." };
+    if (!connector) return { ok: false, reason: "unreachable", computer, message: `${BRAND.NAME} isn't ready to reach your computers yet. Try again in a moment.` };
     const result = await connector.connect(computer.machineKey, { connect: options?.connect !== false });
     if (!result.ok) return { ok: false, reason: "unreachable", computer, message: result.message };
     return { ok: true, computer, address: result.address };

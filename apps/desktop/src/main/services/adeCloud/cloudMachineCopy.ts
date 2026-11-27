@@ -71,6 +71,7 @@ import {
   FETCH_USED_AGENT_TOOLS_COMMAND,
 } from "../../../../../account-directory/src/cloud/computerCommands";
 import type { CloudCopyRecord, CloudCopyRequest, CloudMoveRecord } from "../../../../../account-directory/src/cloud/contract";
+import { BRAND } from "../../../shared/brand";
 
 export type CloudCopyDeps = CloudMachineCreatorDeps & {
   removeAccountMachine: (machineKey: string) => Promise<unknown>;
@@ -104,8 +105,8 @@ async function waitForRunning(client: CloudProvider, instanceId: string, signal:
     if (signal?.aborted) throw new CloudCreateCancelled();
     const instance = await client.getInstance(instanceId).catch(() => null);
     if (instance?.status === "running") return instance;
-    if (instance?.status === "failed") throw new Error(`ADE Cloud couldn't make the copy${instance.statusReason?.message ? `: ${instance.statusReason.message}` : "."}`);
-    if (Date.now() > deadline) throw new Error("ADE Cloud didn't finish making the copy in time.");
+    if (instance?.status === "failed") throw new Error(`${BRAND.CLOUD_NAME} couldn't make the copy${instance.statusReason?.message ? `: ${instance.statusReason.message}` : "."}`);
+    if (Date.now() > deadline) throw new Error(`${BRAND.CLOUD_NAME} didn't finish making the copy in time.`);
     await sleep(POLL_MS);
   }
 }
@@ -219,7 +220,7 @@ async function copyOnServer(
     for (;;) {
       if (options.signal?.aborted) {
         // Its window went away: only the following stops; the copy goes on on ADE Cloud.
-        if (stoppedFollowing(options.signal)) throw new Error(`ADE stopped following the copy here. It goes on on ADE Cloud; ${record.name} shows up under your computers.`);
+        if (stoppedFollowing(options.signal)) throw new Error(`${BRAND.NAME} stopped following the copy here. It goes on on ${BRAND.CLOUD_NAME}; ${record.name} shows up under your computers.`);
         if (record.cancellable && client.cancelCopy) {
           // The person's Cancel. Before the copy signs in the server deletes it (now, or at its step's end); after, it is a whole computer.
           const current = record;
@@ -272,9 +273,9 @@ async function copyOnServer(
         failures = 0;
       } catch (error) {
         failures += 1;
-        if (error instanceof CloudProviderError && error.status === 404) throw new Error("ADE Cloud lost track of the copy. Check your computers list.");
+        if (error instanceof CloudProviderError && error.status === 404) throw new Error(`${BRAND.CLOUD_NAME} lost track of the copy. Check your computers list.`);
         if (failures >= SERVER_MOVE_READ_FAILURES) {
-          throw new Error(`ADE can't reach ADE Cloud to follow the copy. It goes on there; check your computers list. (${getErrorMessage(error)})`);
+          throw new Error(`${BRAND.NAME} can't reach ${BRAND.CLOUD_NAME} to follow the copy. It goes on there; check your computers list. (${getErrorMessage(error)})`);
         }
       }
     }
@@ -309,11 +310,11 @@ async function copyHere(
   const progress = (stage: CloudCreateProgress["stage"], message: string, instanceId?: string, approvalUrl?: string) =>
     onProgress({ requestId, stage, message, ...(instanceId ? { instanceId } : {}), ...(approvalUrl ? { approvalUrl } : {}) });
   const directory = deps.directoryBaseUrl();
-  if (!directory) throw new Error("ADE's account service isn't configured on this computer, so it can't sign the copy in.");
-  if (!(await deps.getAccountToken())) throw new Error("Sign in to ADE on this computer first. The copy joins your account.");
+  if (!directory) throw new Error(`${BRAND.NAME}'s account service isn't configured on this computer, so it can't sign the copy in.`);
+  if (!(await deps.getAccountToken())) throw new Error(`Sign in to ${BRAND.NAME} on this computer first. The copy joins your account.`);
   const source = await client.getInstance(args.instanceId);
   if (!["running", "sleeping", "stopped"].includes(source.status)) {
-    throw new Error(`The computer is ${source.status}; ADE Cloud copies a computer that is running, asleep or stopped.`);
+    throw new Error(`The computer is ${source.status}; ${BRAND.CLOUD_NAME} copies a computer that is running, asleep or stopped.`);
   }
   const shape = args.shape ? cloudShape(args.shape) : null;
   if (args.shape && !shape) throw new Error("Pick a size.");
@@ -322,9 +323,9 @@ async function copyHere(
     deps.pendingCreates?.begin(requestId, Date.now());
   } catch (error) {
     logger.warn?.("cloud.machine_copy_not_recorded", { error: getErrorMessage(error) });
-    throw new Error("ADE couldn't save a note of the copy it's about to make, so it didn't make one. Check that ADE can write to its folder, then try again.");
+    throw new Error(`${BRAND.NAME} couldn't save a note of the copy it's about to make, so it didn't make one. Check that ${BRAND.NAME} can write to its folder, then try again.`);
   }
-  progress("creating", `Copying ${source.name ?? source.id} on ADE Cloud…`);
+  progress("creating", `Copying ${source.name ?? source.id} on ${BRAND.CLOUD_NAME}…`);
   // A running source must not fall asleep mid-copy.
   if (source.status === "running") {
     await client.exec(source.id, cloudHoldCommand("copy", COPY_HOLD_MS), { timeoutMs: 30_000 })
@@ -353,7 +354,7 @@ async function copyHere(
     logger.info?.("cloud.machine_copy_started", { sourceId: source.id, instanceId: fork.id });
     try {
       if (fork.status !== "running") {
-        progress("creating", "ADE Cloud is copying the disk. A big one takes a few minutes…", fork.id);
+        progress("creating", `${BRAND.CLOUD_NAME} is copying the disk. A big one takes a few minutes…`, fork.id);
         fork = await waitForRunning(client, fork.id, options.signal, sleep);
       }
     } catch (error) {
@@ -522,7 +523,7 @@ async function moveOnServer(
   });
   for (;;) {
     // Its window went away: only the following stops; the move goes on on ADE Cloud.
-    if (stoppedFollowing(options.signal)) throw new Error(`ADE stopped following the move here. It goes on on ADE Cloud; check ${record.sourceName}'s card.`);
+    if (stoppedFollowing(options.signal)) throw new Error(`${BRAND.NAME} stopped following the move here. It goes on on ${BRAND.CLOUD_NAME}; check ${record.sourceName}'s card.`);
     if (options.signal?.aborted && record.cancellable && client.cancelMove) {
       // The person's Cancel. Before the copy the server undoes it (now, or at its step's end); after, it goes on there to the end.
       const current = record;
@@ -564,9 +565,9 @@ async function moveOnServer(
       failures = 0;
     } catch (error) {
       failures += 1;
-      if (error instanceof CloudProviderError && error.status === 404) throw new Error("ADE Cloud lost track of the move. Check the computer's card.");
+      if (error instanceof CloudProviderError && error.status === 404) throw new Error(`${BRAND.CLOUD_NAME} lost track of the move. Check the computer's card.`);
       if (failures >= SERVER_MOVE_READ_FAILURES) {
-        throw new Error(`ADE can't reach ADE Cloud to follow the move. It goes on there; check the computer's card. (${getErrorMessage(error)})`);
+        throw new Error(`${BRAND.NAME} can't reach ${BRAND.CLOUD_NAME} to follow the move. It goes on there; check the computer's card. (${getErrorMessage(error)})`);
       }
     }
   }
@@ -714,7 +715,7 @@ async function moveHere(
     }
     // A cancel stays a cancel, so the caller reads it as one.
     if (error instanceof CloudCreateCancelled) throw error;
-    throw new Error(`ADE couldn't move ${sourceName}: ${getErrorMessage(error)} ${sourceName} is as it was, and the new machine was deleted.`);
+    throw new Error(`${BRAND.NAME} couldn't move ${sourceName}: ${getErrorMessage(error)} ${sourceName} is as it was, and the new machine was deleted.`);
   }
 
   options.onCopied?.({ instanceId: target.instanceId, machineKey: target.machineKey ?? null, name: target.name });

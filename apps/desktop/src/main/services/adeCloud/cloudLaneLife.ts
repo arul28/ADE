@@ -37,6 +37,7 @@ import type { CloudLaneBackup } from "../../../../../account-directory/src/cloud
 import { CLOUD_MACHINE_KEY_METADATA, type createCloudMachines } from "./cloudMachines";
 import type { CloudInstance, CloudLogger, CloudProvider } from "./cloudProvider";
 import { createCloudLaneAccount } from "./cloudLaneAccount";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The life of an ADE Cloud lane's computer after its launch, in this app's
@@ -157,7 +158,7 @@ function diskGrowOf(raw: unknown, input: { kind: CloudLaneJobKind; currentGb: nu
   if (raw == null) return null;
   if (typeof raw !== "number" || !Number.isInteger(raw) || raw <= 0) throw new Error("Pick a disk size in whole GB.");
   if (input.kind !== "resize") throw new Error("A move makes a new computer. Grow its disk after the move.");
-  if (input.currentGb == null) throw new Error("ADE Cloud didn't say how big this computer's disk is, so ADE can't grow it.");
+  if (input.currentGb == null) throw new Error(`${BRAND.CLOUD_NAME} didn't say how big this computer's disk is, so ${BRAND.NAME} can't grow it.`);
   if (raw <= input.currentGb) return null;
   if (input.tier.diskMaxGb != null && raw > input.tier.diskMaxGb) {
     throw new Error(`${input.tier.label} lets the disk grow to ${input.tier.diskMaxGb} GB.`);
@@ -384,7 +385,7 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
         return null;
       });
       if (instance?.status === "running") return;
-      if (instance?.status === "failed") throw new Error("ADE Cloud couldn't start the computer again.");
+      if (instance?.status === "failed") throw new Error(`${BRAND.CLOUD_NAME} couldn't start the computer again.`);
       // A resize leaves it asleep on some sizes: wake it, as a send would.
       if (instance && (instance.status === "sleeping" || instance.status === "stopped")) {
         await client.startInstance(instanceId).catch((error: unknown) => {
@@ -406,7 +407,7 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     }
     setStage(record, "connect", "running");
     const machineKey = job.machineKey;
-    if (!machineKey) throw new Error("ADE couldn't tell which machine the computer is in your account.");
+    if (!machineKey) throw new Error(`${BRAND.NAME} couldn't tell which machine the computer is in your account.`);
     const since = now();
     let targetId: string | null = null;
     let lastError: unknown = null;
@@ -416,7 +417,7 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
         targetId = (await deps.connectMachine(machineKey)).targetId;
       } catch (error) {
         lastError = error;
-        if (now() - since > CONNECT_WAIT_MS) throw new Error(`ADE couldn't connect to the computer: ${getErrorMessage(lastError).replace(/\.$/, "")}.`);
+        if (now() - since > CONNECT_WAIT_MS) throw new Error(`${BRAND.NAME} couldn't connect to the computer: ${getErrorMessage(lastError).replace(/\.$/, "")}.`);
         await sleep(CONNECT_RETRY_MS);
       }
     }
@@ -426,7 +427,7 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
         return [];
       });
       const has = projects.some((project) => project.exists !== false && normalizeGitRemoteIdentity(project.gitOriginUrl) === job.projectOrigin);
-      if (!has) throw new Error("ADE on the computer answers, but the lane's project isn't there.");
+      if (!has) throw new Error(`${BRAND.NAME} on the computer answers, but the lane's project isn't there.`);
     }
     setStage(record, "connect", "done");
   };
@@ -486,7 +487,7 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
         : { ok: true, message: "" };
       if (result.ok) forgetConnections(record.fromMachineKey ?? null, job.fromInstanceId);
       setStage(record, "remove", result.ok ? "done" : "warning", {
-        detail: result.ok ? null : "The old computer is still there, asleep. Delete it from Settings › ADE Cloud",
+        detail: result.ok ? null : `The old computer is still there, asleep. Delete it from Settings › ${BRAND.CLOUD_NAME}`,
       });
     }
     await nameMovedComputer(record, null);
@@ -581,7 +582,7 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     job.machineKey = result.machineKey ?? null;
     if (stageOf(record, "start")?.status !== "done") setStage(record, "start", "done");
     setStage(record, "remove", result.sourceDeleted ? "done" : "warning", {
-      detail: result.sourceDeleted ? null : "The old computer is still there, asleep. Delete it from Settings › ADE Cloud",
+      detail: result.sourceDeleted ? null : `The old computer is still there, asleep. Delete it from Settings › ${BRAND.CLOUD_NAME}`,
     });
     await nameMovedComputer(record, result.name);
     deps.changed();
@@ -709,16 +710,16 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
 
   const startTierChange = async (raw: CloudLaneChangeTierArgs, instanceId: string, timing: "now" | "idle"): Promise<CloudLaneJobSnapshot> => {
     const instance = await readInstance(instanceId);
-    if (!instance) throw new Error("ADE Cloud has no such computer.");
+    if (!instance) throw new Error(`${BRAND.CLOUD_NAME} has no such computer.`);
     const catalog = cloudCatalogOf(await deps.machines.account().catch((error: unknown) => {
       logger.warn?.("cloud.lane_job_account_read_failed", { instanceId, error: getErrorMessage(error) });
       return null;
     }));
     const tier = cloudTier(catalog, raw.sizeId);
-    if (!tier) throw new Error("ADE Cloud doesn't offer that size now.");
+    if (!tier) throw new Error(`${BRAND.CLOUD_NAME} doesn't offer that size now.`);
     const from = tierOfInstance(instance, cloudTiers(catalog));
     const shape = cloudShapeFor({ cpu: tier.cpu, memoryGb: tier.memoryGb });
-    if (!shape) throw new Error("ADE can't make that size.");
+    if (!shape) throw new Error(`${BRAND.NAME} can't make that size.`);
     const kind: CloudLaneJobKind = (instance.type === "vm" ? "vm" : "default") === tier.type ? "resize" : "move";
     const diskGb = diskGrowOf(raw.diskGb, { kind, currentGb: instance.resources?.disk ?? null, tier });
     // The same size with a bigger disk is a disk grow (the Android pane's Grow the disk): the same steps.
@@ -818,7 +819,7 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
       const answered = new Promise<boolean>((resolve) => cancelSettles.set(jobId, resolve));
       moveCancels.get(jobId)?.abort();
       const cancelled = await Promise.race([answered, sleep(MOVE_CANCEL_WAIT_MS).then(() => null)]);
-      if (cancelled === false) throw new Error("The copy already started, so the move can't be cancelled now. ADE finishes it.");
+      if (cancelled === false) throw new Error(`The copy already started, so the move can't be cancelled now. ${BRAND.NAME} finishes it.`);
     }
     return structuredClone(record.job);
   };
@@ -831,7 +832,7 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
       return await cancelMoveBeforeCopy(record);
     }
     const changing = record.job.stages.some((stage) => stage.id !== "save" && stage.status !== "pending");
-    if (changing && record.job.phase !== "failed") throw new Error("The size is already changing. ADE finishes it.");
+    if (changing && record.job.phase !== "failed") throw new Error(`The size is already changing. ${BRAND.NAME} finishes it.`);
     record.job.phase = "cancelled";
     record.job.endedAt = nowIso();
     running.get(record.job.jobId)?.abort();
@@ -895,7 +896,7 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
           // The old computer stays as it was (its pause clears itself); the
           // half-made new one is the pending-create sweep's to delete.
           record.job.phase = "failed";
-          record.job.error = "ADE quit during the move. The old computer is as it was; Retry to move it again.";
+          record.job.error = `${BRAND.NAME} quit during the move. The old computer is as it was; Retry to move it again.`;
           const stage = stageOf(record, stageOf(record, "copy")?.status === "running" ? "copy" : "computer");
           if (stage) Object.assign(stage, { status: "failed", error: record.job.error, endedAt: nowIso() });
           resetRunningSave(record);

@@ -22,6 +22,7 @@ import { AdeExpectedError, expectedErrorKind, markExpected } from "../../../shar
 import { CLOUD_ACCESS_REFUSED, CloudProviderError, type CloudProvider } from "./cloudProvider";
 import { createCloudServerProvider, type CloudComputerSignal } from "./cloudServerProvider";
 import { CLOUD_COMPUTER_UNREADABLE } from "../../../../../account-directory/src/cloud/contract";
+import { BRAND } from "../../../shared/brand";
 
 export const CLOUD_VAULT_KIND = "integration";
 
@@ -124,7 +125,7 @@ export async function accountTokenWithin(
   } catch (error) {
     if (error instanceof Error && error.name === "TimeoutError") {
       throw markExpected(
-        new CloudProviderError("ADE couldn't refresh your ADE account sign-in in time. Try again in a moment.", "token_timeout", 0),
+        new CloudProviderError(`${BRAND.NAME} couldn't refresh your ${BRAND.NAME} account sign-in in time. Try again in a moment.`, "token_timeout", 0),
         "network",
       );
     }
@@ -214,9 +215,9 @@ type CloudAccess =
 
 /** Why ADE Cloud can't be used from here, one sentence per reason (`cloud.status` names the reason by these). */
 export const NO_PROVIDER_SENTENCE: Readonly<Record<Exclude<CloudAccess["state"], "ready">, string>> = {
-  no_access: "ADE Cloud isn't available on this account yet.",
-  signed_out: "Sign in to ADE to use ADE Cloud.",
-  unreadable: "ADE couldn't check this account's ADE Cloud access. Try again in a moment.",
+  no_access: `${BRAND.CLOUD_NAME} isn't available on this account yet.`,
+  signed_out: `Sign in to ${BRAND.NAME} to use ${BRAND.CLOUD_NAME}.`,
+  unreadable: `${BRAND.NAME} couldn't check this account's ${BRAND.CLOUD_NAME} access. Try again in a moment.`,
 };
 
 /** `/cloud/access` is asked at most this often per account. */
@@ -497,6 +498,6 @@ export async function readCloudStatus(deps: CloudAccessDeps): Promise<CloudStatu
   } catch (error) {
     const refused = error instanceof CloudProviderError && error.code === CLOUD_ACCESS_REFUSED;
     // Refused is no access; one that could not be reached still is.
-    return { ...NO_ACCESS, connected: !refused, error: error instanceof Error ? error.message : "Couldn't reach ADE Cloud." };
+    return { ...NO_ACCESS, connected: !refused, error: error instanceof Error ? error.message : `Couldn't reach ${BRAND.CLOUD_NAME}.` };
   }
 }

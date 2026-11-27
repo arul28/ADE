@@ -30,6 +30,7 @@ import { getErrorMessage } from "../shared/utils";
 import { clipReason, readApproval, record, text } from "./cloudActionArgs";
 import type { CloudChatApprovals } from "./cloudAgentActions";
 import type { CloudLogger } from "./cloudProvider";
+import { BRAND } from "../../../shared/brand";
 
 export type CloudTierRequestActionDeps = {
   approvals: CloudChatApprovals | null;
@@ -86,7 +87,7 @@ export function buildCloudTierRequestActions(deps: CloudTierRequestActionDeps) {
       const catalog = cloudCatalogOf(all.account);
       const tiers = cloudTiers(catalog);
       const to = cloudTier(catalog, sizeId);
-      if (!to) throw new Error("ADE Cloud doesn't offer that size now.");
+      if (!to) throw new Error(`${BRAND.CLOUD_NAME} doesn't offer that size now.`);
       const from = cloudTierOfMachine(box, tiers);
       if (from?.id === to.id) throw new Error(`It's already ${to.label}.`);
       const requestId = randomUUID();
@@ -132,11 +133,11 @@ export function buildCloudTierRequestActions(deps: CloudTierRequestActionDeps) {
       const error = text(args, "error")?.slice(0, 300) ?? null;
       const postCard = deps.approvals?.postCard;
       const readCard = deps.approvals?.readCard;
-      if (!postCard || !readCard) throw new Error("ADE can't update cards in this chat here.");
+      if (!postCard || !readCard) throw new Error(`${BRAND.NAME} can't update cards in this chat here.`);
       return await oneAtATime(`${chatSessionId}\0${requestId}`, async () => {
         const card = await readCard(chatSessionId, cloudTierRequestCardId(requestId));
         const request = card ? cloudTierRequestOfCard(card, chatSessionId) : null;
-        if (!card || !request) throw new Error("This chat has no such ADE Cloud size request.");
+        if (!card || !request) throw new Error(`This chat has no such ${BRAND.CLOUD_NAME} size request.`);
         // The yes that arrives after its change already ended changes nothing.
         if (!outcome && answer !== "dismiss" && cloudTierRequestAnswerOfCard(card)?.outcome) return { answered: true, toldAgent: false };
         const told = cloudTierRequestToldKey(answer, outcome);

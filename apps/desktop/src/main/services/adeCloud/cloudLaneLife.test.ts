@@ -166,7 +166,7 @@ describe("cloud lane life: the work check", () => {
         : { tally: { pushed: 1, failed: 0, skipped: 0, lanes: [cleanLane()] }, error: null };
     }],
     ["the read after the push is unknown", () => {
-      pushWork = async ({ check }) => check ? { tally: null, error: "ADE couldn't read this computer's work." }
+      pushWork = async ({ check }) => check ? { tally: null, error: "Daex couldn't read this computer's work." }
         : { tally: { pushed: 1, failed: 0, skipped: 0, lanes: [cleanLane()] }, error: null };
     }],
   ])("a lane is not freed when %s, and its computer stays", async (_label, arrange) => {

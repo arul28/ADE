@@ -30,6 +30,7 @@ import { CloudProviderError } from "./cloudProvider";
 import { getSharedAccountAuthService, getSharedAccountDirectoryBaseUrl } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
 import type { Logger } from "../logging/logger";
+import { BRAND } from "../../../shared/brand";
 
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const KEY_MAX_CHARS = 200;
@@ -84,7 +85,7 @@ export function registerAdeCloudReadIpc(args: {
         code: error instanceof CloudApiError || error instanceof CloudProviderError ? error.code : null,
         durationMs: Date.now() - startedAt,
       });
-      const failure = new Error("ADE couldn't load this from your ADE account. Try again.");
+      const failure = new Error(`${BRAND.NAME} couldn't load this from your ${BRAND.NAME} account. Try again.`);
       // No answer (offline, a network still coming up at launch) or the
       // server busy: the reader tries again, and it is not an ADE fault.
       const noAnswer = !(error instanceof CloudApiError) || error.status === 0 || error.status === 429 || error.status >= 502;
@@ -99,12 +100,12 @@ export function registerAdeCloudReadIpc(args: {
 
   ipcMain.handle(IPC.adeCloudOpenProject, async (event, arg: { binding?: unknown }): Promise<RemoteOpenProjectBinding> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.adeCloudOpenProject)) {
-      throw new Error("Only the ADE window can open a project.");
+      throw new Error(`Only the ${BRAND.NAME} window can open a project.`);
     }
     const given = record(arg?.binding);
     const projectId = text(given.projectId);
     if (given.kind !== "remote" || !projectId || !isAdeCloudBinding(given as RemoteOpenProjectBinding)) {
-      throw new Error("This isn't a project on ADE Cloud.");
+      throw new Error(`This isn't a project on ${BRAND.CLOUD_NAME}.`);
     }
     // Rebuilt field by field: main stores and persists it.
     const binding = adeCloudBinding({
@@ -151,10 +152,10 @@ export function registerAdeCloudReadIpc(args: {
    */
   const write = async <T>(event: IpcMainInvokeEvent, channel: string, run: (api: CloudApiClient) => Promise<T>): Promise<AdeCloudQueueSendAnswer<T>> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, channel)) {
-      return { ok: false, code: "untrusted", status: 0, message: "Only the ADE window can send this." };
+      return { ok: false, code: "untrusted", status: 0, message: `Only the ${BRAND.NAME} window can send this.` };
     }
     const api = client();
-    if (!api) return { ok: false, code: "signed_out", status: 401, message: "Sign in to ADE to send to this chat." };
+    if (!api) return { ok: false, code: "signed_out", status: 401, message: `Sign in to ${BRAND.NAME} to send to this chat.` };
     try {
       return { ok: true, result: await run(api) };
     } catch (error) {
@@ -163,14 +164,14 @@ export function registerAdeCloudReadIpc(args: {
         return { ok: false, code: error.code, status: error.status, message: error.message };
       }
       logger.warn("ade_cloud.account_write_failed", { channel, error: error instanceof Error ? error.name : "unknown" });
-      return { ok: false, code: "network", status: 0, message: "ADE couldn't reach your ADE account. Try again." };
+      return { ok: false, code: "network", status: 0, message: `${BRAND.NAME} couldn't reach your ${BRAND.NAME} account. Try again.` };
     }
   };
 
   /** Account data with no computer: CTO, automations, Linear, Jira and the rest (`accountCalls.ts`). It never throws. */
   ipcMain.handle(IPC.adeCloudAccountCall, async (event, call: unknown) => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.adeCloudAccountCall)) {
-      return { ok: false, code: "untrusted", status: 0, message: "Only the ADE window can read this." };
+      return { ok: false, code: "untrusted", status: 0, message: `Only the ${BRAND.NAME} window can read this.` };
     }
     const answer = await runAdeCloudAccountCall(client(), call);
     if (!answer.ok && answer.status !== 404) {
@@ -189,7 +190,7 @@ export function registerAdeCloudReadIpc(args: {
     const chatId = text(arg?.chatId);
     const messageId = typeof arg?.messageId === "string" && ID_PATTERN.test(arg.messageId) ? arg.messageId : null;
     if (!machineKey || !chatId || !messageId) {
-      return { ok: false, code: "invalid", status: 400, message: "ADE couldn't take this message back." } satisfies AdeCloudQueueSendAnswer<never>;
+      return { ok: false, code: "invalid", status: 400, message: `${BRAND.NAME} couldn't take this message back.` } satisfies AdeCloudQueueSendAnswer<never>;
     }
     return write(event, IPC.adeCloudChatMessageCancel, (api) => api.cancelChatMessage(machineKey, chatId, messageId));
   });

@@ -34,6 +34,7 @@ import { getErrorMessage, isRecord } from "../shared/utils";
 import type { CloudBrainMakerBase } from "./cloudBrainMaker";
 import { cloudLaneLaunchOutcomes, type CloudLaneAnalyticsCapture } from "./cloudLaneAnalytics";
 import { createCloudLaneLaunchService, type CloudLaneLaunchService } from "./cloudLaneLaunchService";
+import { BRAND } from "../../../shared/brand";
 
 type Logger = {
   info: (event: string, meta?: Record<string, unknown>) => void;
@@ -72,7 +73,7 @@ export function cloudLaneLaunchTransportSet(): boolean {
   return transport !== null;
 }
 
-const NO_TRANSPORT = "This ADE can't reach other computers, so it can't start a lane on ADE Cloud. Use the ADE app, or run this where ADE runs in the background.";
+const NO_TRANSPORT = `This ${BRAND.NAME} can't reach other computers, so it can't start a lane on ${BRAND.CLOUD_NAME}. Use the ${BRAND.NAME} app, or run this where ${BRAND.NAME} runs in the background.`;
 
 /** The folder for the brain's launch records. */
 export function cloudLaneLaunchRecordsDir(adeDir: string): string {
@@ -224,7 +225,7 @@ export function createCloudLaneLaunchBrainHost(deps: {
       kind: "remote",
       key: `cloud-lane:${targetId}:${projectId}`,
       targetId,
-      runtimeName: "ADE Cloud",
+      runtimeName: `${BRAND.CLOUD_NAME}`,
       transport: "paired",
       projectId,
       rootPath,

@@ -35,6 +35,7 @@ import { CLOUD_PHONE_MODELS } from "../../../shared/cloudPhone";
 import { DEFAULT_ADE_ACCOUNT_DIRECTORY_URL, DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL } from "../../../shared/accountDirectory";
 import { isLoopbackHost } from "../../../shared/passwordFillTarget";
 import { CLOUD_PATHS } from "../../../../../account-directory/src/cloud/contract";
+import { BRAND } from "../../../shared/brand";
 
 type Point = { width: number; height: number };
 
@@ -492,7 +493,7 @@ export function createCloudPhoneViewHost(args: { logger: Logger }): CloudPhoneVi
 
   const open = (openArgs: CloudPhoneViewOpenArgs & { sender: WebContents }): { viewId: string } => {
     const url = readControlViewUrl(openArgs.url);
-    if (!url) throw new Error("That link isn't an ADE Cloud iPhone view link.");
+    if (!url) throw new Error(`That link isn't a ${BRAND.CLOUD_NAME} iPhone view link.`);
     if (openArgs.deviceFamily !== "iphone" && openArgs.deviceFamily !== "ipad") {
       throw new Error("That device type can't be shown here.");
     }

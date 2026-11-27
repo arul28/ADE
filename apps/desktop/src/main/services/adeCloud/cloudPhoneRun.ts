@@ -1,5 +1,6 @@
 import type { CloudPhoneStart } from "../../../../../account-directory/src/cloud/contract";
 import { CLOUD_PHONE_IDLE_MINUTES, CLOUD_PHONE_MAX_MINUTES, CLOUD_PHONE_MODELS, isCloudPhoneDevice } from "../../../shared/cloudPhone";
+import { BRAND } from "../../../shared/brand";
 
 /*
  * One run of the ADE Cloud iPhone as a brain tracks it, and the lines its chat
@@ -51,7 +52,7 @@ export function cloudPhoneStartLine(start: CloudPhoneStart): string {
   const minutes = start.minutes
     ? start.minutes.left > 0 ? ` Credits for about ${start.minutes.left} min left this period.` : " This period's credits are used, so extra credits apply."
     : "";
-  return `ADE Cloud iPhone started (${label}).${minutes} It stops after ${CLOUD_PHONE_IDLE_MINUTES} min with no command or input.`;
+  return `${BRAND.CLOUD_NAME} iPhone started (${label}).${minutes} It stops after ${CLOUD_PHONE_IDLE_MINUTES} min with no command or input.`;
 }
 
 /** The chat's line for the run's end; `stopped` is a stop this brain asked for. */
@@ -60,5 +61,5 @@ export function cloudPhoneEndLine(ended: { readyAt: number | null; lastActivityA
   const idleEnd = end !== "stopped" && end.why === "idle" && ended.lastActivityAt ? ended.lastActivityAt + CLOUD_PHONE_IDLE_MINUTES * 60_000 : null;
   const at = end === "stopped" ? now : end.at ?? Math.min(now, idleEnd ?? now);
   const used = ended.readyAt ? ` Used ${Math.min(CLOUD_PHONE_MAX_MINUTES, Math.max(1, Math.ceil((at - ended.readyAt) / 60_000)))} min this run.` : "";
-  return end === "stopped" ? `ADE Cloud iPhone stopped.${used}` : `ADE Cloud iPhone stopped: ${endSentence(end.why)}.${used}`;
+  return end === "stopped" ? `${BRAND.CLOUD_NAME} iPhone stopped.${used}` : `${BRAND.CLOUD_NAME} iPhone stopped: ${endSentence(end.why)}.${used}`;
 }

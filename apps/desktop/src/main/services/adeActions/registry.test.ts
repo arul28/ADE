@@ -207,7 +207,7 @@ describe("runtime domain services behind the allowlist", () => {
         () => settingsDomain.set!("all", "ade_mcp.enabled", false),
         () => settingsDomain.set!("all", "ade_mcp.machine.abc", { endpointKey: "x" }),
       ]) {
-        expect(call).toThrow(/Settings → ADE MCP/);
+        expect(call).toThrow(/Settings → Daex MCP/);
       }
       expect(vault.get("all", "ade_mcp", "account-secret")).toBe("s3cret");
       expect(settings.get("all", "ade_mcp.enabled")).toBe(true);
@@ -922,7 +922,7 @@ describe("runtime domain services behind the allowlist", () => {
       }
       await expect(chat.getImageDataUrl({ path: textPath })).rejects.toThrow(/not an image/i);
       for (const refused of [outside, homeSecret]) {
-        await expect(chat.getImageDataUrl({ path: refused }), refused).rejects.toThrow(/outside the folders ADE shows chat images from/);
+        await expect(chat.getImageDataUrl({ path: refused }), refused).rejects.toThrow(/outside the folders Daex shows chat images from/);
       }
     } finally {
       vi.restoreAllMocks();
@@ -956,7 +956,7 @@ describe("runtime domain services behind the allowlist", () => {
       };
 
       await expect(chat.getImageDataUrl({ path: symlinkPath }))
-        .rejects.toThrow(/outside the folders ADE shows chat images from/);
+        .rejects.toThrow(/outside the folders Daex shows chat images from/);
     } finally {
       vi.restoreAllMocks();
       await fs.promises.rm(base, { recursive: true, force: true });

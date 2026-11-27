@@ -23,6 +23,7 @@ import {
 import { getErrorMessage } from "../shared/utils";
 import { createCloudMachine, type CloudMachineCreatorDeps } from "./cloudMachineCreator";
 import { copyCloudMachine, moveCloudMachine, type CloudCopyDeps } from "./cloudMachineCopy";
+import { BRAND } from "../../../shared/brand";
 
 export type CloudMakeKind = "create" | "copy" | "move";
 
@@ -138,8 +139,8 @@ function pushJoinApproval(input: { requestId: string; url: string; name: string;
   try {
     joinApprovalPush({
       dedupeKey: `cloud-join-approval:${input.requestId}:${deepLink}`,
-      title: `Approve ${input.name} joining your ADE account`,
-      body: "A new ADE Cloud computer waits for you. Tap to approve it.",
+      title: `Approve ${input.name} joining your ${BRAND.NAME} account`,
+      body: `A new ${BRAND.CLOUD_NAME} computer waits for you. Tap to approve it.`,
       deepLink,
       chatSessionId: input.chatSessionId,
     });

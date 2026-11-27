@@ -42,6 +42,7 @@ import {
 import { deleteComputersForRequest, pairAndConnectWithRetry } from "./cloudComputerSteps";
 import { launchFileName } from "./cloudLaunchFileCopies";
 import type { CloudProvider } from "./cloudProvider";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The computer half of an ADE Cloud lane launch (`cloudLaneLaunchService.ts`),
@@ -120,7 +121,7 @@ export function createCloudLaneComputerStages(
   /** ADE's server launcher for this account, or a plain sentence why there is none. */
   const launcher = () => {
     const baseUrl = deps.creator.directoryBaseUrl();
-    if (!baseUrl) throw new LaunchStepError("ADE's account service isn't set up on this computer, so it can't add a computer to your account.");
+    if (!baseUrl) throw new LaunchStepError(`${BRAND.NAME}'s account service isn't set up on this computer, so it can't add a computer to your account.`);
     return createCloudApiClient({
       baseUrl,
       accessToken: () => deps.creator.getAccountToken(),
@@ -213,7 +214,7 @@ export function createCloudLaneComputerStages(
         persist(record);
         out.push(attachment);
       } catch (error) {
-        throw new LaunchStepError(`ADE couldn't send ${name} to ADE Cloud: ${getErrorMessage(error).replace(/\.$/, "")}. Retry to send it again.`);
+        throw new LaunchStepError(`${BRAND.NAME} couldn't send ${name} to ${BRAND.CLOUD_NAME}: ${getErrorMessage(error).replace(/\.$/, "")}. Retry to send it again.`);
       }
     }
     return out;
@@ -260,7 +261,7 @@ export function createCloudLaneComputerStages(
   /** Starts (or, the same id again, reads) the launch on the server, asking again while a create is in flight. */
   const startOnServer = async (record: CloudLaneLaunchRecord, signal: AbortSignal): Promise<CloudLaunchRecord> => {
     const api = launcher();
-    if (!(await deps.creator.getAccountToken())) throw new LaunchStepError("Sign in to ADE on this computer first. The new computer joins your account.");
+    if (!(await deps.creator.getAccountToken())) throw new LaunchStepError(`Sign in to ${BRAND.NAME} on this computer first. The new computer joins your account.`);
     const files = await uploadFiles(record, api);
     assertActive(record, signal);
     const body = serverRequestOf(record, files, record.retryOnServer === true);
@@ -334,7 +335,7 @@ export function createCloudLaneComputerStages(
       const approval = state === "needs_approval" ? server.approval : null;
       if (approval?.url) record.snapshot.cloud.approvalUrl = approval.url;
       else delete record.snapshot.cloud.approvalUrl;
-      show("join", "running", approval ? `Approve "${record.computerName}" joining your account: open ${approval.url} on your phone or in a browser signed in to ADE.` : null);
+      show("join", "running", approval ? `Approve "${record.computerName}" joining your account: open ${approval.url} on your phone or in a browser signed in to ${BRAND.NAME}.` : null);
       return;
     }
     delete record.snapshot.cloud.approvalUrl;
@@ -373,7 +374,7 @@ export function createCloudLaneComputerStages(
 
   /** The sentence for a launch the server or its computer ended, from the computer's own words when it has them. */
   const serverFailure = (server: CloudLaunchRecord): LaunchStepError => {
-    if (server.state === "cancelled") return new LaunchStepError("This launch was cancelled on ADE Cloud.");
+    if (server.state === "cancelled") return new LaunchStepError(`This launch was cancelled on ${BRAND.CLOUD_NAME}.`);
     const failed = server.stages.find((stage) => stage.status === "failed");
     return new LaunchStepError(clip(server.error ?? failed?.error ?? "The new computer couldn't start the lane.", 400));
   };
@@ -529,7 +530,7 @@ export function createCloudLaneComputerStages(
           bind ??= startBindPass(record, current, signal);
           // Signed in, yet no project or launch shows up there: say so instead of waiting forever.
           if (clonedAt != null && Date.now() - clonedAt > SERVER_LAUNCH_BIND_WAIT_MS && server.state !== "joined") {
-            throw new LaunchStepError("The new computer started the lane, but ADE can't find it there. Retry to look again.");
+            throw new LaunchStepError(`The new computer started the lane, but ${BRAND.NAME} can't find it there. Retry to look again.`);
           }
         }
         const pause = sleep(Date.now() - lastProgress > 60_000 ? SERVER_LAUNCH_SLOW_POLL_MS : SERVER_LAUNCH_POLL_MS);
@@ -543,7 +544,7 @@ export function createCloudLaneComputerStages(
         const before = server.updatedAt;
         server = await launcher().launchStatus(launchId).catch((error: unknown) => {
           // A read that didn't land is read again; the server's own refusal ends the launch here.
-          if (error instanceof CloudApiError && error.status === 404) throw new LaunchStepError("ADE Cloud no longer has this launch. Cancel it and send again.");
+          if (error instanceof CloudApiError && error.status === 404) throw new LaunchStepError(`${BRAND.CLOUD_NAME} no longer has this launch. Cancel it and send again.`);
           logger.info("cloud_lane_launch.server_read_failed", { launchId, error: getErrorMessage(error) });
           return server;
         });

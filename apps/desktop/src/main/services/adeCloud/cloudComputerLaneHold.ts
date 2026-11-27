@@ -37,6 +37,7 @@ import {
   CloudComputerLaneLimitError,
   isAdeCloudComputer,
 } from "./cloudComputerRules";
+import { BRAND } from "../../../shared/brand";
 
 /** A lane row as the rule reads it. Primary lanes never count and are not passed. */
 export type CloudComputerLaneRow = { id: string; name: string | null; status: string | null };
@@ -240,7 +241,7 @@ export function claimCloudComputerLane(args: { projectRoot: string; laneId: stri
       const claims = claimFile.claims.filter((claim) => nowMs - claim.at < CLAIM_TTL_MS);
       claims.push({ projectRoot: path.resolve(args.projectRoot), laneId: args.laneId, at: nowMs });
       writeFileAtomic(claimFilePath(), `${JSON.stringify({ version: 1, projects, claims } satisfies ClaimFile)}\n`);
-    }, { waitMs: 5_000, label: "the ADE Cloud lane lock", staleAfterMs: 30_000 });
+    }, { waitMs: 5_000, label: `the ${BRAND.CLOUD_NAME} lane lock`, staleAfterMs: 30_000 });
   } catch (error) {
     if (error instanceof ExclusiveFileLockTimeoutError) throw new AdeExpectedError(CLOUD_COMPUTER_LANE_CHECK_BUSY_MESSAGE, "user");
     throw error;
@@ -255,7 +256,7 @@ export function releaseCloudComputerLaneClaim(projectRoot: string, laneId: strin
       const claims = claimFile.claims.filter((claim) => !(claim.laneId === laneId && sameProject(claim.projectRoot, projectRoot)));
       if (claims.length === claimFile.claims.length) return;
       writeFileAtomic(claimFilePath(), `${JSON.stringify({ ...claimFile, claims } satisfies ClaimFile)}\n`);
-    }, { waitMs: 2_000, label: "the ADE Cloud lane lock", staleAfterMs: 30_000 });
+    }, { waitMs: 2_000, label: `the ${BRAND.CLOUD_NAME} lane lock`, staleAfterMs: 30_000 });
   } catch (error) {
     // The claim stops counting on its own after two minutes.
     captureError(error, { level: "warning", tags: { area: "cloud_lane_hold" }, fingerprint: ["cloud_lane_hold", "release_failed"] });

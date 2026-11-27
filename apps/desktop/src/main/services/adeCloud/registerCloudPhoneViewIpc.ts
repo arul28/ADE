@@ -21,6 +21,7 @@ import type {
 import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
 import type { Logger } from "../logging/logger";
 import { createCloudPhoneViewHost, type CloudPhoneViewHost } from "./cloudPhoneViewHost";
+import { BRAND } from "../../../shared/brand";
 
 let host: CloudPhoneViewHost | null = null;
 
@@ -84,7 +85,7 @@ export function registerCloudPhoneViewIpc(args: { logger: Logger }): void {
 
   ipcMain.handle(IPC.cloudPhoneViewOpen, (event, raw: unknown): CloudPhoneViewOpenResult => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudPhoneViewOpen)) {
-      throw new Error("ADE can't do that from here.");
+      throw new Error(`${BRAND.NAME} can't do that from here.`);
     }
     return viewHost.open({ ...readOpenArgs(raw), sender: event.sender });
   });

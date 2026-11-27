@@ -14,6 +14,7 @@ import type {
 import { getErrorMessage } from "../shared/utils";
 import type { CloudMachineCreatorDeps } from "./cloudMachineCreator";
 import { CloudProviderError } from "./cloudProvider";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The pure parts of an ADE Cloud lane launch (`cloudLaneLaunchService.ts`):
@@ -125,16 +126,16 @@ export const CONNECT_RETRY_MS = 3_000;
 export const RESUBSCRIBE_MS = 15_000;
 /** While a launch's brain can't be read, how often ADE Cloud is asked whether its computer is still there. */
 export const COMPUTER_GONE_CHECK_MS = 60_000;
-export const COMPUTER_DELETED_SENTENCE = "This lane's ADE Cloud computer was deleted before the lane finished starting. Send the prompt again to start it on a new computer.";
+export const COMPUTER_DELETED_SENTENCE = `This lane's ${BRAND.CLOUD_NAME} computer was deleted before the lane finished starting. Send the prompt again to start it on a new computer.`;
 export const RESUBSCRIBE_ATTEMPTS = 20;
 
-export const CANT_MAKE_COMPUTER = "ADE Cloud can't make a computer right now. Try again soon.";
+export const CANT_MAKE_COMPUTER = `${BRAND.CLOUD_NAME} can't make a computer right now. Try again soon.`;
 /** Where this launch can't send files to the new computer (a brain host has no upload route to it). */
-export const CANT_CARRY_FILES = "Files from this computer can't go to a new ADE Cloud computer from here. Start without them, then add them once it runs.";
+export const CANT_CARRY_FILES = `Files from this computer can't go to a new ${BRAND.CLOUD_NAME} computer from here. Start without them, then add them once it runs.`;
 
 /** A cancelled launch's computer that is still there, named so a person can find and delete it. */
 export const cantDeleteComputer = (name: string): string =>
-  `ADE couldn't delete the computer "${name}" it made. It tries again when ADE next opens, or delete it in Settings › ADE Cloud.`;
+  `${BRAND.NAME} couldn't delete the computer "${name}" it made. It tries again when ${BRAND.NAME} next opens, or delete it in Settings › ${BRAND.CLOUD_NAME}.`;
 
 export class LaunchCancelled extends Error {
   constructor() { super("Launch cancelled."); }
@@ -193,10 +194,10 @@ export function cloudLaneLaunchFailureSentence(stage: ChatLaunchStageId, error: 
   }
   if (stage === "clone") {
     if (/repository not found|authentication failed|could not read username|permission denied|access denied|returned error: 40[34]/i.test(raw)) {
-      return "The new computer can't read this repository. Check that ADE Cloud can sign in to GitHub for it, then retry.";
+      return `The new computer can't read this repository. Check that ${BRAND.CLOUD_NAME} can sign in to GitHub for it, then retry.`;
     }
     if (error instanceof CloudProviderError) return clip(raw);
-    return "ADE couldn't clone the repository on the new computer.";
+    return `${BRAND.NAME} couldn't clone the repository on the new computer.`;
   }
-  return "ADE couldn't start setting up the lane on the new computer.";
+  return `${BRAND.NAME} couldn't start setting up the lane on the new computer.`;
 }

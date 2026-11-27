@@ -45,6 +45,7 @@ import {
 } from "./cloudPendingCreates";
 import type { HeadlessApprovalResult } from "../../../../../ade-cli/src/services/account/cloudHeadlessApproval";
 import { CLOUD_JOIN_APPROVAL_WAIT_MS, cloudJoinApprovalWaitText } from "../../../shared/cloudLaneLife";
+import { BRAND } from "../../../shared/brand";
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -130,7 +131,7 @@ export class CloudCreateCancelled extends Error {
   }
 }
 
-const CLOUD_CANT_MAKE_COMPUTER_MESSAGE = "ADE Cloud can't make a computer right now. Try again soon.";
+const CLOUD_CANT_MAKE_COMPUTER_MESSAGE = `${BRAND.CLOUD_NAME} can't make a computer right now. Try again soon.`;
 
 const BRAIN_READY_TIMEOUT_MS = 3 * 60_000;
 const SIGN_IN_FINISH_TIMEOUT_MS = 90_000;
@@ -194,10 +195,10 @@ export async function waitForCloudBoxAuth(
   let auth = await readCloudBoxAuth(client, instanceId, signal);
   while (!auth) {
     if (signal?.aborted) throw new CloudCreateCancelled();
-    if (Date.now() > deadline) throw new Error(`ADE did not start on ${machine} in time.`);
+    if (Date.now() > deadline) throw new Error(`${BRAND.NAME} did not start on ${machine} in time.`);
     const state = (await client.getInstance(instanceId).catch(() => null))?.status ?? null;
     if (state === "failed" || state === "deleted") {
-      throw new Error(state === "failed" ? `ADE Cloud couldn't start ${machine}.` : `ADE Cloud deleted ${machine}.`);
+      throw new Error(state === "failed" ? `${BRAND.CLOUD_NAME} couldn't start ${machine}.` : `${BRAND.CLOUD_NAME} deleted ${machine}.`);
     }
     await options.sleep(POLL_MS);
     auth = await readCloudBoxAuth(client, instanceId, signal);
@@ -242,8 +243,8 @@ export async function requestCloudApprovalTicket(args: {
     }) as Record<string, unknown> | null;
   } catch (error) {
     if (args.signal?.aborted) throw new CloudCreateCancelled();
-    if (controller.signal.aborted) throw new Error("ADE's account service didn't answer in time to approve the machine's sign-in. Try again.");
-    throw new Error(`ADE couldn't reach its account service to approve the machine's sign-in: ${error instanceof Error ? error.message : String(error)}`);
+    if (controller.signal.aborted) throw new Error(`${BRAND.NAME}'s account service didn't answer in time to approve the machine's sign-in. Try again.`);
+    throw new Error(`${BRAND.NAME} couldn't reach its account service to approve the machine's sign-in: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
     clearTimeout(timer);
     args.signal?.removeEventListener("abort", onCancel);
@@ -263,12 +264,12 @@ export async function requestCloudApprovalTicket(args: {
 
 /** `/device/approve`'s refusals, in words. */
 function approvalErrorMessage(status: number, code: string | null): string {
-  if (status === 401) return "Your ADE sign-in on this computer has expired. Sign in again, then make the machine.";
-  if (code === "expired") return "The new machine's sign-in code expired before ADE could approve it. Try again.";
+  if (status === 401) return `Your ${BRAND.NAME} sign-in on this computer has expired. Sign in again, then make the machine.`;
+  if (code === "expired") return `The new machine's sign-in code expired before ${BRAND.NAME} could approve it. Try again.`;
   if (code === "already_used") return "The new machine's sign-in code was already used. Try again.";
   if (code === "rate_limited") return "Too many sign-in approvals in a row. Wait a minute and try again.";
-  if (status === 503 || code === "unavailable") return "ADE's account service can't approve sign-ins right now. Try again in a moment.";
-  return `ADE's account service refused the sign-in (${status}).`;
+  if (status === 503 || code === "unavailable") return `${BRAND.NAME}'s account service can't approve sign-ins right now. Try again in a moment.`;
+  return `${BRAND.NAME}'s account service refused the sign-in (${status}).`;
 }
 
 export function normalizeCloudMachineName(raw: string): string {
@@ -313,8 +314,8 @@ export async function createCloudMachine(
   // Everything that can fail before hours are spent is checked first.
   const client = await deps.client();
   const directory = deps.directoryBaseUrl();
-  if (!directory) throw new Error("ADE's account service isn't configured on this computer, so it can't sign the new machine in.");
-  if (!(await deps.getAccountToken())) throw new Error("Sign in to ADE on this computer first. The new machine joins your account.");
+  if (!directory) throw new Error(`${BRAND.NAME}'s account service isn't configured on this computer, so it can't sign the new machine in.`);
+  if (!(await deps.getAccountToken())) throw new Error(`Sign in to ${BRAND.NAME} on this computer first. The new machine joins your account.`);
   if (!(await client.hasTemplate())) throw new Error(CLOUD_CANT_MAKE_COMPUTER_MESSAGE);
   checkCancelled();
   const logger = deps.logger ?? {};
@@ -336,9 +337,9 @@ export async function createCloudMachine(
     deps.pendingCreates?.begin(requestId, Date.now());
   } catch (error) {
     logger.warn?.("cloud.machine_create_not_recorded", { error: errorText(error) });
-    throw new Error("ADE couldn't save a note of the machine it's about to make, so it didn't make one. Check that ADE can write to its folder, then try again.");
+    throw new Error(`${BRAND.NAME} couldn't save a note of the machine it's about to make, so it didn't make one. Check that ${BRAND.NAME} can write to its folder, then try again.`);
   }
-  progress("creating", `Making ${name} on ADE Cloud…`);
+  progress("creating", `Making ${name} on ${BRAND.CLOUD_NAME}…`);
   let instance: CloudInstance;
   try {
     instance = await client.createInstance({
@@ -397,10 +398,10 @@ export async function createCloudMachine(
       }
       throw new CloudCreateCancelled(cleanup?.resolved
         ? undefined
-        : "ADE stopped making the machine. If ADE Cloud still makes it, ADE deletes it as soon as it appears.");
+        : `${BRAND.NAME} stopped making the machine. If ${BRAND.CLOUD_NAME} still makes it, ${BRAND.NAME} deletes it as soon as it appears.`);
     }
     if (cleanup && cleanup.unresolved.length) {
-      throw new Error(`${errorText(error).replace(/\.$/, "")}. ADE Cloud may have made the computer anyway and ADE couldn't delete it yet; it tries again when ADE next starts.`);
+      throw new Error(`${errorText(error).replace(/\.$/, "")}. ${BRAND.CLOUD_NAME} may have made the computer anyway and ${BRAND.NAME} couldn't delete it yet; it tries again when ${BRAND.NAME} next starts.`);
     }
     throw error;
   }
@@ -451,11 +452,11 @@ export async function approveCloudMachineSignIn(
   // left pending (not claimed by /device/approve), so the phone's own
   // approval flow can take it.
   const handOff = async (code: string) => {
-    if (!deps.handOffApproval) throw new Error("ADE has no window here to approve the machine's sign-in.");
+    if (!deps.handOffApproval) throw new Error(`${BRAND.NAME} has no window here to approve the machine's sign-in.`);
     args.onApprovalSent();
     const url = `${directory.replace(/\/+$/, "")}/device?user_code=${encodeURIComponent(code)}`;
     deps.handOffApproval({ url, userCode: code, name });
-    progress("approve_elsewhere", `Approve ${name} joining your account: open the link on your phone or in a browser signed in to ADE.`, instanceId, url);
+    progress("approve_elsewhere", `Approve ${name} joining your account: open the link on your phone or in a browser signed in to ${BRAND.NAME}.`, instanceId, url);
     const approveDeadline = Date.now() + APPROVE_ELSEWHERE_TIMEOUT_MS;
     for (;;) {
       checkCancelled();
@@ -472,7 +473,7 @@ export async function approveCloudMachineSignIn(
         return false;
       });
     if (!headless || !selfApproved) return await handOff(userCode);
-    progress("signing_in", `Approving ${name} with this machine's ADE sign-in…`, instanceId);
+    progress("signing_in", `Approving ${name} with this machine's ${BRAND.NAME} sign-in…`, instanceId);
     try {
       await approveWithTicket(({ url, mode, signal: windowSignal }) =>
         // The approval page (mode "browser") needs a person's own sign-in.
@@ -513,7 +514,7 @@ export async function approveCloudMachineSignIn(
 
   async function approveWithTicket(openWindow: NonNullable<CloudMachineCreatorDeps["approveInWindow"]>): Promise<void> {
     const token = await deps.getAccountToken();
-    if (!token) throw new Error("Sign in to ADE on this computer first. The machine joins your account.");
+    if (!token) throw new Error(`Sign in to ${BRAND.NAME} on this computer first. The machine joins your account.`);
     args.onApprovalSent();
     const window = await requestCloudApprovalTicket({ directory, token, userCode, ...(deps.fetch ? { fetch: deps.fetch } : {}), ...(signal ? { signal } : {}) });
     if (window.mode === "browser") logger.warn?.("cloud.approve_ticket_unavailable", { instanceId });
@@ -607,7 +608,7 @@ export async function waitForCloudAccountRow(
     // and only stops the wait; it is not reported as a finished create.
     if (signal?.aborted) {
       logger.info?.("cloud.machine_join_cancelled", { instanceId, requestId });
-      throw new CloudCreateCancelled(`You stopped waiting. "${name}" had already signed in, so ADE kept it: it appears under Your computers when it's ready.`);
+      throw new CloudCreateCancelled(`You stopped waiting. "${name}" had already signed in, so ${BRAND.NAME} kept it: it appears under Your computers when it's ready.`);
     }
     if (!machineKey) {
       const read = await client.exec(instanceId, MACHINE_KEY_COMMAND).catch((error: unknown) => {
@@ -678,7 +679,7 @@ export async function bringCloudBoxIntoAde(
   let approvalSent = false;
   try {
     checkCancelled();
-    progress("waiting_for_brain", "Starting ADE on the new machine…", instance.id);
+    progress("waiting_for_brain", `Starting ${BRAND.NAME} on the new machine…`, instance.id);
     const readAuth = () => readCloudBoxAuth(client, instance.id, signal);
     const auth = await waitForCloudBoxAuth(client, instance.id, { signal, sleep, machine: "the new machine" });
     checkCancelled();
@@ -719,12 +720,12 @@ export async function bringCloudBoxIntoAde(
       if (signedIn === true) {
         deps.pendingCreates?.finish(requestId);
         logger.info?.("cloud.machine_kept_signed_in", { instanceId: instance.id, requestId });
-        throw new Error(`${reasonFor()} "${name}" had already signed in, so ADE kept it: it's under Your computers. Delete it from its row if you don't want it.`);
+        throw new Error(`${reasonFor()} "${name}" had already signed in, so ${BRAND.NAME} kept it: it's under Your computers. Delete it from its row if you don't want it.`);
       }
       if (signedIn === "unknown") {
         // Left on the pending list: the next start asks the box again and
         // deletes it only on a clear "signed out".
-        throw new Error(`${reasonFor()} ADE couldn't tell whether "${name}" (${instance.id}) finished signing in, so it didn't delete it. If it shows as Not in ADE under Your computers, delete it from its row; ADE also checks again when it next starts.`);
+        throw new Error(`${reasonFor()} ${BRAND.NAME} couldn't tell whether "${name}" (${instance.id}) finished signing in, so it didn't delete it. If it shows as Not in ${BRAND.NAME} under Your computers, delete it from its row; ${BRAND.NAME} also checks again when it next starts.`);
       }
     }
     // A box that never signed in is only using hours: take it back off the provider.
@@ -737,8 +738,8 @@ export async function bringCloudBoxIntoAde(
     // A request the cancel cut short reads as the cancel, not as its own error.
     const reason = reasonFor();
     throw new Error(deleted
-      ? `${reason} ADE deleted the computer it made.`
-      : `${reason} ADE couldn't confirm it deleted the computer it made ("${name}", ${instance.id}). Delete it from its row under Your computers; ADE also tries again when it next starts.`);
+      ? `${reason} ${BRAND.NAME} deleted the computer it made.`
+      : `${reason} ${BRAND.NAME} couldn't confirm it deleted the computer it made ("${name}", ${instance.id}). Delete it from its row under Your computers; ${BRAND.NAME} also tries again when it next starts.`);
   }
 
   progress("joining", `${name} is signed in. Adding it to your computers…`, instance.id);

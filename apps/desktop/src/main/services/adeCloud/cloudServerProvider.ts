@@ -45,6 +45,7 @@ import {
 } from "./cloudProvider";
 import { cloudSavedChatUrl, cloudSavedChatsUrl, type CloudSavedChatList, type CloudSavedChatPage } from "../../../shared/cloudSavedChats";
 import { markExpected } from "../../../shared/expectedError";
+import { BRAND } from "../../../shared/brand";
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -94,7 +95,7 @@ export type CloudDeleteContext = {
   keepLane?: { branchRef: string | null } | null;
 };
 
-const BAD_RESPONSE = "ADE Cloud answered with something ADE could not read.";
+const BAD_RESPONSE = `${BRAND.CLOUD_NAME} answered with something ${BRAND.NAME} could not read.`;
 
 function instancePath(id: string, action?: string): string {
   const base = `${INSTANCES}/${encodeURIComponent(id)}`;
@@ -169,9 +170,9 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
   async function accountToken(): Promise<string> {
     const token = await deps.accessToken();
     // Signed out is a state the person fixes, not a defect.
-    if (!token) throw markExpected(new CloudProviderError("Sign in to ADE to use ADE Cloud.", CLOUD_ACCESS_REFUSED, 401), "user");
+    if (!token) throw markExpected(new CloudProviderError(`Sign in to ${BRAND.NAME} to use ${BRAND.CLOUD_NAME}.`, CLOUD_ACCESS_REFUSED, 401), "user");
     if (deps.signedInAccount && deps.signedInAccount() !== deps.account) {
-      throw markExpected(new CloudProviderError("The ADE account changed. Try again.", "no_account", 409), "user");
+      throw markExpected(new CloudProviderError(`The ${BRAND.NAME} account changed. Try again.`, "no_account", 409), "user");
     }
     return token;
   }
@@ -182,7 +183,7 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
     init: { body?: unknown; timeoutMs?: number; signal?: AbortSignal } = {},
   ): Promise<unknown> {
     const base = deps.baseUrl()?.replace(/\/+$/, "");
-    if (!base) throw new CloudProviderError("ADE's account service isn't set up on this computer.", "network", 0);
+    if (!base) throw new CloudProviderError(`${BRAND.NAME}'s account service isn't set up on this computer.`, "network", 0);
     const token = await accountToken();
     // Cached after the first read: one OS probe per process. Not on the access
     // check, which every signed-in account polls: the id goes only to an
@@ -191,7 +192,7 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
     const controller = new AbortController();
     const timedOut = () => init.signal?.aborted
       ? new CloudProviderError("Cancelled.", "cancelled", 0)
-      : markExpected(new CloudProviderError("ADE Cloud did not answer in time. Try again.", "timeout", 0), "network");
+      : markExpected(new CloudProviderError(`${BRAND.CLOUD_NAME} did not answer in time. Try again.`, "timeout", 0), "network");
     // The caller's signal (a cancelled create) stops the request too.
     const onCallerAbort = () => controller.abort();
     if (init.signal?.aborted) controller.abort();
@@ -219,7 +220,7 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
         if (controller.signal.aborted) throw timedOut();
         // Offline, DNS, a dropped connection: the person's network, not a defect.
         throw markExpected(
-          new CloudProviderError(`Could not reach ADE Cloud: ${error instanceof Error ? error.message : String(error)}`, "network", 0),
+          new CloudProviderError(`Could not reach ${BRAND.CLOUD_NAME}: ${error instanceof Error ? error.message : String(error)}`, "network", 0),
           "network",
         );
       }
@@ -240,7 +241,7 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
       const refused = response.status === 401 || code === "unauthorized"
         || (response.status === 404 && method === "GET" && path === INSTANCES);
       const failure = new CloudProviderError(
-        message ?? (response.status >= 500 ? "ADE Cloud is having trouble right now. Try again in a moment." : `ADE Cloud answered with an error (${response.status}).`),
+        message ?? (response.status >= 500 ? `${BRAND.CLOUD_NAME} is having trouble right now. Try again in a moment.` : `${BRAND.CLOUD_NAME} answered with an error (${response.status}).`),
         refused ? CLOUD_ACCESS_REFUSED : code ?? `http_${response.status}`,
         response.status,
         { reason, ...(computerLimit ? { computerLimit } : {}) },
@@ -277,7 +278,7 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
     async getAccount(): Promise<CloudAccountState> {
       const account = await request("GET", "/cloud/account");
       // Every surface reads the plan's period; an answer without it is a failed read, not a crash.
-      if (!record(record(account)?.billing)) throw new Error("ADE Cloud sent account details without billing.");
+      if (!record(record(account)?.billing)) throw new Error(`${BRAND.CLOUD_NAME} sent account details without billing.`);
       return account as CloudAccountState;
     },
 
@@ -285,7 +286,7 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
       const data = record(await request("GET", INSTANCES))?.data;
       // An unreadable reply is a failed read, never "no computers": a caller
       // that reads absence as deleted (a launch's gone-computer check) must not.
-      if (!Array.isArray(data)) throw new Error("ADE Cloud sent a list of computers ADE couldn't read.");
+      if (!Array.isArray(data)) throw new Error(`${BRAND.CLOUD_NAME} sent a list of computers ${BRAND.NAME} couldn't read.`);
       return data.map(readInstance);
     },
 
@@ -604,7 +605,7 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
 
     async phoneCall(input: CloudPhoneCallRequest, options?: { timeoutMs?: number }): Promise<{ status: number; type: string | null; body: Buffer }> {
       const base = deps.baseUrl()?.replace(/\/+$/, "");
-      if (!base) throw new CloudProviderError("ADE's account service isn't set up on this computer.", "network", 0);
+      if (!base) throw new CloudProviderError(`${BRAND.NAME}'s account service isn't set up on this computer.`, "network", 0);
       const token = await accountToken();
       let response: Response;
       try {
@@ -619,7 +620,7 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
         return { status: response.status, type: response.headers.get("content-type"), body: Buffer.from(await response.arrayBuffer()) };
       } catch (error) {
         throw markExpected(
-          new CloudProviderError(`Could not reach ADE Cloud: ${error instanceof Error ? error.message : String(error)}`, "network", 0),
+          new CloudProviderError(`Could not reach ${BRAND.CLOUD_NAME}: ${error instanceof Error ? error.message : String(error)}`, "network", 0),
           "network",
         );
       }

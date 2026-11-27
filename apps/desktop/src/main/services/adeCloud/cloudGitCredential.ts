@@ -41,6 +41,7 @@ import {
 import { createAccountAppTokenClient } from "../../../shared/github/accountAppTokenClient";
 import { GITHUB_CLI_VAULT_KEY, GITHUB_PAT_VAULT_KEY, decodeAccountGithubToken } from "../github/accountGithubTokenItem";
 import type { CloudVault } from "./cloudAccess";
+import { BRAND } from "../../../shared/brand";
 
 /** The account vault items a cloud computer's git can use, in the order they are tried. Kind `integration`, scope `all`. */
 const ACCOUNT_GIT_CREDENTIAL_ITEMS: ReadonlyArray<{ key: string; source: AccountGitCredentialSource }> = [
@@ -101,8 +102,8 @@ export async function accountAppConnection(deps: {
   return !answer.status.connected || answer.status.state === "needs_reauth" ? "not_connected" : "unknown";
 }
 
-const UNREADABLE_MESSAGE = `ADE couldn't read your account's GitHub sign-in on this computer. ${CONNECT_GITHUB_HINT}`;
-const NONE_MESSAGE = `Your ADE account has no GitHub sign-in a cloud computer can clone with. ${CONNECT_GITHUB_HINT}`;
+const UNREADABLE_MESSAGE = `${BRAND.NAME} couldn't read your account's GitHub sign-in on this computer. ${CONNECT_GITHUB_HINT}`;
+const NONE_MESSAGE = `Your ${BRAND.NAME} account has no GitHub sign-in a cloud computer can clone with. ${CONNECT_GITHUB_HINT}`;
 
 /** Whether the account has a credential git can use on a new cloud computer. Never throws. */
 async function accountGitCredential(deps: AccountGitCredentialDeps): Promise<AccountGitCredential> {
@@ -185,7 +186,7 @@ export async function cloudGitPreflight(
   if (credential.ok) return { ok: true, via: credential.source };
   const repo = githubRepoOf(originUrl);
   // Not a GitHub origin: the launch's own refusal speaks for it.
-  if (!repo) return { ok: true, via: "unknown", warning: "ADE couldn't check this repository on GitHub." };
+  if (!repo) return { ok: true, via: "unknown", warning: `${BRAND.NAME} couldn't check this repository on GitHub.` };
   const visibility = await githubRepoVisibility(repo, deps);
   if (visibility === "public") return { ok: true, via: "public" };
   if (visibility === "not_visible") {
@@ -197,18 +198,18 @@ export async function cloudGitPreflight(
       return {
         ok: true,
         via: "unknown",
-        warning: `${name} isn't public on GitHub, and ADE couldn't read your account's GitHub sign-in on this computer. The new computer reads it itself; if no sign-in follows your account, its clone fails until GitHub is connected in Settings › GitHub.`,
+        warning: `${name} isn't public on GitHub, and ${BRAND.NAME} couldn't read your account's GitHub sign-in on this computer. The new computer reads it itself; if no sign-in follows your account, its clone fails until GitHub is connected in Settings › GitHub.`,
       };
     }
     return {
       ok: false,
       reason: "none",
-      message: `${name} isn't public on GitHub, and your ADE account has no GitHub sign-in a cloud computer can clone it with. ${CONNECT_GITHUB_HINT}`,
+      message: `${name} isn't public on GitHub, and your ${BRAND.NAME} account has no GitHub sign-in a cloud computer can clone it with. ${CONNECT_GITHUB_HINT}`,
     };
   }
   return {
     ok: true,
     via: "unknown",
-    warning: `ADE couldn't reach GitHub to check ${repo.owner}/${repo.repo}. If it is private, the new computer can't clone it until GitHub is connected in Settings › GitHub.`,
+    warning: `${BRAND.NAME} couldn't reach GitHub to check ${repo.owner}/${repo.repo}. If it is private, the new computer can't clone it until GitHub is connected in Settings › GitHub.`,
   };
 }

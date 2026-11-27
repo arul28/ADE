@@ -74,6 +74,7 @@ import {
 } from "./cloudPhoneDriver";
 import { createNomacDriver } from "./cloudPhoneNomacDriver";
 import { createRevylDriver } from "./cloudPhoneRevylDriver";
+import { BRAND } from "../../../shared/brand";
 
 export { CloudPhoneError, type CloudPhoneToolAnswer };
 
@@ -370,7 +371,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
 
   async function provider(): Promise<CloudProvider> {
     const client = await deps.provider();
-    if (!client?.phoneState) throw new CloudPhoneError(await deps.whyNoProvider() ?? "Sign in to ADE to use the ADE Cloud iPhone.", "no_account");
+    if (!client?.phoneState) throw new CloudPhoneError(await deps.whyNoProvider() ?? `Sign in to ${BRAND.NAME} to use the ${BRAND.CLOUD_NAME} iPhone.`, "no_account");
     return client;
   }
 
@@ -497,7 +498,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
    * `account`: the account the command began under (a retry's), refused when another is signed in now.
    */
   async function ensure({ device, chatSessionId = null, needs = [], account: began }: { device?: CloudPhoneDevice; chatSessionId?: string | null; needs?: readonly CloudPhoneAbility[]; account?: string | null } = {}): Promise<Held> {
-    const switched = (): CloudPhoneError => new CloudPhoneError("The ADE account changed while the cloud iPhone was in use. Try again.", "no_account");
+    const switched = (): CloudPhoneError => new CloudPhoneError(`The ${BRAND.NAME} account changed while the cloud iPhone was in use. Try again.`, "no_account");
     const account = await currentAccount();
     if (began !== undefined && account !== began) throw switched();
     // The running phone can't do what is needed: said before any call (the server says the same of one started elsewhere).
@@ -530,7 +531,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       const starter = (async () => {
         const client = await provider();
         // Signed out or switched while this waited: the start is never sent under another account.
-        if (accountOf(client) !== account) throw new CloudPhoneError("The ADE account changed while the cloud iPhone started. Try again.", "no_account");
+        if (accountOf(client) !== account) throw new CloudPhoneError(`The ${BRAND.NAME} account changed while the cloud iPhone started. Try again.`, "no_account");
         // Another machine's start for this account is in flight: asked again until it holds the live phone.
         const startOnce = async (): Promise<CloudPhoneStart> => {
           const by = Date.now() + START_BUSY_WAIT_MS;
@@ -567,7 +568,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     }
     const phone = await starting.phone;
     // Signed out or switched while it started: never hand this phone to another account.
-    if (phone.account !== (await currentAccount())) throw new CloudPhoneError("The ADE account changed while the cloud iPhone started. Try again.", "no_account");
+    if (phone.account !== (await currentAccount())) throw new CloudPhoneError(`The ${BRAND.NAME} account changed while the cloud iPhone started. Try again.`, "no_account");
     if (began !== undefined && phone.account !== began) throw switched();
     // Another caller's start (no needs) may have made this one: the server checked only that caller's needs.
     return able(phone);
@@ -645,7 +646,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     async getStatus(): Promise<CloudPhoneStatusView> {
       const client = await deps.provider();
       if (!client?.phoneState) {
-        return { access: "off", minutes: null, phone: null, capabilities: [], supported: false, reason: await deps.whyNoProvider() ?? "Sign in to ADE to use the ADE Cloud iPhone." };
+        return { access: "off", minutes: null, phone: null, capabilities: [], supported: false, reason: await deps.whyNoProvider() ?? `Sign in to ${BRAND.NAME} to use the ${BRAND.CLOUD_NAME} iPhone.` };
       }
       const askedAt = Date.now();
       const state = await client.phoneState();
@@ -661,7 +662,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
         else await settleEnd(tracked, Boolean(state.phone));
       }
       // Access is on or off (an older server's `soon` reads as off).
-      const reason = state.access === "on" ? null : "The ADE Cloud iPhone isn't available right now.";
+      const reason = state.access === "on" ? null : `The ${BRAND.CLOUD_NAME} iPhone isn't available right now.`;
       const lastActivityAt = liveRun && state.phone?.id === liveRun.phoneId && state.phone.state !== "ended" ? liveRun.lastActivityAt : null;
       // What the phone can do: the server says, for the live phone or the next one (an
       // older server: the live phone's provider, or with none running, NoMac's).
@@ -794,7 +795,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       } finally {
         fs.closeSync(fd);
       }
-      const caption = textArg(args?.caption, "caption", 300) ?? "ADE Cloud iPhone screenshot";
+      const caption = textArg(args?.caption, "caption", 300) ?? `${BRAND.CLOUD_NAME} iPhone screenshot`;
       const artifactId = args?.noProof === true ? null : fileProof(proof, args ?? {}, { kind: "screenshot", path: target, mimeType: "image/png", title: caption });
       return { path: target, link, bytes: bytes.length, artifactId };
     },
@@ -914,7 +915,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       if (!video || answer.failed) return { ...answer, path: null, artifactId: null };
       const target = path.join(os.tmpdir(), `ade-cloud-iphone-${Date.now()}.${video.extension}`);
       fs.writeFileSync(target, video.bytes);
-      const caption = textArg(args?.caption, "caption", 300) ?? "ADE Cloud iPhone recording";
+      const caption = textArg(args?.caption, "caption", 300) ?? `${BRAND.CLOUD_NAME} iPhone recording`;
       const artifactId = args?.noProof === true ? null : fileProof(proof, args ?? {}, { kind: "video_recording", path: target, mimeType: video.extension === "mov" ? "video/quicktime" : "video/mp4", title: caption });
       return { ...answer, path: target, artifactId };
     },

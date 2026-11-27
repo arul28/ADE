@@ -28,6 +28,7 @@ import type { CloudApproval } from "./cloudAgentActions";
 import type { CloudLaneAccount } from "./cloudLaneAccount";
 import { captureCloudLaneAnalytics, type CloudLaneAnalyticsCapture } from "./cloudLaneAnalytics";
 import type { CloudInstance, CloudLogger, CloudProvider } from "./cloudProvider";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The `cloud` actions for the account's lanes, saved chats, CLI copies,
@@ -100,7 +101,7 @@ const STALE_MS = 7 * 24 * 60 * 60_000;
 const MOVE_ENDED: ReadonlySet<string> = new Set(["done", "failed", "cancelled"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** Where the person does it in ADE, when the caller has no chat to ask in. */
-const PERSON_PLACE = "Do it in ADE: the lane's row in Work or Lanes, or Settings › ADE Cloud. Or ask for it in an ADE chat, where ADE can ask you.";
+const PERSON_PLACE = `Do it in ${BRAND.NAME}: the lane's row in Work or Lanes, or Settings › ${BRAND.CLOUD_NAME}. Or ask for it in a ${BRAND.NAME} chat, where ${BRAND.NAME} can ask you.`;
 /** An agent's delete can't keep the chats behind the person's back: the card offers each choice. */
 const LANE_DELETE_KEEP_CHATS_GONE = "keepChats is gone: the delete card asks the person. Delete lane deletes the lane, its computer and its saved chats; Keep for later (ade cloud lanes free) removes only the computer and keeps the lane and its chats.";
 
@@ -129,7 +130,7 @@ function workLine(lane: { ahead: number; dirty: boolean; files?: number }): stri
   const parts: string[] = [];
   if (lane.ahead > 0) parts.push(`${plural(lane.ahead, "commit")} not pushed`);
   if (lane.dirty) parts.push(typeof lane.files === "number" && lane.files > 0 ? `${plural(lane.files, "file")} changed` : "changes not committed");
-  return parts.join(", ") || "work ADE couldn't read";
+  return parts.join(", ") || `work ${BRAND.NAME} couldn't read`;
 }
 
 function laneLink(laneId: string): string {
@@ -217,18 +218,18 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
     const [machines, kept, chatRead, backups] = await Promise.all([
       machinesRead,
       deps.account().lanesWithoutComputer().catch((error: unknown) => {
-        unread.push(`ADE couldn't read the lanes whose computer was deleted: ${getErrorMessage(error)}`);
+        unread.push(`${BRAND.NAME} couldn't read the lanes whose computer was deleted: ${getErrorMessage(error)}`);
         failed.add("kept");
         return [] as CloudLaneWithoutComputer[];
       }),
       readChats().catch((error: unknown) => {
-        unread.push(`ADE couldn't read the saved chats: ${getErrorMessage(error)}`);
+        unread.push(`${BRAND.NAME} couldn't read the saved chats: ${getErrorMessage(error)}`);
         failed.add("chats");
         return { chats: [] as CloudSavedChatRow[], complete: true };
       }),
       api
         ? api.laneBackups().catch((error: unknown) => {
-            unread.push(`ADE couldn't read the lane backups: ${getErrorMessage(error)}`);
+            unread.push(`${BRAND.NAME} couldn't read the lane backups: ${getErrorMessage(error)}`);
             failed.add("backups");
             return [] as CloudLaneBackup[];
           })
@@ -340,13 +341,13 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
     const matches = id
       ? read.lanes.filter((lane) => lane.laneId.toLowerCase() === id)
       : read.lanes.filter((lane) => lane.name.toLowerCase() === wanted || (lane.branch ?? "").toLowerCase() === wanted);
-    if (!matches.length) throw new Error(`No ADE Cloud lane is called "${selector}". ade cloud lanes lists them.`);
+    if (!matches.length) throw new Error(`No ${BRAND.CLOUD_NAME} lane is called "${selector}". ade cloud lanes lists them.`);
     if (matches.length > 1) {
       throw new Error(`"${selector}" names ${matches.length} lanes: ${matches.map((lane) => `${lane.name} (${lane.laneId}, ${lane.state.replace("_", " ")})`).join(", ")}. Pass the id.`);
     }
     // A list with a part unread can hide a second lane of that name: a change needs the id.
     if (options.write && !id && (read.failed.has("kept") || read.failed.has("chats"))) {
-      throw new Error(`ADE couldn't read all your lanes just now, so "${selector}" could name more than one. Pass the id (${matches[0]!.laneId}), or try again.`);
+      throw new Error(`${BRAND.NAME} couldn't read all your lanes just now, so "${selector}" could name more than one. Pass the id (${matches[0]!.laneId}), or try again.`);
     }
     return { lane: matches[0]!, chatRows: read.chatRows, keptIds: read.keptIds };
   };
@@ -360,7 +361,7 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
     if (work.unpushed === null) {
       const known = work.unpushedLanes.map((lane) => `• ${cloudWorkLaneName(lane) || lane.branchRef}: ${workLine(lane)}`);
       return [
-        `ADE couldn't check all its work (${(work.message ?? "no answer").replace(/\.$/, "")}). Anything not on GitHub is lost if you delete it.`,
+        `${BRAND.NAME} couldn't check all its work (${(work.message ?? "no answer").replace(/\.$/, "")}). Anything not on GitHub is lost if you delete it.`,
         ...(known.length ? ["Not on GitHub, lost if you delete:", ...known] : []),
       ].join("\n");
     }
@@ -373,7 +374,7 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
     if (!machineKey) {
       const { chats } = await readChats();
       const found = chats.find((chat) => chat.chatId === chatId);
-      if (!found) throw new Error(`ADE Cloud has no saved chat ${chatId} among your newest ${CHAT_PAGES * CHAT_PAGE}. Pass --machine-key, or see ade cloud chats.`);
+      if (!found) throw new Error(`${BRAND.CLOUD_NAME} has no saved chat ${chatId} among your newest ${CHAT_PAGES * CHAT_PAGE}. Pass --machine-key, or see ade cloud chats.`);
       return found;
     }
     // A machine key: that computer's chats only, so an older chat is found too.
@@ -386,7 +387,7 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
       cursor = listed.nextCursor;
       if (!cursor) break;
     }
-    throw new Error(`ADE Cloud has no saved chat ${chatId} from that computer. See ade cloud chats --machine-key ${machineKey}.`);
+    throw new Error(`${BRAND.CLOUD_NAME} has no saved chat ${chatId} from that computer. See ade cloud chats --machine-key ${machineKey}.`);
   };
 
   /** A lane's branch from the Git summary a computer of it saved at rest, when nothing else names it. */
@@ -432,7 +433,7 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
 
   const requireApi = (): CloudApiClient => {
     const api = deps.api();
-    if (!api) throw new Error("This ADE isn't signed in to your ADE account.");
+    if (!api) throw new Error(`This ${BRAND.NAME} isn't signed in to your ${BRAND.NAME} account.`);
     return api;
   };
 
@@ -516,14 +517,14 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
       const account = deps.account();
       if (!lane.computer) {
         // The lane's chats are all that is left of it: deleting the lane deletes them (the server does it with its record).
-        const saved = lane.backup ? ` and the work ADE saved for it (${workLine({ ahead: lane.backup.commits, dirty: lane.backup.files > 0, files: lane.backup.files })})` : "";
+        const saved = lane.backup ? ` and the work ${BRAND.NAME} saved for it (${workLine({ ahead: lane.backup.commits, dirty: lane.backup.files > 0, files: lane.backup.files })})` : "";
         await deps.approve(approval, {
           action: "delete",
           title: `Delete lane "${lane.name}"`,
           question: `Delete ${lane.name}?`,
           body: `${lane.chats > 0 ? `Its ${plural(lane.chats, "saved chat")}` : "Its saved chats"}${saved} go for good.${lane.branch ? ` ADE doesn't delete its branch ${lane.branch} on GitHub.` : ""}`,
           confirm: "Delete lane",
-          confirmDetail: "Its computer is already gone; nothing of the lane is left in ADE after this.",
+          confirmDetail: `Its computer is already gone; nothing of the lane is left in ${BRAND.NAME} after this.`,
           personPlace: PERSON_PLACE,
         });
         const kept = keptIds.has(lane.laneId);
@@ -579,7 +580,7 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
         confirmDetail: `The lane, its computer, its files and its saved chats go for good.${lane.branch ? ` ADE doesn't delete its branch ${lane.branch} on GitHub.` : ""}`,
         alternative: {
           label: "Keep for later",
-          detail: "ADE pushes its work to GitHub and removes only its computer. The lane and its chats stay; your next message makes a new computer.",
+          detail: `${BRAND.NAME} pushes its work to GitHub and removes only its computer. The lane and its chats stay; your next message makes a new computer.`,
         },
         // Never answered alone, not even for a computer this chat made: the lane's saved chats go with it.
         personPlace: PERSON_PLACE,
@@ -628,7 +629,7 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
         action: "delete",
         title: `Keep "${lane.name}" for later`,
         question: `Keep ${lane.name} for later?`,
-        body: "ADE pushes its work to GitHub, removes its computer, and keeps the lane and its chats.",
+        body: `${BRAND.NAME} pushes its work to GitHub, removes its computer, and keeps the lane and its chats.`,
         confirm: "Keep for later",
         confirmDetail: "Your next message in the lane makes a new computer on the same branch.",
         madeByThisChat: chatSessionId != null && metadata[CLOUD_MADE_BY_CHAT_METADATA] === chatSessionId,
@@ -648,10 +649,10 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
       const { lane } = await resolveLane(text(args, "lane"), { write: true });
       if (lane.computer) throw new Error(`${lane.name} is on a computer already (${lane.state}). Send it a message, or ade cloud wake ${lane.computer.name ?? lane.computer.instanceId}.`);
       const branch = lane.branch ?? await savedBranchOf(lane);
-      if (!branch) throw new Error(`ADE never learned ${lane.name}'s branch. Start a new lane on ADE Cloud instead.`);
+      if (!branch) throw new Error(`${BRAND.NAME} never learned ${lane.name}'s branch. Start a new lane on ${BRAND.CLOUD_NAME} instead.`);
       const here = normalizeGitRemoteIdentity(deps.projectOriginUrl());
       // The lane's own repository decides: this folder's never stands in for an unknown one.
-      if (!lane.projectOrigin) throw new Error(`ADE doesn't know which repository ${lane.name} is from. Start a new lane on ADE Cloud in that project instead.`);
+      if (!lane.projectOrigin) throw new Error(`${BRAND.NAME} doesn't know which repository ${lane.name} is from. Start a new lane on ${BRAND.CLOUD_NAME} in that project instead.`);
       if (here !== normalizeGitRemoteIdentity(lane.projectOrigin)) throw new Error(`${lane.name} is a lane of ${lane.projectOrigin}. Run this in a folder of that project.`);
       const size = text(args, "size");
       return await deps.laneLaunch({
@@ -675,7 +676,7 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
       const { lane } = await resolveLane(text(record(rawArgs), "lane"), { write: true });
       if (!lane.computer) throw new Error(`${lane.name}'s computer was already deleted. Its next message makes a new one.`);
       await deps.account().keepComputer({ instanceId: lane.computer.instanceId });
-      return { kept: true, message: `ADE keeps ${lane.name}'s computer. The idle clock starts again.` };
+      return { kept: true, message: `${BRAND.NAME} keeps ${lane.name}'s computer. The idle clock starts again.` };
     },
 
     /** The lane's Git summary as its computer saved it at rest: no wake (`ade cloud lanes git`). */
@@ -704,7 +705,7 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
       await deps.approve(approval, {
         action: "delete",
         title: `Delete ${what}`,
-        body: "ADE deletes ADE Cloud's copy of this chat for good. Work the chat pushed stays on GitHub.",
+        body: `${BRAND.NAME} deletes ${BRAND.CLOUD_NAME}'s copy of this chat for good. Work the chat pushed stays on GitHub.`,
         confirm: "Delete chat",
         personPlace: PERSON_PLACE,
       });
@@ -730,7 +731,7 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
       const api = requireApi();
       const machineKey = text(args, "machineKey") ?? await sessionMachineKey(api, sessionId);
       const copy = machineKey ? await api.savedSession(machineKey, sessionId) : null;
-      if (!copy) throw new Error(`ADE Cloud has no saved copy of session ${sessionId}${machineKey ? "" : " among your newest copies; pass --machine-key"}. ade cloud sessions lists them.`);
+      if (!copy) throw new Error(`${BRAND.CLOUD_NAME} has no saved copy of session ${sessionId}${machineKey ? "" : " among your newest copies; pass --machine-key"}. ade cloud sessions lists them.`);
       return copy;
     },
 
@@ -740,13 +741,13 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
       if (!sessionId) throw new Error("Pass the session id (ade cloud sessions).");
       const api = requireApi();
       const machineKey = text(args, "machineKey") ?? await sessionMachineKey(api, sessionId);
-      if (!machineKey) throw new Error(`ADE Cloud has no saved copy of session ${sessionId} among your newest copies. Pass --machine-key, or see ade cloud sessions.`);
+      if (!machineKey) throw new Error(`${BRAND.CLOUD_NAME} has no saved copy of session ${sessionId} among your newest copies. Pass --machine-key, or see ade cloud sessions.`);
       const approval = readApproval(args);
       await deps.approve(approval, {
         action: "delete",
         title: "Delete a saved terminal copy",
         question: "Delete this saved terminal copy?",
-        body: "ADE deletes ADE Cloud's copy of this CLI or shell session for good.",
+        body: `${BRAND.NAME} deletes ${BRAND.CLOUD_NAME}'s copy of this CLI or shell session for good.`,
         confirm: "Delete copy",
         personPlace: PERSON_PLACE,
       });
@@ -771,7 +772,7 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
       const api = requireApi();
       const machineKey = text(args, "machineKey");
       const backups = (await api.laneBackups(laneId, null)).filter((backup) => !machineKey || sameMachineKey(backup.machineKey, machineKey));
-      if (!backups.length) throw new Error("ADE Cloud has no saved work for that lane.");
+      if (!backups.length) throw new Error(`${BRAND.CLOUD_NAME} has no saved work for that lane.`);
       const commits = Math.max(...backups.map((backup) => backup.commits));
       const files = Math.max(...backups.map((backup) => backup.files));
       const approval = readApproval(args);
@@ -779,7 +780,7 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
       await deps.approve(approval, {
         action: "delete",
         title: `Delete ${what}`,
-        body: `ADE deletes the work it saved for this lane (${workLine({ ahead: commits, dirty: files > 0, files })}). It isn't on GitHub, so it is gone for good.`,
+        body: `${BRAND.NAME} deletes the work it saved for this lane (${workLine({ ahead: commits, dirty: files > 0, files })}). It isn't on GitHub, so it is gone for good.`,
         confirm: "Delete saved work",
         personPlace: PERSON_PLACE,
       });
@@ -813,15 +814,15 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
       const move = jobs.moves.find((entry) => entry.moveId === jobId);
       const copy = jobs.copies.find((entry) => entry.copyId === jobId);
       if (!launch && !move && !copy) {
-        if (jobs.unread.length) throw new Error(`ADE couldn't read all of ADE Cloud's jobs (${jobs.unread.join("; ")}). Try again in a moment.`);
-        throw new Error(`ADE Cloud runs no job ${jobId} now. ade cloud jobs lists them.`);
+        if (jobs.unread.length) throw new Error(`${BRAND.NAME} couldn't read all of ${BRAND.CLOUD_NAME}'s jobs (${jobs.unread.join("; ")}). Try again in a moment.`);
+        throw new Error(`${BRAND.CLOUD_NAME} runs no job ${jobId} now. ade cloud jobs lists them.`);
       }
       const what = launch ? `the launch of "${launch.laneName ?? "a lane"}"` : move ? `the move of "${move.sourceName}"` : `the copy of "${copy!.sourceName}"`;
       const approval = readApproval(args);
       await deps.approve(approval, {
         action: "delete",
         title: `Cancel ${what}`,
-        body: launch ? "ADE stops it and deletes the computer made for it." : "ADE stops it and deletes the new computer. The old one stays as it is.",
+        body: launch ? `${BRAND.NAME} stops it and deletes the computer made for it.` : `${BRAND.NAME} stops it and deletes the new computer. The old one stays as it is.`,
         confirm: "Cancel it",
         personPlace: PERSON_PLACE,
       });
@@ -838,7 +839,7 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
       const origin = raw ? normalizeGitRemoteIdentity(raw) ?? raw : null;
       if (!origin) throw new Error("Name the project: --origin github.com/<owner>/<repo>, or run this in a folder of it.");
       const overview = await requireApi().projectOverview(origin);
-      if (!overview) throw new Error("ADE's server is too old to show a project's overview.");
+      if (!overview) throw new Error(`${BRAND.NAME}'s server is too old to show a project's overview.`);
       return overview;
     },
   };

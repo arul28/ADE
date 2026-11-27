@@ -26,6 +26,7 @@ import { CloudCreateCancelled, bringCloudBoxIntoAde, createCloudMachine, type Cl
 import { deleteComputersForRequest, pairAndConnectWithRetry } from "./cloudComputerSteps";
 import { CloudProviderError, type CloudInstance, type CloudProvider } from "./cloudProvider";
 import { clip, cloudLaneLaunchFailureSentence, githubClone, LaunchCancelled, LaunchStepError, type Logger } from "./cloudLaneLaunchSteps";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Makes the CTO's home on ADE Cloud (`shared/ctoCloudHome.ts`): the smallest
@@ -138,7 +139,7 @@ export function createCtoCloudHomeService(deps: Deps) {
       // A quit cut the job off: it waits for Retry, on the same computer.
       if (raw.phase === "running") {
         raw.phase = "failed";
-        raw.error = "ADE closed while it was setting this up. Retry to go on.";
+        raw.error = `${BRAND.NAME} closed while it was setting this up. Retry to go on.`;
         for (const stage of raw.stages) if (stage.status === "running") stage.status = "pending";
       }
       if (raw.phase === "cancelled" && raw.cleanupDone) {
@@ -244,7 +245,7 @@ export function createCtoCloudHomeService(deps: Deps) {
   const runComputerAndJoin = async (job: JobRecord, signal: AbortSignal): Promise<void> => {
     const client = await deps.creator.client();
     const directory = deps.creator.directoryBaseUrl();
-    if (!directory) throw new LaunchStepError("ADE's account service isn't set up on this computer, so it can't add a computer to your account.");
+    if (!directory) throw new LaunchStepError(`${BRAND.NAME}'s account service isn't set up on this computer, so it can't add a computer to your account.`);
     setStage(job, "computer", "running", job.reused ? "Your earlier CTO computer" : "Smallest size");
     publish(job);
     const progress = (stage: CloudCreateProgress["stage"], message: string, instanceId?: string) => {
@@ -291,7 +292,7 @@ export function createCtoCloudHomeService(deps: Deps) {
     }
     assertActive(job, signal);
     job.instanceId = result.instanceId;
-    if (!result.machineKey) throw new LaunchStepError("The new computer signed in, but ADE couldn't tell which computer it is.");
+    if (!result.machineKey) throw new LaunchStepError(`The new computer signed in, but ${BRAND.NAME} couldn't tell which computer it is.`);
     job.machineKey = result.machineKey;
     setStage(job, "computer", "done", stageOf(job, "computer")?.detail ?? null);
     setStage(job, "join", "done", result.joined ? null : "Still starting");
@@ -301,7 +302,7 @@ export function createCtoCloudHomeService(deps: Deps) {
   /** Pairs and connects, retrying while the computer's account row and relay route come up. */
   const pairAndConnect = (job: JobRecord, signal: AbortSignal): Promise<string> => {
     const machineKey = job.machineKey;
-    if (!machineKey) throw new LaunchStepError("ADE lost track of the new computer. Cancel and try again.");
+    if (!machineKey) throw new LaunchStepError(`${BRAND.NAME} lost track of the new computer. Cancel and try again.`);
     return pairAndConnectWithRetry({
       machineKey,
       holder: job,
@@ -515,7 +516,7 @@ export function createCtoCloudHomeService(deps: Deps) {
       // set up and ready: it may already be the CTO's home.
       job.cleanupDone = true;
     } else {
-      const couldnt = `ADE couldn't delete the computer "${job.computerName}". Delete it in Settings › ADE Cloud.`;
+      const couldnt = `${BRAND.NAME} couldn't delete the computer "${job.computerName}". Delete it in Settings › ${BRAND.CLOUD_NAME}.`;
       try {
         const { found, deleted } = await deleteOwnComputers(job);
         job.cleanupDone = deleted === found;

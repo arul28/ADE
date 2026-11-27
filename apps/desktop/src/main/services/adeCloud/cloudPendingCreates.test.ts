@@ -140,8 +140,8 @@ describe("ADE Cloud half-made boxes", () => {
   });
 
   it.each([
-    { delete: "lands", deleteNeverLands: false, boxRemains: false, recordRemains: false, error: /Could not reach ADE Cloud/ },
-    { delete: "never lands", deleteNeverLands: true, boxRemains: true, recordRemains: true, error: /tries again when ADE next starts/ },
+    { delete: "lands", deleteNeverLands: false, boxRemains: false, recordRemains: false, error: /Could not reach Daex Cloud/ },
+    { delete: "never lands", deleteNeverLands: true, boxRemains: true, recordRemains: true, error: /tries again when Daex next starts/ },
   ])("a create whose answer was lost is found by its request id and deleted; its record goes only once the delete $delete", async ({ deleteNeverLands, boxRemains, recordRemains, error }) => {
     const fake = fakeCloud([], {
       createLosesAnswer: (body) => ({

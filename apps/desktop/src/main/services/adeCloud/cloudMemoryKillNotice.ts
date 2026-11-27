@@ -1,4 +1,5 @@
 import { scrubString } from "../../../shared/sentry/scrub";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * What a chat is told when ADE Cloud's memory guard stopped a process
@@ -63,7 +64,7 @@ const totalText = (totalMb: number) => `${Math.max(1, Math.round(totalMb / 1024)
 
 /** The chat notice: what was stopped, why, and how to get more memory. */
 export function formatCloudMemoryKillNotice(kill: CloudMemoryKillReport): string {
-  return `This ADE Cloud computer ran out of memory (${totalText(kill.totalMb)}, no swap), so ADE stopped its biggest process, "${cloudMemoryKillCommandLabel(kill.command)}" (${memoryText(kill.rssMb)}), before the computer had to restart. `
+  return `This ${BRAND.CLOUD_NAME} computer ran out of memory (${totalText(kill.totalMb)}, no swap), so ${BRAND.NAME} stopped its biggest process, "${cloudMemoryKillCommandLabel(kill.command)}" (${memoryText(kill.rssMb)}), before the computer had to restart. `
     + "For more memory, move the lane to a bigger size: the agent can ask you for one.";
 }
 

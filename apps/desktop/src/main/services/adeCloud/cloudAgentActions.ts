@@ -108,6 +108,7 @@ import { captureCloudLaneAnalytics, type CloudLaneAnalyticsCapture } from "./clo
 import { countAgentMadeToday, type createCloudMachines } from "./cloudMachines";
 import { isCloudPhoneProviderChoice, type CloudPhoneProviderChoiceAnswer } from "../../../shared/cloudPhone";
 import { cloudAgentLimitsChanges, type CloudAgentLimitsStore } from "./cloudSleep";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Who is asking, stamped by the RPC server from the caller's session; never
@@ -251,7 +252,7 @@ export const CLOUD_AGENT_NO_COMPUTER_MESSAGE =
   + "(ade chat create --machine cloud --size <size>, or ade lanes create --machine cloud --size <size>), "
   + "or ask the person to make the computer in ADE (Settings › ADE Cloud).";
 
-const NO_DESKTOP = "This ADE can't make ADE Cloud machines: it isn't signed in to your ADE account.";
+const NO_DESKTOP = `This ${BRAND.NAME} can't make ${BRAND.CLOUD_NAME} machines: it isn't signed in to your ${BRAND.NAME} account.`;
 
 /**
  * New machines unattended agents started from this brain today, kept for the
@@ -277,26 +278,26 @@ const agentNewComputersToday = (listed: number): number => Math.max(listed, made
 
 /** Where a person starts a lane on ADE Cloud when the caller has no chat to ask in. */
 const CLOUD_LANE_PERSON_PLACE =
-  "Start it in the ADE app (pick ADE Cloud under Run on in a new chat), or ask for it in an ADE chat, where ADE can ask you.";
+  `Start it in the ${BRAND.NAME} app (pick ${BRAND.CLOUD_NAME} under Run on in a new chat), or ask for it in a ${BRAND.NAME} chat, where ${BRAND.NAME} can ask you.`;
 
 export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
   const logger = deps.logger ?? {};
 
   const readMachines = async (): Promise<CloudMachinesResult> => {
     const result = await deps.machines.list();
-    if (result.state === "not_connected") throw new Error(result.message ?? "ADE Cloud isn't available on this account yet.");
-    if (result.state !== "ok") throw new Error(result.message ?? "ADE couldn't read your ADE Cloud machines.");
+    if (result.state === "not_connected") throw new Error(result.message ?? `${BRAND.CLOUD_NAME} isn't available on this account yet.`);
+    if (result.state !== "ok") throw new Error(result.message ?? `${BRAND.NAME} couldn't read your ${BRAND.CLOUD_NAME} machines.`);
     return result;
   };
 
   /** A box by its the provider id, ADE machine key, or name. */
   const resolveMachine = async (selector: string | null): Promise<{ box: CloudMachine; all: CloudMachinesResult }> => {
-    if (!selector) throw new Error("Name the machine: its name or ADE Cloud id (ade cloud list).");
+    if (!selector) throw new Error(`Name the machine: its name or ${BRAND.CLOUD_NAME} id (ade cloud list).`);
     const all = await readMachines();
     const wanted = selector.toLowerCase();
     const matches = all.machines.filter((box) =>
       box.instanceId === selector || box.machineKey === selector || (box.name ?? "").toLowerCase() === wanted);
-    if (!matches.length) throw new Error(`No ADE Cloud machine is called "${selector}". ade cloud list shows them.`);
+    if (!matches.length) throw new Error(`No ${BRAND.CLOUD_NAME} machine is called "${selector}". ade cloud list shows them.`);
     if (matches.length > 1) {
       throw new Error(`"${selector}" names ${matches.length} machines: ${matches.map((box) => box.instanceId).join(", ")}. Pass the id.`);
     }
@@ -429,7 +430,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     },
   ): Promise<{ counted: () => void; release: () => void; unattended: boolean; maker: CloudAgentMaker | null; choice: "confirm" | "alternative" }> => {
     const nothing = { counted: () => undefined, release: () => undefined, unattended: false, maker: null, choice: "confirm" as const };
-    const noChatToAsk = () => new CloudDeclined(`${card.title} uses credits or deletes something, so it needs your yes, and ADE has no chat to ask you in. ${card.personPlace ?? "Run it from an ADE chat, or do it in ADE: Settings › ADE Cloud, the lane's row."}`);
+    const noChatToAsk = () => new CloudDeclined(`${card.title} uses credits or deletes something, so it needs your yes, and ${BRAND.NAME} has no chat to ask you in. ${card.personPlace ?? "Run it from an ADE chat, or do it in ADE: Settings › ADE Cloud, the lane's row."}`);
     if (approval.by === "person") return nothing;
     const chatSessionId = approval.chatSessionId;
     // An app on ADE MCP has no chat to ask in: it is answered like a chat
@@ -438,7 +439,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     // A rule's own run: nobody to ask, the agent limits answer.
     const automationRun = !viaAdeMcp && approval.automation === true;
     const declineComputer = (where: string): never => {
-      if (chatSessionId && deps.approvals) deps.approvals.notice(chatSessionId, `ADE said no to "${card.title}" in ${where}: agents start lanes on ADE Cloud, they don't make computers.`);
+      if (chatSessionId && deps.approvals) deps.approvals.notice(chatSessionId, `${BRAND.NAME} said no to "${card.title}" in ${where}: agents start lanes on ${BRAND.CLOUD_NAME}, they don't make computers.`);
       else logger.info?.("cloud.unattended_answer", { message: `"${card.title}" declined in ${where}: agents don't make computers` });
       throw new CloudDeclined(`${card.title}: declined. ${CLOUD_AGENT_NO_COMPUTER_MESSAGE}`);
     };
@@ -461,7 +462,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     // Written on a new machine, so the agents' daily limit counts it after a restart too.
     const maker: CloudAgentMaker = viaAdeMcp ? "mcp" : automation ? "automation" : "chat";
     if (level === "plan") {
-      notice(`ADE said no to "${card.title}" for this chat: plan mode changes nothing.`);
+      notice(`${BRAND.NAME} said no to "${card.title}" for this chat: plan mode changes nothing.`);
       throw new CloudDeclined(`${card.title}: declined, because this chat is in plan mode.`);
     }
     // What only the person decides (a size, a delete of a machine this chat
@@ -473,22 +474,22 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     const personDecides = card.action === "person_only" || card.tierChange === true || card.makesComputer === true
       || (card.action === "delete" && !card.madeByThisChat);
     if (viaAdeMcp || automation || (level === "full-auto" && !personDecides)) {
-      const where = viaAdeMcp ? "this app connected through ADE MCP" : automation ? "this automation run" : "this full-auto chat";
+      const where = viaAdeMcp ? `this app connected through ${BRAND.NAME} MCP` : automation ? "this automation run" : "this full-auto chat";
       if (card.makesComputer) declineComputer(where);
       if (card.action === "person_only") {
-        notice(`ADE said no to "${card.title}" in ${where}: only you can decide it.`);
+        notice(`${BRAND.NAME} said no to "${card.title}" in ${where}: only you can decide it.`);
         throw new CloudDeclined(`${card.title}: declined. Only the person can decide it (Settings › Integrations › ADE Cloud).`);
       }
       if (card.tierChange) {
-        notice(`ADE said no to "${card.title}" in ${where}: only you can change a computer's size.`);
+        notice(`${BRAND.NAME} said no to "${card.title}" in ${where}: only you can change a computer's size.`);
         throw new CloudDeclined(`${card.title}: declined. Only the person can change a computer's size. From a chat, ask them with ade cloud resize --request --size <size> --reason "<why>".`);
       }
       if (card.action === "delete" && viaAdeMcp) {
-        notice(`ADE said no to "${card.title}" in ${where}: only you can delete a computer.`);
+        notice(`${BRAND.NAME} said no to "${card.title}" in ${where}: only you can delete a computer.`);
         throw new CloudDeclined(`${card.title}: declined. A delete through ADE MCP always needs the person; ask them to delete it from its card in ADE.`);
       }
       if (card.action === "delete" && !card.madeByThisChat) {
-        notice(`ADE said no to "${card.title}" in ${where}: nobody is here to approve deleting a machine this chat didn't make.`);
+        notice(`${BRAND.NAME} said no to "${card.title}" in ${where}: nobody is here to approve deleting a machine this chat didn't make.`);
         throw new CloudDeclined(`${card.title}: declined. Nobody is watching ${where} to approve deleting a machine it didn't make; ask the person to delete it from its card.`);
       }
       // What the person chose agents may do alone (Settings › Integrations › ADE Cloud).
@@ -498,7 +499,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         try {
           await outsideAgentCheck(approval);
         } catch (error) {
-          notice(`ADE said no to "${card.title}" in ${where}: ${CLOUD_OUTSIDE_AGENT_FREE_MESSAGE}`);
+          notice(`${BRAND.NAME} said no to "${card.title}" in ${where}: ${CLOUD_OUTSIDE_AGENT_FREE_MESSAGE}`);
           throw error;
         }
       }
@@ -507,7 +508,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         return { ...CLOUD_DEFAULT_AGENT_LIMITS, fallback: true };
       }) : null;
       const refuse = (why: string, change = "The person can change what agents may do in Settings › Integrations › ADE Cloud."): never => {
-        notice(`ADE said no to "${card.title}" in ${where}: ${why}`);
+        notice(`${BRAND.NAME} said no to "${card.title}" in ${where}: ${why}`);
         throw new CloudDeclined(`${card.title}: declined. ${why} ${change}`.trim());
       };
       if (limits && !limits.unattendedSpend) refuse("your settings say unattended agents ask before anything that uses credits.");
@@ -519,7 +520,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const blocked = costs && card.usesHours !== false ? cloudUnattendedHoursBlock(await readAccount()) : null;
       if (blocked) {
         const why = blocked === "out_of_hours" ? CLOUD_OUT_OF_HOURS_MESSAGE : CLOUD_HOURS_UNKNOWN_MESSAGE;
-        notice(`ADE said no to "${card.title}" in ${where}: ${why}`);
+        notice(`${BRAND.NAME} said no to "${card.title}" in ${where}: ${why}`);
         throw new CloudDeclined(`${card.title}: declined. ${why}`);
       }
       if (limits && card.newMachine) {
@@ -528,7 +529,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
           logger.warn?.("cloud.agent_made_today_read_failed", { error: getErrorMessage(error) });
           return null;
         });
-        if (listed == null) refuse("ADE couldn't count today's new computers, so it can't check the daily limit. Try again soon.", "");
+        if (listed == null) refuse(`${BRAND.NAME} couldn't count today's new computers, so it can't check the daily limit. Try again soon.`, "");
         // Makes still running are in neither count: they go on top of the larger one.
         const made = agentNewComputersToday(listed ?? 0);
         if (made >= limits.machinesPerDay) {
@@ -539,7 +540,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
           );
         }
       }
-      notice(`ADE approved "${card.title}" for ${where}, within what you let agents do.`);
+      notice(`${BRAND.NAME} approved "${card.title}" for ${where}, within what you let agents do.`);
       if (!card.newMachine) return { ...nothing, unattended: true, maker };
       reservedHere += 1;
       let held = true;
@@ -570,7 +571,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       // there is one way to say it.
       questions: [{
         id: "decision",
-        header: "ADE Cloud",
+        header: `${BRAND.CLOUD_NAME}`,
         question,
         ...(body.trim() ? { impact: body.trim() } : {}),
         allowsFreeform: false,
@@ -582,7 +583,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       });
     } catch (error) {
       // The chat lives on another ADE on this computer, or is gone: there is no card to show.
-      throw new CloudDeclined(`${card.title}: ADE couldn't ask in this chat (${getErrorMessage(error)}), so nothing was done.`);
+      throw new CloudDeclined(`${card.title}: ${BRAND.NAME} couldn't ask in this chat (${getErrorMessage(error)}), so nothing was done.`);
     }
     const answer = response.answers.decision?.[0] ?? "";
     // The person said yes to an agent's ask: still an agent's new machine.
@@ -595,7 +596,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     // told it was not a no.
     if (response.decision === "cancel" || response.decision === "none") {
       const closed = `${card.title}: the card closed before the person answered (the turn stopped, or this computer restarted or moved), so nothing was done. Run the command again if it's still needed.`;
-      approvals.notice(chatSessionId, `ADE closed the card "${question}" before you answered (the turn stopped, or this lane's computer restarted or moved), so nothing was done.`);
+      approvals.notice(chatSessionId, `${BRAND.NAME} closed the card "${question}" before you answered (the turn stopped, or this lane's computer restarted or moved), so nothing was done.`);
       // The command's own answer may never reach the agent (its turn was the
       // one stopped), so its next turn starts with it too.
       try {
@@ -629,11 +630,11 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     if (background) return { requestId: maker.start(input), background: true };
     const chatSessionId = approval.by === "agent" ? approval.chatSessionId : null;
     if (!chatSessionId || !deps.approvals) {
-      throw new Error("The new machine joins your account once you approve it, and ADE has no chat here to show you the link. Run this from an ADE chat, or from the phone's ADE Cloud page.");
+      throw new Error(`The new machine joins your account once you approve it, and ${BRAND.NAME} has no chat here to show you the link. Run this from a ${BRAND.NAME} chat, or from the phone's ${BRAND.CLOUD_NAME} page.`);
     }
     const approvals = deps.approvals;
     return await maker.make(input, (url, name) => {
-      approvals.notice(chatSessionId, `Approve "${name}" joining your ADE account: open ${url} on your phone or in a browser signed in to ADE. The command waits up to ${cloudJoinApprovalWaitText()}.`);
+      approvals.notice(chatSessionId, `Approve "${name}" joining your ${BRAND.NAME} account: open ${url} on your phone or in a browser signed in to ${BRAND.NAME}. The command waits up to ${cloudJoinApprovalWaitText()}.`);
     });
   };
 
@@ -666,7 +667,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
   };
 
   const noLanes = (): never => {
-    throw new Error("This ADE can't reach your ADE account's lanes. Sign in to ADE, then try again.");
+    throw new Error(`This ${BRAND.NAME} can't reach your ${BRAND.NAME} account's lanes. Sign in to ${BRAND.NAME}, then try again.`);
   };
   const laneVerbs = buildCloudLaneVerbs({
     account: () => deps.lanes?.account() ?? noLanes(),
@@ -713,7 +714,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       // The lanes whose computer was deleted, read beside the list and from it (no second list).
       const lanesComputerDeleted = deps.lanes
         ? laneVerbs.lanesComputerDeleted(listing.then((listed) => {
-            if (listed.state !== "ok") throw new Error(listed.message ?? "ADE Cloud isn't there.");
+            if (listed.state !== "ok") throw new Error(listed.message ?? `${BRAND.CLOUD_NAME} isn't there.`);
             return listed;
           }))
         : Promise.resolve(null);
@@ -746,7 +747,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       if (cannotMake()) throw new Error(NO_DESKTOP);
       const yes = await approve(approval, {
         action: "spend",
-        title: `Make "${name}" on ADE Cloud`,
+        title: `Make "${name}" on ${BRAND.CLOUD_NAME}`,
         body: `A ${shape.label}${kind === "vm" ? " full computer" : " computer"} (${shape.cpu} CPU, ${shape.memoryGb} GB). ${describeCloudHoursUse(kind, shape.id, cloudCatalogOf(account), cloudUnitWords(account))}`,
         confirm: "Make it",
         newMachine: true,
@@ -834,7 +835,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       // A move deletes the machine it runs from: the chat asking for it, and
       // this brain, would stop halfway, with the new machine awake and using hours.
       if (box.instanceId === process.env.ADE_CLOUD_INSTANCE_ID?.trim()) {
-        throw new Error(`"${box.name ?? box.instanceId}" is the machine this runs on, so it can't move itself. Push the lane's branch, then start a lane on ADE Cloud on it with the size the work needs (ade lanes create --machine cloud --size ${to === "vm" ? "large" : "small"} --existing-branch <branch> --name "<name>"), and start a chat there (ade chat create --machine <its computer> --lane <its lane id> --provider <p> --model <id> --prompt "<the task>"). This machine stays and sleeps when idle; offer to delete it from the new chat.`);
+        throw new Error(`"${box.name ?? box.instanceId}" is the machine this runs on, so it can't move itself. Push the lane's branch, then start a lane on ${BRAND.CLOUD_NAME} on it with the size the work needs (ade lanes create --machine cloud --size ${to === "vm" ? "large" : "small"} --existing-branch <branch> --name "<name>"), and start a chat there (ade chat create --machine <its computer> --lane <its lane id> --provider <p> --model <id> --prompt "<the task>"). This machine stays and sleeps when idle; offer to delete it from the new chat.`);
       }
       const shapeId = shapeArg(args);
       const approval = readApproval(args);
@@ -844,7 +845,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const yes = await approve(approval, {
         action: "delete",
         title: `Move "${name}" to a ${cloudKindLabel(to)}`,
-        body: `ADE makes a new ${cloudKindLabel(to)}, copies every repo, lane and chat on "${name}" into it, then deletes "${name}". Running processes stop${box.type === "vm" ? ", and Docker images and volumes stay behind" : ""}.`,
+        body: `${BRAND.NAME} makes a new ${cloudKindLabel(to)}, copies every repo, lane and chat on "${name}" into it, then deletes "${name}". Running processes stop${box.type === "vm" ? ", and Docker images and volumes stay behind" : ""}.`,
         confirm: "Move it",
         newMachine: true,
         makesComputer: true,
@@ -870,7 +871,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const requestId = text(record(rawArgs), "requestId");
       if (!requestId) throw new Error("Pass the requestId the make returned.");
       const job = deps.maker?.status(requestId) ?? null;
-      if (!job) throw new Error("ADE has no make with that id here (it finished over 30 minutes ago, or ran on another machine).");
+      if (!job) throw new Error(`${BRAND.NAME} has no make with that id here (it finished over 30 minutes ago, or ran on another machine).`);
       return job;
     },
 
@@ -890,7 +891,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       // A CLI session needs a window to start its terminal in, which a brain
       // doesn't have: it starts from the ADE app.
       if (asked.kind === "cli") {
-        throw new Error("A CLI session on ADE Cloud starts from the ADE app. Here, start a chat (ade chat create --machine cloud) or the lane alone (ade lanes create --machine cloud).");
+        throw new Error(`A CLI session on ${BRAND.CLOUD_NAME} starts from the ${BRAND.NAME} app. Here, start a chat (ade chat create --machine cloud) or the lane alone (ade lanes create --machine cloud).`);
       }
       // No size asked for: the size the person saved for new lanes, then Small.
       // That is ADE's default for this launch, so a Small may move to Medium
@@ -902,7 +903,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const launch: ChatLaunchArgs = { ...asked, cloud: { sizeId, sizeChoice: sizeDefaulted ? "default" : "picked" } };
       const laneOnly = launch.kind === "lane";
       const host = deps.laneLaunch?.() ?? null;
-      if (!host) throw new Error("This ADE can't start a lane on ADE Cloud. Use the ADE app, or the ade command where ADE runs in the background.");
+      if (!host) throw new Error(`This ${BRAND.NAME} can't start a lane on ${BRAND.CLOUD_NAME}. Use the ${BRAND.NAME} app, or the ade command where ${BRAND.NAME} runs in the background.`);
       const approval = readApproval(args);
       const chatSessionId = approval.by === "agent" ? approval.chatSessionId : null;
       const launchId = typeof launch.launchId === "string" ? launch.launchId.trim().toLowerCase() : "";
@@ -920,7 +921,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const replaces = existing?.launch.phase === "failed" && existing.launch.cloud?.handedOff !== true;
       if (existing) {
         if (approval.by === "agent" && existing.madeByChat !== chatSessionId) {
-          throw new CloudDeclined("This ADE Cloud lane was started from another chat, so only that chat or you can follow it here.");
+          throw new CloudDeclined(`This ${BRAND.CLOUD_NAME} lane was started from another chat, so only that chat or you can follow it here.`);
         }
         // Already approved and counted when it started.
         if (!replaces) return (await host.start(startArgs)).status;
@@ -945,7 +946,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       await outsideAgentCheck(approval, account);
       const catalog = cloudCatalogOf(account);
       const tier = cloudTier(catalog, startSize);
-      if (!tier) throw new Error("ADE Cloud doesn't offer that size right now. Pick another one.");
+      if (!tier) throw new Error(`${BRAND.CLOUD_NAME} doesn't offer that size right now. Pick another one.`);
       const kind: CloudMachineKind = tier.type === "vm" ? "vm" : "box";
       const shape = cloudShapeFor({ cpu: tier.cpu, memoryGb: tier.memoryGb });
       // The size a default Small may move to, in the catalog's own words (Medium uses hours, Small none).
@@ -954,8 +955,8 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const moveUpRate = moveUpTier ? cloudTierRateLabel(moveUpTier, words) : null;
       const yes = await approve(approval, {
         action: "spend",
-        title: "Start a lane on ADE Cloud",
-        body: `ADE makes a new ${tier.label} computer (${tier.cpu} CPU, ${tier.memoryGb} GB) for this lane alone, gets the repository there and ${startsLaneOnly ? "sets up the lane" : "starts the chat on it"}.${shape ? ` ${describeCloudHoursUse(kind, shape.id, catalog, words)}` : ""}${mayMoveUp ? ` If this repository's setup needs more than ${CLOUD_AUTO_SIZE.fromMemoryGb} GB, ADE uses ${moveUpTier?.label ?? CLOUD_AUTO_SIZE.toLabel}${moveUpRate ? ` (it ${moveUpRate})` : ""} instead and remembers that.` : ""}`,
+        title: `Start a lane on ${BRAND.CLOUD_NAME}`,
+        body: `${BRAND.NAME} makes a new ${tier.label} computer (${tier.cpu} CPU, ${tier.memoryGb} GB) for this lane alone, gets the repository there and ${startsLaneOnly ? "sets up the lane" : "starts the chat on it"}.${shape ? ` ${describeCloudHoursUse(kind, shape.id, catalog, words)}` : ""}${mayMoveUp ? ` If this repository's setup needs more than ${CLOUD_AUTO_SIZE.fromMemoryGb} GB, ADE uses ${moveUpTier?.label ?? CLOUD_AUTO_SIZE.toLabel}${moveUpRate ? ` (it ${moveUpRate})` : ""} instead and remembers that.` : ""}`,
         confirm: "Start it",
         newMachine: true,
         shape: shape?.id ?? null,
@@ -1063,15 +1064,15 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const self = process.env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "";
       // An agent on the computer may leave it out: this is the only computer it can mean.
       const machine = text(args, "machine") ?? self;
-      if (!self) throw new Error("Clear caches runs only on an ADE Cloud computer. Open it from the lane's row in Settings › ADE Cloud.");
+      if (!self) throw new Error(`Clear caches runs only on a ${BRAND.CLOUD_NAME} computer. Open it from the lane's row in Settings › ${BRAND.CLOUD_NAME}.`);
       if (machine !== self) throw new Error("That request reached another computer. Nothing was cleared.");
       try {
         await approve(readApproval(args), {
           action: "person_only",
           title: "Clear caches on this computer",
-          body: "ADE deletes package and build caches here and measures the disk again. Repositories, dependencies, images and emulators stay. Builds may be slower until the caches fill again.",
+          body: `${BRAND.NAME} deletes package and build caches here and measures the disk again. Repositories, dependencies, images and emulators stay. Builds may be slower until the caches fill again.`,
           confirm: "Clear caches",
-          personPlace: "Clear them from the lane's row in Settings › ADE Cloud.",
+          personPlace: `Clear them from the lane's row in Settings › ${BRAND.CLOUD_NAME}.`,
         });
       } catch (error) {
         captureCloudLaneAnalytics(deps.analytics, "api", "cloud_clear_caches", "denied");
@@ -1104,10 +1105,10 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const self = process.env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "";
       const host = deps.diskGrow?.() ?? null;
       if (!self || !host) {
-        throw new AdeExpectedError("ade cloud resize --free grows the disk of the ADE Cloud computer it runs on, and this isn't one. A lane computer's disk grows from its row in Settings › ADE Cloud.", "user");
+        throw new AdeExpectedError(`ade cloud resize --free grows the disk of the ${BRAND.CLOUD_NAME} computer it runs on, and this isn't one. A lane computer's disk grows from its row in Settings › ${BRAND.CLOUD_NAME}.`, "user");
       }
       const machine = text(args, "machine");
-      if (machine && machine !== self) throw new AdeExpectedError("A disk grows only from the computer it belongs to. Run this on that computer, or grow it from its row in Settings › ADE Cloud.", "user");
+      if (machine && machine !== self) throw new AdeExpectedError(`A disk grows only from the computer it belongs to. Run this on that computer, or grow it from its row in Settings › ${BRAND.CLOUD_NAME}.`, "user");
       const reason = text(args, "reason");
       if (!reason) throw new AdeExpectedError("Say why it needs the room (--reason).", "user");
       const gbArg = (key: string): number | null => {
@@ -1123,7 +1124,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const approval = readApproval(args);
       const chatSessionId = approval.by === "agent" ? approval.chatSessionId : null;
       if (chatSessionId && deps.approvals?.permissionLevel(chatSessionId) === "plan") {
-        deps.approvals.notice(chatSessionId, "ADE said no to growing this computer's disk for this chat: plan mode changes nothing.");
+        deps.approvals.notice(chatSessionId, `${BRAND.NAME} said no to growing this computer's disk for this chat: plan mode changes nothing.`);
         throw new CloudDeclined("Grow the disk: declined, because this chat is in plan mode.");
       }
       const answer = await host.growToFit({
@@ -1182,7 +1183,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         throw new CloudDeclined("Cancelling deletes the computer made for this lane, so only the person can do it, in ADE.");
       }
       if (approval.by === "agent" && (!approval.chatSessionId || existing.madeByChat !== approval.chatSessionId)) {
-        throw new CloudDeclined("This ADE Cloud lane was started from another chat, so only that chat or you can cancel it.");
+        throw new CloudDeclined(`This ${BRAND.CLOUD_NAME} lane was started from another chat, so only that chat or you can cancel it.`);
       }
       return await host.cancel(launchId);
     },
@@ -1201,7 +1202,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       await approve(approval, {
         action: "delete",
         title: `Delete "${box.name ?? box.instanceId}"`,
-        body: `ADE deletes it on ADE Cloud and removes it from your computers. Everything on its disk is gone for good: repos, lanes, and any work not pushed.`,
+        body: `${BRAND.NAME} deletes it on ${BRAND.CLOUD_NAME} and removes it from your computers. Everything on its disk is gone for good: repos, lanes, and any work not pushed.`,
         confirm: "Delete it",
         madeByThisChat: approval.by === "agent" && approval.chatSessionId != null
           && instance?.[CLOUD_MADE_BY_CHAT_METADATA] === approval.chatSessionId,
@@ -1222,7 +1223,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       await approve(readApproval(args), {
         action: "spend",
         title: `Update "${box.name ?? box.instanceId}"`,
-        body: "It restarts on the current ADE. Files and repos stay; running chats, terminals and processes stop.",
+        body: `It restarts on the current ${BRAND.NAME}. Files and repos stay; running chats, terminals and processes stop.`,
         confirm: "Update it",
       });
       return await runAction(box, { instanceId: box.instanceId, action: "update" });
@@ -1231,7 +1232,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     /** Plan, hours left, and what happens at 0. */
     async hours() {
       const account = await deps.machines.account();
-      if (!account) throw new Error("ADE Cloud isn't available on this account yet.");
+      if (!account) throw new Error(`${BRAND.CLOUD_NAME} isn't available on this account yet.`);
       return account;
     },
 
@@ -1242,7 +1243,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
      */
     async referral(): Promise<CloudReferralSummary> {
       const summary = await deps.machines.referral();
-      if (!summary) throw new Error("ADE Cloud isn't available on this account yet.");
+      if (!summary) throw new Error(`${BRAND.CLOUD_NAME} isn't available on this account yet.`);
       return summary;
     },
 
@@ -1300,7 +1301,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         const max = cloudShapeById(next.maxShape);
         await approve(readApproval(args), {
           action: "person_only",
-          title: "Let agents use more on ADE Cloud",
+          title: `Let agents use more on ${BRAND.CLOUD_NAME}`,
           body: `Unattended agents could then ${next.unattendedSpend ? `start ${next.machinesPerDay} new computer${next.machinesPerDay === 1 ? "" : "s"} a day, up to ${max.label}` : "use nothing"}.`,
           confirm: "Allow it",
         });

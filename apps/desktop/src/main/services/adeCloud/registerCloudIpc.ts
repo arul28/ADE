@@ -83,6 +83,7 @@ import { normalizeAppPackageChannel } from "../../../shared/packageChannel";
 import { createCloudPendingCreateStore, sweepCloudPendingCreates } from "./cloudPendingCreates";
 import { createLaneFollower } from "./cloudLaneFollow";
 import type { MachineConnector, MachineWakeResult } from "../machines/machineConnector";
+import { BRAND } from "../../../shared/brand";
 
 type Logger = {
   info(event: string, meta?: Record<string, unknown>): void;
@@ -259,13 +260,13 @@ export function registerCloudIpc(args: {
   // computer (`POST /cloud/instances/:id/sign-ins/:job/code`), so it never
   // goes to this window's machine and needs no connection to the computer.
   ipcMain.handle(IPC.cloudLaunchSignInCode, async (event, arg?: { instanceId?: unknown; jobId?: unknown; code?: unknown }): Promise<CloudRemoteSignInStatus> => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudLaunchSignInCode)) throw new Error("ADE can't do that from here.");
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudLaunchSignInCode)) throw new Error(`${BRAND.NAME} can't do that from here.`);
     const instanceId = typeof arg?.instanceId === "string" ? arg.instanceId.trim() : "";
     const jobId = typeof arg?.jobId === "string" ? arg.jobId.trim() : "";
     const code = typeof arg?.code === "string" ? arg.code.trim() : "";
     if (!instanceId || !jobId || !code) throw new Error("A sign-in code needs its computer, its sign-in and the code.");
     const baseUrl = directoryBaseUrl();
-    if (!baseUrl) throw new Error("ADE's account service isn't set up on this computer.");
+    if (!baseUrl) throw new Error(`${BRAND.NAME}'s account service isn't set up on this computer.`);
     return await createCloudApiClient({ baseUrl, accessToken: () => getAccountToken() }).sendSignInCode(instanceId, jobId, code);
   });
   // A message for an existing ADE Cloud chat whose computer is asleep or gone:
@@ -275,7 +276,7 @@ export function registerCloudIpc(args: {
   // window's machine.
   const accountApi = () => {
     const baseUrl = directoryBaseUrl();
-    if (!baseUrl) throw new AdeExpectedError("ADE's account service isn't set up on this computer.", "environment");
+    if (!baseUrl) throw new AdeExpectedError(`${BRAND.NAME}'s account service isn't set up on this computer.`, "environment");
     return createCloudApiClient({ baseUrl, accessToken: () => getAccountToken() });
   };
   // Sponsored cards on Free-plan ADE Cloud chats (`gravity.ts`). Account level,
@@ -351,7 +352,7 @@ export function registerCloudIpc(args: {
   // A lane's saved work (`laneBackups.ts`): read with no wake and no hours, account level.
   registerCloudLaneBackupIpc({ accountApi, logger });
   ipcMain.handle(IPC.cloudChatMessageSend, async (event, arg?: Record<string, unknown>): Promise<CloudChatSendAnswer> => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudChatMessageSend)) throw new Error("ADE can't do that from here.");
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudChatMessageSend)) throw new Error(`${BRAND.NAME} can't do that from here.`);
     const text = (value: unknown, max: number) => (typeof value === "string" && value.trim() && value.length <= max ? value : null);
     const machineKey = text(arg?.machineKey, 256)?.trim() ?? null;
     const chatId = text(arg?.chatId, 256)?.trim() ?? null;
@@ -482,12 +483,12 @@ export function registerCloudIpc(args: {
   });
   readMachinesNow = async () => (await machines.list()).state === "ok";
   ipcMain.handle(IPC.cloudLaneComputer, async (event, raw: unknown) => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudLaneComputer)) throw new Error("ADE can't do that from here.");
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudLaneComputer)) throw new Error(`${BRAND.NAME} can't do that from here.`);
     const request = isRecord(raw) ? raw : {};
     return await laneFollower.laneComputer(typeof request.laneId === "string" ? request.laneId : "");
   });
   ipcMain.handle(IPC.cloudFollowLane, async (event, raw: unknown) => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudFollowLane)) throw new Error("ADE can't do that from here.");
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudFollowLane)) throw new Error(`${BRAND.NAME} can't do that from here.`);
     const request = isRecord(raw) ? raw : {};
     return await laneFollower.follow(typeof request.laneId === "string" ? request.laneId : "", { connect: request.connect !== false });
   });
@@ -581,7 +582,7 @@ export function registerCloudIpc(args: {
     }
     if (probe.exitCode !== 1) return null;
     logger.info("cloud.update_blocked_needs_update", { instanceId: instance.id });
-    return "This computer needs updating before ADE can update it. Choose Update this computer in its menu.";
+    return `This computer needs updating before ${BRAND.NAME} can update it. Choose Update this computer in its menu.`;
   });
 
   const readSignInEnd = async (): Promise<CloudSignInEnd | null> => {
@@ -689,7 +690,7 @@ export function registerCloudIpc(args: {
   // Account-level, so no pin: an account has one referrer, whichever computer asks.
   // The invite link itself rides the account read (`CloudAccountState.referral`).
   ipcMain.handle(IPC.cloudRedeemInvite, async (event, arg: { code?: unknown }): Promise<CloudInviteRedeemOutcome> => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudRedeemInvite)) return { ok: false, reason: "unavailable", message: "ADE can't do that from here." };
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudRedeemInvite)) return { ok: false, reason: "unavailable", message: `${BRAND.NAME} can't do that from here.` };
     const code = typeof arg?.code === "string" ? arg.code : "";
     try {
       const outcome = await machines.redeemInvite(code);
@@ -709,7 +710,7 @@ export function registerCloudIpc(args: {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudPickPlanCleanup)) return null;
     const pick = readPick(arg);
     const planId = arg?.planId === "free" || isPaidPlanId(arg?.planId) ? arg.planId : null;
-    if (!pick || !planId) throw new Error("ADE couldn't read which computers to free.");
+    if (!pick || !planId) throw new Error(`${BRAND.NAME} couldn't read which computers to free.`);
     const account = await billingCall(async () => (await requireCloudProvider(credentials)).pickPlanCleanup({ planId, ...pick }));
     logger.info("cloud.plan_cleanup_picked", { plan: planId, computers: pick.instanceIds.length, push: pick.push });
     sendToAllWindows(IPC.cloudStatusChanged);
@@ -719,10 +720,10 @@ export function registerCloudIpc(args: {
   // Account-level: a tester's pick of who runs their phones, so no pin. The
   // server refuses anyone not on the iPhone's beta list with its own sentence.
   ipcMain.handle(IPC.cloudSetPhoneProvider, async (event, arg: { provider?: unknown }): Promise<CloudPhoneProviderChoiceAnswer> => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSetPhoneProvider)) throw new Error("ADE can't change that from here.");
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSetPhoneProvider)) throw new Error(`${BRAND.NAME} can't change that from here.`);
     if (!isCloudPhoneProviderChoice(arg?.provider)) throw new Error("Pick auto, nomac or revyl.");
     const provider = await requireCloudProvider(credentials);
-    if (!provider.setPhoneProvider) throw new Error("This ADE Cloud can't change the cloud iPhone provider yet.");
+    if (!provider.setPhoneProvider) throw new Error(`This ${BRAND.CLOUD_NAME} can't change the cloud iPhone provider yet.`);
     const choice = arg.provider;
     const answer = await billingCall(async () => await provider.setPhoneProvider!(choice));
     logger.info("cloud.phone_provider_set", { provider: answer.provider });
@@ -744,7 +745,7 @@ export function registerCloudIpc(args: {
     // A pick that was sent but can't be read must not become "no pick": the plan would change and nothing the person chose would go.
     if (arg?.cleanup != null && !cleanup) {
       logger.warn("cloud.plan_cleanup_pick_unreadable", { plan: plan ?? null });
-      throw new Error("ADE couldn't read the computers you picked, so your plan didn't change. Try again.");
+      throw new Error(`${BRAND.NAME} couldn't read the computers you picked, so your plan didn't change. Try again.`);
     }
     const result = await billingCall(async () => (await requireCloudProvider(credentials)).billingCheckout(plan, cleanup ?? undefined));
     if (result.url == null) {
@@ -767,9 +768,9 @@ export function registerCloudIpc(args: {
   });
 
   ipcMain.handle(IPC.cloudPushAllWork, async (event, arg: { instanceId?: unknown }): Promise<CloudMachineActionResult> => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudPushAllWork)) return { ok: false, blocker: null, message: "ADE can't do that from here." };
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudPushAllWork)) return { ok: false, blocker: null, message: `${BRAND.NAME} can't do that from here.` };
     const instanceId = typeof arg?.instanceId === "string" ? arg.instanceId.trim() : "";
-    if (!isCloudInstanceId(instanceId)) return { ok: false, blocker: null, message: "ADE doesn't know that computer." };
+    if (!isCloudInstanceId(instanceId)) return { ok: false, blocker: null, message: `${BRAND.NAME} doesn't know that computer.` };
     const result = await machines.pushAllWork(instanceId);
     if (result.ok) args.recordMachineAction?.("push_all_work");
     sendToAllWindows(IPC.cloudStatusChanged);
@@ -784,7 +785,7 @@ export function registerCloudIpc(args: {
   ipcMain.handle(IPC.cloudOpenFreeUnlock, async (event): Promise<{ opened: boolean; unlocked: boolean }> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudOpenFreeUnlock)) return { opened: false, unlocked: false };
     const provider = await requireCloudProvider(credentials);
-    if (!provider.billingFreeUnlock) throw new Error("This ADE Cloud can't take a card for the free credits yet.");
+    if (!provider.billingFreeUnlock) throw new Error(`This ${BRAND.CLOUD_NAME} can't take a card for the free credits yet.`);
     const result = await billingCall(async () => await provider.billingFreeUnlock!());
     if (result.unlocked) {
       logger.info("cloud.free_unlocked", { source: "card_on_file" });
@@ -802,11 +803,11 @@ export function registerCloudIpc(args: {
    * (the server owns the clock wherever the computer is), so no pin.
    */
   ipcMain.handle(IPC.cloudKeepIdleComputer, async (event, arg: { instanceId?: unknown }): Promise<{ ok: boolean; message?: string }> => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudKeepIdleComputer)) return { ok: false, message: "ADE can't do that from here." };
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudKeepIdleComputer)) return { ok: false, message: `${BRAND.NAME} can't do that from here.` };
     const instanceId = typeof arg?.instanceId === "string" ? arg.instanceId.trim() : "";
-    if (!isCloudInstanceId(instanceId)) return { ok: false, message: "ADE doesn't know that computer." };
+    if (!isCloudInstanceId(instanceId)) return { ok: false, message: `${BRAND.NAME} doesn't know that computer.` };
     const provider = await requireCloudProvider(credentials);
-    if (!provider.keepIdleComputer) return { ok: false, message: "This ADE Cloud can't keep a computer that way." };
+    if (!provider.keepIdleComputer) return { ok: false, message: `This ${BRAND.CLOUD_NAME} can't keep a computer that way.` };
     try {
       await provider.keepIdleComputer(instanceId);
     } catch (error) {
@@ -925,7 +926,7 @@ export function registerCloudIpc(args: {
   ipcMain.handle(IPC.cloudCopyMachine, async (event, arg: { requestId?: unknown; instanceId?: unknown; name?: unknown; shape?: unknown }) => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudCopyMachine)) return { started: false };
     const instanceId = typeof arg?.instanceId === "string" ? arg.instanceId.trim() : "";
-    if (!isCloudInstanceId(instanceId)) throw new Error("ADE doesn't know that computer.");
+    if (!isCloudInstanceId(instanceId)) throw new Error(`${BRAND.NAME} doesn't know that computer.`);
     const requestId = typeof arg?.requestId === "string" && arg.requestId ? arg.requestId : randomUUID();
     return startLongAction(event, requestId, async (signal, send) => {
       const result = await copyCloudMachine(copyDeps, {
@@ -942,7 +943,7 @@ export function registerCloudIpc(args: {
   ipcMain.handle(IPC.cloudMoveMachine, async (event, arg: { requestId?: unknown; instanceId?: unknown; machineKey?: unknown; to?: unknown; shape?: unknown }) => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudMoveMachine)) return { started: false };
     const instanceId = typeof arg?.instanceId === "string" ? arg.instanceId.trim() : "";
-    if (!isCloudInstanceId(instanceId)) throw new Error("ADE doesn't know that computer.");
+    if (!isCloudInstanceId(instanceId)) throw new Error(`${BRAND.NAME} doesn't know that computer.`);
     if (arg?.to !== "vm" && arg?.to !== "box") throw new Error("Move it to a standard or a full computer.");
     const to = arg.to;
     const requestId = typeof arg?.requestId === "string" && arg.requestId ? arg.requestId : randomUUID();
@@ -958,7 +959,7 @@ export function registerCloudIpc(args: {
       return {
         message: result.sourceDeleted
           ? `${result.name} is now a ${cloudKindLabel(to)}, with all its files.`
-          : `${result.name} has all its files on the new ${cloudKindLabel(to)}. ADE couldn't delete the old one; delete it from its card.`,
+          : `${result.name} has all its files on the new ${cloudKindLabel(to)}. ${BRAND.NAME} couldn't delete the old one; delete it from its card.`,
         result,
       };
     });
@@ -967,13 +968,13 @@ export function registerCloudIpc(args: {
   ipcMain.handle(IPC.cloudReconnectMachine, async (event, arg: { requestId?: unknown; instanceId?: unknown }) => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudReconnectMachine)) return { started: false };
     const instanceId = typeof arg?.instanceId === "string" ? arg.instanceId.trim() : "";
-    if (!isCloudInstanceId(instanceId)) throw new Error("ADE doesn't know that computer.");
+    if (!isCloudInstanceId(instanceId)) throw new Error(`${BRAND.NAME} doesn't know that computer.`);
     const requestId = typeof arg?.requestId === "string" && arg.requestId ? arg.requestId : randomUUID();
     return startLongAction(event, requestId, async (signal, send) => {
       const result = await reconnectCloudMachine(machineCreatorDeps, { instanceId, requestId }, send, { signal });
       args.recordMachineAction?.("reconnect");
       return {
-        message: result.joined ? `${result.name} is back in ADE.` : `${result.name} is signed in again. It shows up in a minute.`,
+        message: result.joined ? `${result.name} is back in ${BRAND.NAME}.` : `${result.name} is signed in again. It shows up in a minute.`,
         result,
       };
     });

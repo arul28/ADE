@@ -24,6 +24,7 @@ import {
   type CloudPhoneToolAnswer,
 } from "./cloudPhoneDriver";
 import { findElement, readTarget, screenOf, screenText, stepWords, targetWords, type Screen, type StepTarget } from "./cloudPhoneScreenText";
+import { BRAND } from "../../../shared/brand";
 
 type Raw = { status: number; type: string | null; body: Buffer };
 /** One command's calls: its first finding no live phone means the phone ended before it (`CloudPhoneGoneError`). */
@@ -136,8 +137,8 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
       // Checked before every dispatch, a retry too: the call carries the token signed in now, and
       // after a switch that is another account's, never this command's next step.
       const client = await ctx.client();
-      if (!client.phoneCall) throw new CloudPhoneError("Update ADE to drive this cloud iPhone.", "no_account");
-      if ((client.account ?? null) !== phone.account) throw new CloudPhoneError("The ADE account changed while the cloud iPhone was in use. Try again.", "no_account");
+      if (!client.phoneCall) throw new CloudPhoneError(`Update ${BRAND.NAME} to drive this cloud iPhone.`, "no_account");
+      if ((client.account ?? null) !== phone.account) throw new CloudPhoneError(`The ${BRAND.NAME} account changed while the cloud iPhone was in use. Try again.`, "no_account");
       // `phoneId`: the held phone. A replacement (another chat stopped and started one) is refused
       // `phone_not_running`, so a command never goes on on a phone it didn't start on.
       const raw = await client.phoneCall({ action, phoneId: phone.phoneId, ...(body ? { body } : {}), ...(options.query ? { query: options.query } : {}) }, { timeoutMs: options.timeoutMs });
@@ -174,7 +175,7 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
       throw new CloudPhoneError(`Reading the screen: ${message || `the phone answered ${raw.status}`}.`, code);
     }
     // An unreadable tree is an error, never an empty screen: a `gone` would pass on it.
-    const unreadable = (): CloudPhoneError => new CloudPhoneError("Reading the screen: the cloud iPhone answered a screen ADE couldn't read.", "screen_unreadable");
+    const unreadable = (): CloudPhoneError => new CloudPhoneError(`Reading the screen: the cloud iPhone answered a screen ${BRAND.NAME} couldn't read.`, "screen_unreadable");
     let tree: unknown;
     try {
       tree = JSON.parse(raw.body.toString("utf8"));
