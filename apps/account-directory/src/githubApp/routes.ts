@@ -116,7 +116,7 @@ function withCors(response: Response, origin: string): Response {
 
 const notFound = () => fail("not_found", "That was not found.", 404);
 const badRequest = (message: string) => fail("bad_request", message, 400);
-const notConfigured = () => fail("github_app_not_configured", "GitHub sign-in through ADE is not set up on this server yet.", 503);
+const notConfigured = () => fail("github_app_not_configured", "GitHub sign-in through Daex is not set up on this server yet.", 503);
 const withRetryAfter = (response: Response, seconds: number): Response => {
   response.headers.set("retry-after", String(Math.max(1, Math.ceil(seconds))));
   return response;
@@ -151,7 +151,7 @@ export async function handleGithubAppRequest(request: Request, env: GithubAppEnv
 
   if (request.method === "OPTIONS") {
     if (!route) return notFound();
-    if (!corsOrigin) return fail("origin_not_allowed", "This origin can't call ADE's GitHub sign-in.", 403);
+    if (!corsOrigin) return fail("origin_not_allowed", "This origin can't call Daex's GitHub sign-in.", 403);
     const methods = methodsFor(route);
     const wanted = request.headers.get("access-control-request-method")?.toUpperCase() ?? "";
     if (!methods.includes(wanted)) return fail("bad_request", "That method isn't allowed here.", 405);
@@ -171,7 +171,7 @@ export async function handleGithubAppRequest(request: Request, env: GithubAppEnv
       },
     });
   }
-  if (requestOrigin && !corsOrigin) return fail("origin_not_allowed", "This origin can't call ADE's GitHub sign-in.", 403);
+  if (requestOrigin && !corsOrigin) return fail("origin_not_allowed", "This origin can't call Daex's GitHub sign-in.", 403);
 
   const response = await routeRequest(request, env, route, waitUntil);
   return corsOrigin ? withCors(response, corsOrigin) : response;
@@ -182,8 +182,8 @@ async function routeRequest(request: Request, env: GithubAppEnv, route: Route | 
   const caller = await authenticate(request, env);
   if (!caller.ok) {
     return caller.reason === "authentication unavailable"
-      ? fail("unavailable", "ADE can't check your sign-in right now. Try again soon.", 503)
-      : fail("unauthorized", "Sign in to ADE to connect GitHub.", 401);
+      ? fail("unavailable", "Daex can't check your sign-in right now. Try again soon.", 503)
+      : fail("unauthorized", "Sign in to Daex to connect GitHub.", 401);
   }
   const rt = await githubAppRuntime(env);
   if (!rt) return notConfigured();
@@ -265,11 +265,11 @@ async function handleSignInStart(request: Request, env: GithubAppEnv, rt: Github
   if (body === "too_large") return fail("too_large", "That request is too large.", 413);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   const client = typeof body.client === "string" && CLIENT_KINDS.has(body.client as GithubAppClientKind) ? body.client as GithubAppClientKind : null;
-  if (!client) return badRequest("Say which ADE app is signing in: desktop, web, ios or cli.");
+  if (!client) return badRequest("Say which Daex app is signing in: desktop, web, ios or cli.");
   let returnTo: string | null = null;
   if (client === "web") {
     const parsed = parseReturnTo(body.returnTo, trustedHttpsOrigin(env.WEB_CLIENT_ORIGIN, { requireExactOrigin: true }));
-    if (parsed === false) return badRequest("The return address must be a page of the ADE web app.");
+    if (parsed === false) return badRequest("The return address must be a page of the Daex web app.");
     returnTo = parsed;
   }
   const wait = await overLimit(rt.db, userId, "sign_in", GITHUB_APP_SIGN_IN_LIMIT_PER_10_MIN, 10 * 60_000, now);
@@ -633,11 +633,11 @@ async function handleToken(request: Request, rt: GithubAppRuntime, userId: strin
       return json(response);
     }
     case "not_connected":
-      return fail("not_connected", "GitHub isn't connected to your ADE account.", 404);
+      return fail("not_connected", "GitHub isn't connected to your Daex account.", 404);
     case "needs_reauth":
       return fail("needs_reauth", "Your GitHub connection ended. Connect GitHub again.", 409, { reason: outcome.reason });
     case "renewing":
-      return withRetryAfter(fail("renewing", "ADE is renewing your GitHub sign-in. Try again in a moment.", 503), outcome.retryAfterSec);
+      return withRetryAfter(fail("renewing", "Daex is renewing your GitHub sign-in. Try again in a moment.", 503), outcome.retryAfterSec);
     case "unavailable":
       return githubUnavailable(outcome.retryAfterSec);
   }
@@ -696,7 +696,7 @@ async function handleAdopt(request: Request, rt: GithubAppRuntime, userId: strin
       const repeated: GithubAppAdoptResponse = { adopted: true, githubLogin: existing.github_login, generation: existing.generation };
       return json(repeated, 200);
     }
-    return fail("already_connected", "Your ADE account already has GitHub connected.", 409, { githubLogin: existing.github_login });
+    return fail("already_connected", "Your Daex account already has GitHub connected.", 409, { githubLogin: existing.github_login });
   }
 
   let tokens: GithubTokens = { accessToken, accessExpiresAt: expiresAt, refreshToken, refreshExpiresAt };
@@ -705,7 +705,7 @@ async function handleAdopt(request: Request, rt: GithubAppRuntime, userId: strin
     // The live access token: GitHub says whether it is one of this App's.
     const check = await checkToken(rt.config, accessToken);
     if (check.kind === "transient") return githubUnavailable(60);
-    if (check.kind === "invalid") return fail("not_this_app", "GitHub doesn't know this sign-in as one of the ADE GitHub App's.", 400);
+    if (check.kind === "invalid") return fail("not_this_app", "GitHub doesn't know this sign-in as one of the Daex GitHub App's.", 400);
     user = check.user;
   } else {
     // The access token is spent or nearly so: one refresh proves the chain
@@ -715,13 +715,13 @@ async function handleAdopt(request: Request, rt: GithubAppRuntime, userId: strin
     if (!refreshed.ok) {
       if (refreshed.kind === "bad_refresh_token") return fail("refresh_expired", "This GitHub sign-in has ended. Connect GitHub again.", 400);
       if (refreshed.kind === "transient") return githubUnavailable(refreshed.retryAfterSec ?? 60);
-      return fail("not_this_app", "GitHub doesn't know this sign-in as one of the ADE GitHub App's.", 400);
+      return fail("not_this_app", "GitHub doesn't know this sign-in as one of the Daex GitHub App's.", 400);
     }
     tokens = { ...refreshed.tokens, refreshToken: refreshed.tokens.refreshToken ?? refreshToken, refreshExpiresAt: refreshed.tokens.refreshExpiresAt ?? refreshExpiresAt };
   }
   if (!user) {
     const read = await readGithubUser(rt.config, tokens.accessToken);
-    if (!read.ok) return read.kind === "transient" ? githubUnavailable(60) : fail("not_this_app", "GitHub doesn't know this sign-in as one of the ADE GitHub App's.", 400);
+    if (!read.ok) return read.kind === "transient" ? githubUnavailable(60) : fail("not_this_app", "GitHub doesn't know this sign-in as one of the Daex GitHub App's.", 400);
     user = read.user;
     await recordGithubAccountCreated(rt.db, user, Date.now()).catch((error: unknown) => {
       logGithubApp({ event: "github_app.account_age_save_failed", userId, message: error instanceof Error ? error.message : "unknown" });
@@ -736,7 +736,7 @@ async function handleAdopt(request: Request, rt: GithubAppRuntime, userId: strin
       const dropped = deleteToken(rt.config, tokens.accessToken);
       if (waitUntil) waitUntil(dropped); else await dropped;
     }
-    return fail("already_connected", "Your ADE account already has GitHub connected.", 409, { githubLogin: previous?.github_login ?? "" });
+    return fail("already_connected", "Your Daex account already has GitHub connected.", 409, { githubLogin: previous?.github_login ?? "" });
   }
   if (previous) {
     const cleanup = deletePreviousToken(rt, previous, saved.access_token_sha256);
@@ -757,7 +757,7 @@ async function handleRetire(request: Request, rt: GithubAppRuntime, userId: stri
   if (wait) return rateLimited(wait);
   const grant = await loadGrant(rt.db, userId);
   if (grant && grant.access_token_sha256 === await sha256Hex(accessToken)) {
-    return fail("live_token", "That token is the one your ADE account uses. Disconnect GitHub instead.", 409);
+    return fail("live_token", "That token is the one your Daex account uses. Disconnect GitHub instead.", 409);
   }
   if (!(await deleteToken(rt.config, accessToken))) return githubUnavailable(60);
   logGithubApp({ event: "github_app.retired", userId });

@@ -97,7 +97,7 @@ export const MOVE_JOB_KIND = "move";
 
 /** The person's sentences when a move refuses. */
 const SERVER_MOVE_UNAVAILABLE = "server_move_unavailable";
-const SERVER_MOVE_UNAVAILABLE_MESSAGE = "Moving a computer from here needs the next ADE update. Try again after it ships.";
+const SERVER_MOVE_UNAVAILABLE_MESSAGE = "Moving a computer from here needs the next Daex update. Try again after it ships.";
 
 /** How long each wait may last before the move gives up. */
 const IDLE_WAIT_MAX_MS = 24 * 60 * 60_000;
@@ -426,7 +426,7 @@ async function make(env: CloudEnv, job: JobRow, ctx: JobContext, params: MovePar
   const source = await sourceOf(env, job);
   if (!source) return SOURCE_GONE;
   const size = sizeOf(params);
-  if (!size || !job.target_launch_id) return { kind: "fail", error: "that size isn't one ADE Cloud offers." };
+  if (!size || !job.target_launch_id) return { kind: "fail", error: "that size isn't one Daex Cloud offers." };
   const instance = await ctx.provider.getInstance(source.instance_id);
   let facts = factsOf(job);
   // The chats' save starts now, beside the making, on a running old computer.
@@ -472,7 +472,7 @@ async function make(env: CloudEnv, job: JobRow, ctx: JobContext, params: MovePar
   const body = await answer.json().catch(() => null) as { instanceId?: unknown; error?: { code?: unknown; message?: unknown } } | null;
   if (answer.status === 409 && body?.error?.code === "create_in_progress") return { kind: "wait", delayMs: JOIN_POLL_MS };
   if (!answer.ok) {
-    const why = typeof body?.error?.message === "string" ? body.error.message : "ADE Cloud couldn't make the new computer.";
+    const why = typeof body?.error?.message === "string" ? body.error.message : "Daex Cloud couldn't make the new computer.";
     return { kind: "fail", error: why };
   }
   const instanceId = typeof body?.instanceId === "string" ? body.instanceId : null;
@@ -591,7 +591,7 @@ async function serve(job: JobRow, ctx: JobContext, params: MoveParams): Promise<
   if (!facts.projects) {
     // Read while its ADE still runs; the pause below stops it.
     const listed = await tryExec(ctx, sourceId, PROJECTS_LIST_COMMAND, EXEC_MS);
-    if (!listed) throw new Error("ADE couldn't read the old computer's projects.");
+    if (!listed) throw new Error("Daex couldn't read the old computer's projects.");
     facts = { ...facts, projects: readProjectRoots(listed.stdout) };
   }
   // Noted before the pause: whatever happens next, an undo lets its ADE start again.
@@ -722,7 +722,7 @@ async function rename(env: CloudEnv, job: JobRow, ctx: JobContext, params: MoveP
   const facts = factsOf(job);
   logCloud("cloud.machine_moved", { jobId: job.job_id, sourceId: job.source_instance_id, instanceId: targetId, to: params.to, transferMs: facts.transferMs ?? null, warnings: facts.warnings ?? [], renamed });
   const notes = [
-    facts.warnings?.includes("projects") ? " Some projects didn't open there; add them again in ADE." : "",
+    facts.warnings?.includes("projects") ? " Some projects didn't open there; add them again in Daex." : "",
     renamed ? "" : ` It's named ${facts.targetName ?? "the new computer"} for now.`,
   ].join("");
   return { kind: "end", patch: { state: "done", message: `Moved ${name} to a ${kindLabel(params.to)}.${notes}` } };
@@ -743,7 +743,7 @@ async function runMoveStep(env: CloudEnv, job: JobRow, ctx: JobContext): Promise
     case "delete_source": return await deleteSource(env, job, ctx, params);
     case "confirm_delete": return await confirmDelete(job, ctx);
     case "rename": return await rename(env, job, ctx, params);
-    default: return { kind: "fail", error: "ADE Cloud lost track of this move." };
+    default: return { kind: "fail", error: "Daex Cloud lost track of this move." };
   }
 }
 
@@ -800,8 +800,8 @@ registerJobKind(MOVE_JOB_KIND, {
   run: runMoveStep,
   failed: (job, error) => {
     // A refusal's own sentence ("That size isn't…") reads on after the colon; ADE's name keeps its capital.
-    const why = /^ADE\b/.test(error) ? error : `${error.charAt(0).toLowerCase()}${error.slice(1)}`;
-    const sentence = `ADE couldn't move ${sourceNameOf(job)}: ${/[.!?…]$/.test(why) ? why : `${why}.`} ${asWasSentence(job)}`;
+    const why = /^(?:Daex|ADE)\b/.test(error) ? error : `${error.charAt(0).toLowerCase()}${error.slice(1)}`;
+    const sentence = `Daex couldn't move ${sourceNameOf(job)}: ${/[.!?…]$/.test(why) ? why : `${why}.`} ${asWasSentence(job)}`;
     return { state: "failed", message: sentence, error: sentence, approval_url: null };
   },
   undo: (env, job, ctx) => undoMove(env, job, ctx),
@@ -831,7 +831,7 @@ function moveSizeOf(source: ComputerRow, to: CloudMoveKind, sizeId: unknown, res
   const type = typeOf(to);
   if (sizeId != null) {
     const asked = cloudSizeForTier(sizeId as CloudTierId);
-    if (!asked) return "That size isn't one ADE Cloud offers.";
+    if (!asked) return "That size isn't one Daex Cloud offers.";
     if (asked.type !== type) return `That size isn't a ${kindLabel(to)}'s.`;
     return asked;
   }
@@ -858,12 +858,12 @@ export async function handleMoveStart(request: Request, env: CloudEnv, source: C
     return json(moveRecordOf(existing), 200);
   }
   if (body.origin != null && body.origin !== "person") {
-    return fail("person_only", "Only you can move a computer to the other kind. Ask in ADE.", 403);
+    return fail("person_only", "Only you can move a computer to the other kind. Ask in Daex.", 403);
   }
   const to = body.to === "full" || body.to === "standard" ? body.to : null;
   if (!to) return badRequest("Move it to a standard or a full computer.");
   const timing = body.timing == null ? "now" : body.timing === "now" || body.timing === "idle" ? body.timing : null;
-  if (!timing) return badRequest("That timing isn't one ADE knows.");
+  if (!timing) return badRequest("That timing isn't one Daex knows.");
   if (body.save != null && typeof body.save !== "boolean") return badRequest(UNREADABLE_REQUEST_MESSAGE);
   if (!(await machineLaunchMinVersion(env))) return fail(SERVER_MOVE_UNAVAILABLE, SERVER_MOVE_UNAVAILABLE_MESSAGE, 409);
   if ((source.type === "vm" ? "vm" : "default") === typeOf(to)) {
@@ -880,7 +880,7 @@ export async function handleMoveStart(request: Request, env: CloudEnv, source: C
   if (launching) return fail("computer_busy", "This computer is still being set up. Try again when its lane has started.", 409);
   const refused = await deps.refusal(source, size);
   if (refused) return refused;
-  if (!deps.provider) return fail("unavailable", "ADE Cloud can't move a computer right now. Try again soon.", 503);
+  if (!deps.provider) return fail("unavailable", "Daex Cloud can't move a computer right now. Try again soon.", 503);
 
   const chatRequest = moveChatRequestOf(body);
   const params: MoveParams = {
@@ -917,7 +917,7 @@ export async function handleMoveStart(request: Request, env: CloudEnv, source: C
 
 /** `GET /cloud/moves`, `GET /cloud/moves/:id`, `DELETE /cloud/moves/:id`. Rows only, but a cancel. */
 export async function routeMoves(request: Request, path: string, env: CloudEnv, userId: string, deps: Pick<MoveRouteDeps, "now" | "waitUntil" | "provider" | "createComputer">): Promise<Response> {
-  const notFound = () => fail("not_found", "ADE Cloud has no such move.", 404);
+  const notFound = () => fail("not_found", "Daex Cloud has no such move.", 404);
   if (path === "/cloud/moves") {
     if (request.method !== "GET") return notFound();
     const rows = (await env.DB.prepare(`

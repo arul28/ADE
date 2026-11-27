@@ -373,7 +373,7 @@ async function setProviderChoice(request: Request, env: CloudEnv, userId: string
   const provider = body?.provider;
   if (provider !== "auto" && !isCloudPhoneProvider(provider)) return fail("bad_request", `provider is auto, ${CLOUD_PHONE_PROVIDERS.join(" or ")}.`, 400);
   const saved = await env.DB.prepare("update cloud_phone_beta set provider = ? where user_id = ?").bind(provider === "auto" ? null : provider, userId).run();
-  if ((saved.meta?.changes ?? 0) !== 1) return fail("phone_not_on_account", "Only ADE Cloud iPhone testers can pick a provider.", 403);
+  if ((saved.meta?.changes ?? 0) !== 1) return fail("phone_not_on_account", "Only Daex Cloud iPhone testers can pick a provider.", 403);
   logCloud("cloud.phone_provider_picked", { userId, provider });
   return json({ ok: true, provider } satisfies CloudPhoneProviderChoiceAnswer);
 }
@@ -477,7 +477,7 @@ async function phoneContext(env: CloudEnv, userId: string, now: number): Promise
   const label = phoneLabelFor(userId);
   if (!label) {
     logCloud("cloud.phone_label_unusable", { userId });
-    return fail("phone_unavailable", "The ADE Cloud iPhone can't be used with this account.", 400);
+    return fail("phone_unavailable", "The Daex Cloud iPhone can't be used with this account.", 400);
   }
   const account = await loadAccount(env, userId, now);
   let rows = await periodPhones(env, userId, account.period_start);
@@ -602,9 +602,9 @@ function startRefusal(context: PhoneContext): { code: string; message: string } 
   const { usage, account } = context;
   if (allowedMinutes(usage) > 0) return null;
   const next = accountRules(account) === "free"
-    ? "Pick a plan in Settings › ADE Cloud for more"
-    : "Turn on extra credits in Settings › ADE Cloud to keep going";
-  return { code: "phone_credits_out", message: `Your ADE Cloud credits are used up, and the iPhone uses one a minute. ${next}, or wait until ${formatDay(account.period_end)}.` };
+    ? "Pick a plan in Settings › Daex Cloud for more"
+    : "Turn on extra credits in Settings › Daex Cloud to keep going";
+  return { code: "phone_credits_out", message: `Your Daex Cloud credits are used up, and the iPhone uses one a minute. ${next}, or wait until ${formatDay(account.period_end)}.` };
 }
 
 /**
@@ -616,7 +616,7 @@ export async function routePhone(request: Request, path: string, env: CloudEnv, 
   const { access, choice } = await phoneAccess(env, userId);
   const picked = choice?.picked ?? null;
   if (path === CLOUD_PATHS.phoneProvider) {
-    return request.method === "POST" ? setProviderChoice(request, env, userId) : fail("not_found", "ADE Cloud has no such route.", 404);
+    return request.method === "POST" ? setProviderChoice(request, env, userId) : fail("not_found", "Daex Cloud has no such route.", 404);
   }
 
   if (path === CLOUD_PATHS.phone && request.method === "GET") {
@@ -640,7 +640,7 @@ export async function routePhone(request: Request, path: string, env: CloudEnv, 
     const phoneId = context.live?.session.id ?? context.liveRowId;
     if (!phoneId) return json({ ok: true, stopped: false });
     if (!(await stopPhone(env, userId, phoneId, now, "person"))) {
-      return fail("phone_unavailable", "The ADE Cloud iPhone isn't answering right now. Try again in a moment.", 502);
+      return fail("phone_unavailable", "The Daex Cloud iPhone isn't answering right now. Try again in a moment.", 502);
     }
     return json({ ok: true, stopped: true });
   }
@@ -648,11 +648,11 @@ export async function routePhone(request: Request, path: string, env: CloudEnv, 
   if (access !== "on") {
     // Set up, but this account isn't on the beta list: the one answer that isn't "try again".
     return anyProviderConfigured(env) && phoneAccessSetting(env) === "beta"
-      ? fail("phone_not_on_account", "The ADE Cloud iPhone isn't on this account.", 403)
-      : fail("phone_unavailable", "The ADE Cloud iPhone isn't available right now.", 503);
+      ? fail("phone_not_on_account", "The Daex Cloud iPhone isn't on this account.", 403)
+      : fail("phone_unavailable", "The Daex Cloud iPhone isn't available right now.", 503);
   }
   if (path === CLOUD_PATHS.phoneCall) {
-    return request.method === "POST" ? routePhoneCall(request, env, userId, now) : fail("not_found", "ADE Cloud has no such route.", 404);
+    return request.method === "POST" ? routePhoneCall(request, env, userId, now) : fail("not_found", "Daex Cloud has no such route.", 404);
   }
   const starting = path === CLOUD_PATHS.phone && request.method === "POST";
   // A start is use of the free plan: one free plan per computer and per GitHub account, as a computer's start
@@ -665,10 +665,10 @@ export async function routePhone(request: Request, path: string, env: CloudEnv, 
   const context = await phoneContext(env, userId, now);
   if (context instanceof Response) return context;
   if (starting) return startPhone(request, env, userId, now, context, picked, waitUntil);
-  if (request.method !== "POST") return fail("not_found", "ADE Cloud has no such route.", 404);
+  if (request.method !== "POST") return fail("not_found", "Daex Cloud has no such route.", 404);
 
   const live = context.live;
-  if (!live) return fail("phone_not_running", "Your ADE Cloud iPhone isn't running. Start it first.", 409);
+  if (!live) return fail("phone_not_running", "Your Daex Cloud iPhone isn't running. Start it first.", 409);
   const body = await readJson(request);
   // The view: a control link by default (the person uses the phone in the pane).
   const view = await PHONE_PROVIDERS[live.where.provider].view(env, {
@@ -702,7 +702,7 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
   if (context.live && startedBeforePeriod(context) && body.attach !== true) {
     // A stop the provider refused leaves that phone running: no second one beside it.
     if (!(await stopPhone(env, userId, context.live.session.id, now, "period_changed"))) {
-      return fail("phone_unavailable", "Your ADE Cloud iPhone from last period couldn't be stopped yet. Try again in a moment.", 503);
+      return fail("phone_unavailable", "Your Daex Cloud iPhone from last period couldn't be stopped yet. Try again in a moment.", 503);
     }
     // The new phone is held to what reaches the account now, not to the stopped one's billing.
     const fresh = await phoneContext(env, userId, now);
@@ -714,28 +714,28 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
   let provider: CloudPhoneProvider = context.live?.where.provider ?? "nomac";
   // `attach`: a token for the live phone only (a brain keeping it on); never a start. A client that can't
   // drive the live phone's provider (an old brain, a Revyl phone) is told it isn't running.
-  if (body.attach === true && (!session || !drives(provider))) return fail("phone_not_running", "Your ADE Cloud iPhone isn't running.", 409);
+  if (body.attach === true && (!session || !drives(provider))) return fail("phone_not_running", "Your Daex Cloud iPhone isn't running.", 409);
   // A plain start from that client, with such a phone live: it can't drive what it would get (an empty token).
   if (session && !drives(provider)) {
-    return fail("phone_needs_update", "Your ADE Cloud iPhone is running somewhere this version of ADE can't drive. Update ADE, or stop the phone first.", 409);
+    return fail("phone_needs_update", "Your Daex Cloud iPhone is running somewhere this version of Daex can't drive. Update Daex, or stop the phone first.", 409);
   }
   // A running phone keeps its provider: one that can't do what this start needs is never swapped quietly.
   const lacked = session && body.attach !== true ? cloudPhoneLacks(provider, needs) : [];
   if (lacked.length) {
-    return fail("phone_lacks", `Your running ADE Cloud iPhone can't ${abilityWords(lacked)}. Stop it first, then start a new one.`, 409);
+    return fail("phone_lacks", `Your running Daex Cloud iPhone can't ${abilityWords(lacked)}. Stop it first, then start a new one.`, 409);
   }
   if (session && device && session.device && session.device !== device) {
-    return fail("phone_running", `Your ADE Cloud iPhone is already running as ${session.device}. Stop it first to start a ${device}.`, 409);
+    return fail("phone_running", `Your Daex Cloud iPhone is already running as ${session.device}. Stop it first to start a ${device}.`, 409);
   }
   if (!session) {
     if (env.CLOUD_PHONES_PAUSED?.trim() === "1") {
       captureCloudPhone(env, waitUntil, userId, { step: "refused", plan, reason: "paused" }, "paused", now);
-      return fail("phone_paused", "New ADE Cloud iPhones are paused for a moment. Try again soon.", 503);
+      return fail("phone_paused", "New Daex Cloud iPhones are paused for a moment. Try again soon.", 503);
     }
     // The owner's free-use cap refuses a new free phone as it refuses a new free computer (never naming why).
     if (await freeCapRefuses(env, context.account, now, waitUntil)) {
       captureCloudPhone(env, waitUntil, userId, { step: "refused", plan, reason: "free_cap" }, "free_cap", now);
-      return fail("phone_unavailable", "The ADE Cloud iPhone can't start right now. Try again soon.", 503);
+      return fail("phone_unavailable", "The Daex Cloud iPhone can't start right now. Try again soon.", 503);
     }
     const refusal = startRefusal(context);
     if (refusal) {
@@ -748,7 +748,7 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
     // second billed phone (at another provider, or one that can do what this one needs). Ask again, or stop it.
     if (context.liveRowId) {
       logCloud("cloud.phone_start_refused", { userId, code: "phone_unreadable", phoneId: context.liveRowId });
-      return fail("phone_unavailable", "Your ADE Cloud iPhone isn't answering right now. Try again in a moment, or stop it first.", 503);
+      return fail("phone_unavailable", "Your Daex Cloud iPhone isn't answering right now. Try again in a moment, or stop it first.", 503);
     }
     const minutes = Math.min(CLOUD_PHONE_MAX_MINUTES, allowedMinutes(context.usage));
     const free = accountRules(context.account) === "free";
@@ -762,7 +762,7 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
     if (routed instanceof Response) return routed;
     // One start per account at a time, across providers and machines: two starts that both saw no live phone
     // would each make one (and bill both). The other is told to try again, and then finds this phone.
-    const startingElsewhere = (): Response => fail("phone_starting", "Your ADE Cloud iPhone is starting. Try again in a moment.", 409);
+    const startingElsewhere = (): Response => fail("phone_starting", "Your Daex Cloud iPhone is starting. Try again in a moment.", 409);
     const claimed = await env.DB.prepare("update cloud_accounts set phone_start_claim = ? where user_id = ? and (phone_start_claim is null or phone_start_claim < ?)")
       .bind(now, userId, now - PHONE_START_CLAIM_MS).run();
     if ((claimed.meta?.changes ?? 0) !== 1) return startingElsewhere();
@@ -781,7 +781,7 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
       const lacking = cloudPhoneLacks(route.order[0], needs);
       if (lacking.length) {
         logCloud("cloud.phone_start_refused", { userId, code: "phone_lacks", needs: lacking, provider: route.order[0] });
-        return fail("phone_lacks", `The ADE Cloud iPhone can't ${abilityWords(lacking)}.`, 409);
+        return fail("phone_lacks", `The Daex Cloud iPhone can't ${abilityWords(lacking)}.`, 409);
       }
       route.order = route.order.filter((provider) => cloudPhoneLacks(provider, needs).length === 0);
       // A start that finished between this request's read and its claim: its phone is the answer next time.
@@ -808,7 +808,7 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
             env.DB.prepare("update cloud_phone_revyl set user_id = ? where user_id = ?").bind(hashed, userId),
           ]);
         }
-        return fail("not_found", "This ADE account no longer exists.", 404);
+        return fail("not_found", "This Daex account no longer exists.", 404);
       }
     } finally {
       await env.DB.prepare("update cloud_accounts set phone_start_claim = null where user_id = ? and phone_start_claim = ?").bind(userId, now).run();
@@ -849,7 +849,7 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
 async function routePhoneCall(request: Request, env: CloudEnv, userId: string, now: number): Promise<Response> {
   const row = await env.DB.prepare("select phone_id, provider, provider_ref, device, ready_at from cloud_phones where user_id = ? and state = 'live' order by created_at desc limit 1")
     .bind(userId).first<Pick<PhoneRow, "phone_id" | "provider" | "provider_ref" | "device" | "ready_at">>();
-  if (!row) return fail("phone_not_running", "Your ADE Cloud iPhone isn't running. Start it first.", 409);
+  if (!row) return fail("phone_not_running", "Your Daex Cloud iPhone isn't running. Start it first.", 409);
   const body = await readJson(request);
   if (!body) return fail("bad_request", "That request could not be read.", 400);
   // The phone the brain holds (`phoneId`): once another one replaced it, its steps never reach the new phone.
@@ -859,7 +859,7 @@ async function routePhoneCall(request: Request, env: CloudEnv, userId: string, n
   const where = whereOfRow(row);
   const call = PHONE_PROVIDERS[where.provider].call;
   if (!call) return fail("bad_request", "This phone takes its calls directly.", 400);
-  if (row.ready_at == null) return fail("phone_starting", "Your ADE Cloud iPhone is still starting. Try again in a moment.", 409);
+  if (row.ready_at == null) return fail("phone_starting", "Your Daex Cloud iPhone is still starting. Try again in a moment.", 409);
   return call(env, userId, { id: row.phone_id, ref: where.ref }, body, now);
 }
 
@@ -929,8 +929,8 @@ export async function handleNomacWebhook(request: Request, env: CloudEnv, now: n
         key: `nomac_credit_low:${day}`,
         kind: "nomac_credit_low",
         userId: null,
-        subject: "ADE Cloud: NoMac credit is low",
-        reason: "NoMac's prepaid credit covers less than an hour of the phones running now. Add credit at nomac.app before every ADE Cloud iPhone stops.",
+        subject: "Daex Cloud: NoMac credit is low",
+        reason: "NoMac's prepaid credit covers less than an hour of the phones running now. Add credit at nomac.app before every Daex Cloud iPhone stops.",
       }, now, waitUntil);
     }
   } catch (error) {

@@ -38,7 +38,7 @@ export async function handleHostRead(request: Request, env: LaneShareEnv, userId
   const machineKey = parseMachineKey(body?.machineKey);
   if (!machineKey) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   // A removed machine keeps a valid account token; without its machine row it reads nothing.
-  if (!(await ownsMachine(env, userId, machineKey))) return fail("unknown_machine", "That computer isn't on your ADE account.", 404);
+  if (!(await ownsMachine(env, userId, machineKey))) return fail("unknown_machine", "That computer isn't on your Daex account.", 404);
   return json(await hostGrantList(env, userId, machineKey, now));
 }
 
@@ -140,7 +140,7 @@ export async function handleConnect(request: Request, env: LaneShareEnv, userId:
   const row = await loadRow(env, id);
   if (!row || row.receiver_user_id !== userId) return notFound();
   if (effectiveState(row, now) !== "active") return shareClosed();
-  if (!dpopThumbprint) return badRequest("Update ADE: this version can't connect to a shared lane.");
+  if (!dpopThumbprint) return badRequest("Update Daex: this version can't connect to a shared lane.");
   const machine = await env.DB.prepare(
     "select reachable_endpoints, last_seen_at from machines where user_id = ? and machine_key = ?",
   ).bind(row.giver_user_id, row.machine_key).first<{ reachable_endpoints: string | null; last_seen_at: number | null }>();

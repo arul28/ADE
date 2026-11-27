@@ -37,7 +37,7 @@ const BODY_OVERHEAD_BYTES = 64 * 1024;
 const DEFAULT_LIST_LIMIT = 100;
 const MAX_LIST_LIMIT = 200;
 
-const notFound = () => fail("not_found", "ADE Cloud has no copy of that session.", 404);
+const notFound = () => fail("not_found", "Daex Cloud has no copy of that session.", 404);
 const unavailable = () => fail("unavailable", "Saved sessions aren't available right now. Try again soon.", 503);
 const unreadable = () => fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
 
@@ -198,7 +198,7 @@ async function handlePut(request: Request, env: CloudEnv, bucket: R2Bucket, user
   if (!body.ok) return body.tooLarge ? fail("copy_too_large", "That session copy is too large to save.", 413) : unreadable();
   const computer = await callingComputer(env, request, userId, body.value.instanceId);
   // Only the owner's own computers save copies.
-  if (!computer) return fail("not_found", "ADE Cloud has no such computer.", 404);
+  if (!computer) return fail("not_found", "Daex Cloud has no such computer.", 404);
   const input = readSessionRowInput(body.value.row);
   const format: CloudSessionCopyFormat | null = body.value.format === "text" || body.value.format === "xterm" ? body.value.format : null;
   if (!input || !format || typeof body.value.text !== "string") return unreadable();
@@ -425,7 +425,7 @@ async function handleMove(request: Request, env: CloudEnv, bucket: R2Bucket, use
   } else {
     const owned = await ownedComputer(env, userId, instanceId);
     // Only the caller's own computer, and only to its own machine key.
-    if (!owned || owned.deleted_at != null) return fail("not_found", "ADE Cloud has no such computer.", 404);
+    if (!owned || owned.deleted_at != null) return fail("not_found", "Daex Cloud has no such computer.", 404);
     if (owned.machine_key && owned.machine_key.toLowerCase() !== requestedKey.toLowerCase()) {
       return fail("wrong_machine", "A session moves only to the machine key of the computer that asks.", 409);
     }

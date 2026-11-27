@@ -87,7 +87,7 @@ function withCors(response: Response, origin: string): Response {
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
-const notFound = () => fail("not_found", "That project was not found on your ADE account.", 404);
+const notFound = () => fail("not_found", "That project was not found on your Daex account.", 404);
 const badRequest = (message: string) => fail("bad_request", message, 400);
 
 /**
@@ -109,7 +109,7 @@ export async function handleAccountProjectRequest(request: Request, env: Account
 
   if (request.method === "OPTIONS") {
     if (!route) return notFound();
-    if (!corsOrigin) return fail("origin_not_allowed", "This origin can't call the ADE project list.", 403);
+    if (!corsOrigin) return fail("origin_not_allowed", "This origin can't call the Daex project list.", 403);
     const methods = methodsFor(route);
     const wanted = request.headers.get("access-control-request-method")?.toUpperCase() ?? "";
     if (!methods.includes(wanted)) return fail("bad_request", "That method isn't allowed here.", 405);
@@ -129,7 +129,7 @@ export async function handleAccountProjectRequest(request: Request, env: Account
       },
     });
   }
-  if (requestOrigin && !corsOrigin) return fail("origin_not_allowed", "This origin can't call the ADE project list.", 403);
+  if (requestOrigin && !corsOrigin) return fail("origin_not_allowed", "This origin can't call the Daex project list.", 403);
 
   const response = await routeRequest(request, env, route, url);
   return corsOrigin ? withCors(response, corsOrigin) : response;
@@ -140,8 +140,8 @@ async function routeRequest(request: Request, env: AccountProjectEnv, route: Rou
   const caller = await authenticate(request, env);
   if (!caller.ok) {
     return caller.reason === "authentication unavailable"
-      ? fail("unavailable", "ADE can't check your sign-in right now. Try again soon.", 503)
-      : fail("unauthorized", "Sign in to ADE to see your projects.", 401);
+      ? fail("unavailable", "Daex can't check your sign-in right now. Try again soon.", 503)
+      : fail("unauthorized", "Sign in to Daex to see your projects.", 401);
   }
   const userId = caller.userId;
   const now = Date.now();
@@ -158,8 +158,8 @@ async function routeRequest(request: Request, env: AccountProjectEnv, route: Rou
     if (error instanceof AccountProjectLimitError) {
       logAccountProject({ event: "account_project.refused", userId, code: error.limit });
       return error.limit === "live_projects"
-        ? fail("too_many_projects", "Your ADE account has as many projects as it can hold. Remove one first.", 409)
-        : fail("too_many_projects", "Your ADE account can't hold more projects right now.", 409);
+        ? fail("too_many_projects", "Your Daex account has as many projects as it can hold. Remove one first.", 409)
+        : fail("too_many_projects", "Your Daex account can't hold more projects right now.", 409);
     }
     throw error;
   }
@@ -204,9 +204,9 @@ const repoKeyHost = (repoKey: string): string => repoKey.slice("repo:".length).s
 /** One repository as a request names it, or a sentence saying what is wrong. */
 function parseIdentity(raw: Record<string, unknown>): IdentityInput | string {
   const repoKey = parseRepoKey(raw.repoKey);
-  if (!repoKey) return "The repository address is missing or isn't one ADE reads.";
+  if (!repoKey) return "The repository address is missing or isn't one Daex reads.";
   const host = typeof raw.host === "string" && HOST.test(raw.host) && raw.host.length <= 255 ? raw.host : null;
-  if (!host) return "The repository host is missing or isn't one ADE reads.";
+  if (!host) return "The repository host is missing or isn't one Daex reads.";
   // `ssh.github.com` (GitHub's SSH on port 443) is github.com.
   const keyHost = repoKeyHost(repoKey);
   if (keyHost !== host && !(host === "github.com" && keyHost === "ssh.github.com")) {
@@ -215,14 +215,14 @@ function parseIdentity(raw: Record<string, unknown>): IdentityInput | string {
   let canonicalRepoKey: string | null = null;
   if (raw.canonicalRepoKey !== undefined && raw.canonicalRepoKey !== null) {
     canonicalRepoKey = parseRepoKey(raw.canonicalRepoKey);
-    if (!canonicalRepoKey || repoKeyHost(canonicalRepoKey) !== host) return "The repository's current address isn't one ADE reads.";
+    if (!canonicalRepoKey || repoKeyHost(canonicalRepoKey) !== host) return "The repository's current address isn't one Daex reads.";
   }
   const owner = boundedText(raw.owner, ACCOUNT_PROJECT_MAX_OWNER);
   const name = boundedText(raw.name, ACCOUNT_PROJECT_MAX_NAME);
-  if (!owner || !name || !REPO_PART.test(owner) || !REPO_PART.test(name)) return "The repository owner or name isn't one ADE reads.";
+  if (!owner || !name || !REPO_PART.test(owner) || !REPO_PART.test(name)) return "The repository owner or name isn't one Daex reads.";
   let repoId: number | null = null;
   if (raw.repoId !== undefined && raw.repoId !== null) {
-    if (typeof raw.repoId !== "number" || !Number.isSafeInteger(raw.repoId) || raw.repoId <= 0) return "The repository id isn't one ADE reads.";
+    if (typeof raw.repoId !== "number" || !Number.isSafeInteger(raw.repoId) || raw.repoId <= 0) return "The repository id isn't one Daex reads.";
     repoId = raw.repoId;
   }
   // The id is the only thing that makes a current address trustworthy.
@@ -230,7 +230,7 @@ function parseIdentity(raw: Record<string, unknown>): IdentityInput | string {
   let defaultBranch: string | null = null;
   if (raw.defaultBranch !== undefined && raw.defaultBranch !== null) {
     defaultBranch = boundedText(raw.defaultBranch, ACCOUNT_PROJECT_MAX_BRANCH);
-    if (!defaultBranch) return "The default branch isn't one ADE reads.";
+    if (!defaultBranch) return "The default branch isn't one Daex reads.";
   }
   return { host, owner, name, repoKey, canonicalRepoKey, repoId, defaultBranch };
 }
@@ -287,14 +287,14 @@ async function handleCopies(request: Request, env: AccountProjectEnv, userId: st
   if (body === "too_large") return fail("too_large", "That request is too large.", 413);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   const machineKey = parseMachineKey(body.machineKey);
-  if (!machineKey) return badRequest("The machine key is missing or isn't one ADE reads.");
+  if (!machineKey) return badRequest("The machine key is missing or isn't one Daex reads.");
   if (!Array.isArray(body.copies)) return badRequest("The copies are missing.");
   if (body.copies.length > ACCOUNT_PROJECT_MAX_COPIES_PER_MACHINE) {
     return fail("too_many_copies", `A computer can publish at most ${ACCOUNT_PROJECT_MAX_COPIES_PER_MACHINE} project folders.`, 413);
   }
   const owned = await env.DB.prepare("select 1 as found from machines where user_id = ? and machine_key = ?")
     .bind(userId, machineKey).first<{ found: number }>();
-  if (!owned) return fail("unknown_machine", "That computer isn't on your ADE account.", 400);
+  if (!owned) return fail("unknown_machine", "That computer isn't on your Daex account.", 400);
 
   const copies: CopyPlanInput[] = [];
   const seen = new Set<string>();
@@ -304,13 +304,13 @@ async function handleCopies(request: Request, env: AccountProjectEnv, userId: st
     const identity = parseIdentity(record);
     if (typeof identity === "string") return badRequest(`Copy ${index + 1}: ${identity}`);
     const checkoutId = typeof record.checkoutId === "string" && CHECKOUT_ID.test(record.checkoutId) ? record.checkoutId : null;
-    if (!checkoutId) return badRequest(`Copy ${index + 1}: the folder id isn't one ADE reads.`);
+    if (!checkoutId) return badRequest(`Copy ${index + 1}: the folder id isn't one Daex reads.`);
     if (seen.has(checkoutId)) return badRequest(`Copy ${index + 1}: that folder is listed twice.`);
     seen.add(checkoutId);
     const rootPath = boundedText(record.rootPath, ACCOUNT_PROJECT_MAX_ROOT_PATH);
-    if (!rootPath) return badRequest(`Copy ${index + 1}: the folder path isn't one ADE reads.`);
+    if (!rootPath) return badRequest(`Copy ${index + 1}: the folder path isn't one Daex reads.`);
     const add = record.add === undefined || record.add === "none" ? "none" : record.add === "auto" ? "auto" : null;
-    if (!add) return badRequest(`Copy ${index + 1}: the add mode isn't one ADE reads.`);
+    if (!add) return badRequest(`Copy ${index + 1}: the add mode isn't one Daex reads.`);
     copies.push({ ...identity, checkoutId, rootPath, isMain: record.isMain === true, add });
   }
   const results = await replaceMachineCopies(env.DB, userId, machineKey, copies, now);

@@ -112,8 +112,8 @@ async function resolveUserId(env: CloudEnv, body: Record<string, unknown>): Prom
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return fail("bad_request", "That email isn't valid.", 400);
   const found = await clerkUserIdsFor(env, email);
   if (found == null) return fail("unavailable", "Clerk could not be asked for that email. Try again, or pass userId.", 503);
-  if (found.length === 0) return fail("not_found", "No ADE account has that email verified.", 404);
-  if (found.length > 1) return fail("conflict", "More than one ADE account has that email. Pass userId.", 409, { userIds: found });
+  if (found.length === 0) return fail("not_found", "No Daex account has that email verified.", 404);
+  if (found.length > 1) return fail("conflict", "More than one Daex account has that email. Pass userId.", 409, { userIds: found });
   return { userId: found[0]!, email };
 }
 
@@ -274,7 +274,7 @@ export async function handleOwnerAccount(env: CloudEnv, body: Record<string, unk
   // A userId must name an account ADE Cloud knows (a typo makes no row); an
   // email Clerk verified may create it (on Free), as its first read would.
   if (!who.email && !(await env.DB.prepare("select 1 as known from cloud_accounts where user_id = ?").bind(who.userId).first())) {
-    return fail("not_found", "ADE Cloud has no account with that userId.", 404);
+    return fail("not_found", "Daex Cloud has no account with that userId.", 404);
   }
   let account = await loadAccount(env, who.userId, now);
   const statements: D1PreparedStatement[] = [];

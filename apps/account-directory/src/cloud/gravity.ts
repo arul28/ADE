@@ -408,7 +408,7 @@ export async function routeSponsored(request: Request, path: string, env: Gravit
   return null;
 }
 
-const notFound = () => fail("not_found", "That ADE Cloud route doesn't exist.", 404);
+const notFound = () => fail("not_found", "That Daex Cloud route doesn't exist.", 404);
 
 /**
  * The account's answer, on every machine. A yes keeps the SHA-256 of the
@@ -439,11 +439,11 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
   if (choice === "granted") {
     before = await honorGpc(env, account, await readConsent(env, userId), who, now);
     if (body.confirmed !== true && yesNeedsConfirm(before, await shownAnswer(env, before, who, now), who)) {
-      return fail("sponsored_confirm", "Turning sponsored cards back on takes a second confirm. Try again, or update ADE if it doesn't ask.", 409);
+      return fail("sponsored_confirm", "Turning sponsored cards back on takes a second confirm. Try again, or update Daex if it doesn't ask.", 409);
     }
   }
   if (choice === "notice") {
-    if (!startsOnFor(env, who)) return fail("unavailable", "Sponsored cards don't start on where you are, so ADE asks first.", 409);
+    if (!startsOnFor(env, who)) return fail("unavailable", "Sponsored cards don't start on where you are, so Daex asks first.", 409);
     before = await readConsent(env, userId);
     // An answer that holds, or any no (even one run out), stands: the person is asked, never told.
     if (!startsOnNow(env, before, await shownAnswer(env, before, who, now), who)) return answered();

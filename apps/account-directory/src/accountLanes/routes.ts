@@ -52,7 +52,7 @@ export function isAccountLanesRequest(url: URL): boolean {
   return path === PATH;
 }
 
-const notFound = () => fail("not_found", "That lane list was not found on your ADE account.", 404);
+const notFound = () => fail("not_found", "That lane list was not found on your Daex account.", 404);
 
 function text(value: unknown, max: number): string | null {
   if (typeof value !== "string") return null;
@@ -87,7 +87,7 @@ export async function handleAccountLanesRequest(request: Request, env: AccountLa
   // The read only: a browser never publishes a machine's lanes.
   const corsOrigin = requestOrigin && allowedOrigin && requestOrigin === allowedOrigin ? allowedOrigin : null;
   if (request.method === "OPTIONS") {
-    if (!corsOrigin) return fail("origin_not_allowed", "This origin can't call the ADE lane list.", 403);
+    if (!corsOrigin) return fail("origin_not_allowed", "This origin can't call the Daex lane list.", 403);
     if ((request.headers.get("access-control-request-method") ?? "").toUpperCase() !== "GET") return fail("bad_request", "That method isn't allowed here.", 405);
     const requested = (request.headers.get("access-control-request-headers") ?? "").split(",").map((header) => header.trim().toLowerCase()).filter(Boolean);
     if (requested.some((header) => !ALLOWED_REQUEST_HEADERS.has(header))) return fail("origin_not_allowed", "Those headers aren't allowed.", 403);
@@ -102,13 +102,13 @@ export async function handleAccountLanesRequest(request: Request, env: AccountLa
       },
     });
   }
-  if (requestOrigin && (!corsOrigin || request.method !== "GET")) return fail("origin_not_allowed", "This origin can't call the ADE lane list.", 403);
+  if (requestOrigin && (!corsOrigin || request.method !== "GET")) return fail("origin_not_allowed", "This origin can't call the Daex lane list.", 403);
   if (request.method !== "GET" && request.method !== "PUT") return notFound();
   const caller = await authenticate(request, env);
   if (!caller.ok) {
     return caller.reason === "authentication unavailable"
-      ? fail("unavailable", "ADE can't check your sign-in right now. Try again soon.", 503)
-      : fail("unauthorized", "Sign in to ADE to see your lanes.", 401);
+      ? fail("unavailable", "Daex can't check your sign-in right now. Try again soon.", 503)
+      : fail("unauthorized", "Sign in to Daex to see your lanes.", 401);
   }
   const response = request.method === "GET"
     ? await handleList(url, env, caller.userId, Date.now())
@@ -157,11 +157,11 @@ async function handlePut(request: Request, env: AccountLaneEnv, userId: string, 
     env.DB.prepare("select hash, lane_count from account_lane_index_state where user_id = ? and machine_key = ?").bind(userId, machineKey).first<{ hash: string; lane_count: number }>(),
     env.DB.prepare("select coalesce(sum(lane_count), 0) as total from account_lane_index_state where user_id = ? and machine_key != ?").bind(userId, machineKey).first<{ total: number }>(),
   ]);
-  if (!machine) return fail("not_found", "That machine isn't on your ADE account.", 404);
+  if (!machine) return fail("not_found", "That machine isn't on your Daex account.", 404);
   if (state?.hash === hash) return json({ changed: false, count: state.lane_count } satisfies AccountLaneIndexPutResult);
   if ((others?.total ?? 0) + lanes.length > ACCOUNT_LANE_INDEX_MAX_PER_ACCOUNT) {
     logCloud("account_lanes.refused", { userId, code: "account_full" });
-    return fail("too_many_lanes", `Your ADE account lists at most ${ACCOUNT_LANE_INDEX_MAX_PER_ACCOUNT} lanes.`, 409);
+    return fail("too_many_lanes", `Your Daex account lists at most ${ACCOUNT_LANE_INDEX_MAX_PER_ACCOUNT} lanes.`, 409);
   }
   // One batch: the old set goes and the new set comes in the same transaction.
   const statements: D1PreparedStatement[] = [

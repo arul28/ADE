@@ -157,7 +157,7 @@ export type AutomationDeps = {
   createComputer: LaunchRouteDeps["createComputer"];
 };
 
-const notFound = () => fail("not_found", "ADE Cloud has no such automation.", 404);
+const notFound = () => fail("not_found", "Daex Cloud has no such automation.", 404);
 const OPEN_STATES = "('queued', 'starting', 'running', 'finishing')";
 const ACTIVE_STATES = "('starting', 'running')";
 
@@ -175,8 +175,8 @@ function parseTrigger(value: unknown): CloudAutomationTrigger | string {
   if (raw?.kind === "manual") return { kind: "manual" };
   if (raw?.kind === "schedule") {
     const cron = multilineShortString(raw.cron, 120);
-    if (!cron || !parseCron(cron)) return "That schedule isn't one ADE can read.";
-    if (!isTimeZone(raw.timezone)) return "That schedule's time zone isn't one ADE knows.";
+    if (!cron || !parseCron(cron)) return "That schedule isn't one Daex can read.";
+    if (!isTimeZone(raw.timezone)) return "That schedule's time zone isn't one Daex knows.";
     return { kind: "schedule", cron, timezone: raw.timezone };
   }
   if (raw?.kind === "webhook") {
@@ -186,7 +186,7 @@ function parseTrigger(value: unknown): CloudAutomationTrigger | string {
     return { kind: "webhook", hookId: raw.hookId, ...(maxAge ? { maxAgeMinutes: maxAge } : {}) };
   }
   // Everything else watches something on one computer, or GitHub and Linear (not on ADE Cloud yet).
-  return "ADE Cloud runs a rule on a schedule, a custom webhook or Run now. Other triggers run on one of your computers.";
+  return "Daex Cloud runs a rule on a schedule, a custom webhook or Run now. Other triggers run on one of your computers.";
 }
 
 /** The registration's body as one, or the sentence that says what's wrong. */
@@ -201,36 +201,36 @@ export function parseRegistration(body: Record<string, unknown>): CloudAutomatio
   if (!spec || !name) return "A registration needs the rule's name.";
   const project = spec.project && typeof spec.project === "object" ? spec.project as Record<string, unknown> : null;
   const origin = githubOriginOf(project?.origin);
-  if (!origin) return "Only rules in GitHub repositories can run on ADE Cloud.";
-  if (!Array.isArray(spec.triggers) || spec.triggers.length === 0 || spec.triggers.length > 8) return "A rule on ADE Cloud needs a trigger.";
+  if (!origin) return "Only rules in GitHub repositories can run on Daex Cloud.";
+  if (!Array.isArray(spec.triggers) || spec.triggers.length === 0 || spec.triggers.length > 8) return "A rule on Daex Cloud needs a trigger.";
   const triggers: CloudAutomationTrigger[] = [];
   for (const entry of spec.triggers) {
     const trigger = parseTrigger(entry);
     if (typeof trigger === "string") return trigger;
     triggers.push(trigger);
   }
-  if (triggers.filter((trigger) => trigger.kind === "schedule").length > 1) return "A rule on ADE Cloud takes one schedule.";
-  if (triggers.filter((trigger) => trigger.kind === "webhook").length > 1) return "A rule on ADE Cloud takes one webhook.";
-  if (!cloudSizeForTier(spec.sizeId)) return "That size isn't one ADE Cloud offers.";
+  if (triggers.filter((trigger) => trigger.kind === "schedule").length > 1) return "A rule on Daex Cloud takes one schedule.";
+  if (triggers.filter((trigger) => trigger.kind === "webhook").length > 1) return "A rule on Daex Cloud takes one webhook.";
+  if (!cloudSizeForTier(spec.sizeId)) return "That size isn't one Daex Cloud offers.";
   const chat = spec.chat && typeof spec.chat === "object" ? spec.chat as Record<string, unknown> : null;
   const provider = typeof chat?.provider === "string" && /^[a-z][a-z0-9_-]{0,39}$/.test(chat.provider) ? chat.provider : null;
   const modelId = typeof chat?.modelId === "string" && /^[A-Za-z0-9_.:/-]{1,200}$/.test(chat.modelId) ? chat.modelId : null;
   const permissions = typeof chat?.permissions === "string" && /^[a-z][a-z0-9_-]{0,39}$/.test(chat.permissions) ? chat.permissions : null;
   const effort = chat?.effort == null ? null : typeof chat.effort === "string" && /^[a-z][a-z0-9_-]{0,39}$/.test(chat.effort) ? chat.effort : undefined;
   const prompt = typeof chat?.prompt === "string" ? chat.prompt : null;
-  if (!provider || !modelId || !permissions || effort === undefined || !prompt?.trim()) return "A rule on ADE Cloud needs its model, permissions and prompt.";
+  if (!provider || !modelId || !permissions || effort === undefined || !prompt?.trim()) return "A rule on Daex Cloud needs its model, permissions and prompt.";
   // Room for the trigger's own text the server adds.
-  if (prompt.length > CLOUD_LAUNCH_MAX_PROMPT_CHARS - MAX_TRIGGER_BODY_CHARS - 2_000) return "This rule's prompt is too long for ADE Cloud.";
+  if (prompt.length > CLOUD_LAUNCH_MAX_PROMPT_CHARS - MAX_TRIGGER_BODY_CHARS - 2_000) return "This rule's prompt is too long for Daex Cloud.";
   const lane = spec.lane && typeof spec.lane === "object" ? spec.lane as Record<string, unknown> : null;
   const from = lane?.from == null ? null : typeof lane.from === "string" && /^[A-Za-z0-9._/@+-]{1,250}$/.test(lane.from) ? lane.from : undefined;
   if (from === undefined) return "That branch name can't be used.";
   const limits = spec.limits && typeof spec.limits === "object" ? spec.limits as Record<string, unknown> : null;
   const perHour = limits?.maxRunsPerHour == null ? null : Number(limits.maxRunsPerHour);
   if (perHour != null && (!Number.isInteger(perHour) || perHour < 1 || perHour > MAX_RUNS_PER_HOUR_CAP)) return `A rule runs at most ${MAX_RUNS_PER_HOUR_CAP} times an hour.`;
-  if (spec.timezone != null && !isTimeZone(spec.timezone)) return "That rule's time zone isn't one ADE knows.";
+  if (spec.timezone != null && !isTimeZone(spec.timezone)) return "That rule's time zone isn't one Daex knows.";
   // Only `trigger.*` and `run.*` (and the clock) are variables on a computer; other braces are the prompt's own text.
   const unknown = promptVariables(prompt).find((variable) => /^(?:trigger|run)\./.test(variable) && !CLOUD_AUTOMATION_PROMPT_VARIABLE.test(variable));
-  if (unknown) return `ADE Cloud can't fill {{${unknown}}} in this rule's prompt.`;
+  if (unknown) return `Daex Cloud can't fill {{${unknown}}} in this rule's prompt.`;
   return {
     ruleVersion,
     enabled: body.enabled,
@@ -545,10 +545,10 @@ async function handleRegister(request: Request, env: RelayEnv, userId: string, r
   }
   if (!existing) {
     const count = await env.DB.prepare("select count(*) as count from cloud_automations where user_id = ?").bind(userId).first<{ count: number }>();
-    if ((count?.count ?? 0) >= MAX_RULES_PER_ACCOUNT) return fail("automation_limit", `ADE Cloud runs at most ${MAX_RULES_PER_ACCOUNT} automations for one account.`, 403);
+    if ((count?.count ?? 0) >= MAX_RULES_PER_ACCOUNT) return fail("automation_limit", `Daex Cloud runs at most ${MAX_RULES_PER_ACCOUNT} automations for one account.`, 403);
   }
   const hook = spec.triggers.find((trigger): trigger is Extract<CloudAutomationTrigger, { kind: "webhook" }> => trigger.kind === "webhook") ?? null;
-  if (hook && !masterKey(env)) return fail("unavailable", "ADE Cloud can't take webhooks right now. Try again soon.", 503);
+  if (hook && !masterKey(env)) return fail("unavailable", "Daex Cloud can't take webhooks right now. Try again soon.", 503);
 
   const schedule = spec.triggers.find((trigger): trigger is Extract<CloudAutomationTrigger, { kind: "schedule" }> => trigger.kind === "schedule") ?? null;
   const startsAt = Math.max(0, Math.round(registration.startsAt ?? 0));
@@ -585,7 +585,7 @@ async function handleRegister(request: Request, env: RelayEnv, userId: string, r
     ).run();
   } catch (error) {
     // The one unique index besides the key: another of this account's rules holds this hook.
-    if (error instanceof Error && /unique/i.test(error.message)) return fail("hook_taken", "Another of your automations on ADE Cloud already uses that webhook.", 409);
+    if (error instanceof Error && /unique/i.test(error.message)) return fail("hook_taken", "Another of your automations on Daex Cloud already uses that webhook.", 409);
     throw error;
   }
   const saved = await readRule(env, userId, ruleId);
@@ -643,7 +643,7 @@ async function failRun(
   await env.DB.prepare(`update cloud_automation_runs set state = 'failed', reason = ?, started_at = ${startedAt}, ended_at = ?, updated_at = ? where run_id = ? and state in ${options.states ?? OPEN_STATES}`)
     .bind(reason, now, now, runId).run();
   logCloud("cloud.automation_run_failed", { userId, ruleId, runId });
-  if ("rule" in owner) await tell(env, owner.rule, `"${owner.rule.name}" didn't run on ADE Cloud`, reason, now, options.email === true);
+  if ("rule" in owner) await tell(env, owner.rule, `"${owner.rule.name}" didn't run on Daex Cloud`, reason, now, options.email === true);
 }
 
 /**
@@ -700,16 +700,16 @@ const TRIGGER_WORDS: Record<CloudAutomationTrigger["kind"], string> = { schedule
 async function startRunLaunch(env: RelayEnv, rule: RuleRow, run: RunRow, deps: AutomationDeps): Promise<void> {
   const { now } = deps;
   const spec = specOf(rule);
-  if (!spec) return failRun(env, { rule }, run.run_id, "ADE Cloud can't read this rule. Change it and save it on one of your computers.", now);
+  if (!spec) return failRun(env, { rule }, run.run_id, "Daex Cloud can't read this rule. Change it and save it on one of your computers.", now);
   const limits = limitsOf(rule);
   if (!limits) {
-    return failRun(env, { rule }, run.run_id, "ADE Cloud couldn't read your agent limits, so it didn't start an unattended run. It reads them again the next time ADE opens this project on one of your computers.", now, { email: true });
+    return failRun(env, { rule }, run.run_id, "Daex Cloud couldn't read your agent limits, so it didn't start an unattended run. It reads them again the next time Daex opens this project on one of your computers.", now, { email: true });
   }
   if (!limits.unattendedSpend) {
-    return failRun(env, { rule }, run.run_id, "Your agent limits say unattended agents ask before anything that uses credits, so ADE Cloud didn't start this run. Change it in Settings › ADE Cloud.", now, { email: true });
+    return failRun(env, { rule }, run.run_id, "Your agent limits say unattended agents ask before anything that uses credits, so Daex Cloud didn't start this run. Change it in Settings › Daex Cloud.", now, { email: true });
   }
   if (!withinShape(spec.sizeId, limits.maxShape)) {
-    return failRun(env, { rule }, run.run_id, `This rule's computer is bigger than your agent limits allow (${limits.maxShape.replace("x", " CPU, ")} GB). Pick a smaller size or raise the limit in Settings › ADE Cloud.`, now, { email: true });
+    return failRun(env, { rule }, run.run_id, `This rule's computer is bigger than your agent limits allow (${limits.maxShape.replace("x", " CPU, ")} GB). Pick a smaller size or raise the limit in Settings › Daex Cloud.`, now, { email: true });
   }
   if (rule.git_ok === 0 && rule.repo_visibility === "private") {
     return failRun(env, { rule }, run.run_id, connectGitHubSentence(spec.project.origin), now, { email: true });
@@ -728,7 +728,7 @@ async function startRunLaunch(env: RelayEnv, rule: RuleRow, run: RunRow, deps: A
       const latest = await readRun(env, run.run_id);
       // Another tick claimed it (or the run moved on): that one goes on with it.
       if (!latest || latest.state !== "starting" || latest.started_at != null) return;
-      return failRun(env, { rule }, run.run_id, `Your agent limits allow ${limits.machinesPerDay} new computer${limits.machinesPerDay === 1 ? "" : "s"} a day for unattended agents, and today's are used. Raise the limit in Settings › ADE Cloud.`, now, { email: true });
+      return failRun(env, { rule }, run.run_id, `Your agent limits allow ${limits.machinesPerDay} new computer${limits.machinesPerDay === 1 ? "" : "s"} a day for unattended agents, and today's are used. Raise the limit in Settings › Daex Cloud.`, now, { email: true });
     }
   }
   const waitOrGiveUp = async (why: string): Promise<void> => {
@@ -738,7 +738,7 @@ async function startRunLaunch(env: RelayEnv, rule: RuleRow, run: RunRow, deps: A
       logCloud("cloud.automation_run_start_waiting", { runId: run.run_id, why });
       return;
     }
-    await failRun(env, { rule }, run.run_id, "ADE Cloud couldn't make this run's computer for an hour, so it gave up on this run.", now, { unclaimDay: true });
+    await failRun(env, { rule }, run.run_id, "Daex Cloud couldn't make this run's computer for an hour, so it gave up on this run.", now, { unclaimDay: true });
   };
   if (!deps.provider) return waitOrGiveUp("no_provider");
   let trigger: TriggerFacts = { kind: run.trigger_kind, summary: run.trigger_summary, firedAt: run.created_at };
@@ -790,7 +790,7 @@ async function startRunLaunch(env: RelayEnv, rule: RuleRow, run: RunRow, deps: A
     return waitOrGiveUp("unavailable");
   }
   const refusal = await response.json().catch(() => null) as { error?: { message?: unknown } } | null;
-  const message = typeof refusal?.error?.message === "string" ? refusal.error.message : "ADE Cloud couldn't make this run's computer.";
+  const message = typeof refusal?.error?.message === "string" ? refusal.error.message : "Daex Cloud couldn't make this run's computer.";
   // Refused before anything was made: the day's computer it claimed is free again.
   await failRun(env, { rule }, run.run_id, message, now, { email: true, unclaimDay: true });
 }
@@ -833,7 +833,7 @@ async function triggerRun(env: RelayEnv, rule: RuleRow, trigger: TriggerFacts, d
       .bind(now, now, rule.user_id, rule.rule_id).run();
     if ((paused.meta?.changes ?? 0) === 1) {
       logCloud("cloud.automation_storm_paused", { userId: rule.user_id, ruleId: rule.rule_id });
-      await tell(env, rule, `"${rule.name}" is paused`, `It started ${rule.max_runs_per_hour} runs in an hour on ADE Cloud, so ADE paused it. Turn the rule off and on again to start it again.`, now, true);
+      await tell(env, rule, `"${rule.name}" is paused`, `It started ${rule.max_runs_per_hour} runs in an hour on Daex Cloud, so Daex paused it. Turn the rule off and on again to start it again.`, now, true);
     }
     return await recordSkipped(env, rule, trigger, `Paused: it started ${rule.max_runs_per_hour} runs in an hour.`, now);
   }
@@ -858,7 +858,7 @@ async function triggerRun(env: RelayEnv, rule: RuleRow, trigger: TriggerFacts, d
     .bind(...values("queued"), rule.user_id, rule.rule_id).run();
   if ((queued.meta?.changes ?? 0) === 1) return await written();
   return await recordSkipped(env, rule, trigger, notBefore
-    ? "Another delivery was already waiting for the rule to finish moving to ADE Cloud."
+    ? "Another delivery was already waiting for the rule to finish moving to Daex Cloud."
     : "Another run of this rule was already running, and one was waiting.", now);
 }
 
@@ -886,7 +886,7 @@ export async function noteAutomationLaunchProgress(env: RelayEnv, record: CloudL
     `).bind(failed ? "failed" : "done", reason, record.instanceId, now, run.run_id).run();
     if (failed) {
       const rule = await readRule(env, run.user_id, run.rule_id);
-      if (rule && reason) await tell(env, rule, `"${rule.name}" failed on ADE Cloud`, reason, now, false);
+      if (rule && reason) await tell(env, rule, `"${rule.name}" failed on Daex Cloud`, reason, now, false);
     }
     return;
   }
@@ -917,11 +917,11 @@ async function finishRun(env: RelayEnv, provider: CloudProvider, run: RunRow): P
   if (!computer) return end(null, null);
   if (rule?.keep_computer === 1) return end("kept", "This rule keeps its computer after a run.");
   // A blocked account's computer stays as it is.
-  if (await isCloudBlocked(env, run.user_id)) return end("kept", "Its computer stays: ADE Cloud is turned off for this account.");
+  if (await isCloudBlocked(env, run.user_id)) return end("kept", "Its computer stays: Daex Cloud is turned off for this account.");
   try {
     const saved = await saveBeforeDelete(env, provider, computer, "automation_run");
     if (!saved.ok) return end("kept", `Its computer stays: ${saved.reason}`);
-    if (saved.resting && !(await stillRestsWithBackups(env, computer.instance_id))) return end("kept", "Its computer stays: someone started it while ADE saved it.");
+    if (saved.resting && !(await stillRestsWithBackups(env, computer.instance_id))) return end("kept", "Its computer stays: someone started it while Daex saved it.");
     const lane = mergeLaneFacts(laneFactsOfRow(computer), laneFactsOf(saved.metadata));
     const laneKept = namesLane(lane);
     if (laneKept) await markKeepLaneStatement(env, computer, lane, "freed").run();
@@ -935,7 +935,7 @@ async function finishRun(env: RelayEnv, provider: CloudProvider, run: RunRow): P
     return end("freed", null);
   } catch (error) {
     reportCloudFailure("cloud.automation_run_free_failed", { runId: run.run_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
-    return end("kept", "Its computer stays: ADE Cloud couldn't reach it to save its work.");
+    return end("kept", "Its computer stays: Daex Cloud couldn't reach it to save its work.");
   }
 }
 
@@ -1003,7 +1003,7 @@ async function fireSchedule(env: RelayEnv, row: CronRow, deps: AutomationDeps): 
   if (due < rule.starts_at) return;
   if (now - due >= CATCH_UP_MS) {
     // Missed (the server was down, or the rule was waiting): recorded, not run late.
-    await recordSkipped(env, rule, { kind: "schedule", summary: `Due ${new Date(due).toISOString()}`, firedAt: due }, "Missed: ADE Cloud didn't reach it within an hour of its time.", now);
+    await recordSkipped(env, rule, { kind: "schedule", summary: `Due ${new Date(due).toISOString()}`, firedAt: due }, "Missed: Daex Cloud didn't reach it within an hour of its time.", now);
     return;
   }
   await triggerRun(env, rule, { kind: "schedule", summary: `Due ${new Date(due).toISOString()}`, firedAt: due }, deps);
@@ -1016,7 +1016,7 @@ async function moveRunOn(env: RelayEnv, row: CronRow, deps: AutomationDeps): Pro
   const rule = await readRule(env, run.user_id, run.rule_id);
   // A blocked account's waiting or starting run never makes a computer. No email: the account is blocked.
   if ((run.state === "queued" || run.state === "starting") && await isCloudBlocked(env, run.user_id)) {
-    return failRun(env, { run }, run.run_id, "ADE Cloud is turned off for this account.", now, { unclaimDay: true });
+    return failRun(env, { run }, run.run_id, "Daex Cloud is turned off for this account.", now, { unclaimDay: true });
   }
   if (run.state === "queued") {
     if (!rule) {
@@ -1086,9 +1086,9 @@ export async function handleAutomationDelivery(request: Request, env: RelayEnv, 
   // The owner's one row (the path names the owner), for this hook. The signature,
   // whose key is derived with the owner's id, proves the delivery is for it.
   const row = await env.DB.prepare("select * from cloud_automations where user_id = ? and rule_id = ?").bind(userId, ruleId).first<RuleRow>();
-  if (!row || row.hook_id !== hookId) return fail("gone", "This webhook doesn't run on ADE Cloud any more.", 410);
+  if (!row || row.hook_id !== hookId) return fail("gone", "This webhook doesn't run on Daex Cloud any more.", 410);
   const key = await hookKey(env, row);
-  if (!key) return fail("unavailable", "ADE Cloud can't check deliveries right now.", 503);
+  if (!key) return fail("unavailable", "Daex Cloud can't check deliveries right now.", 503);
   const rule: RuleRow | null = sameText(await hmacHex(key, `${timestamp}.${text}`), signature) ? row : null;
   if (!rule) {
     logCloud("cloud.automation_delivery_refused", { ruleId });
@@ -1096,7 +1096,7 @@ export async function handleAutomationDelivery(request: Request, env: RelayEnv, 
   }
   const { now } = deps;
   if (Math.abs(now - timestamp) > HOOK_MAX_SKEW_MS) return fail("stale_signature", "This delivery's signature is too old. Send it again.", 401);
-  if (await isCloudBlocked(env, rule.user_id)) return fail("gone", "This webhook doesn't run on ADE Cloud any more.", 410);
+  if (await isCloudBlocked(env, rule.user_id)) return fail("gone", "This webhook doesn't run on Daex Cloud any more.", 410);
   let delivery: Record<string, unknown>;
   try {
     const parsed = JSON.parse(text) as unknown;

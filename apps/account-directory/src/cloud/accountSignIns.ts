@@ -54,7 +54,7 @@ const WRITER = "ade-directory-web";
 const VAULT_PAGES = 25;
 const RELAY_TIMEOUT_MS = 8_000;
 
-const unavailable = () => fail("unavailable", "ADE can't reach your account's sign-ins right now. Try again soon.", 503);
+const unavailable = () => fail("unavailable", "Daex can't reach your account's sign-ins right now. Try again soon.", 503);
 
 type VaultItem = { kind?: unknown; key?: unknown; value?: unknown; deleted?: unknown };
 
@@ -253,14 +253,14 @@ function signInIdOf(raw: string | undefined): CloudAccountSignInId | null {
 /** `/cloud/sign-ins[/:id]`. */
 export async function routeAccountSignIns(request: Request, path: string, env: RelayEnv, now: number): Promise<Response> {
   const authorization = request.headers.get("authorization");
-  if (!authorization) return fail("unauthorized", "Sign in to ADE to use ADE Cloud.", 401);
+  if (!authorization) return fail("unauthorized", "Sign in to Daex to use Daex Cloud.", 401);
   if (!relayFetch(env)) return unavailable();
   const rest = path.split("/").slice(3);
   if (rest.length === 0) {
-    return request.method === "GET" ? json(await statusOf(env, authorization)) : fail("not_found", "ADE Cloud has no such sign-in.", 404);
+    return request.method === "GET" ? json(await statusOf(env, authorization)) : fail("not_found", "Daex Cloud has no such sign-in.", 404);
   }
   const id = rest.length === 1 ? signInIdOf(rest[0]) : null;
-  if (!id) return fail("not_found", "ADE Cloud has no such sign-in.", 404);
+  if (!id) return fail("not_found", "Daex Cloud has no such sign-in.", 404);
 
   if (request.method === "PUT") {
     const body = await readJson(request);
@@ -311,5 +311,5 @@ export async function routeAccountSignIns(request: Request, path: string, env: R
     logCloud("cloud.sign_in_removed", { id });
     return json(await statusOf(env, authorization));
   }
-  return fail("not_found", "ADE Cloud has no such sign-in.", 404);
+  return fail("not_found", "Daex Cloud has no such sign-in.", 404);
 }

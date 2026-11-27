@@ -40,34 +40,34 @@ const BUSY_CHANGING_STATE = "The computer is busy changing state. Try again in a
  * the provider's text (`cloudRefusalMessage`).
  */
 const OWN_SENTENCES: Readonly<Record<string, string>> = {
-  invalid_api_key: "ADE Cloud refused this request. Try again in a moment.",
-  ip_not_allowed: "ADE Cloud refused this request. Try again in a moment.",
-  instance_limit_reached: "ADE Cloud is at capacity right now. Try again in a few minutes.",
-  insufficient_balance: "ADE Cloud can't start this computer right now. Try again in a few minutes.",
-  instance_suspended: "ADE Cloud can't start this computer right now. Try again in a few minutes.",
-  tier_limit: "ADE Cloud can't start this computer right now. Try again in a few minutes.",
-  no_capacity: "ADE Cloud has no room for this size right now. Try again in a few minutes or pick another size.",
-  capacity_unavailable: "ADE Cloud has no room for this size right now. Try again in a few minutes or pick another size.",
-  not_found: "ADE Cloud has no such computer.",
-  rate_limited: "ADE Cloud is limiting requests right now. Try again in a minute.",
+  invalid_api_key: "Daex Cloud refused this request. Try again in a moment.",
+  ip_not_allowed: "Daex Cloud refused this request. Try again in a moment.",
+  instance_limit_reached: "Daex Cloud is at capacity right now. Try again in a few minutes.",
+  insufficient_balance: "Daex Cloud can't start this computer right now. Try again in a few minutes.",
+  instance_suspended: "Daex Cloud can't start this computer right now. Try again in a few minutes.",
+  tier_limit: "Daex Cloud can't start this computer right now. Try again in a few minutes.",
+  no_capacity: "Daex Cloud has no room for this size right now. Try again in a few minutes or pick another size.",
+  capacity_unavailable: "Daex Cloud has no room for this size right now. Try again in a few minutes or pick another size.",
+  not_found: "Daex Cloud has no such computer.",
+  rate_limited: "Daex Cloud is limiting requests right now. Try again in a minute.",
   [TRY_AGAIN_CODE]: BUSY_CHANGING_STATE,
   wake_failed: BUSY_CHANGING_STATE,
   wake_timeout: BUSY_CHANGING_STATE,
   container_unreachable: BUSY_CHANGING_STATE,
   upstream_unreachable: BUSY_CHANGING_STATE,
   host_mesh_not_ready: BUSY_CHANGING_STATE,
-  provisioning_failed: "ADE Cloud could not start the computer.",
-  timeout: "ADE Cloud did not answer in time. Try again.",
-  network: "Could not reach ADE Cloud. Try again.",
+  provisioning_failed: "Daex Cloud could not start the computer.",
+  timeout: "Daex Cloud did not answer in time. Try again.",
+  network: "Could not reach Daex Cloud. Try again.",
 };
 
 /** The sentence a person reads for a provider error code. */
 export function cloudErrorMessage(code: string, status: number): string {
   if (Object.hasOwn(OWN_SENTENCES, code)) return OWN_SENTENCES[code]!;
   // The provider's catch-all: its own text says which cause (`cloudRefusalMessage`); this is the fallback.
-  if (code === "invalid_request") return "ADE Cloud couldn't do that with this computer right now.";
-  if (status >= 500) return "ADE Cloud is having trouble right now. Try again in a moment.";
-  return `ADE Cloud answered with an error (${status}).`;
+  if (code === "invalid_request") return "Daex Cloud couldn't do that with this computer right now.";
+  if (status >= 500) return "Daex Cloud is having trouble right now. Try again in a moment.";
+  return `Daex Cloud answered with an error (${status}).`;
 }
 
 /**
@@ -94,7 +94,7 @@ function providerErrorDetail(body: unknown): string | null {
     // Host and node names: dotted names (`node-3.internal`, `ip-10-0-0-1.ec2.internal`) and node-style ids.
     .replace(/\b[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*\.(?:internal|local|lan|cluster|svc|compute|ec2|corp|intra|net|io|com|cloud|app)\b(?::\d+)?/gi, "…")
     .replace(/\b(?:node|host|worker|ip)-[a-z0-9-]*\d[a-z0-9-]*\b/gi, "…")
-    .replace(/\bagent\s?37\b/gi, "ADE Cloud")
+    .replace(/\bagent\s?37\b/gi, "Daex Cloud")
     .replace(/\s+/g, " ")
     .trim();
   if (!/[A-Za-z]{3}/.test(cleaned)) return null;
@@ -113,7 +113,7 @@ export function cloudRefusalMessage(code: string, status: number, body: unknown)
   const refusal = status >= 400 && status < 500 && status !== 401 && status !== 403;
   if (Object.hasOwn(OWN_SENTENCES, code) || !refusal) return cloudErrorMessage(code, status);
   const detail = providerErrorDetail(body);
-  return detail ? `ADE Cloud couldn't do that. ${detail}` : cloudErrorMessage(code, status);
+  return detail ? `Daex Cloud couldn't do that. ${detail}` : cloudErrorMessage(code, status);
 }
 
 /** Both envelopes: `{error: {code}}` on the API and `{error: "code"}` on transport errors. */
@@ -314,7 +314,7 @@ export function createCloudProvider(apiKey: string, fetcher: typeof fetch = fetc
 
     async getInstance(id: string): Promise<CloudInstance> {
       const instance = toInstance(await api("GET", instancePath(id)));
-      if (!instance) throw new CloudProviderError("ADE Cloud answered with a computer ADE could not read.", "bad_response", 200);
+      if (!instance) throw new CloudProviderError("Daex Cloud answered with a computer Daex could not read.", "bad_response", 200);
       return instance;
     },
 
@@ -330,7 +330,7 @@ export function createCloudProvider(apiKey: string, fetcher: typeof fetch = fetc
         ...(input.metadata ? { metadata: input.metadata } : {}),
         ...(input.publicPorts?.length ? { public_ports: input.publicPorts } : {}),
       }, CREATE_TIMEOUT_MS));
-      if (!instance) throw new CloudProviderError("ADE Cloud answered with a computer ADE could not read.", "bad_response", 201);
+      if (!instance) throw new CloudProviderError("Daex Cloud answered with a computer Daex could not read.", "bad_response", 201);
       return instance;
     },
 
@@ -374,7 +374,7 @@ export function createCloudProvider(apiKey: string, fetcher: typeof fetch = fetc
     async addPublicPort(id: string, input: { port: number; label: string }): Promise<{ port: number; url: string }> {
       const body = await api("POST", instancePath(id, "public-ports"), input) as Record<string, unknown> | null;
       const url = str(body?.url);
-      if (!url || !/^https:\/\//.test(url)) throw new CloudProviderError("ADE Cloud answered with a public port ADE could not read.", "bad_response", 201);
+      if (!url || !/^https:\/\//.test(url)) throw new CloudProviderError("Daex Cloud answered with a public port Daex could not read.", "bad_response", 201);
       return { port: num(body?.port) ?? input.port, url };
     },
 
@@ -388,7 +388,7 @@ export function createCloudProvider(apiKey: string, fetcher: typeof fetch = fetc
         ...(input.metadata ? { metadata: input.metadata } : {}),
         auto_sleep: false,
       }, CREATE_TIMEOUT_MS));
-      if (!instance) throw new CloudProviderError("ADE Cloud answered with a computer ADE could not read.", "bad_response", 201);
+      if (!instance) throw new CloudProviderError("Daex Cloud answered with a computer Daex could not read.", "bad_response", 201);
       return instance;
     },
 
@@ -396,7 +396,7 @@ export function createCloudProvider(apiKey: string, fetcher: typeof fetch = fetc
     async signedUrl(id: string, input: { port: number; ttlSeconds: number }): Promise<{ url: string; expiresAt: number | null }> {
       const body = await api("POST", instancePath(id, "signed-url"), { port: input.port, ttl_seconds: input.ttlSeconds }) as Record<string, unknown> | null;
       const url = str(body?.url);
-      if (!url || !/^https:\/\//.test(url)) throw new CloudProviderError("ADE Cloud answered with a link ADE could not read.", "bad_response", 200);
+      if (!url || !/^https:\/\//.test(url)) throw new CloudProviderError("Daex Cloud answered with a link Daex could not read.", "bad_response", 200);
       return { url, expiresAt: num(body?.expires_at) };
     },
 

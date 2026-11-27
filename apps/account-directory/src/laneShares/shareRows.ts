@@ -88,7 +88,7 @@ export type ShareRow = {
 const NOT_FOUND_MESSAGE = "That lane share was not found. If it was sent to you, sign in with the email address it went to.";
 export const notFound = () => fail("not_found", NOT_FOUND_MESSAGE, 404);
 export const badRequest = (message: string) => fail("bad_request", message, 400);
-export const clerkUnavailable = () => fail("unavailable", "ADE can't check your email address right now. Try again soon.", 503);
+export const clerkUnavailable = () => fail("unavailable", "Daex can't check your email address right now. Try again soon.", 503);
 export const shareClosed = () => fail("share_closed", "This lane share has ended.", 410);
 export const clerkBudgetSpent = () => fail("rate_limited", "Too many lane share requests from this account. Try again later.", 429);
 

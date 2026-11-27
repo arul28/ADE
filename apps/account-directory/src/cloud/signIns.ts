@@ -28,7 +28,7 @@ const JOB_ID = /^[A-Za-z0-9_-]{8,80}$/;
 const SIGN_IN_EXEC_TIMEOUT_MS = 60_000;
 const MAX_CODE_CHARS = 2_000;
 
-const unreadable = () => fail("sign_in_unreadable", "ADE on the computer didn't answer the sign-in. Try again in a moment.", 502);
+const unreadable = () => fail("sign_in_unreadable", "Daex on the computer didn't answer the sign-in. Try again in a moment.", 502);
 
 /** Single-quoted for the computer's shell; only ever used on values this file already checked. */
 const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
@@ -84,11 +84,11 @@ export async function routeSignIns(request: Request, computer: ComputerRow, rest
   };
 
   if (rest.length === 0) {
-    if (request.method !== "POST") return fail("not_found", "ADE Cloud has no such sign-in.", 404);
+    if (request.method !== "POST") return fail("not_found", "Daex Cloud has no such sign-in.", 404);
     const body = await readJson(request);
     if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
     const row = cloudRemoteSignInOf(body.provider);
-    if (!row) return badRequest("ADE doesn't know that provider.");
+    if (!row) return badRequest("Daex doesn't know that provider.");
     // Refused before anything wakes: an API key the account keeps, or a sign-in only ADE desktop runs.
     if (!cloudRemoteSignInRuns(row)) return fail("sign_in_elsewhere", cloudRemoteSignInRefusal(row), 409);
     const ran = await exec(`ade providers sign-in ${row.provider} --remote --json`);
@@ -109,14 +109,14 @@ export async function routeSignIns(request: Request, computer: ComputerRow, rest
   }
 
   const jobId = rest[0]!;
-  if (!JOB_ID.test(jobId) || rest.length > 2) return fail("not_found", "ADE Cloud has no such sign-in.", 404);
+  if (!JOB_ID.test(jobId) || rest.length > 2) return fail("not_found", "Daex Cloud has no such sign-in.", 404);
   if (rest.length === 1) {
-    if (request.method !== "GET") return fail("not_found", "ADE Cloud has no such sign-in.", 404);
+    if (request.method !== "GET") return fail("not_found", "Daex Cloud has no such sign-in.", 404);
     const ran = await exec(`ade providers sign-in-status ${shellQuote(jobId)} --json`);
     if (ran instanceof Response) return ran;
     return statusAnswer(ran.stdout, jobId);
   }
-  if (rest[1] !== "code" || request.method !== "POST") return fail("not_found", "ADE Cloud has no such sign-in.", 404);
+  if (rest[1] !== "code" || request.method !== "POST") return fail("not_found", "Daex Cloud has no such sign-in.", 404);
   const body = await readJson(request);
   const code = typeof body?.code === "string" ? body.code.trim() : "";
   if (!code || code.length > MAX_CODE_CHARS || /[\r\n\u0000]/.test(code)) return badRequest("That code can't be used.");

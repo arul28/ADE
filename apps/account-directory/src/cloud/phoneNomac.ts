@@ -96,11 +96,11 @@ function providerFailure(event: string, answer: NomacAnswer, userId: string): Re
   if (code === "insufficient_credit" || code === "credit") {
     reportCloudFailure("cloud.phone_nomac_credit", { status: answer.status });
     // A 5xx may still hide a phone it made (502); a 4xx refusal made none.
-    return fail("phone_unavailable", "The ADE Cloud iPhone can't start right now. ADE has been told.", answer.status >= 500 ? 502 : 503);
+    return fail("phone_unavailable", "The Daex Cloud iPhone can't start right now. Daex has been told.", answer.status >= 500 ? 502 : 503);
   }
   return fail("phone_unavailable", answer.status >= 500 || answer.status === 503
-    ? "The ADE Cloud iPhone isn't answering right now. Try again in a moment."
-    : `The ADE Cloud iPhone refused that: ${withoutPhoneProviderNames(message)}`, answer.status >= 500 ? 502 : 400);
+    ? "The Daex Cloud iPhone isn't answering right now. Try again in a moment."
+    : `The Daex Cloud iPhone refused that: ${withoutPhoneProviderNames(message)}`, answer.status >= 500 ? 502 : 400);
 }
 
 export function sessionOf(value: unknown): PhoneSession | null {

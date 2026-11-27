@@ -72,6 +72,6 @@ export function cloudModelCatalog(): CloudModelCatalog {
 
 /** `GET /cloud/models`. */
 export function handleCloudModels(request: Request): Response {
-  if (request.method !== "GET") return fail("not_found", "ADE Cloud has no such route.", 404);
+  if (request.method !== "GET") return fail("not_found", "Daex Cloud has no such route.", 404);
   return json(cloudModelCatalog());
 }

@@ -225,7 +225,7 @@ describe("device-login pairing grants", () => {
     // This string is what the desktop's reconnect banner and `ade` both surface,
     // so it has to name the action rather than describe the failure.
     expect(await refusal.json()).toEqual({
-      error: "Sign in again on this computer to reconnect it to your ADE account",
+      error: "Sign in again on this computer to reconnect it to your Daex account",
       code: "pairing_authentication_required",
       revokedAt: expect.any(Number),
     });

@@ -21,7 +21,7 @@ export const FILE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 export const r2KeyOf = (userId: string, launchId: string, fileId: string) => `launches/${userId}/${launchId}/${fileId}`;
 export const r2PrefixOf = (userId: string, launchId: string) => `launches/${userId}/${launchId}/`;
 
-const notFound = () => fail("not_found", "ADE Cloud has no such launch.", 404);
+const notFound = () => fail("not_found", "Daex Cloud has no such launch.", 404);
 const fileTooBig = () => fail("file_too_big", "Each file can be at most 25 MB.", 413);
 
 /** Room under the account's draft bytes for `?` more: binds `userId, now, bytes`. */
@@ -61,7 +61,7 @@ export async function insertDraft(env: CloudEnv, userId: string, launchId: strin
 export async function handlePutFile(request: Request, env: CloudEnv, userId: string, launchId: string, fileId: string, now: number): Promise<Response> {
   if (!UUID_PATTERN.test(launchId) || !FILE_ID.test(fileId)) return notFound();
   const bucket = env.CLOUD_CHATS;
-  if (!bucket) return fail("unavailable", "ADE Cloud can't keep files right now. Start without them.", 503);
+  if (!bucket) return fail("unavailable", "Daex Cloud can't keep files right now. Start without them.", 503);
   const declared = Number(request.headers.get("content-length") ?? NaN);
   if (Number.isFinite(declared) && declared > CLOUD_LAUNCH_MAX_FILE_BYTES) return fileTooBig();
   const reserve = Number.isFinite(declared) ? declared : CLOUD_LAUNCH_MAX_FILE_BYTES;

@@ -61,7 +61,7 @@ export async function handleAccountSelfDeleteRequest(
   if (request.method !== "POST") return withCors(fail("bad_request", "That method isn't allowed here.", 405));
 
   const caller = await authenticate(request, env);
-  if (!caller.ok) return withCors(fail("unauthorized", "Sign in to ADE to delete your account.", 401));
+  if (!caller.ok) return withCors(fail("unauthorized", "Sign in to Daex to delete your account.", 401));
 
   let confirm: unknown = null;
   try {
@@ -76,7 +76,7 @@ export async function handleAccountSelfDeleteRequest(
   }
 
   const secretKey = env.CLERK_SECRET_KEY?.trim();
-  if (!secretKey) return withCors(fail("unavailable", "ADE can't delete accounts right now. Try again soon.", 503));
+  if (!secretKey) return withCors(fail("unavailable", "Daex can't delete accounts right now. Try again soon.", 503));
 
   let status = 0;
   try {
@@ -91,7 +91,7 @@ export async function handleAccountSelfDeleteRequest(
   }
   if (status !== 200 && status !== 404) {
     console.warn("account.self_delete_failed", JSON.stringify({ status }));
-    return withCors(fail("unavailable", "ADE couldn't delete your account. Try again in a minute.", 502));
+    return withCors(fail("unavailable", "Daex couldn't delete your account. Try again in a minute.", 502));
   }
   console.info("account.self_deleted", JSON.stringify({ alreadyGone: status === 404 }));
   return withCors(json({ deleted: true } satisfies AccountDeleteResponse));

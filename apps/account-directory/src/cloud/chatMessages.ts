@@ -61,7 +61,7 @@ const CLAIM_ID = /^[A-Za-z0-9_-]{16,80}$/;
 const OPEN_STATES = "('queued', 'sending', 'waiting_for_sign_in')";
 
 const notFound = () => fail("not_found", "That saved chat doesn't exist.", 404);
-const messageNotFound = () => fail("not_found", "ADE Cloud has no such message.", 404);
+const messageNotFound = () => fail("not_found", "Daex Cloud has no such message.", 404);
 const unavailable = () => fail("unavailable", "Saved chats aren't available right now. Try again soon.", 503);
 
 export type ChatMessageRow = {
@@ -467,7 +467,7 @@ function parseChatAttachments(value: unknown): CloudChatMessageAttachment[] | st
 async function attachmentsUploaded(env: CloudEnv, userId: string, attachments: CloudChatMessageAttachment[]): Promise<string | null> {
   if (!attachments.length) return null;
   const bucket = env.CLOUD_CHATS;
-  if (!bucket) return "ADE Cloud can't keep files right now. Send without them.";
+  if (!bucket) return "Daex Cloud can't keep files right now. Send without them.";
   for (const file of attachments) {
     const head = await bucket.head(`launches/${userId}/${file.launchId}/${file.fileId}`);
     if (!head || head.size !== file.sizeBytes) return `Upload "${file.name}" first, then send the message.`;
@@ -497,7 +497,7 @@ async function keepDraftFiles(env: CloudEnv, userId: string, attachments: CloudC
 async function copyFilesToLaunch(env: CloudEnv, userId: string, attachments: CloudChatMessageAttachment[], launchId: string, now: number): Promise<Response | null> {
   if (!attachments.length) return null;
   const bucket = env.CLOUD_CHATS;
-  if (!bucket) return badRequest("ADE Cloud can't keep files right now. Send without them.");
+  if (!bucket) return badRequest("Daex Cloud can't keep files right now. Send without them.");
   // The copies count against the account's drafts like an upload: a refused start leaves them until the draft expires.
   if (!await insertDraft(env, userId, launchId, attachments.reduce((total, file) => total + file.sizeBytes, 0), now)) return draftsFull(userId);
   for (const file of attachments) {
@@ -628,7 +628,7 @@ async function handleSend(request: Request, env: CloudEnv, userId: string, machi
   const settings = cloudChatMessageSettingsOf(body.settings);
   // The size of a new computer, when this message makes one: a size ADE Cloud offers, or left out.
   const sizeId = body.sizeId == null ? null : cloudSizeForTier(body.sizeId) ? body.sizeId as CloudTierId : undefined;
-  if (sizeId === undefined) return badRequest("That size isn't one ADE Cloud offers.");
+  if (sizeId === undefined) return badRequest("That size isn't one Daex Cloud offers.");
 
   const chat = await resolveTarget(env, userId, machineKey, chatId);
   if (!chat) return notFound();
@@ -652,7 +652,7 @@ async function handleSend(request: Request, env: CloudEnv, userId: string, machi
   const missingFile = await attachmentsUploaded(env, userId, attachments);
   if (missingFile) return badRequest(missingFile);
   await keepDraftFiles(env, userId, attachments, now);
-  if (!deps.wake) return fail("unavailable", "ADE Cloud can't wake computers right now. Try again soon.", 503);
+  if (!deps.wake) return fail("unavailable", "Daex Cloud can't wake computers right now. Try again soon.", 503);
 
   // `origin: "mcp"`: an outside agent (ADE MCP) sending; on the free plan it can't wake or start a computer.
   const input: SendInput = { messageId, text, attachments, provider, modelId, settings, sizeId, outsideAgent: body.origin === "mcp" };
@@ -721,7 +721,7 @@ async function sendThroughLaunch(env: CloudEnv, keys: UserKeys, userId: string, 
   const { now } = deps;
   const gone = (why: string) => fail("computer_deleted", why, 409);
   if (!chat.lane_id || !UUID_PATTERN.test(chat.lane_id)) {
-    return gone("This chat's computer is gone and ADE doesn't know its lane, so it can't continue it. Start a new chat in the lane.");
+    return gone("This chat's computer is gone and Daex doesn't know its lane, so it can't continue it. Start a new chat in the lane.");
   }
   const running = await activeContinueLaunch(env, userId, chat.lane_id, chat.chat_id);
   if (running) return await addToLaunch(env, keys, userId, chat, input, running, now);
@@ -734,8 +734,8 @@ async function sendThroughLaunch(env: CloudEnv, keys: UserKeys, userId: string, 
   const origin = githubOriginOf(lane.projectOrigin ?? chat.project_key);
   if (!provider || modelId == null || !origin) {
     return gone(chat.kind === "cli"
-      ? "This CLI's computer is gone and ADE can't tell which CLI or repository it used. Start a new CLI in the lane."
-      : "This chat's computer is gone and ADE can't tell which agent or repository it used. Start a new chat in the lane.");
+      ? "This CLI's computer is gone and Daex can't tell which CLI or repository it used. Start a new CLI in the lane."
+      : "This chat's computer is gone and Daex can't tell which agent or repository it used. Start a new chat in the lane.");
   }
   const parsed: ParsedLaunchRequest = {
     launchId: crypto.randomUUID(),
@@ -887,7 +887,7 @@ export async function routeComputerMessages(request: Request, env: CloudEnv, com
   const signIn = state === "waiting_for_sign_in" ? parseSignIn(body?.signIn) : null;
   if (state === "waiting_for_sign_in" && !signIn) return badRequest("A sign-in wait needs the sign-in.");
   const sessionId = typeof body?.sessionId === "string" && ROW_ID.test(body.sessionId) ? body.sessionId : null;
-  const error = state === "failed" ? clippedText(body?.error, 300) ?? "ADE couldn't send this message to the chat." : null;
+  const error = state === "failed" ? clippedText(body?.error, 300) ?? "Daex couldn't send this message to the chat." : null;
   // Only the claim that took it; a final state is final (the same report again answers the same).
   const written = await env.DB.prepare(`
     update cloud_chat_messages set state = ?, session_id = coalesce(?, session_id), error = ?, sign_in_json = ?, updated_at = ?

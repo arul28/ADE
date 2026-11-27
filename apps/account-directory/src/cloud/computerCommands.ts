@@ -561,11 +561,11 @@ export function pushWorkGithubMessage(problem: "refused" | "unreachable", outcom
   if (problem === "refused") {
     return outcome === "kept"
       ? "GitHub refused this computer access to the lane's repository, so nothing was deleted. The repository may have moved, or your GitHub connection (Settings › GitHub) can't reach it. Fix that, then try again."
-      : "GitHub refused this computer access to the lane's repository, so ADE can't tell what isn't on GitHub.";
+      : "GitHub refused this computer access to the lane's repository, so Daex can't tell what isn't on GitHub.";
   }
   return outcome === "kept"
     ? "This computer couldn't reach GitHub to check the lane's work, so nothing was deleted. Try again in a minute."
-    : "This computer couldn't reach GitHub, so ADE can't tell what isn't on GitHub.";
+    : "This computer couldn't reach GitHub, so Daex can't tell what isn't on GitHub.";
 }
 
 /**

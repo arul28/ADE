@@ -122,7 +122,7 @@ async function computerOf(env: CloudEnv, job: JobRow): Promise<ComputerRow | nul
   return job.source_instance_id ? await ownedComputer(env, job.user_id, job.source_instance_id) : null;
 }
 
-const GONE: StepResult = { kind: "fail", error: "ADE Cloud has no such computer." };
+const GONE: StepResult = { kind: "fail", error: "Daex Cloud has no such computer." };
 
 async function tryExec(ctx: JobContext, instanceId: string, command: string, timeoutMs: number): Promise<{ exitCode: number; stdout: string; stderr?: string } | null> {
   try {
@@ -141,14 +141,14 @@ async function awake(env: CloudEnv, job: JobRow, ctx: JobContext, computer: Comp
     if (statements.length) await env.DB.batch(statements);
   }
   if (instance.status === "running") return null;
-  if (instance.status === "failed") return { kind: "fail", error: "The computer didn't wake up, so ADE couldn't push its work. Nothing was deleted." };
+  if (instance.status === "failed") return { kind: "fail", error: "The computer didn't wake up, so Daex couldn't push its work. Nothing was deleted." };
   const facts = factsOf(job);
   const asked = facts.wakeAskedAt ?? null;
-  if (asked != null && ctx.now - asked > WAKE_WAIT_MAX_MS) return { kind: "fail", error: "The computer didn't wake up in time, so ADE couldn't push its work. Nothing was deleted." };
+  if (asked != null && ctx.now - asked > WAKE_WAIT_MAX_MS) return { kind: "fail", error: "The computer didn't wake up in time, so Daex couldn't push its work. Nothing was deleted." };
   const waking = instance.status === "starting" || instance.status === "waking" || instance.status === "creating";
   if (!waking && asked == null) {
     // A delete holds it (a move from its saved copy, the idle cleanup): a wake now would put work after the save.
-    if (!await takeFromDeletes(env, computer.instance_id, ctx.now)) return { kind: "fail", error: "ADE Cloud is deleting this computer already, so ADE couldn't push its work." };
+    if (!await takeFromDeletes(env, computer.instance_id, ctx.now)) return { kind: "fail", error: "Daex Cloud is deleting this computer already, so Daex couldn't push its work." };
     // Noted first: a tick that dies after the ask doesn't ask twice.
     await ctx.save({ facts_json: withFacts(job, { wakeAskedAt: ctx.now }) });
     const status = await ctx.provider.startInstance(computer.instance_id);
@@ -179,7 +179,7 @@ async function check(env: CloudEnv, job: JobRow, ctx: JobContext): Promise<StepR
   }
   if (work === "setup") return { kind: "fail", error: "This lane is still being set up. Finish signing in, or cancel the setup, then free the computer.", refused: true };
   if (work === "busy") return { kind: "fail", error: "The agent is still working. Stop it or wait, then free the computer.", refused: true };
-  if (work === "unknown") return { kind: "fail", error: "ADE couldn't tell whether the agent is still working, so the computer stays. Try again in a moment." };
+  if (work === "unknown") return { kind: "fail", error: "Daex couldn't tell whether the agent is still working, so the computer stays. Try again in a moment." };
   return { kind: "next", step: "push", patch: { state: "pushing", message: `Pushing ${nameOf(job)}'s work to GitHub…` } };
 }
 
@@ -195,7 +195,7 @@ async function push(env: CloudEnv, job: JobRow, ctx: JobContext): Promise<StepRe
     let code = "push_tally_unreadable";
     if (!ran) code = "push_exec_failed";
     else if (ran.exitCode !== 0) code = `push_exit_${ran.exitCode}`;
-    return { kind: "fail", error: "ADE couldn't push this lane's work, so the computer stays. Try again.", code };
+    return { kind: "fail", error: "Daex couldn't push this lane's work, so the computer stays. Try again.", code };
   }
   logCloud("cloud.free_pushed", { jobId: job.job_id, pushed: tally.pushed, failed: tally.failed, skipped: tally.skipped });
   const left = (tally.lanes ?? []).filter((lane) => lane.state === "unpushed" || lane.state === "failed");
@@ -210,18 +210,18 @@ async function push(env: CloudEnv, job: JobRow, ctx: JobContext): Promise<StepRe
     // good (a lane folder that's no longer a Git worktree): name the lanes and
     // say what to do in both cases.
     // An older ADE names no lanes: say so plainly, as work that didn't push.
-    if (left.length === 0) return { kind: "fail", error: "ADE couldn't push all work on this computer, so it stays. Open the lane to see why, then try again." };
+    if (left.length === 0) return { kind: "fail", error: "Daex couldn't push all work on this computer, so it stays. Open the lane to see why, then try again." };
     if (unpushed.length === 0) {
-      return { kind: "fail", error: `ADE couldn't read the work in${laneNamesOf(left)}, so nothing was deleted. Try again in a minute; if it fails again, open that lane to see why.` };
+      return { kind: "fail", error: `Daex couldn't read the work in${laneNamesOf(left)}, so nothing was deleted. Try again in a minute; if it fails again, open that lane to see why.` };
     }
-    return { kind: "fail", error: `ADE couldn't push the work in${laneNamesOf(unpushed)} to GitHub, so the computer stays. Open it, push or discard that work, then try again.` };
+    return { kind: "fail", error: `Daex couldn't push the work in${laneNamesOf(unpushed)} to GitHub, so the computer stays. Open it, push or discard that work, then try again.` };
   }
   const facts = factsOf(job);
   const own = tally.lanes?.find((lane) => lane.laneId === facts.laneId) ?? tally.lanes?.find((lane) => !lane.primary) ?? null;
   const branchRef = own?.branchRef?.trim() || facts.branchRef || null;
   if (!branchRef) {
     if (tally.lanes && !own) return { kind: "fail", error: LANE_NOT_ON_COMPUTER_MESSAGE, refused: true };
-    return { kind: "fail", error: "ADE couldn't tell which branch this lane is on, so the computer stays." };
+    return { kind: "fail", error: "Daex couldn't tell which branch this lane is on, so the computer stays." };
   }
   return { kind: "next", step: "recheck", patch: { facts_json: withFacts(job, { branchRef }), message: "Checking that everything is on GitHub…" } };
 }
@@ -234,12 +234,12 @@ async function recheck(env: CloudEnv, job: JobRow, ctx: JobContext): Promise<Ste
   // Read once more after the push: anything new or unknown keeps the computer.
   const ran = await tryExec(ctx, computer.instance_id, pushWorkCommand(true, { afterPush: true }), CHECK_EXEC_MS);
   const tally = ran && ran.exitCode === 0 ? readPushWorkTally(ran.stdout) : null;
-  if (!tally || !tally.lanes) return { kind: "fail", error: "ADE couldn't confirm all work is on GitHub, so the computer stays. Try again." };
+  if (!tally || !tally.lanes) return { kind: "fail", error: "Daex couldn't confirm all work is on GitHub, so the computer stays. Try again." };
   const github = githubFailure(tally.lanes);
   if (github) return github;
-  if (tally.failed > 0) return { kind: "fail", error: "ADE couldn't read every project on this computer, so it stays. Try again." };
+  if (tally.failed > 0) return { kind: "fail", error: "Daex couldn't read every project on this computer, so it stays. Try again." };
   const left = tally.lanes.filter((lane) => lane.state === "unpushed" || lane.state === "failed");
-  if (left.length > 0) return { kind: "fail", error: `Work changed on this computer while ADE pushed it${laneNamesOf(left)}, so it stays. Try again.` };
+  if (left.length > 0) return { kind: "fail", error: `Work changed on this computer while Daex pushed it${laneNamesOf(left)}, so it stays. Try again.` };
   return { kind: "next", step: "delete", patch: { state: "deleting", message: `Removing ${nameOf(job)}…` } };
 }
 
@@ -250,7 +250,7 @@ async function remove(env: CloudEnv, job: JobRow, ctx: JobContext): Promise<Step
   if (!computer) return { kind: "next", step: "confirm_delete" };
   const lane = mergeLaneFacts(laneFactsOfRow(computer), laneFactsOf((await ctx.provider.getInstance(computer.instance_id).catch(() => null))?.metadata));
   if (facts.branchRef) lane.branch = facts.branchRef;
-  if (!namesLane(lane)) return { kind: "fail", error: "ADE Cloud doesn't know a lane on this computer, so there is no lane to keep. Nothing was deleted." };
+  if (!namesLane(lane)) return { kind: "fail", error: "Daex Cloud doesn't know a lane on this computer, so there is no lane to keep. Nothing was deleted." };
   await ctx.save({ facts_json: withFacts(job, { laneMarked: true }) });
   await markKeepLaneStatement(env, computer, lane, "freed").run();
   await deleteComputer(env, ctx.provider, computer, { who: "free", reason: "freed" }, ctx.now);
@@ -298,7 +298,7 @@ async function runFreeStep(env: CloudEnv, job: JobRow, ctx: JobContext): Promise
     case "recheck": return await recheck(env, job, ctx);
     case "delete": return await remove(env, job, ctx);
     case "confirm_delete": return await confirmDelete(env, job, ctx);
-    default: return { kind: "fail", error: "ADE Cloud lost track of this job." };
+    default: return { kind: "fail", error: "Daex Cloud lost track of this job." };
   }
 }
 
@@ -350,7 +350,7 @@ export async function handleFreeStart(request: Request, env: CloudEnv, computer:
     if (!namesLane(live)) return fail("no_lane", "This computer wasn't made for one lane, so there is no lane to keep. Delete it, or keep it.", 409);
     Object.assign(facts, { laneId: live.laneId, laneName: live.laneName, branchRef: live.branch });
   }
-  if (!deps.provider) return fail("unavailable", "ADE Cloud can't free a computer right now. Try again soon.", 503);
+  if (!deps.provider) return fail("unavailable", "Daex Cloud can't free a computer right now. Try again soon.", 503);
   const wake = await deps.wakeRefusal?.();
   if (wake) return wake;
   const { now } = deps;
@@ -379,7 +379,7 @@ export async function handleFreeStart(request: Request, env: CloudEnv, computer:
 
 /** `GET /cloud/frees/:id`. A watched free runs its due step right after the answer (`nudgeJob`). */
 export async function routeFrees(request: Request, path: string, env: CloudEnv, userId: string, deps: FreeRouteDeps): Promise<Response> {
-  const notFound = () => fail("not_found", "ADE Cloud has no such job.", 404);
+  const notFound = () => fail("not_found", "Daex Cloud has no such job.", 404);
   const freeId = path.slice("/cloud/frees/".length);
   if (request.method !== "GET" || !isUuid(freeId)) return notFound();
   const job = await readJob(env, freeId.toLowerCase());

@@ -41,7 +41,7 @@ const MAX_UPSTREAM_BYTES = 4_000_000;
 /** Largest `filter` a Linear search may carry, as JSON. */
 const MAX_FILTER_CHARS = 8_000;
 
-export const LINEAR_NEEDS_RENEWAL_MESSAGE = "Linear needs one of your computers to renew its sign-in. Open ADE on a computer once.";
+export const LINEAR_NEEDS_RENEWAL_MESSAGE = "Linear needs one of your computers to renew its sign-in. Open Daex on a computer once.";
 
 /* ---- Linear documents: the fields mirror the desktop's linearClientShared.ts and linearQuickView.ts. ---- */
 
@@ -325,19 +325,19 @@ async function readUpstream(response: Response): Promise<unknown | null> {
   }
 }
 
-const vaultUnavailable = () => fail("unavailable", "ADE can't reach your account's connections right now. Try again soon.", 503);
+const vaultUnavailable = () => fail("unavailable", "Daex can't reach your account's connections right now. Try again soon.", 503);
 
 async function prepare(request: Request, env: RelayEnv, userId: string, now: number): Promise<
   { ok: true; body: Record<string, unknown>; authorization: string; scope: string } | { ok: false; response: Response }
 > {
-  if (request.method !== "POST") return { ok: false, response: fail("not_found", "ADE Cloud has no such route.", 404) };
+  if (request.method !== "POST") return { ok: false, response: fail("not_found", "Daex Cloud has no such route.", 404) };
   const authorization = request.headers.get("authorization");
-  if (!authorization) return { ok: false, response: fail("unauthorized", "Sign in to ADE to use ADE Cloud.", 401) };
+  if (!authorization) return { ok: false, response: fail("unauthorized", "Sign in to Daex to use Daex Cloud.", 401) };
   if (!relayFetch(env)) return { ok: false, response: vaultUnavailable() };
   const body = await readJson(request);
   if (!body) return { ok: false, response: fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400) };
   const scope = accountRepoScopeKey(typeof body.origin === "string" ? body.origin : null);
-  if (!scope) return { ok: false, response: fail("bad_request", "That isn't a repository ADE can name.", 400) };
+  if (!scope) return { ok: false, response: fail("bad_request", "That isn't a repository Daex can name.", 400) };
   if (!await takeRequest(env, userId, "integrations", now)) {
     return { ok: false, response: tooManyRequests("Too many Linear and Jira requests from this account in the last minute. Try again in a minute.") };
   }
@@ -350,7 +350,7 @@ export async function routeLinearQuery(request: Request, env: LinearRenewalEnv, 
   if (!prepared.ok) return prepared.response;
   const { body, authorization, scope } = prepared;
   const op = typeof body.op === "string" && (CLOUD_LINEAR_OPS as readonly string[]).includes(body.op) ? body.op as CloudLinearOp : null;
-  if (!op) return fail("bad_request", "ADE Cloud doesn't run that Linear request.", 400);
+  if (!op) return fail("bad_request", "Daex Cloud doesn't run that Linear request.", 400);
   const document = LINEAR_DOCUMENTS[op];
   const vars = document.vars(body.vars && typeof body.vars === "object" && !Array.isArray(body.vars) ? body.vars as Record<string, unknown> : {});
   if (typeof vars === "string") return fail("bad_request", vars, 400);
@@ -359,7 +359,7 @@ export async function routeLinearQuery(request: Request, env: LinearRenewalEnv, 
   if (stored === undefined) return vaultUnavailable();
   let token = linearToken(stored?.value ?? null, now);
   if (token === "not_connected") {
-    return fail("linear_not_connected", "Linear isn't connected for this project. Connect it in ADE on a computer.", 409);
+    return fail("linear_not_connected", "Linear isn't connected for this project. Connect it in Daex on a computer.", 409);
   }
   if (token === "needs_renewal" && stored) {
     const renewal = await renewLinearGrant(env, { authorization, userId, scope, item: stored, now, waitUntil });
@@ -382,18 +382,18 @@ export async function routeLinearQuery(request: Request, env: LinearRenewalEnv, 
     });
   } catch (error) {
     logCloud("cloud.linear_query_failed", { op, error: error instanceof Error ? error.name : "unknown" });
-    return fail("unavailable", "ADE can't reach Linear right now. Try again soon.", 503);
+    return fail("unavailable", "Daex can't reach Linear right now. Try again soon.", 503);
   }
   if (response.status === 401) {
     await response.body?.cancel().catch(() => {});
     logCloud("cloud.linear_query_refused", { op, status: 401, authMode: token.authMode });
     return token.authMode === "oauth"
       ? fail("linear_needs_renewal", LINEAR_NEEDS_RENEWAL_MESSAGE, 409)
-      : fail("linear_not_connected", "Linear refused this project's API key. Connect Linear again in ADE on a computer.", 409);
+      : fail("linear_not_connected", "Linear refused this project's API key. Connect Linear again in Daex on a computer.", 409);
   }
   if (response.status === 429) {
     await response.body?.cancel().catch(() => {});
-    return fail("rate_limited", "Linear asked ADE to slow down. Try again in a minute.", 429);
+    return fail("rate_limited", "Linear asked Daex to slow down. Try again in a minute.", 429);
   }
   const answer = await readUpstream(response) as { data?: unknown; errors?: unknown } | null;
   if (!response.ok || !answer || typeof answer !== "object" || !answer.data || typeof answer.data !== "object") {
@@ -411,11 +411,11 @@ async function jiraCall(env: RelayEnv, prepared: { authorization: string; scope:
   if (stored === undefined) return { ok: false, response: vaultUnavailable() };
   const connection = jiraConnectionOf(stored?.value ?? null);
   if (connection === "not_connected") {
-    return { ok: false, response: fail("jira_not_connected", "Jira isn't connected for this project. Connect it in ADE on a computer.", 409) };
+    return { ok: false, response: fail("jira_not_connected", "Jira isn't connected for this project. Connect it in Daex on a computer.", 409) };
   }
   if (connection === "bad_site") {
     logCloud("cloud.jira_site_refused", {});
-    return { ok: false, response: fail("jira_site_unsupported", "ADE Cloud reads only Jira sites at atlassian.net. Use ADE on a computer for this Jira site.", 409) };
+    return { ok: false, response: fail("jira_site_unsupported", "Daex Cloud reads only Jira sites at atlassian.net. Use Daex on a computer for this Jira site.", 409) };
   }
   let response: Response;
   try {
@@ -434,11 +434,11 @@ async function jiraCall(env: RelayEnv, prepared: { authorization: string; scope:
     });
   } catch (error) {
     logCloud("cloud.jira_call_failed", { error: error instanceof Error ? error.name : "unknown" });
-    return { ok: false, response: fail("unavailable", "ADE can't reach Jira right now. Try again soon.", 503) };
+    return { ok: false, response: fail("unavailable", "Daex can't reach Jira right now. Try again soon.", 503) };
   }
   if (response.status === 401 || response.status === 403) {
     await response.body?.cancel().catch(() => {});
-    return { ok: false, response: fail("jira_not_connected", "Jira refused this project's sign-in. Connect Jira again in ADE on a computer.", 409) };
+    return { ok: false, response: fail("jira_not_connected", "Jira refused this project's sign-in. Connect Jira again in Daex on a computer.", 409) };
   }
   if (response.status === 404) {
     await response.body?.cancel().catch(() => {});
@@ -446,7 +446,7 @@ async function jiraCall(env: RelayEnv, prepared: { authorization: string; scope:
   }
   if (response.status === 429) {
     await response.body?.cancel().catch(() => {});
-    return { ok: false, response: fail("rate_limited", "Jira asked ADE to slow down. Try again in a minute.", 429) };
+    return { ok: false, response: fail("rate_limited", "Jira asked Daex to slow down. Try again in a minute.", 429) };
   }
   const value = await readUpstream(response);
   if (!response.ok || !value || typeof value !== "object" || Array.isArray(value)) {

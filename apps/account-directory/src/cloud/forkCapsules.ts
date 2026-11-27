@@ -38,7 +38,7 @@ import { readBoundedBytes } from "../sinkUtils";
 const SEAL_OVERHEAD = 28;
 const TRANSPORT_KINDS: ReadonlySet<string> = new Set(["claude-jsonl", "codex-rollout", "opencode-export", "droid-jsonl", "transcript"]);
 
-const notFound = () => fail("not_found", "ADE Cloud has no saved copy of that session.", 404);
+const notFound = () => fail("not_found", "Daex Cloud has no saved copy of that session.", 404);
 const unavailable = () => fail("unavailable", "Saved session copies aren't available right now. Try again soon.", 503);
 const tooLarge = () => fail("capsule_too_large", `A saved session copy keeps at most ${CLOUD_CAPSULE_MAX_BYTES / (1024 * 1024)} MB.`, 413);
 const partTooLarge = () => fail("capsule_too_large", `One part of a saved session copy is at most ${CLOUD_CAPSULE_MAX_PART_BYTES / (1024 * 1024)} MB.`, 413);
@@ -163,7 +163,7 @@ async function handlePutPart(request: Request, env: CloudEnv, bucket: R2Bucket, 
   const declared = Number(request.headers.get("content-length") ?? "");
   if (Number.isFinite(declared) && declared > CLOUD_CAPSULE_MAX_PART_BYTES) return partTooLarge();
   const computer = await callingComputer(env, request, userId, null);
-  if (!computer) return fail("not_found", "ADE Cloud has no such computer.", 404);
+  if (!computer) return fail("not_found", "Daex Cloud has no such computer.", 404);
   // The upload this part belongs to; an older ADE names none and adds to the pending one.
   const named = request.headers.get(CLOUD_CAPSULE_UPLOAD_HEADER)?.trim() || null;
   if (named && !UPLOAD_ID.test(named)) return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
@@ -218,7 +218,7 @@ async function handleCommit(request: Request, env: CloudEnv, bucket: R2Bucket, u
   const body = await readJson(request);
   if (!body) return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
   const computer = await callingComputer(env, request, userId, body.instanceId);
-  if (!computer) return fail("not_found", "ADE Cloud has no such computer.", 404);
+  if (!computer) return fail("not_found", "Daex Cloud has no such computer.", 404);
   const parts = typeof body.parts === "number" && Number.isInteger(body.parts) && body.parts > 0 ? body.parts : null;
   const provider = typeof body.provider === "string" && /^[a-z][a-z0-9_-]{0,39}$/.test(body.provider) ? body.provider : null;
   const transportKind = typeof body.transportKind === "string" && TRANSPORT_KINDS.has(body.transportKind) ? body.transportKind : null;

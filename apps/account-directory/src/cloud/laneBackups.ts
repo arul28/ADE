@@ -89,11 +89,11 @@ type BackupRow = {
   updated_at: number;
 };
 
-const notFound = () => fail("not_found", "ADE Cloud has no saved work for that lane.", 404);
+const notFound = () => fail("not_found", "Daex Cloud has no saved work for that lane.", 404);
 const unavailable = () => fail("unavailable", "Saved lane work isn't available right now. Try again soon.", 503);
 const tooLarge = () => fail("backup_too_large", CLOUD_BACKUP_TOO_LARGE_SENTENCE, 413);
 const accountFull = () => fail("backup_account_full", CLOUD_BACKUP_ACCOUNT_FULL_SENTENCE, 413);
-const noComputer = () => fail("not_found", "ADE Cloud has no such computer.", 404);
+const noComputer = () => fail("not_found", "Daex Cloud has no such computer.", 404);
 
 const uploadPrefix = (userId: string, machineKey: string, laneId: string, uploadId: string): string => `backups/${userId}/${machineKey}/${laneId}/${uploadId}/`;
 const partKey = (prefix: string, kind: CloudBackupKind, part: number): string => `${prefix}${kind}/${String(part).padStart(5, "0")}`;
@@ -525,7 +525,7 @@ async function handleReport(request: Request, env: CloudEnv, userId: string, now
   }
   const state = body.complete && problems.length === 0 ? "current" : "failed";
   if (!body.complete && problems.length === 0) {
-    problems.push({ laneId: "", laneName: null, reason: "ADE couldn't read every project on this computer, so it couldn't save every lane." });
+    problems.push({ laneId: "", laneName: null, reason: "Daex couldn't read every project on this computer, so it couldn't save every lane." });
   }
   // A report comes from a computer that is awake: it no longer rests with any earlier report.
   await env.DB.prepare(`

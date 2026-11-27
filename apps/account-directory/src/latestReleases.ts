@@ -58,7 +58,7 @@ export async function handleLatestReleasesRequest(request: Request, env: LatestR
   const corsOrigin = requestOrigin && allowedOrigin && requestOrigin === allowedOrigin ? allowedOrigin : null;
 
   if (request.method === "OPTIONS") {
-    if (!corsOrigin) return fail("origin_not_allowed", "This origin can't read ADE releases.", 403);
+    if (!corsOrigin) return fail("origin_not_allowed", "This origin can't read Daex releases.", 403);
     return new Response(null, {
       status: 204,
       headers: {
@@ -70,11 +70,11 @@ export async function handleLatestReleasesRequest(request: Request, env: LatestR
       },
     });
   }
-  if (requestOrigin && !corsOrigin) return fail("origin_not_allowed", "This origin can't read ADE releases.", 403);
+  if (requestOrigin && !corsOrigin) return fail("origin_not_allowed", "This origin can't read Daex releases.", 403);
   if (request.method !== "GET") return fail("bad_request", "That method isn't allowed here.", 405);
 
   const caller = await authenticate(request, env);
-  if (!caller.ok) return fail("unauthorized", "Sign in to ADE to read releases.", 401);
+  if (!caller.ok) return fail("unauthorized", "Sign in to Daex to read releases.", 401);
 
   const latest: LatestReleasesResponse = await reader.refresh();
   const response = json(latest);

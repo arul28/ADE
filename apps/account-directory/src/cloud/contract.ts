@@ -656,7 +656,7 @@ export const CLOUD_SMALL_UNLIMITED_SENTENCE = "Unlimited Small computers. They n
 /** The small print beside it: the owner may act on a rare outlier. */
 export const CLOUD_SMALL_FAIR_USE_SENTENCE = "Small computers are for your own work and fall under fair use.";
 /** What a credit buys. */
-export const CLOUD_CREDIT_UNIT_SENTENCE = "A credit is an hour on a Medium computer or a minute on the ADE Cloud iPhone. Small computers use none.";
+export const CLOUD_CREDIT_UNIT_SENTENCE = "A credit is an hour on a Medium computer or a minute on the Daex Cloud iPhone. Small computers use none.";
 
 /**
  * The sizes and plans, so no client carries its own copy. A size uses
@@ -935,15 +935,15 @@ export const formatCloudFreeGithubDay = (at: number): string =>
 export function cloudFreeGithubSentence(state: CloudFreePlanGithubState, facts: { oldEnoughAt: number | null; plusIncludedMilli: number }): string | null {
   switch (state) {
     case "no_github":
-      return "Free credits need a GitHub account. Connect GitHub to start; ADE Cloud uses it to get your code.";
+      return "Free credits need a GitHub account. Connect GitHub to start; Daex Cloud uses it to get your code.";
     case "too_new":
       return facts.oldEnoughAt != null
         ? `Your GitHub account is new, so free credits start on ${formatCloudFreeGithubDay(facts.oldEnoughAt)}. Add a card (no charge) to start now.`
         : "Your GitHub account is new, so free credits start when it is 30 days old. Add a card (no charge) to start now.";
     case "used":
-      return `This GitHub account already has a free plan on another ADE account. Plus gives you ${Math.round(facts.plusIncludedMilli / 1000).toLocaleString("en-US")} credits a month.`;
+      return `This GitHub account already has a free plan on another Daex account. Plus gives you ${Math.round(facts.plusIncludedMilli / 1000).toLocaleString("en-US")} credits a month.`;
     case "checking":
-      return "ADE couldn't check your GitHub account just now. It tries again in a few minutes.";
+      return "Daex couldn't check your GitHub account just now. It tries again in a few minutes.";
     default:
       return null;
   }
@@ -1084,8 +1084,8 @@ export type CloudTimedWakesCancelled = { at: number; count: number; reason: "out
 export function timedWakesCancelledSentence(notice: Pick<CloudTimedWakesCancelled, "count" | "reason">): string {
   const what = notice.count === 1 ? "A timed wake-up" : `${notice.count} timed wake-ups`;
   return notice.reason === "over_plan_disk"
-    ? `${what} on your ADE Cloud computers won't run (a chat's scheduled wake-up or an automation's schedule), because your computers hold more disk than the free plan has, so they can't wake. Once you delete a computer or get Plus, each computer sets its next timed wake-up again the next time it runs.`
-    : `${what} on your ADE Cloud computers won't run (a chat's scheduled wake-up or an automation's schedule), because you're out of ADE Cloud credits, so your computers can't wake. When your credits reset or you add credits, each computer sets its next timed wake-up again the next time it runs.`;
+    ? `${what} on your Daex Cloud computers won't run (a chat's scheduled wake-up or an automation's schedule), because your computers hold more disk than the free plan has, so they can't wake. Once you delete a computer or get Plus, each computer sets its next timed wake-up again the next time it runs.`
+    : `${what} on your Daex Cloud computers won't run (a chat's scheduled wake-up or an automation's schedule), because you're out of Daex Cloud credits, so your computers can't wake. When your credits reset or you add credits, each computer sets its next timed wake-up again the next time it runs.`;
 }
 
 /** Each plan's name inside a sentence ("To fit the free plan", "Plus allows ..."): the server's emails and ADE say the same. */
@@ -1104,12 +1104,12 @@ export function ignoredFilesList(ignored: Pick<CloudIgnoredFiles, "paths" | "mor
  * that the computer hasn't said yet.
  */
 export function ignoredFilesSentence(ignored: CloudIgnoredFiles | null | undefined): string {
-  if (!ignored) return "ADE doesn't know yet which files git ignores on it (such as .env or a local database); those are never saved, so they won't be kept.";
+  if (!ignored) return "Daex doesn't know yet which files git ignores on it (such as .env or a local database); those are never saved, so they won't be kept.";
   const list = ignoredFilesList(ignored);
   const builds = ignored.rebuildable > 0 ? " Build and install folders such as node_modules aren't listed: they come back when you build." : "";
   if (ignored.incomplete) {
-    if (!list) return `ADE couldn't read every lane on it to see which files git ignores (such as .env or a local database); those are never saved, so they won't be kept.${builds}`;
-    return `Files git ignores are never saved, so these won't be kept: ${list}. ADE couldn't read every lane on it, so there may be more.${builds}`;
+    if (!list) return `Daex couldn't read every lane on it to see which files git ignores (such as .env or a local database); those are never saved, so they won't be kept.${builds}`;
+    return `Files git ignores are never saved, so these won't be kept: ${list}. Daex couldn't read every lane on it, so there may be more.${builds}`;
   }
   if (!list) return `No files that git ignores were found on it.${builds}`;
   return `Files git ignores are never saved, so these won't be kept: ${list}.${builds}`;
@@ -1139,7 +1139,7 @@ export const CLOUD_IDLE_CLEANUP_DAYS: Readonly<Record<"free" | "paid", number>> 
 
 /** What happens before the delete, in ADE and the emails. ADE never commits or pushes for the person: it saves the lane's work in ADE Cloud. */
 export function idleCleanupSaveSentence(branch: string | null | undefined): string {
-  return `ADE deletes it only once its work that isn't on GitHub is saved in ADE Cloud; it never commits or pushes for you. The lane and its chats stay, and your next message makes a new computer from ${branch ? `the lane's branch, ${branch},` : "the lane's branch"} with that work back on it.`;
+  return `Daex deletes it only once its work that isn't on GitHub is saved in Daex Cloud; it never commits or pushes for you. The lane and its chats stay, and your next message makes a new computer from ${branch ? `the lane's branch, ${branch},` : "the lane's branch"} with that work back on it.`;
 }
 
 /**
@@ -1148,7 +1148,7 @@ export function idleCleanupSaveSentence(branch: string | null | undefined): stri
  * never wakes it to save: its next use saves it when it rests.
  */
 export function idleCleanupHeldNext(retryAt: number, now: number): string {
-  return `Open the lane once so ADE saves its work when the computer rests, or delete the lane if you don't need it. ADE checks again ${inHowLong(retryAt, now)}.`;
+  return `Open the lane once so Daex saves its work when the computer rests, or delete the lane if you don't need it. Daex checks again ${inHowLong(retryAt, now)}.`;
 }
 
 /** What a cheaper plan's limits freed and kept, for ADE's notice after the run. */
@@ -1162,10 +1162,10 @@ export function planCleanupDoneSentence(done: CloudPlanCleanupDone): string {
       : ` ${lanesKept === done.freed.length ? (lanesKept === 1 ? "Its lane and chats stay" : "Their lanes and chats stay") : (lanesKept === 1 ? "The lane among them and its chats stay" : "The lanes among them and their chats stay")}; the next message to a lane makes a new computer.`;
     const savedAll = done.freed.every((entry) => entry.pushed !== false);
     const how = savedAll ? "saved each lane's work and removed" : "removed";
-    parts.push(`To fit ${CLOUD_PLAN_SENTENCE_NAMES[done.planId]}, ADE ${how} ${done.freed.length === 1 ? "this computer" : "these computers"}: ${list}.${kept}`);
+    parts.push(`To fit ${CLOUD_PLAN_SENTENCE_NAMES[done.planId]}, Daex ${how} ${done.freed.length === 1 ? "this computer" : "these computers"}: ${list}.${kept}`);
   }
   if (done.kept.length) {
-    parts.push(`ADE kept ${done.kept.map((entry) => entry.name).join(", ")}, because ADE couldn't save its lanes' work. Use it once so ADE saves the work when it rests, delete it yourself, or pick again in ADE.`);
+    parts.push(`Daex kept ${done.kept.map((entry) => entry.name).join(", ")}, because Daex couldn't save its lanes' work. Use it once so Daex saves the work when it rests, delete it yourself, or pick again in Daex.`);
   }
   return parts.join(" ");
 }
@@ -1190,12 +1190,12 @@ export function planCleanupSentence(cleanup: Pick<CloudPlanCleanup, "planId" | "
  * (`over_plan_limits`): the server's refusal and ADE's notice say the same.
  */
 export function overPlanLimitsSentence(cleanup: Pick<CloudPlanCleanup, "planId" | "computerCount" | "computerLimit">): string {
-  return `${planCleanupSentence(cleanup)} ADE can't make a new computer until you have fewer. Free up or delete computers yourself, or open Settings › ADE Cloud › Plans to pick the ones ADE frees.`;
+  return `${planCleanupSentence(cleanup)} Daex can't make a new computer until you have fewer. Free up or delete computers yourself, or open Settings › Daex Cloud › Plans to pick the ones Daex frees.`;
 }
 
 /** A move refused for the same reason: a move makes a new computer too. */
 export function overPlanLimitsMoveSentence(cleanup: Pick<CloudPlanCleanup, "planId" | "computerCount" | "computerLimit">): string {
-  return `${planCleanupSentence(cleanup)} A move makes a new computer, so ADE can't move this one until you have fewer. Free up or delete computers yourself, or open Settings › ADE Cloud › Plans to pick the ones ADE frees.`;
+  return `${planCleanupSentence(cleanup)} A move makes a new computer, so Daex can't move this one until you have fewer. Free up or delete computers yourself, or open Settings › Daex Cloud › Plans to pick the ones Daex frees.`;
 }
 
 /** "1 cloud computer", "3 cloud computers". */
@@ -1253,7 +1253,7 @@ export function computerLimitSentence(detail: Pick<CloudComputerLimitDetail, "li
 
 /** An outside agent (ADE MCP) asking to start ADE Cloud work on the Free plan is refused with this code (403) and sentence, which the agent passes on. */
 export const CLOUD_OUTSIDE_AGENT_FREE_CODE = "outside_agent_free_plan";
-export const CLOUD_OUTSIDE_AGENT_FREE_MESSAGE = "ADE Cloud can't be started by outside agents on the Free plan. To let outside agents use ADE Cloud, move to a paid plan.";
+export const CLOUD_OUTSIDE_AGENT_FREE_MESSAGE = "Daex Cloud can't be started by outside agents on the Free plan. To let outside agents use Daex Cloud, move to a paid plan.";
 
 /** Largest part of a chat the server accepts, in bytes of its text. */
 export const CLOUD_CHAT_MAX_PART_BYTES = 8 * 1024 * 1024;
@@ -1485,7 +1485,7 @@ export const isCloudRefusalCode = (code: unknown): code is CloudRefusalCode =>
   typeof code === "string" && Object.hasOwn(CLOUD_REFUSAL_CODES, code);
 
 /** `plan_past_due`: a paid plan whose last payment failed; its computers are suspended until the card works. */
-export const CLOUD_PLAN_PAST_DUE_SENTENCE = "ADE Cloud suspended this machine because your last payment didn't go through, so ADE can't wake it right now. Update your card in Manage billing.";
+export const CLOUD_PLAN_PAST_DUE_SENTENCE = "Daex Cloud suspended this machine because your last payment didn't go through, so Daex can't wake it right now. Update your card in Manage billing.";
 
 /**
  * The GET routes a blocked account still reads (`readOnly`): everything it
@@ -1536,7 +1536,7 @@ export type CloudWakeOutcome = { state: "awake" | "waking" | "launching" | "movi
  * the sentence.
  */
 export const CLOUD_COMPUTER_MOVING_CODE = "computer_moving";
-export const CLOUD_COMPUTER_MOVING_SENTENCE = "This ADE Cloud computer is moving to a new one, and a turn started now would be cut. Send again once the move is done.";
+export const CLOUD_COMPUTER_MOVING_SENTENCE = "This Daex Cloud computer is moving to a new one, and a turn started now would be cut. Send again once the move is done.";
 
 /* ---- The message queue for an existing cloud chat ---- */
 
@@ -1765,13 +1765,13 @@ export const CLOUD_BACKUP_MAX_PART_BYTES = 6 * 1024 * 1024;
 /** Most stored bytes of one account's backups, as the fork capsules: about 20 lanes at the full lane cap. */
 export const CLOUD_BACKUP_MAX_ACCOUNT_BYTES = 1024 * 1024 * 1024;
 /** Said when one lane's work is over `CLOUD_BACKUP_MAX_BYTES`. */
-export const CLOUD_BACKUP_TOO_LARGE_SENTENCE = `This lane's work that isn't on GitHub is over ${CLOUD_BACKUP_MAX_BYTES / (1024 * 1024)} MB, so ADE can't save it. Push it to GitHub, or remove large files that git doesn't ignore. The computer is kept until then.`;
+export const CLOUD_BACKUP_TOO_LARGE_SENTENCE = `This lane's work that isn't on GitHub is over ${CLOUD_BACKUP_MAX_BYTES / (1024 * 1024)} MB, so Daex can't save it. Push it to GitHub, or remove large files that git doesn't ignore. The computer is kept until then.`;
 /** Said when the account's backups are over `CLOUD_BACKUP_MAX_ACCOUNT_BYTES`. */
-export const CLOUD_BACKUP_ACCOUNT_FULL_SENTENCE = `This account's saved lane work is over ${CLOUD_BACKUP_MAX_ACCOUNT_BYTES / (1024 * 1024 * 1024)} GB, so ADE can't save more. Push lanes to GitHub or delete lanes you don't need. The computer is kept until then.`;
+export const CLOUD_BACKUP_ACCOUNT_FULL_SENTENCE = `This account's saved lane work is over ${CLOUD_BACKUP_MAX_ACCOUNT_BYTES / (1024 * 1024 * 1024)} GB, so Daex can't save more. Push lanes to GitHub or delete lanes you don't need. The computer is kept until then.`;
 /** The one sentence a cleanup gives when a lane has no current backup. */
-export const CLOUD_BACKUP_NOT_SAVED_SENTENCE = "ADE couldn't save this lane's work.";
+export const CLOUD_BACKUP_NOT_SAVED_SENTENCE = "Daex couldn't save this lane's work.";
 /** A resting computer whose ADE has not saved lane work yet (it rested before an update): kept until its next rest saves it. */
-export const CLOUD_BACKUP_NEVER_SAVED_SENTENCE = "ADE keeps this computer: it went to sleep before ADE saved lane work. The next time you use it and it sleeps again, ADE saves its lanes and can clean it up.";
+export const CLOUD_BACKUP_NEVER_SAVED_SENTENCE = "Daex keeps this computer: it went to sleep before Daex saved lane work. The next time you use it and it sleeps again, Daex saves its lanes and can clean it up.";
 
 /** What the computer read from the lane when it made the backup. */
 export type CloudLaneBackupFacts = {
@@ -2176,9 +2176,9 @@ export type CloudLaunchAutoSize = {
 export function cloudAutoSizeSentence(why: CloudLaunchAutoSize["why"] | "checking" | "moving"): string {
   const { fromMemoryGb, toLabel } = CLOUD_AUTO_SIZE;
   if (why === "remembered") return `${toLabel}: this repo's setup needed more than ${fromMemoryGb} GB before.`;
-  if (why === "checking") return `Setup needed more than this computer's memory. ADE is checking whether it can move it to ${toLabel}…`;
-  if (why === "moving") return `Setup needed more than ${fromMemoryGb} GB, so ADE is moving this computer to ${toLabel}, which uses credits. It restarts for a moment, then setup runs again.`;
-  return `Setup needed more than ${fromMemoryGb} GB, so ADE moved this computer to ${toLabel}, which uses credits.`;
+  if (why === "checking") return `Setup needed more than this computer's memory. Daex is checking whether it can move it to ${toLabel}…`;
+  if (why === "moving") return `Setup needed more than ${fromMemoryGb} GB, so Daex is moving this computer to ${toLabel}, which uses credits. It restarts for a moment, then setup runs again.`;
+  return `Setup needed more than ${fromMemoryGb} GB, so Daex moved this computer to ${toLabel}, which uses credits.`;
 }
 
 /**
@@ -2195,13 +2195,13 @@ export function cloudAutoSizeRefusalSentence(reason: CloudAutoSizeRefusal): stri
   const { toLabel } = CLOUD_AUTO_SIZE;
   switch (reason) {
     case "picked":
-      return `Small was picked for this launch, so ADE didn't move it up. Start it again on ${toLabel}, which uses credits.`;
+      return `Small was picked for this launch, so Daex didn't move it up. Start it again on ${toLabel}, which uses credits.`;
     case "capped":
-      return `Your agent limits keep agents nobody watches at Small, so ADE didn't move it up. Start it again on ${toLabel}, or raise the limit in Settings › ADE Cloud.`;
+      return `Your agent limits keep agents nobody watches at Small, so Daex didn't move it up. Start it again on ${toLabel}, or raise the limit in Settings › Daex Cloud.`;
     case "moved":
-      return "ADE already moved this computer up once for this launch. Pick a bigger size, or make setup use less memory.";
+      return "Daex already moved this computer up once for this launch. Pick a bigger size, or make setup use less memory.";
     case "not_launch":
-      return "ADE moves a computer up only for the launch that made it.";
+      return "Daex moves a computer up only for the launch that made it.";
   }
 }
 
@@ -2755,7 +2755,7 @@ export type CloudRemoteSignInRow = {
 export const CLOUD_LAUNCH_SIGN_IN_TIMED_OUT = "The provider sign-in didn't finish in time. Start the chat again after you sign in.";
 
 /** What the phone and the web show for a provider whose sign-in can't move. */
-export const CLOUD_REMOTE_SIGN_IN_ELSEWHERE = "Sign in from ADE desktop; it reaches ADE Cloud.";
+export const CLOUD_REMOTE_SIGN_IN_ELSEWHERE = "Sign in from Daex desktop; it reaches Daex Cloud.";
 
 /**
  * One row per provider ADE runs (machine-agnostic data: nothing here knows
@@ -2772,12 +2772,12 @@ export const CLOUD_REMOTE_SIGN_IN: readonly CloudRemoteSignInRow[] = [
   { provider: "droid", label: "Droid", remoteSignIn: "device", reason: null, accountSignIn: "droid" },
   { provider: "devin", label: "Devin", remoteSignIn: "url_paste", reason: null, accountSignIn: "devin" },
   { provider: "claude", label: "Claude", remoteSignIn: "url_paste", reason: null, accountSignIn: "claude" },
-  { provider: "cursor", label: "Cursor", remoteSignIn: "api_key", reason: "Cursor on ADE Cloud uses your Cursor API key: add it in ADE Cloud's sign-ins.", accountSignIn: "cursor" },
-  { provider: "opencode", label: "OpenCode", remoteSignIn: "api_key", reason: "OpenCode on ADE Cloud uses your OpenRouter key: add it in ADE Cloud's sign-ins.", accountSignIn: "openrouter" },
-  { provider: "pi", label: "Pi", remoteSignIn: "api_key", reason: "Pi on ADE Cloud uses your OpenRouter key: add it in ADE Cloud's sign-ins.", accountSignIn: "openrouter" },
+  { provider: "cursor", label: "Cursor", remoteSignIn: "api_key", reason: "Cursor on Daex Cloud uses your Cursor API key: add it in Daex Cloud's sign-ins.", accountSignIn: "cursor" },
+  { provider: "opencode", label: "OpenCode", remoteSignIn: "api_key", reason: "OpenCode on Daex Cloud uses your OpenRouter key: add it in Daex Cloud's sign-ins.", accountSignIn: "openrouter" },
+  { provider: "pi", label: "Pi", remoteSignIn: "api_key", reason: "Pi on Daex Cloud uses your OpenRouter key: add it in Daex Cloud's sign-ins.", accountSignIn: "openrouter" },
   { provider: "antigravity", label: "Antigravity", remoteSignIn: "desktop", reason: "Antigravity signs in with Google in a browser on the same computer.", accountSignIn: null },
   // Qwen's own OAuth sign-in ended on 2026-04-15; Qwen Code runs on a DashScope API key.
-  { provider: "qwen", label: "Qwen Code", remoteSignIn: "api_key", reason: "Qwen Code on ADE Cloud uses your Alibaba Cloud Model Studio (DashScope) API key: add it in ADE Cloud's sign-ins.", accountSignIn: "qwen" },
+  { provider: "qwen", label: "Qwen Code", remoteSignIn: "api_key", reason: "Qwen Code on Daex Cloud uses your Alibaba Cloud Model Studio (DashScope) API key: add it in Daex Cloud's sign-ins.", accountSignIn: "qwen" },
 ];
 
 /** Why a provider can't be signed in on a computer from here, with one way to do it: only a `desktop` row adds where. */

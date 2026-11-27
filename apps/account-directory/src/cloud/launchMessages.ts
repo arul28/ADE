@@ -23,7 +23,7 @@ export const LAUNCH_MESSAGE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 /** A computer's claim on a message: random, made once per message and kept on the computer. */
 const CLAIM_ID = /^[A-Za-z0-9_-]{16,80}$/;
 
-const notFound = () => fail("not_found", "ADE Cloud has no such launch.", 404);
+const notFound = () => fail("not_found", "Daex Cloud has no such launch.", 404);
 
 type MessageRow = {
   launch_id: string;
@@ -270,7 +270,7 @@ async function handleReportMessage(request: Request, env: CloudEnv, launch: Laun
   const state = body?.state === "delivered" || body?.state === "failed" ? body.state : null;
   if (!claimId || !state) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   const sessionId = shortString(body?.sessionId, 120) ?? launch.session_id;
-  const error = state === "failed" ? clippedText(body?.error, 300) ?? "ADE couldn't send this message to the chat." : null;
+  const error = state === "failed" ? clippedText(body?.error, 300) ?? "Daex couldn't send this message to the chat." : null;
   // Only the claim that took it; the same report again changes nothing and answers the same.
   const written = await env.DB.prepare(`
     update cloud_launch_messages set state = ?, session_id = ?, error = ?, updated_at = ?
@@ -279,7 +279,7 @@ async function handleReportMessage(request: Request, env: CloudEnv, launch: Laun
   if ((written.meta?.changes ?? 0) === 1) {
     await (state === "delivered"
       ? chatMessagesDeliveredStatement(env, launch.launch_id, now)
-      : chatMessageFailedStatement(env, launch.launch_id, messageId, error ?? "ADE couldn't send this message to the chat.", now)).run();
+      : chatMessageFailedStatement(env, launch.launch_id, messageId, error ?? "Daex couldn't send this message to the chat.", now)).run();
   }
   const stored = await readMessage(env, launch.launch_id, messageId);
   if (!stored) return notFound();

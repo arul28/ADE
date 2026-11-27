@@ -512,15 +512,15 @@ export async function ownMachineMoveTarget(
       from cloud_computers where user_id = ? and lower(machine_key) = lower(?)
     `).bind(userId, fromMachineKey).first<{ live: number; gone: number }>(),
   ]);
-  if (!machine || revoked) return { ok: false, code: "not_found", message: "ADE doesn't know that machine of yours.", status: 404 };
-  if (cloudTarget) return { ok: false, code: "wrong_machine", message: "An ADE Cloud computer moves a saved copy to itself with its own id.", status: 409 };
-  if ((source?.live ?? 0) > 0) return { ok: false, code: "computer_exists", message: "This copy's ADE Cloud computer still exists: move the chat from it instead.", status: 409 };
-  if ((source?.gone ?? 0) === 0) return { ok: false, code: "not_found", message: "That saved copy isn't on a deleted ADE Cloud computer.", status: 404 };
+  if (!machine || revoked) return { ok: false, code: "not_found", message: "Daex doesn't know that machine of yours.", status: 404 };
+  if (cloudTarget) return { ok: false, code: "wrong_machine", message: "A Daex Cloud computer moves a saved copy to itself with its own id.", status: 409 };
+  if ((source?.live ?? 0) > 0) return { ok: false, code: "computer_exists", message: "This copy's Daex Cloud computer still exists: move the chat from it instead.", status: 409 };
+  if ((source?.gone ?? 0) === 0) return { ok: false, code: "not_found", message: "That saved copy isn't on a deleted Daex Cloud computer.", status: 404 };
   return { ok: true, machineKey: machine.machine_key };
 }
 
 /** A queued message to a chat that moves to the person's own machine: no computer drains it there, so it ends as failed and keeps its text. */
-export const MOVED_TO_OWN_MACHINE_MESSAGE_ERROR = "This chat moved to your computer before ADE Cloud sent this message. Send it again there.";
+export const MOVED_TO_OWN_MACHINE_MESSAGE_ERROR = "This chat moved to your computer before Daex Cloud sent this message. Send it again there.";
 
 /**
  * The queued messages of a moved chat or CLI follow it to `toMachineKey`.
@@ -784,7 +784,7 @@ export function deleteLogStatement(
 }
 
 /** A launch whose computer was deleted before it finished: it ends with this error, and Retry makes a new computer. */
-export const LAUNCH_COMPUTER_DELETED = "This launch's ADE Cloud computer was deleted before it finished. Retry makes a new one.";
+export const LAUNCH_COMPUTER_DELETED = "This launch's Daex Cloud computer was deleted before it finished. Retry makes a new one.";
 
 /** Settles an open stretch and marks the computer deleted, for after the provider's delete. */
 export function markDeletedStatements(env: CloudDb, computer: ComputerRow, now: number): D1PreparedStatement[] {
@@ -884,7 +884,7 @@ export function goneFromProviderStatements(env: CloudEnv, computer: ComputerRow,
  */
 export class ComputerCloseError extends Error {
   constructor(cause: unknown) {
-    super(cause instanceof Error ? cause.message : "ADE Cloud deleted the computer but couldn't record it. Try again.", { cause });
+    super(cause instanceof Error ? cause.message : "Daex Cloud deleted the computer but couldn't record it. Try again.", { cause });
     this.name = "ComputerCloseError";
   }
 }

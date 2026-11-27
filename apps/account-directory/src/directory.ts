@@ -670,7 +670,7 @@ async function enforceRevocationGate(
       input.pairingGrant ? "grant_rejected" : "no_proof",
     );
     return json({
-      error: "Sign in again on this computer to reconnect it to your ADE account",
+      error: "Sign in again on this computer to reconnect it to your Daex account",
       code: "pairing_authentication_required",
       revokedAt: revocation.revoked_at,
     }, { status: 403 });

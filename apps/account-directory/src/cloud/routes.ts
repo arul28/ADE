@@ -175,7 +175,7 @@ const MAX_STRING = 4096;
 const MAX_COMMAND = 100_000;
 const MAX_EXEC_TIMEOUT_MS = 15 * 60_000;
 
-const NOT_FOUND_MESSAGE = "ADE Cloud has no such computer.";
+const NOT_FOUND_MESSAGE = "Daex Cloud has no such computer.";
 const notFound = () => fail("not_found", NOT_FOUND_MESSAGE, 404);
 /**
  * At 0 hours only the sizes that use hours are refused, so the sentence says
@@ -185,8 +185,8 @@ const notFound = () => fail("not_found", NOT_FOUND_MESSAGE, 404);
 const outOfHours = (account?: Pick<AccountRow, "plan" | "free_refused_at" | "free_github_hold">, smallFree = true) => fail(
   "out_of_hours",
   account && smallFree && !hasNoFreePlan(account)
-    ? "You're out of ADE Cloud credits for this period. Small computers don't use credits, so they keep working."
-    : "You're out of ADE Cloud credits for this period.",
+    ? "You're out of Daex Cloud credits for this period. Small computers don't use credits, so they keep working."
+    : "You're out of Daex Cloud credits for this period.",
   402,
 );
 const badDiskStep = () => badRequest(`Disk grows in steps of ${DISK_STEP_GB} GB.`);
@@ -194,10 +194,10 @@ const noProviderKey = () => fail("unavailable", cloudErrorMessage("no_provider_k
 /** Another change took the computer's disk while this one ran. */
 const diskChanged = () => fail("disk_limit", "This computer's disk changed while this ran. Try again.", 409);
 
-const CANT_MAKE_COMPUTER_MESSAGE = "ADE Cloud can't make a computer right now. Try again soon.";
+const CANT_MAKE_COMPUTER_MESSAGE = "Daex Cloud can't make a computer right now. Try again soon.";
 /** A free account at the owner's free-use cap: nothing new, no disk growth. Never names why. */
 const cantMakeComputer = () => fail("unavailable", CANT_MAKE_COMPUTER_MESSAGE, 503);
-const cantGrowDisk = () => fail("disk_limit", "ADE Cloud can't grow this disk right now. Try again later.", 403, { reason: "unavailable" satisfies CloudDiskRefusalReason });
+const cantGrowDisk = () => fail("disk_limit", "Daex Cloud can't grow this disk right now. Try again later.", 403, { reason: "unavailable" satisfies CloudDiskRefusalReason });
 
 type Refused = { response: Response; refusal: CloudRefusal };
 
@@ -327,9 +327,9 @@ async function awakeRoom(env: CloudEnv, computer: ComputerRow, now: number, wait
   }
 }
 
-const COMPUTER_DELETING_MESSAGE = "ADE Cloud is deleting this computer because it went unused. Its work was saved to its branch on GitHub, and its lane stays: your next message to the lane makes a new computer.";
+const COMPUTER_DELETING_MESSAGE = "Daex Cloud is deleting this computer because it went unused. Its work was saved to its branch on GitHub, and its lane stays: your next message to the lane makes a new computer.";
 /** The delete of a lane's move from its saved copy (`claimSavedDelete`): no idle cleanup holds the computer. */
-const COMPUTER_MOVING_MESSAGE = "ADE Cloud is moving this lane to another machine from its saved copy, and deletes this computer. Open the lane on its new machine.";
+const COMPUTER_MOVING_MESSAGE = "Daex Cloud is moving this lane to another machine from its saved copy, and deletes this computer. Open the lane on its new machine.";
 
 /**
  * Marks real use for the idle cleanup before the person's request runs
@@ -341,7 +341,7 @@ async function idleUseRefusal(env: CloudEnv, computer: ComputerRow, now: number)
   const use = await recordIdleUse(env, computer, now);
   const deleting = () => fail("computer_deleting", computer.idle_claimed_at == null ? COMPUTER_MOVING_MESSAGE : COMPUTER_DELETING_MESSAGE, 409);
   if (use === "deleting") return deleting();
-  if (use === "unrecorded") return fail("unavailable", "ADE Cloud couldn't record that you're using this computer, so it didn't run that. Try again in a moment.", 503);
+  if (use === "unrecorded") return fail("unavailable", "Daex Cloud couldn't record that you're using this computer, so it didn't run that. Try again in a moment.", 503);
   // A resting computer this request wakes: taken from any delete in the same write that checks for one.
   if (!isMeteredStatus(computer.status) && !await takeFromDeletes(env, computer.instance_id, now)) return deleting();
   return null;
@@ -677,8 +677,8 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
   const { body } = extras;
   const resources = body.resources && typeof body.resources === "object" ? body.resources as Record<string, unknown> : null;
   const size = cloudSizeFor(body.type, resources?.cpu, resources?.memory);
-  if (!size) return refused(badRequest("That size isn't one ADE Cloud offers."));
-  const name = computerName(body.name) ?? "ADE computer";
+  if (!size) return refused(badRequest("That size isn't one Daex Cloud offers."));
+  const name = computerName(body.name) ?? "Daex computer";
   const clientMetadata = stringMap(body.metadata, MAX_METADATA_ENTRIES);
   const requestedEnv = stringMap(body.env, MAX_ENV_ENTRIES);
   const publicPorts = onlyWakePorts(body.publicPorts);
@@ -697,7 +697,7 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
   const clientEnv = { ...keptEnv, ...extras.serverEnv };
   // The app's own update track: the computer starts from that channel's image and follows it.
   const channel = body.channel === undefined ? "stable" : readUpdateChannel(body.channel);
-  if (!channel) return refused(badRequest("That update channel isn't one ADE knows."));
+  if (!channel) return refused(badRequest("That update channel isn't one Daex knows."));
 
   // A repeat of a request this account made gets that computer, before any
   // limit: it is not a new computer, so hours or the computer limit can't refuse it.
@@ -746,7 +746,7 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
     }
     // A computer the person picked to free for a cheaper plan goes; moving it would race the delete.
     if (readPlanCleanupChoiceIds(account).includes(source.instance_id)) {
-      return refused(fail("computer_busy", "ADE is freeing this computer for your plan, so it can't move now.", 409));
+      return refused(fail("computer_busy", "Daex is freeing this computer for your plan, so it can't move now.", 409));
     }
     diskGb = source.disk_gb;
     moveFromInstanceId = source.instance_id;
@@ -828,7 +828,7 @@ async function planFork(
   const size = resources
     ? cloudSizeFor(computer.type, resources.cpu, resources.memory)
     : cloudSizeFor(computer.type, computer.cpu, computer.memory_gb);
-  if (!size) return no(badRequest("That size isn't one ADE Cloud offers."));
+  if (!size) return no(badRequest("That size isn't one Daex Cloud offers."));
   // Only the copy's own size: a Small copy never uses hours.
   const empty = outOfHoursFor(size.multiplierMilli);
   if (empty) return no(refuse(empty));
@@ -995,7 +995,7 @@ async function handleResize(request: Request, env: CloudEnv, computer: ComputerR
   if (outside) return refuse(outside);
 
   const size = cloudSizeFor(computer.type, body.cpu ?? computer.cpu, body.memory ?? computer.memory_gb);
-  if (!size) return badRequest("That size isn't one ADE Cloud offers.");
+  if (!size) return badRequest("That size isn't one Daex Cloud offers.");
   // The size it runs at after: at 0 hours a resize to Small (or a Small's disk grow) goes ahead, one to a bigger size doesn't.
   const empty = outOfHoursFor(size.multiplierMilli);
   if (empty) return refuse(empty);
@@ -1231,7 +1231,7 @@ async function handleUpdate(request: Request, env: CloudEnv, computer: ComputerR
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   const reason = body.reason === undefined || body.reason === "manual" ? "manual" : body.reason === "idle" ? "idle" : null;
-  if (!reason) return badRequest("That update reason isn't one ADE Cloud knows.");
+  if (!reason) return badRequest("That update reason isn't one Daex Cloud knows.");
   const targets = await readUpdateTargets(env);
   const channel = channelOfComputer(computer);
   if (reason === "idle") {
@@ -1291,8 +1291,8 @@ async function handleUpdate(request: Request, env: CloudEnv, computer: ComputerR
   }
 }
 
-const LANE_READ_FAILED_MESSAGE = "ADE Cloud couldn't read which lane this computer holds, so it didn't delete it. Try again in a moment.";
-const NO_LANE_MESSAGE = "ADE Cloud doesn't know a lane on this computer, so there is no lane to keep. Nothing was deleted.";
+const LANE_READ_FAILED_MESSAGE = "Daex Cloud couldn't read which lane this computer holds, so it didn't delete it. Try again in a moment.";
+const NO_LANE_MESSAGE = "Daex Cloud doesn't know a lane on this computer, so there is no lane to keep. Nothing was deleted.";
 
 /**
  * Before a delete that keeps the lane: the lane's facts, the row's first and a
@@ -1324,7 +1324,7 @@ async function markKeepLane(env: CloudEnv, provider: CloudProvider, computer: Co
   return null;
 }
 
-const COMPUTER_AWAKE_MESSAGE = "The ADE Cloud computer is awake, so its saved copy may be older than its work.";
+const COMPUTER_AWAKE_MESSAGE = "The Daex Cloud computer is awake, so its saved copy may be older than its work.";
 
 /**
  * Null while the computer rests with every lane's work saved; else the
@@ -1343,7 +1343,7 @@ async function refuseUnlessRestsSaved(env: CloudEnv, provider: CloudProvider, co
   return instance ? null : "gone";
 }
 
-const COMPUTER_ALREADY_DELETING_MESSAGE = "ADE Cloud is deleting this computer already. Nothing else was deleted.";
+const COMPUTER_ALREADY_DELETING_MESSAGE = "Daex Cloud is deleting this computer already. Nothing else was deleted.";
 
 /**
  * The delete claim of a move from the saved copy (`idle_deleting_at`, the
@@ -1541,7 +1541,7 @@ async function moveRefusal(env: CloudEnv, source: ComputerRow, size: CloudSize, 
     return fail("computer_busy", "This computer is in the middle of a move. Try again when the move is done.", 409);
   }
   if (readPlanCleanupChoiceIds(account).includes(source.instance_id)) {
-    return fail("computer_busy", "ADE is freeing this computer for your plan, so it can't move now.", 409);
+    return fail("computer_busy", "Daex is freeing this computer for your plan, so it can't move now.", 409);
   }
   // As its create checks: an account over its plan gets no move, and the count leaves only this source out.
   const over = overPlanLimits(env, account, computers, "move") ?? await computerLimitCheck(env, account, now, source.instance_id);
@@ -1657,7 +1657,7 @@ const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer:
   },
   "POST public-ports": async (request, _env, computer, provider) => {
     const body = await readJson(request);
-    if (body?.port !== WAKE_PORT) return badRequest("Only ADE's own wake port can be opened.");
+    if (body?.port !== WAKE_PORT) return badRequest("Only Daex's own wake port can be opened.");
     return json(await provider.addPublicPort(computer.instance_id, { port: WAKE_PORT, label: shortText(body.label, 60) ?? "ADE wake" }));
   },
   "PUT auto-sleep": async (request, _env, computer, provider) => {
@@ -1773,7 +1773,7 @@ async function routeCheckout(
 ): Promise<Response> {
   // Builds that know one paid plan send no body: that's Plus.
   if (body.plan !== undefined && !(body.plan === "plus" || (body.plan === "pro" && offers.pro) || (body.plan === "max" && offers.max))) {
-    return badRequest("That plan isn't one ADE Cloud offers.");
+    return badRequest("That plan isn't one Daex Cloud offers.");
   }
   // A downgrade's pick: the computers ADE frees, and whether their work is pushed first.
   const cleanup = body.cleanup === undefined ? undefined : readPlanCleanupPick(body.cleanup);
@@ -1784,7 +1784,7 @@ async function routeCheckout(
     const bought = await env.DB.prepare("select plan, paid_plan from cloud_accounts where user_id = ?").bind(userId).first<{ plan: string; paid_plan: string | null }>();
     if (bought?.plan === "paid" && bought.paid_plan === "max") {
       logCloud("cloud.plan_change_old_build_refused", { userId });
-      return fail("update_needed", "Update ADE to change your Max plan, or change it in Manage billing.", 409);
+      return fail("update_needed", "Update Daex to change your Max plan, or change it in Manage billing.", 409);
     }
   }
   return json(await createCheckoutUrl(env, userId, back, now, isPaidPlanId(body.plan) ? body.plan : undefined, waitUntil, cleanup));
@@ -1801,7 +1801,7 @@ async function routeBilling(request: Request, url: URL, path: string, env: Cloud
     if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
     if (path === CLOUD_PATHS.billingPortal || path === CLOUD_PATHS.billingFreeUnlock || path === CLOUD_PATHS.billingCheckout) {
       const back = billingReturnOf(env, url, body.returnTo);
-      if (!back) return badRequest("ADE Cloud can't send you back there after billing.");
+      if (!back) return badRequest("Daex Cloud can't send you back there after billing.");
       if (path === CLOUD_PATHS.billingPortal) return json(await createPortalUrl(env, userId, back, now));
       // A card saved with no charge starts the free hours of a GitHub account younger than 30 days.
       if (path === CLOUD_PATHS.billingFreeUnlock) return json(await createFreeUnlockUrl(env, userId, back, { now, waitUntil }));
@@ -1933,7 +1933,7 @@ function featuresOf(value: unknown): string | null {
   return known.length ? known.join(",") : null;
 }
 
-const UPDATE_NEEDED_MESSAGE = "This computer runs an older ADE that can't take messages while it sleeps. Open the lane and update the computer, then send again.";
+const UPDATE_NEEDED_MESSAGE = "This computer runs an older Daex that can't take messages while it sleeps. Open the lane and update the computer, then send again.";
 /** Long enough for a woken computer's ADE to start and send what waits; a drain that runs longer goes on by itself. */
 const DRAIN_EXEC_TIMEOUT_MS = 120_000;
 
@@ -2006,7 +2006,7 @@ export async function handleCloudRequest(request: Request, env: CloudEnv, waitUn
   const allowedOrigin = trustedHttpsOrigin(env.WEB_CLIENT_ORIGIN, { requireExactOrigin: true });
   const corsOrigin = requestOrigin && allowedOrigin && requestOrigin === allowedOrigin ? allowedOrigin : null;
   if (request.method === "OPTIONS") {
-    if (!corsOrigin) return fail("origin_not_allowed", "This origin can't call ADE Cloud.", 403);
+    if (!corsOrigin) return fail("origin_not_allowed", "This origin can't call Daex Cloud.", 403);
     const wanted = request.headers.get("access-control-request-method")?.toUpperCase() ?? "";
     if (!CORS_METHODS.split(", ").includes(wanted)) return fail("bad_request", "That method isn't allowed here.", 405);
     const requested = (request.headers.get("access-control-request-headers") ?? "")
@@ -2023,7 +2023,7 @@ export async function handleCloudRequest(request: Request, env: CloudEnv, waitUn
       },
     });
   }
-  if (requestOrigin && !corsOrigin) return fail("origin_not_allowed", "This origin can't call ADE Cloud.", 403);
+  if (requestOrigin && !corsOrigin) return fail("origin_not_allowed", "This origin can't call Daex Cloud.", 403);
   const response = await routeCloudRequest(request, env, waitUntil);
   return corsOrigin ? withCors(response, corsOrigin) : response;
 }
@@ -2064,8 +2064,8 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   const caller = await authenticate(request, env);
   if (!caller.ok) {
     return caller.reason === "authentication unavailable"
-      ? fail("unavailable", "ADE Cloud can't check your sign-in right now. Try again soon.", 503)
-      : fail("unauthorized", "Sign in to ADE to use ADE Cloud.", 401);
+      ? fail("unavailable", "Daex Cloud can't check your sign-in right now. Try again soon.", 503)
+      : fail("unauthorized", "Sign in to Daex to use Daex Cloud.", 401);
   }
   // Every account may use ADE Cloud, except one the owner blocked (`safety.ts`).
   const blocked = await isCloudBlockedForRequest(env, caller.userId);

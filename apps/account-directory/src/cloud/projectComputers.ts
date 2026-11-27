@@ -59,7 +59,7 @@ type JobRow = {
   created_at: number;
 };
 
-const notFound = () => fail("not_found", "ADE Cloud has no such job.", 404);
+const notFound = () => fail("not_found", "Daex Cloud has no such job.", 404);
 
 /** The computers of `origin` on this account, oldest first. */
 async function computersOf(env: CloudEnv, userId: string, origin: string): Promise<ComputerRow[]> {
@@ -141,13 +141,13 @@ async function runOne(env: CloudEnv, provider: CloudProvider, row: JobRow): Prom
       return settle(env, row, "kept", work.reason);
     }
     // A start since the check takes it out of rest: its lanes may have changed.
-    if (work.resting && !(await stillRestsWithBackups(env, computer.instance_id))) return settle(env, row, "kept", "Someone started this computer while ADE saved it.");
+    if (work.resting && !(await stillRestsWithBackups(env, computer.instance_id))) return settle(env, row, "kept", "Someone started this computer while Daex saved it.");
     await deleteComputer(env, provider, computer, { who: "project_delete", reason: "project_delete" }, Date.now());
     logCloud("cloud.project_delete_computer_deleted", { instanceId: computer.instance_id });
     return settle(env, row, "deleted", null);
   } catch (error) {
     reportCloudFailure("cloud.project_delete_computer_failed", { instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
-    return settle(env, row, "kept", "ADE Cloud couldn't reach the computer to save its work.");
+    return settle(env, row, "kept", "Daex Cloud couldn't reach the computer to save its work.");
   }
 }
 

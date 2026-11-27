@@ -212,7 +212,7 @@ async function handlePutPart(request: Request, env: CloudEnv, userId: string, ma
     return fail("part_too_large", "That part of the chat is too large to save.", 413);
   }
   // Called from the computer: only its owner's computers save here.
-  if (!await ownedComputer(env, userId, instanceId)) return fail("not_found", "ADE Cloud has no such computer.", 404);
+  if (!await ownedComputer(env, userId, instanceId)) return fail("not_found", "Daex Cloud has no such computer.", 404);
 
   const keys = await userKeys(env, userId, now);
   if (!keys) return unavailable();
@@ -705,7 +705,7 @@ async function handleMove(request: Request, env: CloudEnv, userId: string, machi
   } else {
     const computer = await ownedComputer(env, userId, instanceId);
     // Only the caller's own computer, and only to its own machine key.
-    if (!computer || computer.deleted_at != null) return fail("not_found", "ADE Cloud has no such computer.", 404);
+    if (!computer || computer.deleted_at != null) return fail("not_found", "Daex Cloud has no such computer.", 404);
     if (computer.machine_key && computer.machine_key.toLowerCase() !== requestedKey.toLowerCase()) {
       return fail("wrong_machine", "A chat moves only to the machine key of the computer that asks.", 409);
     }

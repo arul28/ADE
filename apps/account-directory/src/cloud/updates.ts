@@ -47,7 +47,7 @@ const AUTO_RETRY_AFTER_MS = 60 * 60_000;
 /** `asleep` stays for rows an older server wrote. */
 const AUTOMATIC_REASONS = new Set<CloudUpdateReason>(["idle", "asleep", "rollback"]);
 
-const ROLLED_BACK = "It didn't start on the new version, so ADE put it back on the version before.";
+const ROLLED_BACK = "It didn't start on the new version, so Daex put it back on the version before.";
 const ROLLBACK_FAILED = "It didn't start on the new version, and going back to the version before didn't work either.";
 const NO_EARLIER_VERSION = "It didn't start on the new version, and there was no earlier version to go back to.";
 

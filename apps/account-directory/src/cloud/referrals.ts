@@ -160,12 +160,12 @@ export async function referralSummary(env: CloudEnv, account: AccountRow, now: n
 /* ---- Redeem ---- */
 
 const REFUSALS: Record<CloudInviteRefusalReason, { status: number; message: string }> = {
-  invalid_code: { status: 400, message: "That isn't an ADE invite code. Paste the invite link or its 8-character code." },
-  unknown_code: { status: 404, message: "No ADE account has that invite code. Check it and try again." },
+  invalid_code: { status: 400, message: "That isn't a Daex invite code. Paste the invite link or its 8-character code." },
+  unknown_code: { status: 404, message: "No Daex account has that invite code. Check it and try again." },
   own_code: { status: 400, message: "That's your own invite code. Send it to a friend instead." },
   already_referred: { status: 409, message: "This account already used an invite code, and it can't be changed." },
   mutual: { status: 409, message: "That account already used your invite code, so you can't use theirs." },
-  too_late: { status: 403, message: `Invite codes can be entered for ${CLOUD_REFERRAL_ENTER_DAYS} days after you make your ADE account.` },
+  too_late: { status: 403, message: `Invite codes can be entered for ${CLOUD_REFERRAL_ENTER_DAYS} days after you make your Daex account.` },
   rate_limited: { status: 429, message: "Too many tries. Wait a minute and try again." },
 };
 
@@ -360,11 +360,11 @@ export async function rewardAfterCloudChat(env: CloudEnv, userId: string, now: n
 /** `/cloud/referrals` and `/cloud/referrals/redeem`, behind the `/cloud` access gate. Null for any other path. */
 export async function routeReferrals(request: Request, path: string, env: CloudEnv, userId: string, ctx: Ctx): Promise<Response | null> {
   if (path === CLOUD_PATHS.referrals) {
-    if (request.method !== "GET") return fail("not_found", "ADE Cloud has no such route.", 404);
+    if (request.method !== "GET") return fail("not_found", "Daex Cloud has no such route.", 404);
     return json(await referralSummary(env, await loadAccount(env, userId, ctx.now), ctx.now));
   }
   if (path === CLOUD_PATHS.referralsRedeem) {
-    if (request.method !== "POST") return fail("not_found", "ADE Cloud has no such route.", 404);
+    if (request.method !== "POST") return fail("not_found", "Daex Cloud has no such route.", 404);
     return redeem(request, env, userId, ctx);
   }
   return null;

@@ -109,7 +109,7 @@ export async function handleOwnerPhoneBeta(env: CloudEnv, body: Record<string, u
     const shown = <T extends { provider: string | null }>(row: T) => ({ ...row, provider: row.provider ?? "auto" });
     return json({ ok: true, access: phoneAccessSetting(env), users: (rows.results ?? []).map(shown), pending: (pending.results ?? []).map(shown) });
   }
-  if (body.provider !== undefined) return fail("bad_request", "Testers pick their own provider in an ADE beta app now; the list only adds and removes.", 400);
+  if (body.provider !== undefined) return fail("bad_request", "Testers pick their own provider in a Daex beta app now; the list only adds and removes.", 400);
   if (typedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(typedEmail)) return fail("bad_request", "That email isn't valid.", 400);
   if (typedUserId && !/^[A-Za-z0-9_-]{1,100}$/.test(typedUserId)) return fail("bad_request", "That userId isn't valid.", 400);
   let userIds = typedUserId ? [typedUserId] : [];
@@ -120,7 +120,7 @@ export async function handleOwnerPhoneBeta(env: CloudEnv, body: Record<string, u
       // No ADE account has it yet: the email waits for the account that signs up with it.
       if (body.enabled === false) {
         const removed = await env.DB.prepare("delete from cloud_phone_beta_pending where email = ?").bind(typedEmail).run();
-        if ((removed.meta?.changes ?? 0) === 0) return fail("not_found", "No ADE account or waiting tester has that email.", 404);
+        if ((removed.meta?.changes ?? 0) === 0) return fail("not_found", "No Daex account or waiting tester has that email.", 404);
         logCloud("cloud.phone_beta_pending_removed");
         return json({ ok: true, removed: [], pending: true });
       }

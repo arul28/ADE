@@ -149,7 +149,7 @@ async function workspaceOf(env: CloudEnv, userId: string, now: number): Promise<
   const known = await env.DB.prepare("select user_id, external_id, app_id from cloud_phone_revyl where user_id = ?").bind(userId).first<WorkspaceRow>();
   if (known) return known;
   const externalId = externalIdFor(userId);
-  if (!externalId) return fail("phone_unavailable", "The ADE Cloud iPhone can't be used with this account.", 400);
+  if (!externalId) return fail("phone_unavailable", "The Daex Cloud iPhone can't be used with this account.", 400);
   const hash = (await sha256Hex(`ade-revyl:${userId}`)).slice(0, 16);
   const answer = await partner(env, "POST", "/partner/connections", {
     external_account_id: externalId,
@@ -161,7 +161,7 @@ async function workspaceOf(env: CloudEnv, userId: string, now: number): Promise<
   const code = revylErrorOf(answer).code;
   if (answer.status !== 201 && !(answer.status === 409 && code === "already_connected")) {
     reportCloudFailure(`cloud.phone_revyl_connect_failed.${code.replace(/[^A-Za-z0-9_]/g, "").slice(0, 40)}`, { userId, status: answer.status, code }, "cloud-phone");
-    return fail("phone_unavailable", "The ADE Cloud iPhone can't start right now. ADE has been told.", 503);
+    return fail("phone_unavailable", "The Daex Cloud iPhone can't start right now. Daex has been told.", 503);
   }
   // Kept only for an account that still exists: one deleted meanwhile has its connection taken back at once.
   const kept = await env.DB.prepare(`
@@ -172,7 +172,7 @@ async function workspaceOf(env: CloudEnv, userId: string, now: number): Promise<
   if ((kept.meta?.changes ?? 0) === 0 && !(await env.DB.prepare("select 1 from cloud_phone_revyl where user_id = ?").bind(userId).first())) {
     const undone = await partner(env, "DELETE", `/partner/connections/${encodeURIComponent(externalId)}`);
     if (undone.status >= 400 && undone.status !== 404) reportCloudFailure("cloud.phone_revyl_orphan_disconnect_failed", { userId, status: undone.status, code: revylErrorOf(undone).code }, "cloud-phone");
-    return fail("phone_unavailable", "The ADE Cloud iPhone can't be used with this account.", 400);
+    return fail("phone_unavailable", "The Daex Cloud iPhone can't be used with this account.", 400);
   }
   logCloud("cloud.phone_revyl_workspace", { userId, created: answer.status === 201 });
   return { user_id: userId, external_id: externalId, app_id: null };
@@ -321,7 +321,7 @@ async function startRevylPhone(env: CloudEnv, userId: string, device: CloudPhone
     if (started.status === 429) return fail("phone_busy", "Too many phones started in a row. Wait a minute, then try again.", 429);
     // A 5xx, a timeout, or a success with no session id may have made a phone: unknown (502), never a refusal.
     const unknown = started.status >= 500 || started.status < 300;
-    return fail("phone_unavailable", unknown ? "The ADE Cloud iPhone isn't answering right now. Try again in a moment." : `The ADE Cloud iPhone refused that: ${withoutPhoneProviderNames(revylErrorOf(started).message)}`, unknown ? 502 : 400);
+    return fail("phone_unavailable", unknown ? "The Daex Cloud iPhone isn't answering right now. Try again in a moment." : `The Daex Cloud iPhone refused that: ${withoutPhoneProviderNames(revylErrorOf(started).message)}`, unknown ? 502 : 400);
   }
   const read = await readRevylPhone(env, userId, sessionId, named);
   return {
@@ -351,14 +351,14 @@ async function stopRevylPhone(env: CloudEnv, userId: string, phoneId: string): P
  */
 async function revylViewUrl(env: CloudEnv, userId: string, ref: string, origin: string, control: boolean): Promise<{ url: string; points: { width: number; height: number } | null } | Response> {
   const workspace = await knownWorkspace(env, userId);
-  if (!workspace) return fail("phone_not_running", "Your ADE Cloud iPhone isn't running. Start it first.", 409);
+  if (!workspace) return fail("phone_not_running", "Your Daex Cloud iPhone isn't running. Start it first.", 409);
   const answer = await workspaceJson(env, workspace, "GET", `/execution/streaming/worker-connection/${encodeURIComponent(ref)}`);
   const whep = answer.body?.whep_url;
   const socket = answer.body?.worker_ws_url;
   if (answer.status !== 200 || typeof whep !== "string" || !whep.startsWith("https://")) {
-    if (answer.status === 200 && answer.body?.status === "not_ready") return fail("phone_starting", "Your ADE Cloud iPhone is still starting. Try again in a moment.", 409);
+    if (answer.status === 200 && answer.body?.status === "not_ready") return fail("phone_starting", "Your Daex Cloud iPhone is still starting. Try again in a moment.", 409);
     reportCloudFailure("cloud.phone_view_failed.revyl", { userId, status: answer.status, code: revylErrorOf(answer).code }, "cloud-phone");
-    return fail("phone_unavailable", "The ADE Cloud iPhone isn't answering right now. Try again in a moment.", 502);
+    return fail("phone_unavailable", "The Daex Cloud iPhone isn't answering right now. Try again in a moment.", 502);
   }
   const width = Number(answer.body?.device_width);
   const height = Number(answer.body?.device_height);
@@ -571,7 +571,7 @@ function buildCommand(input: { sub: string; scheme: string | null; configuration
     `SCHEME=${shellQuote(input.scheme ?? "")}`,
     "if [ -z \"$SCHEME\" ]; then SCHEME=$(xcodebuild \"$@\" -list 2>/dev/null | awk '/Schemes:/{f=1;next} f&&NF{sub(/^ +/,\"\");print;exit}'); fi",
     "if [ -z \"$SCHEME\" ]; then echo 'No scheme found to build.' >&2; exit 65; fi",
-    "echo \"ADE: building $SCHEME (" + input.configuration + ")\"",
+    "echo \"Daex: building $SCHEME (" + input.configuration + ")\"",
     `xcodebuild "$@" -scheme "$SCHEME" -configuration ${input.configuration} -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$ROOT/build" ARCHS=arm64 CODE_SIGNING_ALLOWED=NO ${input.clean ? "clean " : ""}build`,
   ].join("\n");
 }
@@ -589,13 +589,13 @@ async function routeRevylCall(env: CloudEnv, userId: string, phone: { id: string
     ? Object.fromEntries(Object.entries(body.query as Record<string, unknown>).filter((entry): entry is [string, string] => /^[a-z_]{1,40}$/.test(entry[0]) && typeof entry[1] === "string" && entry[1].length <= 200))
     : {};
   const workspace = await knownWorkspace(env, userId);
-  if (!workspace) return fail("phone_not_running", "Your ADE Cloud iPhone isn't running. Start it first.", 409);
+  if (!workspace) return fail("phone_not_running", "Your Daex Cloud iPhone isn't running. Start it first.", 409);
 
   if (action.startsWith("proxy.")) {
     const name = action.slice("proxy.".length);
     const method = Object.hasOwn(PROXY_ACTIONS, name) ? PROXY_ACTIONS[name] : undefined;
     if (!method) return fail("bad_request", `${action} isn't a cloud iPhone action.`, 400);
-    if (!phone.ref) return fail("phone_starting", "Your ADE Cloud iPhone is still starting. Try again in a moment.", 409);
+    if (!phone.ref) return fail("phone_starting", "Your Daex Cloud iPhone is still starting. Try again in a moment.", 409);
     // Revyl names a recording only when it starts: the phone's row keeps it, so any brain of the account stops it.
     const stopping = name === "stop_screen_recording";
     if (stopping && typeof args.recording_id !== "string") {
@@ -671,7 +671,7 @@ async function routeRevylCall(env: CloudEnv, userId: string, phone: { id: string
       }
     }
     if ((claimed.meta?.changes ?? 0) !== 1) {
-      return fail("phone_busy", "A build is already running on your ADE Cloud iPhone. Wait for it to finish, or stop the phone and start a new one.", 409);
+      return fail("phone_busy", "A build is already running on your Daex Cloud iPhone. Wait for it to finish, or stop the phone and start a new one.", 409);
     }
     const answer = await workspaceJson(env, workspace, "POST", "/apps/remote", {
       body: { build_definition_hash: await sha256Hex(JSON.stringify(recipe)), git_branch_name: "ade", recipe, source: { key, type: "archive" }, timeout_seconds: BUILD_TIMEOUT_SECONDS },
@@ -704,7 +704,7 @@ async function routeRevylCall(env: CloudEnv, userId: string, phone: { id: string
   // build.install: the build's app, into the live phone.
   const version = stringArg(args.version_id);
   if (!version || !UUID.test(version)) return fail("bad_request", "version_id is the build's version.", 400);
-  if (!phone.ref) return fail("phone_starting", "Your ADE Cloud iPhone is still starting. Try again in a moment.", 409);
+  if (!phone.ref) return fail("phone_starting", "Your Daex Cloud iPhone is still starting. Try again in a moment.", 409);
   const build = await workspaceJson(env, workspace, "GET", `/apps/builds/${encodeURIComponent(version)}`, { query: { include_download_url: "true" } });
   if (build.status !== 200 || build.body?.app_id !== app) return fail("bad_request", "That build isn't one of this account's.", 400);
   const named = typeof build.body?.download_url === "string" && build.body.download_url.startsWith("https://") ? build.body.download_url : undefined;
@@ -760,7 +760,7 @@ export const REVYL_PHONE: PhoneProviderServer = {
   startAnswer: async (_env, _session, _userId, now) => ({ token: { token: "", expiresAt: now + TOKEN_MINUTES * 60_000 }, apiBase: "" }),
 
   async view(env, { userId, phone, control, origin, now }) {
-    if (!phone.ref) return fail("phone_starting", "Your ADE Cloud iPhone is still starting. Try again in a moment.", 409);
+    if (!phone.ref) return fail("phone_starting", "Your Daex Cloud iPhone is still starting. Try again in a moment.", 409);
     const view = await revylViewUrl(env, userId, phone.ref, origin, control);
     if (view instanceof Response) return view;
     // The stream link lasts the phone's life; the pane asks again before this.

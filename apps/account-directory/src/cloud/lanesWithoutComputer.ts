@@ -234,7 +234,7 @@ export async function routeLanesWithoutComputer(request: Request, path: string, 
   }
   // A lane a computer still holds is not a lane without one: its saved work stays with it.
   const live = await env.DB.prepare("select 1 as n from cloud_computers where user_id = ? and lane_id = ? and deleted_at is null limit 1").bind(userId, laneId).first<{ n: number }>();
-  if (live) return fail("lane_has_computer", "This lane has a computer on ADE Cloud. Delete the lane instead.", 409);
+  if (live) return fail("lane_has_computer", "This lane has a computer on Daex Cloud. Delete the lane instead.", 409);
   // The lane is gone from ADE Cloud, so its saved work and its chats on every computer go with it
   // (all but what moved to the person's machine). First, and the record last: a delete that fails
   // part way keeps the record, so the same forget again finishes it (each delete finds only what is left).
@@ -244,5 +244,5 @@ export async function routeLanesWithoutComputer(request: Request, path: string, 
 }
 
 function notFound(): Response {
-  return fail("not_found", "ADE Cloud has no such lane.", 404);
+  return fail("not_found", "Daex Cloud has no such lane.", 404);
 }

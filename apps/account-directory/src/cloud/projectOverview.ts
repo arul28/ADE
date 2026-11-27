@@ -80,7 +80,7 @@ export async function handleProjectOverview(url: URL, env: CloudEnv, userId: str
   const origin = projectKeyOf(url.searchParams.get("origin"));
   if (!origin) return fail("bad_request", "Name the project's repository as `origin`.", 400);
   const keys = await userKeys(env, userId, now);
-  if (!keys) return fail("unavailable", "ADE Cloud can't read this project right now. Try again soon.", 503);
+  if (!keys) return fail("unavailable", "Daex Cloud can't read this project right now. Try again soon.", 503);
 
   // Both lists are the account's own, indexed by user (`idx_cloud_computers_user`) and bounded.
   const [computers, kept, chats, sessions, git] = await Promise.all([

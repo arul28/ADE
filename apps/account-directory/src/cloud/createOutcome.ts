@@ -33,7 +33,7 @@ export type CreateComputerExtras = {
   setupDiskGb?: number | null;
 };
 
-export const createInProgress = () => fail("create_in_progress", "ADE Cloud is still making this computer. Try again in a moment.", 409);
+export const createInProgress = () => fail("create_in_progress", "Daex Cloud is still making this computer. Try again in a moment.", 409);
 
 /** The route's answer for a create's outcome: 201, 200 for a replay, 409 while one is in flight, or the refusal. */
 export function createAnswerOf(outcome: CreateComputerOutcome): Response {

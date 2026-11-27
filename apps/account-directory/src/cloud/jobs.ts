@@ -246,7 +246,7 @@ export async function runJob(env: CloudEnv, jobId: string, deps: CloudJobDeps, o
         deps,
         now,
         save: async (patch) => {
-          if (!(await writeJob(env, jobId, leaseId, clock(), { patch }))) throw new Error("ADE Cloud lost track of this job for a moment.");
+          if (!(await writeJob(env, jobId, leaseId, clock(), { patch }))) throw new Error("Daex Cloud lost track of this job for a moment.");
         },
       };
       // An undo left over from a failure or a cancel: tried until nothing is left.

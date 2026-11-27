@@ -155,7 +155,7 @@ export function isDeletedAccountsListRequest(path: string): boolean {
 export async function handleDeletedAccountsList(request: Request, env: { DB: D1Database; CLOUD_EVENT_WAKE_SECRET?: string }): Promise<Response> {
   const proven = presentsEventWakeSecret(request, env);
   if (proven === null) return fail("unavailable", "Deleted accounts are not shared on this server.", 503);
-  if (request.method !== "GET" || !proven) return fail("not_found", "ADE Cloud has no such route.", 404);
+  if (request.method !== "GET" || !proven) return fail("not_found", "Daex Cloud has no such route.", 404);
   const rows = (await env.DB.prepare("select user_id, deleted_at from account_erasures order by deleted_at desc limit ?")
     .bind(DELETED_ACCOUNTS_LIST_MAX).all<{ user_id: string; deleted_at: number }>()).results ?? [];
   return json({ accounts: rows.map((row) => ({ userId: row.user_id, deletedAt: row.deleted_at })) });

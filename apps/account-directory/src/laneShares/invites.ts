@@ -132,7 +132,7 @@ export async function handleInvite(request: Request, env: LaneShareEnv, userId: 
   if (!machineKey || !laneId) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   const preset = parsePreset(body.preset);
   const risk = parseRisk(body.risk);
-  if (!preset || !risk) return badRequest("That access level isn't one ADE offers.");
+  if (!preset || !risk) return badRequest("That access level isn't one Daex offers.");
   const endsAt = parseEndsAt(body.endsAt, now);
   if (endsAt === false) return badRequest("The end date must be in the future and within a year.");
   const projectLabel = parseLabel(body.projectLabel);
@@ -155,7 +155,7 @@ export async function handleInvite(request: Request, env: LaneShareEnv, userId: 
   }
   if (!(await ownsMachine(env, userId, machineKey))) {
     logLaneShare({ event: "lane_share.refused", userId, code: "unknown_machine" });
-    return fail("unknown_machine", "That computer isn't on your ADE account.", 400);
+    return fail("unknown_machine", "That computer isn't on your Daex account.", 400);
   }
   const giverLabel = boundedDisplayText(giver.displayName, MAX_GIVER_LABEL);
   const fields = { receiverEmail, repoKey, machineKey, laneId, preset, risk, endsAt: endsAt ?? null, projectLabel, laneLabel, giverLabel };

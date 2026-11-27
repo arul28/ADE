@@ -35,7 +35,7 @@ const SHAPES = new Set(["2x4", "4x8", "4x16", "4x32"]);
 /** The old full read's page cap, for a relay without the narrow item read. */
 const LEGACY_PAGES = 4;
 
-const unavailable = () => fail("unavailable", "ADE can't reach your account's agent limits right now. Try again soon.", 503);
+const unavailable = () => fail("unavailable", "Daex can't reach your account's agent limits right now. Try again soon.", 503);
 
 /** The stored item, `null` when none is stored, or `undefined` when the vault didn't answer. */
 async function readStored(env: RelayEnv, authorization: string): Promise<VaultRecord | null | undefined> {
@@ -80,7 +80,7 @@ function changesOf(raw: unknown): Partial<CloudAgentLimitsValue> | string {
     out.machinesPerDay = value;
   }
   if ("maxShape" in input) {
-    if (typeof input.maxShape !== "string" || !SHAPES.has(input.maxShape)) return "maxShape must be one of ADE Cloud's sizes.";
+    if (typeof input.maxShape !== "string" || !SHAPES.has(input.maxShape)) return "maxShape must be one of Daex Cloud's sizes.";
     out.maxShape = input.maxShape as CloudAgentLimitsValue["maxShape"];
   }
   if ("extraDiskMonthCents" in input) {
@@ -111,16 +111,16 @@ function mergedValue(stored: VaultRecord | null, changes: Partial<CloudAgentLimi
 /** `/cloud/limits`. */
 export async function routeCloudLimits(request: Request, env: RelayEnv): Promise<Response> {
   const authorization = request.headers.get("authorization");
-  if (!authorization) return fail("unauthorized", "Sign in to ADE to use ADE Cloud.", 401);
+  if (!authorization) return fail("unauthorized", "Sign in to Daex to use Daex Cloud.", 401);
   if (!relayFetch(env)) return unavailable();
   if (request.method === "GET") {
     const stored = await readStored(env, authorization);
     if (stored === undefined) return unavailable();
     const state = stateOf(stored);
-    if (!state) return fail("limits_unreadable", "Your agent limits were saved by a newer ADE. Update ADE to see or change them.", 409);
+    if (!state) return fail("limits_unreadable", "Your agent limits were saved by a newer Daex. Update Daex to see or change them.", 409);
     return json(state);
   }
-  if (request.method !== "PUT") return fail("not_found", "ADE Cloud has no such route.", 404);
+  if (request.method !== "PUT") return fail("not_found", "Daex Cloud has no such route.", 404);
 
   const body = await readJson(request);
   if (!body) return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
@@ -137,7 +137,7 @@ export async function routeCloudLimits(request: Request, env: RelayEnv): Promise
     return fail("limits_changed", "Your agent limits changed on another device. Look at them again, then save.", 409, { state: stateOf(stored) });
   }
   if (stored && !limitsOf(stored.value)) {
-    return fail("limits_unreadable", "Your agent limits were saved by a newer ADE. Update ADE to see or change them.", 409);
+    return fail("limits_unreadable", "Your agent limits were saved by a newer Daex. Update Daex to see or change them.", 409);
   }
   const written = await writeVaultItem(env, authorization, {
     scope: SCOPE,

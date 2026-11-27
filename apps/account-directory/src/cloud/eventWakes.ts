@@ -99,9 +99,9 @@ async function topicsInOwnWorkspace(env: RelayEnv, request: Request, computer: C
 
 /** `PUT /cloud/instances/:id/event-wakes {topics}`: the computer's whole list, replaced. An empty list removes it. */
 export async function routeEventWakeSubscription(request: Request, env: RelayEnv, userId: string, instanceId: string, now: number): Promise<Response> {
-  if (request.method !== "PUT") return fail("not_found", "ADE Cloud has no such route.", 404);
+  if (request.method !== "PUT") return fail("not_found", "Daex Cloud has no such route.", 404);
   const computer = await ownedComputer(env, userId, instanceId);
-  if (!computer) return fail("not_found", "ADE Cloud has no such computer.", 404);
+  if (!computer) return fail("not_found", "Daex Cloud has no such computer.", 404);
   const body = await readJson(request);
   if (!body) return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
   const asked = eventWakeTopicsOf(body.topics, userId);
@@ -114,7 +114,7 @@ export async function routeEventWakeSubscription(request: Request, env: RelayEnv
   ]);
   logCloud("cloud.event_wakes_set", { instanceId, topics: topics.length, ...(settled ? {} : { leftOut: asked.length - topics.length }) });
   // Not a success, so the computer doesn't record the list as sent and sends it again at its next rest.
-  if (!settled) return fail("linear_workspace_unchecked", "ADE couldn't match a Linear workspace to this lane's Linear connection yet. It checks again next time.", 409);
+  if (!settled) return fail("linear_workspace_unchecked", "Daex couldn't match a Linear workspace to this lane's Linear connection yet. It checks again next time.", 409);
   return json({ topics } satisfies CloudEventWakesResult);
 }
 
@@ -151,7 +151,7 @@ export function isInternalEventWakeRequest(path: string): boolean {
 export async function handleInternalEventWake(request: Request, env: EventWakeEnv, wake: EventWakeComputer, now: number): Promise<Response> {
   const proven = presentsEventWakeSecret(request, env);
   if (proven === null) return fail("unavailable", "Event wakes are not set up on this server.", 503);
-  if (request.method !== "POST" || !proven) return fail("not_found", "ADE Cloud has no such route.", 404);
+  if (request.method !== "POST" || !proven) return fail("not_found", "Daex Cloud has no such route.", 404);
   const body = await readJson(request);
   const topic = typeof body?.topic === "string" ? body.topic : "";
   if (!TOPIC_PATTERN.test(topic)) return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);

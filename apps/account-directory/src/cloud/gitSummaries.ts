@@ -24,7 +24,7 @@ import { logCloud, type CloudEnv } from "./store";
 const BODY_OVERHEAD_BYTES = 8 * 1024;
 const MAX_LIST = 200;
 
-const notFound = () => fail("not_found", "ADE Cloud has no Git summary for that lane.", 404);
+const notFound = () => fail("not_found", "Daex Cloud has no Git summary for that lane.", 404);
 const unavailable = () => fail("unavailable", "Saved Git summaries aren't available right now. Try again soon.", 503);
 const unreadable = () => fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
 
@@ -107,7 +107,7 @@ async function handlePut(request: Request, env: CloudEnv, userId: string, machin
   const body = await readCappedJson(request, CLOUD_GIT_SUMMARY_MAX_BYTES + BODY_OVERHEAD_BYTES);
   if (!body.ok) return body.tooLarge ? fail("summary_too_large", "That Git summary is too large to save.", 413) : unreadable();
   const computer = await callingComputer(env, request, userId, body.value.instanceId);
-  if (!computer) return fail("not_found", "ADE Cloud has no such computer.", 404);
+  if (!computer) return fail("not_found", "Daex Cloud has no such computer.", 404);
   const summary = readSummaryInput(body.value.summary);
   if (!summary) return unreadable();
   const projectKey = text(body.value.projectKey, 300);

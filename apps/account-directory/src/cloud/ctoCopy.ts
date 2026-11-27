@@ -115,12 +115,12 @@ export async function decodeCtoCopy(raw: string | null): Promise<CloudCtoCopy | 
 }
 
 export async function routeCtoCopy(request: Request, url: URL, env: RelayEnv): Promise<Response> {
-  if (request.method !== "GET") return fail("not_found", "ADE Cloud has no such route.", 404);
+  if (request.method !== "GET") return fail("not_found", "Daex Cloud has no such route.", 404);
   const authorization = request.headers.get("authorization");
-  if (!authorization) return fail("unauthorized", "Sign in to ADE to use ADE Cloud.", 401);
-  if (!relayFetch(env)) return fail("unavailable", "ADE can't reach your CTO's copy right now. Try again soon.", 503);
+  if (!authorization) return fail("unauthorized", "Sign in to Daex to use Daex Cloud.", 401);
+  if (!relayFetch(env)) return fail("unavailable", "Daex can't reach your CTO's copy right now. Try again soon.", 503);
   const scope = accountRepoScopeKey(url.searchParams.get("origin"));
-  if (!scope) return fail("bad_request", "That isn't a repository ADE can name.", 400);
+  if (!scope) return fail("bad_request", "That isn't a repository Daex can name.", 400);
 
   const ref = { scope, kind: CTO_ACCOUNT_COPY_VAULT_KIND, key: CTO_ACCOUNT_COPY_VAULT_KEY };
   let stored: VaultRecord | null;
@@ -129,10 +129,10 @@ export async function routeCtoCopy(request: Request, url: URL, env: RelayEnv): P
     stored = read.value;
   } else if (read.reason === "no_route") {
     const rows = await readVaultScope(env, authorization, scope, LEGACY_PAGES, { partial: true });
-    if (!rows) return fail("unavailable", "ADE can't reach your CTO's copy right now. Try again soon.", 503);
+    if (!rows) return fail("unavailable", "Daex can't reach your CTO's copy right now. Try again soon.", 503);
     stored = rows.find((row) => row.kind === ref.kind && row.key === ref.key && !row.deleted) ?? null;
   } else {
-    return fail("unavailable", "ADE can't reach your CTO's copy right now. Try again soon.", 503);
+    return fail("unavailable", "Daex can't reach your CTO's copy right now. Try again soon.", 503);
   }
   if (!stored) return json({ available: false, copy: null } satisfies CloudCtoCopySummary);
   const copy = await decodeCtoCopy(stored.value);

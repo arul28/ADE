@@ -143,7 +143,7 @@ export async function handleLaneShareRequest(request: Request, env: LaneShareEnv
 
   if (request.method === "OPTIONS") {
     if (!route) return notFound();
-    if (!corsOrigin) return fail("origin_not_allowed", "This origin can't call ADE lane sharing.", 403);
+    if (!corsOrigin) return fail("origin_not_allowed", "This origin can't call Daex lane sharing.", 403);
     const methods = methodsFor(route);
     const wanted = request.headers.get("access-control-request-method")?.toUpperCase() ?? "";
     if (!methods.includes(wanted)) return fail("bad_request", "That method isn't allowed here.", 405);
@@ -163,7 +163,7 @@ export async function handleLaneShareRequest(request: Request, env: LaneShareEnv
       },
     });
   }
-  if (requestOrigin && !corsOrigin) return fail("origin_not_allowed", "This origin can't call ADE lane sharing.", 403);
+  if (requestOrigin && !corsOrigin) return fail("origin_not_allowed", "This origin can't call Daex lane sharing.", 403);
 
   const response = await routeRequest(request, env, route);
   return corsOrigin ? withCors(response, corsOrigin) : response;
@@ -174,8 +174,8 @@ async function routeRequest(request: Request, env: LaneShareEnv, route: Route | 
   const caller = await authenticate(request, env);
   if (!caller.ok) {
     return caller.reason === "authentication unavailable"
-      ? fail("unavailable", "ADE can't check your sign-in right now. Try again soon.", 503)
-      : fail("unauthorized", "Sign in to ADE to share lanes.", 401);
+      ? fail("unavailable", "Daex can't check your sign-in right now. Try again soon.", 503)
+      : fail("unauthorized", "Sign in to Daex to share lanes.", 401);
   }
   const userId = caller.userId;
   const now = Date.now();
@@ -355,7 +355,7 @@ async function handleEdit(request: Request, env: LaneShareEnv, userId: string, i
   if (endsAt === false) return badRequest("The end date must be in the future and within a year.");
   const preset = body.preset === undefined ? undefined : parsePreset(body.preset);
   const risk = body.risk === undefined ? undefined : parseRisk(body.risk);
-  if (preset === null || risk === null) return badRequest("That access level isn't one ADE offers.");
+  if (preset === null || risk === null) return badRequest("That access level isn't one Daex offers.");
   const state = effectiveState(row, now);
   if (state !== "pending" && state !== "active") return shareClosed();
   const result = await env.DB.prepare(`
@@ -383,7 +383,7 @@ async function handleMove(request: Request, env: LaneShareEnv, userId: string, i
   if (!row || row.giver_user_id !== userId) return notFound();
   const machineKey = parseMachineKey(body?.machineKey);
   if (!machineKey) return badRequest(UNREADABLE_REQUEST_MESSAGE);
-  if (!(await ownsMachine(env, userId, machineKey))) return fail("unknown_machine", "That computer isn't on your ADE account.", 400);
+  if (!(await ownsMachine(env, userId, machineKey))) return fail("unknown_machine", "That computer isn't on your Daex account.", 400);
   const state = effectiveState(row, now);
   if (state !== "pending" && state !== "active") return shareClosed();
   await settleLane(env, userId, row.lane_id, now);

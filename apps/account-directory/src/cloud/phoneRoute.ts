@@ -59,8 +59,8 @@ export const phoneBusy = (plan: "free" | "paid" = "free"): Response =>
   fail(
     "phone_busy",
     plan === "free"
-      ? "The ADE Cloud iPhone is busy right now because of heavy use. Try again in a few minutes, or move to a paid plan for priority access."
-      : "The ADE Cloud iPhone is busy right now because of heavy use. Try again in a few minutes.",
+      ? "The Daex Cloud iPhone is busy right now because of heavy use. Try again in a few minutes, or move to a paid plan for priority access."
+      : "The Daex Cloud iPhone is busy right now because of heavy use. Try again in a few minutes.",
     503,
   );
 
@@ -106,10 +106,10 @@ export function routeOf(
   { picked, free, revylOpen = true }: { picked: CloudPhoneProvider | null; free: boolean; revylOpen?: boolean },
   drives: (provider: CloudPhoneProvider) => boolean,
 ): PhoneRoute | Response {
-  const unavailable = (): Response => fail("phone_unavailable", "The ADE Cloud iPhone can't start right now. Try again soon.", 503);
+  const unavailable = (): Response => fail("phone_unavailable", "The Daex Cloud iPhone can't start right now. Try again soon.", 503);
   if (picked) {
     if (!PHONE_PROVIDERS[picked].canStart(env)) return unavailable();
-    if (!drives(picked)) return fail("phone_needs_update", "Update ADE to use your ADE Cloud iPhone.", 409);
+    if (!drives(picked)) return fail("phone_needs_update", "Update Daex to use your Daex Cloud iPhone.", 409);
     return { order: [picked], reason: "choice", busy: null };
   }
   const nomacOnly = free || !revylOpen;
@@ -147,7 +147,7 @@ export function heldToUnsureStart(route: PhoneRoute, account: UnsureStart, now: 
   const unsure = account.phone_start_unsure;
   if (!unsureStartHeld(account, now) || !isCloudPhoneProvider(unsure)) return route;
   if (route.order.includes(unsure)) return { ...route, order: [unsure] };
-  return fail("phone_unavailable", "Your last ADE Cloud iPhone start didn't finish answering, and that phone may still be coming up. Try again in a few minutes.", 503);
+  return fail("phone_unavailable", "Your last Daex Cloud iPhone start didn't finish answering, and that phone may still be coming up. Try again in a few minutes.", 503);
 }
 
 type StartInput = Parameters<PhoneProviderServer["start"]>[1];
@@ -185,7 +185,7 @@ async function startAlongRoute(env: CloudEnv, route: PhoneRoute, userId: string,
   for (const [index, provider] of route.order.entries()) {
     const started = await PHONE_PROVIDERS[provider].start(env, input).catch((error: unknown) => {
       reportCloudFailure("cloud.phone_start_threw", { userId, provider, message: error instanceof Error ? error.message : "unknown" }, "cloud-phone");
-      return fail("phone_unavailable", "The ADE Cloud iPhone isn't answering right now. Try again in a moment.", 502);
+      return fail("phone_unavailable", "The Daex Cloud iPhone isn't answering right now. Try again in a moment.", 502);
     });
     if (!(started instanceof Response)) {
       // The phone is known now (saved by the caller): a lost start before it no longer holds the route.
@@ -202,5 +202,5 @@ async function startAlongRoute(env: CloudEnv, route: PhoneRoute, userId: string,
     if (!next) break;
     logCloud("cloud.phone_start_failover", { userId, from: provider, to: next, status: started.status });
   }
-  return refused ?? fail("phone_unavailable", "The ADE Cloud iPhone can't start right now. Try again soon.", 503);
+  return refused ?? fail("phone_unavailable", "The Daex Cloud iPhone can't start right now. Try again soon.", 503);
 }

@@ -50,7 +50,7 @@ import { deleteComputer, isPendingId, logCloud, ownedComputer, reportCloudFailur
 export const COPY_JOB_KIND = "copy";
 
 const SERVER_COPY_UNAVAILABLE = "server_copy_unavailable";
-const SERVER_COPY_UNAVAILABLE_MESSAGE = "Copying a computer from here needs the next ADE update. Try again after it ships.";
+const SERVER_COPY_UNAVAILABLE_MESSAGE = "Copying a computer from here needs the next Daex update. Try again after it ships.";
 const COPY_NEEDS_UPDATE = "copy_needs_update";
 
 /** The original's hold on sleep while it is forked (`cloudHoldCommand`); it expires by itself. */
@@ -117,7 +117,7 @@ function paramsOf(job: JobRow): CopyParams {
   const maker = raw.madeByAgent;
   return {
     sourceInstanceId: typeof raw.sourceInstanceId === "string" ? raw.sourceInstanceId : job.source_instance_id ?? "",
-    name: typeof raw.name === "string" && raw.name ? raw.name : "ADE computer",
+    name: typeof raw.name === "string" && raw.name ? raw.name : "Daex computer",
     type: raw.type === "vm" ? "vm" : "default",
     cpu: typeof raw.cpu === "number" ? raw.cpu : 2,
     memoryGb: typeof raw.memoryGb === "number" ? raw.memoryGb : 4,
@@ -190,7 +190,7 @@ async function hold(env: CloudEnv, job: JobRow, ctx: JobContext, params: CopyPar
   const source = await sourceOf(env, job, params);
   if (!source) return SOURCE_GONE;
   const instance = await ctx.provider.getInstance(source.instance_id);
-  const next: StepResult = { kind: "next", step: "fork", patch: { message: `Copying ${sourceNameOf(job)} on ADE Cloud…` } };
+  const next: StepResult = { kind: "next", step: "fork", patch: { message: `Copying ${sourceNameOf(job)} on Daex Cloud…` } };
   if (instance.status === "running") {
     // Noted before the hold: whatever happens next, an undo lets it sleep again.
     const facts = withFacts(job, { sourceHeld: true });
@@ -200,20 +200,20 @@ async function hold(env: CloudEnv, job: JobRow, ctx: JobContext, params: CopyPar
   }
   if (instance.status === "sleeping" || instance.status === "stopped") return next;
   if (SOURCE_SETTLING.has(instance.status) && ctx.now - job.created_at <= SOURCE_WAIT_MAX_MS) return { kind: "wait", delayMs: SOURCE_POLL_MS };
-  return { kind: "fail", error: `it is ${instance.status}; ADE Cloud copies a computer that is running, asleep or stopped.` };
+  return { kind: "fail", error: `it is ${instance.status}; Daex Cloud copies a computer that is running, asleep or stopped.` };
 }
 
 async function fork(env: CloudEnv, job: JobRow, ctx: JobContext, params: CopyParams): Promise<StepResult> {
   const source = await sourceOf(env, job, params);
   if (!source) return SOURCE_GONE;
-  if (!ctx.deps.forkComputer) throw new Error("ADE Cloud can't copy a computer right now.");
+  if (!ctx.deps.forkComputer) throw new Error("Daex Cloud can't copy a computer right now.");
   const launchId = job.target_launch_id;
-  if (!launchId) return { kind: "fail", error: "ADE Cloud lost track of this copy." };
+  if (!launchId) return { kind: "fail", error: "Daex Cloud lost track of this copy." };
   const size = cloudSizeFor(params.type, params.cpu, params.memoryGb);
   const ready = await prepareCopyLaunch(env, job.user_id, launchId, {
     sizeId: size?.tier ?? null, type: params.type, name: params.name, copiedFrom: source.instance_id,
   }, ctx.now);
-  if (!ready) return { kind: "fail", error: "ADE Cloud can't sign a copy in right now. Try again soon." };
+  if (!ready) return { kind: "fail", error: "Daex Cloud can't sign a copy in right now. Try again soon." };
   const instance = await ctx.provider.getInstance(source.instance_id);
   const metadata = copiedComputerMetadata(instance.metadata, {
     ade_copied_from: source.instance_id,
@@ -232,7 +232,7 @@ async function fork(env: CloudEnv, job: JobRow, ctx: JobContext, params: CopyPar
   if (outcome.kind === "in_progress") return { kind: "wait", delayMs: IN_PROGRESS_POLL_MS };
   if (outcome.kind === "refused") {
     const body = await outcome.response.json().catch(() => null) as { error?: { message?: unknown } } | null;
-    return { kind: "fail", error: typeof body?.error?.message === "string" ? body.error.message : "ADE Cloud couldn't copy the computer." };
+    return { kind: "fail", error: typeof body?.error?.message === "string" ? body.error.message : "Daex Cloud couldn't copy the computer." };
   }
   if (outcome.kind === "replayed") await bindCopyLaunchStatement(env, launchId, outcome.instance.id, ctx.now).run();
   logCloud("cloud.copy_forked", { jobId: job.job_id, sourceId: source.instance_id, instanceId: outcome.instance.id, replay: outcome.kind === "replayed" });
@@ -241,7 +241,7 @@ async function fork(env: CloudEnv, job: JobRow, ctx: JobContext, params: CopyPar
     step: "boot",
     patch: {
       target_instance_id: outcome.instance.id,
-      message: "ADE Cloud is copying the disk. A big one takes a few minutes…",
+      message: "Daex Cloud is copying the disk. A big one takes a few minutes…",
       facts_json: withFacts(job, { forkStartedAt }),
     },
   };
@@ -271,8 +271,8 @@ async function boot(job: JobRow, ctx: JobContext, params: CopyParams): Promise<S
       patch: { source_instance_id: null, state: "joining", message: joiningMessage(params), facts_json: withFacts(job, { holdReleased: true, forkMs }) },
     };
   }
-  if (status === "failed") return { kind: "fail", error: `ADE Cloud couldn't make the copy${reason ? `: ${reason}` : "."}` };
-  if (ctx.now - (job.step_started_at ?? ctx.now) > FORK_READY_MAX_MS) return { kind: "fail", error: "ADE Cloud didn't finish making the copy in time." };
+  if (status === "failed") return { kind: "fail", error: `Daex Cloud couldn't make the copy${reason ? `: ${reason}` : "."}` };
+  if (ctx.now - (job.step_started_at ?? ctx.now) > FORK_READY_MAX_MS) return { kind: "fail", error: "Daex Cloud didn't finish making the copy in time." };
   return { kind: "wait", delayMs: FORK_POLL_MS };
 }
 
@@ -353,7 +353,7 @@ async function runCopyStep(env: CloudEnv, job: JobRow, ctx: JobContext): Promise
     case "hand": return await hand(env, job, ctx, params);
     case "join": return await join(env, job, ctx, params);
     case "name": return await name(env, job, params);
-    default: return { kind: "fail", error: "ADE Cloud lost track of this copy." };
+    default: return { kind: "fail", error: "Daex Cloud lost track of this copy." };
   }
 }
 
@@ -408,7 +408,7 @@ async function undoCopy(env: CloudEnv, job: JobRow, ctx: JobContext, why: "faile
 
 /** Why a copy failed, as one clause ending in a stop. */
 function failureClause(error: string): string {
-  const why = /^ADE\b/.test(error) ? error : `${error.charAt(0).toLowerCase()}${error.slice(1)}`;
+  const why = /^(?:Daex|ADE)\b/.test(error) ? error : `${error.charAt(0).toLowerCase()}${error.slice(1)}`;
   return /[.!?…]$/.test(why) ? why : `${why}.`;
 }
 
@@ -432,7 +432,7 @@ async function keepSignedInCopy(env: CloudEnv, job: JobRow, ctx: JobContext, why
     });
     return;
   }
-  const sentence = `ADE couldn't finish copying ${source}: ${failureClause(factsOf(job).failure ?? "something went wrong")} ${params.name} had already signed in, so ADE kept it. ${source} is as it was.`;
+  const sentence = `Daex couldn't finish copying ${source}: ${failureClause(factsOf(job).failure ?? "something went wrong")} ${params.name} had already signed in, so Daex kept it. ${source} is as it was.`;
   await ctx.save({ message: sentence, error: sentence, ...(machineKey ? { target_machine_key: machineKey } : {}) });
 }
 
@@ -440,7 +440,7 @@ registerJobKind(COPY_JOB_KIND, {
   run: runCopyStep,
   failed: (job, error) => {
     const tail = job.target_instance_id ? `${sourceNameOf(job)} is as it was, and the copy was deleted.` : `${sourceNameOf(job)} is as it was.`;
-    const sentence = `ADE couldn't copy ${sourceNameOf(job)}: ${failureClause(error)} ${tail}`;
+    const sentence = `Daex couldn't copy ${sourceNameOf(job)}: ${failureClause(error)} ${tail}`;
     // The bare reason, for an undo that keeps a copy that signed in meanwhile.
     return { state: "failed", message: sentence, error: sentence, approval_url: null, facts_json: withFacts(job, { failure: error }) };
   },
@@ -493,7 +493,7 @@ function copySizeOf(source: ComputerRow, sizeId: unknown, resources: unknown): C
   const kind = type === "vm" ? "full computer" : "standard computer";
   if (sizeId != null) {
     const asked = cloudSizeForTier(sizeId as CloudTierId);
-    if (!asked) return "That size isn't one ADE Cloud offers.";
+    if (!asked) return "That size isn't one Daex Cloud offers.";
     if (asked.type !== type) return `A copy is a ${kind}, like the original. Use Move to change its kind.`;
     return asked;
   }
@@ -501,7 +501,7 @@ function copySizeOf(source: ComputerRow, sizeId: unknown, resources: unknown): C
     const shape = typeof resources === "object" ? resources as { cpu?: unknown; memoryGb?: unknown } : {};
     return cloudSizeFor(type, shape.cpu, shape.memoryGb) ?? `That size isn't a ${kind}'s.`;
   }
-  return cloudSizeFor(type, source.cpu, source.memory_gb) ?? "That size isn't one ADE Cloud offers.";
+  return cloudSizeFor(type, source.cpu, source.memory_gb) ?? "That size isn't one Daex Cloud offers.";
 }
 
 /** `POST /cloud/instances/:id/copy`. */
@@ -520,7 +520,7 @@ export async function handleCopyStart(request: Request, env: CloudEnv, source: C
     return json(copyRecordOf(existing), 200);
   }
   const origin = body.origin == null ? "person" : typeof body.origin === "string" && ORIGINS.has(body.origin) ? body.origin : null;
-  if (!origin) return badRequest("That origin isn't one ADE knows.");
+  if (!origin) return badRequest("That origin isn't one Daex knows.");
   if (body.name != null && typeof body.name !== "string") return badRequest(UNREADABLE_REQUEST_MESSAGE);
   const madeByChat = body.madeByChat == null ? null : shortString(body.madeByChat, 128);
   if (body.madeByChat != null && !madeByChat) return badRequest(UNREADABLE_REQUEST_MESSAGE);
@@ -530,7 +530,7 @@ export async function handleCopyStart(request: Request, env: CloudEnv, source: C
   const sourceName = source.name ?? source.instance_id;
   // The fork runs the original's ADE: one older than the switch's never reads the file.
   if (source.ade_version && !adeVersionAtLeast(source.ade_version, minVersion)) {
-    return fail(COPY_NEEDS_UPDATE, `${sourceName} runs an older ADE than a copy from here needs. Update it, then copy it again.`, 409);
+    return fail(COPY_NEEDS_UPDATE, `${sourceName} runs an older Daex than a copy from here needs. Update it, then copy it again.`, 409);
   }
   const size = copySizeOf(source, body.sizeId, body.resources);
   if (typeof size === "string") return badRequest(size);
@@ -541,15 +541,15 @@ export async function handleCopyStart(request: Request, env: CloudEnv, source: C
   };
   const refused = await deps.refusal(source, { resources: { cpu: size.cpu, memory: size.memoryGb }, metadata: madeBy });
   if (refused) return refused;
-  if (!deps.provider) return fail("unavailable", "ADE Cloud can't copy a computer right now. Try again soon.", 503);
+  if (!deps.provider) return fail("unavailable", "Daex Cloud can't copy a computer right now. Try again soon.", 503);
   if (!env.CLOUD_LAUNCH_JOIN_KEY?.trim()) {
     reportCloudFailure("cloud.launch_join_key_missing");
-    return fail("unavailable", "ADE Cloud can't copy a computer right now. Try again soon.", 503);
+    return fail("unavailable", "Daex Cloud can't copy a computer right now. Try again soon.", 503);
   }
 
   const params: CopyParams = {
     sourceInstanceId: source.instance_id,
-    name: boundedDisplayText(body.name, 60) ?? boundedDisplayText(`${sourceName} copy`, 60) ?? "ADE computer copy",
+    name: boundedDisplayText(body.name, 60) ?? boundedDisplayText(`${sourceName} copy`, 60) ?? "Daex computer copy",
     type: size.type === "vm" ? "vm" : "default",
     cpu: size.cpu,
     memoryGb: size.memoryGb,
@@ -563,7 +563,7 @@ export async function handleCopyStart(request: Request, env: CloudEnv, source: C
       values (?, ?, ?, ?, ?, ?, ?, ?, 'copying', 'hold', ?, '{}', ?, ?, ?, ?)
     `).bind(
       copyId, COPY_JOB_KIND, source.user_id, source.instance_id, sourceName, source.machine_key, crypto.randomUUID(),
-      JSON.stringify(params), `Copying ${sourceName} on ADE Cloud…`, now, now, now, now + JOB_RECORD_TTL_MS,
+      JSON.stringify(params), `Copying ${sourceName} on Daex Cloud…`, now, now, now, now + JOB_RECORD_TTL_MS,
     ).run();
   } catch (error) {
     // The same id got in first, or another job holds this computer (one live job per computer).
@@ -582,7 +582,7 @@ export async function handleCopyStart(request: Request, env: CloudEnv, source: C
 
 /** `GET /cloud/copies`, `GET /cloud/copies/:id` (a watched copy runs its due step after the answer), `DELETE /cloud/copies/:id` (cancel). */
 export async function routeCopies(request: Request, path: string, env: CloudEnv, userId: string, deps: Omit<CopyRouteDeps, "refusal">): Promise<Response> {
-  const notFound = () => fail("not_found", "ADE Cloud has no such copy.", 404);
+  const notFound = () => fail("not_found", "Daex Cloud has no such copy.", 404);
   if (path === "/cloud/copies") {
     if (request.method !== "GET") return notFound();
     const rows = (await env.DB.prepare(`

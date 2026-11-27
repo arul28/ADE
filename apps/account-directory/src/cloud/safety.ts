@@ -318,7 +318,7 @@ const textField = (value: unknown, max: number): string | null =>
  * can never reach them. 503 while `CLOUD_OWNER_TOKEN` is unset.
  */
 export async function handleCloudOwnerRequest(request: Request, env: CloudEnv, path: string, deps: { provider: CloudProvider | null; now: number; waitUntil?: CloudWaitUntil }): Promise<Response> {
-  if (request.method !== "POST") return fail("not_found", "ADE Cloud has no such route.", 404);
+  if (request.method !== "POST") return fail("not_found", "Daex Cloud has no such route.", 404);
   const allowed = await ownerTokenMatches(env, request);
   if (allowed == null) return fail("unavailable", "The owner routes aren't set up.", 503);
   if (!allowed) {

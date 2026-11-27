@@ -314,13 +314,13 @@ export async function githubRepoVisibility(origin: string): Promise<RepoVisibili
 /** The plain sentence a refused launch gives (the desktop's `cloudGitPreflight`). */
 export function connectGitHubSentence(origin: string): string {
   const name = origin.replace(/^github\.com\//, "");
-  return `${name} isn't public on GitHub, and your ADE account has no GitHub sign-in a cloud computer can clone it with. Connect GitHub in Settings › GitHub so your sign-in follows your ADE account, then send again.`;
+  return `${name} isn't public on GitHub, and your Daex account has no GitHub sign-in a cloud computer can clone it with. Connect GitHub in Settings › GitHub so your sign-in follows your Daex account, then send again.`;
 }
 
 /** The plain sentence a launch refused for a missing App installation gives. */
 export function giveAdeAccessSentence(origin: string): string {
   const [, owner = "", repo = ""] = origin.split("/");
-  return `Give ADE access to ${owner}: install the ADE GitHub App on ${owner} with ${repo} selected, then send again.`;
+  return `Give Daex access to ${owner}: install the Daex GitHub App on ${owner} with ${repo} selected, then send again.`;
 }
 
 export type ServerGitCheck = { ok: true } | { ok: false; code: "git_credential_missing" | "github_app_not_installed"; message: string; installUrl?: string };
