@@ -979,6 +979,73 @@ describe("cloud keep awake", () => {
       fs.rmSync(home, { recursive: true, force: true });
     }
   });
+  // Typing from any client keeps an awake computer up, so it never sleeps
+  // under someone writing a reply; a client that never stops sending typing
+  // (a stuck key, a bug) must not bill the account all day.
+  it("sleeps three minutes after the last keystroke, and stops counting typing 20 minutes after the last real work", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cloud-typing-"));
+    const minute = 60_000;
+    let clock = 1_000_000;
+    let turnRunning = true;
+    const askedAt: number[] = [];
+    const keepAwake = createCloudKeepAwake({
+      env: { ADE_CLOUD_INSTANCE_ID: "thisbox001" },
+      adeHome: home,
+      intervalMs: minute,
+      now: () => clock,
+      readBusy: async () => ({ busy: turnRunning, reasons: turnRunning ? ["chat"] : [] }),
+      requestIdleSleep: async () => {
+        askedAt.push(clock);
+      },
+    });
+    try {
+      // A turn ran and ended: real work at `workEnded`.
+      await keepAwake.tick();
+      const workEnded = clock;
+      turnRunning = false;
+
+      // Typing a reply for 10 minutes: never asked to sleep.
+      for (let i = 0; i < 10; i += 1) {
+        clock += minute;
+        expect(keepAwake.noteTyping()).toBe(true);
+        await keepAwake.tick();
+      }
+      expect(askedAt).toEqual([]);
+
+      // Stops typing (walked away with the chat open): asked to sleep three to
+      // four minutes later (the first idle check still counts the last use).
+      const lastKey = clock;
+      for (let i = 0; i < 6 && askedAt.length === 0; i += 1) {
+        clock += minute;
+        await keepAwake.tick();
+      }
+      expect(askedAt).toHaveLength(1);
+      expect(askedAt[0]).toBeGreaterThanOrEqual(lastKey + 3 * minute);
+      expect(askedAt[0]).toBeLessThanOrEqual(lastKey + 4 * minute);
+
+      // A send wakes it again: real work restarts the guard.
+      turnRunning = true;
+      clock += 30 * minute;
+      await keepAwake.tick();
+      const sentAt = clock;
+      turnRunning = false;
+
+      // Typing that never stops counts only until 20 minutes after that work.
+      for (let i = 0; i < 30 && askedAt.length === 1; i += 1) {
+        clock += minute;
+        keepAwake.noteTyping();
+        await keepAwake.tick();
+      }
+      expect(keepAwake.noteTyping()).toBe(false);
+      expect(askedAt).toHaveLength(2);
+      expect(askedAt[1]).toBeGreaterThan(sentAt + 20 * minute);
+      expect(askedAt[1]).toBeLessThanOrEqual(sentAt + 25 * minute);
+      expect(workEnded).toBeLessThan(sentAt);
+    } finally {
+      keepAwake.dispose();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
   // The server wakes a sleeping computer only for a timer it holds: a check
   // that sleeps before it sends a timer it just found runs hours late.
   it("sends a timer found during the rest save before it sleeps", async () => {

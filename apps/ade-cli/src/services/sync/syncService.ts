@@ -267,6 +267,7 @@ type SyncServiceArgs = {
     | null;
   projectCatalogProvider?: SyncProjectCatalogProvider;
   onRemoteFileWrite?: () => void;
+  onRemoteUse?: (use: { action: string; args: unknown } | "terminal_input") => void;
   /** Lane sharing events for the owner's app (a guest turn still running after a revoke). */
   onLaneShareEvent?: (event: LaneShareHostEvent) => void;
   rosterProvider?: SyncRosterProvider;
@@ -1399,6 +1400,7 @@ export function createSyncService(args: SyncServiceArgs) {
     projectCatalogProvider: args.projectCatalogProvider,
     projectScopes: args.projectScopes,
     onRemoteFileWrite: args.onRemoteFileWrite,
+    onRemoteUse: args.onRemoteUse,
     rosterProvider: args.rosterProvider,
     foreignChatProvider: args.foreignChatProvider,
     personalChatScope: args.personalChatScope,

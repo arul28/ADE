@@ -538,6 +538,7 @@ export type AdeRuntimeSyncOptions = {
   phonePairingStateDir?: string;
   projectCatalogProvider?: Parameters<typeof createSyncService>[0]["projectCatalogProvider"];
   onRemoteFileWrite?: Parameters<typeof createSyncService>[0]["onRemoteFileWrite"];
+  onRemoteUse?: Parameters<typeof createSyncService>[0]["onRemoteUse"];
   rosterProvider?: Parameters<typeof createSyncService>[0]["rosterProvider"];
   activityRosterProvider?: PushPublisherDeps["activityRosterProvider"];
   foreignChatProvider?: Parameters<typeof createSyncService>[0]["foreignChatProvider"];
@@ -4806,6 +4807,7 @@ export async function createAdeRuntime(args: {
         forceHostRole: syncRuntimeOptions.forceHostRole ?? false,
         projectCatalogProvider: syncRuntimeOptions.projectCatalogProvider,
         onRemoteFileWrite: syncRuntimeOptions.onRemoteFileWrite,
+        onRemoteUse: syncRuntimeOptions.onRemoteUse,
         onLaneShareEvent: (event) => pushEvent("runtime", { type: "lane_share_event", event }),
         rosterProvider: syncRuntimeOptions.rosterProvider,
         foreignChatProvider: syncRuntimeOptions.foreignChatProvider,

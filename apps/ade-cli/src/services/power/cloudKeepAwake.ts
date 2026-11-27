@@ -27,6 +27,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isAdeCloudComputer } from "../../../../desktop/src/main/services/adeCloud/cloudComputerRules";
+import { adeActionAccess, isBackgroundAdeWrite } from "../../../../desktop/src/shared/adeActionAccess";
 
 /** One ping a minute: a 5-minute timeout (the provider's shortest) survives four missed pings. */
 export const CLOUD_KEEP_AWAKE_INTERVAL_MS = 60_000;
@@ -42,6 +43,12 @@ const PING_TIMEOUT_MS = 10_000;
 
 /** Idle this long and the brain asks the server to sleep it; matches the chat process timer `SESSION_INACTIVITY_TIMEOUT_MS`. */
 export const CLOUD_IDLE_SLEEP_AFTER_MS = 3 * 60_000;
+/**
+ * Typing keeps an awake machine awake only this long after its last real work
+ * (a send, a turn, a command). A client that keeps sending typing pings (a
+ * stuck key, a bug) can't hold a machine awake past it.
+ */
+export const CLOUD_TYPING_KEEPS_AWAKE_MS = 20 * 60_000;
 /** A command or turn this silent, with nothing typed, counts as idle. */
 export const CLOUD_UNTOUCHED_IDLE_MS = 60 * 60_000;
 /**
@@ -88,6 +95,28 @@ export type CloudBusyFacts = {
   /** A move, copy, resize or first clone in progress (`holdCloudBusy`). */
   holds: string[];
 };
+
+/**
+ * What a call from another machine is to the keep-awake: `work` (a write a
+ * person asked for), `typing` (a composer keystroke, `noteTyping`), or null
+ * (a read, a status poll, a background write). Desktop's RPC and the phone's
+ * sync commands use the same rule, so every client keeps a machine awake the
+ * same way. Typing pings are background writes: they never wake a sleeping
+ * computer, they only travel over a live link.
+ */
+export function cloudRemoteUseKind(domain: string | null | undefined, action: string | null | undefined, args?: unknown): "work" | "typing" | null {
+  if (!domain || !action) return null;
+  // A person watching a tool (Linux Desktop, a preview) keeps an awake computer awake.
+  if (domain === "work_tools" && action === "noteWatching") return "work";
+  // A draft's keystrokes (`prewarmDraft`), or a keystroke in an open chat
+  // (`warmupModel` with `sdkOnly`, which a composer repeats while the person
+  // types). Any other warmup (Cursor's, when its tile is only viewed) is not use.
+  if (domain === "chat" && action === "prewarmDraft") return "typing";
+  if (domain === "chat" && action === "warmupModel") {
+    return args && typeof args === "object" && (args as { sdkOnly?: unknown }).sdkOnly === true ? "typing" : null;
+  }
+  return adeActionAccess(domain, action) === "write" && !isBackgroundAdeWrite(domain, action) ? "work" : null;
+}
 
 /** Names an agent CLI runs under when someone starts it by hand in a shell. */
 export const AGENT_CLI_PROCESS_NAMES: ReadonlySet<string> = new Set(["claude", "codex", "cursor-agent", "agent", "droid", "opencode", "muse"]);
@@ -252,6 +281,13 @@ export type CloudKeepAwake = {
    * them. Pings at once unless one went out within the interval.
    */
   noteUse(): Promise<void>;
+  /**
+   * Someone is typing in a chat of this machine. Counts as use (the machine
+   * sleeps three minutes after the last keystroke) only within
+   * {@link CLOUD_TYPING_KEEPS_AWAKE_MS} of the last real work. False when it
+   * didn't count.
+   */
+  noteTyping(): boolean;
   /** One check now (tests, and a host that knows work just started). */
   tick(): Promise<void>;
 };
@@ -299,6 +335,8 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
   let lastUseAt: number | null = null;
   /** The last moment real work ran (never the boot itself), for `reportUse`. */
   let lastWorkAt: number | null = null;
+  /** The last work that wasn't typing (boot, a noted use, a busy check): the typing guard's start. */
+  let lastNonTypingActivityAt = lastBusyAt;
   let lastTickAt: number | null = null;
   /** The timer the last check read (and sent, when it could). */
   let checkedWakeAt: number | null = null;
@@ -576,6 +614,9 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
       // machine sleeps at least three minutes after its last work, never less.
       if (state.busy || wasBusy) lastBusyAt = at;
       if (state.busy) lastWorkAt = at;
+      // Real work (a turn, a command, setup, a timer) restarts the typing guard;
+      // "in_use" alone may be only typing, and `noteUse` restarts it itself.
+      if (state.reasons.some((reason) => reason !== "in_use")) lastNonTypingActivityAt = at;
       wasBusy = state.busy;
       try {
         options.sampleCpu?.(at, state.reasons);
@@ -627,7 +668,21 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
       lastBusyAt = now();
       lastWorkAt = lastBusyAt;
       lastUseAt = lastBusyAt;
+      lastNonTypingActivityAt = lastBusyAt;
       if (pingIsDue()) await tick();
+    },
+    noteTyping() {
+      if (!enabled) return false;
+      const at = now();
+      if (at - lastNonTypingActivityAt > CLOUD_TYPING_KEEPS_AWAKE_MS) return false;
+      // Use, not work: the idle clock and the early grow wait for it, but
+      // `reportUse` (the server's idle cleanup) counts only real work.
+      // The next check (at most a minute away) pings: a machine is never idle
+      // past three minutes awake, well inside the provider's five.
+      usedSinceTick = true;
+      lastBusyAt = at;
+      lastUseAt = at;
+      return true;
     },
     tick,
   };

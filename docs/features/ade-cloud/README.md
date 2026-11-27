@@ -2022,8 +2022,20 @@ One busy list, `decideCloudBusy` in
   children on gVisor.
 - Typing warms the chat's model (`chat.prewarmDraft`, and `chat.warmupModel`
   with `sdkOnly`). These are background writes, so typing never wakes a
-  sleeping computer, but an awake one counts it as use and stays awake. Any
-  other warmup (a viewed Cursor tile) is not use. A person's **Run doctor**
+  sleeping computer, but an awake one counts it as use and stays awake: it
+  sleeps three to four minutes after the last keystroke. The desktop (and ADE
+  Web) composer and the iPhone composer repeat `warmupModel` with `sdkOnly`
+  at most every 30 s while the draft changes in a chat on a cloud computer,
+  for every provider (`CLOUD_TYPING_PING_MS`, `SyncService.noteChatTyping`).
+  A chat left open sends nothing, and the iPhone sends only from a focused
+  field, so a restored draft is not typing. Typing counts only within 20
+  minutes of the computer's last real work (a turn, a command, a send:
+  `CLOUD_TYPING_KEEPS_AWAKE_MS`, `noteTyping`), so a client that never stops
+  can't hold a computer awake. Typing is use, not work: it doesn't count for
+  the idle cleanup's `reportUse`. `cloudRemoteUseKind` is the one rule for
+  the desktop's RPC calls and the phone's sync commands; on the sync channel,
+  terminal typing (`terminal_input`) counts as work, as `pty.write` does over
+  RPC. Any other warmup (a viewed Cursor tile) is not use. A person's **Run doctor**
   (`ai.runAcpProviderDoctor`) is use and wakes it; the page-open diagnostics
   are not.
 - Three minutes after the last work, the brain calls

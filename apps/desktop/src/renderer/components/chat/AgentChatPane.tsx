@@ -516,7 +516,7 @@ import {
   useDraftAttachmentTransfer,
 } from "./draftAttachmentTransfer";
 import { chatNoticeReducer, noticeForChat, shownChatNotice, type ChatNotice } from "./chatNotice";
-import { chatQueueMachineKey, savedChatComputerGone, savedChatLocation } from "../../state/cloudSavedChats";
+import { chatQueueMachineKey, isCloudConnectionTarget, savedChatComputerGone, savedChatLocation } from "../../state/cloudSavedChats";
 import { releaseHeldAttachments, releaseSentHeldAttachments } from "./heldChatAttachments";
 import { prepareDeviceHeldForSend } from "./deviceHeldSend";
 import { newClientSendId } from "../../../shared/adeCloud/chatQueue";
@@ -4475,6 +4475,13 @@ async function readMachineFile(filePath: string, pin: OpenProjectBinding | null)
     : new TextEncoder().encode(decodeURIComponent(body));
   return { bytes, contentType: match[1] || "application/octet-stream" };
 }
+
+/**
+ * A cloud chat's typing signal goes out at most this often while the person
+ * types. The computer sleeps three minutes after the last one, so a 30 s
+ * spacing survives five missed pings.
+ */
+const CLOUD_TYPING_PING_MS = 30_000;
 
 export function AgentChatPane({
   laneId,
@@ -10435,24 +10442,46 @@ export function AgentChatPane({
   // starts no query and no process. The text is read from the draft store, so
   // typing does not render the pane, and one request per chat and model is
   // enough.
+  //
+  // A chat on an ADE Cloud computer, any provider: the same call is the
+  // typing signal (`cloudRemoteUseKind`), repeated at most every
+  // `CLOUD_TYPING_PING_MS` while the draft changes, so the computer sleeps
+  // three minutes after the last keystroke instead of under the person. Only
+  // a changed draft sends: a chat left open sends nothing. It travels over the
+  // live link only and never wakes a sleeping computer.
   useEffect(() => {
     if (!isTileActive || !selectedSessionId || !selectedSessionModelId || turnActive) return undefined;
     const desc = getModelById(selectedSessionModelId);
-    if (!desc?.isCliWrapped || desc.family !== "anthropic") return undefined;
+    const warmsClaudeSdk = Boolean(desc?.isCliWrapped && desc.family === "anthropic");
     const warmupKey = `${selectedSessionId}:${selectedSessionModelId}`;
-    if (claudeTypingWarmupKeyRef.current === warmupKey) return undefined;
-    const requestWarm = () => {
-      if (claudeTypingWarmupKeyRef.current === warmupKey) return;
-      if (!draftStore.get().trim()) return;
-      claudeTypingWarmupKeyRef.current = warmupKey;
-      withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.warmupModel({
-        sessionId: selectedSessionId,
-        modelId: selectedSessionModelId,
-        sdkOnly: true,
-      }, chatPin)).catch(() => { /* best-effort: the send loads what it needs */ });
+    let lastDraft = draftStore.get();
+    let lastTypingPingAt = 0;
+    const request = () => withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.warmupModel({
+      sessionId: selectedSessionId,
+      modelId: selectedSessionModelId,
+      sdkOnly: true,
+    }, chatPin)).catch(() => { /* best-effort: the send loads what it needs */ });
+    const onDraft = () => {
+      const draft = draftStore.get();
+      const changed = draft !== lastDraft;
+      lastDraft = draft;
+      if (!draft.trim()) return;
+      if (warmsClaudeSdk && claudeTypingWarmupKeyRef.current !== warmupKey) {
+        claudeTypingWarmupKeyRef.current = warmupKey;
+        lastTypingPingAt = Date.now();
+        void request();
+        return;
+      }
+      if (!changed) return;
+      const pin = chatRuntimePinRef.current;
+      if (pin?.kind !== "remote" || !isCloudConnectionTarget(pin.targetId)) return;
+      const at = Date.now();
+      if (at - lastTypingPingAt < CLOUD_TYPING_PING_MS) return;
+      lastTypingPingAt = at;
+      void request();
     };
-    requestWarm();
-    return draftStore.subscribe(requestWarm);
+    onDraft();
+    return draftStore.subscribe(onDraft);
   }, [draftStore, isTileActive, selectedSessionId, selectedSessionModelId, turnActive]);
 
   useEffect(() => {

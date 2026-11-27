@@ -31457,6 +31457,23 @@ async function runServe(
         logger: headlessProjectLogger,
       })
     : null;
+  /**
+   * A phone's command or terminal typing over the sync channel: the same rule
+   * as a desktop's RPC calls (`withRemoteUseNoted`). A keystroke in a chat is
+   * typing, counted only within the keep-awake's guard.
+   */
+  const noteSyncRemoteUse = (use: { action: string; args: unknown } | "terminal_input"): void => {
+    if (!cloudKeepAwake || !cloudKeepAwakeModule) return;
+    if (use === "terminal_input") {
+      void cloudKeepAwake.noteUse();
+      return;
+    }
+    const dot = use.action.indexOf(".");
+    if (dot <= 0) return;
+    const kind = cloudKeepAwakeModule.cloudRemoteUseKind(use.action.slice(0, dot), use.action.slice(dot + 1), use.args);
+    if (kind === "work") void cloudKeepAwake.noteUse();
+    else if (kind === "typing") cloudKeepAwake.noteTyping();
+  };
   // Work the busy list can't see (a first clone, a push). Held while it runs
   // and counted as use when it ends: the checks come once a minute, so work
   // that fits between two of them would otherwise leave no trace, and the
@@ -32132,6 +32149,7 @@ async function runServe(
   sharedSyncListener?.setFallbackConnectionHandler(
     createBrainProjectActionsSyncHandler({
       logger: headlessProjectLogger,
+      onRemoteUse: noteSyncRemoteUse,
       // A lane share guest goes to its project's host (the router set below).
       routeLaneShareGuest: async (handoff) => (await sharedSyncListener?.routeLaneShareGuest(handoff)) ?? false,
       projectCatalogProvider: machineProjectCatalogProvider,
@@ -32289,6 +32307,8 @@ async function runServe(
       personalChatScope,
       // A save from the web or the phone is work, and keeps a cloud machine awake.
       onRemoteFileWrite: () => { void cloudKeepAwake?.noteUse(); },
+      // The phone's commands and terminal typing count as a desktop's calls do.
+      onRemoteUse: noteSyncRemoteUse,
     },
   });
   simulatorReclaimScopes = () => scopeRegistry.listReady().map((scope) => ({
@@ -33342,30 +33362,20 @@ async function runServe(
   // Work another machine does here (a command, a chat or CLI send, a file
   // copied in) keeps a cloud machine awake (cloudKeepAwake). Reads, lists
   // and status polls do not: an idle window polling one must not bill it all month.
-  const isRemoteWork = (params: unknown): boolean => {
-    if (!isRecord(params) || !isRecord(params.arguments)) return false;
-    if (params.name === "work_copy_file") return true;
-    if (params.name !== "run_ade_action") return false;
-    const domain = asString(params.arguments.domain);
-    const action = asString(params.arguments.action);
-    // A person watching a tool (Linux Desktop, a preview): a read, so it never
-    // wakes a sleeping computer, but it does keep an awake one awake.
-    if (domain === "work_tools" && action === "noteWatching") return true;
-    // Someone typing warms the chat's model: a draft's first keystroke
-    // (`prewarmDraft`) or a keystroke in an open chat (`warmupModel` with
-    // `sdkOnly`). Background writes (BACKGROUND_WRITES), so typing never wakes
-    // a sleeping computer, but an awake one stays awake while the person is
-    // about to send. Any other warmup (Cursor's, when its tile is only viewed)
-    // is not use.
-    if (domain === "chat" && action === "prewarmDraft") return true;
-    if (domain === "chat" && action === "warmupModel") return isRecord(params.arguments.args) && params.arguments.args.sdkOnly === true;
-    return Boolean(domain && action && adeActionAccess(domain, action) === "write" && !isBackgroundAdeWrite(domain, action));
+  const remoteUseKind = (params: unknown): "work" | "typing" | null => {
+    if (!isRecord(params) || !isRecord(params.arguments)) return null;
+    if (params.name === "work_copy_file") return "work";
+    if (params.name !== "run_ade_action" || !cloudKeepAwakeModule) return null;
+    return cloudKeepAwakeModule.cloudRemoteUseKind(asString(params.arguments.domain), asString(params.arguments.action), params.arguments.args);
   };
   const withRemoteUseNoted = <H extends JsonRpcHandler>(peerDeviceId: string | null, handler: H): H => {
     if (!peerDeviceId || !cloudKeepAwake) return handler;
     const keepAwake = cloudKeepAwake;
     return Object.assign(async (request: Parameters<JsonRpcHandler>[0]) => {
-      const remoteWork = request.method === "ade/actions/call" && isRemoteWork(request.params);
+      const useKind = request.method === "ade/actions/call" ? remoteUseKind(request.params) : null;
+      // Typing counts only within the keep-awake's guard (`noteTyping`); past
+      // it, a keystroke is not work: no hold, no use reported to the server.
+      const remoteWork = useKind === "work" || (useKind === "typing" && keepAwake.noteTyping());
       if (remoteWork) {
         // The server deletes this computer next (`cloudDeleteFreeze.ts`): work that came now would be lost with it.
         const frozen = cloudDeleteFreezeRefusal();
@@ -33377,7 +33387,7 @@ async function runServe(
         // shows the sentence and keeps the text.
         const moving = isRemoteTurnStart(request.params) ? cloudMoveSendRefusal(layout.adeDir) : null;
         if (moving) throw new JsonRpcError(JsonRpcErrorCode.policyDenied, encodeCodedErrorMessage(moving.code, moving.message), { code: moving.code });
-        void keepAwake.noteUse();
+        if (useKind === "work") void keepAwake.noteUse();
         // The server's idle cleanup may be saving this computer for its delete
         // (`/use`, cloudComputerRest.ts): once the delete started, the work is refused.
         const refusal = await cloudRest?.noteRemoteWork();

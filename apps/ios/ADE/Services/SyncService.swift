@@ -5331,6 +5331,8 @@ final class SyncService: ObservableObject {
   private(set) var supportsStackLayeredBypass = false
   private let chatSnapshotRequestCoalescingInterval: TimeInterval = 5
   private let chatEventUnsubscribeRetentionLimit = 4
+  /// When this phone last told a cloud chat's computer someone is typing (`noteChatTyping`).
+  var cloudTypingPingAtBySession: [String: Date] = [:]
   private var recentFullChatSnapshotRequestBySession: [
     String: (uptime: TimeInterval, connectionGeneration: UInt64)
   ] = [:]
@@ -17600,6 +17602,46 @@ final class SyncService: ObservableObject {
     // phone mirrors that update rather than guessing (a slash command or a
     // dropped send leaves them pending there).
     return syncChatMessageDelivery(from: response)
+  }
+
+  /// A cloud chat's typing signal goes out at most this often (the desktop's
+  /// `CLOUD_TYPING_PING_MS`). The computer sleeps three minutes after the
+  /// last one, so this spacing survives five missed pings.
+  static let cloudTypingPingInterval: TimeInterval = 30
+
+  /// Someone typed in this chat's composer. For a chat on an ADE Cloud
+  /// computer the phone has a live link to, tell the computer at most every
+  /// `cloudTypingPingInterval`, so it sleeps three minutes after the last
+  /// keystroke instead of under the person. The signal is `chat.warmupModel`
+  /// with `sdkOnly` (the desktop's keystroke warmup): a background write, so
+  /// it never wakes a sleeping computer and never waits in this phone's
+  /// offline queue. The computer counts it only within 20 minutes of its last
+  /// real work (`cloudKeepAwake.noteTyping`).
+  func noteChatTyping(sessionId: String, modelId: String) {
+    let trimmed = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty,
+          let key = chatThreadKey(for: trimmed),
+          isCloudFleetKey(key.machineKey),
+          savedCloudChatAccountKey(forThreadKey: key) == nil
+    else { return }
+    let now = Date()
+    if let last = cloudTypingPingAtBySession[trimmed], now.timeIntervalSince(last) < Self.cloudTypingPingInterval { return }
+    cloudTypingPingAtBySession[trimmed] = now
+    let scope = chatCommandScope(for: trimmed)
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      _ = try? await self.sendCommand(
+        action: self.chatActionName("chat.warmupModel", sessionId: trimmed),
+        // The computer requires a model id; with `sdkOnly` an unknown one
+        // loads nothing and still counts as typing.
+        args: ["sessionId": trimmed, "modelId": modelId.isEmpty ? "unknown" : modelId, "sdkOnly": true],
+        disconnectOnTimeout: false,
+        timeoutNanoseconds: 10_000_000_000,
+        targetProjectId: scope.projectId,
+        targetProjectRootPath: scope.rootPath,
+        attemptedLiveFailurePolicy: .preserveForManualRetry
+      )
+    }
   }
 
   enum CloudComputerSendResult {
