@@ -38,8 +38,10 @@ struct HubScreen: View {
   @State private var locationTarget: HubAccountHomeTarget?
   /// The Hub notice waiting for a covering pane to close.
   @State private var heldHubNoticeId: UUID?
-  /// "ADE is now Daex", shown on the Hub until it is closed, once per install.
-  @AppStorage("ade.brand.renameNoticeSeen.v1") private var renameNoticeSeen = false
+  /// "ADE is now Daex", shown on the Hub until it is closed, once per install,
+  /// and only to an install that ran before the rename: `BrandRenameNotice`
+  /// writes `false` for those at launch. Unset (not decided yet) hides it.
+  @AppStorage(BrandRenameNotice.seenKey) private var renameNoticeSeen = true
   // Set when a hub chat row is tapped — drives the chat cover (wired in
   // HubScreen+ChatNavigation).
   @State var openChatTarget: HubChatTarget?
@@ -1466,5 +1468,29 @@ struct HubScreen: View {
   private func persistHubLayout() {
     guard let connectionKey = layoutConnectionKey else { return }
     HubLayoutStore.save(HubLayoutState(order: projectOrder), for: connectionKey)
+  }
+}
+
+/// Who sees the Hub's "ADE is now Daex" notice: only an install that ran
+/// before the rename. A new install starts with it already seen.
+enum BrandRenameNotice {
+  static let seenKey = "ade.brand.renameNoticeSeen.v1"
+
+  /// Decides once per install. Call at launch before `SyncService` exists,
+  /// because it writes the device id on the first launch.
+  ///
+  /// The install ran before when this launch finds what an earlier launch
+  /// left: a device id (`ade.sync.deviceId` in defaults, or the Keychain copy,
+  /// which outlives an uninstall) or a saved color scheme. A keychain that
+  /// refuses the read (a launch before the first unlock, when defaults read
+  /// empty as well) decides nothing; a later launch does.
+  static func seedIfNeeded(_ defaults: UserDefaults = .standard, keychain: KeychainService = KeychainService()) {
+    guard defaults.object(forKey: seenKey) == nil else { return }
+    let keychainDeviceId = keychain.readDeviceId()
+    if case .failed = keychainDeviceId { return }
+    var ranBefore = defaults.string(forKey: "ade.sync.deviceId") != nil
+      || defaults.string(forKey: ADEColorSchemeChoice.storageKey) != nil
+    if case .value = keychainDeviceId { ranBefore = true }
+    defaults.set(!ranBefore, forKey: seenKey)
   }
 }

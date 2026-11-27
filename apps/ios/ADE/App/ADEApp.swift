@@ -2,6 +2,9 @@ import SwiftUI
 
 @main
 struct ADEApp: App {
+  /// First of all stored properties: they start in order, and `syncService`
+  /// below writes the device id the rename notice reads as "ran before".
+  private let brandRenameNoticeSeeded: Void = BrandRenameNotice.seedIfNeeded()
   @UIApplicationDelegateAdaptor(ADEAppDelegate.self) private var appDelegate
   @Environment(\.scenePhase) private var scenePhase
   // Owned here, not observed: the app's body only hands these to the
