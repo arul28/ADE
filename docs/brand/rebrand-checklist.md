@@ -43,7 +43,7 @@ purple rounded "ADE" app icon.
 
 | Asset | Path | Format / size | Referenced by | Commit |
 |---|---|---|---|---|
-| Desktop app icons | `apps/desktop/build/icon.icns`, `icon.beta.icns`, `icon.alpha.icns`, `icon.ico`, `icon.png`, `icons/16..1024x*.png` | icns; ico (multi-layer); png 16-1024 | `package.json` `build.mac.icon`, `build.win.icon`, `build.linux.icon`; `main.ts:1217-1232` window/dock icon; `run-electron-builder.mjs` channel icons; `build-music-host-win.mjs` exe icon | fade6e71a |
+| Desktop app icons | `apps/desktop/build/icon.icns`, `icon.beta.icns`, `icon.alpha.icns`, `icon.ico`, `icon.png`, `icons/16..1024x*.png`; macOS 26: `icon.icon`, `icon.beta.icon`, `icon.alpha.icon` (`mac-icon-composer.cjs`) | icns; ico (multi-layer); png 16-1024; Icon Composer `.icon` | `package.json` `build.mac.icon`, `build.win.icon`, `build.linux.icon`; `main.ts:1217-1232` window/dock icon; `run-electron-builder.mjs` channel icons; `build-music-host-win.mjs` exe icon | fade6e71a |
 | Dev dock icon | `apps/desktop/build/icon.dev.png` (generated, not tracked) | png | `scripts/generate-dev-icon.cjs` rebuilds it when `icon.png` is newer | automatic |
 | Renderer wordmark / mark | `apps/desktop/src/renderer/public/logo.png`, `logo-light.png` (now 1138x868), `welcome/ade-icon.webp` | png, webp | `AdeWordmark.tsx`, `LiquidGlassLogoReveal.tsx`, `liquidGlass/logoTexture.ts`, `GeneralPage.tsx:237` (About), `AdeQrCode.tsx:24`, `ChatComputerUseActions.tsx:155`; web client `app.ade-app.dev/logo.png` | a1f030d05 |
 | Web client favicon | `apps/desktop/src/renderer/webclient.html:13` (inline 32 px PNG) | data URI | browser tab | a1f030d05 |

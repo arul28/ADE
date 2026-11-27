@@ -14,6 +14,7 @@ const {
   formatRuntimeArtifactDiff,
 } = require("./runtime-resource-targets.cjs");
 const { createBrainCopy } = require("./mac-brain-copy.cjs");
+const { applyMacIconComposerIcon } = require("./mac-icon-composer.cjs");
 
 const appDir = path.resolve(__dirname, "..");
 
@@ -583,6 +584,12 @@ module.exports = async function afterPack(context) {
       const count = writeMacLocalizedDisplayName(appBundlePath, displayName);
       console.log(`[afterPack] Shown app name "${displayName}" in ${count} locales`);
     }
+    // The macOS 26 icon (Assets.car + CFBundleIconName) from the `.icon`
+    // beside the configured `.icns`; the `.icns` stays for older macOS.
+    applyMacIconComposerIcon(appBundlePath, {
+      configuredIcon: context.packager.platformSpecificBuildOptions?.icon,
+      searchDirs: [context.packager.info?.buildResourcesDir, context.packager.info?.projectDir, appDir].filter(Boolean),
+    });
   }
   if (platform === "darwin" && appBundlePath) {
     // The brain-executable switch (`brainExecutableMode.json`, mode
