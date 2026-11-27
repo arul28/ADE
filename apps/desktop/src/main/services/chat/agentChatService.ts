@@ -37790,7 +37790,7 @@ export function createAgentChatService(args: {
       ? [
           "",
           "## Project slash commands and skills",
-          "Daex walks up from the lane worktree to discover `.claude/commands/*.md` plus `.claude/skills/<name>/SKILL.md`, `.agents/skills/<name>/SKILL.md`, `.ade/skills/<name>/SKILL.md`, user skill roots, and Daex bundled skills. Claude Code already lists `<cwd>/.claude/`, `~/.claude/`, and Daex's bundled `ade:*` plugin skills for you, so this section lists only the roots it cannot see.",
+          "Daex walks up from the lane worktree to discover `.claude/commands/*.md` plus `.claude/skills/<name>/SKILL.md`, `.agents/skills/<name>/SKILL.md`, `.ade/skills/<name>/SKILL.md`, user skill roots, and Daex bundled skills. Claude Code already lists `<cwd>/.claude/`, `~/.claude/`, and Daex's bundled `daex:*` plugin skills for you, so this section lists only the roots it cannot see.",
           "**User-invoked (`/<name>`):** When the user sends a message that is exactly `/<name>` or `/<name> <args>`, Daex may pre-expand the file's body and substitute `$ARGUMENTS` before it reaches you. You'll see the expanded instructions, not necessarily the literal `/<name>`.",
           "**Mid-sentence reference:** When the user mentions a command/skill mid-sentence, read the file at the path below and follow it.",
           "**Autonomous skill use:** If, while working on a task, you decide a discovered skill applies, read its SKILL.md file and follow it as if it had been invoked.",
@@ -49505,7 +49505,7 @@ export function createAgentChatService(args: {
       ? [
         "",
         "## Project slash commands and skills",
-        "Daex walks up from the lane worktree to discover `.claude/commands/*.md` plus `.claude/skills/<name>/SKILL.md`, `.agents/skills/<name>/SKILL.md`, `.ade/skills/<name>/SKILL.md`, user skill roots, and Daex bundled skills. Claude Code already lists `<cwd>/.claude/`, `~/.claude/`, and Daex's bundled `ade:*` plugin skills for you, so this section lists only the roots it cannot see — do not expect it to repeat your own listing.",
+        "Daex walks up from the lane worktree to discover `.claude/commands/*.md` plus `.claude/skills/<name>/SKILL.md`, `.agents/skills/<name>/SKILL.md`, `.ade/skills/<name>/SKILL.md`, user skill roots, and Daex bundled skills. Claude Code already lists `<cwd>/.claude/`, `~/.claude/`, and Daex's bundled `daex:*` plugin skills for you, so this section lists only the roots it cannot see — do not expect it to repeat your own listing.",
         "**User-invoked (`/<name>`):** When the user sends a message that is exactly `/<name>` or `/<name> <args>`, Daex pre-expands the file's body (commands take precedence over same-named skills) and substitutes `$ARGUMENTS` before it reaches you. You'll see the expanded instructions, not the literal `/<name>`.",
         "**Mid-sentence reference:** When the user mentions a command/skill mid-sentence (e.g. \"please /audit this\", \"can you do a /security-review\") the message is NOT auto-expanded. Read the file at the path below and follow it.",
         "**Autonomous skill use:** If, while working on a task, you decide a discovered skill applies (its description matches the situation), Read its SKILL.md file and follow it as if it had been invoked. Don't ask the user — just use the skill when warranted.",

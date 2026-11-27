@@ -1,7 +1,7 @@
 import path from "node:path";
 
 import { adeBundledAgentSkills } from "../../../shared/adeCliGuidance";
-import { adeWithheldAgentSkills } from "../../../shared/agentSkillRoots";
+import { adeWithheldAgentSkills, isAgentSkillNamed } from "../../../shared/agentSkillRoots";
 import { formatAdeAgentSkillRootsForPrompt } from "../../../shared/agentSkillRoots";
 import type { AgentChatPersonalProfile, AgentChatSession } from "../../../shared/types/chat";
 
@@ -59,7 +59,7 @@ export function isEmbeddedPersonalSession(
  * Skills an `assistant` chat does not get: they act on a lane's worktree,
  * branch or pull request, and a personal chat has none of those.
  */
-export const PERSONAL_LANE_ONLY_AGENT_SKILLS = ["daex-lanes-git", "daex-pr-workflows", "ade-lanes-git", "ade-pr-workflows"] as const;
+export const PERSONAL_LANE_ONLY_AGENT_SKILLS = ["daex-lanes-git", "daex-pr-workflows"] as const;
 
 /**
  * Which ADE skill catalog one chat's provider is handed — the one answer every
@@ -84,9 +84,7 @@ export function adeSkillCatalogFor(
 
 /** A `/` entry naming a lane-only skill (`/ade-lanes-git`, or plugin-namespaced `/ade:ade-lanes-git`). */
 export function isPersonalLaneOnlySkillCommand(name: string): boolean {
-  const bare = name.replace(/^\//, "");
-  const unscoped = bare.slice(bare.indexOf(":") + 1);
-  return (PERSONAL_LANE_ONLY_AGENT_SKILLS as readonly string[]).some((skill) => skill === bare || skill === unscoped);
+  return isAgentSkillNamed(name, PERSONAL_LANE_ONLY_AGENT_SKILLS);
 }
 
 /**
