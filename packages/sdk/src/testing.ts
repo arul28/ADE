@@ -1,8 +1,8 @@
-import { AdeError } from "./errors.js";
-import type { AdeChatClient } from "./client.js";
+import { DaexError } from "./errors.js";
+import type { DaexChatClient } from "./client.js";
 import type { ThreadOpenOptions } from "./clientOptions.js";
 import type {
-  AdeThread,
+  DaexThread,
   EditLastOptions,
   SendOptions,
   SetModelResult,
@@ -23,7 +23,7 @@ import type {
   ThreadHistoryPage,
   ThreadSummary,
   Unsubscribe,
-  AdeProvider,
+  DaexProvider,
 } from "./types.js";
 import { budgetExceeded, ThreadUsageAccumulator, validateThreadBudget, type ThreadBudget, type ThreadUsage } from "./usage.js";
 import type { ApprovalDecision, ApprovalRequest } from "./approvals.js";
@@ -47,7 +47,7 @@ type MockResponse =
 
 export type MockToolCall = { tool: string; args: unknown; result?: unknown };
 
-export type MockAdeChat = AdeChatClient & {
+export type MockDaexChat = DaexChatClient & {
   /** Accounts `accounts.list` returns and `switchAccount` accepts. */
   setAccounts(accounts: readonly AccountInfo[]): void;
   /** What `providers.capabilities(provider)` answers; it throws `unsupported` until set. */
@@ -59,7 +59,7 @@ export type MockAdeChat = AdeChatClient & {
   queueApproval(request?: Partial<ApprovalRequest>): void;
   queueError(error: string | Error): void;
   queueUsage(event: AgentChatEvent): void;
-  replay(envelopes: readonly AgentChatEventEnvelope[], key?: string): Promise<AdeThread>;
+  replay(envelopes: readonly AgentChatEventEnvelope[], key?: string): Promise<DaexThread>;
 };
 
 const USAGE = new Set(["tokens", "context_usage", "codex_token_usage"]);
@@ -67,7 +67,7 @@ const STATUS = new Set(["status", "done", "error", "turn_health", "session_meta_
 const now = () => new Date().toISOString();
 
 /** Script assistant behavior without launching a runtime or spending provider tokens. */
-export function createMockAdeChat(): MockAdeChat {
+export function createMockDaexChat(): MockDaexChat {
   const responses: MockResponse[] = [];
   const usageQueue: AgentChatEvent[] = [];
   const threads = new Map<string, MockThread>();
@@ -81,13 +81,13 @@ export function createMockAdeChat(): MockAdeChat {
   let disposed = false;
 
   const assertUsable = () => {
-    if (disposed) throw new AdeError("disposed", "This mock ADE chat client was disposed.");
+    if (disposed) throw new DaexError("disposed", "This mock ADE chat client was disposed.");
   };
   const emitClient = (event: string, payload: unknown) => {
     for (const listener of [...(clientListeners.get(event) ?? [])]) listener(payload);
   };
 
-  class MockThread implements AdeThread {
+  class MockThread implements DaexThread {
     readonly id = "mock-session-" + nextSession++;
     private currentTitle: string | null;
     private currentModel: ThreadModelSelection | null;
@@ -107,7 +107,7 @@ export function createMockAdeChat(): MockAdeChat {
     private budgetStopped = false;
     private archived = false;
     private readonly budget?: ThreadBudget;
-    private readonly provider: AdeProvider;
+    private readonly provider: DaexProvider;
 
     get title(): string | null { return this.currentTitle; }
     get model(): ThreadModelSelection | null { return this.currentModel; }
@@ -156,7 +156,7 @@ export function createMockAdeChat(): MockAdeChat {
 
     private async dispatch(text: string, _options: SendOptions | SteerOptions = {}): Promise<void> {
       assertUsable();
-      if (this.budgetStopped) throw new AdeError("invalid_option", "The mock thread exceeded its usage budget.");
+      if (this.budgetStopped) throw new DaexError("invalid_option", "The mock thread exceeded its usage budget.");
       this.turn += 1;
       this.active = true;
       this.emit({ type: "user_message", text, turnId: "mock-turn-" + this.turn });
@@ -212,7 +212,7 @@ export function createMockAdeChat(): MockAdeChat {
       this.finish("interrupted");
     }
     async respond(requestId: string, response: ThreadRespondOptions): Promise<void> {
-      if (!this.pending.has(requestId)) throw new AdeError("approval_not_found", "No pending mock request " + requestId + ".");
+      if (!this.pending.has(requestId)) throw new DaexError("approval_not_found", "No pending mock request " + requestId + ".");
       this.pending.delete(requestId);
       const declined = response.decision === "decline" || response.decision === "cancel";
       this.emit({ type: "pending_input_resolved", itemId: requestId, resolution: declined ? "declined" : "accepted", turnId: "mock-turn-" + this.turn });
@@ -220,7 +220,7 @@ export function createMockAdeChat(): MockAdeChat {
     }
     private queuedIndex(id: string): number {
       const index = this.queued.findIndex((item) => item.id === id);
-      if (index < 0) throw new AdeError("invalid_option", "No queued mock message " + id + ".");
+      if (index < 0) throw new DaexError("invalid_option", "No queued mock message " + id + ".");
       return index;
     }
     readonly queue = {
@@ -294,7 +294,7 @@ export function createMockAdeChat(): MockAdeChat {
       return { events, hasMore: older.length > events.length, nextBeforeSequence: events[0]?.sequence ?? null };
     }
     async approve(itemId: string, _decision: ApprovalDecision): Promise<void> {
-      if (!this.pending.has(itemId)) throw new AdeError("approval_not_found", "No pending mock approval " + itemId + ".");
+      if (!this.pending.has(itemId)) throw new DaexError("approval_not_found", "No pending mock approval " + itemId + ".");
       this.pending.delete(itemId);
       this.emit({ type: "pending_input_resolved", itemId, resolution: "accepted", turnId: "mock-turn-" + this.turn });
       this.finish("completed");
@@ -335,16 +335,16 @@ export function createMockAdeChat(): MockAdeChat {
   }
 
   const unsupported = (what: string) => async (): Promise<never> => {
-    throw new AdeError("unsupported", "The mock client does not " + what + ".");
+    throw new DaexError("unsupported", "The mock client does not " + what + ".");
   };
-  const client: MockAdeChat = {
+  const client: MockDaexChat = {
     providers: {
       status: async () => ({}),
       refresh: async () => ({}),
       onChange: (listener) => { providerListeners.add(listener); return () => providerListeners.delete(listener); },
       capabilities: async (provider: string): Promise<ProviderCapabilities> => {
         const value = capabilities.get(provider);
-        if (!value) throw new AdeError("unsupported", "No mock capability record for provider " + provider + "; set one with setCapabilities().");
+        if (!value) throw new DaexError("unsupported", "No mock capability record for provider " + provider + "; set one with setCapabilities().");
         return value;
       },
     },
@@ -387,18 +387,18 @@ export function createMockAdeChat(): MockAdeChat {
       list: async () => [...threads.values()].map((thread) => thread.summary),
       get: async (key) => threads.get(key)?.summary ?? null,
       delete: async (key) => {
-        if (!threads.delete(key)) throw new AdeError("thread_not_found", "No mock thread is registered under " + key + ".");
+        if (!threads.delete(key)) throw new DaexError("thread_not_found", "No mock thread is registered under " + key + ".");
         emitClient("threadLifecycle", { key, change: "deleted" });
       },
       archive: async (key) => {
         const thread = threads.get(key);
-        if (!thread) throw new AdeError("thread_not_found", "No mock thread is registered under " + key + ".");
+        if (!thread) throw new DaexError("thread_not_found", "No mock thread is registered under " + key + ".");
         thread.setArchived(true);
         emitClient("threadLifecycle", { key, change: "archived" });
       },
       unarchive: async (key) => {
         const thread = threads.get(key);
-        if (!thread) throw new AdeError("thread_not_found", "No mock thread is registered under " + key + ".");
+        if (!thread) throw new DaexError("thread_not_found", "No mock thread is registered under " + key + ".");
         thread.setArchived(false);
         emitClient("threadLifecycle", { key, change: "unarchived" });
       },
@@ -436,3 +436,11 @@ export function createMockAdeChat(): MockAdeChat {
   };
   return client;
 }
+
+// Pre-Daex names, kept as deprecated aliases so code written against the
+// `@ade-dev` packages keeps compiling. Remove them in a future major version.
+/** @deprecated Use {@link MockDaexChat}. */
+export type MockAdeChat = MockDaexChat;
+/** @deprecated Use {@link createMockDaexChat}. */
+export const createMockAdeChat = createMockDaexChat;
+

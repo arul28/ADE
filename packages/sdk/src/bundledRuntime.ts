@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveRuntimeTarget } from "./download.js";
-import { AdeError } from "./errors.js";
+import { DaexError } from "./errors.js";
 import { isDirectory, isFile } from "./fsProbe.js";
 
 /**
@@ -32,7 +32,7 @@ import { isDirectory, isFile } from "./fsProbe.js";
  * at; `nodeModulesPath` is `<pkg>/native/node_modules`, which is
  * `ADE_RUNTIME_NODE_MODULES`. The two are reported separately rather than
  * derived at the call site because an embedder is free to relocate either half
- * inside their bundle, and `createAdeChat` accepts both.
+ * inside their bundle, and `createDaexChat` accepts both.
  */
 
 export type BundledRuntime = {
@@ -152,14 +152,14 @@ export function resolveBundledRuntime(
   const nodeModulesPath = path.join(runtimeRoot, "node_modules");
 
   if (!isFile(binaryPath)) {
-    throw new AdeError(
+    throw new DaexError(
       "binary_not_found",
       `${packageName} is installed at ${packageRoot} but carries no runtime binary at ${binaryPath}. ` +
         `Reinstall the package, or pass binaryPath explicitly.`,
     );
   }
   if (!isDirectory(nodeModulesPath)) {
-    throw new AdeError(
+    throw new DaexError(
       "binary_not_found",
       `${packageName} is installed at ${packageRoot} but carries no native modules at ${nodeModulesPath}. ` +
         `The binary dlopens them, so it cannot start without that directory.`,

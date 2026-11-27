@@ -33,7 +33,7 @@ import { resolveActivityLabel, DEFAULT_THINKING_LABEL } from "../activity/labels
 import type { ThreadStatus } from "../sdkTypes";
 import { ApprovalCard, type ApprovalRespond, type ApprovalUiOptions } from "./ApprovalCard";
 import { PendingInputCard, type PendingInputRespond } from "./PendingInputCard";
-import { AdeLinkHandlerProvider, type AdeLinkClickHandler } from "./links";
+import { DaexLinkHandlerProvider, type DaexLinkClickHandler } from "./links";
 import { renderMarkdown as defaultRenderMarkdown } from "./markdown";
 import { ToolChip, type ToolChipAction } from "./ToolChip";
 import type { ToolChipRow, TranscriptRow } from "./transcriptRows";
@@ -53,14 +53,14 @@ export type TranscriptProps = {
   /** Replace the built-in markdown renderer. */
   renderMarkdown?: (text: string) => ReactNode;
   /**
-   * Decide what a link in assistant text does (see `AdeLinkClickHandler`).
+   * Decide what a link in assistant text does (see `DaexLinkClickHandler`).
    * Without it a link opens with `target="_blank"`. In Electron that is a new,
    * chrome-less app window showing a URL a model wrote, so an Electron host
    * should pass this and open allowed URLs with `shell.openExternal`. A custom
    * `renderMarkdown` draws its own links; this applies only to the built-in
-   * renderer (and to anything that renders `<AdeLink>`).
+   * renderer (and to anything that renders `<DaexLink>`).
    */
-  onLinkClick?: AdeLinkClickHandler;
+  onLinkClick?: DaexLinkClickHandler;
   /**
    * Answer an approval. Omit when the thread has no `approve`: approval cards
    * then render read-only with a line saying why.
@@ -218,7 +218,7 @@ export function Transcript({
     || (status === "running" && (visible.length === 0 || tail!.event.type !== "tool_chip"));
 
   return (
-    <AdeLinkHandlerProvider onLinkClick={onLinkClick}>
+    <DaexLinkHandlerProvider onLinkClick={onLinkClick}>
       <div
         ref={scrollRef}
         className={["adechat-transcript", className].filter(Boolean).join(" ")}
@@ -273,7 +273,7 @@ export function Transcript({
           />
         ) : null}
       </div>
-    </AdeLinkHandlerProvider>
+    </DaexLinkHandlerProvider>
   );
 }
 

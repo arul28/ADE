@@ -26,7 +26,7 @@ import type {
 } from "./hostConfig.js";
 
 /** Known provider ids for autocomplete; provider strings remain open for newer runtimes. */
-export type AdeProvider =
+export type DaexProvider =
   | "claude"
   | "codex"
   | "cursor"
@@ -323,7 +323,7 @@ export type PendingInputSource =
  *
  * `"approval"` and `"permissions"` are the two approval-shaped kinds — a
  * yes/no on an action the model wants to take. The other four want prose or a
- * choice, and `AdeThread.approve` cannot answer them: render them read-only.
+ * choice, and `DaexThread.approve` cannot answer them: render them read-only.
  */
 export const PENDING_INPUT_KINDS = [
   "approval",
@@ -484,7 +484,7 @@ export type ProviderCapabilities = {
  */
 export type UsageLimitResume = {
   state: "armed" | "resuming" | "paused" | "opted_out" | "no_reset" | (string & {});
-  provider: AdeProvider;
+  provider: DaexProvider;
   /** When the resume prompt is sent (reset + buffer). Null when unknown. */
   fireAt: string | null;
   /** The reset the provider published. Null when unknown. */
@@ -502,7 +502,7 @@ export type UsageLimitEvent = {
   /** Thread key; empty when the session is not one this client opened by key. */
   key: string;
   sessionId: string;
-  provider: AdeProvider;
+  provider: DaexProvider;
   /** The current state, or null when the limit cleared. */
   status: UsageLimitResume | null;
 };
@@ -591,14 +591,14 @@ export type KnownAgentChatEvent =
     }
   | { type: "done"; [key: string]: unknown };
 
-/** Event types the SDK routes to the `usage` channel of `AdeThread.on`. */
+/** Event types the SDK routes to the `usage` channel of `DaexThread.on`. */
 export const USAGE_EVENT_TYPES = [
   "tokens",
   "context_usage",
   "codex_token_usage",
 ] as const;
 
-/** Event types the SDK routes to the `status` channel of `AdeThread.on`. */
+/** Event types the SDK routes to the `status` channel of `DaexThread.on`. */
 export const STATUS_EVENT_TYPES = [
   "status",
   "done",
@@ -650,7 +650,7 @@ export type CapabilitiesChangedEvent = {
  * The four capability reports a thread carries, as one object.
  *
  * Returned by `setModel` and carried by `capabilities_changed`. Each report
- * keeps its own null rule — see the matching field on `AdeThread`.
+ * keeps its own null rule — see the matching field on `DaexThread`.
  */
 export type ThreadCapabilities = {
   mcpCapability: McpCapabilityReport | null;
@@ -683,7 +683,7 @@ export type ThreadModelSelection = {
 /**
  * One page of a thread's durable transcript, newest page first.
  *
- * Returned by `AdeThread.historyPage`. `events` are in transcript order
+ * Returned by `DaexThread.historyPage`. `events` are in transcript order
  * (oldest first) within the page.
  */
 export type ThreadHistoryPage = {
@@ -866,18 +866,18 @@ export type ModelCatalogEntry = {
   displayName: string;
   /**
    * The provider group this model belongs to. One of the six
-   * {@link AdeProvider} values for every model this SDK can open a thread on;
+   * {@link DaexProvider} values for every model this SDK can open a thread on;
    * typed open because the runtime's catalog is downloaded and can list a
    * provider group newer than this SDK.
    *
-   * Because it is open, `ThreadOpenOptions.provider` (typed `AdeProvider`) will
+   * Because it is open, `ThreadOpenOptions.provider` (typed `DaexProvider`) will
    * not take it without narrowing. Narrow it with `isSupportedProvider` — an
    * SDK export since 0.4 — rather than a cast:
    *
    *   if (!isSupportedProvider(entry.provider)) return;
    *   ade.threads.open(key, { provider: entry.provider, model: entry.id });
    */
-  provider: AdeProvider | (string & {});
+  provider: DaexProvider | (string & {});
   /** Provider-native model ref ADE sends under the hood. */
   runtimeModelId: string;
   isDefault: boolean;
@@ -1090,7 +1090,7 @@ export type DoctorReport = {
      *
      * An unsupported runtime still connects: features it lacks are detected
      * and degrade with a logged line. Pass `requireCompatibleRuntime: true` to
-     * `createAdeChat` to refuse it instead. A dev build (`0.0.0`, or no version
+     * `createDaexChat` to refuse it instead. A dev build (`0.0.0`, or no version
      * at all) counts as supported and says so in `note`.
      */
     compatibility: RuntimeCompatibility;
@@ -1131,3 +1131,8 @@ export type RuntimeCompatibility = {
 
 
 export type Unsubscribe = () => void;
+
+// Pre-Daex names, kept as deprecated aliases so code written against the
+// `@ade-dev` packages keeps compiling. Remove them in a future major version.
+/** @deprecated Use {@link DaexProvider}. */
+export type AdeProvider = DaexProvider;

@@ -1,7 +1,7 @@
 /**
  * The `client.providers` surface: probe, merge, fan out, poll.
  *
- * Lifted out of `createAdeChat` whole. It owns one question — "what does this
+ * Lifted out of `createDaexChat` whole. It owns one question — "what does this
  * machine have installed and signed in, right now" — and it answers it from two
  * sources that disagree by design: the runtime's own probe knows what is on
  * disk, and only the model catalog knows how many models are selectable. The

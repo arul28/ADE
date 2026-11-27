@@ -1,4 +1,4 @@
-import { AdeError } from "./errors.js";
+import { DaexError } from "./errors.js";
 import type { PersonalChatsApi } from "./personalChats.js";
 import type { AgentChatEventEnvelope, ThreadHistoryPage } from "./types.js";
 
@@ -45,7 +45,7 @@ function trimPage(
 }
 
 /**
- * One page of a session's durable transcript. The body of `AdeThread.historyPage`.
+ * One page of a session's durable transcript. The body of `DaexThread.historyPage`.
  *
  * The newest page comes from the tail read every runtime has; an older page
  * needs the `getEventHistoryPage` action, and without it `onUnsupported` runs
@@ -78,7 +78,7 @@ export async function readHistoryPage(args: {
     return trimPage(events, limit, runtimeHasMore);
   }
   if (typeof before !== "number" || !Number.isInteger(before) || before < 0) {
-    throw new AdeError("invalid_option", "historyPage({ beforeSequence }) takes a non-negative integer.");
+    throw new DaexError("invalid_option", "historyPage({ beforeSequence }) takes a non-negative integer.");
   }
   if (!args.pageSupported) {
     args.onUnsupported();

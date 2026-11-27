@@ -8,7 +8,7 @@
  */
 
 /** Every token this package reads. Nothing else is styleable. */
-export const ADE_CHAT_TOKENS = [
+export const DAEX_CHAT_TOKENS = [
   /**
    * The outermost surface: the chat root and the composer bar. Separate from
    * `--adechat-bg` so it alone can be `transparent` while inset surfaces
@@ -37,8 +37,8 @@ export const ADE_CHAT_TOKENS = [
   "--adechat-space",
 ] as const;
 
-export type AdeChatToken = (typeof ADE_CHAT_TOKENS)[number];
-export type AdeChatTheme = Record<AdeChatToken, string>;
+export type DaexChatToken = (typeof DAEX_CHAT_TOKENS)[number];
+export type DaexChatTheme = Record<DaexChatToken, string>;
 
 export type CreateThemeInput = {
   /** Any CSS color. Hex (3/6/8 digit) unlocks derived tints. */
@@ -150,7 +150,7 @@ function contrastForeground(background: string, scheme: "light" | "dark"): strin
  * Build the full token set from a handful of inputs. Every token is always
  * present, so the result can be spread straight onto a `style` prop.
  */
-export function createTheme(input: CreateThemeInput = {}): AdeChatTheme {
+export function createTheme(input: CreateThemeInput = {}): DaexChatTheme {
   const transparent = input.background?.trim().toLowerCase() === "transparent";
   const requestedBackground = transparent ? undefined : input.background;
   const backgroundLuminance = requestedBackground ? relativeLuminance(requestedBackground) : null;
@@ -206,12 +206,21 @@ export function createTheme(input: CreateThemeInput = {}): AdeChatTheme {
 }
 
 /** The dark default, useful as a baseline to spread and override. */
-export const defaultTheme: AdeChatTheme = createTheme();
+export const defaultTheme: DaexChatTheme = createTheme();
 
 /** Serialize a theme for a `<style>` block or a stylesheet string. */
-export function themeToCss(theme: AdeChatTheme, selector = ":root"): string {
-  const body = (Object.keys(theme) as AdeChatToken[])
+export function themeToCss(theme: DaexChatTheme, selector = ":root"): string {
+  const body = (Object.keys(theme) as DaexChatToken[])
     .map((token) => `  ${token}: ${theme[token]};`)
     .join("\n");
   return `${selector} {\n${body}\n}`;
 }
+
+// Pre-Daex names, kept as deprecated aliases so code written against the
+// `@ade-dev` packages keeps compiling. Remove them in a future major version.
+/** @deprecated Use {@link DAEX_CHAT_TOKENS}. */
+export const ADE_CHAT_TOKENS = DAEX_CHAT_TOKENS;
+/** @deprecated Use {@link DaexChatTheme}. */
+export type AdeChatTheme = DaexChatTheme;
+/** @deprecated Use {@link DaexChatToken}. */
+export type AdeChatToken = DaexChatToken;

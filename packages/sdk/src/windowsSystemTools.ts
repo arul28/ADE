@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { AdeError } from "./errors.js";
+import { DaexError } from "./errors.js";
 
 /**
  * Resolution of the Windows system executables this package shells out to.
@@ -55,7 +55,7 @@ export function trustedWindowsToolKernelPath(tool: TrustedWindowsTool): string {
 /**
  * Resolve one of the three tools to a canonical, spawnable absolute path.
  *
- * Throws `AdeError("spawn_failed")` rather than degrading to a bare command
+ * Throws `DaexError("spawn_failed")` rather than degrading to a bare command
  * name. A PATH fallback is exactly the behaviour this function exists to
  * remove: falling back would mean that anyone who can make the System32 lookup
  * fail also gets to choose the binary, which is strictly worse than not running
@@ -88,7 +88,7 @@ export function resolveTrustedWindowsTool(
     canonicalRoot = realpathNative(TRUSTED_WINDOWS_SYSTEM32_KERNEL_ROOT);
     canonicalTool = realpathNative(kernelToolPath);
   } catch (error) {
-    throw new AdeError("spawn_failed", `Could not resolve the Windows ${tool} executable.`, {
+    throw new DaexError("spawn_failed", `Could not resolve the Windows ${tool} executable.`, {
       cause: error,
     });
   }
@@ -104,7 +104,7 @@ export function resolveTrustedWindowsTool(
     escapesRoot ||
     canonicalTool.toLowerCase() !== expectedTool.toLowerCase()
   ) {
-    throw new AdeError(
+    throw new DaexError(
       "spawn_failed",
       `Refusing an untrusted Windows ${tool} executable: ${canonicalTool}`,
     );
@@ -114,12 +114,12 @@ export function resolveTrustedWindowsTool(
   try {
     isFile = statSync(canonicalTool).isFile();
   } catch (error) {
-    throw new AdeError("spawn_failed", `Could not inspect the Windows ${tool} executable.`, {
+    throw new DaexError("spawn_failed", `Could not inspect the Windows ${tool} executable.`, {
       cause: error,
     });
   }
   if (!isFile) {
-    throw new AdeError(
+    throw new DaexError(
       "spawn_failed",
       `The Windows ${tool} path is not a file: ${canonicalTool}`,
     );

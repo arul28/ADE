@@ -1,4 +1,4 @@
-import { AdeError } from "./errors.js";
+import { DaexError } from "./errors.js";
 export type AccountUsage = {
   state: "ok" | "stale" | "expired" | "signed_out" | "no_reading" | "error";
   readAt: string | null;
@@ -125,7 +125,7 @@ function accountInfo(value: unknown): AccountInfo {
   const row = record(withoutSecrets(record(value).instance ?? record(value).account ?? value));
   const account = record(row.account);
   if (typeof row.id !== "string" || typeof row.provider !== "string") {
-    throw new AdeError("protocol_error", "The ADE runtime returned an invalid provider account.");
+    throw new DaexError("protocol_error", "The ADE runtime returned an invalid provider account.");
   }
   const email = typeof account.email === "string" ? account.email : row.email;
   const plan = typeof account.plan === "string" ? account.plan : row.plan;
@@ -205,7 +205,7 @@ function withoutSecrets(value: unknown): unknown {
 function credentialInfo(value: unknown): ApiCredentialInfo {
   const row = record(withoutSecrets(record(value).credential ?? value));
   if (typeof row.provider !== "string" || typeof row.credentialId !== "string") {
-    throw new AdeError("protocol_error", "The ADE runtime returned an invalid credential summary.");
+    throw new DaexError("protocol_error", "The ADE runtime returned an invalid credential summary.");
   }
   return row as ApiCredentialInfo;
 }
@@ -213,7 +213,7 @@ function credentialInfo(value: unknown): ApiCredentialInfo {
 function loginInfo(value: unknown, accountId: string, provider: string): SignInStatus {
   const row = record(record(value).login ?? record(value).status ?? value);
   if (typeof row.loginId !== "string" || !["running", "verifying", "succeeded", "failed", "cancelled", "expired"].includes(String(row.state))) {
-    throw new AdeError("protocol_error", "The ADE runtime returned an invalid sign-in status.");
+    throw new DaexError("protocol_error", "The ADE runtime returned an invalid sign-in status.");
   }
   return {
     loginId: row.loginId,
@@ -254,7 +254,7 @@ export function createAccountManagement(call: AccountActionCall, assertUsable: (
     },
     signIn: async (id, options = {}) => {
       const existing = (await listAccounts()).find((account) => account.id === id);
-      if (!existing) throw new AdeError("invalid_option", `Provider account "${id}" does not exist.`);
+      if (!existing) throw new DaexError("invalid_option", `Provider account "${id}" does not exist.`);
       const started = loginInfo(await callAccount("loginStart", { id, ...options }), id, existing.provider);
       const listeners = new Set<(status: SignInStatus) => void>();
       let current = started;
@@ -289,12 +289,12 @@ export function createAccountManagement(call: AccountActionCall, assertUsable: (
             try {
               await callAccount("refresh", { instanceId: id });
               const account = (await listAccounts(existing.provider)).find((entry) => entry.id === id);
-              if (!account) throw new AdeError("protocol_error", `Signed-in account "${id}" was not returned by refresh.`);
+              if (!account) throw new DaexError("protocol_error", `Signed-in account "${id}" was not returned by refresh.`);
               resolveDone(account);
             } catch (error) { rejectDone(error instanceof Error ? error : new Error(String(error))); }
           })();
         } else {
-          rejectDone(failure ?? new AdeError("sign_in_failed", status.message ?? `Sign-in ${status.state}.`));
+          rejectDone(failure ?? new DaexError("sign_in_failed", status.message ?? `Sign-in ${status.state}.`));
         }
       };
       const handle: SignInHandle & { dispose(): void; cancelForDispose(): Promise<void> } = {
@@ -304,8 +304,8 @@ export function createAccountManagement(call: AccountActionCall, assertUsable: (
           return () => listeners.delete(listener);
         },
         submitCode: async (code) => {
-          if (finished) throw new AdeError("disposed", "This sign-in has already finished.");
-          if (!code.trim()) throw new AdeError("invalid_option", "A sign-in code is required.");
+          if (finished) throw new DaexError("disposed", "This sign-in has already finished.");
+          if (!code.trim()) throw new DaexError("invalid_option", "A sign-in code is required.");
           await callAccount("loginSubmitCode", { loginId: current.loginId, code });
         },
         cancel: async () => {
@@ -324,7 +324,7 @@ export function createAccountManagement(call: AccountActionCall, assertUsable: (
           finish(cancelled);
         },
         dispose: () => {
-          if (!finished) rejectDone(new AdeError("disposed", "The ADE chat client was disposed during sign-in."));
+          if (!finished) rejectDone(new DaexError("disposed", "The ADE chat client was disposed during sign-in."));
           if (timer) clearTimeout(timer);
           timer = null;
           finished = true;
@@ -344,12 +344,12 @@ export function createAccountManagement(call: AccountActionCall, assertUsable: (
           delay = Math.min(5_000, delay * 1.5);
         } catch (error) {
           if (finished) return;
-          if (error instanceof AdeError && error.code === "disposed") {
+          if (error instanceof DaexError && error.code === "disposed") {
             handle.dispose();
             rejectDone(error);
             return;
           }
-          if (error instanceof AdeError && error.code === "unsupported") {
+          if (error instanceof DaexError && error.code === "unsupported") {
             finish({ ...current, state: "failed", message: error.message, endedAt: new Date().toISOString() }, error);
             return;
           }
@@ -372,7 +372,7 @@ export function createAccountManagement(call: AccountActionCall, assertUsable: (
     },
     add: async ({ provider, key, label }) => {
       assertUsable();
-      if (!key) throw new AdeError("invalid_option", "credentials.add() needs a key value.");
+      if (!key) throw new DaexError("invalid_option", "credentials.add() needs a key value.");
       return credentialInfo(await call("credentials", "store", { provider, key, label }));
     },
     remove: async (id, provider) => {

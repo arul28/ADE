@@ -6,7 +6,7 @@
  * `apps/desktop/src/renderer/components/shared/ModelPicker/` (ModelPickerRail,
  * ModelPickerContent, ModelListRow) — including the vertical rail with
  * per-provider status dots and arrow-key roving focus. The data layer is
- * rewritten against `AdeChatClient` rather than ADE's runtime catalog cache,
+ * rewritten against `DaexChatClient` rather than ADE's runtime catalog cache,
  * and ADE-only affordances (favourites, recents, per-surface defaults, cloud
  * launch) are out of scope for this package. Reasoning effort is in scope: a
  * row of levels under the list for the selected model, when it lists any.
@@ -14,8 +14,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { useAdeProviders } from "../context/AdeChatContext";
-import type { AdeChatClient, ModelDescriptor, ProviderStatus } from "../sdkTypes";
+import { useDaexProviders } from "../context/AdeChatContext";
+import type { DaexChatClient, ModelDescriptor, ProviderStatus } from "../sdkTypes";
 import {
   groupModelsByProvider,
   isModelSelectable,
@@ -30,7 +30,7 @@ export type ModelPickerProps = {
   models?: readonly ModelDescriptor[];
   providers?: readonly ProviderStatus[];
   /** Used only when `models`/`providers` are omitted. */
-  client?: AdeChatClient;
+  client?: DaexChatClient;
   /** Hide the search field. */
   searchable?: boolean;
   /** Rendered under a provider group that cannot be selected from. */
@@ -63,7 +63,7 @@ export function ModelPicker(props: ModelPickerProps) {
 }
 
 function ConnectedModelPicker(props: ModelPickerProps) {
-  const { statuses, models, loading, error } = useAdeProviders(props.client);
+  const { statuses, models, loading, error } = useDaexProviders(props.client);
   if (error) {
     return <div className="adechat-modelpicker-empty">Could not load models: {error.message}</div>;
   }

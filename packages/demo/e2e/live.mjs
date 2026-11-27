@@ -22,7 +22,7 @@
  */
 
 import path from "node:path";
-import { createAdeChat } from "@daex-dev/sdk";
+import { createDaexChat } from "@daex-dev/sdk";
 import { check, eventText, summarize, waitForIdle } from "./harness.mjs";
 import { makeIsolatedHome } from "../lib/isolatedHome.mjs";
 import { readMcpLog, startMcpServer } from "../lib/mcpServer.mjs";
@@ -52,7 +52,7 @@ try {
 
   /* ---- boot ------------------------------------------------------------- */
 
-  client = await createAdeChat({ home, binaryPath: runtimeBinary, logger: sdkLog });
+  client = await createDaexChat({ home, binaryPath: runtimeBinary, logger: sdkLog });
 
   const doctor = await client.doctor();
   check("doctor.sane", doctor.socket.connected && doctor.events.mode !== "unavailable",
@@ -220,7 +220,7 @@ try {
   await client.dispose();
   client = null;
 
-  resumed = await createAdeChat({ home, binaryPath: runtimeBinary, logger: sdkLog });
+  resumed = await createDaexChat({ home, binaryPath: runtimeBinary, logger: sdkLog });
   // No provider/model: reopening a durable key must not require the caller to
   // remember how the thread was created.
   const resumedThread = await resumed.threads.open("main");

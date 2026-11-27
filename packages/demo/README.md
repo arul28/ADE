@@ -65,7 +65,7 @@ down together.
    `app/host.mjs`, not the renderer. `@daex-dev/sdk/server` supplies the shared
    WebSocket RPC protocol; the host owns the listener, access rules and app config.
 2. **The renderer's proxy satisfies the same interface.** `bridgeClient.ts`
-   wraps `createAdeRemoteClient()` from the SDK package, and `adaptSdkClient()`
+   wraps `createDaexRemoteClient()` from the SDK package, and `adaptSdkClient()`
    from `@daex-dev/chat-ui` accepts it unchanged — the client surface survives a
    process boundary with no app-specific remote mode.
 3. **The host owns placement and vocabulary.** Provider cards sit in the

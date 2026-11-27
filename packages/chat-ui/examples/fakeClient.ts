@@ -1,5 +1,5 @@
 /**
- * A fully typed in-memory `AdeChatClient`.
+ * A fully typed in-memory `DaexChatClient`.
  *
  * Used by `examples/basic.tsx` and by the package's tests, so the same stub
  * proves the components and documents the contract `@daex-dev/sdk` must satisfy.
@@ -7,8 +7,8 @@
  */
 
 import type {
-  AdeChatClient,
-  AdeThread,
+  DaexChatClient,
+  DaexThread,
   AgentChatEvent,
   AgentChatEventEnvelope,
   ModelDescriptor,
@@ -54,7 +54,7 @@ export const fakeModels: ModelDescriptor[] = [
 
 type Listener<T> = (value: T) => void;
 
-class FakeThread implements AdeThread {
+class FakeThread implements DaexThread {
   readonly key: string;
   private readonly events: AgentChatEventEnvelope[] = [];
   private readonly eventListeners = new Set<Listener<AgentChatEventEnvelope>>();
@@ -170,7 +170,7 @@ export type FakeClientOptions = {
   seed?: AgentChatEvent[];
 };
 
-export type FakeClient = AdeChatClient & {
+export type FakeClient = DaexChatClient & {
   /** Threads opened so far, keyed by thread key. */
   readonly threads_: Map<string, FakeThread>;
   /** Push a new provider status list to every subscriber. */

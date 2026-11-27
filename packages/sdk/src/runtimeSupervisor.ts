@@ -2,11 +2,11 @@ import type { ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { resolveBinary } from "./binary.js";
 import { resolveBundledRuntime } from "./bundledRuntime.js";
-import type { AdeClientEvent, AdeClientEventMap } from "./clientEvents.js";
-import type { CreateAdeChatOptions, InternalAdeChatOptions } from "./clientOptions.js";
+import type { DaexClientEvent, DaexClientEventMap } from "./clientEvents.js";
+import type { CreateDaexChatOptions, InternalAdeChatOptions } from "./clientOptions.js";
 import { checkRuntimeCompatibility, SUPPORTED_RUNTIME_RANGE } from "./compatibility.js";
 import { DEFAULT_RELEASE_REPO } from "./download.js";
-import { AdeError, errorMessage } from "./errors.js";
+import { DaexError, errorMessage } from "./errors.js";
 import { ChatEventStream, type ChatEventHub } from "./eventStream.js";
 import { JsonRpcConnection } from "./jsonRpc.js";
 import { reclaimStaleRuntime, runtimePidfilePath } from "./runtimePidfile.js";
@@ -42,8 +42,8 @@ export type RuntimeBinary = {
 /** `autoRestart`, resolved. */
 export type RestartPolicy = { maxAttempts: number; backoffMs: number };
 
-/** Resolve `createAdeChat({ autoRestart })` to a policy, or null when off. */
-export function readRestartPolicy(autoRestart: CreateAdeChatOptions["autoRestart"]): RestartPolicy | null {
+/** Resolve `createDaexChat({ autoRestart })` to a policy, or null when off. */
+export function readRestartPolicy(autoRestart: CreateDaexChatOptions["autoRestart"]): RestartPolicy | null {
   if (!autoRestart) return null;
   const custom = typeof autoRestart === "object" ? autoRestart : {};
   return {
@@ -58,7 +58,7 @@ export function readRestartPolicy(autoRestart: CreateAdeChatOptions["autoRestart
  * so it has no binary and reports `source: "attached"`.
  */
 export async function resolveRuntimeBinary(
-  options: CreateAdeChatOptions | InternalAdeChatOptions,
+  options: CreateDaexChatOptions | InternalAdeChatOptions,
   home: string,
   logger: (line: string) => void,
 ): Promise<RuntimeBinary> {
@@ -94,7 +94,7 @@ export async function resolveRuntimeBinary(
 }
 
 export type RuntimeSupervisorDeps = {
-  options: CreateAdeChatOptions | InternalAdeChatOptions;
+  options: CreateDaexChatOptions | InternalAdeChatOptions;
   home: string;
   socketPath: string;
   binary: RuntimeBinary;
@@ -103,7 +103,7 @@ export type RuntimeSupervisorDeps = {
   hub: ChatEventHub;
   logger: (line: string) => void;
   recordError: (scope: string, error: unknown) => void;
-  emitClient: <E extends AdeClientEvent>(event: E, payload: AdeClientEventMap[E]) => void;
+  emitClient: <E extends DaexClientEvent>(event: E, payload: DaexClientEventMap[E]) => void;
   isDisposed: () => boolean;
   /** The runtime went away. Called once per connection, before any restart. */
   onLost: (message: string) => void;
@@ -263,7 +263,7 @@ export class RuntimeSupervisor {
       // Two writers over the same database is corruption, which is strictly
       // worse than refusing to start, and the caller cannot discover it from
       // inside. Fatal, with everything needed to resolve it by hand.
-      throw new AdeError(
+      throw new DaexError(
         "spawn_failed",
         `Another process (pid ${reclaim.pid}) is recorded as owning this ADE home and could not be ` +
           `confirmed stale: ${reclaim.reason}. Starting a second runtime on the same state root risks ` +
@@ -326,7 +326,7 @@ export class RuntimeSupervisor {
     } catch (error) {
       bound.connection.close();
       await bound.sidecar?.stop();
-      throw new AdeError("handshake_failed", `The ADE runtime handshake failed: ${errorMessage(error)}`, {
+      throw new DaexError("handshake_failed", `The ADE runtime handshake failed: ${errorMessage(error)}`, {
         cause: error,
       });
     }
@@ -339,7 +339,7 @@ export class RuntimeSupervisor {
       if (options.requireCompatibleRuntime) {
         bound.connection.close();
         await bound.sidecar?.stop();
-        throw new AdeError("runtime_incompatible", `${line}. Install a supported runtime.`);
+        throw new DaexError("runtime_incompatible", `${line}. Install a supported runtime.`);
       }
       logger(`${line}; features it lacks are detected and degrade`);
     }

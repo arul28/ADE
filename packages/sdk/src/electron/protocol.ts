@@ -13,7 +13,7 @@
  * all, so anything that reaches it must be self-contained.
  */
 
-import type { AdeClientEvent, AdeClientEventMap } from "../clientEvents.js";
+import type { DaexClientEvent, DaexClientEventMap } from "../clientEvents.js";
 import type {
   InstructionsCapability,
   PermissionCapability,
@@ -27,10 +27,10 @@ import type {
 } from "../types.js";
 
 /** Channel namespace. A host that runs two bridges gives each its own prefix. */
-export const ADE_DEFAULT_CHANNEL_PREFIX = "ade";
+export const DAEX_DEFAULT_CHANNEL_PREFIX = "ade";
 
 /** Default `window` key the preload exposes the bridge under. */
-export const ADE_DEFAULT_BRIDGE_KEY = "ade";
+export const DAEX_DEFAULT_BRIDGE_KEY = "ade";
 
 /** `<prefix>:invoke` — one `ipcMain.handle` for every method. */
 export function invokeChannel(prefix: string): string {
@@ -91,7 +91,7 @@ export interface ContextBridgeLike {
 /* -------------------------------------------------------------------------- */
 
 /** One call from a renderer. `args` is positional, matching the SDK method. */
-export type AdeIpcInvokeRequest = {
+export type DaexIpcInvokeRequest = {
   method: string;
   args: unknown[];
 };
@@ -100,23 +100,23 @@ export type AdeIpcInvokeRequest = {
  * A failure, flattened so it survives structured clone.
  *
  * `ipcMain.handle` rejections reach the renderer as a plain `Error` whose
- * message has been rewritten, which loses `AdeError.code` — the one field an
+ * message has been rewritten, which loses `DaexError.code` — the one field an
  * embedder branches on. So the handler never rejects: it resolves with this
- * envelope and the renderer rebuilds a real `AdeError`.
+ * envelope and the renderer rebuilds a real `DaexError`.
  */
-export type AdeIpcErrorPayload = {
+export type DaexIpcErrorPayload = {
   __adeError: true;
   name: "AdeError";
   code: string;
   message: string;
 };
 
-export type AdeIpcInvokeResponse<T = unknown> =
+export type DaexIpcInvokeResponse<T = unknown> =
   | { ok: true; value: T }
-  | { ok: false; error: AdeIpcErrorPayload };
+  | { ok: false; error: DaexIpcErrorPayload };
 
 /** Flatten errors for JSON transports while preserving SDK error codes. */
-export function serializeAdeError(error: unknown): AdeIpcErrorPayload {
+export function serializeAdeError(error: unknown): DaexIpcErrorPayload {
   const candidate = error && typeof error === "object"
     ? (error as { name?: unknown; code?: unknown; message?: unknown })
     : null;
@@ -129,7 +129,7 @@ export function serializeAdeError(error: unknown): AdeIpcErrorPayload {
 }
 
 /** A pushed envelope for one thread subscription. */
-export type AdeIpcThreadEvent = {
+export type DaexIpcThreadEvent = {
   kind: "thread";
   subscriptionId: string;
   key: string;
@@ -137,7 +137,7 @@ export type AdeIpcThreadEvent = {
 };
 
 /** A pushed provider-status snapshot for one `providers.onChange` subscription. */
-export type AdeIpcProvidersEvent = {
+export type DaexIpcProvidersEvent = {
   kind: "providers";
   subscriptionId: string;
   statuses: Record<string, ProviderStatus>;
@@ -146,21 +146,21 @@ export type AdeIpcProvidersEvent = {
 /**
  * A pushed runtime lifecycle event for one `client.subscribe` subscription.
  *
- * `event` and `payload` are exactly what `AdeChatClient.on` delivers in the
- * main process: a union keyed by `AdeClientEventMap`, so narrowing on `event`
+ * `event` and `payload` are exactly what `DaexChatClient.on` delivers in the
+ * main process: a union keyed by `DaexClientEventMap`, so narrowing on `event`
  * types `payload`. One subscription carries every event name; the renderer
  * client splits them.
  */
-export type AdeIpcClientEvent = {
-  [E in AdeClientEvent]: {
+export type DaexIpcClientEvent = {
+  [E in DaexClientEvent]: {
     kind: "client";
     subscriptionId: string;
     event: E;
-    payload: AdeClientEventMap[E];
+    payload: DaexClientEventMap[E];
   };
-}[AdeClientEvent];
+}[DaexClientEvent];
 
-export type AdeIpcEventPayload = AdeIpcThreadEvent | AdeIpcProvidersEvent | AdeIpcClientEvent;
+export type DaexIpcEventPayload = DaexIpcThreadEvent | DaexIpcProvidersEvent | DaexIpcClientEvent;
 
 /**
  * What the preload puts on `window[key]`.
@@ -169,9 +169,9 @@ export type AdeIpcEventPayload = AdeIpcThreadEvent | AdeIpcProvidersEvent | AdeI
  * `contextBridge` keeps its prototype, so the renderer receives an id plus
  * functions and rebuilds every object shape on its own side.
  */
-export type AdeBridge = {
-  invoke(method: string, args: unknown[]): Promise<AdeIpcInvokeResponse>;
-  onEvent(listener: (payload: AdeIpcEventPayload) => void): () => void;
+export type DaexBridge = {
+  invoke(method: string, args: unknown[]): Promise<DaexIpcInvokeResponse>;
+  onEvent(listener: (payload: DaexIpcEventPayload) => void): () => void;
 };
 
 /* -------------------------------------------------------------------------- */
@@ -191,7 +191,7 @@ export type AdeBridge = {
  *
  * Types only: this module still has no value import of its own.
  */
-export type AdeIpcThreadSnapshot = {
+export type DaexIpcThreadSnapshot = {
   id: string;
   key: string;
   /** The thread's title at open (or after the last `thread.update`). */
@@ -205,7 +205,7 @@ export type AdeIpcThreadSnapshot = {
 };
 
 /** `{ subscriptionId }`, returned by every subscribe method. */
-export type AdeIpcSubscription = { subscriptionId: string };
+export type DaexIpcSubscription = { subscriptionId: string };
 
 /* -------------------------------------------------------------------------- */
 /* Method names                                                                */
@@ -219,7 +219,7 @@ export type AdeIpcSubscription = { subscriptionId: string };
  * process may change them — through `thread.updateMcpServers`, or through the
  * bridge's `openOptions` hook returning `refresh.mcpServers`.
  */
-export const ADE_IPC_METHODS = [
+export const DAEX_IPC_METHODS = [
   "providers.status",
   "providers.refresh",
   "providers.capabilities",
@@ -285,13 +285,13 @@ export const ADE_IPC_METHODS = [
   "thread.unsubscribe",
 ] as const;
 
-export type AdeIpcMethod = (typeof ADE_IPC_METHODS)[number];
+export type DaexIpcMethod = (typeof DAEX_IPC_METHODS)[number];
 
 /**
  * Methods whose first argument is a thread key, so `allowThreadKey` can gate
  * them without the dispatch table restating the rule per method.
  */
-export const ADE_IPC_THREAD_KEY_METHODS: ReadonlySet<AdeIpcMethod> = new Set<AdeIpcMethod>([
+export const DAEX_IPC_THREAD_KEY_METHODS: ReadonlySet<DaexIpcMethod> = new Set<DaexIpcMethod>([
   "threads.open",
   "threads.get",
   "threads.delete",
@@ -429,3 +429,36 @@ export function mergeHistoryWithBuffer(
   });
   return merged.sort(compareEnvelopes);
 }
+
+// Pre-Daex names, kept as deprecated aliases so code written against the
+// `@ade-dev` packages keeps compiling. Remove them in a future major version.
+/** @deprecated Use {@link DAEX_DEFAULT_BRIDGE_KEY}. */
+export const ADE_DEFAULT_BRIDGE_KEY = DAEX_DEFAULT_BRIDGE_KEY;
+/** @deprecated Use {@link DAEX_DEFAULT_CHANNEL_PREFIX}. */
+export const ADE_DEFAULT_CHANNEL_PREFIX = DAEX_DEFAULT_CHANNEL_PREFIX;
+/** @deprecated Use {@link DAEX_IPC_METHODS}. */
+export const ADE_IPC_METHODS = DAEX_IPC_METHODS;
+/** @deprecated Use {@link DAEX_IPC_THREAD_KEY_METHODS}. */
+export const ADE_IPC_THREAD_KEY_METHODS = DAEX_IPC_THREAD_KEY_METHODS;
+/** @deprecated Use {@link DaexBridge}. */
+export type AdeBridge = DaexBridge;
+/** @deprecated Use {@link DaexIpcClientEvent}. */
+export type AdeIpcClientEvent = DaexIpcClientEvent;
+/** @deprecated Use {@link DaexIpcErrorPayload}. */
+export type AdeIpcErrorPayload = DaexIpcErrorPayload;
+/** @deprecated Use {@link DaexIpcEventPayload}. */
+export type AdeIpcEventPayload = DaexIpcEventPayload;
+/** @deprecated Use {@link DaexIpcInvokeRequest}. */
+export type AdeIpcInvokeRequest = DaexIpcInvokeRequest;
+/** @deprecated Use {@link DaexIpcInvokeResponse}. */
+export type AdeIpcInvokeResponse<T = unknown> = DaexIpcInvokeResponse<T>;
+/** @deprecated Use {@link DaexIpcMethod}. */
+export type AdeIpcMethod = DaexIpcMethod;
+/** @deprecated Use {@link DaexIpcProvidersEvent}. */
+export type AdeIpcProvidersEvent = DaexIpcProvidersEvent;
+/** @deprecated Use {@link DaexIpcSubscription}. */
+export type AdeIpcSubscription = DaexIpcSubscription;
+/** @deprecated Use {@link DaexIpcThreadEvent}. */
+export type AdeIpcThreadEvent = DaexIpcThreadEvent;
+/** @deprecated Use {@link DaexIpcThreadSnapshot}. */
+export type AdeIpcThreadSnapshot = DaexIpcThreadSnapshot;

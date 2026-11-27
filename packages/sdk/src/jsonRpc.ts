@@ -1,5 +1,5 @@
 import net from "node:net";
-import { AdeError, toError } from "./errors.js";
+import { DaexError, toError } from "./errors.js";
 
 /**
  * Newline-delimited JSON-RPC 2.0 over a unix socket or Windows named pipe.
@@ -53,7 +53,7 @@ export class JsonRpcConnection {
     socket.on("data", (chunk: Buffer | string) => this.handleData(chunk));
     socket.on("error", (error: Error) => this.fail(error));
     socket.on("close", () =>
-      this.fail(new AdeError("transport_closed", "The ADE runtime socket closed.")),
+      this.fail(new DaexError("transport_closed", "The ADE runtime socket closed.")),
     );
   }
 
@@ -93,7 +93,7 @@ export class JsonRpcConnection {
   ): Promise<T> {
     if (this.closed) {
       return Promise.reject(
-        new AdeError("transport_closed", `The ADE runtime socket is closed (${method}).`),
+        new DaexError("transport_closed", `The ADE runtime socket is closed (${method}).`),
       );
     }
     let timeoutMs: number;
@@ -117,7 +117,7 @@ export class JsonRpcConnection {
         // response may still arrive and desynchronise every later id. Kill the
         // connection rather than leave a half-understood stream in place.
         this.fail(
-          new AdeError(
+          new DaexError(
             "rpc_timeout",
             `The ADE runtime did not answer ${method} within ${timeoutMs}ms.`,
           ),
@@ -135,7 +135,7 @@ export class JsonRpcConnection {
         const entry = this.pending.get(key);
         if (entry) clearTimeout(entry.timer);
         this.pending.delete(key);
-        reject(new AdeError("transport_closed", `Failed to send ${method}.`, { cause: error }));
+        reject(new DaexError("transport_closed", `Failed to send ${method}.`, { cause: error }));
       });
     });
   }
@@ -176,7 +176,7 @@ export class JsonRpcConnection {
     // as intentional and does not fire the unexpected-drop handlers.
     if (this.closed) return;
     this.closed = true;
-    this.rejectAll(new AdeError("transport_closed", "The ADE runtime socket closed."));
+    this.rejectAll(new DaexError("transport_closed", "The ADE runtime socket closed."));
     try {
       this.socket.end();
       this.socket.destroy();
@@ -231,7 +231,7 @@ export class JsonRpcConnection {
         parsed = JSON.parse(trimmed) as JsonRpcMessage | JsonRpcMessage[];
       } catch (error) {
         this.fail(
-          new AdeError("protocol_error", "The ADE runtime sent a non-JSON frame.", {
+          new DaexError("protocol_error", "The ADE runtime sent a non-JSON frame.", {
             cause: error,
           }),
         );
@@ -261,7 +261,7 @@ export class JsonRpcConnection {
     clearTimeout(entry.timer);
     if (message.error) {
       entry.reject(
-        new AdeError(
+        new DaexError(
           "rpc_error",
           `${entry.method} failed: ${message.error.message}`,
           { cause: message.error },
@@ -276,7 +276,7 @@ export class JsonRpcConnection {
 function normalizeTimeoutMs(value: number): number {
   const timeoutMs = Number(value);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMEOUT_MS) {
-    throw new AdeError(
+    throw new DaexError(
       "invalid_option",
       `RPC timeout must be a finite positive number no greater than ${MAX_TIMEOUT_MS}.`,
     );
@@ -303,7 +303,7 @@ class ByteQueue {
     const index = this.indexOfByte(NEWLINE);
     if (index < 0) {
       if (this.bytes > maxBytes) {
-        throw new AdeError(
+        throw new DaexError(
           "protocol_error",
           `The ADE runtime sent an oversized frame (> ${maxBytes} bytes).`,
         );
@@ -311,7 +311,7 @@ class ByteQueue {
       return null;
     }
     if (index > maxBytes) {
-      throw new AdeError(
+      throw new DaexError(
         "protocol_error",
         `The ADE runtime sent an oversized frame (> ${maxBytes} bytes).`,
       );

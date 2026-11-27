@@ -27,25 +27,25 @@
  */
 
 import { APPROVAL_DECISIONS, type ApprovalDecision } from "../approvals.js";
-import { AdeError, errorMessage } from "../errors.js";
-import type { AdeChatClient, ThreadOpenOptions, ThreadResumeOptions } from "../client.js";
-import { ADE_CLIENT_EVENTS } from "../clientEvents.js";
-import type { AdeThread, HistoryPageOptions, ThreadRespondOptions, ThreadUpdate, ThreadUpdateOptions } from "../thread.js";
+import { DaexError, errorMessage } from "../errors.js";
+import type { DaexChatClient, ThreadOpenOptions, ThreadResumeOptions } from "../client.js";
+import { DAEX_CLIENT_EVENTS } from "../clientEvents.js";
+import type { DaexThread, HistoryPageOptions, ThreadRespondOptions, ThreadUpdate, ThreadUpdateOptions } from "../thread.js";
 import { createSignInRegistry } from "../signInRegistry.js";
 import type { AgentChatEventEnvelope, ThreadSummary, Unsubscribe } from "../types.js";
 import {
-  ADE_DEFAULT_CHANNEL_PREFIX,
-  ADE_IPC_THREAD_KEY_METHODS,
+  DAEX_DEFAULT_CHANNEL_PREFIX,
+  DAEX_IPC_THREAD_KEY_METHODS,
   eventChannel,
   invokeChannel,
   serializeAdeError,
-  type AdeIpcErrorPayload,
-  type AdeIpcMethod,
-  type AdeIpcEventPayload,
-  type AdeIpcInvokeRequest,
-  type AdeIpcInvokeResponse,
-  type AdeIpcSubscription,
-  type AdeIpcThreadSnapshot,
+  type DaexIpcErrorPayload,
+  type DaexIpcMethod,
+  type DaexIpcEventPayload,
+  type DaexIpcInvokeRequest,
+  type DaexIpcInvokeResponse,
+  type DaexIpcSubscription,
+  type DaexIpcThreadSnapshot,
   type IpcMainInvokeEventLike,
   type IpcMainLike,
   type WebContentsLike,
@@ -58,14 +58,14 @@ import { rendererOpenOptions, rendererSendOptions } from "./rendererOptions.js";
  */
 export type ThreadRemovalKind = "deleted" | "archived";
 
-export type RegisterAdeIpcOptions = {
+export type RegisterDaexIpcOptions = {
   /** Channel namespace. Defaults to `"ade"`, giving `ade:invoke` and `ade:event`. */
   channelPrefix?: string;
   /**
    * Gate every call before the SDK sees it.
    *
    * Runs first, on every method, with the raw positional arguments. Return
-   * false and the renderer receives `AdeError("unauthorized")` and the SDK is
+   * false and the renderer receives `DaexError("unauthorized")` and the SDK is
    * not called at all. This is where a host checks the sender frame and its own
    * sign-in state.
    */
@@ -80,7 +80,7 @@ export type RegisterAdeIpcOptions = {
    * A thread key carries MCP servers, a permission policy and a working
    * directory, so a compromised renderer that can open an arbitrary key can
    * choose its own tool surface. Return false and the call is rejected with
-   * `AdeError("unauthorized")`.
+   * `DaexError("unauthorized")`.
    *
    * May be async (SDK >= 0.4), so a host whose truth lives in the runtime can
    * answer from `client.threads.get(key)` instead of a hand-synced copy. It
@@ -127,7 +127,7 @@ export type RegisterAdeIpcOptions = {
   openOptions?: (
     key: string,
     rendererOptions: Record<string, unknown> | undefined,
-    context: AdeIpcOpenContext,
+    context: DaexIpcOpenContext,
   ) =>
     | ThreadOpenOptions
     | ThreadResumeOptions
@@ -138,7 +138,7 @@ export type RegisterAdeIpcOptions = {
    *
    * Called for `thread.setModel`, and for a renderer-supplied `model` on
    * `threads.open` when there is no `openOptions` hook. Return false and the
-   * call fails with `AdeError("unauthorized")`. Without it any model id the
+   * call fails with `DaexError("unauthorized")`. Without it any model id the
    * catalog resolves is accepted — including one on a provider the host never
    * meant to offer. May be async (SDK >= 0.4).
    */
@@ -170,7 +170,7 @@ export type RegisterAdeIpcOptions = {
 };
 
 /** What the `openOptions` hook learns about the key being opened. */
-export type AdeIpcOpenContext = {
+export type DaexIpcOpenContext = {
   /** The runtime has a session for the key: this open is a resume. */
   exists: boolean;
   /** That session's summary (`client.threads.get`), or null when `exists` is false. */
@@ -178,10 +178,10 @@ export type AdeIpcOpenContext = {
 };
 
 /**
- * `registerAdeIpc`'s result: call it to dispose the bridge (the pre-0.4
+ * `registerDaexIpc`'s result: call it to dispose the bridge (the pre-0.4
  * contract), and use `forget` to release a key's handles by hand.
  */
-export type AdeIpcBridgeHandle = (() => void) & {
+export type DaexIpcBridgeHandle = (() => void) & {
   /**
    * Release every renderer's handles and subscriptions for `key`. The bridge
    * already does this for a delete made through the client it serves (by the
@@ -210,7 +210,7 @@ export type AdeIpcBridgeHandle = (() => void) & {
  * call are not replayed. A client with `autoRestart` never changes identity and
  * needs none of this.
  */
-export type AdeChatClientSource = AdeChatClient | (() => AdeChatClient | null | undefined);
+export type DaexChatClientSource = DaexChatClient | (() => DaexChatClient | null | undefined);
 
 /** One subscription a renderer holds, by the id it holds it under. */
 type SubscriptionEntry =
@@ -221,9 +221,9 @@ type SubscriptionEntry =
 type RendererEntry = {
   webContents: WebContentsLike;
   /** The client this renderer's handles were opened on. */
-  client: AdeChatClient | null;
+  client: DaexChatClient | null;
   /** Threads this renderer opened, by key. */
-  threads: Map<string, AdeThread>;
+  threads: Map<string, DaexThread>;
   /**
    * What the renderer SENT for each key it opened — raw, before the hook or
    * the filter. A client swap resolves the options again from this, against
@@ -231,7 +231,7 @@ type RendererEntry = {
    */
   rendererOptions: Map<string, unknown>;
   /** In-flight opens, so two overlapping opens of one key share a subscription. */
-  opening: Map<string, Promise<AdeThread>>;
+  opening: Map<string, Promise<DaexThread>>;
   /** Every live subscription, by the id the renderer holds. */
   subscriptions: Map<string, SubscriptionEntry>;
   /** The move onto a swapped client, while it runs. Every call waits for it. */
@@ -249,39 +249,39 @@ function nextSubscriptionId(prefix: string): string {
 }
 
 /**
- * Read an `AdeError` code without `instanceof`.
+ * Read an `DaexError` code without `instanceof`.
  *
- * The Electron entries are separate bundles, so `AdeError` from
- * `@daex-dev/sdk` and `AdeError` from `@daex-dev/sdk/electron` are two classes
+ * The Electron entries are separate bundles, so `DaexError` from
+ * `@daex-dev/sdk` and `DaexError` from `@daex-dev/sdk/electron` are two classes
  * with one name. An `instanceof` check here would silently flatten every SDK
  * error to `rpc_error` — exactly the field this whole envelope exists to carry
  * — so the shape is read instead of the prototype.
  */
-export function adeErrorCodeOf(error: unknown): string | null {
+export function daexErrorCodeOf(error: unknown): string | null {
   if (!error || typeof error !== "object") return null;
   const candidate = error as { name?: unknown; code?: unknown };
   if (candidate.name !== "AdeError") return null;
   return typeof candidate.code === "string" ? candidate.code : null;
 }
 
-function serializeError(error: unknown): AdeIpcErrorPayload {
+function serializeError(error: unknown): DaexIpcErrorPayload {
   return serializeAdeError(error);
 }
 
-function unauthorized(method: string): AdeError {
-  return new AdeError("unauthorized", `The host refused ${method} for this renderer.`);
+function unauthorized(method: string): DaexError {
+  return new DaexError("unauthorized", `The host refused ${method} for this renderer.`);
 }
 
 function requireString(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim().length === 0) {
-    throw new AdeError("invalid_option", `${label} must be a non-empty string.`);
+    throw new DaexError("invalid_option", `${label} must be a non-empty string.`);
   }
   return value;
 }
 
 function requireRecord(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new AdeError("invalid_option", `${label} must be an object.`);
+    throw new DaexError("invalid_option", `${label} must be an object.`);
   }
   return value as Record<string, unknown>;
 }
@@ -290,7 +290,7 @@ const DECISIONS: ReadonlySet<string> = new Set<string>(APPROVAL_DECISIONS);
 
 function requireApprovalDecision(value: unknown): ApprovalDecision {
   if (typeof value !== "string" || !DECISIONS.has(value)) {
-    throw new AdeError(
+    throw new DaexError(
       "invalid_option",
       `decision must be one of ${APPROVAL_DECISIONS.join(", ")}; got ${JSON.stringify(value)}.`,
     );
@@ -344,24 +344,24 @@ export function navigationEndsRendererWorld(args: unknown[]): boolean {
  *
  * Returns a disposer that removes the handler and tears down every renderer's
  * subscriptions. Call it before `client.dispose()` so no push races a closing
- * runtime. The disposer also carries `forget(key)` (see `AdeIpcBridgeHandle`).
+ * runtime. The disposer also carries `forget(key)` (see `DaexIpcBridgeHandle`).
  *
  * `clientSource` is the client, or a function returning the current one — see
- * {@link AdeChatClientSource} for what a swap does.
+ * {@link DaexChatClientSource} for what a swap does.
  */
-export function registerAdeIpc(
+export function registerDaexIpc(
   ipcMain: IpcMainLike,
-  clientSource: AdeChatClientSource,
-  opts: RegisterAdeIpcOptions = {},
-): AdeIpcBridgeHandle {
+  clientSource: DaexChatClientSource,
+  opts: RegisterDaexIpcOptions = {},
+): DaexIpcBridgeHandle {
   // The client whose `threadLifecycle` events this bridge follows: a static
   // client from registration on, and for a client getter the one it last
   // served (see `syncClient`). A delete made on it by host code in main
   // releases the renderers' handles for the key, as a delete over the bridge
   // does.
-  let watchedClient: AdeChatClient | null = null;
+  let watchedClient: DaexChatClient | null = null;
   let stopWatching: Unsubscribe | null = null;
-  const watchLifecycle = (client: AdeChatClient): void => {
+  const watchLifecycle = (client: DaexChatClient): void => {
     if (watchedClient === client) return;
     stopWatching?.();
     stopWatching = null;
@@ -386,22 +386,22 @@ export function registerAdeIpc(
       log(`[ade-electron] cannot follow thread deletes on this client: ${errorMessage(error)}`);
     }
   };
-  const currentClient = (): AdeChatClient => {
+  const currentClient = (): DaexChatClient => {
     const client = typeof clientSource === "function" ? clientSource() : clientSource;
     if (!client || typeof client !== "object" || !client.threads) {
-      throw new AdeError("disposed", "The host has no ADE chat client to serve this call.");
+      throw new DaexError("disposed", "The host has no ADE chat client to serve this call.");
     }
     return client;
   };
-  const prefix = opts.channelPrefix?.trim() || ADE_DEFAULT_CHANNEL_PREFIX;
+  const prefix = opts.channelPrefix?.trim() || DAEX_DEFAULT_CHANNEL_PREFIX;
   const log = opts.logger ?? (() => {});
   const { allowThreadKey } = opts;
   const renderers = new Map<number, RendererEntry>();
   // Sign-ins a renderer started, by webContents id. Released with the renderer.
-  const signIns = createSignInRegistry<number, AdeIpcErrorPayload>(serializeError);
+  const signIns = createSignInRegistry<number, DaexIpcErrorPayload>(serializeError);
   let disposed = false;
 
-  function push(webContents: WebContentsLike, payload: AdeIpcEventPayload): void {
+  function push(webContents: WebContentsLike, payload: DaexIpcEventPayload): void {
     if (webContents.isDestroyed()) return;
     try {
       webContents.send(eventChannel(prefix), payload);
@@ -461,7 +461,7 @@ export function registerAdeIpc(
     return entry;
   }
 
-  function snapshot(thread: AdeThread, key: string): AdeIpcThreadSnapshot {
+  function snapshot(thread: DaexThread, key: string): DaexIpcThreadSnapshot {
     return {
       id: thread.id,
       key,
@@ -483,7 +483,7 @@ export function registerAdeIpc(
    * renderer was sending.
    */
   async function hostOpenOptions(
-    client: AdeChatClient,
+    client: DaexChatClient,
     key: string,
     raw: unknown,
   ): Promise<ThreadResumeOptions | undefined> {
@@ -499,7 +499,7 @@ export function registerAdeIpc(
       } catch (error) {
         log(`[ade-electron] threads.open "${key}": could not read whether the key exists (${errorMessage(error)}); treating it as new`);
       }
-      const context: AdeIpcOpenContext = { exists: summary !== null, summary };
+      const context: DaexIpcOpenContext = { exists: summary !== null, summary };
       return (await opts.openOptions(key, rendererOptions, context)) ?? undefined;
     }
     const filtered = rendererOpenOptions(key, rendererOptions, log);
@@ -517,11 +517,11 @@ export function registerAdeIpc(
    */
   async function openThread(
     entry: RendererEntry,
-    client: AdeChatClient,
+    client: DaexChatClient,
     key: string,
     raw: unknown,
     options: ThreadResumeOptions | undefined,
-  ): Promise<AdeThread> {
+  ): Promise<DaexThread> {
     const existing = entry.threads.get(key);
     if (existing) {
       // A held key still takes the hook's `refresh`: that is how a rotated MCP
@@ -582,7 +582,7 @@ export function registerAdeIpc(
   /** Attach one main-side listener for a key's envelopes under a given id. */
   function attachThreadSubscription(
     entry: RendererEntry,
-    thread: AdeThread,
+    thread: DaexThread,
     key: string,
     subscriptionId: string,
   ): void {
@@ -596,12 +596,12 @@ export function registerAdeIpc(
     entry.subscriptions.set(subscriptionId, { kind: "thread", key, stop });
   }
 
-  function attachClientSubscription(entry: RendererEntry, client: AdeChatClient, subscriptionId: string): void {
-    const stops = ADE_CLIENT_EVENTS.map((event) =>
+  function attachClientSubscription(entry: RendererEntry, client: DaexChatClient, subscriptionId: string): void {
+    const stops = DAEX_CLIENT_EVENTS.map((event) =>
       client.on(event, (payload) => {
-        // The cast restores what `ADE_CLIENT_EVENTS.map` loses: the pairing of
+        // The cast restores what `DAEX_CLIENT_EVENTS.map` loses: the pairing of
         // `event` with its payload type. `client.on(event, …)` checked it.
-        const message = { kind: "client", subscriptionId, event, payload } as AdeIpcEventPayload;
+        const message = { kind: "client", subscriptionId, event, payload } as DaexIpcEventPayload;
         // A lifecycle event names a key, and a key the gate refuses may itself
         // be private (the same rule `threads.list` follows).
         const key = event === "threadLifecycle" ? (payload as { key?: unknown }).key : undefined;
@@ -624,7 +624,7 @@ export function registerAdeIpc(
     });
   }
 
-  function attachProvidersSubscription(entry: RendererEntry, client: AdeChatClient, subscriptionId: string): void {
+  function attachProvidersSubscription(entry: RendererEntry, client: DaexChatClient, subscriptionId: string): void {
     const stop = client.providers.onChange((statuses) => {
       push(entry.webContents, { kind: "providers", subscriptionId, statuses });
     });
@@ -651,13 +651,13 @@ export function registerAdeIpc(
   }
 
   /**
-   * Move a renderer onto a swapped client. See {@link AdeChatClientSource}.
+   * Move a renderer onto a swapped client. See {@link DaexChatClientSource}.
    *
    * Each key is authorized and its options resolved AGAIN, for the new client:
    * the old client's resolved options may carry the previous account's MCP
    * credentials, and the host's gate may no longer admit the key at all.
    */
-  async function moveToClient(entry: RendererEntry, client: AdeChatClient): Promise<void> {
+  async function moveToClient(entry: RendererEntry, client: DaexChatClient): Promise<void> {
     const previous = entry.client;
     entry.client = client;
     if (!previous) return;
@@ -724,10 +724,10 @@ export function registerAdeIpc(
     }
   }
 
-  function requireThread(entry: RendererEntry, key: string): AdeThread {
+  function requireThread(entry: RendererEntry, key: string): DaexThread {
     const thread = entry.threads.get(key);
     if (!thread) {
-      throw new AdeError(
+      throw new DaexError(
         "thread_not_found",
         `This renderer has no open thread "${key}". Call threads.open first; a reload drops the bridge's handles but not the conversation.`,
       );
@@ -736,15 +736,15 @@ export function registerAdeIpc(
   }
 
   /**
-   * The dispatch table, typed `Record<AdeIpcMethod, …>`.
+   * The dispatch table, typed `Record<DaexIpcMethod, …>`.
    *
    * Not `Record<string, …>`: the method list and the handler table are the two
    * halves of one contract, and typing the table against the list is what makes
-   * adding a name to `ADE_IPC_METHODS` without a handler a compile error rather
+   * adding a name to `DAEX_IPC_METHODS` without a handler a compile error rather
    * than a renderer call that fails at run time.
    */
   const handlers: Record<
-    AdeIpcMethod,
+    DaexIpcMethod,
     (entry: RendererEntry, args: unknown[]) => unknown | Promise<unknown>
   > = {
     "providers.status": () => currentClient().providers.status(),
@@ -753,7 +753,7 @@ export function registerAdeIpc(
     "providers.subscribe": (entry) => {
       const subscriptionId = nextSubscriptionId("providers");
       attachProvidersSubscription(entry, currentClient(), subscriptionId);
-      const result: AdeIpcSubscription = { subscriptionId };
+      const result: DaexIpcSubscription = { subscriptionId };
       return result;
     },
     "providers.unsubscribe": (entry, args) => {
@@ -765,7 +765,7 @@ export function registerAdeIpc(
     "client.subscribe": (entry) => {
       const subscriptionId = nextSubscriptionId("client");
       attachClientSubscription(entry, currentClient(), subscriptionId);
-      const result: AdeIpcSubscription = { subscriptionId };
+      const result: DaexIpcSubscription = { subscriptionId };
       return result;
     },
     "client.unsubscribe": (entry, args) => {
@@ -873,7 +873,7 @@ export function registerAdeIpc(
       const options = raw ? {
         ...(raw.queue === "keep" || raw.queue === "drop" ? { queue: raw.queue } : {}),
         ...(typeof raw.mode === "string" ? { mode: raw.mode } : {}),
-      } as Parameters<AdeThread["interrupt"]>[0] : undefined;
+      } as Parameters<DaexThread["interrupt"]>[0] : undefined;
       await requireThread(entry, key).interrupt(options);
       return null;
     },
@@ -916,11 +916,11 @@ export function registerAdeIpc(
     },
     "thread.slashCommands": (entry, args) => requireThread(entry, requireString(args[0], "thread key")).slashCommands(),
     "thread.recover": (entry, args) => {
-      const options = args[1] && typeof args[1] === "object" ? args[1] as Parameters<AdeThread["recover"]>[0] : {};
+      const options = args[1] && typeof args[1] === "object" ? args[1] as Parameters<DaexThread["recover"]>[0] : {};
       return requireThread(entry, requireString(args[0], "thread key")).recover(options);
     },
     "thread.resolveUnprocessed": (entry, args) => {
-      const raw = args[1] && typeof args[1] === "object" ? args[1] as Parameters<AdeThread["resolveUnprocessed"]>[0] : { steerId: "", action: "dismiss" as const };
+      const raw = args[1] && typeof args[1] === "object" ? args[1] as Parameters<DaexThread["resolveUnprocessed"]>[0] : { steerId: "", action: "dismiss" as const };
       return requireThread(entry, requireString(args[0], "thread key")).resolveUnprocessed(raw);
     },
     "thread.usageLimit.resumeNow": (entry, args) => requireThread(entry, requireString(args[0], "thread key")).usageLimit.resumeNow(),
@@ -960,7 +960,7 @@ export function registerAdeIpc(
       const thread = requireThread(entry, key);
       const subscriptionId = nextSubscriptionId(`thread:${key}`);
       attachThreadSubscription(entry, thread, key, subscriptionId);
-      const result: AdeIpcSubscription = { subscriptionId };
+      const result: DaexIpcSubscription = { subscriptionId };
       return result;
     },
     "thread.unsubscribe": (entry, args) => {
@@ -999,21 +999,21 @@ export function registerAdeIpc(
 
   async function dispatch(
     event: IpcMainInvokeEventLike,
-    request: AdeIpcInvokeRequest,
-  ): Promise<AdeIpcInvokeResponse> {
+    request: DaexIpcInvokeRequest,
+  ): Promise<DaexIpcInvokeResponse> {
     const method = typeof request?.method === "string" ? request.method : "";
     const args = Array.isArray(request?.args) ? request.args : [];
     try {
-      if (disposed) throw new AdeError("disposed", "The ADE IPC bridge has been disposed.");
+      if (disposed) throw new DaexError("disposed", "The ADE IPC bridge has been disposed.");
       // `Object.hasOwn` rather than a bare lookup: a renderer that sends
       // `{ method: "constructor" }` must get "unknown method", not a prototype
       // member invoked with its arguments.
       if (!Object.hasOwn(handlers, method)) {
-        throw new AdeError("invalid_option", `Unknown ADE bridge method "${method}".`);
+        throw new DaexError("invalid_option", `Unknown ADE bridge method "${method}".`);
       }
       // Own-property membership in the typed table is the proof that this
       // string is one of the declared methods.
-      const known = method as AdeIpcMethod;
+      const known = method as DaexIpcMethod;
       if (opts.authorize && !(await opts.authorize(event, method, args))) {
         throw unauthorized(method);
       }
@@ -1022,15 +1022,15 @@ export function registerAdeIpc(
         const allowed = typeof gate === "function" ? await gate(event, method, args) : gate === true;
         if (!allowed) throw unauthorized(method);
       }
-      if (allowThreadKey && ADE_IPC_THREAD_KEY_METHODS.has(known)) {
+      if (allowThreadKey && DAEX_IPC_THREAD_KEY_METHODS.has(known)) {
         const key = typeof args[0] === "string" ? args[0] : "";
         if (!(await allowThreadKey(key))) throw unauthorized(method);
       }
       // The gates above may have awaited. A bridge disposed, or a renderer
       // destroyed, meanwhile must not get a fresh registry entry: its
       // `destroyed` listener would never fire, and its subscriptions would leak.
-      if (disposed) throw new AdeError("disposed", "The ADE IPC bridge has been disposed.");
-      if (event.sender.isDestroyed()) throw new AdeError("disposed", "The renderer that made this call is gone.");
+      if (disposed) throw new DaexError("disposed", "The ADE IPC bridge has been disposed.");
+      if (event.sender.isDestroyed()) throw new DaexError("disposed", "The renderer that made this call is gone.");
       const handler = handlers[known];
       const entry = rendererFor(event);
       // Waits out a client-swap move already in progress for this renderer.
@@ -1046,7 +1046,7 @@ export function registerAdeIpc(
   if (typeof clientSource !== "function") watchLifecycle(clientSource);
 
   ipcMain.handle(invokeChannel(prefix), (event: IpcMainInvokeEventLike, payload: unknown) =>
-    dispatch(event, (payload ?? {}) as AdeIpcInvokeRequest),
+    dispatch(event, (payload ?? {}) as DaexIpcInvokeRequest),
   );
 
   const dispose = (): void => {
@@ -1064,3 +1064,18 @@ export function registerAdeIpc(
     },
   });
 }
+
+// Pre-Daex names, kept as deprecated aliases so code written against the
+// `@ade-dev` packages keeps compiling. Remove them in a future major version.
+/** @deprecated Use {@link DaexChatClientSource}. */
+export type AdeChatClientSource = DaexChatClientSource;
+/** @deprecated Use {@link RegisterDaexIpcOptions}. */
+export type RegisterAdeIpcOptions = RegisterDaexIpcOptions;
+/** @deprecated Use {@link daexErrorCodeOf}. */
+export const adeErrorCodeOf = daexErrorCodeOf;
+/** @deprecated Use {@link registerDaexIpc}. */
+export const registerAdeIpc = registerDaexIpc;
+/** @deprecated Use {@link DaexIpcBridgeHandle}. */
+export type AdeIpcBridgeHandle = DaexIpcBridgeHandle;
+/** @deprecated Use {@link DaexIpcOpenContext}. */
+export type AdeIpcOpenContext = DaexIpcOpenContext;

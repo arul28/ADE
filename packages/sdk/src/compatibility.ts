@@ -9,7 +9,7 @@ import type { RuntimeCompatibility } from "./types.js";
  * runtime outside it still connects — features it lacks are feature-detected
  * and degrade with a logged line — unless the host passes
  * `requireCompatibleRuntime: true`, which refuses it with
- * `AdeError("runtime_incompatible")`.
+ * `DaexError("runtime_incompatible")`.
  *
  * The lower bound is the first runtime that carries every wire change this
  * SDK uses: `updateSession.mcpServers`, attachment `type` / `hydrate`, the

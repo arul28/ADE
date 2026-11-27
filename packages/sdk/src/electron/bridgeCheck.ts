@@ -2,24 +2,24 @@
  * Check a hand-written preload bridge against the one this SDK version ships.
  *
  * `@daex-dev/sdk/electron/preload-auto` must be `webPreferences.preload`
- * itself, so a host with its own preload either bundles `exposeAdeBridge` into
+ * itself, so a host with its own preload either bundles `exposeDaexBridge` into
  * it or copies it by hand. A hand copy can drift from the SDK (a channel name,
  * the payload shape) with no compile error and no runtime error: the bridge
  * simply never answers. Run this in the host's test suite, in Node, against the
  * function that exposes the copy.
  */
 
-import { AdeError } from "../errors.js";
+import { DaexError } from "../errors.js";
 import {
-  ADE_DEFAULT_BRIDGE_KEY,
-  ADE_DEFAULT_CHANNEL_PREFIX,
+  DAEX_DEFAULT_BRIDGE_KEY,
+  DAEX_DEFAULT_CHANNEL_PREFIX,
   eventChannel,
   invokeChannel,
   type ContextBridgeLike,
   type IpcRendererLike,
 } from "./protocol.js";
 
-export type CheckAdeBridgeOptions = {
+export type CheckDaexBridgeOptions = {
   /** The `window` key the copy should expose. Defaults to `"ade"`. */
   key?: string;
   /** The channel namespace the main process uses. Defaults to `"ade"`. */
@@ -29,28 +29,28 @@ export type CheckAdeBridgeOptions = {
 type Listener = (event: unknown, ...args: unknown[]) => void;
 
 function fail(detail: string): never {
-  throw new AdeError("invalid_option", `The preload bridge does not match @daex-dev/sdk: ${detail}`);
+  throw new DaexError("invalid_option", `The preload bridge does not match @daex-dev/sdk: ${detail}`);
 }
 
 /**
  * Run `expose` with a fake `contextBridge` and `ipcRenderer`, and check that
- * what it exposes behaves like `exposeAdeBridge` from this SDK version:
+ * what it exposes behaves like `exposeDaexBridge` from this SDK version:
  *   - one object on `window[key]` with `invoke` and `onEvent`;
  *   - `invoke(method, args)` calls `ipcRenderer.invoke(<prefix>:invoke,
  *     { method, args })` and resolves to its result unchanged;
  *   - `onEvent(listener)` listens on `<prefix>:event`, passes each payload
  *     through unchanged, and its return value removes that same listener.
  *
- * Resolves when the copy matches. Rejects with `AdeError("invalid_option")`
+ * Resolves when the copy matches. Rejects with `DaexError("invalid_option")`
  * naming the first difference. `expose` is typically
  * `(contextBridge, ipcRenderer) => { ...your preload's bridge code... }`.
  */
-export async function checkAdeBridge(
+export async function checkDaexBridge(
   expose: (contextBridge: ContextBridgeLike, ipcRenderer: IpcRendererLike) => void,
-  opts: CheckAdeBridgeOptions = {},
+  opts: CheckDaexBridgeOptions = {},
 ): Promise<void> {
-  const key = opts.key?.trim() || ADE_DEFAULT_BRIDGE_KEY;
-  const prefix = opts.channelPrefix?.trim() || ADE_DEFAULT_CHANNEL_PREFIX;
+  const key = opts.key?.trim() || DAEX_DEFAULT_BRIDGE_KEY;
+  const prefix = opts.channelPrefix?.trim() || DAEX_DEFAULT_CHANNEL_PREFIX;
   const exposed = new Map<string, unknown>();
   const invokes: Array<{ channel: string; args: unknown[] }> = [];
   const listeners = new Map<string, Set<Listener>>();
@@ -137,3 +137,10 @@ export async function checkAdeBridge(
     fail("the function onEvent() returned did not remove its ipcRenderer listener.");
   }
 }
+
+// Pre-Daex names, kept as deprecated aliases so code written against the
+// `@ade-dev` packages keeps compiling. Remove them in a future major version.
+/** @deprecated Use {@link CheckDaexBridgeOptions}. */
+export type CheckAdeBridgeOptions = CheckDaexBridgeOptions;
+/** @deprecated Use {@link checkDaexBridge}. */
+export const checkAdeBridge = checkDaexBridge;

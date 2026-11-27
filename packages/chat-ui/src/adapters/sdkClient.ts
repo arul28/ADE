@@ -1,5 +1,5 @@
 /**
- * Adapter from an `@daex-dev/sdk` client to the `AdeChatClient` this package renders.
+ * Adapter from an `@daex-dev/sdk` client to the `DaexChatClient` this package renders.
  *
  * WHY THIS EXISTS. The two packages were designed against each other but do not
  * meet structurally, and every difference is deliberate on both sides:
@@ -32,16 +32,16 @@
  */
 
 import type {
-  AdeThread as SdkThread,
+  DaexThread as SdkThread,
   AgentChatFileRef,
   ModelCatalogEntry,
   ProviderStatus as SdkProviderStatus,
 } from "@daex-dev/sdk";
 import type {
   AccountManagement,
-  AdeChatClient,
-  AdeChatClientEventMap,
-  AdeThread,
+  DaexChatClient,
+  DaexChatClientEventMap,
+  DaexThread,
   AgentChatEventEnvelope,
   ApprovalDecision,
   ApprovalRequest,
@@ -141,7 +141,7 @@ export type SdkModelCatalogEntry = Pick<ModelCatalogEntry, "id" | "displayName" 
  * A thread this adapter can wrap.
  *
  * `setModel` is optional because an older `@daex-dev/sdk` has none — see
- * `AdeThread.setModel` for why that is reported rather than assumed. `id` and
+ * `DaexThread.setModel` for why that is reported rather than assumed. `id` and
  * `mcpCapability` are optional because nothing here reads them, and demanding
  * them would reject a proxy that forwards only the chat surface.
  */
@@ -163,7 +163,7 @@ export type SdkLikeThread = Pick<SdkThread, "key" | "send" | "interrupt" | "hist
     steer(text: string, opts?: { attachments?: SdkFileRef[] }): Promise<void>;
     /**
      * Paged history (`@daex-dev/sdk` >= 0.3). OPTIONAL; forwarded only when
-     * present, so `useAdeThread` can tell a paging client from one that loads
+     * present, so `useDaexThread` can tell a paging client from one that loads
      * the whole window in one `history()` read.
      */
     historyPage?(request?: HistoryPageOptions): Promise<{
@@ -236,7 +236,7 @@ export interface SdkLikeChatClient {
    * renderer client). OPTIONAL: clients without this surface report neither
    * restarts nor usage-limit updates.
    */
-  on?(event: "restart", cb: (payload: AdeChatClientEventMap["restart"]) => void): Unsubscribe;
+  on?(event: "restart", cb: (payload: DaexChatClientEventMap["restart"]) => void): Unsubscribe;
 }
 
 /**
@@ -256,7 +256,7 @@ export type AdaptSdkClientOptions = {
   /**
    * Create-time arguments merged into every `threads.open` this package makes.
    *
-   * `<AdeChat>` only ever supplies a `modelId`, so the provider, MCP servers,
+   * `<DaexChat>` only ever supplies a `modelId`, so the provider, MCP servers,
    * permission preset and title all have to come from the host. When the picked
    * model is in the catalog its provider wins over `defaults.provider`.
    *
@@ -557,7 +557,7 @@ type ThreadListenerArgs =
   | ["usage", (usage: ThreadUsage) => void]
   | ["status", (status: ThreadStatus) => void];
 
-class AdaptedThread implements AdeThread {
+class AdaptedThread implements DaexThread {
   /**
    * Present only when the underlying SDK thread supports it, so `canSetModel`
    * reflects the inner thread's real capability rather than the wrapper's.
@@ -725,11 +725,11 @@ class AdaptedThread implements AdeThread {
   }
 }
 
-/** Wrap an `@daex-dev/sdk` client (or a proxy of one) as an `AdeChatClient`. */
+/** Wrap an `@daex-dev/sdk` client (or a proxy of one) as an `DaexChatClient`. */
 export function adaptSdkClient(
   sdk: SdkLikeChatClient,
   options: AdaptSdkClientOptions = {},
-): AdeChatClient {
+): DaexChatClient {
   let catalog: SdkModelCatalogEntry[] = [];
 
   const openOptionsFor = (opts?: ThreadOpenOptions): Record<string, unknown> => {
@@ -780,9 +780,9 @@ export function adaptSdkClient(
     ...(sdk.credentials ? { credentials: sdk.credentials } : {}),
     ...(on
       ? {
-          on: <E extends keyof AdeChatClientEventMap>(
+          on: <E extends keyof DaexChatClientEventMap>(
             event: E,
-            cb: (payload: AdeChatClientEventMap[E]) => void,
+            cb: (payload: DaexChatClientEventMap[E]) => void,
           ): Unsubscribe => {
             if (event === "usageLimit") {
               try {
@@ -795,7 +795,7 @@ export function adaptSdkClient(
                 throw cause;
               }
             }
-            return on.call(sdk, event as "restart", cb as (payload: AdeChatClientEventMap["restart"]) => void);
+            return on.call(sdk, event as "restart", cb as (payload: DaexChatClientEventMap["restart"]) => void);
           },
         }
       : {}),

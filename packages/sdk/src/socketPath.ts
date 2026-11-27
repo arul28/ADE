@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { AdeError } from "./errors.js";
+import { DaexError } from "./errors.js";
 
 /**
  * POSIX `sun_path` is 104 bytes on macOS/BSD and 108 on Linux. A unix socket
@@ -124,7 +124,7 @@ export async function ensurePrivateSocketDirectory(
   if (typeof uid !== "number") return;
   const stat = await fs.promises.lstat(directory);
   if (stat.uid !== uid) {
-    throw new AdeError(
+    throw new DaexError(
       "connect_failed",
       `The socket directory ${directory} is owned by uid ${stat.uid}, not by this user (uid ${uid}). ` +
         `Refusing to bind an ADE runtime socket in a directory somebody else controls.`,

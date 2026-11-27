@@ -12,8 +12,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { app, BrowserWindow, ipcMain } from "electron";
-import { createAdeChat } from "@daex-dev/sdk";
-import { registerAdeIpc } from "@daex-dev/sdk/electron";
+import { createDaexChat } from "@daex-dev/sdk";
+import { registerDaexIpc } from "@daex-dev/sdk/electron";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -24,7 +24,7 @@ const require = createRequire(import.meta.url);
  * By default this points straight at the SDK's self-running preload,
  * `@daex-dev/sdk/electron/preload-auto`: one file whose only `require` is
  * `electron`, the only thing a sandboxed preload can load. (Not
- * `@daex-dev/sdk/electron/preload`, which exports `exposeAdeBridge` without
+ * `@daex-dev/sdk/electron/preload`, which exports `exposeDaexBridge` without
  * calling it, so `window.ade` would stay undefined.) Set `ADE_EXAMPLE_PRELOAD=local` to load
  * `preload.cjs` next to this file instead: that is the shape a host writes when
  * it wants its own channels alongside ADE's.
@@ -38,12 +38,12 @@ let disposeIpc = null;
 let client = null;
 
 async function start() {
-  client = await createAdeChat({
+  client = await createDaexChat({
     home: path.join(app.getPath("userData"), "ade"),
     logger: (line) => process.stderr.write(`[ade] ${line}\n`),
   });
 
-  disposeIpc = registerAdeIpc(ipcMain, client, {
+  disposeIpc = registerDaexIpc(ipcMain, client, {
     // Only this app's own thread. A compromised renderer cannot name a key with
     // different MCP servers or a different permission policy.
     allowThreadKey: (key) => key === "main",

@@ -1,5 +1,5 @@
 /**
- * Every link chat-ui draws goes through `<AdeLink>`, so a host can decide what
+ * Every link chat-ui draws goes through `<DaexLink>`, so a host can decide what
  * opens and where.
  *
  * Without a handler a link keeps the web default: `target="_blank"` with
@@ -13,14 +13,14 @@
 import { createContext, useContext, type MouseEvent, type ReactNode } from "react";
 
 /** Where a link was drawn. */
-export type AdeLinkSource =
+export type DaexLinkSource =
   /** A link in rendered assistant markdown (model-written text). */
   | "markdown"
   /** The "Documentation" link on a provider card (`ProviderStatus.docsUrl`). */
   | "provider-docs";
 
-export type AdeLinkClickInfo = {
-  source: AdeLinkSource;
+export type DaexLinkClickInfo = {
+  source: DaexLinkSource;
   /** The visible link text. For a bare URL it equals `href`. */
   text: string;
 };
@@ -31,16 +31,16 @@ export type AdeLinkClickInfo = {
  * handler opens it. `href` has passed `safeHref` (http, https, mailto, tel,
  * `#`, or a relative path) and is never `javascript:` or `data:`.
  */
-export type AdeLinkClickHandler = (href: string, info: AdeLinkClickInfo) => void;
+export type DaexLinkClickHandler = (href: string, info: DaexLinkClickInfo) => void;
 
-const LinkHandlerContext = createContext<AdeLinkClickHandler | null>(null);
+const LinkHandlerContext = createContext<DaexLinkClickHandler | null>(null);
 
-/** Supplies `onLinkClick` to every `<AdeLink>` below it. */
-export function AdeLinkHandlerProvider({
+/** Supplies `onLinkClick` to every `<DaexLink>` below it. */
+export function DaexLinkHandlerProvider({
   onLinkClick,
   children,
 }: {
-  onLinkClick: AdeLinkClickHandler | undefined;
+  onLinkClick: DaexLinkClickHandler | undefined;
   children: ReactNode;
 }) {
   const inherited = useContext(LinkHandlerContext);
@@ -51,14 +51,14 @@ export function AdeLinkHandlerProvider({
   );
 }
 
-export function AdeLink({
+export function DaexLink({
   href,
   source,
   className,
   children,
 }: {
   href: string;
-  source: AdeLinkSource;
+  source: DaexLinkSource;
   className?: string;
   children: ReactNode;
 }) {
@@ -89,3 +89,16 @@ export function AdeLink({
     </a>
   );
 }
+
+// Pre-Daex names, kept as deprecated aliases so code written against the
+// `@ade-dev` packages keeps compiling. Remove them in a future major version.
+/** @deprecated Use {@link DaexLink}. */
+export const AdeLink = DaexLink;
+/** @deprecated Use {@link DaexLinkClickHandler}. */
+export type AdeLinkClickHandler = DaexLinkClickHandler;
+/** @deprecated Use {@link DaexLinkClickInfo}. */
+export type AdeLinkClickInfo = DaexLinkClickInfo;
+/** @deprecated Use {@link DaexLinkHandlerProvider}. */
+export const AdeLinkHandlerProvider = DaexLinkHandlerProvider;
+/** @deprecated Use {@link DaexLinkSource}. */
+export type AdeLinkSource = DaexLinkSource;

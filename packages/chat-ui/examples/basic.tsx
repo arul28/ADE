@@ -1,7 +1,7 @@
 /**
  * Full assembly against a fake client.
  *
- * Two shapes are shown: `<AdeChat>` (the composed default) and the same thing
+ * Two shapes are shown: `<DaexChat>` (the composed default) and the same thing
  * built from the individual pieces, which is what a host does when it wants its
  * own layout. Both use the same `createFakeClient()` stub, so this file also
  * doubles as the demo harness.
@@ -10,14 +10,14 @@
 import { useState } from "react";
 
 import {
-  AdeChat,
-  AdeChatProvider,
+  DaexChat,
+  DaexChatProvider,
   Composer,
   ModelPicker,
   ProviderCards,
   Transcript,
   createTheme,
-  useAdeThread,
+  useDaexThread,
   type ActivityLabelConfig,
   type ModelDescriptor,
 } from "../src";
@@ -52,7 +52,7 @@ const theme = createTheme({
 export function BasicChat() {
   return (
     <div style={{ height: 600, maxWidth: 720 }}>
-      <AdeChat
+      <DaexChat
         client={client}
         threadKey="demo"
         defaultModelId="claude-sonnet"
@@ -72,7 +72,7 @@ export function CustomLayout() {
   const [model, setModel] = useState<ModelDescriptor | null>(null);
 
   return (
-    <AdeChatProvider client={client} labels={labels}>
+    <DaexChatProvider client={client} labels={labels}>
       <div className="adechat-root" style={{ ...theme, height: 600, maxWidth: 720 }}>
         {/* Provider cards are free-floating: put them wherever they belong. */}
         <div style={{ display: "grid", gap: 8, padding: 16 }}>
@@ -83,12 +83,12 @@ export function CustomLayout() {
           rail={<ModelPicker client={client} value={model?.id ?? null} onChange={setModel} />}
         />
       </div>
-    </AdeChatProvider>
+    </DaexChatProvider>
   );
 }
 
 function ThreadPane({ modelId, rail }: { modelId: string; rail: React.ReactNode }) {
-  const thread = useAdeThread("demo-custom", { client, modelId });
+  const thread = useDaexThread("demo-custom", { client, modelId });
 
   return (
     <>

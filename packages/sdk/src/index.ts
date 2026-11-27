@@ -2,7 +2,7 @@
  * `@daex-dev/sdk` — a typed Node/Electron-main client that spawns and owns a slim
  * ADE runtime and exposes chat as durable named threads.
  *
- *   const ade = await createAdeChat({ home: app.getPath("userData") + "/ade" });
+ *   const ade = await createDaexChat({ home: app.getPath("userData") + "/ade" });
  *   const thread = await ade.threads.open("support", {
  *     provider: "claude",
  *     model: "claude-sonnet-4-5",
@@ -33,19 +33,19 @@
  * (`apps/desktop/src/shared/callerMcpServers.ts`).
  */
 
-export { createAdeChat, ADE_CLIENT_EVENTS } from "./client.js";
+export { createDaexChat, DAEX_CLIENT_EVENTS } from "./client.js";
 export type {
-  AdeChatClient,
-  AdeClientEvent,
-  AdeClientEventMap,
-  CreateAdeChatOptions,
+  DaexChatClient,
+  DaexClientEvent,
+  DaexClientEventMap,
+  CreateDaexChatOptions,
   ThreadOpenOptions,
   ThreadRefreshOptions,
   ThreadResumeOptions,
 } from "./client.js";
 
 export type {
-  AdeThread,
+  DaexThread,
   HistoryPageOptions,
   SendOptions,
   SetModelResult,
@@ -72,7 +72,7 @@ export {
   type PackagedRuntime,
   type ResolvePackagedRuntimeOptions,
 } from "./packagedRuntime.js";
-export { AdeError, type AdeErrorCode } from "./errors.js";
+export { DaexError, type DaexErrorCode } from "./errors.js";
 export { InvalidOutputError, validateJsonSchema, type JsonSchema, type RunOptions } from "./run.js";
 export { SDK_VERSION } from "./version.js";
 export type { PermissionPreset, ThreadPermissionPolicy } from "./permissions.js";
@@ -126,7 +126,7 @@ export {
 } from "./download.js";
 
 export type {
-  AdeProvider,
+  DaexProvider,
   AgentChatCodexCollaborationMode,
   AgentChatEvent,
   AgentChatEventEnvelope,
@@ -161,3 +161,15 @@ export type {
   ThreadSummary,
   Unsubscribe,
 } from "./types.js";
+
+// Pre-Daex names: deprecated aliases of the Daex* exports above, kept so code
+// written against the `@ade-dev` packages keeps compiling.
+export { ADE_CLIENT_EVENTS } from "./clientEvents.js";
+export type { AdeClientEvent, AdeClientEventMap } from "./clientEvents.js";
+export { createAdeChat } from "./client.js";
+export type { AdeChatClient } from "./client.js";
+export { AdeError } from "./errors.js";
+export type { AdeErrorCode } from "./errors.js";
+export type { AdeProvider } from "./types.js";
+export type { AdeThread } from "./thread.js";
+export type { CreateAdeChatOptions } from "./clientOptions.js";

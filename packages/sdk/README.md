@@ -41,9 +41,9 @@ connects, logs one warning, and degrades feature by feature. Pass
 ## Quickstart
 
 ```ts
-import { createAdeChat } from "@daex-dev/sdk";
+import { createDaexChat } from "@daex-dev/sdk";
 
-const ade = await createAdeChat({ home: "./.ade-embed" });
+const ade = await createDaexChat({ home: "./.ade-embed" });
 const thread = await ade.threads.open("support", {
   provider: "claude",
   model: "claude-sonnet-4-5",
@@ -225,7 +225,7 @@ names only, and a pre-0.3 store is migrated on first read. The runtime does the
 same. So supply current values in one of three ways:
 
 ```ts
-const ade = await createAdeChat({
+const ade = await createDaexChat({
   home,
   mcpHeaders: (key, server) => (server === "app" ? { Authorization: `Bearer ${token()}` } : undefined),
 });
@@ -319,7 +319,7 @@ Run this from the main process, not the renderer. Spawn owns a child process
 and a socket / named pipe.
 
 ```ts
-const ade = await createAdeChat({
+const ade = await createDaexChat({
   home: path.join(app.getPath("userData"), "ade"),
 });
 ```
@@ -331,15 +331,15 @@ ordering rule already in code. None of the three depends on `electron`.
 `@daex-dev/sdk/electron/global` types `window.ade`. For a `sandbox: true`
 preload, point `webPreferences.preload` at
 `require.resolve("@daex-dev/sdk/electron/preload-auto")` (default key and
-prefix), copy the ten-line preload from the docs, or bundle `exposeAdeBridge`
+prefix), copy the ten-line preload from the docs, or bundle `exposeDaexBridge`
 into one file. `@daex-dev/sdk/electron/preload` alone only exports the function
 and exposes nothing. See
 [Electron](https://ade-app.dev/docs/sdk/electron).
 
 The renderer does not configure threads. Pass `openOptions: (key, rendererOptions) => ThreadOpenOptions`
-to `registerAdeIpc` and main decides; without it, only `provider`, `model`,
+to `registerDaexIpc` and main decides; without it, only `provider`, `model`,
 `title` and `reasoningEffort` cross (breaking in 0.3). `allowModel` gates model
-choice. `registerAdeIpc` also accepts `() => client`, for a host that replaces
+choice. `registerDaexIpc` also accepts `() => client`, for a host that replaces
 its client per account.
 
 `onThreadRemoved(key, kind)` (0.5) fires for every delete and archive the served
@@ -358,7 +358,7 @@ To ship the runtime inside a signed app instead of downloading it, install
 ## Runtime exits
 
 ```ts
-const ade = await createAdeChat({ home, autoRestart: true });
+const ade = await createDaexChat({ home, autoRestart: true });
 ade.on("exit", ({ code, signal, error }) => {});
 ade.on("transport", ({ state }) => {});          // "closed" | "reconnected"
 ade.on("restart", ({ attempt, ok }) => {});

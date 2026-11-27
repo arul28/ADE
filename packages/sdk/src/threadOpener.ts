@@ -1,5 +1,5 @@
-import type { CreateAdeChatOptions, ThreadResumeOptions } from "./clientOptions.js";
-import { AdeError } from "./errors.js";
+import type { CreateDaexChatOptions, ThreadResumeOptions } from "./clientOptions.js";
+import { DaexError } from "./errors.js";
 import type { ChatEventSource } from "./eventStream.js";
 import {
   canonicalThreadCwd,
@@ -39,7 +39,7 @@ import type { ThreadRecord, ThreadStore } from "./threadStore.js";
 import { validateThreadBudget, type ThreadBudget } from "./usage.js";
 import { sameJson, threadOpenWarnings, threadResumeMismatchWarnings } from "./threadWarnings.js";
 import type {
-  AdeProvider,
+  DaexProvider,
   ProviderCapabilities,
   AgentChatEventEnvelope,
   AgentChatSessionSummary,
@@ -58,7 +58,7 @@ import type {
 
 /** Whether an error means "the runtime does not have this session". */
 export function isAbsentSessionError(error: unknown): boolean {
-  if (!(error instanceof AdeError)) return false;
+  if (!(error instanceof DaexError)) return false;
   if (error.code === "thread_not_found") return true;
   // Timeouts and a closed socket are not "the session is gone": recreating
   // would drop injected MCP under the same key. Only a not-found RPC is a
@@ -89,9 +89,9 @@ function withValidatedAttachmentRoots(opts: ThreadResumeOptions, home: string): 
  * the last write. Falls back to Claude when neither is a provider this SDK
  * knows, which is the same closed-union default the rest of the SDK uses.
  */
-function resolveThreadProvider(...candidates: Array<string | undefined>): AdeProvider {
+function resolveThreadProvider(...candidates: Array<string | undefined>): DaexProvider {
   for (const candidate of candidates) {
-    if (candidate?.trim()) return candidate as AdeProvider;
+    if (candidate?.trim()) return candidate as DaexProvider;
   }
   return "claude";
 }
@@ -115,7 +115,7 @@ export type ThreadOpenerContext = {
   /** The client-wide `instructions` default. */
   defaultInstructions: ThreadInstructions | undefined;
   mcpHeaders: McpHeadersResolver | undefined;
-  resolveSecret: CreateAdeChatOptions["resolveSecret"] | undefined;
+  resolveSecret: CreateDaexChatOptions["resolveSecret"] | undefined;
   chats: PersonalChatsApi;
   store: ThreadStore;
   hub: ChatEventSource & { emit(envelope: AgentChatEventEnvelope): void };
@@ -144,7 +144,7 @@ type BuildThreadInit = {
   sessionId: string;
   key: string;
   mcpCapability: McpCapabilityReport | null;
-  provider: AdeProvider;
+  provider: DaexProvider;
   instructionsCapability: InstructionsCapability | null;
   settingSourcesCapability: SettingSourcesCapability | null;
   permissionCapability: PermissionCapability | null;
@@ -197,9 +197,9 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
 
   const pushResolvedSecret = async (sessionId: string, provider: string, credentialId: string | undefined): Promise<void> => {
     if (!credentialId || !ctx.resolveSecret) return;
-    const secret = await ctx.resolveSecret(provider as AdeProvider, credentialId);
+    const secret = await ctx.resolveSecret(provider as DaexProvider, credentialId);
     if (!secret) {
-      throw new AdeError("invalid_option", `No host-vault secret was returned for credential "${credentialId}".`);
+      throw new DaexError("invalid_option", `No host-vault secret was returned for credential "${credentialId}".`);
     }
     // The secret travels to the runtime only for this session. ThreadStore
     // persists the credential id, never the value.
@@ -511,16 +511,16 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
     // rebuild a lost thread on another provider, under a looser policy, or with
     // no MCP servers at all. For a brand-new key there is no record and the
     // call's options are all there is.
-    const provider = (record?.provider || opts.provider) as AdeProvider | undefined;
+    const provider = (record?.provider || opts.provider) as DaexProvider | undefined;
     const model = record?.modelId || record?.model || opts.model;
     if (!provider?.trim()) {
-      throw new AdeError(
+      throw new DaexError(
         "invalid_option",
         `Opening the new thread "${key}" needs a provider. Pass { provider, model }.`,
       );
     }
     if (!model?.trim()) {
-      throw new AdeError("invalid_option", `Opening the new thread "${key}" needs a model id. Pass { provider, model }.`);
+      throw new DaexError("invalid_option", `Opening the new thread "${key}" needs a model id. Pass { provider, model }.`);
     }
 
     // A value the caller passed for a new thread is refused when the provider
@@ -536,7 +536,7 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
     ): T | undefined => {
       const value = stored ?? requested;
       if (value === undefined || !providerCapabilities || supported(value)) return value;
-      if (stored === undefined) throw new AdeError("invalid_option", refusal(value));
+      if (stored === undefined) throw new DaexError("invalid_option", refusal(value));
       logger(`ade sdk: thread "${key}" dropped a stored setting its provider no longer supports: ${refusal(value)}`);
       return undefined;
     };
@@ -574,7 +574,7 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
       ? await ctx.resolveSecret(provider, credentialId)
       : undefined;
     if (credentialId && ctx.resolveSecret && !credentialSecret) {
-      throw new AdeError("invalid_option", `No host-vault secret was returned for credential "${credentialId}".`);
+      throw new DaexError("invalid_option", `No host-vault secret was returned for credential "${credentialId}".`);
     }
 
     // Host configuration: the record, then this call's options, then the
@@ -622,7 +622,7 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
     if (suppliedServers && !ctx.runtime.mcpServers() && ctx.runtime.reportsCapabilities()) {
       // Never silently drop MCP config: an app that asked for a tool server and
       // did not get one behaves wrongly rather than visibly failing.
-      throw new AdeError(
+      throw new DaexError(
         "invalid_option",
         "This ADE runtime does not support per-thread MCP servers (capabilities.personalChats.mcpServers is not set). Upgrade the runtime or drop `mcpServers`.",
       );
@@ -630,7 +630,7 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
     if (suppliedServers && hasMcpToolFilters(mcpServers) && !ctx.runtime.mcpToolFilters()) {
       // The same rule one level down: an older runtime drops the filter
       // fields, which would hand the agent the very tools the host hid.
-      throw new AdeError(
+      throw new DaexError(
         "invalid_option",
         "This ADE runtime does not support MCP tool filters (capabilities.personalChats.mcpToolFilters is not set). Upgrade the runtime or drop `allowedTools` / `disallowedTools`.",
       );
@@ -680,7 +680,7 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
       ...(askedForMcp ? { strictMcpConfig: loadUserMcpServers !== true } : {}),
     });
     if (!created?.sessionId) {
-      throw new AdeError("protocol_error", "The ADE runtime created a chat with no session id.");
+      throw new DaexError("protocol_error", "The ADE runtime created a chat with no session id.");
     }
     if (suppliedServers && mcpServers) mcpPushed.set(key, mcpServersFingerprint(mcpServers));
     else mcpPushed.delete(key);

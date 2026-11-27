@@ -565,7 +565,7 @@ export type ThreadHistoryPage = {
   nextBeforeSequence?: number | null;
 };
 
-/** A change to an open thread's settings (`AdeThread.update`). */
+/** A change to an open thread's settings (`DaexThread.update`). */
 export type ThreadUpdatePatch = {
   /** New title. `null` clears the host title. */
   title?: string | null;
@@ -576,13 +576,13 @@ export type ThreadUpdatePatch = {
 };
 
 /**
- * What `AdeThread.update` resolves to. An SDK thread resolves `{ title, model }`;
+ * What `DaexThread.update` resolves to. An SDK thread resolves `{ title, model }`;
  * only `model` is read, and a client may resolve nothing.
  */
 export type ThreadUpdateReply = { model?: unknown } | null | void;
 
-/** The runtime lifecycle events a client can report (`AdeChatClient.on`). */
-export type AdeChatClientEventMap = {
+/** The runtime lifecycle events a client can report (`DaexChatClient.on`). */
+export type DaexChatClientEventMap = {
   /**
    * One automatic runtime restart attempt finished (`@daex-dev/sdk`
    * `autoRestart`). `ok: true` means the runtime is back and open threads were
@@ -592,7 +592,7 @@ export type AdeChatClientEventMap = {
   usageLimit: UsageLimitEvent;
 };
 
-export interface AdeThread {
+export interface DaexThread {
   readonly key: string;
   send(input: SendInput | string): Promise<void>;
   /**
@@ -646,7 +646,7 @@ export interface AdeThread {
   /**
    * Read one page of history, newest first by page (each page oldest-first).
    *
-   * OPTIONAL: `useAdeThread` uses it when present — the newest page on open,
+   * OPTIONAL: `useDaexThread` uses it when present — the newest page on open,
    * older pages on demand — and falls back to one `history()` read otherwise.
    * A client without it (an SDK before 0.3, a proxy) loads the whole window.
    */
@@ -665,7 +665,7 @@ export interface AdeThread {
    *
    * OPTIONAL for the same reason as `setModel`. `ThreadState.canUpdate`
    * reports its presence. A reasoning or fast-mode change is refused while a
-   * turn runs (`AdeError` code `turn_in_flight` on `@daex-dev/sdk` >= 0.4).
+   * turn runs (`DaexError` code `turn_in_flight` on `@daex-dev/sdk` >= 0.4).
    */
   update?(patch: ThreadUpdatePatch): Promise<ThreadUpdateReply>;
   /**
@@ -690,7 +690,7 @@ export interface AdeThread {
   on(type: "status", cb: (status: ThreadStatus) => void): Unsubscribe;
 }
 
-export interface AdeChatClient {
+export interface DaexChatClient {
   providers: {
     status(): Promise<ProviderStatus[]>;
     onChange(cb: (statuses: ProviderStatus[]) => void): Unsubscribe;
@@ -707,7 +707,7 @@ export interface AdeChatClient {
     list(): Promise<ModelDescriptor[]>;
   };
   threads: {
-    open(key: string, opts?: ThreadOpenOptions): Promise<AdeThread>;
+    open(key: string, opts?: ThreadOpenOptions): Promise<DaexThread>;
   };
   /** Account management is optional and disabled for untrusted renderers by default. */
   accounts?: AccountManagement;
@@ -717,12 +717,21 @@ export interface AdeChatClient {
    * Runtime lifecycle events.
    *
    * OPTIONAL: a client without a runtime it can restart has nothing to report.
-   * `useAdeThread` subscribes to `restart` and, after a successful restart,
+   * `useDaexThread` subscribes to `restart` and, after a successful restart,
    * re-opens the thread and re-reads its history, so the transcript shows what
    * the runtime has rather than what this view held before the outage.
    */
-  on?<E extends keyof AdeChatClientEventMap>(
+  on?<E extends keyof DaexChatClientEventMap>(
     event: E,
-    cb: (payload: AdeChatClientEventMap[E]) => void,
+    cb: (payload: DaexChatClientEventMap[E]) => void,
   ): Unsubscribe;
 }
+
+// Pre-Daex names, kept as deprecated aliases so code written against the
+// `@ade-dev` packages keeps compiling. Remove them in a future major version.
+/** @deprecated Use {@link DaexChatClient}. */
+export type AdeChatClient = DaexChatClient;
+/** @deprecated Use {@link DaexChatClientEventMap}. */
+export type AdeChatClientEventMap = DaexChatClientEventMap;
+/** @deprecated Use {@link DaexThread}. */
+export type AdeThread = DaexThread;

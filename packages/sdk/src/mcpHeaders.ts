@@ -231,7 +231,7 @@ export function missingHeadersWarning(
   return (
     `ade sdk: thread "${key}" MCP servers need header values the SDK does not persist: ${list}. ` +
     `They were sent without them. Pass refresh.mcpServers to threads.open, or an mcpHeaders ` +
-    `callback to createAdeChat, so the host supplies current credentials.`
+    `callback to createDaexChat, so the host supplies current credentials.`
   );
 }
 

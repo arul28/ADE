@@ -39,9 +39,9 @@ the package you just built.
 
 | file | process | what it does |
 | --- | --- | --- |
-| `main.mjs` | main | creates the SDK client and calls `registerAdeIpc` |
+| `main.mjs` | main | creates the SDK client and calls `registerDaexIpc` |
 | `preload.cjs` | preload | exposes two functions on `window.ade` |
-| `renderer/app.js` | renderer | calls `createAdeIpcClient(window.ade)` |
+| `renderer/app.js` | renderer | calls `createDaexIpcClient(window.ade)` |
 
 ## Two ways to load the preload
 
@@ -56,7 +56,7 @@ preload: require.resolve("@daex-dev/sdk/electron/preload-auto")
 ```
 
 Do not point it at `@daex-dev/sdk/electron/preload`. That file exports
-`exposeAdeBridge` and does not call it, so `window.ade` stays undefined.
+`exposeDaexBridge` and does not call it, so `window.ade` stays undefined.
 
 Set `ADE_EXAMPLE_PRELOAD=local` to load `preload.cjs` next to `main.mjs`
 instead. That file is hand-written, imports nothing, and is the shape to copy
@@ -74,16 +74,16 @@ buffers.
 
 ## Using `@daex-dev/chat-ui` instead
 
-`createAdeIpcClient` returns the shape `adaptSdkClient` expects, with no cast:
+`createDaexIpcClient` returns the shape `adaptSdkClient` expects, with no cast:
 
 ```tsx
-import { createAdeIpcClient } from "@daex-dev/sdk/electron/renderer";
-import { adaptSdkClient, AdeChat } from "@daex-dev/chat-ui";
+import { createDaexIpcClient } from "@daex-dev/sdk/electron/renderer";
+import { adaptSdkClient, DaexChat } from "@daex-dev/chat-ui";
 
-const client = adaptSdkClient(createAdeIpcClient(window.ade));
+const client = adaptSdkClient(createDaexIpcClient(window.ade));
 
 export function App() {
-  return <AdeChat client={client} threadKey="main" />;
+  return <DaexChat client={client} threadKey="main" />;
 }
 ```
 

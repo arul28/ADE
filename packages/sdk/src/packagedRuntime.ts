@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { AdeError } from "./errors.js";
+import { DaexError } from "./errors.js";
 import { isDirectory, isFile } from "./fsProbe.js";
 
 /**
@@ -25,11 +25,11 @@ export type ResolvePackagedRuntimeOptions = {
 };
 
 /**
- * Spread straight into `createAdeChat`:
+ * Spread straight into `createDaexChat`:
  *
- *   createAdeChat({ ...resolvePackagedRuntime(process.resourcesPath), home, allowDownload: false })
+ *   createDaexChat({ ...resolvePackagedRuntime(process.resourcesPath), home, allowDownload: false })
  *
- * The field names ARE the `createAdeChat` option names, which is the point:
+ * The field names ARE the `createDaexChat` option names, which is the point:
  * no host-side mapping to get wrong. `source: "packaged"` makes
  * `doctor().runtime.source` report `"packaged"`.
  */
@@ -104,7 +104,7 @@ function machOCpuTypes(filePath: string): number[] | null {
  *     A universal binary matches when it contains the arch. A header this
  *     function does not recognize is not treated as a mismatch.
  *
- * Throws `AdeError("binary_not_found")`, naming the path, when the binary is
+ * Throws `DaexError("binary_not_found")`, naming the path, when the binary is
  * there but `native/node_modules` is not: the binary dlopens those modules,
  * so a bundle missing them is a packaging mistake to fail on, not a fallback
  * to take quietly.
@@ -130,7 +130,7 @@ export function resolvePackagedRuntime(
   const runtimeRoot = path.join(root, "native");
   const runtimeNodeModules = path.join(runtimeRoot, "node_modules");
   if (!isDirectory(runtimeNodeModules)) {
-    throw new AdeError(
+    throw new DaexError(
       "binary_not_found",
       `The packaged ADE runtime at ${binaryPath} has no native modules at ${runtimeNodeModules}. ` +
         `Copy the whole runtime package (bin/ and native/) into the app's resources.`,

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { AdeError, errorMessage } from "./errors.js";
+import { DaexError, errorMessage } from "./errors.js";
 import type {
   AgentChatHostConfigLevel,
   AgentChatInstructions,
@@ -38,24 +38,24 @@ export function normalizeInstructions(
   if (value === undefined) return undefined;
   if (typeof value === "string") {
     if (!value.trim()) {
-      throw new AdeError("invalid_option", "instructions text must not be empty.");
+      throw new DaexError("invalid_option", "instructions text must not be empty.");
     }
     return { mode: "append", text: value };
   }
   if (typeof value !== "object" || value === null) {
-    throw new AdeError(
+    throw new DaexError(
       "invalid_option",
       "instructions must be a string or { mode: \"append\" | \"replace\", text }.",
     );
   }
   if (value.mode !== "append" && value.mode !== "replace") {
-    throw new AdeError(
+    throw new DaexError(
       "invalid_option",
       `instructions.mode must be "append" or "replace"; got ${JSON.stringify(value.mode)}.`,
     );
   }
   if (typeof value.text !== "string" || !value.text.trim()) {
-    throw new AdeError("invalid_option", "instructions.text must be a non-empty string.");
+    throw new DaexError("invalid_option", "instructions.text must be a non-empty string.");
   }
   return { mode: value.mode, text: value.text };
 }
@@ -65,7 +65,7 @@ export function normalizeSettingSources(
 ): AgentChatSettingSources | undefined {
   if (value === undefined) return undefined;
   if (!(SETTING_SOURCES as readonly string[]).includes(value)) {
-    throw new AdeError(
+    throw new DaexError(
       "invalid_option",
       `settingSources must be one of ${SETTING_SOURCES.join(", ")}; got ${JSON.stringify(value)}.`,
     );
@@ -249,7 +249,7 @@ function collectAttachmentRoots(
   label: (index: number) => string,
 ): { roots: string[]; refused: Array<{ root: string; reason: string }> } {
   if (!Array.isArray(value)) {
-    throw new AdeError("invalid_option", "attachmentRoots must be an array of absolute directory paths.");
+    throw new DaexError("invalid_option", "attachmentRoots must be an array of absolute directory paths.");
   }
   const roots: string[] = [];
   const refused: Array<{ root: string; reason: string }> = [];
@@ -285,11 +285,11 @@ export function validateAttachmentRoots(value: unknown, sdkHome: string): string
   // than the first entry's problem. A non-array falls through to the walk,
   // which owns that refusal.
   if (Array.isArray(value) && value.length > MAX_ATTACHMENT_ROOTS) {
-    throw new AdeError("invalid_option", overLimitMessage(value.length));
+    throw new DaexError("invalid_option", overLimitMessage(value.length));
   }
   const { roots, refused } = collectAttachmentRoots(value, sdkHome, (index) => `attachmentRoots[${index}]`);
   const first = refused[0];
-  if (first) throw new AdeError("invalid_option", first.reason);
+  if (first) throw new DaexError("invalid_option", first.reason);
   return roots;
 }
 
@@ -309,7 +309,7 @@ export type AttachmentRootCheck = { ok: true; root: string } | { ok: false; reas
  *
  * `root` is the canonical, validated spelling, so it is what
  * `validateAttachmentRoots` and the runtime will accept. `sdkHome` is the same
- * `home` you pass to `createAdeChat`.
+ * `home` you pass to `createDaexChat`.
  */
 export function checkAttachmentRoot(value: unknown, sdkHome: string): AttachmentRootCheck {
   try {
@@ -353,7 +353,7 @@ export function filterAttachmentRoots(value: unknown, sdkHome: string): Attachme
 
 function validateHostDirectory(value: unknown, sdkHome: string, label: string): string {
   if (typeof value !== "string" || !value.trim()) {
-    throw new AdeError("invalid_option", `${label} must be a non-empty absolute path.`);
+    throw new DaexError("invalid_option", `${label} must be a non-empty absolute path.`);
   }
   const raw = value.trim();
   // `~`, `~/` and `~\` only, which is exactly what the engine refuses. A bare
@@ -361,13 +361,13 @@ function validateHostDirectory(value: unknown, sdkHome: string, label: string): 
   // the engine accepts — so the client rejected a path the runtime would have
   // run in, and the two copies disagreed on a real filesystem.
   if (raw === "~" || raw.startsWith("~/") || raw.startsWith("~\\")) {
-    throw new AdeError(
+    throw new DaexError(
       "invalid_option",
       `${label} must be an absolute path, and "~" is not expanded: pass the real path instead of "${raw}".`,
     );
   }
   if (!path.isAbsolute(raw)) {
-    throw new AdeError(
+    throw new DaexError(
       "invalid_option",
       `${label} must be an absolute path; "${raw}" is relative and would resolve against the runtime's own working directory, not yours.`,
     );
@@ -378,21 +378,21 @@ function validateHostDirectory(value: unknown, sdkHome: string, label: string): 
   // check that exists to keep an agent out of it.
   const resolved = canonicalizePath(path.resolve(raw));
   if (isFilesystemRoot(resolved)) {
-    throw new AdeError(
+    throw new DaexError(
       "invalid_option",
       `${label} must not be a filesystem root; "${resolved}" would put the agent's working directory at the top of the disk.`,
     );
   }
   const home = canonicalizePath(path.resolve(os.homedir()));
   if (samePath(resolved, home)) {
-    throw new AdeError(
+    throw new DaexError(
       "invalid_option",
       `${label} must not be the user's home directory itself ("${resolved}"). Point it at a directory your app owns.`,
     );
   }
   const stateRoot = canonicalizePath(path.resolve(sdkHome));
   if (isInside(stateRoot, resolved)) {
-    throw new AdeError(
+    throw new DaexError(
       "invalid_option",
       `${label} must not be inside the SDK home ("${stateRoot}"): that directory holds the runtime's own state, and an agent editing it corrupts the client that started it.`,
     );

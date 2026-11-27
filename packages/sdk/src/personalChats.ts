@@ -1,4 +1,4 @@
-import { AdeError } from "./errors.js";
+import { DaexError } from "./errors.js";
 import type { JsonRpcConnection } from "./jsonRpc.js";
 import type { EngineApprovalDecision } from "./approvals.js";
 import type {
@@ -37,7 +37,7 @@ export function summaryTurnActive(summary: AgentChatSessionSummary | null | unde
   return summary?.status === "active" || typeof summary?.currentTurnStartedAt === "string";
 }
 
-/** Error codes the runtime names itself, which the SDK passes through as `AdeError` codes. */
+/** Error codes the runtime names itself, which the SDK passes through as `DaexError` codes. */
 const RUNTIME_ERROR_CODES = ["turn_in_flight", "unsupported"] as const;
 type RuntimeErrorCode = (typeof RUNTIME_ERROR_CODES)[number];
 const RUNTIME_ERROR_PREFIX = new RegExp(`(?:^|: )(${RUNTIME_ERROR_CODES.join("|")}):`);
@@ -54,7 +54,7 @@ function isRuntimeErrorCode(value: unknown): value is RuntimeErrorCode {
  * `data`. `turn_in_flight`: the refusal exists only because a turn is running.
  * `unsupported`: the provider cannot do what was asked (for example `retry`).
  */
-function runtimeErrorCode(error: AdeError): RuntimeErrorCode | null {
+function runtimeErrorCode(error: DaexError): RuntimeErrorCode | null {
   const code = (error.cause as { data?: { code?: unknown } } | undefined)?.data?.code;
   if (isRuntimeErrorCode(code)) return code;
   const prefix = RUNTIME_ERROR_PREFIX.exec(error.message)?.[1];
@@ -105,13 +105,13 @@ export class PersonalChatsApi {
         timeoutMs ? { timeoutMs } : {},
       );
     } catch (error) {
-      if (error instanceof AdeError && error.code === "rpc_error") {
+      if (error instanceof DaexError && error.code === "rpc_error") {
         // A stable code from the runtime (1.2.82+) wins over the prose rule
         // below: a mid-turn refusal can also carry `invalid_argument:` text.
         const runtimeCode = runtimeErrorCode(error);
-        if (runtimeCode) throw new AdeError(runtimeCode, error.message, { cause: error });
+        if (runtimeCode) throw new DaexError(runtimeCode, error.message, { cause: error });
         if (/invalid_argument:/.test(error.message)) {
-          throw new AdeError("invalid_option", error.message, { cause: error });
+          throw new DaexError("invalid_option", error.message, { cause: error });
         }
       }
       throw error;
@@ -297,7 +297,7 @@ export class PersonalChatsApi {
    * Answers one blocked approval.
    *
    * The engine settles an unknown or already-settled item silently, so a caller
-   * cannot tell a real answer from a no-op by the result. `AdeThread.approve`
+   * cannot tell a real answer from a no-op by the result. `DaexThread.approve`
    * checks the pending set first for that reason.
    */
   approve(args: {

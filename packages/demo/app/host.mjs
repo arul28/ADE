@@ -1,7 +1,7 @@
 /** DataDesk host process. The SDK owns the chat WebSocket protocol. */
 
-import { AdeError, createAdeChat } from "@daex-dev/sdk";
-import { createAdeServer } from "@daex-dev/sdk/server";
+import { DaexError, createDaexChat } from "@daex-dev/sdk";
+import { createDaexServer } from "@daex-dev/sdk/server";
 import { WebSocketServer } from "ws";
 import { pickCheapestModel } from "../lib/pickModel.mjs";
 
@@ -24,14 +24,14 @@ const rendererMethods = new Set([
   "thread.approve", "thread.pendingApprovals", "thread.usage", "thread.updateMcpServers", "thread.refreshMcpHeaders",
   "datadesk.thread.setModel",
 ]);
-const client = await createAdeChat({
+const client = await createDaexChat({
   home,
   ...(binaryPath ? { binaryPath } : {}),
   logger: (line) => process.stderr.write(`[host] ${line}\n`),
 });
 log("ade sdk client ready");
 
-const bridge = createAdeServer({
+const bridge = createDaexServer({
   client,
   authorize: (_socket, method) => rendererMethods.has(method),
   allowThreadKey: (key) => key === "main",
@@ -70,7 +70,7 @@ const bridge = createAdeServer({
       try {
         return await thread.setModel(modelId);
       } catch (error) {
-        if (error instanceof AdeError && error.code === "invalid_option") {
+        if (error instanceof DaexError && error.code === "invalid_option") {
           throw new Error("DataDesk is still answering. It will switch models once this reply finishes.");
         }
         throw error;

@@ -1,5 +1,5 @@
 /**
- * The public option surface of `createAdeChat` and `threads.open`.
+ * The public option surface of `createDaexChat` and `threads.open`.
  *
  * Types only, and mostly documentation: the MCP per-provider table, the three
  * permission forms, the `cwd` refusals and the resume rule are each a paragraph
@@ -13,11 +13,11 @@ import type { ThreadInstructions } from "./hostConfig.js";
 import type { McpHeadersResolver } from "./mcpHeaders.js";
 import type { PermissionPreset, ThreadPermissionPolicy } from "./permissions.js";
 import type { RuntimeDownloader } from "./download.js";
-import type { AdeProvider, AgentChatSettingSources, McpServerConfig } from "./types.js";
-import type { AdeThread } from "./thread.js";
+import type { DaexProvider, AgentChatSettingSources, McpServerConfig } from "./types.js";
+import type { DaexThread } from "./thread.js";
 import type { ThreadBudget } from "./usage.js";
 
-export type CreateAdeChatOptions = {
+export type CreateDaexChatOptions = {
   /** Isolated per-app ADE state root. Created if missing. */
   home: string;
   /** Pin a specific `ade` build. Skips PATH discovery and the downloader. */
@@ -103,7 +103,7 @@ export type CreateAdeChatOptions = {
   autoRestart?: boolean | { maxAttempts?: number; backoffMs?: number };
   /**
    * Refuse a runtime whose version is outside `SUPPORTED_RUNTIME_RANGE`,
-   * throwing `AdeError("runtime_incompatible")` from `createAdeChat` (and
+   * throwing `DaexError("runtime_incompatible")` from `createDaexChat` (and
    * failing an `autoRestart` attempt the same way).
    *
    * Off by default: an unsupported runtime connects, logs one warning, and
@@ -138,7 +138,7 @@ export type CreateAdeChatOptions = {
    * The value is pushed to the runtime for the live session and never saved
    * in the SDK thread record.
    */
-  resolveSecret?: (provider: AdeProvider, credentialId: string) => string | undefined | Promise<string | undefined>;
+  resolveSecret?: (provider: DaexProvider, credentialId: string) => string | undefined | Promise<string | undefined>;
   /** Usage-limit behavior for new threads. Defaults to `wait`. */
   onUsageLimit?: "failover" | "wait" | "ask";
 };
@@ -186,7 +186,7 @@ export type ThreadRefreshOptions = {
 };
 
 /** Escape hatches for tests and embedders. Not part of the stable surface. */
-export type InternalAdeChatOptions = CreateAdeChatOptions & {
+export type InternalAdeChatOptions = CreateDaexChatOptions & {
   /** Override the endpoint (a mock server's temp socket, for instance). */
   socketPath?: string;
   /** Attach to an already-running runtime instead of spawning one. */
@@ -207,7 +207,7 @@ export type InternalAdeChatOptions = CreateAdeChatOptions & {
 
 export type ThreadOpenOptions = {
   /** A provider id present in this runtime's model catalog. */
-  provider: AdeProvider | (string & {});
+  provider: DaexProvider | (string & {});
   model: string;
   /** Stop a turn when cumulative reported usage reaches either limit. */
   budget?: ThreadBudget;
@@ -227,7 +227,7 @@ export type ThreadOpenOptions = {
    * MCP servers to attach to this thread.
    *
    * Refused outright by providers with no MCP surface (Pi), so a thread never
-   * opens silently tool-less. Read {@link AdeThread.mcpCapability} afterwards
+   * opens silently tool-less. Read {@link DaexThread.mcpCapability} afterwards
    * for what the provider actually delivered.
    *
    * Supplying servers also turns on strict mode unless you set
@@ -275,7 +275,7 @@ export type ThreadOpenOptions = {
    * and are not what strict mode excludes.
    *
    * Do not present this to your users as "only your tools are loaded" without
-   * checking {@link AdeThread.mcpCapability}: it names the exact residual for
+   * checking {@link DaexThread.mcpCapability}: it names the exact residual for
    * the thread you actually got, and it is authoritative where this table is
    * only a summary.
    *
@@ -307,9 +307,9 @@ export type ThreadOpenOptions = {
    * that may not, and what happens to everything else. `fallback: "deny"`
    * guarantees a turn never parks, which is what a host with no approval UI
    * wants. `fallback: "ask"` emits `approval_request` and needs
-   * {@link AdeThread.approve} wired to a card.
+   * {@link DaexThread.approve} wired to a card.
    *
-   * Read {@link AdeThread.permissionCapability} afterwards: only Claude gates
+   * Read {@link DaexThread.permissionCapability} afterwards: only Claude gates
    * every tool call against the policy.
    *
    * IGNORED ON RESUME: a key this home already knows re-applies the value it
@@ -328,7 +328,7 @@ export type ThreadOpenOptions = {
    * This does NOT put the text in the transcript: `exportThread` returns no
    * user message carrying it, which is the whole difference from the
    * hidden-first-message workaround it replaces. Falls back to the client-level
-   * `instructions` when omitted; check {@link AdeThread.instructionsCapability}
+   * `instructions` when omitted; check {@link DaexThread.instructionsCapability}
    * for what the provider did with it.
    *
    * IGNORED ON RESUME: a key this home already knows re-applies the value it
@@ -394,7 +394,7 @@ export type ThreadOpenOptions = {
    * `"project"` is usually the right choice for an embedder. Loading a user's
    * personal `~/.claude` into an app-branded assistant is a surprise, and it
    * should take an explicit `"user"` or `"all"` to get it. Only Claude has a
-   * real switch — see {@link AdeThread.settingSourcesCapability}.
+   * real switch — see {@link DaexThread.settingSourcesCapability}.
    *
    * IGNORED ON RESUME: a key this home already knows re-applies the value it
    * was created with, and the SDK logs one line when the value passed here
@@ -438,3 +438,8 @@ export type ThreadOpenOptions = {
  * a resume and on a recreate alike — see {@link ThreadRefreshOptions}.
  */
 export type ThreadResumeOptions = Partial<ThreadOpenOptions>;
+
+// Pre-Daex names, kept as deprecated aliases so code written against the
+// `@ade-dev` packages keeps compiling. Remove them in a future major version.
+/** @deprecated Use {@link CreateDaexChatOptions}. */
+export type CreateAdeChatOptions = CreateDaexChatOptions;

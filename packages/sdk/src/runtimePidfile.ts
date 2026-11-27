@@ -16,7 +16,7 @@ const execFileAsync = promisify(execFile);
  *  1. **Reclaim.** A host that dies without unwinding leaves its runtime alive
  *     (POSIX reparents orphans to init rather than killing them). The engine's
  *     parent-death watchdog ends that runtime within a few seconds, but a new
- *     `createAdeChat` on the same home can start inside that window and race a
+ *     `createDaexChat` on the same home can start inside that window and race a
  *     dying process for the same socket. Reading the pidfile lets the new client
  *     end the old runtime deterministically instead of hoping about timing.
  *

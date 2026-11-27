@@ -16,18 +16,18 @@
  */
 
 import {
-  ADE_DEFAULT_BRIDGE_KEY,
-  ADE_DEFAULT_CHANNEL_PREFIX,
+  DAEX_DEFAULT_BRIDGE_KEY,
+  DAEX_DEFAULT_CHANNEL_PREFIX,
   eventChannel,
   invokeChannel,
-  type AdeBridge,
-  type AdeIpcEventPayload,
-  type AdeIpcInvokeResponse,
+  type DaexBridge,
+  type DaexIpcEventPayload,
+  type DaexIpcInvokeResponse,
   type ContextBridgeLike,
   type IpcRendererLike,
 } from "./protocol.js";
 
-export type ExposeAdeBridgeOptions = {
+export type ExposeDaexBridgeOptions = {
   /** `window` key the bridge lands on. Defaults to `"ade"`. */
   key?: string;
   /** Channel namespace. Must match the main process. Defaults to `"ade"`. */
@@ -40,19 +40,19 @@ export type ExposeAdeBridgeOptions = {
  * Call it once, at the top level of your preload:
  *
  *   const { contextBridge, ipcRenderer } = require("electron");
- *   exposeAdeBridge(contextBridge, ipcRenderer);
+ *   exposeDaexBridge(contextBridge, ipcRenderer);
  *
  * The surface is deliberately two functions wide. Every method name, argument
  * shape and subscription rule lives in the renderer half, so a preload written
  * against one SDK version keeps working as the method table grows.
  */
-export function exposeAdeBridge(
+export function exposeDaexBridge(
   contextBridge: ContextBridgeLike,
   ipcRenderer: IpcRendererLike,
-  opts: ExposeAdeBridgeOptions = {},
+  opts: ExposeDaexBridgeOptions = {},
 ): void {
-  const key = opts.key?.trim() || ADE_DEFAULT_BRIDGE_KEY;
-  const prefix = opts.channelPrefix?.trim() || ADE_DEFAULT_CHANNEL_PREFIX;
+  const key = opts.key?.trim() || DAEX_DEFAULT_BRIDGE_KEY;
+  const prefix = opts.channelPrefix?.trim() || DAEX_DEFAULT_CHANNEL_PREFIX;
   // Built by the same two functions the main process uses, never by a template
   // literal of their own: the channel name is the contract between two
   // processes, and a second spelling of it desynchronizes silently — no compile
@@ -60,12 +60,12 @@ export function exposeAdeBridge(
   const invokeName = invokeChannel(prefix);
   const eventName = eventChannel(prefix);
 
-  const bridge: AdeBridge = {
-    invoke(method: string, args: unknown[]): Promise<AdeIpcInvokeResponse> {
-      return ipcRenderer.invoke(invokeName, { method, args }) as Promise<AdeIpcInvokeResponse>;
+  const bridge: DaexBridge = {
+    invoke(method: string, args: unknown[]): Promise<DaexIpcInvokeResponse> {
+      return ipcRenderer.invoke(invokeName, { method, args }) as Promise<DaexIpcInvokeResponse>;
     },
-    onEvent(listener: (payload: AdeIpcEventPayload) => void): () => void {
-      const handler = (_event: unknown, payload: AdeIpcEventPayload) => {
+    onEvent(listener: (payload: DaexIpcEventPayload) => void): () => void {
+      const handler = (_event: unknown, payload: DaexIpcEventPayload) => {
         listener(payload);
       };
       ipcRenderer.on(eventName, handler);
@@ -78,5 +78,17 @@ export function exposeAdeBridge(
   contextBridge.exposeInMainWorld(key, bridge);
 }
 
+export { DAEX_DEFAULT_BRIDGE_KEY, DAEX_DEFAULT_CHANNEL_PREFIX } from "./protocol.js";
+export type { DaexBridge, ContextBridgeLike, IpcRendererLike } from "./protocol.js";
+
+// Pre-Daex names, kept as deprecated aliases so code written against the
+// `@ade-dev` packages keeps compiling. Remove them in a future major version.
+/** @deprecated Use {@link ExposeDaexBridgeOptions}. */
+export type ExposeAdeBridgeOptions = ExposeDaexBridgeOptions;
+/** @deprecated Use {@link exposeDaexBridge}. */
+export const exposeAdeBridge = exposeDaexBridge;
+
+// Pre-Daex names: deprecated aliases of the Daex* exports above, kept so code
+// written against the `@ade-dev` packages keeps compiling.
 export { ADE_DEFAULT_BRIDGE_KEY, ADE_DEFAULT_CHANNEL_PREFIX } from "./protocol.js";
-export type { AdeBridge, ContextBridgeLike, IpcRendererLike } from "./protocol.js";
+export type { AdeBridge } from "./protocol.js";

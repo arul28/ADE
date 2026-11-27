@@ -12,7 +12,7 @@ import {
   type RuntimeDownloader,
 } from "./download.js";
 import { resolveBundledRuntime, type BundledRuntime } from "./bundledRuntime.js";
-import { AdeError, errorMessage } from "./errors.js";
+import { DaexError, errorMessage } from "./errors.js";
 import { isDirectory, isFile } from "./fsProbe.js";
 import { resolveSpawnInvocation } from "./windowsInvocation.js";
 
@@ -167,7 +167,7 @@ export async function resolveBinary(options: ResolveBinaryOptions): Promise<Reso
   if (binaryPath?.trim()) {
     const resolved = path.resolve(binaryPath.trim());
     if (!fileExists(resolved)) {
-      throw new AdeError("binary_not_found", `The ADE binary at ${resolved} does not exist.`);
+      throw new DaexError("binary_not_found", `The ADE binary at ${resolved} does not exist.`);
     }
     const explicit = resolveExplicitRuntimeLayout({
       runtimeNodeModules,
@@ -235,7 +235,7 @@ export async function resolveBinary(options: ResolveBinaryOptions): Promise<Reso
   }
 
   if (!allowDownload) {
-    throw new AdeError(
+    throw new DaexError(
       "runtime_unavailable",
       `No ADE runtime is available for ${target.target} and allowDownload is false, so none was ` +
         `fetched. Tried, in order: ${tried.join("; ")}. Install ` +
@@ -278,14 +278,14 @@ function resolveExplicitRuntimeLayout(options: {
   const resolvedRoot = root ? path.resolve(root) : path.dirname(resolvedNodeModules);
 
   if (!directoryExists(resolvedNodeModules)) {
-    throw new AdeError(
+    throw new DaexError(
       "binary_not_found",
       `runtimeNodeModules names ${resolvedNodeModules}, which is not a directory. The runtime ` +
         `dlopens its native modules out of that directory and cannot start without it.`,
     );
   }
   if (!directoryExists(resolvedRoot)) {
-    throw new AdeError(
+    throw new DaexError(
       "binary_not_found",
       `runtimeRoot names ${resolvedRoot}, which is not a directory.`,
     );

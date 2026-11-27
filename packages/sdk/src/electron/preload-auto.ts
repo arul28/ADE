@@ -2,7 +2,7 @@
  * `@daex-dev/sdk/electron/preload-auto` — a preload that exposes the bridge by
  * itself, for `webPreferences.preload`.
  *
- * `@daex-dev/sdk/electron/preload` only EXPORTS `exposeAdeBridge`. Pointing
+ * `@daex-dev/sdk/electron/preload` only EXPORTS `exposeDaexBridge`. Pointing
  * `webPreferences.preload` at it loads the function and never calls it, so
  * `window.ade` stays undefined and every renderer call waits for a bridge that
  * is not there. This entry is that same function, called once with the default
@@ -19,7 +19,7 @@
  */
 
 import type { ContextBridgeLike, IpcRendererLike } from "./protocol.js";
-import { exposeAdeBridge } from "./preload.js";
+import { exposeDaexBridge } from "./preload.js";
 
 declare const require: (id: "electron") => {
   contextBridge: ContextBridgeLike;
@@ -27,4 +27,4 @@ declare const require: (id: "electron") => {
 };
 
 const electron = require("electron");
-exposeAdeBridge(electron.contextBridge, electron.ipcRenderer);
+exposeDaexBridge(electron.contextBridge, electron.ipcRenderer);

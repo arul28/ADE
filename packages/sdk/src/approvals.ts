@@ -1,8 +1,8 @@
-import { AdeError } from "./errors.js";
+import { DaexError } from "./errors.js";
 import { isSupportedProvider } from "./permissions.js";
 import {
   PENDING_INPUT_KINDS,
-  type AdeProvider,
+  type DaexProvider,
   type PendingInputKind,
   type PendingInputRequest,
 } from "./types.js";
@@ -68,7 +68,7 @@ export type ApprovalRequest = {
   /** Provider payload: the command string, the patch, the tool input. */
   detail?: unknown;
   /** Which provider raised it. */
-  provider: AdeProvider;
+  provider: DaexProvider;
   /** The original prompts for requests answered through `respond()`. */
   questions?: PendingInputRequest["questions"];
   /** False when the runtime cannot answer this request through the SDK. */
@@ -182,13 +182,13 @@ export function observedApprovalFromEvent(event: {
  *
  * `threadProvider` fills in for a request whose `source` is not one of the six
  * chat providers — `"acp"` covers four dialects at once and `"ade"` is a
- * request ADE staged itself, and neither is a value `AdeProvider` can carry.
+ * request ADE staged itself, and neither is a value `DaexProvider` can carry.
  * The thread's own provider is the honest answer there, because it is the
  * provider that is actually blocked.
  */
 export function approvalFromPendingInput(
   request: PendingInputRequest,
-  threadProvider: AdeProvider,
+  threadProvider: DaexProvider,
   observed?: ObservedApproval,
 ): ApprovalRequest {
   const itemId = request.itemId ?? request.requestId;
@@ -218,7 +218,7 @@ export function approvalFromPendingInput(
     ...(Array.isArray(request.questions) && request.questions.length > 0 ? { questions: request.questions } : {}),
     answerable,
     // `isSupportedProvider` is a type guard, so `request.source` is already
-    // narrowed to `AdeProvider` in this branch.
+    // narrowed to `DaexProvider` in this branch.
     provider: isSupportedProvider(request.source) ? request.source : threadProvider,
   };
 }
@@ -226,7 +226,7 @@ export function approvalFromPendingInput(
 /** Maps an observed event to the same shape, for the no-RPC fallback path. */
 export function approvalFromObserved(
   observed: ObservedApproval,
-  threadProvider: AdeProvider,
+  threadProvider: DaexProvider,
 ): ApprovalRequest {
   return {
     itemId: observed.itemId,
@@ -250,32 +250,32 @@ const RESPOND_DECISIONS: ReadonlySet<string> = new Set(["accept", "accept_for_se
  */
 export function validateRespondOptions(response: unknown): void {
   if (!response || typeof response !== "object" || Array.isArray(response)) {
-    throw new AdeError("invalid_option", "respond() needs a response object.");
+    throw new DaexError("invalid_option", "respond() needs a response object.");
   }
   const responseRecord = response as Record<string, unknown>;
   const unexpectedField = Object.keys(responseRecord).find((field) => !RESPOND_FIELDS.has(field));
   if (unexpectedField) {
-    throw new AdeError("invalid_option", `respond() does not accept the "${unexpectedField}" field.`);
+    throw new DaexError("invalid_option", `respond() does not accept the "${unexpectedField}" field.`);
   }
   const { answers, decision, responseText } = responseRecord;
   if (decision !== undefined && (typeof decision !== "string" || !RESPOND_DECISIONS.has(decision))) {
-    throw new AdeError(
+    throw new DaexError(
       "invalid_option",
       'respond() decision must be "accept", "accept_for_session", "decline" or "cancel".',
     );
   }
   if (answers !== undefined) {
     if (!answers || typeof answers !== "object" || Array.isArray(answers)) {
-      throw new AdeError("invalid_option", "respond() answers must be an object keyed by question id.");
+      throw new DaexError("invalid_option", "respond() answers must be an object keyed by question id.");
     }
     for (const [questionId, answer] of Object.entries(answers)) {
       if (!questionId || !(typeof answer === "string" ||
         (Array.isArray(answer) && answer.every((value) => typeof value === "string")))) {
-        throw new AdeError("invalid_option", "respond() answers must map question ids to strings or string arrays.");
+        throw new DaexError("invalid_option", "respond() answers must map question ids to strings or string arrays.");
       }
     }
   }
   if (responseText !== undefined && responseText !== null && typeof responseText !== "string") {
-    throw new AdeError("invalid_option", "respond() responseText must be a string or null.");
+    throw new DaexError("invalid_option", "respond() responseText must be a string or null.");
   }
 }
