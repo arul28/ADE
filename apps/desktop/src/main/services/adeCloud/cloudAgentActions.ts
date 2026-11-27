@@ -571,7 +571,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       // there is one way to say it.
       questions: [{
         id: "decision",
-        header: `${BRAND.CLOUD_NAME}`,
+        header: BRAND.CLOUD_NAME,
         question,
         ...(body.trim() ? { impact: body.trim() } : {}),
         allowsFreeform: false,

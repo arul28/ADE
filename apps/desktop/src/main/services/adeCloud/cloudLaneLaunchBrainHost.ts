@@ -225,7 +225,7 @@ export function createCloudLaneLaunchBrainHost(deps: {
       kind: "remote",
       key: `cloud-lane:${targetId}:${projectId}`,
       targetId,
-      runtimeName: `${BRAND.CLOUD_NAME}`,
+      runtimeName: BRAND.CLOUD_NAME,
       transport: "paired",
       projectId,
       rootPath,
