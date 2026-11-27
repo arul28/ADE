@@ -2,6 +2,7 @@ import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { TERMINAL_BRACKETED_PASTE_END, TERMINAL_BRACKETED_PASTE_START } from "./terminalBracketedPaste";
 import { withChatPin } from "../chat/chatMachinePin";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Clipboard-image paste for terminals that take the image as a saved file.
@@ -68,7 +69,7 @@ function quotePathForShell(path: string): string {
 
 function formatClipboardImageForPty(path: string, mimeType: string): string {
   return [
-    "ADE clipboard image attached.",
+    `${BRAND.NAME} clipboard image attached.`,
     `Path: ${path}`,
     `Type: ${mimeType || "image/png"}`,
     "",

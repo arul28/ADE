@@ -4,6 +4,8 @@
  * `usePaletteSuggestions` owns the debounce, cache and the model call.
  */
 
+import { BRAND } from "../../../shared/brand";
+
 /** The slice of a palette command the suggestion scoring reads. */
 export type PaletteSuggestionCommand = {
   id: string;
@@ -101,7 +103,7 @@ export function paletteSuggestionCandidates<C extends PaletteSuggestionCommand>(
 }
 
 export function paletteSuggestionDescription(command: PaletteSuggestionCommand): string {
-  const fallback = `Open the ${command.group ?? "ADE"} action for this task.`;
+  const fallback = `Open the ${command.group ?? BRAND.NAME} action for this task.`;
   const terms = command.keywords?.slice(0, 7).join(", ");
   return [
     `${command.title}: ${command.hint?.trim() || fallback}`,
