@@ -12,6 +12,7 @@ import { workToolDefinition } from "./workTools";
 import { usePinTargetsTab } from "../../state/crossMachineLanes";
 import { requireChatPin } from "../chat/chatMachinePin";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 /** `localhost:5173`, the way every surface names a dev server. */
 export function devServerLabel(server: Pick<DevServerRecord, "url" | "port">): string {
@@ -70,7 +71,7 @@ export function SessionDevServerBadge({
     const stopDevServer = window.ade?.workTools?.stopDevServer;
     const label = devServerLabel(server);
     if (!stopDevServer) {
-      showToast({ tone: "warning", title: `Could not stop ${label}`, message: "This version of ADE cannot stop servers." });
+      showToast({ tone: "warning", title: `Could not stop ${label}`, message: `This version of ${BRAND.NAME} cannot stop servers.` });
       return;
     }
     setStopping((current) => new Set(current).add(server.port));
@@ -91,7 +92,7 @@ export function SessionDevServerBadge({
       showToast({
         tone: "error",
         title: `Could not stop ${label}`,
-        message: plainErrorText(error, "ADE couldn't stop it."),
+        message: plainErrorText(error, `${BRAND.NAME} couldn't stop it.`),
       });
     } finally {
       setStopping((current) => {

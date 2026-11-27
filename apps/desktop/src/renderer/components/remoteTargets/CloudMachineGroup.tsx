@@ -34,6 +34,7 @@ import {
 import { CloudUpdateLine } from "./CloudUpdateLine";
 import { cloudPendingLabel, type CloudBoxActionError, type CloudBoxPending } from "./useCloudBoxActions";
 import { connectButtonStyle, machineRowStyle, nameStyle, subTextStyle } from "./remoteTargetListStyles";
+import { BRAND } from "../../../shared/brand";
 
 
 /** The group's head: the mark, how many computers, and how fast they use hours now. */
@@ -53,7 +54,7 @@ export function CloudGroupHead({
     <div className="ade-cx-section-head ade-cx-cloud-head">
       <CloudMark size={12} bold />
       {ADE_CLOUD_NAME}
-      {loading ? <CircleNotch size={11} className="animate-spin" aria-label="Checking ADE Cloud" /> : null}
+      {loading ? <CircleNotch size={11} className="animate-spin" aria-label={`Checking ${BRAND.CLOUD_NAME}`} /> : null}
       {totals.hoursRate > 0 ? (
         <span className="ade-cx-cloud-head-facts kit-num" title={`How fast the computers awake now use your ${words.noun}. ${words.unitSentence}`}>
           Now: {formatCloudHoursRate(totals.hoursRate, words)}
@@ -81,17 +82,17 @@ export function CloudGroupBanners({
   const banners: ReactNode[] = [];
   if (loadError && !result) {
     banners.push(
-      <Banner key="load" layout="inline" model={{ id: "cloud-machines-load", tone: "warning", icon: <CloudMark size={15} />, title: `ADE couldn't read your ${ADE_CLOUD_NAME} machines`, detail: loadError, actions: [{ label: "Retry", icon: <ArrowClockwise size={12} />, onClick: onRetry }] }} />,
+      <Banner key="load" layout="inline" model={{ id: "cloud-machines-load", tone: "warning", icon: <CloudMark size={15} />, title: `${BRAND.NAME} couldn't read your ${ADE_CLOUD_NAME} machines`, detail: loadError, actions: [{ label: "Retry", icon: <ArrowClockwise size={12} />, onClick: onRetry }] }} />,
     );
   }
   if (result?.state === "access_refused") {
     banners.push(
-      <Banner key="refused" layout="inline" model={{ id: "cloud-access-refused", tone: "error", icon: <CloudMark size={15} />, title: `${ADE_CLOUD_NAME} refused this account`, detail: result.message ?? "ADE can't show, wake or delete your machines right now. They keep running.", report: false }} />,
+      <Banner key="refused" layout="inline" model={{ id: "cloud-access-refused", tone: "error", icon: <CloudMark size={15} />, title: `${ADE_CLOUD_NAME} refused this account`, detail: result.message ?? `${BRAND.NAME} can't show, wake or delete your machines right now. They keep running.`, report: false }} />,
     );
   }
   if (result?.state === "unreachable") {
     banners.push(
-      <Banner key="unreachable" layout="inline" model={{ id: "cloud-unreachable", tone: "warning", icon: <CloudMark size={15} />, title: `ADE couldn't reach ${ADE_CLOUD_NAME}`, detail: result.message ?? undefined, actions: [{ label: "Retry", icon: <ArrowClockwise size={12} />, onClick: onRetry }] }} />,
+      <Banner key="unreachable" layout="inline" model={{ id: "cloud-unreachable", tone: "warning", icon: <CloudMark size={15} />, title: `${BRAND.NAME} couldn't reach ${ADE_CLOUD_NAME}`, detail: result.message ?? undefined, actions: [{ label: "Retry", icon: <ArrowClockwise size={12} />, onClick: onRetry }] }} />,
     );
   }
   const accountBanner = result?.state === "ok" && result.account ? cloudAccountBanner(result.account) : null;
@@ -187,7 +188,7 @@ export function CloudBoxStrip({
     <div className="ade-cx-cloud-strip" data-cloud-instance={box.instanceId}>
       <div className="ade-cx-cloud-facts-clip">
         <div className="ade-cx-cloud-facts">
-          <span className="kit-tag" data-tone={tone ?? undefined} title={`ADE Cloud status: ${box.status}`}>
+          <span className="kit-tag" data-tone={tone ?? undefined} title={`${BRAND.CLOUD_NAME} status: ${box.status}`}>
             {stateLabel}
           </span>
           <span className="ade-cx-cloud-fact">{describeCloudMachineSize(box, catalog)}</span>
@@ -195,7 +196,7 @@ export function CloudBoxStrip({
           {box.sleep.state !== "auto" ? (
             <span
               className="ade-cx-cloud-fact"
-              title="The ADE on this computer is older than sleeping on its own. It sleeps when idle once ADE on it updates."
+              title={`The ${BRAND.NAME} on this computer is older than sleeping on its own. It sleeps when idle once ${BRAND.NAME} on it updates.`}
             >
               {describeCloudSleepPolicy(box.sleep)}
             </span>
@@ -371,7 +372,7 @@ export function cloudDeletedRow(name: string, onRemove: () => void): { label: st
   return {
     label: `Deleted on ${ADE_CLOUD_NAME}. It no longer exists.`,
     action: (
-      <button type="button" aria-label={`Remove ${name} from ADE`} onClick={onRemove} style={{ ...connectButtonStyle, marginRight: 4 }}>
+      <button type="button" aria-label={`Remove ${name} from ${BRAND.NAME}`} onClick={onRemove} style={{ ...connectButtonStyle, marginRight: 4 }}>
         <UserMinus size={13} />
         Remove
       </button>

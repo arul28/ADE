@@ -7,6 +7,7 @@ import { DEVICE_KINDS, railMachineName } from "./workToolCatalog";
 import { workToolDefinition } from "./workTools";
 import type { ToolMachine } from "./useToolMachines";
 import { MachineOsMark, WorkToolTileMark } from "./workToolTileMarks";
+import { BRAND } from "../../../shared/brand";
 
 type StartAsk = { id: string; label: string; detail: string; icon: ReactNode; prompt: (machine: string) => string };
 
@@ -293,13 +294,13 @@ export function WorkToolPickMachineState({
   const title = kind === "ios"
     ? (onAdeCloud ? "Apple simulators stream here from a Mac" : "Apple simulators run on a Mac")
     : onAdeCloud && kind === "android"
-      ? "Android comes to ADE Cloud later"
+      ? `Android comes to ${BRAND.CLOUD_NAME} later`
       : `This machine can't run the ${noun}`;
   const somewhere = kind === "ios" ? "a Mac" : "a machine that can run it";
   let line: string;
   if (!machines.length && read === "pending") line = "Looking for your machines…";
-  else if (!machines.length && read === "failed") line = "Couldn't read your account's machines. Check that ADE is signed in, then open this again.";
-  else if (!machines.length) line = `Sign in to ADE on ${somewhere} and it shows up here.`;
+  else if (!machines.length && read === "failed") line = `Couldn't read your account's machines. Check that ${BRAND.NAME} is signed in, then open this again.`;
+  else if (!machines.length) line = `Sign in to ${BRAND.NAME} on ${somewhere} and it shows up here.`;
   else if (!onChoose) line = `Open a chat on this lane to pick where its ${noun}s run.`;
   else if (viewOnly) line = `Pick ${somewhere} to show its ${noun} here, then ask the agent to start one.`;
   else line = `Pick where this chat's ${noun}s run. Then ask the agent to start one.`;

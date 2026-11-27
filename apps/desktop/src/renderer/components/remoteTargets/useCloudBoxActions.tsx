@@ -29,6 +29,7 @@ import { cloudBoxWork, type CloudBoxWork } from "./cloudMachineModel";
 import type { MachineAction } from "./MachineActionsMenu";
 import { useCloudMachines, watchedCloudMachines } from "./useCloudMachines";
 import { cloudUnitWords } from "../../../shared/cloudUnitWords";
+import { BRAND } from "../../../shared/brand";
 
 /** What one box is doing in the list right now, shown on its card. */
 export type CloudBoxPending = CloudMachineActionKind | "remove" | "copy" | "move" | "reconnect";
@@ -84,7 +85,7 @@ const PENDING_LABELS: Record<CloudBoxPending, string> = {
   backup: "Backing up. On a big disk this takes a few minutes…",
   delete: "Deleting the computer…",
   update: "Updating. It restarts…",
-  remove: "Removing it from ADE…",
+  remove: `Removing it from ${BRAND.NAME}…`,
   copy: "Copying it into a new machine. A big disk takes a few minutes…",
   move: "Moving it: a new machine, then every file copied over…",
   reconnect: "Signing it back in to your account…",
@@ -235,7 +236,7 @@ export function useCloudBoxActions(args: {
   const deleteBox = useCallback(async (ctx: CloudBoxContext) => {
     const ok = await confirmDialog({
       title: `Delete ${ctx.name}?`,
-      message: `ADE deletes ${ctx.name} on ADE Cloud and removes it from your computers. Everything on its disk is gone for good: repos, lanes, and any work you have not pushed.`,
+      message: `${BRAND.NAME} deletes ${ctx.name} on ${BRAND.CLOUD_NAME} and removes it from your computers. Everything on its disk is gone for good: repos, lanes, and any work you have not pushed.`,
       children: ctx.work.runningChats > 0
         ? <Banner layout="inline" model={{ id: "cloud-delete-running", tone: "warning", title: `${chatsLine(ctx.work.runningChats, ctx.name)} They stop for good.` }} />
         : undefined,
@@ -275,14 +276,14 @@ export function useCloudBoxActions(args: {
     removing.current.add(key);
     try {
       const message = input.box
-        ? `${input.name} leaves your computers on every device. The computer stays on ADE Cloud and uses credits whenever it's awake. To remove it for good, use Delete computer instead.`
+        ? `${input.name} leaves your computers on every device. The computer stays on ${BRAND.CLOUD_NAME} and uses credits whenever it's awake. To remove it for good, use Delete computer instead.`
         : input.deletedOnCloud
-          ? `${input.name} was deleted on ADE Cloud, so it no longer exists. This removes its entry from your computers on every device.`
+          ? `${input.name} was deleted on ${BRAND.CLOUD_NAME}, so it no longer exists. This removes its entry from your computers on every device.`
           : `${input.name} leaves your computers on every device.\n\n${accountMachineRemovalConfirmBody(input.machine)}`;
       const ok = await confirmDialog({
-        title: `Remove ${input.name} from ADE?`,
+        title: `Remove ${input.name} from ${BRAND.NAME}?`,
         message: <span style={{ whiteSpace: "pre-line" }}>{message}</span>,
-        confirmLabel: "Remove from ADE",
+        confirmLabel: `Remove from ${BRAND.NAME}`,
         destructive: true,
         size: "md",
       });
@@ -298,8 +299,8 @@ export function useCloudBoxActions(args: {
         }
         showToast({
           tone: "success",
-          title: `Removed ${input.name} from ADE`,
-          message: input.box ? "It still runs on ADE Cloud. Delete computer removes it for good." : undefined,
+          title: `Removed ${input.name} from ${BRAND.NAME}`,
+          message: input.box ? `It still runs on ${BRAND.CLOUD_NAME}. Delete computer removes it for good.` : undefined,
           replayMask: { title: true },
         });
       } catch (error) {
@@ -347,7 +348,7 @@ export function useCloudBoxActions(args: {
     });
     try {
       const started = await start(requestId);
-      if (!started.started) throw new Error("ADE couldn't start that.");
+      if (!started.started) throw new Error(`${BRAND.NAME} couldn't start that.`);
     } catch (error) {
       off();
       setPending(instanceId, null);
@@ -363,7 +364,7 @@ export function useCloudBoxActions(args: {
     const rate = ctx.box.hoursRate != null ? formatCloudHoursRate(ctx.box.hoursRate, cloudUnitWords(watchedCloudMachines()?.account)) : null;
     const ok = await confirmDialog({
       title: `Copy ${ctx.name}?`,
-      message: `ADE makes a new computer with the same files (repos, lanes, installed dependencies) and signs it in as a new computer${rate ? `. It ${rate} while awake` : ""}. A big disk takes a few minutes.`,
+      message: `${BRAND.NAME} makes a new computer with the same files (repos, lanes, installed dependencies) and signs it in as a new computer${rate ? `. It ${rate} while awake` : ""}. A big disk takes a few minutes.`,
       confirmLabel: "Copy",
     });
     if (!ok) return;
@@ -373,7 +374,7 @@ export function useCloudBoxActions(args: {
   const updateBox = useCallback(async (ctx: CloudBoxContext) => {
     const ok = await confirmDialog({
       title: `Update ${ctx.name}?`,
-      message: `${ctx.name} restarts on the current ADE now. Its files and repos stay; running chats, terminals and processes stop. It also updates itself when it's idle or asleep.`,
+      message: `${ctx.name} restarts on the current ${BRAND.NAME} now. Its files and repos stay; running chats, terminals and processes stop. It also updates itself when it's idle or asleep.`,
       confirmLabel: "Update",
     });
     if (ok) await run(ctx, "update");
@@ -400,8 +401,8 @@ export function useCloudBoxActions(args: {
     const ok = await confirmDialog({
       title: to === "vm" ? `Move ${ctx.name} to a full computer?` : `Move ${ctx.name} to a standard computer?`,
       message: to === "vm"
-        ? `ADE makes a ${target.label} full computer (${runs}), copies every repo, lane and chat on ${ctx.name} into it, then deletes ${ctx.name}. Running processes stop.`
-        : `ADE makes a standard computer, copies every repo, lane and chat on ${ctx.name} into it, then deletes ${ctx.name}. Docker images and volumes stay behind, and running processes stop.`,
+        ? `${BRAND.NAME} makes a ${target.label} full computer (${runs}), copies every repo, lane and chat on ${ctx.name} into it, then deletes ${ctx.name}. Running processes stop.`
+        : `${BRAND.NAME} makes a standard computer, copies every repo, lane and chat on ${ctx.name} into it, then deletes ${ctx.name}. Docker images and volumes stay behind, and running processes stop.`,
       confirmLabel: "Move",
       destructive: true,
       size: "md",
@@ -468,14 +469,14 @@ export function useCloudBoxActions(args: {
     // A box that joined once (it carries its machine key) and left the account.
     if (ctx.accountKnown && !ctx.accountMachine && box.machineKey && !suspended && window.ade?.cloud?.reconnectMachine
       && (box.state === "running" || box.state === "asleep" || box.state === "stopped")) {
-      items.push({ key: "cloud-reconnect", label: "Reconnect to ADE", icon: <PlugsConnected size={14} />, disabled: busy, onSelect: () => void reconnectBox(ctx) });
+      items.push({ key: "cloud-reconnect", label: `Reconnect to ${BRAND.NAME}`, icon: <PlugsConnected size={14} />, disabled: busy, onSelect: () => void reconnectBox(ctx) });
     }
     if (ctx.accountMachine) {
       const accountMachine = ctx.accountMachine;
       items.push({
         key: "cloud-remove",
-        label: "Remove from ADE",
-        ariaLabel: `Remove ${ctx.name} from ADE`,
+        label: `Remove from ${BRAND.NAME}`,
+        ariaLabel: `Remove ${ctx.name} from ${BRAND.NAME}`,
         icon: <UserMinus size={14} />,
         danger: true,
         disabled: busy,
@@ -485,7 +486,7 @@ export function useCloudBoxActions(args: {
     items.push({
       key: "cloud-delete",
       label: "Delete computer",
-      ariaLabel: `Delete ${ctx.name} on ADE Cloud`,
+      ariaLabel: `Delete ${ctx.name} on ${BRAND.CLOUD_NAME}`,
       icon: <Trash size={14} />,
       danger: true,
       disabled: busy || box.state === "deleting",
@@ -571,7 +572,7 @@ function CloudResizeDialog({
       open
       onOpenChange={(open) => { if (!open) onCancel(); }}
       title={`Resize ${name}`}
-      description={`${name} restarts to change size. Its files stay; running chats, terminals and processes stop, and ADE on it starts again in a few seconds.`}
+      description={`${name} restarts to change size. Its files stay; running chats, terminals and processes stop, and ${BRAND.NAME} on it starts again in a few seconds.`}
       size="sm"
       actions={[
         {

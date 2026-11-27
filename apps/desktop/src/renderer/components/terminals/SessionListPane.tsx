@@ -155,6 +155,7 @@ import {
 } from "../cloudLane/cloudLanesWithoutComputer";
 import { openDraftAndFocusWorkInput } from "../work/workShortcuts";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
@@ -1041,7 +1042,7 @@ function reportSettleFailures(
   });
   showToast({
     title: `${action} failed on ${failed.map((group) => group.machineName).join(", ")}`,
-    message: plainErrorText(firstError, "ADE couldn't finish that."),
+    message: plainErrorText(firstError, `${BRAND.NAME} couldn't finish that.`),
     tone: "error",
   });
 }
@@ -4042,7 +4043,7 @@ export const SessionListPane = React.memo(function SessionListPane({
               data-testid="orphan-session-explanation"
             >
               The lane record is missing from the latest runtime snapshot. Refresh to reconcile this group with its
-              owning machine. ADE will not delete sessions, Git branches, worktrees, commits, or pull requests.
+              owning machine. {BRAND.NAME} will not delete sessions, Git branches, worktrees, commits, or pull requests.
             </div>
             {renderHandoffCards(laneHandoffJobs)}
             {renderLaneSessionLists(laneId, list)}
@@ -4647,8 +4648,8 @@ function MachineReadFailureNotice({ failure, onDismiss }: {
           icon: <Desktop size={13} weight="bold" />,
           title: `Couldn't load chats from ${failure.machineName}`,
           detail: slowLink
-            ? "The connection to that machine is slow or dropping. ADE tries again on its own."
-            : "That machine is connected but didn't send its chats. ADE tries again on its own.",
+            ? `The connection to that machine is slow or dropping. ${BRAND.NAME} tries again on its own.`
+            : `That machine is connected but didn't send its chats. ${BRAND.NAME} tries again on its own.`,
           // crossMachineLanes already logged this failure to Sentry with its count.
           report: {
             surface: "work_machine_read",

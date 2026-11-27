@@ -4,6 +4,7 @@ import type { AgentChatRemoteWorkUse } from "../../../shared/types/chat";
 import type { RemoteWorkCopyListing } from "../../../shared/types/remoteWork";
 import { READABLE_TOAST_DURATION_MS, showToast } from "../app/toast/toastStore";
 import { joinNames, type LeftoverMachine } from "./workToolCatalog";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The tools pane's one Clean up: deletes this chat's code on each machine it
@@ -59,7 +60,7 @@ export async function cleanUpRemoteWork(args: {
       // An older ADE there ignores `keepUnsynced` and would delete unpushed work.
       if (copy.keepsUnsynced !== true) {
         remaining += 1;
-        failed.push(`${where}: update ADE there to clean up from here, or delete it in Settings › Machines.`);
+        failed.push(`${where}: update ${BRAND.NAME} there to clean up from here, or delete it in Settings › Machines.`);
         continue;
       }
       // A delete goes through the copy's own project on that machine.

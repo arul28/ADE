@@ -2,6 +2,7 @@ import type { OpenProjectBinding } from "../../../shared/types";
 import { isRemoteCallNotSentError, isRemoteOutcomeUnknownError } from "../../../shared/runtimeErrors";
 import { REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE } from "../../../shared/types/remoteRuntime";
 import { requireChatPin } from "../chat/chatMachinePin";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * One send of a person's text from the Work input box to a running agent CLI
@@ -56,7 +57,7 @@ export async function sendAgentCliText(args: {
   pin: OpenProjectBinding | null;
 }): Promise<AgentCliTypeSendResult> {
   const api = typeof window !== "undefined" ? window.ade?.agentChat?.typeIntoCli : undefined;
-  if (typeof api !== "function") return { kind: "failed", error: "This ADE cannot type into a CLI session." };
+  if (typeof api !== "function") return { kind: "failed", error: `This ${BRAND.NAME} cannot type into a CLI session.` };
   try {
     const result = await api({
       sessionId: args.sessionId,

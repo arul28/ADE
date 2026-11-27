@@ -23,6 +23,7 @@ import { checkoutCloudPlanUp } from "../settings/cloudDashboard/cloudPlanMoveUp"
 import { KeepChatsCheckbox, deleteCloudLaneWithCheck, freeCloudLaneWithConfirm } from "./deleteCloudLane";
 import { cloudLaneChangesAvailable } from "./cloudLaneActions";
 import "./cloudLane.css";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The computer limit card (Pricing v2): a new cloud lane needs a computer and
@@ -184,8 +185,8 @@ function CloudComputerLimitCard({ given, onClose }: { given: CloudComputerLimitD
               {deleteLane.hasLane === false
                 ? "This computer has no lane, so only the computer goes."
                 : keepChats
-                  ? "The lane and its computer are deleted; its chats stay in Work. ADE asks first if any work isn't on GitHub."
-                  : "The lane, its computer and its chats are deleted. ADE asks first if any work isn't on GitHub."}
+                  ? `The lane and its computer are deleted; its chats stay in Work. ${BRAND.NAME} asks first if any work isn't on GitHub.`
+                  : `The lane, its computer and its chats are deleted. ${BRAND.NAME} asks first if any work isn't on GitHub.`}
             </p>
             {deleteLane.hasLane !== false ? <KeepChatsCheckbox checked={keepChats} onChange={setKeepChats} /> : null}
           </>
@@ -215,7 +216,7 @@ function CloudComputerLimitCard({ given, onClose }: { given: CloudComputerLimitD
           <b>What happens:</b>{" "}
           {onPaidPlan
             ? `your plan changes to ${label} now, and you pay the difference for the rest of this month. Credits you used stay used.`
-            : `ADE opens the checkout. Once it's paid you can have ${plural(next.computerLimit, "cloud computer")}, and your new lane can start.`}
+            : `${BRAND.NAME} opens the checkout. Once it's paid you can have ${plural(next.computerLimit, "cloud computer")}, and your new lane can start.`}
         </p>
       </>
     );
@@ -232,7 +233,7 @@ function CloudComputerLimitCard({ given, onClose }: { given: CloudComputerLimitD
       title={title}
       description="Each cloud lane runs on its own computer. Make room for your new lane."
       actions={[...(confirm ? [{ ...confirm, autoFocus: true }] : []), { label: "Not now", variant: "secondary", onClick: onClose }]}
-      footerStart={!canChange && way !== "move" && way ? <span className="adecl-limit-empty">Free up or delete lanes from the ADE desktop app.</span> : undefined}
+      footerStart={!canChange && way !== "move" && way ? <span className="adecl-limit-empty">Free up or delete lanes from the {BRAND.NAME} desktop app.</span> : undefined}
     >
       {loading ? (
         <p className="adecl-limit-empty">Reading your computers…</p>
@@ -253,7 +254,7 @@ function CloudComputerLimitCard({ given, onClose }: { given: CloudComputerLimitD
             ) : null}
           </div>
           {lanes.length === 0 && way && way !== "move" ? (
-            <p className="adecl-limit-empty">ADE couldn't list your computers here. Open Settings › ADE Cloud to see every lane.</p>
+            <p className="adecl-limit-empty">{BRAND.NAME} couldn't list your computers here. Open Settings › {BRAND.CLOUD_NAME} to see every lane.</p>
           ) : step ? (
             <div className="adecl-limit-step">{step}</div>
           ) : null}

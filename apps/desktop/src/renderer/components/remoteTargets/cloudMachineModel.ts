@@ -14,6 +14,7 @@ import { buildAccountMachineSnapshot } from "../../../shared/accountMachineSnaps
 import { CLOUD_CREDIT_WORDS, type CloudUnitWords } from "../../../shared/cloudUnitWords";
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import type { AttentionItem } from "../../../shared/types/attention";
+import { BRAND } from "../../../shared/brand";
 
 /** Whether `box` is the one whose hostname is `host`: on the provider a box's hostname is its instance id. */
 function cloudBoxHasHost(box: CloudMachine, host: string | null | undefined): boolean {
@@ -165,7 +166,7 @@ export function adeCloudMachineLine({ known, laneIds, awake }: {
 }): string {
   if (!known) return "Your account's cloud machine";
   const lanes = new Set(laneIds).size;
-  if (lanes === 0) return "No lanes yet: pick ADE Cloud in Run on to start one";
+  if (lanes === 0) return `No lanes yet: pick ${BRAND.CLOUD_NAME} in Run on to start one`;
   const count = `${lanes} ${lanes === 1 ? "lane" : "lanes"}`;
   if (awake == null) return count;
   return `${count}, ${awake === 0 ? "all asleep" : `${awake} awake`}`;

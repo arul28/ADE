@@ -7,9 +7,10 @@ import { ModelPicker } from "../../shared/ModelPicker/ModelPicker";
 import { LaneCombobox, type LaneComboboxLane } from "../LaneCombobox";
 import { ImportAccountPicker } from "./ImportAccountPicker";
 import { LaneDot } from "./ImportSessionParts";
+import { BRAND } from "../../../../shared/brand";
 
 const SURFACE_LABELS: Record<ImportSurface, string> = {
-  chat: "ADE chat",
+  chat: `${BRAND.NAME} chat`,
   cli: "CLI",
 };
 
@@ -161,9 +162,9 @@ export function ImportActionBar({
     return (
       <footer className="import-actions">
         <div className="import-actions-row">
-          <span className="import-actions-label">Already in ADE.</span>
+          <span className="import-actions-label">Already in {BRAND.NAME}.</span>
           <div className="import-actions-end">
-            <PrimaryButton label="Open in ADE" busy={false} disabled={busy} onClick={openExisting.onOpen} />
+            <PrimaryButton label={`Open in ${BRAND.NAME}`} busy={false} disabled={busy} onClick={openExisting.onOpen} />
           </div>
         </div>
       </footer>

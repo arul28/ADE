@@ -42,6 +42,7 @@ import {
   readAccountRefusalCode,
   type AccountMachineRefusalCode,
 } from "../../../shared/accountMachineRefusal";
+import { BRAND } from "../../../shared/brand";
 
 // ---------------------------------------------------------------------------
 // Route identity + discovered-machine helpers (framework-free, unit-tested via
@@ -274,7 +275,7 @@ export function describePublishRefusal(
   if (code === "machine_revoked") {
     return {
       code,
-      summary: "this computer was removed from your ADE account",
+      summary: `this computer was removed from your ${BRAND.NAME} account`,
       actionLabel: "Reconnect this computer",
     };
   }
@@ -373,7 +374,7 @@ export function describeThisComputerCard(
   if (display.kind === "healthy") {
     return {
       tone: "healthy",
-      summary: "signed in and published to your ADE account",
+      summary: `signed in and published to your ${BRAND.NAME} account`,
       action: { label: null, needsSignIn: false, retry: false, startSync: false },
     };
   }
@@ -394,7 +395,7 @@ export function channelProductName(
 ): string {
   const normalized = normalizeAppPackageChannel(channel);
   if (normalized !== "stable") return appPackageChannelDisplayName(normalized);
-  return updateTrackOfVersion(version) === "beta" ? "ADE Beta" : "ADE";
+  return updateTrackOfVersion(version) === "beta" ? BRAND.BETA_NAME : BRAND.NAME;
 }
 
 /**
@@ -485,7 +486,7 @@ export function formatMachineEndpoint(
 }
 
 /** A saved machine whose link another ADE app on this computer holds: its state, and the press that takes it back. */
-export const HELD_ELSEWHERE_STATE_LABEL = "In use by another ADE app";
+export const HELD_ELSEWHERE_STATE_LABEL = `In use by another ${BRAND.NAME} app`;
 export const HELD_ELSEWHERE_ACTION_LABEL = "Use it here";
 
 export function connectionStateLabel(
@@ -558,13 +559,13 @@ export function formatRemoteTargetError(error: unknown): string {
   // The main process answers with a named, timed message well inside the IPC
   // ceiling, so this only shows when that answer was lost to the ceiling itself.
   if (/IPC handler for 'ade\.account\.pairMachine' timed out/i.test(message)) {
-    return "ADE stopped waiting for that computer before it finished connecting. Make sure ADE is open on it, then try again.";
+    return `${BRAND.NAME} stopped waiting for that computer before it finished connecting. Make sure ${BRAND.NAME} is open on it, then try again.`;
   }
 
   if (/ECONNRESET/i.test(message)) {
     return sshHint
-      ? "SSH server closed the connection before ADE could finish the SSH handshake. Check that Remote Login/sshd is enabled on the remote machine and try again."
-      : "The connection was reset before ADE could finish connecting. Check that the machine is awake and reachable, then try again.";
+      ? `SSH server closed the connection before ${BRAND.NAME} could finish the SSH handshake. Check that Remote Login/sshd is enabled on the remote machine and try again.`
+      : `The connection was reset before ${BRAND.NAME} could finish connecting. Check that the machine is awake and reachable, then try again.`;
   }
 
   if (
@@ -576,7 +577,7 @@ export function formatRemoteTargetError(error: unknown): string {
   }
 
   if (/host denied|verification failed|host key verification/i.test(message)) {
-    return "SSH host-key verification failed. Check that this is the right machine, then update the saved SSH host key or trust the new key when ADE prompts.";
+    return `SSH host-key verification failed. Check that this is the right machine, then update the saved SSH host key or trust the new key when ${BRAND.NAME} prompts.`;
   }
 
   if (
@@ -586,13 +587,13 @@ export function formatRemoteTargetError(error: unknown): string {
   ) {
     return sshHint
       ? "SSH did not finish connecting. Check that the machine is awake, reachable on Tailscale or LAN, and Remote Login is enabled."
-      : "ADE did not finish connecting. Check that the machine is awake and reachable on Tailscale or LAN.";
+      : `${BRAND.NAME} did not finish connecting. Check that the machine is awake and reachable on Tailscale or LAN.`;
   }
 
   if (/ECONNREFUSED/i.test(message)) {
     return sshHint
       ? "The machine refused the SSH connection. Check the port and make sure Remote Login/sshd is running."
-      : "The machine refused the connection. Check that ADE is running on that computer and reachable on the saved port.";
+      : `The machine refused the connection. Check that ${BRAND.NAME} is running on that computer and reachable on the saved port.`;
   }
 
   if (
@@ -600,7 +601,7 @@ export function formatRemoteTargetError(error: unknown): string {
       message,
     )
   ) {
-    return "ADE could not resolve that host. Check the hostname, or use the Tailscale 100.x address from discovery.";
+    return `${BRAND.NAME} could not resolve that host. Check the hostname, or use the Tailscale 100.x address from discovery.`;
   }
 
   return message || "Remote connection failed.";

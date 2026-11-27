@@ -5,6 +5,7 @@ import { EXTERNAL_SESSION_PROVIDERS } from "../../../../shared/types/externalSes
 import { ToolLogo } from "../ToolLogos";
 import { PROVIDER_TOOL_TYPE } from "./contract";
 import { useTourOpen } from "../../../onboarding/useTourOpen";
+import { BRAND } from "../../../../shared/brand";
 
 const STORAGE_PREFIX = "ade.importChatsBadge.dismissed:";
 
@@ -83,7 +84,7 @@ export function ImportFloatingBadge({
           disabled={disabled}
           onClick={open}
           className="import-chat-pill__action inline-flex min-w-0 max-w-full items-center gap-3 disabled:cursor-not-allowed"
-          aria-label="Import your chats from outside ADE"
+          aria-label={`Import your chats from outside ${BRAND.NAME}`}
         >
           <span className="import-chat-pill__providers flex h-7 shrink-0 items-center gap-1">
             {EXTERNAL_SESSION_PROVIDERS.map((provider) => (
@@ -100,7 +101,7 @@ export function ImportFloatingBadge({
             ))}
           </span>
           <span className="import-chat-pill__label shrink-0 text-left text-[12px] font-medium tracking-tight text-fg/90">
-            Import your chats from outside ADE
+            Import your chats from outside {BRAND.NAME}
           </span>
         </button>
         <button

@@ -12,6 +12,7 @@ import {
 import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
 import { OpenInSubmenu } from "../ui/OpenInSubmenu";
 import { resolveOpenInTarget } from "../../../shared/editorTargets";
+import { BRAND } from "../../../shared/brand";
 
 type ForeignLaneContextMenuProps = {
   lane: LaneSummary;
@@ -160,7 +161,7 @@ export function ForeignLaneContextMenu({
           });
         }}
       >
-        Copy ADE Lane Link
+        Copy {BRAND.NAME} Lane Link
       </HoverButton>
       <HoverButton
         style={menuItemStyle}

@@ -10,6 +10,7 @@ import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, primaryButton } from "../lan
 import { extractError } from "../../lib/format";
 import { useAsyncAction } from "../../hooks/useAsyncAction";
 import type { RemoteRuntimeParsedPairingInput } from "../../../shared/types";
+import { BRAND } from "../../../shared/brand";
 
 const fieldStyle: CSSProperties = {
   width: "100%",
@@ -33,7 +34,7 @@ function friendlyPairError(error: unknown): string {
     return "That code didn't work. Check the six digits shown on the other computer and try again.";
   }
   if (/unreachable|timed out|timeout|ECONN|ENOTFOUND|network|connect|offline/i.test(message)) {
-    return "Couldn't reach that computer. Make sure ADE is open there, then try again.";
+    return `Couldn't reach that computer. Make sure ${BRAND.NAME} is open there, then try again.`;
   }
   return message || "Pairing failed.";
 }
@@ -132,8 +133,8 @@ export function PairMachineForm({
     <form onSubmit={handleSubmit} style={{ display: "grid", gap: 12 }}>
       <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.45 }}>
         {pairingAgain
-          ? "This computer's pairing is out of date there. Enter the pairing code shown in ADE on that computer to pair again."
-          : "You haven't connected to this computer before. Enter the pairing code shown in ADE on that computer."}
+          ? `This computer's pairing is out of date there. Enter the pairing code shown in ${BRAND.NAME} on that computer to pair again.`
+          : `You haven't connected to this computer before. Enter the pairing code shown in ${BRAND.NAME} on that computer.`}
       </div>
       <div style={{ display: "grid", gap: 6 }}>
         <span style={LABEL_STYLE}>Nearby computer</span>

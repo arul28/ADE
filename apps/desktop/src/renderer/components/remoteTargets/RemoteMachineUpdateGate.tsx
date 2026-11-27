@@ -10,6 +10,7 @@ import { connectedMachinesFromSnapshot, type ConnectedMachine } from "./remoteMa
 import { useMachineUpdateAsk } from "./MachineNeedsUpdate";
 import { cloudBoxContext, useCloudBoxActions } from "./useCloudBoxActions";
 import { useCloudMachines } from "./useCloudMachines";
+import { BRAND } from "../../../shared/brand";
 
 type RequiredUpdate = Extract<DesktopUpdateRequirement, { required: true }>;
 
@@ -88,7 +89,7 @@ function bannerModel(name: string, block: RemoteMachineBlock, extra: Partial<Ban
     id: `remote-machine-update:${block.machine.id}`,
     tone: "warning",
     icon: <ArrowsClockwise size={16} weight="bold" />,
-    title: `${name} runs an old version of ADE (${currentVersion} → ${targetVersion})`,
+    title: `${name} runs an old version of ${BRAND.NAME} (${currentVersion} → ${targetVersion})`,
     detail: "Update it to keep working on it. Its lanes, chats and work are saved.",
     report: false,
     ...extra,
@@ -98,7 +99,7 @@ function bannerModel(name: string, block: RemoteMachineBlock, extra: Partial<Ban
 /** A paired desktop: the ordinary "Update & restart", with its impact confirmation. */
 function DesktopUpdateBanner({ name, block }: { name: string; block: RemoteMachineBlock }) {
   const { actions, busy, askable, status, failed } = useMachineUpdateAsk(block.machine, name, block.requirement.targetVersion);
-  const updateThere = `Open ADE on ${name} and update it there.`;
+  const updateThere = `Open ${BRAND.NAME} on ${name} and update it there.`;
   // Asking failed (an old brain may not know the call): the panel stays and
   // says where it can be updated.
   const note = !askable || failed ? updateThere : status?.message ?? null;
@@ -139,7 +140,7 @@ function CloudComputerUpdateBanner({ name, block, instanceId }: { name: string; 
             variant: "solid",
             busy: pending,
             disabled: !box,
-            title: box ? undefined : "Loading your ADE Cloud computers…",
+            title: box ? undefined : `Loading your ${BRAND.CLOUD_NAME} computers…`,
             onClick: () => {
               if (!box) return;
               void actions.update(cloudBoxContext({ box, accountMachine: null, targetId: block.machine.id, activityItems: NO_ITEMS, accountKnown: false, name }));

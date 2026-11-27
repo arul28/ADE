@@ -52,6 +52,7 @@ import { captureProblem } from "../../../../shared/sentry/capture";
 import "./importSessions.css";
 import { sessionDateGroup } from "./sessionPresentation";
 import { isImeComposing } from "../../../lib/imeComposition";
+import { BRAND } from "../../../../shared/brand";
 
 export { DEFAULT_FORK_MODEL } from "./importBrowserModel";
 
@@ -77,7 +78,7 @@ export type ImportSessionBrowserProps = {
 };
 
 function scanFailureMessage(machineName: string): string {
-  return `ADE couldn't scan sessions on ${machineName}. Check that this computer has the project open, then try again.`;
+  return `${BRAND.NAME} couldn't scan sessions on ${machineName}. Check that this computer has the project open, then try again.`;
 }
 
 function CenterState({

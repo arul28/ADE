@@ -17,6 +17,7 @@ import {
 } from "./DiagnosisRows";
 import { HostReachabilitySection } from "./HostReachabilityCheck";
 import { HostStallNote } from "./HostStallNote";
+import { BRAND } from "../../../shared/brand";
 
 const wrapStyle: CSSProperties = { gap: 14, padding: "14px 16px" };
 
@@ -54,7 +55,7 @@ function failureLabel(failure: RemoteRuntimeDoctorFailure | undefined): string |
       return "A different computer answered";
     case "capability":
     case "protocol":
-      return "Different ADE version";
+      return `Different ${BRAND.NAME} version`;
     case "superseded":
       return "Another connection took over";
     default:

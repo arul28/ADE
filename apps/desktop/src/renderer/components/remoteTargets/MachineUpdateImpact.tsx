@@ -12,6 +12,7 @@ import {
   type MachinePlatform,
 } from "./MachineIdentity";
 import { machineUpdateTrack, type ConnectedMachine, type MachineUpdateTarget } from "./remoteMachineModel";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * What an update does on each machine, as one row per machine: its tile and
@@ -51,8 +52,8 @@ export function updateImpactHeadline(impact: UpdateImpact): string {
 
 /** The quiet line for what a restart ends for good, or for what can't be known. */
 function impactNote(impact: UpdateImpact): string | null {
-  if (!impact.checked) return "Anything running there stops when ADE restarts.";
-  if (impact.busyWithoutDetail) return "That ADE is too old to list everything running.";
+  if (!impact.checked) return `Anything running there stops when ${BRAND.NAME} restarts.`;
+  if (impact.busyWithoutDetail) return `That ${BRAND.NAME} is too old to list everything running.`;
   if (impact.cliSessions + impact.terminals === 0) return null;
   // A brain that reopens CLIs does so only with Continue chats after restarts on.
   const cliReopen = impact.cliSessions > 0 && impact.cliSessionsReopen === true && impact.continueAfterRestart !== false;
@@ -243,8 +244,8 @@ export async function confirmMachineTrackSwitch(machine: MachineWithImpact, trac
   return await confirmDialog({
     title: `Switch ${machine.name} to ${label}?`,
     message: track === "beta"
-      ? "ADE there checks that the newest Beta build can open its projects, installs it and restarts. Projects and chats stay, and Beta can have bugs Stable doesn't."
-      : "ADE there checks that the newest Stable build can open its projects, installs it and restarts. Projects and chats stay.",
+      ? `${BRAND.NAME} there checks that the newest Beta build can open its projects, installs it and restarts. Projects and chats stay, and Beta can have bugs Stable doesn't.`
+      : `${BRAND.NAME} there checks that the newest Stable build can open its projects, installs it and restarts. Projects and chats stay.`,
     icon: <ArrowClockwise size={16} weight="bold" />,
     tone: track === "beta" ? "warning" : "accent",
     size: "md",
@@ -277,7 +278,7 @@ export async function confirmMachineUpdates(
       : null;
   return await confirmDialog({
     title: single ? `Update ${single.name} to ${singleVersion}?` : `Update ${machines.length} machines?`,
-    message: "ADE restarts there.",
+    message: `${BRAND.NAME} restarts there.`,
     icon: <ArrowClockwise size={16} weight="bold" />,
     tone: "accent",
     size: "md",

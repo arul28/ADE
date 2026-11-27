@@ -19,6 +19,7 @@ import { cloudLaneJobPresentation, cloudLaneJobTitle } from "./cloudLaneJobPrese
 import { cloudLaneLifeAvailable, dismissCloudLaneJob } from "./cloudLaneActions";
 import { cloudLaneJobMarks, cloudLaneJobVisible, cloudLaneJobsNow, subscribeCloudLaneJobs, useCloudLaneJobs, type CloudLaneJobMark } from "./cloudLaneStores";
 import "./cloudLane.css";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The ADE Cloud size changes and moves of this app, in the bottom-right
@@ -264,7 +265,7 @@ function cloudLaneJobsHeadline(jobs: readonly CloudLaneJobSnapshot[], account: C
   if (running > 0) return `Changing ${running} cloud lane${running === 1 ? "" : "s"}…`;
   const done = jobs.filter((job) => job.phase === "online").length;
   const failed = jobs.filter((job) => job.phase === "failed").length;
-  return [done ? `${done} done` : null, failed ? `${failed} failed` : null].filter(Boolean).join(" · ") || "ADE Cloud lanes";
+  return [done ? `${done} done` : null, failed ? `${failed} failed` : null].filter(Boolean).join(" · ") || `${BRAND.CLOUD_NAME} lanes`;
 }
 
 const JobRow = React.memo(function JobRow({ job, account, single }: { job: CloudLaneJobSnapshot; account: CloudAccountState | null; single: boolean }) {
@@ -406,7 +407,7 @@ export function CloudLaneJobsSlideOut() {
           </ul>
         ),
         closeLabel: anyFailed ? "Dismiss" : "Hide",
-        closeTitle: anyFailed ? "Dismiss" : "Hide. The change goes on; its steps stay in the lane's chat and on the ADE Cloud page. A failure shows here again.",
+        closeTitle: anyFailed ? "Dismiss" : `Hide. The change goes on; its steps stay in the lane's chat and on the ${BRAND.CLOUD_NAME} page. A failure shows here again.`,
         // Session replay: the lane names are the person's content.
         replayMask: { title: true },
       }}

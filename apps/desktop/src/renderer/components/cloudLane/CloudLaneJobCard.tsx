@@ -43,6 +43,7 @@ import { cancelCloudLaneJob, dismissCloudLaneJob, retryCloudLaneJob } from "./cl
 import { cloudLaneJobPresentation, cloudLaneJobTitle, cloudSizeLabel } from "./cloudLaneJobPresentation";
 import { setCloudLaneJobBar, useCloudLaneJobBar } from "./cloudLaneStores";
 import "./cloudLane.css";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The steps of a tier change or a move, in the same card a new cloud lane
@@ -203,7 +204,7 @@ export const CloudLaneJobCard = React.memo(function CloudLaneJobCard({
       else if (kind === "dismiss") await dismissCloudLaneJob(job.jobId);
       else await cancelCloudLaneJob(job.jobId);
     } catch (runError) {
-      setError(ipcErrorMessage(runError) || "ADE couldn't do that. Try again in a moment.");
+      setError(ipcErrorMessage(runError) || `${BRAND.NAME} couldn't do that. Try again in a moment.`);
     } finally {
       setBusy(null);
     }

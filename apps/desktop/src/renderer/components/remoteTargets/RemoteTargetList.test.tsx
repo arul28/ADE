@@ -243,7 +243,7 @@ describe("RemoteTargetList", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Add machine" }));
     // A publish refusal is not "signed out": the sign-in path must not appear.
-    expect(screen.queryByRole("button", { name: /Sign in to ADE/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Sign in to Daex/ })).toBeNull();
     expect(screen.getByRole("button", { name: /^Find nearby/ })).toBeTruthy();
   });
 
@@ -905,7 +905,7 @@ describe("RemoteTargetList", () => {
     await waitFor(() =>
       expect(
         screen.getByText(
-          /SSH server closed the connection before ADE could finish the SSH handshake/,
+          /SSH server closed the connection before Daex could finish the SSH handshake/,
         ),
       ).toBeTruthy(),
     );
@@ -1633,7 +1633,7 @@ describe("RemoteTargetList", () => {
 
     await screen.findByRole("button", { name: "Add machine" });
     expect(screen.queryByText(/Couldn't load machines from your account/i)).toBeNull();
-    expect(screen.queryByText(/couldn't reach your ADE account/i)).toBeNull();
+    expect(screen.queryByText(/couldn't reach your Daex account/i)).toBeNull();
   });
 
   it("shows an account connect failure only on the machine that failed", async () => {

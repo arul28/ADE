@@ -76,10 +76,10 @@ describe("ThisComputerStatus", () => {
 
     render(<ThisComputerStatus accountSignedIn />);
 
-    expect(await screen.findByText("This computer was removed from your ADE account")).toBeTruthy();
+    expect(await screen.findByText("This computer was removed from your Daex account")).toBeTruthy();
     // The directory answered; "couldn't publish it" would be a lie.
     expect(screen.queryByText(/couldn't publish it/)).toBeNull();
-    const card = screen.getByText("This computer was removed from your ADE account")
+    const card = screen.getByText("This computer was removed from your Daex account")
       .closest("[data-this-computer-card]") as HTMLElement;
     // One owner, one button.
     expect(within(card).getAllByRole("button")).toHaveLength(1);

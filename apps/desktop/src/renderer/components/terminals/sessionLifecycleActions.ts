@@ -22,6 +22,7 @@ import { isAdeAvailable } from "../../lib/adeAvailability";
 import { machineErrorText } from "../../lib/machineErrorText";
 import { sendWithCloudWakeMark } from "../../state/cloudSavedChatsSync";
 import { requireChatPin, withChatPin } from "../chat/chatMachinePin";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * One place for every write the Work tab's menus make against a session: the
@@ -556,7 +557,7 @@ export async function handoffAgentCliSession(
       tone: "success",
       title: mode === "fork" ? "Forked into a chat" : "Handed off to a chat",
       message: result.cliContextSource === "terminal_output"
-        ? "ADE couldn't read the CLI's conversation, so the chat starts from its last terminal output."
+        ? `${BRAND.NAME} couldn't read the CLI's conversation, so the chat starts from its last terminal output.`
         : "The chat carries the CLI's conversation. The CLI is left as it was.",
     });
   } catch (error) {

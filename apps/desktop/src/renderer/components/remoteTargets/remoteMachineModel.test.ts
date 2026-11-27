@@ -541,7 +541,7 @@ describe("machineUpdateTargetVersion", () => {
 describe("formatRemoteTargetError", () => {
   it("does not blame sshd for a refused paired-sync port", () => {
     expect(formatRemoteTargetError("ECONNREFUSED")).toBe(
-      "The machine refused the connection. Check that ADE is running on that computer and reachable on the saved port.",
+      "The machine refused the connection. Check that Daex is running on that computer and reachable on the saved port.",
     );
     expect(formatRemoteTargetError("ECONNREFUSED")).not.toMatch(/sshd|Remote Login/);
   });
@@ -560,7 +560,7 @@ describe("formatRemoteTargetError", () => {
       formatRemoteTargetError(
         "Error invoking remote method 'ade.remoteRuntime.getSshHostKeyTrust': Error: read ECONNRESET",
       ),
-    ).toMatch(/SSH server closed the connection before ADE could finish the SSH handshake/);
+    ).toMatch(/SSH server closed the connection before Daex could finish the SSH handshake/);
   });
 
   it("replaces a raw pairMachine IPC timeout with human copy", () => {

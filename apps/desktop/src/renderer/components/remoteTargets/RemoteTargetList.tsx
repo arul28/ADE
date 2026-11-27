@@ -78,6 +78,7 @@ import {
 import { useCloudMachineGroup, type RowExtras } from "./useCloudMachineGroup";
 import type { MachineRow } from "./remoteMachineModel";
 import { machineSectionFold, type MachineFoldContext } from "./machineSectionFold";
+import { BRAND } from "../../../shared/brand";
 
 type RemoteTargetListProps = {
   onConnected?: (result: RemoteRuntimeConnectResult) => void;
@@ -164,7 +165,7 @@ function connectedViaLabel(result: RemoteRuntimeConnectResult): string | null {
   const routeLabel = {
     lan: "local network",
     tailnet: "Tailscale",
-    relay: "ADE relay",
+    relay: `${BRAND.NAME} relay`,
     ssh: "SSH",
   }[result.route.kind];
   const latency =
@@ -886,7 +887,7 @@ export function RemoteTargetList({
       showToast({
         tone: "info",
         title: `Can't find ${target.name} nearby`,
-        message: "Open ADE on it, on this Wi-Fi or your Tailscale network, then press Pair again.",
+        message: `Open ${BRAND.NAME} on it, on this Wi-Fi or your Tailscale network, then press Pair again.`,
         report: false,
       });
     },
@@ -965,7 +966,7 @@ export function RemoteTargetList({
           if (!connectionErrorReported) {
             setAccountRowErrors((current) => ({
               ...current,
-              [machineKey]: "ADE couldn't finish opening the connection, and didn't say why. Try again — if it keeps happening, check that ADE is running on that machine.",
+              [machineKey]: `${BRAND.NAME} couldn't finish opening the connection, and didn't say why. Try again — if it keeps happening, check that ${BRAND.NAME} is running on that machine.`,
             }));
           }
           return;
@@ -1543,7 +1544,7 @@ export function RemoteTargetList({
               id: "machines-this-computer-offline",
               tone: "info",
               title: "This computer is offline",
-              detail: `ADE reconnects to these computers on its own when the internet is back. ${THIS_COMPUTER_OFFLINE_HINT}`,
+              detail: `${BRAND.NAME} reconnects to these computers on its own when the internet is back. ${THIS_COMPUTER_OFFLINE_HINT}`,
             }}
           />
         ) : null}
@@ -1600,7 +1601,7 @@ export function RemoteTargetList({
       key: "nearby",
       icon: <WifiHigh size={18} weight="bold" />,
       label: "Find nearby",
-      detail: "Computers on this Wi-Fi or your Tailscale network with ADE open",
+      detail: `Computers on this Wi-Fi or your Tailscale network with ${BRAND.NAME} open`,
     },
     ...(thisComputerCode
       ? [{
@@ -1708,17 +1709,17 @@ export function RemoteTargetList({
                       <li>
                         <span className="ade-cx-step-num">1</span>
                         <span className="ade-cx-step-copy">
-                          <b>Install ADE</b> on the other computer.
+                          <b>Install {BRAND.NAME}</b> on the other computer.
                         </span>
                         <button type="button" className="ade-cx-chip-btn" onClick={() => openExternalUrl(ADE_SITE_URL)}>
-                          Get ADE
+                          Get {BRAND.NAME}
                           <ArrowSquareOut size={11} weight="bold" />
                         </button>
                       </li>
                       <li>
                         <span className="ade-cx-step-num">2</span>
                         <span className="ade-cx-step-copy">
-                          <b>Sign in</b> there{accountEmail ? <> as <span className="ade-cx-email">{accountEmail}</span></> : " with this same ADE account"}.
+                          <b>Sign in</b> there{accountEmail ? <> as <span className="ade-cx-email">{accountEmail}</span></> : ` with this same ${BRAND.NAME} account`}.
                         </span>
                       </li>
                       <li>
@@ -1733,7 +1734,7 @@ export function RemoteTargetList({
                   <button type="button" className="ade-cx-steps-card ade-cx-signin" onClick={() => onAccountRequested?.()}>
                     <span className="ade-cx-way-icon" data-tone="accent"><UserCircle size={20} weight="bold" /></span>
                     <span className="ade-cx-way-copy">
-                      <span className="ade-cx-way-label">Sign in to ADE</span>
+                      <span className="ade-cx-way-label">Sign in to {BRAND.NAME}</span>
                       <span className="ade-cx-way-detail">The easiest way: your computers find each other on your account.</span>
                     </span>
                     <CaretRight size={14} weight="bold" />
@@ -1755,7 +1756,7 @@ export function RemoteTargetList({
             {addMode === "code" ? (
               <div style={{ display: "grid", gap: 10 }}>
                 <div style={helperTextStyle}>
-                  In ADE on the phone or the other computer, choose to pair with a code and enter this one. Computers signed in to your account don't need it.
+                  In {BRAND.NAME} on the phone or the other computer, choose to pair with a code and enter this one. Computers signed in to your account don't need it.
                 </div>
                 {thisComputerCode}
               </div>
@@ -1786,7 +1787,7 @@ export function RemoteTargetList({
                 ) : null}
                 {!loadingDiscovered && nearbyMachines.length === 0 ? (
                   <div style={helperTextStyle}>
-                    No computers found. Open ADE on the other computer and make sure both are on the same Wi-Fi or Tailscale network.
+                    No computers found. Open {BRAND.NAME} on the other computer and make sure both are on the same Wi-Fi or Tailscale network.
                   </div>
                 ) : null}
                 {nearbyMachines.length > 0 ? (

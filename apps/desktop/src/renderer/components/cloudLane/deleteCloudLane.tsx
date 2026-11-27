@@ -12,6 +12,7 @@ import { CLOUD_LANE_LIFE_UNAVAILABLE, cloudLaneComputerOfLane, cloudLaneLifeAvai
 import { refreshCloudLanesWithoutComputer } from "./cloudLaneStores";
 import { CloudLaneSavedWork } from "./CloudLaneSavedWork";
 import "./cloudLane.css";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Where a cloud lane's delete is, by computer, for the surfaces that show the
@@ -136,7 +137,7 @@ export async function deleteCloudLaneWithCheck(input: CloudLaneDeleteOptions & {
     if (input.askFirst) {
       const confirmed = await confirmDialog({
         title: `Delete ${laneName}?`,
-        message: "ADE deletes the lane, its computer and its chats. If any of its work isn't on GitHub, ADE asks again first.",
+        message: `${BRAND.NAME} deletes the lane, its computer and its chats. If any of its work isn't on GitHub, ${BRAND.NAME} asks again first.`,
         icon: <CloudMark size={16} brand />,
         confirmLabel: "Delete lane",
         destructive: true,
@@ -153,7 +154,7 @@ export async function deleteCloudLaneWithCheck(input: CloudLaneDeleteOptions & {
       dismissToast(toastId);
       let pushFirst = false;
       const confirmed = await confirmDialog({
-        title: work.unpushed ? `${laneName} has work that isn't on GitHub` : `ADE couldn't check ${laneName} for unpushed work`,
+        title: work.unpushed ? `${laneName} has work that isn't on GitHub` : `${BRAND.NAME} couldn't check ${laneName} for unpushed work`,
         message: work.unpushed
           ? "Deleting the lane deletes its computer, and this work goes with it. Push it first, or delete anyway."
           : `${work.message ? `${work.message} ` : ""}Deleting the lane deletes its computer. Work that isn't pushed goes with it.`,
@@ -179,7 +180,7 @@ export async function deleteCloudLaneWithCheck(input: CloudLaneDeleteOptions & {
               <CloudArrowUp size={13} />
               Push all work to GitHub
             </button>
-            <p className="adecl-delete-note">ADE pushes every lane&apos;s work on this computer, then deletes the lane.</p>
+            <p className="adecl-delete-note">{BRAND.NAME} pushes every lane&apos;s work on this computer, then deletes the lane.</p>
           </div>
         ),
       });
@@ -195,7 +196,7 @@ export async function deleteCloudLaneWithCheck(input: CloudLaneDeleteOptions & {
           id: toastId,
           tone: "error",
           title: `Kept ${laneName}`,
-          message: `${ipcErrorMessage(error) || "ADE couldn't push the work."} The lane and its computer stay.`,
+          message: `${ipcErrorMessage(error) || `${BRAND.NAME} couldn't push the work.`} The lane and its computer stay.`,
           durationMs: READABLE_TOAST_DURATION_MS,
           replayMask: { title: true },
         });
@@ -219,9 +220,9 @@ export async function deleteCloudLaneWithCheck(input: CloudLaneDeleteOptions & {
       message: keepChats
         ? "The lane and its computer are gone. Its chats stay in Work to read."
         : chatsKept
-          ? "The lane and its computer are gone. ADE couldn't delete all its chats; remove the rest in Work."
+          ? `The lane and its computer are gone. ${BRAND.NAME} couldn't delete all its chats; remove the rest in Work.`
         : input.onlyChats
-          ? "Its computer is gone. The chats that moved are off ADE Cloud; any others stay in Work to read."
+          ? `Its computer is gone. The chats that moved are off ${BRAND.CLOUD_NAME}; any others stay in Work to read.`
           : "The lane, its computer and its chats are gone.",
       durationMs: chatsKept && !keepChats ? READABLE_TOAST_DURATION_MS : undefined,
       replayMask: { title: true },
@@ -250,7 +251,7 @@ export async function freeCloudLaneWithConfirm(input: { instanceId: string; lane
   const { instanceId, laneName } = input;
   const ok = input.confirmed === true || await confirmDialog({
     title: `Free the computer of ${laneName}?`,
-    message: "ADE pushes its work to GitHub, then removes the computer. The lane and its chats stay. Your next message makes a new computer.",
+    message: `${BRAND.NAME} pushes its work to GitHub, then removes the computer. The lane and its chats stay. Your next message makes a new computer.`,
     icon: <CloudMark size={16} brand />,
     confirmLabel: "Free the computer",
     cancelLabel: "Cancel",
@@ -263,7 +264,7 @@ export async function freeCloudLaneWithConfirm(input: { instanceId: string; lane
     tone: "info",
     busy: true,
     title: `Freeing ${laneName}'s computer`,
-    message: "ADE pushes its work to GitHub, then removes the computer. This can take a few minutes.",
+    message: `${BRAND.NAME} pushes its work to GitHub, then removes the computer. This can take a few minutes.`,
     durationMs: 0,
     dismissible: false,
     replayMask: { title: true },
@@ -365,6 +366,6 @@ function unpushedText(lane: CloudLaneWorkLane): string {
   if (lane.dirty) parts.push("changes not committed");
   if (lane.ahead > 0) parts.push(`${lane.ahead} commit${lane.ahead === 1 ? "" : "s"} not pushed`);
   // `failed` with nothing counted is a lane push-work couldn't read (or fetch for), not a push.
-  if (lane.state === "failed") parts.push(lane.dirty || lane.ahead > 0 ? "the last push failed" : "ADE couldn't read this lane's work");
+  if (lane.state === "failed") parts.push(lane.dirty || lane.ahead > 0 ? "the last push failed" : `${BRAND.NAME} couldn't read this lane's work`);
   return parts.length ? parts.join(", ") : "work not pushed";
 }

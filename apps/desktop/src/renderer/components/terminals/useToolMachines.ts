@@ -11,6 +11,7 @@ import { useAppStore } from "../../state/appStore";
 import { isAdeCloudComputer, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import { ADE_CLOUD_NAME } from "../../../shared/adeCloudMachine";
 import { isCloudPhoneMissingAnswer } from "../../../shared/types/deviceSources";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * One machine on the person's ADE account, as the tools pane's "runs on" rails
@@ -36,7 +37,7 @@ export type ToolMachine = {
 /** The ADE Cloud iPhone as a chip in the iPhone's "runs on" row. Only the iPhone has it. */
 export const ADE_CLOUD_TOOL_MACHINE: ToolMachine = {
   key: "ade-cloud",
-  name: "ADE Cloud",
+  name: BRAND.CLOUD_NAME,
   platform: "darwin",
   online: true,
   isChat: false,

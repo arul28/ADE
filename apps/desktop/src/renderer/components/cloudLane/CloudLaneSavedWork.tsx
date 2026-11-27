@@ -11,6 +11,7 @@ import { MachineActionsMenu } from "../remoteTargets/MachineActionsMenu";
 import { cn } from "../ui/cn";
 import { confirmDialog } from "../ui/dialog";
 import "./cloudLane.css";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * "Get this lane's work": the lane's work that wasn't on GitHub when its
@@ -150,7 +151,7 @@ function useSavedWorkActions(backup: CloudLaneBackup, name: string) {
     if (!cloud?.forgetLaneBackup) return;
     const ok = await confirmDialog({
       title: `Delete ${name}'s saved work?`,
-      message: "ADE Cloud deletes its only copy of this lane's work that isn't on GitHub. Download the patch first if you might need it.",
+      message: `${BRAND.CLOUD_NAME} deletes its only copy of this lane's work that isn't on GitHub. Download the patch first if you might need it.`,
       confirmLabel: "Delete saved work",
       destructive: true,
     });
@@ -204,7 +205,7 @@ function LaneSavedWorkLine({ backup, name, className }: { backup: CloudLaneBacku
   const actions = useSavedWorkActions(backup, name);
   return (
     <div className={cn("adecl-saved-work", className)} data-cloud-lane-saved-work={backup.laneId}>
-      <span className="adecl-muted">ADE Cloud saved this lane's work that isn't on GitHub ({savedWorkSentence(backup)}) on {savedWhen(backup)}.</span>
+      <span className="adecl-muted">{BRAND.CLOUD_NAME} saved this lane's work that isn't on GitHub ({savedWorkSentence(backup)}) on {savedWhen(backup)}.</span>
       <div className="adecl-nocomp-actions">
         <SavedWorkButtons actions={actions} />
       </div>
@@ -236,7 +237,7 @@ export function CloudSavedLaneWorkCard({ shownLaneIds }: { shownLaneIds: Readonl
         <ClockCounterClockwise size={14} />
         Saved lane work
         <span className="kit-card-head-count">{rows.length}</span>
-        <span className="adecd-head-note">Work that wasn't on GitHub when ADE deleted its computer</span>
+        <span className="adecd-head-note">Work that wasn't on GitHub when {BRAND.NAME} deleted its computer</span>
       </header>
       <div className="kit-card-body" data-flush="true">
         {rows.map((backup) => (

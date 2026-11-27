@@ -70,6 +70,7 @@ import {
   writeCliInputDraft,
   type CliInputQueueItem,
 } from "./cliInputBoxState";
+import { BRAND } from "../../../shared/brand";
 
 type CommandMenuAnchor = { top: number; left: number; bottom: number };
 
@@ -121,7 +122,7 @@ export const CliInputModeToggle = memo(function CliInputModeToggle({ sessionId }
   const boxOn = mode === "box";
   const label = boxOn ? "Type in the terminal" : "Use the input box";
   return (
-    <SmartTooltip content={{ label, description: boxOn ? "Hide the input box and type straight into the CLI." : "Write in an ADE box with history, @ mentions (files, models, chats, PRs) and a queue; the terminal stays usable." }}>
+    <SmartTooltip content={{ label, description: boxOn ? "Hide the input box and type straight into the CLI." : `Write in a ${BRAND.NAME} box with history, @ mentions (files, models, chats, PRs) and a queue; the terminal stays usable.` }}>
       <button
         type="button"
         aria-label={label}
@@ -488,7 +489,7 @@ export const WorkCliInputBox = memo(function WorkCliInputBox({
     if (!enqueueCliInput(sessionId, text)) {
       showToast({
         title: "This message isn't saved yet",
-        message: "ADE couldn't save it (storage is full). It still sends from this window, but reloading ADE before then loses it.",
+        message: `${BRAND.NAME} couldn't save it (storage is full). It still sends from this window, but reloading ${BRAND.NAME} before then loses it.`,
         tone: "warning",
       });
     }
@@ -556,7 +557,7 @@ export const WorkCliInputBox = memo(function WorkCliInputBox({
   let placeholder = `Message ${providerLabel}…`;
   if (offline) placeholder = `${machineName ?? "This computer"} is offline. What you send goes out when it reconnects.`;
   else if (busy) placeholder = `${providerLabel} is working. What you send waits for its turn to end.`;
-  else if (!readsFreePrompt) placeholder = `Message ${providerLabel}… ADE can't tell when it is free, so Enter types it at once.`;
+  else if (!readsFreePrompt) placeholder = `Message ${providerLabel}… ${BRAND.NAME} can't tell when it is free, so Enter types it at once.`;
 
   return (
     <div className="shrink-0 bg-[color:var(--chat-canvas-bg)] px-3 pb-3 pt-2" data-testid="work-cli-input-box">

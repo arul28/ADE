@@ -7,6 +7,7 @@ import { isAdeAvailable } from "../../lib/adeAvailability";
 import { ipcErrorMessage } from "../../lib/format";
 import { isAdeCloudComputer, machineLabelForBinding } from "../../state/adeCloudLaneIndex";
 import { showToast } from "../app/toast/toastStore";
+import { BRAND } from "../../../shared/brand";
 
 /*
  * A chat's device choice per kind, as the Work tools pane and its panels see
@@ -64,7 +65,7 @@ function isUnsupportedAnswer(text: string): boolean {
 
 /** A failed switch in words a person can act on. */
 function setFailureText(reason: string, pin: OpenProjectBinding | null): string {
-  if (isUnsupportedAnswer(reason)) return "The ADE on this chat's machine can't keep a device choice. Update ADE there.";
+  if (isUnsupportedAnswer(reason)) return `The ${BRAND.NAME} on this chat's machine can't keep a device choice. Update ${BRAND.NAME} there.`;
   if (isRemoteMachineAwayError(reason)) {
     const label = machineLabelForBinding(pin);
     // An ADE Cloud computer drops its link while it restarts (a disk grow, a wake).

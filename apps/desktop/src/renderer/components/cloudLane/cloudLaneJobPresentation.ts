@@ -12,6 +12,7 @@ import {
 import { cloudCatalogOf, type CloudAccountState } from "../../../shared/adeCloud";
 import { cloudTier } from "../../../shared/cloudTiers";
 import type { NoticeTone } from "../ui/notice/noticeTones";
+import { BRAND } from "../../../shared/brand";
 
 /** "a Large", "an X-Large": the article a size's name reads with. */
 function withArticle(label: string): string {
@@ -50,11 +51,11 @@ export function cloudLaneJobPresentation(job: CloudLaneJobSnapshot, account: Clo
     const disk = `${job.laneName}'s disk`;
     switch (job.phase) {
       case "waiting":
-        return { title: `${disk} grows to ${job.diskGb} GB when the agent is idle`, stepLine: liveStepLine(job), tone: "accent", note: "ADE waits for the agent to finish its turn. Your files and chats stay.", row: { state: "starting", label: "Grows when idle" } };
+        return { title: `${disk} grows to ${job.diskGb} GB when the agent is idle`, stepLine: liveStepLine(job), tone: "accent", note: `${BRAND.NAME} waits for the agent to finish its turn. Your files and chats stay.`, row: { state: "starting", label: "Grows when idle" } };
       case "running":
         return { title: `Growing ${disk} to ${job.diskGb} GB`, stepLine: liveStepLine(job), tone: "accent", note: "The computer restarts for a moment. Your files and chats stay. You can close this window.", row: { state: "starting", label: "Growing disk" } };
       case "online":
-        return { title: `${disk} grew to ${job.diskGb} GB`, stepLine: null, tone: "success", note: "ADE connected to the computer again.", row: { state: "awake", label: "Disk grown" } };
+        return { title: `${disk} grew to ${job.diskGb} GB`, stepLine: null, tone: "success", note: `${BRAND.NAME} connected to the computer again.`, row: { state: "awake", label: "Disk grown" } };
       case "failed":
         return { title: "The disk grow stopped", stepLine: job.error ?? job.stages.find((stage) => stage.status === "failed")?.error ?? null, tone: "error", note: null, row: { state: "failed", label: "Disk grow stopped" } };
       case "cancelled":
@@ -67,7 +68,7 @@ export function cloudLaneJobPresentation(job: CloudLaneJobSnapshot, account: Clo
         title: `${job.laneName} changes to ${to} when the agent is idle`,
         stepLine: liveStepLine(job),
         tone: "accent",
-        note: "ADE waits for the agent to finish its turn. Your files and chats stay.",
+        note: `${BRAND.NAME} waits for the agent to finish its turn. Your files and chats stay.`,
         row: { state: "starting", label: "Changes when idle" },
       };
     case "running":
@@ -77,7 +78,7 @@ export function cloudLaneJobPresentation(job: CloudLaneJobSnapshot, account: Clo
         tone: "accent",
         // A message sent meanwhile waits on ADE Cloud until the change is done (`AgentChatPane` submit).
         note: move
-          ? "Your files and chats stay. A message you send now waits on ADE Cloud, and the agent gets it on the new computer. You can close this window."
+          ? `Your files and chats stay. A message you send now waits on ${BRAND.CLOUD_NAME}, and the agent gets it on the new computer. You can close this window.`
           : "Your files and chats stay. A message you send waits until the computer is back. You can close this window.",
         row: { state: "starting", label: move ? "Moving" : "Changing size" },
       };
@@ -87,8 +88,8 @@ export function cloudLaneJobPresentation(job: CloudLaneJobSnapshot, account: Clo
         stepLine: move ? `${job.laneName} is online. The old computer is gone.` : null,
         tone: "success",
         note: move
-          ? "Same lane, same chats, on the new computer. ADE points this chat, its tools and Android there."
-          : "ADE connected to the computer again.",
+          ? `Same lane, same chats, on the new computer. ${BRAND.NAME} points this chat, its tools and Android there.`
+          : `${BRAND.NAME} connected to the computer again.`,
         row: { state: "awake", label: move ? "Moved" : "Resized" },
       };
     case "failed":

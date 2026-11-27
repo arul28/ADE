@@ -14,6 +14,7 @@ import { cloudBoxContext, useCloudBoxActions, type CloudBoxContext } from "./use
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import { useCloudMachines } from "./useCloudMachines";
+import { BRAND } from "../../../shared/brand";
 
 /** While a box's row lags, how often the account list is read again. */
 const CLOUD_ROW_CATCH_UP_REFRESH_MS = 15_000;
@@ -186,8 +187,8 @@ export function useCloudMachineGroup(args: {
     return {
       extraActions: [{
         key: "remove-ade",
-        label: "Remove from ADE",
-        ariaLabel: `Remove ${name} from ADE`,
+        label: `Remove from ${BRAND.NAME}`,
+        ariaLabel: `Remove ${name} from ${BRAND.NAME}`,
         icon: <UserMinus size={14} />,
         danger: true,
         onSelect: removeFromAde,
