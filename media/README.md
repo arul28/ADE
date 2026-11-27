@@ -1,4 +1,4 @@
-# ADE media library
+# Daex media library
 
 Images and video used by the public Mintlify docs, the GitHub README, and the
 marketing site's stills. Keep it small: a file lives here only while a page

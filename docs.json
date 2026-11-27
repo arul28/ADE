@@ -1,7 +1,7 @@
 {
   "$schema": "https://mintlify.com/docs.json",
   "theme": "maple",
-  "name": "ADE",
+  "name": "Daex",
   "colors": {
     "primary": "#7C3AED",
     "light": "#A78BFA",
@@ -22,7 +22,7 @@
     }
   },
   "search": {
-    "prompt": "Search ADE docs..."
+    "prompt": "Search Daex docs..."
   },
   "navigation": {
     "tabs": [
@@ -42,7 +42,7 @@
             ]
           },
           {
-            "group": "Set up ADE",
+            "group": "Set up Daex",
             "icon": "flag-checkered",
             "pages": [
               "getting-started/install",
@@ -305,7 +305,7 @@
             "href": "/key-concepts"
           },
           {
-            "label": "Embed ADE chat",
+            "label": "Embed Daex chat",
             "href": "/sdk/overview"
           }
         ]

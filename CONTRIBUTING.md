@@ -1,4 +1,4 @@
-# Contributing to ADE
+# Contributing to Daex
 
 Contributions are wanted and encouraged. If a pull request is high quality and
 useful, it gets merged. Only the maintainer (Arul) can merge or close PRs.
@@ -24,7 +24,7 @@ Run the smallest checks that cover what you changed:
 
 - Desktop: `npm --prefix apps/desktop run typecheck`, the relevant Vitest files,
   and `npm --prefix apps/desktop run lint` for renderer or main process code
-- ADE CLI: `npm --prefix apps/ade-cli run typecheck` and
+- Daex CLI: `npm --prefix apps/ade-cli run typecheck` and
   `npm --prefix apps/ade-cli run test`
 - Docs: `node scripts/validate-docs.mjs`
 

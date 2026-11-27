@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://ade-app.dev">
-    <img src="assets/logo.png" alt="ADE" width="200" />
+    <img src="assets/logo.png" alt="Daex" width="200" />
   </a>
 </p>
 
@@ -13,7 +13,7 @@
   <a href="https://ade-app.dev/download/windows">Windows</a> ·
   <a href="https://ade-app.dev/docs/getting-started/linux">Linux</a> ·
   <a href="https://testflight.apple.com/join/ZSdJGKPy">iOS</a> ·
-  <a href="#ade-beta">Beta</a> ·
+  <a href="#daex-beta">Beta</a> ·
   <a href="https://app.ade-app.dev">Web</a> ·
   <a href="https://ade-app.dev/docs">Docs</a> ·
   <a href="https://ade-app.dev/docs/changelog">Changelog</a>
@@ -27,14 +27,14 @@
 </p>
 
 <p align="center">
-  <img src="assets/readme/hero.png" alt="ADE on a Mac, a server, and a phone" width="900" />
+  <img src="assets/readme/hero.png" alt="Daex on a Mac, a server, and a phone" width="900" />
 </p>
 
-ADE puts Claude Code, Codex, Cursor, Factory Droid, and OpenCode in one app. You use the plans you already pay for.
+Daex (formerly ADE) puts Claude Code, Codex, Cursor, Factory Droid, and OpenCode in one app. You use the plans you already pay for.
 
-You don't need a computer of your own. Every ADE account has **ADE Cloud**, a machine that is always there, in every "Run on" menu on the web, the iPhone and the desktop. Sign in at [app.ade-app.dev](https://app.ade-app.dev) or on your phone, connect GitHub, pick a repo, and work. Each cloud lane gets its own computer that sleeps when idle and wakes when you send it work.
+You don't need a computer of your own. Every Daex account has **Daex Cloud**, a machine that is always there, in every "Run on" menu on the web, the iPhone and the desktop. Sign in at [app.ade-app.dev](https://app.ade-app.dev) or on your phone, connect GitHub, pick a repo, and work. Each cloud lane gets its own computer that sleeps when idle and wakes when you send it work.
 
-Your own machines sit next to ADE Cloud. Sign in on each one, and you can reach all of them from the desktop app, the terminal, the web, or your phone. Every chat and terminal session stays in sync. I start a task on my desktop at home, check on it from my phone at the gym, and finish it in a browser on a friend's laptop.
+Your own machines sit next to Daex Cloud. Sign in on each one, and you can reach all of them from the desktop app, the terminal, the web, or your phone. Every chat and terminal session stays in sync. I start a task on my desktop at home, check on it from my phone at the gym, and finish it in a browser on a friend's laptop.
 
 It's also a full dev environment: git worktrees, a code editor, pull requests, and history. And it's free.
 
@@ -42,11 +42,11 @@ It's also a full dev environment: git worktrees, a code editor, pull requests, a
 
 **Pick any agent and any model.**
 
-<img src="assets/readme/start.gif" alt="Choosing a model in ADE" width="100%" />
+<img src="assets/readme/start.gif" alt="Choosing a model in Daex" width="100%" />
 
 **Run agents together.** Here Claude hands three jobs to GPT, Claude Haiku, and DeepSeek, and they report back.
 
-<img src="assets/readme/compose.gif" alt="Claude starting three subagents in ADE" width="100%" />
+<img src="assets/readme/compose.gif" alt="Claude starting three subagents in Daex" width="100%" />
 
 **Use every machine you own.** One chat checks the same branch on a Mac Studio and a Windows PC.
 
@@ -56,16 +56,16 @@ It's also a full dev environment: git worktrees, a code editor, pull requests, a
 
 <table>
 <tr>
-<td width="88%"><img src="assets/readme/desktop.webp" alt="ADE desktop app" width="100%" /></td>
-<td width="12%"><img src="assets/readme/phone.webp" alt="ADE on iPhone" width="100%" /></td>
+<td width="88%"><img src="assets/readme/desktop.webp" alt="Daex desktop app" width="100%" /></td>
+<td width="12%"><img src="assets/readme/phone.webp" alt="Daex on iPhone" width="100%" /></td>
 </tr>
 </table>
 
 ## Get started
 
-**No computer?** Go to [app.ade-app.dev](https://app.ade-app.dev) or get the [iOS app](https://testflight.apple.com/join/ZSdJGKPy), sign in, and pick **ADE Cloud** under **Run on**. You can skip the rest of this section.
+**No computer?** Go to [app.ade-app.dev](https://app.ade-app.dev) or get the [iOS app](https://testflight.apple.com/join/ZSdJGKPy), sign in, and pick **Daex Cloud** under **Run on**. You can skip the rest of this section.
 
-**1. Install it.** This installs ADE's background service (the "Brain") and the `ade` command. It also asks whether you want the desktop app.
+**1. Install it.** This installs Daex's background service (the "Brain") and the `daex` command. It also asks whether you want the desktop app.
 
 ```bash
 # macOS and Linux
@@ -82,14 +82,14 @@ Or download the desktop app for [Apple Silicon](https://ade-app.dev/download/mac
 **2. Sign in.** The installer asks you to. If you skipped it, run:
 
 ```bash
-ade connect
+daex connect
 ```
 
-Your account is what links your machines. Run `ade connect` on each one you want to reach: your laptop, a desktop at home, a Linux server. A machine with no browser shows a QR code; scan it with your phone and sign in there.
+Your account is what links your machines. Run `daex connect` on each one you want to reach: your laptop, a desktop at home, a Linux server. A machine with no browser shows a QR code; scan it with your phone and sign in there.
 
-You can skip the account. ADE still works on that one machine, but you can't reach it from anywhere else.
+You can skip the account. Daex still works on that one machine, but you can't reach it from anywhere else.
 
-**3. Open a client.** Open the desktop app, go to [app.ade-app.dev](https://app.ade-app.dev), or get the [iOS app](https://testflight.apple.com/join/ZSdJGKPy). Your machines and ADE Cloud are already there.
+**3. Open a client.** Open the desktop app, go to [app.ade-app.dev](https://app.ade-app.dev), or get the [iOS app](https://testflight.apple.com/join/ZSdJGKPy). Your machines and Daex Cloud are already there.
 
 **4. Open a repo and go.** Open a git repository, make a lane (a git worktree for one task), and ask for a small change. The [quickstart](https://ade-app.dev/docs/quickstart) walks through it.
 
@@ -97,12 +97,12 @@ You can skip the account. ADE still works on that one machine, but you can't rea
 
 Go to **Settings → AI Providers**.
 
-- **Use a subscription you already have.** Sign in to Claude, ChatGPT, Cursor, or Factory. If you're already signed in to that tool's own CLI, ADE uses it.
+- **Use a subscription you already have.** Sign in to Claude, ChatGPT, Cursor, or Factory. If you're already signed in to that tool's own CLI, Daex uses it.
 - **Or paste an API key.** Anthropic, OpenAI, Google, DeepSeek, xAI, Mistral, Groq, OpenRouter, and others. OpenCode reaches 160+ more.
 - **Click Verify, then pick a default model.** You can switch models in any chat.
 - **Mix them.** Under **Advanced**, add any OpenAI- or Anthropic-compatible provider, so you can run, say, DeepSeek inside Claude Code.
 
-You don't need to install the agents. ADE downloads them the first time a machine needs one. Model calls go straight from the machine that runs the agent to the provider, not through ADE. Your keys, sign-ins and Passwords follow your account to every machine, ADE Cloud too.
+You don't need to install the agents. Daex downloads them the first time a machine needs one. Model calls go straight from the machine that runs the agent to the provider, not through Daex. Your keys, sign-ins and Passwords follow your account to every machine, Daex Cloud too.
 
 More: [AI providers](https://ade-app.dev/docs/configuration/ai-providers).
 
@@ -111,48 +111,48 @@ More: [AI providers](https://ade-app.dev/docs/configuration/ai-providers).
 | | |
 | --- | --- |
 | Desktop app | macOS 13+, Windows 10/11 x64, Linux x64 and arm64 (AppImage or `.deb`) |
-| `ade` CLI | macOS, Linux, Windows |
+| `daex` CLI | macOS, Linux, Windows |
 | Web | Any browser, at [app.ade-app.dev](https://app.ade-app.dev) |
 | Phone | iOS on [TestFlight](https://testflight.apple.com/join/ZSdJGKPy). App Store and Android coming soon. |
 | Brain only | Linux (x64, arm64), plus everything above |
-| ADE Cloud | Every account. One Linux computer per cloud lane, run by ADE |
+| Daex Cloud | Every account. One Linux computer per cloud lane, run by Daex |
 
 A Linux server can run just the Brain, and you can use it from any client. A few Mac features aren't on [Windows](https://ade-app.dev/docs/getting-started/windows) or [Linux](https://ade-app.dev/docs/getting-started/linux) yet.
 
-## ADE Beta
+## Daex Beta
 
-Want the newest work first? ADE Beta is built automatically from `main`, so fixes and features reach you hours after they merge. Every stable release is a beta that already ran on real machines without new errors. Beta builds are less tested, so expect the odd rough edge.
+Want the newest work first? Daex Beta is built automatically from `main`, so fixes and features reach you hours after they merge. Every stable release is a beta that already ran on real machines without new errors. Beta builds are less tested, so expect the odd rough edge.
 
 | | |
 | --- | --- |
 | Desktop | **Settings › General › Update track › Beta**. Same install and data, orange icon. Switch back to Stable any time. |
-| iPhone | Join [ADE Beta on TestFlight](https://testflight.apple.com/join/SsxDjqbF). A separate app with an orange icon, installed beside the normal one. |
+| iPhone | Join [Daex Beta on TestFlight](https://testflight.apple.com/join/SsxDjqbF). A separate app with an orange icon, installed beside the normal one. |
 | Web | No separate beta: [app.ade-app.dev](https://app.ade-app.dev) updates minutes after a change merges. |
 
-More: [ADE Beta docs](https://ade-app.dev/docs/getting-started/ade-beta).
+More: [Daex Beta docs](https://ade-app.dev/docs/getting-started/ade-beta).
 
 ## Handy commands
 
 ```bash
-ade connect --status --text   # check this machine's connection
-ade machines list --text      # list the machines on your account
-ade doctor                    # find a problem
-ade help <command>            # help for any command
+daex connect --status --text   # check this machine's connection
+daex machines list --text      # list the machines on your account
+daex doctor                    # find a problem
+daex help <command>            # help for any command
 ```
 
 Everything else: [CLI reference](apps/ade-cli/README.md) · [install options](https://ade-app.dev/docs/getting-started/install) · [connecting machines](https://ade-app.dev/docs/getting-started/connect-machine).
 
-## Work on ADE
+## Work on Daex
 
 ```bash
 npm run setup   # first time
 npm run dev     # build the CLI and open a dev copy of the desktop app
 ```
 
-The dev copy uses its own profile and its own Brain, so it won't touch the ADE you have installed.
+The dev copy uses its own profile and its own Brain, so it won't touch the Daex you have installed.
 
 ```text
-apps/ade-cli   the Brain and the ade command
+apps/ade-cli   the Brain and the daex command
 apps/desktop   the desktop app (Electron)
 apps/ios       the iPhone app (SwiftUI)
 apps/web       ade-app.dev
@@ -167,4 +167,4 @@ More: [local development](docs/development/local-development.md) · [architectur
 
 [AGPL-3.0](LICENSE). © 2025 Arul Sharma. Free forever.
 
-`@ade-dev/sdk` and `@ade-dev/chat-ui` on npm are MIT. Shipping an unmodified ADE runtime inside a larger work is covered by the [runtime embedding exception](RUNTIME-EMBEDDING-EXCEPTION.md).
+`@ade-dev/sdk` and `@ade-dev/chat-ui` on npm are MIT. Shipping an unmodified Daex runtime inside a larger work is covered by the [runtime embedding exception](RUNTIME-EMBEDDING-EXCEPTION.md).
