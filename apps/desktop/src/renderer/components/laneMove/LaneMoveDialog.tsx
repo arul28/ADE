@@ -349,7 +349,7 @@ export function LaneMoveDialog({
               />
             ) : asleepInstanceId ? (
               <Fact icon={<Trash size={15} className="text-muted-fg/70" />}>
-                The {ADE_CLOUD_NAME} computer stays asleep. It saved all of this lane's work when it went to sleep, so {BRAND.NAME}
+                The {ADE_CLOUD_NAME} computer stays asleep. It saved all of this lane's work when it went to sleep, so {BRAND.NAME}{" "}
                 deletes it first and brings the lane back from that saved copy. If anything fails after that, the lane
                 stays in your account and you can move it again.
               </Fact>
