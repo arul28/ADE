@@ -397,7 +397,7 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
     // "BUILD FAILED" tail, so read big pages and walk back to the start.
     const lines: string[] = [];
     let cursor: string | null = null;
-    let lastFirst: unknown;
+    let lastPage = "";
     for (let page = 0; page < BUILD_LOG_PAGES; page += 1) {
       const query: Record<string, string> = { limit: String(BUILD_LOG_PAGE) };
       if (cursor) query.cursor = cursor;
@@ -406,10 +406,12 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
         return null;
       });
       const events = Array.isArray(logs?.events) ? (logs.events as Array<Record<string, unknown>>) : [];
-      // A cursor Revyl didn't take answers the same page again: stop rather than repeat it.
-      if (!events.length || (page > 0 && events[0]?.message === lastFirst)) break;
-      lastFirst = events[0]?.message;
-      lines.unshift(...events.map((event) => (typeof event.message === "string" ? event.message : "")).filter(Boolean));
+      const messages = events.map((event) => (typeof event.message === "string" ? event.message : "")).filter(Boolean);
+      // A cursor Revyl didn't take answers the very same page again: stop rather than repeat it.
+      const signature = messages.join("\n");
+      if (!events.length || (page > 0 && signature === lastPage)) break;
+      lastPage = signature;
+      lines.unshift(...messages);
       const previous: string | null = logs?.has_more_before === true && typeof logs.previous_cursor === "string" ? logs.previous_cursor : null;
       if (!previous) break;
       cursor = previous;
@@ -417,7 +419,9 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
     const compiler = [...new Set(lines.filter((line) => /:\d+(:\d+)?: (fatal )?error:/.test(line)))];
     // The first compiler errors are the cause; without any, the tail says what stopped the build.
     const errors = lines.filter((line) => /error:|\berror\b|failed|No (Xcode|scheme)/i.test(line) && !/^\s*builtin-/.test(line));
-    const shown = compiler.length ? compiler.slice(0, 40) : (errors.length ? errors : lines).slice(-40);
+    // The runner's own toolchain line rides along: the brain moves a Metal build on it (`missedMetal`).
+    const metal = compiler.length ? lines.filter((line) => /missing Metal Toolchain/i.test(line)).slice(-1) : [];
+    const shown = compiler.length ? [...compiler.slice(0, 40), ...metal] : (errors.length ? errors : lines).slice(-40);
     const why = [status.error, status.suggested_fix].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
     return ["The build failed.", ...why, ...(shown.length ? ["", ...shown] : [])].join("\n");
   }
