@@ -932,6 +932,13 @@ final class ProductAnalytics {
        nsError.code == ASAuthorizationError.canceled.rawValue {
       return (provider, .cancelled, "authorization_canceled")
     }
+    // Apple's 1000 ("unknown") is what iOS returns when no Apple Account is
+    // signed in on the phone (Apple's review devices among them). The phone
+    // can't do Sign in with Apple; the provider is not broken.
+    if nsError.domain == ASAuthorizationError.errorDomain,
+       nsError.code == ASAuthorizationError.unknown.rawValue {
+      return (provider, .unavailable, code)
+    }
     let reason: ADEAnalyticsSignInFailureReason
     switch code {
     case "form_code_incorrect":
