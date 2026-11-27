@@ -57,13 +57,13 @@ extension LiveInspectMarkupModel {
       return [
         surface.packetName,
         "Each packet came from the user clicking a UI element on the lane's real Android emulator. Frames are the emulator's screen pixels, the same space as the attached picture.",
-        "The element's identifier is its resource id; ref is the id `ade android tap-element --ref` takes. Android views carry no source file: search the app's layouts and Compose code for the resource id or the text.",
+        "The element's identifier is its resource id; ref is the id `\(Brand.cliName) android tap-element --ref` takes. Android views carry no source file: search the app's layouts and Compose code for the resource id or the text.",
         "The attached picture is the frozen screen; any marks drawn on it are the user's markup.",
       ].joined(separator: "\n")
     case .appControl:
       return [
         surface.packetName,
-        "Each packet came from a developer-owned app session, usually Electron launched or connected through ADE CLI with a local CDP port. Image attachments are visual evidence for the same packet and use the frozen frame's pixel space.",
+        "Each packet came from a developer-owned app session, usually Electron launched or connected through the \(Brand.name) CLI with a local CDP port. Image attachments are visual evidence for the same packet and use the frozen frame's pixel space.",
         "Use exactSource when sourceConfidence is exact. Treat sourceCandidates as ranked guesses from DOM text/test ids/selectors and source search, not proof. Prefer the screenshot, DOM selector, and exact source when available.",
         "The attached picture is the frozen frame; any marks drawn on it are the user's markup.",
       ].joined(separator: "\n")

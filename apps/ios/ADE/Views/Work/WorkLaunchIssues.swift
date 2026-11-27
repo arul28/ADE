@@ -126,7 +126,7 @@ func workLaunchIssuePromptBlock(_ issues: [WorkLaunchIssue]) -> String {
     }
     sections.append(([
       "Attached issue context:",
-      "ADE already stores any local Linear credentials; do not ask the user for a Linear API key. Use the identifiers below.",
+      "\(Brand.name) already stores any local Linear credentials; do not ask the user for a Linear API key. Use the identifiers below.",
     ] + entries).joined(separator: "\n\n"))
   }
 
@@ -148,7 +148,7 @@ func workLaunchIssuePromptBlock(_ issues: [WorkLaunchIssue]) -> String {
     }
     sections.append(([
       "Attached GitHub issue context:",
-      "ADE already stores any local GitHub credentials; do not ask the user for a GitHub token. Use the identifiers below.",
+      "\(Brand.name) already stores any local GitHub credentials; do not ask the user for a GitHub token. Use the identifiers below.",
     ] + entries).joined(separator: "\n\n"))
   }
 
