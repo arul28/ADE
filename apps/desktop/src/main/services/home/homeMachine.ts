@@ -15,6 +15,7 @@ import type {
 } from "../../../shared/types/homeWidgets";
 import { execFileOffThread, offThreadSpawnEnabled } from "../shared/offThreadSpawn";
 import { BRAND } from "../../../shared/brand";
+import { ADE_CLI_NAME_SOURCE } from "../../../shared/cliCommandNames";
 
 /**
  * Machine health and listening ports for the home page's Machine widget.
@@ -45,8 +46,8 @@ const DEV_PROCESS_NAMES = new Set([
   "wrangler", "workerd", "air", "uv", "ngrok", "cloudflared", "jekyll", "flask", "rustc",
 ]);
 
-/** ADE's own executables, any channel: "ADE", "ADE Beta", "ADE Helper (GPU)", "ade-music-host", "ade-now-playing". */
-const ADE_PROCESS_NAME = /^ade(?:\s|-|$)/i;
+/** ADE's own executables, any channel: "ADE", "ADE Beta", "ADE Helper (GPU)", "ade-music-host", "ade-now-playing", the `daex` CLI. */
+const ADE_PROCESS_NAME = new RegExp(String.raw`^${ADE_CLI_NAME_SOURCE}(?:\s|-|$)`, "i");
 
 function processBaseName(name: string | null): string {
   return (name ?? "").toLowerCase().replace(/\.exe$/, "");

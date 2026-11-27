@@ -2,6 +2,7 @@ import path from "node:path";
 import { realMemoryFor, runHostTool, type HostMemoryReadDeps } from "./hostMemorySignals";
 import { windowsPowerShellCommand } from "../shared/processExecution";
 import { isAndroidEmulatorImage, isAndroidQemuImage } from "../android/androidEmulatorImage";
+import { ADE_CLI_NAME_SOURCE } from "../../../shared/cliCommandNames";
 
 /*
  * What is using this machine, in the few groups a triage needs: ADE's own
@@ -64,6 +65,8 @@ const SOURCE_CHECKOUT_CLI = /(?:^|[/\\])apps[/\\]ade-cli[/\\](?:src|dist)[/\\]/i
 const SOURCE_CHECKOUT_DESKTOP = /(?:^|[/\\])apps[/\\]desktop[/\\]/i;
 /** The packaged brain: the app's bundled `ade-cli/cli.cjs`, or the standalone runtime serving. */
 const PACKAGED_CLI = /[/\\]ade-cli[/\\]cli\.cjs\b/i;
+/** The standalone runtime's executable by either name (`daex`, alias `ade`), stable or Alpha. */
+const STANDALONE_CLI = new RegExp(`^${ADE_CLI_NAME_SOURCE}(?:-alpha)?$`);
 const DESKTOP_APP = /[/\\]ADE(?: Alpha)?\.app[/\\]|[/\\]ADE(?: Alpha)?\.exe\b|[/\\](?:opt|usr[/\\]lib)[/\\]ade(?:-alpha)?[/\\]|\.AppImage\b/i;
 
 /**
@@ -88,7 +91,7 @@ export function classifyProcessCommand(command: string, exe = executableName(com
   // A brain from a source checkout; its other commands (a test run, a one-off
   // `ade`) are not a second brain and stay in `other`.
   if (SOURCE_CHECKOUT_CLI.test(command) && serving) return "dev_brain";
-  if (PACKAGED_CLI.test(command) || ((exe === "ade" || exe === "ade-alpha") && serving)) return "installed_brain";
+  if (PACKAGED_CLI.test(command) || (STANDALONE_CLI.test(exe) && serving)) return "installed_brain";
   if (DESKTOP_APP.test(command) || (SOURCE_CHECKOUT_DESKTOP.test(command) && /electron/i.test(command))) return "desktop";
   return "other";
 }

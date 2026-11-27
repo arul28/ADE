@@ -185,8 +185,8 @@ export function checkRemoteAdeCommand(
     args.push(value);
   }
   // Models often include the program name.
-  if (args[0] === "ade") args.shift();
-  if (args.length === 0) return { ok: false, reason: "Name an daex command, e.g. [\"help\"]." };
+  if (isProgramName(args[0])) args.shift();
+  if (args.length === 0) return { ok: false, reason: "Name a daex command, e.g. [\"help\"]." };
   if (args.length > MAX_REMOTE_ARGS) return { ok: false, reason: `At most ${MAX_REMOTE_ARGS} arguments.` };
   // Only a plain command word may come first. Global flags (`--socket`,
   // `--headless`, `--role`, `--project-root`) take effect before it, and the

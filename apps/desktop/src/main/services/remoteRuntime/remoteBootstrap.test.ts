@@ -193,6 +193,7 @@ describe("normalizeRuntimeVersion", () => {
   it("normalizes plain and prefixed ADE version output", () => {
     expect(normalizeRuntimeVersion("1.0.0-beta.1\n")).toBe("1.0.0-beta.1");
     expect(normalizeRuntimeVersion("ade 1.0.0-beta.1\n")).toBe("1.0.0-beta.1");
+    expect(normalizeRuntimeVersion("daex 1.0.0-beta.1\n")).toBe("1.0.0-beta.1");
   });
 
   it("returns null for empty version output", () => {

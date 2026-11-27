@@ -81,7 +81,7 @@ export function normalizeRemoteArch(raw: string): {
 }
 
 export function normalizeRuntimeVersion(raw: string): string | null {
-  const version = raw.trim().replace(/^ade\s+/i, "").trim();
+  const version = raw.trim().replace(/^(?:daex|ade)\s+/i, "").trim();
   return version || null;
 }
 

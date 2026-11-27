@@ -73,7 +73,7 @@ export function AdeCliSection({ embedded = false }: Props) {
   const agentReady = status?.agentPathReady === true;
   const bundledReady = status?.bundledAvailable === true;
   const installTargetDir = status?.installTargetPath
-    ? status.installTargetPath.replace(/[\\/](?:ade|ade\.cmd)$/i, "")
+    ? status.installTargetPath.replace(/[\\/](?:daex|ade)(?:\.cmd)?$/i, "")
     : "";
   let statusTone: "ok" | "warn" | "crit" | undefined;
   let statusLabel = "Manual action";

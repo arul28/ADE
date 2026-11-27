@@ -482,6 +482,7 @@ describe("Windows sync-host listener scan", () => {
     expect(looksLikeAdeWindowsSyncHostProcess(
       String.raw`"C:\Program Files\ADE Beta\ADE Beta.exe" "C:\x\cli.cjs" "serve" "--socket" "\\.\pipe\ade-runtime-beta-1"`,
     )).toBe(true);
+    expect(looksLikeAdeWindowsSyncHostProcess(String.raw`"C:\Users\me\.ade\bin\daex.exe" "serve"`)).toBe(true);
     expect(looksLikeAdeWindowsSyncHostProcess(String.raw`"C:\Windows\explorer.exe"`)).toBe(false);
     expect(looksLikeAdeWindowsSyncHostProcess(String.raw`"C:\node.exe" "C:\x\cli.cjs" "doctor"`)).toBe(false);
   });

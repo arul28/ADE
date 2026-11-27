@@ -4787,5 +4787,5 @@ async function windowsServiceRecordIsLive(record: { supervisorPid: number; runti
   if (pids.length === 0) return false;
   const images = await readWindowsProcessImages(pids);
   if (!images) return true;
-  return pids.some((pid) => /^(powershell|pwsh|node|ade)(\.exe)?$/iu.test(images.get(pid) ?? ""));
+  return pids.some((pid) => /^(powershell|pwsh|node|daex|ade)(\.exe)?$/iu.test(images.get(pid) ?? ""));
 }

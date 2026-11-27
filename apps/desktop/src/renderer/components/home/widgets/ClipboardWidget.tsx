@@ -69,7 +69,7 @@ function clipKind(text: string): ClipKind {
   if (/^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(trimmed) || /^(?:rgb|hsl|oklch)a?\(/i.test(trimmed)) return { kind: "color", label: null, color: trimmed };
   if (/^(?:[a-z]:\\|\/|~\/)\S*$/i.test(trimmed)) return { kind: "path", label: null };
   if (/\n/.test(trimmed) && /[{};=<>()]/.test(trimmed)) return { kind: "code", label: null };
-  if (/^[\w.-]+\([^)]*\);?$|^(?:npm|npx|git|cd|ade|node|pnpm|yarn)\s/.test(trimmed)) return { kind: "code", label: null };
+  if (/^[\w.-]+\([^)]*\);?$|^(?:npm|npx|git|cd|daex|ade|node|pnpm|yarn)\s/.test(trimmed)) return { kind: "code", label: null };
   return { kind: "text", label: null };
 }
 
