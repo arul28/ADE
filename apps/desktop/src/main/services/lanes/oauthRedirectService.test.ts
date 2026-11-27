@@ -705,7 +705,7 @@ describe("oauthRedirectService", () => {
       expect(infos).toHaveLength(1);
       expect(infos[0].provider).toBe("Generic");
       expect(infos[0].uris).toEqual(["http://localhost:8080/oauth/callback"]);
-      expect(infos[0].instructions).toContain("ADE-managed callback URL");
+      expect(infos[0].instructions).toContain("Daex-managed callback URL");
     });
 
     it("uses current proxy port in URIs", () => {

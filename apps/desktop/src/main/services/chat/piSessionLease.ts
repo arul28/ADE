@@ -7,6 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { pathKey } from "../shared/pathCompare.ts";
 // @ts-expect-error TS5097: same as above.
 import { AdeExpectedError } from "../../../shared/expectedError.ts";
+import { BRAND } from "../../../shared/brand";
 
 export type PiSessionLeaseOwner = "sdk" | "cli";
 
@@ -228,7 +229,7 @@ export function acquirePiSessionLease(args: {
   const lockPath = lockPathFor(sessionFile);
   const localHolder = localLeases.get(lockPath);
   if (localHolder) {
-    const message = `Pi session is already owned by another ${args.owner === "sdk" ? "ADE chat" : "CLI"} writer.`;
+    const message = `Pi session is already owned by another ${args.owner === "sdk" ? `${BRAND.NAME} chat` : "CLI"} writer.`;
     // The same owner still holding its own lease is a lease ADE never
     // released, a defect, and stays reported as one.
     throw localHolder.ownerId === args.ownerId ? new Error(`${message} (held by the same owner)`) : new PiSessionLeaseConflictError(message);
@@ -246,12 +247,12 @@ export function acquirePiSessionLease(args: {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const reclaimClaim = liveReclaimClaim(lockPath, args.isProcessIdentityLive);
     if (reclaimClaim) {
-      throw new PiSessionLeaseConflictError(`Pi session is already being reclaimed by ${reclaimClaim.owner === "sdk" ? "ADE chat" : "Pi CLI"}. Stop that writer or fork the session before continuing.`);
+      throw new PiSessionLeaseConflictError(`Pi session is already being reclaimed by ${reclaimClaim.owner === "sdk" ? `${BRAND.NAME} chat` : "Pi CLI"}. Stop that writer or fork the session before continuing.`);
     }
     if (writeLease(lockPath, record)) break;
     const current = readLease(lockPath);
     if (current && leaseOwnerIsLive(current, args.isProcessIdentityLive)) {
-      throw new PiSessionLeaseConflictError(`Pi session is already owned by ${current.owner === "sdk" ? "ADE chat" : "Pi CLI"}. Stop that writer or fork the session before continuing.`);
+      throw new PiSessionLeaseConflictError(`Pi session is already owned by ${current.owner === "sdk" ? `${BRAND.NAME} chat` : "Pi CLI"}. Stop that writer or fork the session before continuing.`);
     }
     if (reclaimStaleLease(lockPath, current, args.isProcessIdentityLive)) {
       if (writeLease(lockPath, record)) break;

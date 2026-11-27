@@ -522,7 +522,7 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
           action: "delete",
           title: `Delete lane "${lane.name}"`,
           question: `Delete ${lane.name}?`,
-          body: `${lane.chats > 0 ? `Its ${plural(lane.chats, "saved chat")}` : "Its saved chats"}${saved} go for good.${lane.branch ? ` ADE doesn't delete its branch ${lane.branch} on GitHub.` : ""}`,
+          body: `${lane.chats > 0 ? `Its ${plural(lane.chats, "saved chat")}` : "Its saved chats"}${saved} go for good.${lane.branch ? ` ${BRAND.NAME} doesn't delete its branch ${lane.branch} on GitHub.` : ""}`,
           confirm: "Delete lane",
           confirmDetail: `Its computer is already gone; nothing of the lane is left in ${BRAND.NAME} after this.`,
           personPlace: PERSON_PLACE,
@@ -577,7 +577,7 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
           return [goesLine(lane.chats), workBody(work)].filter(Boolean).join("\n");
         },
         confirm: "Delete lane",
-        confirmDetail: `The lane, its computer, its files and its saved chats go for good.${lane.branch ? ` ADE doesn't delete its branch ${lane.branch} on GitHub.` : ""}`,
+        confirmDetail: `The lane, its computer, its files and its saved chats go for good.${lane.branch ? ` ${BRAND.NAME} doesn't delete its branch ${lane.branch} on GitHub.` : ""}`,
         alternative: {
           label: "Keep for later",
           detail: `${BRAND.NAME} pushes its work to GitHub and removes only its computer. The lane and its chats stay; your next message makes a new computer.`,

@@ -377,7 +377,7 @@ export function createAndroidApps(deps: AndroidAppsDeps) {
     const javaMissing = /JAVA_HOME|no java|Unable to locate a Java Runtime/iu.test(run.output);
     return new AndroidEmulatorFailure(
       "ANDROID_BUILD_FAILED",
-      `Gradle ${task} failed (exit ${run.exitCode ?? "none"}).${javaMissing ? ` Gradle could not run the JDK at ${run.jdk.home} (${run.jdk.source}): install Android Studio or a JDK 17+, or set JAVA_HOME for ADE.` : ""}\n${tail(run.output, 25).join("\n")}`,
+      `Gradle ${task} failed (exit ${run.exitCode ?? "none"}).${javaMissing ? ` Gradle could not run the JDK at ${run.jdk.home} (${run.jdk.source}): install Android Studio or a JDK 17+, or set JAVA_HOME for ${BRAND.NAME}.` : ""}\n${tail(run.output, 25).join("\n")}`,
     );
   };
 
