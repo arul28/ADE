@@ -339,9 +339,9 @@ export function buildAdeBootstrapGuidance(
     "## ADE",
     "Daex (formerly ADE) is a local-first dev environment (lanes, chats, terminals, PRs, proof, apps, iOS, browsers); its `daex` CLI controls Daex state. `ade` is the same command and still works.",
     ...(options.nativeSkillListing
-      ? ["Before a task in a Daex area, read its `ade:ade-*` skill."]
+      ? ["Before a task in a Daex area, read its `daex:daex-*` skill."]
       : [
-        `Skills: read the matching \`ade-*\` skill first: ${adeAdvertisedAgentSkillNames().map((name) => `\`${name}\``).join(", ")}.`,
+        `Skills: read the matching \`daex-*\` skill first: ${adeAdvertisedAgentSkillNames().map((name) => `\`${name}\``).join(", ")}.`,
         formatAdeAgentSkillRootsForPrompt(skillRoots),
         "No native skills? `daex skill list --text`, then `daex skill show <name> --text`.",
       ]),
@@ -354,14 +354,14 @@ export function buildAdeBootstrapGuidance(
     // Naming the case ("an existing image file") matters: without it agents
     // opened the browser skill for "put this screenshot in your answer". Do
     // not add "a chart" here; it pulls chart requests away from scenes.
-    "Images in answers: to show an existing image file, such as a screenshot, run `daex proof attach <file>` and paste its `cite:` line; a plain path may not show. Proof or demos for people: **ade-proof-artifacts**.",
+    "Images in answers: to show an existing image file, such as a screenshot, run `daex proof attach <file>` and paste its `cite:` line; a plain path may not show. Proof or demos for people: **daex-proof-artifacts**.",
     // Agents opened about two thirds of recent PRs with `gh`, and rewrote the
     // text of the rest with `gh pr edit`, which drops ADE's footer and leaves
     // cited proof as links GitHub cannot show.
     "PRs: open with `daex prs create`, rewrite text with `daex prs body`; `gh` skips proof upload and the lane link.",
     ...(options.computerUseDirectiveIncluded
       ? []
-      : ["`mcp__computer_use` drives the user's real screen: use it only on request, after `ade-computer-use`; never substitute `@oai/sky` via `node_repl`."]),
+      : ["`mcp__computer_use` drives the user's real screen: use it only on request, after `daex-computer-use`; never substitute `@oai/sky` via `node_repl`."]),
     // Without this line an agent that needed Linear asked for the API key in
     // chat, where it stays in the transcript. Each command shows a card only
     // the user can answer, and the value never reaches the agent.
