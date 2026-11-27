@@ -1412,6 +1412,7 @@ import type { AppBundleOwnershipBridge } from "../shared/types/appBundleOwnershi
 import type { DatabaseCopiesBridge } from "../shared/types/startupRecovery";
 import type { ProductSurveyBridge } from "../shared/types/productSurveys";
 import { HOME_WIDGETS_IPC, type HomeClipboardState, type HomeNowPlayingCommand, type HomeNowPlayingState, type HomeWidgetsBridge } from "../shared/types/homeWidgets";
+import { BRAND } from "../shared/brand";
 
 // Renderer errors reach Sentry through main over this bridge, so the
 // renderer's CSP never has to allow Sentry's host (see main/sentry/initMain.ts).
@@ -2565,7 +2566,7 @@ async function callProjectRuntimeActionIfBound<T>(
 }
 
 function linearAgentUnavailable(): Promise<never> {
-  return Promise.reject(new Error("Open a project in ADE to use the Linear agent."));
+  return Promise.reject(new Error(`Open a project in ${BRAND.NAME} to use the Linear agent.`));
 }
 
 async function callProjectRuntimeActionOr<T>(
@@ -2790,7 +2791,7 @@ async function callPinnedOrBoundRuntimeSyncOr<T>(
  */
 function assertPinIsThisComputer(pin: OpenProjectBinding, what: string): void {
   if (pin.kind !== "remote") return;
-  throw new Error(`${what} is on ${machineNameForBinding(pin)}. Open it from ADE on that computer.`);
+  throw new Error(`${what} is on ${machineNameForBinding(pin)}. Open it from ${BRAND.NAME} on that computer.`);
 }
 
 /**
@@ -2804,7 +2805,7 @@ function callLaneShareAction<T>(
   pin: OpenProjectBinding | null | undefined,
 ): Promise<T> {
   return callPinnedOrBoundRuntimeActionOr<T>(pin, "lane_share", action, { args }, async () => {
-    throw new Error("lane_share_no_runtime: Lane sharing needs the project's ADE brain. Open the project and try again.");
+    throw new Error(`lane_share_no_runtime: Lane sharing needs the project's ${BRAND.NAME} brain. Open the project and try again.`);
   });
 }
 
@@ -2815,7 +2816,7 @@ function callLaneShareAction<T>(
  */
 function callCloudPhone<T>(action: string, args: Record<string, unknown>, pin: OpenProjectBinding | null | undefined): Promise<T> {
   return callPinnedOrBoundRuntimeActionOr<T>(pin, "cloud_phone", action, { args: { ...args } }, async () => {
-    throw new Error("The ADE Cloud iPhone needs this project's ADE brain. Open the project and try again.");
+    throw new Error(`The ${BRAND.CLOUD_NAME} iPhone needs this project's ${BRAND.NAME} brain. Open the project and try again.`);
   });
 }
 
@@ -2992,7 +2993,7 @@ function callChatLaunchAction<T>(
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
 ): Promise<T> {
   return callPinnedOrBoundRuntimeActionOr<T>(pin, "chat", action, request, () =>
-    Promise.reject(new Error("New-lane launches need a connected ADE runtime. Reconnect the machine and try again.")));
+    Promise.reject(new Error(`New-lane launches need a connected ${BRAND.NAME} runtime. Reconnect the machine and try again.`)));
 }
 
 // ADE Cloud lane launches: this app's main process owns one until it hands
@@ -3167,7 +3168,7 @@ async function callIosSimulatorActionOr<T>(
         recordStop: "stop the simulator recording",
       } as Record<string, string>)[action] ?? action.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase();
       throw new Error(
-        `Project is switching. ADE could not confirm the request to ${label} because the active project changed or is still loading. Wait for loading to finish, then return to the simulator's project and try again. If this keeps happening, close and reopen that project tab.`,
+        `Project is switching. ${BRAND.NAME} could not confirm the request to ${label} because the active project changed or is still loading. Wait for loading to finish, then return to the simulator's project and try again. If this keeps happening, close and reopen that project tab.`,
         { cause: error },
       );
     }
@@ -3203,7 +3204,7 @@ function asUserInput<T extends Record<string, unknown>>(args: T): T & { source: 
 let iosSimulatorLocalServiceMissing = false;
 
 const IOS_SIMULATOR_NEEDS_RUNTIME_MESSAGE =
-  "Apple device control needs an open project. Open a project so ADE can reach the Mac that owns its simulators.";
+  `Apple device control needs an open project. Open a project so ${BRAND.NAME} can reach the Mac that owns its simulators.`;
 
 async function iosSimulatorLocalFallback<T>(action: string, local: () => Promise<T>): Promise<T> {
   if (iosSimulatorLocalServiceMissing) {
@@ -3299,7 +3300,7 @@ function callAndroidEmulatorActionOr<T>(
 function appControlNeedsProjectRuntime(action: string): Promise<never> {
   return Promise.reject(
     new Error(
-      `App Control ${action} needs an open project. Open a project so ADE can reach its App Control service.`,
+      `App Control ${action} needs an open project. Open a project so ${BRAND.NAME} can reach its App Control service.`,
     ),
   );
 }
@@ -7626,7 +7627,7 @@ const adeBridge = {
       pin?: OpenProjectBinding | null,
     ): Promise<CustomNotificationResult> =>
       callPinnedOrBoundRuntimeActionOr(pin, "attention", "sendNotification", { args }, () =>
-        Promise.reject(new Error("Open a project in ADE to send a test notification."))),
+        Promise.reject(new Error(`Open a project in ${BRAND.NAME} to send a test notification.`))),
     getSnapshot: async (
       since = 0,
       streamId?: string | null,
@@ -8071,10 +8072,10 @@ const adeBridge = {
      */
     cloudStartBranch: async (args: CloudStartBranchArgs, pin?: OpenProjectBinding | null): Promise<CloudStartBranchCheck> =>
       callPinnedOrBoundRuntimeActionOr(pin, "lane", "cloudStartBranch", { args }, () =>
-        Promise.reject(new Error("Open the project in ADE first."))),
+        Promise.reject(new Error(`Open the project in ${BRAND.NAME} first.`))),
     pushCloudStartBranch: async (args: CloudStartBranchArgs, pin?: OpenProjectBinding | null): Promise<CloudStartBranchCheck> =>
       callPinnedOrBoundRuntimeActionOr(pin, "lane", "pushCloudStartBranch", { args }, () =>
-        Promise.reject(new Error("Open the project in ADE first."))),
+        Promise.reject(new Error(`Open the project in ${BRAND.NAME} first.`))),
     getDeleteRisk: async (
       args: { laneId: string },
       pin?: OpenProjectBinding | null,
@@ -8361,13 +8362,13 @@ const adeBridge = {
       pin?: OpenProjectBinding | null,
     ): Promise<LaneDependencyStatus> =>
       callPinnedOrBoundRuntimeActionOr<LaneDependencyStatus>(pin, "lane", "getDependencyStatus", { args }, () =>
-        Promise.reject(new Error("Package status needs a connected ADE runtime."))),
+        Promise.reject(new Error(`Package status needs a connected ${BRAND.NAME} runtime.`))),
     acknowledgeDependencyStatus: (
       args: AcknowledgeLaneDependencyStatusArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<LaneDependencyStatus> =>
       callPinnedOrBoundRuntimeActionOr<LaneDependencyStatus>(pin, "lane", "acknowledgeDependencyStatus", { args }, () =>
-        Promise.reject(new Error("Package status needs a connected ADE runtime."))),
+        Promise.reject(new Error(`Package status needs a connected ${BRAND.NAME} runtime.`))),
     getTemplate: async (
       args: GetLaneTemplateArgs,
       pin?: OpenProjectBinding | null,
@@ -9347,7 +9348,7 @@ const adeBridge = {
       pin?: OpenProjectBinding | null,
     ): Promise<ChatDeviceSourcesResult> => {
       const answer = await callPinnedOrBoundRuntimeActionIfBound<ChatDeviceSourcesResult>(pin, "chat", "getDeviceSources", { args });
-      if (!answer.handled) throw new Error("This window has no ADE brain that keeps this chat's device choice.");
+      if (!answer.handled) throw new Error(`This window has no ${BRAND.NAME} brain that keeps this chat's device choice.`);
       return answer.result;
     },
     setDeviceSource: async (
@@ -9355,7 +9356,7 @@ const adeBridge = {
       pin?: OpenProjectBinding | null,
     ): Promise<ChatDeviceSourcesResult> => {
       const answer = await callPinnedOrBoundRuntimeActionIfBound<ChatDeviceSourcesResult>(pin, "chat", "setDeviceSource", { args });
-      if (!answer.handled) throw new Error("This window has no ADE brain that keeps this chat's device choice.");
+      if (!answer.handled) throw new Error(`This window has no ${BRAND.NAME} brain that keeps this chat's device choice.`);
       return answer.result;
     },
     prepareCrossMachineHandoff: async (
@@ -14351,63 +14352,63 @@ const adeBridge = {
   jira: {
     getConnectionStatus: async (pin?: OpenProjectBinding | null): Promise<JiraConnectionStatus> =>
       callPinnedOrBoundRuntimeActionOr(pin, "jira", "getConnectionStatus", {}, async () => {
-        throw new Error("Jira needs a connected ADE runtime.");
+        throw new Error(`Jira needs a connected ${BRAND.NAME} runtime.`);
       }),
     connect: async (args: JiraConnectArgs, pin?: OpenProjectBinding | null): Promise<JiraConnectionStatus> =>
       callPinnedOrBoundRuntimeActionOr(pin, "jira", "connect", { args }, async () => {
-        throw new Error("Jira needs a connected ADE runtime.");
+        throw new Error(`Jira needs a connected ${BRAND.NAME} runtime.`);
       }),
     disconnect: async (pin?: OpenProjectBinding | null): Promise<JiraConnectionStatus> =>
       callPinnedOrBoundRuntimeActionOr(pin, "jira", "disconnect", {}, async () => {
-        throw new Error("Jira needs a connected ADE runtime.");
+        throw new Error(`Jira needs a connected ${BRAND.NAME} runtime.`);
       }),
     listProjects: async (args: { query?: string } = {}, pin?: OpenProjectBinding | null): Promise<JiraProject[]> =>
       callPinnedOrBoundRuntimeActionOr(pin, "jira", "listProjects", { args }, async () => {
-        throw new Error("Jira needs a connected ADE runtime.");
+        throw new Error(`Jira needs a connected ${BRAND.NAME} runtime.`);
       }),
     listIssues: async (args: JiraListIssuesArgs = {}, pin?: OpenProjectBinding | null): Promise<JiraIssuePage> =>
       callPinnedOrBoundRuntimeActionOr(pin, "jira", "listIssues", { args }, async () => {
-        throw new Error("Jira needs a connected ADE runtime.");
+        throw new Error(`Jira needs a connected ${BRAND.NAME} runtime.`);
       }),
     getIssue: async (args: { key: string }, pin?: OpenProjectBinding | null): Promise<JiraIssueDetail> =>
       callPinnedOrBoundRuntimeActionOr(pin, "jira", "getIssue", { args }, async () => {
-        throw new Error("Jira needs a connected ADE runtime.");
+        throw new Error(`Jira needs a connected ${BRAND.NAME} runtime.`);
       }),
     listComments: async (args: { key: string; cursor: string | null }, pin?: OpenProjectBinding | null): Promise<{ comments: JiraComment[]; nextCursor: string | null }> =>
       callPinnedOrBoundRuntimeActionOr(pin, "jira", "listComments", { args }, async () => {
-        throw new Error("Jira needs a connected ADE runtime.");
+        throw new Error(`Jira needs a connected ${BRAND.NAME} runtime.`);
       }),
     addComment: async (args: { key: string; body: string }, pin?: OpenProjectBinding | null): Promise<JiraComment> =>
       callPinnedOrBoundRuntimeActionOr(pin, "jira", "addComment", { args }, async () => {
-        throw new Error("Jira needs a connected ADE runtime.");
+        throw new Error(`Jira needs a connected ${BRAND.NAME} runtime.`);
       }),
     updateIssue: async (args: JiraUpdateIssueArgs, pin?: OpenProjectBinding | null): Promise<void> =>
       callPinnedOrBoundRuntimeActionOr(pin, "jira", "updateIssue", { args }, async () => {
-        throw new Error("Jira needs a connected ADE runtime.");
+        throw new Error(`Jira needs a connected ${BRAND.NAME} runtime.`);
       }),
     listTransitions: async (args: { key: string }, pin?: OpenProjectBinding | null): Promise<JiraTransition[]> =>
       callPinnedOrBoundRuntimeActionOr(pin, "jira", "listTransitions", { args }, async () => {
-        throw new Error("Jira needs a connected ADE runtime.");
+        throw new Error(`Jira needs a connected ${BRAND.NAME} runtime.`);
       }),
     transitionIssue: async (args: { key: string; transitionId: string }, pin?: OpenProjectBinding | null): Promise<void> =>
       callPinnedOrBoundRuntimeActionOr(pin, "jira", "transitionIssue", { args }, async () => {
-        throw new Error("Jira needs a connected ADE runtime.");
+        throw new Error(`Jira needs a connected ${BRAND.NAME} runtime.`);
       }),
     listAssignableUsers: async (args: { projectKey?: string; key?: string; query?: string } = {}, pin?: OpenProjectBinding | null): Promise<JiraUser[]> =>
       callPinnedOrBoundRuntimeActionOr(pin, "jira", "listAssignableUsers", { args }, async () => {
-        throw new Error("Jira needs a connected ADE runtime.");
+        throw new Error(`Jira needs a connected ${BRAND.NAME} runtime.`);
       }),
     listLabels: async (args: { query?: string } = {}, pin?: OpenProjectBinding | null): Promise<string[]> =>
       callPinnedOrBoundRuntimeActionOr(pin, "jira", "listLabels", { args }, async () => {
-        throw new Error("Jira needs a connected ADE runtime.");
+        throw new Error(`Jira needs a connected ${BRAND.NAME} runtime.`);
       }),
     getCreateMeta: async (args: { projectKey: string }, pin?: OpenProjectBinding | null): Promise<JiraCreateMeta> =>
       callPinnedOrBoundRuntimeActionOr(pin, "jira", "getCreateMeta", { args }, async () => {
-        throw new Error("Jira needs a connected ADE runtime.");
+        throw new Error(`Jira needs a connected ${BRAND.NAME} runtime.`);
       }),
     createIssue: async (args: JiraCreateIssueArgs, pin?: OpenProjectBinding | null): Promise<JiraCreateIssueResult> =>
       callPinnedOrBoundRuntimeActionOr(pin, "jira", "createIssue", { args }, async () => {
-        throw new Error("Jira needs a connected ADE runtime.");
+        throw new Error(`Jira needs a connected ${BRAND.NAME} runtime.`);
       }),
   },
   // Contract C2 (shared/machineAddress.ts): an address for one machine of the
@@ -15469,7 +15470,7 @@ const adeBridge = {
         ok: false,
         port: args.port,
         reason: "failed",
-        error: "Stopping a server needs the ADE runtime that runs this chat.",
+        error: `Stopping a server needs the ${BRAND.NAME} runtime that runs this chat.`,
       }),
     ),
     /** A dev server started or stopped on the lane's machine. */
