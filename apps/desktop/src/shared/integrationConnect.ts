@@ -167,9 +167,9 @@ const PROVIDERS: Record<ConnectProviderId, ConnectProviderSpec> = {
 
 /** The line an agent gets once the integration is connected: what to use now. */
 export const CONNECT_NEXT_STEP: Record<ConnectProviderId, string> = {
-  github: "Use `ade prs` and `ade github` (see the ade-pr-workflows skill).",
-  linear: "Use `ade linear` (see the ade-linear skill).",
-  jira: "Use `ade jira` (run `ade help jira`).",
+  github: "Use `daex prs` and `daex github` (see the daex-pr-workflows skill).",
+  linear: "Use `daex linear` (see the daex-linear skill).",
+  jira: "Use `daex jira` (run `daex help jira`).",
 };
 
 export function connectProviderSpec(id: ConnectProviderId): ConnectProviderSpec {
