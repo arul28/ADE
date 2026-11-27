@@ -15,6 +15,8 @@ import { useChatRuntimeScope } from "../chat/ChatRuntimeScope";
 import { showToast } from "../app/toast/toastStore";
 import { cn } from "../ui/cn";
 import { StatusChip, type StatusChipAction } from "../ui/notice";
+import { laneDisplayName } from "../../../shared/laneDisplayName";
+import { LaneActiveWorkDialog } from "./detail/LaneActiveWorkDialog";
 
 function toastSwitchFailure(laneId: string, message: string, action: "switch" | "keep" = "switch"): void {
   showToast({
@@ -75,6 +77,14 @@ export function disarmLaneBranchDriftWarning(laneId: string | null | undefined):
 function subscribeArmed(listener: () => void): () => void {
   armedListeners.add(listener);
   return () => { armedListeners.delete(listener); };
+}
+
+/** The lane's display name, for the active-work dialog. */
+function useLaneDisplayNameById(laneId: string | null | undefined): string {
+  return useAppStore((state) => {
+    const lane = laneId ? state.lanes.find((candidate) => candidate.id === laneId) : null;
+    return lane ? laneDisplayName(lane) : "this lane";
+  });
 }
 
 /**
@@ -140,8 +150,9 @@ function ensureAdoptionFeed(pin: OpenProjectBinding): void {
   }, pin);
 }
 
-function dismissAdoption(pin: OpenProjectBinding, laneId: string): void {
-  if (recentAdoptions.delete(adoptionKey(pin.key, laneId))) emitAdoptionChange();
+function dismissAdoption(pin: OpenProjectBinding, laneId: string, adoption: BranchAdoption): void {
+  const key = adoptionKey(pin.key, laneId);
+  if (recentAdoptions.get(key) === adoption && recentAdoptions.delete(key)) emitAdoptionChange();
 }
 
 function subscribeAdoptions(listener: () => void): () => void {
@@ -185,11 +196,12 @@ function useRecentBranchAdoption(
  */
 function LaneBranchAdoptedChip({ laneId, adoption, pin }: { laneId: string; adoption: BranchAdoption; pin: OpenProjectBinding }) {
   const refreshLanes = useAppStore((state) => state.refreshLanes);
+  const laneName = useLaneDisplayNameById(laneId);
   const [pending, setPending] = useState(false);
-  const [forceable, setForceable] = useState(false);
+  const [activeWorkPrompt, setActiveWorkPrompt] = useState(false);
   const switchBack = async (acknowledgeActiveWork: boolean) => {
     setPending(true);
-    setForceable(false);
+    setActiveWorkPrompt(false);
     try {
       await window.ade.lanes.switchBranch({
         laneId,
@@ -197,35 +209,46 @@ function LaneBranchAdoptedChip({ laneId, adoption, pin }: { laneId: string; adop
         mode: "existing",
         ...(acknowledgeActiveWork ? { acknowledgeActiveWork: true } : {}),
       }, pin);
-      dismissAdoption(pin, laneId);
+      dismissAdoption(pin, laneId, adoption);
       await refreshLanes({ includeStatus: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (isActiveWorkRefusal(message)) setForceable(true);
+      if (isActiveWorkRefusal(message)) setActiveWorkPrompt(true);
       else toastSwitchFailure(laneId, plainErrorText(err, "ADE couldn't switch the branch."));
     } finally {
       setPending(false);
     }
   };
   return (
-    <StatusChip
-      testId="lane-branch-adopted-chip"
-      tone="info"
-      icon={<GitBranch size={11} weight="bold" />}
-      label="Now on"
-      detail={adoption.branchRef}
-      detailMono
-      tooltip={`The agent switched this lane to ${adoption.branchRef}, so ADE moved the lane with it. The lane keeps its name, and the chat keeps the PR from ${adoption.previousBranchRef}.`}
-      actions={[{
-        label: pending ? "Switching…" : forceable ? "Switch anyway" : "Switch back",
-        title: forceable
-          ? "A chat is still running in this lane; switch anyway"
-          : `Check out ${adoption.previousBranchRef} again`,
-        disabled: pending,
-        onClick: () => { void switchBack(forceable); },
-      }]}
-      onDismiss={() => dismissAdoption(pin, laneId)}
-    />
+    <>
+      <StatusChip
+        testId="lane-branch-adopted-chip"
+        tone="info"
+        icon={<GitBranch size={11} weight="bold" />}
+        label="Now on"
+        detail={adoption.branchRef}
+        detailMono
+        tooltip={`The agent switched this lane to ${adoption.branchRef}, so ADE moved the lane with it. The lane keeps its name, and the chat keeps the PR from ${adoption.previousBranchRef}.`}
+        actions={[{
+          label: pending ? "Switching…" : "Switch back",
+          title: `Check out ${adoption.previousBranchRef} again`,
+          disabled: pending,
+          onClick: () => { void switchBack(false); },
+        }]}
+      onDismiss={() => dismissAdoption(pin, laneId, adoption)}
+      />
+      {activeWorkPrompt ? (
+        <LaneActiveWorkDialog
+          open
+          laneId={laneId}
+          laneName={laneName}
+          pin={pin}
+          targetLabel={adoption.previousBranchRef}
+          onCancel={() => setActiveWorkPrompt(false)}
+          onContinue={() => { void switchBack(true); }}
+        />
+      ) : null}
+    </>
   );
 }
 
@@ -322,13 +345,25 @@ export function LaneBranchComposerChip({
   const adoption = useRecentBranchAdoption(pin, laneId, laneBranchRef);
   const refreshLanes = useAppStore((state) => state.refreshLanes);
   const [pending, setPending] = useState<LaneBranchDriftResolution | null>(null);
-  const [forceable, setForceable] = useState<LaneBranchDriftResolution | null>(null);
+  const [activeWorkRequest, setActiveWorkPrompt] = useState<{
+    laneId: string;
+    pinKey: string;
+    headBranchRef: string;
+    resolution: LaneBranchDriftResolution;
+  } | null>(null);
+  const activeWorkPrompt = activeWorkRequest
+    && activeWorkRequest.laneId === laneId
+    && activeWorkRequest.pinKey === pinKey
+    && activeWorkRequest.headBranchRef === drift?.headBranchRef
+    ? activeWorkRequest.resolution
+    : null;
+  const laneName = useLaneDisplayNameById(laneId);
 
   const visible = Boolean(laneId && drift && armed);
 
   useEffect(() => {
     if (!drift) {
-      setForceable(null);
+      setActiveWorkPrompt(null);
       disarmLaneBranchDriftWarning(laneId);
     }
   }, [drift, laneId]);
@@ -339,7 +374,7 @@ export function LaneBranchComposerChip({
   ) => {
     if (!laneId || !drift || !pin) return;
     setPending(resolution);
-    setForceable(null);
+    setActiveWorkPrompt(null);
     try {
       await window.ade.lanes.resolveBranchDrift({
         laneId,
@@ -356,8 +391,11 @@ export function LaneBranchComposerChip({
       // the right default — but without a way through it is a dead end. Offer an
       // explicit confirm that retries with the acknowledgement, the same shape the
       // lane list uses for its own branch switch.
-      if (isActiveWorkRefusal(message)) setForceable(resolution);
-      else toastSwitchFailure(laneId, plainErrorText(err, "ADE couldn't switch the branch."), resolution === "keep-head" ? "keep" : "switch");
+      if (isActiveWorkRefusal(message)) {
+        setActiveWorkPrompt({ laneId, pinKey: pin.key, headBranchRef: drift.headBranchRef, resolution });
+      } else {
+        toastSwitchFailure(laneId, plainErrorText(err, "ADE couldn't switch the branch."), resolution === "keep-head" ? "keep" : "switch");
+      }
     } finally {
       setPending(null);
     }
@@ -375,20 +413,19 @@ export function LaneBranchComposerChip({
   }, [drift, driftKind]);
 
   if (!visible || !drift) {
-    return adoption && laneId && pin ? <LaneBranchAdoptedChip laneId={laneId} adoption={adoption} pin={pin} /> : null;
+    return adoption && laneId && pin ? (
+      <LaneBranchAdoptedChip
+        key={JSON.stringify([adoptionKey(pin.key, laneId), adoption.at, adoption.previousBranchRef, adoption.branchRef])}
+        laneId={laneId}
+        adoption={adoption}
+        pin={pin}
+      />
+    ) : null;
   }
 
   const busy = pending != null;
   const actions: StatusChipAction[] = [];
   if (driftKind === "switched") {
-    if (forceable) {
-      actions.push({
-        label: "Switch anyway",
-        title: "A chat is still running in this lane; switch anyway",
-        disabled: busy,
-        onClick: () => { void resolve(forceable, true); },
-      });
-    }
     actions.push(
       {
         label: pending === "switch-back" ? "Switching…" : "Switch back",
@@ -414,22 +451,35 @@ export function LaneBranchComposerChip({
     });
   }
   return (
-    <StatusChip
-      testId="lane-branch-drift-strip"
-      dataAttributes={{ "data-lane-branch-drift-kind": driftKind }}
-      tone={driftKind === "renamed" ? "info" : "warning"}
-      icon={<GitBranch size={11} weight="bold" />}
-      label={
-        driftKind === "renamed"
-          ? "Branch renamed to"
-          : driftKind === "missing"
-            ? `${drift.expectedBranchRef} no longer exists`
-            : "On"
-      }
-      detail={drift.headBranchRef}
-      detailMono
-      tooltip={message}
-      actions={actions}
-    />
+    <>
+      <StatusChip
+        testId="lane-branch-drift-strip"
+        dataAttributes={{ "data-lane-branch-drift-kind": driftKind }}
+        tone={driftKind === "renamed" ? "info" : "warning"}
+        icon={<GitBranch size={11} weight="bold" />}
+        label={
+          driftKind === "renamed"
+            ? "Branch renamed to"
+            : driftKind === "missing"
+              ? `${drift.expectedBranchRef} no longer exists`
+              : "On"
+        }
+        detail={drift.headBranchRef}
+        detailMono
+        tooltip={message}
+        actions={actions}
+      />
+      {activeWorkPrompt && laneId && pin ? (
+        <LaneActiveWorkDialog
+          open
+          laneId={laneId}
+          laneName={laneName}
+          pin={pin}
+          targetLabel={activeWorkPrompt === "keep-head" ? drift.headBranchRef : drift.expectedBranchRef}
+          onCancel={() => setActiveWorkPrompt(null)}
+          onContinue={() => { void resolve(activeWorkPrompt, true); }}
+        />
+      ) : null}
+    </>
   );
 }

@@ -603,7 +603,7 @@ struct WorkCodeBlockView: View {
         } label: {
           Text(copied ? "Copied" : "Copy")
             .font(.caption2.weight(.semibold))
-            .foregroundStyle(copied ? ADEColor.success : ADEColor.accent)
+            .foregroundStyle(copied ? ADEColor.successText : ADEColor.accentText)
             .frame(minHeight: 44)
             .contentShape(Rectangle())
         }

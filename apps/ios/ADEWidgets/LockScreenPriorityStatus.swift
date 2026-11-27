@@ -86,7 +86,7 @@ struct LockScreenPriorityStatus {
                 inlineText: "ADE · idle",
                 count: 0,
                 symbol: "moon.zzz.fill",
-                shortLabel: "IDLE",
+                shortLabel: "Idle",
                 tint: ADESharedTheme.statusIdle,
                 destinationURL: ActivityWidgetPresentation.activityURL,
                 metrics: []
@@ -103,7 +103,7 @@ struct LockScreenPriorityStatus {
                 inlineText: "ADE · offline",
                 count: 0,
                 symbol: "wifi.slash",
-                shortLabel: "OFF",
+                shortLabel: "Off",
                 tint: ADESharedTheme.statusIdle,
                 destinationURL: destination,
                 metrics: metrics,
@@ -196,7 +196,7 @@ struct LockScreenPriorityStatus {
                 inlineText: "ADE · offline \(minutes)m",
                 count: 0,
                 symbol: "wifi.slash",
-                shortLabel: "OFF",
+                shortLabel: "Off",
                 tint: ADESharedTheme.statusIdle,
                 destinationURL: Self.workspaceURL,
                 metrics: metrics
@@ -219,7 +219,7 @@ struct LockScreenPriorityStatus {
                 inlineText: "ADE · \(waitingCount) waiting",
                 count: waitingCount,
                 symbol: "bell.badge.fill",
-                shortLabel: "WAIT",
+                shortLabel: "Wait",
                 tint: ADESharedTheme.warningAmber,
                 destinationURL: Self.sessionURL(first?.sessionId, owner: first?.machineId ?? owner),
                 metrics: metrics
@@ -232,7 +232,7 @@ struct LockScreenPriorityStatus {
                 inlineText: "ADE · \(failed.count) failed",
                 count: failed.count,
                 symbol: "xmark.octagon.fill",
-                shortLabel: "FAIL",
+                shortLabel: "Fail",
                 tint: ADESharedTheme.statusFailed,
                 destinationURL: Self.sessionURL(first.sessionId, owner: first.machineId ?? owner),
                 metrics: metrics
@@ -262,7 +262,7 @@ struct LockScreenPriorityStatus {
                 inlineText: "ADE · \(reviewRequested.count) review",
                 count: reviewRequested.count,
                 symbol: "eye.fill",
-                shortLabel: "REV",
+                shortLabel: "Rev",
                 tint: changes > 0 ? ADESharedTheme.statusFailed : ADESharedTheme.statusReview,
                 destinationURL: Self.prURL(first, owner: owner),
                 metrics: metrics
@@ -275,7 +275,7 @@ struct LockScreenPriorityStatus {
                 inlineText: "ADE · \(mergeReady.count) ready",
                 count: mergeReady.count,
                 symbol: "checkmark.seal.fill",
-                shortLabel: "READY",
+                shortLabel: "Ready",
                 tint: ADESharedTheme.statusSuccess,
                 destinationURL: Self.prURL(first, owner: owner),
                 metrics: metrics
@@ -288,7 +288,7 @@ struct LockScreenPriorityStatus {
                 inlineText: "ADE · \(running.count) working",
                 count: running.count,
                 symbol: "circle.dotted",
-                shortLabel: "WORK",
+                shortLabel: "Work",
                 tint: ADESharedTheme.statusRunning,
                 destinationURL: Self.sessionURL(first.sessionId, owner: first.machineId ?? owner),
                 metrics: metrics
@@ -314,7 +314,7 @@ struct LockScreenPriorityStatus {
                 inlineText: "ADE · syncing",
                 count: 0,
                 symbol: "arrow.triangle.2.circlepath",
-                shortLabel: "SYNC",
+                shortLabel: "Sync",
                 // Neutral, not amber. A sync in flight is true but not
                 // actionable — nobody is being asked for anything — and amber
                 // is spent only on "your move".
@@ -330,7 +330,7 @@ struct LockScreenPriorityStatus {
                 inlineText: "ADE · offline",
                 count: 0,
                 symbol: "wifi.slash",
-                shortLabel: "OFF",
+                shortLabel: "Off",
                 // Neutral, like the other two "Mac offline" branches above.
                 // Red is the alarm hue and now means only "it broke" — a host
                 // that is simply not reachable is true, but it is not a
@@ -349,7 +349,7 @@ struct LockScreenPriorityStatus {
                 inlineText: "ADE · idle",
                 count: 0,
                 symbol: "moon.zzz.fill",
-                shortLabel: "IDLE",
+                shortLabel: "Idle",
                 tint: ADESharedTheme.statusIdle,
                 destinationURL: Self.workspaceURL,
                 metrics: metrics
@@ -486,42 +486,42 @@ struct LockScreenPriorityStatus {
     ) -> (kind: Kind, symbol: String, label: String, tint: Color) {
         switch phase {
         case .needsYou:
-            return (.awaitingInput, "bell.badge.fill", "YOU", ADESharedTheme.warningAmber)
+            return (.awaitingInput, "bell.badge.fill", "You", ADESharedTheme.warningAmber)
         // Blocked is neutral, not amber: `AccountAttentionItem.needsInbox`
         // deliberately excludes it, so it never reaches the inbox and is not
         // the user's move. Painting it amber made "go act" and "waiting on
         // something else" the same colour.
         case .blocked:
-            return (.idle, "hourglass", "HOLD", ADESharedTheme.statusIdle)
+            return (.idle, "hourglass", "Hold", ADESharedTheme.statusIdle)
         case .failed:
-            return (.failed, "xmark.octagon.fill", "FAIL", ADESharedTheme.statusFailed)
+            return (.failed, "xmark.octagon.fill", "Fail", ADESharedTheme.statusFailed)
         case .checksFailing, .changesRequested:
-            return (.ciFailing, "exclamationmark.triangle.fill", "CHECK", ADESharedTheme.statusFailed)
+            return (.ciFailing, "exclamationmark.triangle.fill", "Check", ADESharedTheme.statusFailed)
         case .reviewRequested:
-            return (.reviewRequested, "eye.fill", "REV", ADESharedTheme.statusReview)
+            return (.reviewRequested, "eye.fill", "Rev", ADESharedTheme.statusReview)
         case .mergeReady:
-            return (.mergeReady, "checkmark.seal.fill", "READY", ADESharedTheme.statusSuccess)
+            return (.mergeReady, "checkmark.seal.fill", "Ready", ADESharedTheme.statusSuccess)
         case .starting, .running:
             // Same dashed-circle glyph the snapshot path and the desktop
             // sidebar use for work in flight; the widget used to show a
             // heartbeat trace here and a dotted circle two branches down.
-            return (.running, "circle.dotted", "WORK", ADESharedTheme.statusRunning)
+            return (.running, "circle.dotted", "Work", ADESharedTheme.statusRunning)
         case .open:
-            return (.idle, "arrow.triangle.pull", "OPEN", ADESharedTheme.statusRunning)
+            return (.idle, "arrow.triangle.pull", "Open", ADESharedTheme.statusRunning)
         // Stale is a silence, not a disconnection: the run is alive and has
         // said nothing for hours. A clock asks "how long?", which is the
         // question the row actually raises; `wifi.slash` sent people to check
         // their network.
         case .stale:
-            return (.idle, "clock.badge.exclamationmark", "STALE", ADESharedTheme.statusIdle)
+            return (.idle, "clock.badge.exclamationmark", "Stale", ADESharedTheme.statusIdle)
         case .completed:
-            return (.idle, "checkmark.circle.fill", "DONE", ADESharedTheme.statusSuccess)
+            return (.idle, "checkmark.circle.fill", "Done", ADESharedTheme.statusSuccess)
         case .merged:
-            return (.idle, "arrow.triangle.merge", "MERGED", ADESharedTheme.statusSuccess)
+            return (.idle, "arrow.triangle.merge", "Merged", ADESharedTheme.statusSuccess)
         case .closed:
-            return (.idle, "xmark.circle.fill", "CLOSED", ADESharedTheme.statusIdle)
+            return (.idle, "xmark.circle.fill", "Closed", ADESharedTheme.statusIdle)
         case .unrecognized:
-            return (.idle, "questionmark.circle", "UNKNOWN", ADESharedTheme.statusIdle)
+            return (.idle, "questionmark.circle", "Unknown", ADESharedTheme.statusIdle)
         }
     }
 }

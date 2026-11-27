@@ -658,6 +658,7 @@ import type {
   RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
+  PtyDisposeArgs,
   PtyDisposeResult,
   PtyResumeSessionArgs,
   PtyResumeSessionResult,
@@ -2011,6 +2012,7 @@ export function registerIpc({
     | "setAttentionSessionMuted"
     | "listAttentionDevices"
     | "putAttentionDevicePreferences"
+    | "putAttentionProjectPreferences"
   > | null;
 }) {
   // Process-scoped by design: renderer reloads and additional windows in the
@@ -3526,6 +3528,20 @@ export function registerIpc({
         : {};
       return attentionAccountCoordinator.putDevicePreferences(
         request.deviceId,
+        request.preferences,
+        request.accountOwnerId,
+      );
+    },
+  );
+
+  handle(
+    IPC.attentionPutProjectPreferences,
+    async (_event, input: unknown) => {
+      const request = input && typeof input === "object" && !Array.isArray(input)
+        ? input as { accountOwnerId?: unknown; projectId?: unknown; preferences?: unknown }
+        : {};
+      return attentionAccountCoordinator.putProjectPreferences(
+        request.projectId,
         request.preferences,
         request.accountOwnerId,
       );
@@ -11908,8 +11924,9 @@ export function registerIpc({
     requirePtyService().resize(arg);
   });
 
-  handle(IPC.ptyDispose, async (_event, arg: { ptyId: string; sessionId?: string }): Promise<PtyDisposeResult> => {
-    return requirePtyService().dispose(arg);
+  handle(IPC.ptyDispose, async (_event, arg: PtyDisposeArgs): Promise<PtyDisposeResult> => {
+    const pty = requirePtyService();
+    return arg.confirmProcessExit === true ? pty.disposeWithExitReceipt(arg) : pty.dispose(arg);
   });
 
   handle(IPC.ptyShellSettingsGet, async () => requirePtyService().getShellSettings());

@@ -202,7 +202,7 @@ import {
   type AttentionAcknowledgmentOutcome,
   type AttentionItem,
   type AttentionDesktopAlert,
-  type AttentionPreferenceScope,
+  type AttentionScopePatch,
   type AttentionPreferences,
   type AttentionPresence,
   type AttentionPresenceReceipt,
@@ -965,6 +965,7 @@ import type {
   RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
+  PtyDisposeArgs,
   PtyDisposeResult,
   PtyResumeSessionArgs,
   PtyResumeSessionResult,
@@ -7660,7 +7661,7 @@ const adeBridge = {
     putMachinePreferences: async (
       accountOwnerId: string,
       machineKey: string,
-      preferences: Partial<AttentionPreferenceScope>,
+      preferences: AttentionScopePatch,
     ): Promise<void> =>
       ipcRenderer.invoke(IPC.attentionPutMachinePreferences, {
         accountOwnerId,
@@ -7672,11 +7673,21 @@ const adeBridge = {
     putDevicePreferences: async (
       accountOwnerId: string,
       deviceId: string,
-      preferences: Partial<AttentionPreferenceScope>,
+      preferences: AttentionScopePatch,
     ): Promise<void> =>
       ipcRenderer.invoke(IPC.attentionPutDevicePreferences, {
         accountOwnerId,
         deviceId,
+        preferences,
+      }),
+    putProjectPreferences: async (
+      accountOwnerId: string,
+      projectId: string,
+      preferences: AttentionScopePatch,
+    ): Promise<void> =>
+      ipcRenderer.invoke(IPC.attentionPutProjectPreferences, {
+        accountOwnerId,
+        projectId,
         preferences,
       }),
     setSessionMuted: async (
@@ -12985,10 +12996,7 @@ const adeBridge = {
       );
       if (!runtime.handled) await ipcRenderer.invoke(IPC.ptyResize, arg);
     },
-    dispose: async (arg: {
-      ptyId: string;
-      sessionId?: string;
-    }, pin?: OpenProjectBinding | null): Promise<PtyDisposeResult> => {
+    dispose: async (arg: PtyDisposeArgs, pin?: OpenProjectBinding | null): Promise<PtyDisposeResult> => {
       if (pin) {
         return callPinnedRuntimeAction<PtyDisposeResult>(pin, "pty", "dispose", { args: arg });
       }

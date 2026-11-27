@@ -407,7 +407,7 @@ describe("createAgentChatService", () => {
         expect(events.filter((event) =>
           event.event.type === "system_notice"
           && typeof event.event.message === "string"
-          && /^Resumes at /.test(event.event.message))).toHaveLength(1);
+          && /^Paused: (?:limit resets|resumes) at /.test(event.event.message))).toHaveLength(1);
       });
 
       it("Run next on the manual-resume turn cancels the pending row", async () => {
@@ -569,7 +569,7 @@ describe("createAgentChatService", () => {
         expect(events.filter((event) =>
           event.event.type === "system_notice"
           && typeof event.event.message === "string"
-          && /^Resumes at /.test(event.event.message)))
+          && /^Paused: (?:limit resets|resumes) at /.test(event.event.message)))
           .toHaveLength(2);
         const [afterCap] = await service.listScheduledWork({ sessionId: session.id });
         expect(afterCap?.status).toBe("fired");
@@ -738,7 +738,7 @@ describe("createAgentChatService", () => {
           (event): event is AgentChatEventEnvelope =>
             event.event.type === "system_notice"
             && typeof event.event.message === "string"
-            && /^Resumes at /.test(event.event.message),
+            && /^Paused: (?:limit resets|resumes) at /.test(event.event.message),
         );
         expect(notice.event).toMatchObject({ noticeKind: "rate_limit", severity: "info" });
       });
@@ -766,7 +766,7 @@ describe("createAgentChatService", () => {
         expect(events.some((event) =>
           event.event.type === "system_notice"
           && typeof event.event.message === "string"
-          && /^Resumes at /.test(event.event.message))).toBe(false);
+          && /^Paused: (?:limit resets|resumes) at /.test(event.event.message))).toBe(false);
       });
 
       it("replaces the pending auto-resume instead of stacking on a repeat usage limit", async () => {

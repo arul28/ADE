@@ -673,7 +673,7 @@ import type {
   CtoGetLinearOAuthSessionResult,
   CtoAttentionState,
   AttentionAccountDevice,
-  AttentionPreferenceScope,
+  AttentionScopePatch,
   CtoNeedsSnapshot,
   CtoRunProjectScanResult,
   LinearConnectionStatus,
@@ -890,6 +890,7 @@ import type {
   RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
+  PtyDisposeArgs,
   PtyDisposeResult,
   PtyResumeSessionArgs,
   PtyResumeSessionResult,
@@ -2344,7 +2345,7 @@ declare global {
         putMachinePreferences?: (
           accountOwnerId: string,
           machineKey: string,
-          preferences: Partial<AttentionPreferenceScope>,
+          preferences: AttentionScopePatch,
         ) => Promise<void>;
         /**
          * The account's phones and tablets, for choosing which get
@@ -2358,7 +2359,17 @@ declare global {
         putDevicePreferences?: (
           accountOwnerId: string,
           deviceId: string,
-          preferences: Partial<AttentionPreferenceScope>,
+          preferences: AttentionScopePatch,
+        ) => Promise<void>;
+        /**
+         * One project's override (`preferences.projects[projectId]`, keyed by
+         * the machine-independent project id). Account-scoped, no pin. Absent
+         * on an older host; an older account service answers 404.
+         */
+        putProjectPreferences?: (
+          accountOwnerId: string,
+          projectId: string,
+          preferences: AttentionScopePatch,
         ) => Promise<void>;
         /**
          * Mute one chat's notifications on every device. Account-scoped, so it
@@ -4644,7 +4655,7 @@ declare global {
           },
           pin: OpenProjectBinding,
         ) => Promise<void>;
-        dispose: (args: { ptyId: string; sessionId?: string }, pin: OpenProjectBinding) => Promise<PtyDisposeResult>;
+        dispose: (args: PtyDisposeArgs, pin: OpenProjectBinding) => Promise<PtyDisposeResult>;
         /** The terminal machine's installed shells and its default for new shells. */
         getShellSettings: (pin?: OpenProjectBinding | null) => Promise<TerminalShellSettings>;
         /** Save that machine's default shell: a reported id, or null for Automatic. */

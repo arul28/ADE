@@ -527,10 +527,8 @@ function RecommendedCard({
           <span
             style={{
               fontFamily: SANS_FONT,
-              fontSize: 9,
-              fontWeight: 700,
-              letterSpacing: "0.05em",
-              textTransform: "uppercase",
+              fontSize: 10,
+              fontWeight: 500,
               color: COLORS.accent,
               background: "color-mix(in srgb, var(--color-accent) 16%, transparent)",
               border: `1px solid ${COLORS.accentBorder}`,

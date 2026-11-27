@@ -141,7 +141,7 @@ import {
   useLaneGitActionRuntimeState,
 } from "./laneGitActionRuntime";
 import { toLayoutPx } from "../../lib/webZoom";
-import { extractError } from "../../lib/format";
+import { extractError, sentenceCase } from "../../lib/format";
 
 export function __resetLaneGitActionRuntimeForTests(): void {
   __resetLaneGitListCacheForTests();
@@ -739,7 +739,7 @@ function LaneGitActionsPaneOnMachine({
       }
       patchLaneGitActionRuntimeStateIfCurrent(actionScopeKey, actionVersion, {
         busyAction: null,
-        notice: `${actionName} completed`,
+        notice: `${sentenceCase(actionName)} completed`,
         error: null,
       });
       // Global success toast for remote push/sync completion (the inline notice
@@ -2259,10 +2259,10 @@ function LaneGitActionsPaneOnMachine({
             id: `lane-git-action-status:${laneId ?? ""}`,
             tone: error ? "error" : notice ? "success" : "accent",
             title: error
-              ? `ERROR: ${error}`
+              ? `Error: ${error}`
               : notice
-                ? notice.toUpperCase()
-                : `RUNNING ${busyAction?.toUpperCase() ?? ""}...`,
+                ? notice
+                : `Running ${busyAction ?? ""}…`,
             busy: Boolean(busyAction),
           }}
         />

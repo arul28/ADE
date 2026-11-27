@@ -556,7 +556,7 @@ struct DuoChatPrHeaderLabel: View {
 
   private var tint: Color { lanePullRequestTint(badge.state) }
 
-  /// "#1871" out of the badge's "MERGED #1871": the state is its own word.
+  /// "#1871" out of the badge's "Merged #1871": the state is its own word.
   private var number: String {
     if let range = badge.label.range(of: #"#\d+"#, options: .regularExpression) {
       return String(badge.label[range])

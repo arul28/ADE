@@ -133,6 +133,7 @@ import type {
   LaneDeleteStepName,
   LaneIcon,
   LaneBranchActiveWorkItem,
+  TerminalSessionSummary,
   LaneBranchDrift,
   LaneBranchDriftKind,
   LaneBranchProfile,
@@ -189,6 +190,7 @@ import { DEFAULT_NEW_LANE_DEFAULTS, normalizeLaneStart, plainLaneStartBranch, ty
 import { createLaneBranchNaming } from "./laneBranchNaming";
 
 import { appleLaneDerivedDataPath, endLaneDeviceOnDisk, releaseLaneAppleDevice } from "../ios/laneDeviceRelease";
+import { sessionActiveKind } from "../../../shared/sessionSpawnNesting";
 import { anotherLaneHoldsUdid, readLaneAppleDeviceRecord } from "../ios/laneDeviceRows";
 import { bareSimulatorPowerOff } from "../ios/simulatorPower";
 import {
@@ -1573,6 +1575,7 @@ export type LaneCreateRuntimeOptions = {
 export type LaneDeleteTeardownDeps = {
   agentChatService?: {
     countActiveForLane: (laneId: string) => number;
+    listArchivedWorkingChats?: (laneId: string) => TerminalSessionSummary[];
     disposeForLane: (laneId: string) => Promise<number>;
     /** The lane's chats' work on other machines is removed there (not awaited). */
     releaseRemoteWorkForLane?: (laneId: string, ended: "archived" | "deleted") => void;
@@ -1580,6 +1583,7 @@ export type LaneDeleteTeardownDeps = {
   ptyService?: {
     countActiveForLane: (laneId: string) => number;
     disposeForLane: (laneId: string) => number;
+    listAdditionalLiveSessionsForLane?: (laneId: string) => TerminalSessionSummary[];
   };
   fileWatcherService?: {
     countActiveForWorkspace: (workspaceId: string) => number;
@@ -2824,9 +2828,9 @@ export function createLaneService({
   };
 
   const getActiveWorkForLane = (laneId: string): LaneBranchActiveWorkItem[] => {
-    const terminalRows = db.all<{ id: string; title: string; status: string }>(
+    const terminalRows = db.all<{ id: string; title: string; status: string; tool_type: string | null }>(
       `
-        select id, title, status
+        select id, title, status, tool_type
         from terminal_sessions
         where lane_id = ?
           and archived_at is null
@@ -2836,14 +2840,24 @@ export function createLaneService({
       `,
       [laneId],
     );
+    const archivedWorkingChats = teardownDeps?.agentChatService?.listArchivedWorkingChats?.(laneId) ?? [];
+    const additionalLiveSessions = teardownDeps?.ptyService?.listAdditionalLiveSessionsForLane?.(laneId) ?? [];
     return [
-      ...terminalRows.map((row) => ({
+      ...[...archivedWorkingChats, ...additionalLiveSessions].map((row): LaneBranchActiveWorkItem => ({
         id: row.id,
-        kind: "terminal" as const,
+        kind: sessionActiveKind(row.toolType),
+        toolType: row.toolType ?? null,
+        title: row.title || row.id,
+        status: "running",
+      })),
+      ...terminalRows.map((row): LaneBranchActiveWorkItem => ({
+        id: row.id,
+        kind: sessionActiveKind(row.tool_type),
+        toolType: row.tool_type ?? null,
         title: row.title || row.id,
         status: row.status,
       })),
-    ];
+    ].slice(0, 10);
   };
 
   const findActiveBranchOwner = (branchRef: string, laneId: string): { id: string; name: string } | null => {

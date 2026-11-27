@@ -81,9 +81,9 @@ export function ConflictFilePreview({ file }: { file: ConflictFile }) {
           </span>
           {langHint && (
             <span
-              className="font-mono font-bold uppercase tracking-[1px]"
+              className="font-mono font-medium"
               style={{
-                fontSize: 8,
+                fontSize: 9,
                 padding: "1px 5px",
                 background: "#A78BFA12",
                 color: "#A78BFA",
@@ -98,15 +98,15 @@ export function ConflictFilePreview({ file }: { file: ConflictFile }) {
         <div className="flex items-center" style={{ gap: 6, flexShrink: 0 }}>
           <Warning size={12} weight="fill" style={{ color: "#F59E0B" }} />
           <span
-            className="font-mono font-bold uppercase tracking-[1px]"
-            style={{ fontSize: 8, color: "#F59E0B" }}
+            className="font-medium"
+            style={{ fontSize: 10, color: "#F59E0B" }}
           >
-            CONFLICT
+            Conflict
           </span>
           {file.conflictMarkers && (
             <button
               type="button"
-              className="flex items-center font-mono font-bold uppercase tracking-[1px] transition-colors duration-100"
+              className="flex items-center font-medium transition-colors duration-100"
               style={{
                 fontSize: 9,
                 padding: "2px 8px",
@@ -119,7 +119,7 @@ export function ConflictFilePreview({ file }: { file: ConflictFile }) {
               onClick={() => setShowRawMarkers(!showRawMarkers)}
             >
               <Code size={10} weight="bold" style={{ marginRight: 4 }} />
-              RAW
+              Raw
             </button>
           )}
         </div>
@@ -283,10 +283,10 @@ export function ConflictFilePreview({ file }: { file: ConflictFile }) {
         >
           <div className="flex items-center" style={{ gap: 8, marginBottom: 8 }}>
             <span
-              className="font-mono font-bold uppercase tracking-[1px]"
-              style={{ fontSize: 9, color: "#F59E0B" }}
+              className="font-medium"
+              style={{ fontSize: 11, color: "#F59E0B" }}
             >
-              BOTH LANES MODIFIED THIS FILE
+              Both lanes modified this file
             </span>
           </div>
           <div

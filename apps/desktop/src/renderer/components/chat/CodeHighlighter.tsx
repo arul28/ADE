@@ -2,7 +2,7 @@ import React, { Suspense, useEffect, useMemo, useState, useRef, type CSSProperti
 import { CopySimple, Checks } from "@phosphor-icons/react";
 import { useAppStore, type CodeBlockCopyButtonPosition } from "../../state/appStore";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
-import { codeThemeFingerprint, shikiThemeData, shikiThemeName, usesStockCodeColors, type ShikiThemeData } from "../../theme/codeTheme";
+import { codeThemeFingerprint, shikiThemeData, shikiThemeName, usesStockChatCodeColors, type ShikiThemeData } from "../../theme/codeTheme";
 import { useActiveResolvedTheme } from "../../theme/useActiveTheme";
 import type { Element as HastElement, Root as HastRoot } from "hast";
 import type { BundledLanguage, GrammarState as ShikiGrammarState } from "shiki";
@@ -37,14 +37,16 @@ type ShikiHighlighter = {
 };
 
 /**
- * The colours a block is highlighted with. The stock themes keep Shiki's
- * `github-dark-dimmed`; every other theme brings its own, keyed by a string
+ * The colours a block is highlighted with. Stock dark keeps Shiki's
+ * `github-dark-dimmed`; every other theme (stock light included: the dark
+ * token colours vanish on its light code box) brings its own, keyed by a string
  * that changes whenever its syntax colours do so a cached block never outlives
  * an edit to the theme.
  */
 type CodeTheme = { key: string; data: ShikiThemeData | null };
 
 const STOCK_CODE_THEME: CodeTheme = { key: "stock", data: null };
+const codeThemeCache = new LRUCache<string, CodeTheme>(32);
 
 const loadedThemeNames = new Set<string>();
 
@@ -247,21 +249,21 @@ async function highlightCode(code: string, language: string, codeTheme: CodeThem
 function DiffCodeBlock({ code }: { code: string }) {
   const lines = code.split(/\r?\n/);
   return (
-    <div className="overflow-x-auto whitespace-pre font-mono text-[11px] leading-[1.6] text-[var(--chat-code-fg)]">
+    <div className="overflow-x-auto whitespace-pre font-mono text-[11px] leading-[1.6] text-[var(--chat-code-fg,var(--chat-code-fg-light))]">
       {lines.map((line, index) => {
-        let style: CSSProperties = { color: "color-mix(in srgb, var(--chat-code-fg) 70%, transparent)" };
+        let style: CSSProperties = { color: "var(--chat-code-fg-light, color-mix(in srgb, var(--chat-code-fg) 70%, transparent))" };
         if (line.startsWith("+")) {
           style = {
-            color: "var(--color-diff-add)",
+            color: "var(--chat-code-fg-light, var(--color-diff-add))",
             background: "color-mix(in srgb, var(--color-diff-add) 8%, transparent)",
           };
         } else if (line.startsWith("-")) {
           style = {
-            color: "var(--color-diff-del)",
+            color: "var(--chat-code-fg-light, var(--color-diff-del))",
             background: "color-mix(in srgb, var(--color-diff-del) 8%, transparent)",
           };
         } else if (line.startsWith("@@")) {
-          style = { color: "color-mix(in srgb, var(--color-accent) 70%, transparent)" };
+          style = { color: "var(--chat-code-fg-light, color-mix(in srgb, var(--color-accent) 70%, transparent))" };
         }
         return (
           <div key={`${index}:${line}`} className="px-1 -mx-1" style={style}>
@@ -429,7 +431,7 @@ function HighlightedCodeInner({ code, language, codeTheme }: { code: string; lan
 function PlainCodeFallback({ code }: { code: string }) {
   return (
     <pre className={CODE_PRE_CLASS}>
-      <code className="font-mono text-[11px] leading-[1.6] text-[var(--chat-code-fg)]">
+      <code className="font-mono text-[11px] leading-[1.6] text-[var(--chat-code-fg,var(--chat-code-fg-light))]">
         {code}
       </code>
     </pre>
@@ -455,11 +457,15 @@ export const HighlightedCode = React.memo(function HighlightedCode({
   const copyButtonPosition = useAppStore((s) => s.codeBlockCopyButtonPosition);
   const resolvedTheme = useActiveResolvedTheme();
   const codeTheme = useMemo<CodeTheme>(() => {
-    if (usesStockCodeColors(resolvedTheme)) return STOCK_CODE_THEME;
-    // The key covers every colour the Shiki theme is made from, so editing a
-    // custom theme highlights fresh instead of reading a stale cached block.
-    const data = shikiThemeData(resolvedTheme);
-    return { key: codeThemeFingerprint(resolvedTheme), data: { ...data, name: shikiThemeName(resolvedTheme) } };
+    if (usesStockChatCodeColors(resolvedTheme)) return STOCK_CODE_THEME;
+    // A transcript can mount many code blocks together. Reuse the contrast
+    // calculation for the same palette and invalidate it when the theme changes.
+    const key = codeThemeFingerprint(resolvedTheme);
+    const cached = codeThemeCache.get(key);
+    if (cached) return cached;
+    const theme = { key, data: { ...shikiThemeData(resolvedTheme), name: shikiThemeName(resolvedTheme) } };
+    codeThemeCache.set(key, theme);
+    return theme;
   }, [resolvedTheme]);
   const trimmedCode = code.replace(/\n$/, "");
   const isDiff = language === "diff";
@@ -477,7 +483,7 @@ export const HighlightedCode = React.memo(function HighlightedCode({
     // Code reads left to right even inside a right-to-left list or quote.
     <div
       dir="ltr"
-      className={`group/code relative my-3 rounded-[10px] border border-[color:var(--chat-code-border)] bg-[var(--chat-code-bg)] ${outerOverflowClass}`.trim()}
+      className={`group/code relative my-3 rounded-[10px] border border-[color:var(--chat-code-border)] bg-[var(--chat-code-bg,var(--chat-code-bg-light))] ${outerOverflowClass}`.trim()}
       onPointerEnter={armRun}
       onFocus={armRun}
     >

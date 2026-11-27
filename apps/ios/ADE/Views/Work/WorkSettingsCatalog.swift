@@ -246,6 +246,7 @@ enum WorkSettingsCatalog {
     "integrations.linear-top-bar": Setting(path: "App › Integrations › Show Linear in the top bar", locked: false),
     "integrations.github-issues-top-bar": Setting(path: "App › Integrations › Show GitHub issues in the top bar", locked: false),
     "notifications.events": Setting(path: "App › Notifications › Events", locked: false),
+    "notifications.pull-requests": Setting(path: "App › Notifications › Pull request notifications", locked: false),
     "notifications.focus-suppression": Setting(path: "App › Notifications › Quiet while ADE is focused", locked: false),
     "notifications.quiet-hours": Setting(path: "App › Notifications › Quiet hours", locked: false),
     "notifications.phone": Setting(path: "App › Notifications › Phone notifications", locked: false),

@@ -117,7 +117,6 @@ import {
   PairedRuntimeRelayAuthRequiredError,
   PairedRuntimeSshTrustRequiredError,
   PairedRuntimeTransportUnavailableError,
-  REMOTE_CONNECT_STOPPED_NOTICE,
   RemoteActionOutcomeUnknownError,
   RemoteConnectBackoffError,
   type PairedRuntimeRouteDiagnostic,
@@ -133,7 +132,7 @@ import {
   type HostWentAwayRecovery,
 } from "../../../shared/connectionDiagnosis";
 import { adeActionAccess, isBackgroundAdeWrite, isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
-import { isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
+import { isRuntimeTransportTimeoutError, REMOTE_CONNECT_STOPPED_NOTICE } from "../../../shared/runtimeErrors";
 import { findMachineProject } from "../../../shared/projectIdentity";
 import { isMachineScopeOlderBrainError, MACHINE_SCOPE_PROJECT_ID, machineScopeDomainAnswered, machineScopeUpdateMessage } from "../../../shared/machineScope";
 // How long a woken machine gets to come back online before the call fails as usual.

@@ -52,7 +52,9 @@ import {
   CLOUD_PHONE_PROVIDERS,
   CLOUD_PHONE_RECENT_SHOWN,
   cloudPhoneAbilitiesOf,
+  cloudPhoneBuildNeedsOf,
   cloudPhoneLacks,
+  isCloudPhoneBuildNeed,
   isCloudPhoneDevice,
   isCloudPhoneProvider,
   type CloudAccountPhone,
@@ -73,7 +75,7 @@ import { CLOUD_PLANS } from "./plans";
 import { forgetNomacLabel, nomacSignatureValid, phoneLabelFor, sessionOf, userIdOfLabel } from "./phoneNomac";
 import { LIVE_STATES, isoMs, sentryCode, type PhoneRead, type PhoneSession, type PhoneWhere } from "./phoneProvider";
 import { forgetRevylAccount } from "./phoneRevyl";
-import { PHONE_PROVIDERS, abilityWords, clientDrives, heldToUnsureStart, nextAbilities, pickedProviderOf, revylLimitEndsAt, revylLimitMicros, revylMinutesLeft, revylSpentMicros, routeOf, startOnRoute } from "./phoneRoute";
+import { PHONE_PROVIDERS, abilityWords, buildGaps, clientDrives, heldToUnsureStart, nextAbilities, pickedProviderOf, recordBuildGap, revylLimitEndsAt, revylLimitMicros, revylMinutesLeft, revylSpentMicros, routeForBuilds, routeOf, startOnRoute, type PhoneRoute } from "./phoneRoute";
 import { phoneViewerPage } from "./phoneViewerPage";
 import { CLOUD_PHONE_MAX_MINUTES } from "../../../desktop/src/shared/cloudPhone";
 import { warnHours } from "./hoursWarnings";
@@ -682,21 +684,57 @@ export async function routePhone(request: Request, path: string, env: CloudEnv, 
   return view instanceof Response ? view : json(view satisfies CloudPhoneView);
 }
 
+/** A refusal's `error.code` (logs, PostHog). */
+const refusalCode = async (answer: Response): Promise<string> =>
+  (await answer.clone().json().catch(() => null) as { error?: { code?: string } } | null)?.error?.code ?? "refused";
+
 /**
- * `POST /cloud/phone` `{ device?, attach?, providers?, needs? }`: starts the
- * account's phone or answers its live one. `providers` lists the providers
- * the client can drive (a brain from before Revyl sends none: NoMac only);
- * `needs`, the abilities a running phone must have. A new phone's provider
- * never follows them (`routeOf`): an ability it lacks answers as unavailable.
+ * The route a new phone of the account's would take now, and the minutes a
+ * paid plan's Revyl use has left this period (`revylLimitMicros`, never told
+ * to the person; null when that limit doesn't hold: Free, a tester's pick).
+ */
+async function routeOfStart(
+  env: CloudEnv, userId: string, context: PhoneContext, plan: ReturnType<typeof planIdOf>, picked: CloudPhoneProvider | null, free: boolean,
+  drives: (provider: CloudPhoneProvider) => boolean, now: number,
+): Promise<{ route: PhoneRoute; revylLeft: number | null } | Response> {
+  const revylLeft = free || picked ? null : revylMinutesLeft(
+    revylLimitMicros(CLOUD_PLANS[plan].priceUsd),
+    await revylSpentMicros(env, userId, context.account.period_start, now),
+  );
+  if (revylLeft === 0) logCloud("cloud.phone_revyl_limit", { userId, plan });
+  const route = routeOf(env, { picked, free, revylOpen: revylLeft !== 0 }, drives);
+  return route instanceof Response ? route : { route, revylLeft };
+}
+
+/**
+ * `POST /cloud/phone` `{ device?, attach?, providers?, needs?, builds?, missing? }`:
+ * starts the account's phone or answers its live one. `providers` lists the
+ * providers the client can drive (a brain from before Revyl sends none: NoMac
+ * only); `needs`, the abilities a running phone must have. A new phone's
+ * provider never follows them (`routeOf`): an ability it lacks answers as
+ * unavailable. `builds`: build tools the project needs (`metal`); a provider
+ * found without one in the last day is left out (`routeForBuilds`), and a live
+ * phone there is swapped for one that has it, once the account may have that
+ * one (never stopped for a refusal). `missing` `{ phoneId, need }`: the build
+ * on that phone of the account's just failed for want of `need`
+ * (`recordBuildGap`).
  */
 async function startPhone(request: Request, env: CloudEnv, userId: string, now: number, context: PhoneContext, picked: CloudPhoneProvider | null, waitUntil?: CloudWaitUntil): Promise<Response> {
   const plan = planIdOf(context.account);
   const body = await readJson(request);
   if (!body) return fail("bad_request", "That request could not be read.", 400);
-  const device = readDevice(body.device);
+  let device = readDevice(body.device);
   if (device === null) return fail("bad_request", `device is one of ${CLOUD_PHONE_DEVICES.join(", ")}.`, 400);
   const drives = clientDrives(body.providers);
   const needs = cloudPhoneAbilitiesOf(body.needs);
+  const builds = cloudPhoneBuildNeedsOf(body.builds);
+  const missing = body.missing && typeof body.missing === "object" && !Array.isArray(body.missing) ? body.missing as { phoneId?: unknown; need?: unknown } : null;
+  if (missing && typeof missing.phoneId === "string" && missing.phoneId.length <= 200 && isCloudPhoneBuildNeed(missing.need) && body.attach !== true) {
+    await recordBuildGap(env, userId, missing.phoneId, missing.need, now);
+    if (!builds.includes(missing.need)) builds.push(missing.need);
+  }
+  const free = accountRules(context.account) === "free";
+  const gapped = await buildGaps(env, builds, now, free ? userId : null);
   // A phone from an earlier period ran under that period's terms: it ends, and a new one starts on this period's.
   // Not for `attach` (Keep on): the allowance check ends that phone on its own schedule.
   if (context.live && startedBeforePeriod(context) && body.attach !== true) {
@@ -727,6 +765,32 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
   if (session && device && session.device && session.device !== device) {
     return fail("phone_running", `Your ADE Cloud iPhone is already running as ${session.device}. Stop it first to start a ${device}.`, 409);
   }
+  // The live phone's provider can't build what this start needs (a tester's pick stays theirs): swapped for one that
+  // can, but only once a start may go there; a refusal leaves the live phone as it is.
+  if (session && body.attach !== true && builds.length && gapped.has(provider) && !picked) {
+    const refused = (answer: Response, reason: string): Response => {
+      logCloud("cloud.phone_start_refused", { userId, code: reason, builds, provider });
+      captureCloudPhone(env, waitUntil, userId, { step: "refused", plan, reason }, reason, now);
+      return answer;
+    };
+    if (env.CLOUD_PHONES_PAUSED?.trim() === "1") return refused(fail("phone_paused", "New ADE Cloud iPhones are paused for a moment. Try again soon.", 503), "paused");
+    const credits = startRefusal(context);
+    if (credits) return refused(fail(credits.code, credits.message, 402, { minutes: minutesOf(context.usage) }), credits.code);
+    const swap = await routeOfStart(env, userId, context, plan, picked, free, drives, now);
+    const usable = swap instanceof Response ? swap : routeForBuilds(env, swap.route, { builds, gapped, needs, free, drives });
+    if (usable instanceof Response) return refused(usable, await refusalCode(usable));
+    if (!(await stopPhone(env, userId, session.id, now, "build_tool"))) {
+      return fail("phone_unavailable", "Your ADE Cloud iPhone couldn't be swapped for one that can build this app yet. Try again in a moment.", 503);
+    }
+    logCloud("cloud.phone_build_swap", { userId, phoneId: session.id, from: provider, builds });
+    // The new phone is the same model as the one it replaces (a launch names none).
+    device ??= isCloudPhoneDevice(session.device) ? session.device : undefined;
+    const fresh = await phoneContext(env, userId, now);
+    if (fresh instanceof Response) return fresh;
+    context = { ...fresh, live: null };
+    session = null;
+    reused = false;
+  }
   if (!session) {
     if (env.CLOUD_PHONES_PAUSED?.trim() === "1") {
       captureCloudPhone(env, waitUntil, userId, { step: "refused", plan, reason: "paused" }, "paused", now);
@@ -751,15 +815,17 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
       return fail("phone_unavailable", "Your ADE Cloud iPhone isn't answering right now. Try again in a moment, or stop it first.", 503);
     }
     const minutes = Math.min(CLOUD_PHONE_MAX_MINUTES, allowedMinutes(context.usage));
-    const free = accountRules(context.account) === "free";
-    // A paid plan's Revyl use stops at the plan's price this period (`revylLimitMicros`); never told to the person.
-    const revylLeft = free || picked ? null : revylMinutesLeft(
-      revylLimitMicros(CLOUD_PLANS[plan].priceUsd),
-      await revylSpentMicros(env, userId, context.account.period_start, now),
-    );
-    if (revylLeft === 0) logCloud("cloud.phone_revyl_limit", { userId, plan });
-    const routed = routeOf(env, { picked, free, revylOpen: revylLeft !== 0 }, drives);
-    if (routed instanceof Response) return routed;
+    const planned = await routeOfStart(env, userId, context, plan, picked, free, drives, now);
+    if (planned instanceof Response) return planned;
+    const { revylLeft } = planned;
+    // A project's build tool one provider lacks: the route goes where it builds, or the person is told why not.
+    const routed = routeForBuilds(env, planned.route, { builds, gapped, needs, free, drives });
+    if (routed instanceof Response) {
+      const code = await refusalCode(routed);
+      logCloud("cloud.phone_start_refused", { userId, code, builds });
+      captureCloudPhone(env, waitUntil, userId, { step: "refused", plan, reason: code }, code, now);
+      return routed;
+    }
     // One start per account at a time, across providers and machines: two starts that both saw no live phone
     // would each make one (and bill both). The other is told to try again, and then finds this phone.
     const startingElsewhere = (): Response => fail("phone_starting", "Your ADE Cloud iPhone is starting. Try again in a moment.", 409);
@@ -823,7 +889,7 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
       const limit = provider === "revyl" && revylLeft != null ? Math.min(minutes, revylLeft) : minutes;
       await env.DB.prepare("update cloud_phones set stop_at = coalesce(stop_at, ?), updated_at = ? where phone_id = ? and state = 'live'").bind(now + limit * 60_000, now, session.id).run();
     }
-    logCloud("cloud.phone_started", { userId, phoneId: session.id, reused, device: session.device ?? "iphone", minutes, extra: context.usage.left === 0, provider, route: reason, ...(needs.length ? { needs } : {}) });
+    logCloud("cloud.phone_started", { userId, phoneId: session.id, reused, device: session.device ?? "iphone", minutes, extra: context.usage.left === 0, provider, route: reason, ...(needs.length ? { needs } : {}), ...(builds.length ? { builds } : {}) });
     if (!reused) {
       captureCloudPhone(env, waitUntil, userId, {
         step: "started",

@@ -52,7 +52,7 @@ export function ChannelBadge({
   const betaTrack = !isPrerelease && track === "beta";
   if (!isPrerelease && !betaTrack) return null;
   const shownVersion = betaTrack ? null : version !== undefined ? version : fetchedVersion;
-  const label = betaTrack ? "BETA" : packageChannelLabel(channel);
+  const label = betaTrack ? "Beta" : packageChannelLabel(channel);
   const body = (
     <>
       <span>{label}</span>
@@ -76,8 +76,8 @@ export function ChannelBadge({
 }
 
 /**
- * A machine's update track as the header's chip: the amber BETA chip, or a
- * quiet STABLE one beside it when both tracks are in one list.
+ * A machine's update track as the header's chip: the amber Beta chip, or a
+ * quiet Stable one beside it when both tracks are in one list.
  */
 export function UpdateTrackChip({ track }: { track: UpdateTrack }): React.ReactElement {
   return (
@@ -87,7 +87,7 @@ export function UpdateTrackChip({ track }: { track: UpdateTrack }): React.ReactE
       data-track={track}
       aria-label={updateTrackLabel(track)}
     >
-      {track === "beta" ? "BETA" : "STABLE"}
+      {track === "beta" ? "Beta" : "Stable"}
     </span>
   );
 }

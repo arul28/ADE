@@ -4,7 +4,7 @@ import type { ColumnConfig, TimelineEvent, TimelineColumn } from "./timelineType
 import { CATEGORY_META, getStatusClasses } from "./eventTaxonomy";
 import { eventIcon } from "./eventIcons";
 import { EventMachineChip, isEventMachineOffline } from "./EventMachineChip";
-import { relativeWhen, formatDurationMs } from "../../lib/format";
+import { relativeWhen, formatDurationMs, sentenceCase } from "../../lib/format";
 
 /* ------------------------------------------------------------------ */
 /*  Props                                                              */
@@ -203,11 +203,11 @@ export function TimelineListView({
                 {show("status") ? (
                   <span
                     className={cn(
-                      "shrink-0 border rounded-md px-1.5 py-px font-mono text-[9px] font-bold uppercase tracking-[0.5px]",
+                      "shrink-0 border rounded-md px-1.5 py-px font-sans text-[10px] font-medium",
                       getStatusClasses(ev.status),
                     )}
                   >
-                    {STATUS_CHAR[ev.status] ?? ""} {ev.status}
+                    {STATUS_CHAR[ev.status] ?? ""} {sentenceCase(ev.status)}
                   </span>
                 ) : null}
 

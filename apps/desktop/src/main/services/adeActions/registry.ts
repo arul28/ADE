@@ -186,6 +186,7 @@ import type {
   LaneListSnapshot,
   LanePreviewInfo,
   ListSessionsArgs,
+  PtyDisposeArgs,
   ListLanesArgs,
   UpdateSessionMetaArgs,
   ReadTranscriptTailArgs,
@@ -5437,7 +5438,14 @@ export function getAdeActionDomainServices(
     budget: toService(runtime.budgetCapService),
     update: toService(runtime.autoUpdateService),
     file: toService(buildFileDomainService(runtime)),
-    pty: toService(runtime.ptyService),
+    pty: runtime.ptyService ? toService({
+      ...runtime.ptyService,
+      dispose(args: PtyDisposeArgs) {
+        return args.confirmProcessExit === true
+          ? runtime.ptyService.disposeWithExitReceipt(args)
+          : runtime.ptyService.dispose(args);
+      },
+    }) : null,
     terminal: toService(buildTerminalDomainService(runtime)),
     layout: toService(buildLayoutDomainService(runtime)),
     tiling_tree: toService(buildTilingTreeDomainService(runtime)),

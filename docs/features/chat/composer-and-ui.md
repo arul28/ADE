@@ -472,7 +472,8 @@ a handoff that sees no frames in 1.5 s gives up and restores the composer.
   off` with **Resume in …**, `paused after 2 tries` with **Try again**,
   `resuming…`, or the provider's name when it gave no reset. **Continue on
   <account>** copies the provider thread to another account with room and
-  resumes there; a thread that cannot move continues in a new chat in the
+  resumes there; a thread that cannot move continues, with its queued
+  messages, in a new chat in the
   same lane (a compaction-only turn reports the failure). Clock and provider
   text are in the tooltip.
 - **Quiet limits.** A turn that ended at a 429, or the live resume turn, shows

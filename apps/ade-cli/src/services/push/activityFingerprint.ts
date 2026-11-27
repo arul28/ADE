@@ -45,6 +45,7 @@ export function activityContentFingerprint(item: AttentionItem): string {
     model: item.model ?? null,
     title: item.title,
     projectId: item.project.projectId,
+    projectSettingsKey: item.project.settingsKey ?? null,
     projectName: item.project.name,
     destination: item.destination,
     actions: item.actions.map((action) => `${action.id}:${action.kind}`),

@@ -20,15 +20,17 @@ type ChatProjectionServices = {
   ptyService?: {
     enrichSessions(sessions: TerminalSessionSummary[]): TerminalSessionSummary[];
     ensureResumeTargets?(sessionIds: string[]): Promise<void>;
+    listAdditionalLiveSessionsForLane?(laneId: string): TerminalSessionSummary[];
   } | null;
   agentChatService?: {
     listSessions(
       laneId?: string,
-      options?: { includeIdentity?: boolean; includeAutomation?: boolean; includeSideChats?: boolean; sessionIds?: readonly string[] },
+      options?: { includeIdentity?: boolean; includeAutomation?: boolean; includeSideChats?: boolean; sessionIds?: readonly string[]; openOnly?: boolean },
     ): Promise<AgentChatSessionSummary[]>;
     getSessionSummary(sessionId: string): Promise<AgentChatSessionSummary | null>;
     getSessionIdentityKey(sessionId: string): Promise<AgentChatIdentityKey | null>;
     getSessionSideChatParentId(sessionId: string): Promise<string | null>;
+    listArchivedWorkingChats?(laneId: string): TerminalSessionSummary[];
     /** Each tracked agent CLI row's latest move to another machine (a chat's rides its summary). */
     getCliCrossMachineMoves?(sessionIds: readonly string[]): Map<string, AgentChatCrossMachineHandoffRecord>;
   } | null;
@@ -281,6 +283,7 @@ export function projectChatOntoSession(
 export function projectChatSummariesOntoSessions(
   sessions: TerminalSessionSummary[],
   allChats: AgentChatSessionSummary[],
+  includeSideChats = false,
 ): TerminalSessionSummary[] {
   const hiddenSessionIds = new Set<string>();
   /**
@@ -295,8 +298,8 @@ export function projectChatSummariesOntoSessions(
   const identityKeyBySessionId = new Map<string, string>();
   const chatSummaryBySessionId = new Map<string, AgentChatSessionSummary>();
   for (const chat of allChats) {
-    // A side chat lives inside its main chat, so it is never a roster row.
-    if (chat.sideChatParentSessionId) {
+    // Side chats are absent from Work but count when checking a lane's open work.
+    if (chat.sideChatParentSessionId && !includeSideChats) {
       hiddenSessionIds.add(chat.sessionId);
       continue;
     }
@@ -325,12 +328,15 @@ export async function listSessionsWithChatProjection(
   services: ChatProjectionServices,
   args: ListSessionsArgs = {},
 ): Promise<TerminalSessionSummary[]> {
-  let listedSessions = services.sessionService.list(args);
+  const filterLiveStatus = Boolean(args.openOnly && args.status);
+  let listedSessions = services.sessionService.list(filterLiveStatus
+    ? { ...args, status: undefined, limit: null }
+    : args);
   const missingResumeTargetIds = listedSessions
     .filter(sessionNeedsResumeTargetHydration)
     .slice(0, 10)
     .map((session) => session.id);
-  if (missingResumeTargetIds.length > 0 && services.ptyService?.ensureResumeTargets) {
+  if (!args.openOnly && missingResumeTargetIds.length > 0 && services.ptyService?.ensureResumeTargets) {
     try {
       await services.ptyService.ensureResumeTargets(missingResumeTargetIds);
       listedSessions = services.sessionService.list(args);
@@ -363,6 +369,7 @@ export async function listSessionsWithChatProjection(
         includeAutomation: true,
         includeSideChats: true,
         sessionIds: shownChatIds,
+        ...(args.openOnly ? { openOnly: true } : {}),
       });
       const summarized = new Set(allChats.map((chat) => chat.sessionId));
       const readIds = new Set<string>(shownChatIds.filter((id) => !summarized.has(id)));
@@ -382,9 +389,26 @@ export async function listSessionsWithChatProjection(
         laneId: laneId || null,
         error: getErrorMessage(error),
       });
+      if (args.openOnly) throw error;
     }
   }
-  return withCliCrossMachineMoves(services, projectChatSummariesOntoSessions(sessions, allChats));
+  const projected = projectChatSummariesOntoSessions(sessions, allChats, args.openOnly);
+  if (!args.openOnly) return withCliCrossMachineMoves(services, projected);
+  const matches = (row: TerminalSessionSummary) =>
+    (!args.status || row.status === args.status)
+    && (!args.toolTypes?.length || (row.toolType != null && args.toolTypes.includes(row.toolType)))
+    && (!args.chatSessionId?.trim() || row.chatSessionId === args.chatSessionId.trim());
+  const live = laneId ? [
+    ...(services.ptyService?.listAdditionalLiveSessionsForLane?.(laneId) ?? []),
+    ...(services.agentChatService?.listArchivedWorkingChats?.(laneId) ?? []),
+  ] : [];
+  if (!live.length && !filterLiveStatus) return projected;
+  // A chat may be archived or a PTY detached while the roster is being projected.
+  const liveIds = new Set(live.map((session) => session.id));
+  const combined = [...projected.filter((session) => !liveIds.has(session.id)), ...live].filter(matches);
+  const limit = args.limit === null ? -1 : args.limit ?? 200;
+  if (limit < 0) return combined;
+  return combined.sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt)).slice(0, limit);
 }
 
 /**

@@ -396,7 +396,7 @@
 .ade-pomo[data-phase="break"] .ade-pomo-knob { stroke: var(--kit-ok); }
 .ade-pomo-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; }
 .ade-pomo-time { font-size: clamp(18px, 10cqh, 34px); font-weight: 500; letter-spacing: -0.03em; color: var(--color-fg); }
-.ade-pomo-phase { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--kit-text-3); }
+.ade-pomo-phase { font-size: 11px; font-weight: 500; color: var(--kit-text-3); }
 .ade-pomo[data-running] .ade-pomo-phase { color: var(--color-accent); }
 .ade-pomo-side { display: flex; flex-direction: column; gap: 14px; min-width: 0; flex: 1 1 auto; }
 .ade-pomo-controls { display: flex; gap: 6px; align-items: center; }

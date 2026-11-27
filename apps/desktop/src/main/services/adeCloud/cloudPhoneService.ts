@@ -31,6 +31,7 @@ import {
   cloudPhoneLacks,
   isCloudPhoneAbility,
   type CloudPhoneAbility,
+  type CloudPhoneBuildNeed,
   type CloudPhoneDevice,
   type CloudPhoneMinutes,
   type CloudPhoneProvider,
@@ -70,6 +71,7 @@ import {
   type CloudPhoneHeld as Held,
   type CloudPhonePacked as Packed,
   type CloudPhoneRead,
+  type CloudPhoneRunInput,
   type CloudPhoneToolAnswer,
 } from "./cloudPhoneDriver";
 import { createNomacDriver } from "./cloudPhoneNomacDriver";
@@ -195,12 +197,92 @@ async function packWithTar(noun: "project" | "app", tarArgs: (out: string) => st
   }
 }
 
+/**
+ * The folder inside the upload to build, from the files that go up. The phone
+ * looks only at the folder it is given, so with no `path`, ADE finds the
+ * project where a Mac's own `ade apple launch` looks (`discoverXcodeProjectPaths`
+ * in `iosSimulatorService.ts`): the top, each folder at the top, and `apps/*`.
+ * A `.xcodeproj`, `.xcworkspace` or XcodeGen `project.yml` marks a folder; a
+ * `Package.swift` at the top leaves the choice to the phone. A named `path`
+ * must be something that goes up. Throws a sentence that names `--path`.
+ */
+function cloudPhoneBuildFolder(files: readonly string[], requested: string | undefined, root: string): string | undefined {
+  if (requested) {
+    // `ios/.`, `./ios/` and `ios` are one folder; `..` never gets here (`projectArgs`).
+    const named = path.posix.normalize(requested.replace(/\\/g, "/")).replace(/\/+$/, "");
+    if (!named || named === ".") return undefined;
+    // A folder, or a .xcodeproj / .xcworkspace bundle, with files under it: never a file.
+    if (!files.some((file) => file.startsWith(`${named}/`))) {
+      throw new CloudPhoneError(`${requested} isn't a folder that goes up from ${root}: it isn't there, it's a file, or git doesn't track it. Pass --path <folder>: the folder inside the project with the .xcodeproj or .xcworkspace.`, "bad_request");
+    }
+    return named;
+  }
+  // Each folder's build choices: its workspaces (a workspace carries its project), else its projects, else a project.yml.
+  const folders = new Map<string, { workspaces: Set<string>; projects: Set<string>; spec: boolean }>();
+  let packageAtTop = false;
+  for (const file of files) {
+    if (file === "Package.swift") packageAtTop = true;
+    const parts = file.split("/");
+    // The first bundle on the path: a project's own inner project.xcworkspace sits inside it and is never a choice.
+    const marker = parts.findIndex((part, index) => /\.(xcodeproj|xcworkspace)$/i.test(part) || (part === "project.yml" && index === parts.length - 1));
+    if (marker < 0) continue;
+    const folder = parts.slice(0, marker);
+    if (!(folder.length <= 1 || (folder.length === 2 && folder[0] === "apps"))) continue;
+    const key = folder.join("/");
+    const entry = folders.get(key) ?? { workspaces: new Set<string>(), projects: new Set<string>(), spec: false };
+    folders.set(key, entry);
+    const bundle = parts[marker]!;
+    if (/\.xcworkspace$/i.test(bundle)) entry.workspaces.add(bundle);
+    else if (/\.xcodeproj$/i.test(bundle)) entry.projects.add(bundle);
+    else entry.spec = true;
+  }
+  const choices: string[] = [];
+  const within = (folder: string, bundle: string): string => (folder ? `${folder}/${bundle}` : bundle);
+  for (const [folder, entry] of folders) {
+    const bundles = entry.workspaces.size ? entry.workspaces : entry.projects;
+    if (bundles.size > 1) choices.push(...[...bundles].map((bundle) => within(folder, bundle)));
+    else choices.push(folder);
+  }
+  // A Swift package at the top is a choice of its own when the top has no project.
+  if (packageAtTop && !folders.has("")) choices.push("");
+  if (choices.length === 1) return choices[0] || undefined;
+  if (choices.length > 1) {
+    const shown = choices.sort().map((choice) => choice || ".");
+    throw new CloudPhoneError(`This project has ${shown.length} things to build (${shown.slice(0, 8).join(", ")}${shown.length > 8 ? ", …" : ""}). Pass --path to pick one, e.g. --path ${shown.find((choice) => choice !== ".") ?? shown[0]}.`, "bad_request");
+  }
+  throw new CloudPhoneError(`No Xcode project, workspace or XcodeGen project.yml in ${root}, its folders, or apps/*. Pass --path <folder>: the folder inside the project with the .xcodeproj or .xcworkspace.`, "no_project");
+}
+
+/** Xcode 26 and later ship the Metal compiler as a separate download; a build host without it fails on any `.metal` file. */
+const MISSING_METAL = /missing Metal Toolchain/i;
+const METAL_SENTENCE = "The cloud iPhone's Xcode doesn't have Apple's Metal Toolchain, and this project compiles Metal shaders (a .metal file in the app or in one of its Swift packages), so it can't be built there yet. Build it on a Mac and send the app with ade apple install --app <path to the Simulator .app>.";
+
+/** The line a build that moved to another phone for its Metal shaders starts with. */
+const METAL_MOVED = "Moved to another cloud iPhone: the first one's Xcode has no Metal Toolchain, which this project's Metal shaders need.";
+
+/** A build that failed for want of the Metal Toolchain (its own words, from either provider). */
+const missedMetal = (answer: CloudPhoneToolAnswer): boolean => answer.failed && MISSING_METAL.test(answer.text);
+
+/** A failed build's answer, led by one sentence (`lead`, else the toolchain's) when the build host lacked the Metal Toolchain. */
+function explainBuildFailure(answer: CloudPhoneToolAnswer, lead = METAL_SENTENCE): CloudPhoneToolAnswer {
+  if (!missedMetal(answer)) return answer;
+  return { ...answer, text: `${lead}\n\n${answer.text}` };
+}
+
+/** Projects whose build needed the Metal Toolchain, kept this many (a Swift package's shaders show only in a build). */
+const METAL_PROJECTS_LIMIT = 200;
+
 /** A `.tar.gz` of those files, made with the system's tar (Windows 10+, macOS and Linux all ship one that reads `--null -T -`). */
-async function packProject(root: string): Promise<Packed & { count: number }> {
+async function packProject(root: string, requested?: string): Promise<Packed & { count: number; sub: string | undefined; metal: boolean }> {
   const files = await projectFiles(root);
   if (!files.length) throw new CloudPhoneError("The project has no files to send.", "pack_failed");
+  // Before packing: a project that can't build spends no upload and starts no phone.
+  const sub = cloudPhoneBuildFolder(files, requested, root);
   const packed = await packWithTar("project", (out) => ["--null", "-czf", out, "-T", "-"], { cwd: root, input: Buffer.from(`${files.join("\0")}\0`, "utf8") });
-  return { ...packed, count: files.length };
+  // The project's own shaders (a Swift package's show only when it builds: `metalProjects` keeps those).
+  const inside = sub ? `${sub.replace(/\\/g, "/").replace(/\/+$/, "").replace(/\/[^/]+\.(xcodeproj|xcworkspace)$/i, "")}/` : "";
+  const metal = files.some((file) => file.startsWith(inside) && /\.metal$/i.test(file));
+  return { ...packed, count: files.length, sub, metal };
 }
 
 /**
@@ -365,6 +447,8 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
   const announced = new Set<string>();
   /** One start at a time: a second caller of the same account waits for the same phone. */
   let starting: { account: string | null; phone: Promise<Held> } | null = null;
+  /** Builds (the project, its folder and scheme) that needed the Metal Toolchain: their next start names it. */
+  const metalProjects = new Set<string>();
 
   const accountOf = (client: CloudProvider | null): string | null => client?.account ?? null;
 
@@ -496,7 +580,16 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
    * The account's ready phone, started when there is none; `chatSessionId` is the agent chat told of a new one.
    * `account`: the account the command began under (a retry's), refused when another is signed in now.
    */
-  async function ensure({ device, chatSessionId = null, needs = [], account: began }: { device?: CloudPhoneDevice; chatSessionId?: string | null; needs?: readonly CloudPhoneAbility[]; account?: string | null } = {}): Promise<Held> {
+  async function ensure({ device, chatSessionId = null, needs = [], builds = [], missing, account: began }: {
+    device?: CloudPhoneDevice;
+    chatSessionId?: string | null;
+    needs?: readonly CloudPhoneAbility[];
+    /** Build tools the project needs: the server is always asked, since it may move the phone to a provider that has them. */
+    builds?: readonly CloudPhoneBuildNeed[];
+    /** The build on this phone just failed for want of `need`: told to the server with the start. */
+    missing?: { phoneId: string; need: CloudPhoneBuildNeed };
+    account?: string | null;
+  } = {}): Promise<Held> {
     const switched = (): CloudPhoneError => new CloudPhoneError("The ADE account changed while the cloud iPhone was in use. Try again.", "no_account");
     const account = await currentAccount();
     if (began !== undefined && account !== began) throw switched();
@@ -506,7 +599,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       if (lacked) throw new CloudPhoneError(lacksSentence(lacked), "phone_lacks");
       return phone;
     };
-    if (held && held.renewBy - Date.now() > TOKEN_REFRESH_MARGIN_MS && (!device || held.device === device)) {
+    if (held && !builds.length && held.renewBy - Date.now() > TOKEN_REFRESH_MARGIN_MS && (!device || held.device === device)) {
       if (Date.now() - held.checkedAt < READY_TRUST_MS) return able(held);
       // A held phone may have stopped on its own (idle, its time limit): read it.
       const phone = held;
@@ -526,6 +619,8 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     }
     // A start already running for another account is not this caller's phone: wait for it to end, then start our own.
     while (starting && starting.account !== account) await starting.phone.catch(() => undefined);
+    // A start that names build tools asks the server itself (it may swap the phone): it waits out another one first.
+    while (builds.length && starting) await starting.phone.catch(() => undefined);
     if (!starting) {
       const starter = (async () => {
         const client = await provider();
@@ -536,7 +631,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
           const by = Date.now() + START_BUSY_WAIT_MS;
           for (;;) {
             try {
-              return await client.phoneStart!({ ...(device ? { device } : {}), ...(needs.length ? { needs } : {}) });
+              return await client.phoneStart!({ ...(device ? { device } : {}), ...(needs.length ? { needs } : {}), ...(builds.length ? { builds } : {}), ...(missing ? { missing } : {}) });
             } catch (error) {
               if (!(error instanceof CloudProviderError) || error.code !== "phone_starting" || Date.now() + START_BUSY_POLL_MS > by) throw error;
               await sleep(START_BUSY_POLL_MS);
@@ -545,7 +640,8 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
         };
         const start = await startOnce().catch(async (error: unknown) => {
           // The account's running phone (started on another machine) lacks a need: the agent decides to stop it.
-          if (!(error instanceof CloudProviderError) || error.code !== "phone_lacks" || !needs[0]) throw error;
+          // With build tools in play the server's sentence already names both what builds and what's lacking.
+          if (!(error instanceof CloudProviderError) || error.code !== "phone_lacks" || !needs[0] || builds.length) throw error;
           // Name the need it lacks, read from the running phone (the first need when it can't be read).
           const running = await client.phoneState!().then((state) => state.phone?.provider, () => undefined);
           throw new CloudPhoneError(lacksSentence((running && cloudPhoneLacks(running, needs)[0]) || needs[0]), "phone_lacks");
@@ -579,16 +675,22 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
    * phone ended between the check and the command's first call (idle, its
    * limit): once more on a fresh one.
    */
-  async function withPhone<T>(chatSessionId: string | null, run: (phone: Held, driver: CloudPhoneDriver) => Promise<T>, need?: CloudPhoneAbility): Promise<T> {
+  async function withPhone<T>(
+    chatSessionId: string | null,
+    run: (phone: Held, driver: CloudPhoneDriver) => Promise<T>,
+    need?: CloudPhoneAbility,
+    build: { builds?: readonly CloudPhoneBuildNeed[]; missing?: { phoneId: string; need: CloudPhoneBuildNeed }; account?: string | null } = {},
+  ): Promise<T> {
     const needs = need ? [need] : [];
-    const phone = await ensure({ chatSessionId, needs });
+    const phone = await ensure({ chatSessionId, needs, ...build });
     try {
       return await run(phone, driverOf(phone));
     } catch (error) {
       if (!(error instanceof CloudPhoneGoneError)) throw error;
       if (held === phone) held = null;
       // Only for the account the command began under: after a switch, never on the new account's phone.
-      const fresh = await ensure({ chatSessionId, needs, account: phone.account });
+      // The report went with the first start: never twice.
+      const fresh = await ensure({ chatSessionId, needs, builds: build.builds ?? [], account: phone.account });
       return await run(fresh, driverOf(fresh));
     }
   }
@@ -811,19 +913,54 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       const chatSessionId = cloudPhoneCallerChat(args);
       const scheme = textArg(args?.scheme, "scheme", 200);
       const env = textArg(args?.env, "env", 8_000);
-      const packed = await packProject(root);
+      const packed = await packProject(root, sub);
       try {
-        // env values need a phone that passes them to the app.
-        const answer = await withPhone(chatSessionId, (phone, driver) => driver.run(phone, {
+        const name = cloudPhoneProjectName(root);
+        const input: CloudPhoneRunInput = {
           project: packed,
-          name: cloudPhoneProjectName(root),
-          ...(sub ? { sub } : {}),
+          name,
+          ...(packed.sub ? { sub: packed.sub } : {}),
           ...(scheme ? { scheme } : {}),
           ...(configuration ? { configuration } : {}),
           ...(env ? { env } : {}),
           ...(args?.clean === true ? { clean: true } : {}),
-        }), env ? "launchEnv" : undefined);
-        return { ...answer, files: packed.count, bytes: packed.size };
+        };
+        // env values need a phone that passes them to the app.
+        const need = env ? "launchEnv" as const : undefined;
+        // A project known to compile Metal names it, so the server starts (or swaps to) a phone whose Xcode has the toolchain.
+        // The build, not the checkout: another app in the same checkout may have no shaders.
+        const buildKey = `${name}\0${packed.sub ?? ""}\0${scheme ?? ""}`;
+        const builds: CloudPhoneBuildNeed[] = packed.metal || metalProjects.has(buildKey) ? ["metal"] : [];
+        const ran: { phone?: Held } = {};
+        const answer = await withPhone(chatSessionId, (phone, driver) => {
+          ran.phone = phone;
+          return driver.run(phone, input);
+        }, need, { builds });
+        const failedOn = ran.phone;
+        if (!missedMetal(answer) || !failedOn) return { ...explainBuildFailure(answer), files: packed.count, bytes: packed.size };
+        metalProjects.add(buildKey);
+        if (metalProjects.size > METAL_PROJECTS_LIMIT) metalProjects.delete(metalProjects.values().next().value as string);
+        // Told to the server, which keeps that provider out of Metal builds for a day and moves this phone to one with
+        // the toolchain when the plan allows (a refusal says why, and the phone stays). Built once more there, never again.
+        let moved: CloudPhoneToolAnswer | null = null;
+        let refusal: string | null = null;
+        try {
+          moved = await withPhone(chatSessionId, async (phone, driver) => (phone.phoneId === failedOn.phoneId ? null : await driver.run(phone, input)), need, {
+            builds: ["metal"],
+            missing: { phoneId: failedOn.phoneId, need: "metal" },
+            // Only under the account the first build ran under: after a switch, never on another account's phone.
+            account: failedOn.account,
+          });
+        } catch (error) {
+          if (!(error instanceof CloudProviderError) && !(error instanceof CloudPhoneError)) throw error;
+          refusal = error.message;
+          deps.logger?.info?.("cloud_phone.metal_move_refused", { code: error.code });
+        }
+        if (moved) {
+          deps.logger?.info?.("cloud_phone.metal_moved", { failed: moved.failed });
+          return { ...explainBuildFailure({ ...moved, text: `${METAL_MOVED}\n\n${moved.text}` }), files: packed.count, bytes: packed.size };
+        }
+        return { ...explainBuildFailure(answer, refusal ?? METAL_SENTENCE), files: packed.count, bytes: packed.size };
       } finally {
         fs.rmSync(packed.file, { force: true });
       }
@@ -924,15 +1061,15 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       const chatSessionId = cloudPhoneCallerChat(args);
       const scheme = textArg(args?.scheme, "scheme", 200);
       const only = textArg(args?.only, "only", 2_000);
-      const packed = await packProject(root);
+      const packed = await packProject(root, sub);
       try {
-        return await withPhone(chatSessionId, (phone, driver) => abilityCall(driver.test, "tests").call(driver, phone, {
+        return explainBuildFailure(await withPhone(chatSessionId, (phone, driver) => abilityCall(driver.test, "tests").call(driver, phone, {
           project: packed,
           name: cloudPhoneProjectName(root),
-          ...(sub ? { sub } : {}),
+          ...(packed.sub ? { sub: packed.sub } : {}),
           ...(scheme ? { scheme } : {}),
           ...(only ? { only } : {}),
-        }), "tests");
+        }), "tests"));
       } finally {
         fs.rmSync(packed.file, { force: true });
       }

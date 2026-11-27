@@ -253,8 +253,8 @@ export function ProjectSection() {
                 <div key={entry.relativePath} className="ade-pj-entry">
                   <span className="ade-modern-path" style={{ color: "var(--color-fg)" }}>.ade/{entry.relativePath}</span>
                   <span style={{ display: "flex", gap: 6, flex: "none" }}>
-                    <span className="kit-tag">{entry.kind === "tracked" ? "in git" : "local only"}</span>
-                    <span className="kit-tag" data-tone={entry.exists ? "ok" : "warn"}>{entry.exists ? "present" : "missing"}</span>
+                    <span className="kit-tag">{entry.kind === "tracked" ? "In git" : "Local only"}</span>
+                    <span className="kit-tag" data-tone={entry.exists ? "ok" : "warn"}>{entry.exists ? "Present" : "Missing"}</span>
                   </span>
                 </div>
               ))}

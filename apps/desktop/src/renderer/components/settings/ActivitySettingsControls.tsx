@@ -9,11 +9,15 @@ import {
 } from "@phosphor-icons/react";
 
 import {
+  ATTENTION_SCOPE_EVENT_POLICIES_FEATURE,
   DEFAULT_ATTENTION_PREFERENCES,
   upgradeAttentionEventPolicies,
   type AttentionAccountDevice,
+  type AttentionPreferenceScope,
   type AttentionPreferences,
+  type AttentionScopePatch,
 } from "../../../shared/types";
+import { applyAttentionScopePatchLocally } from "../../../shared/attention/attentionScope";
 import { ipcErrorMessage, relativeWhen } from "../../lib/format";
 import { captureError } from "../../../shared/sentry/capture";
 import { isMac } from "../../lib/platform";
@@ -58,7 +62,17 @@ export type ActivityMachineOption = {
   online: boolean;
 };
 
+export type ActivityProjectOption = {
+  /** The key project settings use (`AttentionProjectRef.settingsKey`). */
+  projectId: string;
+  name: string;
+};
+
+/** A place notification settings can differ from the account's. */
+export type NotificationScopeCollection = "projects" | "machines" | "devices";
+
 export type ActivitySettingsModel = ReturnType<typeof useActivitySettings>;
+
 
 /**
  * Account fields an older build may still carry. The notch that read them is
@@ -73,6 +87,7 @@ function normalizeActivityPreferences(
   const account: AttentionPreferences["account"] & Record<string, unknown> = {
     ...DEFAULT_ATTENTION_PREFERENCES.account,
     ...saved,
+    // The defaults hold only the item events (see DEFAULT_ATTENTION_PREFERENCES).
     eventPolicies: {
       ...DEFAULT_ATTENTION_PREFERENCES.account.eventPolicies,
       ...saved.eventPolicies,
@@ -250,17 +265,22 @@ export function useActivitySettings({ includeDevices = false }: { includeDevices
     }
   }, [accountOwnerId, flashSaved, loadFailed, loadedOwnerId, preferences, setSaveError]);
 
-  const setScopeNotificationsEnabled = useCallback(async (
-    scope: "machines" | "devices",
+  /** Change one project, machine or phone scope through its own relay route. */
+  const updateScope = useCallback(async (
+    collection: NotificationScopeCollection,
     id: string,
-    enabled: boolean,
+    patch: AttentionScopePatch,
   ) => {
     const account = accountScope.current;
     if (!accountOwnerId || loadedOwnerId !== accountOwnerId || loadFailed || account.ownerId !== accountOwnerId) return;
     const api = window.ade?.attention;
-    const put = scope === "machines" ? api?.putMachinePreferences : api?.putDevicePreferences;
-    const noun = scope === "machines" ? "machine" : "phone";
-    const key = `${scope}:${id}`;
+    const put = collection === "machines"
+      ? api?.putMachinePreferences
+      : collection === "devices"
+        ? api?.putDevicePreferences
+        : api?.putProjectPreferences;
+    const noun = collection === "machines" ? "machine" : collection === "devices" ? "phone" : "project";
+    const key = `${collection}:${id}`;
     if (!put) {
       setSaveError(key, `This ADE build can’t change per-${noun} notifications yet.`);
       return;
@@ -268,14 +288,16 @@ export function useActivitySettings({ includeDevices = false }: { includeDevices
     if (account.pending.has(key)) return;
     account.pending.add(key);
     setSavingTargets(new Set(account.pending));
-    const patch = scope === "machines" ? { notificationsEnabled: enabled } : { deviceDeliveryEnabled: enabled };
     try {
       await put(accountOwnerId, id, patch);
       if (!mounted.current || accountScope.current !== account) return;
-      setPreferences((current) => ({
-        ...current,
-        [scope]: { ...current[scope], [id]: { ...current[scope][id], ...patch } },
-      }));
+      setPreferences((current) => {
+        const next = applyAttentionScopePatchLocally(current[collection][id], patch);
+        const scopes = { ...current[collection] };
+        if (Object.keys(next).length > 0) scopes[id] = next;
+        else delete scopes[id];
+        return { ...current, [collection]: scopes };
+      });
       setSaveError(key, null);
       flashSaved();
     } catch (saveError) {
@@ -289,12 +311,12 @@ export function useActivitySettings({ includeDevices = false }: { includeDevices
   }, [accountOwnerId, flashSaved, loadFailed, loadedOwnerId, setSaveError]);
 
   const setMachineMuted = useCallback(
-    (machineKey: string, muted: boolean) => setScopeNotificationsEnabled("machines", machineKey, !muted),
-    [setScopeNotificationsEnabled],
+    (machineKey: string, muted: boolean) => updateScope("machines", machineKey, { notificationsEnabled: !muted }),
+    [updateScope],
   );
   const setPhoneNotificationsEnabled = useCallback(
-    (deviceId: string, enabled: boolean) => setScopeNotificationsEnabled("devices", deviceId, enabled),
-    [setScopeNotificationsEnabled],
+    (deviceId: string, enabled: boolean) => updateScope("devices", deviceId, { deviceDeliveryEnabled: enabled }),
+    [updateScope],
   );
 
   // The roster comes from the snapshot on screen, so it can only ever offer
@@ -316,6 +338,29 @@ export function useActivitySettings({ includeDevices = false }: { includeDevices
     return [...byKey.values()].sort((left, right) => left.name.localeCompare(right.name));
   }, [itemsById]);
 
+  // Projects the account has Activity for, by their settings key (the
+  // repository, so every checkout of it is one choice), plus any project that
+  // already has its own settings.
+  const projects = useMemo<ActivityProjectOption[]>(() => {
+    const byId = new Map<string, ActivityProjectOption>();
+    for (const item of Object.values(itemsById)) {
+      const projectId = item.project.settingsKey?.trim() || item.project.canonicalId?.trim();
+      if (!projectId || byId.has(projectId)) continue;
+      byId.set(projectId, { projectId, name: item.project.name });
+    }
+    for (const projectId of Object.keys(preferences.projects)) {
+      // A repository key reads as itself; a folder's checkout id gets a short tag
+      // so two such projects stay distinguishable.
+      if (!byId.has(projectId)) {
+        byId.set(projectId, {
+          projectId,
+          name: projectId.includes("/") ? projectId : `Project not in Activity · ${projectId.slice(0, 8)}`,
+        });
+      }
+    }
+    return [...byId.values()].sort((left, right) => left.name.localeCompare(right.name));
+  }, [itemsById, preferences.projects]);
+
   const busy = loading || !accountOwnerId || loadedOwnerId !== accountOwnerId || loadFailed;
   const error = loadError ?? saveErrors.get("account") ?? saveErrors.values().next().value ?? null;
   return {
@@ -334,7 +379,16 @@ export function useActivitySettings({ includeDevices = false }: { includeDevices
     preferences,
     account: preferences.account,
     machines,
+    projects,
+    /**
+     * The account service merges per-scope events (an older one let one
+     * scoped event replace the account's whole map), so Settings may offer
+     * events per project, computer and phone.
+     */
+    scopedEventsAvailable: Boolean(preferences.relayFeatures?.includes(ATTENTION_SCOPE_EVENT_POLICIES_FEATURE)),
+    projectScopesAvailable: typeof window !== "undefined" && Boolean(window.ade?.attention?.putProjectPreferences),
     updateAccount,
+    updateScope,
     setMachineMuted,
     machineMuted: (machineKey: string) =>
       preferences.machines[machineKey]?.notificationsEnabled === false,
@@ -551,7 +605,7 @@ export function ActivitySettingsControls({
  * A two-or-three-way choice as a segmented control (`.kit-seg`), exposed as a
  * radio group under the same accessible name the old select carried.
  */
-function SegmentedChoice<T extends string>({
+export function SegmentedChoice<T extends string>({
   ariaLabel,
   value,
   options,
@@ -645,7 +699,10 @@ function NotificationTargetRow({
   checked,
   disabled,
   onChange,
+  onChooseEvents,
 }: {
+  /** Opens the Events matrix for this computer or phone. */
+  onChooseEvents?: () => void;
   icon: React.ElementType;
   name: string;
   /** The status dot is lit: online and getting notifications. */
@@ -670,7 +727,21 @@ function NotificationTargetRow({
           {hint}
         </span>
       )}
-      control={<SettingsToggle label={toggleLabel} checked={checked} disabled={disabled} onChange={onChange} />}
+      control={(
+        <>
+          {onChooseEvents ? (
+            <button
+              type="button"
+              className="ade-modern-btn"
+              aria-label={`Choose events for ${name}`}
+              onClick={onChooseEvents}
+            >
+              Choose events
+            </button>
+          ) : null}
+          <SettingsToggle label={toggleLabel} checked={checked} disabled={disabled} onChange={onChange} />
+        </>
+      )}
     />
   );
 }
@@ -680,7 +751,14 @@ function NotificationTargetRow({
  * notifications that come from it; a phone's is about notifications sent to it.
  * Muted computers still show in Activity.
  */
-export function ActivityMachinesSection({ model }: { model: ActivitySettingsModel }) {
+export function ActivityMachinesSection({
+  model,
+  onChooseEvents,
+}: {
+  model: ActivitySettingsModel;
+  /** Show the Events matrix for one computer or phone; absent where no matrix is on the page. */
+  onChooseEvents?: (collection: "machines" | "devices", id: string) => void;
+}) {
   const {
     machines,
     phones,
@@ -700,7 +778,7 @@ export function ActivityMachinesSection({ model }: { model: ActivitySettingsMode
       group="Machines"
       anchor="activity-machines"
       title="Machines"
-      hint="Mute a computer to stop notifications about it. Turn off a phone to stop sending notifications to it."
+      hint="Mute a computer to stop notifications about it. Turn off a phone to stop sending notifications to it. Choose events to pick what each one gets."
     >
       <ModernRows>
         {phonesLoading ? <ModernRow title="Loading notification devices…" /> : null}
@@ -722,6 +800,7 @@ export function ActivityMachinesSection({ model }: { model: ActivitySettingsMode
               checked={!muted}
               disabled={busy || model.savingTargets.has(`machines:${machine.machineKey}`)}
               onChange={(enabled) => void setMachineMuted(machine.machineKey, !enabled)}
+              onChooseEvents={onChooseEvents ? () => onChooseEvents("machines", machine.machineKey) : undefined}
             />
           );
         })}
@@ -749,6 +828,7 @@ export function ActivityMachinesSection({ model }: { model: ActivitySettingsMode
               checked={enabled && !phonesOff}
               disabled={busy || phonesOff || model.savingTargets.has(`devices:${phone.deviceId}`)}
               onChange={(next) => void setPhoneNotificationsEnabled(phone.deviceId, next)}
+              onChooseEvents={onChooseEvents ? () => onChooseEvents("devices", phone.deviceId) : undefined}
             />
           );
         })}

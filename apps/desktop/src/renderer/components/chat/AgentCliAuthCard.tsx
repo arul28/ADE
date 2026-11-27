@@ -29,7 +29,7 @@ export const CHAT_AUTH_RECOVERED_EVENT = "ade:chat:auth-recovered";
 export const CHAT_AUTH_RETRY_REJECTED_EVENT = "ade:chat:retry-auth-rejected";
 
 const BUTTON_CLASS =
-  "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.14em] transition-colors disabled:pointer-events-none disabled:opacity-45";
+  "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-medium transition-colors disabled:pointer-events-none disabled:opacity-45";
 const AMBER_BUTTON_CLASS =
   "border-amber-300/20 bg-amber-300/[0.08] text-amber-100/82 hover:border-amber-300/35 hover:bg-amber-300/[0.12]";
 
@@ -130,11 +130,11 @@ export function AgentCliAuthCard({
           <div className="mt-3 grid gap-2">
             {pinnedLine && pinnedTool.status ? (
               <div className="grid gap-1.5">
-                <div className="flex flex-wrap items-center gap-2 rounded-lg border border-fg/[0.06] bg-black/20 px-2.5 py-2">
+                <div className="flex flex-wrap items-center gap-2 rounded-lg border border-fg/[0.06] bg-black/20 px-2.5 py-2 ade-chat-well">
                   <span
                     className={cn(
                       "min-w-0 flex-1 text-[length:calc(var(--chat-font-size)*11/14)]",
-                      pinnedLine.tone === "error" ? "text-red-200/80" : "text-fg/78",
+                      pinnedLine.tone === "error" ? "text-red-200/80 [[data-theme=light]_&]:text-red-800" : "text-fg/78 [[data-theme=light]_&]:text-fg",
                     )}
                   >
                     {pinnedLine.text}

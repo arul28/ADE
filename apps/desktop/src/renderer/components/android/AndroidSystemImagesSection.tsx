@@ -243,7 +243,7 @@ function ImageRow({ entry, detail, action }: { entry: AndroidSystemImageEntry; d
         <span className="flex min-w-0 items-baseline gap-2">
           <span className="min-w-0 truncate font-sans text-[12px] font-medium leading-5 text-fg">{entry.name}</span>
           {entry.newest ? (
-            <span className="shrink-0 font-sans text-[10px] uppercase tracking-[0.08em] text-muted-fg">newest</span>
+            <span className="shrink-0 font-sans text-[10px] font-medium text-muted-fg">Newest</span>
           ) : null}
         </span>
         <span className="min-w-0 break-words font-sans text-[11px] leading-4 text-muted-fg">{detail}</span>

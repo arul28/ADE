@@ -129,7 +129,7 @@ export const HarnessPresetRow = memo(function HarnessPresetRow({
               </span>
               {/* The harness is the chip, because it is the fact that changes
                   what pressing this row actually launches. */}
-              <span className="inline-flex shrink-0 items-center gap-1 rounded-sm bg-fg/[0.06] px-1 py-px text-[9px] font-semibold uppercase leading-none text-fg/70">
+              <span className="inline-flex shrink-0 items-center gap-1 rounded-sm bg-fg/[0.06] px-1 py-px text-[9.5px] font-medium leading-none text-fg/70">
                 <ProviderLogo family={bodyLogoFamily(preset.harness)} size={9} />
                 {harnessBodyLabel(preset.harness)}
               </span>

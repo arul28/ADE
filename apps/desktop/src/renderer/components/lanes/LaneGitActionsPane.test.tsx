@@ -887,7 +887,7 @@ describe("LaneGitActionsPane rescue action", () => {
       expect(screen.getByText("1 saved")).toBeTruthy();
     });
     await waitFor(() => {
-      expect(screen.getByText("ERROR: diff refresh noisy")).toBeTruthy();
+      expect(screen.getByText("Error: diff refresh noisy")).toBeTruthy();
     });
     expect(screen.getByText("keep me")).toBeTruthy();
   });
@@ -938,7 +938,7 @@ describe("LaneGitActionsPane rescue action", () => {
     await user.click(screen.getByRole("button", { name: "Delete stash" }));
 
     await waitFor(() => {
-      expect(screen.getByText("ERROR: drop failed")).toBeTruthy();
+      expect(screen.getByText("Error: drop failed")).toBeTruthy();
     });
     expect(screen.getByText("2 saved")).toBeTruthy();
     expect(screen.getByText("drop me")).toBeTruthy();

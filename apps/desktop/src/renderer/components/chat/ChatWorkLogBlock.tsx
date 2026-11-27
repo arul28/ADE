@@ -421,7 +421,8 @@ function FlatPre({ children, failed = false }: { children: React.ReactNode; fail
   return (
     <pre className={cn(
       "mt-1 ml-[18px] max-h-80 overflow-auto whitespace-pre-wrap break-words border-t border-fg/[0.05] pt-2 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.55]",
-      failed ? "text-red-300/75" : "text-fg/55",
+      // Light pages get opaque tones: the faded ones fall under 4.5 : 1 there.
+      failed ? "text-red-300/75 [[data-theme=light]_&]:text-red-700" : "text-fg/55 [[data-theme=light]_&]:text-muted-fg",
     )}>
       {children}
     </pre>
@@ -433,10 +434,10 @@ function DiffBody({ diff }: { diff: string }) {
   return (
     <pre className="mt-1 ml-[18px] max-h-80 overflow-auto whitespace-pre-wrap break-words border-t border-fg/[0.05] pt-2 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.55] text-fg/65">
       {lines.map((line, index) => {
-        let tone = "text-fg/65";
-        if (line.startsWith("+")) tone = "text-emerald-400/85";
-        else if (line.startsWith("-")) tone = "text-red-400/85";
-        else if (line.startsWith("@@")) tone = "text-violet-400/55";
+        let tone = "text-fg/65 [[data-theme=light]_&]:text-muted-fg";
+        if (line.startsWith("+")) tone = "text-emerald-400/85 [[data-theme=light]_&]:text-emerald-800";
+        else if (line.startsWith("-")) tone = "text-red-400/85 [[data-theme=light]_&]:text-red-700";
+        else if (line.startsWith("@@")) tone = "text-violet-400/55 [[data-theme=light]_&]:text-violet-700";
         return (
           <div key={`${index}:${line}`} className={tone}>
             {line}

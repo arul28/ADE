@@ -147,7 +147,7 @@ describe("createChatAutoResumeCoordinator", () => {
     notices.length = 0;
     await failAtUsageLimit("chat-1", 210);
     expect(notices.map((notice) => notice.message))
-      .toEqual([expect.stringMatching(/^Resumes at /)]);
+      .toEqual([expect.stringMatching(/^Paused: (?:limit resets|resumes) at /)]);
   });
 });
 

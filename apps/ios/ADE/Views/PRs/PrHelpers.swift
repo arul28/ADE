@@ -1127,9 +1127,8 @@ struct PrTagChip: View {
   var filled: Bool = false
 
   var body: some View {
-    Text(label.uppercased())
-      .font(.system(size: 10, weight: .semibold, design: .monospaced))
-      .tracking(1.2)
+    Text(label.adeSentenceCased)
+      .font(.system(size: 10, weight: .medium, design: .monospaced))
       .foregroundColor(filled ? Color.white : color)
       .padding(.horizontal, 7)
       .padding(.vertical, 3)

@@ -368,6 +368,13 @@ import type {
   UpdateInstallImpact,
   UpdateInterruptedChat,
 } from "../shared/types";
+import {
+  attentionEventPolicy,
+  attentionQuietHoursActive,
+  resolveAttentionScope,
+  type AttentionScopeTarget,
+} from "../shared/attention/attentionScope";
+import { createProjectSettingsKeyReader } from "../../../ade-cli/src/services/push/projectSettingsKey";
 import type { AppContext } from "./services/ipc/registerIpc";
 import fs from "node:fs";
 import net from "node:net";
@@ -2809,6 +2816,41 @@ app.whenReady().then(async () => {
     lastReadableAccountOwnerId = null;
     return null;
   };
+  /** The last account notification settings any window loaded, for this computer's alerts. */
+  let attentionPreferencesForAlerts: { ownerId: string; preferences: AttentionPreferences } | null = null;
+  let notificationPushStore: ReturnType<typeof createPushRegistrationStore> | undefined;
+  const readNotificationMachineKey = (): string | null => {
+    try {
+      notificationPushStore ??= createPushRegistrationStore({
+        filePath: resolvePushRelayStateFile(machineAdeLayout.secretsDir),
+      });
+      return notificationPushStore.getOrCreateIdentity().machineKey;
+    } catch (error) {
+      localRuntimeLogger.warn("attention.notification_machine_key_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  };
+
+  const computerNoticeAllowed = (
+    kind: "ade_service" | "agent_goal" | "agent_usage_limit_resumed",
+    target: AttentionScopeTarget = {},
+    sessionId?: string,
+  ): boolean => {
+    const ownerId = readAccountOwnerId();
+    const preferences = ownerId && attentionPreferencesForAlerts?.ownerId === ownerId
+      ? attentionPreferencesForAlerts.preferences
+      : null;
+    if (!preferences) return true;
+    if (sessionId && preferences.mutedSessionIds?.includes(sessionId)) return false;
+    const machineKey = Object.keys(preferences.machines ?? {}).length ? readNotificationMachineKey() : null;
+    const { scope, scopedOff, quietHours } = resolveAttentionScope(preferences, { ...target, machineKey });
+    const nowMs = Date.now();
+    return !scopedOff
+      && attentionEventPolicy(scope, kind) === "notify"
+      && !quietHours.some((window) => attentionQuietHoursActive(window, nowMs));
+  };
   const productAnalyticsStateFile = defaultProductAnalyticsStateFile(machineAdeLayout.adeDir);
   // As Sentry decides it: a package that did not come from a release workflow is `development`.
   const analyticsReleaseChannel = resolveReleaseChannel({ env: process.env, packaged: reportsAsPackagedRelease(app.isPackaged), version: app.getVersion() });
@@ -2894,7 +2936,7 @@ app.whenReady().then(async () => {
     },
     onRuntimeModeChange: (mode) => {
       localRuntimeLogger.warn("local_runtime.runtime_mode_changed", { mode });
-      if (!Notification.isSupported()) return;
+      if (!Notification.isSupported() || !computerNoticeAllowed("ade_service")) return;
       try {
         const notification = mode === "isolated"
           ? new Notification({
@@ -5347,6 +5389,7 @@ app.whenReady().then(async () => {
     laneTeardownDeps.ptyService = {
       countActiveForLane: (laneId) => ptyService.countActiveForLane(laneId),
       disposeForLane: (laneId) => ptyService.disposeForLane(laneId),
+      listAdditionalLiveSessionsForLane: ptyService.listAdditionalLiveSessionsForLane,
     };
     laneTeardownDeps.fileWatcherService = {
       countActiveForWorkspace: (id) => fileService.countActiveWatchersForWorkspace(id),
@@ -5481,11 +5524,22 @@ app.whenReady().then(async () => {
     });
     linearLiveStatusServiceRef = linearLiveStatusService;
 
-    /**
-     * An OS notification about one chat that opens it on click. Skipped while
-     * any ADE window is focused: there is no per-window "which chat is open"
-     * signal in main, and the chat's own transcript already says what happened.
-     */
+    const readProjectSettingsKey = createProjectSettingsKeyReader();
+    let chatNoticeFolderId: string | undefined;
+    const chatNoticeProjectIds = (): string[] => {
+      try {
+        chatNoticeFolderId ??= deriveProjectId(projectRoot);
+        return [readProjectSettingsKey(projectRoot, chatNoticeFolderId), chatNoticeFolderId, projectId]
+          .filter((id): id is string => Boolean(id));
+      } catch (error) {
+        logger.warn("agent_chat.notice_project_key_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return [projectId];
+      }
+    };
+
+    /** Show a chat notification when ADE is in the background. */
     const showChatOsNotification = (args: {
       sessionId: string;
       title: string;
@@ -5686,6 +5740,7 @@ app.whenReady().then(async () => {
         provider,
       }),
       onUsageLimitAutoResumed: ({ sessionId, title }) => {
+        if (!computerNoticeAllowed("agent_usage_limit_resumed", { projectIds: chatNoticeProjectIds() }, sessionId)) return;
         showChatOsNotification({
           sessionId,
           title: "Chat resumed",
@@ -5697,6 +5752,7 @@ app.whenReady().then(async () => {
         });
       },
       onGoalEnded: ({ sessionId, title, objective, outcome }) => {
+        if (!computerNoticeAllowed("agent_goal", { projectIds: chatNoticeProjectIds() }, sessionId)) return;
         showChatOsNotification({
           sessionId,
           title: outcome === "reached" ? "Goal reached" : "Goal blocked",
@@ -5783,6 +5839,7 @@ app.whenReady().then(async () => {
     });
     laneTeardownDeps.agentChatService = {
       countActiveForLane: (laneId) => agentChatService.countActiveForLane(laneId),
+      listArchivedWorkingChats: agentChatService.listArchivedWorkingChats,
       disposeForLane: (laneId) => agentChatService.disposeForLane(laneId),
     };
     lateSettle.bind(createSettleWiring({
@@ -7310,6 +7367,7 @@ app.whenReady().then(async () => {
           ? stampCustomNotificationLinkOwner(rest.deepLink, { accountMachineKey, projectId })
           : null,
         machineKey: automationNotifyRelay.store.getOrCreateIdentity().machineKey,
+        projectSettingsKey: projectId ? chatNoticeProjectIds()[0] ?? projectId : null,
       });
     };
 
@@ -7692,7 +7750,6 @@ app.whenReady().then(async () => {
    * the machine event bridge) and by the account snapshots windows poll (for
    * chats on other machines). See `desktopAlertPresenter.ts`.
    */
-  let attentionPreferencesForAlerts: { ownerId: string; preferences: AttentionPreferences } | null = null;
   /** Electron drops a click on a notification nothing references any more. */
   const liveDesktopAlertNotifications = new Set<Notification>();
   let desktopAlertClickOwner: string | null | undefined;
@@ -7734,6 +7791,7 @@ app.whenReady().then(async () => {
         }));
       return;
     }
+    if (!alert.sessionId) return;
     handleDeeplinkUrl(
       buildDeeplink({ kind: "session", sessionId: alert.sessionId }, { form: "ade" }),
       "notification:attention",
@@ -11558,13 +11616,16 @@ app.whenReady().then(async () => {
     },
     onAttentionAccountSnapshot: (snapshot) => desktopAlertPresenter.observeSnapshot(snapshot),
     onAttentionPreferences: (ownerId, preferences) => {
+      const cached = attentionPreferencesForAlerts;
+      const updatedAt = cached?.ownerId === ownerId ? cached.preferences.relayUpdatedAt : null;
+      if (updatedAt && (!preferences.relayUpdatedAt || preferences.relayUpdatedAt < updatedAt)) return;
       attentionPreferencesForAlerts = { ownerId, preferences };
       desktopAlertPresenter.preferencesLoaded();
     },
     onAttentionSessionMuted: (ownerId, sessionId, muted) => {
       const cached = attentionPreferencesForAlerts;
       if (!cached || cached.ownerId !== ownerId) return;
-      const others = cached.preferences.mutedSessionIds.filter((id) => id !== sessionId);
+      const others = (cached.preferences.mutedSessionIds ?? []).filter((id) => id !== sessionId);
       attentionPreferencesForAlerts = {
         ownerId,
         preferences: {

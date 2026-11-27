@@ -6,6 +6,7 @@ import type {
 import type { SyncHelloErrorPayload } from "../../../shared/types/sync";
 import { describeLinkHeldByOtherAdeApp } from "../../../shared/connectionDiagnosis";
 import { carryExpected, markExpected } from "../../../shared/expectedError";
+import { REMOTE_CONNECT_STOPPED_NOTICE } from "../../../shared/runtimeErrors";
 
 export type PairedRuntimeRouteDiagnostic = {
   correlationId: string;
@@ -204,9 +205,6 @@ export class PairedRuntimeSshTrustRequiredError extends Error {
     this.name = "PairedRuntimeSshTrustRequiredError";
   }
 }
-
-export const REMOTE_CONNECT_STOPPED_NOTICE =
-  "ADE won't retry on its own. Fix this, then press Try again.";
 
 /**
  * ADE refused to dial because a recent connect failed; nothing was sent. The

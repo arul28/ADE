@@ -32,7 +32,7 @@ struct MachineRowView: View {
     case connected
 
     var text: String {
-      "CONNECTED"
+      "Connected"
     }
 
     var tint: Color {

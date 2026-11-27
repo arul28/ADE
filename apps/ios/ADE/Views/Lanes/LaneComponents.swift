@@ -190,7 +190,7 @@ struct LanePrTagChip: View {
       Image(systemName: "arrow.triangle.pull")
         .font(.system(size: 9, weight: .bold))
       Text(formatLanePrBadgeLabel(tag))
-        .font(.caption2.monospaced().weight(.bold))
+        .font(.caption2.monospaced().weight(.medium))
         .lineLimit(1)
       if let stack = tag.stack {
         GitHubStackPositionBadge(stack: stack, compact: true)

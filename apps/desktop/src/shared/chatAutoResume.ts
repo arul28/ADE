@@ -12,7 +12,7 @@
  * an ADE-created one).
  */
 
-import { usageLimitTextIdentity } from "./usageLimitResumePresentation";
+import { formatUsageLimitInstant, namesPlanLimitWindow, usageLimitTextIdentity } from "./usageLimitResumePresentation";
 import {
   backgroundCommandLabel,
   deriveBackgroundItems,
@@ -151,7 +151,8 @@ export function isUsageLimitChatError(event: {
     `${typeof errorInfo === "string" ? errorInfo : ""} ${event.message ?? ""}`,
   );
   // "outofusage": Cursor's "You're out of usage" carries neither phrase.
-  return identity.includes("usagelimit") || identity.includes("ratelimit") || identity.includes("outofusage");
+  if (identity.includes("usagelimit") || identity.includes("ratelimit") || identity.includes("outofusage")) return true;
+  return namesPlanLimitWindow(`${typeof errorInfo === "string" ? errorInfo : ""} ${event.message ?? ""}`);
 }
 
 /**
@@ -181,9 +182,20 @@ export function formatAutoResumeHostClock(fireAtMs: number): string {
  * The one "auto-resume is armed" sentence. The host writes it into the chat as
  * a system notice; every client renders it verbatim. Shared so the notice and
  * the resume state can never disagree about what was scheduled or when.
+ *
+ * It quotes the provider's reset (`Paused: limit resets at 3:40 PM ET`), not
+ * ADE's buffered fire time; with no reset instant (a same-reset retry) it
+ * quotes the fire time.
  */
-export function autoResumeScheduledMessage(fireAtMs: number): string {
-  return `Resumes at ${formatAutoResumeHostClock(fireAtMs)}`;
+export function autoResumeScheduledMessage(
+  fireAtMs: number,
+  resetAtMs?: number | null,
+  nowMs: number = Date.now(),
+): string {
+  const quoteReset = typeof resetAtMs === "number" && Number.isFinite(resetAtMs) && resetAtMs + AUTO_RESUME_BUFFER_MS >= fireAtMs;
+  return quoteReset
+    ? `Paused: limit resets at ${formatUsageLimitInstant(resetAtMs, nowMs, { timeZoneName: true })}`
+    : `Paused: resumes at ${formatUsageLimitInstant(fireAtMs, nowMs, { timeZoneName: true })}`;
 }
 
 export const AUTO_RESUME_ARMED_NOTICE_DETAIL =
