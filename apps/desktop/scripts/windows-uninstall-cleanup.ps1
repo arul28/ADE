@@ -164,8 +164,16 @@ namespace Ade.Windows {
   }
 }
 
+# Stable registers both link schemes (`ade://` and `daex://`); each is removed
+# only while it still opens this install.
 function Remove-OwnedStableProtocolRegistration([string]$ExpectedExecutablePath) {
-  $protocolRoot = "Registry::HKEY_CURRENT_USER\Software\Classes\ade"
+  foreach ($scheme in @("ade", "daex")) {
+    Remove-OwnedProtocolRegistration $scheme $ExpectedExecutablePath
+  }
+}
+
+function Remove-OwnedProtocolRegistration([string]$Scheme, [string]$ExpectedExecutablePath) {
+  $protocolRoot = "Registry::HKEY_CURRENT_USER\Software\Classes\$Scheme"
   $commandKey = Join-Path $protocolRoot "shell\open\command"
   if (-not (Test-Path -LiteralPath $commandKey)) { return }
   try {
@@ -183,7 +191,7 @@ function Remove-OwnedStableProtocolRegistration([string]$ExpectedExecutablePath)
       Remove-Item -LiteralPath $protocolRoot -Recurse -Force -ErrorAction Stop
     }
   } catch {
-    throw "Daex could not remove its owned ade:// protocol registration: $($_.Exception.Message)"
+    throw "Daex could not remove its owned ${Scheme}:// protocol registration: $($_.Exception.Message)"
   }
 }
 
