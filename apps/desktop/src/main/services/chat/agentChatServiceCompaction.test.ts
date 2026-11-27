@@ -891,7 +891,11 @@ describe("createAgentChatService", () => {
         // Both reach the new chat, in order, behind the continuation, the comment with the first.
         await vi.waitFor(() => expect(newChatSent()).toContain("second queued"), { timeout: 5_000 });
         const sent = newChatSent();
-        expect(sent).toContain("my review note");
+        // The comment rides the first message, in the same send.
+        const sends = newChatSend.mock.calls.map((call) => JSON.stringify(call));
+        expect(sends.filter((text) => text.includes("my review note"))).toEqual([
+          expect.stringContaining("first queued"),
+        ]);
         expect(sent.indexOf("Continue the interrupted task")).toBeGreaterThanOrEqual(0);
         expect(sent.indexOf("Continue the interrupted task")).toBeLessThan(sent.indexOf("first queued"));
         expect(sent.indexOf("first queued")).toBeLessThan(sent.indexOf("second queued"));
