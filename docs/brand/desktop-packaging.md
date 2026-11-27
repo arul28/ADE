@@ -80,10 +80,16 @@ use the microphone"), the DMG volume.
   "Hide Daex", "Quit Daex"), `app.setAboutPanelOptions({ applicationName })`,
   window titles, dialogs and notifications.
 - `apps/desktop/scripts/create-mac-dmg.mjs`: the DMG volume is named "Daex".
+- The macOS 26 icon (see "macOS 26 app icon" below): `Assets.car` and
+  `CFBundleIconName` from `build/icon*.icon`, beside the unchanged `icon.icns`.
+- The brain's executable is `Contents/MacOS/Daex Brain` (was `ADE Brain`), the
+  name macOS shows in "Background Items Added" and Login Items (see "The brain
+  copy's name" below).
 
 **What stays:** the file `ADE.app`, `Contents/MacOS/ADE`, the helper bundles,
 the Info.plist `CFBundleName`/`CFBundleDisplayName` (`ADE`), the bundle ID,
-the artifact names.
+the artifact names, the launchd labels and plist file names
+(`com.ade.runtime*`, `com.ade.watchdog*`).
 
 **How it works:** macOS shows a name other than the Info.plist one only
 through `InfoPlist.strings`. The menu bar, About panel and notifications use
@@ -101,7 +107,6 @@ requires.
 
 **Risks:**
 
-- Not built or run on a Mac in this branch (see "Not verified").
 - A person who renamed `ADE.app` by hand sees "ADE" in Finder (the file name
   no longer matches `CFBundleDisplayName`). The menu bar still shows Daex.
 - `open -a Daex` and AppleScript `application "Daex"` may not find the app;
@@ -109,6 +114,81 @@ requires.
 - Copy that tells people which app to switch on in System Settings > Privacy
   (`macDesktopService.ts` `responsibleAppName`, from `ADE_DESKTOP_APP_NAME`)
   still says ADE while System Settings will list "Daex". Outside this change.
+
+### macOS 26 app icon
+
+macOS 26 draws an app whose only icon is an `.icns` as a "legacy" icon: the
+art shrunk inside a grey rounded frame (Dock, Finder, About). A full-size icon
+comes from an asset catalog: `Contents/Resources/Assets.car`, named by
+`CFBundleIconName`.
+
+- `apps/desktop/build/icon.icon`, `icon.beta.icon`, `icon.alpha.icon` are Icon
+  Composer packages with two layers: `background.png` (the full-bleed
+  `assets/brand/daex/icon-ios-*.png` art with the glyph painted out) and
+  `glyph.png` (white, alpha from `glyph-mask.png`, with Liquid Glass on).
+- `apps/desktop/scripts/mac-icon-composer.cjs` (afterPack, macOS) compiles the
+  `.icon` beside the configured `.icns` (`build/icon.icns` -> `build/icon.icon`,
+  `build/icon.beta.icns` -> `build/icon.beta.icon`, ...) with `actool` into
+  `Assets.car` and sets `CFBundleIconName` = `AppIcon`. So every channel follows
+  its `.icns` with no extra wiring: `build.mac.icon`, Beta's
+  `scripts/beta/apply-build-track.mjs` and `scripts/package-channel.mjs`.
+- `CFBundleIconFile` stays `icon.icns`, the committed art, so macOS 15 and older
+  show exactly what they did. The catalog is compiled for macOS 26 only
+  (`--minimum-deployment-target 26.0`), as electron-builder's own `.icon`
+  support does.
+- electron-builder 26.15.3 accepts a `.icon` as `mac.icon`, but it then replaces
+  `icon.icns` with actool's rendering and fails any build whose selected Xcode
+  is older than 26. The hook keeps the `.icns` and finds an Xcode 26 or newer
+  by itself (the selected one, else the newest `/Applications/Xcode*.app`, via
+  `DEVELOPER_DIR`), so release runners whose default Xcode is older still work.
+- `ADE_MAC_ICON_COMPOSER`: unset, the icon is required when the build signs
+  (`CSC_LINK`/`CSC_NAME`, every release) and a warning otherwise (a local
+  `dist:mac:dir` without Xcode 26); `required` or `off` force either.
+- Written in afterPack, before signing, so it is sealed like any resource. In a
+  universal build electron-builder copies the x64 `Assets.car` over the arm64
+  one before merging, so both are identical.
+
+### The brain copy's name
+
+The brain service, its watchdog and its PTY host run a copy of the app's
+executable (`brainExecutable.ts`, mode `brain-copy`). macOS names the
+background item after that file. It is now `Daex Brain` (`Daex Alpha Brain`
+for `ADE Alpha`); it was `ADE Brain`.
+
+Why this is safe for existing installs:
+
+- Every install of the service renders the launch agent and rewrites
+  `~/Library/LaunchAgents/com.ade.runtime*.plist` (and the watchdog's) whenever
+  its text differs (`installLaunchdService`, `installLaunchdWatchdogAgent`).
+  The desktop installs on every launch (`installServiceBestEffort`), the CLI on
+  `ade brain start`, a repair, and every update path (Squirrel update, CLI
+  update, `ade brain update`). An old plist names `ADE Brain`, so the first
+  install by a new build rewrites it to `Daex Brain` and restarts the brain.
+  Labels and plist file names do not change, so nothing is left behind.
+- The bundle also carries `Contents/MacOS/ADE Brain`, a second signed copy
+  (34 KB), so an old plist still starts after an update that replaced the
+  bundle without installing the service (a Homebrew upgrade or a drag-and-drop
+  install, then a restart before the app opens).
+- Readers accept both names: `electronMacExecutables` maps `Daex Brain` and
+  `ADE Brain` to the same app (so `isSameElectronRuntime`, the build hash and
+  `hostAppPath` agree), and the sync-host scan (`syncHostSingleton.ts`) matches
+  both process names, including lsof's cut-off 9-character form.
+- No SMAppService or `SMLoginItemSetEnabled` registration exists; the brain is
+  a plain launch agent with `AssociatedBundleIdentifiers` = the app's bundle ID.
+
+Removing the legacy copy later: once no supported release writes `ADE Brain`
+and the launch minimum version has been in force for a while, drop the second
+name from `brainCopyPaths` (`scripts/mac-brain-copy.cjs`); keep the readers.
+
+Checked on macOS 26.6.2 (NoMac, 2026-11-27, `dist:mac:dir`, ad-hoc sealed the
+way `package-channel.mjs` seals): the app installed both launch agents with
+`Daex Brain`, the notice read "Daex Brain can run in the background", and
+`codesign --verify --deep --strict` passed with both copies signed as
+`com.ade.desktop`. Then both plists were rewritten to `ADE Brain` and
+reloaded, as an older build leaves them: the brain started as `ADE Brain`
+(the legacy copy). Reopening the app rewrote both plists to `Daex Brain`, the
+brain ran as `Daex Brain`, and `sfltool dumpbtm` and Login Items listed only
+`Daex Brain`.
 
 ## Windows
 
@@ -304,20 +384,36 @@ builds (same code path; their names come from `displayName`), and a signed
 CI build. Before release, `windows-installed-product-smoke.ps1` checks the
 Daex entry and shortcut on the CI runner.
 
+## Mac test
+
+Run on 2026-11-27 on a NoMac Mac (macOS 26.6.2, Xcode 27.2, Apple silicon):
+`ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY=1 npm run dist:mac:dir`, the app
+ad-hoc sealed and copied to `/Applications/ADE.app`.
+
+- The menu bar, About panel and Dock show Daex; the Dock and About icon are
+  full size with no grey frame (the `.icon` above). `Info.plist` has
+  `CFBundleIconFile` = `icon.icns` (the committed file) and
+  `CFBundleIconName` = `AppIcon`; `Contents/Resources` has both.
+- `build/icon.beta.icon` and `build/icon.alpha.icon` compile with actool and
+  render with `ictool`; no Beta or Alpha app was built.
+- `CFBundleExecutable` is still `ADE`; all 55 `.lproj` folders got
+  `InfoPlist.strings`; the ad-hoc sealed app passes
+  `codesign --verify --deep --strict`.
+- The brain-copy rename (above).
+
 ## Not verified
 
-No Mac or Linux build ran here: electron-builder for macOS needs a Mac.
+No Linux build ran here, and no signed or notarized Mac build.
 Checked instead: electron-builder 26.15.3 source
 (Info.plist, NSIS, desktop entry, packaged `package.json`), Electron's helper
 lookup source, the config schema with the new keys, and the CLI parsing of
 the Linux flag.
 
-Before release, on a Mac (`npm run dist:mac:dir`):
+Before release, on a Mac (`npm run dist:mac:dir`), the items the Mac test
+above did not cover:
 
-- `Contents/Info.plist` still has `CFBundleName` = `ADE`,
-  `CFBundleExecutable` = `ADE`; every `Contents/Resources/*.lproj` has
-  `InfoPlist.strings`; `codesign --verify --deep --strict` passes.
-- The app launches; the menu bar, About panel, Finder and Dock show Daex.
+- Finder shows Daex; a signed and notarized build passes
+  `codesign --verify --deep --strict` and Gatekeeper with both brain copies.
 - It uses `~/Library/Application Support/ade-desktop` and reads its saved
   secrets with no keychain prompt.
 - Updating a released build through the updater leaves it at
