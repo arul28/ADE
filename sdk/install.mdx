@@ -21,9 +21,9 @@ Requires **Node 22**. The packages ship ESM + CJS.
 Pass a directory your app owns. The sidecar stores thread keys and runtime state there. Never point it at the developer's `~/.ade` or at Daex's default machine socket.
 
 ```ts
-import { createAdeChat } from "@daex-dev/sdk";
+import { createDaexChat } from "@daex-dev/sdk";
 
-const ade = await createAdeChat({
+const ade = await createDaexChat({
   home: "./.ade-embed", // created if missing, mode 0700
 });
 ```
@@ -33,9 +33,9 @@ In Electron, use the main process and a path under `userData`:
 ```ts
 import path from "node:path";
 import { app } from "electron";
-import { createAdeChat } from "@daex-dev/sdk";
+import { createDaexChat } from "@daex-dev/sdk";
 
-const ade = await createAdeChat({
+const ade = await createDaexChat({
   home: path.join(app.getPath("userData"), "ade"),
 });
 ```
@@ -53,7 +53,7 @@ Resolution order:
 5. Download from the Daex GitHub release, fail-closed against that release's `SHA256SUMS`.
 
 ```ts
-const ade = await createAdeChat({
+const ade = await createDaexChat({
   home: "./.ade-embed",
   binaryPath: "/usr/local/bin/ade",  // skip everything below
   runtimeNodeModules: "/opt/ade/native/node_modules", // when they are not beside the binary
@@ -81,7 +81,7 @@ Run `@daex-dev/sdk` from the **main process**, not the renderer. Spawn owns a ch
 Do not write the bridge yourself. `@daex-dev/sdk/electron` ships it: one function per process, listener teardown on reload, and the history-and-live ordering rule in code.
 
 <Card title="Electron bridge" href="/sdk/electron" icon="atom" horizontal>
-  `registerAdeIpc`, `exposeAdeBridge`, `createAdeIpcClient`, and what `sandbox: true` requires.
+  `registerDaexIpc`, `exposeDaexBridge`, `createDaexIpcClient`, and what `sandbox: true` requires.
 </Card>
 
 ## Windows

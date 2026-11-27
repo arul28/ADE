@@ -1,6 +1,6 @@
 ---
 title: "Electron"
-description: "Bridge @daex-dev/sdk from Electron's main process to a sandboxed renderer: registerAdeIpc, a copy-paste sandboxed preload, createAdeIpcClient, the openOptions hook, link handling, and runtime lifecycle events."
+description: "Bridge @daex-dev/sdk from Electron's main process to a sandboxed renderer: registerDaexIpc, a copy-paste sandboxed preload, createDaexIpcClient, the openOptions hook, link handling, and runtime lifecycle events."
 icon: "atom"
 ---
 
@@ -29,14 +29,14 @@ A strict Content Security Policy closes the other door. A renderer with `default
 ```ts
 import path from "node:path";
 import { app, BrowserWindow, ipcMain } from "electron";
-import { createAdeChat } from "@daex-dev/sdk";
-import { registerAdeIpc } from "@daex-dev/sdk/electron";
+import { createDaexChat } from "@daex-dev/sdk";
+import { registerDaexIpc } from "@daex-dev/sdk/electron";
 
-const client = await createAdeChat({
+const client = await createDaexChat({
   home: path.join(app.getPath("userData"), "ade"),
 });
 
-const disposeIpc = registerAdeIpc(ipcMain, client, {
+const disposeIpc = registerDaexIpc(ipcMain, client, {
   /** Channel namespace. Defaults to "ade", giving `ade:invoke` and `ade:event`. */
   channelPrefix: "ade",
   /** Runs before every call. Return false and the SDK is never reached. */
@@ -70,7 +70,7 @@ app.on("before-quit", async () => {
 });
 ```
 
-`registerAdeIpc` returns a disposer. Call it before `client.dispose()` so no event is pushed at a closing runtime.
+`registerDaexIpc` returns a disposer. Call it before `client.dispose()` so no event is pushed at a closing runtime.
 
 The disposer also has a `forget(key)` method (SDK 0.4). It releases every renderer's handles and subscriptions for one key and does not touch the conversation. You seldom need it: the bridge already releases a key when it is deleted through the client it serves, by a renderer or by your own `client.threads.delete(key)` in main. Call `forget` for a key that you removed some other way.
 
@@ -80,12 +80,12 @@ The disposer also has a `forget(key)` method (SDK 0.4). It releases every render
 
 Do two things:
 
-1. Pass `onLinkClick` to `<AdeChat>`, `<Transcript>`, `<ProviderCard>` or `<ProviderCards>`. chat-ui then calls `preventDefault()` and gives you the link. Nothing opens unless you open it.
+1. Pass `onLinkClick` to `<DaexChat>`, `<Transcript>`, `<ProviderCard>` or `<ProviderCards>`. chat-ui then calls `preventDefault()` and gives you the link. Nothing opens unless you open it.
 2. Deny new windows in main as a backstop, for any link that you did not handle.
 
 ```tsx
 // renderer
-<AdeChat
+<DaexChat
   client={client}
   threadKey="main"
   onLinkClick={(href, { source }) => window.app.openExternal(href, source)}
@@ -111,7 +111,7 @@ The example pins one key. A host with a chat list has many keys, and `allowThrea
 ```ts
 const catalog = new Set(await loadChatKeys());   // your own chat list
 
-registerAdeIpc(ipcMain, client, {
+registerDaexIpc(ipcMain, client, {
   authorize: (event) => isTrustedFrame(event.sender),
   allowThreadKey: (key) => catalog.has(key),
 });
@@ -127,10 +127,10 @@ allowThreadKey: async (key) => key === "new-chat" || (await client.threads.get(k
 
 The gate runs on every keyed call, so keep it cheap. `allowModel` can also be async.
 
-To keep your own list correct when a renderer deletes or archives a chat over the bridge, pass `onThreadRemoved` to `registerAdeIpc` (SDK 0.5):
+To keep your own list correct when a renderer deletes or archives a chat over the bridge, pass `onThreadRemoved` to `registerDaexIpc` (SDK 0.5):
 
 ```ts
-registerAdeIpc(ipcMain, () => currentClient(), {
+registerDaexIpc(ipcMain, () => currentClient(), {
   // …
   onThreadRemoved: (key, kind) => {
     if (kind === "deleted") catalog.delete(key);
@@ -160,7 +160,7 @@ webPreferences: {
 }
 ```
 
-`@daex-dev/sdk/electron/preload-auto` is one CommonJS file whose only `require` is `"electron"`. It calls `exposeAdeBridge` with the default key `ade` and the default channel prefix `ade`. There is no build step.
+`@daex-dev/sdk/electron/preload-auto` is one CommonJS file whose only `require` is `"electron"`. It calls `exposeDaexBridge` with the default key `ade` and the default channel prefix `ade`. There is no build step.
 
 If you need another key or prefix, or your own channels next to Daex's, write your own preload. Copy this file as it is. It is the whole preload half of the bridge:
 
@@ -168,7 +168,7 @@ If you need another key or prefix, or your own channels next to Daex's, write yo
 // preload.js — safe under sandbox: true. Requires nothing but "electron".
 const { contextBridge, ipcRenderer } = require("electron");
 
-const PREFIX = "ade"; // must equal registerAdeIpc's channelPrefix
+const PREFIX = "ade"; // must equal registerDaexIpc's channelPrefix
 const INVOKE = `${PREFIX}:invoke`;
 const EVENT = `${PREFIX}:event`;
 
@@ -184,44 +184,44 @@ contextBridge.exposeInMainWorld("ade", {
 });
 ```
 
-This is what `exposeAdeBridge` in `@daex-dev/sdk/electron/preload` does. The surface is two functions. Every method name and argument shape is in the renderer half, so this file does not change when the SDK adds methods. A preload that you wrote for 0.2 keeps working with 0.3.
+This is what `exposeDaexBridge` in `@daex-dev/sdk/electron/preload` does. The surface is two functions. Every method name and argument shape is in the renderer half, so this file does not change when the SDK adds methods. A preload that you wrote for 0.2 keeps working with 0.3.
 
-The channel name is the contract between two processes. A wrong name gives no error: the bridge never answers. From SDK 0.4, check your copy in your test suite with `checkAdeBridge`:
+The channel name is the contract between two processes. A wrong name gives no error: the bridge never answers. From SDK 0.4, check your copy in your test suite with `checkDaexBridge`:
 
 ```ts
-import { checkAdeBridge } from "@daex-dev/sdk/electron";
+import { checkDaexBridge } from "@daex-dev/sdk/electron";
 
 // Run the bridge part of your preload with fakes, and compare it with the SDK's own.
-await checkAdeBridge((contextBridge, ipcRenderer) => exposeMyBridge(contextBridge, ipcRenderer));
+await checkDaexBridge((contextBridge, ipcRenderer) => exposeMyBridge(contextBridge, ipcRenderer));
 ```
 
-`checkAdeBridge` runs your function with a fake `contextBridge` and `ipcRenderer`. It checks the `window` key, the two channel names, the `{ method, args }` payload, that events pass through unchanged, and that the unsubscribe removes the same listener. It rejects with `invalid_option` and names the first difference. Pass `{ key, channelPrefix }` when you do not use the defaults. Run it again after each SDK upgrade.
+`checkDaexBridge` runs your function with a fake `contextBridge` and `ipcRenderer`. It checks the `window` key, the two channel names, the `{ method, args }` payload, that events pass through unchanged, and that the unsubscribe removes the same listener. It rejects with `invalid_option` and names the first difference. Pass `{ key, channelPrefix }` when you do not use the defaults. Run it again after each SDK upgrade.
 
-If you prefer to import `exposeAdeBridge`, bundle it into one file. See [Bundle the preload](#bundle-the-preload).
+If you prefer to import `exposeDaexBridge`, bundle it into one file. See [Bundle the preload](#bundle-the-preload).
 
 ### Renderer
 
 ```tsx
 import "@daex-dev/sdk/electron/global"; // types window.ade
-import { createAdeIpcClient } from "@daex-dev/sdk/electron/renderer";
-import { adaptSdkClient, AdeChat } from "@daex-dev/chat-ui";
+import { createDaexIpcClient } from "@daex-dev/sdk/electron/renderer";
+import { adaptSdkClient, DaexChat } from "@daex-dev/chat-ui";
 
-const client = adaptSdkClient(createAdeIpcClient(window.ade), {
+const client = adaptSdkClient(createDaexIpcClient(window.ade), {
   providerFilter: ["claude", "codex"],
 });
 
 export function App() {
-  return <AdeChat client={client} threadKey="main" />;
+  return <DaexChat client={client} threadKey="main" />;
 }
 ```
 
-`createAdeIpcClient` returns the shape `adaptSdkClient` expects. There is no cast and no host glue.
+`createDaexIpcClient` returns the shape `adaptSdkClient` expects. There is no cast and no host glue.
 
-`@daex-dev/sdk/electron/global` is types only. It declares `window.ade?: AdeBridge`, and its JavaScript is empty, so the import costs nothing and is safe under a strict CSP. You can also list it in `tsconfig.json` `compilerOptions.types`. It declares the default key `ade` only. If your preload uses another key, declare `interface Window { <key>: AdeBridge }` yourself.
+`@daex-dev/sdk/electron/global` is types only. It declares `window.ade?: DaexBridge`, and its JavaScript is empty, so the import costs nothing and is safe under a strict CSP. You can also list it in `tsconfig.json` `compilerOptions.types`. It declares the default key `ade` only. If your preload uses another key, declare `interface Window { <key>: DaexBridge }` yourself.
 
-From SDK 0.4 `window.ade` is optional, because a preload that failed to load leaves it undefined. You can check `if (!window.ade)` with no cast. `createAdeIpcClient(window.ade)` still compiles, and throws `invalid_option` when the bridge is missing.
+From SDK 0.4 `window.ade` is optional, because a preload that failed to load leaves it undefined. You can check `if (!window.ade)` with no cast. `createDaexIpcClient(window.ade)` still compiles, and throws `invalid_option` when the bridge is missing.
 
-A page with no bundler cannot import an ES module over `file://`. Load `dist/electron/renderer.global.js` with a plain `<script>` tag instead and read `window.AdeElectron.createAdeIpcClient`.
+A page with no bundler cannot import an ES module over `file://`. Load `dist/electron/renderer.global.js` with a plain `<script>` tag instead and read `window.DaexElectron.createDaexIpcClient`.
 
 ## Sandbox requirements
 
@@ -235,12 +235,12 @@ A preload running under `sandbox: true` has **no module resolution**. `require` 
     Use the [preload above](#preload). It requires only `electron`, so it needs no build step.
   </Card>
   <Card title="Your own bundle" icon="layer-group">
-    Import `exposeAdeBridge` and bundle the preload into one file with esbuild, Vite or Rollup. Keep `electron` external.
+    Import `exposeDaexBridge` and bundle the preload into one file with esbuild, Vite or Rollup. Keep `electron` external.
   </Card>
 </CardGroup>
 
 <Warning>
-Do not set `webPreferences.preload` to `require.resolve("@daex-dev/sdk/electron/preload")`. That file exports `exposeAdeBridge` and does not call it, so `window.ade` stays undefined. Use `preload-auto`.
+Do not set `webPreferences.preload` to `require.resolve("@daex-dev/sdk/electron/preload")`. That file exports `exposeDaexBridge` and does not call it, so `window.ade` stays undefined. Use `preload-auto`.
 </Warning>
 
 ### Bundle the preload
@@ -248,9 +248,9 @@ Do not set `webPreferences.preload` to `require.resolve("@daex-dev/sdk/electron/
 ```ts
 // src/preload.ts
 import { contextBridge, ipcRenderer } from "electron";
-import { exposeAdeBridge } from "@daex-dev/sdk/electron/preload";
+import { exposeDaexBridge } from "@daex-dev/sdk/electron/preload";
 
-exposeAdeBridge(contextBridge, ipcRenderer); // key "ade", channel prefix "ade"
+exposeDaexBridge(contextBridge, ipcRenderer); // key "ade", channel prefix "ade"
 ```
 
 ```bash
@@ -303,7 +303,7 @@ The renderer is the least trusted process in your app. A thread key carries a to
 **With an `openOptions` hook** (recommended for every host), main decides:
 
 ```ts
-registerAdeIpc(ipcMain, client, {
+registerDaexIpc(ipcMain, client, {
   allowThreadKey: (key) => catalog.has(key),
   openOptions: async (key, rendererOptions) => {
     const chat = await loadChat(key);      // your own catalog
@@ -395,7 +395,7 @@ ipcMain.handle("app:pick-file", async () => {
 
 `providers.onChange` and `thread.on` return an `Unsubscribe` that only main can call. A renderer that reloads drops its side and leaves main's listener attached. Nothing fails; the transcript simply starts showing every envelope twice, then three times. In development a fast-refresh loop reloads the renderer constantly, so the leak grows fast and looks like a provider bug.
 
-`registerAdeIpc` keeps a registry keyed by `webContents.id` and disposes it:
+`registerDaexIpc` keeps a registry keyed by `webContents.id` and disposes it:
 
 - when that `webContents` emits `destroyed`;
 - on a cross-document main-frame navigation (`did-start-navigation` or `did-navigate`).
@@ -416,7 +416,7 @@ An event type the SDK has never heard of passes through untouched. Adding a new 
 
 ## Errors
 
-An `ipcMain.handle` rejection reaches the renderer as a plain `Error` with a rewritten message, which loses `AdeError.code` — the one field you branch on. So the handler never rejects. It resolves with `{ __adeError: true, name: "AdeError", code, message }` and the renderer rebuilds a real `AdeError`.
+An `ipcMain.handle` rejection reaches the renderer as a plain `Error` with a rewritten message, which loses `DaexError.code` — the one field you branch on. So the handler never rejects. It resolves with `{ __adeError: true, name: "AdeError", code, message }` and the renderer rebuilds a real `DaexError`.
 
 ```ts
 try {
@@ -426,7 +426,7 @@ try {
 }
 ```
 
-`error.code` is the stable check. `instanceof` is not, because each subpath is a separate bundle and therefore carries its own copy of the class. Import `AdeError` from `@daex-dev/sdk/electron/renderer` if you want `instanceof` to hold in a renderer.
+`error.code` is the stable check. `instanceof` is not, because each subpath is a separate bundle and therefore carries its own copy of the class. Import `DaexError` from `@daex-dev/sdk/electron/renderer` if you want `instanceof` to hold in a renderer.
 
 `authorize`, `allowThreadKey`, `allowModel` or `allowAccountManagement` refusing a
 call rejects with code `unauthorized`, and the SDK is not called at all.
@@ -445,7 +445,7 @@ if (error.code === "turn_in_flight") showHint("Wait for the reply to finish, the
 
 ## Transport degradation and restarts
 
-**The runtime exits.** The client tells you. `client.on("exit" | "transport" | "restart", cb)` in main, or `ipcClient.on(...)` in a renderer, reports each event. Every live thread also gets a synthetic `status` envelope with `turnStatus: "failed"`, so a transcript does not stay "running". Pass `autoRestart` to `createAdeChat` and the client respawns the runtime and re-opens every live thread. The client object stays the same, so the bridge keeps working with no change. See [Runtime](/sdk/runtime#when-the-runtime-exits).
+**The runtime exits.** The client tells you. `client.on("exit" | "transport" | "restart", cb)` in main, or `ipcClient.on(...)` in a renderer, reports each event. Every live thread also gets a synthetic `status` envelope with `turnStatus: "failed"`, so a transcript does not stay "running". Pass `autoRestart` to `createDaexChat` and the client respawns the runtime and re-opens every live thread. The client object stays the same, so the bridge keeps working with no change. See [Runtime](/sdk/runtime#when-the-runtime-exits).
 
 **`DoctorReport.events.mode`.** The push transport can silently become polling: `mode` reads `"push"` normally and `"drain"` when the SDK is polling instead. Nothing about the bridge changes — envelopes still arrive on the same channel — but latency does, so report `mode` in your diagnostics rather than assuming push.
 
@@ -456,7 +456,7 @@ A renderer can read both values with `doctor()` over the bridge.
 ### Runtime lifecycle in the renderer
 
 ```ts
-const ipcClient = createAdeIpcClient(window.ade);
+const ipcClient = createDaexIpcClient(window.ade);
 
 ipcClient.on("exit", ({ code, signal, error }) => showBanner("Chat stopped", error));
 ipcClient.on("restart", ({ attempt, ok, final }) => {
@@ -471,20 +471,20 @@ The payloads are the same as `client.on` in main. One IPC subscription serves ev
 
 `restart.final` (SDK 0.4) is `true` when no further attempt follows: the attempt succeeded, or it failed and was the last one that `autoRestart.maxAttempts` allows. You do not need your own copy of `maxAttempts`.
 
-`useAdeThread` in `@daex-dev/chat-ui` 0.4 re-opens the thread and re-reads its history after a successful restart by itself. You do not need to remount the chat.
+`useDaexThread` in `@daex-dev/chat-ui` 0.4 re-opens the thread and re-reads its history after a successful restart by itself. You do not need to remount the chat.
 
 ### Swap the client
 
 A host that makes one client per signed-in account can pass a function instead of a client:
 
 ```ts
-let current = await createAdeChat({ home: homeFor(account) });
+let current = await createDaexChat({ home: homeFor(account) });
 
-registerAdeIpc(ipcMain, () => current, { allowThreadKey, openOptions });
+registerDaexIpc(ipcMain, () => current, { allowThreadKey, openOptions });
 
 async function switchAccount(next) {
   const previous = current;
-  current = await createAdeChat({ home: homeFor(next) });   // the bridge now serves this one
+  current = await createDaexChat({ home: homeFor(next) });   // the bridge now serves this one
   await previous.dispose();
 }
 ```

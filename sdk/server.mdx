@@ -4,15 +4,15 @@ description: "Expose a Daex chat client to a browser or another process with a h
 icon: "server"
 ---
 
-`@daex-dev/sdk/server` exports `createAdeServer()` and `createAdeRemoteClient()`. The SDK handles the chat RPC contract; your app owns the WebSocket listener, authentication and network policy.
+`@daex-dev/sdk/server` exports `createDaexServer()` and `createDaexRemoteClient()`. The SDK handles the chat RPC contract; your app owns the WebSocket listener, authentication and network policy.
 
 ```ts
 import { WebSocketServer } from "ws";
-import { createAdeChat } from "@daex-dev/sdk";
-import { createAdeServer } from "@daex-dev/sdk/server";
+import { createDaexChat } from "@daex-dev/sdk";
+import { createDaexServer } from "@daex-dev/sdk/server";
 
-const client = await createAdeChat({ home: "./.ade-embed" });
-const bridge = createAdeServer({
+const client = await createDaexChat({ home: "./.ade-embed" });
+const bridge = createDaexServer({
   client,
   authorize: (socket, method, params) => canCall(socket, method, params),
   allowThreadKey: (key, method, params, socket) => ownsThread(socket, key),
@@ -33,7 +33,7 @@ The server does not bind a port or load a WebSocket package. `handleConnection()
 You can add host-owned RPCs through `methods`. They use the same authorization check:
 
 ```ts
-const bridge = createAdeServer({
+const bridge = createDaexServer({
   client,
   authorize: canCall,
   methods: {
@@ -50,12 +50,12 @@ The protocol is JSON over WebSocket:
 {"push":"event","key":"support","envelope":{"sessionId":"…","timestamp":"…","event":{"type":"text","text":"Hello"}}}
 ```
 
-Errors use `{ "id", "ok": false, "error": { "code", "message" } }`. The server sends thread events and provider/client changes as pushes. `createAdeRemoteClient(url)` returns the remote client; pass `{ WebSocket }` if the environment has no global WebSocket. A compatible transport object can be passed instead of a URL.
+Errors use `{ "id", "ok": false, "error": { "code", "message" } }`. The server sends thread events and provider/client changes as pushes. `createDaexRemoteClient(url)` returns the remote client; pass `{ WebSocket }` if the environment has no global WebSocket. A compatible transport object can be passed instead of a URL.
 
 ```ts
-import { createAdeRemoteClient } from "@daex-dev/sdk/server";
+import { createDaexRemoteClient } from "@daex-dev/sdk/server";
 
-const remote = createAdeRemoteClient("ws://127.0.0.1:4318");
+const remote = createDaexRemoteClient("ws://127.0.0.1:4318");
 const thread = await remote.threads.open("support", { provider: "claude", model: "claude-sonnet-4-5" });
 thread.on("event", ({ event }) => render(event));
 await thread.send("Summarise the incident");

@@ -66,9 +66,9 @@ native tree measured 191,403,602 B (191.404 MB).
 With the package installed, the SDK finds it on its own. `resolveBundledRuntime()` is step 2 of the resolution order and sits above the cache, `PATH`, and any download.
 
 ```ts
-import { createAdeChat } from "@daex-dev/sdk";
+import { createDaexChat } from "@daex-dev/sdk";
 
-const ade = await createAdeChat({
+const ade = await createDaexChat({
   home: path.join(app.getPath("userData"), "ade"),
   allowDownload: false,
 });
@@ -81,11 +81,11 @@ const ade = await createAdeChat({
 Inside a packaged app the runtime is no longer under `node_modules`. `resolvePackagedRuntime` finds the copy under your resources directory, so the layout (`bin/ade`, `native/`, `native/node_modules`) is not hardcoded in your app:
 
 ```ts
-import { createAdeChat, resolvePackagedRuntime } from "@daex-dev/sdk";
+import { createDaexChat, resolvePackagedRuntime } from "@daex-dev/sdk";
 
 const packaged = app.isPackaged ? resolvePackagedRuntime(process.resourcesPath) : null;
 
-const ade = await createAdeChat({
+const ade = await createDaexChat({
   home: path.join(app.getPath("userData"), "ade"),
   ...(packaged ?? {}),
   allowDownload: false,
@@ -99,7 +99,7 @@ You can still pass the three paths by hand:
 ```ts
 const runtime = path.join(process.resourcesPath, "ade-runtime");
 
-const ade = await createAdeChat({
+const ade = await createDaexChat({
   home: path.join(app.getPath("userData"), "ade"),
   binaryPath: path.join(runtime, "bin", "ade"),
   runtimeNodeModules: path.join(runtime, "native", "node_modules"),
@@ -107,7 +107,7 @@ const ade = await createAdeChat({
 });
 ```
 
-That form reports `source: "explicit"`. `runtimeRoot` defaults to the parent of `runtimeNodeModules`, so you only pass it when you split the two halves. Both directories are validated at `createAdeChat`, not at spawn: a wrong path fails with `binary_not_found` naming the path, rather than with a dlopen error from inside a child process.
+That form reports `source: "explicit"`. `runtimeRoot` defaults to the parent of `runtimeNodeModules`, so you only pass it when you split the two halves. Both directories are validated at `createDaexChat`, not at spawn: a wrong path fails with `binary_not_found` naming the path, rather than with a dlopen error from inside a child process.
 
 **Paths with spaces are safe.** `/Applications/My App.app/Contents/Resources/…` needs no quoting anywhere: every path is composed with `path.join`, every spawn is argv-based, and no shell string is ever built.
 
@@ -278,7 +278,7 @@ function signingPlan(runtimeDir, packageDir) {
   };
 }
 
-exports.default = async function signAdeRuntime(context) {
+exports.default = async function signDaexRuntime(context) {
   if (context.electronPlatformName !== "darwin") return;
   // The full identity name, for example "Developer ID Application: Example Inc (TEAMID)".
   const identity = process.env.ADE_RUNTIME_SIGN_IDENTITY;
@@ -321,7 +321,7 @@ Then point the client at the copied tree with `resolvePackagedRuntime`, as in [I
 
 ### Intel Macs
 
-Each platform package carries one architecture. An app that ships one runtime (for example `darwin-arm64` only) must refuse to start chat on the other architecture, or ship a second build. A universal app needs both packages: copy `@ade-dev/runtime-darwin-arm64` and `@ade-dev/runtime-darwin-x64` to two directories and choose one at run time from `process.arch`. There is no universal runtime binary. On an Intel Mac, `resolvePackagedRuntime` returns `null` when only an arm64 tree is present, so `createAdeChat` fails at start with `runtime_unavailable` instead of at spawn.
+Each platform package carries one architecture. An app that ships one runtime (for example `darwin-arm64` only) must refuse to start chat on the other architecture, or ship a second build. A universal app needs both packages: copy `@ade-dev/runtime-darwin-arm64` and `@ade-dev/runtime-darwin-x64` to two directories and choose one at run time from `process.arch`. There is no universal runtime binary. On an Intel Mac, `resolvePackagedRuntime` returns `null` when only an arm64 tree is present, so `createDaexChat` fails at start with `runtime_unavailable` instead of at spawn.
 
 ## Confirm what shipped
 

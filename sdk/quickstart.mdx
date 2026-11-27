@@ -1,13 +1,13 @@
 ---
 title: "Quickstart"
-description: "Ten lines to a Daex chat sidecar: createAdeChat, open a durable thread, send, listen, dispose."
+description: "Ten lines to a Daex chat sidecar: createDaexChat, open a durable thread, send, listen, dispose."
 icon: "rocket"
 ---
 
 ```ts
-import { createAdeChat } from "@daex-dev/sdk";
+import { createDaexChat } from "@daex-dev/sdk";
 
-const ade = await createAdeChat({ home: "./.ade-embed" });
+const ade = await createDaexChat({ home: "./.ade-embed" });
 const thread = await ade.threads.open("support", {
   provider: "claude",
   model: "claude-sonnet-4-5",
@@ -68,9 +68,9 @@ Read [Permissions and approvals](/sdk/permissions) before shipping a policy or e
 ## React UI
 
 ```tsx
-import { AdeChat, createTheme, adaptSdkClient } from "@daex-dev/chat-ui";
+import { DaexChat, createTheme, adaptSdkClient } from "@daex-dev/chat-ui";
 
-<AdeChat
+<DaexChat
   client={adaptSdkClient(ade)}
   threadKey="support"
   theme={createTheme({ accent: "#7c5cff", background: "#0e0f13" })}

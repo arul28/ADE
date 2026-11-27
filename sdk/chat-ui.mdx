@@ -1,6 +1,6 @@
 ---
 title: "Chat UI"
-description: "Embeddable React chat for @daex-dev/sdk: AdeChat, Composer, Transcript, ModelPicker, link handling, CSS-token theming, and activity labels."
+description: "Embeddable React chat for @daex-dev/sdk: DaexChat, Composer, Transcript, ModelPicker, link handling, CSS-token theming, and activity labels."
 icon: "window-restore"
 ---
 
@@ -13,9 +13,9 @@ npm install @daex-dev/chat-ui
 React and React DOM are peers (`^18` or `^19`). `@daex-dev/sdk` is an optional peer used for types only.
 
 ```tsx
-import { AdeChat, createTheme, adaptSdkClient } from "@daex-dev/chat-ui";
+import { DaexChat, createTheme, adaptSdkClient } from "@daex-dev/chat-ui";
 
-<AdeChat
+<DaexChat
   client={adaptSdkClient(ade)}
   threadKey="support-42"
   labels={{ map: { "server.*": "Looking that up…" } }}
@@ -23,16 +23,16 @@ import { AdeChat, createTheme, adaptSdkClient } from "@daex-dev/chat-ui";
 />;
 ```
 
-`<AdeChat>` is transcript above, composer with the model rail below. No header bar. Changing `threadKey` opens a different conversation.
+`<DaexChat>` is transcript above, composer with the model rail below. No header bar. Changing `threadKey` opens a different conversation.
 
 `adaptSdkClient` maps a real `@daex-dev/sdk` client onto the view contract. Any SDK-shaped proxy works — for example a renderer that talks to main over a WebSocket.
 
 ## Links
 
-Every link that chat-ui draws goes through one component, `<AdeLink>`: links in assistant markdown, and the "Documentation" link on a provider card. Pass `onLinkClick` to decide what opens and where:
+Every link that chat-ui draws goes through one component, `<DaexLink>`: links in assistant markdown, and the "Documentation" link on a provider card. Pass `onLinkClick` to decide what opens and where:
 
 ```tsx
-<AdeChat
+<DaexChat
   client={client}
   threadKey="main"
   onLinkClick={(href, { source, text }) => openInBrowser(href)}
@@ -47,11 +47,11 @@ Without `onLinkClick`, a link opens with `target="_blank"` and `rel="noreferrer 
 In Electron, `target="_blank"` opens a new `BrowserWindow` with no browser chrome. It looks like part of your app and shows a page at a URL that a model wrote. Pass `onLinkClick`, and deny new windows in main with `setWindowOpenHandler`. See [Electron: Links in the chat](/sdk/electron#links-in-the-chat).
 </Warning>
 
-`<Transcript>`, `<ProviderCard>` and `<ProviderCards>` take the same `onLinkClick` prop. A custom `renderMarkdown` draws its own links, so `onLinkClick` does not reach them unless your renderer uses `<AdeLink>`, which is exported.
+`<Transcript>`, `<ProviderCard>` and `<ProviderCards>` take the same `onLinkClick` prop. A custom `renderMarkdown` draws its own links, so `onLinkClick` does not reach them unless your renderer uses `<DaexLink>`, which is exported.
 
 ## Host control of the composer
 
-`<AdeChat>` accepts these props for a host that drives the conversation itself (chat-ui 0.4):
+`<DaexChat>` accepts these props for a host that drives the conversation itself (chat-ui 0.4):
 
 | Prop | Effect |
 |---|---|
@@ -63,7 +63,7 @@ In Electron, `target="_blank"` opens a new `BrowserWindow` with no browser chrom
 ```tsx
 const threadRef = useRef<ThreadState | null>(null);
 
-<AdeChat
+<DaexChat
   client={client}
   threadKey={key}
   value={draft}
@@ -74,19 +74,19 @@ const threadRef = useRef<ThreadState | null>(null);
   }}
 >
   {(thread) => (thread.rows.length === 0 ? <PromptCards onPick={setDraft} /> : null)}
-</AdeChat>;
+</DaexChat>;
 ```
 
 `ThreadState` carries `rows`, `status`, `model`, `send`, `steer`, `interrupt`, `setModel`, `update`, `retry`, `editLast`, `approve`, and the flags `ready`, `canSetModel`, `canUpdate`, `canRetry` and `canApprove`.
 
-A "Retry" button calls `thread.retry()`, and an "Edit" flow calls `thread.editLast(input)`. When the runtime reports that the old turn left the history (`session_meta_updated` with `historyInvalidated`), `useAdeThread` re-reads the history, so the message shows once. `canRetry` is `false` on an SDK before 0.4. See [Retry and edit](/sdk/threads#retry-and-edit) for the providers and errors.
+A "Retry" button calls `thread.retry()`, and an "Edit" flow calls `thread.editLast(input)`. When the runtime reports that the old turn left the history (`session_meta_updated` with `historyInvalidated`), `useDaexThread` re-reads the history, so the message shows once. `canRetry` is `false` on an SDK before 0.4. See [Retry and edit](/sdk/threads#retry-and-edit) for the providers and errors.
 
 ### Reasoning effort
 
 `ThreadState.update(patch)` changes the title, the reasoning effort or fast mode of the open thread (`thread.update` on `@daex-dev/sdk` 0.3 and later). `canUpdate` is `false` on a client whose thread has no `update`. Use it with the built-in effort control:
 
 ```tsx
-<AdeChat
+<DaexChat
   client={client}
   threadKey={key}
   threadRef={threadRef}
@@ -102,11 +102,11 @@ A reasoning change while a turn runs is refused with the code `turn_in_flight` (
 
 ### Runtime restarts
 
-When the client reports a successful runtime restart (`client.on("restart")` with `ok: true`, from `autoRestart`), `useAdeThread` re-opens the thread and re-reads its history. The old rows stay on screen until the new history replaces them. You do not need to remount the chat. `adaptSdkClient` forwards `on` when the SDK client (or the Electron renderer client) has it.
+When the client reports a successful runtime restart (`client.on("restart")` with `ok: true`, from `autoRestart`), `useDaexThread` re-opens the thread and re-reads its history. The old rows stay on screen until the new history replaces them. You do not need to remount the chat. `adaptSdkClient` forwards `on` when the SDK client (or the Electron renderer client) has it.
 
 ## Approvals
 
-A provider that asks for permission parks its turn until someone answers. `<AdeChat>` draws a card for every `approval_request` and answers it through `thread.approve()`, so a blocked conversation looks blocked rather than broken.
+A provider that asks for permission parks its turn until someone answers. `<DaexChat>` draws a card for every `approval_request` and answers it through `thread.approve()`, so a blocked conversation looks blocked rather than broken.
 
 The card renders **inline in the transcript**, at the position of the request, not as a modal — the reader has to see what the agent was doing when it asked. It shows the description, and for a `command` request the command itself in a monospace block. Three buttons:
 
@@ -121,7 +121,7 @@ Once answered, the card stays on screen in a settled state. A card that disappea
 The card is keyboard reachable and never takes focus from the composer.
 
 ```tsx
-<AdeChat
+<DaexChat
   client={adaptSdkClient(ade)}
   threadKey="assistant"
   approvals={{
@@ -139,7 +139,7 @@ Pass `approvals.render` to replace the card entirely; it receives the request an
 
 An approval is read-only when the thread does not expose `approve`; the card explains that the host cannot answer it instead of showing buttons that throw. Questions, structured questions and plan approvals use a separate input card and `thread.respond(requestId, response)`, where `response` has the runtime's `answers`, `decision` and `responseText` fields. It stays read-only when the client has no `respond` method. Model-selection requests remain read-only here.
 
-After a reload, `<AdeChat>` calls `thread.pendingApprovals()` once on open and restores a card for every outstanding request the transcript no longer carries. A restored card sorts into the transcript at the instant it was read, not at the end, so it sits where the conversation actually is.
+After a reload, `<DaexChat>` calls `thread.pendingApprovals()` once on open and restores a card for every outstanding request the transcript no longer carries. A restored card sorts into the transcript at the instant it was read, not at the end, so it sits where the conversation actually is.
 
 A restored card is **live by construction**. It came from the engine's authoritative "still blocked right now" list, read after the history window, so nothing in that history can expire it — an ending recorded before the request was even restored says only that some earlier turn finished. Only an explicit `pending_input_resolved` settles it. Drawing a genuinely blocked request as expired is a hang: the buttons go read-only while the runtime still waits for the answer.
 
@@ -155,9 +155,9 @@ await thread.respond(requestId, { answers: { project_scope: ["UI", "tests"], tim
 
 ## Queued messages and usage limits
 
-When a thread exposes `queue.list()`, `<AdeChat>` shows its queued messages with the operations the client supports: edit, reorder, cancel, send now and cancel a dispatched send. Failed reads or actions show an error with a retry where the operation can be repeated. Clients without a queue stay usable and do not show an empty placeholder.
+When a thread exposes `queue.list()`, `<DaexChat>` shows its queued messages with the operations the client supports: edit, reorder, cancel, send now and cancel a dispatched send. Failed reads or actions show an error with a retry where the operation can be repeated. Clients without a queue stay usable and do not show an empty placeholder.
 
-Usage-limit events are scoped by `threadKey`; `<AdeChat>` ignores events for another thread. When the thread has resume controls, the notice offers **Resume now** and **Continue on** the alternate account it reports. Failed actions remain visible on the notice.
+Usage-limit events are scoped by `threadKey`; `<DaexChat>` ignores events for another thread. When the thread has resume controls, the notice offers **Resume now** and **Continue on** the alternate account it reports. Failed actions remain visible on the notice.
 
 ## Accounts components
 
@@ -165,7 +165,7 @@ The standalone account components render non-secret account summaries and usage 
 
 ## Composer rail and attachments
 
-`<AdeChat>` passes four props through to its `<Composer>`:
+`<DaexChat>` passes four props through to its `<Composer>`:
 
 | Prop | Effect |
 |---|---|
@@ -183,7 +183,7 @@ Submitting during a running turn is a steer, and staged attachments go with the 
 
 ## Long transcripts
 
-`<AdeChat>` loads history one page at a time when the thread supports `historyPage` (SDK 0.3 and later). It loads the newest page on open and older pages when the reader scrolls to the top or clicks **Load older messages**. `historyPageSize` sets the page size (default 200 events).
+`<DaexChat>` loads history one page at a time when the thread supports `historyPage` (SDK 0.3 and later). It loads the newest page on open and older pages when the reader scrolls to the top or clicks **Load older messages**. `historyPageSize` sets the page size (default 200 events).
 
 Rows are built incrementally: a streamed event changes only the rows it touches. Above `windowThreshold` rows (default 150) the transcript mounts only the rows in view plus `overscan` rows on each side (default 8). With no `ResizeObserver` (jsdom, server rendering) every row renders.
 
@@ -196,7 +196,7 @@ Tool chips carry `identity: { server, tool }`, parsed from the event or from the
 Two slots let a host act on a result:
 
 ```tsx
-<AdeChat
+<DaexChat
   client={client}
   threadKey="main"
   toolChipActions={(row) =>
@@ -298,11 +298,11 @@ CSS custom properties only. No Tailwind, no class overrides.
 
 `createTheme({ background: "transparent" })` lets the host window show through. Pass `scheme` with it, because a transparent background has no luminance to read.
 
-Pass `disableStyles` if you inject the stylesheet yourself. Under a strict CSP with no `'unsafe-inline'` in `style-src`, pass a nonce: `<AdeChat styleNonce={nonce} />`, or `injectAdeChatStyles(document, { nonce })`.
+Pass `disableStyles` if you inject the stylesheet yourself. Under a strict CSP with no `'unsafe-inline'` in `style-src`, pass a nonce: `<DaexChat styleNonce={nonce} />`, or `injectDaexChatStyles(document, { nonce })`.
 
 ## Standalone components
 
-Every piece is importable without `<AdeChat>`:
+Every piece is importable without `<DaexChat>`:
 
 | Component | Role |
 |---|---|

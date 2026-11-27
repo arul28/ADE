@@ -146,7 +146,7 @@ These values are still stored in plain text: the `url` with its query string (th
 ### `mcpHeaders`
 
 ```ts
-const ade = await createAdeChat({
+const ade = await createDaexChat({
   home,
   mcpHeaders: (key, serverName) =>
     serverName === "app" ? { Authorization: `Bearer ${currentToken()}` } : undefined,
@@ -162,7 +162,7 @@ On a resume, the SDK pushes the resolved servers to the runtime when the stored 
 A remote server with a short-lived access token (OAuth, one hour) would start returning 401 partway through a long chat. With `mcpHeaders`, it does not: before each turn the SDK asks the callback again, and when the values differ from the ones it last sent, it pushes them. The runtime restarts the provider between turns and resumes the same conversation, so the next turn runs on the new token. Unchanged values send nothing, so return a cached token until it is close to expiry.
 
 ```ts
-const ade = await createAdeChat({
+const ade = await createDaexChat({
   home,
   mcpHeaders: async (key, serverName) =>
     serverName === "app" ? { Authorization: `Bearer ${await oauth.validAccessToken()}` } : undefined,

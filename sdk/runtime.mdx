@@ -47,7 +47,7 @@ Each `providers.status` record includes `capabilities` for permission modes, rea
 
 ## Pidfile reclaim
 
-`<home>/runtime.pid` records the child. If a previous host died without unwinding, the next `createAdeChat` reclaims:
+`<home>/runtime.pid` records the child. If a previous host died without unwinding, the next `createDaexChat` reclaims:
 
 - A healthy runtime already bound to this home is **reused**.
 - A confirmed-stale child is ended, then a new one is spawned.
@@ -86,7 +86,7 @@ Show the thread as stopped when you get it. Approvals that were pending died wit
 ### `autoRestart`
 
 ```ts
-const ade = await createAdeChat({
+const ade = await createDaexChat({
   home,
   autoRestart: true,                       // 5 attempts, 1 s backoff that doubles
   // autoRestart: { maxAttempts: 3, backoffMs: 500 },
@@ -137,7 +137,7 @@ After the handshake, the SDK compares the runtime's reported version with the ra
 
 - **Inside the range:** nothing happens.
 - **Outside the range:** the runtime still connects. The SDK logs one line, and features that the runtime lacks degrade feature by feature. For example, `thread.updateMcpServers()` throws `invalid_option`, `hydrate: false` is ignored, `thread.retry()` throws `unsupported`, and `attachmentRoots` is ignored.
-- **With `requireCompatibleRuntime: true`:** `createAdeChat` throws `AdeError("runtime_incompatible")` and stops the runtime.
+- **With `requireCompatibleRuntime: true`:** `createDaexChat` throws `DaexError("runtime_incompatible")` and stops the runtime.
 
 A pre-release suffix is ignored, so `1.2.81-alpha.3` counts as `1.2.81`. A development build (`0.0.0`, or no version) counts as supported, and `note` says so. A version that the SDK cannot parse counts as not supported.
 

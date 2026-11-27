@@ -195,7 +195,7 @@ await thread.editLast("", { attachments: [{ path: "/Users/me/MyApp/work/new.csv"
 
 What a subscriber sees, in order:
 
-1. `session_meta_updated` with `historyInvalidated: true` and a new `historyGeneration`. Drop your copy of the events at or after `retractedFromSequence` (from the result), or read `history()` again. `useAdeThread` in chat-ui 0.4 re-reads by itself.
+1. `session_meta_updated` with `historyInvalidated: true` and a new `historyGeneration`. Drop your copy of the events at or after `retractedFromSequence` (from the result), or read `history()` again. `useDaexThread` in chat-ui 0.4 re-reads by itself.
 2. The new turn: `user_message`, `status` started, and the rest of the turn.
 
 Both resolve when the new turn is dispatched, with `{ retractedFromSequence, historyGeneration, conversationRollback }`. `conversationRollback` says what the provider did: `claude_fork` or `claude_new_session` (Claude), `codex_thread` (Codex), or `not_delivered` (the old message never reached the provider, so only the transcript changed).
