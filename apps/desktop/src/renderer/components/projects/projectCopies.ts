@@ -6,12 +6,21 @@ import type {
 } from "../../../shared/types";
 import { cachedGitRemoteIdentity } from "../lanes/laneMachines";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
+import { pathFlavorOf } from "../../../shared/pathCase";
 
 /**
  * The pieces every "copy of a repository on a machine" surface shares: the Add
  * project form, the copies menu on a project tab, and the clone jobs behind
  * both. Pure, so the surfaces cannot disagree about which machine has a copy.
  */
+
+/** `parent` + `name`, joined with that machine's separator. */
+export function joinMachinePath(parent: string, name: string): string {
+  const windows = pathFlavorOf(parent) === "win32";
+  const separator = windows ? "\\" : "/";
+  const base = parent.replace(windows ? /[\\/]+$/ : /\/+$/, "");
+  return `${base}${separator}${name}`;
+}
 
 /** One machine that can hold a copy: this computer or a saved machine. */
 export type CopyMachine = {

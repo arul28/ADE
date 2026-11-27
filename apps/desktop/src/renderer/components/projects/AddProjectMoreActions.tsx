@@ -72,7 +72,8 @@ export function AddProjectMoreActions({
         New empty project…
       </button>
       {places.length > 1 ? (
-        <label style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: "auto" }}>
+        // Beside the two actions it picks the computer for, not across the row.
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: 2 }}>
           on
           <select
             value={placeKey}

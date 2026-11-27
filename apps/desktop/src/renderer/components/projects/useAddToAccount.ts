@@ -15,6 +15,14 @@ export function openAddedAccountProject(project: AccountProjectView): void {
 type AccountAddAnswer = AccountProjectChangeResult;
 
 /**
+ * How an account add ended: `added`; `closed` (another account signed in, so
+ * the form closed and nothing else may happen); `no_account` (signed out, or
+ * an address only the cloning computer can read, told quietly); `failed` (the
+ * error is shown).
+ */
+export type AccountAddOutcome = "added" | "closed" | "no_account" | "failed";
+
+/**
  * One account add, and whether another account signed in while it ran: a
  * result for the first account never lands in the next one's list.
  */
@@ -59,8 +67,17 @@ export function useAddToAccount(args: { folderName: string; onClose: () => void 
     };
   }, []);
 
-  const addToAccount = async (repoUrl: string, options: { openTab: boolean }): Promise<boolean> => {
-    if (typeof window.ade?.project?.accountAdd !== "function") return false;
+  /**
+   * `quietIfNoAccount`: a signed-out client, or an address only the cloning
+   * computer can read, is not an error (the form opens a copy instead).
+   * Defaults to true when no tab opens. `successMessage` replaces the toast's
+   * ADE Cloud line when the add also starts clones.
+   */
+  const addToAccount = async (
+    repoUrl: string,
+    options: { openTab: boolean; quietIfNoAccount?: boolean; successMessage?: string },
+  ): Promise<AccountAddOutcome> => {
+    if (typeof window.ade?.project?.accountAdd !== "function") return "no_account";
     setAccountError(null);
     setAddingToAccount(true);
     const { answer, accountChanged } = await addRepoToAccount(repoUrl);
@@ -68,14 +85,15 @@ export function useAddToAccount(args: { folderName: string; onClose: () => void 
     if (!answer.ok) {
       // Signed out, or an ssh alias only the cloning machine can read: the
       // copies still clone, as they did before the account kept projects.
-      if (!options.openTab && (answer.code === "signed_out" || answer.code === "invalid_repository")) return false;
+      const quiet = options.quietIfNoAccount ?? !options.openTab;
+      if (quiet && (answer.code === "signed_out" || answer.code === "invalid_repository")) return "no_account";
       if (mountedRef.current) setAccountError(answer.message);
       else showToast({ tone: "error", title: `Couldn't add ${folderName} to your account`, message: answer.message });
-      return false;
+      return "failed";
     }
     if (accountChanged) {
       if (mountedRef.current) onClose();
-      return false;
+      return "closed";
     }
     // A form closed while the add ran opens no tab: the project only joins the list.
     if (!options.openTab || !mountedRef.current) {
@@ -83,10 +101,14 @@ export function useAddToAccount(args: { folderName: string; onClose: () => void 
       if (options.openTab) showToast({ tone: "success", title: `Added ${answer.project.name}`, message: "Open it from Home to send its first chat." });
     } else {
       openAddedAccountProject(answer.project);
-      showToast({ tone: "success", title: `Added ${answer.project.name}`, message: "Send a chat from its page to start work on ADE Cloud." });
+      showToast({
+        tone: "success",
+        title: `Added ${answer.project.name}`,
+        message: options.successMessage ?? "Send a chat from its page to start work on ADE Cloud.",
+      });
       onClose();
     }
-    return true;
+    return "added";
   };
 
   return { accountError, addingToAccount, canAddToAccount, addToAccount };

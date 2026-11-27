@@ -284,11 +284,6 @@ export function subscribeCopyJobReady(listener: (job: CopyJob) => void): () => v
   };
 }
 
-/** The jobs of one repository now, outside React. */
-export function listCopyJobs(repoKey: string): readonly CopyJob[] {
-  return listsByRepo.get(repoKey) ?? EMPTY;
-}
-
 /** The jobs of one repository, live. */
 export function useCopyJobs(repoKey: string | null): readonly CopyJob[] {
   const getSnapshot = useCallback(

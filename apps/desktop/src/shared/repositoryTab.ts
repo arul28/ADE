@@ -601,8 +601,9 @@ export type StartOnInputs = {
  * What "Start on" offers for new work in this tab, in order. The first
  * available entry is the default (`startOnDefault`):
  *
- * 1. this computer's online copy (desktop only; its main copy);
- * 2. the copy on the computer used last for this project;
+ * 1. the copy on the computer used last for this project, so a person who
+ *    works on another computer is not moved back to this one;
+ * 2. this computer's online copy (desktop only; its main copy);
  * 3. other online copies (main copies first);
  * 4. online computers with no copy ("clone first"); not for a this-computer-only project;
  * 5. ADE Cloud, for a github.com project;
@@ -625,11 +626,11 @@ export function resolveStartOn(tab: RepositoryTab | null, inputs: StartOnInputs)
   };
   const online = copies.filter(isRoutable).sort(compareCopies);
 
-  add(online.find((copy) => copy.isThisMachine), "this-computer");
   const lastUsed = inputs.lastUsedMachineKey?.trim();
   if (lastUsed) {
     add(online.find((copy) => !copy.isThisMachine && (copy.machineKey === lastUsed || copy.machineId === lastUsed)), "last-used");
   }
+  add(online.find((copy) => copy.isThisMachine), "this-computer");
   for (const copy of online) add(copy, "other");
 
   if (tab.kind === "account") {
