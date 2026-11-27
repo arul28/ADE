@@ -32,8 +32,9 @@ export default defineConfig(({ mode }) => {
       port: 4180,
       allowedHosts: [".trycloudflare.com"],
       // The pricing facts come from the account directory's plan files
-      // (`src/lib/cloudPricing.ts`), outside this app's folder.
-      fs: { allow: [searchForWorkspaceRoot(process.cwd()), "../account-directory/src/cloud"] },
+      // (`src/lib/cloudPricing.ts`), and the product names from the desktop
+      // app's brand file, both outside this app's folder.
+      fs: { allow: [searchForWorkspaceRoot(process.cwd()), "../account-directory/src/cloud", "../desktop/src/shared/brand.ts"] },
     },
     build: { sourcemap: true },
   };

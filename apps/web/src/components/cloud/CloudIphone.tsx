@@ -2,6 +2,7 @@ import { ArrowRight, Clapperboard, Laptop, MousePointerClick, Smartphone } from 
 import { PHONE_CREDITS_PER_MINUTE, PRICING_SIZES, formatCount } from "../../lib/cloudPricing";
 import { cn } from "../../lib/cn";
 import { LINKS } from "../../lib/links";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 const AMBER = "#fdba74";
 
@@ -67,11 +68,11 @@ export function CloudIphoneBand() {
     <div className="mt-16 overflow-hidden rounded-[28px] border border-white/[0.08] bg-[linear-gradient(150deg,rgba(253,186,116,0.10),rgba(18,15,46,0.55)_45%,rgba(12,10,26,0.9))]">
       <div className="grid items-center gap-8 p-6 sm:p-10 md:grid-cols-[minmax(0,4fr)_minmax(0,6fr)] lg:gap-14">
         <div className="mx-auto w-[min(100%,300px)] rounded-[44px] bg-[#1b1b22] p-[9px] shadow-[0_40px_80px_-20px_rgba(0,0,0,0.9),0_0_0_1px_rgba(255,255,255,0.14)]">
-          <img src="/images/home/mockup/crumb-phone.png" alt="An app running on the ADE Cloud iPhone" className="block h-auto w-full rounded-[36px]" />
+          <img src="/images/home/mockup/crumb-phone.png" alt={`An app running on the ${BRAND.CLOUD_NAME} iPhone`} className="block h-auto w-full rounded-[36px]" />
         </div>
         <div>
           <p className="inline-flex items-center gap-2 text-[13px] font-semibold uppercase tracking-[0.08em]" style={{ color: AMBER }}>
-            <Smartphone className="h-3.5 w-3.5" /> ADE Cloud iPhone
+            <Smartphone className="h-3.5 w-3.5" /> {BRAND.CLOUD_NAME} iPhone
           </p>
           <h3 className="mt-3 text-[clamp(24px,2.3vw,32px)] font-medium leading-[1.2] tracking-[-0.02em] text-white">
             No Mac? Ship iPhone apps anyway.

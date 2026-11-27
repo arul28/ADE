@@ -41,6 +41,7 @@ import { MARKETING_CTA_POSITIONS, MARKETING_FEATURES, MARKETING_SCREENS } from "
 import { captureMarketingFeature } from "../../lib/marketingAnalyticsBrowser";
 import { PLAN_CTAS } from "../../lib/planLinks";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /** Each plan's tower over its card: more floors and more lights for a bigger plan. */
 const PLAN_TOWERS: Record<PricingPlan["id"], { floors: number; lit: number; seed: number }> = {
@@ -88,7 +89,7 @@ const panel = "rounded-[24px] border border-white/[0.08] bg-[#100e22]";
  * `lib/cloudPricing.ts`, which reads the plan facts the server bills with.
  */
 export function PricingPage() {
-  useDocumentTitle("ADE Cloud Pricing");
+  useDocumentTitle(`${BRAND.CLOUD_NAME} Pricing`);
   return (
     <Page>
       <div
@@ -106,10 +107,10 @@ export function PricingPage() {
         <FaqSection />
         <section className={cn(wrap, "pb-[clamp(72px,8vw,112px)] pt-[clamp(56px,6vw,88px)] text-center")}>
           <h2 className={serifHeading} style={{ fontSize: "clamp(36px, 4.6vw, 60px)", lineHeight: 1.02 }}>
-            The ADE app is free today.
+            The {BRAND.NAME} app is free today.
           </h2>
           <p className="mx-auto mt-4 max-w-[32rem] text-[15px] leading-[1.6] text-white/55">
-            Run your agents on your own computers, and add ADE Cloud when you want it.
+            Run your agents on your own computers, and add {BRAND.CLOUD_NAME} when you want it.
           </p>
           <InstallBlock position={MARKETING_CTA_POSITIONS.PRICING_PAGE} />
         </section>
@@ -153,7 +154,7 @@ function PricingHero() {
         </div>
 
         <p className="mx-auto mt-8 max-w-[48rem] text-center text-[14px] leading-[1.6] text-white/45">
-          Prices in US dollars. {CLOUD_SMALL_FAIR_USE_SENTENCE} On Free, Small stays free while you open an ADE Cloud chat or terminal from the US at least once a week.
+          Prices in US dollars. {CLOUD_SMALL_FAIR_USE_SENTENCE} On Free, Small stays free while you open a {BRAND.CLOUD_NAME} chat or terminal from the US at least once a week.
         </p>
       </div>
     </section>
@@ -595,7 +596,7 @@ function ExtraCard() {
             <span className="text-[15px] text-white/55">for each {UNIT.one} once your plan's run out</span>
           </p>
           <div className="mt-6">
-            <CheckList accent={AMBER} items={[`On ${listNames(PAID_PLANS.map((plan) => plan.name))}`, "Billed after use", "Turn it on in ADE Cloud settings"]} />
+            <CheckList accent={AMBER} items={[`On ${listNames(PAID_PLANS.map((plan) => plan.name))}`, "Billed after use", `Turn it on in ${BRAND.CLOUD_NAME} settings`]} />
           </div>
         </>
       ) : (
@@ -616,7 +617,7 @@ function ExtraCard() {
         </ul>
       )}
       <p className="mt-5 text-[13.5px] leading-[1.5] text-white/45">
-        On Free, {UNIT.spenders} pause until next month instead. Small computers keep working in the US with sponsored cards and an ADE Cloud chat there each week.
+        On Free, {UNIT.spenders} pause until next month instead. Small computers keep working in the US with sponsored cards and a {BRAND.CLOUD_NAME} chat there each week.
       </p>
     </DetailCard>
   );
@@ -647,9 +648,9 @@ function FreePlanCard() {
 /** Which plans let an agent outside ADE (through ADE MCP) start ADE Cloud work. */
 function OutsideAgentsCard() {
   return (
-    <DetailCard accent={SKY} icon={Bot} title="Outside agents" note="Agents outside ADE, through ADE MCP.">
+    <DetailCard accent={SKY} icon={Bot} title="Outside agents" note={`Agents outside ${BRAND.NAME}, through ${BRAND.NAME} MCP.`}>
       <p className="text-[15px] leading-[1.6] text-white/70">
-        A bot or another app's agent can start work on ADE Cloud on {listNames(OUTSIDE_AGENT_PLANS.map((plan) => plan.name))}.
+        A bot or another app's agent can start work on {BRAND.CLOUD_NAME} on {listNames(OUTSIDE_AGENT_PLANS.map((plan) => plan.name))}.
       </p>
       <ul className="mt-6 grid grid-cols-2 gap-3 text-[14px] text-white/75">
         {PRICING_PLANS.map((plan) => (
@@ -661,7 +662,7 @@ function OutsideAgentsCard() {
       </ul>
       {NO_OUTSIDE_AGENT_PLANS.length > 0 ? (
         <p className="mt-5 text-[13.5px] leading-[1.5] text-white/45">
-          Agents inside ADE, automations and webhooks use ADE Cloud on {listNames(NO_OUTSIDE_AGENT_PLANS.map((plan) => plan.name))} too.
+          Agents inside {BRAND.NAME}, automations and webhooks use {BRAND.CLOUD_NAME} on {listNames(NO_OUTSIDE_AGENT_PLANS.map((plan) => plan.name))} too.
         </p>
       ) : null}
     </DetailCard>
@@ -677,12 +678,12 @@ function CleanupPanel() {
     { title: "You get an email", body: "It comes before anything is deleted, and lists what will not be kept." },
     {
       title: "Your work is pushed",
-      body: "ADE commits the work and pushes it to the task's branch on GitHub. Files git ignores, like .env, are not pushed.",
+      body: `${BRAND.NAME} commits the work and pushes it to the task's branch on GitHub. Files git ignores, like .env, are not pushed.`,
     },
     { title: "The computer goes", body: "The task and its chats stay. Your next message makes a new computer from the branch." },
   ];
   return (
-    <DetailCard accent={VIOLET} icon={Recycle} title="Unused computers" note="ADE deletes computers nobody uses. This is what happens first.">
+    <DetailCard accent={VIOLET} icon={Recycle} title="Unused computers" note={`${BRAND.NAME} deletes computers nobody uses. This is what happens first.`}>
       <ol className="relative grid gap-8 sm:grid-cols-2 lg:grid-cols-4 lg:gap-6">
         <span aria-hidden className="absolute left-4 right-4 top-4 hidden h-px lg:block" style={{ background: `linear-gradient(90deg, ${VIOLET.color}, transparent)` }} />
         {steps.map((step, index) => (
@@ -709,8 +710,8 @@ function FaqSection() {
         <SectionTitle id="faq-title" title="Questions" />
         <div className="mt-6 divide-y divide-white/[0.08] border-y border-white/[0.08]">
           <FaqItem question="How do I pick a plan?">
-            Press its button: ADE's web app signs you in and takes you to checkout. Or pick one in the ADE app, in
-            Settings under ADE Cloud. Free needs no credit card.
+            Press its button: {BRAND.NAME}'s web app signs you in and takes you to checkout. Or pick one in the {BRAND.NAME} app, in
+            Settings under {BRAND.CLOUD_NAME}. Free needs no credit card.
           </FaqItem>
           <FaqItem question="Are Small computers really unlimited?">
             Yes. {UNIT.smallUnlimited} Each one counts toward your plan's cloud computers, and it sleeps when work
@@ -721,16 +722,16 @@ function FaqSection() {
             A computer that is asleep uses no {UNIT.many}, and your {UNIT.many} start over each month.
           </FaqItem>
           <FaqItem question={`What happens when my ${UNIT.many} run out?`}>
-            On Free, your {listNames(HOURLY_SIZES.map((size) => size.label))} computers and the ADE Cloud iPhone stop
+            On Free, your {listNames(HOURLY_SIZES.map((size) => size.label))} computers and the {BRAND.CLOUD_NAME} iPhone stop
             until next month, or until you pick a paid plan; {SMALL_SIZE.label} computers keep working
-             in the US with sponsored cards and an ADE Cloud chat there each week. On a paid plan, turn on {UNIT.extra} in Settings and
+             in the US with sponsored cards and a {BRAND.CLOUD_NAME} chat there each week. On a paid plan, turn on {UNIT.extra} in Settings and
             your agents keep working: each extra {UNIT.one} costs {extraPriceList()}, billed after use. With {UNIT.extra}{" "}
             off, work on the bigger sizes stops at your plan's {UNIT.many}.
           </FaqItem>
           <FaqItem question="Can I change plans or cancel?">
-            Yes, any time in Settings › ADE Cloud. A bigger plan starts right away, and you pay the difference for the
+            Yes, any time in Settings › {BRAND.CLOUD_NAME}. A bigger plan starts right away, and you pay the difference for the
             rest of the month. A smaller plan, or cancelling, starts when your month ends. If you have more cloud
-            computers than the new plan allows, ADE asks which to keep, and pushes the others' work to their branches
+            computers than the new plan allows, {BRAND.NAME} asks which to keep, and pushes the others' work to their branches
             before it frees them.
           </FaqItem>
           <FaqItem question="How many cloud computers can I have?">
@@ -738,25 +739,25 @@ function FaqSection() {
             chats stay, and it gets a new computer the next time you send a message there), delete a lane, or move to a
             bigger plan.
           </FaqItem>
-          <FaqItem question="Can agents outside ADE use ADE Cloud?">
-            On {listNames(OUTSIDE_AGENT_PLANS.map((plan) => plan.name))}, yes: an agent connected through ADE MCP can
-            start work on ADE Cloud.
+          <FaqItem question={`Can agents outside ${BRAND.NAME} use ${BRAND.CLOUD_NAME}?`}>
+            On {listNames(OUTSIDE_AGENT_PLANS.map((plan) => plan.name))}, yes: an agent connected through {BRAND.NAME} MCP can
+            start work on {BRAND.CLOUD_NAME}.
             {NO_OUTSIDE_AGENT_PLANS.length > 0 ? ` On ${listNames(NO_OUTSIDE_AGENT_PLANS.map((plan) => plan.name))}, it can't.` : ""}
           </FaqItem>
           <FaqItem question="What happens to computers I don't use?">
-            After {days(FREE_PLAN.idleDays)} unused on Free, or {days(PAID_IDLE_DAYS)} on a paid plan, ADE deletes the
-            computer. You get an email first. Before it deletes anything, ADE commits the work and pushes it to the
+            After {days(FREE_PLAN.idleDays)} unused on Free, or {days(PAID_IDLE_DAYS)} on a paid plan, {BRAND.NAME} deletes the
+            computer. You get an email first. Before it deletes anything, {BRAND.NAME} commits the work and pushes it to the
             task's branch. Files git ignores, such as .env or a local database, are never pushed, so they are not kept;
             the email lists them. The task and its chats stay, and your next message makes a new computer from the
             branch.
           </FaqItem>
           <FaqItem question="Does the Free plan show ads?">
             {ADS_FREE_PLAN_SENTENCE} A sponsored card is labeled "Sponsored". An agent may also recommend a sponsored
-            tool when you need one; nothing is installed unless you ask. ADE asks you once before the first sponsored
-            card, and you can change your answer in Settings › ADE Cloud.
+            tool when you need one; nothing is installed unless you ask. {BRAND.NAME} asks you once before the first sponsored
+            card, and you can change your answer in Settings › {BRAND.CLOUD_NAME}.
           </FaqItem>
-          <FaqItem question="Do I need ADE Cloud to use ADE?">
-            No. The ADE app costs nothing and runs your agents on your own computers. ADE Cloud adds computers in the
+          <FaqItem question={`Do I need ${BRAND.CLOUD_NAME} to use ${BRAND.NAME}?`}>
+            No. The {BRAND.NAME} app costs nothing and runs your agents on your own computers. {BRAND.CLOUD_NAME} adds computers in the
             cloud when you want agents to keep working with your laptop closed.
           </FaqItem>
         </div>

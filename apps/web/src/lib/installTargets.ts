@@ -1,6 +1,7 @@
 import { LINKS } from "./links";
 import { MARKETING_CTA_LABELS, MARKETING_FEATURES } from "./marketingAnalytics";
 import type { MarketingCtaLabel, MarketingFeature } from "./marketingAnalytics";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 /**
  * Everything the install dialog says, per platform, in one place.
@@ -67,7 +68,7 @@ export const BREW_INSTALL_COMMAND = "brew install --cask arul28/ade/ade";
 export const INSTALL_TARGETS: Readonly<Record<InstallPlatform, InstallTarget>> = Object.freeze({
   mac: {
     platform: "mac",
-    title: "Get ADE for Mac",
+    title: `Get ${BRAND.NAME} for Mac`,
     terminal: {
       heading: "Install from your terminal",
       command: MAC_INSTALL_COMMAND,
@@ -99,7 +100,7 @@ export const INSTALL_TARGETS: Readonly<Record<InstallPlatform, InstallTarget>> =
   },
   windows: {
     platform: "windows",
-    title: "Get ADE for Windows",
+    title: `Get ${BRAND.NAME} for Windows`,
     terminal: {
       heading: "Install from your terminal",
       command: WINDOWS_INSTALL_COMMAND,
@@ -120,7 +121,7 @@ export const INSTALL_TARGETS: Readonly<Record<InstallPlatform, InstallTarget>> =
       heading: "Two Windows prompts to expect",
       items: [
         "SmartScreen may say “Windows protected your PC”. Choose More info, then Run anyway.",
-        "Windows Firewall asks to allow ADE the first time you sync over your network. Allow it on private networks. A per-user install cannot pre-approve that rule.",
+        `Windows Firewall asks to allow ${BRAND.NAME} the first time you sync over your network. Allow it on private networks. A per-user install cannot pre-approve that rule.`,
       ],
     },
     footnote: {
@@ -130,12 +131,12 @@ export const INSTALL_TARGETS: Readonly<Record<InstallPlatform, InstallTarget>> =
   },
   linux: {
     platform: "linux",
-    title: "Get ADE for Linux",
+    title: `Get ${BRAND.NAME} for Linux`,
     terminal: {
       heading: "No desktop? Install just the brain",
       command: LINUX_INSTALL_COMMAND,
       blurb:
-        "Run the brain on a server and control it from ADE on your Mac, Windows, phone, or the web.",
+        `Run the brain on a server and control it from ${BRAND.NAME} on your Mac, Windows, phone, or the web.`,
       analyticsFeature: MARKETING_FEATURES.COPY_INSTALL_COMMAND_LINUX,
     },
     downloads: {

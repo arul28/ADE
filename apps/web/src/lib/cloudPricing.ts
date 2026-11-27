@@ -27,12 +27,13 @@ import {
   type CloudTierId,
 } from "../../../account-directory/src/cloud/contract";
 import { CLOUD_PLANS, SMALL_NO_CARDS_RATE_MILLI, cloudSizeForTier } from "../../../account-directory/src/cloud/plans";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 export { CLOUD_SMALL_FAIR_USE_SENTENCE, cloudComputersPhrase };
 
 /** The Free plan's ad line, on the pricing page and the home page. */
 export const ADS_FREE_PLAN_SENTENCE =
-  "Free is ad-supported: an ADE Cloud chat on Free may show one sponsored card under a finished reply. Paid plans have no ads. Chats on your own computer never show ads.";
+  `Free is ad-supported: a ${BRAND.CLOUD_NAME} chat on Free may show one sponsored card under a finished reply. Paid plans have no ads. Chats on your own computer never show ads.`;
 
 /**
  * Credits an ADE Cloud iPhone minute uses: one, as `CLOUD_CREDIT_UNIT_SENTENCE`
@@ -92,7 +93,7 @@ function cloudUnitWords(): CloudUnitWords {
     offerRest: "Bigger computers use credits, and each plan has a number of cloud computers.",
     unitSentence: CLOUD_CREDIT_UNIT_SENTENCE,
     rateTitle: "What a credit buys",
-    spenders: "bigger computers and the ADE Cloud iPhone",
+    spenders: `bigger computers and the ${BRAND.CLOUD_NAME} iPhone`,
     extraTitle: "Extra credits",
     extra: "extra credits",
   };

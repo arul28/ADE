@@ -7,6 +7,7 @@ import { ToolsSection } from "../../components/home/ToolsSection";
 import { AgentsSection } from "../../components/home/AgentsSection";
 import { FeatureWall } from "../../components/home/FeatureWall";
 import { DownloadSection } from "../../components/home/DownloadSection";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * The home page leads with ADE Cloud and what it costs next to everyone
@@ -15,7 +16,7 @@ import { DownloadSection } from "../../components/home/DownloadSection";
  * agent and model, and everything else built in. Then the download.
  */
 export function HomePage() {
-  useDocumentTitle("ADE — Agentic Development Environment");
+  useDocumentTitle(`${BRAND.NAME} — Agentic Development Environment`);
 
   return (
     <Page>

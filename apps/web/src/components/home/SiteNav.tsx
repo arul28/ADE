@@ -10,6 +10,7 @@ import {
   MARKETING_FEATURES,
 } from "../../lib/marketingAnalytics";
 import { useInstallDialog } from "../install/InstallDialogProvider";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 const PRODUCT_HUNT_URL =
   "https://www.producthunt.com/products/ade-agentic-development-environment?embed=true&utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-ade-2";
@@ -107,8 +108,8 @@ export function SiteNav() {
       {/* The blur is its own layer: a filter on the header itself would pin the fixed menu below to the header's box. */}
       <div aria-hidden className="pointer-events-none absolute inset-0 -z-10 bg-[#0a0a0f]/75 backdrop-blur-xl" />
       <div className="mx-auto flex h-[60px] max-w-[1320px] items-center gap-7 px-5 sm:px-8">
-        <Link to="/" aria-label="ADE home" className="focus-ring flex shrink-0 items-center rounded-md">
-          <img src="/logo.png" alt="ADE" className="h-[22px] w-auto" />
+        <Link to="/" aria-label={`${BRAND.NAME} home`} className="focus-ring flex shrink-0 items-center rounded-md">
+          <img src="/logo.png" alt={BRAND.NAME} className="h-[22px] w-auto" />
         </Link>
 
         <nav className="hidden items-center gap-6 md:flex" aria-label="Main">
@@ -135,7 +136,7 @@ export function SiteNav() {
             rel="noopener noreferrer"
             className="hidden transition-transform duration-200 hover:-translate-y-px lg:inline-flex"
           >
-            <img alt="ADE on Product Hunt" width={150} height={32} src={PRODUCT_HUNT_BADGE} className="h-[32px] w-auto" />
+            <img alt={`${BRAND.NAME} on Product Hunt`} width={150} height={32} src={PRODUCT_HUNT_BADGE} className="h-[32px] w-auto" />
           </a>
           <a
             href={LINKS.github}

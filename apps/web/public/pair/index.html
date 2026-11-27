@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Pair with ADE</title>
+    <title>Pair with Daex</title>
     <!-- iPhone: offer the ADE App Clip card for instant pairing. The pairing
          payload rides the URL fragment, so it never reaches this server and
          is available to the clip at invocation. -->
@@ -57,21 +57,21 @@
   </head>
   <body>
     <div class="card">
-      <h1>Pair your iPhone with ADE</h1>
-      <p id="lead">Scan the pairing code shown in ADE on your computer with your iPhone camera to pair instantly.</p>
+      <h1>Pair your iPhone with Daex</h1>
+      <p id="lead">Scan the pairing code shown in Daex on your computer with your iPhone camera to pair instantly.</p>
       <ol class="steps">
         <li>Open the Camera app on your iPhone</li>
-        <li>Scan the pairing QR shown in ADE on your computer</li>
+        <li>Scan the pairing QR shown in Daex on your computer</li>
         <li>Enter the PIN your computer displays</li>
       </ol>
-      <p>Have the ADE app already? Scanning the same code inside the app's Settings works too.</p>
+      <p>Have the Daex app already? Scanning the same code inside the app's Settings works too.</p>
     </div>
     <script>
       // A phone browser landing here (banner dismissed or clip unavailable)
       // still has the payload in the fragment; keep the copy honest.
       if (/iPhone|iPad/.test(navigator.userAgent) && location.hash.length > 1) {
         document.getElementById("lead").textContent =
-          "Tap the ADE banner above to pair instantly, or install ADE from the App Store and scan the code again.";
+          "Tap the Daex banner above to pair instantly, or install Daex from the App Store and scan the code again.";
       }
     </script>
   </body>

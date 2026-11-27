@@ -9,6 +9,7 @@ import {
   MARKETING_CTA_POSITIONS,
   MARKETING_FEATURES,
 } from "../lib/marketingAnalytics";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 export function SiteFooter() {
   const year = new Date().getFullYear();
@@ -22,7 +23,7 @@ export function SiteFooter() {
             <div className="flex flex-col gap-2">
               <img
                 src="/logo.png"
-                alt="ADE"
+                alt={BRAND.NAME}
                 className="h-9 w-auto object-contain object-left sm:h-10"
                 width={200}
                 height={40}
@@ -57,7 +58,7 @@ export function SiteFooter() {
                 </Link>
                 <Link className="focus-ring inline-flex w-fit items-center gap-1.5 rounded-md text-muted-fg hover:text-fg" to="/#ade-cloud" data-ade-analytics-feature={MARKETING_FEATURES.VIEW_ADE_CLOUD}>
                   <CloudMark className="h-3.5" />
-                  ADE Cloud
+                  {BRAND.CLOUD_NAME}
                 </Link>
               </div>
             </div>

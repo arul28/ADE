@@ -19,6 +19,7 @@ import {
 } from "../../lib/invite";
 import { MARKETING_CTA_POSITIONS, MARKETING_FEATURES } from "../../lib/marketingAnalytics";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * `/invite/<code>`: an ADE account's invite to ADE Cloud. Every download
@@ -30,7 +31,7 @@ import { useDocumentTitle } from "../../lib/useDocumentTitle";
  * replay masks this page's text.
  */
 export function InvitePage() {
-  useDocumentTitle("You're invited to ADE");
+  useDocumentTitle(`You're invited to ${BRAND.NAME}`);
   const params = useParams<{ code: string }>();
   const code = inviteCodeFrom(params.code);
   const [lookup, setLookup] = useState<InviteLookup | null>(code ? null : { state: "not_found" });
@@ -55,18 +56,18 @@ export function InvitePage() {
           <Reveal>
             <Badge className="bg-card/50">
               <Gift className="h-4 w-4" />
-              ADE Cloud invite
+              {BRAND.CLOUD_NAME} invite
             </Badge>
           </Reveal>
           <Reveal delay={0.05}>
             <h1 className="mt-5 text-balance text-4xl font-semibold leading-[1.08] tracking-tight text-fg sm:text-5xl">
-              {invalid ? "This invite isn't valid." : inviter ? `Invited by ${inviter}.` : "You're invited to ADE."}
+              {invalid ? "This invite isn't valid." : inviter ? `Invited by ${inviter}.` : `You're invited to ${BRAND.NAME}.`}
             </h1>
           </Reveal>
           <Reveal delay={0.1}>
             <p className="mt-5 text-pretty text-base leading-relaxed text-muted-fg sm:text-lg">
               {invalid
-                ? `You can still get ADE. ${FREE_OFFER} in the cloud come free.`
+                ? `You can still get ${BRAND.NAME}. ${FREE_OFFER} in the cloud come free.`
                 : `You both get ${INVITE_REWARD_LINE}. ${FREE_OFFER} come free.`}
             </p>
           </Reveal>
@@ -78,9 +79,9 @@ export function InvitePage() {
           {code && !invalid ? (
             <Reveal delay={0.16}>
               <div className="mx-auto mt-10 max-w-md rounded-xl border border-border bg-card/40 p-5 text-left">
-                <p className="text-sm font-medium text-fg">Already have ADE?</p>
+                <p className="text-sm font-medium text-fg">Already have {BRAND.NAME}?</p>
                 <p className="mt-1 text-sm leading-relaxed text-muted-fg">
-                  Open the invite in ADE, or enter the code in Settings › Account within {INVITE_ENTER_DAYS} days of signing up.
+                  Open the invite in {BRAND.NAME}, or enter the code in Settings › Account within {INVITE_ENTER_DAYS} days of signing up.
                 </p>
                 <div className="mt-4 flex flex-wrap items-center gap-3">
                   <a
@@ -88,7 +89,7 @@ export function InvitePage() {
                     data-ade-analytics-feature={MARKETING_FEATURES.OPEN_INVITE_IN_ADE}
                     className="focus-ring inline-flex h-10 items-center gap-2 rounded-full bg-white px-5 text-[14px] font-medium text-black transition-colors hover:bg-white/90"
                   >
-                    <AppWindow className="h-4 w-4" /> Open in ADE
+                    <AppWindow className="h-4 w-4" /> Open in {BRAND.NAME}
                   </a>
                   <span className="inline-flex items-center gap-1 rounded-full border border-border py-1 pl-3 pr-1 font-mono text-[13px] tracking-wider text-fg">
                     {code}

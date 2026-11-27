@@ -1,5 +1,6 @@
 import { AndroidMark, AppleMark, WindowsMark } from "../home/marks";
 import { cn } from "../../lib/cn";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 const ITEMS = [
   {
@@ -18,7 +19,7 @@ const ITEMS = [
     id: "android",
     icon: AndroidMark,
     title: "Android emulator on every computer",
-    body: "Agents run your Android app on any ADE Cloud computer, Small included.",
+    body: `Agents run your Android app on any ${BRAND.CLOUD_NAME} computer, Small included.`,
   },
 ] as const;
 

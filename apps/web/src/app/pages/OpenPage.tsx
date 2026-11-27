@@ -23,6 +23,7 @@ import { Page } from "../../components/Page";
 import { cn } from "../../lib/cn";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
 import { MARKETING_FEATURES } from "../../lib/marketingAnalytics";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 type OpenTarget =
   | { kind: "lane"; laneId: string; envelope?: OpenEnvelope; ownership?: OpenOwnership }
@@ -321,70 +322,70 @@ function describeTarget(target: OpenTarget): { title: string; summary: string; v
   switch (target.kind) {
     case "lane":
       return {
-        title: "Open lane in ADE",
+        title: `Open lane in ${BRAND.NAME}`,
         summary: `Lane ${target.laneId.slice(0, 8)}…`,
       };
     case "session":
       return {
-        title: "Open chat in ADE",
+        title: `Open chat in ${BRAND.NAME}`,
         summary: `Chat ${target.sessionId.slice(0, 8)}…`,
       };
     case "file":
       return {
-        title: "Open file in ADE",
+        title: `Open file in ${BRAND.NAME}`,
         summary: target.line ? `Line ${target.line}` : "Repository file",
         valueLabel: "File",
         value: target.path,
       };
     case "commit":
       return {
-        title: "Open commit in ADE",
+        title: `Open commit in ${BRAND.NAME}`,
         summary: "Git commit",
         valueLabel: "Commit",
         value: target.sha,
       };
     case "artifact":
       return {
-        title: "Open artifact in ADE",
+        title: `Open artifact in ${BRAND.NAME}`,
         summary: "Proof artifact",
         valueLabel: "Artifact",
         value: target.artifactId,
       };
     case "automation-run":
       return {
-        title: "Open an automation run in ADE",
+        title: `Open an automation run in ${BRAND.NAME}`,
         summary: "Opens the run in Automations → History.",
       };
     case "branch":
       return {
-        title: `Open ${target.repo} in ADE`,
+        title: `Open ${target.repo} in ${BRAND.NAME}`,
         summary: `Branch ${target.branch}${target.pr ? ` · PR #${target.pr}` : ""}`,
       };
     case "pr":
       return {
-        title: target.repo ? `Open ${target.repo}#${target.number} in ADE` : `Open PR #${target.number} in ADE`,
+        title: target.repo ? `Open ${target.repo}#${target.number} in ${BRAND.NAME}` : `Open PR #${target.number} in ${BRAND.NAME}`,
         summary: `Pull request #${target.number}`,
       };
     case "linear-issue":
       return {
-        title: `Open ${target.issueIdentifier} in ADE`,
+        title: `Open ${target.issueIdentifier} in ${BRAND.NAME}`,
         summary: target.branch ? `Branch ${target.branch}` : "Linear issue",
       };
     case "settings":
       return {
-        title: "Open a setting in ADE",
-        summary: "Opens this setting in ADE's Settings.",
+        title: `Open a setting in ${BRAND.NAME}`,
+        summary: `Opens this setting in ${BRAND.NAME}'s Settings.`,
         valueLabel: "Setting",
         value: target.entryId,
       };
     case "lane-share":
       return {
-        title: "Open a shared lane in ADE",
-        summary: "Someone shared a lane with you. Sign in to ADE with the email the invite went to, then accept it.",
+        title: `Open a shared lane in ${BRAND.NAME}`,
+        summary: `Someone shared a lane with you. Sign in to ${BRAND.NAME} with the email the invite went to, then accept it.`,
       };
     case "unknown":
       return {
-        title: "This ADE link is broken",
+        title: `This ${BRAND.NAME} link is broken`,
         summary: "It is missing what it should open.",
       };
   }
@@ -440,20 +441,20 @@ type LinkStatus = { signedIn: boolean; onlineComputers: string[] | null };
 function statusLine(attempt: AppAttempt): string {
   switch (attempt) {
     case "noResponse":
-      return "ADE didn't open? Open it in ADE Web instead, or install the app.";
+      return `${BRAND.NAME} didn't open? Open it in ${BRAND.NAME} Web instead, or install the app.`;
     case "handedOff":
-      return "Opened in the ADE app. Didn't work? Open it in ADE Web instead.";
+      return `Opened in the ${BRAND.NAME} app. Didn't work? Open it in ${BRAND.NAME} Web instead.`;
     case "trying":
-      return "Opening the ADE app…";
+      return `Opening the ${BRAND.NAME} app…`;
     case "idle":
       return "Open it in";
   }
 }
 
 function autoOpenLine(preference: OpenPreference): string {
-  if (preference === "web") return "Opening in ADE Web…";
-  if (preference === "app-beta") return "Opening in ADE Beta…";
-  return "Opening in the ADE app…";
+  if (preference === "web") return `Opening in ${BRAND.NAME} Web…`;
+  if (preference === "app-beta") return `Opening in ${BRAND.BETA_NAME}…`;
+  return `Opening in the ${BRAND.NAME} app…`;
 }
 
 /** "Studio is online.", "Studio and 2 more are online." */
@@ -543,7 +544,7 @@ function useLinkStatus(enabled: boolean): { status: LinkStatus | null; frame: Re
     };
   }, [enabled]);
   const frame = enabled && waiting ? (
-    <iframe ref={frameRef} src={LINK_STATUS_URL} title="ADE Web status" aria-hidden tabIndex={-1} hidden />
+    <iframe ref={frameRef} src={LINK_STATUS_URL} title={`${BRAND.NAME} Web status`} aria-hidden tabIndex={-1} hidden />
   ) : null;
   return { status, frame };
 }
@@ -686,14 +687,14 @@ export function OpenPage() {
   const browserLeads = appFailed || !adeUrl || (onlineComputers != null && onlineComputers.length === 0);
   const appHint = onlineComputers
     ? onlineComputersLine(onlineComputers)
-    : "On this device. Fastest when ADE is installed.";
+    : `On this device. Fastest when ${BRAND.NAME} is installed.`;
   const KindIcon = KIND_ICONS[target.kind];
 
   const appChoice = adeUrl ? (
     <OpenChoice
       key="app"
       icon={<AppWindow className={CHOICE_ICON} />}
-      title="The ADE app"
+      title={`The ${BRAND.NAME} app`}
       hint={appHint}
       lead={!browserLeads}
       analyticsFeature={MARKETING_FEATURES.OPEN_IN_DESKTOP}
@@ -704,7 +705,7 @@ export function OpenPage() {
     <OpenChoice
       key="web"
       icon={<Globe className={CHOICE_ICON} />}
-      title="ADE Web"
+      title={`${BRAND.NAME} Web`}
       hint="In this browser. Nothing to install."
       lead={browserLeads}
       analyticsFeature={MARKETING_FEATURES.OPEN_WEB_CLIENT}
@@ -715,7 +716,7 @@ export function OpenPage() {
     <OpenChoice
       key="beta"
       icon={<AppWindow className={CHOICE_ICON} />}
-      title="ADE Beta"
+      title={BRAND.BETA_NAME}
       hint="The TestFlight app on this iPhone or iPad."
       lead={false}
       analyticsFeature={MARKETING_FEATURES.OPEN_IN_DESKTOP}
@@ -726,8 +727,8 @@ export function OpenPage() {
 
   return (
     <Page className="relative grid min-h-screen place-items-center overflow-hidden px-5 py-24 sm:px-6">
-      <Link to="/" className="focus-ring absolute left-6 top-6 rounded-md sm:left-7" aria-label="ADE home">
-        <img src="/logo.png" alt="ADE" className="h-9 w-auto" draggable={false} />
+      <Link to="/" className="focus-ring absolute left-6 top-6 rounded-md sm:left-7" aria-label={`${BRAND.NAME} home`}>
+        <img src="/logo.png" alt={BRAND.NAME} className="h-9 w-auto" draggable={false} />
       </Link>
       {/* The same soft accent glow the ADE app puts behind its start screens. */}
       <div
@@ -759,7 +760,7 @@ export function OpenPage() {
               className="focus-ring rounded-sm font-medium underline underline-offset-4"
               href={`${WEB_CLIENT_ORIGIN}/`}
             >
-              open ADE Web
+              open {BRAND.NAME} Web
             </a>
             .
           </div>
@@ -819,7 +820,7 @@ export function OpenPage() {
                   data-ade-analytics-feature={MARKETING_FEATURES.VIEW_DOWNLOAD_PAGE}
                   className="focus-ring inline-flex items-center gap-1 rounded-sm font-medium underline-offset-4 transition-colors hover:text-fg hover:underline"
                 >
-                  <Download className="h-3.5 w-3.5" /> Get the ADE app
+                  <Download className="h-3.5 w-3.5" /> Get the {BRAND.NAME} app
                 </Link>
               ) : null}
             </div>

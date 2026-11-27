@@ -12,6 +12,7 @@ import {
   MARKETING_CTA_POSITIONS,
   MARKETING_FEATURES,
 } from "../../lib/marketingAnalytics";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * Landing page for the desktop's phone-pairing QR code.
@@ -27,7 +28,7 @@ import {
  * value to copy, transmit, or log, and nothing here ever forwards it anywhere.
  */
 export function PairPage() {
-  useDocumentTitle("Get ADE for iPhone");
+  useDocumentTitle(`Get ${BRAND.NAME} for iPhone`);
 
   return (
     <Page>
@@ -41,12 +42,12 @@ export function PairPage() {
           </Reveal>
           <Reveal delay={0.05}>
             <h1 className="mt-5 text-balance text-4xl font-semibold leading-[1.08] tracking-tight text-fg sm:text-5xl">
-              Get ADE for iPhone.
+              Get {BRAND.NAME} for iPhone.
             </h1>
           </Reveal>
           <Reveal delay={0.1}>
             <p className="mt-5 text-pretty text-base leading-relaxed text-muted-fg sm:text-lg">
-              Install ADE, then scan the pairing code on your computer again to connect.
+              Install {BRAND.NAME}, then scan the pairing code on your computer again to connect.
             </p>
           </Reveal>
 
@@ -62,7 +63,7 @@ export function PairPage() {
                 target="_blank"
                 rel="noreferrer"
               >
-                Get ADE for iPhone <ArrowUpRight className="h-4 w-4" />
+                Get {BRAND.NAME} for iPhone <ArrowUpRight className="h-4 w-4" />
               </LinkButton>
               <a
                 href={LINKS.webClient}

@@ -40,6 +40,7 @@ import {
 } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { MARKETING_FEATURES } from "../../lib/marketingAnalytics";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 const GRID = "grid auto-rows-[150px] grid-flow-dense grid-cols-2 gap-3 md:grid-cols-4 lg:auto-rows-[170px] lg:grid-cols-6";
 
@@ -155,7 +156,7 @@ export function FeatureWall() {
           title="Pull requests"
           body="Checks, reviews and merge, no GitHub tab."
           src="/images/home/wall/prs.webp"
-          alt="ADE's pull request view: PR #1820 with its description, branch and checks"
+          alt={`${BRAND.NAME}'s pull request view: PR #1820 with its description, branch and checks`}
           glow="rgba(16,185,129,0.22)"
         />
         <ScreenTile
@@ -165,7 +166,7 @@ export function FeatureWall() {
           title="Worktrees"
           body="Every task in its own worktree."
           src="/images/home/wall/lanes.webp"
-          alt="A worktree in ADE: its branch, one commit ahead of main, the chat that made it, and its activity"
+          alt={`A worktree in ${BRAND.NAME}: its branch, one commit ahead of main, the chat that made it, and its activity`}
           glow="rgba(56,189,248,0.2)"
         />
         <ScreenTile
@@ -175,7 +176,7 @@ export function FeatureWall() {
           title="Automations"
           body="Agents on a schedule, or on any event."
           src="/images/home/wall/automations.webp"
-          alt="ADE's automation builder: a GitHub issue opens a lane and runs an agent, with every trigger it can use"
+          alt={`${BRAND.NAME}'s automation builder: a GitHub issue opens a lane and runs an agent, with every trigger it can use`}
           glow="rgba(251,146,60,0.2)"
         />
 
@@ -190,7 +191,7 @@ export function FeatureWall() {
               <br />
               built in.
             </div>
-            <div className="mt-3 text-[14px] text-white/85">No plugins to find. It ships with ADE.</div>
+            <div className="mt-3 text-[14px] text-white/85">No plugins to find. It ships with {BRAND.NAME}.</div>
           </div>
         </Tile>
 
@@ -201,7 +202,7 @@ export function FeatureWall() {
           title="Files"
           body="A full editor, with a diff for every change."
           src="/images/home/wall/files.webp"
-          alt="ADE's file editor with a docs page open on a worktree, beside the project's files"
+          alt={`${BRAND.NAME}'s file editor with a docs page open on a worktree, beside the project's files`}
           glow="rgba(129,140,248,0.22)"
         />
 
@@ -225,7 +226,7 @@ export function FeatureWall() {
             title="Import your chats"
             body="Bring in your Claude Code and Codex chats."
             src="/images/home/wall/import.webp"
-            alt="ADE's import window: past Claude, Codex and Cursor chats on this computer, with one open"
+            alt={`${BRAND.NAME}'s import window: past Claude, Codex and Cursor chats on this computer, with one open`}
             glow="rgba(167,139,250,0.2)"
           />
 
@@ -237,7 +238,7 @@ export function FeatureWall() {
             body="Customize your home screen."
             detail="Pick from widgets for projects, pull requests, usage limits, machine health, weather, a focus timer, clipboard history, contributions, music and more."
             src="/images/home/wall/widgets.webp"
-            alt="ADE's home page: projects, open pull requests, the weather and a 3D chart of a year of contributions, over a painted background"
+            alt={`${BRAND.NAME}'s home page: projects, open pull requests, the weather and a 3D chart of a year of contributions, over a painted background`}
             glow="rgba(125,211,252,0.18)"
           />
           <ScreenTile
@@ -247,7 +248,7 @@ export function FeatureWall() {
             title="Themes and backgrounds"
             body="26 themes, or your own."
             src="/images/home/wall/themes.webp"
-            alt="ADE's appearance settings: 26 themes and a live preview over a painted background"
+            alt={`${BRAND.NAME}'s appearance settings: 26 themes and a live preview over a painted background`}
             glow="rgba(240,171,252,0.16)"
           />
 
@@ -271,7 +272,7 @@ export function FeatureWall() {
             title="Grid view"
             body="Watch many chats work side by side."
             src="/images/home/wall/grid.webp"
-            alt="Two agent chats side by side in ADE's grid view, with the chat list on the left"
+            alt={`Two agent chats side by side in ${BRAND.NAME}'s grid view, with the chat list on the left`}
             glow="rgba(103,232,249,0.16)"
           />
           <ScreenTile
@@ -291,7 +292,7 @@ export function FeatureWall() {
             title="CTO"
             body="A manager for each project."
             src="/images/home/wall/cto.webp"
-            alt="ADE's CTO introducing itself: it runs point on the project and can drive ADE"
+            alt={`${BRAND.NAME}'s CTO introducing itself: it runs point on the project and can drive ${BRAND.NAME}`}
             glow="rgba(94,234,212,0.16)"
           />
 
@@ -306,7 +307,7 @@ export function FeatureWall() {
             title="Board"
             body="Every chat on one board."
             src="/images/home/wall/board.webp"
-            alt="ADE's Work board with columns for chats that need you, are working, are waiting, and are done"
+            alt={`${BRAND.NAME}'s Work board with columns for chats that need you, are working, are waiting, and are done`}
             glow="rgba(190,242,100,0.14)"
           />
           <ScreenTile
@@ -316,7 +317,7 @@ export function FeatureWall() {
             title="Usage"
             body="Limits and spend, every plan."
             src="/images/home/wall/spend.webp"
-            alt="ADE's usage page: cost, sessions and pull requests, and the rate limits left on Claude, Codex, Copilot, Grok and OpenCode"
+            alt={`${BRAND.NAME}'s usage page: cost, sessions and pull requests, and the rate limits left on Claude, Codex, Copilot, Grok and OpenCode`}
             glow="rgba(253,186,116,0.16)"
           />
 
@@ -327,14 +328,14 @@ export function FeatureWall() {
             title="Keep awake"
             body="Agents work with the lid closed."
             src="/images/home/wall/awake.webp"
-            alt="ADE's setting to keep the Mac awake: never, while I'm away, or even with the lid closed"
+            alt={`${BRAND.NAME}'s setting to keep the Mac awake: never, while I'm away, or even with the lid closed`}
             glow="rgba(165,180,252,0.16)"
           />
-          <Small span="2x1" icon={Plug} title="ADE MCP" body="Let ChatGPT, Claude, Grok and other AI apps use ADE on your computer." tint="text-cyan-300" />
+          <Small span="2x1" icon={Plug} title={`${BRAND.NAME} MCP`} body={`Let ChatGPT, Claude, Grok and other AI apps use ${BRAND.NAME} on your computer.`} tint="text-cyan-300" />
           <Small icon={Boxes} title="One MCP setup" body="Add a server once, every agent gets it." tint="text-cyan-400" />
 
           <Small span="2x1" icon={Globe} title="Web app" body="Control every machine and agent from a browser. It works like the desktop app." tint="text-blue-300" />
-          <Small span="2x1" icon={Server} title="Headless brain" body="Run ADE on a server with no screen. Sign in, and it joins your other machines." tint="text-slate-300" />
+          <Small span="2x1" icon={Server} title="Headless brain" body={`Run ${BRAND.NAME} on a server with no screen. Sign in, and it joins your other machines.`} tint="text-slate-300" />
           <Small span="2x1" icon={Scale} title="Smart balance" body="Spreads chats across all your accounts, so one plan never runs dry first." tint="text-lime-400" />
 
           <Small icon={CalendarClock} title="Scheduled sends" body="Write now, send later." tint="text-yellow-300" />
@@ -351,7 +352,7 @@ export function FeatureWall() {
             title="History graph"
             body="Every branch and commit, drawn."
             src="/images/home/wall/history.webp"
-            alt="ADE's history: the commit graph across lanes, with an agent's commit selected"
+            alt={`${BRAND.NAME}'s history: the commit graph across lanes, with an agent's commit selected`}
             glow="rgba(249,168,212,0.16)"
           />
           <Tile span="3x2" className="flex items-center gap-6 p-6 sm:p-8">
@@ -401,7 +402,7 @@ function PhoneTile() {
       <div className="relative mt-auto flex-1 overflow-hidden">
         <img
           src="/images/hero-v2/phone.webp"
-          alt="A chat in the ADE iPhone app"
+          alt={`A chat in the ${BRAND.NAME} iPhone app`}
           loading="lazy"
           className="absolute left-1/2 top-1 w-[80%] -translate-x-1/2 rounded-t-[40px] border border-b-0 border-white/15 shadow-[0_-10px_60px_rgba(56,189,248,0.18)] transition-transform duration-700 ease-out group-hover:-translate-y-1"
         />
