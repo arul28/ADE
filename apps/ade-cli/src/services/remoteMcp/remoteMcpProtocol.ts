@@ -232,7 +232,7 @@ export function createRemoteMcpProtocol(deps: {
 
   const instructions = (scope: RemoteMcpScope): string => [
     `Daex on ${deps.machineName()}: coding lanes (git worktrees), agent chats and pull requests.`,
-    "Use the typed tools; `ade` runs anything else.",
+    "Use typed tools; `ade` runs anything else.",
     "`machine` (a machines_list key or name) defaults to this machine, `project` to the last opened (chat_start and lanes_create need it); each result names both. A chat id finds its own.",
     // An app without MCP prompts (Grok Bot) reads the same skill through the `ade` tool.
     "The `daex-mcp-client` prompt (or `skill show daex-mcp-client`) explains the workflow.",
