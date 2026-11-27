@@ -10,6 +10,7 @@ import { floatAndroidMiniPlayerForChat } from "./androidMiniPlayerStore";
 import { requestAndroidPicker } from "./androidPickerRequests";
 import type { AndroidLaneDeviceCard } from "./useAndroidLaneDeviceCard";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The Android Development card's action menu: the twin of `AppleToolCardMenu`.
@@ -70,7 +71,7 @@ export function AndroidToolCardMenu({
       .catch((error: unknown) => {
         showToast({
           title: `${action} failed`,
-          message: plainErrorText(error, "ADE couldn't finish that."),
+          message: plainErrorText(error, `${BRAND.NAME} couldn't finish that.`),
           tone: "error",
         });
       })

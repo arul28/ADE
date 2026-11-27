@@ -3,6 +3,7 @@ import type { AnnouncementPageProps } from "../announcementPages";
 import { WhatsNewFeature } from "./WhatsNewFeature";
 import home from "./assets/integrations-home.webp";
 import mcp from "./assets/integrations-mcp.webp";
+import { BRAND } from "../../../../shared/brand";
 
 /** One Integrations page: the built-in integrations and the MCP catalogue. */
 export default function IntegrationsAnnouncement({ close }: AnnouncementPageProps) {
@@ -18,7 +19,7 @@ export default function IntegrationsAnnouncement({ close }: AnnouncementPageProp
         width: 1600,
         height: 990,
         images: [
-          { src: home, alt: "Built into ADE: GitHub, Linear and Jira, each with its own card" },
+          { src: home, alt: `Built into ${BRAND.NAME}: GitHub, Linear and Jira, each with its own card` },
           { src: mcp, alt: "The MCP servers catalogue: Notion, Sentry, Supabase, Stripe, Cloudflare and dozens more, each one click to set up" },
         ],
       }}

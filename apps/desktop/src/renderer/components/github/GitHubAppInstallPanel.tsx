@@ -38,6 +38,7 @@ import {
 } from "../../lib/useGithubAccountApp";
 import { isGithubServiceUnavailable } from "../../../shared/githubServiceHealth";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 const ADE_GITHUB_APP_NAME = "ADE";
 const ADE_GITHUB_APP_INSTALL_URL = "https://github.com/apps/ade-for-github/installations/new";
@@ -149,7 +150,7 @@ export function GitHubAppInstallPanel({
         webhookState: "unknown",
         webhookLastSeenAt: null,
         checkedAt: new Date().toISOString(),
-        error: plainErrorText(error, "ADE couldn't check the GitHub app."),
+        error: plainErrorText(error, `${BRAND.NAME} couldn't check the GitHub app.`),
         // The call itself failed, so nothing was learned about the account.
         appUserAuthFailure: null,
       });
@@ -204,7 +205,7 @@ export function GitHubAppInstallPanel({
       setAppAuth(next ?? null);
       setDeviceSession(null);
       setDeviceError(null);
-      setDeviceMessage("ADE's GitHub authorization was removed on this machine.");
+      setDeviceMessage(`${BRAND.NAME}'s GitHub authorization was removed on this machine.`);
     } catch (error) {
       setDeviceError(deviceAuthErrorCopy(error));
     } finally {
@@ -229,7 +230,7 @@ export function GitHubAppInstallPanel({
         copyFeedbackTimeoutRef.current = null;
       }, 1500);
     } catch (error) {
-      setDeviceMessage(plainErrorText(error, "ADE couldn't copy the code."));
+      setDeviceMessage(plainErrorText(error, `${BRAND.NAME} couldn't copy the code.`));
     }
   }, [deviceSession]);
 
@@ -258,7 +259,7 @@ export function GitHubAppInstallPanel({
       if (result.status === "expired") {
         if (autoRenewCountRef.current >= 3 || !window.ade?.github?.startAppUserDeviceAuth) {
           setDeviceSession(null);
-          setDeviceMessage("Code expired. Click Authorize ADE to get a new code.");
+          setDeviceMessage(`Code expired. Click Authorize ${BRAND.NAME} to get a new code.`);
           return;
         }
         try {
@@ -338,7 +339,7 @@ export function GitHubAppInstallPanel({
 
   const accountSignInDone = useCallback(() => {
     setDeviceError(null);
-    setDeviceMessage("GitHub is connected to your ADE account. Checking repository access...");
+    setDeviceMessage(`GitHub is connected to your ${BRAND.NAME} account. Checking repository access...`);
     onAccountAppChanged?.();
     void loadStatus(true, { retryAfterAuthorization: true });
     if (pin) void window.ade?.prs?.reconcileNow?.(pin).catch(() => {});
@@ -352,8 +353,8 @@ export function GitHubAppInstallPanel({
 
   const disconnectAccountApp = useCallback(async () => {
     const confirmed = await confirmDialog({
-      title: "Disconnect GitHub from your ADE account?",
-      message: "Every computer on your ADE account stops using this sign-in. Live pull request updates stop until you connect again.",
+      title: `Disconnect GitHub from your ${BRAND.NAME} account?`,
+      message: `Every computer on your ${BRAND.NAME} account stops using this sign-in. Live pull request updates stop until you connect again.`,
       confirmLabel: "Disconnect",
       destructive: true,
     });
@@ -362,13 +363,13 @@ export function GitHubAppInstallPanel({
     try {
       const result = await signOutGithubAccountApp();
       if (!result.ok) {
-        setDeviceError("ADE couldn't disconnect GitHub. Check your connection and try again.");
+        setDeviceError(`${BRAND.NAME} couldn't disconnect GitHub. Check your connection and try again.`);
         return;
       }
       setDeviceError(null);
       setDeviceMessage(result.deletedAtGitHub
-        ? "GitHub is disconnected from your ADE account."
-        : "GitHub is disconnected from your ADE account. GitHub didn't answer, so also remove ADE from your authorized GitHub apps.");
+        ? `GitHub is disconnected from your ${BRAND.NAME} account.`
+        : `GitHub is disconnected from your ${BRAND.NAME} account. GitHub didn't answer, so also remove ${BRAND.NAME} from your authorized GitHub apps.`);
       onAccountAppChanged?.();
       void loadStatus(true);
     } finally {
@@ -412,7 +413,7 @@ export function GitHubAppInstallPanel({
       <ArrowSquareOut size={12} weight="bold" />
       {useAccountFlow
         ? (accountFlowBusy ? "Waiting for GitHub" : account.cta === "authorize" ? "Connect GitHub" : "Connect again")
-        : authBusy ? "Authorizing" : account.cta === "authorize" ? "Authorize ADE" : "Re-authorize"}
+        : authBusy ? "Authorizing" : account.cta === "authorize" ? `Authorize ${BRAND.NAME}` : "Re-authorize"}
     </button>
   ) : null;
 
@@ -489,8 +490,8 @@ export function GitHubAppInstallPanel({
       model={{
         id: "github-account-app-login-mismatch",
         tone: "info",
-        title: `This computer uses GitHub @${accountApp.localLogin ?? appAuth?.userLogin ?? "unknown"}. Your ADE account uses @${accountApp.githubLogin}.`,
-        detail: "ADE keeps using this computer's sign-in until you choose.",
+        title: `This computer uses GitHub @${accountApp.localLogin ?? appAuth?.userLogin ?? "unknown"}. Your ${BRAND.NAME} account uses @${accountApp.githubLogin}.`,
+        detail: `${BRAND.NAME} keeps using this computer's sign-in until you choose.`,
         actions: [{ label: `Use @${accountApp.githubLogin} here`, onClick: () => void switchToAccountSignIn() }],
       }}
     />
@@ -566,7 +567,7 @@ export function GitHubAppInstallPanel({
       {account.note ? <p style={authMessageStyle}>{account.note}</p> : null}
       {disconnectArmed ? (
         <p style={authMessageStyle}>
-          Disconnecting removes ADE's GitHub authorization on this machine. Real-time pull request updates stop until you authorize again.
+          Disconnecting removes {BRAND.NAME}'s GitHub authorization on this machine. Real-time pull request updates stop until you authorize again.
         </p>
       ) : null}
 
@@ -598,7 +599,7 @@ export function GitHubAppInstallPanel({
       {deviceError ? <p style={{ ...authMessageStyle, color: COLORS.danger }}>{deviceError}</p> : null}
       {accountFlowNotes}
       {!useAccountFlow && accountState === "missing" && !deviceSession && !accountChecking ? (
-        <p style={authMessageStyle}>Authorize once so ADE can check which repositories the app is installed on.</p>
+        <p style={authMessageStyle}>Authorize once so {BRAND.NAME} can check which repositories the app is installed on.</p>
       ) : null}
     </section>
 
@@ -674,7 +675,7 @@ export function GitHubAppInstallPanel({
       <IntegrationCard
         icon={<WebhooksLogo size={16} weight="duotone" />}
         title="ADE for GitHub app"
-        hint="A read-only GitHub app that tells ADE the moment a pull request, review or check changes."
+        hint={`A read-only GitHub app that tells ${BRAND.NAME} the moment a pull request, review or check changes.`}
         badge={repoDone && authorizedDone ? renderPill({ tone: "ok", color: "", label: "Live updates on" }, true) : null}
         tone={deviceSession ? "focus" : undefined}
         actions={(
@@ -697,12 +698,12 @@ export function GitHubAppInstallPanel({
             <span className="ade-ig-step-num" aria-hidden>{authorizedDone ? <Check size={11} weight="bold" /> : 1}</span>
             <div className="ade-ig-step-main">
               <div className="ade-ig-step-head">
-                <b>{useAccountFlow ? "Connect GitHub" : "Authorize ADE"}</b>
+                <b>{useAccountFlow ? "Connect GitHub" : `Authorize ${BRAND.NAME}`}</b>
                 {accountChecking ? null : renderPill(accountPill(account.tone, account.label), true)}
               </div>
               <p className="ade-ig-note">
                 {!useAccountFlow && accountState === "missing" && !accountChecking
-                  ? "Sign in once on GitHub so ADE can see where the app is installed."
+                  ? `Sign in once on GitHub so ${BRAND.NAME} can see where the app is installed.`
                   : account.subtext}
               </p>
               {account.note ? <p className="ade-ig-note">{account.note}</p> : null}
@@ -778,8 +779,8 @@ function accountFlowAxis(connected: boolean, needsReauth: boolean, login: string
       tone: "ok" as const,
       label: "Connected",
       subtext: login
-        ? `Connected to your ADE account as @${login}. Your other computers use it too.`
-        : "Connected to your ADE account. Your other computers use it too.",
+        ? `Connected to your ${BRAND.NAME} account as @${login}. Your other computers use it too.`
+        : `Connected to your ${BRAND.NAME} account. Your other computers use it too.`,
       cta: null,
       note: null,
     };
@@ -796,7 +797,7 @@ function accountFlowAxis(connected: boolean, needsReauth: boolean, login: string
   return {
     tone: "neutral" as const,
     label: "Not connected",
-    subtext: "Sign in once on GitHub. Every computer on your ADE account uses this sign-in.",
+    subtext: `Sign in once on GitHub. Every computer on your ${BRAND.NAME} account uses this sign-in.`,
     cta: "authorize" as const,
     note: null,
   };
@@ -921,14 +922,14 @@ function repoView(
       if (isGithubServiceUnavailable({ message: error })) {
         return {
           pill: { tone: "neutral", color: COLORS.textMuted, label: "Waiting on GitHub" },
-          subtext: "GitHub returned a server error, so ADE couldn't check this repo. Nothing to fix here — it will recheck once GitHub recovers.",
+          subtext: `GitHub returned a server error, so ${BRAND.NAME} couldn't check this repo. Nothing to fix here — it will recheck once GitHub recovers.`,
         };
       }
       return {
         pill: { tone: "neutral", color: COLORS.textMuted, label: "Couldn't verify" },
         subtext: error?.trim()
           ? error
-          : "ADE couldn't confirm the app status for this repo. Check again in a moment.",
+          : `${BRAND.NAME} couldn't confirm the app status for this repo. Check again in a moment.`,
       };
   }
 }

@@ -41,10 +41,11 @@ import { refreshActivitySnapshot } from "./useActivitySync";
 import { Dialog } from "../ui/dialog";
 import { Banner } from "../ui/notice/Banner";
 import "./Activity.css";
+import { BRAND } from "../../../shared/brand";
 
 function navigationErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message.trim();
-  return "ADE couldn’t open the exact machine and project for this item.";
+  return `${BRAND.NAME} couldn’t open the exact machine and project for this item.`;
 }
 
 /**
@@ -55,8 +56,8 @@ function navigationErrorMessage(error: unknown): string {
 function dismissErrorMessage(error: unknown, count: number): string {
   const detail = error instanceof Error && error.message.trim() ? error.message.trim() : "";
   const subject = count === 1
-    ? "ADE couldn’t dismiss that item."
-    : `ADE couldn’t clear ${count} items.`;
+    ? `${BRAND.NAME} couldn’t dismiss that item.`
+    : `${BRAND.NAME} couldn’t clear ${count} items.`;
   return detail ? `${subject} ${detail}` : `${subject} Refresh Activity, then try again.`;
 }
 
@@ -97,8 +98,8 @@ function unreachedClearMessage(
   const unreached = itemsPhrase(unreachedCount);
   const detail = reason?.trim();
   const head = cleared > 0
-    ? `Cleared ${cleared} of ${total}. ADE couldn’t reach ${unreached}, so nothing changed for them — try again.`
-    : `ADE couldn’t reach ${unreached}, so nothing cleared. Try again in a moment.`;
+    ? `Cleared ${cleared} of ${total}. ${BRAND.NAME} couldn’t reach ${unreached}, so nothing changed for them — try again.`
+    : `${BRAND.NAME} couldn’t reach ${unreached}, so nothing cleared. Try again in a moment.`;
   // A batch can hit both at once: an earlier chunk refuses a row, a later one
   // never lands. Say both rather than pick the tidier half.
   const alsoStale = staleCount > 0
@@ -114,7 +115,7 @@ function seenOutcomeMessage(
 ): string | null {
   const missed = outcome.stale.length + outcome.unreached.length;
   if (missed === 0) return null;
-  return `ADE couldn’t mark ${missed} of ${total} seen. Refresh Activity, then try again.`;
+  return `${BRAND.NAME} couldn’t mark ${missed} of ${total} seen. Refresh Activity, then try again.`;
 }
 
 /**
@@ -360,7 +361,7 @@ export function ActivityPane({
     } catch (error) {
       setNavigationError(
         kind === "seen"
-          ? "ADE couldn’t mark those items seen. Refresh Activity, then try again."
+          ? `${BRAND.NAME} couldn’t mark those items seen. Refresh Activity, then try again.`
           : dismissErrorMessage(error, checkedItems.length),
       );
     } finally {

@@ -10,6 +10,7 @@ import { useHasOwnComputer } from "../../../state/ownComputers";
 import { useWidgetPreview, useWidgetVisible } from "../HomeWidgetGrid";
 import type { HomeWidgetProps } from "../homeWidgetRegistry";
 import "../homeWidgets.css";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * Your work as a contribution skyline (the shared ContributionSkyline): a
@@ -115,7 +116,7 @@ export default function ContributionsWidget({ item }: HomeWidgetProps) {
     <section className="kit-card ade-home-card ade-contrib" aria-label="Contributions">
       <WelcomeCardHead icon={SquaresFour} title="Contributions" action={{ label: "Details", onClick: openUsageDetails }}>
         {calendar ? (
-          <span className="ade-home-card-scope" title="GitHub's contribution calendar for your account, plus your chats in ADE on this computer.">GitHub + ADE</span>
+          <span className="ade-home-card-scope" title={`GitHub's contribution calendar for your account, plus your chats in ${BRAND.NAME} on this computer.`}>GitHub + {BRAND.NAME}</span>
         ) : hasOwnComputer ? (
           <span className="ade-home-card-scope">this machine</span>
         ) : null}

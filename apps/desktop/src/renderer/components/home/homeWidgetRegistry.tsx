@@ -3,6 +3,7 @@ import type { HomeLayoutItem, HomeWidgetType } from "./homeLayout";
 import { HOME_WIDGET_CATALOG } from "./homeWidgetCatalog";
 import { hasDesktopHome } from "../../lib/adeAvailability";
 import { WelcomeCardHead } from "../projects/ProjectWelcomeSidePanels";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The widgets added after the home page shipped. Each is its own chunk,
@@ -46,7 +47,7 @@ export const LazyHomeWidget = memo(function LazyHomeWidget({ item }: HomeWidgetP
   const meta = HOME_WIDGET_CATALOG[item.type];
   if (!Widget) return <WidgetShell type={item.type} message={meta.comingSoon ?? "Not available."} />;
   if (meta.desktopOnly && !hasDesktopHome()) {
-    return <WidgetShell type={item.type} message="Available in the ADE desktop app." />;
+    return <WidgetShell type={item.type} message={`Available in the ${BRAND.NAME} desktop app.`} />;
   }
   return (
     <Suspense fallback={<WidgetShell type={item.type} />}>

@@ -11,6 +11,7 @@ import { ViewerModeToggleButton } from "./ViewerModeToggle";
 import { ZoomControls } from "./ZoomControls";
 import { readViewerMode, rememberViewerMode } from "./viewerModeMemory";
 import { plainErrorText } from "../../../../lib/plainError";
+import { BRAND } from "../../../../../shared/brand";
 
 // Mermaid is heavy, so load it only after a diagram viewer is opened.
 const MermaidDiagram = lazy(() =>
@@ -213,7 +214,7 @@ export function MermaidViewer(props: ViewerProps) {
     } catch (err) {
       showToast({
         title,
-        message: plainErrorText(err, "ADE couldn't copy that."),
+        message: plainErrorText(err, `${BRAND.NAME} couldn't copy that.`),
         tone: "error",
       });
     }

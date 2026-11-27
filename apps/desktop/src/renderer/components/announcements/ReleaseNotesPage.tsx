@@ -15,6 +15,7 @@ import type { UpdateInterruptedChat } from "../../../shared/types";
 import { ADE_GITHUB_URL } from "../../../shared/productLinks";
 import type { ReleaseNotesDigest } from "./releaseNotesDigest";
 import "./releaseNotesPage.css";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * "And more": the last page after an update. The release notes for every
@@ -115,7 +116,7 @@ export function ReleaseNotesPage({
 }) {
   const many = Boolean(notes && notes.versionCount > 1 && notes.fromVersion);
   const headline = !notes
-    ? "ADE is up to date."
+    ? `${BRAND.NAME} is up to date.`
     : many
       ? `And more since ${notes.fromVersion}.`
       : `And more in ${notes.version}.`;

@@ -62,6 +62,7 @@ import {
   useJiraProjects,
 } from "./jiraIssueStore";
 import { extractError } from "../../lib/format";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Starting a new issue in Linear, GitHub or Jira, in one composer: a big title, the
@@ -398,7 +399,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
     if (!sessionId) return "";
     const chatLink = buildDeeplink({ kind: "session", sessionId, ...(request.context?.laneId ? { laneId: request.context.laneId } : {}) });
     const lane = request.context?.laneName ? ` in lane **${request.context.laneName}**` : "";
-    return `\n\n<details><summary>Context</summary>\n\nStarted from [an ADE chat](${chatLink})${lane}.\n\n</details>`;
+    return `\n\n<details><summary>Context</summary>\n\nStarted from [a ${BRAND.NAME} chat](${chatLink})${lane}.\n\n</details>`;
   }, [request.context]);
 
   const reset = () => {

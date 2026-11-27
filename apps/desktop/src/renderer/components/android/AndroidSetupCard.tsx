@@ -12,6 +12,7 @@ import { AndroidLicenseDialog } from "./AndroidLicenseDialog";
 import { formatAndroidBytes } from "../../../shared/androidFormat";
 import { androidInstallLine } from "./androidSdkFormat";
 import { useAndroidSdkSetup } from "./useAndroidSdkSetup";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * "Set up Android on this machine" (plan §5 "SDK missing"): a checklist of
@@ -215,7 +216,7 @@ export function AndroidSetupCard({
     const typed = await promptDialog({
       title: machineName ? `${title} on ${machineName}` : title,
       message: purpose === "install"
-        ? "The full path of a folder on that machine. ADE makes it if it is missing."
+        ? `The full path of a folder on that machine. ${BRAND.NAME} makes it if it is missing.`
         : "The full path of the SDK folder on that machine (it holds platform-tools or emulator).",
       defaultValue: current,
       confirmLabel: purpose === "install" ? "Use folder" : "Use this SDK",
@@ -354,7 +355,7 @@ export function AndroidSetupCard({
           model={{
             id: "android-setup-not-writable",
             tone: "warning",
-            title: "ADE cannot write to that folder",
+            title: `${BRAND.NAME} cannot write to that folder`,
             detail: plan.writableDetail ?? "Pick another install folder.",
             report: false,
             actions: [{ label: "Change folder", onClick: () => void changeInstallFolder() }],

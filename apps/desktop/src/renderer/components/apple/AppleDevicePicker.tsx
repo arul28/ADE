@@ -54,6 +54,7 @@ import { AppleRuntimeInstallProgress, AppleRuntimesSection, AppleXcodeNote } fro
 import { appleRuntimeInstallActive } from "../../../shared/appleRuntimeVersions";
 import { Spinner } from "../ui/Spinner";
 import { useTicker } from "../../lib/ticker";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The pane's front door: an "Available" heading with one glyph per installed
@@ -445,7 +446,7 @@ function DeviceCard({
             ) : ownership?.ownership === "ade-orphan" && ownership.deletesAfter ? (
               <ReleasedDeviceTag deletesAfter={ownership.deletesAfter} />
             ) : ownership?.ownership === "ade-kept" ? (
-              <PaneTooltip label="ADE made this device, and it was released and kept as a free simulator. ADE does not delete it; start it to give it to this lane, or delete it from its menu." side="bottom">
+              <PaneTooltip label={`${BRAND.NAME} made this device, and it was released and kept as a free simulator. ${BRAND.NAME} does not delete it; start it to give it to this lane, or delete it from its menu.`} side="bottom">
                 <span
                   data-apple-device-kept=""
                   className="shrink-0 font-sans text-[10px] font-medium uppercase tracking-[0.08em] text-muted-fg"
@@ -454,7 +455,7 @@ function DeviceCard({
                 </span>
               </PaneTooltip>
             ) : ownership?.ownership === "ade-orphan" ? (
-              <PaneTooltip label="ADE made this device and no lane holds it. Clean up deletes it." side="bottom">
+              <PaneTooltip label={`${BRAND.NAME} made this device and no lane holds it. Clean up deletes it.`} side="bottom">
                 <span
                   data-apple-device-leftover=""
                   className="shrink-0 font-sans text-[10px] font-medium uppercase tracking-[0.08em] text-warning"
@@ -467,12 +468,12 @@ function DeviceCard({
                 Running
               </span>
             ) : ownership?.looksLikeAde ? (
-              <PaneTooltip label="Named like an ADE device, but made before ADE marked its devices. Delete it here if you do not use it." side="bottom">
+              <PaneTooltip label={`Named like a ${BRAND.NAME} device, but made before ${BRAND.NAME} marked its devices. Delete it here if you do not use it.`} side="bottom">
                 <span
                   data-apple-device-unmarked=""
                   className="shrink-0 font-sans text-[10px] font-medium uppercase tracking-[0.08em] text-muted-fg"
                 >
-                  Old ADE?
+                  Old {BRAND.NAME}?
                 </span>
               </PaneTooltip>
             ) : null}
@@ -507,7 +508,7 @@ function ReleasedDeviceTag({ deletesAfter }: { deletesAfter: string }) {
   const when = Number.isFinite(leftMs) && minutes > 0 ? `in ${minutes} min` : "soon";
   return (
     <PaneTooltip
-      label={`ADE made this device and a lane released it. ADE deletes it ${when === "soon" ? "at its next cleanup" : when}, with its apps and data. Start it to take it back for this lane.`}
+      label={`${BRAND.NAME} made this device and a lane released it. ${BRAND.NAME} deletes it ${when === "soon" ? "at its next cleanup" : when}, with its apps and data. Start it to take it back for this lane.`}
       side="bottom"
     >
       <span
@@ -732,7 +733,7 @@ function CreateSection({
         ) : (
           <p className="min-w-0 break-words font-sans text-[11px] leading-4 text-muted-fg">
             {pickedMissing
-              ? `${missingRuntime!.name} isn't on this Mac. ADE downloads what Xcode needs (about 8 GB per runtime), then creates the simulator.`
+              ? `${missingRuntime!.name} isn't on this Mac. ${BRAND.NAME} downloads what Xcode needs (about 8 GB per runtime), then creates the simulator.`
               : "Starts empty. Nothing is copied or downloaded. Deleted with the lane."}
           </p>
         )}
@@ -780,7 +781,7 @@ function StorageSection({
     : [
       total ? `${installedCount} simulators use ${total}` : `${installedCount} simulators`,
       leftovers.length ? `${leftovers.length} leftover${leftoverLabel ? ` (${leftoverLabel})` : ""}` : null,
-      unmarked ? `${unmarked} old ADE?` : null,
+      unmarked ? `${unmarked} old ${BRAND.NAME}?` : null,
     ].filter(Boolean).join(" · ");
   return (
     <section
@@ -801,7 +802,7 @@ function StorageSection({
               variant="outline"
               size="sm"
               disabled={disabled || cleaning}
-              aria-label="Clean up ADE simulators"
+              aria-label={`Clean up ${BRAND.NAME} simulators`}
               data-apple-storage-cleanup=""
               onClick={onCleanup}
               className="shrink-0"
@@ -812,7 +813,7 @@ function StorageSection({
           ) : null}
         </div>
         <p className="min-w-0 break-words font-sans text-[11px] leading-4 text-muted-fg">
-          Removes ADE's leftover devices and powers off idle ones. Your own simulators are never touched.
+          Removes {BRAND.NAME}'s leftover devices and powers off idle ones. Your own simulators are never touched.
         </p>
       </div>
     </section>

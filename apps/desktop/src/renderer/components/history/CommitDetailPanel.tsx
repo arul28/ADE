@@ -43,6 +43,7 @@ import { copyText, stripIpcErrorPrefix } from "./historyClipboard";
 import { InlineErrorNotice } from "../ui/notice";
 import { usePinTargetsTab } from "../../state/crossMachineLanes";
 import { laneDisplayName } from "../../../shared/laneDisplayName";
+import { BRAND } from "../../../shared/brand";
 
 const FILE_ROWS = 200;
 
@@ -495,7 +496,7 @@ export function CommitDetailPanel({
           {relatedEvents.length > 0 ? (
             <section className="flex min-w-0 flex-col">
               <header className="flex h-6 items-center gap-1.5">
-                <h3 className="m-0 text-[12px] font-medium text-muted-fg">ADE activity</h3>
+                <h3 className="m-0 text-[12px] font-medium text-muted-fg">{BRAND.NAME} activity</h3>
                 <span className="text-[12px] tabular-nums text-muted-fg/50">{relatedEvents.length}</span>
               </header>
               <div className="mt-1 flex flex-col">

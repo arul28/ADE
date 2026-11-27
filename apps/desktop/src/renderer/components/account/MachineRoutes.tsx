@@ -16,6 +16,7 @@ import type { MachineRouteItem, MachineRouteKind } from "./machineRouteModel";
 // The badges and panels are also drawn in the Connections popover, which can
 // open before the Account page has ever loaded this stylesheet.
 import "./accountPage.css";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Tailscale's mark: a 3×3 grid of dots, the middle row and the bottom centre
@@ -145,14 +146,14 @@ export function MachineRoutesPanel({
           <ModernRow
             icon={<CloudArrowUp size={15} weight="bold" />}
             tone="slate"
-            title={`ADE Relay on ${relay.machineLabel}`}
+            title={`${BRAND.NAME} Relay on ${relay.machineLabel}`}
             hint={relay.unavailableReason
               ?? (relay.enabled
-                ? "Your phone, the web app and AI apps can reach it from anywhere, through ADE's servers."
-                : "Only your local network and Tailscale reach it. ADE's servers can't.")}
+                ? `Your phone, the web app and AI apps can reach it from anywhere, through ${BRAND.NAME}'s servers.`
+                : `Only your local network and Tailscale reach it. ${BRAND.NAME}'s servers can't.`)}
             control={(
               <SettingsToggle
-                label={`ADE Relay on ${relay.machineLabel}`}
+                label={`${BRAND.NAME} Relay on ${relay.machineLabel}`}
                 checked={relay.enabled}
                 disabled={relay.busy || relay.unavailableReason != null}
                 onChange={relay.onChange}
@@ -207,7 +208,7 @@ export function RelayOffDialog({
     {
       icon: <Browser size={15} weight="bold" />,
       tone: httpsReady ? "warn" : "crit",
-      title: "The ADE web app",
+      title: `The ${BRAND.NAME} web app`,
       detail: httpsReady
         ? "Browsers that already opened it reconnect over Tailscale HTTPS from your tailnet. A new browser can't pair with it."
         : "Can't reach it. Set up Tailscale HTTPS first to keep browsers that already opened it.",
@@ -215,18 +216,18 @@ export function RelayOffDialog({
     {
       icon: <Plugs size={15} weight="bold" />,
       tone: "crit",
-      title: "AI apps using your ADE MCP server",
+      title: `AI apps using your ${BRAND.NAME} MCP server`,
       detail: "Can't reach it. Your other computers still answer.",
     },
     {
       icon: <Broadcast size={15} weight="bold" />,
       tone: "ok",
-      title: "ADE's servers",
+      title: `${BRAND.NAME}'s servers`,
       detail: "Never carry its traffic. Your other computers keep their own setting.",
     },
   ];
   const warning = connectedViaRelay
-    ? `This window reaches ${where} through ADE Relay, so it will lose the connection. Turn the relay back on from ${where} itself, or over your local network or Tailscale.`
+    ? `This window reaches ${where} through ${BRAND.NAME} Relay, so it will lose the connection. Turn the relay back on from ${where} itself, or over your local network or Tailscale.`
     : !tailscaleReady
       ? `Tailscale isn't set up on ${where}, so away from its network nothing will reach it.`
       : null;
@@ -237,7 +238,7 @@ export function RelayOffDialog({
         if (!next && !busy) onCancel();
       }}
       role="alertdialog"
-      title={`Turn off ADE Relay on ${machineName}?`}
+      title={`Turn off ${BRAND.NAME} Relay on ${machineName}?`}
       description="It will only be reachable over its local network and Tailscale. You can turn it back on here any time."
       tone="warning"
       size="md"
@@ -247,7 +248,7 @@ export function RelayOffDialog({
       actions={[
         { label: "Cancel", onClick: onCancel, disabled: busy, variant: "secondary" },
         {
-          label: "Turn off ADE Relay",
+          label: `Turn off ${BRAND.NAME} Relay`,
           onClick: onConfirm,
           busy,
           disabled: !understood,

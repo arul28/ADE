@@ -1,6 +1,7 @@
 import React from "react";
 import type { ViewerProps } from "./types";
 import { DocumentSurface } from "./DocumentSurface";
+import { BRAND } from "../../../../../shared/brand";
 
 /**
  * The fallback for documents with no in-app renderer: Word files (no preview
@@ -13,9 +14,9 @@ import { DocumentSurface } from "./DocumentSurface";
  * cannot show this" and "this file is broken".
  */
 const LEGACY_OFFICE_EXTENSIONS: Record<string, string> = {
-  ".doc": "Legacy .doc files cannot be previewed in ADE. Open it externally, or save it as .docx.",
-  ".xls": "Legacy .xls files cannot be previewed in ADE. Open it externally, or save it as .xlsx.",
-  ".ppt": "Legacy .ppt files cannot be previewed in ADE. Open it externally, or save it as .pptx.",
+  ".doc": `Legacy .doc files cannot be previewed in ${BRAND.NAME}. Open it externally, or save it as .docx.`,
+  ".xls": `Legacy .xls files cannot be previewed in ${BRAND.NAME}. Open it externally, or save it as .xlsx.`,
+  ".ppt": `Legacy .ppt files cannot be previewed in ${BRAND.NAME}. Open it externally, or save it as .pptx.`,
 };
 
 function legacyNoticeFor(relativePath: string): string | null {

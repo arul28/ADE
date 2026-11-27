@@ -111,7 +111,7 @@ describe("AppleToolCardMenu", () => {
 
     fireEvent.click(screen.getByText("Release device…"));
     // Nothing is released until the person has read what happens next.
-    await screen.findByText(/ADE deletes it, with its apps and data, in about 5 minutes/u);
+    await screen.findByText(/Daex deletes it, with its apps and data, in about 5 minutes/u);
     expect(ios.deviceDetach).not.toHaveBeenCalled();
     if (keep) fireEvent.click(screen.getByText(/Keep it as a free simulator instead/u));
     fireEvent.click(screen.getByRole("button", { name: "Release" }));
@@ -124,9 +124,9 @@ describe("AppleToolCardMenu", () => {
     open();
 
     fireEvent.click(screen.getByText("Release device…"));
-    await screen.findByText(/ADE deletes it/u);
+    await screen.findByText(/Daex deletes it/u);
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    await waitFor(() => expect(screen.queryByText(/ADE deletes it/u)).toBeNull());
+    await waitFor(() => expect(screen.queryByText(/Daex deletes it/u)).toBeNull());
     expect(ios.deviceDetach).not.toHaveBeenCalled();
   });
 

@@ -87,6 +87,7 @@ import {
   ctoModelSupportsLiveRedirect,
   toCtoModelPreferences,
 } from "./useCtoModelOptions";
+import { BRAND } from "../../../shared/brand";
 
 export type CtoSettingsSection = "look" | "brain" | "memory" | "routines" | "instructions";
 
@@ -841,7 +842,7 @@ function InstructionsPane({
         >
           <summary
             className="cursor-pointer rounded-[var(--radius-lg)] px-3.5 py-2.5 text-[12.5px] font-medium text-[var(--kit-text-2)] outline-none hover:text-fg focus-visible:ring-1 focus-visible:ring-[var(--cto-accent-line)]"
-            title="ADE's rules, these instructions, the notes and the live state"
+            title={`${BRAND.NAME}'s rules, these instructions, the notes and the live state`}
           >
             {promptOpen ? "Hide" : "Show"}
           </summary>

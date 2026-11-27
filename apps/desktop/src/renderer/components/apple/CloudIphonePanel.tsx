@@ -36,6 +36,7 @@ import {
   useCloudPhoneLive,
   useCloudPhoneIdleCountdown,
 } from "../../state/cloudPhoneLive";
+import { BRAND } from "../../../shared/brand";
 
 /*
  * The ADE Cloud iPhone in the tools pane (`ios@cloud`).
@@ -69,7 +70,7 @@ const END_REASONS: Readonly<Record<string, string>> = {
   // No per-phone billing mode reaches the app (a phone started before credits keeps minutes): true for both.
   spend_cap: "It reached its spend limit.",
   stopped: "It was stopped.",
-  credit: "ADE Cloud could not keep it running.",
+  credit: `${BRAND.CLOUD_NAME} could not keep it running.`,
   crashed: "It crashed.",
   no_capacity: "No cloud iPhone was free.",
 };
@@ -98,7 +99,7 @@ function useCloudPhoneStatus(pin: OpenProjectBinding | null, hidden: boolean) {
   const refresh = useCallback(async () => {
     const api = window.ade?.cloudPhone;
     if (!api) {
-      setError("This ADE can't reach the ADE Cloud iPhone.");
+      setError(`This ${BRAND.NAME} can't reach the ${BRAND.CLOUD_NAME} iPhone.`);
       return;
     }
     const mine = ++seq.current;
@@ -260,8 +261,8 @@ function CloudPhoneStrip({ control, failure = control.failure }: { control: Clou
     return (
       <AppleDeviceNoticeStrip
         sentence={minutes && minutes.left <= 0
-          ? `Your ADE Cloud credits are used up, and the iPhone uses ${words.count(words.phoneMilliPerMinute / 1000)} a minute.${why}`
-          : `The ADE Cloud iPhone is off. It uses ${words.count(words.phoneMilliPerMinute / 1000)} a minute while it runs.${why}`}
+          ? `Your ${BRAND.CLOUD_NAME} credits are used up, and the iPhone uses ${words.count(words.phoneMilliPerMinute / 1000)} a minute.${why}`
+          : `The ${BRAND.CLOUD_NAME} iPhone is off. It uses ${words.count(words.phoneMilliPerMinute / 1000)} a minute while it runs.${why}`}
         actionLabel={busy === "start" ? "Starting" : "Start"}
         busy={busy === "start"}
         onAction={() => void run("start")}
@@ -340,14 +341,14 @@ function CloudPhoneRunningStrip({ control }: { control: CloudPhoneControl }) {
 /** Every viewport but the live phone: reading, not on this account, off, or starting. */
 function cloudPhoneIdleViewport(control: CloudPhoneControl, showing: boolean): ReactNode | null {
   const { status, off, minutesLine, model, family, ready, run } = control;
-  if (!status) return <PaneMessage title="ADE Cloud iPhone" description="Reading this account's cloud iPhone…" />;
+  if (!status) return <PaneMessage title={`${BRAND.CLOUD_NAME} iPhone`} description="Reading this account's cloud iPhone…" />;
   if (status.access !== "on") {
-    return <PaneMessage title="ADE Cloud iPhone" description={status.reason} />;
+    return <PaneMessage title={`${BRAND.CLOUD_NAME} iPhone`} description={status.reason} />;
   }
   if (off) {
     return (
       <PaneMessage
-        title="ADE Cloud iPhone"
+        title={`${BRAND.CLOUD_NAME} iPhone`}
         description={`${minutesLine ? `${minutesLine} this period. ` : ""}Agents start it with ade apple launch, which builds this lane's app on it.`}
       />
     );
@@ -356,7 +357,7 @@ function cloudPhoneIdleViewport(control: CloudPhoneControl, showing: boolean): R
     return (
       <AppleDeviceLoadingCard
         name={model.deviceTypeName}
-        runtime="iOS 27 · ADE Cloud"
+        runtime={`iOS 27 · ${BRAND.CLOUD_NAME}`}
         isNew
         family={family}
         stage={ready ? "streaming" : "starting"}
@@ -373,8 +374,8 @@ export function CloudIphonePanel(props: CloudIphonePanelProps) {
   if (typeof window === "undefined" || !isAdeAvailable(window.ade?.cloudPhone)) {
     return (
       <PaneMessage
-        title="ADE Cloud iPhone"
-        description="Open this chat in the ADE desktop app to see the phone. The chat's agents use it from here too."
+        title={`${BRAND.CLOUD_NAME} iPhone`}
+        description={`Open this chat in the ${BRAND.NAME} desktop app to see the phone. The chat's agents use it from here too.`}
       />
     );
   }
@@ -465,7 +466,7 @@ function CloudIphoneLive({ pin, sessionId, laneId, hidden: hiddenProp = false }:
         id: "cloud-iphone-screenshot",
         tone: "success",
         title: "Screenshot filed to the proof drawer",
-        message: result.artifactId ? `ADE Cloud iPhone · ${model.label}` : "Saved, but this project has no proof drawer here.",
+        message: result.artifactId ? `${BRAND.CLOUD_NAME} iPhone · ${model.label}` : "Saved, but this project has no proof drawer here.",
       }))
       .catch((caught: unknown) => setError(caught))
       .finally(() => setScreenshotPending(false));
@@ -491,7 +492,7 @@ function CloudIphoneLive({ pin, sessionId, laneId, hidden: hiddenProp = false }:
             id: "cloud-iphone-recording",
             tone: "success",
             title: "Recording filed to the proof drawer",
-            message: `ADE Cloud iPhone · ${model.label}`,
+            message: `${BRAND.CLOUD_NAME} iPhone · ${model.label}`,
           });
         }
       })
@@ -549,7 +550,7 @@ function CloudIphoneLive({ pin, sessionId, laneId, hidden: hiddenProp = false }:
             <AppleDeviceRail
               containerWidth={bodyWidth}
               deviceName={model.deviceTypeName}
-              deviceRuntime={`iOS 27 · ADE Cloud${minutesLine ? ` · ${minutesLine}` : ""}`}
+              deviceRuntime={`iOS 27 · ${BRAND.CLOUD_NAME}${minutesLine ? ` · ${minutesLine}` : ""}`}
               inputConnected={live}
               mode={effectiveMode}
               canUse3d={canUse3d}
@@ -654,7 +655,7 @@ function CloudIphoneFlat({ pin, hidden: hiddenProp = false }: CloudIphonePanelPr
           >
             <iframe
               src={cloudPhoneEmbedUrl(link.url)}
-              title="ADE Cloud iPhone"
+              title={`${BRAND.CLOUD_NAME} iPhone`}
               allow="clipboard-read; clipboard-write"
               referrerPolicy="no-referrer"
               className="block h-full w-full border-0 bg-black"

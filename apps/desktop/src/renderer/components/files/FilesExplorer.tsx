@@ -17,6 +17,7 @@ import { SmartTooltip } from "../ui/SmartTooltip";
 import { changeStatusColor, changeStatusLabel, changeStatusTitle, getFileIcon, useFileIconColor } from "./filePresentation";
 import { isImeComposing } from "../../lib/imeComposition";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 const ROW_HEIGHT = 28;
 
@@ -295,7 +296,7 @@ export function FilesExplorer({
       await onRenamePath(renamingPath, destinationPath);
       cancelRename();
     } catch (error) {
-      setRenameError(plainErrorText(error, "ADE couldn't rename that."));
+      setRenameError(plainErrorText(error, `${BRAND.NAME} couldn't rename that.`));
     } finally {
       renameSubmittingRef.current = false;
     }

@@ -19,9 +19,9 @@ describe("describeAppleError", () => {
     // helper
     [new Error("Device not booted (state: Shutdown)"), "The device is off.", "start"],
     [new Error("Unable to boot device in current state: Shutdown"), "The device is off.", "start"],
-    [Object.assign(new Error("The simulator helper binary is missing at /x"), { code: "APPLE_HELPER_UNAVAILABLE" }), "ADE's simulator helper is missing from this install.", "reinstall"],
-    [new Error("APPLE_HELPER_UNAVAILABLE: this runtime cannot start a device."), "ADE's simulator helper is missing from this install.", "reinstall"],
-    [new Error("The simulator helper client has been disposed."), "ADE's simulator helper is missing from this install.", "reinstall"],
+    [Object.assign(new Error("The simulator helper binary is missing at /x"), { code: "APPLE_HELPER_UNAVAILABLE" }), "Daex's simulator helper is missing from this install.", "reinstall"],
+    [new Error("APPLE_HELPER_UNAVAILABLE: this runtime cannot start a device."), "Daex's simulator helper is missing from this install.", "reinstall"],
+    [new Error("The simulator helper client has been disposed."), "Daex's simulator helper is missing from this install.", "reinstall"],
     [new Error("The simulator helper is not running yet. Try again in a moment."), "The simulator helper is still starting.", "reconnect"],
     [new Error("The simulator helper did not answer `capture-start` within 20s."), "The simulator helper stopped answering.", "reconnect"],
     [Object.assign(new Error("No simulator with UDID X is in the default device set."), { code: "unknown-device" }), "That simulator is no longer installed.", undefined],
@@ -42,7 +42,7 @@ describe("describeAppleError", () => {
     [Object.assign(new Error("x"), { code: "not-capturing" }), "Video stopped.", "reconnect"],
     [Object.assign(new Error("x"), { code: "unsupported-button" }), "This device has no such button.", undefined],
     // brain
-    [new Error("This local release build output cannot start the ADE brain directly. Install the channel app into /Applications and relaunch ADE."), "Install ADE into Applications, then relaunch.", "reinstall"],
+    [new Error("This local release build output cannot start the ADE brain directly. Install the channel app into /Applications and relaunch ADE."), "Install Daex into Applications, then relaunch.", "reinstall"],
     // stream
     [new Error("APPLE_STREAM_NOT_RUNNING: no live view is running on lane x."), "Video stopped.", "reconnect"],
     [new Error("The simulator helper started a capture but reported no stream address."), "Video stopped.", "reconnect"],
@@ -53,7 +53,7 @@ describe("describeAppleError", () => {
     [new Error("APPLE_NO_INSTALLED_SIMULATORS: no iOS Simulator runtime is installed"), "No iOS simulators are installed.", undefined],
     [new Error("No available iOS Simulator devices were found."), "No iOS simulators are installed.", undefined],
     [new Error("APPLE_DEVICE_EXISTS: lane x already has iPhone (udid)."), "This lane already has a device.", undefined],
-    [new Error("APPLE_DEVICE_ATTACHED_NOT_DELETABLE: iPhone was attached"), "ADE only detaches a simulator it did not create.", undefined],
+    [new Error("APPLE_DEVICE_ATTACHED_NOT_DELETABLE: iPhone was attached"), "Daex only detaches a simulator it did not create.", undefined],
     [new Error("No installed simulator matches iPhone 99."), "That simulator is not installed.", undefined],
     [new Error("Apple devices belong to a lane. Pass --lane."), "Open the Apple tab from a lane first.", undefined],
     [new Error("A laneId is required: an Apple device belongs to exactly one lane."), "Open the Apple tab from a lane first.", undefined],
@@ -72,10 +72,10 @@ describe("describeAppleError", () => {
     [new Error("iOS simulator service has been disposed."), "The simulator was reset. Try again.", undefined],
     // platform
     [new Error("Apple device control is only available on macOS."), "Apple simulators need a Mac runtime.", undefined],
-    [new Error("The Apple device environment isn't available on the connected ADE host."), "This ADE host has no Apple device support.", undefined],
-    [new Error("The Apple device stream relay is not available in this runtime."), "This ADE host has no Apple device support.", undefined],
-    [new Error("The live view needs a connection to the ADE machine that owns the device."), "Not connected to the machine that owns the device.", "reconnect"],
-    [new Error("The ADE connection has no usable address."), "Not connected to the machine that owns the device.", "reconnect"],
+    [new Error("The Apple device environment isn't available on the connected Daex host."), "This Daex host has no Apple device support.", undefined],
+    [new Error("The Apple device stream relay is not available in this runtime."), "This Daex host has no Apple device support.", undefined],
+    [new Error("The live view needs a connection to the Daex machine that owns the device."), "Not connected to the machine that owns the device.", "reconnect"],
+    [new Error("The Daex connection has no usable address."), "Not connected to the machine that owns the device.", "reconnect"],
     // preview lab
     [new Error("xcrun mcpbridge is not installed"), "Xcode's preview bridge is not available.", undefined],
     [new Error("Choose a #Preview before rendering."), "No SwiftUI preview was found for this file.", undefined],

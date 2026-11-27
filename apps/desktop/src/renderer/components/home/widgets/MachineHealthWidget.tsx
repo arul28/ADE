@@ -11,6 +11,7 @@ import { Banner } from "../../ui/notice";
 import { usePolling } from "../../../hooks/usePolling";
 import { formatBytesShort } from "./widgetHooks";
 import "../homeWidgets.css";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * Machine health for the computer this window runs on.
@@ -411,9 +412,9 @@ export default function MachineHealthWidget({ item }: HomeWidgetProps) {
                       {entry.ports.length > 4 ? <i>+{entry.ports.length - 4}</i> : null}
                     </span>
                     {entry.protected ? (
-                      <span className="ade-mh-own" title="One of ADE's own processes">ADE</span>
+                      <span className="ade-mh-own" title={`One of ${BRAND.NAME}'s own processes`}>{BRAND.NAME}</span>
                     ) : entry.system ? (
-                      <span className="ade-mh-own" title="A system or service process; ADE does not stop it">System</span>
+                      <span className="ade-mh-own" title={`A system or service process; ${BRAND.NAME} does not stop it`}>System</span>
                     ) : (
                       <button
                         type="button"

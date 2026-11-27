@@ -92,6 +92,7 @@ import { confirmAppleDeviceRelease } from "./appleReleaseConfirm";
 import { DEVICE_DRAWER_DOCK_CLASS } from "../device/DeviceToolsDrawerShell";
 import { useDeviceMachinePin } from "./useDeviceMachinePin";
 import { WorkToolEmptyLine } from "../terminals/workToolChrome";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The Apple device, as the body of the Work tools pane's Apple tab.
@@ -953,8 +954,8 @@ function AppleDevicePaneOnMachine({
       case "helper-missing":
         return (
           <PaneMessage
-            title="ADE's simulator helper is missing from this install."
-            description="Reinstall ADE to restore it."
+            title={`${BRAND.NAME}'s simulator helper is missing from this install.`}
+            description={`Reinstall ${BRAND.NAME} to restore it.`}
           />
         );
       case "no-device":
@@ -1406,7 +1407,7 @@ function AppleDevicePaneOnMachine({
                installed and is only given back. */
             <AppleDeviceConfirmBar
               sentence={laneDevice && isAdeOwnedLaneDevice(laneDevice.origin)
-                ? `Delete ${laneDevice.name} and pick another? ADE made it, so its apps and data go with it.`
+                ? `Delete ${laneDevice.name} and pick another? ${BRAND.NAME} made it, so its apps and data go with it.`
                 : "Give up this device and pick another? It stays installed."}
             >
               <Button variant="ghost" size="sm" onClick={() => setConfirmSwitch(false)}>

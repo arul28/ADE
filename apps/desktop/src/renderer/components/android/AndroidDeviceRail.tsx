@@ -34,6 +34,7 @@ import {
   MENU_LABEL_CLASS,
   MENU_SEPARATOR_CLASS,
 } from "../ui/paneMenuTokens";
+import { BRAND } from "../../../shared/brand";
 
 export type AndroidDeviceRailProps = {
   containerWidth: number;
@@ -265,7 +266,7 @@ export function AndroidDeviceRail({
             checked={keepRunning === true}
             onCheckedChange={() => onToggleKeepRunning()}
             title={idleStopMinutes
-              ? `ADE stops an emulator nobody used for ${idleStopMinutes} min. Keep this one running.`
+              ? `${BRAND.NAME} stops an emulator nobody used for ${idleStopMinutes} min. Keep this one running.`
               : "Keep this emulator running."}
           >
             <PushPin size={14} />

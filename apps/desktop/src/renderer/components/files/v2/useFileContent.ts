@@ -2,6 +2,7 @@ import type { PinnedFilesApi } from "./pinnedFilesApi";
 import { useEffect, useState } from "react";
 import type { FileContent } from "../../../../shared/types";
 import { plainErrorText } from "../../../lib/plainError";
+import { BRAND } from "../../../../shared/brand";
 
 /** Small LRU of the initial readFile payload, keyed by `${workspaceId}::${path}`. */
 const cache = new Map<string, FileContent>();
@@ -111,7 +112,7 @@ export function useFileContent(
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        setState({ status: "error", error: plainErrorText(err, "ADE couldn't open the file.") });
+        setState({ status: "error", error: plainErrorText(err, `${BRAND.NAME} couldn't open the file.`) });
       });
     return () => {
       cancelled = true;

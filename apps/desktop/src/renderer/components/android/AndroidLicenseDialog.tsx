@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { AndroidSdkLicense, AndroidSdkSetupPart } from "../../../shared/types/androidEmulator";
 import { Dialog } from "../ui/dialog";
 import { formatAndroidBytes } from "../../../shared/androidFormat";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * "Review licences & install" (plan §1: ADE never accepts a licence by
@@ -40,7 +41,7 @@ export function AndroidLicenseDialog({
         if (!next && !starting) onCancel();
       }}
       title="Review licences"
-      description={`Google's terms for the parts ADE installs${machineName ? ` on ${machineName}` : ""}. ADE records your acceptance in the SDK folder.`}
+      description={`Google's terms for the parts ${BRAND.NAME} installs${machineName ? ` on ${machineName}` : ""}. ${BRAND.NAME} records your acceptance in the SDK folder.`}
       width={560}
       testId="android-license-dialog"
       actions={[

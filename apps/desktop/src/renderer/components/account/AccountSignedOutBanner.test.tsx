@@ -217,7 +217,7 @@ describe("AccountSignedOutBanner — this computer refused", () => {
     renderBanner();
 
     const banner = await findRefusedBanner();
-    expect(banner.textContent).toContain("ADE stopped trying to reconnect it on its own.");
+    expect(banner.textContent).toContain("Daex stopped trying to reconnect it on its own.");
   });
 
   it("asks a refused re-pair to confirm it's you, not to sign in again", async () => {

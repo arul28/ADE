@@ -19,6 +19,7 @@ import type { NoticeAction } from "../ui/notice";
 import { Banner } from "../ui/notice";
 import { cloudBoxContext, cloudPendingLabel, useCloudBoxActions } from "../remoteTargets/useCloudBoxActions";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 /** What the cloud computer lacks for the Android emulator. */
 export type AndroidCloudNeed =
@@ -105,7 +106,7 @@ export function AndroidCloudComputerNotice({
           ? () => void (async () => {
             const ok = await confirmDialog({
               title: `Grow the disk of ${ctx.name} to ${toGb} GB?`,
-              message: `ADE saves the chats on ${ctx.name}, grows the disk and starts ADE again: the computer restarts and is back in a few minutes. Chats and agent CLIs that were working continue after it; a command running in a terminal stops. The lane's chats show the steps. A disk can't shrink later.`,
+              message: `${BRAND.NAME} saves the chats on ${ctx.name}, grows the disk and starts ${BRAND.NAME} again: the computer restarts and is back in a few minutes. Chats and agent CLIs that were working continue after it; a command running in a terminal stops. The lane's chats show the steps. A disk can't shrink later.`,
               confirmLabel: "Grow the disk",
             });
             if (!ok) return;
@@ -114,7 +115,7 @@ export function AndroidCloudComputerNotice({
               await changeCloudLaneTier({ instanceId: box.instanceId, sizeId, timing: "now", diskGb: toGb });
               onDismiss?.();
             } catch (error) {
-              actions.reportError(box.instanceId, plainErrorText(error, "ADE couldn't resize the cloud computer."));
+              actions.reportError(box.instanceId, plainErrorText(error, `${BRAND.NAME} couldn't resize the cloud computer.`));
             }
           })()
           : () => void actions.growDisk(ctx, toGb).then((result) => {

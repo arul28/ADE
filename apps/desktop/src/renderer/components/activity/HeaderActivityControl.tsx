@@ -41,13 +41,14 @@ import {
 } from "./activityPriority";
 import { refreshActivitySnapshot } from "./useActivitySync";
 import "./HeaderActivityControl.css";
+import { BRAND } from "../../../shared/brand";
 
 const RELATIVE_TIME_TICK_MS = 30_000;
 const IDLE_TICK_MS = 120_000;
 
 function navigationErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message.trim();
-  return "ADE couldn’t open the exact machine and project for this item.";
+  return `${BRAND.NAME} couldn’t open the exact machine and project for this item.`;
 }
 
 /**
@@ -217,7 +218,7 @@ export function HeaderActivityControl({
       setNavigationError(
         error instanceof Error && error.message.trim()
           ? error.message.trim()
-          : "ADE couldn’t dismiss that item.",
+          : `${BRAND.NAME} couldn’t dismiss that item.`,
       );
     });
   }, []);
@@ -235,7 +236,7 @@ export function HeaderActivityControl({
         }
       })
       .catch(() => {
-        setNavigationError("ADE couldn’t clear the inbox. Refresh Activity, then try again.");
+        setNavigationError(`${BRAND.NAME} couldn’t clear the inbox. Refresh Activity, then try again.`);
       });
   }, []);
 
@@ -442,7 +443,7 @@ export function HeaderActivityControl({
               id: "activity-header-signed-out",
               tone: "neutral",
               title: availability?.message
-                ?? "Showing work from this machine. Sign in to combine every ADE machine.",
+                ?? `Showing work from this machine. Sign in to combine every ${BRAND.NAME} machine.`,
             }}
             layout="inline"
             style={{ margin: "0 12px 8px" }}
@@ -461,7 +462,7 @@ export function HeaderActivityControl({
             <BellSimpleSlash size={22} weight="duotone" />
             <strong>Signed out</strong>
             <p>
-              Sign in to ADE to follow agents and pull requests across every
+              Sign in to {BRAND.NAME} to follow agents and pull requests across every
               machine on your account.
             </p>
           </div>

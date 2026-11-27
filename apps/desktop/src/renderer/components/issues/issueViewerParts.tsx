@@ -11,6 +11,7 @@ import { Banner } from "../ui/notice";
 import { noticeKindModel } from "../ui/notice/noticeKind";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { BranchIcon } from "../ui/vcsIcons";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Chrome every issue provider's viewer shares: the props a host passes, the
@@ -124,8 +125,8 @@ export function copyIssueText(text: string, what: string): void {
 /** The lanes an issue lives on, drawn the same way for every provider. */
 export function LinkedInAdeLanes({ linked }: { linked: Array<{ lane: LaneSummary; chatCount: number }> }) {
   return (
-    <section className="mt-3 border-t border-[color:var(--kit-rule)] pt-3" aria-label="Linked in ADE">
-      <div className="kit-eyebrow mb-1.5">Linked in ADE</div>
+    <section className="mt-3 border-t border-[color:var(--kit-rule)] pt-3" aria-label={`Linked in ${BRAND.NAME}`}>
+      <div className="kit-eyebrow mb-1.5">Linked in {BRAND.NAME}</div>
       {linked.length === 0 ? (
         <p className="text-[11.5px] text-[color:var(--kit-text-3)]">Not on a lane yet.</p>
       ) : (
@@ -190,7 +191,7 @@ export function IssueNoMachineNotice({ url, openLabel, onLeave }: { url?: string
           id: "issue-no-machine",
           ...noticeKindModel("status"),
           title: "No computer is online",
-          detail: "ADE reads issues through a computer that has this project. Open ADE on one, or connect it.",
+          detail: `${BRAND.NAME} reads issues through a computer that has this project. Open ${BRAND.NAME} on one, or connect it.`,
           actions: [
             { label: "Machines", onClick: () => { onLeave?.(); window.location.hash = `#${settingsRouteFor("machines.list")}`; } },
             ...(url ? [{ label: openLabel ?? "Open on the web", href: url }] : []),
@@ -211,7 +212,7 @@ export function IssueStaleBanner({ error, onRetry }: { error: string | null; onR
         model={{
           id: "issue-refresh-failed",
           tone: "warning",
-          title: "Showing the last copy ADE read",
+          title: `Showing the last copy ${BRAND.NAME} read`,
           detail: error,
           actions: [{ label: "Retry", onClick: onRetry }],
         }}

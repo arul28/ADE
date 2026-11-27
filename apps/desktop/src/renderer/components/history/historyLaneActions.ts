@@ -2,6 +2,7 @@ import type { GitConflictState, GitStashSummary, OpenProjectBinding } from "../.
 import { githubRepoRefFromRemoteUrl } from "../../../shared/githubRemote";
 import { showToast } from "../app/toast/toastStore";
 import { confirmDialog, promptDialog } from "../ui/dialog/confirm";
+import { BRAND } from "../../../shared/brand";
 
 export type HistoryLaneActionId =
   | "fetch"
@@ -242,7 +243,7 @@ export function buildHistoryLaneActions(args: {
     laneAction({
       id: "rename_lane",
       label: "Rename lane",
-      description: "Update the ADE lane name",
+      description: `Update the ${BRAND.NAME} lane name`,
     }),
     laneAction({
       id: "archive_lane",
@@ -253,13 +254,13 @@ export function buildHistoryLaneActions(args: {
     laneAction({
       id: "delete_lane_worktree",
       label: "Delete lane worktree",
-      description: "Remove the ADE lane and worktree, keep the local branch",
+      description: `Remove the ${BRAND.NAME} lane and worktree, keep the local branch`,
       destructive: true,
     }),
     laneAction({
       id: "delete_lane_branch",
       label: "Delete lane + branch",
-      description: "Remove the ADE lane, worktree, and local branch",
+      description: `Remove the ${BRAND.NAME} lane, worktree, and local branch`,
       destructive: true,
     }),
     laneAction({
@@ -513,7 +514,7 @@ export async function runHistoryLaneAction(args: {
       case "delete_lane_worktree": {
         const currentName = laneName?.trim() || "this lane";
         if (!await promptConfirmOrCancel(
-          `Delete ${currentName}'s ADE lane and worktree? Type delete to confirm. The local branch stays.`,
+          `Delete ${currentName}'s ${BRAND.NAME} lane and worktree? Type delete to confirm. The local branch stays.`,
           "delete",
           { confirmLabel: "Delete", destructive: true },
         )) {
@@ -529,8 +530,8 @@ export async function runHistoryLaneAction(args: {
         const branch = remote.branch?.trim() || "";
         const expected = branch || "delete";
         const message = branch
-          ? `Delete this ADE lane, worktree, and local branch "${branch}"? Type ${branch} to confirm.`
-          : "Delete this ADE lane, worktree, and local branch? Type delete to confirm.";
+          ? `Delete this ${BRAND.NAME} lane, worktree, and local branch "${branch}"? Type ${branch} to confirm.`
+          : `Delete this ${BRAND.NAME} lane, worktree, and local branch? Type delete to confirm.`;
         if (!await promptConfirmOrCancel(message, expected, { confirmLabel: "Delete", destructive: true })) {
           return;
         }
@@ -558,7 +559,7 @@ export async function runHistoryLaneAction(args: {
         onComplete?.();
         return;
       case "stash": {
-        const message = await promptOrCancel("Stash message", "ADE history stash");
+        const message = await promptOrCancel("Stash message", `${BRAND.NAME} history stash`);
         if (!message) return;
         const includeUntracked = await confirmOrCancel("Include untracked files in the stash?", { cancelLabel: "Tracked only" });
         await window.ade.git.stashPush({ laneId, message, includeUntracked }, pin);

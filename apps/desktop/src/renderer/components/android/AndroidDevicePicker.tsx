@@ -45,6 +45,7 @@ import {
   ANDROID_TILE_FOCUS_RING,
   type AndroidCatalogCreateOptions,
 } from "./AndroidCatalogGrid";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The Android pane's front door, in the Apple picker's place and classes:
@@ -442,7 +443,7 @@ function AvdCard({
             )}
           </span>
           <span className="min-w-0 break-words font-sans text-[11px] leading-4 text-muted-fg">
-            {avd.madeForOtherLane ? `${spec} · ADE made, other lane` : avd.adeCreated ? `${spec} · ADE made` : spec}
+            {avd.madeForOtherLane ? `${spec} · ${BRAND.NAME} made, other lane` : avd.adeCreated ? `${spec} · ${BRAND.NAME} made` : spec}
           </span>
         </span>
       </button>
@@ -864,7 +865,7 @@ function StorageSection({
                   <li key={avd.name} data-android-storage-row={avd.name} className="flex min-w-0 items-baseline gap-2 font-sans text-[11px] leading-4">
                     <span className="min-w-0 flex-1 truncate text-fg/85">{androidAvdLabel(avd)}</span>
                     <span className="shrink-0 text-muted-fg">
-                      {avd.adeCreated ? "ADE made" : "Yours"}
+                      {avd.adeCreated ? `${BRAND.NAME} made` : "Yours"}
                       {avd.heldByLaneId ? " · in use" : avd.running ? " · running" : ""}
                     </span>
                     <span className="w-14 shrink-0 text-right tabular-nums text-fg/70">{sizeLabel(avd.sizeBytes) ?? "—"}</span>
@@ -875,8 +876,8 @@ function StorageSection({
                 <div className="flex min-w-0 flex-wrap items-center gap-2 pt-1">
                   <span className="min-w-0 flex-1 font-sans text-[11px] leading-4 text-muted-fg">
                     {removable.length > 0
-                      ? `${removable.length} ADE-made device${removable.length === 1 ? "" : "s"} no lane uses.`
-                      : "Nothing to clean up: every ADE-made device is in use or running."}
+                      ? `${removable.length} ${BRAND.NAME}-made device${removable.length === 1 ? "" : "s"} no lane uses.`
+                      : `Nothing to clean up: every ${BRAND.NAME}-made device is in use or running.`}
                   </span>
                   {removable.length > 0 ? (
                     <Button

@@ -20,6 +20,7 @@ import {
   IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE,
   IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE,
 } from "../../../shared/types/iosSimulator";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Every helper, `simctl`, registry and IPC failure the Apple pane can meet,
@@ -96,18 +97,18 @@ const RULES: readonly Rule[] = [
   },
   // The preload refuses a change while the project tab is switching, because
   // the project it was meant for is ambiguous. Nothing is wrong with the device.
-  { test: matches(/Project is switching/i), sentence: "ADE was switching projects. Try again." },
+  { test: matches(/Project is switching/i), sentence: `${BRAND.NAME} was switching projects. Try again.` },
   // A viewer asked to watch a device that is off. Watching never boots it.
   { test: includes(APPLE_DEVICE_OFF_CODE), sentence: "The device is off.", action: "start" },
   // The device is off (helper `DeviceSession` refusal, or `simctl` on a shut-down device).
   { test: matches(/Device not booted|current state: Shutdown|is not booted|Unable to boot device/i), sentence: "The device is off.", action: "start" },
   // The helper.
-  { test: includes(APPLE_HELPER_UNAVAILABLE_CODE), sentence: "ADE's simulator helper is missing from this install.", action: "reinstall" },
-  { test: matches(/simulator helper binary is missing|simulator helper (client )?has been disposed|simulator helper exited/i), sentence: "ADE's simulator helper is missing from this install.", action: "reinstall" },
+  { test: includes(APPLE_HELPER_UNAVAILABLE_CODE), sentence: `${BRAND.NAME}'s simulator helper is missing from this install.`, action: "reinstall" },
+  { test: matches(/simulator helper binary is missing|simulator helper (client )?has been disposed|simulator helper exited/i), sentence: `${BRAND.NAME}'s simulator helper is missing from this install.`, action: "reinstall" },
   { test: matches(/simulator helper is not running yet/i), sentence: "The simulator helper is still starting.", action: "reconnect" },
   { test: matches(/simulator helper did not answer/i), sentence: "The simulator helper stopped answering.", action: "reconnect" },
   // A dev/local build that cannot boot the brain.
-  { test: includes("cannot start the ADE brain directly"), sentence: "Install ADE into Applications, then relaunch.", action: "reinstall" },
+  { test: matches(/cannot start the (?:ADE|Daex) brain directly/), sentence: `Install ${BRAND.NAME} into Applications, then relaunch.`, action: "reinstall" },
   // The stream.
   { test: includes(APPLE_STREAM_NOT_RUNNING_CODE), sentence: "Video stopped.", action: "reconnect" },
   { test: matches(/reported no stream address|live view returned no address/i), sentence: "Video stopped.", action: "reconnect" },
@@ -138,7 +139,7 @@ const RULES: readonly Rule[] = [
   // The per-lane device registry.
   { test: includes(APPLE_NO_INSTALLED_SIMULATORS_CODE), sentence: "No iOS simulators are installed." },
   { test: includes(APPLE_DEVICE_EXISTS_CODE), sentence: "This lane already has a device." },
-  { test: includes(APPLE_DEVICE_ATTACHED_NOT_DELETABLE_CODE), sentence: "ADE only detaches a simulator it did not create." },
+  { test: includes(APPLE_DEVICE_ATTACHED_NOT_DELETABLE_CODE), sentence: `${BRAND.NAME} only detaches a simulator it did not create.` },
   { test: matches(/No installed simulator matches/i), sentence: "That simulator is not installed." },
   { test: matches(/Apple devices belong to a lane|laneId is required|no Apple device yet/i), sentence: "Open the Apple tab from a lane first." },
   { test: includes(APPLE_START_GIVE_UP_CODE), sentence: "The simulator is taking too long to start.", action: "start" },
@@ -156,8 +157,8 @@ const RULES: readonly Rule[] = [
   { test: matches(/launch was superseded|service has been disposed/i), sentence: "The simulator was reset. Try again." },
   // Platform.
   { test: matches(/only available on macOS|only supported on macOS|need a Mac|macOS is required/i), sentence: "Apple simulators need a Mac runtime." },
-  { test: matches(/isn't available on the connected ADE host|not available in this runtime/i), sentence: "This ADE host has no Apple device support." },
-  { test: matches(/needs a connection to the ADE machine|has no usable address/i), sentence: "Not connected to the machine that owns the device.", action: "reconnect" },
+  { test: matches(/isn't available on the connected (?:ADE|Daex) host|not available in this runtime/i), sentence: `This ${BRAND.NAME} host has no Apple device support.` },
+  { test: matches(/needs a connection to the (?:ADE|Daex) machine|has no usable address/i), sentence: "Not connected to the machine that owns the device.", action: "reconnect" },
   { test: matches(/No available iOS Simulator devices/i), sentence: "No iOS simulators are installed." },
   // Preview Lab.
   { test: matches(/mcpbridge|Xcode MCP/i), sentence: "Xcode's preview bridge is not available." },

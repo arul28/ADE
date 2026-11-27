@@ -38,6 +38,7 @@ import {
   type IssueViewerProps,
 } from "./issueViewerParts";
 import type { JiraIssueEditing } from "./JiraIssueView";
+import { BRAND } from "../../../shared/brand";
 
 type JiraRef = Extract<IssueRef, { provider: "jira" }>;
 
@@ -62,7 +63,7 @@ export function JiraIssueViewer({
   const label = jiraRef.key;
   const url = issue?.url ?? jiraRef.url ?? `${jiraRef.siteUrl}/browse/${jiraRef.key}`;
   const readOnlyReason = issue && !isCompleteJiraIssue(entry)
-    ? entry.error ? "ADE couldn't read the whole issue. Retry to edit it." : "Reading the whole issue from Jira…"
+    ? entry.error ? `${BRAND.NAME} couldn't read the whole issue. Retry to edit it.` : "Reading the whole issue from Jira…"
     : issue?.permissions.edit ? null : "This Jira account does not have permission to edit this issue.";
 
   const loadTransitions = useCallback(async () => {
@@ -292,7 +293,7 @@ function JiraLoadState({
     detail = retryTime ? `Try again after ${retryTime}. ${message}` : message;
   } else if (parsed?.reason === "not-found" || status === "missing") {
     title = `Jira didn't return ${jiraRef.key}`;
-    detail = "Check that the issue exists and that ADE is connected to the right Jira site.";
+    detail = `Check that the issue exists and that ${BRAND.NAME} is connected to the right Jira site.`;
   }
   return (
     <div className="p-4">

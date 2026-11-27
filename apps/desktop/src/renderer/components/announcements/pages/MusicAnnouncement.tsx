@@ -2,6 +2,7 @@ import { MusicNotes } from "@phosphor-icons/react";
 import type { AnnouncementPageProps } from "../announcementPages";
 import { WhatsNewFeature } from "./WhatsNewFeature";
 import shot from "./assets/music.webp";
+import { BRAND } from "../../../../shared/brand";
 
 /** Apple Music and Spotify in the Music tab. */
 export default function MusicAnnouncement({ close }: AnnouncementPageProps) {
@@ -9,7 +10,7 @@ export default function MusicAnnouncement({ close }: AnnouncementPageProps) {
     <WhatsNewFeature
       close={close}
       place={{ icon: <MusicNotes size={17} weight="fill" />, name: "Music" }}
-      headline="Your music, without leaving ADE."
+      headline={`Your music, without leaving ${BRAND.NAME}.`}
       sentence="Play Apple Music or Spotify from the Music tab or the top bar."
       action={{ tipId: "music", label: "Open Music" }}
       media={{

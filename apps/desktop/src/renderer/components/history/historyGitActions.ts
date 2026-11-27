@@ -4,6 +4,7 @@ import { confirmDialog, promptDialog } from "../ui/dialog/confirm";
 import { trackPendingLaneCreate } from "../../lib/pendingLaneCreates";
 import { selectActiveProjectStateKey, useAppStore } from "../../state/appStore";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 export type HistoryGitActionId =
   | "checkout"
@@ -449,7 +450,7 @@ export async function runHistoryGitAction(args: {
         return;
     }
   } catch (err) {
-    const msg = plainErrorText(err, "ADE couldn't finish that Git action.");
+    const msg = plainErrorText(err, `${BRAND.NAME} couldn't finish that Git action.`);
     onError?.(msg);
   }
 }

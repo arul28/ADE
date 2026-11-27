@@ -58,6 +58,7 @@ import { AccountInviteFact } from "../settings/cloudDashboard/CloudInvite";
 import { ContextMenu, type ContextMenuState } from "../ui/ContextMenu";
 import { promptDialog } from "../ui/dialog";
 import { showToast } from "../app/toast/toastStore";
+import { BRAND } from "../../../shared/brand";
 
 export { describeThisComputerMissing } from "./YourMacsCard";
 
@@ -74,12 +75,12 @@ type AccountBridge = {
  */
 async function confirmAccountDeletion(): Promise<boolean> {
   const answer = await promptDialog({
-    title: "Delete your ADE account?",
+    title: `Delete your ${BRAND.NAME} account?`,
     message: (
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         <span>This deletes your account for good. It cannot be undone. These go with it:</span>
         <ul style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 2 }}>
-          <li>Your ADE Cloud computers and the work saved on them</li>
+          <li>Your {BRAND.CLOUD_NAME} computers and the work saved on them</li>
           <li>Your saved chats</li>
           <li>Your Passwords &amp; Secrets vault</li>
           <li>Your project list</li>
@@ -167,7 +168,7 @@ export function SignInCard({
         gap: 14,
       }}
     >
-      <AdeWordmark alt="ADE" style={{ height: 30, opacity: 0.95 }} draggable={false} />
+      <AdeWordmark alt={BRAND.NAME} style={{ height: 30, opacity: 0.95 }} draggable={false} />
       <div
         style={cardStyle({
           padding: 28,
@@ -187,7 +188,7 @@ export function SignInCard({
               action -- the table's "Signed out" describes the state, but
               this card is where you act on it.
             */}
-            {unreadable || expired ? accountSessionTitle(sessionState) : "Sign in to ADE"}
+            {unreadable || expired ? accountSessionTitle(sessionState) : `Sign in to ${BRAND.NAME}`}
           </div>
           {notice ? (
             <div
@@ -299,11 +300,11 @@ export function SignInCard({
                 fontSize: 11.5,
               }}
             >
-              <span>Sign in to use ADE Relay</span>
-              <SmartTooltip content={{ label: "ADE Relay", description: "ADE's hosted relay pairs this machine with your account so phones and other Macs can reach it.", docUrl: docs.adeRelay }}>
+              <span>Sign in to use {BRAND.NAME} Relay</span>
+              <SmartTooltip content={{ label: `${BRAND.NAME} Relay`, description: `${BRAND.NAME}'s hosted relay pairs this machine with your account so phones and other Macs can reach it.`, docUrl: docs.adeRelay }}>
                 <button
                   type="button"
-                  aria-label="Learn about ADE Relay"
+                  aria-label={`Learn about ${BRAND.NAME} Relay`}
                   onClick={() => openExternalUrl(docs.adeRelay)}
                   style={{
                     display: "inline-flex",
@@ -435,7 +436,7 @@ function AccountDetailsSection({
         <div className="ade-acct-fact">
           <dt><At size={13} weight="bold" />Email</dt>
           <dd>
-            <span className="ade-acct-fact-value">{status.email ?? "Your ADE account"}</span>
+            <span className="ade-acct-fact-value">{status.email ?? `Your ${BRAND.NAME} account`}</span>
             {providerCaption ? <span className="ade-acct-fact-note">{providerCaption}</span> : null}
           </dd>
         </div>
@@ -478,7 +479,7 @@ function AccountDetailsSection({
           Sign out of this computer
         </button>
         {onDeleteAccount ? (
-          <SmartTooltip content={{ label: "More account options", description: "Delete your ADE account." }}>
+          <SmartTooltip content={{ label: "More account options", description: `Delete your ${BRAND.NAME} account.` }}>
             <button
               ref={menuButtonRef}
               type="button"
@@ -517,7 +518,7 @@ function AccountDetailsSection({
       ) : null}
       {confirming ? (
         <ConfirmSheet
-          title="Sign out of ADE?"
+          title={`Sign out of ${BRAND.NAME}?`}
           body="Signing out removes this computer's access to your account and its account-connected machines. Devices paired directly with a code stay connected."
           confirmLabel="Sign out"
           danger
@@ -593,7 +594,7 @@ export function AccountPage({ embedded = false }: { embedded?: boolean } = {}) {
       const next = await api.signOut();
       publishAccountStatus(next);
     } catch (err) {
-      setSignOutError(err instanceof Error ? err.message : "Couldn't sign out of your ADE account.");
+      setSignOutError(err instanceof Error ? err.message : `Couldn't sign out of your ${BRAND.NAME} account.`);
     } finally {
       setSigningOut(false);
     }
@@ -610,7 +611,7 @@ export function AccountPage({ embedded = false }: { embedded?: boolean } = {}) {
       publishAccountStatus(next);
       showToast({
         tone: "success",
-        title: "Your ADE account is deleted",
+        title: `Your ${BRAND.NAME} account is deleted`,
         message: "You are signed out. Local projects on this computer stay here.",
       });
     } catch (err) {

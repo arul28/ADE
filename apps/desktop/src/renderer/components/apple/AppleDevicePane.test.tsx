@@ -296,8 +296,8 @@ describe("AppleDevicePane states", () => {
       }),
     });
     renderPane();
-    expect(await screen.findByText("ADE's simulator helper is missing from this install.")).toBeTruthy();
-    expect(screen.getByText("Reinstall ADE to restore it.")).toBeTruthy();
+    expect(await screen.findByText("Daex's simulator helper is missing from this install.")).toBeTruthy();
+    expect(screen.getByText("Reinstall Daex to restore it.")).toBeTruthy();
     expect(paneState()).toBe("helper-missing");
   });
 
@@ -433,7 +433,7 @@ describe("AppleDevicePane states", () => {
       );
       await waitFor(() => expect(paneState()).toBe("stopped"));
       fireEvent.click(screen.getByRole("button", { name: "Choose another device" }));
-      await screen.findByText(/ADE deletes it, with its apps and data, in about 5 minutes/u);
+      await screen.findByText(/Daex deletes it, with its apps and data, in about 5 minutes/u);
       expect(iosSimulator.deviceDetach).not.toHaveBeenCalled();
       fireEvent.click(screen.getByText(/Keep it as a free simulator instead/u));
       fireEvent.click(screen.getByRole("button", { name: "Release" }));

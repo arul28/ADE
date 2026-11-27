@@ -1,6 +1,7 @@
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { AppleDeviceCleanupResult, AppleRuntimeDeleteResult, AppleRuntimeInventory } from "../../../shared/types/iosSimulator";
 import { READABLE_TOAST_DURATION_MS, showToast } from "../app/toast/toastStore";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The toasts for cleaning up simulators and removing runtimes, shared by the
@@ -14,13 +15,13 @@ function cleanupNotice(input: { listUnreadable: boolean; deviceErrors: number; s
   message?: string;
 } {
   if (input.listUnreadable) {
-    return { tone: "error", title: "Could not read the simulator list", message: "Nothing was cleaned up. The ADE log has the details." };
+    return { tone: "error", title: "Could not read the simulator list", message: `Nothing was cleaned up. The ${BRAND.NAME} log has the details.` };
   }
   if (input.deviceErrors) {
     return {
       tone: input.summary ? "warning" : "error",
       title: input.summary ?? "Simulators were not cleaned up",
-      message: `${input.deviceErrors} could not be cleaned up yet. The ADE log has the details.`,
+      message: `${input.deviceErrors} could not be cleaned up yet. The ${BRAND.NAME} log has the details.`,
     };
   }
   return { tone: "success", title: input.summary ?? "No simulators to clean up" };
@@ -29,7 +30,7 @@ function cleanupNotice(input: { listUnreadable: boolean; deviceErrors: number; s
 /** Why Clean up powered nothing off, in the words the toast uses. */
 const CLEANUP_SKIP_REASON: Record<NonNullable<AppleDeviceCleanupResult["powerOffSkipped"]>, string> = {
   "simulator-app-open": "Simulator.app is open, so nothing was powered off.",
-  "process-list-unavailable": "ADE could not check what uses the devices, so nothing was powered off.",
+  "process-list-unavailable": `${BRAND.NAME} could not check what uses the devices, so nothing was powered off.`,
 };
 
 /** What a runtime remove did, as one toast. Counts only; the details are in the log. */

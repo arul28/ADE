@@ -23,6 +23,7 @@ import {
   startAndroidTileTurn,
   type AndroidTileSpec,
 } from "./androidTileRenderer";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The picker's "New device" grid: one tile per catalog device, with its
@@ -348,7 +349,7 @@ function CatalogDetails({
     [state.images],
   );
   const profileLine = state.ade
-    ? `ADE profile ${state.profileId}, added to Android Studio's device list.`
+    ? `${BRAND.NAME} profile ${state.profileId}, added to Android Studio's device list.`
     : state.fallback
       ? `This SDK has no newer profile: uses ${state.profileId}.`
       : `SDK profile ${state.profileId}.`;

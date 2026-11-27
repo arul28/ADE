@@ -1,3 +1,4 @@
+import { BRAND } from "../../../../shared/brand";
 /**
  * Draws the "Shipped this week" share card: a 1200×675 PNG in ADE's look
  * (deep gradient, mono eyebrows, one accent per figure), from the same
@@ -206,10 +207,10 @@ export async function drawShippedShareCard(data: ShippedShareData): Promise<stri
   ctx.fillStyle = "rgba(255,255,255,0.9)";
   ctx.font = `800 22px ${sans}`;
   ctx.textAlign = "right";
-  ctx.fillText("ADE", WIDTH - pad - 48, HEIGHT - pad - 34);
+  ctx.fillText(BRAND.NAME, WIDTH - pad - 48, HEIGHT - pad - 34);
   ctx.fillStyle = "rgba(255,255,255,0.45)";
   ctx.font = `400 14px ${sans}`;
-  ctx.fillText("Made in ADE", WIDTH - pad - 48, HEIGHT - pad - 14);
+  ctx.fillText(`Made in ${BRAND.NAME}`, WIDTH - pad - 48, HEIGHT - pad - 14);
   ctx.textAlign = "left";
 
   return canvas.toDataURL("image/png");

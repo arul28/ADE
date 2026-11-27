@@ -163,6 +163,7 @@ import {
   webMachineRowLabel,
   type WebMachineEntry,
 } from "../../webclient/workspace/webWorkspaceModel";
+import { BRAND } from "../../../shared/brand";
 
 const MACHINES_REFRESH_MS = 30_000;
 /** Settings anchor for this card; the manifest entry `account.computers` points here. */
@@ -258,18 +259,18 @@ export function describeThisComputerMissing(
     case "expired":
       return {
         title,
-        body: "This computer's ADE sign-in expired, so it stopped publishing itself to your account. Sign in again, then choose Reconnect this computer. If the row still doesn't come back, Repair restarts ADE's background service on this computer.",
+        body: `This computer's ${BRAND.NAME} sign-in expired, so it stopped publishing itself to your account. Sign in again, then choose Reconnect this computer. If the row still doesn't come back, Repair restarts ${BRAND.NAME}'s background service on this computer.`,
       };
     case "unreadable":
       return {
         title,
-        body: "ADE can't read this computer's sign-in, so it isn't publishing itself. Repair the stored sign-in, then Reconnect.",
+        body: `${BRAND.NAME} can't read this computer's sign-in, so it isn't publishing itself. Repair the stored sign-in, then Reconnect.`,
       };
     case "signed_out":
     case "active":
       return {
         title,
-        body: "This computer isn't listed on your account, so it isn't sharing Activity and your other computers can't reach it. That can happen if it was removed, or if ADE on this computer stopped publishing. Reconnect puts it back. If it still doesn't stick, Repair restarts ADE's background service here, then try Reconnect again.",
+        body: `This computer isn't listed on your account, so it isn't sharing Activity and your other computers can't reach it. That can happen if it was removed, or if ${BRAND.NAME} on this computer stopped publishing. Reconnect puts it back. If it still doesn't stick, Repair restarts ${BRAND.NAME}'s background service here, then try Reconnect again.`,
       };
     default: {
       const _exhaustive: never = sessionState;
@@ -1020,7 +1021,7 @@ export function YourMacsCard({
             id: "mobile-live-machine-limit",
             tone: "info",
             icon: <DeviceMobile size={16} weight="duotone" />,
-            title: `The ADE phone app keeps ${MOBILE_LIVE_MACHINE_LIMIT} computers live at a time`,
+            title: `The ${BRAND.NAME} phone app keeps ${MOBILE_LIVE_MACHINE_LIMIT} computers live at a time`,
             detail: "The others show their last update and connect when you open them on your phone.",
           }}
         />
@@ -1267,7 +1268,7 @@ export function YourMacsCard({
                   <div className="ade-acct-machine-title">
                     <span className="ade-acct-machine-name">{ADE_CLOUD_NAME}</span>
                   </div>
-                  <div className="ade-acct-machine-status">Its computers start when a lane needs one. Manage it in ADE Cloud settings.</div>
+                  <div className="ade-acct-machine-status">Its computers start when a lane needs one. Manage it in {BRAND.CLOUD_NAME} settings.</div>
                 </div>
               </div>
             </div>

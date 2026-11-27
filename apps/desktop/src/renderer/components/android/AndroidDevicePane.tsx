@@ -69,6 +69,7 @@ import type { AndroidDrawerGroupId } from "./drawer/androidDrawerState";
 import { presetDeviceDrawerGroup } from "../device/deviceDrawerState";
 import { useDeviceMachinePin } from "../apple/useDeviceMachinePin";
 import { WorkToolEmptyLine } from "../terminals/workToolChrome";
+import { BRAND } from "../../../shared/brand";
 
 /** Below this pane width the chips would crowd the picture; the drawer still has every control. */
 const ANDROID_QUICK_CHIPS_MIN_WIDTH = 420;
@@ -718,7 +719,7 @@ function AndroidDevicePaneOnMachine({
         return (
           <AndroidPaneMessage
             title="Android Development is not available here."
-            description="Update ADE, or open this lane in the ADE desktop app."
+            description={`Update ${BRAND.NAME}, or open this lane in the ${BRAND.NAME} desktop app.`}
           />
         );
       case "loading":

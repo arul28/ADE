@@ -47,6 +47,7 @@ import type { CtoAdoptAccountCopyResult } from "../../../shared/ctoAccountCopy";
 import { CtoGreeting } from "./CtoGreeting";
 import { CtoAccountCopyView } from "./CtoAccountCopyView";
 import "./ctoPage.css";
+import { BRAND } from "../../../shared/brand";
 
 const MAX_WAKING_RETRIES = 4;
 
@@ -647,7 +648,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
     // This computer runs the build that is showing this page, so the hint is
     // only ever about another home machine.
     note: homeCrossMachine === false && otherMachineCount > 0 && ctoHome.home?.isThisMachine !== true
-      ? `Update ADE on ${homeLabel} to reach other machines.`
+      ? `Update ${BRAND.NAME} on ${homeLabel} to reach other machines.`
       : null,
     onClick: () => {
       setSettingsOpen(false);
@@ -719,7 +720,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   const renderStage = (): React.ReactNode => {
     switch (stage) {
       case "bridgeMissing":
-        return <CtoStateCard look={look} name={ctoDisplayName} avatar="error" status="Reopen ADE to reconnect" tone="crit" />;
+        return <CtoStateCard look={look} name={ctoDisplayName} avatar="error" status={`Reopen ${BRAND.NAME} to reconnect`} tone="crit" />;
       case "chooser":
         return (
           <CtoHomeChooser
@@ -745,8 +746,8 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
             look={look}
             name={ctoDisplayName}
             avatar="asleep"
-            status="Its ADE Cloud computer is gone"
-            statusHint="ADE Cloud deletes a computer that sits idle. A new one picks up from the copy in your account."
+            status={`Its ${BRAND.CLOUD_NAME} computer is gone`}
+            statusHint={`${BRAND.CLOUD_NAME} deletes a computer that sits idle. A new one picks up from the copy in your account.`}
             action={{
               label: "Make a new computer",
               onClick: () => {
@@ -764,7 +765,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
             look={look}
             name={ctoDisplayName}
             avatar="asleep"
-            status={waking ? "Waking up…" : "Asleep on ADE Cloud"}
+            status={waking ? "Waking up…" : `Asleep on ${BRAND.CLOUD_NAME}`}
             statusHint={`${ctoHome.homeName ?? "Its computer"} sleeps when idle. Waking it takes a moment.`}
             action={{ label: waking ? "Waking…" : "Wake", onClick: () => void wakeCloudHome(), disabled: waking }}
             secondaryAction={{ label: "Move to…", onClick: () => setChooserOpen(true) }}
@@ -830,7 +831,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
             name={ctoDisplayName}
             avatar="error"
             status="Couldn't wake up"
-            statusHint="ADE tried a few times. Nothing was lost."
+            statusHint={`${BRAND.NAME} tried a few times. Nothing was lost.`}
             tone="crit"
             detail={error}
             action={{

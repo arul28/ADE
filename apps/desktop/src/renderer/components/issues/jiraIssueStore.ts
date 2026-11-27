@@ -23,6 +23,7 @@ import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import { useActiveProjectRoot } from "../../state/appStore";
 import { createIssueEntryCache, type IssueEntry } from "./issueEntryCache";
 import { cacheScopePin } from "../../lib/tabBindingKey";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Pins. Issue reads and writes go to the repository reader
@@ -302,7 +303,7 @@ export function loadJiraIssue(
         return revisionAtStart === jiraConnectionRevision ? issue : null;
       }
       : null,
-    { unavailable: "Jira is not available in this ADE window.", failed: "Jira request failed." },
+    { unavailable: `Jira is not available in this ${BRAND.NAME} window.`, failed: "Jira request failed." },
     options,
   );
 }
@@ -783,7 +784,7 @@ export function loadJiraIssueList(
   }
   const read = window.ade?.jira?.listIssues;
   if (!read) {
-    rememberList(key, { ...current, status: "error", error: "Jira issue lists are not available in this ADE window.", promise: null });
+    rememberList(key, { ...current, status: "error", error: `Jira issue lists are not available in this ${BRAND.NAME} window.`, promise: null });
     notify();
     return Promise.resolve();
   }

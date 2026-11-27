@@ -4,6 +4,7 @@ import { WhatsNewFeature } from "./WhatsNewFeature";
 import word from "./assets/files-word.webp";
 import sheet from "./assets/files-sheet.webp";
 import diagram from "./assets/files-diagram.webp";
+import { BRAND } from "../../../../shared/brand";
 
 /** Native previews for Word docs, spreadsheets, decks and diagrams. */
 export default function OpenAnyFileAnnouncement({ close }: AnnouncementPageProps) {
@@ -11,7 +12,7 @@ export default function OpenAnyFileAnnouncement({ close }: AnnouncementPageProps
     <WhatsNewFeature
       close={close}
       place={{ icon: <FileText size={17} weight="fill" />, name: "Files" }}
-      headline="Docs, sheets and decks open in ADE."
+      headline={`Docs, sheets and decks open in ${BRAND.NAME}.`}
       sentence="Word, Excel, PowerPoint and diagrams open in Files the way they look."
       action={{ tipId: "files", label: "Open Files" }}
       media={{
