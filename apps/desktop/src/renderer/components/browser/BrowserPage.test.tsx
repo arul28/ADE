@@ -166,7 +166,7 @@ describe("BrowserPage dock", () => {
 
   it.each([
     ["https://flights.example.test/", "https://flights.example.test/"],
-    ["https://user:password-proof@flights.example.test/?token=secret-proof&reset_token=reset-proof&X-Amz-Signature=signed-proof&code=oauth-proof&sid=session-proof&search=Paris#access_token=fragment-proof", "https://flights.example.test/?token=%5Bredacted+by+ADE%5D&reset_token=%5Bredacted+by+ADE%5D&X-Amz-Signature=%5Bredacted+by+ADE%5D&code=%5Bredacted+by+ADE%5D&sid=%5Bredacted+by+ADE%5D&search=Paris"],
+    ["https://user:password-proof@flights.example.test/?token=secret-proof&reset_token=reset-proof&X-Amz-Signature=signed-proof&code=oauth-proof&sid=session-proof&search=Paris#access_token=fragment-proof", "https://flights.example.test/?token=%5Bredacted+by+Daex%5D&reset_token=%5Bredacted+by+Daex%5D&X-Amz-Signature=%5Bredacted+by+Daex%5D&code=%5Bredacted+by+Daex%5D&sid=%5Bredacted+by+Daex%5D&search=Paris"],
   ])("hands the page to the docked chat with safe hidden context for %s", async (url, safeUrl) => {
     TAB.url = url;
     const { container } = await renderPage();

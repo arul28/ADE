@@ -8641,7 +8641,7 @@ final class ADETests: XCTestCase {
     // "mixed" from a single one.
     let mixed = adeUsageRatesNote(sources: ["list", "fallback"], pricingUpdatedAt: nil)
     XCTAssertEqual(mixed, adeUsageRatesNote(sources: ["mixed"], pricingUpdatedAt: nil))
-    XCTAssertEqual(mixed?.hasSuffix("only ADE's built-in list knows."), true)
+    XCTAssertEqual(mixed?.hasSuffix("only Daex's built-in list knows."), true)
     // An unparseable timestamp must not surface a "not yet" age.
     XCTAssertEqual(
       adeUsageRatesNote(sources: ["list"], pricingUpdatedAt: "nonsense"),
