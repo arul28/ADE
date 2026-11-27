@@ -259,38 +259,38 @@ describe("ctoStateService", () => {
 
     const preview = service.previewSystemPrompt();
     expect(preview.sections.map((section) => section.id)).toEqual(["doctrine", "continuity", "memory", "knowledge", "capabilities"]);
-    expect(preview.sections[0]?.content).toContain("You are the CTO for the current project inside ADE.");
+    expect(preview.sections[0]?.content).toContain("You are the CTO for the current project inside Daex.");
     // The doctrine is the only voice instruction there is — there is no
     // per-user overlay to fall back on, so it has to carry the tone rules.
     expect(preview.sections[0]?.content).toContain("How you speak:");
-    expect(preview.sections[0]?.content).toContain("Helping with ADE itself:");
+    expect(preview.sections[0]?.content).toContain("Helping with Daex itself:");
     expect(preview.sections[1]?.content).toContain("readHistory");
     // Memory section: teaches the notes and open-work tools
     expect(preview.sections[2]?.content).toContain("remember");
     expect(preview.sections[2]?.content).toContain("trackWork");
     // Knowledge section: ADE architecture, chat vs terminal disambiguation, task routing, model selection
-    expect(preview.sections[3]?.content).toContain("ADE Architecture");
+    expect(preview.sections[3]?.content).toContain("Daex Architecture");
     expect(preview.sections[3]?.content).toContain("spawnChat");
     expect(preview.sections[3]?.content).toContain("createTerminal");
     expect(preview.sections[3]?.content).toContain("Model Selection");
-    expect(preview.sections[3]?.content).toContain("ade actions run <domain.action>");
+    expect(preview.sections[3]?.content).toContain("daex actions run <domain.action>");
     expect(preview.sections[3]?.content).toContain("bundled `ade-*` skills");
     // Capabilities section: schema authority plus cross-tool operating rules
-    expect(preview.sections[4]?.content).toContain("ADE operator tools");
-    expect(preview.sections[4]?.content).toContain("registered ADE operator tool schemas");
+    expect(preview.sections[4]?.content).toContain("Daex operator tools");
+    expect(preview.sections[4]?.content).toContain("registered Daex operator tool schemas");
     expect(preview.sections[4]?.content).not.toContain("listLanes —");
     expect(preview.sections[4]?.content).toContain("UI navigation is suggestion-only.");
-    expect(preview.prompt).toContain("Immutable ADE doctrine");
-    expect(preview.prompt).toContain("ADE environment knowledge");
-    expect(preview.prompt).toContain("ADE operator tools");
+    expect(preview.prompt).toContain("Immutable Daex doctrine");
+    expect(preview.prompt).toContain("Daex environment knowledge");
+    expect(preview.prompt).toContain("Daex operator tools");
 
     // The knowledge document lives in the system prompt and NOWHERE else. The
     // per-turn reconstruction context used to repeat it verbatim, and since the
     // chat service concatenates the two, every CTO user turn carried ~10 KB of
     // the same architecture doc twice.
     const reconstruction = service.buildReconstructionContext();
-    expect(reconstruction).not.toContain("ADE Architecture");
-    expect(reconstruction).not.toContain("ADE Operational Knowledge");
+    expect(reconstruction).not.toContain("Daex Architecture");
+    expect(reconstruction).not.toContain("Daex Operational Knowledge");
     expect(reconstruction).toContain("CTO Context");
 
     fixture.db.close();
@@ -314,17 +314,17 @@ describe("ctoStateService", () => {
     expect(staticSection.body).toBe(service.previewSystemPrompt().prompt);
     // The immutable half is where the doctrine and the architecture document
     // live, and it is the bulk of the prefix.
-    expect(staticSection.body).toContain("Immutable ADE doctrine");
-    expect(staticSection.body).toContain("ADE Architecture");
-    expect(staticSection.body).toContain("ADE operator tools");
+    expect(staticSection.body).toContain("Immutable Daex doctrine");
+    expect(staticSection.body).toContain("Daex Architecture");
+    expect(staticSection.body).toContain("Daex operator tools");
     expect(staticSection.body.length).toBeGreaterThan(10_000);
 
     // The volatile half repeats none of it.
     const volatileSection = service.buildReconstructionContext();
     expect(volatileSection).toContain("CTO Context");
-    expect(volatileSection).not.toContain("Immutable ADE doctrine");
-    expect(volatileSection).not.toContain("ADE Architecture");
-    expect(volatileSection).not.toContain("registered ADE operator tool schemas");
+    expect(volatileSection).not.toContain("Immutable Daex doctrine");
+    expect(volatileSection).not.toContain("Daex Architecture");
+    expect(volatileSection).not.toContain("registered Daex operator tool schemas");
 
     // Same prompt, same key — that is what lets the chat service stage it once
     // per provider thread instead of once per turn.
@@ -356,7 +356,7 @@ describe("ctoStateService", () => {
   it("does not duplicate registered tool descriptions in the manifest", () => {
     const manifest = buildCtoCapabilityManifest();
 
-    expect(manifest).toContain("registered ADE operator tool schemas");
+    expect(manifest).toContain("registered Daex operator tool schemas");
     expect(manifest).not.toContain("spawnChat —");
     expect(manifest).not.toContain("createLane —");
     expect(manifest).toContain("# Operating Rules");

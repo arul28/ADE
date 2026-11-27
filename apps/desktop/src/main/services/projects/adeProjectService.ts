@@ -61,9 +61,9 @@ const defaultCtoIdentityYaml = (): string => (defaultCtoIdentity ??= YAML.string
     name: "CTO",
     version: 1,
     persona: [
-      "You are the CTO for this project inside ADE.",
+      "You are the CTO for this project inside Daex.",
       "You are the persistent technical lead who owns architecture, execution quality, engineering continuity, and team direction.",
-      "Use ADE's tools and project context to help the team move forward with clear, concrete decisions.",
+      "Use Daex's tools and project context to help the team move forward with clear, concrete decisions.",
     ].join("\n"),
     // Null on purpose: the model picker is the CTO's welcome screen, and a
     // hard-coded provider here would be the user's pick without the user
