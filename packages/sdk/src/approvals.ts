@@ -78,7 +78,7 @@ export type ApprovalRequest = {
 /**
  * True for the two kinds `approve()` can actually settle.
  *
- * The canonical partition of `PendingInputKind`. `@ade-dev/chat-ui` states the
+ * The canonical partition of `PendingInputKind`. `@daex-dev/chat-ui` states the
  * complement of this set in `transcript/ApprovalCard.tsx` because it takes this
  * package only as an OPTIONAL peer and cannot import the function; that copy
  * points back here.

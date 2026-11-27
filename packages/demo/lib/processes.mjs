@@ -42,7 +42,7 @@ export function own(child) {
  * Stop a child by the pid captured at spawn.
  *
  * The grace period has to outlast the slowest orderly shutdown underneath us:
- * a host holding an `@ade-dev/sdk` client spends up to 5s waiting for its own
+ * a host holding an `@daex-dev/sdk` client spends up to 5s waiting for its own
  * runtime child to exit. SIGKILLing the host before that finishes orphans the
  * runtime — it survives, still holding its ADE home, because a POSIX child does
  * not die with its parent.

@@ -35,7 +35,7 @@ export type ToolIdentity = {
  * split into an invented server: a half-formed MCP name is not evidence of
  * which server owns it.
  *
- * A verbatim copy of `parseToolIdentity` in `@ade-dev/sdk` (>= 0.3,
+ * A verbatim copy of `parseToolIdentity` in `@daex-dev/sdk` (>= 0.3,
  * `packages/sdk/src/toolIdentity.ts`), so the two files diff cleanly. It is a
  * copy, not an import, because the SDK is an optional peer and this runs in a
  * browser; change the two together.

@@ -124,7 +124,7 @@ export type AdeChatProps = {
   /**
    * Called when the person picks an effort in the built-in picker. The effort
    * control is drawn only when this is set. Applying it to the thread (for
-   * example `thread.update({ reasoningEffort })` on `@ade-dev/sdk` >= 0.3) is the
+   * example `thread.update({ reasoningEffort })` on `@daex-dev/sdk` >= 0.3) is the
    * host's job; this component does not call the runtime for it.
    */
   onReasoningEffortChange?: ModelPickerProps["onReasoningEffortChange"];

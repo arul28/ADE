@@ -1,7 +1,7 @@
 /**
  * Check a hand-written preload bridge against the one this SDK version ships.
  *
- * `@ade-dev/sdk/electron/preload-auto` must be `webPreferences.preload`
+ * `@daex-dev/sdk/electron/preload-auto` must be `webPreferences.preload`
  * itself, so a host with its own preload either bundles `exposeAdeBridge` into
  * it or copies it by hand. A hand copy can drift from the SDK (a channel name,
  * the payload shape) with no compile error and no runtime error: the bridge
@@ -29,7 +29,7 @@ export type CheckAdeBridgeOptions = {
 type Listener = (event: unknown, ...args: unknown[]) => void;
 
 function fail(detail: string): never {
-  throw new AdeError("invalid_option", `The preload bridge does not match @ade-dev/sdk: ${detail}`);
+  throw new AdeError("invalid_option", `The preload bridge does not match @daex-dev/sdk: ${detail}`);
 }
 
 /**

@@ -1,5 +1,5 @@
 /**
- * `@ade-dev/sdk` — a typed Node/Electron-main client that spawns and owns a slim
+ * `@daex-dev/sdk` — a typed Node/Electron-main client that spawns and owns a slim
  * ADE runtime and exposes chat as durable named threads.
  *
  *   const ade = await createAdeChat({ home: app.getPath("userData") + "/ade" });

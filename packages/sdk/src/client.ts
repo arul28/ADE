@@ -37,7 +37,7 @@ import type {
   ThreadResumeOptions,
 } from "./clientOptions.js";
 
-// Re-exported from here because `@ade-dev/sdk` has always published them from
+// Re-exported from here because `@daex-dev/sdk` has always published them from
 // this module; the split is internal and must not move a public name.
 export type {
   CreateAdeChatOptions,

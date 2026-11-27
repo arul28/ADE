@@ -17,7 +17,7 @@ import { pathToFileURL } from "node:url";
  * asserts `LICENSE` appears in the tarball listing. That step needs npm and a
  * few seconds per package, so the unit tests leave it off and CI turns it on.
  *
- * `@ade-dev/sdk` and `@ade-dev/chat-ui` are MIT; ADE itself stays
+ * `@daex-dev/sdk` and `@daex-dev/chat-ui` are MIT; ADE itself stays
  * AGPL-3.0-only, and `RUNTIME-EMBEDDING-EXCEPTION.md` covers an unmodified
  * runtime binary inside a larger work. See `sdk/license.mdx`. This script takes
  * no position on which license is correct. It only enforces that whatever the

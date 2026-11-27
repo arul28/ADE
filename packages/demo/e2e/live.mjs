@@ -1,7 +1,7 @@
 /**
- * The live end-to-end proof: @ade-dev/sdk -> a real ADE runtime -> a real Claude
+ * The live end-to-end proof: @daex-dev/sdk -> a real ADE runtime -> a real Claude
  * turn -> a real MCP tool call against the toy `demodata` server, and back out
- * through the event shapes `@ade-dev/chat-ui` renders.
+ * through the event shapes `@daex-dev/chat-ui` renders.
  *
  * This spends real provider tokens. It is deliberately ONE turn, on the
  * cheapest available Claude model, with a two-sentence prompt. It never retries
@@ -22,7 +22,7 @@
  */
 
 import path from "node:path";
-import { createAdeChat } from "@ade-dev/sdk";
+import { createAdeChat } from "@daex-dev/sdk";
 import { check, eventText, summarize, waitForIdle } from "./harness.mjs";
 import { makeIsolatedHome } from "../lib/isolatedHome.mjs";
 import { readMcpLog, startMcpServer } from "../lib/mcpServer.mjs";

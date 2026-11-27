@@ -1,5 +1,5 @@
 /**
- * `@ade-dev/chat-ui` — embeddable React chat components over `@ade-dev/sdk`.
+ * `@daex-dev/chat-ui` — embeddable React chat components over `@daex-dev/sdk`.
  *
  * Every component is importable on its own; `<AdeChat>` is one opinionated
  * assembly of them, not a required entry point.

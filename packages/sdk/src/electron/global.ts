@@ -1,10 +1,10 @@
 /**
- * `@ade-dev/sdk/electron/global` — the type of `window.ade`.
+ * `@daex-dev/sdk/electron/global` — the type of `window.ade`.
  *
  * Types only. Import it once, for its side effect on the type checker, in any
  * file of a renderer that reads the bridge:
  *
- *   import "@ade-dev/sdk/electron/global";
+ *   import "@daex-dev/sdk/electron/global";
  *   const client = createAdeIpcClient(window.ade);
  *
  * or list it in `tsconfig.json` `compilerOptions.types`. It declares the

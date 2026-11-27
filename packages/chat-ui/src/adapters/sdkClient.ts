@@ -1,10 +1,10 @@
 /**
- * Adapter from an `@ade-dev/sdk` client to the `AdeChatClient` this package renders.
+ * Adapter from an `@daex-dev/sdk` client to the `AdeChatClient` this package renders.
  *
  * WHY THIS EXISTS. The two packages were designed against each other but do not
  * meet structurally, and every difference is deliberate on both sides:
  *
- *   | concern            | `@ade-dev/sdk`                        | `@ade-dev/chat-ui`               |
+ *   | concern            | `@daex-dev/sdk`                        | `@daex-dev/chat-ui`               |
  *   |--------------------|-----------------------------------|------------------------------|
  *   | provider statuses  | `Record<string, …>` keyed by id    | an array of `{ id, … }`      |
  *   | provider fields    | `available` / `requiresConfiguration` | `installed` / `loginCommand` |
@@ -18,13 +18,13 @@
  * understand) and this package is view-shaped on purpose (it renders a state,
  * not a stream). Without this function every embedder writes the same ~150
  * lines of glue, and each one gets the tool-status and token mapping subtly
- * different. It lives here rather than in `@ade-dev/sdk` because it produces THIS
+ * different. It lives here rather than in `@daex-dev/sdk` because it produces THIS
  * package's contract and must stay browser-safe. The SDK is imported for its
  * TYPES only, so it contributes nothing to the bundle and stays an optional
  * peer: an app that proxies its SDK client over IPC or a socket can adapt the
  * proxy just as well as the real object.
  *
- *   import { adaptSdkClient } from "@ade-dev/chat-ui";
+ *   import { adaptSdkClient } from "@daex-dev/chat-ui";
  *
  *   const client = adaptSdkClient(sdkClient, {
  *     defaults: { provider: "claude", model: "anthropic/claude-haiku-5-5" },
@@ -36,7 +36,7 @@ import type {
   AgentChatFileRef,
   ModelCatalogEntry,
   ProviderStatus as SdkProviderStatus,
-} from "@ade-dev/sdk";
+} from "@daex-dev/sdk";
 import type {
   AccountManagement,
   AdeChatClient,
@@ -72,11 +72,11 @@ import { readThreadModelSelection } from "../models/modelSelection";
 /* -------------------------------------------------------------------------- */
 
 /**
- * The `@ade-dev/sdk` surface this adapter drives.
+ * The `@daex-dev/sdk` surface this adapter drives.
  *
  * Every type below is derived from the SDK's own declarations rather than
  * restated, so a rename or a signature change over there is a compile error
- * here instead of a silent mismatch at runtime. `@ade-dev/sdk` is an OPTIONAL peer
+ * here instead of a silent mismatch at runtime. `@daex-dev/sdk` is an OPTIONAL peer
  * and this is a type-only import, so nothing is added to the runtime bundle and
  * a host that never installs the SDK is unaffected.
  *
@@ -91,7 +91,7 @@ export type { SdkProviderStatus };
  *
  * The catalog half is picked from the SDK's own type, so a rename over there is
  * a compile error here. The probe half is restated as OPTIONAL, and that is the
- * whole point: `@ade-dev/sdk` 0.2 always fills those fields (deriving them when
+ * whole point: `@daex-dev/sdk` 0.2 always fills those fields (deriving them when
  * the runtime cannot probe), but a 0.1 client, a WebSocket proxy, or a test
  * double sends a record without them. Requiring them would reject clients that
  * work perfectly well, and this adapter already has an honest answer for their
@@ -140,7 +140,7 @@ export type SdkModelCatalogEntry = Pick<ModelCatalogEntry, "id" | "displayName" 
 /**
  * A thread this adapter can wrap.
  *
- * `setModel` is optional because an older `@ade-dev/sdk` has none — see
+ * `setModel` is optional because an older `@daex-dev/sdk` has none — see
  * `AdeThread.setModel` for why that is reported rather than assumed. `id` and
  * `mcpCapability` are optional because nothing here reads them, and demanding
  * them would reject a proxy that forwards only the chat surface.
@@ -148,7 +148,7 @@ export type SdkModelCatalogEntry = Pick<ModelCatalogEntry, "id" | "displayName" 
 export type SdkLikeThread = Pick<SdkThread, "key" | "send" | "interrupt" | "history" | "on"> &
   Partial<Pick<SdkThread, "id" | "mcpCapability">> & {
     /**
-     * Restated rather than picked: `@ade-dev/sdk` 0.3 resolves it to the
+     * Restated rather than picked: `@daex-dev/sdk` 0.3 resolves it to the
      * selection plus the new capability reports, 0.2 and the Electron bridge to
      * the selection alone. The adapter reads the result only as an optional
      * `ThreadModelSelection`, so every generation fits.
@@ -162,7 +162,7 @@ export type SdkLikeThread = Pick<SdkThread, "key" | "send" | "interrupt" | "hist
      */
     steer(text: string, opts?: { attachments?: SdkFileRef[] }): Promise<void>;
     /**
-     * Paged history (`@ade-dev/sdk` >= 0.3). OPTIONAL; forwarded only when
+     * Paged history (`@daex-dev/sdk` >= 0.3). OPTIONAL; forwarded only when
      * present, so `useAdeThread` can tell a paging client from one that loads
      * the whole window in one `history()` read.
      */
@@ -172,7 +172,7 @@ export type SdkLikeThread = Pick<SdkThread, "key" | "send" | "interrupt" | "hist
       nextBeforeSequence?: number | null;
     }>;
     /**
-     * The resolved model (`@ade-dev/sdk` >= 0.3 `ThreadModelSelection`). Read as a
+     * The resolved model (`@daex-dev/sdk` >= 0.3 `ThreadModelSelection`). Read as a
      * live property, never cached: the SDK updates it after `setModel`.
      */
     readonly model?: {
@@ -182,7 +182,7 @@ export type SdkLikeThread = Pick<SdkThread, "key" | "send" | "interrupt" | "hist
     } | null;
     /**
      * Declared structurally rather than picked from the SDK thread, for the
-     * same reason as the probe fields above: an older `@ade-dev/sdk`, a fake,
+     * same reason as the probe fields above: an older `@daex-dev/sdk`, a fake,
      * or a proxy that forwards only the chat surface has no answer path, and
      * this adapter reports its absence instead of assuming it.
      */
@@ -196,9 +196,9 @@ export type SdkLikeThread = Pick<SdkThread, "key" | "send" | "interrupt" | "hist
       continueOnAlternate?(): Promise<unknown>;
     };
     switchAccount?(instanceId: string): Promise<unknown>;
-    /** `@ade-dev/sdk` >= 0.3 `thread.update`. Forwarded only when present. */
+    /** `@daex-dev/sdk` >= 0.3 `thread.update`. Forwarded only when present. */
     update?(patch: ThreadUpdatePatch): Promise<ThreadUpdateReply>;
-    /** `@ade-dev/sdk` >= 0.4 `thread.retry` / `thread.editLast`. Forwarded only when present. */
+    /** `@daex-dev/sdk` >= 0.4 `thread.retry` / `thread.editLast`. Forwarded only when present. */
     retry?(): Promise<unknown>;
     editLast?(text: string, opts?: { attachments?: SdkFileRef[] }): Promise<unknown>;
   };
@@ -232,7 +232,7 @@ export interface SdkLikeChatClient {
   accounts?: AccountManagement;
   credentials?: CredentialManagement;
   /**
-   * Client events (`@ade-dev/sdk` >= 0.3 `client.on`, and the Electron
+   * Client events (`@daex-dev/sdk` >= 0.3 `client.on`, and the Electron
    * renderer client). OPTIONAL: clients without this surface report neither
    * restarts nor usage-limit updates.
    */
@@ -260,7 +260,7 @@ export type AdaptSdkClientOptions = {
    * permission preset and title all have to come from the host. When the picked
    * model is in the catalog its provider wins over `defaults.provider`.
    *
-   * Over the `@ade-dev/sdk` >= 0.3 Electron bridge, the main process drops every
+   * Over the `@daex-dev/sdk` >= 0.3 Electron bridge, the main process drops every
    * renderer open option except `provider`, `model`, `title` and
    * `reasoningEffort` unless the host registered an `openOptions` hook, so MCP
    * servers, permissions, cwd and instructions set here have no effect there.
@@ -389,7 +389,7 @@ export function providerStatusesFromSdk(
       // from `authenticated`: that would render an unauthenticated provider as
       // "not installed" and send the user to the wrong copyable command.
       //
-      // The same derivation exists in `@ade-dev/sdk` (`src/providers.ts`,
+      // The same derivation exists in `@daex-dev/sdk` (`src/providers.ts`,
       // `deriveProviderStatus`). This copy is load-bearing rather than
       // redundant: it serves 0.1 clients, WebSocket proxies and test doubles
       // that send a record with neither `installed` nor `source`, which the SDK
@@ -466,7 +466,7 @@ function toSendText(input: SendInput | string): string {
  * ONE RULE, THREE COPIES. `IMAGE_EXTENSIONS`, `isImageAttachmentPath` and
  * `inferAttachmentType` below are a word-for-word copy of the runtime's own
  * `inferAttachmentType` rule in `apps/desktop/src/shared/types/chat.ts`, and
- * `@ade-dev/sdk` carries the same copy in `packages/sdk/src/attachments.ts`.
+ * `@daex-dev/sdk` carries the same copy in `packages/sdk/src/attachments.ts`.
  * This package cannot import either (the SDK is an optional peer and this runs
  * in a browser), so a change to the rule is made in all three places or none.
  */
@@ -725,7 +725,7 @@ class AdaptedThread implements AdeThread {
   }
 }
 
-/** Wrap an `@ade-dev/sdk` client (or a proxy of one) as an `AdeChatClient`. */
+/** Wrap an `@daex-dev/sdk` client (or a proxy of one) as an `AdeChatClient`. */
 export function adaptSdkClient(
   sdk: SdkLikeChatClient,
   options: AdaptSdkClientOptions = {},

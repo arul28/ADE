@@ -7,7 +7,7 @@
  * discovering the answer is no.
  */
 
-import { createAdeChat } from "@ade-dev/sdk";
+import { createAdeChat } from "@daex-dev/sdk";
 import { check, summarize } from "./harness.mjs";
 import { makeIsolatedHome } from "../lib/isolatedHome.mjs";
 import { startMcpServer } from "../lib/mcpServer.mjs";

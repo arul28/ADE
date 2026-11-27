@@ -24,7 +24,7 @@ import {
   createTheme,
   type AdeChatClient,
   type ActivityLabelConfig,
-} from "@ade-dev/chat-ui";
+} from "@daex-dev/chat-ui";
 
 import { createBridgeClient, type AppConfig } from "./bridgeClient";
 
@@ -95,7 +95,7 @@ export function App() {
   }, [connectionEpoch]);
 
   // The adapter is what turns the SDK's client surface — here reached over a
-  // WebSocket — into the shape `@ade-dev/chat-ui` renders. `defaults` carries the
+  // WebSocket — into the shape `@daex-dev/chat-ui` renders. `defaults` carries the
   // create-time arguments the chat components have no vocabulary for: which
   // provider, which MCP servers, which permission preset.
   const client = useMemo<AdeChatClient | null>(() => {

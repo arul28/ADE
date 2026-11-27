@@ -214,7 +214,7 @@ function renderApi(buckets) {
   const lines = [
     "---",
     'title: "API reference"',
-    'description: "Every function, error, and constant exported by @ade-dev/sdk — generated from the published TypeScript declarations."',
+    'description: "Every function, error, and constant exported by @daex-dev/sdk — generated from the published TypeScript declarations."',
     'icon: "code"',
     "---",
     "",
@@ -240,7 +240,7 @@ function renderTypes(buckets) {
   const lines = [
     "---",
     'title: "Types"',
-    'description: "Every type and interface exported by @ade-dev/sdk — generated from the published TypeScript declarations."',
+    'description: "Every type and interface exported by @daex-dev/sdk — generated from the published TypeScript declarations."',
     'icon: "shapes"',
     "---",
     "",

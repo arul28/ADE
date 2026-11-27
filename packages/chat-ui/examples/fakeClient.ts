@@ -2,7 +2,7 @@
  * A fully typed in-memory `AdeChatClient`.
  *
  * Used by `examples/basic.tsx` and by the package's tests, so the same stub
- * proves the components and documents the contract `@ade-dev/sdk` must satisfy.
+ * proves the components and documents the contract `@daex-dev/sdk` must satisfy.
  * Nothing here talks to a network or a process.
  */
 

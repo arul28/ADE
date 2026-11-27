@@ -1,12 +1,12 @@
 /**
- * `@ade-dev/sdk/electron/renderer` — the renderer half of the Electron bridge.
+ * `@daex-dev/sdk/electron/renderer` — the renderer half of the Electron bridge.
  *
  * Turns `window.ade` (what the preload exposed) back into an object shaped like
  * an SDK client, so it drops straight into `adaptSdkClient` with no host glue
  * and no `as any`:
  *
- *   import { createAdeIpcClient } from "@ade-dev/sdk/electron/renderer";
- *   import { adaptSdkClient, AdeChat } from "@ade-dev/chat-ui";
+ *   import { createAdeIpcClient } from "@daex-dev/sdk/electron/renderer";
+ *   import { adaptSdkClient, AdeChat } from "@daex-dev/chat-ui";
  *
  *   const sdkLike = createAdeIpcClient(window.ade);
  *   const client = adaptSdkClient(sdkLike, { providerFilter: ["claude", "codex"] });
@@ -90,7 +90,7 @@ const STATUS = new Set<string>(STATUS_EVENT_TYPES);
  * A thread handle over IPC.
  *
  * Every member is typed with the SDK's own type, not a loosened copy, so this
- * interface satisfies `SdkLikeThread` from `@ade-dev/chat-ui` structurally and
+ * interface satisfies `SdkLikeThread` from `@daex-dev/chat-ui` structurally and
  * `adaptSdkClient` takes it with no cast. The capability reports, `title` and
  * `model` are snapshots taken at open and refreshed by this handle's own
  * `setModel` and `update` calls; a change made by another renderer or by the
@@ -152,7 +152,7 @@ export interface AdeIpcThread {
   on(channel: ThreadEventChannel, cb: (envelope: AgentChatEventEnvelope) => void): Unsubscribe;
 }
 
-/** A client over IPC. Satisfies `SdkLikeChatClient` from `@ade-dev/chat-ui`. */
+/** A client over IPC. Satisfies `SdkLikeChatClient` from `@daex-dev/chat-ui`. */
 export interface AdeIpcClient {
   providers: {
     status(): Promise<Record<string, ProviderStatus>>;
@@ -719,7 +719,7 @@ export {
 /**
  * The same `AdeError` class the renderer half throws.
  *
- * Import it from here rather than from `@ade-dev/sdk` if you want `instanceof`
+ * Import it from here rather than from `@daex-dev/sdk` if you want `instanceof`
  * to hold: the subpaths are separate bundles and the root entry is Node-only,
  * so it does not belong in a renderer at all. `error.code` is the stable check
  * and survives regardless.

@@ -1,7 +1,7 @@
 /** The renderer's SDK remote client, plus DataDesk-only config and reconnect state. */
 
-import { createAdeRemoteClient, type AdeRemoteClient } from "@ade-dev/sdk/server";
-import type { SdkLikeChatClient, SdkProviderStatus, Unsubscribe } from "@ade-dev/chat-ui";
+import { createAdeRemoteClient, type AdeRemoteClient } from "@daex-dev/sdk/server";
+import type { SdkLikeChatClient, SdkProviderStatus, Unsubscribe } from "@daex-dev/chat-ui";
 
 export type AppConfig = {
   mcpUrl: string;

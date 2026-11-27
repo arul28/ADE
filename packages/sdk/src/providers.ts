@@ -141,7 +141,7 @@ export function deriveProviderStatus(
       // exists on disk", which is why `source: "derived"` travels with it and
       // why a UI should say "not detected" rather than "not installed".
       //
-      // `@ade-dev/chat-ui` mirrors this rule in `src/adapters/sdkClient.ts`
+      // `@daex-dev/chat-ui` mirrors this rule in `src/adapters/sdkClient.ts`
       // because it takes this package only as an optional peer and must derive
       // the same answer for a client that is not this SDK. Keep both in step.
       installed: models.length > 0,

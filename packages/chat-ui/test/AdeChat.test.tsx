@@ -13,7 +13,7 @@ import type {
 
 /**
  * Regression cover for a defect found by running `<AdeChat>` against a real
- * `@ade-dev/sdk` client for the first time: with neither `modelId` nor
+ * `@daex-dev/sdk` client for the first time: with neither `modelId` nor
  * `defaultModelId`, the component opened the thread with no model at all. The
  * fake client used by the other tests accepted that; the SDK rejects it, and
  * the user's first sight of the product was a developer-facing error.

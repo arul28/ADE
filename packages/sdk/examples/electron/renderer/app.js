@@ -1,6 +1,6 @@
 /**
  * The whole renderer. No React, no build step — the point is the bridge, not
- * the view. `@ade-dev/chat-ui` drops in here unchanged: `adaptSdkClient(client)`
+ * the view. `@daex-dev/chat-ui` drops in here unchanged: `adaptSdkClient(client)`
  * accepts this exact object, because `createAdeIpcClient` returns the shape it
  * expects with no cast.
  */

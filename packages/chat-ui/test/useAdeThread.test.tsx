@@ -18,7 +18,7 @@ import type {
  *  1. The merged transcript is ORDERED, by `sequence` then `timestamp`. History
  *     and the live buffer are concatenated, not interleaved, so without a sort
  *     an envelope that arrived live during `history()` renders after rows that
- *     came before it. `@ade-dev/sdk` answers the same question the same way in
+ *     came before it. `@daex-dev/sdk` answers the same question the same way in
  *     `compareEnvelopes`; leaving the two sides with different answers is what
  *     this covers.
  *  2. Requests the runtime is still blocked on reach the rows as REQUESTS, not

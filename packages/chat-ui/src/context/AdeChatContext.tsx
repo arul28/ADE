@@ -71,7 +71,7 @@ export function useAdeChatClient(explicit?: AdeChatClient): AdeChatClient {
   const resolved = explicit ?? client;
   if (!resolved) {
     throw new Error(
-      "@ade-dev/chat-ui: no AdeChatClient. Pass `client` or wrap the tree in <AdeChatProvider>.",
+      "@daex-dev/chat-ui: no AdeChatClient. Pass `client` or wrap the tree in <AdeChatProvider>.",
     );
   }
   return resolved;
@@ -722,7 +722,7 @@ function isHistoryInvalidation(envelope: AgentChatEventEnvelope): boolean {
 /**
  * The de-duplication key for history/live overlap.
  *
- * CANONICAL DEFINITION: `envelopeDedupeKey` in `@ade-dev/sdk`
+ * CANONICAL DEFINITION: `envelopeDedupeKey` in `@daex-dev/sdk`
  * (`src/electron/protocol.ts`). This is a deliberate byte-identical mirror,
  * because that package is an OPTIONAL peer of this one and chat-ui must work
  * for a WebSocket proxy or a test double that has no SDK at all. The SDK's copy

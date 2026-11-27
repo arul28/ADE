@@ -1,4 +1,4 @@
-# @ade-dev/sdk
+# @daex-dev/sdk
 
 Typed Node / Electron-main client that spawns a slim ADE runtime as a sidecar
 and exposes chat as durable named threads.
@@ -12,7 +12,7 @@ and exposes chat as durable named threads.
 | [MCP servers](https://ade-app.dev/docs/sdk/mcp) | Injected tools, credentials that change, resource links, and the strict-mode honesty table |
 | [Permissions](https://ade-app.dev/docs/sdk/permissions) | The policy object, per-provider enforcement, answering approvals |
 | [Accounts](https://ade-app.dev/docs/sdk/accounts) | Isolated sign-in, provider accounts, stored credentials, presets and usage limits |
-| [Chat UI](https://ade-app.dev/docs/sdk/chat-ui) | `@ade-dev/chat-ui`, theming, approval cards, provider cards |
+| [Chat UI](https://ade-app.dev/docs/sdk/chat-ui) | `@daex-dev/chat-ui`, theming, approval cards, provider cards |
 | [Electron](https://ade-app.dev/docs/sdk/electron) | The main / preload / renderer bridge under `sandbox: true` |
 | [WebSocket server](https://ade-app.dev/docs/sdk/server) | Authorized server bridge and browser remote client |
 | [Testing](https://ade-app.dev/docs/sdk/testing) | Mock clients and transcript replay without a runtime or provider tokens |
@@ -22,7 +22,7 @@ and exposes chat as durable named threads.
 | [License](https://ade-app.dev/docs/sdk/license) | What each artifact is licensed under |
 
 ```bash
-npm install @ade-dev/sdk
+npm install @daex-dev/sdk
 ```
 
 Requires Node 22.13 or newer. The sidecar is a guest: isolated `home`, sync off, no
@@ -41,7 +41,7 @@ connects, logs one warning, and degrades feature by feature. Pass
 ## Quickstart
 
 ```ts
-import { createAdeChat } from "@ade-dev/sdk";
+import { createAdeChat } from "@daex-dev/sdk";
 
 const ade = await createAdeChat({ home: "./.ade-embed" });
 const thread = await ade.threads.open("support", {
@@ -324,15 +324,15 @@ const ade = await createAdeChat({
 });
 ```
 
-Do not write the bridge yourself. `@ade-dev/sdk/electron`,
-`@ade-dev/sdk/electron/preload` and `@ade-dev/sdk/electron/renderer` ship one
+Do not write the bridge yourself. `@daex-dev/sdk/electron`,
+`@daex-dev/sdk/electron/preload` and `@daex-dev/sdk/electron/renderer` ship one
 function per process, with listener teardown on reload and the history-and-live
 ordering rule already in code. None of the three depends on `electron`.
-`@ade-dev/sdk/electron/global` types `window.ade`. For a `sandbox: true`
+`@daex-dev/sdk/electron/global` types `window.ade`. For a `sandbox: true`
 preload, point `webPreferences.preload` at
-`require.resolve("@ade-dev/sdk/electron/preload-auto")` (default key and
+`require.resolve("@daex-dev/sdk/electron/preload-auto")` (default key and
 prefix), copy the ten-line preload from the docs, or bundle `exposeAdeBridge`
-into one file. `@ade-dev/sdk/electron/preload` alone only exports the function
+into one file. `@daex-dev/sdk/electron/preload` alone only exports the function
 and exposes nothing. See
 [Electron](https://ade-app.dev/docs/sdk/electron).
 

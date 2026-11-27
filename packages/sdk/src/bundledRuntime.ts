@@ -52,7 +52,7 @@ export type ResolveBundledRuntimeOptions = {
   /**
    * Directory or file to resolve the package from. Defaults to this module's
    * own location, which is what an embedder wants: the runtime package sits
-   * beside `@ade-dev/sdk` in the same `node_modules` tree.
+   * beside `@daex-dev/sdk` in the same `node_modules` tree.
    */
   resolveFrom?: string;
   platform?: NodeJS.Platform;

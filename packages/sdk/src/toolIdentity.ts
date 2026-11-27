@@ -35,7 +35,7 @@ export type ToolIdentity = {
  * split into an invented server: a half-formed MCP name is not evidence of
  * which server owns it.
  *
- * `@ade-dev/chat-ui` keeps a copy of this rule for its tool chips (it takes
+ * `@daex-dev/chat-ui` keeps a copy of this rule for its tool chips (it takes
  * this package only as an optional peer); the two must agree.
  */
 export function parseToolIdentity(name: string): ToolIdentity {

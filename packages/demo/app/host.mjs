@@ -1,7 +1,7 @@
 /** DataDesk host process. The SDK owns the chat WebSocket protocol. */
 
-import { AdeError, createAdeChat } from "@ade-dev/sdk";
-import { createAdeServer } from "@ade-dev/sdk/server";
+import { AdeError, createAdeChat } from "@daex-dev/sdk";
+import { createAdeServer } from "@daex-dev/sdk/server";
 import { WebSocketServer } from "ws";
 import { pickCheapestModel } from "../lib/pickModel.mjs";
 

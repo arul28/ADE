@@ -1,8 +1,8 @@
 {
-  "name": "ade-sdk-electron-example",
+  "name": "daex-sdk-electron-example",
   "version": "0.0.0",
   "private": true,
-  "description": "Minimal hardened Electron app on @ade-dev/sdk/electron. Not installed by CI.",
+  "description": "Minimal hardened Electron app on @daex-dev/sdk/electron. Not installed by CI.",
   "license": "AGPL-3.0-only",
   "type": "module",
   "main": "main.mjs",
@@ -10,7 +10,7 @@
     "start": "electron ."
   },
   "dependencies": {
-    "@ade-dev/sdk": "file:../.."
+    "@daex-dev/sdk": "file:../.."
   },
   "devDependencies": {
     "electron": "^33.3.1"

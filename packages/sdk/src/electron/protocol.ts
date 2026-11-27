@@ -332,7 +332,7 @@ export const ADE_IPC_THREAD_KEY_METHODS: ReadonlySet<AdeIpcMethod> = new Set<Ade
 /* -------------------------------------------------------------------------- */
 
 /**
- * The de-duplication key `@ade-dev/chat-ui` documents.
+ * The de-duplication key `@daex-dev/chat-ui` documents.
  *
  * History and the live stream overlap by design — an envelope emitted while
  * `history()` is in flight legitimately appears in both — so both sides key on
@@ -354,7 +354,7 @@ export function envelopeDedupeKey(
    * deltas inside one array do not.
    *
    * BRIDGE-LOCAL. It means nothing outside the array it was counted in, which
-   * is why `@ade-dev/chat-ui`'s mirror of this key does not carry it.
+   * is why `@daex-dev/chat-ui`'s mirror of this key does not carry it.
    */
   occurrence = 0,
 ): string {
@@ -378,7 +378,7 @@ function keyEnvelopes(envelopes: readonly AgentChatEventEnvelope[]): string[] {
 /**
  * Envelope order: numbered envelopes first, then `sequence`, then `timestamp`.
  *
- * Mirrors `sortEnvelopes` in `@ade-dev/chat-ui`. Provider clocks are not
+ * Mirrors `sortEnvelopes` in `@daex-dev/chat-ui`. Provider clocks are not
  * trusted, which is why `sequence` wins whenever an envelope carries one. Two
  * envelopes with neither compare equal and a stable sort leaves them in
  * arrival order.

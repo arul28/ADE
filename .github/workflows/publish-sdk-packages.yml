@@ -1,4 +1,4 @@
-# Publish `@ade-dev/sdk` then `@ade-dev/chat-ui`.
+# Publish `@daex-dev/sdk` then `@daex-dev/chat-ui`.
 #
 # Desktop/runtime releases stay on `v*` (see release.yml). These packages use
 # `ade-sdk-v*` so a desktop tag cannot publish an npm version by accident.
@@ -23,9 +23,17 @@
 #    Then set repo variable `SDK_TRUSTED_PUBLISHING=true` to tell this workflow
 #    the trusted publisher is live, and delete the NPM_TOKEN secret.
 # 2. `NPM_TOKEN` secret — a GRANULAR access token limited to the two
-#    `@ade-dev` packages, with an expiry. Not a classic token, and never a
+#    `@daex-dev` packages, with an expiry. Not a classic token, and never a
 #    reason to turn off account 2FA: granular tokens are the supported way to
 #    publish from CI with 2FA on.
+#
+# SCOPE MOVE. These packages were `@ade-dev/sdk` and `@ade-dev/chat-ui` up to
+# 0.7.1 and are `@daex-dev/*` from then on. The first `@daex-dev` version of
+# each package does not exist yet, so it cannot have a trusted publisher:
+# it ships by mode 2 with a token that covers the `@daex-dev` scope, and the
+# plan step below refuses OIDC for a package npm has never seen. The owner's
+# steps (new org, token, trusted publisher, deprecating the old packages) are
+# in packages/MIGRATING-TO-DAEX-DEV.md.
 #
 # With neither configured, runs end early with a notice instead of failing.
 # Both modes produce provenance; OIDC needs `id-token: write` on a
@@ -33,7 +41,7 @@
 # >= 11.5.1 — hence the explicit npm upgrade step below, so the bar holds
 # whatever npm the runner's Node bundles.
 
-name: Publish ADE SDK packages
+name: Publish Daex SDK packages
 
 on:
   push:
@@ -125,8 +133,8 @@ jobs:
           VER="${{ steps.versions.outputs.version }}"
           AUTO="false"
           if [ "${{ github.ref_type }}" = "branch" ]; then AUTO="true"; fi
-          for PKG in "@ade-dev/sdk" "@ade-dev/chat-ui"; do
-            KEY=$( [ "$PKG" = "@ade-dev/sdk" ] && echo sdk || echo ui )
+          for PKG in "@daex-dev/sdk" "@daex-dev/chat-ui"; do
+            KEY=$( [ "$PKG" = "@daex-dev/sdk" ] && echo sdk || echo ui )
             if npm view "$PKG@$VER" version >/dev/null 2>&1; then
               if [ "$AUTO" = "true" ]; then
                 echo "$PKG@$VER already published; skipping." >> "$GITHUB_STEP_SUMMARY"
@@ -136,11 +144,15 @@ jobs:
                 exit 1
               fi
             else
+              if [ "${{ steps.token.outputs.mode }}" = "oidc" ] && ! npm view "$PKG" name >/dev/null 2>&1; then
+                echo "$PKG has never been published, so it has no trusted publisher yet. Publish its first version with an NPM_TOKEN that covers @daex-dev (unset SDK_TRUSTED_PUBLISHING); see packages/MIGRATING-TO-DAEX-DEV.md."
+                exit 1
+              fi
               echo "$KEY=publish" >> "$GITHUB_OUTPUT"
             fi
           done
 
-      - name: Install and build @ade-dev/sdk
+      - name: Install and build @daex-dev/sdk
         if: steps.plan.outputs.sdk == 'publish'
         run: |
           cd packages/sdk
@@ -149,7 +161,7 @@ jobs:
           npm test
           npm run build
 
-      - name: Publish @ade-dev/sdk
+      - name: Publish @daex-dev/sdk
         if: steps.plan.outputs.sdk == 'publish'
         working-directory: packages/sdk
         # In OIDC mode NODE_AUTH_TOKEN is deliberately empty: npm then mints a
@@ -159,7 +171,7 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ steps.token.outputs.mode == 'token' && secrets.NPM_TOKEN || '' }}
 
-      - name: Install and build @ade-dev/chat-ui
+      - name: Install and build @daex-dev/chat-ui
         if: steps.plan.outputs.ui == 'publish'
         run: |
           cd packages/chat-ui
@@ -168,7 +180,7 @@ jobs:
           npm test
           npm run build
 
-      - name: Publish @ade-dev/chat-ui
+      - name: Publish @daex-dev/chat-ui
         if: steps.plan.outputs.ui == 'publish'
         working-directory: packages/chat-ui
         run: npm publish --access public --provenance

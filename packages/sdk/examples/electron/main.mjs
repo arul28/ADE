@@ -12,8 +12,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { app, BrowserWindow, ipcMain } from "electron";
-import { createAdeChat } from "@ade-dev/sdk";
-import { registerAdeIpc } from "@ade-dev/sdk/electron";
+import { createAdeChat } from "@daex-dev/sdk";
+import { registerAdeIpc } from "@daex-dev/sdk/electron";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -22,16 +22,16 @@ const require = createRequire(import.meta.url);
  * Which preload to load.
  *
  * By default this points straight at the SDK's self-running preload,
- * `@ade-dev/sdk/electron/preload-auto`: one file whose only `require` is
+ * `@daex-dev/sdk/electron/preload-auto`: one file whose only `require` is
  * `electron`, the only thing a sandboxed preload can load. (Not
- * `@ade-dev/sdk/electron/preload`, which exports `exposeAdeBridge` without
+ * `@daex-dev/sdk/electron/preload`, which exports `exposeAdeBridge` without
  * calling it, so `window.ade` would stay undefined.) Set `ADE_EXAMPLE_PRELOAD=local` to load
  * `preload.cjs` next to this file instead: that is the shape a host writes when
  * it wants its own channels alongside ADE's.
  */
 function resolvePreload() {
   if (process.env.ADE_EXAMPLE_PRELOAD === "local") return path.join(here, "preload.cjs");
-  return require.resolve("@ade-dev/sdk/electron/preload-auto");
+  return require.resolve("@daex-dev/sdk/electron/preload-auto");
 }
 
 let disposeIpc = null;

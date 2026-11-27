@@ -3,7 +3,7 @@
  *
  * A support conversation about an embedder's chat starts with "which SDK is
  * running?", and the answer has to survive bundling: an app that bundles this
- * package into its own output has no `node_modules/@ade-dev/sdk/package.json`
+ * package into its own output has no `node_modules/@daex-dev/sdk/package.json`
  * to read, and reading one at runtime differs between the ESM and CJS builds.
  * So the value is substituted by tsup's `define` (see tsup.config.ts) and the
  * literal below is only what a source-level consumer — vitest, `tsx`, a

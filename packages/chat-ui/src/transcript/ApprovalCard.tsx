@@ -73,9 +73,9 @@ const SETTLED_COPY: Record<Exclude<ApprovalRowState, "pending">, string> = {
  */
 /*
  * THE ONLY DECLARATION OF THIS PARTITION IN THIS PACKAGE, and a deliberate
- * mirror of `isApprovalShaped` in `@ade-dev/sdk` (`src/approvals.ts`), which is
+ * mirror of `isApprovalShaped` in `@daex-dev/sdk` (`src/approvals.ts`), which is
  * canonical. It is written here as the complement rather than imported because
- * `@ade-dev/sdk` is an OPTIONAL peer of this package: chat-ui must render for a
+ * `@daex-dev/sdk` is an OPTIONAL peer of this package: chat-ui must render for a
  * WebSocket proxy or a test double that has no SDK at all. Update both when
  * `PendingInputKind` gains a member.
  */

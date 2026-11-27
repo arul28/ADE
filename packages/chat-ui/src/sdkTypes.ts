@@ -1,5 +1,5 @@
 /**
- * Public SDK surface that `@ade-dev/chat-ui` renders against.
+ * Public SDK surface that `@daex-dev/chat-ui` renders against.
  *
  * PROVENANCE: the event shapes below are a hand-trimmed subset of
  * `apps/desktop/src/shared/types/chat.ts` (`AgentChatEvent`,
@@ -14,7 +14,7 @@
  * permission, and the turn stays blocked until someone answers.
  *
  * This file is a *copy*, not an import: the package is standalone and takes
- * `@ade-dev/sdk` only as an optional peer. `@ade-dev/sdk` is being built in parallel to
+ * `@daex-dev/sdk` only as an optional peer. `@daex-dev/sdk` is being built in parallel to
  * exactly this contract; the assumptions it must honour are listed in
  * README.md under "SDK contract assumptions".
  */
@@ -89,7 +89,7 @@ export type ModelDescriptor = {
  * id forward to its successor, so `modelId` here may not be in the catalog the
  * picker shows. `displayName` is the runtime's name for it, and a UI should
  * prefer it over printing a raw id. Mirrors the type of the same name in
- * `@ade-dev/sdk` >= 0.3; every field past `modelId` is optional so an older
+ * `@daex-dev/sdk` >= 0.3; every field past `modelId` is optional so an older
  * SDK or a proxy that forwards less still fits.
  */
 export type ThreadModelSelection = {
@@ -294,7 +294,7 @@ export type AccountInfo = {
   usage?: AccountUsage;
 };
 
-/** A provider sign-in's status, as `@ade-dev/sdk`'s `SignInStatus` reports it. */
+/** A provider sign-in's status, as `@daex-dev/sdk`'s `SignInStatus` reports it. */
 export type SignInUpdate = {
   loginId?: string;
   state: "running" | "verifying" | "succeeded" | "failed" | "cancelled" | "expired" | (string & {});
@@ -464,7 +464,7 @@ export type ChatEventStatus = {
   message?: string;
   /**
    * Set only on the SDK's own `"failed"` status for a runtime that went away
-   * mid-turn (`@ade-dev/sdk` >= 0.3); the runtime never sends it. It ends the
+   * mid-turn (`@daex-dev/sdk` >= 0.3); the runtime never sends it. It ends the
    * turn like any `"failed"`.
    */
   synthetic?: true;
@@ -519,12 +519,12 @@ export type RenderedChatEvent =
 /**
  * Any other event kind, carried but not drawn.
  *
- * ADE's own event union has ~60 members and grows every release, and `@ade-dev/sdk`
+ * ADE's own event union has ~60 members and grows every release, and `@daex-dev/sdk`
  * models it as exactly this open record. Closing it here would make an SDK
  * envelope unassignable to this one — a compile error for every embedder — and
  * would invite a runtime cast at the boundary. Open instead: the renderer
  * narrows with `RENDERED_TYPES` and ignores what it does not recognise, so a
- * newer runtime adds event kinds without breaking an older `@ade-dev/chat-ui`.
+ * newer runtime adds event kinds without breaking an older `@daex-dev/chat-ui`.
  */
 export type UnknownChatEvent = { type: string; [key: string]: unknown };
 
@@ -584,7 +584,7 @@ export type ThreadUpdateReply = { model?: unknown } | null | void;
 /** The runtime lifecycle events a client can report (`AdeChatClient.on`). */
 export type AdeChatClientEventMap = {
   /**
-   * One automatic runtime restart attempt finished (`@ade-dev/sdk`
+   * One automatic runtime restart attempt finished (`@daex-dev/sdk`
    * `autoRestart`). `ok: true` means the runtime is back and open threads were
    * reattached. `attempt` counts from 1 per outage.
    */
@@ -599,7 +599,7 @@ export interface AdeThread {
    * Deliver a message into an already-running turn.
    *
    * Attachments on `input` are forwarded, and an attachment-only steer (empty
-   * text) is valid. Both need `@ade-dev/sdk` >= 0.3: an older SDK thread's
+   * text) is valid. Both need `@daex-dev/sdk` >= 0.3: an older SDK thread's
    * `steer(text)` ignores the attachments, and refuses an empty text.
    */
   steer(input: SendInput | string): Promise<void>;
@@ -661,15 +661,15 @@ export interface AdeThread {
   readonly model?: ThreadModelSelection | null;
   /**
    * Change the thread's title, reasoning effort or fast mode
-   * (`@ade-dev/sdk` >= 0.3 `thread.update`).
+   * (`@daex-dev/sdk` >= 0.3 `thread.update`).
    *
    * OPTIONAL for the same reason as `setModel`. `ThreadState.canUpdate`
    * reports its presence. A reasoning or fast-mode change is refused while a
-   * turn runs (`AdeError` code `turn_in_flight` on `@ade-dev/sdk` >= 0.4).
+   * turn runs (`AdeError` code `turn_in_flight` on `@daex-dev/sdk` >= 0.4).
    */
   update?(patch: ThreadUpdatePatch): Promise<ThreadUpdateReply>;
   /**
-   * Run the last user message again (`@ade-dev/sdk` >= 0.4 `thread.retry`).
+   * Run the last user message again (`@daex-dev/sdk` >= 0.4 `thread.retry`).
    * The runtime rolls the provider conversation back to before that message,
    * removes the old turn from the transcript, and sends the message again.
    * Files the old turn changed are not restored.

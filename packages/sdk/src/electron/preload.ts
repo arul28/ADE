@@ -1,5 +1,5 @@
 /**
- * `@ade-dev/sdk/electron/preload` — the preload half of the Electron bridge.
+ * `@daex-dev/sdk/electron/preload` — the preload half of the Electron bridge.
  *
  * THIS FILE MUST BUNDLE TO ONE SELF-CONTAINED FILE. A preload that runs under
  * `sandbox: true` has no module resolution: it cannot `require` a file path and

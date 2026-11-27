@@ -1,15 +1,15 @@
 /**
- * `@ade-dev/sdk/electron/preload-auto` — a preload that exposes the bridge by
+ * `@daex-dev/sdk/electron/preload-auto` — a preload that exposes the bridge by
  * itself, for `webPreferences.preload`.
  *
- * `@ade-dev/sdk/electron/preload` only EXPORTS `exposeAdeBridge`. Pointing
+ * `@daex-dev/sdk/electron/preload` only EXPORTS `exposeAdeBridge`. Pointing
  * `webPreferences.preload` at it loads the function and never calls it, so
  * `window.ade` stays undefined and every renderer call waits for a bridge that
  * is not there. This entry is that same function, called once with the default
  * key (`"ade"`) and channel prefix (`"ade"`):
  *
  *   webPreferences: {
- *     preload: require.resolve("@ade-dev/sdk/electron/preload-auto"),
+ *     preload: require.resolve("@daex-dev/sdk/electron/preload-auto"),
  *     sandbox: true,
  *   }
  *

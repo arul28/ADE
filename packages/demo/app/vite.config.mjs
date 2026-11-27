@@ -14,7 +14,7 @@ export default defineConfig({
     // published install would be — this demo is proof of the shipped artifact,
     // not of the source tree.
     alias: {
-      "@ade-dev/chat-ui": path.resolve(appRoot, "../node_modules/@ade-dev/chat-ui/dist/index.js"),
+      "@daex-dev/chat-ui": path.resolve(appRoot, "../node_modules/@daex-dev/chat-ui/dist/index.js"),
     },
     dedupe: ["react", "react-dom"],
   },

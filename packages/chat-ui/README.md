@@ -1,6 +1,6 @@
-# @ade-dev/chat-ui
+# @daex-dev/chat-ui
 
-Embeddable React chat components over `@ade-dev/sdk`.
+Embeddable React chat components over `@daex-dev/sdk`.
 
 **Docs:** [Chat UI](https://ade-app.dev/docs/sdk/chat-ui) · [ADE SDK](https://ade-app.dev/docs/sdk/overview)
 
@@ -9,17 +9,17 @@ developers. There are no lanes, projects, repos, or worktrees in any prop or
 any string it can display. Tool activity is renamed through a label map, so a
 customer sees "Searching your invoices…" where the agent ran `server.tool`.
 
-- Zero runtime dependencies. React and React DOM are peers; `@ade-dev/sdk` is an
+- Zero runtime dependencies. React and React DOM are peers; `@daex-dev/sdk` is an
   optional peer used for types only.
 - Theming is CSS custom properties only — no Tailwind, no class overrides.
 - Every component is importable standalone; `<AdeChat>` is one assembly of them.
 
 ```bash
-npm install @ade-dev/chat-ui
+npm install @daex-dev/chat-ui
 ```
 
 ```tsx
-import { AdeChat, createTheme } from "@ade-dev/chat-ui";
+import { AdeChat, createTheme } from "@daex-dev/chat-ui";
 
 <AdeChat
   client={client}
@@ -336,8 +336,8 @@ through; derived tints are only computed for hex inputs.
 
 `src/sdkTypes.ts` is the *view* contract this package renders against — a copy,
 not an import, so the package is standalone and any client shape can satisfy it.
-`src/adapters/sdkClient.ts` bridges a real `@ade-dev/sdk` client onto it and does
-import that package's types (type-only, and `@ade-dev/sdk` is an optional peer, so
+`src/adapters/sdkClient.ts` bridges a real `@daex-dev/sdk` client onto it and does
+import that package's types (type-only, and `@daex-dev/sdk` is an optional peer, so
 nothing reaches the bundle).
 
 The list below is the adapter's **output** contract: what every component here
@@ -345,7 +345,7 @@ may assume about the client it is handed. Write your own client — a WebSocket
 proxy, an Electron IPC bridge, a fake — and these are the rules to meet.
 
 One such client is checked here rather than described: `test/electronBridge.test.tsx`
-assigns `createAdeIpcClient()` from `@ade-dev/sdk/electron/renderer` to
+assigns `createAdeIpcClient()` from `@daex-dev/sdk/electron/renderer` to
 `SdkLikeChatClient` with no cast, then drives a full turn through
 `registerAdeIpc` and `<AdeChat>`. A drift between that bridge and this contract
 is a typecheck failure, not a runtime surprise.
@@ -370,7 +370,7 @@ is a typecheck failure, not a runtime surprise.
    `"event"` subscriber — the hook de-duplicates the overlap on
    `sessionId:sequence:timestamp:type` and then re-sorts, so a live envelope
    that beat the page still renders in its own place. The canonical definition
-   of that key is `envelopeDedupeKey` in `@ade-dev/sdk`
+   of that key is `envelopeDedupeKey` in `@daex-dev/sdk`
    (`src/electron/protocol.ts`); this package mirrors it because the SDK is an
    optional peer.
 6. **Streaming text** may be sent either as growing snapshots or as deltas; both
@@ -396,7 +396,7 @@ is a typecheck failure, not a runtime surprise.
     throw. `pendingApprovals()` is read once on open, so a reload restores the
     cards a lost live stream would otherwise have taken with it.
 
-## What `@ade-dev/sdk` actually returns
+## What `@daex-dev/sdk` actually returns
 
 The adapter exists because the two shapes do not meet. The differences that
 catch people writing their own proxy:

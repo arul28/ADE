@@ -1,8 +1,8 @@
 /**
- * `@ade-dev/sdk/electron` — the main-process half of the Electron bridge.
+ * `@daex-dev/sdk/electron` — the main-process half of the Electron bridge.
  *
- * `@ade-dev/sdk` spawns a child process and speaks over a Unix socket, so it
- * lives in the main process. `@ade-dev/chat-ui` is React and lives in the
+ * `@daex-dev/sdk` spawns a child process and speaks over a Unix socket, so it
+ * lives in the main process. `@daex-dev/chat-ui` is React and lives in the
  * renderer. They cannot share an object, and the glue between them is not
  * application logic — it is object-lifetime bookkeeping across a process
  * boundary, and it is the same in every app.
@@ -252,7 +252,7 @@ function nextSubscriptionId(prefix: string): string {
  * Read an `AdeError` code without `instanceof`.
  *
  * The Electron entries are separate bundles, so `AdeError` from
- * `@ade-dev/sdk` and `AdeError` from `@ade-dev/sdk/electron` are two classes
+ * `@daex-dev/sdk` and `AdeError` from `@daex-dev/sdk/electron` are two classes
  * with one name. An `instanceof` check here would silently flatten every SDK
  * error to `rpc_error` — exactly the field this whole envelope exists to carry
  * — so the shape is read instead of the prototype.

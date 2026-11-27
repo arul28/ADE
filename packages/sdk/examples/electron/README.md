@@ -1,6 +1,6 @@
 # ADE SDK Electron example
 
-A minimal hardened Electron app on `@ade-dev/sdk/electron`. Three files, one per
+A minimal hardened Electron app on `@daex-dev/sdk/electron`. Three files, one per
 process, and a vanilla-JavaScript transcript so nothing here is React or build
 tooling.
 
@@ -32,7 +32,7 @@ npm install
 npm start
 ```
 
-`npm install` links `@ade-dev/sdk` from `file:../..`, so the example runs against
+`npm install` links `@daex-dev/sdk` from `file:../..`, so the example runs against
 the package you just built.
 
 ## The three files
@@ -52,10 +52,10 @@ is bundled.
 By default `main.mjs` points at the SDK's self-running preload:
 
 ```js
-preload: require.resolve("@ade-dev/sdk/electron/preload-auto")
+preload: require.resolve("@daex-dev/sdk/electron/preload-auto")
 ```
 
-Do not point it at `@ade-dev/sdk/electron/preload`. That file exports
+Do not point it at `@daex-dev/sdk/electron/preload`. That file exports
 `exposeAdeBridge` and does not call it, so `window.ade` stays undefined.
 
 Set `ADE_EXAMPLE_PRELOAD=local` to load `preload.cjs` next to `main.mjs`
@@ -72,13 +72,13 @@ ADE_EXAMPLE_PRELOAD=local npm start
 dialog in the main process and send the path back. The bridge does not upload
 buffers.
 
-## Using `@ade-dev/chat-ui` instead
+## Using `@daex-dev/chat-ui` instead
 
 `createAdeIpcClient` returns the shape `adaptSdkClient` expects, with no cast:
 
 ```tsx
-import { createAdeIpcClient } from "@ade-dev/sdk/electron/renderer";
-import { adaptSdkClient, AdeChat } from "@ade-dev/chat-ui";
+import { createAdeIpcClient } from "@daex-dev/sdk/electron/renderer";
+import { adaptSdkClient, AdeChat } from "@daex-dev/chat-ui";
 
 const client = adaptSdkClient(createAdeIpcClient(window.ade));
 

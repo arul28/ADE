@@ -64,7 +64,7 @@ export type AdeErrorCode =
   | "approval_not_found"
   /**
    * A bridge refused the call before it reached the SDK — the host's
-   * `authorize` hook said no. Used by `@ade-dev/sdk/electron`.
+   * `authorize` hook said no. Used by `@daex-dev/sdk/electron`.
    */
   | "unauthorized"
   | "disposed"

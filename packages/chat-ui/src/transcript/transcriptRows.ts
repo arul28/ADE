@@ -4,7 +4,7 @@
  * PROVENANCE: ported from
  * `apps/desktop/src/renderer/components/chat/chatTranscriptRows.ts` (ADE
  * desktop renderer). That module is dependency-free by design; this is a
- * trimmed copy carrying over only the row kinds `@ade-dev/chat-ui` renders.
+ * trimmed copy carrying over only the row kinds `@daex-dev/chat-ui` renders.
  *
  * Kept from the original, with behaviour intact:
  *  - `mergeStreamingText` (prefix-aware streaming append)
