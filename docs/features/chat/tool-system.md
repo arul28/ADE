@@ -237,9 +237,9 @@ identifiers from one place instead of restating them:
 
 Before the Daex rename these were `ade-cto` and `ade_cto`. Old transcripts keep
 those names: the CTO tool renderers take the last segment of any namespace, a
-Codex call under the old namespace falls back by bare name, a stored "Allow for
-session" for an `ade-cto` tool still answers (`legacyCtoApprovalOverrideKey`),
-and permission policies treat `ade-cto` as an alias (`mcpServerNameAliases`).
+Codex call under the old namespace falls back by bare name, and permission
+policies treat `ade-cto` as an alias (`mcpServerNameAliases`). The CTO runs
+full-auto, so no stored approval names the old server.
 
 - **Claude** — `buildClaudeSdkMcpServer(managed, "cto")` produces an SDK MCP
   server named `daex-cto`, merged into `opts.mcpServers`. It is deliberately

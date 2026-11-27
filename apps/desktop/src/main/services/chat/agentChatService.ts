@@ -11386,15 +11386,6 @@ function collectSpawnLineageFields(
 const CTO_MCP_SERVER_NAME = "daex-cto";
 const CTO_CODEX_TOOL_NAMESPACE = "daex_cto";
 
-/**
- * A CTO tool's "Allow for session" key under the server's name before the
- * Daex rename (`ade-cto`), so a chat that allowed one before the update is
- * not asked again.
- */
-function legacyCtoApprovalOverrideKey(normalizedToolName: string): string {
-  return normalizedToolName.replace(/^mcp_daex_cto_/, "mcp_ade_cto_");
-}
-
 /** A started HTTP MCP server bound to one session and one tool set. */
 type HttpMcpLease = {
   config: { type?: string; name?: string; url?: string; headers?: unknown };
@@ -15951,8 +15942,7 @@ export function createAgentChatService(args: {
         : claudeToolNeedsApproval(toolName, input, effectivePermMode));
     if (needsApproval) {
       // Check session-wide overrides — user already said "Allow for Session" for this tool
-      if (!noSessionWideAnswer && (runtime.approvalOverrides.has(normalizedToolName)
-        || runtime.approvalOverrides.has(legacyCtoApprovalOverrideKey(normalizedToolName)))) {
+      if (!noSessionWideAnswer && runtime.approvalOverrides.has(normalizedToolName)) {
         return { behavior: "allow", updatedInput: input };
       }
 
