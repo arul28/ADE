@@ -426,6 +426,7 @@ import { resolveRepoRoot } from "../../desktop/src/main/services/projects/projec
 import type { Logger } from "../../desktop/src/main/services/logging/logger";
 import { withLinkSummary } from "./connectionLinkSummary";
 import { createBrainLogger } from "./services/runtime/brainLogger";
+import { ensureDaexCommandBesideBinary } from "./services/runtime/daexCommand";
 import type {
   CloneProjectInput,
   CreateProjectInput,
@@ -44798,6 +44799,12 @@ async function runParsedCli(
         process.stderr.write(`${BRAND.NAME}: HTTPS_PROXY/HTTP_PROXY is set, but Node ${process.versions.node} cannot apply it (Node 24.14 or newer can); outbound requests go direct.\n`);
       }
       void trustSystemCertificates(networkWarningLogger);
+      // `daex` beside a standalone `ade` in the machine bin folder: a
+      // `brain update --foreground` ran in the old process, which only
+      // replaced `ade`. Best effort, never throws; never inside an app bundle.
+      if (path.dirname(process.execPath) === path.resolve(resolveMachineAdeLayout().binDir)) {
+        ensureDaexCommandBesideBinary(process.execPath);
+      }
       const result = await runServe(plan.rest, parsed.options);
       return {
         output:

@@ -127,6 +127,12 @@ if [ -n "${ADE_MIN_VERSION:-}" ] && [ "$(newest_version "$version" "$ADE_MIN_VER
     "$bin" brain update --version "$ADE_MIN_VERSION" --no-restart --foreground >> "$log" 2>&1 \
     || echo "$(date -u +%FT%TZ) installing ADE $ADE_MIN_VERSION failed; starting ${version:-the image ADE}" >> "$log"
 fi
+# `daex` beside the persistent-disk `ade`: the `--foreground` update above runs
+# in the old process, which only replaces `ade`. Anything already named `daex`
+# there (our link or someone else's file) is left alone.
+if [ -x "$home_ade" ] && [ ! -e "$ADE_HOME/bin/daex" ] && [ ! -L "$ADE_HOME/bin/daex" ]; then
+  ln -s ade "$ADE_HOME/bin/daex" 2>/dev/null || true
+fi
 
 base_path=$PATH
 delay=2
