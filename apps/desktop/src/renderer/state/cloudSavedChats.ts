@@ -88,6 +88,11 @@ export function isCloudConnectionTarget(machineId: string): boolean {
   return cloudConnectionKeys.has(machineId);
 }
 
+/** Whether a pin names a connection to an ADE Cloud computer. */
+export function isCloudPin(pin: OpenProjectBinding | null | undefined): pin is Extract<OpenProjectBinding, { kind: "remote" }> {
+  return pin?.kind === "remote" && isCloudConnectionTarget(pin.targetId);
+}
+
 /**
  * The account key of the cloud computer behind a connection, or null. A
  * connection's own fields may not carry it (ADE Web's target has none, and
@@ -465,7 +470,7 @@ export function chatQueueMachineKey(pin: OpenProjectBinding | null | undefined, 
 
 /** The queue target for a send to a chat on an ADE Cloud connection, or null. */
 function cloudConnectionQueueTarget(pin: OpenProjectBinding | null | undefined, sessionId: string): SavedChatQueueTarget | null {
-  if (pin?.kind !== "remote" || !isCloudConnectionTarget(pin.targetId)) return null;
+  if (!isCloudPin(pin)) return null;
   const saved = savedChatLocation(pin, sessionId, () => false);
   // A deleted computer's chat takes no send (`send` says so before this).
   if (saved?.computerGone) return null;
@@ -551,7 +556,7 @@ export function withSavedChatReads(
     try {
       return await run(pin);
     } catch (error) {
-      if (!refusedBeforeSend(error) || !reach?.wakeForSend || pin?.kind !== "remote" || !isCloudConnectionTarget(pin.targetId)) throw error;
+      if (!refusedBeforeSend(error) || !reach?.wakeForSend || !isCloudPin(pin)) throw error;
       const wokenPin = await reach.wakeForSend(pin, sessionId);
       if (!wokenPin) throw error;
       // The woken computer's pin: the same kind of value the caller passed.

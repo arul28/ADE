@@ -17,6 +17,8 @@ const PLAYABLE_VIDEO_EXTENSIONS = new Set([".mp4", ".m4v"]);
 const CONVERTIBLE_VIDEO_EXTENSIONS = new Set([".mov", ".qt", ".webm", ".mkv", ".avi"]);
 /** Every video extension the CTO shows: the ones that play everywhere and the ones it converts. */
 export const PROOF_VIDEO_EXTENSIONS: ReadonlySet<string> = new Set([...PLAYABLE_VIDEO_EXTENSIONS, ...CONVERTIBLE_VIDEO_EXTENSIONS]);
+/** Every picture extension the CTO shows as proof. */
+export const PROOF_PICTURE_EXTENSIONS: ReadonlySet<string> = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".heif", ".tif", ".tiff"]);
 /** Containers whose video is usually already H.264 (screen and phone recordings). */
 const REMUX_FIRST_EXTENSIONS = new Set([".mov", ".qt", ".mkv"]);
 const CONVERT_TIMEOUT_MS = 5 * 60_000;
@@ -30,19 +32,22 @@ export type PlayableVideoResult =
   | { path: string; converted: false }
   | { path: string; converted: true; via: "ffmpeg-remux" | "ffmpeg" | "avconvert" };
 
-/** Local ffmpeg builds already checked for libx264, by path. */
-const h264Capable = new Map<string, boolean>();
+/** Each ffmpeg build's `-encoders` list, asked once per path ("" when it could not be read). */
+const encoderLists = new Map<string, Promise<string>>();
 
-function encodesH264(binaryPath: string): Promise<boolean> {
-  const known = h264Capable.get(binaryPath);
-  if (known !== undefined) return Promise.resolve(known);
-  return new Promise((resolve) => {
-    execFile(binaryPath, ["-hide_banner", "-encoders"], { timeout: 10_000, windowsHide: true }, (error, stdout) => {
-      const capable = !error && /\blibx264\b/.test(String(stdout ?? ""));
-      h264Capable.set(binaryPath, capable);
-      resolve(capable);
+/** Whether the ffmpeg at `ffmpegPath` has the encoder `encoderName` (e.g. `libx264`, `libwebp`). */
+export async function ffmpegHasEncoder(ffmpegPath: string, encoderName: string): Promise<boolean> {
+  let list = encoderLists.get(ffmpegPath);
+  if (!list) {
+    list = new Promise((resolve) => {
+      execFile(ffmpegPath, ["-hide_banner", "-encoders"], { timeout: 10_000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => {
+        resolve(error ? "" : String(stdout ?? ""));
+      });
     });
-  });
+    encoderLists.set(ffmpegPath, list);
+  }
+  const escaped = encoderName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`\\b${escaped}\\b`).test(await list);
 }
 
 /**
@@ -53,7 +58,7 @@ function encodesH264(binaryPath: string): Promise<boolean> {
  */
 async function ffmpegPath(): Promise<string | null> {
   const local = resolveExecutableFromKnownLocations("ffmpeg")?.path;
-  if (local && await encodesH264(local)) return local;
+  if (local && await ffmpegHasEncoder(local, "libx264")) return local;
   const found = resolveFfmpegTools();
   if (found) return found.ffmpegPath;
   if (!ffmpegDownloadable()) return null;

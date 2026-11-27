@@ -76,11 +76,15 @@ export function useSavedChatProof(artifactId: string, wanted: boolean): SavedCha
     let cancelled = false;
     let request = pending.get(key);
     if (!request) {
+      // Only an answer is remembered ("none saved" included); a failed read shows
+      // nothing now and is asked again the next time the citation shows.
       request = readProof({ machineKey, chatId, artifactId })
-        .catch(() => null)
         .then((proof) => {
           remember(key, proof);
           return proof;
+        }, (error: unknown) => {
+          console.warn("[cloud] reading a saved proof failed", error instanceof Error ? error.message : String(error));
+          return null;
         })
         .finally(() => pending.delete(key));
       pending.set(key, request);

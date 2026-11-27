@@ -37,8 +37,9 @@ const SENSITIVE_KEY = /^(?:api[_-]?key|secret|token|password|authorization)$/i;
  * `rowStale`: the chat's title, status or lane name changed after its last part; the next upload sends the row even with no new text.
  * `settings`: the composer settings the saved row last carried (`settingsKey`), so a setting changed with no turn after it still reaches the copy before a rest.
  * `laneColor`: the lane color the saved row last carried, so a lane recolored (or a copy saved before rows carried it) gets its row again before a rest.
+ * `generation`: counts the server copies this chat started over (`deleteAndRestart`): what went with an earlier copy (its proof) went with its delete.
  */
-type Entry = { offset: number; seq: number; dirty: boolean; laneId: string | null; rowStale?: boolean; settings?: string; laneColor?: string | null };
+type Entry = { offset: number; seq: number; dirty: boolean; laneId: string | null; rowStale?: boolean; settings?: string; laneColor?: string | null; generation?: number };
 
 /** The settings of a row as one comparable string; "" when it has none. */
 function settingsKey(row: CloudSavedChatRowInput): string {
@@ -104,8 +105,8 @@ export type CloudChatUploader = {
    * when this project has no such parent chat.
    */
   uploadSubagentCopy(parentSessionId: string, copy: { chatId: string; text: string; title: string | null; lastActivityAt: string | null }): Promise<boolean | null>;
-  /** The chats of this project the server holds a saved copy of (at least one part sent). */
-  savedChatIds(): string[];
+  /** The chats of this project the server holds a saved copy of (at least one part sent), each with its copy's `generation`. */
+  savedChats(): Array<{ id: string; generation: number }>;
   dispose(): void;
 };
 
@@ -158,11 +159,11 @@ export async function uploadSubagentCloudCopy(
   return false;
 }
 
-/** Every chat on this computer with a saved copy on the account server, across its open projects. */
-export function savedCloudChatIds(): Set<string> {
-  const ids = new Set<string>();
-  for (const uploader of uploaders) for (const id of uploader.savedChatIds()) ids.add(id);
-  return ids;
+/** Every chat on this computer with a saved copy on the account server, across its open projects, by its copy's generation. */
+export function savedCloudChats(): Map<string, number> {
+  const chats = new Map<string, number>();
+  for (const uploader of uploaders) for (const { id, generation } of uploader.savedChats()) chats.set(id, generation);
+  return chats;
 }
 
 /** The restored chat's upload goes on from `seq` in the project that holds it (`CloudChatUploader.adoptRestored`). */
@@ -699,6 +700,8 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
       if (response.ok) {
         entry.offset = 0;
         entry.seq = 0;
+        // The new copy has none of the old one's proof.
+        entry.generation = (entry.generation ?? 0) + 1;
       }
     } catch (error) {
       log?.warn("cloud.chat_upload_restart_failed", { sessionId, error: error instanceof Error ? error.name : "unknown" });
@@ -823,7 +826,8 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
       const reader = openTranscript(deps.chatTranscriptsDir, sessionId);
       if (!reader) return false;
       currentMachineKey();
-      state.chats[sessionId] = { offset: reader.size, seq, dirty: false, laneId };
+      // A copy it did not save here: proof marks of an earlier copy don't hold for it.
+      state.chats[sessionId] = { offset: reader.size, seq, dirty: false, laneId, generation: (state.chats[sessionId]?.generation ?? 0) + 1 };
       persist();
       return true;
     },
@@ -866,8 +870,8 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
       }
       return true;
     },
-    savedChatIds() {
-      return disposed ? [] : Object.entries(state.chats).filter(([, entry]) => entry.seq > 0).map(([id]) => id);
+    savedChats() {
+      return disposed ? [] : Object.entries(state.chats).filter(([, entry]) => entry.seq > 0).map(([id, entry]) => ({ id, generation: entry.generation ?? 0 }));
     },
     dispose() {
       disposed = true;

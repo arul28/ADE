@@ -17671,16 +17671,9 @@ final class SyncService: ObservableObject {
     compactFirst: Bool?
   ) async throws -> CloudComputerSendResult {
     let direct = Task { @MainActor in try await sendDirect() }
-    let first: Result<Any, Error>? = await withTaskGroup(of: Result<Any, Error>?.self) { group in
-      group.addTask { await direct.result }
-      group.addTask {
-        try? await Task.sleep(nanoseconds: Self.cloudSendAnswerWaitNanoseconds)
-        return nil
-      }
-      let winner = await group.next() ?? nil
-      // Cancels the waits only; the direct send keeps going.
-      group.cancelAll()
-      return winner
+    // Gives up the wait, not the send: the direct send keeps going while the queue takes it.
+    let first: Result<Any, Error>? = await workAwaitWithDeadline(timeoutNanoseconds: Self.cloudSendAnswerWaitNanoseconds) {
+      await direct.result
     }
     switch first {
     case .success(let value)?:

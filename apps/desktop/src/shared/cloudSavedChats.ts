@@ -7,12 +7,15 @@ import {
   cloudChatRowSettingsOf,
   cloudLaneColorOf,
   type CloudChatComputer,
+  type CloudChatProofSource,
   type CloudChatRow,
   type CloudChatRowInput,
   type CloudChatRowSettings,
   type CloudChatTranscriptPage,
   type CloudComputerDeleteReason,
 } from "../../../account-directory/src/cloud/contract";
+import { bytesToBase64 } from "./base64";
+import type { CloudSavedChatProof } from "./cloudApiClient";
 import type { AgentChatSessionSummary } from "./types/chat";
 
 export type { CloudChatComputer, CloudChatRowSettings, CloudComputerDeleteReason };
@@ -76,17 +79,11 @@ export type CloudSavedChatProofArgs = { machineKey: string; chatId: string; arti
  * JPEG or GIF (its type from its bytes), and whether it is a picture or a
  * still of a video. Null from the bridge when nothing was saved.
  */
-export type CloudSavedChatProofResult = { dataUrl: string; source: "image" | "video" };
+export type CloudSavedChatProofResult = { dataUrl: string; source: CloudChatProofSource };
 
 /** A saved proof's bytes as the data URL a client shows (no Buffer: the web client builds it too). */
-export function savedChatProofResultOf(proof: { bytes: ArrayBuffer; mimeType: string; source: "image" | "video" }): CloudSavedChatProofResult {
-  const bytes = new Uint8Array(proof.bytes);
-  let binary = "";
-  const chunk = 0x8000;
-  for (let start = 0; start < bytes.length; start += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(start, start + chunk));
-  }
-  return { dataUrl: `data:${proof.mimeType};base64,${btoa(binary)}`, source: proof.source };
+export function savedChatProofResultOf(proof: CloudSavedChatProof): CloudSavedChatProofResult {
+  return { dataUrl: `data:${proof.mimeType};base64,${bytesToBase64(new Uint8Array(proof.bytes))}`, source: proof.source };
 }
 
 export function cloudSavedChatsUrl(base: string): string {

@@ -325,6 +325,8 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
   let lastPingAt: number | null = null;
   /** Work noted since the last check took it. Kept until one does, however late it runs. */
   let usedSinceTick = false;
+  /** Real use since the last check (`noteUse`), as opposed to typing alone (`noteTyping`). */
+  let workedSinceTick = false;
   let lastPingOk: boolean | null = null;
   let warnedNoUrl = false;
   /** What the account server holds for this machine, as last sent: `none`, `<url>|<at>`, or null before the first send. */
@@ -581,6 +583,8 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
         state = { ...state, busy: true, reasons: [...state.reasons, "in_use"] };
       }
       usedSinceTick = false;
+      const workedSinceLastTick = workedSinceTick;
+      workedSinceTick = false;
       const nextWakeAt = state.nextWakeAt ?? null;
       checkedWakeAt = nextWakeAt;
       // An overdue timer fires on this awake machine on its own; only a future one is sent.
@@ -613,10 +617,12 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
       // Work ends between checks. The first idle check still counts it, so a
       // machine sleeps at least three minutes after its last work, never less.
       if (state.busy || wasBusy) lastBusyAt = at;
-      if (state.busy) lastWorkAt = at;
-      // Real work (a turn, a command, setup, a timer) restarts the typing guard;
-      // "in_use" alone may be only typing, and `noteUse` restarts it itself.
-      if (state.reasons.some((reason) => reason !== "in_use")) lastNonTypingActivityAt = at;
+      // Real work (a turn, a command, setup, a timer, a person's action) is
+      // work: it moves the server's idle clock and restarts the typing guard.
+      // "in_use" alone may be only typing, which is neither.
+      const realWork = workedSinceLastTick || state.reasons.some((reason) => reason !== "in_use");
+      if (state.busy && realWork) lastWorkAt = at;
+      if (realWork) lastNonTypingActivityAt = at;
       wasBusy = state.busy;
       try {
         options.sampleCpu?.(at, state.reasons);
@@ -665,6 +671,7 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
     async noteUse() {
       if (!enabled) return;
       usedSinceTick = true;
+      workedSinceTick = true;
       lastBusyAt = now();
       lastWorkAt = lastBusyAt;
       lastUseAt = lastBusyAt;

@@ -420,11 +420,7 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
       const kept = (previous?.lanes ?? []).filter((lane) => !listedLaneIds || listedLaneIds.has(lane.id));
       const known = new Set(kept.map((lane) => lane.id));
       // A lane listed before its rows carried a color (or before a recolor) takes the newest saved one.
-      const savedColor = new Map<string, string>();
-      for (const row of rows) {
-        const color = cloudLaneColorOf(row.laneColor);
-        if (row.laneId && color && !savedColor.has(row.laneId)) savedColor.set(row.laneId, color);
-      }
+      const savedColor = savedLaneColors(rows);
       const lanes = kept.map((lane) => {
         const name = laneNow.get(lane.id)?.trim();
         const color = savedColor.get(lane.id);
@@ -592,13 +588,14 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         displayName: savedProjectName(null, context.projectKey!),
         gitOriginUrl: context.projectKey,
       };
-      const lanes = [...(previous?.lanes ?? [])];
+      // A lane listed with no color takes the one its copy saved.
+      const savedColor = savedLaneColors(rows);
+      const lanes = (previous?.lanes ?? []).map((lane) => {
+        const color = lane.color ? null : savedColor.get(lane.id);
+        return color ? { ...lane, color } : lane;
+      });
       const known = new Set(lanes.map((lane) => lane.id));
       for (const row of rows) {
-        // A lane listed with no color takes the one its copy saved.
-        const color = cloudLaneColorOf(row.laneColor);
-        const at = color && row.laneId ? lanes.findIndex((lane) => lane.id === row.laneId && !lane.color) : -1;
-        if (at >= 0) lanes[at] = { ...lanes[at]!, color };
         if (!row.laneId || known.has(row.laneId)) continue;
         known.add(row.laneId);
         lanes.push(laneComputerLane({ laneId: row.laneId, laneName: row.laneName ?? row.laneId, laneColor: row.laneColor }, undefined));
@@ -669,6 +666,16 @@ async function readProjectOverview(projectKey: string | null): Promise<CloudProj
     console.warn("[cloud] the project overview read failed", error instanceof Error ? error.message : String(error));
     return null;
   }
+}
+
+/** Each lane's color as its saved rows carry it: the first (newest) valid one per lane. */
+function savedLaneColors(rows: readonly { laneId?: string | null; laneColor?: string | null }[]): Map<string, string> {
+  const colors = new Map<string, string>();
+  for (const row of rows) {
+    const color = cloudLaneColorOf(row.laneColor);
+    if (row.laneId && color && !colors.has(row.laneId)) colors.set(row.laneId, color);
+  }
+  return colors;
 }
 
 /**

@@ -128,7 +128,8 @@ final class AccountCloudStore: ObservableObject {
   /// `savedProofKeptBytes`, the oldest first out.
   private var savedProofs: [String: (at: Date, proof: CloudSavedChatProof?)] = [:]
   private var savedProofOrder: [String] = []
-  private var savedProofReads: [String: Task<CloudSavedChatProof?, Never>] = [:]
+  /// Each read's answer, and whether the server gave one (a failed read is not "none saved").
+  private var savedProofReads: [String: Task<(proof: CloudSavedChatProof?, answered: Bool), Never>] = [:]
   private static let savedProofKeptBytes = 24 * 1024 * 1024
   private static let savedProofNoneKept: TimeInterval = 300
 
@@ -601,24 +602,25 @@ final class AccountCloudStore: ObservableObject {
     if let kept = savedProofs[id], kept.proof != nil || Date().timeIntervalSince(kept.at) < Self.savedProofNoneKept {
       return kept.proof
     }
-    if let running = savedProofReads[id] { return await running.value }
+    if let running = savedProofReads[id] { return await running.value.proof }
     let generation = accountGeneration
-    let read = Task { @MainActor [weak sync] () -> CloudSavedChatProof? in
-      guard let client = await sync?.cloudServerClient() else { return nil }
+    let read = Task { @MainActor [weak sync] () -> (proof: CloudSavedChatProof?, answered: Bool) in
+      guard let client = await sync?.cloudServerClient() else { return (nil, false) }
       do {
-        return try await client.savedChatProof(machineKey: accountMachineKey, chatId: chatId, artifactId: artifactId)
+        return (try await client.savedChatProof(machineKey: accountMachineKey, chatId: chatId, artifactId: artifactId), true)
       } catch {
         accountCloudLog.notice("cloud_store read=proof failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
-        return nil
+        return (nil, false)
       }
     }
     savedProofReads[id] = read
-    let proof = await read.value
+    let result = await read.value
     savedProofReads[id] = nil
     // The account changed while it was out: none of it is this account's.
     guard generation == accountGeneration else { return nil }
-    keepSavedProof(id: id, proof: proof)
-    return proof
+    // Only an answer is kept ("none saved" included); a failed read is asked again next time.
+    if result.answered { keepSavedProof(id: id, proof: result.proof) }
+    return result.proof
   }
 
   private func keepSavedProof(id: String, proof: CloudSavedChatProof?) {

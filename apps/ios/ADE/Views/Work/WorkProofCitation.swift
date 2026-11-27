@@ -61,7 +61,8 @@ struct WorkProofCitationView: View {
         Group {
           // The computer can't send it (asleep, deleted): the copy it saved before it rested.
           if failed, let saved {
-            savedMedia(saved, label: captionText(artifact))
+            // Once awake, the live proof loads again and takes the saved one's place.
+            savedMedia(saved, label: captionText(artifact)) { await citations.load(artifact, .retry) }
           } else {
             media(artifact: artifact, content: content, load: citations.load)
           }
@@ -83,7 +84,10 @@ struct WorkProofCitationView: View {
       Group {
         if let saved {
           VStack(alignment: .leading, spacing: 6) {
-            savedMedia(saved, label: caption.isEmpty ? (saved.source == .video ? "Video proof" : "Proof") : caption)
+            // Once awake, the chat's host is asked for the proof again; found, the live view loads it.
+            savedMedia(saved, label: caption.isEmpty ? (saved.source == .video ? "Video proof" : "Proof") : caption) {
+              await citations?.resolveMissing?(artifactId)
+            }
             if !caption.isEmpty {
               Text(caption)
                 .font(.footnote)
@@ -125,7 +129,7 @@ struct WorkProofCitationView: View {
   /// The saved picture where the live proof would be. A video shows its
   /// still with "Wake to play"; the video itself plays only from the computer.
   @ViewBuilder
-  private func savedMedia(_ proof: CloudSavedChatProof, label: String) -> some View {
+  private func savedMedia(_ proof: CloudSavedChatProof, label: String, afterWake: @escaping @MainActor () async -> Void) -> some View {
     let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
     VStack(alignment: .leading, spacing: 4) {
       if let image = UIImage(data: proof.data) {
@@ -142,6 +146,7 @@ struct WorkProofCitationView: View {
               waking = true
               Task {
                 await wake()
+                await afterWake()
                 waking = false
               }
             } label: {

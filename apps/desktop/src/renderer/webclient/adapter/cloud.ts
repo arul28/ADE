@@ -518,7 +518,8 @@ export function createWebCloudNamespace(
       },
       // Straight from the account with the person's token: a picture is no read for a connected machine to relay.
       readProof: async ({ machineKey, chatId, artifactId }) => {
-        const proof = await accountClient.cloudApi()?.savedChatProof(machineKey, chatId, artifactId).catch(() => null);
+        // A failed read throws (the caller remembers only "none saved"); a 404 is null.
+        const proof = await accountClient.cloudApi()?.savedChatProof(machineKey, chatId, artifactId);
         return proof ? savedChatProofResultOf(proof) : null;
       },
     },

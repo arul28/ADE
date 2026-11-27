@@ -5209,9 +5209,9 @@ declare global {
           /**
            * One proof picture a saved chat cited (a still for a video), from
            * the account with no wake. By the chat's own saved copy, never the
-           * tab's machine; null when none was saved. Optional: older bridges.
+           * tab's machine; null when none was saved.
            */
-          readProof?: (args: CloudSavedChatProofArgs) => Promise<CloudSavedChatProofResult | null>;
+          readProof: (args: CloudSavedChatProofArgs) => Promise<CloudSavedChatProofResult | null>;
         };
         getStatus: () => Promise<CloudStatus | null>;
         /** A copy or move reports through `onCreateProgress`, ending in `done` or `failed`. */

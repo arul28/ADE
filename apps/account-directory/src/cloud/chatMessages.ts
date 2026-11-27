@@ -270,7 +270,7 @@ export type ChatMessageDeps = {
 /* ---- Person routes: /cloud/chats/:m/:c/messages[/:msg] ---- */
 
 /** The facts a continue launch needs, from the target's sealed summary. */
-type TargetFacts = { provider: string | null; model: string | null; laneName: string | null; projectId: string | null; laneColor?: string | null };
+type TargetFacts = { provider: string | null; model: string | null; laneName: string | null; projectId: string | null; laneColor: string | null };
 
 /** What a send goes to: a saved chat, or a saved CLI session (its session id in `chat_id`). */
 type QueueTarget = Pick<CopyRow, "machine_key" | "chat_id" | "instance_id" | "project_key" | "lane_id"> & {
@@ -390,7 +390,7 @@ async function movedChatTarget(env: CloudEnv, userId: string, machineKey: string
     instance_id: move.source_instance_id,
     project_key: null,
     lane_id: move.lane_id,
-    facts: async () => ({ provider: null, model: null, laneName: null, projectId: null }),
+    facts: async () => ({ provider: null, model: null, laneName: null, projectId: null, laneColor: null }),
   };
 }
 

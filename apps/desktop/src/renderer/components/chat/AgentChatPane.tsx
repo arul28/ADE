@@ -516,7 +516,7 @@ import {
   useDraftAttachmentTransfer,
 } from "./draftAttachmentTransfer";
 import { chatNoticeReducer, noticeForChat, shownChatNotice, type ChatNotice } from "./chatNotice";
-import { chatQueueMachineKey, isCloudConnectionTarget, savedChatComputerGone, savedChatLocation } from "../../state/cloudSavedChats";
+import { chatQueueMachineKey, isCloudPin, savedChatComputerGone, savedChatLocation } from "../../state/cloudSavedChats";
 import { releaseHeldAttachments, releaseSentHeldAttachments } from "./heldChatAttachments";
 import { prepareDeviceHeldForSend } from "./deviceHeldSend";
 import { newClientSendId } from "../../../shared/adeCloud/chatQueue";
@@ -10474,7 +10474,7 @@ export function AgentChatPane({
       }
       if (!changed) return;
       const pin = chatRuntimePinRef.current;
-      if (pin?.kind !== "remote" || !isCloudConnectionTarget(pin.targetId)) return;
+      if (!isCloudPin(pin)) return;
       const at = Date.now();
       if (at - lastTypingPingAt < CLOUD_TYPING_PING_MS) return;
       lastTypingPingAt = at;

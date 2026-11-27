@@ -982,12 +982,14 @@ describe("cloud keep awake", () => {
   // Typing from any client keeps an awake computer up, so it never sleeps
   // under someone writing a reply; a client that never stops sending typing
   // (a stuck key, a bug) must not bill the account all day.
-  it("sleeps three minutes after the last keystroke, and stops counting typing 20 minutes after the last real work", async () => {
+  it("sleeps three minutes after the last keystroke, stops counting typing 20 minutes after the last real work, and never reports typing as work", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cloud-typing-"));
     const minute = 60_000;
     let clock = 1_000_000;
     let turnRunning = true;
     const askedAt: number[] = [];
+    // The last work each rest reports to the server's idle cleanup.
+    const reportedWorkAt: Array<number | null> = [];
     const keepAwake = createCloudKeepAwake({
       env: { ADE_CLOUD_INSTANCE_ID: "thisbox001" },
       adeHome: home,
@@ -996,6 +998,9 @@ describe("cloud keep awake", () => {
       readBusy: async () => ({ busy: turnRunning, reasons: turnRunning ? ["chat"] : [] }),
       requestIdleSleep: async () => {
         askedAt.push(clock);
+      },
+      reportUse: async (lastWorkAt) => {
+        reportedWorkAt.push(lastWorkAt);
       },
     });
     try {
@@ -1040,7 +1045,8 @@ describe("cloud keep awake", () => {
       expect(askedAt).toHaveLength(2);
       expect(askedAt[1]).toBeGreaterThan(sentAt + 20 * minute);
       expect(askedAt[1]).toBeLessThanOrEqual(sentAt + 25 * minute);
-      expect(workEnded).toBeLessThan(sentAt);
+      // Each rest reports the turn that ran, not the typing after it.
+      expect(reportedWorkAt).toEqual([workEnded, sentAt]);
     } finally {
       keepAwake.dispose();
       fs.rmSync(home, { recursive: true, force: true });

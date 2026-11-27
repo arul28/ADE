@@ -217,16 +217,12 @@ function CitedProofMedia({
         // One width for every waiting tile: a message that fits its text
         // would otherwise give each tile its caption's width.
         <SlowLinkHeldPicture title={text} bytes={held.bytes} onShow={showHeld} className="min-h-40 w-[420px] max-w-full" />
-      ) : loading ? (
+      ) : loading || (failed && saved.status === "loading") ? (
         <span className="flex min-h-40 w-[420px] max-w-full items-center justify-center rounded-xl border border-fg/[0.06] bg-black/20 text-muted-fg/35">
           <SpinnerGap size={18} className="animate-spin" aria-label="Loading proof" />
         </span>
       ) : failed && saved.status === "ready" ? (
         <SavedProofPicture proof={saved.proof} label={text} compact={compact} onWake={retryLabel === "Wake" ? retry : null} />
-      ) : failed && saved.status === "loading" ? (
-        <span className="flex min-h-40 w-[420px] max-w-full items-center justify-center rounded-xl border border-fg/[0.06] bg-black/20 text-muted-fg/35">
-          <SpinnerGap size={18} className="animate-spin" aria-label="Loading proof" />
-        </span>
       ) : failed ? (
         <span className="block"><ProofPreviewFailureNotice failureText={failureText} onRetry={retry} retryLabel={retryLabel} /></span>
       ) : preview && image ? (

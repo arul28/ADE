@@ -393,7 +393,8 @@ async function handlePutProof(request: Request, env: CloudEnv, userId: string, m
   }
   const source: CloudChatProofSource = request.headers.get(CLOUD_CHAT_PROOF_SOURCE_HEADER)?.trim() === "video" ? "video" : "image";
   const row = await copyRow(env, userId, machineKey, chatId);
-  if (!row) return notFound();
+  // Its own code: the computer stops sending this chat's proof until it saves a new copy.
+  if (!row) return fail("copy_not_found", "This chat has no saved copy to keep proof with.", 404);
   const keys = await userKeys(env, userId, now);
   if (!keys) return unavailable();
   const prefix = row.r2_key;

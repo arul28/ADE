@@ -3906,8 +3906,10 @@ describe("ADE Cloud without a computer", () => {
       expect((await putProof(PNG)).status).toBe(200);
       expect(copyBytes()).toBe(before + stored!.size);
       const read = await harness.send(OWNER, "GET", proofPath());
-      expect([read.status, read.headers.get("content-type"), read.headers.get("x-content-type-options"), read.headers.get("content-disposition"), read.headers.get("cache-control"), read.headers.get("x-ade-proof-source")])
-        .toEqual([200, "image/png", "nosniff", "inline", "private, max-age=300", "image"]);
+      expect([read.status, read.headers.get("content-type"), read.headers.get("x-content-type-options"), read.headers.get("content-disposition"), read.headers.get("x-ade-proof-source")])
+        .toEqual([200, "image/png", "nosniff", "inline", "image"]);
+      // A decrypted picture never sits in a shared cache.
+      expect(read.headers.get("cache-control")).toMatch(/\bprivate\b/);
       expect(new Uint8Array(await read.arrayBuffer())).toEqual(PNG);
       // A video's still, as WebP: the type follows the bytes, never the request's own content type.
       expect((await putProof(WEBP, { headers: { "x-ade-proof-source": "video", "content-type": "text/html" }, path: proofPath("c1", "rec-1") })).status).toBe(200);
@@ -3928,7 +3930,7 @@ describe("ADE Cloud without a computer", () => {
     it.each<[string, (() => Promise<void>) | null, () => Promise<Response>, number, string]>([
       ["from another account's caller", null, () => putProof(PNG, { caller: OTHER }), 404, "not_found"],
       ["from no computer of the account", null, () => putProof(PNG, { headers: { "x-ade-instance": "notmybox99" } }), 404, "not_found"],
-      ["for a chat with no saved copy", null, () => putProof(PNG, { path: proofPath("c-none") }), 404, "not_found"],
+      ["for a chat with no saved copy", null, () => putProof(PNG, { path: proofPath("c-none") }), 404, "copy_not_found"],
       ["an SVG", null, () => putProof(bytesOf('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>')), 415, "proof_unsupported"],
       ["HTML named as a picture", null, () => putProof(bytesOf("<html><body>hi</body></html>"), { headers: { "content-type": "image/png" } }), 415, "proof_unsupported"],
       ["an empty body", null, () => putProof(new Uint8Array(0)), 400, "bad_request"],

@@ -69,8 +69,9 @@ export function registerCloudSavedChatsIpc(args: { logger: Logger }): void {
         .savedChatProof(arg.machineKey, arg.chatId, arg.artifactId);
       return proof ? savedChatProofResultOf(proof) : null;
     } catch (error) {
+      // Thrown, not null: "none saved" is remembered, a failed read is not.
       logger.warn("cloud.saved_chat_proof_read_failed", { error: error instanceof Error ? error.name : "unknown" });
-      return null;
+      throw new Error("ADE couldn't read the saved proof.");
     }
   });
 

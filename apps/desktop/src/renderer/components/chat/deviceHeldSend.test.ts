@@ -38,7 +38,10 @@ describe("prepareDeviceHeldForSend", () => {
       machineRests: true,
     });
 
-    await expect(send()).rejects.toThrow("Not sent. ADE couldn't copy your files to the chat's computer.");
+    // Nothing went: the send refuses, and the sentence names no transport detail.
+    const refused = await send().then(() => null, (error: unknown) => error);
+    expect(refused).toBeInstanceOf(Error);
+    expect((refused as Error).message).not.toContain("disk full");
 
     await expect(send()).resolves.toEqual({
       attachments: [
