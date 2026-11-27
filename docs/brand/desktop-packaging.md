@@ -112,33 +112,73 @@ requires.
 
 ## Windows
 
-**What a person sees today:** window titles and dialogs (now Daex); the
-Start menu shortcut "ADE", the Apps list entry "ADE", the taskbar group and
-toast notifications (both named from the Start menu shortcut that carries the
+**What a person saw:** window titles and dialogs; the Start menu shortcut
+"ADE", the installed apps entry "ADE", the taskbar group and toast
+notifications (both named from the Start menu shortcut that carries the
 AUMID), Task Manager ("ADE", the exe's FileDescription), the installer
 ("ADE Setup" and its built-in text), the "Updating ADE" window.
 
-**What changed (shipped in this branch):** window titles, dialogs,
-notifications and the jump-list task ("Install a downloaded Daex update") in
-`main.ts`; the file type description written to the ProgID
-(`--config.fileAssociations.description`, "Daex files", in
-`run-electron-builder.mjs`).
+**What changed (shipped in this branch):**
+
+- Window titles, dialogs, notifications and the jump-list task ("Install a
+  downloaded Daex update") in `main.ts`; the file type description written to
+  the ProgID (`--config.fileAssociations.description`, "Daex files", in
+  `run-electron-builder.mjs`).
+- Decision 1: the Start menu shortcut and the installed apps entry
+  ("Apps & features" / "Installed apps") say **Daex**, **Daex Beta** or
+  **Daex Alpha**, for new installs and for every existing install on its next
+  update. `run-electron-builder.mjs` passes `--config.nsis.shortcutName` and
+  `--config.nsis.uninstallDisplayName` from `displayName` in
+  `windows-package-identity.mjs`. The taskbar group and toasts take their name
+  from that shortcut, so they say Daex too.
+- The custom installer and uninstaller text in `build/installer.nsh`
+  (`DetailPrint` lines and message boxes, "Daex could not stop its background
+  service…") says Daex. Every `PRODUCT_NAME` comparison and path is unchanged.
+- `windows-installed-product-smoke.ps1` (the release gate) looks for the
+  installed apps entry by its Daex name and checks that the Daex Start menu
+  shortcut exists.
+
+**How decision 1 works** (electron-builder 26.15.3, `app-builder-lib`):
+
+- `shortcutName` only sets the NSIS define `SHORTCUT_NAME`
+  (`CommonWindowsInstallerConfiguration.js`, `NsisTarget.js`). It names
+  `$SMPROGRAMS\<name>.lnk` (and the desktop link, which ADE does not create)
+  and is stored as `ShortcutName` in `HKCU\Software\<GUID>`. Nothing else
+  reads it.
+- `uninstallDisplayName` only sets `UNINSTALL_DISPLAY_NAME`, written as
+  `DisplayName` under the Uninstall key. The key itself is a GUID made from
+  `appId`, so the entry is the same one, renamed; Windows never shows two.
+- On an update, `setLinkVars` (`common.nsh`) reads the old name from
+  `ShortcutName` ("ADE"), the old uninstaller runs with `--keep-shortcuts`
+  (the install key has `KeepShortcuts=true` and the exe exists), so it leaves
+  `ADE.lnk` alone, and `addStartMenuLink` (`include/installer.nsh`) renames
+  `ADE.lnk` to `Daex.lnk` and stamps the AUMID `com.ade.desktop` on it again.
+  A person who deleted the shortcut does not get one back, as before.
+- That `Rename` fails if `Daex.lnk` already exists, which would leave both.
+  `customInstall` then deletes the old one, only when it opens this install's
+  exe (`adeRemoveStaleStartMenuLink`; one PowerShell run, only in that case).
+- Downgrading to an older release reverses it: the old installer reads
+  `ShortcutName` "Daex" and renames the shortcut back to "ADE".
+- Uninstall reads `ShortcutName`, so it removes `Daex.lnk`.
 
 **What stays, and why:**
 
 - `productName` `ADE` / `ADE Beta` / `ADE Alpha` (`windows-package-identity.mjs`).
-  It names `ADE.exe`, the install folder, and `PRODUCT_NAME`, which
-  `build/installer.nsh` compares to `"ADE Alpha"` and `"ADE Beta"` to pick the
-  channel for every install, update and uninstall step.
-- The exe's version info (FileDescription, ProductName). electron-builder
-  writes it from `productName` with rcedit **after** afterPack runs, so a hook
-  cannot change it without re-signing.
-- Start menu shortcut name and Apps list name: owner decision 1.
-- The custom installer text in `build/installer.nsh` ("ADE could not
-  configure its terminal command…"). The installer's own title and built-in
-  messages come from `PRODUCT_NAME` and stay "ADE", so the custom lines stay
-  too and change together with decision 1. The strings can change at any
-  time; the `PRODUCT_NAME` comparisons cannot.
+  It names `ADE.exe`, the install folder, `Uninstall ADE.exe`, and
+  `PRODUCT_NAME`, which `build/installer.nsh` compares to `"ADE Alpha"` and
+  `"ADE Beta"` to pick the channel for every install, update and uninstall
+  step.
+- The exe's version info (FileDescription, ProductName), so Task Manager and
+  the "Open with" list say "ADE". electron-builder writes it from
+  `productName` with rcedit **after** afterPack runs, so a hook cannot change
+  it without re-signing.
+- The installer's title ("ADE Setup") and electron-builder's built-in
+  messages, which come from `PRODUCT_NAME`; the file association verb
+  "Open with ADE", which electron-builder builds from `productName` with no
+  option.
+- Taskbar pins. A pin is a copy of the shortcut in `User Pinned\TaskBar`
+  that points at `ADE.exe` with the AUMID; neither moves, so it keeps working.
+  Its own file keeps the name "ADE" until the person pins again.
 - The "Updating ADE" window takes its name from
   `appPackageChannelDisplayName` (`src/shared/packageChannel.ts`), which is
   display only and can move to `BRAND` with the rest of `src/shared`.
@@ -201,20 +241,10 @@ platform for now and takes only Paradev's display-name mechanism (the
 ## Owner decisions
 
 1. **Windows Start menu shortcut, taskbar and toast name, Apps list entry.**
-   Recommendation: do it in a follow-up with a Windows update test.
-   Set `nsis.shortcutName` to the Daex name per channel (`Daex`, `Daex Beta`,
-   `Daex Alpha`) and `uninstallDisplayName` to the same, from
-   `run-electron-builder.mjs`, and keep `productName` "ADE". electron-builder's
-   NSIS template already handles an existing install: it reads the old
-   shortcut name from `HKCU\Software\<GUID>\ShortcutName`, renames
-   `ADE.lnk` to `Daex.lnk` and stamps the AUMID on it again
-   (`templates/nsis/include/installer.nsh`, `common.nsh`), and the install
-   folder stays the recorded one. Taskbar pins point at `ADE.exe`, which does
-   not move. Needed with it: update the `uninstallDisplayName` check in
-   `validate-win-artifacts.mjs`, switch the custom text in
-   `build/installer.nsh` to Daex, and test a real update from the released
-   build (shortcut renamed, pin works, toasts say Daex, one Apps entry).
-   Task Manager keeps "ADE" until `productName` changes.
+   Done: the owner chose Daex for everyone, existing installs included. See
+   "Windows" above for what changed and how, and "Windows update test" below
+   for the result. `productName` stays "ADE"; Task Manager keeps "ADE" until
+   it changes (decision 3).
 2. **macOS `.app` file name and executable.** Recommendation: keep `ADE.app`.
    The display change already shows Daex everywhere a person looks. Renaming
    the bundle for new installs (Paradev's route) means `productName` "Daex",
@@ -244,10 +274,40 @@ platform for now and takes only Paradev's display-name mechanism (the
    until enough releases that register `daex://` have shipped. The Windows
    uninstaller removes both registrations when they point at the install.
 
+## Windows update test
+
+Run on 2026-11-27 in Windows Sandbox on Windows 11 (nothing ran on the host).
+The old build is the released Stable `ADE-1.2.137-win-x64.exe` from
+`arul28/ADE`. The new build is this branch's NSIS config and `installer.nsh`
+wrapped around the 1.2.137 app files: `7z` pulls `$PLUGINSDIR\app-64.7z` out
+of the released installer and unpacks it, then
+`ADE_DESKTOP_VERSION=1.2.138 node scripts/run-electron-builder.mjs --win --x64
+--publish never --prepackaged <app dir> --config.directories.output=<dir>`
+builds an unsigned `ADE-1.2.138-win-x64.exe`. A `.wsb` file maps both
+installers and a script read-only, plus one writable output folder, with
+networking off; the script records the state after each step.
+
+| Step | Start menu (`%APPDATA%\…\Programs`) | Installed apps `DisplayName` | `ShortcutName` | Install folder |
+|---|---|---|---|---|
+| Install 1.2.137 (`/S`) | `ADE.lnk` -> `…\Programs\ADE\ADE.exe`, AUMID `com.ade.desktop` | `ADE` (1.2.137) | `ADE` | `…\Programs\ADE` |
+| Update (`--updated /S`, as the updater runs it) | `Daex.lnk` -> same exe, AUMID `com.ade.desktop`; no `ADE.lnk` | `Daex` (1.2.138), same uninstall key | `Daex` | `…\Programs\ADE`, `ADE.exe` |
+| Downgrade to 1.2.137 (`/S`) | `ADE.lnk` (renamed back) | `ADE` | `ADE` | unchanged |
+| Add a stray `Daex.lnk`, then install 1.2.138 (`/S`) | `Daex.lnk` only (the old one removed by `customInstall`) | `Daex` | `Daex` | unchanged |
+| Uninstall (`QuietUninstallString`) | no ADE or Daex shortcut | no entry | no key | removed |
+
+All installers exited 0. A copy of the original `ADE.lnk` (what a taskbar
+pin holds) still pointed at an existing `ADE.exe` after the update.
+
+Not covered: the taskbar and toast names on a real desktop (no one clicked
+in the sandbox; they follow the shortcut, per Windows), Beta and Alpha
+builds (same code path; their names come from `displayName`), and a signed
+CI build. Before release, `windows-installed-product-smoke.ps1` checks the
+Daex entry and shortcut on the CI runner.
+
 ## Not verified
 
-Built and run nothing: electron-builder for macOS needs a Mac, and no
-installer was built here. Checked instead: electron-builder 26.15.3 source
+No Mac or Linux build ran here: electron-builder for macOS needs a Mac.
+Checked instead: electron-builder 26.15.3 source
 (Info.plist, NSIS, desktop entry, packaged `package.json`), Electron's helper
 lookup source, the config schema with the new keys, and the CLI parsing of
 the Linux flag.
@@ -268,4 +328,5 @@ On Linux: `dpkg -c` lists `/opt/ADE/…`;
 `StartupWMClass=ade-desktop`; the running window groups under that launcher.
 
 On Windows: the installed exe and folder are unchanged
-(`windows-installed-product-smoke.ps1`); window titles read "… - Daex".
+(`windows-installed-product-smoke.ps1`); window titles read "… - Daex"; the
+Start menu entry, taskbar hover and a toast say Daex after a real update.
