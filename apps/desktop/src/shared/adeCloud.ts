@@ -824,22 +824,13 @@ export function cloudHoursLeftMilli(account: Pick<CloudAccountState, "hours" | "
 /** The name Daex shows for a computer it made with no lane name (`cloudMachineCreator`). */
 export const CLOUD_MACHINE_DEFAULT_NAME = `${BRAND.CLOUD_NAME} computer`;
 
-/**
- * The same default under the old product name. It is still the one stored
- * (`storedCloudMachineName`): released desktops and iPhones compare stored
- * names to it.
- */
+/** The same default under the old product name, as computers made before the rename are stored. */
 export const LEGACY_CLOUD_MACHINE_DEFAULT_NAME = `${BRAND.FORMER_NAME} Cloud computer`;
 
 /** True for the name Daex gives a computer with no lane name, under either product name. */
 export function isCloudMachineDefaultName(name: string | null | undefined): boolean {
   const trimmed = name?.trim();
   return trimmed === CLOUD_MACHINE_DEFAULT_NAME || trimmed === LEGACY_CLOUD_MACHINE_DEFAULT_NAME;
-}
-
-/** The name to write for a computer: the no-lane default goes in under its old name. */
-export function storedCloudMachineName(name: string): string {
-  return isCloudMachineDefaultName(name) ? LEGACY_CLOUD_MACHINE_DEFAULT_NAME : name;
 }
 
 /** At this share of one computer's disk, ADE warns and offers "Free up space". */

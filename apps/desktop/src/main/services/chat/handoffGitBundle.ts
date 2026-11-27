@@ -39,9 +39,9 @@ const BASE64_PATTERN = /^[A-Za-z0-9+/]*={0,2}$/;
 const GITLINK_MODE = "160000";
 
 const SNAPSHOT_IDENTITY: NodeJS.ProcessEnv = {
-  GIT_AUTHOR_NAME: "ADE",
+  GIT_AUTHOR_NAME: BRAND.NAME,
   GIT_AUTHOR_EMAIL: "handoff@ade.invalid",
-  GIT_COMMITTER_NAME: "ADE",
+  GIT_COMMITTER_NAME: BRAND.NAME,
   GIT_COMMITTER_EMAIL: "handoff@ade.invalid",
 };
 
@@ -329,7 +329,7 @@ export async function packHandoffGitBundle(args: {
     ? null
     : await gitOut(
         cwd,
-        ["commit-tree", workingTree, "-p", tip, "-m", `ADE handoff ${args.handoffId}`],
+        ["commit-tree", workingTree, "-p", tip, "-m", `${BRAND.NAME} handoff ${args.handoffId}`],
         SNAPSHOT_IDENTITY,
       );
   const head = snapshotSha ?? tip;
