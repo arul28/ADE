@@ -39,7 +39,7 @@ export function isAdeCloudComputer(env: NodeJS.ProcessEnv = process.env): boolea
 export function describeAdeCloudComputer(): string | null {
   if (!isAdeCloudComputer()) return null;
   const memoryGb = Math.round(os.totalmem() / 2 ** 30);
-  return `**ADE Cloud:** you run on this lane's own ADE Cloud computer (Linux, ${memoryGb} GB memory, no swap). A command that ends with "Killed" ran out of memory: ADE stopped the biggest process to save the computer. For more memory or disk, \`ade cloud resize --request --size <size> --reason "…"\` asks the user on a card. Details: **ade-cloud**.`;
+  return `**Daex Cloud:** you run on this lane's own Daex Cloud computer (Linux, ${memoryGb} GB memory, no swap). A command that ends with "Killed" ran out of memory: Daex stopped the biggest process to save the computer. For more memory or disk, \`daex cloud resize --request --size <size> --reason "…"\` asks the user on a card. Details: **daex-cloud**.`;
 }
 
 /** What a person or an agent reads when a cloud computer refuses a second lane. Stable: the UI and the CLI show it as is. */

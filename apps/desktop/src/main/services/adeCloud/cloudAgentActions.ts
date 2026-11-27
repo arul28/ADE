@@ -248,9 +248,9 @@ export class CloudDeclined extends AdeExpectedError {
  * start lanes on ADE Cloud, each with its own computer, and never add a bare one.
  */
 export const CLOUD_AGENT_NO_COMPUTER_MESSAGE =
-  "Agents don't make ADE Cloud computers. Start a lane on ADE Cloud with the size the work needs "
-  + "(ade chat create --machine cloud --size <size>, or ade lanes create --machine cloud --size <size>), "
-  + "or ask the person to make the computer in ADE (Settings › ADE Cloud).";
+  "Agents don't make Daex Cloud computers. Start a lane on Daex Cloud with the size the work needs "
+  + "(daex chat create --machine cloud --size <size>, or daex lanes create --machine cloud --size <size>), "
+  + "or ask the person to make the computer in Daex (Settings › Daex Cloud).";
 
 const NO_DESKTOP = `This ${BRAND.NAME} can't make ${BRAND.CLOUD_NAME} machines: it isn't signed in to your ${BRAND.NAME} account.`;
 
@@ -292,12 +292,12 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
 
   /** A box by its the provider id, ADE machine key, or name. */
   const resolveMachine = async (selector: string | null): Promise<{ box: CloudMachine; all: CloudMachinesResult }> => {
-    if (!selector) throw new Error(`Name the machine: its name or ${BRAND.CLOUD_NAME} id (ade cloud list).`);
+    if (!selector) throw new Error(`Name the machine: its name or ${BRAND.CLOUD_NAME} id (daex cloud list).`);
     const all = await readMachines();
     const wanted = selector.toLowerCase();
     const matches = all.machines.filter((box) =>
       box.instanceId === selector || box.machineKey === selector || (box.name ?? "").toLowerCase() === wanted);
-    if (!matches.length) throw new Error(`No ${BRAND.CLOUD_NAME} machine is called "${selector}". ade cloud list shows them.`);
+    if (!matches.length) throw new Error(`No ${BRAND.CLOUD_NAME} machine is called "${selector}". daex cloud list shows them.`);
     if (matches.length > 1) {
       throw new Error(`"${selector}" names ${matches.length} machines: ${matches.map((box) => box.instanceId).join(", ")}. Pass the id.`);
     }
@@ -430,7 +430,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     },
   ): Promise<{ counted: () => void; release: () => void; unattended: boolean; maker: CloudAgentMaker | null; choice: "confirm" | "alternative" }> => {
     const nothing = { counted: () => undefined, release: () => undefined, unattended: false, maker: null, choice: "confirm" as const };
-    const noChatToAsk = () => new CloudDeclined(`${card.title} uses credits or deletes something, so it needs your yes, and ${BRAND.NAME} has no chat to ask you in. ${card.personPlace ?? "Run it from an ADE chat, or do it in ADE: Settings › ADE Cloud, the lane's row."}`);
+    const noChatToAsk = () => new CloudDeclined(`${card.title} uses credits or deletes something, so it needs your yes, and ${BRAND.NAME} has no chat to ask you in. ${card.personPlace ?? "Run it from a Daex chat, or do it in Daex: Settings › Daex Cloud, the lane's row."}`);
     if (approval.by === "person") return nothing;
     const chatSessionId = approval.chatSessionId;
     // An app on ADE MCP has no chat to ask in: it is answered like a chat
@@ -478,15 +478,15 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       if (card.makesComputer) declineComputer(where);
       if (card.action === "person_only") {
         notice(`${BRAND.NAME} said no to "${card.title}" in ${where}: only you can decide it.`);
-        throw new CloudDeclined(`${card.title}: declined. Only the person can decide it (Settings › Integrations › ADE Cloud).`);
+        throw new CloudDeclined(`${card.title}: declined. Only the person can decide it (Settings › Integrations › Daex Cloud).`);
       }
       if (card.tierChange) {
         notice(`${BRAND.NAME} said no to "${card.title}" in ${where}: only you can change a computer's size.`);
-        throw new CloudDeclined(`${card.title}: declined. Only the person can change a computer's size. From a chat, ask them with ade cloud resize --request --size <size> --reason "<why>".`);
+        throw new CloudDeclined(`${card.title}: declined. Only the person can change a computer's size. From a chat, ask them with daex cloud resize --request --size <size> --reason "<why>".`);
       }
       if (card.action === "delete" && viaAdeMcp) {
         notice(`${BRAND.NAME} said no to "${card.title}" in ${where}: only you can delete a computer.`);
-        throw new CloudDeclined(`${card.title}: declined. A delete through ADE MCP always needs the person; ask them to delete it from its card in ADE.`);
+        throw new CloudDeclined(`${card.title}: declined. A delete through Daex MCP always needs the person; ask them to delete it from its card in Daex.`);
       }
       if (card.action === "delete" && !card.madeByThisChat) {
         notice(`${BRAND.NAME} said no to "${card.title}" in ${where}: nobody is here to approve deleting a machine this chat didn't make.`);
@@ -507,7 +507,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         logger.warn?.("cloud.agent_limits_read_failed", { error: getErrorMessage(error) });
         return { ...CLOUD_DEFAULT_AGENT_LIMITS, fallback: true };
       }) : null;
-      const refuse = (why: string, change = "The person can change what agents may do in Settings › Integrations › ADE Cloud."): never => {
+      const refuse = (why: string, change = "The person can change what agents may do in Settings › Integrations › Daex Cloud."): never => {
         notice(`${BRAND.NAME} said no to "${card.title}" in ${where}: ${why}`);
         throw new CloudDeclined(`${card.title}: declined. ${why} ${change}`.trim());
       };
@@ -835,7 +835,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       // A move deletes the machine it runs from: the chat asking for it, and
       // this brain, would stop halfway, with the new machine awake and using hours.
       if (box.instanceId === process.env.ADE_CLOUD_INSTANCE_ID?.trim()) {
-        throw new Error(`"${box.name ?? box.instanceId}" is the machine this runs on, so it can't move itself. Push the lane's branch, then start a lane on ${BRAND.CLOUD_NAME} on it with the size the work needs (ade lanes create --machine cloud --size ${to === "vm" ? "large" : "small"} --existing-branch <branch> --name "<name>"), and start a chat there (ade chat create --machine <its computer> --lane <its lane id> --provider <p> --model <id> --prompt "<the task>"). This machine stays and sleeps when idle; offer to delete it from the new chat.`);
+        throw new Error(`"${box.name ?? box.instanceId}" is the machine this runs on, so it can't move itself. Push the lane's branch, then start a lane on ${BRAND.CLOUD_NAME} on it with the size the work needs (daex lanes create --machine cloud --size ${to === "vm" ? "large" : "small"} --existing-branch <branch> --name "<name>"), and start a chat there (daex chat create --machine <its computer> --lane <its lane id> --provider <p> --model <id> --prompt "<the task>"). This machine stays and sleeps when idle; offer to delete it from the new chat.`);
       }
       const shapeId = shapeArg(args);
       const approval = readApproval(args);
@@ -891,7 +891,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       // A CLI session needs a window to start its terminal in, which a brain
       // doesn't have: it starts from the ADE app.
       if (asked.kind === "cli") {
-        throw new Error(`A CLI session on ${BRAND.CLOUD_NAME} starts from the ${BRAND.NAME} app. Here, start a chat (ade chat create --machine cloud) or the lane alone (ade lanes create --machine cloud).`);
+        throw new Error(`A CLI session on ${BRAND.CLOUD_NAME} starts from the ${BRAND.NAME} app. Here, start a chat (daex chat create --machine cloud) or the lane alone (daex lanes create --machine cloud).`);
       }
       // No size asked for: the size the person saved for new lanes, then Small.
       // That is ADE's default for this launch, so a Small may move to Medium
@@ -903,7 +903,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const launch: ChatLaunchArgs = { ...asked, cloud: { sizeId, sizeChoice: sizeDefaulted ? "default" : "picked" } };
       const laneOnly = launch.kind === "lane";
       const host = deps.laneLaunch?.() ?? null;
-      if (!host) throw new Error(`This ${BRAND.NAME} can't start a lane on ${BRAND.CLOUD_NAME}. Use the ${BRAND.NAME} app, or the ade command where ${BRAND.NAME} runs in the background.`);
+      if (!host) throw new Error(`This ${BRAND.NAME} can't start a lane on ${BRAND.CLOUD_NAME}. Use the ${BRAND.NAME} app, or the daex command where ${BRAND.NAME} runs in the background.`);
       const approval = readApproval(args);
       const chatSessionId = approval.by === "agent" ? approval.chatSessionId : null;
       const launchId = typeof launch.launchId === "string" ? launch.launchId.trim().toLowerCase() : "";
@@ -956,7 +956,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const yes = await approve(approval, {
         action: "spend",
         title: `Start a lane on ${BRAND.CLOUD_NAME}`,
-        body: `${BRAND.NAME} makes a new ${tier.label} computer (${tier.cpu} CPU, ${tier.memoryGb} GB) for this lane alone, gets the repository there and ${startsLaneOnly ? "sets up the lane" : "starts the chat on it"}.${shape ? ` ${describeCloudHoursUse(kind, shape.id, catalog, words)}` : ""}${mayMoveUp ? ` If this repository's setup needs more than ${CLOUD_AUTO_SIZE.fromMemoryGb} GB, ADE uses ${moveUpTier?.label ?? CLOUD_AUTO_SIZE.toLabel}${moveUpRate ? ` (it ${moveUpRate})` : ""} instead and remembers that.` : ""}`,
+        body: `${BRAND.NAME} makes a new ${tier.label} computer (${tier.cpu} CPU, ${tier.memoryGb} GB) for this lane alone, gets the repository there and ${startsLaneOnly ? "sets up the lane" : "starts the chat on it"}.${shape ? ` ${describeCloudHoursUse(kind, shape.id, catalog, words)}` : ""}${mayMoveUp ? ` If this repository's setup needs more than ${CLOUD_AUTO_SIZE.fromMemoryGb} GB, Daex uses ${moveUpTier?.label ?? CLOUD_AUTO_SIZE.toLabel}${moveUpRate ? ` (it ${moveUpRate})` : ""} instead and remembers that.` : ""}`,
         confirm: "Start it",
         newMachine: true,
         shape: shape?.id ?? null,
@@ -1004,12 +1004,12 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const need = text(args, "need");
       if (!need) throw new Error("Say what the person needs right now (--need \"a hosted Postgres for this app\").");
       const none = (message: string, reason?: string) => ({ shown: false, pick: null, ...(reason ? { reason } : {}), message });
-      const onYourOwn = "Pick a tool on its merits, as you would without ADE.";
-      if (approval.by === "person") return none(`Recommendations are for agents in an ADE Cloud chat. ${onYourOwn}`);
+      const onYourOwn = "Pick a tool on its merits, as you would without Daex.";
+      if (approval.by === "person") return none(`Recommendations are for agents in a Daex Cloud chat. ${onYourOwn}`);
       // Only with a person in the chat: never an outside app or an automation nobody watches.
       if (approval.viaAdeMcp || approval.automation) return none(`No recommendation here: nobody is watching this chat. ${onYourOwn}`, "nobody_watching");
       const instanceId = process.env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "";
-      if (!instanceId) return none(`Recommendations run only on ADE Cloud computers. ${onYourOwn}`, "not_cloud");
+      if (!instanceId) return none(`Recommendations run only on Daex Cloud computers. ${onYourOwn}`, "not_cloud");
       const chatSessionId = approval.chatSessionId;
       if (chatSessionId && deps.approvals) {
         // An automation's chat or a subagent's: nobody watches it, whatever the caller says.
@@ -1105,7 +1105,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const self = process.env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "";
       const host = deps.diskGrow?.() ?? null;
       if (!self || !host) {
-        throw new AdeExpectedError(`ade cloud resize --free grows the disk of the ${BRAND.CLOUD_NAME} computer it runs on, and this isn't one. A lane computer's disk grows from its row in Settings › ${BRAND.CLOUD_NAME}.`, "user");
+        throw new AdeExpectedError(`daex cloud resize --free grows the disk of the ${BRAND.CLOUD_NAME} computer it runs on, and this isn't one. A lane computer's disk grows from its row in Settings › ${BRAND.CLOUD_NAME}.`, "user");
       }
       const machine = text(args, "machine");
       if (machine && machine !== self) throw new AdeExpectedError(`A disk grows only from the computer it belongs to. Run this on that computer, or grow it from its row in Settings › ${BRAND.CLOUD_NAME}.`, "user");
@@ -1180,7 +1180,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       if (!host || !existing) return null;
       const approval = readApproval(args);
       if (approval.by === "agent" && approval.viaAdeMcp) {
-        throw new CloudDeclined("Cancelling deletes the computer made for this lane, so only the person can do it, in ADE.");
+        throw new CloudDeclined("Cancelling deletes the computer made for this lane, so only the person can do it, in Daex.");
       }
       if (approval.by === "agent" && (!approval.chatSessionId || existing.madeByChat !== approval.chatSessionId)) {
         throw new CloudDeclined(`This ${BRAND.CLOUD_NAME} lane was started from another chat, so only that chat or you can cancel it.`);

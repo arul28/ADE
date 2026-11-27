@@ -158,7 +158,7 @@ export function createMacDesktopObservations(deps: MacDesktopObservationsDeps) {
       if (!observation) {
         throw new MacDesktopObservationError(
           MAC_DESKTOP_HANDLE_EXPIRED_CODE,
-          `Handle ${handle} belongs to an observation ADE no longer holds. Observe again and use a fresh handle.`,
+          `Handle ${handle} belongs to an observation Daex no longer holds. Observe again and use a fresh handle.`,
         );
       }
       const index = Number.parseInt(rawIndex, 10);

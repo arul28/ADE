@@ -78,7 +78,7 @@ export function createMessagesIntegrationService(args: {
     const result = await readerFor("read").read(request);
     if (result.ok) return result;
     if (result.code === "needs_full_disk_access") {
-      throw new AdeExpectedError("ADE needs Full Disk Access to read Messages. The person can grant it in System Settings › Privacy & Security › Full Disk Access (Settings › Integrations › Messages has a button).", "user");
+      throw new AdeExpectedError("Daex needs Full Disk Access to read Messages. The person can grant it in System Settings › Privacy & Security › Full Disk Access (Settings › Integrations › Messages has a button).", "user");
     }
     throw new AdeExpectedError(result.message || "Messages could not be read.", "user");
   };
@@ -130,7 +130,7 @@ export function createMessagesIntegrationService(args: {
       const result = await reader.send({ to, text: input.text });
       if (!result.ok) {
         if (result.code === "needs_automation_permission") {
-          throw new AdeExpectedError("ADE needs permission to control Messages. The person can allow it in System Settings › Privacy & Security › Automation.", "user");
+          throw new AdeExpectedError("Daex needs permission to control Messages. The person can allow it in System Settings › Privacy & Security › Automation.", "user");
         }
         throw new AdeExpectedError(result.message || "Messages could not send the text.", "user");
       }

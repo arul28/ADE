@@ -61,7 +61,7 @@ export async function requestProjectSecretFromUser(
   const args = readCardArgs(rawArgs);
   const chatSessionId = typeof args.chatSessionId === "string" ? args.chatSessionId.trim() : "";
   if (!chatSessionId) {
-    throw new Error("Asking for a secret needs a chat to ask in. Run `ade secrets request` from inside an ADE chat.");
+    throw new Error("Asking for a secret needs a chat to ask in. Run `daex secrets request` from inside a Daex chat.");
   }
   const rawRequestId = typeof args.requestId === "string" ? args.requestId.trim() : "";
   if (rawRequestId && !REQUEST_ID_PATTERN.test(rawRequestId)) {
@@ -103,7 +103,7 @@ async function askProjectSecret(
   if (!askedDelivery) throw new Error("--delivery must be `secrets` or `file`.");
   const secretFiles = deps.secretFiles ?? null;
   if (askedDelivery === "file" && !secretFiles) {
-    throw new Error("This ADE runtime cannot write temporary secret files. Ask without --delivery file.");
+    throw new Error("This Daex runtime cannot write temporary secret files. Ask without --delivery file.");
   }
   const delivery: ProjectSecretDelivery = askedDelivery;
   const ttlMs = typeof args.ttlMs === "number" && Number.isFinite(args.ttlMs) ? Math.floor(args.ttlMs) : null;
@@ -172,7 +172,7 @@ async function askProjectSecret(
         fileResult = secretFiles.write({ chatSessionId, requestId, name, value, ttlMs });
       } catch (error) {
         const detail = error instanceof Error ? error.message : "unknown error";
-        throw new Error(`ADE could not write the private file for ${name}: ${detail}`);
+        throw new Error(`Daex could not write the private file for ${name}: ${detail}`);
       }
       saved = true;
       return;
@@ -185,7 +185,7 @@ async function askProjectSecret(
     } catch (error) {
       // The service's own messages never carry the value.
       const detail = error instanceof Error ? error.message : "unknown error";
-      throw new Error(`ADE could not save ${name}: ${detail}`);
+      throw new Error(`Daex could not save ${name}: ${detail}`);
     }
     saved = true;
     replaced = exists;

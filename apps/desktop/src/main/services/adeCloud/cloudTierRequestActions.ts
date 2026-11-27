@@ -72,10 +72,10 @@ export function buildCloudTierRequestActions(deps: CloudTierRequestActionDeps) {
     async tier_request(rawArgs?: unknown) {
       const args = record(rawArgs);
       const approval = readApproval(args);
-      if (approval.by === "person") throw new Error("Change the size directly: Settings › ADE Cloud, or ade cloud resize.");
+      if (approval.by === "person") throw new Error("Change the size directly: Settings › Daex Cloud, or daex cloud resize.");
       const chatSessionId = approval.chatSessionId;
       if (!chatSessionId || !deps.approvals?.postCard) {
-        throw new Error("ADE has no chat to show this request in. Ask the person to change the size in Settings › ADE Cloud.");
+        throw new Error("Daex has no chat to show this request in. Ask the person to change the size in Settings › Daex Cloud.");
       }
       const sizeId = text(args, "size")?.toLowerCase() ?? null;
       if (!isCloudTierId(sizeId)) throw new Error(`Pick a size: ${CLOUD_TIER_IDS.join(", ")}.`);
@@ -101,7 +101,7 @@ export function buildCloudTierRequestActions(deps: CloudTierRequestActionDeps) {
       return {
         requested: true,
         requestId,
-        message: `Asked the person in this chat to change ${computerName} to ${to.label}. Nothing changes until they confirm; keep working or end your turn. ADE tells you in this chat when they keep the size, or once the change is done.`,
+        message: `Asked the person in this chat to change ${computerName} to ${to.label}. Nothing changes until they confirm; keep working or end your turn. Daex tells you in this chat when they keep the size, or once the change is done.`,
       };
     },
 

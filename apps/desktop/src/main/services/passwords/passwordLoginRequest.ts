@@ -39,7 +39,7 @@ export async function requestPasswordLoginFromUser(
   const args = readCardArgs(rawArgs);
   const chatSessionId = typeof args.chatSessionId === "string" ? args.chatSessionId.trim() : "";
   if (!chatSessionId) {
-    throw new Error("Asking for a login needs a chat to ask in. Run `ade browser signin` from inside an ADE chat.");
+    throw new Error("Asking for a login needs a chat to ask in. Run `daex browser signin` from inside a Daex chat.");
   }
   const pageUrl = typeof args.pageUrl === "string" ? args.pageUrl.trim() : "";
   const target = deps.passwords.siteForPage(pageUrl);
@@ -75,7 +75,7 @@ async function askLogin(
     } catch (error) {
       // The service's own messages never carry a value.
       const detail = error instanceof Error ? error.message : "unknown error";
-      throw new Error(`ADE could not save the login for ${site}: ${detail}`);
+      throw new Error(`Daex could not save the login for ${site}: ${detail}`);
     }
   };
 

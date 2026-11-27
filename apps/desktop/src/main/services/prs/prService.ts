@@ -11315,7 +11315,7 @@ export function createPrService({
       }
       if (!pr || !sessionId) {
         if (mode === null) return null;
-        throw new Error(`No pull request "${target}" is tracked in this project. Use an ADE PR id, a PR number, or a PR URL.`);
+        throw new Error(`No pull request "${target}" is tracked in this project. Use a Daex PR id, a PR number, or a PR URL.`);
       }
       let record: PrChatWatchRecord | null;
       if (mode === null) {
@@ -11329,7 +11329,7 @@ export function createPrService({
           [canonicalSessionId],
         );
         if (!isChatToolType(sessionRow?.tool_type)) {
-          throw new Error("PR Watch wakes an ADE chat, and this session is not one. Run it from a chat, or pass --chat <chat id>.");
+          throw new Error("PR Watch wakes a Daex chat, and this session is not one. Run it from a chat, or pass --chat <chat id>.");
         }
         if (pr.state === "merged" || pr.state === "closed") {
           throw new Error(`PR #${pr.github_pr_number} is ${pr.state}; there is nothing left to watch.`);

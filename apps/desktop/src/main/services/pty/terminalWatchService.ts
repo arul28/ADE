@@ -400,10 +400,10 @@ export function createTerminalWatchService(deps: TerminalWatchServiceDeps) {
     } else if (final) {
       lines.push("No new output to show.");
     }
-    lines.push("", `Read more: \`ade terminal read --terminal ${watch.terminalId} --text\``);
-    if (!final) lines.push(`Stop watching: \`ade terminal unwatch ${watch.id}\``);
+    lines.push("", `Read more: \`daex terminal read --terminal ${watch.terminalId} --text\``);
+    if (!final) lines.push(`Stop watching: \`daex terminal unwatch ${watch.id}\``);
     if (final?.reason === "wake_limit" || final?.reason === "expired") {
-      lines.push(`Watch again if you still need it: \`ade terminal watch ${watch.terminalId}${watch.matcher ? ` --match ${JSON.stringify(watch.matcher.label)}` : ""}\``);
+      lines.push(`Watch again if you still need it: \`daex terminal watch ${watch.terminalId}${watch.matcher ? ` --match ${JSON.stringify(watch.matcher.label)}` : ""}\``);
     }
 
     const excerptLines = excerpt ? excerpt.text.split("\n").filter((line) => line && line !== "…") : [];
@@ -566,7 +566,7 @@ export function createTerminalWatchService(deps: TerminalWatchServiceDeps) {
       throw new Error(`Chat '${chatSessionId}' was not found on this machine. A terminal watch runs on the machine that runs the chat.`);
     }
     if (!isChatToolType(row.toolType)) {
-      throw new Error("A terminal watch wakes an ADE chat, and this session is not one. Run it from a chat, or pass --chat <chat id>.");
+      throw new Error("A terminal watch wakes a Daex chat, and this session is not one. Run it from a chat, or pass --chat <chat id>.");
     }
     if (row.archivedAt) throw new Error(`Chat '${chatSessionId}' is archived.`);
     return row;
@@ -586,7 +586,7 @@ export function createTerminalWatchService(deps: TerminalWatchServiceDeps) {
       resolved = read.terminalId;
     } catch (error) {
       if (!terminalId && !ptyId) {
-        throw new Error("This chat has no active shell to watch. Pass a terminal id (`ade terminal list --text`), or --command to start one.");
+        throw new Error("This chat has no active shell to watch. Pass a terminal id (`daex terminal list --text`), or --command to start one.");
       }
       throw new Error(`${getErrorMessage(error)} A terminal watch can only watch a terminal on the machine that runs the chat.`);
     }
@@ -603,7 +603,7 @@ export function createTerminalWatchService(deps: TerminalWatchServiceDeps) {
     const others = [...watches.values()].filter((watch) => watch.terminalId !== terminalId || watch.chatSessionId !== chatSessionId);
     const forChat = others.filter((watch) => watch.chatSessionId === chatSessionId).length;
     if (forChat >= MAX_WATCHES_PER_CHAT) {
-      throw new Error(`This chat already watches ${forChat} terminals, the most it can. Stop one first (\`ade terminal unwatch <watch id>\`).`);
+      throw new Error(`This chat already watches ${forChat} terminals, the most it can. Stop one first (\`daex terminal unwatch <watch id>\`).`);
     }
     if (others.length >= MAX_WATCHES_TOTAL) {
       throw new Error("Too many terminal watches are running on this machine. Stop some first.");

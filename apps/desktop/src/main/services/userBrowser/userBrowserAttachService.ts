@@ -153,7 +153,7 @@ export type UserBrowserAttachServiceDeps = {
 };
 
 const ATTACH_CANCELLED_MESSAGE =
-  "This attach was cancelled: the chat detached (or attached again) while it waited. This chat stays on ADE's browser.";
+  "This attach was cancelled: the chat detached (or attached again) while it waited. This chat stays on Daex's browser.";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -178,7 +178,7 @@ function navigableUrl(raw: string): string {
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:" && parsed.href !== "about:blank") {
     throw new UserBrowserAttachError(
-      `ADE navigates the user's tab only to http(s) pages, not ${parsed.protocol} URLs.`,
+      `Daex navigates the user's tab only to http(s) pages, not ${parsed.protocol} URLs.`,
     );
   }
   return parsed.href;
@@ -245,7 +245,7 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
     const chatSessionId = isRecord(input) ? stringOrNull(input.chatSessionId) : null;
     if (!chatSessionId) {
       throw new UserBrowserAttachError(
-        "Attaching to the user's browser needs a chat: run it from an ADE chat, whose shell carries ADE_CHAT_SESSION_ID.",
+        "Attaching to the user's browser needs a chat: run it from a Daex chat, whose shell carries ADE_CHAT_SESSION_ID.",
       );
     }
     return chatSessionId;
@@ -292,7 +292,7 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
     if (attachment.lostReason) {
       attachments.delete(chatSessionId);
       throw new UserBrowserAttachError(
-        `${USER_BROWSER_DETACHED_PREFIX} ${attachment.browserLabel} on ${attachment.machine} — ${attachment.lostReason}, so this chat is back on ADE's browser. Run the command again to use ADE's browser, or ask the user before attaching again.`,
+        `${USER_BROWSER_DETACHED_PREFIX} ${attachment.browserLabel} on ${attachment.machine} — ${attachment.lostReason}, so this chat is back on Daex's browser. Run the command again to use Daex's browser, or ask the user before attaching again.`,
       );
     }
     armIdleTimer(attachment);
@@ -312,11 +312,11 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
     const installed = candidates.filter((entry) => entry.installed);
     if (!installed.length) {
       return requested
-        ? `${userBrowserLabel(requested)} has no profile on ${host}, so ADE cannot attach to it. Ask the user which browser they use.`
-        : `No supported browser (Chrome, Edge, Brave, Arc, Helium, Chromium) has a profile on ${host}, so ADE cannot attach to the user's browser here.`;
+        ? `${userBrowserLabel(requested)} has no profile on ${host}, so Daex cannot attach to it. Ask the user which browser they use.`
+        : `No supported browser (Chrome, Edge, Brave, Arc, Helium, Chromium) has a profile on ${host}, so Daex cannot attach to the user's browser here.`;
     }
     const steps = installed.map((entry) => `${entry.label}: open ${entry.inspectUrl}`).join("; ");
-    return `No browser on ${host} has remote debugging on, so ADE cannot reach the user's tabs. Ask the user to turn it on and try again — ${steps}, and turn on remote debugging there. Chrome then asks them once to allow the connection.`;
+    return `No browser on ${host} has remote debugging on, so Daex cannot reach the user's tabs. Ask the user to turn it on and try again — ${steps}, and turn on remote debugging there. Chrome then asks them once to allow the connection.`;
   };
 
   // ── Page state the action engine reads ───────────────────────────────────
@@ -435,7 +435,7 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
   const attach = async (input: UserBrowserAttachInput = {}): Promise<UserBrowserAttachResult> => {
     const chatSessionId = requireChat(input);
     if (disposed) {
-      throw new UserBrowserAttachError("ADE's runtime is shutting down, so it cannot attach to the user's browser.");
+      throw new UserBrowserAttachError("Daex's runtime is shutting down, so it cannot attach to the user's browser.");
     }
     cancelPendingAttach(chatSessionId);
     const mine: PendingAttach = { token: ++attachTokens, abort: new AbortController() };
@@ -632,17 +632,17 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
       if (cancelledPending) {
         return {
           detached: true,
-          message: `${USER_BROWSER_DETACHED_PREFIX} cancelled the attach that was waiting. This chat stays on ADE's browser.`,
+          message: `${USER_BROWSER_DETACHED_PREFIX} cancelled the attach that was waiting. This chat stays on Daex's browser.`,
         };
       }
       return {
         detached: false,
-        message: "not attached: this chat already uses ADE's browser.",
+        message: "not attached: this chat already uses Daex's browser.",
       };
     }
     return {
       detached: true,
-      message: `${USER_BROWSER_DETACHED_PREFIX} ${existing.browserLabel} on ${existing.machine}. This chat is back on ADE's browser.`,
+      message: `${USER_BROWSER_DETACHED_PREFIX} ${existing.browserLabel} on ${existing.machine}. This chat is back on Daex's browser.`,
     };
   };
 
@@ -860,7 +860,7 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
     navigate: async (attachment, _args, input) => {
       if (input.newTab === true || input.isolated === true || stringOrNull(input.profile)) {
         throw new UserBrowserAttachError(
-          "New and isolated tabs open only in ADE's browser. This chat navigates the attached tab; run `ade browser detach` first to use ADE's browser.",
+          "New and isolated tabs open only in Daex's browser. This chat navigates the attached tab; run `daex browser detach` first to use Daex's browser.",
         );
       }
       const url = navigableUrl(stringOrNull(input.url) ?? "");
@@ -906,7 +906,7 @@ export function createUserBrowserAttachService(deps: UserBrowserAttachServiceDep
     if (!handler) {
       const word = METHOD_COMMAND_WORDS[method] ?? method;
       throw new UserBrowserAttachError(
-        `\`ade browser ${word}\` works only in ADE's browser, and this chat is attached to ${target}. Run \`ade browser detach\` first, or do the step with observe/click/fill/type/press/scroll/wait.`,
+        `\`daex browser ${word}\` works only in Daex's browser, and this chat is attached to ${target}. Run \`daex browser detach\` first, or do the step with observe/click/fill/type/press/scroll/wait.`,
       );
     }
     try {
