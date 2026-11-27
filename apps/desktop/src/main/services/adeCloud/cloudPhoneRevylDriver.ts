@@ -399,7 +399,9 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
     let cursor: string | null = null;
     let lastFirst: unknown;
     for (let page = 0; page < BUILD_LOG_PAGES; page += 1) {
-      const logs = await callJson(phone, "build.logs", { job }, { query: { limit: String(BUILD_LOG_PAGE), ...(cursor ? { cursor } : {}) } }).catch((error: unknown) => {
+      const query: Record<string, string> = { limit: String(BUILD_LOG_PAGE) };
+      if (cursor) query.cursor = cursor;
+      const logs: Record<string, unknown> | null = await callJson(phone, "build.logs", { job }, { query }).catch((error: unknown) => {
         ctx.logger?.warn?.("cloud_phone.build_logs_failed", { error: error instanceof Error ? error.message : String(error) });
         return null;
       });
@@ -408,7 +410,7 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
       if (!events.length || (page > 0 && events[0]?.message === lastFirst)) break;
       lastFirst = events[0]?.message;
       lines.unshift(...events.map((event) => (typeof event.message === "string" ? event.message : "")).filter(Boolean));
-      const previous = logs?.has_more_before === true && typeof logs.previous_cursor === "string" ? logs.previous_cursor : null;
+      const previous: string | null = logs?.has_more_before === true && typeof logs.previous_cursor === "string" ? logs.previous_cursor : null;
       if (!previous) break;
       cursor = previous;
     }
