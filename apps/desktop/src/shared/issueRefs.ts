@@ -28,6 +28,12 @@ export function normalizeLinearIdentifier(value: string | null | undefined): str
   return LINEAR_IDENTIFIER_RE.test(identifier) ? identifier : null;
 }
 
+/** The Linear team key of an issue identifier (`ADE` for `ADE-159`), or null. */
+export function linearTeamKeyFromIdentifier(identifier: string | null | undefined): string | null {
+  const match = identifier ? /^([A-Za-z][A-Za-z0-9]{0,9})-(\d{1,9})$/.exec(identifier.trim()) : null;
+  return match ? match[1]!.toUpperCase() : null;
+}
+
 export function linearIssueRef(identifier: string, url?: string | null): LinearIssueRef | null {
   const normalized = normalizeLinearIdentifier(identifier);
   return normalized ? { provider: "linear", identifier: normalized, url: url ?? null } : null;
@@ -126,19 +132,25 @@ export function proseIssueKeyPattern(): RegExp {
 
 /**
  * The Linear issue a link opens: a linear.app issue URL, or ADE's own
- * linear-issue link (with its branch hint). `adeLink` tells them apart: a
- * linear.app link may point at another workspace.
+ * linear-issue link (with its branch hint). `workspace` is the URL name in a
+ * linear.app link (`linear.app/<workspace>/issue/…`), since an identifier is
+ * only unique inside one workspace; null for ADE's links, which mean "ours".
  */
 export function linearIssueLinkTarget(
   href: string | null | undefined,
-): { ref: LinearIssueRef; branch: string | null; adeLink: boolean } | null {
+): { ref: LinearIssueRef; branch: string | null; workspace: string | null; adeLink: boolean } | null {
   if (!href) return null;
   const fromUrl = issueRefFromUrl(href);
-  if (fromUrl) return fromUrl.provider === "linear" ? { ref: fromUrl, branch: null, adeLink: false } : null;
+  if (fromUrl) {
+    if (fromUrl.provider !== "linear") return null;
+    const first = new URL(href).pathname.split("/").filter(Boolean)[0] ?? "";
+    const workspace = first && first.toLowerCase() !== "issue" ? decodeURIComponent(first) : null;
+    return { ref: fromUrl, branch: null, workspace, adeLink: false };
+  }
   const parsed = parseDeeplink(href);
   if (!parsed.ok || parsed.target.kind !== "linear-issue") return null;
   const ref = linearIssueRef(parsed.target.issueIdentifier);
-  return ref ? { ref, branch: parsed.target.branch ?? null, adeLink: true } : null;
+  return ref ? { ref, branch: parsed.target.branch ?? null, workspace: null, adeLink: true } : null;
 }
 
 /** Plain JSON for persistence; anything that is not a valid ref reads as null. */

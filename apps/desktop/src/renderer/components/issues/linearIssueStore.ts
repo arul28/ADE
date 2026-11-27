@@ -9,6 +9,7 @@ import { useActiveProjectRoot } from "../../state/appStore";
 import { useActiveRepositoryReader } from "../../state/repositoryScope";
 import { cacheScopePin } from "../../lib/tabBindingKey";
 import { applyIssueEdit, type LinearIssueEdit } from "../app/linearIssueBrowserModel";
+import { LINEAR_CONNECTION_CHANGED_EVENT } from "../../lib/linearConnectionEvents";
 import { createIssueEntryCache, type IssueEntry, type IssueEntryStatus } from "./issueEntryCache";
 
 /**
@@ -236,7 +237,13 @@ export async function loadLinearIssueComments(issueId: string, pin: LinearPin): 
 const TEAM_KEYS_STORAGE_PREFIX = "ade.linear.teamKeys.v1:";
 const TEAM_KEYS_REFRESH_MS = 60 * 60_000;
 
-type TeamKeysEntry = { keys: string[]; checkedAt: number };
+/**
+ * `workspaceUrlKey` is the connected workspace's URL name (`linear.app/<it>/…`),
+ * so a link to another workspace's `ENG-12` is not opened as ours. Undefined
+ * until read with the keys; null when Linear is not connected.
+ */
+export type LinearWorkspaceKeys = { keys: string[]; workspaceUrlKey?: string | null; checkedAt: number };
+type TeamKeysEntry = LinearWorkspaceKeys;
 
 const teamKeys = new Map<string, TeamKeysEntry>();
 const teamKeyReads = new Map<string, Promise<void>>();
@@ -247,21 +254,29 @@ function readStoredTeamKeys(projectRoot: string): TeamKeysEntry | null {
     const raw = window.localStorage.getItem(`${TEAM_KEYS_STORAGE_PREFIX}${projectRoot}`);
     const parsed = raw ? (JSON.parse(raw) as Partial<TeamKeysEntry>) : null;
     if (!parsed || !Array.isArray(parsed.keys) || typeof parsed.checkedAt !== "number") return null;
-    return { keys: parsed.keys.filter((key): key is string => typeof key === "string"), checkedAt: parsed.checkedAt };
+    return {
+      keys: parsed.keys.filter((key): key is string => typeof key === "string"),
+      ...(typeof parsed.workspaceUrlKey === "string" || parsed.workspaceUrlKey === null ? { workspaceUrlKey: parsed.workspaceUrlKey } : {}),
+      checkedAt: parsed.checkedAt,
+    };
   } catch {
     return null;
   }
 }
 
-function storeTeamKeys(projectRoot: string, entry: TeamKeysEntry): void {
+/** A catalog read carries no workspace, so an entry without one keeps the known one. */
+function storeTeamKeys(projectRoot: string, next: TeamKeysEntry): void {
   const current = teamKeys.get(projectRoot);
+  const entry = next.workspaceUrlKey === undefined && current?.workspaceUrlKey !== undefined
+    ? { ...next, workspaceUrlKey: current.workspaceUrlKey }
+    : next;
   teamKeys.set(projectRoot, entry);
   try {
     window.localStorage.setItem(`${TEAM_KEYS_STORAGE_PREFIX}${projectRoot}`, JSON.stringify(entry));
   } catch {
     // Storage unavailable: the keys still work for this session.
   }
-  if (current?.keys.join(",") !== entry.keys.join(",")) notify();
+  if (current?.keys.join(",") !== entry.keys.join(",") || current?.workspaceUrlKey !== entry.workspaceUrlKey) notify();
 }
 
 function teamKeysFromCatalog(catalog: CtoGetLinearIssuePickerDataResult): string[] {
@@ -270,12 +285,15 @@ function teamKeysFromCatalog(catalog: CtoGetLinearIssuePickerDataResult): string
 
 function refreshTeamKeys(projectRoot: string, pin: OpenProjectBinding): void {
   if (teamKeyReads.has(projectRoot)) return;
-  const read = window.ade?.cto?.getLinearIssuePickerData;
-  if (!read) return;
+  const cto = window.ade?.cto;
+  if (!cto?.getLinearIssuePickerData) return;
   const current = teamKeys.get(projectRoot);
-  const promise = read(pin)
-    .then((catalog) => storeTeamKeys(projectRoot, { keys: teamKeysFromCatalog(catalog), checkedAt: Date.now() }))
-    .catch(() => storeTeamKeys(projectRoot, { keys: current?.keys ?? [], checkedAt: Date.now() }))
+  const readWorkspace = cto.getLinearConnectionStatus
+    ? cto.getLinearConnectionStatus(pin).then((status) => (status.connected ? status.organizationUrlKey?.trim() || null : null), () => current?.workspaceUrlKey ?? null)
+    : Promise.resolve(current?.workspaceUrlKey ?? null);
+  const promise = Promise.all([cto.getLinearIssuePickerData(pin), readWorkspace])
+    .then(([catalog, workspaceUrlKey]) => storeTeamKeys(projectRoot, { keys: teamKeysFromCatalog(catalog), workspaceUrlKey, checkedAt: Date.now() }))
+    .catch(() => storeTeamKeys(projectRoot, { keys: current?.keys ?? [], workspaceUrlKey: current?.workspaceUrlKey ?? null, checkedAt: Date.now() }))
     .finally(() => teamKeyReads.delete(projectRoot));
   teamKeyReads.set(projectRoot, promise);
 }
@@ -316,18 +334,27 @@ export function useLinearWorkspaceTeamKeys(): string[] {
     if (!projectRoot) return;
     const known = teamKeysEntryFor(projectRoot);
     const readPin = pinRef.current;
-    if (readPin && Date.now() - known.checkedAt > TEAM_KEYS_REFRESH_MS) refreshTeamKeys(projectRoot, readPin);
+    const due = Date.now() - known.checkedAt > TEAM_KEYS_REFRESH_MS || known.workspaceUrlKey === undefined;
+    if (readPin && due) refreshTeamKeys(projectRoot, readPin);
+    // Connecting, switching or disconnecting Linear changes the keys now, not in an hour.
+    const onConnectionChanged = () => {
+      if (pinRef.current) refreshTeamKeys(projectRoot, pinRef.current);
+    };
+    window.addEventListener(LINEAR_CONNECTION_CHANGED_EVENT, onConnectionChanged);
+    return () => window.removeEventListener(LINEAR_CONNECTION_CHANGED_EVENT, onConnectionChanged);
   }, [pinKey, projectRoot]);
   return entry?.keys ?? EMPTY_TEAM_KEYS;
 }
 
+const NO_WORKSPACE: LinearWorkspaceKeys = { keys: EMPTY_TEAM_KEYS, workspaceUrlKey: null, checkedAt: 0 };
+
 /**
- * The same keys, without ever asking Linear: for a view drawn many times on
- * one page (every PR comment). The page above it keeps them fresh with
- * `useLinearWorkspaceTeamKeys`.
+ * The same keys and the workspace's URL name, without ever asking Linear: for
+ * a view drawn many times on one page (every PR comment). The page above it
+ * keeps them fresh with `useLinearWorkspaceTeamKeys`. Stable until they change.
  */
-export function useCachedLinearWorkspaceTeamKeys(): string[] {
-  return useTeamKeysEntry(useActiveProjectRoot())?.keys ?? EMPTY_TEAM_KEYS;
+export function useCachedLinearWorkspace(): LinearWorkspaceKeys {
+  return useTeamKeysEntry(useActiveProjectRoot()) ?? NO_WORKSPACE;
 }
 
 /** Every issue this cache holds, for the create form's "similar issues" hint. */

@@ -1,13 +1,8 @@
 import { findAndReplace } from "mdast-util-find-and-replace";
 import { buildDeeplink } from "../../../../shared/deeplinks";
-import { proseIssueKeyPattern } from "../../../../shared/issueRefs";
+import { linearTeamKeyFromIdentifier, proseIssueKeyPattern } from "../../../../shared/issueRefs";
 
 type MarkdownRoot = Parameters<typeof findAndReplace>[0];
-
-/** `ADE` for `ADE-123`. */
-export function linearTeamOf(identifier: string): string {
-  return identifier.slice(0, identifier.lastIndexOf("-"));
-}
 
 /** Links `#123` to this repo's PR, `@user` to the profile, and the workspace's Linear keys to the issue. */
 export function remarkPrAutolinks({
@@ -56,7 +51,7 @@ export function remarkPrAutolinks({
           // from anywhere it is copied to.
           proseIssueKeyPattern(),
           (full: string) =>
-            teams.has(linearTeamOf(full))
+            teams.has(linearTeamKeyFromIdentifier(full) ?? "")
               ? ({
                 type: "link",
                 url: buildDeeplink({ kind: "linear-issue", issueIdentifier: full }),

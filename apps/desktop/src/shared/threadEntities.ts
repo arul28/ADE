@@ -392,11 +392,7 @@ export function findProseEntities(text: string, lookup: ThreadEntityLookup): Thr
   return out;
 }
 
-/** The Linear team key of an issue identifier (`ADE` for `ADE-159`), or null. */
-export function linearTeamKeyFromIdentifier(identifier: string | null | undefined): string | null {
-  const match = identifier ? LINEAR_ID_RE.exec(identifier.trim()) : null;
-  return match ? match[1]!.toUpperCase() : null;
-}
+export { linearTeamKeyFromIdentifier } from "./issueRefs";
 
 // Pinned to UTC and fed wall-clock-shifted Dates (see wallClockAsUtc): a
 // formatter built without a zone would keep the load-time zone after a change.

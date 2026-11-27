@@ -174,9 +174,10 @@ export function LinearSection() {
     return connection.authMode === "oauth" ? "OAuth" : "API key";
   }, [connection?.authMode]);
   const workspaceLabel = connection?.organizationName?.trim() || connection?.organizationUrlKey?.trim() || null;
-  const workspaceUrlKey = connection?.organizationUrlKey?.trim() || "YOUR-WORKSPACE";
+  const orgUrlKey = connection?.organizationUrlKey?.trim() || null;
   // Without it a link would point at a placeholder workspace, so nothing is added.
-  const hasWorkspaceKey = workspaceUrlKey !== "YOUR-WORKSPACE";
+  const hasWorkspaceKey = orgUrlKey != null;
+  const workspaceUrlKey = orgUrlKey ?? "YOUR-WORKSPACE";
   const githubRepoSlug = githubRepo ? `${githubRepo.owner}/${githubRepo.name}` : null;
   const teamKeys = useMemo(() => {
     const keys = new Set<string>();

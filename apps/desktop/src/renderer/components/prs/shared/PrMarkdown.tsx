@@ -24,7 +24,7 @@ import { HighlightedCode } from "../../chat/CodeHighlighter";
 import { COLORS, fgTint } from "../../lanes/laneDesignTokens";
 import { ADE_DEEPLINK_FOOTER_LOGO_URL } from "../../../../shared/adeDeeplinkFooter";
 import { linearIssueLinkTarget } from "../../../../shared/issueRefs";
-import { useCachedLinearWorkspaceTeamKeys } from "../../issues/linearIssueStore";
+import { useCachedLinearWorkspace } from "../../issues/linearIssueStore";
 import { normalizeEscapedMarkdownNewlines } from "../../../../shared/prMarkdownText";
 import { MermaidDiagram } from "../../shared/MermaidDiagram";
 import {
@@ -34,12 +34,13 @@ import {
   PrMarkdownEnvContext,
   PrQuoteSourceContext,
   PrLinearIssueLink,
+  PrLinearWorkspaceContext,
   PrRefPill,
   PrTaskToggleContext,
   resolveInlineFile,
   type GithubAlertKind,
 } from "./prMarkdownContext";
-import { linearTeamOf, remarkPrAutolinks } from "./prMarkdownAutolinks";
+import { remarkPrAutolinks } from "./prMarkdownAutolinks";
 import { PrTaskCheckbox, PrTaskScopeContext, rehypeNumberTaskBoxes } from "./PrTaskCheckbox";
 import { getFileIcon } from "../../files/filePresentation";
 import {
@@ -584,19 +585,20 @@ function PrRefOrLink({
   children,
   repoOwner,
   repoName,
-  linearTeamKeys,
 }: {
   href?: string;
   children?: ReactNode;
   repoOwner: string;
   repoName: string;
-  linearTeamKeys: readonly string[];
 }) {
   const env = useContext(PrMarkdownEnvContext);
+  const workspaceUrlKey = useContext(PrLinearWorkspaceContext);
   // ADE's own issue links always open here. A linear.app link opens here only
-  // for this workspace's teams: another workspace's ENG-12 is not ours.
+  // when it names the connected workspace: another workspace's ENG-12 is not ours.
   const linear = linearIssueLinkTarget(href);
-  if (href && linear && (linear.adeLink || linearTeamKeys.includes(linearTeamOf(linear.ref.identifier)))) {
+  const ours = linear?.adeLink
+    || (linear?.workspace != null && linear.workspace.toLowerCase() === workspaceUrlKey?.toLowerCase());
+  if (href && linear && ours) {
     return <PrLinearIssueLink href={href} issue={linear.ref} branch={linear.branch}>{children}</PrLinearIssueLink>;
   }
   const label = textOf(children);
@@ -690,14 +692,12 @@ function buildPrOverrides({
   dense,
   repoOwner,
   repoName,
-  linearTeamKeys,
   variant,
 }: {
   tone: PrMarkdownTone;
   dense: boolean;
   repoOwner: string;
   repoName: string;
-  linearTeamKeys: readonly string[];
   variant?: "comment" | "document";
 }): Partial<Components> {
   const mb = dense ? "mb-2" : "mb-3";
@@ -746,7 +746,7 @@ function buildPrOverrides({
       </h4>
     ),
     a: ({ href, children }) => (
-      <PrRefOrLink href={href} repoOwner={repoOwner} repoName={repoName} linearTeamKeys={linearTeamKeys}>
+      <PrRefOrLink href={href} repoOwner={repoOwner} repoName={repoName}>
         {children}
       </PrRefOrLink>
     ),
@@ -884,10 +884,10 @@ export const PrMarkdown = memo(function PrMarkdown({
 }: PrMarkdownProps) {
   // The connected workspace's team keys (cached; PRsPage keeps them fresh), so
   // a typed `ADE-123` opens the issue in ADE without any GitHub setting.
-  const linearTeamKeys = useCachedLinearWorkspaceTeamKeys();
+  const { keys: linearTeamKeys, workspaceUrlKey } = useCachedLinearWorkspace();
   const overrides = useMemo(
-    () => buildPrOverrides({ tone, dense, repoOwner, repoName, linearTeamKeys, variant }),
-    [tone, dense, repoOwner, repoName, linearTeamKeys, variant],
+    () => buildPrOverrides({ tone, dense, repoOwner, repoName, variant }),
+    [tone, dense, repoOwner, repoName, variant],
   );
 
   const components = useMemo<Components>(() => {
@@ -927,6 +927,7 @@ export const PrMarkdown = memo(function PrMarkdown({
       className={`pr-md-root min-w-0 max-w-full ${variant === "document" ? "text-[13.5px] leading-[1.65]" : "text-[13px] leading-[1.55]"} ${dense ? "pr-md-dense" : ""}`}
       style={{ color: COLORS.textPrimary }}
     >
+      <PrLinearWorkspaceContext.Provider value={workspaceUrlKey ?? null}>
       <PrMediaRepoContext.Provider value={mediaRepo}>
         <PrTaskScopeContext.Provider value={taskScope}>
           <ReactMarkdown
@@ -938,6 +939,7 @@ export const PrMarkdown = memo(function PrMarkdown({
           </ReactMarkdown>
         </PrTaskScopeContext.Provider>
       </PrMediaRepoContext.Provider>
+      </PrLinearWorkspaceContext.Provider>
     </div>
   );
 });

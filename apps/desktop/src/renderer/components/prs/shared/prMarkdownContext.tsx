@@ -48,6 +48,13 @@ export type PrChatQuote = {
 
 export const PrMarkdownEnvContext = React.createContext<PrMarkdownEnv | null>(null);
 
+/**
+ * The connected Linear workspace's URL name, set by each PrMarkdown, so a link
+ * can tell our issues from another workspace's. A context, not a prop, so a
+ * change does not rebuild (and remount) every markdown component.
+ */
+export const PrLinearWorkspaceContext = React.createContext<string | null>(null);
+
 /** Repo and machine for `@` and `#` suggestions in the writing surfaces under it. */
 export type PrWritingScope = {
   repoOwner: string | null;
