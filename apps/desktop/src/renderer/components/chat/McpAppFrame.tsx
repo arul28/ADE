@@ -239,7 +239,7 @@ function answerAppRequest(message: Extract<McpAppFrameMessage, { kind: "request"
         id,
         result: {
           protocolVersion: MCP_APP_PROTOCOL_VERSION,
-          hostInfo: { name: "ADE", version: "1" },
+          hostInfo: { name: BRAND.NAME, version: "1" },
           hostCapabilities: {
             openLinks: {},
             serverTools: {},

@@ -646,7 +646,7 @@ export function resolveHarnessPresetPlan(
           id: PROXY_OPENCODE_PROVIDER_ID,
           block: {
             npm: "@ai-sdk/openai-compatible",
-            name: "ADE proxy",
+            name: `${BRAND.NAME} proxy`,
             options: {
               baseURL: proxy.opencodeProvider.baseURL,
               apiKey: proxy.opencodeProvider.apiKey,
