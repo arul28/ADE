@@ -54,8 +54,9 @@ export function useChatTerminalWatches(
     const load = async () => {
       const request = ++latest;
       const failed = beginRead();
+      const pin = pinRef.current;
       try {
-        const rows = await list({ chatSessionId: chatId }, requireChatPin(pinRef.current));
+        const rows = await list({ chatSessionId: chatId }, requireChatPin(pin));
         if (cancelled || request !== latest) return;
         setWatches(Array.isArray(rows) ? rows.filter((row) => row.status === "active") : []);
         setLoadFailure(null);
@@ -64,7 +65,7 @@ export function useChatTerminalWatches(
         // An older brain does not know the action: it has no watches to show.
         // Any other failure is said, not shown as an empty list.
         const unsupported = isUnsupportedAdeActionError(error);
-        setLoadFailure(unsupported ? null : chatReadFailure(error));
+        setLoadFailure(unsupported ? null : chatReadFailure(error, pin));
         if (unsupported) setWatches([]);
         else failed(error);
         console.warn("[ChatTerminalWatches] list failed", { chatId, error });

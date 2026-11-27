@@ -20553,13 +20553,16 @@ export function AgentChatPane({
     const listSessions = window.ade?.sessions?.list;
     if (typeof listSessions !== "function") return undefined;
     let cancelled = false;
+    // Session changes can start overlapping reads: only the newest one lands.
+    let latest = 0;
     const load = async () => {
+      const request = ++latest;
       const failed = beginShellsRead();
+      const pin = chatRuntimePinRef.current;
       try {
-        const pin = chatRuntimePinRef.current;
         const args = { chatSessionId: sessionId, limit: null };
         const listed = await listSessions(args, requireChatPin(pin));
-        if (cancelled) return;
+        if (cancelled || request !== latest) return;
         // A runtime that cannot answer this read answers with nothing; that is
         // "no shells", not a failure (only a rejected promise is one).
         const rows = Array.isArray(listed) ? listed : [];
@@ -20578,14 +20581,13 @@ export function AgentChatPane({
       } catch (error) {
         // A pane that cannot read the list says so with a retry rather than
         // looking like a chat with no shells (notices.md: no false empty state).
-        const failure = chatReadFailure(error);
+        if (cancelled || request !== latest) return;
+        const failure = chatReadFailure(error, pin);
         // An unreachable computer is expected and reads again on its own; only a real failure is an error.
         (failure.unreachable ? console.warn : console.error)("[AgentChatPane] attached shells read failed", { sessionId, error });
         failed(error);
-        if (!cancelled) {
-          setAttachedShells(keepEmptyArray);
-          setShellsLoadFailure(failure);
-        }
+        setAttachedShells(keepEmptyArray);
+        setShellsLoadFailure(failure);
       }
     };
     void load();

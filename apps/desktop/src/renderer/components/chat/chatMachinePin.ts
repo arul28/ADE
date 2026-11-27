@@ -1,5 +1,6 @@
 import type { OpenProjectBinding } from "../../../shared/types";
 import { AdeExpectedError } from "../../../shared/expectedError";
+import { isRemoteConnectStoppedError } from "../../../shared/runtimeErrors";
 import { isLinkLostReadError } from "../../state/projectMachines";
 
 /** Said when a chat-scoped call has no computer to go to. */
@@ -58,13 +59,17 @@ export function chatApiPin(pin: OpenProjectBinding | null | undefined, bound: bo
 
 /**
  * A chat-scoped read that failed, as its section shows it. `unreachable`: only
- * the way to the chat's computer was missing (not connected yet, the link
- * dropped, the computer asleep), so the read runs again on its own once the
- * link is back. Anything else is a real failure, said with its raw error.
+ * the way to another computer was missing (its machine not known yet, the link
+ * dropped or timed out, the computer asleep). A read on this computer is never
+ * "unreachable": a hung local brain is a real failure, said with its raw error.
+ * Neither is a link ADE stopped retrying until the person fixes it (sign in,
+ * pair again, trust a key): its error says what to do, so it stays visible.
  */
 export type ChatReadFailure = { unreachable: boolean; detail: string };
 
-export function chatReadFailure(error: unknown): ChatReadFailure {
+/** `pin` is the machine the read went to (null: not known yet). */
+export function chatReadFailure(error: unknown, pin: OpenProjectBinding | null | undefined): ChatReadFailure {
   const detail = error instanceof Error ? error.message : String(error ?? "");
-  return { unreachable: isLinkLostReadError(error), detail: detail.trim() };
+  const unreachable = pin?.kind !== "local" && isLinkLostReadError(error) && !isRemoteConnectStoppedError(error);
+  return { unreachable, detail: detail.trim() };
 }

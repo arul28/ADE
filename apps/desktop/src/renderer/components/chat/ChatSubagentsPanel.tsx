@@ -4,7 +4,6 @@ import {
   CaretDown,
   CaretRight,
   CircleDashed,
-  DotsThree,
   Clock,
   CopySimple,
   Images,

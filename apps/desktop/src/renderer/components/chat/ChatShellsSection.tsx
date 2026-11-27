@@ -65,9 +65,9 @@ export function ChatShellsSection({
  * Both reads go to the chat's computer, so they usually fail together and for
  * the same reason. When that reason is only that the computer is out of reach
  * (not connected yet, the link dropped, an ADE Cloud computer asleep), it is a
- * quiet neutral line with no Report: ADE reads again by itself once the link
- * is back. Any other failure is an error that carries its raw text, so the
- * person sees it and a report holds it.
+ * quiet info line with no Report; ADE reads again by itself when a dropped
+ * link comes back, and Retry reads now. Any other failure is an error whose
+ * raw text sits in the notice's details fold and goes with its report.
  */
 export function ChatTerminalsReadNotice({
   shellsFailure,
@@ -80,8 +80,9 @@ export function ChatTerminalsReadNotice({
 }) {
   if (!shellsFailure && !watchesFailure) return null;
   const actions = onRetry ? [{ label: "Retry", onClick: onRetry }] : undefined;
-  const failures = [shellsFailure, watchesFailure].filter((failure): failure is ChatReadFailure => failure != null);
-  if (failures.every((failure) => failure.unreachable)) {
+  // The read that really failed, if any; the shells read speaks first.
+  const failure = [shellsFailure, watchesFailure].find((entry) => entry != null && !entry.unreachable) ?? null;
+  if (!failure) {
     return (
       <div className="px-2 pb-3">
         <Banner
@@ -90,19 +91,16 @@ export function ChatTerminalsReadNotice({
           announce={false}
           model={{
             id: "chat-terminals-unreachable",
-            tone: "neutral",
+            tone: "info",
             title: "Can’t reach this chat’s computer right now.",
-            detail: "Its shells and terminal watches show here again once it’s back.",
+            detail: "Its shells and terminal watches can’t be read until it answers.",
             actions,
           }}
         />
       </div>
     );
   }
-  const what = shellsFailure && watchesFailure
-    ? "shells and terminal watches"
-    : shellsFailure ? "shells" : "terminal watches";
-  const failure = failures.find((entry) => !entry.unreachable) ?? failures[0]!;
+  const what = [shellsFailure && "shells", watchesFailure && "terminal watches"].filter(Boolean).join(" and ");
   return (
     <div className="px-2 pb-3">
       <Banner
@@ -112,10 +110,9 @@ export function ChatTerminalsReadNotice({
           id: "chat-terminals-load",
           tone: "error",
           title: `Couldn’t load this chat’s ${what}.`,
-          error: failure.detail || undefined,
           report: {
             surface: "chat_terminals_read",
-            code: shellsFailure && !shellsFailure.unreachable ? "chat_shells_read_failed" : "chat_terminal_watches_read_failed",
+            code: failure === shellsFailure ? "chat_shells_read_failed" : "chat_terminal_watches_read_failed",
             technicalDetail: failure.detail || null,
           },
           actions,
