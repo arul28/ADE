@@ -247,7 +247,7 @@ export function ownerNavigationFailureCopy(
     ? error.message.trim()
     : `The owning ${BRAND.NAME} machine did not accept the destination.`;
   const incompatible = (
-    /older ADE|does not support|method not found|code -32601|runtime incompatible|update ADE/i
+    /older (?:ADE|Daex)|does not support|method not found|code -32601|runtime incompatible|update (?:ADE|Daex)/i
       .test(detail)
   );
   if (incompatible) {

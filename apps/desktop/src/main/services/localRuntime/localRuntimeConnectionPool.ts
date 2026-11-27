@@ -1110,7 +1110,7 @@ const LOCAL_RUNTIME_TRANSPORT_DROP_PATTERN = /Remote (?:ADE|Daex) service connec
 // not the transport's. This is checked first and wins, because a brain-side
 // message can quote a transport sentence verbatim — and retrying a brain-side
 // failure would re-run a non-idempotent action against a healthy daemon.
-const LOCAL_RUNTIME_RPC_METHOD_FAILURE_PATTERN = /^Remote ADE service method \S+ failed[\s(:]/i;
+const LOCAL_RUNTIME_RPC_METHOD_FAILURE_PATTERN = /^Remote (?:ADE|Daex) service method \S+ failed[\s(:]/i;
 
 /** 0xC000026B: Windows would not start a process because the session is logging off. */
 const WINDOWS_STATUS_DLL_INIT_FAILED_LOGOFF = 0xC000026B;

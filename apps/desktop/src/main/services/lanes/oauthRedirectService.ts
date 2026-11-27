@@ -390,7 +390,7 @@ export function createOAuthRedirectService({
 
   function errorPage(laneId: string, message: string): string {
     return `<!DOCTYPE html>
-<html><head><title>OAuth Routing Error — ADE</title>
+<html><head><title>OAuth Routing Error — ${BRAND.NAME}</title>
 <style>
 body{font-family:Geist,-apple-system,BlinkMacSystemFont,sans-serif;background:#09080C;color:#FAFAFA;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
 .c{background:#181423;border:1px solid #2D2840;padding:32px;max-width:520px}
@@ -407,7 +407,7 @@ code{background:#0B0A0F;padding:2px 6px;font-size:12px;color:#A78BFA;font-family
 
   function proxyErrorPage(message: string): string {
     return `<!DOCTYPE html>
-<html><head><title>Preview Error — ADE</title>
+<html><head><title>Preview Error — ${BRAND.NAME}</title>
 <style>
 body{font-family:Geist,-apple-system,BlinkMacSystemFont,sans-serif;background:#09080C;color:#FAFAFA;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
 .c{background:#181423;border:1px solid #2D2840;padding:32px;max-width:560px}
