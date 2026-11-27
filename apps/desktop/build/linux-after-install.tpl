@@ -57,12 +57,17 @@ if apparmor_status --enabled > /dev/null 2>&1; then
 fi
 
 # Do not replace an existing standalone or channel CLI owned by the user.
+# `daex` is the command's name and `ade` its permanent alias: both get a
+# link, each to its own packaged wrapper (afterPack writes the daex twins).
 case '${executable}' in
-  ade-desktop-alpha) CLI_NAME=ade-alpha ;;
-  ade-desktop-beta) CLI_NAME=ade-beta ;;
-  *) CLI_NAME=ade ;;
+  ade-desktop-alpha) CLI_NAME=ade-alpha; DAEX_NAME=daex-alpha ;;
+  ade-desktop-beta) CLI_NAME=ade-beta; DAEX_NAME=daex-beta ;;
+  *) CLI_NAME=ade; DAEX_NAME=daex ;;
 esac
-ADE_CLI='/opt/${sanitizedProductName}/resources/ade-cli/bin/'"$CLI_NAME"
-if [ ! -e /usr/bin/"$CLI_NAME" ] && [ ! -L /usr/bin/"$CLI_NAME" ]; then
-  ln -s "$ADE_CLI" /usr/bin/"$CLI_NAME"
-fi
+for LINK_NAME in "$CLI_NAME" "$DAEX_NAME"; do
+  LINK_TARGET='/opt/${sanitizedProductName}/resources/ade-cli/bin/'"$LINK_NAME"
+  [ -e "$LINK_TARGET" ] || continue
+  if [ ! -e /usr/bin/"$LINK_NAME" ] && [ ! -L /usr/bin/"$LINK_NAME" ]; then
+    ln -s "$LINK_TARGET" /usr/bin/"$LINK_NAME"
+  fi
+done
