@@ -7,10 +7,10 @@
     <link rel="preconnect" href="https://ade-account-directory-production.arulsharma1028.workers.dev" crossorigin />
     <!-- The relay carries every connection from an https page: resolve it early. -->
     <link rel="dns-prefetch" href="https://ade-tunnel-relay.arulsharma1028.workers.dev" />
-    <!-- No favicon ships, so the browser's own /favicon.ico request fell
+    <!-- No favicon file ships: the browser's own /favicon.ico request fell
          through the SPA fallback and downloaded this page again (twice on a
-         cold load). An empty icon stops that request. -->
-    <link rel="icon" href="data:," />
+         cold load). An inline icon (the 32 px Daex icon) stops that request. -->
+    <link rel="icon" type="image/png" sizes="32x32" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAACXBIWXMAAAsTAAALEwEAmpwYAAADz0lEQVR42s1XWUxTQRR9LjHG3agEkC7GLxHiH0pQwAVRaMWaoP4hiYkGt4ghMTEGVBI3BGpfW7UYcUdU4AMXFFSCsinRgJooWCWAcQMLKGhtPc4d2gbEoPiKOMn0vd47754z5868N1cQejUMiRayh7GbIYL7miMm+o4JNiBRSBxK93RVeR2dHK4wKqV0itE9JvogwR0xihMjVT76OJVMXxEp07erfMROKZ3HYLFUProNFLs7Vg/Z6TdCIXqyB4o1ikxEyTPsapkRaplBYjfyWBSTYhNGd0wXG1/fxBFs8K0VbKBKJlojZaKNMf/ujt4VS7SuUGYSoVuE5cJ2LDhBLTdu1DjA2UMYmC5aNYoTICzCdGLzppYduRclN5FM9oEiQLEJg7B6rABaqSqZwUL5csg2QArov3dhGCyE6SIQocxQMGcHLZqBJ8AxOgjTRYDvV7ZlfktArkeUkq1shQHLHN3po3uy05hlSkPfBBgWYfaLgFpOD+oRMuYQFk5Mw/zxqVg0KZ3bCThsspbZ07HEU4cFE9LcS4BAlnge5kBHE0tQeu0FSvLrkKDJ4XYisin8ArPVorq0EcYdxZwIqSGZgJoFifAWsdovA3U172F++gGpWwpRet0M2zc71gRkIl59CdavdpzXPkDy2qtob/2ClM03mUppP6ej/wQoAMl9IK4ATS8tPNezhGQEjTqI1+z/3St1qH/WDOPOYvgJu+Ev7EFl0SvcyX2O0LGp0gm48s+ulNvoGSYkxeTzGT4ubwK1tw1t0G4rQlp8IU7uK+O2MykVCB2XyhatUWIK2IzDPQ5jtf9x3Mh6iobaFtzOeYbMvWVoMltg/WLjYFna+8gWq5CX8YiTWOlr4qlTyyWsAZr5Ui8dzz/JX1v9DmuDTiNwxAFsVV3kM8079hABwj6EsjQFjz7EO/mXeut+Bu8/AZIvhOWRZkstds4pBA7fj9jZJ/GmvhU2mx01ZU2cpPNdEDZFi3WhZ6GZfgSRU0WJBKYZ+b7P1lVxAhvDsvj2qqt5h4qbL7E9OpfbL+qrEOkjcsmPJZWgvMCMiN7gf5ECNqPFbEYbFp3H5/avaGvpRPObTzA/eY9VM01cdso9NcuHDu5rfPGRKXAOiz263hvS3wMOWdfPP8eVMO26y+UlJZwEE5ZfxumD5UiPL+I+sv0CXNo2pJ0wd1QKgllKKLdOAE5wkhbzmI+2XXefe78FLCitCb6v5X/u+yMCg/45HvQDyaAeyf6HQ+m/O5YrfnEs712Y6P55YdKjQAnpWZq1uaM0YwpUUsw+SrP/ozgdlPL8B6xmwLsUTEKMAAAAAElFTkSuQmCC" />
     <title>Daex</title>
     <style>
       /* The app shell sizes itself with `h-full`, a percentage that resolves to

@@ -421,10 +421,10 @@ export const ADE_LOGO_REVEAL_SECONDS = endOf(LOOKS.dark);
 /** A box on screen, in CSS pixels. */
 export type ScreenBox = { left: number; top: number; width: number; height: number };
 
-// Measured on the final frame: the letters span 0.985 of the tile. In the wordmark
-// picture they fill 87.35% of its width, centred 3.16% right and 6.49% down of its middle.
+// Measured on the final frame: the letters span 0.985 of the tile. In the mark
+// picture the glyph fills 80.49% of its width, centred on its middle.
 const LETTERS_PER_TILE = 0.985;
-const WORDMARK_LETTERS = { width: 0.8735, dx: 0.0316, dy: 0.0649 };
+const WORDMARK_LETTERS = { width: 0.8049, dx: 0, dy: 0.0006 };
 
 /**
  * Where the wordmark picture (`logo.png`, `logo-light.png`) sits when the reveal in

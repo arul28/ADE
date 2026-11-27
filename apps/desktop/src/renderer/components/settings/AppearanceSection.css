@@ -333,7 +333,7 @@
   padding: 18px 18px 22px;
   min-height: 170px;
 }
-.ade-ap-preview-logo { width: 84px; height: auto; filter: drop-shadow(0 0 10px color-mix(in srgb, var(--color-accent) 35%, transparent)); }
+.ade-ap-preview-logo { width: 64px; height: auto; filter: drop-shadow(0 0 10px color-mix(in srgb, var(--color-accent) 35%, transparent)); }
 .ade-ap-preview-composer {
   width: 100%;
   border-radius: 10px;
