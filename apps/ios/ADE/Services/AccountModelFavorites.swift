@@ -47,9 +47,11 @@ struct AccountModelFavoritesClient {
   @MainActor
   private func send(method: String, body: Data?) async throws -> [String] {
     let account = AccountService.shared
-    guard let baseURL = AccountConfig.directoryBaseURL, account.phase == .signedIn else {
+    guard let baseURL = AccountConfig.directoryBaseURL, account.phase != .signedOut, account.phase != .unconfigured else {
       throw FavoritesError.signedOut
     }
+    // Restoring the session at launch: not signed out, so no machine fallback.
+    guard account.phase == .signedIn else { throw FavoritesError.transport }
     // Signed in, but Clerk had no token for now: a passing failure, not a sign-out.
     guard let pairing = await account.pairingSession() else { throw FavoritesError.transport }
     let url = baseURL.appendingPathComponent("account/model-favorites")

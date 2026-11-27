@@ -37,6 +37,8 @@ final class ModelPickerStore: ObservableObject {
   func refresh(syncService: SyncService) async {
     let directoryRevision = WorkModelMentionDirectory.shared.recentsRevisionSnapshot
     let generation = favoritesGeneration
+    // Stars queued before this read settle first, so the read sees them.
+    await lastFavoriteChange?.value
     async let favTask = readFavorites(syncService: syncService)
     async let recTask = try? await syncService.getModelRecents()
     let fav = await favTask
@@ -127,6 +129,9 @@ final class ModelPickerStore: ObservableObject {
 
   /// The list after one star, or nil when it failed (roll back).
   private func changeFavorite(_ modelId: String, removing: Bool, account: String?, syncService: SyncService) async -> [String]? {
+    // Tapped while signed out: the tap belongs to the machine's list, even if
+    // an account signed in while it waited in the queue.
+    guard let account else { return try? await syncService.toggleModelFavorite(modelId).favorites }
     do {
       return try await accountFavorites.change(add: removing ? [] : [modelId], remove: removing ? [modelId] : [], account: account)
     } catch AccountModelFavoritesClient.FavoritesError.signedOut, AccountModelFavoritesClient.FavoritesError.unsupported {

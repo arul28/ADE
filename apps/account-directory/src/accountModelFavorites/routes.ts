@@ -102,14 +102,14 @@ export async function handleAccountModelFavoritesRequest(request: Request, env: 
   if (requestOrigin && !corsOrigin) return fail("origin_not_allowed", "This origin can't call ADE's model favorites.", 403);
   if (request.method !== "GET" && request.method !== "PUT") return fail("not_found", "That route was not found on your ADE account.", 404);
   const caller = await authenticate(request, env);
-  if (!caller.ok) {
-    return caller.reason === "authentication unavailable"
+  // A sign-in refusal carries the CORS headers too, so the web client can read it.
+  const response = !caller.ok
+    ? caller.reason === "authentication unavailable"
       ? fail("unavailable", "ADE can't check your sign-in right now. Try again soon.", 503)
-      : fail("unauthorized", "Sign in to ADE to see your favorite models.", 401);
-  }
-  const response = request.method === "GET"
-    ? json(await readRow(env.DB, caller.userId))
-    : await handlePut(request, env, caller.userId, Date.now());
+      : fail("unauthorized", "Sign in to ADE to see your favorite models.", 401)
+    : request.method === "GET"
+      ? json(await readRow(env.DB, caller.userId))
+      : await handlePut(request, env, caller.userId, Date.now());
   if (!corsOrigin) return response;
   const headers = new Headers(response.headers);
   headers.set("access-control-allow-origin", corsOrigin);

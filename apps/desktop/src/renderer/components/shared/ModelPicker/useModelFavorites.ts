@@ -166,6 +166,8 @@ function getImportApi(): ((pin: OpenProjectBinding) => Promise<{ favorites: stri
 
 /** The machine import runs at most once per start; a failure tries again at the next start. */
 let importTried = false;
+/** The owner as this window knows it, for when storage can't keep it. */
+let knownOwner: string | null = null;
 let syncInFlight: Promise<void> | null = null;
 /** A star while a sync ran: sync once more after it. */
 let syncAgain = false;
@@ -223,8 +225,10 @@ const useFavoritesStore = create<FavoritesState>((set, get) => {
    * list are the other account's, so this one starts from its own list.
    */
   const claimFor = (owner: string) => {
-    const previous = readStored(OWNER_KEY);
-    if (typeof previous === "string" && previous !== owner) {
+    const stored = readStored(OWNER_KEY);
+    const previous = knownOwner ?? (typeof stored === "string" ? stored : null);
+    knownOwner = owner;
+    if (previous && previous !== owner) {
       setLocal([], { add: [], remove: [] });
       setFlag(ACCOUNT_SEEDED_KEY);
       setFlag(IMPORTED_KEY);

@@ -223,8 +223,9 @@ async function dispatch(api: CloudApiClient, call: Record<string, unknown>): Pro
       const add = modelIds(call.add);
       const remove = modelIds(call.remove);
       if (!add.length && !remove.length) throw new InvalidCall("ADE couldn't read the favorite models to save.");
-      // The server compares it with the caller's user id; one it can't read is left out, never a refusal.
-      const account = text(call.account, 200) ?? undefined;
+      // The server compares it with the caller's user id. A supplied account is always sent, never dropped.
+      const account = call.account == null ? undefined : text(call.account, 512);
+      if (account === null) throw new InvalidCall("ADE couldn't read the account for these favorites.");
       return await api.changeModelFavorites({ add, remove, ...(account ? { account } : {}) });
     }
     case "savedSession":
