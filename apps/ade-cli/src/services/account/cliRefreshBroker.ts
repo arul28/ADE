@@ -4,6 +4,7 @@ import { AccountRefreshUnavailableError, type AccountRefreshBroker } from "./acc
 import { createAccountRefreshBroker } from "./accountRefreshBroker";
 import { setSharedAccountRefreshBroker } from "./sharedAccountAuthService";
 import { syntheticCallerId } from "../../../../desktop/src/shared/syntheticCallerId";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * The slice of a JSON-RPC client this broker needs. Deliberately structural so
@@ -90,7 +91,7 @@ export async function createCliRefreshBroker(
       const client = await connectQuietly(deps.connect);
       if (!client) {
         throw new AccountRefreshUnavailableError(
-          "ADE's background service could not accept the account refresh request.",
+          `${BRAND.NAME}'s background service could not accept the account refresh request.`,
         );
       }
       try {

@@ -24,6 +24,7 @@ import {
   type AccountOAuthConfig,
   type AccountRefreshBroker,
 } from "./accountAuthService";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 export type AccountAttestationConfig = {
   issuer: string;
@@ -163,7 +164,7 @@ function readProjectSecret(projectRoot: string, name: string): string | null {
     const remembered = REMEMBERED_ACCOUNT_SETTING_NAMES.has(name) ? accountConfigMemo(gate).get(projectRoot) : undefined;
     if (remembered && Object.prototype.hasOwnProperty.call(remembered, name)) return remembered[name] ?? null;
     throw markExpected(
-      new Error("ADE can't read your account settings right now: a project's folder is too slow to open. Try again later."),
+      new Error(`${BRAND.NAME} can't read your account settings right now: a project's folder is too slow to open. Try again later.`),
       "environment",
     );
   }

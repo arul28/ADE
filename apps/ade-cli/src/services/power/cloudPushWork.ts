@@ -6,8 +6,9 @@
 
 import type { AdeRuntime } from "../../bootstrap";
 import { classifyGitPushFailure } from "../../../../desktop/src/main/services/git/gitPushFailure";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
-const COMMIT_MESSAGE = "Work saved from ADE Cloud";
+const COMMIT_MESSAGE = `Work saved from ${BRAND.CLOUD_NAME}`;
 /**
  * The whole fetch step per project, including the wait for the lane's queue
  * (git's own fetch budget is GIT_FETCH_TIMEOUT_MS): a computer GitHub can't

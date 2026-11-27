@@ -13,6 +13,7 @@
  */
 
 /** The longest a device sign-in start keeps retrying an unreachable account directory (`retryUnreachableForMs`). */
+import { BRAND } from "../../../../desktop/src/shared/brand";
 const DEVICE_START_RETRY_MAX_MS = 60_000;
 const DEVICE_START_RETRY_FIRST_DELAY_MS = 1_000;
 const DEVICE_START_RETRY_MAX_DELAY_MS = 8_000;
@@ -63,14 +64,15 @@ export function readDeviceStartRetryMs(value: unknown): number | undefined {
  * Only a network error code goes in, never a URL or a body.
  */
 function deviceBridgeStartError(failure: DeviceBridgeStartFailure, triedForMs: number): Error {
+  // Older clients match this text; keep until released desktops read both names.
   const tried = triedForMs >= 1_000 ? ` ADE kept trying for ${Math.round(triedForMs / 1_000)} s.` : "";
   if (failure.kind === "timeout") {
-    return new Error(`ADE account device service timed out.${tried} Check this computer's network connection and the account directory, then retry.`);
+    return new Error(`${BRAND.NAME} account device service timed out.${tried} Check this computer's network connection and the account directory, then retry.`);
   }
   const why = failure.kind === "not_json"
     ? ` (it answered HTTP ${failure.status} without JSON)`
     : failure.code ? ` (network error ${failure.code})` : " (network error)";
-  return new Error(`ADE account device service could not be reached${why}.${tried} Check this computer's network connection and the account directory, then retry.`);
+  return new Error(`${BRAND.NAME} account device service could not be reached${why}.${tried} Check this computer's network connection and the account directory, then retry.`);
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

@@ -30,6 +30,7 @@ import {
 } from "../../../../desktop/src/shared/types/agentCliLogin";
 import type { CloudSignInStatus } from "../../../../desktop/src/shared/cloudSignIns";
 import type { ProviderLoginState } from "../../../../desktop/src/shared/types/providerInstances";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /** The slice of a login runner's status this needs (the provider account runner and the agent CLI runner share it). */
 type RunnerStatus = {
@@ -119,7 +120,7 @@ export function createRemoteProviderSignIn(deps: RemoteProviderSignInDeps) {
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
   const claude = async (): Promise<ClaudePassRunner> => {
-    if (!deps.claudePass) throw new Error("ADE on this computer can't run Claude's sign-in for another screen. Update it, then try again.");
+    if (!deps.claudePass) throw new Error(`${BRAND.NAME} on this computer can't run Claude's sign-in for another screen. Update it, then try again.`);
     return await deps.claudePass();
   };
 
@@ -133,7 +134,7 @@ export function createRemoteProviderSignIn(deps: RemoteProviderSignInDeps) {
   return {
     async start(provider: string): Promise<CloudRemoteSignInStatus> {
       const row = cloudRemoteSignInOf(provider);
-      if (!row) throw new Error(`ADE doesn't know the provider "${provider}".`);
+      if (!row) throw new Error(`${BRAND.NAME} doesn't know the provider "${provider}".`);
       if (!cloudRemoteSignInRuns(row)) throw new Error(cloudRemoteSignInRefusal(row));
       if (row.provider === "claude") {
         const runner = await claude();
@@ -156,7 +157,7 @@ export function createRemoteProviderSignIn(deps: RemoteProviderSignInDeps) {
         runner = accounts;
         jobId = `${PROVIDER_ACCOUNT}${status.loginId}`;
       } else {
-        if (!isAgentCliLoginProvider(row.provider)) throw new Error(`ADE can't run ${row.label}'s sign-in for another screen.`);
+        if (!isAgentCliLoginProvider(row.provider)) throw new Error(`${BRAND.NAME} can't run ${row.label}'s sign-in for another screen.`);
         const clis = await deps.agentClis();
         status = await clis.start({ provider: row.provider });
         runner = clis;

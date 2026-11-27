@@ -133,6 +133,7 @@ import {
 } from "./syncLoopbackProbe";
 import type { WebhookRemoteSource } from "./webhookRemoteCommands";
 import type { AutomationRuleRemoteSource } from "./automationRuleRemoteCommands";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 type SyncServiceArgs = {
   db: AdeDb;
@@ -891,7 +892,7 @@ export function createSyncService(args: SyncServiceArgs) {
   const assertPhonePairingAvailable = (): void => {
     if (!hostStartupEnabled) {
       throw new Error(
-        "Phone pairing is unavailable because the sync host is disabled for this ADE process.",
+        `Phone pairing is unavailable because the sync host is disabled for this ${BRAND.NAME} process.`,
       );
     }
     if (!isCrdtSyncAvailable()) {
@@ -2057,8 +2058,8 @@ export function createSyncService(args: SyncServiceArgs) {
         ? hostService.getTailnetDiscoveryStatus()
         : createInactiveTailnetDiscoveryStatus(
             canHostPhonePairing
-              ? "Tailnet discovery is waiting for the ADE runtime to start."
-              : "Tailnet discovery is only published by the host ADE runtime.",
+              ? `Tailnet discovery is waiting for the ${BRAND.NAME} runtime to start.`
+              : `Tailnet discovery is only published by the host ${BRAND.NAME} runtime.`,
           );
       const listenerPort = hostService?.getPort() ?? args.sharedSyncListener?.getPort() ?? null;
       const rawListenerValidation = hostService?.getLoopbackValidationStatus()
@@ -2067,7 +2068,7 @@ export function createSyncService(args: SyncServiceArgs) {
           port: null,
           loopbackAdeValidated: false,
           lastFailureAt: listenerValidationHistory.lastFailureAt,
-          reason: "The ADE sync listener has not started.",
+          reason: `The ${BRAND.NAME} sync listener has not started.`,
           lastSuccessAt: listenerValidationHistory.lastSuccessAt,
         };
       const {
@@ -2078,7 +2079,7 @@ export function createSyncService(args: SyncServiceArgs) {
         listenerPort,
         rawValidation: rawListenerValidation,
         bound: listenerPort != null,
-        notBoundReason: "The ADE sync listener is not bound.",
+        notBoundReason: `The ${BRAND.NAME} sync listener is not bound.`,
         validationHistory: listenerValidationHistory,
       });
       const tunnelStatus = args.syncTunnelClientService?.getStatus() ?? null;
@@ -2090,7 +2091,7 @@ export function createSyncService(args: SyncServiceArgs) {
       const tailscaleReason = !tailscaleEnabled
         ? tailnetDiscovery.error
         : !loopbackAdeValidated
-          ? `Tailscale route is unusable because ${listenerReason ?? "the loopback ADE check failed"}`
+          ? `Tailscale route is unusable because ${listenerReason ?? `the loopback ${BRAND.NAME} check failed`}`
           : tailscalePublished
             ? null
             : tailnetDiscovery.error ?? `Tailscale Serve is ${tailnetDiscovery.state}.`;
@@ -2190,7 +2191,7 @@ export function createSyncService(args: SyncServiceArgs) {
             // second the user reinstalls ADE and nothing changes. Describe the
             // capability, and keep the actionable next step.
             : process.platform === "win32"
-              ? "Phone sync is unavailable because CR-SQLite support could not be initialized. Reinstall ADE, then restart it before pairing a device."
+              ? `Phone sync is unavailable because CR-SQLite support could not be initialized. Reinstall ${BRAND.NAME}, then restart it before pairing a device.`
               : "Phone pairing is unavailable because the CRDT database extension is unavailable on this platform.",
       };
     },
@@ -2286,7 +2287,7 @@ export function createSyncService(args: SyncServiceArgs) {
       assertPhonePairingAvailable();
       const current = await service.getStatus();
       if (current.role !== "brain") {
-        throw new Error("Phone pairing PINs can only be managed on the host ADE runtime.");
+        throw new Error(`Phone pairing PINs can only be managed on the host ${BRAND.NAME} runtime.`);
       }
       pinStore.setPin(pin);
       const snapshot = await service.getStatus();
@@ -2302,7 +2303,7 @@ export function createSyncService(args: SyncServiceArgs) {
       assertPhonePairingAvailable();
       const current = await service.getStatus();
       if (current.role !== "brain") {
-        throw new Error("Phone pairing PINs can only be managed on the host ADE runtime.");
+        throw new Error(`Phone pairing PINs can only be managed on the host ${BRAND.NAME} runtime.`);
       }
       pinStore.clearPin();
       const snapshot = await service.getStatus();
@@ -2318,7 +2319,7 @@ export function createSyncService(args: SyncServiceArgs) {
       assertPhonePairingAvailable();
       const current = await service.getStatus();
       if ((current.runtimeRole ?? current.role) !== "host" && current.role !== "brain") {
-        throw new Error("The machine name can only be set on the host ADE runtime.");
+        throw new Error(`The machine name can only be set on the host ${BRAND.NAME} runtime.`);
       }
       runtimeNameStore.setRuntimeName(name);
       const snapshot = await service.getStatus();
@@ -2330,7 +2331,7 @@ export function createSyncService(args: SyncServiceArgs) {
       assertPhonePairingAvailable();
       const current = await service.getStatus();
       if ((current.runtimeRole ?? current.role) !== "host" && current.role !== "brain") {
-        throw new Error("The machine name can only be cleared on the host ADE runtime.");
+        throw new Error(`The machine name can only be cleared on the host ${BRAND.NAME} runtime.`);
       }
       runtimeNameStore.clearRuntimeName();
       const snapshot = await service.getStatus();
@@ -2342,7 +2343,7 @@ export function createSyncService(args: SyncServiceArgs) {
       assertPhonePairingAvailable();
       const current = await service.getStatus({ includeTransferReadiness: false });
       if ((current.runtimeRole ?? current.role) !== "host" && current.role !== "brain") {
-        throw new Error("SSH pairing is only available on the host ADE runtime.");
+        throw new Error(`SSH pairing is only available on the host ${BRAND.NAME} runtime.`);
       }
       const request = parseSshPairingRequest(value);
       const peer: SyncPeerMetadata = {
@@ -2442,7 +2443,7 @@ export function createSyncService(args: SyncServiceArgs) {
       // record here, peers would follow it, and it would never serve sync.
       if (!canClaimCluster()) {
         throw new Error(
-          "This ADE runtime cannot host sync, so it cannot take the host role. Make this project the host from the machine's ADE runtime.",
+          `This ${BRAND.NAME} runtime cannot host sync, so it cannot take the host role. Make this project the host from the machine's ${BRAND.NAME} runtime.`,
         );
       }
       if (!current.transferReadiness.ready) {

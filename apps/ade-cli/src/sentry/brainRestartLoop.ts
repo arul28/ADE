@@ -50,6 +50,7 @@ import {
   type BrainStartCause,
   type BrainStartsState,
 } from "./brainStartsFile";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 const RESTART_LOOP_THRESHOLD = 3;
 const RESTART_LOOP_WINDOW_MS = 10 * 60_000;
@@ -301,7 +302,7 @@ function sendLoopReport(startsPath: string, launchdLastExit: string | null): voi
     // A brain in a loop may not live long enough for the SDK's own send.
     void flushSentry(2_000);
   } catch (error) {
-    process.stderr.write(`ADE brain could not report its restart loop: ${errorText(error)}
+    process.stderr.write(`${BRAND.NAME} brain could not report its restart loop: ${errorText(error)}
 `);
   }
 }

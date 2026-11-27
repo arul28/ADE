@@ -8,6 +8,7 @@ import {
   writeFileAtomic,
 } from "./credentialFileIo";
 import type { CredentialStoreReadFailureReason } from "./credentialStore";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * Setting an unreadable credential file aside so the process that hit it can
@@ -130,7 +131,7 @@ export function quarantineCredentialFile(args: {
   } catch (error: unknown) {
     if (isEnoent(error)) return null; // A peer already replaced or removed it.
     throw new Error(
-      "ADE could not set aside the unreadable credential store, so it was left untouched.",
+      `${BRAND.NAME} could not set aside the unreadable credential store, so it was left untouched.`,
       { cause: error },
     );
   }

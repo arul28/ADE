@@ -22,6 +22,7 @@ import {
   type DiskPressureThresholds,
 } from "../../../../desktop/src/main/services/storage/diskPressure";
 import type { CloudDiskGrowChat } from "../../../../desktop/src/main/services/adeCloud/cloudDiskGrowHost";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /** After a grow started the computer restarts; a "growing" note older than this is over. */
 export const CLOUD_DISK_GROW_STARTED_COOLDOWN_MS = 10 * 60_000;
@@ -86,10 +87,10 @@ function sizeText(bytes: number): string {
 }
 
 const PAUSED: Record<DiskPressureOperationKind, string> = {
-  chat_turn: "ADE paused new agent work there to protect its chats and projects.",
-  cli_launch: "ADE can't safely start a new CLI session there.",
-  high_write_job: "ADE didn't start this task there to avoid writing more data.",
-  compression: "ADE didn't start this task there to avoid writing more data.",
+  chat_turn: `${BRAND.NAME} paused new agent work there to protect its chats and projects.`,
+  cli_launch: `${BRAND.NAME} can't safely start a new CLI session there.`,
+  high_write_job: `${BRAND.NAME} didn't start this task there to avoid writing more data.`,
+  compression: `${BRAND.NAME} didn't start this task there to avoid writing more data.`,
 };
 
 /**
@@ -106,16 +107,16 @@ function cloudDiskRefusalMessage(
 ): string {
   // A grow that started long ago restarted the computer and is over; this disk is still short.
   const grow = state?.state === "growing" && nowMs - state.at > CLOUD_DISK_GROW_STARTED_COOLDOWN_MS ? null : state;
-  const head = `This ADE Cloud computer's disk is almost full (${sizeText(snapshot.freeBytes)} free of ${sizeText(snapshot.totalBytes)}). `
+  const head = `This ${BRAND.CLOUD_NAME} computer's disk is almost full (${sizeText(snapshot.freeBytes)} free of ${sizeText(snapshot.totalBytes)}). `
     + "That's the cloud computer's own disk, not the disk of the computer you're using. "
     + PAUSED[kind];
   if (grow?.state === "growing") {
-    return `${head} ADE is growing it to ${grow.toGb} GB now; the cloud computer restarts for a moment. Try again in a minute or two.`;
+    return `${head} ${BRAND.NAME} is growing it to ${grow.toGb} GB now; the cloud computer restarts for a moment. Try again in a minute or two.`;
   }
   if (grow?.state === "refused") {
-    return `${head} It can't grow on its own: ${grow.wayOut} To make room now, use Clear caches in Settings › ADE Cloud.`;
+    return `${head} It can't grow on its own: ${grow.wayOut} To make room now, use Clear caches in Settings › ${BRAND.CLOUD_NAME}.`;
   }
-  return `${head} ADE grows it as soon as nothing runs there (the cloud computer restarts for a moment), then try again. To make room now, use Clear caches in Settings › ADE Cloud.`;
+  return `${head} ${BRAND.NAME} grows it as soon as nothing runs there (the cloud computer restarts for a moment), then try again. To make room now, use Clear caches in Settings › ${BRAND.CLOUD_NAME}.`;
 }
 
 /** The guard's options on an ADE Cloud computer (`createDiskPressureMonitor`). */

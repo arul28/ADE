@@ -44,6 +44,7 @@ import {
   toolsStagingRoot,
   writableRoots,
 } from "./paths";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 export type ToolResolution = {
   name: string;
@@ -227,7 +228,7 @@ export function resolveTool(name: string, context: ToolsContext = {}): ToolResol
   if (!found) {
     const pinned = resolvePinned(pin, resolved);
     throw new ToolError(
-      `ADE agent tool ${name} (${pinned.packageName}@${pinned.version}) is not installed on this machine.`,
+      `${BRAND.NAME} agent tool ${name} (${pinned.packageName}@${pinned.version}) is not installed on this machine.`,
       {
         kind: "not-installed",
         tool: name,
@@ -421,7 +422,7 @@ async function ensureOneTool(
     // forever — and install it ourselves rather than report a phantom success.
     if (attempt >= MAX_SATISFIED_ATTEMPTS) {
       throw new ToolError(
-        `ADE agent tool ${name} (${pinned.packageName}@${pinned.version}) reported a completed install `
+        `${BRAND.NAME} agent tool ${name} (${pinned.packageName}@${pinned.version}) reported a completed install `
         + `${MAX_SATISFIED_ATTEMPTS} times without one being there: its ${TOOL_INSTALL_SENTINEL} sentinel in `
         + `${pinned.dir} keeps appearing and vanishing. Remove that directory and retry.`,
         {
@@ -460,7 +461,7 @@ async function ensureOneTool(
     const installed = resolveInstalled();
     if (!installed) {
       throw new ToolError(
-        `ADE agent tool ${name} unpacked without its expected entry ${pinned.entryRelativePath}.`,
+        `${BRAND.NAME} agent tool ${name} unpacked without its expected entry ${pinned.entryRelativePath}.`,
         { kind: "extract", tool: name, packageName: pinned.packageName, version: pinned.version },
       );
     }

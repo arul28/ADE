@@ -27,11 +27,12 @@
  */
 
 /** The longest freeze: the server's prepare (40 s), its save for rest (4 min) and the delete, with room to spare. */
+import { BRAND } from "../../../../desktop/src/shared/brand";
 export const CLOUD_DELETE_FREEZE_MS = 10 * 60_000;
 
 /** Said to a person or an agent whose work reaches the computer during the freeze. */
 export const CLOUD_COMPUTER_REMOVING_SENTENCE =
-  "This ADE Cloud computer is being removed. Its work is saved. Send again in a few minutes: ADE then continues the lane on a new computer.";
+  `This ${BRAND.CLOUD_NAME} computer is being removed. Its work is saved. Send again in a few minutes: ${BRAND.NAME} then continues the lane on a new computer.`;
 
 /**
  * How long the Sleep freeze holds after its prepare answered: the server's
@@ -42,7 +43,7 @@ export const CLOUD_SLEEP_FREEZE_AFTER_PREPARE_MS = 30_000;
 
 /** Said to a person or an agent whose work reaches the computer while it goes to sleep. */
 export const CLOUD_COMPUTER_SLEEPING_SENTENCE =
-  "This ADE Cloud computer is going to sleep, and its work is saved. Send again in a moment: ADE wakes it for your message.";
+  `This ${BRAND.CLOUD_NAME} computer is going to sleep, and its work is saved. Send again in a moment: ${BRAND.NAME} wakes it for your message.`;
 
 let frozenUntil = 0;
 let sleepFrozenUntil = 0;

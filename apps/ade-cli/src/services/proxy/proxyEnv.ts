@@ -1,4 +1,5 @@
 /** A subscription the proxy holds: a Claude or Codex login, or one borrowed from a provider's CLI. */
+import { BRAND } from "../../../../desktop/src/shared/brand";
 export type ProxySubscriptionProvider = "claude" | "codex" | "grok" | "kimi" | "devin" | "muse";
 export type ProxySubscriptionHarness = "claude" | "codex" | "opencode";
 
@@ -104,7 +105,7 @@ export function proxyEnvForSubscription(
         "[model_providers.ade-proxy]",
         // Codex refuses a provider block with no name ("provider name must not
         // be empty", Codex 0.164.0), so a subscription never started in Codex.
-        'name = "ADE proxy"',
+        `name = "${BRAND.NAME} proxy"`,
         `base_url = \"${baseURL}\"`,
         'wire_api = "responses"',
         `experimental_bearer_token = \"${resolved.apiKey}\"`,

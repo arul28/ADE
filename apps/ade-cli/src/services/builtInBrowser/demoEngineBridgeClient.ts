@@ -8,6 +8,7 @@ import type {
 } from "../../../../desktop/src/shared/demoVideo/demoContract";
 import { isDemoEngineInputPath } from "../../../../desktop/src/main/services/demoVideo/demoMp4Source";
 import { createDesktopBridgeConnection } from "./desktopBridgeConnection";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * The desktop app's Chromium demo engine as the runtime daemon reaches it.
@@ -38,7 +39,7 @@ export function createDemoEngineBridgeClient(args: {
   logger: Logger;
 }): DemoEngine & { dispose(): void } {
   const { logger } = args;
-  const NO_DESKTOP = "Rendering this demo needs the ADE desktop app on this machine, and none is attached.";
+  const NO_DESKTOP = `Rendering this demo needs the ${BRAND.NAME} desktop app on this machine, and none is attached.`;
   const connection = createDesktopBridgeConnection({
     socketPath: args.socketPath,
     unavailableMessage: NO_DESKTOP,

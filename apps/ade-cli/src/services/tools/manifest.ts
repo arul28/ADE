@@ -1,6 +1,7 @@
 import generatedManifest from "./toolsManifest.generated.json";
 import { ToolError, type ToolErrorContext } from "./errors";
 import { TOOL_TARGETS, type ToolTarget, assertSafePackageCoordinates, isToolTarget } from "./paths";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 export const TOOLS_MANIFEST_SCHEMA_VERSION = 1;
 
@@ -309,7 +310,7 @@ function requirePinnedUrl(value: unknown, label: string, hosts: readonly string[
   }
   const origin = hosts[0];
   if (!origin) {
-    throw manifestError(`${label}: ${context.tool} has no download host ADE allows for a vendor-hosted pin.`, context);
+    throw manifestError(`${label}: ${context.tool} has no download host ${BRAND.NAME} allows for a vendor-hosted pin.`, context);
   }
   if (parsed.host !== origin) {
     throw manifestError(`${label} must be on ${origin}.`, context);
@@ -451,7 +452,7 @@ export function parseToolsManifest(raw: unknown): ToolsManifest {
   }
   if (raw.schemaVersion !== TOOLS_MANIFEST_SCHEMA_VERSION) {
     throw new ToolError(
-      `Unsupported tools manifest schemaVersion ${String(raw.schemaVersion)}; this ADE build understands ${TOOLS_MANIFEST_SCHEMA_VERSION}.`,
+      `Unsupported tools manifest schemaVersion ${String(raw.schemaVersion)}; this ${BRAND.NAME} build understands ${TOOLS_MANIFEST_SCHEMA_VERSION}.`,
       { kind: "manifest" },
     );
   }
@@ -534,7 +535,7 @@ export function findToolPin(manifest: ToolsManifest, name: string): ToolPin {
   const pin = manifest.tools.find((tool) => tool.name === name);
   if (!pin) {
     const known = manifest.tools.map((tool) => tool.name).join(", ");
-    throw new ToolError(`Unknown ADE agent tool ${JSON.stringify(name)}. Pinned tools: ${known}.`, {
+    throw new ToolError(`Unknown ${BRAND.NAME} agent tool ${JSON.stringify(name)}. Pinned tools: ${known}.`, {
       kind: "manifest",
       tool: name,
     });
@@ -546,7 +547,7 @@ export function findToolTargetPin(manifest: ToolsManifest, name: string, target:
   const pin = findToolPin(manifest, name);
   const targetPin = pin.targets[target];
   if (!targetPin) {
-    throw new ToolError(`ADE agent tool ${name} has no pinned build for ${target}.`, {
+    throw new ToolError(`${BRAND.NAME} agent tool ${name} has no pinned build for ${target}.`, {
       kind: "unsupported-target",
       tool: name,
       target,

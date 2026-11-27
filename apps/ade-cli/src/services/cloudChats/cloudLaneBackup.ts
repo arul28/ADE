@@ -58,6 +58,7 @@ import {
   readHandoffWorkingTreeSha,
   refuseUnportablePaths,
 } from "../../../../desktop/src/main/services/chat/handoffGitBundle";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 type Logger = {
   info: (event: string, meta?: Record<string, unknown>) => void;
@@ -67,11 +68,11 @@ type Logger = {
 const GIT_TIMEOUT_MS = 120_000;
 const EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 const SHA = /^[0-9a-f]{40,64}$/;
-const SNAPSHOT_MESSAGE = "ADE backup of uncommitted work (never pushed)";
+const SNAPSHOT_MESSAGE = `${BRAND.NAME} backup of uncommitted work (never pushed)`;
 const SNAPSHOT_IDENTITY: NodeJS.ProcessEnv = {
-  GIT_AUTHOR_NAME: "ADE",
+  GIT_AUTHOR_NAME: BRAND.NAME,
   GIT_AUTHOR_EMAIL: "backup@ade.invalid",
-  GIT_COMMITTER_NAME: "ADE",
+  GIT_COMMITTER_NAME: BRAND.NAME,
   GIT_COMMITTER_EMAIL: "backup@ade.invalid",
 };
 /** A read takes no index lock, so it never blocks an agent's own git. */
@@ -160,8 +161,8 @@ export async function readGithubBase(cwd: string): Promise<GithubBase> {
   return { shas: held, key: createHash("sha256").update(held.join("\n")).digest("hex"), verified };
 }
 
-const STAGED_ONLY_SENTENCE = "This lane has staged changes that its files no longer hold. Commit or unstage them, then ADE saves it.";
-const SUBMODULE_WORK_SENTENCE = "This lane has changes inside a submodule. Commit and push them in the submodule, then ADE saves it.";
+const STAGED_ONLY_SENTENCE = `This lane has staged changes that its files no longer hold. Commit or unstage them, then ${BRAND.NAME} saves it.`;
+const SUBMODULE_WORK_SENTENCE = `This lane has changes inside a submodule. Commit and push them in the submodule, then ${BRAND.NAME} saves it.`;
 
 /**
  * The backup saves the lane's files as they are. Two kinds of work are not in
@@ -185,8 +186,8 @@ async function refuseWorkOutsideTheFiles(cwd: string, workingTree: string, tipTr
   if (changed) throw new LaneBackupRefused(SUBMODULE_WORK_SENTENCE, "failed");
 }
 
-const GITHUB_UNREACHABLE_SENTENCE = "ADE couldn't reach GitHub to check this lane's work. It checks again at the next rest.";
-const MISSING_FOLDER_SENTENCE = "This lane's folder is missing on the computer, and ADE has no saved copy of its work.";
+const GITHUB_UNREACHABLE_SENTENCE = `${BRAND.NAME} couldn't reach GitHub to check this lane's work. It checks again at the next rest.`;
+const MISSING_FOLDER_SENTENCE = `This lane's folder is missing on the computer, and ${BRAND.NAME} has no saved copy of its work.`;
 
 /** `head` and the exclusions, for `rev-list --stdin`. */
 const revsNotOnGithub = (head: string, base: GithubBase): string => `${[head, ...base.shas.map((sha) => `^${sha}`)].join("\n")}\n`;
@@ -201,7 +202,7 @@ export async function readLaneWork(worktreePath: string, base?: GithubBase): Pro
   const cwd = await git(worktreePath, ["rev-parse", "--show-toplevel"]);
   const githubBase = base ?? await readGithubBase(cwd);
   const tip = await resolveCommit(cwd, "HEAD");
-  if (!tip) throw new LaneBackupRefused("This lane has no commit yet, so ADE can't save it. Commit once, then it saves.", "failed");
+  if (!tip) throw new LaneBackupRefused(`This lane has no commit yet, so ${BRAND.NAME} can't save it. Commit once, then it saves.`, "failed");
   const branchRead = await runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd, timeoutMs: 15_000, env: READ_ENV });
   const branch = branchRead.exitCode === 0 ? branchRead.stdout.trim() || null : null;
   const [workingTree, tipTree, aheadText] = await Promise.all([
@@ -210,7 +211,7 @@ export async function readLaneWork(worktreePath: string, base?: GithubBase): Pro
     git(cwd, ["rev-list", "--count", "--stdin"], undefined, undefined, revsNotOnGithub(tip, githubBase)),
   ]);
   const ahead = Number.parseInt(aheadText, 10);
-  if (!Number.isSafeInteger(ahead) || ahead < 0) throw new Error("ADE couldn't count this lane's commits.");
+  if (!Number.isSafeInteger(ahead) || ahead < 0) throw new Error(`${BRAND.NAME} couldn't count this lane's commits.`);
   await refuseWorkOutsideTheFiles(cwd, workingTree, tipTree);
   const fingerprint = createHash("sha256").update(`ade.lane-backup.v2\0${tip}\0${workingTree}\0${branch ?? ""}\0${githubBase.key}`).digest("hex");
   return { fingerprint, clean: ahead === 0 && workingTree === tipTree, cwd, tip, workingTree, tipTree, branch, ahead, base: githubBase };
@@ -238,7 +239,7 @@ export async function packLaneBackup(lane: BackupLane, read: LaneWorkRead): Prom
   try {
     files = (await refuseUnportablePaths(cwd, tip, snapshot, read.base.shas)).length;
   } catch (error) {
-    throw new LaneBackupRefused(`${error instanceof Error ? error.message : String(error)} ADE can't save this lane's work until then.`, "failed");
+    throw new LaneBackupRefused(`${error instanceof Error ? error.message : String(error)} ${BRAND.NAME} can't save this lane's work until then.`, "failed");
   }
   const head = snapshot ?? tip;
   // The commits only this lane has, and the GitHub commits they build on (the bundle's prerequisites).
@@ -247,7 +248,7 @@ export async function packLaneBackup(lane: BackupLane, read: LaneWorkRead): Prom
   const prerequisites = listed.filter((line) => line.startsWith("-")).map((line) => line.slice(1));
   // The patch starts at the last commit GitHub has: the parent of the oldest commit only this lane has.
   const oldest = unpushed[0];
-  if (!oldest) throw new Error("ADE found nothing to save after all.");
+  if (!oldest) throw new Error(`${BRAND.NAME} found nothing to save after all.`);
   const baseSha = (await resolveCommit(cwd, `${oldest}^`)) ?? EMPTY_TREE_SHA;
   const ref = `refs/ade-backup/${refKey(lane.laneId)}/head`;
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-backup-"));
@@ -366,7 +367,7 @@ export async function runLaneBackups(deps: LaneBackupRunDeps): Promise<CloudBack
     const report: CloudBackupLaneReport = { laneId: lane.laneId, laneName: lane.laneName, state: "failed" };
     reports.push(report);
     if (!deps.mayGoOn()) {
-      report.reason = "The save stopped before this lane; ADE saves it at the next rest.";
+      report.reason = `The save stopped before this lane; ${BRAND.NAME} saves it at the next rest.`;
       complete = false;
       continue;
     }
@@ -399,7 +400,7 @@ export async function runLaneBackups(deps: LaneBackupRunDeps): Promise<CloudBack
       } else {
         const capped = capRefusal(error);
         report.state = capped ?? "failed";
-        report.reason = capped && error instanceof Error ? error.message : `ADE couldn't save this lane's work: ${errorText(error).replace(/[.\s]+$/, "")}.`.slice(0, 300);
+        report.reason = capped && error instanceof Error ? error.message : `${BRAND.NAME} couldn't save this lane's work: ${errorText(error).replace(/[.\s]+$/, "")}.`.slice(0, 300);
       }
       summary.failed += 1;
       logger.warn("cloud.lane_backup_failed", { laneId: lane.laneId, state: report.state, error: errorText(error).slice(0, 200) });
@@ -667,7 +668,7 @@ export async function prepareLaneBranchFromBackup(args: {
     const defaultName = (await runGit(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], { cwd, timeoutMs: 15_000, env: READ_ENV }))
       .stdout.trim().replace(/^origin\//, "") || "the default branch";
     args.logger.info("cloud.lane_branch_from_default", { laneId: args.laneId });
-    return { created: true, branch, note: `${branch} wasn't on GitHub, so ADE started it again from ${defaultName}.` };
+    return { created: true, branch, note: `${branch} wasn't on GitHub, so ${BRAND.NAME} started it again from ${defaultName}.` };
   }
   // A retry: an earlier attempt made the branch from this backup, so it is still not published.
   if (local) return local === backup.headSha ? { created: true, branch } : { created: false };

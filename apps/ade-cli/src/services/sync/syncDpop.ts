@@ -1,5 +1,6 @@
 import { createHash, createPublicKey, verify as verifySignature, type KeyObject } from "node:crypto";
 import type { SyncDpopProof } from "../../../../desktop/src/shared/types/sync";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * DPoP-style proof-of-possession for paired sync connections.
@@ -207,7 +208,7 @@ export function syncDpopFailureMessage(reason: string): string {
   switch (reason) {
     case "proof_required":
     case "dpop_required":
-      return "This device did not present its security key. Update ADE on the device, then pair it again.";
+      return `This device did not present its security key. Update ${BRAND.NAME} on the device, then pair it again.`;
     case "stale_timestamp":
       return "This device's clock is too far from this machine's. Fix the date and time on both, then try again.";
     case "replayed_nonce":

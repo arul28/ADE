@@ -30,6 +30,7 @@ import type {
   AccountSessionState,
 } from "./accountAuthService";
 import { defaultRelayUrl } from "../sync/syncCloudRelayStore";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 type AccountMachinePairer = {
   pairWithAccountMachine(
@@ -136,7 +137,7 @@ export class AccountMachineActivityPurgeError extends Error {
 
   constructor(readonly machineKey: string, readonly detail: string | null) {
     super(
-      "This machine was removed from your ADE account, but its Activity couldn't be cleared. Its agents may keep showing in Activity — try removing it again.",
+      `This machine was removed from your ${BRAND.NAME} account, but its Activity couldn't be cleared. Its agents may keep showing in Activity — try removing it again.`,
     );
     this.name = "AccountMachineActivityPurgeError";
   }
@@ -187,14 +188,14 @@ function packagedSafeAccountDirectoryOverride(
  */
 function notSignedInMessage(
   readState: AccountSessionReadState | undefined,
-  action: "remove a machine from your ADE account" | "rename a machine",
+  action: "remove a machine from your Daex account" | "rename a machine",
   sessionState?: AccountSessionState,
 ): string {
   if (readState === "unreadable" || sessionState === "unreadable") {
-    return `ADE couldn't read this computer's saved sign-in, so nothing was changed. Wait a moment and try again to ${action}; if it keeps failing, sign in again on this computer.`;
+    return `${BRAND.NAME} couldn't read this computer's saved sign-in, so nothing was changed. Wait a moment and try again to ${action}; if it keeps failing, sign in again on this computer.`;
   }
   if (sessionState === "expired") {
-    return `Your ADE account sign-in expired — sign in again to ${action}.`;
+    return `Your ${BRAND.NAME} account sign-in expired — sign in again to ${action}.`;
   }
   return `Not signed in — sign in to ${action}.`;
 }
@@ -225,7 +226,7 @@ export class AccountMachineDirectoryService {
         return {
           state: "unavailable",
           machines: [],
-          message: "ADE couldn't read this computer's saved sign-in. Try again in a moment.",
+          message: `${BRAND.NAME} couldn't read this computer's saved sign-in. Try again in a moment.`,
         };
       }
       // A provider-rejected session is a real sign-out, but the user should be
@@ -234,7 +235,7 @@ export class AccountMachineDirectoryService {
         return {
           state: "auth_expired",
           machines: [],
-          message: "Your ADE account session expired. Run `ade login` again.",
+          message: `Your ${BRAND.NAME} account session expired. Run \`daex login\` again.`,
         };
       }
       return { state: "signed_out", machines: [], message: null };
@@ -245,7 +246,7 @@ export class AccountMachineDirectoryService {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return /not signed in|session expired/i.test(message)
-        ? { state: "auth_expired", machines: [], message: "Your ADE account session expired. Run `ade login` again." }
+        ? { state: "auth_expired", machines: [], message: `Your ${BRAND.NAME} account session expired. Run \`daex login\` again.` }
         : { state: "unavailable", machines: [], message };
     }
     return await fetchAccountMachines({
@@ -273,7 +274,7 @@ export class AccountMachineDirectoryService {
     if (!status.signedIn && status.source !== "env-token") {
       throw new Error(notSignedInMessage(
         this.account.getSessionReadState?.(),
-        "remove a machine from your ADE account",
+        "remove a machine from your Daex account",
         status.sessionState ?? this.account.getSessionState?.(),
       ));
     }
@@ -281,9 +282,9 @@ export class AccountMachineDirectoryService {
     try {
       token = (await this.account.getAccessToken()).trim();
     } catch {
-      throw new Error("Your ADE account session expired. Sign in again.");
+      throw new Error(`Your ${BRAND.NAME} account session expired. Sign in again.`);
     }
-    if (!token) throw new Error("Your ADE account session expired. Sign in again.");
+    if (!token) throw new Error(`Your ${BRAND.NAME} account session expired. Sign in again.`);
 
     const baseUrl = resolveTrustedAccountDirectoryBaseUrl(
       packagedSafeAccountDirectoryOverride(
@@ -338,7 +339,7 @@ export class AccountMachineDirectoryService {
         if (refreshedToken) response = await sendDelete(refreshedToken);
       }
       if (response.status === 401 || response.status === 403) {
-        throw new Error("Your ADE account session expired. Sign in again.");
+        throw new Error(`Your ${BRAND.NAME} account session expired. Sign in again.`);
       }
       if (!response.ok) {
         // A partial removal (roster row gone, Activity left behind) has to read
@@ -390,9 +391,9 @@ export class AccountMachineDirectoryService {
     try {
       token = (await this.account.getAccessToken()).trim();
     } catch {
-      throw new Error("Your ADE account session expired. Sign in again.");
+      throw new Error(`Your ${BRAND.NAME} account session expired. Sign in again.`);
     }
-    if (!token) throw new Error("Your ADE account session expired. Sign in again.");
+    if (!token) throw new Error(`Your ${BRAND.NAME} account session expired. Sign in again.`);
 
     const baseUrl = resolveTrustedAccountDirectoryBaseUrl(
       packagedSafeAccountDirectoryOverride(
@@ -449,7 +450,7 @@ export class AccountMachineDirectoryService {
         if (refreshedToken) response = await sendRename(refreshedToken);
       }
       if (response.status === 401 || response.status === 403) {
-        throw new Error("Your ADE account session expired. Sign in again.");
+        throw new Error(`Your ${BRAND.NAME} account session expired. Sign in again.`);
       }
       if (!response.ok) {
         throw new Error(`Machine directory returned ${response.status}.`);
@@ -484,7 +485,7 @@ export class AccountMachineDirectoryService {
       durationMs: Date.now() - directoryStartedAt,
     });
     if (listed.state === "signed_out" || listed.state === "auth_expired") {
-      throw new Error("Not signed in — run `ade login`. Direct local and SSH routes stay reachable meanwhile.");
+      throw new Error("Not signed in — run `daex login`. Direct local and SSH routes stay reachable meanwhile.");
     }
     if (listed.state !== "ok") {
       throw new Error(listed.message ?? "The account machine directory is unavailable.");
@@ -513,7 +514,7 @@ export class AccountMachineDirectoryService {
       ? initialStatus.userId?.trim() ?? ""
       : "";
     if (!accountOwnerUserId) {
-      throw new Error("Your ADE account identity is unavailable. Sign in again.");
+      throw new Error(`Your ${BRAND.NAME} account identity is unavailable. Sign in again.`);
     }
     const token = (await this.account.getAccessToken()).trim();
     const refreshedStatus = this.account.getStatus();
@@ -522,7 +523,7 @@ export class AccountMachineDirectoryService {
       || !refreshedStatus.signedIn
       || refreshedStatus.userId?.trim() !== accountOwnerUserId
     ) {
-      throw new Error("Your ADE account changed before the connection started. Try again.");
+      throw new Error(`Your ${BRAND.NAME} account changed before the connection started. Try again.`);
     }
     const authorizeAccountCommit = async (expectedOwnerUserId: string): Promise<boolean> => {
       const before = this.account.getStatus();
@@ -547,7 +548,7 @@ export class AccountMachineDirectoryService {
     const credentials = await pairedStore.pairWithAccountMachine(
       machine,
       token,
-      this.options.deviceName?.() ?? `ADE CLI on ${os.hostname()}`,
+      this.options.deviceName?.() ?? `${BRAND.NAME} CLI on ${os.hostname()}`,
       {
         ...options,
         appVersion: this.options.appVersion,
@@ -563,7 +564,7 @@ export class AccountMachineDirectoryService {
         priorCredentials,
         expectedOwnerUserId: accountOwnerUserId,
       });
-      throw new Error("Your ADE account changed before this machine could be saved. Try again.");
+      throw new Error(`Your ${BRAND.NAME} account changed before this machine could be saved. Try again.`);
     }
     const firstEndpoint = credentials.endpoints[0];
     const displayName = accountMachineDisplayName(machine);

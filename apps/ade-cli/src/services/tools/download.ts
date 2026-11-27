@@ -6,6 +6,7 @@ import path from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { ToolError } from "./errors";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /** Idle-socket timeout. Matches the ADE brain updater's download budget. */
 export const TOOL_DOWNLOAD_IDLE_TIMEOUT_MS = 30_000;
@@ -139,7 +140,7 @@ async function streamToFile(
     throw networkError(`Too many redirects while downloading ${url}`);
   }
   if (!url.startsWith("https://")) {
-    throw networkError(`Refusing to download ADE agent tools over a non-HTTPS URL: ${url}`);
+    throw networkError(`Refusing to download ${BRAND.NAME} agent tools over a non-HTTPS URL: ${url}`);
   }
   assertAllowedHost(url, options.allowedHosts);
 

@@ -10,6 +10,7 @@ import {
   type WorkToolShowStatus,
   type WorkToolShowSurface,
 } from "../../../../desktop/src/shared/types/workToolShow";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * `ade ui show` on the brain side.
@@ -93,7 +94,7 @@ function describeWorkToolShowResult(
   if (status === "held") {
     return `A desktop window${where} has this project open, but the user cannot see this chat right now (another chat is in front, or the window is hidden). The ${name} opens when they go to this chat.`;
   }
-  return `No desktop window is open for this chat, so nothing was shown. Tell the user to open this chat in ADE Desktop.`;
+  return `No desktop window is open for this chat, so nothing was shown. Tell the user to open this chat in ${BRAND.NAME} Desktop.`;
 }
 
 type PendingShow = {

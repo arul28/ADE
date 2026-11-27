@@ -38,6 +38,7 @@ import type {
   AccountVaultPage,
   AccountVaultWrite,
 } from "./accountRelayRows";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 export {
   decodeAccountSettingRecord,
@@ -272,8 +273,8 @@ export class PushRelayUnreachableError extends Error {
     const reason = code === "timeout" ? null : describeFetchTransportFailure(options?.cause) ?? code;
     super(
       code === "timeout"
-        ? "ADE's account service did not answer in time."
-        : `ADE can't reach its account service${reason ? ` (${reason})` : ""}.`,
+        ? `${BRAND.NAME}'s account service did not answer in time.`
+        : `${BRAND.NAME} can't reach its account service${reason ? ` (${reason})` : ""}.`,
       options,
     );
     this.name = "PushRelayUnreachableError";
@@ -282,16 +283,16 @@ export class PushRelayUnreachableError extends Error {
 
 /** The answers this client gives itself when the signed-in account changed under a request. */
 const ACCOUNT_CHANGED_REASONS = {
-  beforeAuthorize: "ADE account changed before the request was authorized",
-  whileAuthorizing: "ADE account changed while the request was authorized",
-  inFlight: "ADE account changed while the relay response was in flight",
+  beforeAuthorize: `${BRAND.NAME} account changed before the request was authorized`,
+  whileAuthorizing: `${BRAND.NAME} account changed while the request was authorized`,
+  inFlight: `${BRAND.NAME} account changed while the relay response was in flight`,
 } as const;
 const ACCOUNT_CHANGED_REASON_SET: ReadonlySet<string> = new Set(Object.values(ACCOUNT_CHANGED_REASONS));
 
 /** The 401s this client builds itself, before any request, when it has no token to send. */
 const NO_ACCOUNT_TOKEN_REASONS = {
-  noUsableToken: "ADE account has no usable access token",
-  signedOut: "ADE account is not signed in",
+  noUsableToken: `${BRAND.NAME} account has no usable access token`,
+  signedOut: `${BRAND.NAME} account is not signed in`,
 } as const;
 const NO_ACCOUNT_TOKEN_REASON_SET: ReadonlySet<string> = new Set(Object.values(NO_ACCOUNT_TOKEN_REASONS));
 
@@ -376,7 +377,7 @@ export class PushRelayMachineRevokedError extends PushRelayRequestError {
   readonly code = "machine_revoked" as const;
 
   constructor(action: string, readonly revokedAt: string | null) {
-    super(action, 403, "this machine was removed from your ADE account");
+    super(action, 403, `this machine was removed from your ${BRAND.NAME} account`);
     this.name = "PushRelayMachineRevokedError";
   }
 }
@@ -927,7 +928,7 @@ export function createPushRelayClient(args: {
         : acknowledgment.expectedAccountOwnerId?.trim() || null;
       if (expectedAccountUserId !== currentAccountUserId) {
         throw new Error(
-          "The ADE account changed before the Activity acknowledgment could sync.",
+          `The ${BRAND.NAME} account changed before the Activity acknowledgment could sync.`,
         );
       }
       if (!currentAccountUserId) return null;
@@ -987,7 +988,7 @@ export function createPushRelayClient(args: {
     }): Promise<AccountNotificationResult> {
       const expectedAccountUserId = args.getAccountUserId?.() ?? undefined;
       if (!args.getAccountAccessToken || !expectedAccountUserId) {
-        throw new PushRelayRequestError("sendAccountNotification", 401, "ADE account is not signed in");
+        throw new PushRelayRequestError("sendAccountNotification", 401, `${BRAND.NAME} account is not signed in`);
       }
       const response = await request("POST", "/attention/account/notify", {
         body: {

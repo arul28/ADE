@@ -14,6 +14,7 @@ import {
   remoteCommandArgsFingerprint,
 } from "./syncRemoteCommandService";
 import { ROSTER_DIRTYING_COMMAND_ACTIONS } from "./syncRosterFanout";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * Routes a `command` that names a registered project to that project's scope,
@@ -157,7 +158,7 @@ export function createBrainRoutedCommandHandler<P extends BrainRoutedCommandPeer
       };
       const projectId = router.resolveProjectId({ projectId: targetProjectId, projectRootPath: targetRootPath });
       if (!projectId) {
-        reject("This project is not on this ADE machine. Select the project again and retry.", "project_not_open");
+        reject(`This project is not on this ${BRAND.NAME} machine. Select the project again and retry.`, "project_not_open");
         return true;
       }
       pruneRecords();

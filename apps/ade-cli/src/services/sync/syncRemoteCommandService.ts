@@ -454,6 +454,7 @@ import {
   runMachineUpdateRemoteCommand,
   type MachineUpdatePairing,
 } from "./machineUpdateRemoteCommands";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 export type ExternalSessionsRemoteService = {
   list(args?: ExternalSessionListArgs): Promise<ExternalSessionSummary[]>;
@@ -560,7 +561,7 @@ export function evaluateRemoteCommandPolicy(args: {
     if (args.requestedProjectId && !args.hostProjectId) {
       return {
         code: "project_not_open",
-        message: `Remote command ${action} requires an open project on this ADE machine.`,
+        message: `Remote command ${action} requires an open project on this ${BRAND.NAME} machine.`,
       };
     }
   }
@@ -576,7 +577,7 @@ export function evaluateRemoteCommandPolicy(args: {
   if (policy.runtimeHostOnly && args.peer.pairingRecord?.runtimeHostGranted !== true) {
     return {
       code: "forbidden_command",
-      message: `Remote command ${action} needs a computer connected through your ADE account. Reconnect it from Your computers, then try again.`,
+      message: `Remote command ${action} needs a computer connected through your ${BRAND.NAME} account. Reconnect it from Your computers, then try again.`,
     };
   }
   if (policy.localOnly || policy.requiresApproval) {
@@ -6051,7 +6052,7 @@ function registerMachineUpdateRemoteCommands({ register }: RemoteCommandRegistra
 function registerPushRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   const publisher = args.pushPublisherService ?? null;
   const unavailable = (action: string) => async (): Promise<never> => {
-    throw new Error(`${action} is unavailable: push publishing is not running on this ADE machine.`);
+    throw new Error(`${action} is unavailable: push publishing is not running on this ${BRAND.NAME} machine.`);
   };
 
   register(
@@ -6298,7 +6299,7 @@ function registerWorkToolsRemoteCommands({ args, register }: RemoteCommandRegist
       if (!browser) throw new Error("The browser isn't available on this machine.");
       const state = await workToolsStateService.getLaneState({ laneId });
       if (!state.browser) {
-        throw new Error("ADE Desktop isn't showing this project's browser right now, so the tab can't be closed from here.");
+        throw new Error(`${BRAND.NAME} Desktop isn't showing this project's browser right now, so the tab can't be closed from here.`);
       }
       // Already gone (closed on the desktop, or a second tap): the phone wanted
       // it closed and it is, so this is not an error.
@@ -7081,13 +7082,13 @@ function registerCloudPhoneRemoteCommands({ args, register }: RemoteCommandRegis
   let resolved: Record<string, unknown> | null = null;
   const domain = (): Record<string, unknown> => {
     resolved ??= getDomain() ?? null;
-    if (!resolved) throw new Error("The ADE Cloud iPhone is not available in this runtime.");
+    if (!resolved) throw new Error(`The ${BRAND.CLOUD_NAME} iPhone is not available in this runtime.`);
     return resolved;
   };
   const call = async (action: string, input: Record<string, unknown>): Promise<unknown> => {
     const service = domain();
     const handler = service[action];
-    if (typeof handler !== "function") throw new Error(`The ADE Cloud iPhone has no "${action}" here.`);
+    if (typeof handler !== "function") throw new Error(`The ${BRAND.CLOUD_NAME} iPhone has no "${action}" here.`);
     return await (handler as (values: unknown) => Promise<unknown>).call(service, input);
   };
 
@@ -8906,7 +8907,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   const keptLaneCall = async (action: "kept_lane_move_preview" | "kept_lane_move" | "kept_lane_move_status", payload: Record<string, unknown>) => {
     const domain = args.cloudActions?.() ?? null;
     const handler = domain?.[action];
-    if (typeof handler !== "function") throw new Error(`cloud has no "${action}" here. Update ADE on this computer.`);
+    if (typeof handler !== "function") throw new Error(`cloud has no "${action}" here. Update ${BRAND.NAME} on this computer.`);
     // The same gate as every other ADE Cloud call: with ADE Cloud off here, the command isn't here.
     const accessOn = await cloudDomainEnabled(domain, (error) => {
       args.logger.warn("cloud.remote_access_read_failed", { error: error instanceof Error ? error.message : String(error) });

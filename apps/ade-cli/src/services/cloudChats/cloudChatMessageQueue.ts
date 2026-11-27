@@ -38,6 +38,7 @@ import {
 } from "../account/cloudLaunchMessages";
 import { SIGN_IN_WAIT_MS, waitForSignIn, type SignInWaitDeps } from "../account/cloudLaunchSignInWait";
 import { saveCloudFiles, withAttachmentPaths, type SavedCloudFile } from "./cloudAttachmentFiles";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 type Logger = {
   info: (event: string, meta?: Record<string, unknown>) => void;
@@ -105,7 +106,7 @@ export type CloudChatMessageQueue = {
 type QueuedFile = SavedCloudFile;
 
 /** The CLI's process is gone (a cold restart): nothing ADE types reaches it. */
-const CLI_ENDED_SENTENCE = "This CLI isn't running on its computer any more (the computer restarted), so ADE couldn't type the message. Open the CLI and send the message again.";
+const CLI_ENDED_SENTENCE = `This CLI isn't running on its computer any more (the computer restarted), so ${BRAND.NAME} couldn't type the message. Open the CLI and send the message again.`;
 
 const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
@@ -200,7 +201,7 @@ export function createCloudChatMessageQueue(deps: CloudChatQueueDeps): CloudChat
           const sessionKind = await kindOf(where.projectId);
           if (sessionKind === "cli_ended") return { kind: "failed", error: CLI_ENDED_SENTENCE };
           // A running CLI is signed in already; its own prompt waits for the turn.
-          if (sessionKind === "cli") return deps.typeIntoCli ? { kind: "go" } : { kind: "failed", error: "This computer's ADE can't type into a CLI. Update ADE, then send the message again." };
+          if (sessionKind === "cli") return deps.typeIntoCli ? { kind: "go" } : { kind: "failed", error: `This computer's ${BRAND.NAME} can't type into a CLI. Update ${BRAND.NAME}, then send the message again.` };
           const provider = message.provider ?? await deps.chatProvider(where.projectId, sessionId).catch(() => null);
           if (!provider) return { kind: "failed", error: "This chat is not on its computer any more. Send the message again." };
           if (!deps.signIn) return { kind: "go" };

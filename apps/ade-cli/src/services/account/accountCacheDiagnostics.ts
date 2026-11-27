@@ -1,6 +1,7 @@
 import path from "node:path";
 import { createFileLogger } from "../../../../desktop/src/main/services/logging/logger";
 import type { AccountCacheLogger } from "./accountCacheStore";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * What an account-synced store says about a failed sync, and where it says
@@ -28,18 +29,18 @@ export function errorReason(error: unknown): string | null {
 export function describeSyncFailure(error: unknown, phase: "upload" | "pull"): string {
   const what = phase === "upload" ? "send this computer's changes to" : "get changes from";
   if (isRecord(error) && error.name === "PushRelayUnreachableError" && typeof error.message === "string") {
-    return `ADE couldn't ${what} your account: ${error.message}`;
+    return `${BRAND.NAME} couldn't ${what} your account: ${error.message}`;
   }
   const status = errorStatus(error);
-  if (status === 429) return `Your account service asked ADE to slow down, so it couldn't ${what} your account yet. It retries on its own.`;
+  if (status === 429) return `Your account service asked ${BRAND.NAME} to slow down, so it couldn't ${what} your account yet. It retries on its own.`;
   if (status !== null && status >= 500) {
-    return `ADE couldn't ${what} your account: the account service is unavailable (HTTP ${status}). It retries on its own.`;
+    return `${BRAND.NAME} couldn't ${what} your account: the account service is unavailable (HTTP ${status}). It retries on its own.`;
   }
   if (status !== null) {
     const reason = errorReason(error);
-    return `Your account service refused to let ADE ${what} your account (HTTP ${status}${reason !== null ? `: ${reason.slice(0, 120)}` : ""}).`;
+    return `Your account service refused to let ${BRAND.NAME} ${what} your account (HTTP ${status}${reason !== null ? `: ${reason.slice(0, 120)}` : ""}).`;
   }
-  return `ADE couldn't ${what} your account. It retries on its own.`;
+  return `${BRAND.NAME} couldn't ${what} your account. It retries on its own.`;
 }
 
 /**

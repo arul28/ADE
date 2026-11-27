@@ -25,6 +25,7 @@ import type { RelayAuthorizationLifecycle } from "./relayAuthorization";
 import type { SyncTransportOrigin } from "./sharedSyncListener";
 import type { SyncPairingRecord } from "./syncPairingStore";
 import type { SyncRemoteCommandService } from "./syncRemoteCommandService";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * The types of the lane share guest host (`laneShareGuestHost.ts`) and its
@@ -203,5 +204,5 @@ export type LaneShareRedeemedGuest = NonNullable<LaneShareGuestHandoff["redeemed
 
 /** Guest hello refusals, shared by every host and the brain's ingress. */
 export const LANE_SHARE_UNAVAILABLE = "This computer could not check its shared lanes right now. Try again in a moment.";
-export const LANE_SHARE_NO_GRANT = "This lane is not shared with your ADE account, or the share has ended. Open it again from ADE.";
-export const LANE_SHARE_PROJECT_NOT_OPEN = "The owner's computer can't open this lane's project right now. ADE tries again in a minute.";
+export const LANE_SHARE_NO_GRANT = `This lane is not shared with your ${BRAND.NAME} account, or the share has ended. Open it again from ${BRAND.NAME}.`;
+export const LANE_SHARE_PROJECT_NOT_OPEN = `The owner's computer can't open this lane's project right now. ${BRAND.NAME} tries again in a minute.`;

@@ -6,6 +6,7 @@ import {
   type UpdateRequestedBy,
 } from "../../../../desktop/src/shared/types/remoteRuntime";
 import type { MachineUpdateAndRestartResult } from "../runtime/machineUpdateAndRestart";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * "Update & restart" for a phone (or the hosted web client), the sync-command
@@ -102,7 +103,7 @@ export async function runMachineUpdateRemoteCommand(
   pairing: MachineUpdatePairing | null,
 ): Promise<unknown> {
   const commands = configured;
-  if (!commands) throw new Error("This ADE runtime cannot update itself.");
+  if (!commands) throw new Error(`This ${BRAND.NAME} runtime cannot update itself.`);
   if (action === MACHINE_UPDATE_IMPACT_ACTION) return await commands.updateImpact();
   const targetVersion = typeof args.targetVersion === "string" && args.targetVersion.trim()
     ? args.targetVersion.trim()

@@ -634,7 +634,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
       );
       if (providers.size > 1) {
         // These commands take no provider, so the id is the way to pick one.
-        return new Error(`${requested} is signed in to both Claude and Codex here; pass the account id instead (ade providers accounts list shows it).`);
+        return new Error(`${requested} is signed in to both Claude and Codex here; pass the account id instead (daex providers accounts list shows it).`);
       }
     }
     return new Error(`No provider account ${JSON.stringify(requested)}.`);

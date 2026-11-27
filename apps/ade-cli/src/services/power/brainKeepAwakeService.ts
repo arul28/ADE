@@ -18,6 +18,7 @@ import { disableSystemSleepOnAc, execSystemText, readSystemSleepConfig } from ".
 import { writeFileAtomic } from "../../../../desktop/src/main/services/state/durableFile";
 import { offThreadSpawnEnabled, spawnOffThread } from "../../../../desktop/src/main/services/shared/offThreadSpawn";
 import { resolveTrustedWindowsTool } from "../../lib/trustedWindowsTools";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 const DEFAULT_POLL_MS = 5_000;
 const KEEP_AWAKE_PREFERENCE_ANALYTICS_DEDUPE_MS = 24 * 60 * 60_000;
@@ -167,7 +168,7 @@ export function createBrainKeepAwakeService(
       hasStoredPreference: true,
       migrationBlocked: true,
     };
-    stateReadError = "ADE can't read the saved keep-awake setting.";
+    stateReadError = `${BRAND.NAME} can't read the saved keep-awake setting.`;
     options.logger?.warn("keepAwake.state_read_failed", {
       error: error instanceof Error ? error.message : String(error),
     });
@@ -265,7 +266,7 @@ export function createBrainKeepAwakeService(
         const gnomeInhibit = "gnome-session-inhibit --app-id ade-desktop --inhibit suspend";
         const processChild = spawn("systemd-inhibit", [
           "--what=idle:sleep",
-          "--who=ADE",
+          `--who=${BRAND.NAME}`,
           "--why=Agents are working",
           "--mode=block",
           "/bin/sh",
@@ -297,7 +298,7 @@ export function createBrainKeepAwakeService(
         return;
       }
     } catch (error) {
-      blockerError = "This machine wouldn't let ADE stay awake.";
+      blockerError = `This machine wouldn't let ${BRAND.NAME} stay awake.`;
       options.logger?.warn("keepAwake.lock_start_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
@@ -311,7 +312,7 @@ export function createBrainKeepAwakeService(
     spawned.once("error", (error) => {
       if (child !== spawned) return;
       child = null;
-      blockerError = "This machine wouldn't let ADE stay awake.";
+      blockerError = `This machine wouldn't let ${BRAND.NAME} stay awake.`;
       options.logger?.warn("keepAwake.lock_start_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
@@ -320,7 +321,7 @@ export function createBrainKeepAwakeService(
       if (child !== spawned) return;
       child = null;
       if (!disposed && state.preferences.level !== "never") {
-        blockerError = "This machine wouldn't let ADE stay awake.";
+        blockerError = `This machine wouldn't let ${BRAND.NAME} stay awake.`;
         options.logger?.warn("keepAwake.lock_exited_while_active", { code, signal });
       }
     });
@@ -449,7 +450,7 @@ export function createBrainKeepAwakeService(
     async setLevel(level: unknown): Promise<KeepAwakeSnapshot> {
       const request = ++levelRequests;
       if (migrationBlocked) {
-        blockerError = stateReadError ?? "ADE can't read the saved keep-awake setting.";
+        blockerError = stateReadError ?? `${BRAND.NAME} can't read the saved keep-awake setting.`;
         return snapshot();
       }
       if (!isKeepAwakeLevel(level)) level = "never";
@@ -466,10 +467,10 @@ export function createBrainKeepAwakeService(
       if (platform === "linux" && nextLevel !== "never" && nextLevel !== currentLevel) {
         // polkit can refuse the lock and the tool can be absent. Settings only
         // reads on save, so a failure at the first turn would go unseen.
-        const probe = await execSystemText("systemd-inhibit", ["--what=idle:sleep", "--who=ADE", "--why=Checking the lock", "--mode=block", "true"], 5_000);
+        const probe = await execSystemText("systemd-inhibit", ["--what=idle:sleep", `--who=${BRAND.NAME}`, "--why=Checking the lock", "--mode=block", "true"], 5_000);
         if (request !== levelRequests) return snapshot();
         if (!probe.ok) {
-          blockerError = "This machine wouldn't let ADE stay awake.";
+          blockerError = `This machine wouldn't let ${BRAND.NAME} stay awake.`;
           options.logger?.warn("keepAwake.lock_probe_failed", { stderr: probe.stderr.slice(0, 200) });
           return snapshot();
         }

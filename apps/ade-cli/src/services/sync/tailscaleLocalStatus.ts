@@ -6,6 +6,7 @@ import type {
 } from "../../../../desktop/src/shared/types";
 import { execFileOffThread, offThreadSpawnEnabled } from "../../../../desktop/src/main/services/shared/offThreadSpawn";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 const execFileAsync = promisify(execFile);
 
@@ -151,7 +152,7 @@ export function parseTailscaleLocalStatus(
       keyExpiry: null,
       keyExpired: false,
       health: [],
-      readError: "Tailscale answered with something ADE couldn't read.",
+      readError: `Tailscale answered with something ${BRAND.NAME} couldn't read.`,
       checkedAt,
     };
   }

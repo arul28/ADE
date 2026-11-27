@@ -221,6 +221,7 @@ import {
   syncFileRequestWorkspaceId,
   visibleFileWorkspacesForPeer,
 } from "./syncFileRequests";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 export {
   assertFileRequestWorkspaceVisibleToPeer,
@@ -1740,7 +1741,7 @@ export function resolveSyncHostInboundProjectScope(
     return {
       ok: false,
       code: "project_not_open",
-      message: "This ADE machine does not have a project open for phone sync.",
+      message: `This ${BRAND.NAME} machine does not have a project open for phone sync.`,
       expectedProjectId: null,
       receivedProjectId: received,
     };
@@ -1752,7 +1753,7 @@ export function resolveSyncHostInboundProjectScope(
     return {
       ok: false,
       code: "project_mismatch",
-      message: "This ADE machine is hosting a different project. Select the project again and retry.",
+      message: `This ${BRAND.NAME} machine is hosting a different project. Select the project again and retry.`,
       expectedProjectId: host,
       receivedProjectId: received,
     };
@@ -2810,7 +2811,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         && (recordOwner !== nextUserId || revokedDeviceIds.has(peer.pairedDeviceId ?? "")),
       );
       if (!relayLeaseChanged && !accountTrustRevoked) continue;
-      closePeerForAccountLease(peer, "ADE account session changed");
+      closePeerForAccountLease(peer, `${BRAND.NAME} account session changed`);
       closedAny = true;
     }
     if (revokedDeviceIds.size > 0 || closedAny) {
@@ -3531,7 +3532,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       ? "Tailnet discovery is disabled for this background project context."
       : shouldAttemptTailnetServiceAdvertise()
       ? "Tailnet discovery has not been published yet."
-      : "Tailscale Serve discovery is not available in this ADE process.",
+      : `Tailscale Serve discovery is not available in this ${BRAND.NAME} process.`,
     stderr: null,
   };
   let lastBroadcastAt: string | null = null;
@@ -4761,7 +4762,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         servicePort: port,
         target: null,
         updatedAt: nowIso(),
-        error: "Tailscale Serve discovery is not available in this ADE process.",
+        error: `Tailscale Serve discovery is not available in this ${BRAND.NAME} process.`,
         stderr: null,
       });
       return;
@@ -7396,7 +7397,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       && Boolean(requestedProjectId)
       && !matchesHostProject;
     if (requestedProjectId && hostProjectId && !matchesHostProject && !shouldRouteToProject) {
-      reject("This ADE machine is hosting a different project. Select the project again and retry.", "project_not_open");
+      reject(`This ${BRAND.NAME} machine is hosting a different project. Select the project again and retry.`, "project_not_open");
       return;
     }
     if (payload.action === "lanes.presence.announce" || payload.action === "lanes.presence.release") {
@@ -8024,7 +8025,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               ok: false,
               error: {
                 code: "relay_account_required",
-                message: "Sign in with the same ADE account on both machines.",
+                message: `Sign in with the same ${BRAND.NAME} account on both machines.`,
               },
             }, envelope.requestId);
             try { peer.ws.close(4003, "Account sign-in required"); } catch { /* ignore */ }
@@ -8060,7 +8061,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               ok: false,
               error: {
                 code: "relay_account_required",
-                message: "Sign in with the same ADE account on both machines.",
+                message: `Sign in with the same ${BRAND.NAME} account on both machines.`,
               },
             }, envelope.requestId);
             try { peer.ws.close(4003, "Account session changed"); } catch { /* ignore */ }
@@ -8237,7 +8238,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               deviceId: hello.peer.deviceId,
             });
             return authFail(
-              "Sign in with the same ADE account on both machines.",
+              `Sign in with the same ${BRAND.NAME} account on both machines.`,
               "relay_account_required",
             );
           }
@@ -8311,7 +8312,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             const config = args.getAccountAttestationConfig?.();
             if (!ownerUserId || !relayAccountToken || !config) {
               authFailureCode = "relay_account_required";
-              authFailureMessage = "Sign in with the same ADE account on both machines.";
+              authFailureMessage = `Sign in with the same ${BRAND.NAME} account on both machines.`;
               args.logger.warn("sync_host.paired_relay_account_required", {
                 deviceId: pairedAuth.deviceId,
                 hostSignedIn: Boolean(ownerUserId),
@@ -8330,7 +8331,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               relayAccountExpiresAtMs = attestation.expiresAtMs;
             } catch (error) {
               authFailureCode = "relay_account_required";
-              authFailureMessage = "Sign in with the same ADE account on both machines.";
+              authFailureMessage = `Sign in with the same ${BRAND.NAME} account on both machines.`;
               args.logger.warn("sync_host.paired_relay_account_rejected", {
                 deviceId: pairedAuth.deviceId,
                 reason: typeof (error as { code?: unknown } | null)?.code === "string"
@@ -8348,7 +8349,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               || commitAuthorization.generation !== authorization.generation
             ) {
               authFailureCode = "relay_account_required";
-              authFailureMessage = "Sign in with the same ADE account on both machines.";
+              authFailureMessage = `Sign in with the same ${BRAND.NAME} account on both machines.`;
               return true;
             }
           }
@@ -8407,7 +8408,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
                 ownerMatches: false,
               });
               return authFail(
-                "This machine is signed in to a different ADE account than the one that paired this device.",
+                `This machine is signed in to a different ${BRAND.NAME} account than the one that paired this device.`,
               );
             }
           }
@@ -8485,7 +8486,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           return false;
         }
         return authFail(
-          "This connection did not present any way to authenticate. Update ADE on this device.",
+          `This connection did not present any way to authenticate. Update ${BRAND.NAME} on this device.`,
         );
       })();
       if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;

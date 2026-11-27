@@ -24,6 +24,7 @@ import type { CloudCapsuleManifest, CloudChatRow } from "../../../../account-dir
 import { CLOUD_CAPSULE_MAX_BYTES } from "../../../../account-directory/src/cloud/contract";
 import type { CloudApiClient } from "../../../../desktop/src/shared/cloudApiClient";
 import type { AgentChatCrossMachineHandoffCapsule, AgentChatEventEnvelope } from "../../../../desktop/src/shared/types";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 type Logger = {
   info: (event: string, meta?: Record<string, unknown>) => void;
@@ -286,7 +287,7 @@ export async function restoreCloudChat(
   if (args.kind === "cli") {
     const cli = await restoreCloudCli(deps, args);
     if (cli) return cli;
-    throw new Error("ADE couldn't find this CLI's saved copy, so it can't continue it here.");
+    throw new Error(`${BRAND.NAME} couldn't find this CLI's saved copy, so it can't continue it here.`);
   }
   // A restore that ran before moved the copy here already: read it from here.
   let from = args.fromMachineKey;
@@ -298,7 +299,7 @@ export async function restoreCloudChat(
   if (!saved) {
     const cli = await restoreCloudCli(deps, args);
     if (cli) return cli;
-    throw new Error("ADE couldn't find this chat's saved copy, so it can't continue it here.");
+    throw new Error(`${BRAND.NAME} couldn't find this chat's saved copy, so it can't continue it here.`);
   }
   // The capsule is under the key the copy is under, or (a restore that failed after the move) under the
   // key the copy moved from: the move kept it there (`keepCapsule`) until a restore succeeds.
@@ -316,7 +317,7 @@ export async function restoreCloudChat(
   if (stale) logger.info("cloud.restore_capsule_stale", { chatId: args.chatId });
   const capsule = found && !stale ? found.capsule : null;
   const modelId = capsule?.target.targetModelId || args.modelId || saved.chat.model;
-  if (!modelId) throw new Error("ADE can't tell which model this chat used, so it can't continue it here.");
+  if (!modelId) throw new Error(`${BRAND.NAME} can't tell which model this chat used, so it can't continue it here.`);
   // The copy moves to this computer's key BEFORE any part of this chat uploads
   // here (CONTRACTS: moveSavedChat). A failed move stops the continue: a
   // restored chat would otherwise upload as a second copy of the same chat.
@@ -331,7 +332,7 @@ export async function restoreCloudChat(
       moved = answer.moved;
     } catch (error) {
       logger.warn("cloud.restore_move_failed", { chatId: args.chatId, error: errorText(error) });
-      throw new Error("ADE couldn't move this chat's saved copy to this computer, so it can't continue it here. Try again.");
+      throw new Error(`${BRAND.NAME} couldn't move this chat's saved copy to this computer, so it can't continue it here. Try again.`);
     }
   }
   // No upload of this chat until the uploader continues from the moved copy's sequence.

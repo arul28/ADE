@@ -2,6 +2,7 @@ import type {
   AccountMachinePairingRefusalCode,
   AccountMachinePairingResult,
 } from "./accountMachinePublisherService";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * The two independent halves of "this machine was removed from your account".
@@ -135,7 +136,7 @@ export async function repairMachinePairing(
       published: false,
       pushRestored: false,
       state: "push_state_unreadable",
-      reason: "ADE can't read this computer's Activity settings right now, so it can't tell whether delivery is still turned off. Try again in a moment.",
+      reason: `${BRAND.NAME} can't read this computer's Activity settings right now, so it can't tell whether delivery is still turned off. Try again in a moment.`,
     };
   }
 
@@ -160,7 +161,7 @@ export async function repairMachinePairing(
       pushRestored: false,
       state,
       reason: input.unavailable?.reason
-        ?? "This ADE brain is not publishing this machine to your account yet.",
+        ?? `This ${BRAND.NAME} brain is not publishing this machine to your account yet.`,
     };
   }
 
@@ -207,7 +208,7 @@ export async function repairMachinePairing(
         published: true,
         pushRestored: false,
         state: "push_state_unreadable",
-        reason: "ADE can't read this computer's Activity settings right now, so it can't turn delivery back on. Try again in a moment.",
+        reason: `${BRAND.NAME} can't read this computer's Activity settings right now, so it can't turn delivery back on. Try again in a moment.`,
       };
     }
     if (storedNow) {

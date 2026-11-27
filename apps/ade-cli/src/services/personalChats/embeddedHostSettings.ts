@@ -10,6 +10,7 @@ import {
   type HarnessPreset,
 } from "../../../../desktop/src/shared/harnessPresets";
 import { asObject, requiredString } from "./rpcArgs";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * The settings an SDK host manages for its end user, behind the
@@ -124,7 +125,7 @@ export class EmbeddedHostSettings {
       if (!Array.isArray(stored)) throw new Error("Harness presets could not be loaded; the stored value is unreadable.");
       const presets = normalizeHarnessPresetList(stored);
       if (presets.length !== stored.length) {
-        throw new Error("Harness presets could not be loaded; update ADE to read every saved preset.");
+        throw new Error(`Harness presets could not be loaded; update ${BRAND.NAME} to read every saved preset.`);
       }
       return presets;
     };

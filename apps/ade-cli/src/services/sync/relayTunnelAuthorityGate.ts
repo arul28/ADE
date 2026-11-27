@@ -1,4 +1,5 @@
 import type { TunnelHostListener } from "./syncTunnelClientService";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * Decides whether THIS runtime may hold the machine's relay tunnel.
@@ -148,7 +149,7 @@ export function createRelayTunnelAuthorityGate(
   if (!(hasSyncListener && held)) {
     log?.info?.("sync.tunnel_start_skipped", {
       reason: hasSyncListener
-        ? "This runtime does not hold the machine-wide sync host lease; another ADE process owns phone sync and the relay."
+        ? `This runtime does not hold the machine-wide sync host lease; another ${BRAND.NAME} process owns phone sync and the relay.`
         : "This runtime does not host the shared sync listener.",
       hasSyncListener,
       holdsSyncHostLease: held,

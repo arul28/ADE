@@ -27,6 +27,7 @@ import {
   type SyncHostSingletonConflict,
   type SyncHostSingletonOwner,
 } from "./syncHostSingleton";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 export type SyncHostRecoveryDeps = {
   /**
@@ -130,11 +131,11 @@ export function classifySyncHostOwnerKind(owner: SyncHostSingletonOwner): SyncHo
 export function ownerLabelForKind(kind: SyncHostOwnerKind): string {
   switch (kind) {
     case "installed":
-      return "Installed ADE";
+      return `Installed ${BRAND.NAME}`;
     case "development":
       return "Development runtime";
     case "unknown":
-      return "Another ADE runtime";
+      return `Another ${BRAND.NAME} runtime`;
     default: {
       const exhaustive: never = kind;
       return exhaustive;
@@ -261,7 +262,7 @@ export function redactSyncHostReadinessSnapshot(
     conflict: {
       ...snapshot.conflict,
       ownerKind: "unknown",
-      ownerLabel: "Another ADE runtime",
+      ownerLabel: `Another ${BRAND.NAME} runtime`,
       projectLabel: null,
       impact: null,
       recoveryEligible: false,
@@ -592,7 +593,7 @@ async function runSyncHostRecovery(
         return finish(
           "restarting",
           false,
-          "Restarting this machine's ADE brain. Reconnect if this screen drops.",
+          `Restarting this machine's ${BRAND.NAME} brain. Reconnect if this screen drops.`,
           await diagnoseSyncHostReadinessAsync(deps),
         );
       } catch (error) {

@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import http from "node:http";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * How long one loopback probe waits for the listener's 426 before it gives up.
@@ -240,7 +241,7 @@ export async function probeAdeListenerAt(
         reason: ok
           ? null
           : statusCode !== 426
-            ? `Expected ADE 426 Upgrade Required on ${host}:${port}, received ${statusCode ?? "no status"}${statusMessage ? ` ${statusMessage}` : ""}.`
+            ? `Expected ${BRAND.NAME} 426 Upgrade Required on ${host}:${port}, received ${statusCode ?? "no status"}${statusMessage ? ` ${statusMessage}` : ""}.`
             : markerValue == null || markerValue.length === 0
               ? `The listener on ${host}:${port} returned 426 but did not present a loopback identity in ${SYNC_LOOPBACK_ADE_MARKER_HEADER}.`
               : expectedNonce.length === 0
@@ -250,7 +251,7 @@ export async function probeAdeListenerAt(
     });
     request.setTimeout(timeoutMs, () => {
       timedOut = true;
-      request.destroy(new Error(`Loopback ADE probe timed out after ${timeoutMs}ms.`));
+      request.destroy(new Error(`Loopback ${BRAND.NAME} probe timed out after ${timeoutMs}ms.`));
     });
     request.once("error", (error) => {
       finish({
@@ -259,7 +260,7 @@ export async function probeAdeListenerAt(
         statusMessage: null,
         markerValue: null,
         timedOut,
-        reason: `ADE loopback probe failed on ${host}:${port}: ${error.message}`,
+        reason: `${BRAND.NAME} loopback probe failed on ${host}:${port}: ${error.message}`,
       });
     });
   });
@@ -289,7 +290,7 @@ export async function assertAdeLoopbackListener(
   if (!result.ok) {
     throw new LoopbackShadowedError(
       port,
-      result.reason ?? `The listener on 127.0.0.1:${port} is not ADE.`,
+      result.reason ?? `The listener on 127.0.0.1:${port} is not ${BRAND.NAME}.`,
       result.checkedAt,
       loopbackShadowAnswerOf(result),
     );

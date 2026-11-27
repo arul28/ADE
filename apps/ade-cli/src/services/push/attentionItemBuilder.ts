@@ -21,6 +21,7 @@ import { scheduledWakeState } from "../../../../desktop/src/shared/sessionStatus
 import { laneDisplayName } from "../../../../desktop/src/shared/laneDisplayName";
 import { withActivityFingerprints } from "./activityFingerprint";
 import type { StoredUserMessage } from "./pushRegistrationStore";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * The Activity projection: `(runs, recentRuns, prActivities, roster)` in, wire
@@ -433,15 +434,15 @@ const AGENT_PRIVACY_PREVIEW_BY_PHASE: Partial<Record<AttentionPhase, string>> = 
   // "needs you", the same two words the status label, the title suffix and the
   // Activity column heading use. "needs your input" was a third phrasing
   // for one state, on the surface with the least room to explain itself.
-  needs_you: "An ADE agent needs you.",
-  failed: "An ADE agent run failed.",
-  completed: "An ADE agent is done.",
+  needs_you: `A ${BRAND.NAME} agent needs you.`,
+  failed: `A ${BRAND.NAME} agent run failed.`,
+  completed: `A ${BRAND.NAME} agent is done.`,
   // "An ADE agent is idle." — same subject ("An ADE agent") and same verb
   // phrase as the title suffix above. The old "An ADE agent session is idle."
   // named a different subject for the same row.
-  stale: "An ADE agent is idle.",
+  stale: `A ${BRAND.NAME} agent is idle.`,
 };
-const AGENT_PRIVACY_PREVIEW_FALLBACK = "An ADE agent is working.";
+const AGENT_PRIVACY_PREVIEW_FALLBACK = `A ${BRAND.NAME} agent is working.`;
 
 export function agentAttentionTitle(subject: string, phase: AttentionPhase): string {
   return `${subject} ${AGENT_TITLE_SUFFIX_BY_PHASE[phase] ?? AGENT_TITLE_SUFFIX_FALLBACK}`;
@@ -596,7 +597,7 @@ function buildMessageItems(
       machine,
       project: attentionProjectRef(
         message.scopeKey,
-        scope?.projectName ?? "ADE project",
+        scope?.projectName ?? `${BRAND.NAME} project`,
         scope?.projectRoot,
         context.canonicalProjectId,
       ),
@@ -606,7 +607,7 @@ function buildMessageItems(
       model: message.model,
       title,
       preview: sanitizeAttentionPreview(message.body?.trim() || title, 320),
-      privacyPreview: "An ADE agent sent you a message.",
+      privacyPreview: `A ${BRAND.NAME} agent sent you a message.`,
       // The chat that sent it, so a row can say where it came from.
       detail: message.chatTitle ? sanitizeAttentionPreview(message.chatTitle, 160) : null,
       recentActivity: [],
@@ -685,7 +686,7 @@ function buildRunItems(context: AttentionItemBuildContext, machine: AttentionIte
       machine,
       project: attentionProjectRef(
         run.scopeKey,
-        scope?.projectName ?? "ADE project",
+        scope?.projectName ?? `${BRAND.NAME} project`,
         scope?.projectRoot,
         context.canonicalProjectId,
       ),
@@ -790,7 +791,7 @@ async function buildRosterItems(
           || chat.preview?.trim()
           || chat.title?.trim()
           || laneNames.get(chat.laneId)
-          || "ADE session",
+          || `${BRAND.NAME} session`,
       );
       const actions: AttentionItem["actions"] = [
         { id: "open", kind: "open", label: "Open" },
@@ -903,7 +904,7 @@ function buildPrItems(
       machine,
       project: attentionProjectRef(
         pr.scopeKey,
-        scope?.projectName ?? "ADE project",
+        scope?.projectName ?? `${BRAND.NAME} project`,
         scope?.projectRoot,
         context.canonicalProjectId,
       ),

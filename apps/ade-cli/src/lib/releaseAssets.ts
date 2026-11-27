@@ -5,6 +5,7 @@ import http from "node:http";
 import https from "node:https";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 /**
  * Shared primitives for reading ADE's published GitHub release assets.
@@ -155,7 +156,7 @@ export function runtimeNativeArchiveAssetName(target: string): string {
 function resolveDownloadModule(url: string): typeof https | typeof http {
   if (url.startsWith("https://")) return https;
   if (url.startsWith("http://")) return http;
-  throw new ReleaseAssetDownloadError(`Unsupported ADE release asset URL: ${url}`, { url });
+  throw new ReleaseAssetDownloadError(`Unsupported ${BRAND.NAME} release asset URL: ${url}`, { url });
 }
 
 /**
@@ -185,7 +186,7 @@ async function downloadReleaseAssetInternal(
     const request = resolveDownloadModule(url).get(
       url,
       {
-        headers: { "user-agent": options.userAgent ?? "ADE release asset fetcher" },
+        headers: { "user-agent": options.userAgent ?? `${BRAND.NAME} release asset fetcher` },
         timeout: options.timeoutMs ?? RELEASE_DOWNLOAD_TIMEOUT_MS,
       },
       (response) => {

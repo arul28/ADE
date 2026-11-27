@@ -3,6 +3,7 @@ import {
   type AccountRefreshBroker,
 } from "./accountAuthService";
 import { carryExpected } from "../../../../desktop/src/shared/expectedError";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 export type AccountRefreshBrokerTransport = {
   /** Probe the transport immediately before a request; false hands auth back to its local path. */
@@ -41,9 +42,9 @@ export function createAccountRefreshBroker(
   options: AccountRefreshBrokerOptions,
 ): AccountRefreshBroker {
   const unavailableMessage = options.unavailableMessage
-    ?? "ADE couldn't ask the brain for an account token. Try again in a moment.";
+    ?? `${BRAND.NAME} couldn't ask the brain for an account token. Try again in a moment.`;
   const emptyTokenMessage = options.emptyTokenMessage
-    ?? "The ADE brain did not return an account token.";
+    ?? `The ${BRAND.NAME} brain did not return an account token.`;
 
   return {
     async getAccessToken(_requestOptions) {

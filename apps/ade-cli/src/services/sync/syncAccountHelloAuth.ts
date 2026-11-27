@@ -8,6 +8,7 @@ import type { AccountAttestationConfig } from "../account/sharedAccountAuthServi
 import type { VerifiedAccountAttestation } from "../account/accountAttestationVerifier";
 import { isValidDpopPublicKey, type SyncPairingRecord, type SyncPairingStore } from "./syncPairingStore";
 import { evaluatePairedHelloDpop, syncDpopFailureMessage, type SyncDpopNonceCache } from "./syncDpop";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * Shared account-hello authentication for the two ingresses that accept one:
@@ -30,14 +31,14 @@ import { evaluatePairedHelloDpop, syncDpopFailureMessage, type SyncDpopNonceCach
 export const SYNC_REPAIR_REQUIRED_MESSAGE = "This device is not paired with this machine, or its saved"
   + " pairing is no longer valid. Pair it again.";
 
-export const SYNC_ACCOUNT_SESSION_CHANGED_MESSAGE = "The ADE account session on the computer you're"
+export const SYNC_ACCOUNT_SESSION_CHANGED_MESSAGE = `The ${BRAND.NAME} account session on the computer you're`
   + " connecting to changed while connecting. Try again.";
 
 export const SYNC_ACCOUNT_VERIFY_UNAVAILABLE_MESSAGE = "The computer you're connecting to cannot verify"
-  + " ADE accounts. Update ADE there, then try again.";
+  + ` ${BRAND.NAME} accounts. Update ${BRAND.NAME} there, then try again.`;
 
 export const SYNC_ACCOUNT_NOT_SIGNED_IN_MESSAGE = "The computer you're connecting to is not signed in"
-  + " to an ADE account. Sign in on that computer, then try again.";
+  + ` to a ${BRAND.NAME} account. Sign in on that computer, then try again.`;
 
 export const SYNC_ACCOUNT_DEVICE_MISMATCH_MESSAGE = "The account identity in this connection did not"
   + " match the device that sent it.";
@@ -46,7 +47,7 @@ export const SYNC_ACCOUNT_KEYLESS_RECORD_MESSAGE = "This device's saved pairing 
   + " security. Remove it on this computer and pair it again.";
 
 export const SYNC_ACCOUNT_OTHER_OWNER_MESSAGE = "This device is already paired to this machine under"
-  + " a different ADE account.";
+  + ` a different ${BRAND.NAME} account.`;
 
 export const SYNC_ACCOUNT_PAIRING_WRITE_FAILED_MESSAGE = "The computer you're connecting to could not"
   + " save the new pairing for this device. Try again.";
@@ -55,7 +56,7 @@ export const SYNC_ACCOUNT_COMMIT_FAILED_MESSAGE = "The computer you're connectin
   + " finish saving the account pairing. Try again.";
 
 export const SYNC_ACCOUNT_VERIFY_FAILED_MESSAGE = "The computer you're connecting to could not verify"
-  + " its ADE account session. Open ADE there and check that it is signed in to the same ADE account,"
+  + ` its ${BRAND.NAME} account session. Open ${BRAND.NAME} there and check that it is signed in to the same ${BRAND.NAME} account,`
   + " then try again.";
 
 /** A paired secret is 48 hex characters; anything far longer is not one. */
@@ -155,7 +156,7 @@ export async function authenticateSyncAccountHello(
     });
     return reject(
       "Signing in cannot authenticate a direct connection to this machine."
-        + ` Connect through ADE Relay, or pair this device with a ${options.pairingCodeNoun}.`,
+        + ` Connect through ${BRAND.NAME} Relay, or pair this device with a ${options.pairingCodeNoun}.`,
     );
   }
 

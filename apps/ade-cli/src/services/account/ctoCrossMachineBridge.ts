@@ -72,6 +72,7 @@ import {
   type PooledConnection,
   type RemoteProjectRecord,
 } from "./machineBridge";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 export { CTO_REMOTE_CLIENT_NAME };
 const CTO_PAIRED_STORE_FILE = "cto-paired-machines.json";
@@ -166,7 +167,7 @@ export function createCtoCrossMachineBridge(
   const pool = createMachineConnectionPool({
     poolId: "cto",
     pairedStoreFile: CTO_PAIRED_STORE_FILE,
-    deviceName: () => `ADE CTO on ${os.hostname()}`,
+    deviceName: () => `${BRAND.NAME} CTO on ${os.hostname()}`,
     initializeParams: ctoCallerInitializeParams,
     appVersion: options.appVersion,
     projectRoots: () => [options.projectRoot],
@@ -202,7 +203,7 @@ export function createCtoCrossMachineBridge(
     const origin = projectOrigin().identity;
     if (!origin) {
       throw new Error(
-        "This project has no git origin remote, so ADE can't find the same repository on your other machines.",
+        `This project has no git origin remote, so ${BRAND.NAME} can't find the same repository on your other machines.`,
       );
     }
     const records = await pool.listProjects(entry);
@@ -216,7 +217,7 @@ export function createCtoCrossMachineBridge(
   const machineForTarget = async (target: CtoMachineTarget): Promise<AdeAccountMachine> => {
     const machines = await listAccountMachines();
     const machine = machines.find((candidate) => candidate.machineKey === target.machineId);
-    if (!machine) throw new Error(`${target.name} is no longer on your ADE account.`);
+    if (!machine) throw new Error(`${target.name} is no longer on your ${BRAND.NAME} account.`);
     return machine;
   };
 
@@ -245,7 +246,7 @@ export function createCtoCrossMachineBridge(
     if (!project) {
       const origin = projectOrigin().identity;
       throw new Error(
-        `${machineName(machine)} doesn't have this project (${origin ?? "no origin"}). Open the repository in ADE on that machine once, then try again.`,
+        `${machineName(machine)} doesn't have this project (${origin ?? "no origin"}). Open the repository in ${BRAND.NAME} on that machine once, then try again.`,
       );
     }
     return { entry, project };
@@ -293,7 +294,7 @@ export function createCtoCrossMachineBridge(
 
   const localCaller = async (): Promise<CtoActionCaller> => {
     const caller = await options.getLocalActionCaller?.();
-    if (!caller) throw new Error("ADE actions are not available on this runtime yet.");
+    if (!caller) throw new Error(`${BRAND.NAME} actions are not available on this runtime yet.`);
     return caller;
   };
 

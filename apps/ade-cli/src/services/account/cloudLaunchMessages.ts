@@ -9,6 +9,7 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { CloudApiError } from "../../../../desktop/src/shared/cloudApiClient";
 import type { CloudBootLaunchDeps } from "./cloudBootLaunch";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 type MessageDeps = Pick<CloudBootLaunchDeps, "launchId" | "logger" | "stateFile" | "api" | "sendChatMessage" | "waitForChatIdle" | "typeIntoCli">;
 /** The chat the queued messages go to; `cli`: a restored CLI, so each one is typed at its prompt. */
@@ -113,7 +114,7 @@ export async function deliverInOrder<M extends OrderedMessage>(messages: readonl
         continue;
       }
       if (journal.attempted.includes(message.messageId)) {
-        await finish(message.messageId, mine, "failed", "ADE couldn't confirm this message reached the chat. Send it again if it isn't there.");
+        await finish(message.messageId, mine, "failed", `${BRAND.NAME} couldn't confirm this message reached the chat. Send it again if it isn't there.`);
         continue;
       }
     } else if (message.state !== "queued") {
@@ -166,7 +167,7 @@ export async function deliverInOrder<M extends OrderedMessage>(messages: readonl
         done = false;
         break;
       }
-      await finish(message.messageId, claimId, "failed", `ADE couldn't send this message to the chat: ${errorText(error)}`.slice(0, 300));
+      await finish(message.messageId, claimId, "failed", `${BRAND.NAME} couldn't send this message to the chat: ${errorText(error)}`.slice(0, 300));
       continue;
     }
     journal.sent.push(message.messageId);
@@ -213,7 +214,7 @@ export async function deliverQueuedMessages(deps: MessageDeps, projectId: string
       const clientSendId = `launch-message-${launchId}-${message.messageId}`;
       if (cli && typeIntoCli) {
         const outcome = await typeIntoCli(projectId, sessionId, { text: message.text, clientMessageId: clientSendId });
-        if (outcome === "ended") throw new Error("The CLI has ended, so ADE couldn't type this message.");
+        if (outcome === "ended") throw new Error(`The CLI has ended, so ${BRAND.NAME} couldn't type this message.`);
         // Another runtime runs the CLI now: not typed, so a later round types it.
         if (outcome === "deferred") throw Object.assign(new Error("The CLI is busy."), { code: "turn_in_flight" });
         return;

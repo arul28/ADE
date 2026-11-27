@@ -9,6 +9,7 @@ import path from "node:path";
 import { writeJsonAtomic } from "../services/runtime/atomicJson";
 import { lastFailurePathForMachine } from "../../../desktop/src/main/services/runtime/lastFailureStore";
 import { markBrainRunStoppedBy } from "../../../desktop/src/main/services/runtime/brainUnplannedRestart";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 export const BRAIN_STARTS_FILE = "brain-starts.json";
 
@@ -119,7 +120,7 @@ export function readStartsFile(filePath: string): BrainStartsState {
   } catch (error) {
     // Absent is the first start on this machine; anything else starts over.
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      process.stderr.write(`ADE brain is starting its restart record over: ${errorText(error)}
+      process.stderr.write(`${BRAND.NAME} brain is starting its restart record over: ${errorText(error)}
 `);
     }
     return { starts: [], loopFoundAt: null, lastReportedAt: null };
@@ -170,7 +171,7 @@ export function writeStartsFile(filePath: string, state: BrainStartsState): void
     writeJsonAtomic(filePath, state, `${process.pid}`);
   } catch (error) {
     // Without the record a loop goes unreported; the brain itself is unaffected.
-    process.stderr.write(`ADE brain could not save its restart record: ${errorText(error)}
+    process.stderr.write(`${BRAND.NAME} brain could not save its restart record: ${errorText(error)}
 `);
   }
 }
