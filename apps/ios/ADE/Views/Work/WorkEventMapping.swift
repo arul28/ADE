@@ -1092,7 +1092,9 @@ func nonEmpty(_ value: String) -> String? {
 func workDiffWasShortened(_ diff: String) -> Bool {
   // Anchored at the start, mirroring desktop: an unanchored search matched a
   // real diff whose own changed lines quoted the notice.
-  guard diff.hasPrefix("[ADE] Large file diff was shortened") else { return false }
+  // "[ADE]" before the rename, "[Daex]" after.
+  guard diff.hasPrefix("[Daex] Large file diff was shortened")
+    || diff.hasPrefix("[ADE] Large file diff was shortened") else { return false }
   return diff.contains("bytes were left out.")
     || diff.contains("bytes omitted from stored chat history.")
 }

@@ -152,7 +152,7 @@ export const buildCursorSdkSystemPrompt = (
     const cliT = truncateFromEnd(cliClean, CLI_HELP_BUDGET);
     blocks.push(
       [
-        "## ADE CLI primer",
+        "## Daex CLI primer",
         "Lane shells have a `daex` command that drives the same project DB through the machine runtime endpoint (`ade` is the same command and still works). The `daex cursor cloud` subcommands (e.g. `agents list`, `agents create`, `agents send`, `agents cancel`) mirror the SDK surface above. Run `daex <command> --help` for full flags.",
         cliT.value,
       ].join("\n"),

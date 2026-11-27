@@ -50,7 +50,7 @@ const redactStoredInlineImageDataUrls = (
         return { value: candidate, omittedBytes: 0, changed: false };
       }
       return {
-        value: `[ADE] Inline image was left out (${bytes} bytes).`,
+        value: `[Daex] Inline image was left out (${bytes} bytes).`,
         omittedBytes: bytes,
         changed: true,
       };
@@ -60,7 +60,7 @@ const redactStoredInlineImageDataUrls = (
     }
     if (depth >= 32) {
       return {
-        value: "[ADE] Deeply nested content was left out.",
+        value: "[Daex] Deeply nested content was left out.",
         omittedBytes: 0,
         changed: true,
       };
@@ -137,7 +137,7 @@ const compactStoredTextPayload = (
   if (originalBytes <= maxBytes) return null;
 
   const prefix = [
-    `[ADE] Large ${label} was shortened to keep this chat fast.`,
+    `[Daex] Large ${label} was shortened to keep this chat fast.`,
     `Original size: ${originalBytes} bytes.`,
     "",
     "----- BEGIN FIRST PREVIEW -----",
@@ -157,7 +157,7 @@ const compactStoredTextPayload = (
     "",
     "----- END FIRST PREVIEW -----",
     "",
-    `[ADE] ${omittedBytes} bytes were left out.`,
+    `[Daex] ${omittedBytes} bytes were left out.`,
     "",
     "----- BEGIN LAST PREVIEW -----",
     "",
@@ -195,7 +195,8 @@ const isCompactedPayloadWrapper = (value: unknown): boolean => {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as Record<string, unknown>;
   return typeof candidate.summary === "string"
-    && candidate.summary.startsWith("[ADE] Large ")
+    // Wrappers written before the rename say "[ADE]".
+    && (candidate.summary.startsWith("[Daex] Large ") || candidate.summary.startsWith("[ADE] Large "))
     && typeof candidate.preview === "string"
     && typeof candidate.originalBytes === "number"
     && typeof candidate.omittedBytes === "number";
@@ -242,7 +243,7 @@ const compactStoredUnknownPayload = (
   if (!serialized.serializable) {
     // Unmeasurable is not "small". Substitute a bounded placeholder rather than
     // storing and transmitting a payload no cap could see.
-    const summary = `[ADE] Large ${label} could not be measured and was left out.`;
+    const summary = `[Daex] Large ${label} could not be measured and was left out.`;
     return {
       value: { summary, originalBytes: 0, omittedBytes: 0, preview: serialized.text.slice(0, 256) },
       originalBytes: 0,
@@ -256,7 +257,7 @@ const compactStoredUnknownPayload = (
   }
   return {
     value: {
-      summary: `[ADE] Large ${label} was shortened to keep this chat fast.`,
+      summary: `[Daex] Large ${label} was shortened to keep this chat fast.`,
       originalBytes: compacted.originalBytes,
       omittedBytes: compacted.omittedBytes,
       preview: compacted.text,

@@ -341,9 +341,9 @@ export function buildAdeBootstrapGuidance(
   options: AdeBootstrapGuidanceOptions = {},
 ): string {
   return [
-    // The heading stays "## ADE": external-session discovery (this build's and
-    // older ones') recognizes Daex's own ACP chats by it (`discoverAcpShared.ts`).
-    "## ADE",
+    // External-session discovery recognizes Daex's own ACP chats by this
+    // heading, or the pre-rename "## ADE" (`discoverAcpShared.ts`).
+    "## Daex",
     "Daex (formerly ADE) is a local-first dev environment (lanes, chats, terminals, PRs, proof, apps, iOS, browsers); its `daex` CLI controls Daex state. `ade` is the same command and still works.",
     ...(options.nativeSkillListing
       ? ["Before a task in a Daex area, read its `daex:daex-*` skill."]

@@ -10161,7 +10161,7 @@ function buildExecutionModeDirective(
 
   if (provider === "codex" && mode === "parallel") {
     return [
-      "[ADE launch directive]",
+      "[Daex launch directive]",
       "Use Codex parallel delegation for independent subtasks when it improves latency or coverage.",
       "Split bounded work into parallel subagents, keep each delegate narrowly scoped, then reconcile results before the final answer.",
       "If the task is tightly coupled, stay focused instead of forcing delegation.",
@@ -10170,7 +10170,7 @@ function buildExecutionModeDirective(
 
   if (provider === "claude" && (mode === "subagents" || mode === "parallel")) {
     return [
-      "[ADE launch directive]",
+      "[Daex launch directive]",
       "Use Claude subagents for independent subtasks when they will materially improve latency or coverage.",
       "Split bounded work into narrowly scoped delegates, let them complete independently, then reconcile the results before the final answer.",
       "If the task is tightly coupled, stay focused instead of forcing delegation.",
@@ -10179,7 +10179,7 @@ function buildExecutionModeDirective(
 
   if (provider === "droid" && (mode === "parallel" || mode === "subagents" || mode === "teams")) {
     return [
-      "[ADE launch directive]",
+      "[Daex launch directive]",
       "Use Droid's available delegation tools for independent subtasks when they will materially improve latency or coverage.",
       "Split bounded work into narrowly scoped delegates, let them complete independently, then reconcile the results before the final answer.",
       "If the task is tightly coupled, stay focused instead of forcing delegation.",
@@ -10188,7 +10188,7 @@ function buildExecutionModeDirective(
 
   if (provider === "muse" && (mode === "parallel" || mode === "subagents" || mode === "teams")) {
     return [
-      "[ADE launch directive]",
+      "[Daex launch directive]",
       "Use Muse's subagents and workflows for independent subtasks when they will materially improve latency or coverage.",
       "Give each worker a narrow objective, let them run in parallel, then reconcile their results before the final answer.",
       "If the task is tightly coupled, stay focused instead of forcing delegation.",
@@ -10204,7 +10204,7 @@ function buildClaudeInteractionModeDirective(
 ): string | null {
   if (provider !== "claude" || mode !== "plan") return null;
   return [
-    "[ADE launch directive]",
+    "[Daex launch directive]",
     "You are in plan mode for this turn.",
     "Stay inspect-only: analyze the request, outline the implementation, surface risks, and do not make edits or run commands.",
   ].join("\n");
@@ -10215,7 +10215,7 @@ function buildLaneWorktreeDirective(args: { laneId: string; laneWorktreePath: st
   const laneWorktreePath = args.laneWorktreePath.trim();
   if (!laneId.length || !laneWorktreePath.length) return null;
   return [
-    "[ADE launch directive]",
+    "[Daex launch directive]",
     `Daex launched this session in lane '${laneId}' at worktree '${laneWorktreePath}'.`,
     "Read-only inspection outside that worktree is allowed when needed. Edit files and run mutating commands only inside that worktree unless Daex explicitly relaunches you elsewhere.",
   ].join("\n");
@@ -19169,7 +19169,7 @@ export function createAgentChatService(args: {
         ? Math.max(0, Math.floor(maxComposedChars) - restartNoteChars)
         : 0;
       replay = fitTranscriptReplayTextToBudget(replay, budget);
-      const reconstructionPrefix = "System context (ADE continuity, do not echo verbatim):\n";
+      const reconstructionPrefix = "System context (Daex continuity, do not echo verbatim):\n";
       const separatorLength = replay && reconstruction ? 2 : 0;
       const reconstructionBudget = Math.max(
         0,
@@ -19215,7 +19215,7 @@ export function createAgentChatService(args: {
     if (restartNote) parts.push(`System notice from Daex (not from the user):\n${restartNote}`);
     if (replay) parts.push(replay);
     if (reconstruction) {
-      parts.push(`System context (ADE continuity, do not echo verbatim):\n${reconstruction}`);
+      parts.push(`System context (Daex continuity, do not echo verbatim):\n${reconstruction}`);
     }
     return {
       composed: parts.join("\n\n"),
@@ -48780,14 +48780,14 @@ export function createAgentChatService(args: {
     const head = text.slice(0, halfPreviewChars);
     const tail = text.slice(Math.max(halfPreviewChars, text.length - halfPreviewChars));
     const updatedToolOutput = [
-      `[ADE] Large ${input.tool_name} tool output trimmed before model context.`,
+      `[Daex] Large ${input.tool_name} tool output trimmed before model context.`,
       `Original size: ${originalBytes} bytes. Retained first and last ${halfPreviewChars} characters.`,
       "",
       "----- BEGIN FIRST PREVIEW -----",
       head,
       "----- END FIRST PREVIEW -----",
       "",
-      `[ADE] ${Math.max(0, originalBytes - Buffer.byteLength(head + tail, "utf8"))} bytes omitted.`,
+      `[Daex] ${Math.max(0, originalBytes - Buffer.byteLength(head + tail, "utf8"))} bytes omitted.`,
       "",
       "----- BEGIN LAST PREVIEW -----",
       tail,

@@ -387,7 +387,7 @@ function unwrapAdeGuidancePromptForTitle(raw: string): string {
   if (!text.length) return "";
   const marker = /\bUser prompt:\s*/iu.exec(text);
   const looksLikeAdeGuidance =
-    /^ADE session guidance\b/iu.test(text)
+    /^(?:ADE|Daex) session guidance\b/iu.test(text)
     || (/^Start working on that user prompt immediately\./iu.test(text) && marker != null);
   if (!looksLikeAdeGuidance) return stripAdeLaneDirectiveForTitle(text);
 
@@ -403,7 +403,7 @@ function stripAdeLaneDirectiveForTitle(raw: string): string {
   const firstLine = lines[start]?.trim() ?? "";
   const pathLine = lines[start + 1]?.trim() ?? "";
   const looksLikeLaneDirective =
-    /^You are working in ADE lane:?$/iu.test(firstLine)
+    /^You are working in (?:ADE|Daex) lane:?$/iu.test(firstLine)
     && (
       pathLine.includes(".ade/worktrees/")
       || pathLine.startsWith("/")
@@ -1086,17 +1086,17 @@ function workTabCliPreamblePrompt(
   sessionGuidance: string,
   hasInitialPrompt = false,
 ): string {
-  // "ADE session guidance" stays as written: title cleanup here and
-  // external-session discovery (this build's and older ones') find Daex's
-  // preamble in provider session files by that phrase.
+  // Title cleanup here and external-session discovery find Daex's preamble
+  // in provider session files by "Daex session guidance" (or the pre-rename
+  // "ADE session guidance").
   const launchInstruction = hasInitialPrompt
     ? [
-        "ADE session guidance. Treat this as operating guidance for the CLI session",
+        "Daex session guidance. Treat this as operating guidance for the CLI session",
         "and keep it in mind while handling the user prompt below.",
         "Start working on that user prompt immediately.",
       ].join(" ")
     : [
-        "ADE session guidance. Treat this as operating guidance for the CLI session,",
+        "Daex session guidance. Treat this as operating guidance for the CLI session,",
         "keep it in mind for future user messages, and wait for the user's next",
         "instruction before taking action.",
       ].join(" ");
