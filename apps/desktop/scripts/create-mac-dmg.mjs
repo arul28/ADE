@@ -91,7 +91,9 @@ try {
       await run("hdiutil", [
         "create",
         "-volname",
-        "ADE",
+        // The mounted disk's shown name only; the app inside stays ADE.app
+        // (docs/brand/desktop-packaging.md). Daex is BRAND.NAME.
+        "Daex",
         "-srcfolder",
         stagingDir,
         "-ov",

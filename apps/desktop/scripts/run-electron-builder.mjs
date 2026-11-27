@@ -172,7 +172,7 @@ const args = [
   // so the updater feed can only ever reference the file published beside it.
   `--config.win.artifactName=${windowsInstallerArtifactName(channelIdentity)}`,
   `--config.fileAssociations.name=${channelIdentity.fileClass}`,
-  `--config.fileAssociations.description=${configuredFileAssociation.description ?? "ADE files"}`,
+  `--config.fileAssociations.description=${configuredFileAssociation.description ?? "Daex files"}`,
   ...configuredFileAssociation.ext.map((extension) => `--config.fileAssociations.ext=${extension}`),
   // electron-builder 26 selects the Azure signing manager purely on the
   // presence of win.azureSignOptions, and that selection sits above the single

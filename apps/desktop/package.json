@@ -218,7 +218,7 @@
     "productName": "ADE",
     "protocols": [
       {
-        "name": "ADE link",
+        "name": "Daex link",
         "schemes": [
           "ade"
         ],
@@ -500,17 +500,18 @@
       "icon": "build/icon.icns",
       "category": "public.app-category.developer-tools",
       "extendInfo": {
-        "NSAppleEventsUsageDescription": "ADE launches agent terminals that can use local app automation through Codex Computer Use.",
-        "NSMicrophoneUsageDescription": "ADE uses your microphone for on-device voice-to-text dictation, and — when you start a voice conversation in a chat — to send your speech to OpenAI.",
-        "NSCameraUsageDescription": "ADE's built-in browser shows a site's camera prompt; if you allow camera auto-approval in Settings, a site an agent opens can use the camera.",
-        "NSScreenCaptureUsageDescription": "ADE captures the window in front when you press both Command keys, so you can ask the CTO about what you are looking at.",
-        "NSLocalNetworkUsageDescription": "ADE finds and connects to your other Macs and devices running ADE on your local network.",
+        "LSHasLocalizedDisplayName": true,
+        "NSAppleEventsUsageDescription": "Daex launches agent terminals that can use local app automation through Codex Computer Use.",
+        "NSMicrophoneUsageDescription": "Daex uses your microphone for on-device voice-to-text dictation, and — when you start a voice conversation in a chat — to send your speech to OpenAI.",
+        "NSCameraUsageDescription": "Daex's built-in browser shows a site's camera prompt; if you allow camera auto-approval in Settings, a site an agent opens can use the camera.",
+        "NSScreenCaptureUsageDescription": "Daex captures the window in front when you press both Command keys, so you can ask the CTO about what you are looking at.",
+        "NSLocalNetworkUsageDescription": "Daex finds and connects to your other Macs and devices running Daex on your local network.",
         "NSBonjourServices": [
           "_ade-sync._tcp"
         ],
         "CFBundleDocumentTypes": [
           {
-            "CFBundleTypeName": "ADE files and folders",
+            "CFBundleTypeName": "Daex files and folders",
             "CFBundleTypeRole": "Viewer",
             "LSHandlerRank": "Alternate",
             "LSItemContentTypes": [
@@ -570,7 +571,7 @@
     },
     "fileAssociations": [
       {
-        "name": "ADE files",
+        "name": "Daex files",
         "ext": [
           "txt",
           "md",
@@ -644,7 +645,7 @@
           "to": "native/ade-desktop-driver"
         }
       ],
-      "maintainer": "ADE",
+      "maintainer": "Daex",
       "mimeTypes": [
         "text/plain",
         "text/markdown",

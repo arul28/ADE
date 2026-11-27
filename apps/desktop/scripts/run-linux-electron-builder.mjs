@@ -11,6 +11,11 @@ const identity = resolveWindowsPackageIdentity(process.env.ADE_PACKAGE_CHANNEL);
 const channel = identity.packageChannel;
 if (channel === "beta") throw new Error("Beta is an update track of the normal app, not a separate Linux package. Build the normal package with ADE_RELEASE_TAG set to a beta tag.");
 const executable = channel === "stable" ? "ade-desktop" : `ade-desktop-${channel}`;
+// The launcher's shown name ("Daex", "Daex Alpha"; Daex is BRAND.NAME in
+// src/shared/brand.ts). productName stays "ADE": the deb installs to
+// /opt/<productName>, and released builds update from there
+// (docs/brand/desktop-packaging.md).
+const displayName = identity.productName.replace(/^ADE(?= |$)/, "Daex");
 const repository = process.env.ADE_RELEASE_REPOSITORY?.trim() || "arul28/ADE";
 if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) throw new Error("ADE_RELEASE_REPOSITORY must be an owner/repo pair");
 const [owner, repo] = repository.split("/");
@@ -19,6 +24,7 @@ if (iconChannel) ensureIcnsPng(path.join(root, "build", `icon.${iconChannel}.icn
 const args = ["--publish", "never", `--config.appId=${identity.appId}`,
   `--config.productName=${identity.productName}`, `--config.linux.executableName=${executable}`,
   `--config.extraMetadata.desktopName=${executable}.desktop`, "--config.linux.syncDesktopName=true",
+  `--config.linux.desktop.entry.Name=${displayName}`,
   // electron-builder's ${arch} turns x64 into x86_64 for AppImage and amd64 for
   // deb. Every consumer (validator, release publish, download routes) expects
   // x64, and a release job packages only its host architecture.
