@@ -96,7 +96,7 @@ describe("describeUnpublishedAccountDirectory competing sync host", () => {
       competingSyncHostSkipReason({ appName: "ADE Alpha", pid: 9253 }),
     );
     expect(describeUnpublishedAccountDirectory("no_active_sync_scope", health)).toEqual({
-      summary: "another Daex app on this computer owns sync for this machine (ADE Alpha, pid 9253)",
+      summary: "another Daex app on this computer owns sync for this machine (Daex Alpha, pid 9253)",
       nextAction: "Quit that Daex to let this one host sync.",
     });
   });

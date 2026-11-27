@@ -44,6 +44,7 @@ import type { LinearConnectionStatus } from "./linearSync";
 import type { SyncHostConflictPublic, SyncHostReadinessSnapshot } from "./syncHostRecovery";
 import { readAccountRefusalCode } from "../accountMachineRefusal";
 import { BRAND } from "../brand";
+import { installedDesktopAppDisplayName } from "../packageChannel";
 
 export type SyncScalarBytes = {
   type: "bytes";
@@ -681,7 +682,7 @@ export function describeUnpublishedAccountDirectory(
       const owner = readCompetingSyncHostOwner(health ?? null);
       if (owner?.pid != null) {
         return {
-          summary: `another ${BRAND.NAME} app on this computer owns sync for this machine (${owner.appName ?? `${BRAND.NAME}`}, pid ${owner.pid})`,
+          summary: `another ${BRAND.NAME} app on this computer owns sync for this machine (${owner.appName ? installedDesktopAppDisplayName(owner.appName) : BRAND.NAME}, pid ${owner.pid})`,
           nextAction: QUIT_COMPETING_SYNC_HOST_ADVICE,
         };
       }
