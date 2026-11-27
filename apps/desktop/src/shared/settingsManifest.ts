@@ -23,6 +23,7 @@ import { PROVIDER_DISPLAY_NAME } from "./providers";
  */
 import { SCOPE_COPY, type SettingScope, type SettingWebScope } from "./types/settingsScope";
 import { BRAND } from "./brand";
+import { brandSearchQueries } from "./brandSearch";
 export type { SettingScope, SettingWebScope } from "./types/settingsScope";
 
 export const SETTINGS_TAB_IDS = [
@@ -2333,10 +2334,20 @@ export function settingsTabLabel(tab: SettingsTabId): string {
 /**
  * Score an entry against a search query. Returns null when it doesn't match.
  * Lower is better: label prefix beats label substring beats keyword hit.
+ * The word "ade" also searches as "daex" (`brandSearchQueries`).
  */
 export function scoreSettingsEntry(entry: SettingEntry, query: string): number | null {
   const q = query.trim().toLowerCase();
   if (!q) return 0;
+  let best: number | null = null;
+  for (const variant of brandSearchQueries(q)) {
+    const score = scoreSettingsEntryFor(entry, variant);
+    if (score !== null && (best === null || score < best)) best = score;
+  }
+  return best;
+}
+
+function scoreSettingsEntryFor(entry: SettingEntry, q: string): number | null {
   const label = entry.label.toLowerCase();
   if (label.startsWith(q)) return 0;
   if (label.includes(q)) return 1;
@@ -2394,7 +2405,7 @@ export function isComputerSettingsEntry(entry: SettingEntry): boolean {
 const FIND_STOP_WORDS = new Set([
   "a", "an", "and", "are", "can", "change", "do", "does", "edit", "for", "find", "how", "i", "in", "is", "it",
   "manage", "me", "my", "of", "on", "or", "set", "setting", "settings", "the", "to", "turn", "up", "where",
-  "which", "with", "you", "your", "off", "configure", "ade", "page", "option", "options",
+  "which", "with", "you", "your", "off", "configure", "ade", "daex", "page", "option", "options",
 ]);
 
 // The words people use for what the manifest calls something else.
@@ -2409,15 +2420,16 @@ const FIND_SYNONYMS: Record<string, string> = {
   publish: "transcript",
   share: "transcript",
   sharing: "transcript",
-  // "ADE Cloud" is a product, not the stop word "ade" plus "cloud": alone,
-  // "cloud" is a fragment of Cloudflare and Cloudinary and finds them first.
-  "ade-cloud": "ade cloud",
+  // "Daex Cloud" (or the old "ADE Cloud") is a product, not the stop word
+  // "ade" plus "cloud": alone, "cloud" is a fragment of Cloudflare and
+  // Cloudinary and finds them first.
+  "daex-cloud": "daex cloud",
 };
 
 function findWords(query: string): string[] {
   return query
     .toLowerCase()
-    .replace(/\bade[\s-]+cloud\b/g, "ade-cloud")
+    .replace(/\b(?:ade|daex)[\s-]+cloud\b/g, "daex-cloud")
     .split(/[^a-z0-9.+-]+/)
     .map((word) => word.replace(/^[.+-]+|[.+-]+$/g, ""))
     .filter((word) => word.length > 1 && !FIND_STOP_WORDS.has(word))

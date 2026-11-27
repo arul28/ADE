@@ -160,6 +160,7 @@ import { useTabCopyPin } from "../../state/repositoryScope";
 import { isImeComposing } from "../../lib/imeComposition";
 import { InlineErrorNotice } from "../ui/notice";
 import { BRAND } from "../../../shared/brand";
+import { brandSearchQueries } from "../../../shared/brandSearch";
 
 export type CommandPaletteIntent =
   | "default"
@@ -1137,7 +1138,8 @@ export function CommandPalette({
       ]
         .join(" ")
         .toLowerCase();
-      return parsedWorkQuery.terms.every((term) => searchable.includes(term));
+      // The word "ade" also matches as "daex": people still type the old name.
+      return parsedWorkQuery.terms.every((term) => brandSearchQueries(term).some((variant) => searchable.includes(variant)));
     });
   }, [commands, parsedWorkQuery.terms]);
 
