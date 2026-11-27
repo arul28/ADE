@@ -24,6 +24,10 @@ final class ModelPickerStore: ObservableObject {
   private var lastFavoriteChange: Task<Void, Never>?
   /// The last list a server answered: what a failed star rolls back to.
   private var confirmedFavorites: [String] = []
+  /// Bumped by each star the server confirmed: a read older than one never replaces its list.
+  private var confirmations = 0
+  /// Stars tapped and not answered yet.
+  private var starsInFlight = 0
   /// Stars taken off since the picker opened: the machine import never adds them back.
   private var removedHere: Set<String> = []
 
@@ -41,14 +45,16 @@ final class ModelPickerStore: ObservableObject {
     let generation = favoritesGeneration
     // Stars queued before this read settle first, so the read sees them.
     await lastFavoriteChange?.value
+    let confirmedBefore = confirmations
     async let favTask = readFavorites(syncService: syncService)
     async let recTask = try? await syncService.getModelRecents()
     let fav = await favTask
     let rec = await recTask
-    // A star tapped while the read ran wins over the read, and its answer is the newer confirmed list.
-    if let fav, generation == favoritesGeneration {
+    if let fav, confirmations == confirmedBefore {
+      // No star was confirmed while the read ran: this is the newest saved list.
       confirmedFavorites = fav
-      favorites = fav
+      // Show it unless a star tapped meanwhile is still on its way (its answer wins).
+      if generation == favoritesGeneration || starsInFlight == 0 { favorites = fav }
     }
     if let rec {
       recents = rec
@@ -68,13 +74,18 @@ final class ModelPickerStore: ObservableObject {
     let generation = favoritesGeneration
     // The account the tap was made under, read now: a later account never gets it.
     let account = AccountService.shared.identity?.userId
+    starsInFlight += 1
     let prior = lastFavoriteChange
     lastFavoriteChange = Task { @MainActor [weak self] in
       await prior?.value
       guard let self else { return }
       let settled = await self.changeFavorite(modelId, removing: removing, account: account, syncService: syncService)
+      self.starsInFlight -= 1
       // Every answer is the server's whole list, a superseded one too.
-      if let settled { self.confirmedFavorites = settled }
+      if let settled {
+        self.confirmedFavorites = settled
+        self.confirmations &+= 1
+      }
       guard generation == self.favoritesGeneration else { return }
       self.favorites = settled ?? self.confirmedFavorites
     }
