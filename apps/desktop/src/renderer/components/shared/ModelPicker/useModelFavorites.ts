@@ -94,10 +94,17 @@ const settledWhileUnsaved = new Set<string>();
  * overwritten. When storage could not save this window's queue, its own
  * changes win for their ids and every other saved change is kept.
  */
+/** The account the shared queue belongs to: the saved owner every window shares, else this window's memory. */
+function currentOwner(): string | null {
+  const stored = readStored(OWNER_KEY);
+  return typeof stored === "string" ? stored : knownOwner;
+}
+
 function readPending(): Pending {
   const raw = readStored(PENDING_KEY) as (Partial<Pending> & { owner?: unknown }) | null;
   // A queue saved under another account (a reset storage could not save) is that account's: never sent for this one.
-  const foreign = typeof raw?.owner === "string" && knownOwner != null && raw.owner !== knownOwner;
+  const owner = currentOwner();
+  const foreign = typeof raw?.owner === "string" && owner != null && raw.owner !== owner;
   const saved: Pending = foreign ? { add: [], remove: [] } : { add: idsOf(raw?.add), remove: idsOf(raw?.remove) };
   if (!unsavedPending) return saved;
   const mine = new Set([...unsavedPending.add, ...unsavedPending.remove, ...settledWhileUnsaved]);
@@ -108,7 +115,7 @@ function readPending(): Pending {
 }
 
 function savePending(pending: Pending): void {
-  if (writeStored(PENDING_KEY, { ...pending, owner: knownOwner })) {
+  if (writeStored(PENDING_KEY, { ...pending, owner: currentOwner() })) {
     unsavedPending = null;
     settledWhileUnsaved.clear();
   } else {
@@ -227,16 +234,14 @@ const useFavoritesStore = create<FavoritesState>((set, get) => {
    * list are the other account's, so this one starts from its own list.
    */
   const claimFor = (owner: string) => {
-    const stored = readStored(OWNER_KEY);
-    // The saved owner is shared by every window; this window's memory is the fallback when storage can't be read.
-    const previous = typeof stored === "string" ? stored : knownOwner;
+    const previous = currentOwner();
     knownOwner = owner;
+    writeStored(OWNER_KEY, owner);
     if (previous && previous !== owner) {
       setLocal([], { add: [], remove: [] });
       setFlag(ACCOUNT_SEEDED_KEY);
       setFlag(IMPORTED_KEY);
     }
-    writeStored(OWNER_KEY, owner);
   };
 
   const syncOnce = async (): Promise<void> => {
