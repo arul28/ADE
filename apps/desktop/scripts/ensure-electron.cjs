@@ -11,7 +11,7 @@ const distDir = path.join(electronDir, "dist");
 const pathFile = path.join(electronDir, "path.txt");
 const cacheDir = path.join(projectRoot, ".cache", "electron");
 const appleEventsUsageDescription =
-  "ADE launches agent terminals that can use local app automation through Codex Computer Use.";
+  "Daex launches agent terminals that can use local app automation through Codex Computer Use.";
 
 function hasInstalledBinary() {
   if (!fs.existsSync(distDir)) return false;

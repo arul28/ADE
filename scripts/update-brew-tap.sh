@@ -71,7 +71,7 @@ cask "ade" do
   sha256 arm: "$arm_sha", intel: "$intel_sha"
 
   url "https://github.com/arul28/ADE/releases/download/v#{version}/ADE-#{version}-#{arch}.dmg"
-  name "ADE"
+  name "Daex"
   desc "Agent development environment for orchestrating coding agents, lanes, and PRs"
   homepage "https://github.com/arul28/ADE"
 

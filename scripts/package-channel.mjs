@@ -12,7 +12,7 @@ import { parseCodesigningIdentities, resolveChannelSignIdentity } from "./channe
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const currentRepoRoot = path.resolve(scriptDir, "..");
 const APPLE_EVENTS_USAGE_DESCRIPTION =
-  "ADE launches agent terminals that can use local app automation through Codex Computer Use.";
+  "Daex launches agent terminals that can use local app automation through Codex Computer Use.";
 const ADHOC_SIGN_WARNING =
   '[ade] Ad-hoc signing: macOS forgets Screen Recording/Accessibility grants for this app on every rebuild. Create a self-signed code-signing certificate named "ADE Local" in Keychain Access to keep them. See docs/development/local-development.md.';
 const SIGNING_KEYCHAIN_HINT =
