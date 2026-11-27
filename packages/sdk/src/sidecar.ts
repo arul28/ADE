@@ -334,7 +334,7 @@ export async function startSidecar(options: SidecarOptions): Promise<Sidecar> {
     if (exit.value) {
       throw new DaexError(
         "spawn_failed",
-        `The ADE runtime exited during startup (code ${exit.value.code ?? "null"}, signal ${
+        `The Daex runtime exited during startup (code ${exit.value.code ?? "null"}, signal ${
           exit.value.signal ?? "null"
         }).${stderrTail.length ? `\n${stderrTail.join("\n")}` : ""}`,
       );
@@ -384,7 +384,7 @@ export async function startSidecar(options: SidecarOptions): Promise<Sidecar> {
   releaseSidecar(handle);
   throw new DaexError(
     "connect_failed",
-    `The ADE runtime never accepted a connection on ${socketPath}: ${errorMessage(lastError)}${
+    `The Daex runtime never accepted a connection on ${socketPath}: ${errorMessage(lastError)}${
       stderrTail.length ? `\n${stderrTail.join("\n")}` : ""
     }`,
     { cause: lastError },

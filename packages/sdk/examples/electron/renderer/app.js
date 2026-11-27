@@ -56,7 +56,7 @@ async function pickModel() {
   const models = await client.models.list();
   const usable = models.filter((model) => model.isAvailable !== false);
   const chosen = usable[0] || models[0];
-  if (!chosen) throw new Error("ADE knows no models. Install and sign in to a provider CLI.");
+  if (!chosen) throw new Error("Daex knows no models. Install and sign in to a provider CLI.");
   return chosen;
 }
 

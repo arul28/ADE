@@ -624,7 +624,7 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
       // did not get one behaves wrongly rather than visibly failing.
       throw new DaexError(
         "invalid_option",
-        "This ADE runtime does not support per-thread MCP servers (capabilities.personalChats.mcpServers is not set). Upgrade the runtime or drop `mcpServers`.",
+        "This Daex runtime does not support per-thread MCP servers (capabilities.personalChats.mcpServers is not set). Upgrade the runtime or drop `mcpServers`.",
       );
     }
     if (suppliedServers && hasMcpToolFilters(mcpServers) && !ctx.runtime.mcpToolFilters()) {
@@ -632,7 +632,7 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
       // fields, which would hand the agent the very tools the host hid.
       throw new DaexError(
         "invalid_option",
-        "This ADE runtime does not support MCP tool filters (capabilities.personalChats.mcpToolFilters is not set). Upgrade the runtime or drop `allowedTools` / `disallowedTools`.",
+        "This Daex runtime does not support MCP tool filters (capabilities.personalChats.mcpToolFilters is not set). Upgrade the runtime or drop `allowedTools` / `disallowedTools`.",
       );
     }
 
@@ -680,7 +680,7 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
       ...(askedForMcp ? { strictMcpConfig: loadUserMcpServers !== true } : {}),
     });
     if (!created?.sessionId) {
-      throw new DaexError("protocol_error", "The ADE runtime created a chat with no session id.");
+      throw new DaexError("protocol_error", "The Daex runtime created a chat with no session id.");
     }
     if (suppliedServers && mcpServers) mcpPushed.set(key, mcpServersFingerprint(mcpServers));
     else mcpPushed.delete(key);

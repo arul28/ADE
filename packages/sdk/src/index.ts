@@ -2,8 +2,8 @@
  * `@daex-dev/sdk` — a typed Node/Electron-main client that spawns and owns a slim
  * ADE runtime and exposes chat as durable named threads.
  *
- *   const ade = await createDaexChat({ home: app.getPath("userData") + "/ade" });
- *   const thread = await ade.threads.open("support", {
+ *   const daex = await createDaexChat({ home: app.getPath("userData") + "/ade" });
+ *   const thread = await daex.threads.open("support", {
  *     provider: "claude",
  *     model: "claude-sonnet-4-5",
  *     permissions: "always-allow",
@@ -22,7 +22,7 @@
  * than opening a tool-less thread. Every thread that requested MCP reports what
  * it actually got:
  *
- *   const thread = await ade.threads.open("k", { provider, model, mcpServers });
+ *   const thread = await daex.threads.open("k", { provider, model, mcpServers });
  *   if (thread.mcpCapability?.level !== "enforced") {
  *     warnUser(thread.mcpCapability?.residual);
  *   }

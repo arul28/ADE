@@ -127,7 +127,7 @@ export async function ensurePrivateSocketDirectory(
     throw new DaexError(
       "connect_failed",
       `The socket directory ${directory} is owned by uid ${stat.uid}, not by this user (uid ${uid}). ` +
-        `Refusing to bind an ADE runtime socket in a directory somebody else controls.`,
+        `Refusing to bind a Daex runtime socket in a directory somebody else controls.`,
     );
   }
   if ((stat.mode & 0o077) !== 0) {

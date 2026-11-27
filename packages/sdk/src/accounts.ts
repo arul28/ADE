@@ -125,7 +125,7 @@ function accountInfo(value: unknown): AccountInfo {
   const row = record(withoutSecrets(record(value).instance ?? record(value).account ?? value));
   const account = record(row.account);
   if (typeof row.id !== "string" || typeof row.provider !== "string") {
-    throw new DaexError("protocol_error", "The ADE runtime returned an invalid provider account.");
+    throw new DaexError("protocol_error", "The Daex runtime returned an invalid provider account.");
   }
   const email = typeof account.email === "string" ? account.email : row.email;
   const plan = typeof account.plan === "string" ? account.plan : row.plan;
@@ -205,7 +205,7 @@ function withoutSecrets(value: unknown): unknown {
 function credentialInfo(value: unknown): ApiCredentialInfo {
   const row = record(withoutSecrets(record(value).credential ?? value));
   if (typeof row.provider !== "string" || typeof row.credentialId !== "string") {
-    throw new DaexError("protocol_error", "The ADE runtime returned an invalid credential summary.");
+    throw new DaexError("protocol_error", "The Daex runtime returned an invalid credential summary.");
   }
   return row as ApiCredentialInfo;
 }
@@ -213,7 +213,7 @@ function credentialInfo(value: unknown): ApiCredentialInfo {
 function loginInfo(value: unknown, accountId: string, provider: string): SignInStatus {
   const row = record(record(value).login ?? record(value).status ?? value);
   if (typeof row.loginId !== "string" || !["running", "verifying", "succeeded", "failed", "cancelled", "expired"].includes(String(row.state))) {
-    throw new DaexError("protocol_error", "The ADE runtime returned an invalid sign-in status.");
+    throw new DaexError("protocol_error", "The Daex runtime returned an invalid sign-in status.");
   }
   return {
     loginId: row.loginId,
@@ -324,7 +324,7 @@ export function createAccountManagement(call: AccountActionCall, assertUsable: (
           finish(cancelled);
         },
         dispose: () => {
-          if (!finished) rejectDone(new DaexError("disposed", "The ADE chat client was disposed during sign-in."));
+          if (!finished) rejectDone(new DaexError("disposed", "The Daex chat client was disposed during sign-in."));
           if (timer) clearTimeout(timer);
           timer = null;
           finished = true;

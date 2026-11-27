@@ -123,7 +123,7 @@ export function createDaexServer(options: CreateDaexServerOptions): DaexServer {
   let closed = false;
 
   const attach = (socket: DaexServerSocket): Unsubscribe => {
-    if (closed) throw new DaexError("disposed", "This ADE server bridge has been closed.");
+    if (closed) throw new DaexError("disposed", "This Daex server bridge has been closed.");
     const threads = new Map<string, SocketThread>();
     const opening = new Map<string, Promise<DaexThread>>();
     const requestIds = new Set<string | number>();
@@ -324,7 +324,7 @@ export function createDaexServer(options: CreateDaexServerOptions): DaexServer {
         const handler = handlers[request.method] ?? (customHandler
           ? (value: Record<string, unknown>) => customHandler(value, { socket })
           : undefined);
-        if (!handler) throw new DaexError("unsupported", "The ADE server does not expose " + request.method + ".");
+        if (!handler) throw new DaexError("unsupported", "The Daex server does not expose " + request.method + ".");
         const result = await handler(params);
         send({ id, ok: true, result: result === undefined ? null : result });
       } catch (error) {

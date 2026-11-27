@@ -423,7 +423,7 @@ function describeProvider(entry: SdkProviderStatusRecord): string | undefined {
   // Node package, not a CLI", for instance. Dropping that in favour of a
   // generic rung would be a step backwards, so it wins.
   if (entry.detail) return entry.detail;
-  if (entry.modelCount === 0) return "ADE has no models for this provider.";
+  if (entry.modelCount === 0) return "Daex has no models for this provider.";
   if (!entry.authenticated) return "Not signed in.";
   if (entry.requiresConfiguration) return "Needs configuration before it can run.";
   if (!entry.available) return "Signed in, but no model is usable right now.";

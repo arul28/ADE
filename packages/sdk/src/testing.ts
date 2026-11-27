@@ -81,7 +81,7 @@ export function createMockDaexChat(): MockDaexChat {
   let disposed = false;
 
   const assertUsable = () => {
-    if (disposed) throw new DaexError("disposed", "This mock ADE chat client was disposed.");
+    if (disposed) throw new DaexError("disposed", "This mock Daex chat client was disposed.");
   };
   const emitClient = (event: string, payload: unknown) => {
     for (const listener of [...(clientListeners.get(event) ?? [])]) listener(payload);

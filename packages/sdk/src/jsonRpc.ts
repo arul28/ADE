@@ -53,7 +53,7 @@ export class JsonRpcConnection {
     socket.on("data", (chunk: Buffer | string) => this.handleData(chunk));
     socket.on("error", (error: Error) => this.fail(error));
     socket.on("close", () =>
-      this.fail(new DaexError("transport_closed", "The ADE runtime socket closed.")),
+      this.fail(new DaexError("transport_closed", "The Daex runtime socket closed.")),
     );
   }
 
@@ -93,7 +93,7 @@ export class JsonRpcConnection {
   ): Promise<T> {
     if (this.closed) {
       return Promise.reject(
-        new DaexError("transport_closed", `The ADE runtime socket is closed (${method}).`),
+        new DaexError("transport_closed", `The Daex runtime socket is closed (${method}).`),
       );
     }
     let timeoutMs: number;
@@ -119,7 +119,7 @@ export class JsonRpcConnection {
         this.fail(
           new DaexError(
             "rpc_timeout",
-            `The ADE runtime did not answer ${method} within ${timeoutMs}ms.`,
+            `The Daex runtime did not answer ${method} within ${timeoutMs}ms.`,
           ),
         );
       }, timeoutMs);
@@ -176,7 +176,7 @@ export class JsonRpcConnection {
     // as intentional and does not fire the unexpected-drop handlers.
     if (this.closed) return;
     this.closed = true;
-    this.rejectAll(new DaexError("transport_closed", "The ADE runtime socket closed."));
+    this.rejectAll(new DaexError("transport_closed", "The Daex runtime socket closed."));
     try {
       this.socket.end();
       this.socket.destroy();
@@ -231,7 +231,7 @@ export class JsonRpcConnection {
         parsed = JSON.parse(trimmed) as JsonRpcMessage | JsonRpcMessage[];
       } catch (error) {
         this.fail(
-          new DaexError("protocol_error", "The ADE runtime sent a non-JSON frame.", {
+          new DaexError("protocol_error", "The Daex runtime sent a non-JSON frame.", {
             cause: error,
           }),
         );
@@ -305,7 +305,7 @@ class ByteQueue {
       if (this.bytes > maxBytes) {
         throw new DaexError(
           "protocol_error",
-          `The ADE runtime sent an oversized frame (> ${maxBytes} bytes).`,
+          `The Daex runtime sent an oversized frame (> ${maxBytes} bytes).`,
         );
       }
       return null;
@@ -313,7 +313,7 @@ class ByteQueue {
     if (index > maxBytes) {
       throw new DaexError(
         "protocol_error",
-        `The ADE runtime sent an oversized frame (> ${maxBytes} bytes).`,
+        `The Daex runtime sent an oversized frame (> ${maxBytes} bytes).`,
       );
     }
     const payload = this.consume(index).toString("utf8");

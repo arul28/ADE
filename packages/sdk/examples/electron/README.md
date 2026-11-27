@@ -1,4 +1,4 @@
-# ADE SDK Electron example
+# Daex SDK Electron example
 
 A minimal hardened Electron app on `@daex-dev/sdk/electron`. Three files, one per
 process, and a vanilla-JavaScript transcript so nothing here is React or build
@@ -12,7 +12,7 @@ configuration a hardened product ships and the one an untested bridge breaks on.
 
 Install a provider CLI first and sign in to it. The example opens the cheapest
 available model in the catalog. With no provider installed it shows
-"ADE knows no models" and sends nothing.
+"Daex knows no models" and sends nothing.
 
 ```
 npm install -g @anthropic-ai/claude-code   # or another supported provider
@@ -60,7 +60,7 @@ Do not point it at `@daex-dev/sdk/electron/preload`. That file exports
 
 Set `ADE_EXAMPLE_PRELOAD=local` to load `preload.cjs` next to `main.mjs`
 instead. That file is hand-written, imports nothing, and is the shape to copy
-when your app wants its own channels alongside ADE's.
+when your app wants its own channels alongside Daex's.
 
 ```
 ADE_EXAMPLE_PRELOAD=local npm start

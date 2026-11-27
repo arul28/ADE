@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveRuntimeTarget } from "./download.js";
 import { DaexError } from "./errors.js";
-import { isDirectory, isFile } from "./fsProbe.js";
+import { isDirectory, runtimeBinaryIn } from "./fsProbe.js";
 
 /**
  * Resolution of a runtime shipped as an npm platform package.
@@ -21,7 +21,8 @@ import { isDirectory, isFile } from "./fsProbe.js";
  *
  *   @ade-dev/runtime-<target>/
  *     package.json          { os: [...], cpu: [...], version: <ade release> }
- *     bin/ade[.exe]         the runtime binary, mode 0755
+ *     bin/daex[.exe]        the runtime binary, mode 0755 (bin/ade[.exe] before
+ *                           the Daex rename; still accepted)
  *     native/               the extracted contents of <binary>.native.tar.gz
  *       node_modules/       the modules the binary dlopens
  *       vendor/crsqlite/... the cr-sqlite extension
@@ -146,12 +147,13 @@ export function resolveBundledRuntime(
   }
 
   const packageRoot = path.dirname(manifestPath);
-  const binaryName = platform === "win32" ? "ade.exe" : "ade";
-  const binaryPath = path.join(packageRoot, "bin", binaryName);
+  // `bin/daex` when the package carries it, else `bin/ade` (every package
+  // published before the Daex rename).
+  const { binaryPath, found } = runtimeBinaryIn(path.join(packageRoot, "bin"), platform);
   const runtimeRoot = path.join(packageRoot, "native");
   const nodeModulesPath = path.join(runtimeRoot, "node_modules");
 
-  if (!isFile(binaryPath)) {
+  if (!found) {
     throw new DaexError(
       "binary_not_found",
       `${packageName} is installed at ${packageRoot} but carries no runtime binary at ${binaryPath}. ` +

@@ -223,7 +223,7 @@ export async function createDaexChat(
 
   let disposed = false;
   const assertUsable = (): void => {
-    if (disposed) throw new DaexError("disposed", "This ADE chat client was disposed.");
+    if (disposed) throw new DaexError("disposed", "This Daex chat client was disposed.");
   };
 
   // ---- client events -------------------------------------------------------
@@ -332,7 +332,7 @@ export async function createDaexChat(
     assertUsable();
     const capabilities = runtime.initialize.capabilities?.[domain] as { actions?: unknown } | undefined;
     if (!Array.isArray(capabilities?.actions) || !capabilities.actions.includes(action)) {
-      throw new DaexError("unsupported", `This ADE runtime does not advertise ${domain}.${action}.`);
+      throw new DaexError("unsupported", `This Daex runtime does not advertise ${domain}.${action}.`);
     }
     if (!runtime.managesAccounts) {
       throw new DaexError(
@@ -355,12 +355,12 @@ export async function createDaexChat(
   const providerCapabilities = async (provider: string): Promise<ProviderCapabilities> => {
     assertUsable();
     if (runtime.initialize.capabilities?.providers?.capabilities !== true) {
-      throw new DaexError("unsupported", "This ADE runtime does not advertise provider capabilities.");
+      throw new DaexError("unsupported", "This Daex runtime does not advertise provider capabilities.");
     }
     const statuses = await publishProviderStatus();
     const capabilities = statuses[provider]?.capabilities;
     if (!capabilities) {
-      throw new DaexError("unsupported", `The ADE runtime has no capability record for provider "${provider}".`);
+      throw new DaexError("unsupported", `The Daex runtime has no capability record for provider "${provider}".`);
     }
     return capabilities;
   };
@@ -674,7 +674,7 @@ export async function createDaexChat(
     if (!runtime.actionAvailable(action)) {
       throw new DaexError(
         "invalid_option",
-        `This ADE runtime cannot ${what} a chat (no "${action}" action). Upgrade the runtime.`,
+        `This Daex runtime cannot ${what} a chat (no "${action}" action). Upgrade the runtime.`,
       );
     }
   };

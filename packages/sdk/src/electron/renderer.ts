@@ -283,7 +283,7 @@ export function createDaexIpcClient(bridgeInput: DaexBridge | null | undefined):
   async function call<T>(method: string, args: unknown[]): Promise<T> {
     const response = (await bridge.invoke(method, args)) as DaexIpcInvokeResponse<T>;
     if (!response || typeof response !== "object" || !("ok" in response)) {
-      throw new DaexError("protocol_error", `The ADE bridge returned no result for ${method}.`);
+      throw new DaexError("protocol_error", `The Daex bridge returned no result for ${method}.`);
     }
     if (!response.ok) rehydrate(response.error);
     return response.value;

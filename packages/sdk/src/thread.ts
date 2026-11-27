@@ -1080,7 +1080,7 @@ export class Thread implements DaexThread {
     if (!this.hostConfig.rerunLastTurnSupported?.()) {
       throw new DaexError(
         "unsupported",
-        `${action} needs an ADE runtime with the rerunLastTurn action (1.2.82 or later).`,
+        `${action} needs a Daex runtime with the rerunLastTurn action (1.2.82 or later).`,
       );
     }
     // A running turn is refused by the runtime itself (code `turn_in_flight`),
@@ -1109,7 +1109,7 @@ export class Thread implements DaexThread {
     if (!this.hostConfig.updateMcpServersSupported?.()) {
       throw new DaexError(
         "invalid_option",
-        "This ADE runtime cannot replace a thread's MCP servers (capabilities.personalChats.updateMcpServers is not set). " +
+        "This Daex runtime cannot replace a thread's MCP servers (capabilities.personalChats.updateMcpServers is not set). " +
           "Upgrade the runtime, or open a new thread key with the new servers.",
       );
     }
@@ -1130,7 +1130,7 @@ export class Thread implements DaexThread {
     if (!this.hostConfig.updateMcpServersSupported?.()) {
       throw new DaexError(
         "invalid_option",
-        "This ADE runtime cannot replace a thread's MCP servers (capabilities.personalChats.updateMcpServers is not set).",
+        "This Daex runtime cannot replace a thread's MCP servers (capabilities.personalChats.updateMcpServers is not set).",
       );
     }
     return await this.refreshResolvedMcpHeaders();
@@ -1151,7 +1151,7 @@ export class Thread implements DaexThread {
     if (hasMcpToolFilters(servers) && !this.hostConfig.mcpToolFiltersSupported?.()) {
       throw new DaexError(
         "invalid_option",
-        "This ADE runtime does not support MCP tool filters (capabilities.personalChats.mcpToolFilters is not set), " +
+        "This Daex runtime does not support MCP tool filters (capabilities.personalChats.mcpToolFilters is not set), " +
           "and would drop allowedTools / disallowedTools without a word. Upgrade the runtime or drop the filters.",
       );
     }
@@ -1401,7 +1401,7 @@ export class Thread implements DaexThread {
   private assertAction(action: string): void {
     this.assertUsable();
     if (this.hostConfig.actionListed?.(action) !== true) {
-      throw new DaexError("unsupported", `This ADE runtime does not advertise the ${action} action.`);
+      throw new DaexError("unsupported", `This Daex runtime does not advertise the ${action} action.`);
     }
   }
 

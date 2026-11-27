@@ -13,7 +13,7 @@ import {
 } from "./download.js";
 import { resolveBundledRuntime, type BundledRuntime } from "./bundledRuntime.js";
 import { DaexError, errorMessage } from "./errors.js";
-import { isDirectory, isFile } from "./fsProbe.js";
+import { isDirectory, isFile, RUNTIME_COMMANDS } from "./fsProbe.js";
 import { resolveSpawnInvocation } from "./windowsInvocation.js";
 
 const execFileAsync = promisify(execFile);
@@ -128,7 +128,7 @@ const defaultDirectoryExists = isDirectory;
  *   1. `binaryPath` — the caller pinned a build; never second-guessed.
  *   2. An installed `@ade-dev/runtime-<target>` platform package.
  *   3. A previous download cached under `<home>`.
- *   4. An `ade` already installed on PATH.
+ *   4. A `daex` (or, failing that, an `ade`) already installed on PATH.
  *   5. Download the platform runtime into `<home>/bin`.
  *
  * The bundled package sits directly below the pinned path because installing it
@@ -167,7 +167,7 @@ export async function resolveBinary(options: ResolveBinaryOptions): Promise<Reso
   if (binaryPath?.trim()) {
     const resolved = path.resolve(binaryPath.trim());
     if (!fileExists(resolved)) {
-      throw new DaexError("binary_not_found", `The ADE binary at ${resolved} does not exist.`);
+      throw new DaexError("binary_not_found", `The Daex binary at ${resolved} does not exist.`);
     }
     const explicit = resolveExplicitRuntimeLayout({
       runtimeNodeModules,
@@ -218,18 +218,22 @@ export async function resolveBinary(options: ResolveBinaryOptions): Promise<Reso
   tried.push(`no previous download is cached at ${cached.binaryPath}`);
 
   if (allowPathDiscovery) {
-    const onPath = discoverOnPath("ade", env, platform);
-    if (onPath) {
-      logger(`ade sdk: using the ade already installed at ${onPath}`);
-      return {
-        binaryPath: onPath,
-        runtimeRoot: null,
-        nodeModulesPath: null,
-        source: "path",
-        checksumVerified: false,
-      };
+    // `daex` first: it is the CLI's name since the Daex rename, and `ade` stays
+    // as its alias and as the only name of a runtime installed before it.
+    for (const command of RUNTIME_COMMANDS) {
+      const onPath = discoverOnPath(command, env, platform);
+      if (onPath) {
+        logger(`ade sdk: using the ${command} already installed at ${onPath}`);
+        return {
+          binaryPath: onPath,
+          runtimeRoot: null,
+          nodeModulesPath: null,
+          source: "path",
+          checksumVerified: false,
+        };
+      }
     }
-    tried.push("no `ade` was found on PATH");
+    tried.push("neither `daex` nor `ade` was found on PATH");
   } else {
     tried.push("PATH discovery is disabled");
   }
@@ -237,7 +241,7 @@ export async function resolveBinary(options: ResolveBinaryOptions): Promise<Reso
   if (!allowDownload) {
     throw new DaexError(
       "runtime_unavailable",
-      `No ADE runtime is available for ${target.target} and allowDownload is false, so none was ` +
+      `No Daex runtime is available for ${target.target} and allowDownload is false, so none was ` +
         `fetched. Tried, in order: ${tried.join("; ")}. Install ` +
         `@ade-dev/runtime-${target.target}, or pass binaryPath (with runtimeNodeModules when the ` +
         `native modules are not beside the binary).`,

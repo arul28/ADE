@@ -875,7 +875,7 @@ export type ModelCatalogEntry = {
    * SDK export since 0.4 — rather than a cast:
    *
    *   if (!isSupportedProvider(entry.provider)) return;
-   *   ade.threads.open(key, { provider: entry.provider, model: entry.id });
+   *   daex.threads.open(key, { provider: entry.provider, model: entry.id });
    */
   provider: DaexProvider | (string & {});
   /** Provider-native model ref ADE sends under the hood. */

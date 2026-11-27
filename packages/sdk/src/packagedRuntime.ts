@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DaexError } from "./errors.js";
-import { isDirectory, isFile } from "./fsProbe.js";
+import { isDirectory, runtimeBinaryIn } from "./fsProbe.js";
 
 /**
  * The runtime a host copied into its own app bundle.
@@ -34,7 +34,7 @@ export type ResolvePackagedRuntimeOptions = {
  * `doctor().runtime.source` report `"packaged"`.
  */
 export type PackagedRuntime = {
-  /** Absolute path of `bin/ade` (`bin/ade.exe` on Windows). */
+  /** Absolute path of `bin/daex`, or `bin/ade` in an older bundle (`.exe` on Windows). */
   binaryPath: string;
   /** Absolute path of `native/`, which becomes `ADE_RUNTIME_ROOT`. */
   runtimeRoot: string;
@@ -97,7 +97,7 @@ function machOCpuTypes(filePath: string): number[] | null {
  *
  * Returns null — so the caller can fall back to `resolveBundledRuntime()` in
  * development — when:
- *   - `<resourcesPath>/<dir>/bin/ade[.exe]` does not exist; or
+ *   - neither `<resourcesPath>/<dir>/bin/daex[.exe]` nor `bin/ade[.exe]` exists; or
  *   - on macOS, the binary's Mach-O header names no slice for `arch`. An
  *     arm64-only runtime inside an app running under Rosetta on Intel would
  *     otherwise fail at spawn with an error that names neither architecture.
@@ -118,8 +118,10 @@ export function resolvePackagedRuntime(
   const dir = opts.dir?.trim() || "ade-runtime";
   if (typeof resourcesPath !== "string" || !resourcesPath.trim()) return null;
   const root = path.resolve(resourcesPath, dir);
-  const binaryPath = path.join(root, "bin", platform === "win32" ? "ade.exe" : "ade");
-  if (!isFile(binaryPath)) return null;
+  // `bin/daex` when the bundle carries it, else `bin/ade` (bundles made before
+  // the Daex rename).
+  const { binaryPath, found } = runtimeBinaryIn(path.join(root, "bin"), platform);
+  if (!found) return null;
 
   if (platform === "darwin") {
     const wanted = CPU_TYPE_BY_ARCH[arch];
@@ -132,7 +134,7 @@ export function resolvePackagedRuntime(
   if (!isDirectory(runtimeNodeModules)) {
     throw new DaexError(
       "binary_not_found",
-      `The packaged ADE runtime at ${binaryPath} has no native modules at ${runtimeNodeModules}. ` +
+      `The packaged Daex runtime at ${binaryPath} has no native modules at ${runtimeNodeModules}. ` +
         `Copy the whole runtime package (bin/ and native/) into the app's resources.`,
     );
   }
