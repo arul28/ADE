@@ -18,28 +18,28 @@
 
 /** The line itself. Exported so a test can assert on it without rebuilding it. */
 export const MAC_DESKTOP_PROMPT_LINE =
-  "This lane has a private macOS screen (Mac Desktop). Drive it with `ade screen` — observe first, act on the handles it returns; read the **ade-computer-use** skill before your first action. Stop it when you finish unless the user wants to look. If it refuses, report it; do not fall back to the user's real screen.";
+  "This lane has a private macOS screen (Mac Desktop). Drive it with `daex screen` — observe first, act on the handles it returns; read the **daex-computer-use** skill before your first action. Stop it when you finish unless the user wants to look. If it refuses, report it; do not fall back to the user's real screen.";
 
 /** The same line for a Windows host, whose lane screen is the Windows Desktop. */
 export const WINDOWS_DESKTOP_PROMPT_LINE =
-  "This lane has a private Windows screen (Windows Desktop). Drive it with `ade screen` — observe first, act on the handles it returns; read the **ade-computer-use** skill before your first action. Stop it when you finish unless the user wants to look. The default seat is private; the user's main desktop needs their yes (`ade screen start --shared --reason \"…\"`); never use `--allow-prompt` or `--consent` yourself.";
+  "This lane has a private Windows screen (Windows Desktop). Drive it with `daex screen` — observe first, act on the handles it returns; read the **daex-computer-use** skill before your first action. Stop it when you finish unless the user wants to look. The default seat is private; the user's main desktop needs their yes (`daex screen start --shared --reason \"…\"`); never use `--allow-prompt` or `--consent` yourself.";
 
 /** The same line for a Linux host: each lane gets its own X display. */
 export const LINUX_DESKTOP_PROMPT_LINE =
-  "This lane has a private Linux screen (Linux Desktop, its own X display). Drive it with `ade screen` — observe first, act on the handles it returns; open a browser with `ade screen open <url>`; read the **ade-computer-use** skill before your first action.";
+  "This lane has a private Linux screen (Linux Desktop, its own X display). Drive it with `daex screen` — observe first, act on the handles it returns; open a browser with `daex screen open <url>`; read the **daex-computer-use** skill before your first action.";
 
 // The capability lines go out only where the computer-use directive does too
 // (the same host check gives both), and that directive opens with "read the
 // ade-computer-use skill before your first screen action". They do not repeat
 // it. The active lines above can arrive alone later, so they keep it.
 const LINUX_DESKTOP_CAPABILITY_PROMPT_LINE =
-  "This lane can start its own private Linux screen (Linux Desktop) for GUI work: browsers, Electron and desktop apps. Use `ade screen`. If it refuses, report it.";
+  "This lane can start its own private Linux screen (Linux Desktop) for GUI work: browsers, Electron and desktop apps. Use `daex screen`. If it refuses, report it.";
 
 const MAC_DESKTOP_CAPABILITY_PROMPT_LINE =
-  "This lane can start its own private macOS screen with `ade screen`, for native Mac apps no CLI or test reaches; stop it when done, and never fall back to the user's screen.";
+  "This lane can start its own private macOS screen with `daex screen`, for native Mac apps no CLI or test reaches; stop it when done, and never fall back to the user's screen.";
 
 const WINDOWS_DESKTOP_CAPABILITY_PROMPT_LINE =
-  "This lane can start its own private Windows screen (Windows Desktop), only for what no CLI, test or background tool reaches, such as a native Windows app. Use `ade screen`, and stop it when you finish. The default seat is private; the user's main desktop needs their yes; never use `--allow-prompt` or `--consent` yourself.";
+  "This lane can start its own private Windows screen (Windows Desktop), only for what no CLI, test or background tool reaches, such as a native Windows app. Use `daex screen`, and stop it when you finish. The default seat is private; the user's main desktop needs their yes; never use `--allow-prompt` or `--consent` yourself.";
 
 /**
  * @param available True when this host can provide the lane a private display.

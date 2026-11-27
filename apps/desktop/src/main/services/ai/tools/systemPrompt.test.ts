@@ -55,17 +55,17 @@ describe("buildCodingAgentSystemPrompt", () => {
       "opencode",
     ] as const)("tells %s how to wake itself later and where the scheduling rules live", (runtime) => {
       const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime });
-      expect(result).toContain("ade chat scheduled-work create");
-      expect(result).toContain("**ade-cli-control-plane**");
+      expect(result).toContain("daex chat scheduled-work create");
+      expect(result).toContain("**daex-cli-control-plane**");
       // A wake is the agent's own work; a message arriving later is a draft.
-      expect(result).toContain("ade drafts");
-      expect(result).toContain('ade chat note "');
-      expect(result).toContain('ade chat ask "');
+      expect(result).toContain("daex drafts");
+      expect(result).toContain('daex chat note "');
+      expect(result).toContain('daex chat ask "');
       // Agents cannot settle, and a note is cut at 72 characters. Both rules
       // are manual detail in ade-cli-control-plane, which the skill index names
       // on every one of these prompts.
-      expect(result).toContain("`ade-cli-control-plane`");
-      expect(result).not.toContain("ade chat settle");
+      expect(result).toContain("`daex-cli-control-plane`");
+      expect(result).not.toContain("daex chat settle");
     });
 
   });
@@ -79,8 +79,8 @@ describe("buildCodingAgentSystemPrompt", () => {
       expect(result).toContain("## Workflow Tools");
       expect(result).toContain("createLane");
       // The workflow names a proof command that works off the lane screen.
-      expect(result).toMatch(/\*\*Workflow:\*\*[^\n]*`ade browser proof`/);
-      expect(result).not.toContain("ade proof capture");
+      expect(result).toMatch(/\*\*Workflow:\*\*[^\n]*`daex browser proof`/);
+      expect(result).not.toContain("daex proof capture");
     });
 
     // `captureScreenshot` has no executable implementation in any live tool

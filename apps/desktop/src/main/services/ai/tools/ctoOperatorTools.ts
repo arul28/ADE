@@ -349,7 +349,7 @@ const machineArgSchema = z
 /** `createLane` and `spawnChat` also take "cloud": a new lane on its own new ADE Cloud computer. */
 const laneMachineArgSchema = machineArgSchema.describe(
   "Machine id or name from listMachines (case-insensitive). Omit for this CTO's home machine. "
-  + "Or \"cloud\": a new lane on its own new ADE Cloud computer (pick size, or the person's saved size). "
+  + "Or \"cloud\": a new lane on its own new Daex Cloud computer (pick size, or the person's saved size). "
   + "The person approves it in this chat, with the size and its credits rate.",
 );
 
@@ -753,7 +753,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   const startCloudLane = async (launch: Record<string, unknown>, size: CloudTierId | undefined) => {
     const cross = deps.crossMachine;
     if (!cross) {
-      throw new Error("A lane on ADE Cloud starts where ADE runs in the background. Ask the person to start it in the ADE app (Run on: ADE Cloud).");
+      throw new Error("A lane on Daex Cloud starts where Daex runs in the background. Ask the person to start it in the Daex app (Run on: Daex Cloud).");
     }
     const launchId = randomUUID();
     let status: unknown;
@@ -781,14 +781,14 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       machine: { name: machine.name ?? null, instanceId: machine.instanceId ?? null },
       ...(snapshot.error ? { error: snapshot.error } : {}),
       ...(record.approvalUrl ? { approvalUrl: record.approvalUrl } : {}),
-      next: `It keeps starting on ADE Cloud. Follow it: runMachineAction cloud.lane_launch_status { launchId: "${launchId}" }. Once it runs, use machine set to its computer's name.`,
+      next: `It keeps starting on Daex Cloud. Follow it: runMachineAction cloud.lane_launch_status { launchId: "${launchId}" }. Once it runs, use machine set to its computer's name.`,
     };
   };
 
   defineLazyTool(tools, "listMachines", () => core(crossMachine.tools.listMachines));
 
   defineLazyTool(tools, "listLanes", () => core({
-    description: "List all ADE lanes with their status (dirty, ahead/behind, rebase state), branch info, and metadata. Use this to understand what work is happening across the project and choose where to open work. Pass machine to list another machine's lanes.",
+    description: "List all Daex lanes with their status (dirty, ahead/behind, rebase state), branch info, and metadata. Use this to understand what work is happening across the project and choose where to open work. Pass machine to list another machine's lanes.",
     inputSchema: z.object({
       includeArchived: z.boolean().optional().default(false),
       machine: machineArgSchema,
@@ -813,7 +813,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   }));
 
   defineLazyTool(tools, "inspectLane", () => core({
-    description: "Inspect one ADE lane by ID to understand its branch, worktree, and git state. Pass machine for a lane on another machine.",
+    description: "Inspect one Daex lane by ID to understand its branch, worktree, and git state. Pass machine for a lane on another machine.",
     inputSchema: z.object({
       laneId: z.string(),
       machine: machineArgSchema,
@@ -847,7 +847,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   }));
 
   defineLazyTool(tools, "createLane", () => core({
-    description: "Create a new ADE lane for isolated work. Pass machine to create it on another machine: the lane, its worktree and everything run in it then live on that machine.",
+    description: "Create a new Daex lane for isolated work. Pass machine to create it on another machine: the lane, its worktree and everything run in it then live on that machine.",
     inputSchema: z.object({
       name: z.string(),
       description: z.string().optional(),
@@ -869,8 +869,8 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         const start = rawStart ? normalizeLaneStart(rawStart) : null;
         if (rawStart && !start) throw new Error("start.from \"branch\" needs start.branch.");
         if (isCloudLaneMachine(machine)) {
-          if (start && start.on !== "remote") throw new Error("A lane on ADE Cloud starts from the pushed branch: use start.on \"remote\".");
-          if (description !== undefined) throw new Error("A lane on ADE Cloud takes no description yet. Leave it out.");
+          if (start && start.on !== "remote") throw new Error("A lane on Daex Cloud starts from the pushed branch: use start.on \"remote\".");
+          if (description !== undefined) throw new Error("A lane on Daex Cloud takes no description yet. Leave it out.");
           return await startCloudLane({
             kind: "lane",
             prompt: "",
@@ -911,7 +911,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
 
   defineLazyTool(tools, "listChats", () => core({
     description:
-      "List ADE chat sessions so you can supervise active work and persistent identity threads. Each row carries " +
+      "List Daex chat sessions so you can supervise active work and persistent identity threads. Each row carries " +
       "its settle/snooze lifecycle plus `wokeReason` when a snooze broke early, so you can triage what actually " +
       "needs you versus what is deliberately quiet. Pass machine to list another machine's chats (those rows carry no lifecycle). " +
       "Archived chats are left out unless includeArchived is true; getChatStatus still reads one by id.",
@@ -958,15 +958,15 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
 
   defineLazyTool(tools, "spawnChat", () => core({
     description:
-      "Create a native ADE work chat session — the primary way to launch an AI agent in ADE. " +
+      "Create a native Daex work chat session — the primary way to launch an AI agent in Daex. " +
       "Always pass modelId, the full model ID " +
       "(e.g. 'anthropic/claude-opus-5' for Opus, 'anthropic/claude-sonnet-5' for Sonnet, " +
-      "'anthropic/claude-haiku-5-5' for Haiku, 'openai/gpt-5.6-sol' for Sol): ADE never picks a model for an agent. " +
+      "'anthropic/claude-haiku-5-5' for Haiku, 'openai/gpt-5.6-sol' for Sol): Daex never picks a model for an agent. " +
       "Set initialPrompt to seed the chat with a task description — the agent will begin working immediately. " +
       "Pass permissionMode only when the user asks for a specific access level; omitting it keeps the provider's " +
-      "own default, which is the safe choice. It accepts ADE's full permission contract, including auto and " +
+      "own default, which is the safe choice. It accepts Daex's full permission contract, including auto and " +
       "config-toml; for Droid's finer-grained levels, pass droidPermissionMode. " +
-      "This creates a full ADE chat with UI, streaming, tool approval, and service integration. " +
+      "This creates a full Daex chat with UI, streaming, tool approval, and service integration. " +
       "Use this when the user asks for 'a chat' or 'an agent'. If they explicitly want a terminal or CLI tool, use createTerminal instead. " +
       "It is for real work (code changes, long investigations), or a read-only background helper (permissionMode 'plan' on your own lane) " +
       "when your harness has no background subagent that reports back. NOT for a quick question: to find out what is on a machine " +
@@ -1001,7 +1001,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
           + "use it whenever you will need, join, or review the result. 'peer' starts a chat that does not report back: "
           + "nothing is posted to you when it finishes, and it never wakes you.",
         ),
-      openInUi: z.boolean().optional().default(true).describe("Whether to open the chat in the ADE UI."),
+      openInUi: z.boolean().optional().default(true).describe("Whether to open the chat in the Daex UI."),
       instanceId: z
         .string()
         .trim()
@@ -1041,7 +1041,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
           if (laneId?.trim()) throw new Error("machine \"cloud\" makes a new lane for the chat: leave out laneId.");
           if (instanceId || credentialId) throw new Error("instanceId and credentialId name this machine's accounts. Leave them out for machine \"cloud\".");
           const prompt = initialPrompt?.trim();
-          if (!prompt) throw new Error("A chat on ADE Cloud starts with its first message: pass initialPrompt.");
+          if (!prompt) throw new Error("A chat on Daex Cloud starts with its first message: pass initialPrompt.");
           // A chat on another computer can't report back here: it starts as its own chat.
           return await startCloudLane({
             kind: "chat",
@@ -1171,7 +1171,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
 
   defineLazyTool(tools, "sendChatMessage", () => core({
     description:
-      "Send a message to an ADE chat session you are supervising. Pass machine for a chat on another machine "
+      "Send a message to a Daex chat session you are supervising. Pass machine for a chat on another machine "
       + "(the same machine you started or listed it on).",
     inputSchema: z.object({
       sessionId: z.string().trim().min(1),
@@ -1194,7 +1194,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   }));
 
   defineLazyTool(tools, "interruptChat", () => core({
-    description: "Interrupt a running ADE chat turn. Pass machine for a chat on another machine.",
+    description: "Interrupt a running Daex chat turn. Pass machine for a chat on another machine.",
     inputSchema: z.object({
       sessionId: z.string().trim().min(1),
       machine: machineArgSchema,
@@ -1216,7 +1216,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
 
   defineLazyTool(tools, "getChatStatus", () => core({
     description:
-      "Get the current status for an ADE chat session, including its settle/snooze lifecycle " +
+      "Get the current status for a Daex chat session, including its settle/snooze lifecycle " +
       "and — when it recently came back from a snooze — the reason it woke. Pass machine for a chat on another machine.",
     inputSchema: z.object({
       sessionId: z.string().trim().min(1),
@@ -1288,7 +1288,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       + "in your reply so it shows inline on desktop, web and the phone. By default the chat's latest turn that filed any; "
       + "turnId picks one turn, all: true takes every turn. At most " + CTO_PROOF_SHOW_LIMIT + " come back; `more` counts the rest "
       + "and skip passes over that many newest ones to reach them. Pass machine for a chat on another "
-      + "machine or an ADE Cloud lane: its files are copied here once, so they stay viewable after that machine sleeps. "
+      + "machine or a Daex Cloud lane: its files are copied here once, so they stay viewable after that machine sleeps. "
       + "`skipped` names proof that could not be shown and why (a deleted file, a machine that is offline).",
     inputSchema: z.object({
       sessionId: z.string().trim().min(1),
@@ -1339,7 +1339,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
 
   defineLazyTool(tools, "getSessionLifecycle", () => core({
     description:
-      "Read the settle/snooze lifecycle for any ADE session (chat or tracked CLI). Use this to triage " +
+      "Read the settle/snooze lifecycle for any Daex session (chat or tracked CLI). Use this to triage " +
       "what needs attention: `snoozed` rows are deliberately quiet until `snoozedUntil`, and `wokeReason` " +
       "explains why a snoozed row came back early ('needs_you' = blocked on a human, 'error' = the turn " +
       "failed, 'turn_complete' = the work finished, 'timer' = the snooze simply expired, 'manual' = someone woke it).",
@@ -1355,7 +1355,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
 
   defineLazyTool(tools, "settleSession", () => core({
     description:
-      "Mark an ADE session complete so it drops out of the active tier. Pass `outcome` to record a one-line " +
+      "Mark a Daex session complete so it drops out of the active tier. Pass `outcome` to record a one-line " +
       "result on the row. Real activity (a new turn, an approval request, a failed turn) un-settles it again.",
     inputSchema: z.object({
       sessionId: z.string().trim().min(1),
@@ -1382,7 +1382,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
 
   defineLazyTool(tools, "unsettleSession", () => core({
     description:
-      "Return a settled ADE session to the active lifecycle. This clears a declared settle plus a " +
+      "Return a settled Daex session to the active lifecycle. This clears a declared settle plus a " +
       "'settled' pin; an explicit keep-active pin survives.",
     inputSchema: z.object({
       sessionId: z.string().trim().min(1),
@@ -1400,7 +1400,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
 
   defineLazyTool(tools, "setSessionSettleOverride", () => core({
     description:
-      "Pin an ADE session's settle state. 'settled' behaves like a declared settle, 'active' is a keep-active " +
+      "Pin a Daex session's settle state. 'settled' behaves like a declared settle, 'active' is a keep-active " +
       "pin, and `clear` returns the row to the declared lifecycle state.",
     inputSchema: z.object({
       sessionId: z.string().trim().min(1),
@@ -1420,7 +1420,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
 
   defineLazyTool(tools, "snoozeSession", () => core({
     description:
-      "Hide an ADE session from the attention surfaces until a deadline. Snooze is a visibility overlay, not a " +
+      "Hide a Daex session from the attention surfaces until a deadline. Snooze is a visibility overlay, not a " +
       "lifecycle change: the session keeps running, and a hand-raise (approval request, failed turn, completed " +
       "turn) wakes it early with a recorded reason. Pass either `untilIso` or `durationMinutes`.",
     inputSchema: z.object({
@@ -1447,7 +1447,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   }));
 
   defineLazyTool(tools, "wakeSession", () => core({
-    description: "Clear a snooze on an ADE session so it resurfaces now. No-op when the session was not snoozed.",
+    description: "Clear a snooze on a Daex session so it resurfaces now. No-op when the session was not snoozed.",
     inputSchema: z.object({
       sessionId: z.string().trim().min(1),
       reason: z
@@ -1466,7 +1466,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   }));
 
   defineLazyTool(tools, "getChatTranscript", () => core({
-    description: "Read recent user and assistant turns for an ADE chat session without focusing the UI. Pass machine for a chat on another machine.",
+    description: "Read recent user and assistant turns for a Daex chat session without focusing the UI. Pass machine for a chat on another machine.",
     inputSchema: z.object({
       sessionId: z.string(),
       limit: z.number().int().positive().max(100).optional().default(20),
@@ -1565,7 +1565,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   }));
 
   defineLazyTool(tools, "getPullRequestStatus", () => core({
-    description: "Inspect pull request status, checks, reviews, and comments through ADE's PR service.",
+    description: "Inspect pull request status, checks, reviews, and comments through Daex's PR service.",
     inputSchema: z.object({
       prId: z.string().trim().min(1),
       includeChecks: z.boolean().optional().default(true),
@@ -1598,7 +1598,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   }));
 
   defineLazyTool(tools, "commentOnPullRequest", () => core({
-    description: "Post a comment to a pull request through ADE's PR service.",
+    description: "Post a comment to a pull request through Daex's PR service.",
     inputSchema: z.object({
       prId: z.string().trim().min(1),
       body: z.string().trim().min(1),
@@ -1616,7 +1616,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
 
   defineLazyTool(tools, "waitForChats", () => core({
     description:
-      "Return now and have ADE wake this thread when all (or any) of the named chats reach a state — 'idle' (finished "
+      "Return now and have Daex wake this thread when all (or any) of the named chats reach a state — 'idle' (finished "
       + "its turn, the default) or 'terminal' (ended or failed). Use it instead of polling getChatStatus. Subagents "
       + "you spawned already wake you after every turn; this is for joining several chats, or chats you did not spawn.",
     inputSchema: z.object({
@@ -1635,7 +1635,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
           waitFor,
           ...(timeoutMinutes ? { timeoutMinutes } : {}),
         });
-        return { success: true, waitId: waiter.id, expiresAt: waiter.expiresAt, note: "End your turn; ADE wakes you." };
+        return { success: true, waitId: waiter.id, expiresAt: waiter.expiresAt, note: "End your turn; Daex wakes you." };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }
@@ -1644,13 +1644,13 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
 
   defineLazyTool(tools, "watchPullRequest", () => core({
     description:
-      "Have ADE wake a chat whenever its pull request changes: a check fails, the checks pass, someone comments "
+      "Have Daex wake a chat whenever its pull request changes: a check fails, the checks pass, someone comments "
       + "or reviews, the branch starts conflicting, or the PR merges or closes. 'ship' adds standing instructions to "
       + "take the PR all the way to merged (fix CI and review findings in one push, rebase only on a real conflict, "
       + "merge when green) and waits until CI and the review bots have finished before waking. 'off' stops it. "
       + "Defaults to your own thread; pass sessionId to watch for a worker chat.",
     inputSchema: z.object({
-      pr: z.string().trim().min(1).describe("ADE PR id, PR number, or PR URL."),
+      pr: z.string().trim().min(1).describe("Daex PR id, PR number, or PR URL."),
       mode: z.enum(["watch", "ship", "off"]).default("watch"),
       sessionId: z.string().trim().min(1).optional().describe("Chat to wake. Defaults to this CTO thread."),
     }),
@@ -1671,7 +1671,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   }));
 
   defineLazyTool(tools, "updatePullRequestTitle", () => core({
-    description: "Update a pull request title through ADE's PR service.",
+    description: "Update a pull request title through Daex's PR service.",
     inputSchema: z.object({
       prId: z.string().trim().min(1),
       title: z.string().trim().min(1),
@@ -1688,7 +1688,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   }));
 
   defineLazyTool(tools, "updatePullRequestBody", () => core({
-    description: "Update a pull request body through ADE's PR service.",
+    description: "Update a pull request body through Daex's PR service.",
     inputSchema: z.object({
       prId: z.string().trim().min(1),
       body: z.string().min(1),
@@ -1705,7 +1705,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   }));
 
   defineLazyTool(tools, "listFileWorkspaces", () => files({
-    description: "List ADE file workspaces so the CTO can inspect files by lane or attached workspace.",
+    description: "List Daex file workspaces so the CTO can inspect files by lane or attached workspace.",
     inputSchema: z.object({
       includeArchived: z.boolean().optional().default(true),
     }),
@@ -1717,7 +1717,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   }));
 
   defineLazyTool(tools, "readWorkspaceFile", () => files({
-    description: "Read a file from an ADE workspace or lane without opening the renderer editor.",
+    description: "Read a file from a Daex workspace or lane without opening the renderer editor.",
     inputSchema: z.object({
       workspaceId: z.string().trim().min(1).optional(),
       laneId: z.string().trim().min(1).optional(),
@@ -1744,7 +1744,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   }));
 
   defineLazyTool(tools, "searchWorkspaceText", () => files({
-    description: "Search indexed text inside an ADE workspace or lane.",
+    description: "Search indexed text inside a Daex workspace or lane.",
     inputSchema: z.object({
       workspaceId: z.string().trim().min(1).optional(),
       laneId: z.string().trim().min(1).optional(),
@@ -1831,7 +1831,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   // ---------------------------------------------------------------------------
 
   defineLazyTool(tools, "createPrFromLane", () => core({
-    description: "Create a pull request from an ADE lane against its parent branch.",
+    description: "Create a pull request from a Daex lane against its parent branch.",
     inputSchema: z.object({
       laneId: z.string().trim().min(1),
       title: z.string().trim().min(1),
@@ -1857,7 +1857,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   }));
 
   defineLazyTool(tools, "landPullRequest", () => core({
-    description: "Land (merge) an ADE-managed pull request.",
+    description: "Land (merge) a Daex-managed pull request.",
     inputSchema: z.object({
       prId: z.string().trim().min(1),
       method: z.enum(["merge", "squash", "rebase"]).optional().default("squash"),
@@ -1875,7 +1875,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   }));
 
   defineLazyTool(tools, "closePullRequest", () => core({
-    description: "Close an ADE-managed pull request without merging.",
+    description: "Close a Daex-managed pull request without merging.",
     inputSchema: z.object({
       prId: z.string().trim().min(1),
     }),
@@ -1891,7 +1891,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   }));
 
   defineLazyTool(tools, "requestPrReviewers", () => core({
-    description: "Request user or team reviewers on an ADE-managed pull request.",
+    description: "Request user or team reviewers on a Daex-managed pull request.",
     inputSchema: z.object({
       prId: z.string().trim().min(1),
       reviewers: z.array(z.string().trim().min(1)).optional(),
@@ -1913,7 +1913,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
 
   defineLazyTool(tools, "getPullRequestDiff", () => core({
     description:
-      "Retrieve the code diff for an ADE-managed pull request. " +
+      "Retrieve the code diff for a Daex-managed pull request. " +
       "Returns per-file patches from GitHub. Use `files` to limit to specific paths. " +
       "Output is truncated to `maxChars` (default 80 000) to stay within context budgets.",
     inputSchema: z.object({
@@ -1979,7 +1979,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   }));
 
   defineLazyTool(tools, "approvePullRequest", () => core({
-    description: "Submit an APPROVE review on an ADE-managed pull request.",
+    description: "Submit an APPROVE review on a Daex-managed pull request.",
     inputSchema: z.object({
       prId: z.string().trim().min(1),
       body: z
@@ -2001,7 +2001,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
 
   defineLazyTool(tools, "requestPrChanges", () => core({
     description:
-      "Submit a REQUEST_CHANGES review on an ADE-managed pull request with a comment explaining what needs to change.",
+      "Submit a REQUEST_CHANGES review on a Daex-managed pull request with a comment explaining what needs to change.",
     inputSchema: z.object({
       prId: z.string().trim().min(1),
       body: z.string().trim().min(1).describe("Review comment explaining the requested changes."),
@@ -2022,7 +2022,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   // ---------------------------------------------------------------------------
 
   defineLazyTool(tools, "deleteLane", () => core({
-    description: "Delete an ADE lane and its associated worktree. This is destructive — the worktree and branch are removed.",
+    description: "Delete a Daex lane and its associated worktree. This is destructive — the worktree and branch are removed.",
     inputSchema: z.object({
       laneId: z.string().trim().min(1).describe("ID of the lane to delete."),
     }),
@@ -2072,7 +2072,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   // ---------------------------------------------------------------------------
 
   defineLazyTool(tools, "listTestSuites", () => tests({
-    description: "List available test suites that can be run in ADE.",
+    description: "List available test suites that can be run in Daex.",
     inputSchema: z.object({}),
     execute: async () => {
       if (!deps.testService) return { success: false, error: "Test service is not available." };
@@ -2082,7 +2082,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   }));
 
   defineLazyTool(tools, "runTests", () => tests({
-    description: "Run a test suite in a specific ADE lane.",
+    description: "Run a test suite in a specific Daex lane.",
     inputSchema: z.object({
       laneId: z.string().trim().min(1),
       suiteId: z.string().trim().min(1),
@@ -2184,7 +2184,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
 
   defineLazyTool(tools, "watchTerminal", () => core({
     description:
-      "Have ADE wake a chat when an ADE terminal on this machine prints something new, instead of polling it. "
+      "Have Daex wake a chat when a Daex terminal on this machine prints something new, instead of polling it. "
       + "Output already on screen never wakes; new output wakes after it goes quiet for a few seconds, with the last "
       + "~4 KB cleaned of colors and redraws. 'match' limits wakes to lines containing that text (case-insensitive; | separates alternatives). "
       + "The terminal exiting, the lifetime (default 2h, max 24h) or 20 wakes in an hour ends the watch with one "
@@ -2210,7 +2210,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
           lifetime: lifetime ?? null,
           armedBy: "agent",
         });
-        return { success: true, ...result, note: "End your turn; ADE wakes the chat on new output." };
+        return { success: true, ...result, note: "End your turn; Daex wakes the chat on new output." };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }
@@ -2334,7 +2334,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   // ---------------------------------------------------------------------------
 
   defineLazyTool(tools, "listAutomations", () => core({
-    description: "List automation rules configured in ADE.",
+    description: "List automation rules configured in Daex.",
     inputSchema: z.object({}),
     execute: async () => {
       if (!deps.automationService) return { success: false, error: "Automation service is not available." };
@@ -2344,7 +2344,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   }));
 
   defineLazyTool(tools, "triggerAutomation", () => core({
-    description: "Manually trigger an ADE automation rule.",
+    description: "Manually trigger a Daex automation rule.",
     inputSchema: z.object({
       automationId: z.string().trim().min(1),
       dryRun: z.boolean().optional().default(false),
@@ -3063,9 +3063,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   // ADE source search sits with file reads
   defineLazyTool(tools, "searchCodebase", () => files({
     description:
-      "Search the ADE codebase itself for patterns, function names, or implementation details. " +
-      "Use this when you need to understand how an ADE feature works internally, find the implementation " +
-      "of a specific function, or debug unexpected behavior. This searches the actual ADE source code, " +
+      "Search the Daex codebase itself for patterns, function names, or implementation details. " +
+      "Use this when you need to understand how a Daex feature works internally, find the implementation " +
+      "of a specific function, or debug unexpected behavior. This searches the actual Daex source code, " +
       "not the user's project files. Results are scoped and truncated to avoid context bloat.",
     inputSchema: z.object({
       pattern: z.string().trim().min(1).describe("Regex or text pattern to search for (e.g. 'spawnChat', 'createLane', 'modelId')."),
@@ -3526,7 +3526,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
 
   defineLazyTool(tools, "noReply", () => core({
     description:
-      "End this turn with no reply. Use it when a child chat, a schedule or ADE woke you and the person needs "
+      "End this turn with no reply. Use it when a child chat, a schedule or Daex woke you and the person needs "
       + "nothing new: progress, a push, a PR opened, checks running, a review round, a conflict the child fixed. "
       + "Call it last and write nothing after it; any text after it is not shown.",
     inputSchema: z.object({}),
@@ -3676,7 +3676,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   // pack, so it can never be one of the things waiting to be revealed.
   defineLazyTool(tools, "loadCtoTools", () => core({
     description:
-      "Load one pack of ADE operator tools. Every ADE domain is reachable from this session, but only the core pack "
+      "Load one pack of Daex operator tools. Every Daex domain is reachable from this session, but only the core pack "
       + "(lanes, chats, steering, git, PRs, automations, handoff, memory, events) carries full descriptions from the start. "
       + "Extension packs stay callable at all times — this reveals their full descriptions and input contracts. "
       + "Call it with no pack to see every pack, its scope, and whether it is loaded.",
@@ -3924,9 +3924,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
     description:
       "Schedule durable work on a chat: a one-shot wakeup (delaySeconds or runAt) or a recurring five-field cron in the "
       + "person's time zone (the one in your context). Survives restarts. Pass exactly one of cron, runAt, or delaySeconds. "
-      + "A cron can take a check: a shell command ADE runs in the project folder before each fire. The chat wakes only "
+      + "A cron can take a check: a shell command Daex runs in the project folder before each fire. The chat wakes only "
       + "when the check's stdout differs from its last run, or the first time it fails (non-zero exit); a failing check "
-      + "stays quiet after that until it passes again. ADE runs it once now as the baseline and returns that run.",
+      + "stays quiet after that until it passes again. Daex runs it once now as the baseline and returns that run.",
     inputSchema: z.object({
       sessionId: z.string().min(1).describe("Chat to wake."),
       prompt: z.string().trim().min(1).max(4000).describe("What the chat should do when it wakes."),
@@ -3958,7 +3958,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
 
   defineLazyTool(tools, "listScheduledWork", () => scheduling({
     description:
-      "List ADE-managed wakeups, cron jobs, and loops — for one chat, or across the project. "
+      "List Daex-managed wakeups, cron jobs, and loops — for one chat, or across the project. "
       + `Returns a compact record per job (prompts truncated to ${SCHEDULED_WORK_PROMPT_PREVIEW_CHARS} characters) `
       + `and at most ${MAX_SCHEDULED_WORK_ITEMS} of them; read 'count' for the real total and 'truncated' to know `
       + "the list was cut. Narrow with sessionId, or call getScheduledWorkState for one chat's full picture.",
@@ -4088,8 +4088,8 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
 
   defineLazyTool(tools, "searchProject", () => search({
     description:
-      "Search ADE's own project index across lanes, chats, PRs, files, and issues — the same index behind ⌘K. "
-      + "Use searchCodebase instead when you want raw ADE source text.",
+      "Search Daex's own project index across lanes, chats, PRs, files, and issues — the same index behind ⌘K. "
+      + "Use searchCodebase instead when you want raw Daex source text.",
     inputSchema: z.object({
       query: z.string().trim().min(1),
       laneId: z.string().optional().describe("Restrict to one lane. Read-only, so any lane is fine."),
@@ -4121,7 +4121,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
 
   defineLazyTool(tools, "getUsageStats", () => insights({
     description:
-      "Read token, cost, and activity stats. scope picks the reach: account merges every machine on the ADE account, "
+      "Read token, cost, and activity stats. scope picks the reach: account merges every machine on the Daex account, "
       + "machine is this computer only, project is the open project's share.",
     inputSchema: z.object({
       preset: z.enum(["today", "7d", "30d", "year", "all"]).optional().default("7d"),
@@ -4170,7 +4170,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
 
   defineLazyTool(tools, "getProjectConfig", () => config({
     description:
-      "Read the project's effective ADE configuration: shared config, local overrides, and the merged result. "
+      "Read the project's effective Daex configuration: shared config, local overrides, and the merged result. "
       + "Read-only, and VALUES of env blocks and credential-shaped fields are replaced with placeholders — "
       + "you see which keys exist, never what they are set to. Use the Settings surface to change any of it.",
     inputSchema: z.object({}),
@@ -4185,7 +4185,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
 
   defineLazyTool(tools, "listProjectSecretNames", () => config({
     description:
-      "List the NAMES and metadata of this project's ADE secrets. Values are never returned by any tool you have — "
+      "List the NAMES and metadata of this project's Daex secrets. Values are never returned by any tool you have — "
       + "if the user needs a secret value, they must read it from the Secrets surface themselves.",
     inputSchema: z.object({}),
     execute: async () => {
@@ -4239,7 +4239,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   }));
 
   defineLazyTool(tools, "listIosLaunchTargets", () => devices({
-    description: "List the app targets ADE can launch on an iOS simulator for a lane.",
+    description: "List the app targets Daex can launch on an iOS simulator for a lane.",
     inputSchema: z.object({ laneId: z.string().optional().describe("Lane to scan. Read-only, so any lane is fine.") }),
     execute: async ({ laneId }) => {
       const iosSimulator = deps.iosSimulatorService;
@@ -4270,7 +4270,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   }));
 
   defineLazyTool(tools, "listAppControlTargets", () => devices({
-    description: "List the desktop apps and renderer targets ADE can attach to right now.",
+    description: "List the desktop apps and renderer targets Daex can attach to right now.",
     inputSchema: z.object({}),
     execute: async () => {
       const appControl = deps.appControlService;

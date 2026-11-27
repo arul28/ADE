@@ -17,8 +17,8 @@ describe("buildMacDesktopDirective", () => {
   // The line names the screen of the machine running the chat: a Windows
   // brain's agent was once told it had a macOS screen (2026-10-20).
   it.each([
-    { host: "darwin", command: "ade screen", wrongHost: /Windows/, safety: /fall back to the user's (?:real )?screen/ },
-    { host: "win32", command: "ade screen", wrongHost: /macOS|mac-desktop|Mac Desktop/, safety: /default seat is private.*needs their yes.*never use `--allow-prompt` or `--consent`/ },
+    { host: "darwin", command: "daex screen", wrongHost: /Windows/, safety: /fall back to the user's (?:real )?screen/ },
+    { host: "win32", command: "daex screen", wrongHost: /macOS|mac-desktop|Mac Desktop/, safety: /default seat is private.*needs their yes.*never use `--allow-prompt` or `--consent`/ },
   ] as const)("emits one $host line before and after screen activation", ({ host, command, wrongHost, safety }) => {
     for (const active of [false, true]) {
       const line = buildMacDesktopDirective(true, host, active)!;
@@ -31,7 +31,7 @@ describe("buildMacDesktopDirective", () => {
       // The skill is named once: the capability notice only goes out beside the
       // computer-use directive (`currentComputerUseDirective`), which opens by
       // naming it; the active line can arrive alone later, so it names it.
-      if (active) expect(line).toContain("ade-computer-use");
+      if (active) expect(line).toContain("daex-computer-use");
     }
   });
 

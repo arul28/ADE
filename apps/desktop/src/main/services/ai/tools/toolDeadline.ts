@@ -42,7 +42,7 @@ const activeDeadline = new AsyncLocalStorage<DeadlineState>();
 export class AdeToolDeadlineError extends Error {
   constructor(readonly budgetMs: number) {
     super(
-      `ADE stopped waiting for this tool after ${Math.round(budgetMs / 1000)}s. `
+      `Daex stopped waiting for this tool after ${Math.round(budgetMs / 1000)}s. `
       + "The operation may still finish on its own. Check the current state "
       + "(for example list lanes or chats) before trying it again.",
     );

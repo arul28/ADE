@@ -98,7 +98,7 @@ export function spawnWarnings(args: {
   const applied = args.session.permissionMode ?? null;
   if (requested && applied && requested !== applied) {
     warnings.push(
-      `ADE started this chat at permission mode '${applied}', not '${requested}': a chat never gets more access `
+      `Daex started this chat at permission mode '${applied}', not '${requested}': a chat never gets more access `
       + "than the chat that starts it. Tell the user if the work needs more; only they can raise it.",
     );
   }
@@ -363,7 +363,7 @@ export function createCtoCrossMachineToolKit(deps: CtoCrossMachineToolDeps) {
 
   const listMachines = executableTool({
     description:
-      "List the machines on this ADE account: which one is your home machine, which are online, and which have this "
+      "List the machines on this Daex account: which one is your home machine, which are online, and which have this "
       + "project's repository. Call it before passing `machine` to any other tool. Set includeWork to also read each "
       + "machine's lane count and running chats for this project (slower: it asks every online machine).",
     inputSchema: z.object({
@@ -396,12 +396,12 @@ export function createCtoCrossMachineToolKit(deps: CtoCrossMachineToolDeps) {
 
   const listMachineActions = executableTool({
     description:
-      "List the ADE actions a machine will run for you — the same surface as `ade actions run <domain>.<action>`, "
+      "List the Daex actions a machine will run for you — the same surface as `daex actions run <domain>.<action>`, "
       + "filtered by THAT machine's policy for your role. Pass domain (e.g. 'lane', 'chat', 'git', 'pr', 'files') to also get "
       + "each action's input contract. Omit machine for your home machine. Use it before runMachineAction instead of guessing names.",
     inputSchema: z.object({
       machine: machineArg,
-      domain: z.string().trim().min(1).optional().describe("One ADE action domain. Omit to list every domain's action names."),
+      domain: z.string().trim().min(1).optional().describe("One Daex action domain. Omit to list every domain's action names."),
     }),
     execute: async ({ machine, domain }) => {
       if (!deps.crossMachine) return { success: false, error: NOT_REACHABLE };
@@ -429,7 +429,7 @@ export function createCtoCrossMachineToolKit(deps: CtoCrossMachineToolDeps) {
 
   const runMachineAction = executableTool({
     description:
-      "Run one ADE action on any machine on the account (your full remote surface: everything `ade actions run` exposes), "
+      "Run one Daex action on any machine on the account (your full remote surface: everything `daex actions run` exposes), "
       + "in this project's checkout on that machine. The machine's own policy decides what is allowed and its refusal is "
       + "returned verbatim. Reads (get*/list*/read*/search*/preview*…) run straight away; anything else asks the user to "
       + "confirm first. Actions that return secrets or tokens are refused. Use it to answer questions about another machine "
@@ -437,7 +437,7 @@ export function createCtoCrossMachineToolKit(deps: CtoCrossMachineToolDeps) {
       + "and its input.",
     inputSchema: z.object({
       machine: machineArg,
-      domain: z.string().trim().min(1).describe("ADE action domain, e.g. 'lane', 'chat', 'git', 'pr'."),
+      domain: z.string().trim().min(1).describe("Daex action domain, e.g. 'lane', 'chat', 'git', 'pr'."),
       action: z.string().trim().min(1).describe("Action name in that domain, e.g. 'list', 'getStatus'."),
       args: z.record(z.string(), z.unknown()).optional().describe("Object arguments (what --input-json would carry)."),
       arg: z.union([z.string(), z.number(), z.boolean()]).optional().describe("A single scalar argument, for actions that take one instead of args."),
