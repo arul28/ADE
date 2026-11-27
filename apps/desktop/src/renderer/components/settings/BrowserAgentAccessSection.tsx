@@ -13,6 +13,7 @@ import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitiv
 import { Banner } from "../ui/notice";
 import { useSettingsAction } from "./useSettingsAction";
 import "./machineSettings.css";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * "Agents can use the ADE browser", mirrored from the browser's own ⋯ menu.
@@ -55,7 +56,7 @@ export function BrowserAgentAccessSection() {
 
   return (
     <ModernSection
-      group="ADE browser"
+      group={`${BRAND.NAME} browser`}
       anchor="browser-agent-access"
       title={BROWSER_AGENT_ACCESS_TITLE}
       hint="An agent using it can act as you on any site you are signed in to."

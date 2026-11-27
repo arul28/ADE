@@ -5,6 +5,7 @@ import { captureError } from "../../../shared/sentry/capture";
 import { confirmDialog } from "../ui/dialog";
 import { Banner, type BannerModel } from "../ui/notice";
 import { ModernRow, ModernRows, SettingsSegmented } from "./primitives";
+import { BRAND } from "../../../shared/brand";
 
 /** Stable and Beta, with what each means; the one list of tracks a control offers. */
 export const UPDATE_TRACK_OPTIONS = [
@@ -118,8 +119,8 @@ export function UpdateTrackControls({ snapshot }: { snapshot: AutoUpdateSnapshot
       const confirmed = await confirmDialog({
         title: `Switch this computer to ${label}?`,
         message: target === "beta"
-          ? `ADE downloads Beta${versionText}, then asks you to restart. Your projects and chats stay, and Beta can have bugs Stable doesn't.`
-          : `ADE downloads Stable${versionText}, then asks you to restart. Your projects and chats stay.`,
+          ? `${BRAND.NAME} downloads Beta${versionText}, then asks you to restart. Your projects and chats stay, and Beta can have bugs Stable doesn't.`
+          : `${BRAND.NAME} downloads Stable${versionText}, then asks you to restart. Your projects and chats stay.`,
         confirmLabel: `Switch to ${label}`,
         tone: target === "beta" ? "warning" : "accent",
       });
@@ -128,7 +129,7 @@ export function UpdateTrackControls({ snapshot }: { snapshot: AutoUpdateSnapshot
       if (!result.ok) setBlocked({ target, reason: result.reason });
     } catch (error) {
       captureError(error, { tags: { area: "update_track", step: "switch" }, fingerprint: ["update_track", "switch"] });
-      setBlocked({ target, reason: "ADE couldn't start the switch. Try again." });
+      setBlocked({ target, reason: `${BRAND.NAME} couldn't start the switch. Try again.` });
     } finally {
       setChecking(null);
     }

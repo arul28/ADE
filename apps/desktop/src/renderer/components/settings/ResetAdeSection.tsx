@@ -1,5 +1,6 @@
 import { ResetAdeButton } from "../app/ResetAdeDialog";
 import { ModernRow, ModernRows, ModernSection } from "./primitives";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The hard reset, as a setting. Its own section at the very bottom of General,
@@ -13,12 +14,12 @@ import { ModernRow, ModernRows, ModernSection } from "./primitives";
  */
 export function ResetAdeSection() {
   return (
-    <ModernSection group="Reset ADE" anchor="reset-ade" title="Reset ADE">
+    <ModernSection group={`Reset ${BRAND.NAME}`} anchor="reset-ade" title={`Reset ${BRAND.NAME}`}>
       <ModernRows>
         <ModernRow
-          title="Remove everything ADE put on this computer"
-          hint="Includes ADE's data and lanes in every project, then reopens ADE as a new install. Your code and repositories stay."
-          control={<ResetAdeButton label="Reset ADE…" className="ade-modern-btn ade-modern-btn-danger" />}
+          title={`Remove everything ${BRAND.NAME} put on this computer`}
+          hint={`Includes ${BRAND.NAME}'s data and lanes in every project, then reopens ${BRAND.NAME} as a new install. Your code and repositories stay.`}
+          control={<ResetAdeButton label={`Reset ${BRAND.NAME}…`} className="ade-modern-btn ade-modern-btn-danger" />}
         />
       </ModernRows>
     </ModernSection>

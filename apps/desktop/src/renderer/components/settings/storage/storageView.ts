@@ -17,6 +17,7 @@ import { DELETED_LANE_CHATS_ITEM_ID } from "../../../../shared/types/storage";
 import type { ResourcePressureLevel } from "../../../lib/resourcePressure";
 import { COLORS } from "../../lanes/laneDesignTokens";
 import { formatStorageBytes } from "../../../../shared/formatting";
+import { BRAND } from "../../../../shared/brand";
 export { formatStorageBytes } from "../../../../shared/formatting";
 
 /**
@@ -52,7 +53,7 @@ export const CATEGORY_META: Record<StorageCategoryId, CategoryMeta> = {
   },
   lanes_worktrees: {
     name: "Lanes & worktrees",
-    description: "Working copies ADE keeps for each lane.",
+    description: `Working copies ${BRAND.NAME} keeps for each lane.`,
     hue: "#4aa8e0",
   },
   build_release: {
@@ -62,7 +63,7 @@ export const CATEGORY_META: Record<StorageCategoryId, CategoryMeta> = {
   },
   caches: {
     name: "Caches",
-    description: "Rebuildable data ADE recreates whenever it needs it.",
+    description: `Rebuildable data ${BRAND.NAME} recreates whenever it needs it.`,
     hue: "#43b3a0",
   },
   proof_attachments: {
@@ -72,7 +73,7 @@ export const CATEGORY_META: Record<StorageCategoryId, CategoryMeta> = {
   },
   recovery_backups: {
     name: "Recovery backups",
-    description: "Snapshots ADE saved before making risky changes.",
+    description: `Snapshots ${BRAND.NAME} saved before making risky changes.`,
     hue: "#7b86e0",
   },
   database: {
@@ -242,7 +243,7 @@ export function categoryPolicyChip(
 /** Plain-language framing for each internal database category. No jargon. */
 export const DB_CATEGORY_HINT: Record<DbBreakdownCategory, string> = {
   webhooks: "History of incoming events from your automations.",
-  sync_bookkeeping: "Records ADE keeps to sync your work across devices.",
+  sync_bookkeeping: `Records ${BRAND.NAME} keeps to sync your work across devices.`,
   pr_cache: "A local copy of pull request details, refetched when needed.",
   core: "Your project's live data — chats, lanes, and settings.",
 };
@@ -816,7 +817,7 @@ export function buildSafeCleanupPlan(
       .filter((entry) => entry.action === "prunable" || entry.action === "compactable")
       .map((entry) => entry.label);
     alsoRuns.push(trimmed.length > 0
-      ? `Trims database data ADE no longer needs (${trimmed.join(", ")}) and returns free space to the disk.`
+      ? `Trims database data ${BRAND.NAME} no longer needs (${trimmed.join(", ")}) and returns free space to the disk.`
       : "Returns free database space to the disk when the database is fragmented.");
   }
 

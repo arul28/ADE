@@ -27,6 +27,7 @@ import type { IntegrationHeroBrand } from "../integrations/integrationBrand";
 import { CodexAvatarMark, DroidLogo } from "../../shared/ProviderLogos";
 import vscodeLogoSrc from "../../../assets/editor-logos/vscode.svg";
 import zedLogoSrc from "../../../assets/editor-logos/zed.svg";
+import { BRAND } from "../../../../shared/brand";
 
 /** ADE MCP wears ADE's violet, the way an integration page wears its maker's colour. */
 export const ADE_MCP_ACCENT = "#8B7CF6";
@@ -36,8 +37,8 @@ export const ADE_MCP_DIALOG_VARS: CSSProperties = { ["--ig-accent" as string]: A
 
 /** The ADE MCP banner, drawn by the integration pages' hero. */
 export const ADE_MCP_BRAND: IntegrationHeroBrand = {
-  label: "ADE MCP",
-  tagline: "One address for your ADE account. An AI app that signs in with it can use ADE on every computer you include.",
+  label: `${BRAND.NAME} MCP`,
+  tagline: `One address for your ${BRAND.NAME} account. An AI app that signs in with it can use ${BRAND.NAME} on every computer you include.`,
   accent: ADE_MCP_ACCENT,
   banner: {
     background: [
@@ -205,7 +206,7 @@ const GALLERY: Record<GalleryAppId, GalleryApp> = {
         detail: <>In claude.ai, go to <Path parts={["Customize", "Connectors"]} />, then <Path parts={["+ Add", "Add custom connector"]} />.</>,
       },
       {
-        title: "Name it ADE and paste the server URL",
+        title: `Name it ${BRAND.NAME} and paste the server URL`,
         snippet: { code: url, copyLabel: "Copy server URL" },
       },
       { title: "Choose Add, then Connect", signIn: {} },
@@ -227,7 +228,7 @@ const GALLERY: Record<GalleryAppId, GalleryApp> = {
         detail: <>Go to <Path parts={["Settings", "Apps"]} /> (Plugins on some plans) and choose <b>Add custom MCP server</b>. ChatGPT may ask you to turn on developer mode first.</>,
       },
       {
-        title: "Name it ADE and paste the server URL",
+        title: `Name it ${BRAND.NAME} and paste the server URL`,
         detail: "If it asks how to sign in, pick OAuth.",
         snippet: { code: url, copyLabel: "Copy server URL" },
       },
@@ -246,7 +247,7 @@ const GALLERY: Record<GalleryAppId, GalleryApp> = {
     tokenSnippet: "claude-code",
     steps: (url) => [
       {
-        title: "Add ADE in a terminal",
+        title: `Add ${BRAND.NAME} in a terminal`,
         snippet: { code: `claude mcp add --transport http ade ${url}`, copyLabel: "Copy Claude Code command" },
       },
       {
@@ -265,7 +266,7 @@ const GALLERY: Record<GalleryAppId, GalleryApp> = {
     tokenSnippet: "codex",
     steps: (url) => [
       {
-        title: "Add ADE in a terminal",
+        title: `Add ${BRAND.NAME} in a terminal`,
         snippet: { code: `codex mcp add ade --url ${url}`, copyLabel: "Copy Codex command" },
       },
       {
@@ -307,14 +308,14 @@ const GALLERY: Record<GalleryAppId, GalleryApp> = {
     token: false,
     steps: (url) => [
       {
-        title: "Ask Grok Bot to add ADE",
+        title: `Ask Grok Bot to add ${BRAND.NAME}`,
         detail: <>Send it this message, or use <Path parts={["Plugins", "Add"]} />.</>,
         snippet: { code: `Add a custom MCP server: ${url}`, copyLabel: "Copy message for Grok Bot" },
       },
       { title: "Open the sign-in link it sends", signIn: { pageTitle: "Connect Grok Bot" } },
     ],
     notes: [
-      "Grok Bot reaches ADE over the internet, so give it this exact address. A localhost or home-network address won't work.",
+      `Grok Bot reaches ${BRAND.NAME} over the internet, so give it this exact address. A localhost or home-network address won't work.`,
     ],
   },
   cursor: {
@@ -326,13 +327,13 @@ const GALLERY: Record<GalleryAppId, GalleryApp> = {
     tokenSnippet: "cursor",
     steps: (url) => [
       {
-        title: "Add ADE to Cursor's MCP file",
+        title: `Add ${BRAND.NAME} to Cursor's MCP file`,
         detail: <>Put this in <code>~/.cursor/mcp.json</code> (merge it with any servers already there).</>,
         snippet: { code: json({ mcpServers: { ade: { url } } }), copyLabel: "Copy Cursor config" },
       },
       {
         title: "Sign in",
-        detail: <>Cursor shows ADE under <Path parts={["Cursor Settings", "MCP"]} />. Choose its sign-in button.</>,
+        detail: <>Cursor shows {BRAND.NAME} under <Path parts={["Cursor Settings", "MCP"]} />. Choose its sign-in button.</>,
         signIn: {},
       },
     ],
@@ -346,7 +347,7 @@ const GALLERY: Record<GalleryAppId, GalleryApp> = {
     tokenSnippet: "vscode",
     steps: (url) => [
       {
-        title: "Add ADE",
+        title: `Add ${BRAND.NAME}`,
         detail: <>Run this in a terminal, or use <Path parts={["Command Palette", "MCP: Add Server", "HTTP"]} /> and paste the server URL.</>,
         snippet: { code: `code --add-mcp '${JSON.stringify({ name: "ade", type: "http", url })}'`, copyLabel: "Copy VS Code command" },
       },
@@ -362,7 +363,7 @@ const GALLERY: Record<GalleryAppId, GalleryApp> = {
     tokenSnippet: "gemini-cli",
     steps: (url) => [
       {
-        title: "Add ADE to Gemini's settings",
+        title: `Add ${BRAND.NAME} to Gemini's settings`,
         detail: <>Put this in <code>~/.gemini/settings.json</code> (merge it with what's there).</>,
         snippet: { code: json({ mcpServers: { ade: { httpUrl: url } } }), copyLabel: "Copy Gemini CLI settings" },
       },

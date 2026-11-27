@@ -29,6 +29,7 @@ import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { isDegradedSyncSnapshot } from "../../../lib/localSyncStatusReader";
 import type { OpenProjectBinding } from "../../../../shared/types";
 import { onlineCopyPin, settingsCopyScope, useProjectCopyPage, useThisComputerCopyPin } from "../ProjectCopyScope";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * Settings → General's "Needs attention": every problem ADE can see, from
@@ -172,7 +173,7 @@ function readFailureItem(failed: string[], recheck: () => Promise<void>): Attent
   return [{
     id: "overview-read-failed",
     severity: "warning",
-    title: failed.length === 1 ? `ADE couldn't check ${names}` : `ADE couldn't check ${failed.length} things`,
+    title: failed.length === 1 ? `${BRAND.NAME} couldn't check ${names}` : `${BRAND.NAME} couldn't check ${failed.length} things`,
     detail: `Couldn't read ${names}, so this list may be missing something.`,
     where: "General",
     route: settingsRouteFor("overview.attention"),
@@ -194,8 +195,8 @@ function serviceItems(info: AppInfo | null, health: RuntimeHealthSnapshot | null
       items.push({
         id: "service-blocked",
         severity: "problem",
-        title: "macOS is blocking ADE's background service",
-        detail: "Turn on ADE in System Settings → General → Login Items → Allow in the Background.",
+        title: `macOS is blocking ${BRAND.NAME}'s background service`,
+        detail: `Turn on ${BRAND.NAME} in System Settings → General → Login Items → Allow in the Background.`,
         where: THIS_MACHINE_NAME,
         route,
       });
@@ -203,7 +204,7 @@ function serviceItems(info: AppInfo | null, health: RuntimeHealthSnapshot | null
       items.push({
         id: "service-down",
         severity: "problem",
-        title: runtime.runtimeMode === "primary" ? "The background service isn't answering" : "ADE is running without its background service",
+        title: runtime.runtimeMode === "primary" ? "The background service isn't answering" : `${BRAND.NAME} is running without its background service`,
         detail: runtime.serviceHealth.message ?? runtime.serviceInstall.message ?? "Chats and terminals may not start, and other devices can't reach this computer.",
         where: THIS_MACHINE_NAME,
         route,
@@ -213,7 +214,7 @@ function serviceItems(info: AppInfo | null, health: RuntimeHealthSnapshot | null
       items.push({
         id: "service-version",
         severity: "warning",
-        title: "The background service runs a different ADE version",
+        title: `The background service runs a different ${BRAND.NAME} version`,
         detail: runtime.versionSkew.message ?? "Restart the service so it matches this app.",
         where: THIS_MACHINE_NAME,
         route,
@@ -247,8 +248,8 @@ function updateItems(update: AutoUpdateSnapshot | null): AttentionItem[] {
     return [{
       id: "update-install-failed",
       severity: "warning",
-      title: `ADE ${update.lastInstallFailed.targetVersion} didn't install`,
-      detail: "ADE restarted on the old version. Try again from ADE service.",
+      title: `${BRAND.NAME} ${update.lastInstallFailed.targetVersion} didn't install`,
+      detail: `${BRAND.NAME} restarted on the old version. Try again from ${BRAND.NAME} service.`,
       where: THIS_MACHINE_NAME,
       route,
     }];
@@ -258,7 +259,7 @@ function updateItems(update: AutoUpdateSnapshot | null): AttentionItem[] {
       id: "update-parked",
       severity: "warning",
       title: "An update is waiting and couldn't start",
-      detail: "Open ADE service to install it.",
+      detail: `Open ${BRAND.NAME} service to install it.`,
       where: THIS_MACHINE_NAME,
       route,
     }];
@@ -267,7 +268,7 @@ function updateItems(update: AutoUpdateSnapshot | null): AttentionItem[] {
     return [{
       id: "update-error",
       severity: "warning",
-      title: "ADE couldn't check for updates",
+      title: `${BRAND.NAME} couldn't check for updates`,
       detail: update.error ?? undefined,
       where: THIS_MACHINE_NAME,
       route,
@@ -285,7 +286,7 @@ function pressureItems(pressure: DiskPressureSnapshot | null): AttentionItem[] {
     id: "disk-pressure",
     severity: urgent ? "problem" : "warning",
     title: urgent ? "The disk is almost full" : "The disk is getting full",
-    detail: `${gb < 10 ? gb.toFixed(1) : Math.round(gb)} GB free.${urgent ? " ADE is pausing heavy work." : ""}`,
+    detail: `${gb < 10 ? gb.toFixed(1) : Math.round(gb)} GB free.${urgent ? ` ${BRAND.NAME} is pausing heavy work.` : ""}`,
     where: THIS_MACHINE_NAME,
     route: settingsRouteFor("storage.usage"),
     // Hidden while the disk stays in this state, however the free space moves.
@@ -336,7 +337,7 @@ function providerItems(
       id: `provider-${provider.provider}`,
       severity: "warning",
       title: lostLogin ? `${name} is signed out` : `${name} can't start chats`,
-      detail: provider.blocker ?? (lostLogin ? "Sign in again to use it here." : "You're signed in, but ADE couldn't start it."),
+      detail: provider.blocker ?? (lostLogin ? "Sign in again to use it here." : `You're signed in, but ${BRAND.NAME} couldn't start it.`),
       where: "Providers",
       route,
     }];
@@ -432,7 +433,7 @@ function machinesBehindItem(snapshot: ConnectionSnapshot | null, update: AutoUpd
   return {
     id: MACHINES_BEHIND_ITEM_ID,
     severity: "note",
-    title: behind.length === 1 ? `${behind[0]!.name} runs an older ADE` : `${behind.length} machines run an older ADE`,
+    title: behind.length === 1 ? `${behind[0]!.name} runs an older ${BRAND.NAME}` : `${behind.length} machines run an older ${BRAND.NAME}`,
     detail: behind.map((machine) => `${machine.name}: ${machine.versionLabel ?? machine.version ?? "unknown"}`).join(", "),
     where: behind.length === 1 ? behind[0]!.name : "Your computers",
     route: settingsRouteFor("general.update-other-machines"),
@@ -505,7 +506,7 @@ function githubItems(status: Awaited<ReturnType<typeof window.ade.github.getStat
   return [{
     id: "github-auth",
     severity: "problem",
-    title: failure.kind === "invalid_token" ? "GitHub sign-in stopped working" : "GitHub refuses ADE's access",
+    title: failure.kind === "invalid_token" ? "GitHub sign-in stopped working" : `GitHub refuses ${BRAND.NAME}'s access`,
     detail: failure.message,
     where: "Integrations",
     route: settingsRouteFor("integrations.github"),
@@ -595,7 +596,7 @@ async function integrationItems(pin: OpenProjectBinding | null, failed?: string[
       id: "linear-auth",
       severity: "warning",
       title: "Linear isn't connected",
-      detail: "ADE has a Linear sign-in for this project, but Linear refused it.",
+      detail: `${BRAND.NAME} has a Linear sign-in for this project, but Linear refused it.`,
       where: "Integrations",
       route: settingsRouteFor("integrations.linear"),
     });
@@ -687,10 +688,10 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
     const failed: string[] = [];
     const { projectPin: reportPin, connectionsPin: githubPin, providersPin: aiPin } = pinsRef.current;
     const [info, update, pressure, runtimeHealth, report, usage, ai, cli, machines, sync, github, projectConfig, providerAccounts] = await Promise.all([
-      quiet(() => ade.app.getInfo(), failed, "ADE's service"),
+      quiet(() => ade.app.getInfo(), failed, `${BRAND.NAME}'s service`),
       quiet(ade.updateGetState ? () => ade.updateGetState() : null, failed, "updates"),
       quiet(isAdeAvailable(ade.storage?.getPressure) ? () => ade.storage.getPressure() : null, failed, "disk space"),
-      quiet(isAdeAvailable(ade.app?.getRuntimeHealth) ? () => ade.app.getRuntimeHealth() : null, failed, "ADE's service health"),
+      quiet(isAdeAvailable(ade.app?.getRuntimeHealth) ? () => ade.app.getRuntimeHealth() : null, failed, `${BRAND.NAME}'s service health`),
       reportPin ? quiet(isAdeAvailable(ade.projectHealth?.getReport) ? () => ade.projectHealth.getReport({ forceRefresh: opts.force }, reportPin) : null, failed, "this project") : Promise.resolve(null),
       quiet(ade.usage?.getSnapshot ? () => ade.usage.getSnapshot() : null, failed, "usage"),
       quiet(ade.ai?.getStatus ? () => ade.ai.getStatus(undefined, aiPin) : null, failed, "providers"),

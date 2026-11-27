@@ -8,6 +8,7 @@ import { saveProjectLocalConfig } from "../../lib/projectLocalConfig";
 import { requirePin } from "../../state/repositoryScope";
 import { AccountSettingNotices } from "./AccountSettingNotices";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 /** The PR settings that follow the account (`projectConfigAccountLayer.ts`). */
 const PR_ACCOUNT_KEYS = ["prs.transcriptGists", "prs.pollIntervalSeconds", "prs.autoMapByBranch"] as const;
@@ -61,7 +62,7 @@ export function PrChatTranscriptsSection() {
       }), pin);
       setTranscriptGistsEnabled(next.effective.github?.prTranscriptGists?.enabled === true);
     } catch (error) {
-      setActionError(plainErrorText(error, "ADE couldn't save the setting."));
+      setActionError(plainErrorText(error, `${BRAND.NAME} couldn't save the setting.`));
     } finally {
       setConfigBusy(false);
     }
@@ -72,7 +73,7 @@ export function PrChatTranscriptsSection() {
       group="PR chat transcripts"
       anchor="pr-chat-transcripts"
       title="PR chat transcripts"
-      hint="Link the ADE chat behind a pull request when you create or link it."
+      hint={`Link the ${BRAND.NAME} chat behind a pull request when you create or link it.`}
     >
       <AccountSettingNotices pin={pin} keys={PR_ACCOUNT_KEYS} onResolved={() => setAttempt((value) => value + 1)} />
       <ModernRows>
@@ -91,7 +92,7 @@ export function PrChatTranscriptsSection() {
             hint="Published as secret gists: anyone with the link can read them. Chat turns only, never terminal logs."
             control={
               <SettingsToggle
-                label="Attach ADE chat transcript links when creating or linking PRs."
+                label={`Attach ${BRAND.NAME} chat transcript links when creating or linking PRs.`}
                 checked={transcriptGistsEnabled === true}
                 disabled={configBusy || transcriptGistsEnabled === null}
                 onChange={(enabled) => { void handleToggleTranscriptGists(enabled); }}

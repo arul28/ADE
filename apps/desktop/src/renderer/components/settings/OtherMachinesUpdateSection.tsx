@@ -31,6 +31,7 @@ import { ModernRow, ModernRows, ModernSection, SettingsSegmented } from "./primi
 import { Banner } from "../ui/notice";
 import type { UpdateTrack } from "../../../shared/updateTrack";
 import { UPDATE_TRACK_OPTIONS } from "./UpdateTrackControls";
+import { BRAND } from "../../../shared/brand";
 
 /** The tracks without their hints: a machine row has room for the names only. */
 const TRACK_OPTIONS = UPDATE_TRACK_OPTIONS.map(({ value, label }) => ({ value, label }));
@@ -125,7 +126,7 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
       icon={compact ? <ArrowsClockwise size={15} weight="bold" /> : undefined}
       tone="green"
       title="Update other machines"
-      hint="With the ADE app open there, the app and its background service update together; otherwise only the service does."
+      hint={`With the ${BRAND.NAME} app open there, the app and its background service update together; otherwise only the service does.`}
       actions={automaticBehind.length > 1 ? (
         <button
           type="button"
@@ -142,7 +143,7 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
         {failed && readMachines == null ? (
           <ModernRow
             title="Couldn't read the connected machines"
-            hint="ADE could not list them just now. Open Connections in the top bar to see them."
+            hint={`${BRAND.NAME} could not list them just now. Open Connections in the top bar to see them.`}
           />
         ) : readMachines == null ? (
           <ModernRow title="Reading connected machines…" />
@@ -211,7 +212,7 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
               ) : machine.name}
               hint={(
                 <>
-                  {machine.version ? <>ADE <span className="kit-num">{machine.versionLabel ?? machine.version}</span></> : "Version unknown"}
+                  {machine.version ? <>{BRAND.NAME} <span className="kit-num">{machine.versionLabel ?? machine.version}</span></> : "Version unknown"}
                   {targetVersion
                     ? <> · <span className="kit-num">{targetVersion}</span> available</>
                     : null}

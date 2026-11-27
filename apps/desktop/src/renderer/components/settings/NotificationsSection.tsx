@@ -35,6 +35,7 @@ import { ProjectSettingsNotice } from "./ProjectSettingsNotice";
 import { isStandaloneSettings } from "./settingsManifest";
 import { Banner } from "../ui/notice";
 import "./NotificationsSection.css";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Notifications and Activity, on one page.
@@ -214,11 +215,11 @@ export function NotificationsSection() {
               <ModernRows>
                 <ModernRow
                   anchor="focus-suppression"
-                  title="Quiet while ADE is focused"
-                  hint="If you are looking at ADE, Activity carries it instead."
+                  title={`Quiet while ${BRAND.NAME} is focused`}
+                  hint={`If you are looking at ${BRAND.NAME}, Activity carries it instead.`}
                   control={
                     <SettingsToggle
-                      label="Stay quiet while ADE is focused"
+                      label={`Stay quiet while ${BRAND.NAME} is focused`}
                       checked={account.desktopFirstEnabled}
                       disabled={busy}
                       onChange={(desktopFirstEnabled) => updateAccount({ desktopFirstEnabled })}
@@ -231,7 +232,7 @@ export function NotificationsSection() {
                   hint={
                     account.desktopFirstEnabled
                       ? "How long before your phone gets it too."
-                      : "Turn on “Quiet while ADE is focused” to delay the phone."
+                      : `Turn on “Quiet while ${BRAND.NAME} is focused” to delay the phone.`
                   }
                   control={
                     <SettingsSelect
@@ -246,7 +247,7 @@ export function NotificationsSection() {
                 <ModernRow
                   anchor="phone-notifications"
                   title="Phone notifications"
-                  hint="Send Notify events to the ADE app on your phone."
+                  hint={`Send Notify events to the ${BRAND.NAME} app on your phone.`}
                   control={
                     <SettingsToggle
                       label="Phone notifications"

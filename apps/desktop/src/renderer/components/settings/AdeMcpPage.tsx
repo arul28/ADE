@@ -39,6 +39,7 @@ import { CopyButton } from "./adeMcp/adeMcpParts";
 import { AppSetupSheet } from "./adeMcp/AppSetupSheet";
 import { TokenDialog } from "./adeMcp/TokenDialog";
 import "./adeMcp/adeMcp.css";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Settings → You → ADE MCP: one MCP server for the person's ADE account,
@@ -143,7 +144,7 @@ export function AdeMcpPage() {
     } catch (error) {
       if (!mounted.current || request !== loadRequest.current) return;
       setStatus(null);
-      setLoadError(errorText(error, "Couldn't load ADE MCP."));
+      setLoadError(errorText(error, `Couldn't load ${BRAND.NAME} MCP.`));
     } finally {
       if (mounted.current && request === loadRequest.current) setLoading(false);
     }
@@ -184,12 +185,12 @@ export function AdeMcpPage() {
   const setEnabled = (enabled: boolean) => void run(async () => {
     const next = await call<RemoteMcpStatus>("setEnabled", { enabled });
     if (mounted.current) setStatus(next);
-  }, "ADE couldn't change that.");
+  }, `${BRAND.NAME} couldn't change that.`);
 
   const setIncluded = (machine: RemoteMcpMachine, included: boolean) => void run(async () => {
     const next = await call<RemoteMcpStatus>("setMachineIncluded", { machineKey: machine.machineKey, included });
     if (mounted.current) setStatus(next);
-  }, `ADE couldn't change ${machine.name}.`);
+  }, `${BRAND.NAME} couldn't change ${machine.name}.`);
 
   // The dialog shows its own error; the page only refreshes its list.
   const createToken = useCallback(async (label: string, scope: RemoteMcpScope): Promise<RemoteMcpCreatedToken> => {
@@ -201,7 +202,7 @@ export function AdeMcpPage() {
   const setScope = (connection: RemoteMcpConnectionSummary, scope: RemoteMcpScope) => void run(async () => {
     await call("updateConnection", { id: connection.id, scope });
     await load();
-  }, "ADE couldn't change that.");
+  }, `${BRAND.NAME} couldn't change that.`);
 
   const confirmRemove = async (connection: RemoteMcpConnectionSummary) => {
     const isToken = connection.kind === "token";
@@ -215,7 +216,7 @@ export function AdeMcpPage() {
     await run(async () => {
       await call("removeConnection", { id: connection.id });
       await load();
-    }, "ADE couldn't disconnect that.");
+    }, `${BRAND.NAME} couldn't disconnect that.`);
   };
 
   const signedIn = status?.signedIn === true;
@@ -293,7 +294,7 @@ export function AdeMcpPage() {
         brand={ADE_MCP_BRAND}
         className="ade-amcp-hero"
         anchor="ade-mcp"
-        group="ADE MCP"
+        group={`${BRAND.NAME} MCP`}
         status={overall}
         art={HERO_ART}
         panel={(
@@ -318,13 +319,13 @@ export function AdeMcpPage() {
             <div className="ade-ig-hero-toggle">
               <span>
                 <b>{enabled ? "On" : "Off"}</b>
-                <small>Let AI apps use ADE</small>
+                <small>Let AI apps use {BRAND.NAME}</small>
               </span>
               <SettingsToggle
                 checked={enabled}
                 disabled={busy || !status || !signedIn}
                 onChange={setEnabled}
-                label="Let AI apps use ADE"
+                label={`Let AI apps use ${BRAND.NAME}`}
               />
             </div>
           </>
@@ -340,7 +341,7 @@ export function AdeMcpPage() {
             tone: unsyncedVault.state === "failing" ? "error" : "warning",
             title: "Account sync isn't working on this computer",
             detail: [
-              unsyncedVault.message ?? "ADE MCP's settings and connections can't reach this computer until it syncs.",
+              unsyncedVault.message ?? `${BRAND.NAME} MCP's settings and connections can't reach this computer until it syncs.`,
               unsyncedVault.pendingChanges > 0 ? `${unsyncedVault.pendingChanges} change${unsyncedVault.pendingChanges === 1 ? "" : "s"} waiting to upload.` : null,
               agoText(unsyncedVault.lastSyncedAt) ? `Last synced ${agoText(unsyncedVault.lastSyncedAt)}.` : null,
             ].filter(Boolean).join(" "),
@@ -413,7 +414,7 @@ export function AdeMcpPage() {
           <ol className="ade-ig-steps ade-amcp-how">
             {[
               ["Turn it on", "Your account gets one address. It's the same on every computer."],
-              ["Connect an app", "claude.ai, ChatGPT, Grok, Cursor, Claude Code and others sign in with your ADE account. Scripts and APIs use a token."],
+              ["Connect an app", `claude.ai, ChatGPT, Grok, Cursor, Claude Code and others sign in with your ${BRAND.NAME} account. Scripts and APIs use a token.`],
               ["Choose what it can do", "Read only or read & write, for each app. Change it or revoke it here any time."],
             ].map(([title, detail], index) => (
               <li key={title} className="ade-ig-step">
@@ -434,7 +435,7 @@ export function AdeMcpPage() {
           anchor="ade-mcp-computers"
           icon={<Desktop size={16} weight="duotone" />}
           title="Computers"
-          hint="Apps reach the computers you include. They can ask for one by name, or let ADE pick."
+          hint={`Apps reach the computers you include. They can ask for one by name, or let ${BRAND.NAME} pick.`}
           actions={(
             <button type="button" className="ade-modern-btn" data-size="sm" disabled={busy || loading} onClick={() => void load()}>
               {loading ? "Checking…" : "Check again"}

@@ -1,5 +1,6 @@
 import { IntegrationCard } from "./IntegrationChrome";
 import { SettingsTextField } from "../primitives";
+import { BRAND } from "../../../../shared/brand";
 
 const AGENT37_LOGO_PATHS = [
   "M226.31 69.18 L280.18 69.18 L442.82 231.82 L442.82 278.38 L284.11 437.1 L230.73 437.1 L68.93 275.3 L68.93 226.56 Z",
@@ -27,7 +28,7 @@ export function BringYourOwnCloudCard() {
       anchor="cloud-own-provider"
       icon={<Agent37Mark />}
       title="Use your own Agent 37 account"
-      hint="ADE keeps the key in your ADE account, so every computer you sign in to can use it."
+      hint={`${BRAND.NAME} keeps the key in your ${BRAND.NAME} account, so every computer you sign in to can use it.`}
     >
       <div className="ade-ig-form">
         <div className="ade-ig-form-row">

@@ -23,6 +23,7 @@ import { useSettingsAction } from "./useSettingsAction";
 import { Banner } from "../ui/notice";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import "./machineSettings.css";
+import { BRAND } from "../../../shared/brand";
 
 const SEARCH_ENGINE_OPTIONS: readonly { value: BuiltInBrowserSearchEngineId; label: string }[] = [
   ...BUILT_IN_BROWSER_SEARCH_ENGINES.map((engine) => ({ value: engine.id, label: engine.label })),
@@ -78,7 +79,7 @@ function BrowserBehaviourSection() {
 
   const chooseFolder = async () => {
     const chosen = await window.ade.project.chooseDirectory({
-      title: "Choose where ADE browser downloads go",
+      title: `Choose where ${BRAND.NAME} browser downloads go`,
       defaultPath: settings.downloadDir ?? undefined,
     });
     if (!chosen) return;
@@ -87,7 +88,7 @@ function BrowserBehaviourSection() {
 
   return (
     <ModernSection
-      group="ADE browser"
+      group={`${BRAND.NAME} browser`}
       anchor="browser-settings"
       title="Browser behaviour"
       hint="Machine-wide, like the browser profile itself."
@@ -160,7 +161,7 @@ function BrowserBehaviourSection() {
         <ModernRow
           anchor="browser-search-engine"
           title="Search engine"
-          hint="What the address bar searches with when you type words instead of an address. Used by this computer's ADE browser."
+          hint={`What the address bar searches with when you type words instead of an address. Used by this computer's ${BRAND.NAME} browser.`}
           control={(
             <SettingsSelect
               ariaLabel="Search engine"
@@ -268,7 +269,7 @@ function BrowserTrustedCertificatesSection() {
 
   return (
     <ModernSection
-      group="ADE browser"
+      group={`${BRAND.NAME} browser`}
       anchor="browser-trusted-certificates"
       title="Trusted local certificates"
       hint="Self-signed HTTPS certificates you trusted for a local or private address. A site whose certificate changes asks again."
@@ -318,7 +319,7 @@ function BrowserTrustedCertificatesSection() {
         </ModernRows>
       ) : certificates ? (
         <p className="ade-modern-muted">
-          None. When a local HTTPS page's certificate isn't trusted, the ADE browser offers to trust it above the page.
+          None. When a local HTTPS page's certificate isn't trusted, the {BRAND.NAME} browser offers to trust it above the page.
         </p>
       ) : null}
       {certificates && certificates.length > 1 ? (
@@ -386,7 +387,7 @@ export function BrowserAutoGrantSection() {
 
   return (
     <ModernSection
-      group="ADE browser"
+      group={`${BRAND.NAME} browser`}
       anchor="browser-auto-grant"
       title="Let agents approve these without asking"
       hint="All off by default. Sites you blocked stay blocked."
@@ -423,7 +424,7 @@ export function BrowserAutoGrantSection() {
         />
       ) : null}
       {settings.autoGrant.camera || settings.autoGrant.microphone
-        ? <p className="ade-modern-muted">Camera and microphone also need the operating system's permission for ADE.</p>
+        ? <p className="ade-modern-muted">Camera and microphone also need the operating system's permission for {BRAND.NAME}.</p>
         : null}
     </ModernSection>
   );

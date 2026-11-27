@@ -9,6 +9,7 @@ import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitiv
 import { onlineCopyPin, ProjectCopyBar, ProjectCopyUnavailable, settingsCopyScope, useProjectCopyPage } from "./ProjectCopyScope";
 import { requirePin } from "../../state/repositoryScope";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Scheduled work: the global pause, then the live job list in the same panel,
@@ -36,13 +37,13 @@ export function AiFeaturesSection() {
           .then((snapshot) => ({ snapshot, error: null as string | null }))
           .catch((error) => ({
             snapshot: null,
-            error: plainErrorText(error, "ADE couldn't read the project settings."),
+            error: plainErrorText(error, `${BRAND.NAME} couldn't read the project settings.`),
           })),
         window.ade.agentChat.listScheduledWork(undefined, pin)
           .then((items) => ({ items, error: null as string | null }))
           .catch((error) => ({
             items: [] as AgentChatScheduledWorkItem[],
-            error: plainErrorText(error, "ADE couldn't read the scheduled work."),
+            error: plainErrorText(error, `${BRAND.NAME} couldn't read the scheduled work.`),
           })),
       ]);
       setScheduledWork(scheduledWorkResult.items);
@@ -80,7 +81,7 @@ export function AiFeaturesSection() {
       setLocal(!value);
       showToast({
         title: "Couldn't save the setting",
-        message: plainErrorText(error, "ADE couldn't save the setting."),
+        message: plainErrorText(error, `${BRAND.NAME} couldn't save the setting.`),
         tone: "error",
       });
     } finally {
@@ -103,7 +104,7 @@ export function AiFeaturesSection() {
       await loadStatus();
     } catch (error) {
       console.error("[AiFeaturesSection] scheduled-work cancellation failed:", error);
-      setScheduledWorkError(plainErrorText(error, "ADE couldn't cancel that scheduled work."));
+      setScheduledWorkError(plainErrorText(error, `${BRAND.NAME} couldn't cancel that scheduled work.`));
     }
   }, [loadStatus, pin]);
 

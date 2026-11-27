@@ -5,6 +5,7 @@ import { ipcErrorMessage } from "../../../lib/format";
 import { Button } from "../../ui/Button";
 import { Banner } from "../../ui/notice";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "../primitives";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * Settings › Integrations › Messages, on a Mac.
@@ -27,7 +28,7 @@ export function MessagesIntegrationCard() {
       setStatus(await api.messagesIntegrationStatus());
       setError(null);
     } catch (failure) {
-      setError(ipcErrorMessage(failure) || "ADE couldn't read the Messages integration.");
+      setError(ipcErrorMessage(failure) || `${BRAND.NAME} couldn't read the Messages integration.`);
     }
   }, [api]);
 
@@ -42,7 +43,7 @@ export function MessagesIntegrationCard() {
       setStatus(await api.messagesIntegrationSet(next));
       setError(null);
     } catch (failure) {
-      setError(ipcErrorMessage(failure) || "ADE couldn't change the Messages integration.");
+      setError(ipcErrorMessage(failure) || `${BRAND.NAME} couldn't change the Messages integration.`);
     } finally {
       setBusy(false);
     }
@@ -90,7 +91,7 @@ export function MessagesIntegrationCard() {
             model={{
               id: "messages-full-disk-access",
               tone: "warning",
-              title: "ADE needs Full Disk Access to read Messages.",
+              title: `${BRAND.NAME} needs Full Disk Access to read Messages.`,
               actions: [
                 { label: "Open Full Disk Access", onClick: () => void window.ade.app.openSystemSettingsPane("macos-full-disk-access") },
                 { label: "Check again", variant: "secondary", onClick: () => void load() },
@@ -108,7 +109,7 @@ export function MessagesIntegrationCard() {
             {toggle("sendWithoutAsking", "Send without asking", "Texts go out without an approval card.", !status.sendTexts)}
             <ModernRow
               title="Sending uses the Messages app"
-              hint="macOS asks once to let ADE control it."
+              hint={`macOS asks once to let ${BRAND.NAME} control it.`}
               control={(
                 <Button size="sm" variant="outline" onClick={() => void window.ade.app.openSystemSettingsPane("macos-automation")}>
                   Automation settings

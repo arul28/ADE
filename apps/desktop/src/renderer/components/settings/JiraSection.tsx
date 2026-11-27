@@ -25,6 +25,7 @@ import { AccountSettingNotices } from "./AccountSettingNotices";
 import "./IntegrationsSettings.css";
 import { saveProjectLocalConfig } from "../../lib/projectLocalConfig";
 import { requirePin } from "../../state/repositoryScope";
+import { BRAND } from "../../../shared/brand";
 
 const JIRA_API_TOKENS_URL = "https://id.atlassian.com/manage-profile/security/api-tokens";
 
@@ -199,7 +200,7 @@ export function JiraSection() {
       anchor="jira-projects"
       icon={<Kanban size={16} weight="duotone" />}
       title="Projects for this repository"
-      hint="Pick the Jira projects you work in here. New issues default to them, and ADE recognizes their issue keys in chat."
+      hint={`Pick the Jira projects you work in here. New issues default to them, and ${BRAND.NAME} recognizes their issue keys in chat.`}
       badge={connected && projectKeys.length ? <span className="kit-tag" data-tone="ok">{projectKeys.length} chosen</span> : null}
       actions={connected && projects.length > 8 ? (
         <SettingsTextField value={projectQuery} onChange={setProjectQuery} placeholder="Search projects" ariaLabel="Search Jira projects" />
@@ -236,7 +237,7 @@ export function JiraSection() {
         <p className="ade-ig-note ade-ig-foot">
           {projectBusy
             ? <><CircleNotch size={12} className="animate-spin" /> Saving…</>
-            : "Saved for this repository. Signed in to ADE, your other computers get it too."}
+            : `Saved for this repository. Signed in to ${BRAND.NAME}, your other computers get it too.`}
         </p>
       ) : null}
       <AccountSettingNotices

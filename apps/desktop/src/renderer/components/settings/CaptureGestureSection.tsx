@@ -16,6 +16,7 @@ import {
 } from "../capture/captureGestureLocalSettings";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
 import "./machineSettings.css";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The on/off switch for the global capture gesture, plus whatever the native
@@ -157,8 +158,8 @@ export function CaptureGestureSection() {
             )}
             hint={
               available
-                ? `Press ${chord} anywhere to capture the window in front. Over ADE, its tab, lane, PR and open file come along with the image.`
-                : blocker ?? "This ADE surface cannot run the native capture helper."
+                ? `Press ${chord} anywhere to capture the window in front. Over ${BRAND.NAME}, its tab, lane, PR and open file come along with the image.`
+                : blocker ?? `This ${BRAND.NAME} surface cannot run the native capture helper.`
             }
             control={
               <SettingsToggle

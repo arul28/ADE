@@ -34,6 +34,7 @@ import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { isImeComposing } from "../../lib/imeComposition";
 import { requirePin } from "../../state/repositoryScope";
 import { plainError, plainErrorText, type PlainError } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 const LINEAR_API_SETTINGS_URL = "https://linear.app/settings/api";
 
@@ -154,8 +155,8 @@ export function LinearSection() {
     const baseCandidates: Array<Omit<GitHubAutolinkCandidate, "configured" | "command">> = [
       {
         id: "ade-pr",
-        title: "ADE pull requests",
-        desc: "Opens the pull request in ADE",
+        title: `${BRAND.NAME} pull requests`,
+        desc: `Opens the pull request in ${BRAND.NAME}`,
         keyPrefix: "ADEPR-",
         urlTemplate: adePrTemplate,
         isAlphanumeric: false,
@@ -231,7 +232,7 @@ export function LinearSection() {
     } catch (err) {
       if (autolinksRequestIdRef.current !== requestId) return;
       setGithubAutolinks([]);
-      setAutolinkError(plainError(err, { fallback: "ADE couldn't read this repository's links on GitHub." }));
+      setAutolinkError(plainError(err, { fallback: `${BRAND.NAME} couldn't read this repository's links on GitHub.` }));
     } finally {
       if (autolinksRequestIdRef.current === requestId) {
         setAutolinksLoading(false);
@@ -400,7 +401,7 @@ export function LinearSection() {
     if (!openExternal) {
       setOauthSessionIdState(null);
       setOauthStartingState(false);
-      showToast({ tone: "error", title: "Browser sign-in unavailable", message: "Browser sign-in is not available in this ADE build." });
+      showToast({ tone: "error", title: "Browser sign-in unavailable", message: `Browser sign-in is not available in this ${BRAND.NAME} build.` });
       return;
     }
     invalidateLoadRequests();
@@ -451,7 +452,7 @@ export function LinearSection() {
       }, requirePin(pin));
       await loadGithubAutolinks();
     } catch (err) {
-      setAutolinkError(plainError(err, { fallback: `ADE couldn't add the ${candidate.keyPrefix} link on GitHub.` }));
+      setAutolinkError(plainError(err, { fallback: `${BRAND.NAME} couldn't add the ${candidate.keyPrefix} link on GitHub.` }));
     } finally {
       setCreatingAutolinkId(null);
     }
@@ -501,7 +502,7 @@ export function LinearSection() {
           {isRemoteRuntime
             ? "Browser sign-in can't reach a project on another computer. Use an API key; it's saved on that computer."
             : connection?.oauthAvailable === false
-              ? "Browser sign-in isn't available in this build of ADE. Use an API key."
+              ? `Browser sign-in isn't available in this build of ${BRAND.NAME}. Use an API key.`
               : "Opens Linear in your browser and connects the workspace you have selected there."}
         </p>
         <div className="ade-ig-form-row">
@@ -570,7 +571,7 @@ export function LinearSection() {
     <IntegrationCard
       icon={<LinkSimple size={16} weight="bold" />}
       title="Links on GitHub"
-      hint={<>Issue keys like ENG-123 and ADE PR references become links in {githubRepoSlug ? <span className="ade-ig-mono">{githubRepoSlug}</span> : "this repository"}&rsquo;s PRs, commits and comments.</>}
+      hint={<>Issue keys like ENG-123 and {BRAND.NAME} PR references become links in {githubRepoSlug ? <span className="ade-ig-mono">{githubRepoSlug}</span> : "this repository"}&rsquo;s PRs, commits and comments.</>}
       badge={autolinkCandidates.length > 0 && !autolinksRefused ? (
         <span className="kit-tag" data-tone={configuredAutolinkCount === autolinkCandidates.length ? "ok" : undefined}>
           {configuredAutolinkCount === autolinkCandidates.length ? "All added" : `${configuredAutolinkCount} of ${autolinkCandidates.length} added`}
@@ -630,7 +631,7 @@ export function LinearSection() {
         </div>
       )}
       {!teamKeys.length && githubRepoSlug ? (
-        <p className="ade-ig-note">Links for your team keys appear once ADE has loaded the workspace&rsquo;s projects.</p>
+        <p className="ade-ig-note">Links for your team keys appear once {BRAND.NAME} has loaded the workspace&rsquo;s projects.</p>
       ) : null}
       {autolinkError ? (
         <Banner
@@ -658,7 +659,7 @@ export function LinearSection() {
           : isConnected
             ? { tone: "ok", label: "Connected" }
             : { tone: "neutral", label: "Not connected" }}
-        accountNote={statusReadFailed && !connection ? "ADE couldn't read this machine's Linear connection." : undefined}
+        accountNote={statusReadFailed && !connection ? `${BRAND.NAME} couldn't read this machine's Linear connection.` : undefined}
         account={isConnected ? {
           avatar: <LinearWorkspaceAvatar organizationName={connection?.organizationName} logoUrl={connection?.organizationLogoUrl} />,
           title: workspaceLabel ?? "Linear",

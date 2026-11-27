@@ -13,6 +13,7 @@ import {
   PROJECT_MOVE_CHANGED_EVENT,
   volumeFor,
 } from "../projectMove/projectMoveModel";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Where the page's copy of the project lives, and the Move… action. The move
@@ -54,7 +55,7 @@ export function ProjectLocationSection() {
     return (
       <ModernSection group="Project" anchor="project-location" title="Project location">
         <ModernRows>
-          <ModernRow title={`This copy is on ${machineName}`} hint={`Move it from ADE on ${machineName}.`} />
+          <ModernRow title={`This copy is on ${machineName}`} hint={`Move it from ${BRAND.NAME} on ${machineName}.`} />
         </ModernRows>
       </ModernSection>
     );

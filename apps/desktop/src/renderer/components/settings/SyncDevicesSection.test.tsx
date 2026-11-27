@@ -545,7 +545,7 @@ describe("PhoneConnectionsTab", () => {
     );
     expect(screen.getByText("Arul iPhone")).toBeTruthy();
     expect(
-      screen.getByText("Sign in to ADE on your iPhone — this computer appears automatically."),
+      screen.getByText("Sign in to Daex on your iPhone — this computer appears automatically."),
     ).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Revoke" }));

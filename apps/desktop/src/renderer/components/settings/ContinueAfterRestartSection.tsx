@@ -8,6 +8,7 @@ import { routedPageFor, settingsMachinePageFor } from "./SettingsMachinesNav";
 import { useSettingsMachines } from "./machines/settingsMachinesContext";
 import { MachinePicker, reachableMachines } from "./ProvidersMachinePicker";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 /** The anchor every link to this setting uses, including ones made before it moved here. */
 export const CONTINUE_AFTER_RESTART_ANCHOR = "continue-after-restart";
@@ -73,7 +74,7 @@ export function ContinueAfterRestartSection() {
       setEnabled(!next);
       showToast({
         title: "Couldn't save the setting",
-        message: plainErrorText(error, "ADE couldn't save the setting."),
+        message: plainErrorText(error, `${BRAND.NAME} couldn't save the setting.`),
         tone: "error",
       });
     } finally {

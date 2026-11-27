@@ -6,20 +6,21 @@ import { confirmDialog } from "../ui/dialog";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
 import { Banner } from "../ui/notice";
 import { extractError } from "../../lib/format";
+import { BRAND } from "../../../shared/brand";
 
-const OTHER_PROJECTS_NOTE = "Other work may also be running, such as agents in projects that aren't open in ADE.";
+const OTHER_PROJECTS_NOTE = `Other work may also be running, such as agents in projects that aren't open in ${BRAND.NAME}.`;
 
 function statusLine(summary: BackgroundServiceSummary | null): string {
   if (!summary) return "Checking…";
-  if (summary.runner === "desktop") return "Not running. ADE is running your agents itself until it is repaired.";
+  if (summary.runner === "desktop") return `Not running. ${BRAND.NAME} is running your agents itself until it is repaired.`;
   const activity = summary.activity;
-  let status = "Running. ADE couldn't check which agents are working.";
+  let status = `Running. ${BRAND.NAME} couldn't check which agents are working.`;
   if (activity) {
     const count = activity.runningChats.length;
     status = count > 0 ? `Running. ${agentsAre(count)} working.` : "Running. No agents are working in open projects.";
     if (activity.otherProjectsBusy) status = `${status} ${OTHER_PROJECTS_NOTE}`;
   }
-  return summary.manageable ? status : `${status} This build of ADE can't stop it; the installed ADE can.`;
+  return summary.manageable ? status : `${status} This build of ${BRAND.NAME} can't stop it; the installed ${BRAND.NAME} can.`;
 }
 
 function stopWarning(activity: BackgroundServiceActivity): string {
@@ -27,7 +28,7 @@ function stopWarning(activity: BackgroundServiceActivity): string {
   const stops = count === 0
     ? "This stops any open terminals and test runs."
     : `This stops ${count === 1 ? "the working agent" : `all ${pluralCount(count, "working agent")}`} and any open terminals and test runs.`;
-  return activity.otherProjectsBusy ? `${stops} ${OTHER_PROJECTS_NOTE}` : `${stops} Opening ADE starts the service again.`;
+  return activity.otherProjectsBusy ? `${stops} ${OTHER_PROJECTS_NOTE}` : `${stops} Opening ${BRAND.NAME} starts the service again.`;
 }
 
 /**
@@ -80,12 +81,12 @@ export function BackgroundServiceSection() {
     // Re-read so the warning names what is running now, not at page load.
     const activity = (await refresh())?.activity;
     if (!activity) {
-      setError("ADE couldn't check which agents are working, so it stopped nothing. Try again.");
+      setError(`${BRAND.NAME} couldn't check which agents are working, so it stopped nothing. Try again.`);
       return;
     }
     const chats = activity.runningChats;
     const confirmed = await confirmDialog({
-      title: "Stop the background service and quit ADE?",
+      title: `Stop the background service and quit ${BRAND.NAME}?`,
       message: stopWarning(activity),
       children: chats.length > 0 ? (
         <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, lineHeight: 1.6 }}>
@@ -124,7 +125,7 @@ export function BackgroundServiceSection() {
       group="Background service"
       anchor="background-service"
       title="Background service"
-      hint="Runs your agents, terminals and tests, so they keep going after you quit ADE."
+      hint={`Runs your agents, terminals and tests, so they keep going after you quit ${BRAND.NAME}.`}
     >
       <ModernRows>
         <ModernRow
@@ -137,7 +138,7 @@ export function BackgroundServiceSection() {
               disabled={stopping}
               onClick={() => void stop()}
             >
-              {stopping ? "Stopping…" : "Stop and quit ADE"}
+              {stopping ? "Stopping…" : `Stop and quit ${BRAND.NAME}`}
             </button>
           ) : null}
         >
@@ -158,7 +159,7 @@ export function BackgroundServiceSection() {
           <ModernRow
             anchor="quit-confirmation"
             title="Ask before quitting"
-            hint="Asks while agents are working. ADE always warns you when quitting would stop agents."
+            hint={`Asks while agents are working. ${BRAND.NAME} always warns you when quitting would stop agents.`}
             control={<SettingsToggle checked={ask} onChange={changeAsk} label="Ask before quitting" />}
           />
         ) : null}

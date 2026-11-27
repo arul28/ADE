@@ -23,6 +23,7 @@ import { ProviderLogo } from "../shared/ProviderLogos";
 import { cn } from "../ui/cn";
 import { UsageSegmented } from "../usage/UsageSegmented";
 import "../usage/usageSurfaces.css";
+import { BRAND } from "../../../shared/brand";
 
 export type UsageBreakdownView = "models" | AdeUsageCostBreakdownBy;
 type Metric = "cost" | "tokens";
@@ -242,7 +243,7 @@ export function UsageBreakdown({
               {` › ${lane.name} · `}
             </>
           ) : null}
-          {view === "account" ? "ADE chats on this machine." : scope === "account" ? "ADE chats in this project, on this machine." : "ADE chats in this project."}
+          {view === "account" ? `${BRAND.NAME} chats on this machine.` : scope === "account" ? `${BRAND.NAME} chats in this project, on this machine.` : `${BRAND.NAME} chats in this project.`}
           {" Value is at list prices; billed is what API keys were charged."}
         </p>
       ) : null}
@@ -254,7 +255,7 @@ export function UsageBreakdown({
         <p className="usage-footnote py-6 text-center">This host does not keep a per-turn ledger.</p>
       ) : rows.length === 0 ? (
         <p className="usage-footnote py-6 text-center">
-          {ledgerView ? "No ADE chat turns in this range." : "No model activity in this range."}
+          {ledgerView ? `No ${BRAND.NAME} chat turns in this range.` : "No model activity in this range."}
         </p>
       ) : (
         <table className="usage-table">

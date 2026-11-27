@@ -36,6 +36,7 @@ import type { useThisComputerFacts } from "./useThisComputerFacts";
 import { MachineCapabilitiesArea, MachinePreferenceRow } from "./machineSeams";
 import { MachineWorkCopies } from "./MachineWorkCopies";
 import { plainErrorText } from "../../../lib/plainError";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * Everything Settings knows or can change about one machine, in four groups
@@ -249,7 +250,7 @@ function RowValue({ children }: { children: ReactNode }) {
 function routeWord(kind: string): string {
   if (kind === "tailnet") return "Tailscale";
   if (kind === "lan") return "your network";
-  if (kind === "relay") return "ADE relay";
+  if (kind === "relay") return `${BRAND.NAME} relay`;
   if (kind === "ssh") return "SSH";
   return kind;
 }
@@ -351,7 +352,7 @@ function ContinueRow({ scope, reach }: { scope: SettingsMachinePage; reach: bool
       setValue(await window.ade.ai.setContinueAfterRestart(next, scope.pin));
     } catch (error) {
       setValue({ enabled: !next });
-      showToast({ tone: "error", title: "Couldn't save the setting", message: plainErrorText(error, "ADE couldn't save the setting.", scope.isThisMachine ? null : scope.machineName) });
+      showToast({ tone: "error", title: "Couldn't save the setting", message: plainErrorText(error, `${BRAND.NAME} couldn't save the setting.`, scope.isThisMachine ? null : scope.machineName) });
     } finally {
       setSaving(false);
     }
@@ -393,7 +394,7 @@ function ShellRow({ scope, reach }: { scope: SettingsMachinePage; reach: boolean
             setSaving(true);
             void window.ade.pty.setDefaultShell({ shellId: next === AUTOMATIC ? null : next }, scope.pin)
               .then((result) => setSettings(result))
-              .catch((error: unknown) => showToast({ tone: "error", title: "Couldn't change the shell", message: plainErrorText(error, "ADE couldn't change the shell.", scope.isThisMachine ? null : scope.machineName) }))
+              .catch((error: unknown) => showToast({ tone: "error", title: "Couldn't change the shell", message: plainErrorText(error, `${BRAND.NAME} couldn't change the shell.`, scope.isThisMachine ? null : scope.machineName) }))
               .finally(() => setSaving(false));
           }}
         />
@@ -412,7 +413,7 @@ function KeepAwakeRow({ scope, reach, needsUpdate, onOpen }: { scope: SettingsMa
   const [snapshot, setSnapshot] = usePinnedRead<KeepAwakeSnapshot>(scope, reach || scope.isThisMachine, (pin) => window.ade.keepAwakeGet(pin));
   const [saving, setSaving] = useState(false);
   if (needsUpdate) {
-    return <MachineRow icon={<Coffee size={14} />} title="Keep awake" control={<RowHint>{`Update ADE on ${scope.machineName}`}</RowHint>} />;
+    return <MachineRow icon={<Coffee size={14} />} title="Keep awake" control={<RowHint>{`Update ${BRAND.NAME} on ${scope.machineName}`}</RowHint>} />;
   }
   if (snapshot === undefined) {
     return <MachineRow icon={<Coffee size={14} />} title="Keep awake" value="…" />;
@@ -440,7 +441,7 @@ function KeepAwakeRow({ scope, reach, needsUpdate, onOpen }: { scope: SettingsMa
               setSaving(true);
               void window.ade.keepAwakeSetLevel(level, scope.pin)
                 .then((next) => setSnapshot(next))
-                .catch((error: unknown) => showToast({ tone: "error", title: "Couldn't change keep awake", message: plainErrorText(error, "ADE couldn't change keep awake.", scope.isThisMachine ? null : scope.machineName) }))
+                .catch((error: unknown) => showToast({ tone: "error", title: "Couldn't change keep awake", message: plainErrorText(error, `${BRAND.NAME} couldn't change keep awake.`, scope.isThisMachine ? null : scope.machineName) }))
                 .finally(() => setSaving(false));
             }}
           />

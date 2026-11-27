@@ -34,6 +34,7 @@ import type { McpFoundServer, McpRegistryContext, McpServerSignIn } from "../../
 import { useAppStore } from "../../../state/appStore";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { plainErrorText } from "../../../lib/plainError";
+import { BRAND } from "../../../../shared/brand";
 
 /** The three places a server can be switched off. */
 export type McpRegistryLevel = "account" | "machine" | "project";
@@ -126,7 +127,7 @@ export function useMcpRegistry(): McpRegistryApi {
       const synced = await settings.sync();
       if (!synced.ok) return synced;
       if (synced.value === "failed" || synced.value === "unavailable") {
-        return { ok: false as const, message: "ADE couldn't sync your MCP servers. Check your ADE sign-in and internet connection, then try again." };
+        return { ok: false as const, message: `${BRAND.NAME} couldn't sync your MCP servers. Check your ${BRAND.NAME} sign-in and internet connection, then try again.` };
       }
       return getServers();
     };
@@ -183,7 +184,7 @@ export function useMcpRegistry(): McpRegistryApi {
     try {
       next = await readAll(syncFirst);
     } catch (error) {
-      next = { ...EMPTY, phase: "unavailable", message: plainErrorText(error, "ADE couldn't read the MCP servers.") };
+      next = { ...EMPTY, phase: "unavailable", message: plainErrorText(error, `${BRAND.NAME} couldn't read the MCP servers.`) };
     }
     if (seq === loadSeq.current) {
       setView(next);
@@ -243,7 +244,7 @@ export function useMcpRegistry(): McpRegistryApi {
       outcome = error;
     }
     await reload();
-    return outcome == null ? null : plainErrorText(outcome, "ADE couldn't save the MCP server change.");
+    return outcome == null ? null : plainErrorText(outcome, `${BRAND.NAME} couldn't save the MCP server change.`);
   }, [reload]);
 
   const offTarget = useCallback((level: "machine" | "project"): { scope: string; key: string } | null => {
@@ -261,7 +262,7 @@ export function useMcpRegistry(): McpRegistryApi {
     const registry = window.ade?.mcpRegistry;
     if (!isAdeAvailable(registry)) return NO_BRIDGE;
     const server = normalizeMcpRegistryServer(draft);
-    if (!server) return "ADE can't save that server. Check its name and its command or URL.";
+    if (!server) return `${BRAND.NAME} can't save that server. Check its name and its command or URL.`;
     // A new name is checked against the brain's own list before anything is
     // written: this page's list can be behind another computer's, and the
     // values below would otherwise overwrite that server's.
@@ -315,8 +316,8 @@ export function useMcpRegistry(): McpRegistryApi {
     const target = offTarget(level);
     if (!target) {
       return level === "machine"
-        ? "This computer has no sync identity yet. Sign in to ADE on it first."
-        : "This project has no git remote, so ADE can't tell it apart on your other computers.";
+        ? `This computer has no sync identity yet. Sign in to ${BRAND.NAME} on it first.`
+        : `This project has no git remote, so ${BRAND.NAME} can't tell it apart on your other computers.`;
     }
     return await writeOff(target, name, !on);
   }), [mutate, offTarget, writeOff, writeServers]);

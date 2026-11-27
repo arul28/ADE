@@ -4,6 +4,7 @@ import { formatBytes } from "../../lib/format";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { SettingsCard, SettingsNumber, SettingsToggle } from "./primitives";
 import "./AppleDevicesSection.css";
+import { BRAND } from "../../../shared/brand";
 
 /*
  * The visual blocks Settings › Apple devices and Settings › Android devices
@@ -317,7 +318,7 @@ export function RecordingsWarningCard({
     <SettingsCard
       anchor={anchor}
       title={title}
-      description={`Using ${formatBytes(totalBytes)}, over the ${formatBytes(warnBytes)} warning size. ADE does not delete recordings.`}
+      description={`Using ${formatBytes(totalBytes)}, over the ${formatBytes(warnBytes)} warning size. ${BRAND.NAME} does not delete recordings.`}
       control={
         <span
           role="status"

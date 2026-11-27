@@ -1,6 +1,7 @@
 import React from "react";
 import { Warning } from "@phosphor-icons/react";
 import { mcpPlainTextSecretFindings, type McpPlainTextSecretFinding } from "../../../../shared/mcpServerImport";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * "This looks like a secret, and it is in the part that syncs as plain text."
@@ -12,7 +13,7 @@ import { mcpPlainTextSecretFindings, type McpPlainTextSecretFinding } from "../.
 
 function sentence(finding: McpPlainTextSecretFinding, transport: "stdio" | "http" | "sse"): string {
   if (finding.kind === "reference") {
-    return `ADE does not fill in ${finding.reference ?? "${...}"}. The server gets that text as written.`;
+    return `${BRAND.NAME} does not fill in ${finding.reference ?? "${...}"}. The server gets that text as written.`;
   }
   if (finding.where === "url") {
     return "This URL looks like it holds a secret. The URL is saved as plain text and syncs to your account. Put the secret in a header instead.";

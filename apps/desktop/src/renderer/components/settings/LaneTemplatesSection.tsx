@@ -40,6 +40,7 @@ import { getNewLaneDefaultsCached } from "../../lib/newLaneDefaultsCache";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { requirePin } from "../../state/repositoryScope";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 function generateId(): string {
   return `tpl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
@@ -291,7 +292,7 @@ export function LaneTemplatesSection() {
       await refresh();
       refreshNewLaneDefaults();
     } catch (err: unknown) {
-      showToast({ title: "Failed to save template", message: plainErrorText(err, "ADE couldn't save the template."), tone: "error" });
+      showToast({ title: "Failed to save template", message: plainErrorText(err, `${BRAND.NAME} couldn't save the template.`), tone: "error" });
     }
   }, [pin, refresh, refreshNewLaneDefaults]);
 
@@ -301,7 +302,7 @@ export function LaneTemplatesSection() {
       await refresh();
       refreshNewLaneDefaults();
     } catch (err: unknown) {
-      showToast({ title: "Failed to delete template", message: plainErrorText(err, "ADE couldn't delete the template."), tone: "error" });
+      showToast({ title: "Failed to delete template", message: plainErrorText(err, `${BRAND.NAME} couldn't delete the template.`), tone: "error" });
     }
   }, [pin, refresh, refreshNewLaneDefaults]);
 
@@ -838,7 +839,7 @@ const PLATFORM_EDITOR_COPY: Record<
     scriptPlaceholder: "scripts/setup-lane-mac.sh",
   },
   linux: {
-    label: "Linux only (ADE Cloud)",
+    label: `Linux only (${BRAND.CLOUD_NAME})`,
     commandsPlaceholder: "npm ci --prefer-offline",
     scriptPlaceholder: "scripts/setup-lane-linux.sh",
   },
@@ -926,7 +927,7 @@ function SetupScriptFields({
         {macosTool ? (
           <div style={{ ...hintStyle, marginTop: 0, color: COLORS.warning }}>
             <code style={codeStyle}>{macosTool}</code> only exists on macOS, and these commands also run on Linux,
-            including ADE Cloud. Add Linux commands below so cloud lanes don&apos;t take the slow path.
+            including {BRAND.CLOUD_NAME}. Add Linux commands below so cloud lanes don&apos;t take the slow path.
           </div>
         ) : null}
 

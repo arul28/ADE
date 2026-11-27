@@ -10,6 +10,7 @@ import {
 import type { ThisMachineRefusal } from "../../../shared/accountMachineRefusal";
 import { accountSessionConnectionsSubtitle } from "../../lib/account";
 import { describeThisComputerRefusal } from "../../lib/thisComputerRefusal";
+import { BRAND } from "../../../shared/brand";
 
 export type AccountDirectorySummary = {
   label: string;
@@ -85,20 +86,20 @@ export function accountDirectorySummary(
   const health = status.routeHealth?.accountDirectory;
   if (!health) {
     return {
-      label: "Connected to your ADE account · checking machine publication",
+      label: `Connected to your ${BRAND.NAME} account · checking machine publication`,
       healthy: false,
     };
   }
   if (health.state === "published") {
     if (health.reachableEndpointCount === 0) {
       return {
-        label: "Published to your ADE account, but no reachable routes are available",
+        label: `Published to your ${BRAND.NAME} account, but no reachable routes are available`,
         healthy: false,
       };
     }
     // Deliberately just the fact of the connection. The published-route count was
     // plumbing detail the reader could neither act on nor interpret.
-    return { label: "Connected to your ADE account", healthy: true };
+    return { label: `Connected to your ${BRAND.NAME} account`, healthy: true };
   }
   // A refusal is not "can't reach your account, retrying": the directory
   // answered, and nothing retries on its own. Say what happened; the card

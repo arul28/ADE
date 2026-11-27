@@ -55,6 +55,7 @@ import { MiniChrome, SANS_FONT_LABELS, UserSceneThumb, gradientSceneBackground }
 import { AppearanceScheduleSettings } from "./AppearanceScheduleSettings";
 import "./AppearanceSection.css";
 import { AdeWordmark } from "../ui/AdeWordmark";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Appearance settings.
@@ -266,7 +267,7 @@ export function AppearanceSection() {
         <aside className="ade-ap-aside">
           <div className="ade-ap-aside-head">
             <span className="kit-eyebrow">Preview</span>
-            <button type="button" className="ade-ap-reset" onClick={resetAll} title="Restore ADE, dark, Geist, and the default background">
+            <button type="button" className="ade-ap-reset" onClick={resetAll} title={`Restore ${BRAND.NAME}, dark, Geist, and the default background`}>
               <ArrowCounterClockwise size={11} weight="bold" /> Reset
             </button>
           </div>
@@ -803,7 +804,7 @@ function AppearancePreview() {
         <PreviewBackdrop scene={scene} palette={palette} />
         <div className="ade-ap-preview-top">
           <span className="ade-ap-dots"><i /><i /><i /></span>
-          <span className="ade-ap-preview-tab">ADE</span>
+          <span className="ade-ap-preview-tab">{BRAND.NAME}</span>
           <span className="ade-ap-preview-tab" data-dim="true">New tab</span>
         </div>
         <div className="ade-ap-preview-hero">

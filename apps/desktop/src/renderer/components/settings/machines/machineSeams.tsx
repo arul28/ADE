@@ -27,6 +27,7 @@ import { showToast } from "../../app/toast/toastStore";
 import { SettingsSelect } from "../primitives";
 import { freeSpaceLevel } from "../storage/storageView";
 import { plainErrorText } from "../../../lib/plainError";
+import { BRAND } from "../../../../shared/brand";
 
 /** Amber at 20% left, red at 5%: the one headroom rule every meter uses. */
 export function headroomLevel(percentLeft: number): "warn" | "crit" | undefined {
@@ -152,9 +153,9 @@ export function MachineCapabilitiesArea({
               icon={<Coffee size={14} />}
               title="Sleep"
               value={value.sleep.lidClosedAwake
-                ? "Kept awake by ADE, even with the lid closed"
+                ? `Kept awake by ${BRAND.NAME}, even with the lid closed`
                 : value.sleep.keptAwake
-                  ? "Kept awake by ADE while you're away"
+                  ? `Kept awake by ${BRAND.NAME} while you're away`
                   : value.power?.hasBattery ? "Can sleep — work there stops when it does" : "Can sleep when idle"}
             />
           ) : null}
@@ -237,7 +238,7 @@ export function MachinePreferenceRow({ machineKey, name }: { machineKey: string 
                 // Saved here, but the phone and the other machines still read the old one.
                 if (!synced) showToast({ tone: "warning", title: "Saved on this computer only", message: "Your other machines keep the old setting until you are signed in and online." });
               })
-              .catch((error: unknown) => showToast({ tone: "error", title: "Couldn't save the setting", message: plainErrorText(error, "ADE couldn't save the setting.", name) }))
+              .catch((error: unknown) => showToast({ tone: "error", title: "Couldn't save the setting", message: plainErrorText(error, `${BRAND.NAME} couldn't save the setting.`, name) }))
               .finally(() => setSaving(false));
           }}
         />

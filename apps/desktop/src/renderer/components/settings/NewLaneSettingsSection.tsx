@@ -20,6 +20,7 @@ import { useLaneStartMenuData } from "../lanes/useLaneStartMenuData";
 import { captureLaneSetupAnalytics } from "../../lib/laneSetupAnalytics";
 import "./machineSettings.css";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 /** Which kind of pattern a project chose, for analytics: never its text. */
 function patternKind(pattern: string): "pattern_ade" | "pattern_user" | "pattern_none" | "pattern_custom" {
@@ -74,7 +75,7 @@ export function NewLaneSettingsSection() {
       captureLaneSetupAnalytics({ action: "start_default_changed", outcome: `start_${next.from}` });
       flash();
     } catch (error) {
-      fail(plainErrorText(error, "ADE couldn't save the new lane setting."));
+      fail(plainErrorText(error, `${BRAND.NAME} couldn't save the new lane setting.`));
     } finally {
       setPending(null);
     }
@@ -92,8 +93,8 @@ export function NewLaneSettingsSection() {
         model={{
           id: "new-lane-defaults-error",
           tone: "error",
-          title: "ADE couldn't read this project's new-lane settings",
-          detail: "The machine that owns this project may need a newer ADE.",
+          title: `${BRAND.NAME} couldn't read this project's new-lane settings`,
+          detail: `The machine that owns this project may need a newer ${BRAND.NAME}.`,
           actions: [{ label: "Try again", onClick: retry }],
         }}
       />
@@ -237,7 +238,7 @@ function BranchPatternRow({
       anchor="new-lane-branch-pattern"
       title="Branch names"
       hint={!supported
-        ? "The machine that owns this project needs a newer ADE to change branch names."
+        ? `The machine that owns this project needs a newer ${BRAND.NAME} to change branch names.`
         : error || (custom && problem)
         ? <span className="ade-nl-warn">{error ?? problem}</span>
         : <>“Fix login bug” becomes <code className="ade-nl-code">{example}</code></>}
@@ -360,7 +361,7 @@ function ScopeChip({ scope }: { scope: NewLaneSettingsScope }) {
     <span
       className="kit-tag gap-[5px]"
       title={account
-        ? `Saved to your ADE account for ${scope.repo}. Every computer and phone that opens this repository uses it.`
+        ? `Saved to your ${BRAND.NAME} account for ${scope.repo}. Every computer and phone that opens this repository uses it.`
         : "This project has no remote, so these settings are saved on this computer only."}
     >
       {account ? <UserCircle size={12} weight="duotone" /> : <Desktop size={12} weight="duotone" />}

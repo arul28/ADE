@@ -12,9 +12,10 @@ import { Banner } from "../../ui/notice";
 import { ipcErrorMessage } from "../../../lib/format";
 import { ADE_MCP_DIALOG_VARS, McpAppLogo, TOKEN_SNIPPETS, tokenSnippet, type TokenSnippetId } from "./adeMcpApps";
 import { Snippet } from "./adeMcpParts";
+import { BRAND } from "../../../../shared/brand";
 
 const ACCESS: readonly { value: RemoteMcpScope; label: string; detail: string; icon: typeof PencilSimple }[] = [
-  { value: "write", label: "Read & write", detail: "Works like you in ADE: start chats, make lanes, open PRs, answer cards, read and save secrets.", icon: PencilSimple },
+  { value: "write", label: "Read & write", detail: `Works like you in ${BRAND.NAME}: start chats, make lanes, open PRs, answer cards, read and save secrets.`, icon: PencilSimple },
   { value: "read", label: "Read only", detail: "Looks at lanes, chats, PRs and usage. Changes nothing.", icon: Eye },
 ];
 
@@ -49,7 +50,7 @@ export function TokenDialog({
     try {
       setCreated(await createToken(label.trim() || "Token", scope));
     } catch (err) {
-      setError(ipcErrorMessage(err) || "ADE couldn't make a token.");
+      setError(ipcErrorMessage(err) || `${BRAND.NAME} couldn't make a token.`);
     } finally {
       setBusy(false);
     }
@@ -67,7 +68,7 @@ export function TokenDialog({
     try {
       const ok = await confirmDialog({
         title: "Close without copying the token?",
-        message: "ADE shows a token only once. If you close now, revoke it under Connections and make a new one.",
+        message: `${BRAND.NAME} shows a token only once. If you close now, revoke it under Connections and make a new one.`,
         confirmLabel: "Close",
         cancelLabel: "Keep it open",
         tone: "warning",
@@ -158,7 +159,7 @@ export function TokenDialog({
       open
       onOpenChange={(open) => { if (!open) void requestClose(); }}
       title="Copy your token"
-      description={`${created.connection.label} · ${created.connection.scope === "read" ? "Read only" : "Read & write"}. ADE shows it once; closing this forgets it.`}
+      description={`${created.connection.label} · ${created.connection.scope === "read" ? "Read only" : "Read & write"}. ${BRAND.NAME} shows it once; closing this forgets it.`}
       icon={<ShieldCheck size={16} weight="duotone" />}
       tone="success"
       width={600}

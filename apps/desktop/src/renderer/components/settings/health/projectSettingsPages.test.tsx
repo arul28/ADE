@@ -455,7 +455,7 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
     await openView("Space");
 
     await screen.findByRole("img", { name: /Lanes & worktrees/ });
-    const legend = screen.getByRole("group", { name: /What ADE keeps, by category/ });
+    const legend = screen.getByRole("group", { name: /What Daex keeps, by category/ });
     // Lanes 4 GB, chats 900 MB, caches 350 MB, build 200 MB; the rest fold into Other.
     for (const name of ["Lanes & worktrees", "Chats & terminal history", "Caches", "Build & release files", "Other"]) {
       expect(within(legend).getByText(name)).toBeTruthy();

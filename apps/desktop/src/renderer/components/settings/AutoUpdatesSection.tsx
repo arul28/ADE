@@ -6,6 +6,7 @@ import {
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
 import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
 import { Banner } from "../ui/notice";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The two update-install preferences, as rows of one panel.
@@ -45,7 +46,7 @@ export function AutoUpdatesControls() {
         ...patch,
       }));
     } catch {
-      setError("ADE could not save this update preference.");
+      setError(`${BRAND.NAME} could not save this update preference.`);
     } finally {
       setSaving(false);
     }
@@ -54,18 +55,18 @@ export function AutoUpdatesControls() {
   const current = preferences ?? DEFAULT_AUTO_UPDATE_PREFERENCES;
 
   if (snapshot.installMode === "manual") {
-    return <ModernRows><ModernRow anchor="auto-updates" title="Install updates manually" hint="Download and install the latest package to update ADE." /></ModernRows>;
+    return <ModernRows><ModernRow anchor="auto-updates" title="Install updates manually" hint={`Download and install the latest package to update ${BRAND.NAME}.`} /></ModernRows>;
   }
 
   return (
     <ModernRows>
       <ModernRow
         anchor="auto-updates"
-        title="Install ADE updates automatically"
+        title={`Install ${BRAND.NAME} updates automatically`}
         hint="After a countdown you can cancel — or when you quit with no agent running."
         control={
           <SettingsToggle
-            label="Install ADE updates automatically"
+            label={`Install ${BRAND.NAME} updates automatically`}
             checked={current.automaticInstall}
             disabled={!preferences || saving}
             onChange={(automaticInstall) => void update({ automaticInstall })}
@@ -109,7 +110,7 @@ export function AutoUpdatesControls() {
 
 export function AutoUpdatesSection() {
   return (
-    <ModernSection group="Updates" title="Updates" hint="Choose whether ADE installs downloaded updates automatically.">
+    <ModernSection group="Updates" title="Updates" hint={`Choose whether ${BRAND.NAME} installs downloaded updates automatically.`}>
       <AutoUpdatesControls />
     </ModernSection>
   );

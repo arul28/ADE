@@ -21,6 +21,7 @@ import { IntegrationCard } from "./integrations/IntegrationChrome";
 import { useThisComputerCopyPin } from "./ProjectCopyScope";
 import { requirePin } from "../../state/repositoryScope";
 import { showToast } from "../app/toast/toastStore";
+import { BRAND } from "../../../shared/brand";
 
 const INSTALL_POLL_MS = 1_500;
 
@@ -29,7 +30,7 @@ const TEXT: React.CSSProperties = { fontSize: 12.5, fontFamily: SANS_FONT, color
 
 function ctoApi() {
   const api = window.ade?.cto;
-  if (!api) throw new Error("ADE is still starting. Try again in a moment.");
+  if (!api) throw new Error(`${BRAND.NAME} is still starting. Try again in a moment.`);
   return api;
 }
 
@@ -94,7 +95,7 @@ export function LinearAgentSection({ connected, viewerIsAdmin = null, pin = null
   const load = useCallback(async () => {
     const cto = window.ade?.cto;
     if (!cto?.getLinearAgentOverview) {
-      setError("This version of ADE can't set up the agent.");
+      setError(`This version of ${BRAND.NAME} can't set up the agent.`);
       return;
     }
     setLoading(true);
@@ -107,7 +108,7 @@ export function LinearAgentSection({ connected, viewerIsAdmin = null, pin = null
       setOverview(next);
       setError(null);
     } catch (err) {
-      setError(plainErrorText(err, "Could not load the ADE agent."));
+      setError(plainErrorText(err, `Could not load the ${BRAND.NAME} agent.`));
     } finally {
       setLoading(false);
     }
@@ -157,7 +158,7 @@ export function LinearAgentSection({ connected, viewerIsAdmin = null, pin = null
   // leaves the person something to send.
   const [adminNote, setAdminNote] = useState<string | null>(null);
   const copyNoteForAdmin = useCallback(async (workspace: string) => {
-    const note = `Could you add the ADE agent to our Linear workspace (${workspace})? Linear lets only workspace admins approve it. In ADE, open Settings › Integrations › Linear and click "Add to workspace". After that, anyone on the team who uses ADE can assign issues to it.`;
+    const note = `Could you add the ${BRAND.NAME} agent to our Linear workspace (${workspace})? Linear lets only workspace admins approve it. In ${BRAND.NAME}, open Settings › Integrations › Linear and click "Add to workspace". After that, anyone on the team who uses ${BRAND.NAME} can assign issues to it.`;
     setAdminNote(note);
     const write = window.ade?.app?.writeClipboardText;
     try {
@@ -185,7 +186,7 @@ export function LinearAgentSection({ connected, viewerIsAdmin = null, pin = null
 
   const handleTurnOn = useCallback(() => run("rule", async () => {
     const automations = window.ade?.automations;
-    if (!isAdeAvailable(automations?.saveDraft)) throw new Error("Automations are not available in this ADE.");
+    if (!isAdeAvailable(automations?.saveDraft)) throw new Error(`Automations are not available in this ${BRAND.NAME}.`);
     if (!rulePin) throw new Error("No computer with this project is online.");
     const modelConfig: ModelConfig = {
       modelId: effectiveModelId,
@@ -202,7 +203,7 @@ export function LinearAgentSection({ connected, viewerIsAdmin = null, pin = null
       } catch (err) {
         // Show the saved delegations rule, so a retry does not add it twice.
         await load();
-        throw new Error(`The delegations rule is on, but the mentions rule was not saved: ${plainErrorText(err, "ADE couldn't save the rule.")}. Add it in Automations.`);
+        throw new Error(`The delegations rule is on, but the mentions rule was not saved: ${plainErrorText(err, `${BRAND.NAME} couldn't save the rule.`)}. Add it in Automations.`);
       }
     }
   }), [answerMentions, effectiveModelId, effort, hasReasoning, load, permissionConfig, rulePin, run]);
@@ -210,8 +211,8 @@ export function LinearAgentSection({ connected, viewerIsAdmin = null, pin = null
   const handleRemove = useCallback(async () => {
     const orgName = overview?.status?.orgName ?? "this workspace";
     const confirmed = await confirmDialog({
-      title: "Remove the ADE agent?",
-      message: `Delegations to ADE stop for everyone in ${orgName}. Lanes and chats it started stay in ADE.`,
+      title: `Remove the ${BRAND.NAME} agent?`,
+      message: `Delegations to ${BRAND.NAME} stop for everyone in ${orgName}. Lanes and chats it started stay in ${BRAND.NAME}.`,
       confirmLabel: "Remove",
       destructive: true,
     });
@@ -239,8 +240,8 @@ export function LinearAgentSection({ connected, viewerIsAdmin = null, pin = null
   return (
     <IntegrationCard
       icon={<Robot size={16} weight="duotone" />}
-      title="ADE agent"
-      hint="Your team assigns Linear issues to ADE, or mentions @ADE in a comment. Each one runs on the ADE of the person who asked."
+      title={`${BRAND.NAME} agent`}
+      hint={`Your team assigns Linear issues to ${BRAND.NAME}, or mentions @${BRAND.NAME} in a comment. Each one runs on the ${BRAND.NAME} of the person who asked.`}
       badge={badge}
       actions={rulesDone ? (
         <button type="button" className="ade-modern-btn" data-variant="ghost" data-size="sm" onClick={() => navigate("/automations")}>
@@ -258,8 +259,8 @@ export function LinearAgentSection({ connected, viewerIsAdmin = null, pin = null
             id: "linear-agent-unreachable",
             tone: "warning",
             icon: <LinearMark size={14} />,
-            title: "Can't reach the ADE agent service",
-            detail: `${overview?.message ?? "No answer from the relay."} Sign in to ADE in Settings › Account.`,
+            title: `Can't reach the ${BRAND.NAME} agent service`,
+            detail: `${overview?.message ?? "No answer from the relay."} Sign in to ${BRAND.NAME} in Settings › Account.`,
           }}
         />
       ) : null}
@@ -270,8 +271,8 @@ export function LinearAgentSection({ connected, viewerIsAdmin = null, pin = null
             id: "linear-agent-other-account",
             tone: "warning",
             icon: <LinearMark size={14} />,
-            title: "Issues you assign to ADE go to another ADE account",
-            detail: "Linear sends them to a different ADE sign-in. Route them here to run them on this account's machines.",
+            title: `Issues you assign to ${BRAND.NAME} go to another ${BRAND.NAME} account`,
+            detail: `Linear sends them to a different ${BRAND.NAME} sign-in. Route them here to run them on this account's machines.`,
             actions: [{
               label: busy === "member" ? "Routing…" : "Route to this account",
               variant: "secondary",
@@ -286,7 +287,7 @@ export function LinearAgentSection({ connected, viewerIsAdmin = null, pin = null
           <span className="ade-ig-step-num" aria-hidden>{installed ? <Check size={11} weight="bold" /> : 1}</span>
           <div className="ade-ig-step-main">
             <div className="ade-ig-step-head">
-              <b>Add ADE to your workspace</b>
+              <b>Add {BRAND.NAME} to your workspace</b>
               {checking ? <CircleNotch size={12} className="animate-spin" style={{ color: "var(--color-muted-fg)" }} /> : null}
             </div>
             <p className="ade-ig-note">
@@ -295,8 +296,8 @@ export function LinearAgentSection({ connected, viewerIsAdmin = null, pin = null
                 : installed
                   ? `Added to ${status?.orgName ?? "this workspace"}.`
                   : needsAdmin
-                    ? "Only an admin of your Linear workspace can add ADE, and you are not one. Once an admin adds it from their ADE, this step is done for you too."
-                    : "A workspace admin approves it once. After that, teammates only connect Linear in their own ADE."}
+                    ? `Only an admin of your Linear workspace can add ${BRAND.NAME}, and you are not one. Once an admin adds it from their ${BRAND.NAME}, this step is done for you too.`
+                    : `A workspace admin approves it once. After that, teammates only connect Linear in their own ${BRAND.NAME}.`}
             </p>
             {needsAdmin && status ? (
               <div className="ade-ig-step-actions" style={{ flexDirection: "column", alignItems: "flex-start" }}>
@@ -322,7 +323,7 @@ export function LinearAgentSection({ connected, viewerIsAdmin = null, pin = null
           <div className="ade-ig-step-main">
             <div className="ade-ig-step-head"><b>Choose the model that works your issues</b></div>
             {!installed ? (
-              <p className="ade-ig-note">ADE won&rsquo;t pick one for you. Each assigned issue gets its own lane.</p>
+              <p className="ade-ig-note">{BRAND.NAME} won&rsquo;t pick one for you. Each assigned issue gets its own lane.</p>
             ) : rules.length === 0 ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 4 }}>
                 <div
@@ -350,7 +351,7 @@ export function LinearAgentSection({ connected, viewerIsAdmin = null, pin = null
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
                   <label style={{ display: "flex", alignItems: "center", gap: 8, ...TEXT, fontSize: 12 }}>
                     <input type="checkbox" checked={answerMentions} onChange={(event) => setAnswerMentions(event.target.checked)} />
-                    Also answer @ADE mentions
+                    Also answer @{BRAND.NAME} mentions
                   </label>
                   <button
                     type="button"
@@ -399,13 +400,13 @@ export function LinearAgentSection({ connected, viewerIsAdmin = null, pin = null
         <li className="ade-ig-step" data-waiting={!rulesDone ? "true" : undefined}>
           <span className="ade-ig-step-num" aria-hidden>3</span>
           <div className="ade-ig-step-main">
-            <div className="ade-ig-step-head"><b>Assign issues to ADE in Linear</b></div>
+            <div className="ade-ig-step-head"><b>Assign issues to {BRAND.NAME} in Linear</b></div>
             {installed && status && otherMembers.length > 0 ? (
               // One short line however many teammates use ADE; the names open
               // on demand instead of growing the step.
               <details className="ade-linear-link" data-linear-agent-members="">
                 <summary className="ade-ig-note">
-                  {otherMembers.length === 1 ? "1 other person uses ADE" : `${otherMembers.length} other people use ADE`} in this workspace. Their issues run on their own ADE.{" "}
+                  {otherMembers.length === 1 ? `1 other person uses ${BRAND.NAME}` : `${otherMembers.length} other people use ${BRAND.NAME}`} in this workspace. Their issues run on their own {BRAND.NAME}.{" "}
                   <CaretDown size={11} className="ade-linear-links-caret" aria-label="Show who" />
                 </summary>
                 <div className="ade-ig-chips">
@@ -417,16 +418,16 @@ export function LinearAgentSection({ connected, viewerIsAdmin = null, pin = null
             ) : (
               <p className="ade-ig-note">
                 {installed && status
-                  ? "You're the only one using ADE in this workspace so far."
-                  : "Or write @ADE in a comment. ADE replies in Linear as it works."}
+                  ? `You're the only one using ${BRAND.NAME} in this workspace so far.`
+                  : `Or write @${BRAND.NAME} in a comment. ${BRAND.NAME} replies in Linear as it works.`}
               </p>
             )}
             {installed && status ? (
               <div className="ade-ig-inline-field">
-                <span>When someone without ADE assigns one</span>
+                <span>When someone without {BRAND.NAME} assigns one</span>
                 <select
                   className="ade-settings-input"
-                  aria-label="When someone who does not use ADE assigns an issue"
+                  aria-label={`When someone who does not use ${BRAND.NAME} assigns an issue`}
                   style={{ height: 28, width: "auto", minWidth: 190 }}
                   disabled={!status.installedByMe || busy === "settings"}
                   value={status.fallbackMode}
@@ -436,8 +437,8 @@ export function LinearAgentSection({ connected, viewerIsAdmin = null, pin = null
                     void run("settings", () => ctoApi().updateLinearAgentSettings({ fallbackMode: mode, runner: mode === "runner" ? "self" : null }, requirePin(pin)));
                   }}
                 >
-                  <option value="reply">Reply that they need ADE</option>
-                  <option value="runner">Run it on my ADE</option>
+                  <option value="reply">Reply that they need {BRAND.NAME}</option>
+                  <option value="runner">Run it on my {BRAND.NAME}</option>
                 </select>
               </div>
             ) : null}

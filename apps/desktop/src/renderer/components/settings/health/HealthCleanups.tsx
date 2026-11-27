@@ -23,11 +23,12 @@ import { useStorageBytes } from "../storage/useStorageBytes";
 import { captureLaneSetupAnalytics } from "../../../lib/laneSetupAnalytics";
 import type { HealthData } from "./useHealthData";
 import { plainErrorText } from "../../../lib/plainError";
+import { BRAND } from "../../../../shared/brand";
 
 const TRIGGER_LABEL: Record<MaintenanceRunReport["trigger"], string> = {
   manual: "You ran it",
   daily: "Daily",
-  post_boot: "After ADE started",
+  post_boot: `After ${BRAND.NAME} started`,
   post_migration: "After an update",
 };
 
@@ -61,7 +62,7 @@ function CleanupHistory({ runs, loading }: { runs: MaintenanceRunReport[]; loadi
         ? "Loading cleanup history…"
         : runs.length > 0
         ? `${runs.length === 1 ? "1 cleanup" : `${runs.length} cleanups`} freed ${storageBytes(total)}. The last ran ${relativeWhen(runs[0]!.finishedAt || runs[0]!.startedAt)}.`
-        : "ADE tidies its own data every day. Files you clean up from Storage show here too."}
+        : `${BRAND.NAME} tidies its own data every day. Files you clean up from Storage show here too.`}
     >
       {runs.length > 0 ? (
         <>
@@ -452,7 +453,7 @@ function CleanupRules({
   const status = busy
     ? "Saving…"
     : allOff
-      ? "Off — ADE never cleans up on its own."
+      ? `Off — ${BRAND.NAME} never cleans up on its own.`
       : lastCheck ? `Last check ${relativeWhen(lastCheck)}` : "Not checked yet";
 
   // Drawn under Delete only while Delete is on, so a row that is off never
@@ -463,7 +464,7 @@ function CleanupRules({
       {deleteClash ? (
         <p className="ade-cleanup-note">
           <Warning size={12} weight="fill" />
-          Deletes before ADE would free up space, so Free up never runs.
+          Deletes before {BRAND.NAME} would free up space, so Free up never runs.
         </p>
       ) : null}
       <div className="ade-cleanup-subrow">
@@ -487,7 +488,7 @@ function CleanupRules({
     <ModernSection
       group="Cleanups"
       title="Automatic cleanup"
-      hint="ADE only cleans up lanes whose work is safe: never the primary lane, never a lane with uncommitted or unpushed work, an open PR, or anything running."
+      hint={`${BRAND.NAME} only cleans up lanes whose work is safe: never the primary lane, never a lane with uncommitted or unpushed work, an open PR, or anything running.`}
       actions={<span className="ade-cleanup-status" aria-live="polite">{status}</span>}
     >
       <div className="ade-cleanup-group" id="lane-storage-rules" data-settings-anchor="lane-storage-rules">
@@ -618,7 +619,7 @@ export function HealthCleanupRules({
       captureRuleSwitches(effectivePolicy, next);
       void loadStorage({ force: true, silent: true });
     } catch (err) {
-      showToast({ tone: "error", title: "Couldn't save the cleanup rules", message: plainErrorText(err, "ADE couldn't save the cleanup rules.") });
+      showToast({ tone: "error", title: "Couldn't save the cleanup rules", message: plainErrorText(err, `${BRAND.NAME} couldn't save the cleanup rules.`) });
     } finally {
       setBusy(false);
     }
@@ -659,7 +660,7 @@ export function HealthCleanupRules({
             model={{
               id: "lane-cleanup-rules-error",
               tone: "error",
-              title: "ADE couldn't read the cleanup rules",
+              title: `${BRAND.NAME} couldn't read the cleanup rules`,
               detail: data.storage.error,
               actions: [{ label: "Try again", onClick: () => void loadStorage() }],
             }}

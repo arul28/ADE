@@ -52,6 +52,7 @@ import {
 import { errorText, loginHint, personCheckDeclined, plural, scopeLabel } from "./passwordsFormat";
 import { subscribeLaneEnvImport, takeLaneEnvImport, type LaneEnvImportRequest } from "./laneEnvImport";
 import "./passwords.css";
+import { BRAND } from "../../../../shared/brand";
 
 /** The largest CSV the page reads. The brain never needs a bigger one to import. */
 const MAX_IMPORT_BYTES = 5 * 1024 * 1024;
@@ -197,7 +198,7 @@ function PasswordsSectionBody() {
       if (next.signedIn && next.enabled) await loadItems();
       else setItems([]);
     } catch (err) {
-      setLoadError(errorText(err, "ADE couldn't read Passwords & Secrets on this computer."));
+      setLoadError(errorText(err, `${BRAND.NAME} couldn't read Passwords & Secrets on this computer.`));
     } finally {
       setLoaded(true);
     }
@@ -221,7 +222,7 @@ function PasswordsSectionBody() {
       void window.ade.passwords.previewLaneEnv({ path: request.path }, request.pin).then(
         (file) => {
           if (file.entries.length === 0) {
-            showToast({ tone: "warning", title: `No secrets in ${file.fileName}`, message: "It has no NAME=value lines ADE can read.", report: false });
+            showToast({ tone: "warning", title: `No secrets in ${file.fileName}`, message: `It has no NAME=value lines ${BRAND.NAME} can read.`, report: false });
             return;
           }
           setDialog({ kind: "import-env", file, laneEnv: request });
@@ -368,7 +369,7 @@ function PasswordsSectionBody() {
       const file = await window.ade.passwords.chooseEnvFile();
       if (!file) return;
       if (file.entries.length === 0) {
-        showToast({ tone: "warning", title: `No secrets in ${file.fileName}`, message: "It has no NAME=value lines ADE can read.", report: false });
+        showToast({ tone: "warning", title: `No secrets in ${file.fileName}`, message: `It has no NAME=value lines ${BRAND.NAME} can read.`, report: false });
         return;
       }
       setDialog({ kind: "import-env", file });
@@ -408,9 +409,9 @@ function PasswordsSectionBody() {
   const statusText = !status
     ? (loaded ? "Couldn't read this computer's vault" : "Opening…")
     : !signedIn
-      ? "Sign in to ADE to use it"
+      ? `Sign in to ${BRAND.NAME} to use it`
       : !enabled
-        ? (isCloud ? "Off for ADE Cloud computers" : "Off on this computer")
+        ? (isCloud ? `Off for ${BRAND.CLOUD_NAME} computers` : "Off on this computer")
         : `${plural(logins.length, "login")} · ${plural(secrets.length, "secret")}`;
 
   return (
@@ -484,7 +485,7 @@ function PasswordsSectionBody() {
                       hint="Lets your cloud lanes unlock the vault while they work."
                       onClick={() => { close(); void setCloud(status?.cloudEnabled === false); }}
                     >
-                      ADE Cloud computers can use it
+                      {BRAND.CLOUD_NAME} computers can use it
                     </MenuItem>
                     {!isCloud && enabled ? (
                       <MenuItem icon={<Desktop size={14} />} onClick={() => { close(); void setEnabledHere(false); }}>
@@ -704,7 +705,7 @@ function LoginsView({
             {selected.kind === "passkey" ? (
               <>
                 <dt>Passkey</dt>
-                <dd>Used by ADE's browser after Touch ID</dd>
+                <dd>Used by {BRAND.NAME}'s browser after Touch ID</dd>
               </>
             ) : (
               <>

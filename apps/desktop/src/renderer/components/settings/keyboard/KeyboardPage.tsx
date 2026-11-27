@@ -12,6 +12,7 @@ import { currentKeyboardPlatform, KeyCaps, leaderKeyCaps, useShortcutNotes } fro
 import { QuickSlotsCards } from "./QuickSlotsCards";
 import { ShortcutsCard } from "./ShortcutsCard";
 import "./keyboardPage.css";
+import { BRAND } from "../../../../shared/brand";
 
 /** Keyboard wears a cool blue, the way ADE MCP wears ADE's violet. */
 const KEYBOARD_ACCENT = "#5B8DEF";
@@ -57,7 +58,7 @@ export function KeyboardPage() {
     ? { tone: "warn" as const, label: notes.size === 1 ? "1 shortcut needs a look" : `${notes.size} shortcuts need a look` }
     : changed
       ? { tone: "ok" as const, label: changed === 1 ? "1 shortcut changed by you" : `${changed} shortcuts changed by you` }
-      : { tone: "neutral" as const, label: "ADE's default keys" };
+      : { tone: "neutral" as const, label: `${BRAND.NAME}'s default keys` };
   const facts: IntegrationFact[] = [
     { label: "Shortcuts", value: `${snapshot.definitions.length} actions` },
     { label: "Changed", value: changed ? `${changed} by you` : "None" },

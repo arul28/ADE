@@ -7,6 +7,7 @@ import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { Banner } from "../ui/notice";
 import { requirePin } from "../../state/repositoryScope";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 function basename(filePath: string): string {
   const parts = filePath.split(/[/\\]/);
@@ -92,7 +93,7 @@ export function ProjectSection() {
   useEffect(() => {
     if (!pin) return undefined;
     void refresh().catch((err) => {
-      setError(plainErrorText(err, "ADE couldn't read the project settings."));
+      setError(plainErrorText(err, `${BRAND.NAME} couldn't read the project settings.`));
     });
     // The change feed of the copy this card shows, on its own machine.
     const unsubscribe = window.ade.project.onStateEvent((event) => {
@@ -114,7 +115,7 @@ export function ProjectSection() {
       await refresh();
       setNotice(formatCleanupNotice(result, kind === "repair" ? "Folder repair" : "Session log repair"));
     } catch (err) {
-      setError(plainErrorText(err, "ADE couldn't finish the repair."));
+      setError(plainErrorText(err, `${BRAND.NAME} couldn't finish the repair.`));
     } finally {
       setBusy(null);
     }
@@ -244,7 +245,7 @@ export function ProjectSection() {
         >
           <CollapsiblePanel
             title="Folder layout"
-            subtitle="What ADE expects under .ade/"
+            subtitle={`What ${BRAND.NAME} expects under .ade/`}
             expanded={folderOpen}
             onToggle={() => setFolderOpen((open) => !open)}
           >

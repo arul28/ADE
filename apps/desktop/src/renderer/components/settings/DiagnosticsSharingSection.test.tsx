@@ -44,7 +44,7 @@ function mountSection(overrides: {
 
 /** Presses the first button and waits for the preview with its Send button. */
 async function prepareAndReview() {
-  fireEvent.click(await screen.findByRole("button", { name: "Send a report to ADE…" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Send a report to Daex…" }));
   await screen.findByRole("button", { name: "Send" });
 }
 
@@ -167,6 +167,6 @@ describe("DiagnosticsSharingSection manual send", () => {
   it("hides the control on a preload that predates it rather than offering a dead button", () => {
     mountSection({ omitBridge: true });
 
-    expect(screen.queryByRole("button", { name: "Send a report to ADE…" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Send a report to Daex…" })).toBeNull();
   });
 });

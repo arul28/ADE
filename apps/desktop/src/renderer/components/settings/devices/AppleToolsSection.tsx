@@ -19,6 +19,7 @@ import { DevToolsSpaceBar, readyTotal, type SpaceSegment } from "./DevToolsSpace
 import { DevToolRow, DevToolsListSection, LIST_PREVIEW, ListSkeleton, PartError, RowAction, ShowAll, SizeCell, useDevToolHues } from "./devToolsList";
 import { captureDevToolsCleanup } from "./devToolsAnalytics";
 import { devToolsSizes, type DevToolsStorage, type SimulatorRow } from "./useDevToolsStorage";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * Settings › Apple devices, the machine's half: the Xcode it has, what
@@ -239,7 +240,7 @@ function SimulatorsBlock({ storage, pin }: { storage: DevToolsStorage; pin: Open
   const cleanUp = async () => {
     const ok = await confirmDialog({
       title: `Clean up ${pluralCount(leftovers.length, "leftover simulator")}?`,
-      message: "ADE made these for lanes that are gone. Deleting them takes their apps and data.",
+      message: `${BRAND.NAME} made these for lanes that are gone. Deleting them takes their apps and data.`,
       children: (
         <ul className="ade-dev-confirm-list">
           {leftovers.map((row) => <li key={row.sim.udid}>{row.sim.name}{row.bytes != null ? <span>{formatMac(row.bytes)}</span> : null}</li>)}
@@ -284,7 +285,7 @@ function SimulatorsBlock({ storage, pin }: { storage: DevToolsStorage; pin: Open
       anchor="apple-simulators"
       title="Simulators"
       count={data ? rows.length : null}
-      hint="Biggest first. A simulator a lane uses is deleted from that lane; ADE deletes the ones it made when their lane ends."
+      hint={`Biggest first. A simulator a lane uses is deleted from that lane; ${BRAND.NAME} deletes the ones it made when their lane ends.`}
       actions={leftovers.length > 0 ? (
         <button type="button" className="ade-modern-btn" data-size="sm" disabled={busy != null} onClick={() => void cleanUp()}>
           {busy === "cleanup" ? <CircleNotch size={12} className="animate-spin" /> : null}

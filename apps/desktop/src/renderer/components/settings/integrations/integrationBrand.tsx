@@ -11,6 +11,7 @@ import type { ProviderBrandLogo } from "../providers/providerBrand";
 import githubArt from "./banners/github.webp";
 import jiraArt from "./banners/jira.webp";
 import linearArt from "./banners/linear.webp";
+import { BRAND } from "../../../../shared/brand";
 
 /** The integrations an agent can ask to connect. ADE Cloud has its own Settings tab (`ade-cloud`). */
 export type IntegrationId = ConnectProviderId;
@@ -92,7 +93,7 @@ const BRANDS: Record<IntegrationId, IntegrationBrand> = {
   jira: {
     id: "jira",
     label: "Jira",
-    tagline: "Browse, edit and create Jira Cloud issues without leaving ADE.",
+    tagline: `Browse, edit and create Jira Cloud issues without leaving ${BRAND.NAME}.`,
     accent: "#2684FF",
     banner: {
       background: [

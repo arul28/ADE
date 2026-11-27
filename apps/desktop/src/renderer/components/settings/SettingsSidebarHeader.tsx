@@ -10,6 +10,7 @@ import { AccountAvatar } from "../account/AccountAvatar";
 import { HelpMenu } from "../onboarding/HelpMenu";
 import { settingsReturnRoute } from "../app/projectSidebar/settingsReturnRoute";
 import { useAppStore } from "../../state/appStore";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The top of the settings sidebar: a quiet row of app tools (help, zoom),
@@ -116,7 +117,7 @@ function SettingsSidebarIdentity({ onOpen }: { onOpen: () => void }) {
   const sessionLabel = accountSessionShortLabel(accountSessionState(status));
   const name = status.signedIn ? status.name?.trim() || null : null;
   const email = status.signedIn ? status.email?.trim() || null : null;
-  const primary = status.signedIn ? name || email || githubLogin || "Your ADE account" : sessionLabel;
+  const primary = status.signedIn ? name || email || githubLogin || `Your ${BRAND.NAME} account` : sessionLabel;
   const secondary = name && email ? email : null;
 
   return (

@@ -10,6 +10,7 @@ import { ModernSection } from "../primitives";
 import { AppleToolsSection } from "./AppleToolsSection";
 import { ListSkeleton } from "./devToolsList";
 import { useDevToolsStorage } from "./useDevToolsStorage";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * The machine half of Settings › Apple devices, for the machine picked in the
@@ -105,8 +106,8 @@ function NeedsMacCard({
   onOpenCloud: (() => void) | null;
 }) {
   const offer = onOpenCloud
-    ? `Use the ADE Cloud iPhone from any computer${macs.length ? ", or one of your Macs" : ""}.`
-    : macs.length ? "Use one of your Macs." : "Open ADE on a Mac to use one.";
+    ? `Use the ${BRAND.CLOUD_NAME} iPhone from any computer${macs.length ? ", or one of your Macs" : ""}.`
+    : macs.length ? "Use one of your Macs." : `Open ${BRAND.NAME} on a Mac to use one.`;
   return (
     <ModernSection group="Apple Development" anchor="apple-xcode" title={SECTION_TITLE}>
       <div className="ade-dev-card ade-dev-needsmac">
@@ -121,7 +122,7 @@ function NeedsMacCard({
               {onOpenCloud ? (
                 <button type="button" className="ade-modern-btn" data-size="sm" onClick={onOpenCloud}>
                   <Cloud size={13} />
-                  ADE Cloud iPhone
+                  {BRAND.CLOUD_NAME} iPhone
                 </button>
               ) : null}
               {macs.map((mac) => (

@@ -164,7 +164,7 @@ describe("KeepAwakeControls", () => {
   });
 
   it("drops a save failure once a later save works, without swallowing the snapshot's own warning", async () => {
-    // Nothing cleared the transient error, so "ADE couldn't save that." stayed
+    // Nothing cleared the transient error, so "Daex couldn't save that." stayed
     // parked beside a control that had since worked. The snapshot's own
     // `levelError` is a different claim with a different lifetime — a
     // successful call does not disprove a level that isn't in force — so it
@@ -184,10 +184,10 @@ describe("KeepAwakeControls", () => {
 
     await waitFor(() => expect(screen.getByRole("radio", { name: /While I'm away/ })).toBeTruthy());
     fireEvent.click(screen.getByRole("radio", { name: /While I'm away/ }));
-    await waitFor(() => expect(screen.getByText("ADE couldn't save that.")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Daex couldn't save that.")).toBeTruthy());
 
     fireEvent.click(screen.getByRole("radio", { name: /Even with the lid closed/ }));
-    await waitFor(() => expect(screen.queryByText("ADE couldn't save that.")).toBeNull());
+    await waitFor(() => expect(screen.queryByText("Daex couldn't save that.")).toBeNull());
     expect(screen.getByRole("alert").textContent).toContain("You cancelled the password prompt.");
   });
 

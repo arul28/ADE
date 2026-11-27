@@ -8,6 +8,7 @@ import type {
   AppleSimulatorOwnershipInfo,
   XcodeDerivedDataResult,
 } from "../../../../shared/types/iosSimulator";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * What developer tools keep on one machine's disk, outside any project:
@@ -72,9 +73,9 @@ function message(error: unknown): string {
 function simulatorOwner(laneName: string | null, laneHeld: boolean, ownership: AppleSimulatorOwnershipInfo["ownership"] | null): string {
   if (laneHeld) return laneName ? `Lane: ${laneName}` : "A lane";
   switch (ownership) {
-    case "ade-orphan": return "ADE, no lane";
-    case "ade-kept": return "ADE, kept";
-    case "ade-other-project": return "ADE, other project";
+    case "ade-orphan": return `${BRAND.NAME}, no lane`;
+    case "ade-kept": return `${BRAND.NAME}, kept`;
+    case "ade-other-project": return `${BRAND.NAME}, other project`;
     default: return "Yours";
   }
 }
@@ -100,7 +101,7 @@ function buildSimulatorRows(list: AppleDeviceListResult, measured: AppleDeviceLi
           : measured == null
             ? "Checking who it belongs to first."
             : ownership === "ade-other-project"
-            ? "ADE made it for another project, whose lane may use it. Delete it from that project."
+            ? `${BRAND.NAME} made it for another project, whose lane may use it. Delete it from that project.`
             : booted
               ? "It is running. Turn it off first."
               : null,

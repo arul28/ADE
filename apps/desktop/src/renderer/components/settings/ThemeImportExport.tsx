@@ -20,6 +20,7 @@ import { SettingsDisclosure, SettingsSectionAction } from "./primitives";
 import { showToast } from "../app/toast/toastStore";
 import { upsertCustomTheme } from "./themeCustomizerModel";
 import { openExternalUrl } from "../../lib/openExternal";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Import / export for themes.
@@ -126,7 +127,7 @@ export function ThemeImportExport() {
       <SettingsSectionAction
         icon={<UploadSimple size={13} />}
         label="Import"
-        title="Import a theme file: an ADE theme, or a VS Code colour theme (.json)"
+        title={`Import a theme file: a ${BRAND.NAME} theme, or a VS Code colour theme (.json)`}
         onClick={() => fileInputRef.current?.click()}
       />
       <SettingsSectionAction
@@ -140,7 +141,7 @@ export function ThemeImportExport() {
         open={unmapped != null}
         onOpenChange={(open) => { if (!open) setUnmapped(null); }}
         title={`Imported ${unmapped?.name ?? "theme"}`}
-        description="ADE mapped the interface, terminal and code colours it understands. These VS Code keys were not mapped."
+        description={`${BRAND.NAME} mapped the interface, terminal and code colours it understands. These VS Code keys were not mapped.`}
         size="md"
         tone="accent"
         actions={[{ label: "Done", onClick: () => setUnmapped(null), variant: "solid" }]}
@@ -202,8 +203,8 @@ export function ThemeFilesHelp() {
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
         <span style={label}>Import</span>
         <p style={body}>
-          Choose a <code>.json</code> theme file. ADE reads two kinds. An ADE theme file comes from Export. A VS Code
-          colour theme gives ADE its interface, terminal and code colours; comments and trailing commas in the file
+          Choose a <code>.json</code> theme file. {BRAND.NAME} reads two kinds. A {BRAND.NAME} theme file comes from Export. A VS Code
+          colour theme gives {BRAND.NAME} its interface, terminal and code colours; comments and trailing commas in the file
           are fine. A VS Code extension (<code>.vsix</code>) is a zip file: unzip it and choose a file from its
           <code> themes</code> folder. The theme is saved on this computer and becomes the active theme.
         </p>

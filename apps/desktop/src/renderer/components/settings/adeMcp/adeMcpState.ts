@@ -13,6 +13,7 @@ import {
   type RemoteMcpVaultHealth,
 } from "../../../../shared/types/remoteMcp";
 import type { IntegrationFact, IntegrationTone } from "../integrations/IntegrationChrome";
+import { BRAND } from "../../../../shared/brand";
 
 export type MachineState = {
   tone: IntegrationTone;
@@ -23,28 +24,28 @@ export type MachineState = {
 };
 
 const REASON: Record<RemoteMcpNotServingReason, (machine: RemoteMcpMachine) => MachineState> = {
-  off_for_account: () => ({ tone: "neutral", label: "Off", detail: "ADE MCP is off for your account." }),
+  off_for_account: () => ({ tone: "neutral", label: "Off", detail: `${BRAND.NAME} MCP is off for your account.` }),
   left_out: () => ({ tone: "neutral", label: "Left out", detail: "Apps can't reach it. Turn it on to include it." }),
   signed_out: (machine) => ({
     tone: "warn",
     label: "Signed out",
     detail: machine.isThisMachine
-      ? "This computer is signed out of your ADE account. Sign in to include it."
-      : "It's signed out of your ADE account. Sign in on it to include it.",
+      ? `This computer is signed out of your ${BRAND.NAME} account. Sign in to include it.`
+      : `It's signed out of your ${BRAND.NAME} account. Sign in on it to include it.`,
   }),
   relay_disconnected: (machine) => ({
     tone: "warn",
     label: "Not connected",
     detail: machine.isThisMachine
-      ? "This computer isn't connected to ADE Relay, so apps can't reach it. It answers again once it reconnects."
-      : "It isn't connected to ADE Relay, so apps can't reach it. It answers again once it reconnects.",
+      ? `This computer isn't connected to ${BRAND.NAME} Relay, so apps can't reach it. It answers again once it reconnects.`
+      : `It isn't connected to ${BRAND.NAME} Relay, so apps can't reach it. It answers again once it reconnects.`,
   }),
   account_vault_unreachable: (machine) => ({
     tone: "crit",
     label: "Account sync failing",
     detail: machine.isThisMachine
-      ? "This computer's account sync is failing, so it hasn't received ADE MCP's settings."
-      : "Its account sync is failing, so it hasn't received ADE MCP's settings. Open ADE on it to see why.",
+      ? `This computer's account sync is failing, so it hasn't received ${BRAND.NAME} MCP's settings.`
+      : `Its account sync is failing, so it hasn't received ${BRAND.NAME} MCP's settings. Open ${BRAND.NAME} on it to see why.`,
   }),
   waiting_for_account_secret: (machine) => {
     // `reportedAt` is when it started waiting: the entry is rewritten only
@@ -55,19 +56,19 @@ const REASON: Record<RemoteMcpNotServingReason, (machine: RemoteMcpMachine) => M
       return {
         tone: "warn",
         label: "Getting ready",
-        detail: "Waiting for ADE MCP's settings to sync to it. This usually takes under a minute.",
+        detail: `Waiting for ${BRAND.NAME} MCP's settings to sync to it. This usually takes under a minute.`,
       };
     }
     return {
       tone: "crit",
-      label: "Not getting ADE MCP's key",
-      detail: "This computer is still waiting for ADE MCP's key. "
+      label: `Not getting ${BRAND.NAME} MCP's key`,
+      detail: `This computer is still waiting for ${BRAND.NAME} MCP's key. `
         + (machine.isThisMachine
           ? "Check account sync on this page."
-          : "Check account sync on that computer and make sure ADE is up to date."),
+          : `Check account sync on that computer and make sure ${BRAND.NAME} is up to date.`),
     };
   },
-  older_ade: () => ({ tone: "warn", label: "Needs an update", detail: "It runs an older ADE that can't answer. Update ADE on it." }),
+  older_ade: () => ({ tone: "warn", label: "Needs an update", detail: `It runs an older ${BRAND.NAME} that can't answer. Update ${BRAND.NAME} on it.` }),
   offline: () => ({ tone: "neutral", label: "Offline", detail: "Apps reach it again when it's back online." }),
 };
 
@@ -103,14 +104,14 @@ export function machineState(machine: RemoteMcpMachine, relayTurnedOff = false):
     return {
       tone: "warn",
       label: "Relay turned off",
-      detail: "ADE Relay is turned off on this computer (Settings › Account), so apps can't reach it.",
+      detail: `${BRAND.NAME} Relay is turned off on this computer (Settings › Account), so apps can't reach it.`,
     };
   }
   if (servingIsAGuess(machine)) {
     return {
       tone: "neutral",
       label: "Not checked yet",
-      detail: "Its ADE hasn't reported whether it answers. Apps still try it; updating ADE on it shows its true state.",
+      detail: `Its ${BRAND.NAME} hasn't reported whether it answers. Apps still try it; updating ${BRAND.NAME} on it shows its true state.`,
     };
   }
   if (machine.serving) {
@@ -161,7 +162,7 @@ export type OverallState = { tone: IntegrationTone; label: string };
 /** One honest line for the whole account: how many included computers answer. */
 export function overallState(status: RemoteMcpStatus | null, loading: boolean): OverallState {
   if (!status) return loading ? { tone: "checking", label: "Checking…" } : { tone: "neutral", label: "Couldn't check" };
-  if (!status.signedIn) return { tone: "off", label: "Needs your ADE account" };
+  if (!status.signedIn) return { tone: "off", label: `Needs your ${BRAND.NAME} account` };
   if (!status.enabled) return { tone: "off", label: "Off" };
   if (!status.serverUrl) return { tone: "warn", label: "Setting up your address…" };
   const included = status.machines.filter((machine) => machine.included);
@@ -177,8 +178,8 @@ export function overallState(status: RemoteMcpStatus | null, loading: boolean): 
 /** What the hero panel says while there is no server URL to show. */
 export function heroPanelNote(status: RemoteMcpStatus | null): string {
   if (!status) return "Checking…";
-  if (!status.signedIn) return "ADE MCP needs your ADE account. Apps sign in through it.";
-  if (status.enabled) return "ADE is setting up your account's address.";
+  if (!status.signedIn) return `${BRAND.NAME} MCP needs your ${BRAND.NAME} account. Apps sign in through it.`;
+  if (status.enabled) return `${BRAND.NAME} is setting up your account's address.`;
   return "Turn it on to get your account's address.";
 }
 

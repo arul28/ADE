@@ -85,6 +85,7 @@ import {
 import { isWebClientMode } from "../../lib/webClientMode";
 import { decodeSettingsHash } from "./settingsHash";
 import { CloudMark, ADE_CLOUD_NAME } from "../remoteTargets/cloudBrand";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * What each Settings tab renders: its sections as data (`TAB_SECTIONS`), the
@@ -402,13 +403,13 @@ const TAB_GROUPS = {
   },
   privacy: {
     title: "Privacy",
-    description: "What ADE may send, and when.",
+    description: `What ${BRAND.NAME} may send, and when.`,
     icon: <ShieldCheck size={15} weight="duotone" />,
     tone: "teal",
   },
   data: {
     title: "Your data",
-    description: "The copies ADE keeps before an update changes your databases.",
+    description: `The copies ${BRAND.NAME} keeps before an update changes your databases.`,
     icon: <Database size={15} weight="duotone" />,
     tone: "amber",
   },
@@ -438,13 +439,13 @@ const TAB_GROUPS = {
   },
   cloud: {
     title: ADE_CLOUD_NAME,
-    description: "Cloud computers for your lanes, made and signed in from ADE.",
+    description: `Cloud computers for your lanes, made and signed in from ${BRAND.NAME}.`,
     icon: <CloudMark size={15} brand />,
     tone: "slate",
   },
   mcp: {
     title: "MCP servers",
-    description: "Tools every ADE agent gets, on every computer.",
+    description: `Tools every ${BRAND.NAME} agent gets, on every computer.`,
     icon: <Plugs size={15} weight="duotone" />,
     tone: "violet",
   },
@@ -505,12 +506,12 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       title: "Background service",
       group: "service",
     },
-    { entryIds: ["general.ade-cli"], render: () => <AdeCliSection />, machine: "local", title: "ADE command line", group: "cli" },
+    { entryIds: ["general.ade-cli"], render: () => <AdeCliSection />, machine: "local", title: `${BRAND.NAME} command line`, group: "cli" },
     {
       entryIds: ["general.diagnostics-sharing"],
       render: () => <DiagnosticsSharingSection />,
       machine: "local",
-      title: "Send a report to ADE",
+      title: `Send a report to ${BRAND.NAME}`,
       group: "privacy",
     },
     // Files beside this computer's databases: plain IPC, no pin, so `local`.
@@ -527,7 +528,7 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       entryIds: ["general.reset"],
       render: () => <ResetAdeSection />,
       machine: "local",
-      title: "Reset ADE",
+      title: `Reset ${BRAND.NAME}`,
       group: "danger",
     },
   ],
@@ -551,7 +552,7 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       entryIds: ["general.browser-agent-access"],
       render: () => <BrowserAgentAccessSection />,
       machine: "local",
-      title: "ADE browser access",
+      title: `${BRAND.NAME} browser access`,
     },
     {
       entryIds: ["general.browser-settings"],

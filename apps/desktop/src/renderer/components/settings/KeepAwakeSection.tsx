@@ -13,6 +13,7 @@ import { Banner, noticeKindModel, type NoticeKind } from "../ui/notice";
 import { ModernSection } from "./primitives";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import "./machineSettings.css";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Whether ADE may hold this machine awake while agents work.
@@ -193,7 +194,7 @@ export function KeepAwakeControls() {
           setLoadError(null);
         }
       } catch {
-        if (mounted.current) setLevelActionError({ message: "ADE couldn't save that.", kind: "failure" });
+        if (mounted.current) setLevelActionError({ message: `${BRAND.NAME} couldn't save that.`, kind: "failure" });
       } finally {
         if (mounted.current) setBusy(false);
       }
@@ -239,7 +240,7 @@ export function KeepAwakeControls() {
     return (
       <div className="ade-modern-note" style={{ alignItems: "center" }}>
         <MoonStars size={14} />
-        <span>ADE can't keep {isThisMachine ? "this computer" : machineName} awake here, so turns pause when it sleeps.</span>
+        <span>{BRAND.NAME} can't keep {isThisMachine ? "this computer" : machineName} awake here, so turns pause when it sleeps.</span>
       </div>
     );
   }

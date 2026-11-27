@@ -1,6 +1,7 @@
 /** Small pieces the ADE MCP page, its setup sheet and its token dialog share. */
 import { ArrowRight, Check, Copy } from "@phosphor-icons/react";
 import { useCopyToClipboard } from "../../../hooks/useCopyToClipboard";
+import { BRAND } from "../../../../shared/brand";
 
 /** Copy a value; says "Copied" for a moment. `onCopied` runs after the copy lands. */
 export function CopyButton({
@@ -68,10 +69,10 @@ export function SignInPreview({ pageTitle }: { pageTitle?: string }) {
   return (
     <div className="ade-amcp-signin">
       <span className="ade-amcp-signin-caption">
-        {pageTitle ? <>ADE's page, titled <b>{pageTitle}</b>, opens:</> : "ADE's sign-in page opens:"}
+        {pageTitle ? <>{BRAND.NAME}'s page, titled <b>{pageTitle}</b>, opens:</> : `${BRAND.NAME}'s sign-in page opens:`}
       </span>
       <div className="ade-amcp-signin-flow">
-        <span>Sign in to ADE</span>
+        <span>Sign in to {BRAND.NAME}</span>
         <ArrowRight size={11} aria-hidden />
         <span>Pick <b>Read &amp; write</b> or <b>Read only</b></span>
         <ArrowRight size={11} aria-hidden />

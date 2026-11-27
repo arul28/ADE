@@ -60,6 +60,7 @@ import type { SyncConnections } from "./useSyncConnections";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { isDegradedSyncSnapshot } from "../../lib/localSyncStatusReader";
 import { extractError } from "../../lib/format";
+import { BRAND } from "../../../shared/brand";
 
 export { useSyncConnections, type SyncConnections } from "./useSyncConnections";
 
@@ -125,12 +126,12 @@ function connectionLoadGuidance(error: string): string {
     // Was macOS-only copy ("in Applications"), which names a folder Windows
     // does not have. The instruction is the same on every platform: run an
     // installed build, not the build output directory.
-    return "Install this ADE build, reopen it from the installed copy, then try again.";
+    return `Install this ${BRAND.NAME} build, reopen it from the installed copy, then try again.`;
   }
   if (isProjectRegistrationRequiredError(error)) {
-    return "Open a project in ADE, then try again.";
+    return `Open a project in ${BRAND.NAME}, then try again.`;
   }
-  return "Restart ADE, then try again.";
+  return `Restart ${BRAND.NAME}, then try again.`;
 }
 
 export function isSyncHost(status: SyncRoleSnapshot): boolean {
@@ -323,7 +324,7 @@ export function ThisMacCard({
       // reader acknowledges that before the confirm can be pressed.
       const answer = await checkboxConfirmDialog({
         title: `Stop following ${machine}?`,
-        message: `This computer will start hosting sync for ${project}. ADE forgets the saved connection to ${machine}, the record of which machine hosts sync here, and the other machines it had listed. No chats, lanes, or files are deleted.`,
+        message: `This computer will start hosting sync for ${project}. ${BRAND.NAME} forgets the saved connection to ${machine}, the record of which machine hosts sync here, and the other machines it had listed. No chats, lanes, or files are deleted.`,
         children: (
           <div style={{ display: "grid", gap: 8 }}>
             <div>{standing}</div>
@@ -367,7 +368,7 @@ export function ThisMacCard({
         return;
       }
       if (readError !== null) {
-        setStopFollowingFailure(`Nothing was stopped. ADE couldn't read this project's sync state: ${readError}`);
+        setStopFollowingFailure(`Nothing was stopped. ${BRAND.NAME} couldn't read this project's sync state: ${readError}`);
         void refreshSync({ force: true });
         return;
       }
@@ -422,7 +423,7 @@ export function ThisMacCard({
     );
   }
   if (!status) {
-    return <div style={helperTextStyle}>Open a project in ADE before connecting another device.</div>;
+    return <div style={helperTextStyle}>Open a project in {BRAND.NAME} before connecting another device.</div>;
   }
 
   const host = isSyncHost(status);
@@ -708,7 +709,7 @@ function followedMachineName(status: SyncRoleSnapshot): string {
   return status.client.hostName?.trim()
     || followedDevice(status)?.name?.trim()
     || status.client.host?.trim()
-    || "another ADE machine";
+    || `another ${BRAND.NAME} machine`;
 }
 
 /** The record of the machine a viewer follows: the host the snapshot names, not this computer. */
@@ -731,7 +732,7 @@ function followedHostStanding(status: SyncRoleSnapshot, machine: string): string
   const phrase = relativeLastSeenPhrase(seen.length > 0 ? Math.max(...seen) : null);
   return phrase
     ? `${machine} isn't reachable from this computer right now. Last seen ${phrase}.`
-    : `${machine} isn't reachable from this computer right now, and ADE has no record of it being seen.`;
+    : `${machine} isn't reachable from this computer right now, and ${BRAND.NAME} has no record of it being seen.`;
 }
 
 /**
@@ -760,9 +761,9 @@ function connectionProblem(status: SyncRoleSnapshot, host: boolean): string | nu
     // the brain says sync has not started, nobody on this computer hosts it,
     // and the line must say so: the card above carries the Start sync button.
     if (status.routeHealth?.accountDirectory?.state === "sync_not_started") {
-      return "No ADE on this computer is hosting sync right now";
+      return `No ${BRAND.NAME} on this computer is hosting sync right now`;
     }
-    return "This machine connects through your main ADE host";
+    return `This machine connects through your main ${BRAND.NAME} host`;
   }
   // The CRDT failure renders as its own alert block below, with the runtime's
   // full explanation — repeating a one-liner here would just duplicate it.
@@ -777,7 +778,7 @@ function connectionProblem(status: SyncRoleSnapshot, host: boolean): string | nu
     // The brain's own wording for "no project to host sync for" is internal
     // vocabulary; say what it means for the reader.
     if (reason && /no active sync project scope/i.test(reason)) {
-      return "Other devices can reach this computer once a project is open in ADE";
+      return `Other devices can reach this computer once a project is open in ${BRAND.NAME}`;
     }
     return reason || "Starting up — connection details will appear shortly";
   }
@@ -964,8 +965,8 @@ function PairingDisclosure({
       {open ? (
         <div style={{ display: "grid", gap: 10 }}>
           <div style={{ ...helperTextStyle, paddingLeft: 4 }}>
-            This code sets up a manual connection between this computer and another ADE client, like
-            the mobile app. Most connections go through your ADE account instead.
+            This code sets up a manual connection between this computer and another {BRAND.NAME} client, like
+            the mobile app. Most connections go through your {BRAND.NAME} account instead.
           </div>
           {children}
         </div>
@@ -1106,7 +1107,7 @@ export function PhoneConnectionsTab({
 }) {
   const { status } = sync;
   if (sync.loading) return <div style={helperTextStyle}>Getting connection details…</div>;
-  if (!status) return <div style={helperTextStyle}>Open a project in ADE before connecting a phone.</div>;
+  if (!status) return <div style={helperTextStyle}>Open a project in {BRAND.NAME} before connecting a phone.</div>;
 
   const host = isSyncHost(status);
   const phones = sync.devices.filter((device) => !device.isLocal && device.deviceType === "phone");
@@ -1129,7 +1130,7 @@ export function PhoneConnectionsTab({
         <ConnectNewPhone status={status} />
       ) : (
         <div style={helperTextStyle}>
-          Set up phones on the computer that hosts your ADE projects.
+          Set up phones on the computer that hosts your {BRAND.NAME} projects.
         </div>
       )}
     </div>
@@ -1149,7 +1150,7 @@ function ConnectNewPhone({ status }: { status: SyncRoleSnapshot }) {
         Connect a new phone
       </div>
       <div style={{ color: COLORS.textSecondary, fontFamily: SANS_FONT, fontSize: 13, lineHeight: 1.5 }}>
-        Sign in to ADE on your iPhone — this computer appears automatically.
+        Sign in to {BRAND.NAME} on your iPhone — this computer appears automatically.
       </div>
       {status.pairingConnectInfo ? (
         <div
@@ -1219,13 +1220,13 @@ export function WebConnectionsTab({
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <Globe size={18} weight="duotone" color={COLORS.accent} />
           <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 14, fontWeight: 600 }}>
-            ADE in the browser
+            {BRAND.NAME} in the browser
           </div>
         </div>
         {accountSignedIn ? (
           <>
             <div style={helperTextStyle}>
-              Open the web client and sign in with your ADE account to reach this computer.
+              Open the web client and sign in with your {BRAND.NAME} account to reach this computer.
             </div>
             <button
               type="button"
@@ -1233,7 +1234,7 @@ export function WebConnectionsTab({
               onClick={() => openExternalUrl(WEB_CLIENT_BASE_URL)}
             >
               <ArrowSquareOut size={15} weight="bold" />
-              Open ADE in browser
+              Open {BRAND.NAME} in browser
             </button>
           </>
         ) : (
@@ -1487,7 +1488,7 @@ function HiddenPinBlock({
   return (
     <div style={{ display: "grid", gap: 10 }}>
       <div style={{ color: COLORS.textSecondary, fontFamily: SANS_FONT, fontSize: 13 }}>
-        A pairing code is set. It stays hidden after ADE restarts — generate a new one to see it again.
+        A pairing code is set. It stays hidden after {BRAND.NAME} restarts — generate a new one to see it again.
       </div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         <button type="button" style={outlineButton()} disabled={busy} onClick={onGenerate}>

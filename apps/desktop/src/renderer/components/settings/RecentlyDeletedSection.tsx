@@ -34,6 +34,7 @@ import "../terminals/importSessions/importSessions.css";
 import "./primitives/settingsModern.css";
 import "./machineSettings.css";
 import "./recentlyDeleted.css";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Settings › Deleted & Archived › Recently deleted: lanes and chats you
@@ -457,7 +458,7 @@ function DeletedChatDialog({
                 ? `Picks up where it left off, in ${chat.laneName ?? "its lane"}.`
                 : chat.resumable
                   ? `Relaunches the CLI in ${chat.laneName ?? "its lane"}, resuming its conversation.`
-                  : `Starts a new CLI in ${chat.laneName ?? "its lane"}: ADE can't resume its conversation.`}
+                  : `Starts a new CLI in ${chat.laneName ?? "its lane"}: ${BRAND.NAME} can't resume its conversation.`}
             </span>
           )}
         </div>
@@ -611,7 +612,7 @@ export function RecentlyDeletedSection() {
     const { chat, source } = entry;
     const ok = await confirmDialog({
       title: "Remove from Recently deleted?",
-      message: `You won't be able to reopen “${chatTitle(chat)}” in ADE anymore. ${importProviderLabel(chat.sourceProvider)} keeps its own copy${isCli(chat) && !chat.resumable ? ", if it made one" : ""}.`,
+      message: `You won't be able to reopen “${chatTitle(chat)}” in ${BRAND.NAME} anymore. ${importProviderLabel(chat.sourceProvider)} keeps its own copy${isCli(chat) && !chat.resumable ? ", if it made one" : ""}.`,
       confirmLabel: "Remove",
       destructive: true,
     });
@@ -654,10 +655,10 @@ export function RecentlyDeletedSection() {
     const ok = await confirmDialog({
       title: "Drop this lane's saved work?",
       message: lane.kind === "freed"
-        ? `“${lane.laneName}” stays archived, but ADE will no longer be able to put back its uncommitted files.`
+        ? `“${lane.laneName}” stays archived, but ${BRAND.NAME} will no longer be able to put back its uncommitted files.`
         : lane.uncommitted
-          ? `ADE will no longer be able to bring back “${lane.laneName}” or its uncommitted files.`
-          : `ADE will no longer be able to bring back “${lane.laneName}”. Commits that only it held are lost.`,
+          ? `${BRAND.NAME} will no longer be able to bring back “${lane.laneName}” or its uncommitted files.`
+          : `${BRAND.NAME} will no longer be able to bring back “${lane.laneName}”. Commits that only it held are lost.`,
       confirmLabel: "Drop",
       destructive: true,
     });
@@ -726,7 +727,7 @@ export function RecentlyDeletedSection() {
           />
           {outdated.map((machine) => (
             <p key={machine.pin.key} className="ade-modern-muted">
-              {machine.machineName} runs an older ADE — update it there to see its deleted chats.
+              {machine.machineName} runs an older {BRAND.NAME} — update it there to see its deleted chats.
             </p>
           ))}
 
