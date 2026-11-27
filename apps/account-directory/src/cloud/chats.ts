@@ -24,7 +24,7 @@ import {
 import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, fail, json, pageCursorOf, pageCursorSql, readJson } from "./http";
 import { rewardAfterCloudChat } from "./referrals";
 import { captureCloudSafety, type CloudWaitUntil } from "./analytics";
-import { logCloud, moveQueuedMessagesStatement, ownMachineMoveTarget, ownedComputer, type CloudEnv } from "./store";
+import { logCloud, moveQueuedMessagesStatement, ownMachineMoveTarget, ownedComputer, warnCloud, type CloudEnv } from "./store";
 import { digestFor, openBytes, openText, sealBytes, sealText, userKeys, type UserKeys } from "./seal";
 import { deleteCapsule, deleteCapsulesForLane } from "./forkCapsules";
 import { deleteGitSummaryForLaneStatement } from "./gitSummaries";
@@ -61,6 +61,8 @@ const MAX_LIST_LIMIT = 500;
 const DEFAULT_PAGE_PARTS = 6;
 /** A page stops at about this much text, so one response stays a sane size. */
 const PAGE_TARGET_BYTES = 8 * 1024 * 1024;
+/** A page reads at most this many parts per part it returns, empty ones included. */
+const PAGE_READS_PER_PART = 8;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -436,7 +438,7 @@ async function handlePutProof(request: Request, env: CloudEnv, userId: string, m
   try {
     await bucket.put(key, sealed, { customMetadata: { digest, kind, source } });
   } catch (error) {
-    await refund().catch(() => undefined);
+    await refund().catch((refundError) => warnCloud("cloud.chat_proof_refund_failed", { message: refundError instanceof Error ? refundError.message : "unknown" }));
     throw error;
   }
   // The picture goes unless a row still reads its prefix (a move took the copy, proof and all):
@@ -724,7 +726,8 @@ async function handleList(url: URL, env: CloudEnv, userId: string, now: number):
 /**
  * `GET /cloud/chats/:machine/:chat?before&limit`. Newest parts first, each one
  * JSON lines of chat events. `before` is exclusive; `limit` is a page of parts.
- * Empty parts (a row sent with no new text) are left out and don't count.
+ * Empty parts (a row sent with no new text) are left out and don't count,
+ * but a page reads at most `limit * PAGE_READS_PER_PART` parts.
  */
 async function handleGetChat(url: URL, env: CloudEnv, userId: string, machineKey: string, chatId: string, now: number): Promise<Response> {
   const bucket = bucketFor(env);
@@ -744,7 +747,9 @@ async function handleGetChat(url: URL, env: CloudEnv, userId: string, machineKey
   const parts: CloudChatTranscriptPage["parts"] = [];
   let bytes = 0;
   let seq = before - 1;
-  for (; seq >= 1 && parts.length < limit && bytes < PAGE_TARGET_BYTES; seq -= 1) {
+  // Skipped empty parts still cost a read, so a page reads at most this many; `nextBefore` carries on from there.
+  const maxReads = limit * PAGE_READS_PER_PART;
+  for (let reads = 0; seq >= 1 && parts.length < limit && bytes < PAGE_TARGET_BYTES && reads < maxReads; seq -= 1, reads += 1) {
     const object = await bucket.get(partKey(row.r2_key, seq));
     if (!object) {
       // A part R2 no longer has: the copy is damaged. Say so instead of hiding the gap.

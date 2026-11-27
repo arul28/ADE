@@ -677,9 +677,12 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
           }
         }
         // An unknown color keeps the one the copy was last saved with (the end of its mark): a lane list
-        // that could not be read never clears a saved color.
+        // that could not be read never clears a saved color. With no mark either (a lost state file), the copy
+        // waits for a rest that can read the lanes, since the server replaces the summary it holds.
         const knownColor = await laneColorOf(runtime, row.laneId);
-        const laneColor = knownColor !== undefined ? knownColor : /\|(#[0-9a-f]{6})$/.exec(state.sessions[row.id] ?? "")?.[1] ?? null;
+        const previousMark = state.sessions[row.id];
+        if (knownColor === undefined && previousMark === undefined) return;
+        const laneColor = knownColor !== undefined ? knownColor : /\|(#[0-9a-f]{6})$/.exec(previousMark ?? "")?.[1] ?? null;
         // The lane's color is in the mark: a lane recolored (or a copy saved before rows carried it) is sent again.
         const mark = `${window?.endOffset ?? "none"}|${snapshotMark}|${row.status}${laneColor ? `|${laneColor}` : ""}`;
         if (state.sessions[row.id] === mark) return;

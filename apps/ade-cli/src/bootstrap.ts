@@ -3192,7 +3192,10 @@ export async function createAdeRuntime(args: {
             const liveStatus = summary?.status ?? row.status ?? null;
             // The lane's color, so a client shows this lane in it while the computer rests (the list is cached).
             // Undefined when the list can't be read: unknown, so the uploader keeps the color the copy has.
-            const lanes = row.laneId ? await laneService.list({ includeArchived: false, includeStatus: false }).catch(() => null) : null;
+            const lanes = row.laneId ? await laneService.list({ includeArchived: false, includeStatus: false }).catch((error) => {
+              logger.warn("cloud.chat_lane_color_read_failed", { sessionId, error: error instanceof Error ? error.message : String(error) });
+              return null;
+            }) : null;
             const laneColor = !row.laneId ? null : lanes ? cloudLaneColorOf(lanes.find((lane) => lane.id === row.laneId)?.color) : undefined;
             return {
               title: redactSecrets(row.title ?? row.goal ?? ""),
