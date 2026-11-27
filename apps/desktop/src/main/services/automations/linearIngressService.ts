@@ -21,6 +21,7 @@ import {
   resolveLinearRelayBaseUrl,
   type LinearRelayCredentialStore,
 } from "./linearRelayConfig";
+import { BRAND } from "../../../shared/brand";
 
 const DEFAULT_LINEAR_RELAY_POLL_INTERVAL_MS = 45_000;
 // While a wake-up socket is connected, polling is only a safety net.
@@ -58,7 +59,7 @@ function parseRelaySequence(cursor: string): number | null {
   return match ? Number(match[1]) : null;
 }
 const LINEAR_WEBHOOK_RESOURCE_TYPES = ["Issue", "Comment", "IssueLabel", "ProjectUpdate", "InitiativeUpdate", "User"];
-const LINEAR_WEBHOOK_LABEL = "ADE automations";
+const LINEAR_WEBHOOK_LABEL = `${BRAND.NAME} automations`;
 
 type LinearWebhookClient = {
   listWebhooks: () => Promise<LinearWebhookSummary[]>;
@@ -76,7 +77,7 @@ type LinearWebhookClient = {
 
 /** Linear lets only workspace admins read or create webhooks. */
 export const LINEAR_WEBHOOK_NEEDS_ADMIN_MESSAGE =
-  "Linear automations need a webhook, and Linear lets only workspace admins make one. Your Linear account is not an admin of this workspace: ask an admin to make you one, or to connect Linear in ADE with their account.";
+  `Linear automations need a webhook, and Linear lets only workspace admins make one. Your Linear account is not an admin of this workspace: ask an admin to make you one, or to connect Linear in ${BRAND.NAME} with their account.`;
 
 type LinearRelayEvent = {
   cursor: string;

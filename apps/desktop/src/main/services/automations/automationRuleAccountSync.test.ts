@@ -219,7 +219,7 @@ describe("automation rules that follow the account", () => {
     const b = await createComputer({ name: "mac-b", relay });
     const cloudRule = { ...rule("nightly", "x"), execution: { kind: "agent-session", laneMode: "create", session: {} } };
     // Before a first sync it can't be filed in the account: refused, not left in local.yaml with no home.
-    expect(() => a.config.saveAutomationRule(cloudRule as never, { home: "ade-cloud" })).toThrow(/ADE Cloud/);
+    expect(() => a.config.saveAutomationRule(cloudRule as never, { home: "ade-cloud" })).toThrow(/Daex Cloud/);
     expect(a.fileRuleIds()).toEqual([]);
     await settleAll(a, b);
 
@@ -256,7 +256,7 @@ describe("automation rules that follow the account", () => {
     expect(snapshot.validation.ok).toBe(true);
     expect(shown?.needsNewerAde).toBe(true);
     expect(shown?.runsHere).toBe(false);
-    expect(() => a.config.saveAutomationRule({ ...a.stored("future")!, prompt: "y" })).toThrow(/newer ADE/);
+    expect(() => a.config.saveAutomationRule({ ...a.stored("future")!, prompt: "y" })).toThrow(/newer Daex/);
     expect(a.account.get(SCOPE, "automations.rule.future")).toEqual(future);
   });
 

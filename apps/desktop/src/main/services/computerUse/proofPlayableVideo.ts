@@ -6,6 +6,7 @@ import { resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver
 import { ensureFfmpegTools, ffmpegDownloadable, resolveFfmpegTools, runFfmpeg } from "../demoVideo/ffmpegDemoEngine";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Videos every ADE viewer can play: the desktop's Chromium, the hosted web
@@ -166,7 +167,7 @@ export async function ensurePlayableVideo(args: {
   await fs.promises.rm(output, { force: true }).catch(() => undefined);
   throw new Error(
     ffmpeg
-      ? `ADE could not convert ${path.basename(sourcePath)} to MP4, so it may not play on every device.`
+      ? `${BRAND.NAME} could not convert ${path.basename(sourcePath)} to MP4, so it may not play on every device.`
       : `This machine has no ffmpeg to convert ${path.basename(sourcePath)} to MP4, so it may not play on every device.`,
   );
 }

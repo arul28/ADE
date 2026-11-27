@@ -176,7 +176,7 @@ describe("linearIngressService", () => {
     expect(status.state).toBe("ready");
     expect(harness.client.createWebhook).toHaveBeenCalledWith(expect.objectContaining({
       url: "https://ade-github-webhook-relay.arulsharma1028.workers.dev/linear/webhook",
-      label: "ADE automations",
+      label: "Daex automations",
       resourceTypes: ["Issue", "Comment", "IssueLabel", "ProjectUpdate", "InitiativeUpdate", "User"],
       allPublicTeams: true,
     }));

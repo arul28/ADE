@@ -65,6 +65,7 @@ import { dispatchBuiltInBrowserAgentCall } from "./builtInBrowserAgentDispatch";
 import type { BuiltInBrowserService } from "./builtInBrowserService";
 import { localIpcListenOptions } from "../../../../../ade-cli/src/services/runtime/localIpcListenOptions";
 import { pathComparisonKey } from "../shared/pathCompare";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Per connection: the App Control recordings it started and the demo jobs it
@@ -543,7 +544,7 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     ) {
       throw new JsonRpcError(
         JsonRpcErrorCode.policyDenied,
-        `Action 'built_in_browser.${name}' is only available to the trusted ADE renderer.`,
+        `Action 'built_in_browser.${name}' is only available to the trusted ${BRAND.NAME} renderer.`,
       );
     }
     return await dispatchBuiltInBrowserAgentCall(service, name, rawParams);

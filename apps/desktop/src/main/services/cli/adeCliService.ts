@@ -23,6 +23,7 @@ import {
   installWindowsCliLauncher,
   resolveWindowsCliLauncherSource,
 } from "./windowsCliLauncher";
+import { BRAND } from "../../../shared/brand";
 
 type CreateAdeCliServiceArgs = {
   isPackaged: boolean;
@@ -247,7 +248,7 @@ function createWindowsShimScript(args: {
     "      exit /b %ERRORLEVEL%",
     "    )",
     "  )",
-    "  echo ade: Node.js 22+ or the ADE Electron runtime is required to run this source CLI. 1>&2",
+    `  echo ade: Node.js 22+ or the ${BRAND.NAME} Electron runtime is required to run this source CLI. 1>&2`,
     "  exit /b 127",
     ")",
     "if defined ADE_CLI_NODE (",
@@ -267,7 +268,7 @@ function createWindowsShimScript(args: {
     "    exit /b %ERRORLEVEL%",
     "  )",
     ")",
-    "echo ade: Node.js 22+ or the ADE Electron runtime is required to run this CLI. 1>&2",
+    `echo ade: Node.js 22+ or the ${BRAND.NAME} Electron runtime is required to run this CLI. 1>&2`,
     "exit /b 127",
     "",
   ].join("\r\n");
@@ -407,7 +408,7 @@ function writeDevShim(args: {
     "  if command -v asdf >/dev/null 2>&1; then",
     "    exec asdf exec node --import \"$TSX_IMPORT\" \"$CLI_JS\" \"$@\"",
     "  fi",
-    "  echo \"ade: Node.js 22+ or the ADE Electron runtime is required to run this source CLI.\" >&2",
+    `  echo "ade: Node.js 22+ or the ${BRAND.NAME} Electron runtime is required to run this source CLI." >&2`,
     "  exit 127",
     "fi",
     "if [ -n \"${ADE_CLI_NODE:-}\" ]; then",
@@ -425,7 +426,7 @@ function writeDevShim(args: {
     "if command -v asdf >/dev/null 2>&1; then",
     "  exec asdf exec node \"$CLI_JS\" \"$@\"",
     "fi",
-    "echo \"ade: Node.js 22+ or the ADE Electron runtime is required to run this CLI.\" >&2",
+    `echo "ade: Node.js 22+ or the ${BRAND.NAME} Electron runtime is required to run this CLI." >&2`,
     "exit 127",
     "",
   ].join("\n");
@@ -576,13 +577,13 @@ function statusMessage(args: {
 }): { message: string; nextAction: string | null } {
   if (args.terminalInstalled && args.agentPathReady) {
     return {
-      message: `The ${args.commandName} command is available to Terminal and ADE-launched agents.`,
+      message: `The ${args.commandName} command is available to Terminal and ${BRAND.NAME}-launched agents.`,
       nextAction: null,
     };
   }
   if (args.agentPathReady && args.bundledAvailable) {
     return {
-      message: `ADE-launched agents can use ${args.commandName}. Terminal access is not installed yet.`,
+      message: `${BRAND.NAME}-launched agents can use ${args.commandName}. Terminal access is not installed yet.`,
       nextAction: args.installAvailable
         ? `Install the ${args.commandName} command for Terminal access.`
         : "Run npm link in apps/ade-cli for local development.",
@@ -591,15 +592,15 @@ function statusMessage(args: {
   if (args.bundledAvailable) {
     return {
       message: `The bundled ${args.commandName} command is present, but it is not on the agent PATH yet.`,
-      nextAction: "Restart ADE so new agent sessions receive the bundled CLI path.",
+      nextAction: `Restart ${BRAND.NAME} so new agent sessions receive the bundled CLI path.`,
     };
   }
   return {
     message: args.isPackaged
       ? `The bundled ${args.commandName} command is missing from this app build.`
-      : "The local ADE CLI build was not found.",
+      : `The local ${BRAND.NAME} CLI build was not found.`,
     nextAction: args.isPackaged
-      ? "Reinstall or update ADE."
+      ? `Reinstall or update ${BRAND.NAME}.`
       : "Run npm --prefix apps/ade-cli run build.",
   };
 }
@@ -786,8 +787,8 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
       return {
         ok: false,
         message: args.isPackaged
-          ? "The ADE CLI installer is missing from this app build."
-          : "The local ADE CLI build was not found.",
+          ? `The ${BRAND.NAME} CLI installer is missing from this app build.`
+          : `The local ${BRAND.NAME} CLI build was not found.`,
         status,
       };
     }
@@ -801,7 +802,7 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
       } else {
         const result = await spawnAsync(resolved.installerPath!, []);
         if (result.status !== 0) {
-          throw new Error(result.stderr.trim() || result.stdout.trim() || "ADE CLI installer failed.");
+          throw new Error(result.stderr.trim() || result.stdout.trim() || `${BRAND.NAME} CLI installer failed.`);
         }
       }
       const targetDir = path.dirname(installTargetPath(commandName, envSnapshot));

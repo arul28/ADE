@@ -818,7 +818,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
     fakes.flushCookieStore.mockRejectedValueOnce(new Error("cookie flush failed"));
 
-    await expect(service.flushStorage()).rejects.toThrow("Failed to flush ADE browser storage");
+    await expect(service.flushStorage()).rejects.toThrow("Failed to flush Daex browser storage");
 
     expect(fakes.flushCookieStore).toHaveBeenCalledTimes(1);
     expect(fakes.flushStorageData).toHaveBeenCalledTimes(1);
@@ -2622,7 +2622,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(() => service.navigate({
       projectRoot: "/Users/ade/project-alpha",
       url: "https://alpha.example.test",
-    })).toThrow(/No ADE browser window is open for project: \/Users\/ade\/project-alpha/);
+    })).toThrow(/No Daex browser window is open for project: \/Users\/ade\/project-alpha/);
     expect(service.getStatus(browserWin).tabs).toHaveLength(1);
     expect(service.getStatus(browserWin).url).toBe("https://beta.example.test/");
   });
@@ -3633,7 +3633,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(item.setSavePath).not.toHaveBeenCalled();
     expect(collector.events.at(-1)).toMatchObject({
       type: "error",
-      message: expect.stringContaining("Could not start ADE browser download"),
+      message: expect.stringContaining("Could not start Daex browser download"),
     });
   });
 

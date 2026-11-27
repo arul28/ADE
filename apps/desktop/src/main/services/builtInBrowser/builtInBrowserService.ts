@@ -289,6 +289,7 @@ import type {
 import { builtInBrowserAgentPresence } from "./builtInBrowserPresence";
 import type { BuiltInBrowserAgentPresenceTracker } from "./builtInBrowserPresence";
 import { createBuiltInBrowserPresenceRouter } from "./builtInBrowserPresenceRouter";
+import { BRAND } from "../../../shared/brand";
 
 const BROWSER_PARTITION = BUILT_IN_BROWSER_PARTITION;
 const SCREENSHOT_TIMEOUT_MS = 3_000;
@@ -1494,7 +1495,7 @@ export function createBuiltInBrowserService(args: {
     if (!normalized) return activeService();
     const host = hostWindowForProjectRoot(normalized, sourceWindow);
     if (!host) {
-      throw new Error(`No ADE browser window is open for project: ${normalized}`);
+      throw new Error(`No ${BRAND.NAME} browser window is open for project: ${normalized}`);
     }
     const { win } = host;
     const service = serviceForWindowCollection(win, collectionForProjectRoot(normalized), {
@@ -1843,7 +1844,7 @@ export function createBuiltInBrowserService(args: {
       .filter((result): result is PromiseRejectedResult => result.status === "rejected")
       .map((result) => result.reason);
     if (failures.length > 0) {
-      throw new AggregateError(failures, "Failed to flush ADE browser storage.");
+      throw new AggregateError(failures, `Failed to flush ${BRAND.NAME} browser storage.`);
     }
     lastStorageFlushAt = new Date().toISOString();
     try {
@@ -3510,7 +3511,7 @@ function createBuiltInBrowserWindowService(args: {
     const hint = own.length + free.length > 0
       ? ` Close one with \`ade browser close --tab <id>\`. ${parts.join(" ")}${others ? ` Leave the rest (${others}).` : ""}`
       : ` None is yours or free to close (${others || "every tab is in use"}). Ask the user to close a tab, or to raise "Tabs per project" in Settings › Browser. Closing a tab another chat holds stops that chat's work, so do it only if the user agrees.`;
-    return new Error(`ADE browser is limited to ${tabLimit()} tabs for this project, and all are open.${hint} \`ade browser status\` lists every tab with its owner.`);
+    return new Error(`${BRAND.NAME} browser is limited to ${tabLimit()} tabs for this project, and all are open.${hint} \`ade browser status\` lists every tab with its owner.`);
   };
 
   const reusableOwnedTabForInput = (
@@ -3970,7 +3971,7 @@ function createBuiltInBrowserWindowService(args: {
     }
     renderProcessRecoveryTabs.add(tab.id);
     const exitCode = Number.isFinite(details.exitCode) ? `, exit code ${details.exitCode}` : "";
-    const exitMessage = `ADE browser tab renderer exited (${reason}${exitCode}).`;
+    const exitMessage = `${BRAND.NAME} browser tab renderer exited (${reason}${exitCode}).`;
     try {
       tab.pendingNetworkRequests.clear();
       pushNetworkDiagnostic(tab, {
@@ -4003,7 +4004,7 @@ function createBuiltInBrowserWindowService(args: {
         reason,
         err: errorMessage(error),
       });
-      emitError(new Error(`ADE browser tab renderer exited and recovery failed: ${errorMessage(error)}`));
+      emitError(new Error(`${BRAND.NAME} browser tab renderer exited and recovery failed: ${errorMessage(error)}`));
     } finally {
       renderProcessRecoveryTabs.delete(tab.id);
       notifyTabActivity(tab);
@@ -4339,7 +4340,7 @@ function createBuiltInBrowserWindowService(args: {
         return;
       }
       void recoverTabAfterRenderProcessGone(tab, details).catch((error) => {
-        emitError(new Error(`ADE browser tab renderer recovery failed: ${errorMessage(error)}`));
+        emitError(new Error(`${BRAND.NAME} browser tab renderer recovery failed: ${errorMessage(error)}`));
         emitStatus();
       });
     });
@@ -5162,7 +5163,7 @@ function createBuiltInBrowserWindowService(args: {
       if (!tab) {
         if (downloadWebContents && MANAGED_BROWSER_WEB_CONTENTS.has(downloadWebContents)) return;
         event.preventDefault();
-        emitError(new Error("Blocked ADE browser download from unmanaged webContents."));
+        emitError(new Error(`Blocked ${BRAND.NAME} browser download from unmanaged webContents.`));
         return;
       }
       const startedAt = new Date().toISOString();
@@ -5195,7 +5196,7 @@ function createBuiltInBrowserWindowService(args: {
         RESERVED_BROWSER_DOWNLOAD_PATH_KEYS.add(downloadPathReservationKey(savePath));
       } catch (error) {
         event.preventDefault();
-        emitError(new Error(`Could not start ADE browser download: ${errorMessage(error)}`));
+        emitError(new Error(`Could not start ${BRAND.NAME} browser download: ${errorMessage(error)}`));
         return;
       }
       const download: BuiltInBrowserDownload = {
@@ -6001,7 +6002,7 @@ function createBuiltInBrowserWindowService(args: {
     const result = await args.agentAccessController.authorizeUrl(
       tab?.webContents.getURL() ?? null,
       input,
-      "The agent asked to use the ADE browser.",
+      `The agent asked to use the ${BRAND.NAME} browser.`,
       { waitBudgetMs: BUILT_IN_BROWSER_APPROVAL_CALL_BUDGET_MS },
     );
     if (!result.granted) {
@@ -6769,7 +6770,7 @@ function createBuiltInBrowserWindowService(args: {
     if (problem.fingerprint !== input.fingerprint) {
       throw new AdeExpectedError("The page's certificate changed. Reload the page and check it again.", "user");
     }
-    if (!args.certificateTrust) throw new Error("Certificate trust is not available in this ADE build.");
+    if (!args.certificateTrust) throw new Error(`Certificate trust is not available in this ${BRAND.NAME} build.`);
     await args.certificateTrust.trust(tab.isolation?.partition ?? BROWSER_PARTITION, problem);
     if (!tab.webContents.isDestroyed()) {
       tab.loadError = null;
@@ -7227,7 +7228,7 @@ function createBuiltInBrowserWindowService(args: {
         } catch {
           current = null;
         }
-        if (current !== pageOrigin) throw new AdeExpectedError(`The page left ${site} before ADE could sign in. Nothing was filled.`, "user");
+        if (current !== pageOrigin) throw new AdeExpectedError(`The page left ${site} before ${BRAND.NAME} could sign in. Nothing was filled.`, "user");
       };
       const fields = await tab.webContents.executeJavaScriptInIsolatedWorld(BUILT_IN_BROWSER_LOGIN_WORLD_ID, [{ code: LOGIN_FIELD_FINDER }]) as { username: boolean; password: boolean; code?: boolean } | null;
       const filled: string[] = [];
@@ -7313,7 +7314,7 @@ function createBuiltInBrowserWindowService(args: {
           current = null;
         }
         if (current !== target.origin) {
-          throw new AdeExpectedError(`The page left ${site} before ADE finished. Nothing was saved; open the sign-up form again.`, "user");
+          throw new AdeExpectedError(`The page left ${site} before ${BRAND.NAME} finished. Nothing was saved; open the sign-up form again.`, "user");
         }
         await focusElementTarget(tab, { selector: fieldSelector(index) }, { select: true, clear: true });
         await insertTextForAction(tab, password, null);
@@ -7344,7 +7345,7 @@ function createBuiltInBrowserWindowService(args: {
         itemId = saved.id;
       } catch (error) {
         await clearFields();
-        throw new AdeExpectedError(`ADE could not save the new password for ${site}, so the boxes were cleared; do not submit the form. ${error instanceof Error ? error.message : ""}`.trim(), "user");
+        throw new AdeExpectedError(`${BRAND.NAME} could not save the new password for ${site}, so the boxes were cleared; do not submit the form. ${error instanceof Error ? error.message : ""}`.trim(), "user");
       }
       logger()?.info("built_in_browser.signup_filled", { tabId: tab.id, fields: filled.join(",") });
       emitStatus();
@@ -7460,7 +7461,7 @@ function createBuiltInBrowserWindowService(args: {
     } catch (error) {
       if (tab.debuggerHolds.size === 0) removeTabCdpListener(tab);
       throw new Error(
-        `Could not attach the ADE browser debugger to tab ${tab.id}: ${errorMessage(error)}. Close DevTools for this tab and retry.`,
+        `Could not attach the ${BRAND.NAME} browser debugger to tab ${tab.id}: ${errorMessage(error)}. Close DevTools for this tab and retry.`,
       );
     }
     tab.debuggerHolds.add(owner);

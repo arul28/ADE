@@ -35,6 +35,7 @@ import path from "node:path";
 
 import { terminateProcessTree } from "../../shared/processExecution";
 import type { LoginImportReadRequest, LoginImportReadResponse } from "./loginImportRead";
+import { BRAND } from "../../../../shared/brand";
 
 export type LoginImportReadWorkerOptions = {
   /** Injected for tests. */
@@ -91,7 +92,7 @@ export function readLoginImportSourceInWorker(
 ): Promise<LoginImportReadResponse> {
   const workerPath = options.workerPath ?? resolveLoginImportReadWorkerPath();
   if (!options.spawnWorker && !fs.existsSync(workerPath)) {
-    return Promise.resolve(failed("ADE's login import helper is missing from this build."));
+    return Promise.resolve(failed(`${BRAND.NAME}'s login import helper is missing from this build.`));
   }
   return new Promise((resolve) => {
     const spawnWorker = options.spawnWorker ?? spawn;

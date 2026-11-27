@@ -19,6 +19,7 @@ import {
   resolveCursorCloudRelayBaseUrl,
   type CursorCloudRelayCredentialStore,
 } from "./cursorCloudRelayConfig";
+import { BRAND } from "../../../shared/brand";
 
 const DEFAULT_CURSOR_CLOUD_RELAY_POLL_INTERVAL_MS = 45_000;
 const CURSOR_CLOUD_RELAY_PAGE_LIMIT = 500;
@@ -29,7 +30,7 @@ const MIN_CURSOR_WEBHOOK_SECRET_LENGTH = 32;
 const UNAUTHORIZED_FIRST_PAUSE_MS = 5 * 60_000;
 const UNAUTHORIZED_MAX_PAUSE_MS = 6 * 60 * 60_000;
 const CURSOR_CLOUD_RELAY_UNAUTHORIZED_MESSAGE =
-  "The Cursor Cloud relay refused this computer's credentials. Sign in to ADE again, or set up Cursor Cloud events again.";
+  `The Cursor Cloud relay refused this computer's credentials. Sign in to ${BRAND.NAME} again, or set up Cursor Cloud events again.`;
 
 export type CursorCloudIngressStatus = {
   state: "unconfigured" | "ready" | "error";

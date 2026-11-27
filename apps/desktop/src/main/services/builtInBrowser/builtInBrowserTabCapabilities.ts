@@ -125,6 +125,7 @@ import { DEMO_DRAG_PRESS_MS, DEMO_DRAG_STEP_MS, DEMO_DRAG_STEPS, demoDragSeconds
 import { produceDemoVideo } from "../demoVideo/demoRenderService";
 import { watchDemoRecording } from "../demoVideo/demoRecordingGuard";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
+import { BRAND } from "../../../shared/brand";
 
 const DEFAULT_FIND_IN_PAGE_TIMEOUT_MS = 5_000;
 const MAX_FIND_IN_PAGE_TIMEOUT_MS = 30_000;
@@ -1830,7 +1831,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       createCaptureWindow: () => {
         const captureWindow = createCaptureWindow();
         if (!captureWindow) {
-          throw new Error("ADE browser recording needs a desktop window; none is available.");
+          throw new Error(`${BRAND.NAME} browser recording needs a desktop window; none is available.`);
         }
         return captureWindow;
       },
@@ -1894,7 +1895,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
   const defaultCaptureWindowFactory = (): CaptureWindowLike => {
     const BrowserWindowCtor = electronBrowserWindowCtor();
     if (typeof BrowserWindowCtor !== "function") {
-      throw new Error("ADE browser recording is unavailable without an Electron window.");
+      throw new Error(`${BRAND.NAME} browser recording is unavailable without an Electron window.`);
     }
     return new BrowserWindowCtor({
       show: false,

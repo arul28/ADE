@@ -101,6 +101,7 @@ import { SessionTurnAbandonedError } from "../chat/sessionTurnLimits";
 import { PENDING_INPUT_SEND_BLOCKED_MESSAGE } from "../../../shared/pendingInputAnswers";
 import { isMovedAwayChatError } from "../../../shared/crossMachineMoveLock";
 import { CROSS_MACHINE_CALLER_FIELDS } from "../../../shared/crossMachineHandoff";
+import { BRAND } from "../../../shared/brand";
 
 const execFileAsync = promisify(execFile);
 
@@ -2045,9 +2046,9 @@ export function createAutomationService({
   };
   const notHomeMessage = (rule: AutomationRule): string =>
     rule.needsNewerAde
-      ? `'${rule.name}' was made with a newer ADE. Update ADE on this computer to run it here.`
+      ? `'${rule.name}' was made with a newer ${BRAND.NAME}. Update ${BRAND.NAME} on this computer to run it here.`
       : isAdeCloudHome(rule.home)
-        ? `'${rule.name}' runs on ADE Cloud: ADE's server starts each run on its own cloud computer. Change "Runs on" to this computer to run it here.`
+        ? `'${rule.name}' runs on ${BRAND.CLOUD_NAME}: ${BRAND.NAME}'s server starts each run on its own cloud computer. Change "Runs on" to this computer to run it here.`
         : `'${rule.name}' runs on ${rule.home?.name ?? "another computer"}, not this one. Change "Runs on" to this computer to run it here.`;
   /**
    * True while this home must not start a rule on a trigger: a new home waits
@@ -2132,7 +2133,7 @@ export function createAutomationService({
         ? "Tailscale Funnel is not enabled for this machine. Enable Funnel, then refresh Webhooks."
         : tailscaleMessage;
       tailscaleMessage = tailscaleAvailable
-        ? "Tailscale is available, but Funnel is not exposing the ADE webhook gateway yet."
+        ? `Tailscale is available, but Funnel is not exposing the ${BRAND.NAME} webhook gateway yet.`
         : tailscaleMessage;
     }
     const next: AutomationWebhookGatewayStatus = {
@@ -2214,7 +2215,7 @@ export function createAutomationService({
         ready: webhookVia != null,
         via: webhookVia,
         setupError: webhookVia == null
-          ? "Start the local webhook server or configure ADE Webhook Gateway in Automations settings."
+          ? `Start the local webhook server or configure ${BRAND.NAME} Webhook Gateway in Automations settings.`
           : null,
       },
       linear: {
@@ -3528,7 +3529,7 @@ export function createAutomationService({
     limits?: AutomationAgentLimits | null,
   ): Promise<Pick<AutomationActionOutcome, "status" | "output" | "heldForMovedChat">> => {
     if (!adeActionRegistryRef) {
-      return { status: "failed", output: "ADE action registry is not available in this process." };
+      return { status: "failed", output: `${BRAND.NAME} action registry is not available in this process.` };
     }
     const domain = (config.domain ?? "").trim();
     const actionName = (config.action ?? "").trim();
@@ -3536,7 +3537,7 @@ export function createAutomationService({
       return { status: "failed", output: "ade-action requires both 'domain' and 'action'." };
     }
     if (!adeActionRegistryRef.isAllowed(domain, actionName)) {
-      return { status: "failed", output: `Action '${domain}.${actionName}' is not in the ADE action registry.` };
+      return { status: "failed", output: `Action '${domain}.${actionName}' is not in the ${BRAND.NAME} action registry.` };
     }
     const service = adeActionRegistryRef.getService(domain);
     if (!service) {
@@ -4248,7 +4249,7 @@ export function createAutomationService({
   }): Promise<{ launchId: string; laneName: string; machineName: string }> => {
     const execution = args.rule.execution;
     const target = automationCloudTarget(execution);
-    if (!execution || !target) throw new Error("This rule doesn't run on ADE Cloud.");
+    if (!execution || !target) throw new Error(`This rule doesn't run on ${BRAND.CLOUD_NAME}.`);
     const problem = automationCloudProblem(execution);
     // The rule's own settings, with the sentence that fixes them.
     if (problem) throw new AdeExpectedError(problem, "user");
@@ -4261,7 +4262,7 @@ export function createAutomationService({
     const launchAction = cloud?.lane_launch;
     const statusAction = cloud?.lane_launch_status;
     if (typeof launchAction !== "function" || typeof statusAction !== "function") {
-      return fail("This ADE can't start a lane on ADE Cloud. Run the rule on a machine where ADE runs in the background.");
+      return fail(`This ${BRAND.NAME} can't start a lane on ${BRAND.CLOUD_NAME}. Run the rule on a machine where ${BRAND.NAME} runs in the background.`);
     }
     const callCloud = async (action: unknown, input: Record<string, unknown>): Promise<Record<string, unknown> | null> => {
       const answer = await (action as (input: unknown) => Promise<unknown>).call(cloud, input);
@@ -4271,7 +4272,7 @@ export function createAutomationService({
     let laneConfig: ChatLaunchLaneConfig = { mode: "new" };
     if (execution.laneMode === "pr-branch") {
       const headBranch = trimToNull(args.trigger.pr?.headBranch);
-      if (!headBranch) return fail("This run has no pull request branch to open on ADE Cloud.");
+      if (!headBranch) return fail(`This run has no pull request branch to open on ${BRAND.CLOUD_NAME}.`);
       const prUrl = trimToNull(args.trigger.pr?.url);
       // A fresh clone has only the remote's branches; the computer links the lane to the PR.
       laneConfig = { mode: "existing", branchRef: `origin/${headBranch}`, ...(prUrl ? { pullRequestUrl: prUrl } : {}) };
@@ -4296,7 +4297,7 @@ export function createAutomationService({
         read: () => callCloud(statusAction, { launchId, approval: AUTOMATION_CLOUD_APPROVAL }),
         // The join waits for the person: the run says where to approve it.
         onApprovalLink: (link) => {
-          updateRun(args.runId, { summary: `Waiting for you to approve the new ADE Cloud computer: ${link}` });
+          updateRun(args.runId, { summary: `Waiting for you to approve the new ${BRAND.CLOUD_NAME} computer: ${link}` });
           emit({ type: "runs-updated", automationId: args.rule.id, runId: args.runId });
         },
         pollMs: CLOUD_RUN_POLL_MS,
@@ -4310,7 +4311,7 @@ export function createAutomationService({
       return fail(error instanceof Error ? error.message : String(error));
     }
     const { outcome, status } = followed;
-    if (outcome === "missing" || !status) return fail("This machine's ADE no longer has the run's ADE Cloud launch.");
+    if (outcome === "missing" || !status) return fail(`This machine's ${BRAND.NAME} no longer has the run's ${BRAND.CLOUD_NAME} launch.`);
     const snapshot = status.launch;
     switch (outcome) {
       case "succeeded": {
@@ -4323,13 +4324,13 @@ export function createAutomationService({
         return { launchId, laneName: snapshot.laneName || laneName, machineName };
       }
       case "cancelled":
-        return fail("The run's ADE Cloud launch was cancelled, and its computer deleted.");
+        return fail(`The run's ${BRAND.CLOUD_NAME} launch was cancelled, and its computer deleted.`);
       case "failed": {
-        const why = snapshot.error?.trim().replace(/[.\s]+$/, "") || "The lane didn't start on ADE Cloud";
+        const why = snapshot.error?.trim().replace(/[.\s]+$/, "") || `The lane didn't start on ${BRAND.CLOUD_NAME}`;
         return fail(`${why}. Its computer stays for a retry: ade chat launch-status ${launchId} --machine cloud.`);
       }
       case "timeout":
-        return fail(`The lane is still starting on ADE Cloud after ${CLOUD_RUN_WAIT_MS / 60_000} minutes. Follow it: ade chat launch-status ${launchId} --machine cloud.`);
+        return fail(`The lane is still starting on ${BRAND.CLOUD_NAME} after ${CLOUD_RUN_WAIT_MS / 60_000} minutes. Follow it: ade chat launch-status ${launchId} --machine cloud.`);
     }
   };
 
@@ -4613,7 +4614,7 @@ export function createAutomationService({
       try {
         updateRun(run.id, {
           status: "running",
-          summary: "Starting the run's lane on ADE Cloud",
+          summary: `Starting the run's lane on ${BRAND.CLOUD_NAME}`,
           confidence_json: JSON.stringify(confidence),
         });
         emit({ type: "runs-updated", automationId: args.rule.id, runId: run.id });
@@ -4623,7 +4624,7 @@ export function createAutomationService({
           runId: run.id,
           chat: { create, message: { text: prompt, displayText: args.rule.prompt?.trim() || args.rule.name } },
         });
-        const output = `The chat runs on ADE Cloud, in the lane "${started.laneName}" on ${started.machineName}.`;
+        const output = `The chat runs on ${BRAND.CLOUD_NAME}, in the lane "${started.laneName}" on ${started.machineName}.`;
         finishAction({ id: actionId, status: "succeeded", output });
         updateOpenRun(run.id, {
           ended_at: nowIso(),
@@ -5764,7 +5765,7 @@ export function createAutomationService({
         automation_ids_json: JSON.stringify([]),
         status: "ignored",
         summary: elsewhere
-          ? `Matched '${elsewhere.name}', which ${elsewhere.needsNewerAde ? "needs a newer ADE here" : `runs on ${elsewhere.home?.name ?? "another computer"}`}.`
+          ? `Matched '${elsewhere.name}', which ${elsewhere.needsNewerAde ? `needs a newer ${BRAND.NAME} here` : `runs on ${elsewhere.home?.name ?? "another computer"}`}.`
           : args.summary ?? "Ingress delivery did not match any enabled automation rules.",
         cursor: args.cursor ?? null,
       });
@@ -5867,11 +5868,11 @@ export function createAutomationService({
       const registry = adeActionRegistryRef;
       if (!registry) return null;
       if (!registry.isAllowed(domain, action)) {
-        return `The ADE on this machine can't run '${domain}.${action}' in an automation. Update ADE here, or remove the step.`;
+        return `The ${BRAND.NAME} on this machine can't run '${domain}.${action}' in an automation. Update ${BRAND.NAME} here, or remove the step.`;
       }
       const service = registry.getService(domain);
       if (service && typeof service[action] !== "function") {
-        return `The ADE on this machine doesn't have '${domain}.${action}' yet. Update ADE here, then try again.`;
+        return `The ${BRAND.NAME} on this machine doesn't have '${domain}.${action}' yet. Update ${BRAND.NAME} here, then try again.`;
       }
       return null;
     },
@@ -6010,7 +6011,7 @@ export function createAutomationService({
       if (!stored) throw new Error(`Automation not found: ${id}`);
       const deviceId = args.deviceId?.trim() || null;
       const name = args.name?.trim() || null;
-      if (args.cloud && deviceId) throw new Error("Pick ADE Cloud or a computer, not both.");
+      if (args.cloud && deviceId) throw new Error(`Pick ${BRAND.CLOUD_NAME} or a computer, not both.`);
       if (deviceId && !name) throw new Error("Name the computer too (--name), so other computers can show it.");
       const current = findRule(id);
       // ADE Cloud as the home: ADE's server watches the trigger (C9); the brain's
@@ -6021,7 +6022,7 @@ export function createAutomationService({
       const saved = findRule(id);
       if (!saved?.home) {
         throw new Error(
-          `'${saved?.name ?? id}' stays on this computer: it belongs to one chat, the project has no remote, or ADE is signed out, so no other computer can run it.`,
+          `'${saved?.name ?? id}' stays on this computer: it belongs to one chat, the project has no remote, or ${BRAND.NAME} is signed out, so no other computer can run it.`,
         );
       }
       syncFromConfig();

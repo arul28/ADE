@@ -30,6 +30,7 @@ import {
 import { lowerCaseHeaders, queryRecord } from "./webhookRequest";
 import { WEBHOOK_MAX_BODY_BYTES } from "../../../shared/automationWebhooks";
 import { captureProblem } from "../../../shared/sentry/capture";
+import { BRAND } from "../../../shared/brand";
 
 /** GitHub's own webhook payload limit; the hosted relay enforces the same 25 MB. */
 const MAX_GITHUB_WEBHOOK_BODY_BYTES = 25 * 1024 * 1024;
@@ -1647,7 +1648,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         status: authRefused ? "disabled" : "error",
         lastPolledAt: new Date().toISOString(),
         lastError: authRefused
-          ? "The GitHub relay refused this machine's credentials for this repository. Sign in to ADE again (ADE then retries on its own), or install the ADE GitHub App on the repository and retry."
+          ? `The GitHub relay refused this machine's credentials for this repository. Sign in to ${BRAND.NAME} again (${BRAND.NAME} then retries on its own), or install the ${BRAND.NAME} GitHub App on the repository and retry.`
           : error instanceof Error ? error.message : String(error),
       });
     }

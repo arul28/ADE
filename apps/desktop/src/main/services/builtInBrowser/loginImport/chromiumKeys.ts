@@ -22,6 +22,7 @@ import {
   resolveTrustedWindowsTool,
   TrustedWindowsToolError,
 } from "../../../../../../ade-cli/src/lib/trustedWindowsTools";
+import { BRAND } from "../../../../shared/brand";
 
 const KEY_SALT = "saltysalt";
 const KEY_LENGTH = 16;
@@ -170,7 +171,7 @@ function unwrapWindowsDpapiKey(wrapped: Buffer): Buffer {
     throw new ChromiumKeyError(
       "key_unavailable",
       cause instanceof TrustedWindowsToolError
-        ? "Windows would not hand ADE a trusted PowerShell to unwrap the browser key."
+        ? `Windows would not hand ${BRAND.NAME} a trusted PowerShell to unwrap the browser key.`
         : "Windows could not unwrap the browser key.",
       cause,
     );
@@ -298,5 +299,5 @@ export function resolveChromiumKeys(
     return { gcmV10: unwrapWindows(decodeWindowsWrappedKey(contents)) };
   }
 
-  throw new ChromiumKeyError("unsupported", "ADE can't import logins on this platform.");
+  throw new ChromiumKeyError("unsupported", `${BRAND.NAME} can't import logins on this platform.`);
 }

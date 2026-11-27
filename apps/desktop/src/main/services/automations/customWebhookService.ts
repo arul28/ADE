@@ -49,6 +49,7 @@ import {
   signWebhookBody,
   verifyWebhookSignature,
 } from "./webhookRequest";
+import { BRAND } from "../../../shared/brand";
 
 export const WEBHOOK_RELAY_API_BASE_ENV_KEY = "ADE_WEBHOOK_RELAY_API_BASE_URL";
 const DELIVERIES_KEPT_PER_HOOK = 50;
@@ -165,8 +166,8 @@ export function resolveWebhookRelayBaseUrl(db: Pick<AdeDb, "getJson">): string {
 const OUTCOME_DETAIL: Record<"no_rule" | "disabled" | "too_large" | "rate_limited", string> = {
   no_rule: "Arrived, but no saved automation uses this URL yet. Save the automation and it will run on the next one.",
   disabled: "Arrived while the automation was turned off.",
-  too_large: "The body was over 1 MB, so ADE did not read it.",
-  rate_limited: "More than 60 requests arrived in a minute. ADE skipped the extras.",
+  too_large: `The body was over 1 MB, so ${BRAND.NAME} did not read it.`,
+  rate_limited: `More than 60 requests arrived in a minute. ${BRAND.NAME} skipped the extras.`,
 };
 
 export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
@@ -213,7 +214,7 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
         signal: AbortSignal.timeout(15_000),
       });
       const payload = await response.json().catch(() => null) as { error?: string } | null;
-      if (!response.ok) throw new Error(payload?.error ?? `ADE relay answered HTTP ${response.status}.`);
+      if (!response.ok) throw new Error(payload?.error ?? `${BRAND.NAME} relay answered HTTP ${response.status}.`);
       deps.db.run(
         "update automation_webhook_hooks set relay_registered_at = ?, relay_error = null where project_id = ? and hook_id = ?",
         [nowIso(), deps.projectId, hookId],
@@ -264,8 +265,8 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
       return { ...base, url: `${gateway.replace(/\/+$/, "")}${path}`, route: "gateway", localUrl };
     }
     const setupError = row.relay_error === "signed_out" || !row.relay_error
-      ? "Sign in to your ADE account to get a public URL. Until then, only apps on this computer can reach it."
-      : `ADE's relay could not set up this URL: ${row.relay_error}`;
+      ? `Sign in to your ${BRAND.NAME} account to get a public URL. Until then, only apps on this computer can reach it.`
+      : `${BRAND.NAME}'s relay could not set up this URL: ${row.relay_error}`;
     return { ...base, url: localUrl, route: localUrl ? "local" : null, localUrl, setupError };
   };
 
@@ -721,7 +722,7 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
     if (config.maxAgeMinutes && request.via === "relay") {
       const ageMs = Date.now() - Date.parse(receivedAt);
       if (Number.isFinite(ageMs) && ageMs > config.maxAgeMinutes * 60_000) {
-        record("expired", `ADE's relay held it for ${Math.round(ageMs / 60_000)} minutes while this computer was away, longer than the ${config.maxAgeMinutes}-minute limit.`);
+        record("expired", `${BRAND.NAME}'s relay held it for ${Math.round(ageMs / 60_000)} minutes while this computer was away, longer than the ${config.maxAgeMinutes}-minute limit.`);
         return { status: 202, outcome: "expired", deliveryId };
       }
     }
@@ -732,7 +733,7 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
     } else if (config.signature) {
       const secret = deps.readSecret(config.signature.secretName);
       if (!secret) {
-        record("bad_signature", `The signing secret ${config.signature.secretName} is not saved in this project, so ADE could not check the signature.`, { signature: "unchecked" });
+        record("bad_signature", `The signing secret ${config.signature.secretName} is not saved in this project, so ${BRAND.NAME} could not check the signature.`, { signature: "unchecked" });
         return { status: 401, outcome: "bad_signature", deliveryId };
       }
       const failure = verifyWebhookSignature({
@@ -836,8 +837,8 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
           "update automation_webhook_deliveries set outcome = 'error', detail = ?, dedupe_key = null where project_id = ? and id = ?",
           [
             row.body_truncated === 1
-              ? "ADE restarted before this ran, and the body was too large to keep, so it cannot run now. Have the service send it again."
-              : "ADE restarted before this ran, and the automation it was for has since changed or been removed.",
+              ? `${BRAND.NAME} restarted before this ran, and the body was too large to keep, so it cannot run now. Have the service send it again.`
+              : `${BRAND.NAME} restarted before this ran, and the automation it was for has since changed or been removed.`,
             deps.projectId,
             row.id,
           ],
@@ -871,7 +872,7 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
     // One that arrived before the secret was saved proved nothing either way,
     // and replaying it is how setup is finished.
     if (row.signature === "failed" || row.signature === "missing") {
-      throw new Error("That request failed the signature check, so ADE will not run it. Fix the signing secret, then have the service send it again.");
+      throw new Error(`That request failed the signature check, so ${BRAND.NAME} will not run it. Fix the signing secret, then have the service send it again.`);
     }
     const body = row.body_text ?? "";
     // The stored body is pretty-printed JSON or the original text; read as
@@ -919,7 +920,7 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
     };
     if (config?.signature) {
       const secret = deps.readSecret(config.signature.secretName);
-      if (!secret) throw new Error(`Save the signing secret ${config.signature.secretName} first. ADE signs the test with it, the same way the sender will.`);
+      if (!secret) throw new Error(`Save the signing secret ${config.signature.secretName} first. ${BRAND.NAME} signs the test with it, the same way the sender will.`);
       headers[config.signature.header] = signWebhookBody(config.signature, secret, body);
     }
     const route: AutomationWebhookRoute = endpoint.route;

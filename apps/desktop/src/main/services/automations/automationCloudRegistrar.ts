@@ -6,6 +6,7 @@ import type { AutomationCloudHomeState, AutomationRule, AutomationRun, Automatio
 import type { Logger } from "../logging/logger";
 import { automationRuleAccountId, automationRuleCloudId } from "./automationRuleAccountStore";
 import { webhookIdOf, type CloudHomesView } from "./automationRuleAccountSync";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Keeps ADE Cloud's server copy of the rules whose home is ADE Cloud (C9).
@@ -104,7 +105,7 @@ function automationRunOf(rule: Pick<AutomationRule, "id" | "execution">, run: Cl
     confidence: null,
     triggerMetadata: { runsOn: "ade-cloud" },
     // A run the server refused or skipped at once never started.
-    summary: run.state === "failed" || run.state === "skipped" ? null : "Started on ADE Cloud.",
+    summary: run.state === "failed" || run.state === "skipped" ? null : `Started on ${BRAND.CLOUD_NAME}.`,
     billingCode: null,
   };
 }
@@ -304,9 +305,9 @@ export function createAutomationCloudRegistrar(deps: AutomationCloudRegistrarDep
     /** Run now for a cloud-homed rule: ADE's server starts it on its own cloud computer. */
     async runNow(rule: Pick<AutomationRule, "id" | "execution">): Promise<AutomationRun> {
       const api = deps.api();
-      if (!api) throw new Error("Sign in to your ADE account to run this on ADE Cloud.");
+      if (!api) throw new Error(`Sign in to your ${BRAND.NAME} account to run this on ${BRAND.CLOUD_NAME}.`);
       const serverId = serverIdOf(automationRuleAccountId(rule.id));
-      if (!serverId) throw new Error("This project has no GitHub remote, so it can't run on ADE Cloud.");
+      if (!serverId) throw new Error(`This project has no GitHub remote, so it can't run on ${BRAND.CLOUD_NAME}.`);
       const run = await api.runAutomation(serverId);
       serverReadAt = 0;
       deps.onStateChanged();
