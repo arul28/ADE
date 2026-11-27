@@ -4743,6 +4743,9 @@ final class SyncService: ObservableObject {
   /// Which project's Linear team keys were last read, and when
   /// (`refreshLinearWorkspaceTeamKeys`). Memory only.
   private var linearWorkspaceTeamKeysRead: (scope: String, at: Date)?
+  /// Moves with every read that starts, so a read from before a connect,
+  /// switch or disconnect cannot land after the one that followed it.
+  private var linearWorkspaceTeamKeysGeneration = 0
   /// Last-known Cursor connection status for the active project. The Work
   /// toolbar and every mobile Cursor Cloud entry point fail closed until the
   /// host confirms that a Cursor API key/OAuth credential is available.
@@ -12500,6 +12503,7 @@ final class SyncService: ObservableObject {
     let readsThroughAccount = linearReadsThroughAccount
     guard linearConnectionStatus?.connected == true, readsThroughAccount || activeProjectId != nil else {
       linearWorkspaceTeamKeysRead = nil
+      linearWorkspaceTeamKeysGeneration &+= 1
       WorkThreadEntityDirectory.shared.record(linearWorkspaceTeamKeys: [])
       return
     }
@@ -12511,12 +12515,14 @@ final class SyncService: ObservableObject {
       WorkThreadEntityDirectory.shared.record(linearWorkspaceTeamKeys: [])
     }
     linearWorkspaceTeamKeysRead = (scope, Date())
+    linearWorkspaceTeamKeysGeneration &+= 1
+    let generation = linearWorkspaceTeamKeysGeneration
     guard let catalog = try? await fetchLinearIssuePickerData() else {
       // Unreadable now: keep what is known and try again next time.
-      if linearWorkspaceTeamKeysRead?.scope == scope { linearWorkspaceTeamKeysRead = nil }
+      if linearWorkspaceTeamKeysGeneration == generation { linearWorkspaceTeamKeysRead = nil }
       return
     }
-    guard linearWorkspaceTeamKeysRead?.scope == scope else { return }
+    guard linearWorkspaceTeamKeysGeneration == generation else { return }
     WorkThreadEntityDirectory.shared.record(linearWorkspaceTeamKeys: catalog.states.compactMap(\.teamKey))
   }
 
