@@ -1475,7 +1475,7 @@ import {
   type TranscriptHistoryPageRead,
 } from "./chatTranscriptHistoryPager";
 import { extractLeadingSlashCommand, isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
-import { rewriteLegacyBundledSkillCommand } from "../../../shared/agentSkillRoots";
+import { getAgentSkillRootsWithSource, rewriteLegacyBundledSkillCommand } from "../../../shared/agentSkillRoots";
 import { CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE, cursorOwnsSessionName } from "../../../shared/cursorCloudNaming";
 import { COMPACT_BLOCKED_TURN_ACTIVE, isManualCompactCommand, manualCompactInstructions } from "../../../shared/contextCompaction";
 import {
@@ -67869,9 +67869,12 @@ export function createAgentChatService(args: {
     }
     args = withSideChatRole(managed, args);
     // `/ade:ade-browser` and `/ade-browser` (saved prompts, automations, habit)
-    // name skills that are `daex:daex-browser` / `daex-browser` now.
+    // name skills that are `daex:daex-browser` / `daex-browser` now, unless a
+    // project or user skill still carries the old name.
     if (!options?.preparedMessage && typeof args.text === "string") {
-      const renamed = rewriteLegacyBundledSkillCommand(args.text);
+      const renamed = rewriteLegacyBundledSkillCommand(args.text, (name) =>
+        getAgentSkillRootsWithSource({ cwd: managed.laneWorktreePath })
+          .some(({ root, source }) => source !== "bundled" && fs.existsSync(path.join(root, name, "SKILL.md"))));
       if (renamed !== args.text) args = { ...args, text: renamed };
     }
     await accountSwitchesInFlight.get(args.sessionId)?.catch(() => undefined);

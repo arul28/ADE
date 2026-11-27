@@ -179,13 +179,16 @@ export function isAgentSkillNamed(name: string, skills: readonly string[]): bool
  * Copilot and the `/` menus use). Saved prompts, automations and muscle memory
  * still type the old names, and no provider knows them any more. Any other
  * text, including an old-looking name that is not a bundled skill, is
- * returned unchanged.
+ * returned unchanged, and so is a bare `/ade-<x>` when `ownSkillExists` says
+ * a project or user skill carries that exact name: it wins, as in
+ * {@link canonicalBundledAgentSkillName}.
  */
-export function rewriteLegacyBundledSkillCommand(text: string): string {
+export function rewriteLegacyBundledSkillCommand(text: string, ownSkillExists?: (name: string) => boolean): string {
   const match = /^(\s*)\/(ade:)?(ade-[a-z0-9-]+)(?=\s|$)/.exec(text);
   if (!match) return text;
   const target = LEGACY_BUNDLED_AGENT_SKILL_ALIASES[match[3]!];
   if (!target) return text;
+  if (!match[2] && ownSkillExists?.(match[3]!)) return text;
   const command = match[2] ? `/${BUNDLED_AGENT_SKILL_PLUGIN}:${target}` : `/${target}`;
   return `${match[1]}${command}${text.slice(match[0].length)}`;
 }
