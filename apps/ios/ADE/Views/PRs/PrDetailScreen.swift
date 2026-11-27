@@ -455,6 +455,11 @@ struct PrDetailView: View {
       else { return }
       _ = try? await syncService.fetchGitHubPullRequestSnapshot(revalidate: false)
     }
+    // A bare `ADE-123` in the PR text links only with the workspace's team
+    // keys. Work normally reads them; a PR opened first asks once.
+    .task(id: syncService.activeProjectId) {
+      await syncService.ensureLinearWorkspaceTeamKeys()
+    }
     .onChange(of: snapshot != nil) { _, loaded in
       if loaded { openTiming.mark("prDetail.snapshot") }
     }

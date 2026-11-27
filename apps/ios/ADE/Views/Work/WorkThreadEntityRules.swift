@@ -181,8 +181,12 @@ enum WorkThreadEntityRules {
     pattern: "(?<![\(word)])(?:PR|pull request)\\s+(#\\d{1,6})(?![\(word)])",
     options: [.caseInsensitive]
   )
+  // An issue key as Linear prints it (`proseIssueKeyPattern` on the desktop):
+  // uppercase only, and never inside a path, branch name or version —
+  // `feat/ADE-1`, `ade-1-fix` and `ADE-1.2` are not references. `linearChip`
+  // still requires one of the workspace's team keys, so `UTF-8` stays text.
   private static let proseLinearRegex = try! NSRegularExpression(
-    pattern: "(?<![\(word)/#-])([A-Za-z][A-Za-z0-9]{0,9}-\\d{1,9})(?![\(word)-])"
+    pattern: "(?<![\(word)/#.-])([A-Z][A-Z0-9_]{0,9}-\\d{1,9})(?![\(word)-]|\\.\\d)"
   )
 
   private static func wholeMatch(_ regex: NSRegularExpression, _ value: String) -> NSTextCheckingResult? {
@@ -479,7 +483,15 @@ final class WorkThreadEntityDirectory: ObservableObject {
 
   private var lanes: [WorkThreadEntityLane] = []
   private var sessions: [WorkThreadEntitySession] = []
-  private var linearTeamKeys: [String] = []
+  /// Team keys of the issues the lanes link (a team renamed since keeps its
+  /// old issues reachable), and the connected workspace's own teams
+  /// (`SyncService.refreshLinearWorkspaceTeamKeys`). Matched as one set, as
+  /// the desktop's `ThreadEntityProvider` does.
+  private var laneLinearTeamKeys: [String] = []
+  private var workspaceLinearTeamKeys: [String] = []
+  private var linearTeamKeys: [String] {
+    Array(Set(laneLinearTeamKeys).union(workspaceLinearTeamKeys)).sorted()
+  }
   private var skillNames: [String] = []
   private var signature = ""
 
@@ -500,7 +512,7 @@ final class WorkThreadEntityDirectory: ObservableObject {
         }
       }
     }
-    linearTeamKeys = keys.sorted()
+    laneLinearTeamKeys = keys.sorted()
     sessions = terminalSessions.map { session in
       let live: WorkThreadEntitySession.Live?
       if session.runtimeState == "waiting-input" || session.attentionRequestedAt != nil {
@@ -517,6 +529,15 @@ final class WorkThreadEntityDirectory: ObservableObject {
     rebuildIfChanged()
   }
 
+  /// The connected Linear workspace's team keys; empty when Linear is not
+  /// connected, so a bare `ADE-123` in a PR text or reply stays text.
+  func record(linearWorkspaceTeamKeys keys: [String]) {
+    workspaceLinearTeamKeys = Set(
+      keys.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() }.filter { !$0.isEmpty }
+    ).sorted()
+    rebuildIfChanged()
+  }
+
   /// The chat's slash commands and skills, from the host registry.
   func record(skillNames names: [String]) {
     skillNames = names
@@ -530,11 +551,12 @@ final class WorkThreadEntityDirectory: ObservableObject {
   private func rebuildIfChanged() {
     let laneParts = lanes.map { "\($0.id)\u{1}\($0.name)\u{1}\($0.colorHex ?? "")" }.joined(separator: "\u{2}")
     let sessionParts = sessions.map { "\($0.id)\u{1}\($0.title ?? "")\u{1}\(String(describing: $0.live))" }.joined(separator: "\u{2}")
-    let next = [laneParts, sessionParts, linearTeamKeys.joined(separator: ","), skillNames.joined(separator: ",")]
+    let teamKeys = linearTeamKeys
+    let next = [laneParts, sessionParts, teamKeys.joined(separator: ","), skillNames.joined(separator: ",")]
       .joined(separator: "\u{3}")
     guard next != signature else { return }
     signature = next
-    lookup = WorkThreadEntityLookup(lanes: lanes, sessions: sessions, linearTeamKeys: linearTeamKeys, skillNames: skillNames)
+    lookup = WorkThreadEntityLookup(lanes: lanes, sessions: sessions, linearTeamKeys: teamKeys, skillNames: skillNames)
     revision &+= 1
   }
 }
