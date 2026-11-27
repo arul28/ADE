@@ -88,7 +88,8 @@ function cloudSignInFailureReason(output: string): string | null {
     if (/[▀-▟]/.test(line) || /^at\s+\S/.test(line) || /^Waiting for sign-in/i.test(line)) continue;
     // The sign-in instructions themselves: a code was shown, they are no reason.
     if (/^(?:To finish signing in|Or,? (?:open|to sign in))\b/i.test(line)) continue;
-    const cleaned = scrubSignInLine(line.replace(/^ade:\s*/i, "")).replace(/\s+/g, " ").trim();
+    // The computer's CLI may be older ("ade:") or newer ("daex:") than this app.
+    const cleaned = scrubSignInLine(line.replace(/^(?:ade|daex):\s*/i, "")).replace(/\s+/g, " ").trim();
     if (!/[A-Za-z]{3}/.test(cleaned)) continue;
     return cleaned.length > 220 ? `${cleaned.slice(0, 219)}…` : cleaned;
   }

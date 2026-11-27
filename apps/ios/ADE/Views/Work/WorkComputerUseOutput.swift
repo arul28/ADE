@@ -117,8 +117,10 @@ func cuParseOutput(_ output: String) -> CUOutput {
       parsed.effectReason = reason.isEmpty ? nil : reason
       continue
     }
-    if parsed.errorMessage == nil, cuTests(#"^ade:\s"#, trimmed) {
-      let message = String(trimmed.dropFirst(4)).trimmingCharacters(in: .whitespacesAndNewlines)
+    // The CLI's error line: "ade: …" from older CLIs, "daex: …" from newer ones.
+    if parsed.errorMessage == nil, cuTests(#"^(?:ade|daex):\s"#, trimmed) {
+      let prefixLength = trimmed.hasPrefix("daex:") ? 5 : 4
+      let message = String(trimmed.dropFirst(prefixLength)).trimmingCharacters(in: .whitespacesAndNewlines)
         .replacingOccurrences(of: #"^[A-Z][A-Z0-9_]{3,}:\s*"#, with: "", options: .regularExpression)
       parsed.errorMessage = message.isEmpty ? nil : message
       continue

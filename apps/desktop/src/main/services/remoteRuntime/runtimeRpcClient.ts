@@ -638,6 +638,7 @@ export function summarizeRemoteRuntimeStderr(stderr: string): string {
       && !/\b(?:Experimental|Deprecation)Warning\b/.test(line)
       && !/--trace-(?:warnings|deprecation)\b/.test(line)
     )
-    .map((line) => line.replace(/^ade:\s+(?:Error:\s+)?/, ""));
+    // Older CLIs prefix "ade:", newer ones "daex:".
+    .map((line) => line.replace(/^(?:ade|daex):\s+(?:Error:\s+)?/, ""));
   return kept.length > 0 ? kept.join(" ") : stderr.trim();
 }
