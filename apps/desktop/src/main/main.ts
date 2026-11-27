@@ -14,6 +14,7 @@ import {
   whenSystemCertificateReadSettles,
 } from "./services/shared/outboundNetwork";
 import { SENTRY_ENABLED_ARGV } from "../shared/sentry/config";
+import { BRAND } from "../shared/brand";
 import { coerceSavedWindowRepositoryTabs, type SavedWindowRepositoryTabs } from "../shared/windowRepositoryTabs";
 import { captureProblem, flushSentry } from "../shared/sentry/capture";
 import { scrubFreeTextThenCut } from "../shared/sentry/scrub";
@@ -548,7 +549,6 @@ import { LocalRuntimeConnectionPool } from "./services/localRuntime/localRuntime
 import { createSyncService } from "./services/sync/syncService";
 import {
   blockPackagedLaunchForCrossChannelSyncConflict,
-  resolveLaunchingDesktopAppName,
   startCrossChannelSyncHostConflictCheck,
 } from "./services/sync/packagedSyncHostLaunchGate";
 import { createAutoUpdateService, shouldShowInstalledNotice, WINDOWS_PREPARE_WATCHDOG_MS } from "./services/updates/autoUpdateService";
@@ -1094,7 +1094,7 @@ function buildDesktopPrimaryCredentialStore(
       getMachineMainLogger().info("credential_store.keychain_pending_read", {});
     }
     throw new AdeExpectedError(
-      "The system keychain has not answered yet; ADE will read these credentials once it does.",
+      `The system keychain has not answered yet; ${BRAND.NAME} will read these credentials once it does.`,
       "environment",
     );
   }
@@ -1134,7 +1134,7 @@ function buildDesktopPrimaryCredentialStore(
     // The shared file needs no keychain, so the credentials the brain co-owns
     // stay reachable even while the Electron-only ones are locked away.
     return createUnavailableCredentialStore(
-      "Electron safeStorage is unavailable; unlock the OS credential store to read ADE credentials.",
+      `Electron safeStorage is unavailable; unlock the OS credential store to read ${BRAND.NAME} credentials.`,
     );
   }
   return legacyStore;
@@ -1752,7 +1752,7 @@ async function createWindow(args: {
     });
     const fallbackHtml = encodeURIComponent(
       `<html><body style="margin:0;background:#0f0d14;color:#f8f8f2;font-family:Geist,-apple-system,BlinkMacSystemFont,sans-serif;padding:24px;">` +
-        `<h2 style="margin:0 0 12px;">ADE failed to load renderer</h2>` +
+        `<h2 style="margin:0 0 12px;">${BRAND.NAME} failed to load renderer</h2>` +
         `<p style="margin:0 0 8px;">URL: ${rendererUrl.replace(/</g, "&lt;")}</p>` +
         `<p style="margin:0;">Error: ${toErrorMessage(error).replace(/</g, "&lt;")}</p>` +
         `</body></html>`,
@@ -2245,7 +2245,7 @@ app.whenReady().then(async () => {
       ];
       void dialog.showMessageBox({
         type: resetReceipt.failed.length ? "warning" : "info",
-        message: resetReceipt.failed.length ? "ADE was reset, with a few problems" : "ADE was reset",
+        message: resetReceipt.failed.length ? `${BRAND.NAME} was reset, with a few problems` : `${BRAND.NAME} was reset`,
         detail: lines.join("\n"),
       }).catch(() => undefined);
     }
@@ -2898,11 +2898,11 @@ app.whenReady().then(async () => {
       try {
         const notification = mode === "isolated"
           ? new Notification({
-              title: "ADE is running in fallback mode",
-              body: "The ADE background service did not restart cleanly. Phone sync and connections from other machines are unavailable while ADE keeps retrying in the background.",
+              title: `${BRAND.NAME} is running in fallback mode`,
+              body: `The ${BRAND.NAME} background service did not restart cleanly. Phone sync and connections from other machines are unavailable while ${BRAND.NAME} keeps retrying in the background.`,
             })
           : new Notification({
-              title: "ADE service restored",
+              title: `${BRAND.NAME} service restored`,
               body: "Phone sync and connections from other machines are available again.",
             });
         notification.show();
@@ -3070,7 +3070,7 @@ app.whenReady().then(async () => {
       binding?.displayName
       ?? project?.displayName
       ?? (project?.rootPath ? path.basename(project.rootPath) : null);
-    return label ? `${label} - ADE` : "ADE";
+    return label ? `${label} - ${BRAND.NAME}` : BRAND.NAME;
   };
 
   const setWindowTitle = (win: BrowserWindow, title: string): void => {
@@ -8421,7 +8421,7 @@ app.whenReady().then(async () => {
     if (!root) {
       return {
         ok: false,
-        message: "That project is not on this ADE machine.",
+        message: `That project is not on this ${BRAND.NAME} machine.`,
         projectId: requestedProjectId,
         rootPath: requestedRoot,
       };
@@ -8497,7 +8497,7 @@ app.whenReady().then(async () => {
     if (!rootToForget) {
       return {
         ok: true,
-        message: "Project is already removed from this ADE machine.",
+        message: `Project is already removed from this ${BRAND.NAME} machine.`,
         projectId: requestedProjectId,
         rootPath: requestedRoot,
       };
@@ -8830,7 +8830,7 @@ app.whenReady().then(async () => {
   const assertProjectFolderOpenable = (root: string): void => {
     if (!fs.existsSync(root)) {
       throw markExpected(
-        codedError(`The project folder ${root} isn't there. Plug its drive in or move it back; ADE has not created a replacement.`, "project_data_missing"),
+        codedError(`The project folder ${root} isn't there. Plug its drive in or move it back; ${BRAND.NAME} has not created a replacement.`, "project_data_missing"),
         "user",
       );
     }
@@ -10016,8 +10016,8 @@ app.whenReady().then(async () => {
     if (runningDeletes.length === 0) return true;
     const detail =
       runningDeletes.length === 1
-        ? `${runningDeletes[0]} is deleting a lane. Wait for deletion to finish before quitting ADE.`
-        : `These projects are deleting lanes: ${runningDeletes.join(", ")}. Wait for deletion to finish before quitting ADE.`;
+        ? `${runningDeletes[0]} is deleting a lane. Wait for deletion to finish before quitting ${BRAND.NAME}.`
+        : `These projects are deleting lanes: ${runningDeletes.join(", ")}. Wait for deletion to finish before quitting ${BRAND.NAME}.`;
     const dialogOptions = {
       type: "warning" as const,
       // Always offer an escape: a delete-progress flag can get stuck "running"
@@ -10025,12 +10025,12 @@ app.whenReady().then(async () => {
       // disconnect), and a single-button dialog would trap the app forever,
       // forcing a force-quit. "Quit anyway" is safe — runtime-backed deletes
       // run in the daemon, which keeps running after the desktop quits.
-      buttons: ["Keep ADE open", "Quit anyway"],
+      buttons: [`Keep ${BRAND.NAME} open`, "Quit anyway"],
       defaultId: 0,
       cancelId: 0,
       noLink: true,
       title: "Lane delete in progress",
-      message: "ADE cannot quit while a lane is being deleted.",
+      message: `${BRAND.NAME} cannot quit while a lane is being deleted.`,
       detail: `${detail} You can quit anyway — any in-progress deletion continues in the background.`,
     };
     const parentWindow =
@@ -10090,9 +10090,9 @@ app.whenReady().then(async () => {
       defaultId: 0,
       cancelId: 0,
       noLink: true,
-      title: "Close ADE window?",
-      message: "Close this ADE window?",
-      detail: "ADE keeps running in your other windows.",
+      title: `Close ${BRAND.NAME} window?`,
+      message: `Close this ${BRAND.NAME} window?`,
+      detail: `${BRAND.NAME} keeps running in your other windows.`,
     });
     return response === 1;
   };
@@ -10526,7 +10526,7 @@ app.whenReady().then(async () => {
       targetWindow = opened.windowId != null ? BrowserWindow.fromId(opened.windowId) : null;
     }
     if (!targetWindow || targetWindow.isDestroyed()) {
-      return { ok: false, message: "No ADE window is available for this project." };
+      return { ok: false, message: `No ${BRAND.NAME} window is available for this project.` };
     }
     if (targetWindow.isMinimized()) targetWindow.restore();
     targetWindow.show();
@@ -10649,7 +10649,7 @@ app.whenReady().then(async () => {
           // the window the user is working in throws away their project context.
           const win = await acquireRemoteAttentionHostWindow();
           if (!win || win.isDestroyed() || !ipcBridge) {
-            throw new Error("No ADE window is available for the owning machine.");
+            throw new Error(`No ${BRAND.NAME} window is available for the owning machine.`);
           }
           const binding = await ipcBridge.openAttentionProject({
             machineKey: accountMachineKey,
@@ -10666,7 +10666,7 @@ app.whenReady().then(async () => {
         },
         deliverRemote: async (handle, ownedRequest) => {
           if (!(handle instanceof BrowserWindow) || handle.isDestroyed()) {
-            throw new Error("The owning ADE window is no longer available.");
+            throw new Error(`The owning ${BRAND.NAME} window is no longer available.`);
           }
           if (handle.isMinimized()) handle.restore();
           handle.show();
@@ -10865,7 +10865,15 @@ app.whenReady().then(async () => {
         fallback,
       );
     };
-    const menuProductName = resolveLaunchingDesktopAppName(normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL));
+    // The shown name ("Daex", "Daex Alpha"). Not `ADE_DESKTOP_APP_NAME`: that
+    // names the installed app on disk (ADE.app, ADE.exe), which keeps its old
+    // name so existing installs stay put (docs/brand/desktop-packaging.md).
+    const menuProductName = normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL) === "alpha"
+      ? `${BRAND.NAME} Alpha`
+      : BRAND.NAME;
+    // The About panel otherwise shows the bundle's CFBundleName, which a dev
+    // build has as "Electron" and an older package as "ADE".
+    if (process.platform === "darwin") app.setAboutPanelOptions({ applicationName: menuProductName });
     const template: Electron.MenuItemConstructorOptions[] = [
       ...(process.platform === "darwin"
         ? [{
@@ -11032,7 +11040,7 @@ app.whenReady().then(async () => {
       iconPath: process.execPath,
       iconIndex: 0,
       title: "Install update and restart",
-      description: "Install a downloaded ADE update, or check for one",
+      description: `Install a downloaded ${BRAND.NAME} update, or check for one`,
     }]);
   }
 
@@ -11188,7 +11196,7 @@ app.whenReady().then(async () => {
       // own — a reusable empty window if there is one, otherwise a new window.
       const win = await acquireRemoteAttentionHostWindow();
       if (!win || win.isDestroyed() || !ipcBridge) {
-        throw new Error("ADE could not open the remote Activity destination.");
+        throw new Error(`${BRAND.NAME} could not open the remote Activity destination.`);
       }
       let binding: Awaited<ReturnType<typeof ipcBridge.openAttentionProject>>;
       try {
@@ -11217,7 +11225,7 @@ app.whenReady().then(async () => {
     // A canonical foreign-machine identity must never fall through to a local
     // project with a coincidentally matching path.
     if (requiresRemoteMachine) {
-      throw new Error("The owning ADE machine could not be connected.");
+      throw new Error(`The owning ${BRAND.NAME} machine could not be connected.`);
     }
 
     const projectRoot = item.project.rootPath?.trim() ?? "";
@@ -11830,8 +11838,8 @@ app.whenReady().then(async () => {
       type: "info",
       buttons: ["Got it"],
       defaultId: 0,
-      title: "ADE now runs in the background",
-      message: "ADE now runs in the background",
+      title: `${BRAND.NAME} now runs in the background`,
+      message: `${BRAND.NAME} now runs in the background`,
       detail: [
         "Your machine can stay available for mobile pairing and agent work after the app window closes.",
         "You can remove the background service by running `ade serve --uninstall-service`.",
