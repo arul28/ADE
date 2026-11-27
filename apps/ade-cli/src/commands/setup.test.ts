@@ -936,7 +936,7 @@ describe("describeUnpublishedMachine", () => {
       "No active sync scope is available.",
     );
     // The diagnostic points to the process that holds the machine-wide lease.
-    expect(described.detail).toMatch(/another ADE app on this computer/i);
+    expect(described.detail).toMatch(/another Daex app on this computer/i);
   });
 
   it("never renders the publisher's skipReason, for any state", async () => {

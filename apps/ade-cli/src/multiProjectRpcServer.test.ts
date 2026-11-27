@@ -731,13 +731,13 @@ describe("multi-project RPC server", () => {
 
     it.each([
       // The server holds the provider's key now: no brain reaches that item any more.
-      ["the old provider credential", "get", ["all", "integration", CLOUD_PROVIDER_VAULT_ITEM], /reaches only the ADE Cloud items/],
+      ["the old provider credential", "get", ["all", "integration", CLOUD_PROVIDER_VAULT_ITEM], /reaches only the Daex Cloud items/],
       ["the agent limits", "set", ["all", "integration", "cloud-budget", "{\"capUsd\":5}"], null],
       ["a saved cloud sign-in", "get", ["all", "integration", "cloud-claude-token"], null],
-      ["a write to a cloud sign-in", "set", ["all", "integration", "cloud-claude-token", "stolen"], /reaches only the ADE Cloud items/],
-      ["another integration's secret", "get", ["all", "integration", "github"], /reaches only the ADE Cloud items/],
-      ["the credential in a project's scope", "get", ["project:abc", "integration", CLOUD_PROVIDER_VAULT_ITEM], /reaches only the ADE Cloud items/],
-      ["the credential under another kind", "remove", ["all", "secret", CLOUD_PROVIDER_VAULT_ITEM], /reaches only the ADE Cloud items/],
+      ["a write to a cloud sign-in", "set", ["all", "integration", "cloud-claude-token", "stolen"], /reaches only the Daex Cloud items/],
+      ["another integration's secret", "get", ["all", "integration", "github"], /reaches only the Daex Cloud items/],
+      ["the credential in a project's scope", "get", ["project:abc", "integration", CLOUD_PROVIDER_VAULT_ITEM], /reaches only the Daex Cloud items/],
+      ["the credential under another kind", "remove", ["all", "secret", CLOUD_PROVIDER_VAULT_ITEM], /reaches only the Daex Cloud items/],
       ["every row", "list", [], /Choose the account scope/],
     ] as const)("the vault with no project opens only ADE Cloud's items: %s", async (_label, action, argsList, refused) => {
       const rows = new Map<string, string>([

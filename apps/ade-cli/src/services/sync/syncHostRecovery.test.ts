@@ -175,7 +175,7 @@ describe("syncHostRecovery", () => {
       holdsLease: () => false,
     });
     expect(snapshot.state).toBe("conflict");
-    expect(snapshot.headline).toBe("Another ADE is blocking this machine");
+    expect(snapshot.headline).toBe("Another Daex is blocking this machine");
     expect(snapshot.body).toContain("development runtime");
     expect(snapshot.body).not.toContain("19621");
     expect(snapshot.conflict?.ownerLabel).toBe("Development runtime");

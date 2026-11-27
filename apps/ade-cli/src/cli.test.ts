@@ -1645,7 +1645,7 @@ describe("ADE CLI", () => {
       projectHost: snapshot,
     });
     expect(text).toContain("project host");
-    expect(text).toContain("Another ADE is blocking this machine");
+    expect(text).toContain("Another Daex is blocking this machine");
     expect(text).toContain("Development runtime");
     expect(text).toContain("some-lane lane");
     // The multi-line technical detail gets its own block instead of being

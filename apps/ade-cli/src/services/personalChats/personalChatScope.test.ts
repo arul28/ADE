@@ -339,7 +339,7 @@ describe("PersonalChatScope", () => {
       adeDir: "C:\\ADE",
       homeDir: "C:\\Users\\tester",
       fs: fsImpl,
-    })).toThrow(/^invalid_argument: attachmentRoots\[0\] must not be inside ADE's own state directory\./);
+    })).toThrow(/^invalid_argument: attachmentRoots\[0\] must not be inside Daex's own state directory\./);
     expect(validatePersonalAttachmentRoots(["C:\\Projects\\notes"], {
       platform: "win32",
       adeDir: "C:\\ADE",
@@ -1285,7 +1285,7 @@ describe("validatePersonalHostCwd", () => {
 
     it("refuses the ADE state directory spelled in a different case", () => {
       expect(() => validatePersonalHostCwd("/Users/producer/.ADE/state", context))
-        .toThrow(/ADE's own state directory/);
+        .toThrow(/Daex's own state directory/);
     });
 
     it("refuses the home directory spelled in a different case", () => {
@@ -1324,12 +1324,12 @@ describe("validatePersonalHostCwd", () => {
 
     it("refuses a symlink that points into ADE's state directory", () => {
       expect(() => validatePersonalHostCwd("/home/producer/work/ade-shortcut", context))
-        .toThrow(/ADE's own state directory/);
+        .toThrow(/Daex's own state directory/);
     });
 
     it("refuses a symlink whose target is inside ADE's state directory", () => {
       expect(() => validatePersonalHostCwd("/home/producer/work/ade-shortcut/state", context))
-        .toThrow(/ADE's own state directory/);
+        .toThrow(/Daex's own state directory/);
     });
 
     it("refuses a symlink to the filesystem root", () => {
