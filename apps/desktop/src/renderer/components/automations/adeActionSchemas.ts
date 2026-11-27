@@ -84,8 +84,8 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
       {
         name: "open",
         type: "string",
-        description: "Optional ade:// link a tap opens.",
-        placeholder: "ade://pr/{{trigger.pr.number}}",
+        description: `Optional ${BRAND.LINK_SCHEME_FOR_NEW_LINKS}:// link a tap opens.`,
+        placeholder: `${BRAND.LINK_SCHEME_FOR_NEW_LINKS}://pr/{{trigger.pr.number}}`,
       },
     ],
   },

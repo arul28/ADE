@@ -672,7 +672,7 @@ function LinkFields({
           <PickField
             label={`${BRAND.NAME} link`}
             value={f.custom ?? ""}
-            placeholder="ade://… or https://ade-app.dev/open?…"
+            placeholder={`${BRAND.LINK_SCHEME_FOR_NEW_LINKS}://… or https://ade-app.dev/open?…`}
             triggerType={triggerType}
             onChange={(custom) => set({ custom })}
           />

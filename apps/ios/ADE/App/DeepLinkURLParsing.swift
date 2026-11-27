@@ -77,13 +77,22 @@ enum ADEDeepLinkURLParsing {
   }
 
   /// The same link under the `ade` scheme, which every route matches on, so a
-  /// `daex://`, `ade-beta://` or `daex-beta://` link routes like `ade://`. A
-  /// link passed on to a computer goes as `ade://` too: an older version there
-  /// registers and parses only that. Other URLs are returned as they are.
+  /// `daex://`, `ade-beta://` or `daex-beta://` link routes like `ade://`.
+  /// Other URLs are returned as they are.
   static func withADEScheme(_ url: URL) -> URL {
-    guard let scheme = url.scheme?.lowercased(), scheme != "ade", isADELinkScheme(scheme),
+    withScheme(url, "ade")
+  }
+
+  /// The same link under `Brand.linkSchemeForNewLinks` (`daex://`), for a link
+  /// passed on to a computer. Other URLs are returned as they are.
+  static func withNewLinkScheme(_ url: URL) -> URL {
+    withScheme(url, Brand.linkSchemeForNewLinks)
+  }
+
+  private static func withScheme(_ url: URL, _ target: String) -> URL {
+    guard let scheme = url.scheme?.lowercased(), scheme != target, isADELinkScheme(scheme),
           var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
-    components.scheme = "ade"
+    components.scheme = target
     return components.url ?? url
   }
 

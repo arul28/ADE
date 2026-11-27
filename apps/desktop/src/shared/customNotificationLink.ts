@@ -1,4 +1,4 @@
-import { buildDeeplink, isAdeDeeplinkScheme, parseDeeplink, withNewLinkScheme } from "./deeplinks";
+import { ADE_DEEPLINK_SCHEME, buildDeeplink, isAdeDeeplinkScheme, parseDeeplink, withNewLinkScheme } from "./deeplinks";
 import { isWorkBoardColumn, WORK_BOARD_COLUMN_LABEL } from "./types/chat";
 import { BRAND } from "./brand";
 
@@ -26,9 +26,10 @@ export type CustomNotificationLinkResult =
   | { ok: false; problem: string };
 
 /**
- * Accepts any ADE link ADE can open — the `ade://` form or the shareable
- * `https://ade-app.dev/open?…` form, which is converted to `ade://` because the
- * relay sends only that scheme — and says what is wrong with anything else.
+ * Accepts any link Daex can open — the `daex://` or `ade://` form, sent as
+ * `daex://`, or the shareable `https://ade-app.dev/open?…` form, which is
+ * converted to `daex://` because the relay sends only the custom scheme — and
+ * says what is wrong with anything else.
  */
 export function normalizeCustomNotificationLink(raw: string): CustomNotificationLinkResult {
   const value = raw.trim();
@@ -40,19 +41,18 @@ export function normalizeCustomNotificationLink(raw: string): CustomNotification
   try {
     url = new URL(value);
   } catch {
-    return { ok: false, problem: `"${value}" is not a link. Use a ${BRAND.NAME} link such as ade://pr/123.` };
+    return { ok: false, problem: `"${value}" is not a link. Use a ${BRAND.NAME} link such as ${ADE_DEEPLINK_SCHEME}://pr/123.` };
   }
-  // A `daex://` link goes out as `ade://` (`withNewLinkScheme`): a phone on an
-  // older version registers only `ade://`, and the relay sends only that.
+  // An `ade://` link goes out as `daex://` (`withNewLinkScheme`).
   if (isAdeDeeplinkScheme(url.protocol) && PHONE_ONLY_HOSTS.has(url.host.toLowerCase())) {
     if (url.pathname.replace(/\//g, "")) {
-      return { ok: false, problem: `ade://${url.host} takes no path.` };
+      return { ok: false, problem: `${url.protocol}//${url.host} takes no path.` };
     }
     const state = url.searchParams.get("state");
     if (state != null && !isWorkBoardColumn(state)) {
       return {
         ok: false,
-        problem: `ade://activity?state= must be one of ${Object.keys(WORK_BOARD_COLUMN_LABEL).join(", ")}.`,
+        problem: `${url.protocol}//activity?state= must be one of ${Object.keys(WORK_BOARD_COLUMN_LABEL).join(", ")}.`,
       };
     }
     return { ok: true, link: withNewLinkScheme(value) };
@@ -70,7 +70,7 @@ export function normalizeCustomNotificationLink(raw: string): CustomNotification
   }
   return {
     ok: true,
-    // Keep the caller's exact `ade://` link (it may carry parameters the
+    // Keep the caller's exact link (it may carry parameters the
     // desktop grammar does not model); rebuild only the https form.
     link: isAdeDeeplinkScheme(url.protocol) ? withNewLinkScheme(value) : buildDeeplink(parsed.target, { form: "ade" }),
   };

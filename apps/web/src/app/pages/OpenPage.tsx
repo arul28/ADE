@@ -221,8 +221,9 @@ function parseQuery(search: string): OpenTarget {
 }
 
 /**
- * The scheme the page opens the app with (`BRAND.LINK_SCHEME_FOR_NEW_LINKS`).
- * Every released app registers `ade://`; only newer ones `daex://`.
+ * The scheme the page opens the app with (`BRAND.LINK_SCHEME_FOR_NEW_LINKS`:
+ * `daex://`). An app too old to register it is below the minimum version and
+ * must update first anyway.
  */
 const LINK_SCHEME = BRAND.LINK_SCHEME_FOR_NEW_LINKS;
 

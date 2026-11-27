@@ -46,10 +46,7 @@ import type { AppNavigationTarget } from "./types/core";
 import { cloudInviteLink, parseCloudInviteCode } from "../../../account-directory/src/cloud/contract";
 import { BRAND } from "./brand";
 
-/**
- * The scheme every link minted here uses (`BRAND.LINK_SCHEME_FOR_NEW_LINKS`,
- * `ade` until the owner flips it to `daex`).
- */
+/** The scheme every link minted here uses (`BRAND.LINK_SCHEME_FOR_NEW_LINKS`: `daex`). */
 export const ADE_DEEPLINK_SCHEME: string = BRAND.LINK_SCHEME_FOR_NEW_LINKS;
 /**
  * Every scheme an inbound link may use: `ade://` (accepted forever) and
@@ -77,8 +74,8 @@ export function hasAdeDeeplinkScheme(rawUrl: string): boolean {
 
 /**
  * The same custom-scheme link written with {@link ADE_DEEPLINK_SCHEME}, for a
- * link this machine passes on to another (a phone, a notification), which may
- * run a version that registers only `ade://`. Any other text is returned as is.
+ * link this machine passes on to another (a phone, a notification): an
+ * `ade://` link goes out as `daex://`. Any other text is returned as is.
  */
 export function withNewLinkScheme(rawUrl: string): string {
   const match = ADE_DEEPLINK_URL_PREFIX_RE.exec(rawUrl);

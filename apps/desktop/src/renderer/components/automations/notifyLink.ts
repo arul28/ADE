@@ -1,4 +1,4 @@
-import { ADE_DEEPLINK_URL_PREFIX_SOURCE, describeTarget, parseDeeplink } from "../../../shared/deeplinks";
+import { ADE_DEEPLINK_SCHEME, ADE_DEEPLINK_URL_PREFIX_SOURCE, describeTarget, parseDeeplink, withNewLinkScheme } from "../../../shared/deeplinks";
 import { normalizeCustomNotificationLink } from "../../../shared/customNotificationLink";
 import { isWorkBoardColumn, WORK_BOARD_COLUMN_LABEL, type WorkBoardColumn } from "../../../shared/types/chat";
 import { isPullRequestTriggerType } from "../../../shared/types";
@@ -6,7 +6,7 @@ import { BRAND } from "../../../shared/brand";
 
 /**
  * The "When tapped, open" choice of the Send notification step, as fields a
- * person fills in, and the `ade://` link those fields make.
+ * person fills in, and the `daex://` link those fields make.
  *
  * Every ADE place a link can name is here. The phone opens a chat, a pull
  * request, Activity or a Linear issue itself; a lane, file, commit, branch or
@@ -53,7 +53,7 @@ const VARIABLE_RE = /\{\{[^}]*\}\}/g;
 export const RUN_CHAT_VALUE = "{{run.chatSessionId}}";
 export const RUN_LANE_VALUE = "{{run.laneId}}";
 /** "This run's history"; `session` lets the phone open the run's chat instead. */
-export const RUN_HISTORY_LINK = "ade://automation-run/{{run.automationId}}/{{run.id}}?session={{run.chatSessionId}}";
+export const RUN_HISTORY_LINK = `${ADE_DEEPLINK_SCHEME}://automation-run/{{run.automationId}}/{{run.id}}?session={{run.chatSessionId}}`;
 
 /** Which "From this run" choice a link is, or null. */
 /** A "From this run" choice: the run's chat, its lane, or its history. */
@@ -72,12 +72,12 @@ export function runChoiceOf(link: NotifyLink): NotifyRunChoice | null {
  * PR, its chat), else Activity. Never a bare "Just open ADE".
  */
 export function defaultNotifyOpen(args: { agentStepBefore: boolean; triggerType: string }): string {
-  if (args.agentStepBefore) return `ade://session/${RUN_CHAT_VALUE}`;
-  if (isPullRequestTriggerType(args.triggerType)) return "ade://pr/{{trigger.pr.number}}";
+  if (args.agentStepBefore) return `${ADE_DEEPLINK_SCHEME}://session/${RUN_CHAT_VALUE}`;
+  if (isPullRequestTriggerType(args.triggerType)) return `${ADE_DEEPLINK_SCHEME}://pr/{{trigger.pr.number}}`;
   if (args.triggerType.startsWith("session.") || args.triggerType === "session-end") {
-    return "ade://session/{{trigger.session.sessionId}}";
+    return `${ADE_DEEPLINK_SCHEME}://session/{{trigger.session.sessionId}}`;
   }
-  return "ade://activity";
+  return `${ADE_DEEPLINK_SCHEME}://activity`;
 }
 
 export function hasVariable(value: string): boolean {
@@ -125,42 +125,42 @@ export function buildNotifyLink({ kind, fields }: NotifyLink): string {
     case "none":
       return "";
     case "activity":
-      return withQuery("ade://activity", [["state", f.column || undefined]]);
+      return withQuery(`${ADE_DEEPLINK_SCHEME}://activity`, [["state", f.column || undefined]]);
     case "chat":
-      return f.sessionId?.trim() ? `ade://session/${encodePart(f.sessionId)}` : "";
+      return f.sessionId?.trim() ? `${ADE_DEEPLINK_SCHEME}://session/${encodePart(f.sessionId)}` : "";
     case "pr": {
       const number = f.prNumber?.trim().replace(/^#/, "") ?? "";
       if (!number) return "";
       const [owner, name] = (f.repo ?? "").trim().split("/");
       return owner && name
-        ? `ade://pr/${encodePart(owner)}/${encodePart(name)}/${encodePart(number)}`
-        : `ade://pr/${encodePart(number)}`;
+        ? `${ADE_DEEPLINK_SCHEME}://pr/${encodePart(owner)}/${encodePart(name)}/${encodePart(number)}`
+        : `${ADE_DEEPLINK_SCHEME}://pr/${encodePart(number)}`;
     }
     case "linear":
       // Upper-cased for the identifier's own shape (ade-123 → ADE-123), but a
       // `{{…}}` value is left alone: upper-casing it names a field that does
       // not exist.
       return f.linearIssue?.trim()
-        ? `ade://linear-issue/${encodePart(
+        ? `${ADE_DEEPLINK_SCHEME}://linear-issue/${encodePart(
           f.linearIssue.split(/(\{\{[^}]*\}\})/).map((part) => (hasVariable(part) ? part : part.toUpperCase())).join(""),
         )}`
         : "";
     case "lane":
-      return f.laneId?.trim() ? `ade://lane/${encodePart(f.laneId)}` : "";
+      return f.laneId?.trim() ? `${ADE_DEEPLINK_SCHEME}://lane/${encodePart(f.laneId)}` : "";
     case "file":
       return f.path?.trim()
-        ? withQuery(`ade://file/${encodePath(f.path.replace(/^\/+/, ""))}`, [["line", f.line], ["lane", f.laneId]])
+        ? withQuery(`${ADE_DEEPLINK_SCHEME}://file/${encodePath(f.path.replace(/^\/+/, ""))}`, [["line", f.line], ["lane", f.laneId]])
         : "";
     case "commit":
-      return f.sha?.trim() ? withQuery(`ade://commit/${encodePart(f.sha)}`, [["lane", f.laneId]]) : "";
+      return f.sha?.trim() ? withQuery(`${ADE_DEEPLINK_SCHEME}://commit/${encodePart(f.sha)}`, [["lane", f.laneId]]) : "";
     case "branch": {
       const [owner, name] = (f.repo ?? "").trim().split("/");
       return owner && name && f.branch?.trim()
-        ? `ade://repo/${encodePart(owner)}/${encodePart(name)}/branch/${encodePath(f.branch)}`
+        ? `${ADE_DEEPLINK_SCHEME}://repo/${encodePart(owner)}/${encodePart(name)}/branch/${encodePath(f.branch)}`
         : "";
     }
     case "proof":
-      return f.artifactId?.trim() ? `ade://artifact/${encodePart(f.artifactId)}` : "";
+      return f.artifactId?.trim() ? `${ADE_DEEPLINK_SCHEME}://artifact/${encodePart(f.artifactId)}` : "";
     case "run":
       return RUN_HISTORY_LINK;
     case "custom":
@@ -221,7 +221,8 @@ export function readNotifyLink(raw: string | null | undefined): NotifyLink {
       case "artifact":
         return segments.length === 1 && only() ? { kind: "proof", fields: { artifactId: segments[0] } } : null;
       case "automation-run":
-        return link === RUN_HISTORY_LINK ? { kind: "run", fields: {} } : null;
+        // A rule saved before the rename stores the link as `ade://`.
+        return withNewLinkScheme(link) === RUN_HISTORY_LINK ? { kind: "run", fields: {} } : null;
       default:
         return null;
     }

@@ -188,10 +188,10 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     sendNotification: {
       description:
         "Send a push you write to every phone on the Daex account: title up to 64 characters, optional body up to 160, "
-        + "optional ade:// link a tap opens. Respects notifications off, quiet hours and a muted machine. "
+        + "optional daex:// link a tap opens. Respects notifications off, quiet hours and a muted machine. "
         + "At most 60 per account per hour. Open to agents and automations.",
       input: "object { title: string, body?: string, open?: string }",
-      example: "daex notify --title \"Deploy finished\" --body \"Daex 1.4.2 is live\" --open \"ade://pr/1514\"",
+      example: "daex notify --title \"Deploy finished\" --body \"Daex 1.4.2 is live\" --open \"daex://pr/1514\"",
     },
     getSnapshot: {
       description: "Read the account-wide Activity stream across every connected machine and project.",

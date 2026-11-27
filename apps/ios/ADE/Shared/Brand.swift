@@ -27,9 +27,8 @@ public enum Brand {
     /// parsers accept: `ade`, `daex`, and the Beta app's `ade-beta` and
     /// `daex-beta`. Mirrors `BRAND.LINK_SCHEMES` on desktop.
     public static let linkSchemes: Set<String> = ["ade", "daex", "ade-beta", "daex-beta"]
-    /// The scheme newly made links use. Still `ade`, because a version that
-    /// registers only `ade://` cannot open a `daex://` link. Flip with
-    /// `BRAND.LINK_SCHEME_FOR_NEW_LINKS` once enough releases that register
-    /// `daex://` have shipped (the owner decides when).
-    public static let linkSchemeForNewLinks = "ade"
+    /// The scheme newly made links use: `daex`. The account server's minimum
+    /// version keeps every app that registers only `ade://` from running.
+    /// Mirrors `BRAND.LINK_SCHEME_FOR_NEW_LINKS` on desktop.
+    public static let linkSchemeForNewLinks = "daex"
 }

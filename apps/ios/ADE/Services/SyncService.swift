@@ -27332,10 +27332,9 @@ extension SyncService {
           ) else {
         return .dropped("This \(Brand.name) link is not valid.")
       }
-      // A `daex://` link goes to the computer as `ade://`: an older version
-      // there parses only that.
+      // An `ade://` (or Beta) link goes to the computer as `daex://`.
       if ADEDeepLinkURLParsing.isADELinkScheme(scheme), let parsed = URL(string: url) {
-        args["url"] = ADEDeepLinkURLParsing.withADEScheme(parsed).absoluteString
+        args["url"] = ADEDeepLinkURLParsing.withNewLinkScheme(parsed).absoluteString
       } else {
         args["url"] = url
       }

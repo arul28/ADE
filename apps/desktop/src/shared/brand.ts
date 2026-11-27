@@ -27,15 +27,6 @@ export const BRAND = Object.freeze({
   CLI: "daex",
   /** The old command; stays installed as a permanent alias. */
   LEGACY_CLI: "ade",
-  /**
-   * The command name used in agent instructions that may run on another or
-   * older machine: drafts the app sends as the person's message, automation
-   * templates saved into rules, kickoff prompts. Every version understands
-   * `ade`; only new ones have the `daex` alias. Flip to "daex" together with
-   * LINK_SCHEME_FOR_NEW_LINKS once enough releases ship the daex alias.
-   * Bundled skill names in that text follow it (`ade-linear` / `daex-linear`).
-   */
-  AGENT_CLI_FOR_SHARED_TEXT: "ade" as "ade" | "daex",
 
   DOMAIN: "daex.dev",
   /** Old domain. Sign-in and API hosts stay here while released clients call them. */
@@ -54,13 +45,12 @@ export const BRAND = Object.freeze({
    */
   LINK_SCHEMES: ["ade", "daex"],
   /**
-   * The scheme newly made links use. Still `ade`: a link travels to teammates
-   * and other machines, and a version that registers only `ade://` cannot open
-   * a `daex://` link. Flip to `URL_SCHEME` once enough releases that register
-   * `daex://` have shipped (the owner decides when); the iOS copy is
-   * `Brand.linkSchemeForNewLinks`. Flipping it changes no parser.
+   * The scheme newly made links use: `daex`. The account server's minimum
+   * version (`clientUpdateGate.ts`) keeps every app that registers only
+   * `ade://` from running, so nothing has to mint `ade://` links any more.
+   * The iOS copy is `Brand.linkSchemeForNewLinks`.
    */
-  LINK_SCHEME_FOR_NEW_LINKS: "ade" as "ade" | "daex",
+  LINK_SCHEME_FOR_NEW_LINKS: "daex",
 
   NPM_SCOPE: "@daex-dev",
   LEGACY_NPM_SCOPE: "@ade-dev",
