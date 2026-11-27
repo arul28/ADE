@@ -7,6 +7,7 @@ import { formatDate } from "../../../lib/format";
 import { linearIngressApi, setupLinearIngressOrOpenSettings } from "../linearIngressApi";
 import { useAsyncAction } from "../../../hooks/useAsyncAction";
 import { useTabCopyPin } from "../../../state/repositoryScope";
+import { BRAND } from "../../../../shared/brand";
 
 function Dot({ tone }: { tone: "ok" | "warn" | "off" }) {
   return (
@@ -111,7 +112,7 @@ export function IngressStatusStrip({ ingressStatus }: { ingressStatus: Automatio
                 {/* One line: the narrow sidebar must not wrap "Linear" into letters. */}
                 <span
                   style={{ color: "var(--color-fg)", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-                  title={`${linear.appManaged ? "Connected via the ADE Linear app" : "Connected"}${linear.lastEventAt ? ` · last event ${formatDate(linear.lastEventAt, "—")}` : ""}`}
+                  title={`${linear.appManaged ? `Connected via the ${BRAND.NAME} Linear app` : "Connected"}${linear.lastEventAt ? ` · last event ${formatDate(linear.lastEventAt, "—")}` : ""}`}
                 >
                   Connected
                 </span>
@@ -124,7 +125,7 @@ export function IngressStatusStrip({ ingressStatus }: { ingressStatus: Automatio
             ) : linear?.appManaged ? (
               // App-connected workspaces self-configure on the first poll after
               // a linear.* rule is enabled — no manual connect step.
-              <span>Via ADE app</span>
+              <span>Via {BRAND.NAME} app</span>
             ) : null}
           </span>
         ) : undefined,

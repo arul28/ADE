@@ -14,6 +14,7 @@ import { showToast } from "../../app/toast/toastStore";
 import { relativeWhen } from "../../../lib/format";
 import { eyebrowCls, OUTCOME_STYLES, panelCls, rowHoverCls, ruleCls, tagCls, toneTextCls } from "../webhookSurface";
 import { plainErrorText } from "../../../lib/plainError";
+import { BRAND } from "../../../../shared/brand";
 
 const VIA_LABELS: Record<AutomationWebhookDeliverySummary["via"], string> = {
   relay: "via relay",
@@ -89,7 +90,7 @@ function DeliveryDetail({
         if (!cancelled) setDelivery(value);
       })
       .catch((caught: unknown) => {
-        if (!cancelled) setError(plainErrorText(caught, "ADE couldn't load that delivery."));
+        if (!cancelled) setError(plainErrorText(caught, `${BRAND.NAME} couldn't load that delivery.`));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -114,7 +115,7 @@ function DeliveryDetail({
       onReplayed();
       onClose();
     } catch (error) {
-      showToast({ tone: "error", title: "Couldn't replay it", message: plainErrorText(error, "ADE couldn't replay that delivery.") });
+      showToast({ tone: "error", title: "Couldn't replay it", message: plainErrorText(error, `${BRAND.NAME} couldn't replay that delivery.`) });
     } finally {
       setReplaying(false);
     }
@@ -204,7 +205,7 @@ function DeliveryDetail({
             empty={delivery.outcome === "ran" ? "This automation has no prompt of its own." : "No run started, so no prompt was sent."}
           />
           <CodeBlock title="Body" text={delivery.body} />
-          {delivery.bodyTruncated ? <div className={cn("text-[11px]", toneTextCls.warn)}>The body was larger than 64 KB; ADE kept the first 64 KB.</div> : null}
+          {delivery.bodyTruncated ? <div className={cn("text-[11px]", toneTextCls.warn)}>The body was larger than 64 KB; {BRAND.NAME} kept the first 64 KB.</div> : null}
           <CodeBlock title="Headers" text={headerText} />
         </div>
       )}
@@ -236,7 +237,7 @@ export function WebhookDeliveries({
       {deliveries.length === 0 ? (
         <div className="flex items-center gap-2 px-3 py-4 text-[11.5px] text-muted-fg">
           <Tray size={14} />
-          Nothing yet. Requests show up here the moment they arrive, including ones ADE skipped and why.
+          Nothing yet. Requests show up here the moment they arrive, including ones {BRAND.NAME} skipped and why.
         </div>
       ) : (
         <ul className={cn("divide-y", "divide-[color-mix(in_srgb,var(--color-fg)_6%,transparent)]")}>

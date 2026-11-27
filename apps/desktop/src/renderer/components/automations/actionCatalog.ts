@@ -16,6 +16,7 @@ import {
 } from "@phosphor-icons/react";
 import type { ElementType } from "react";
 import { DELETE_LANE_ACTION_TYPE } from "./localAutomationConfig";
+import { BRAND } from "../../../shared/brand";
 
 export type StepKind =
   | "agent-session"
@@ -44,10 +45,10 @@ export const STEP_DEFS: Record<StepKind, StepDef> = {
   },
   "ade-action": {
     kind: "ade-action",
-    label: "ADE action",
+    label: `${BRAND.NAME} action`,
     icon: Code,
     accent: "#58A6FF",
-    description: "Call any ADE domain — git, lane, PR, issue, tests, and more.",
+    description: `Call any ${BRAND.NAME} domain — git, lane, PR, issue, tests, and more.`,
   },
   "run-tests": {
     kind: "run-tests",

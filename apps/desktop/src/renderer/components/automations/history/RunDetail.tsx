@@ -10,6 +10,7 @@ import { STEP_DEFS, type StepDef } from "../actionCatalog";
 import { eventLabel } from "../triggerCatalog";
 import { readTestRunInfo, summarizeTestRun, testRunLabel } from "./testRunInfo";
 import { STATE_HALO, STATE_TEXT, StatusGlyph, durationLabel, messageTone, runState, statusWord } from "./runPresentation";
+import { BRAND } from "../../../../shared/brand";
 
 function stepLabel(actionType: string): string {
   if (actionType === "lane-setup") return "Set up the lane";
@@ -121,7 +122,7 @@ export function RunDetail({
   onChanged?: () => void;
 }) {
   if (loading) return <div className="p-5 text-sm text-muted-fg/60">Loading run detail…</div>;
-  if (!detail) return <div className="p-5 text-sm text-muted-fg/60">Select a run to inspect what ADE did.</div>;
+  if (!detail) return <div className="p-5 text-sm text-muted-fg/60">Select a run to inspect what {BRAND.NAME} did.</div>;
 
   const { run } = detail;
   const metadata = (run.triggerMetadata ?? {}) as Record<string, unknown>;

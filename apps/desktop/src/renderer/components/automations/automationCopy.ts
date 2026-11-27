@@ -15,6 +15,7 @@ import { cronSentence } from "./cronDescribe";
 import { eventLabel } from "./triggerCatalog";
 import { DELETE_LANE_ACTION_TYPE, LANE_MERGED_TRIGGER_TYPE } from "./localAutomationConfig";
 import { describeWebhookFilter, webhookPresetDef } from "../../../shared/automationWebhooks";
+import { BRAND } from "../../../shared/brand";
 
 type RuleLike = Pick<AutomationRule, "triggers" | "trigger" | "execution" | "outputs" | "prompt">;
 
@@ -117,8 +118,8 @@ function linearClause(type: string, trigger: AutomationTrigger): string {
   if (type === "linear.project_update_posted") return `A project update is posted${trigger.project ? ` in ${trigger.project}` : ""}`;
   if (type === "linear.initiative_update_posted") return "An initiative update is posted";
   if (type === "linear.user_joined") return "Someone joins the Linear workspace";
-  if (type === "linear.agent_delegated") return `A Linear issue${where}${labelSuffix(trigger.labels)} is delegated to ADE and reaches this ADE`;
-  if (type === "linear.agent_mentioned") return `An @ADE mention on a Linear issue${where}${labelSuffix(trigger.labels)} reaches this ADE`;
+  if (type === "linear.agent_delegated") return `A Linear issue${where}${labelSuffix(trigger.labels)} is delegated to ${BRAND.NAME} and reaches this ${BRAND.NAME}`;
+  if (type === "linear.agent_mentioned") return `An @${BRAND.NAME} mention on a Linear issue${where}${labelSuffix(trigger.labels)} reaches this ${BRAND.NAME}`;
   if (type.endsWith("_created")) return `A Linear issue is created${where}`;
   if (type.endsWith("_updated")) return `A Linear issue is updated${where}`;
   if (type.endsWith("_assigned")) return `A Linear issue is assigned${where}`;

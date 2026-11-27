@@ -6,6 +6,7 @@
 
 import type { AiPermissionSettings, AutomationRuleDraft, ModelConfig } from "../../../../shared/types";
 import { defaultKickoffPrompt } from "../../../lib/linearBatchLaunch";
+import { BRAND } from "../../../../shared/brand";
 
 const GROUP_ORDER = ["Agent workflows", "Pull requests", "Chats", "Issue intake", "Hygiene"] as const;
 
@@ -443,8 +444,8 @@ export function buildLinearAgentRuleDraft(args: {
   return {
     name: args.name,
     description: args.trigger === "linear.agent_delegated"
-      ? "Runs when a Linear delegation to ADE reaches this ADE."
-      : "Answers when an @ADE mention in Linear reaches this ADE.",
+      ? `Runs when a Linear delegation to ${BRAND.NAME} reaches this ${BRAND.NAME}.`
+      : `Answers when an @${BRAND.NAME} mention in Linear reaches this ${BRAND.NAME}.`,
     enabled: true,
     mode: args.trigger === "linear.agent_delegated" ? "fix" : "monitor",
     triggers: [trigger],

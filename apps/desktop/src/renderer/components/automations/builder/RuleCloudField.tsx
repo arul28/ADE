@@ -7,6 +7,7 @@ import { useAdeCloudEnabled } from "../../../state/cloudAccess";
 import { useAdeCloudDraft } from "../../chat/useAdeCloudDraft";
 import { inputCls } from "../designTokens";
 import { cloudLanesBlockedReason, useAutomationFeatureGate } from "../automationFeatureGate";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * "Run on ADE Cloud", beside "Runs on [machine]": each run makes its lane on
@@ -42,14 +43,14 @@ export function RuleCloudField({
     ? machineBlocked
     : on
       ? "Each run gets a new lane on its own computer. The machine above still watches the trigger and keeps the history."
-      : "Give each run a new lane on its own ADE Cloud computer.";
+      : `Give each run a new lane on its own ${BRAND.CLOUD_NAME} computer.`;
   return (
     <div className="mb-3 rounded-md border border-fg/[0.06] bg-fg/[0.02] px-3 py-2" data-testid="automation-cloud-field">
       <div className="flex items-center justify-between gap-3">
         <span className="flex min-w-0 items-start gap-2">
           <CloudMark size={13} brand className="mt-0.5" />
           <span className="min-w-0">
-            <span className="block text-[11.5px] text-fg/90">Run on ADE Cloud</span>
+            <span className="block text-[11.5px] text-fg/90">Run on {BRAND.CLOUD_NAME}</span>
             <span className="mt-0.5 block text-[10.5px] text-muted-fg/60">
               {hint}
             </span>
@@ -57,7 +58,7 @@ export function RuleCloudField({
         </span>
         <SettingsToggle
           id="automation-run-on-ade-cloud"
-          label="Run on ADE Cloud"
+          label={`Run on ${BRAND.CLOUD_NAME}`}
           checked={on}
           disabled={disabled || (!cloudEnabled && !on) || (machineBlocked != null && !on)}
           onChange={(next) => onChange(next ? {} : null)}
@@ -75,7 +76,7 @@ export function RuleCloudField({
                 className={cn(inputCls, "h-7 min-w-0 flex-1 pl-7")}
                 value={pickedSize ?? ""}
                 disabled={disabled}
-                aria-label="Size of each run's ADE Cloud computer"
+                aria-label={`Size of each run's ${BRAND.CLOUD_NAME} computer`}
                 onChange={(event) => {
                   const next = cloud.tiers.find((tier) => tier.id === event.target.value)?.id ?? null;
                   onChange(next ? { sizeId: next } : {});
@@ -95,7 +96,7 @@ export function RuleCloudField({
             computers it may start a day.
           </p>
           {!cloudEnabled ? (
-            <p className="text-[10.5px] text-amber-300/80">ADE Cloud isn't available on this account. Turn this off to run here.</p>
+            <p className="text-[10.5px] text-amber-300/80">{BRAND.CLOUD_NAME} isn't available on this account. Turn this off to run here.</p>
           ) : null}
           {problem ? (
             <p className="text-[10.5px] text-amber-300/80" data-testid="automation-cloud-problem">{problem}</p>

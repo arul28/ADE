@@ -10,6 +10,7 @@ import { relativeWhen } from "../../lib/format";
 import { OUTCOME_STYLES, dotCls, panelCls, rowHoverCls, tagCls, toneTextCls } from "./webhookSurface";
 import { WebhookDeliveries } from "./builder/WebhookDeliveries";
 import { useTabCopyPin } from "../../state/repositoryScope";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Read-only view of every webhook automation: its URL, whether its signing
@@ -77,7 +78,7 @@ export function WebhookOverview({ intro }: { intro?: string }) {
       ) : entries.length === 0 ? (
         <div className={cn(panelCls, "flex items-center gap-2 px-4 py-5 text-[12.5px] text-muted-fg")}>
           <WebhooksLogo size={15} />
-          No webhook automations yet. Make one in ADE on your computer: Automations → New → Webhook.
+          No webhook automations yet. Make one in {BRAND.NAME} on your computer: Automations → New → Webhook.
         </div>
       ) : (
         <ul className={cn(panelCls, "divide-y divide-[color-mix(in_srgb,var(--color-fg)_7%,transparent)]")}>

@@ -2,6 +2,7 @@ import { describeTarget, parseDeeplink } from "../../../shared/deeplinks";
 import { normalizeCustomNotificationLink } from "../../../shared/customNotificationLink";
 import { isWorkBoardColumn, WORK_BOARD_COLUMN_LABEL, type WorkBoardColumn } from "../../../shared/types/chat";
 import { isPullRequestTriggerType } from "../../../shared/types";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The "When tapped, open" choice of the Send notification step, as fields a
@@ -230,7 +231,7 @@ export function readNotifyLink(raw: string | null | undefined): NotifyLink {
 
 /** What a tap does on the phone, said plainly. */
 export const NOTIFY_LINK_PHONE_EFFECT: Record<NotifyLinkKind, string> = {
-  none: "Opens the ADE app.",
+  none: `Opens the ${BRAND.NAME} app.`,
   activity: "Opens Activity on the phone.",
   chat: "Opens the chat on the phone, on the machine it runs on.",
   pr: "Opens the pull request on the phone.",
@@ -283,6 +284,6 @@ export function checkNotifyLink(link: string): NotifyLinkCheck {
       ? column && isWorkBoardColumn(column)
         ? `Activity · ${WORK_BOARD_COLUMN_LABEL[column]}`
         : "Activity"
-      : "ADE";
+      : BRAND.NAME;
   return { state: "ok", link: trimmed, opens, checkedWithSamples: withVariables };
 }

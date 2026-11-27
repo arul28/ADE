@@ -2,6 +2,7 @@ import type { AutomationTrigger } from "../../../shared/types";
 import { useNavigate } from "react-router-dom";
 import { INPUT_CLS, INPUT_STYLE, parseList } from "./shared";
 import { settingsRouteFor } from "../settings/settingsManifest";
+import { BRAND } from "../../../shared/brand";
 
 export function LinearTriggerFilters({
   trigger,
@@ -17,14 +18,14 @@ export function LinearTriggerFilters({
     return (
       <div className="space-y-2">
         <p className="text-[11px] leading-relaxed text-muted-fg/70">
-          Linear sends each delegation or @ADE mention to the ADE of the person who asked. Teammates’ requests run on their
-          own ADE. Requests from people who do not use ADE come here only if “Run it on my ADE” is chosen in{" "}
+          Linear sends each delegation or @{BRAND.NAME} mention to the {BRAND.NAME} of the person who asked. Teammates’ requests run on their
+          own {BRAND.NAME}. Requests from people who do not use {BRAND.NAME} come here only if “Run it on my {BRAND.NAME}” is chosen in{" "}
           <button
             type="button"
             className="underline decoration-dotted underline-offset-2 hover:text-fg"
             onClick={() => navigate(settingsRouteFor("integrations.linear"))}
           >
-            Settings → Linear → ADE agent
+            Settings → Linear → {BRAND.NAME} agent
           </button>
           .
         </p>

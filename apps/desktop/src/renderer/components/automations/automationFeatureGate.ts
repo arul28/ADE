@@ -22,6 +22,7 @@ import {
 import type { LaneMachine } from "../../state/laneMachineRouting";
 import { eventLabel } from "./triggerCatalog";
 import { isNotifyAdeAction, NOTIFY_STEP, STEP_DEFS, type StepKind } from "./actionCatalog";
+import { BRAND } from "../../../shared/brand";
 
 /** The "Run in" choices, as the builder names them. */
 export const LANE_MODE_LABELS: Record<string, string> = {
@@ -39,9 +40,9 @@ export function automationFeatureLabel(kind: AutomationFeatureKind, id: string):
     case "laneMode": return LANE_MODE_LABELS[id] ?? null;
     case "adeAction": {
       const [domain, action] = id.split(".");
-      return isNotifyAdeAction({ domain, action }) ? NOTIFY_STEP.label : `ADE action ${id}`;
+      return isNotifyAdeAction({ domain, action }) ? NOTIFY_STEP.label : `${BRAND.NAME} action ${id}`;
     }
-    case "cloudLanes": return "Run on ADE Cloud";
+    case "cloudLanes": return `Run on ${BRAND.CLOUD_NAME}`;
     case "notifyLink": return "A notification that opens this run's history";
   }
 }

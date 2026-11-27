@@ -19,6 +19,7 @@ import type { ElementType } from "react";
 import type { AutomationTrigger } from "../../../shared/types";
 import { LINEAR_BRAND, LinearMark } from "../lanes/linearBrand";
 import { LANE_MERGED_TRIGGER_TYPE } from "./localAutomationConfig";
+import { BRAND } from "../../../shared/brand";
 
 export type TriggerSource =
   | "schedule"
@@ -93,8 +94,8 @@ export const TRIGGER_SOURCES: readonly TriggerSourceDef[] = [
       { value: "linear.project_update_posted", label: "Project update posted" },
       { value: "linear.initiative_update_posted", label: "Initiative update posted" },
       { value: "linear.user_joined", label: "Member joined" },
-      { value: "linear.agent_delegated", label: "Delegated to ADE" },
-      { value: "linear.agent_mentioned", label: "Mentioned @ADE" },
+      { value: "linear.agent_delegated", label: `Delegated to ${BRAND.NAME}` },
+      { value: "linear.agent_mentioned", label: `Mentioned @${BRAND.NAME}` },
     ],
   },
   {

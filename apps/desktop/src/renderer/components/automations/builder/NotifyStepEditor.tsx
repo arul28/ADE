@@ -52,6 +52,7 @@ import { AUTOMATION_RUN_LINK_ID, explainAutomationActionError } from "../../../.
 import { useAutomationFeatureGate } from "../automationFeatureGate";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { sessionLaneDisplayName } from "../../../../shared/laneDisplayName";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * A test send has no trigger to fill `{{…}}` values from, so each one is shown
@@ -82,7 +83,7 @@ const RUN_VALUES = [RUN_CHAT, RUN_LANE];
 type Choice = { key: string; label: string; icon: typeof Bell; hint?: string };
 
 const PHONE_CHOICES: Choice[] = [
-  { key: "none", label: "Just open ADE", icon: DeviceMobile },
+  { key: "none", label: `Just open ${BRAND.NAME}`, icon: DeviceMobile },
   { key: "activity", label: "Activity", icon: Pulse },
   { key: "chat", label: "A chat", icon: ChatCircleText },
   { key: "pr", label: "A pull request", icon: GitPullRequest },
@@ -305,7 +306,7 @@ const RUN_CHOICES: Choice[] = [
   {
     key: "run-chat",
     label: RUN_CHAT.label,
-    hint: "Opens on the phone. If the run starts no chat, the tap opens ADE.",
+    hint: `Opens on the phone. If the run starts no chat, the tap opens ${BRAND.NAME}.`,
     icon: ChatCircleText,
   },
   {
@@ -669,14 +670,14 @@ function LinkFields({
       return (
         <div className="space-y-1">
           <PickField
-            label="ADE link"
+            label={`${BRAND.NAME} link`}
             value={f.custom ?? ""}
             placeholder="ade://… or https://ade-app.dev/open?…"
             triggerType={triggerType}
             onChange={(custom) => set({ custom })}
           />
           <p className="text-[10.5px] leading-relaxed text-muted-fg/60">
-            Paste any ADE link: right-click a lane and choose Copy → Copy ADE Lane Link, use a Copy link button in ADE,
+            Paste any {BRAND.NAME} link: right-click a lane and choose Copy → Copy {BRAND.NAME} Lane Link, use a Copy link button in {BRAND.NAME},
             or run <span className="font-mono">ade link lane|session|pr|file|commit|branch</span> in a terminal.
           </p>
         </div>
@@ -764,7 +765,7 @@ export function NotifyStepEditor({
       : body.trim().length > CUSTOM_NOTIFICATION_BODY_MAX
         ? `Shorten the message to ${CUSTOM_NOTIFICATION_BODY_MAX} characters.`
         : null;
-  const testBlocked = machineBlocked ? `${machineBlocked}. Update ADE there to send a test.` : titleProblem;
+  const testBlocked = machineBlocked ? `${machineBlocked}. Update ${BRAND.NAME} there to send a test.` : titleProblem;
 
   const sendTest = async () => {
     const send = window.ade?.attention?.sendNotification;
@@ -805,7 +806,7 @@ export function NotifyStepEditor({
   return (
     <div className="space-y-3" data-testid="notify-step-editor">
       <p className="text-[11px] leading-relaxed text-muted-fg/70">
-        Sends a push to the ADE app on every phone signed in to your account. Phones with notifications off, in quiet
+        Sends a push to the {BRAND.NAME} app on every phone signed in to your account. Phones with notifications off, in quiet
         hours, or that muted this computer stay quiet. Up to {CUSTOM_NOTIFICATION_HOURLY_LIMIT} an hour.
       </p>
 
@@ -893,7 +894,7 @@ export function NotifyStepEditor({
           {needsInput ? (
             <>
               <Warning size={12} className="mt-0.5 shrink-0 text-amber-300" />
-              <span className="text-amber-200/90">Fill in what to open, or choose Just open ADE.</span>
+              <span className="text-amber-200/90">Fill in what to open, or choose Just open {BRAND.NAME}.</span>
             </>
           ) : check.state === "problem" ? (
             <>

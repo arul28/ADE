@@ -53,6 +53,7 @@ import { choiceCls, eyebrowCls, panelCls, tagCls, toneTextCls } from "../webhook
 import { WebhookDeliveries } from "./WebhookDeliveries";
 import { isImeComposing } from "../../../lib/imeComposition";
 import { plainErrorText } from "../../../lib/plainError";
+import { BRAND } from "../../../../shared/brand";
 
 const EXPLAINER_DISMISSED_KEY = "ade.automations.webhookExplainer.dismissed";
 
@@ -125,7 +126,7 @@ function HowItWorks({ presetLabel, onDismiss }: { presetLabel: string; onDismiss
   const tiles: Array<{ icon: ReactNode; title: string; text: string }> = [
     { icon: <Lightning size={14} />, title: `${presetLabel} rings`, text: "Something happens there, so it sends a request." },
     { icon: <Bell size={14} />, title: "Your URL answers", text: "A private address only this automation owns." },
-    { icon: <Robot size={14} />, title: "ADE runs the agent", text: "After checking it's real and worth running." },
+    { icon: <Robot size={14} />, title: `${BRAND.NAME} runs the agent`, text: "After checking it's real and worth running." },
   ];
   return (
     <div className={cn(panelCls, "relative p-3.5")}>
@@ -140,7 +141,7 @@ function HowItWorks({ presetLabel, onDismiss }: { presetLabel: string; onDismiss
       </button>
       <div className={eyebrowCls}>How a webhook works</div>
       <p className="mt-1.5 max-w-xl text-[12px] leading-[1.5] text-fg/85">
-        A webhook is a doorbell. You give a service a URL, and it rings that URL whenever something happens. ADE answers
+        A webhook is a doorbell. You give a service a URL, and it rings that URL whenever something happens. {BRAND.NAME} answers
         the door and starts your agent. Nothing to poll, nothing to keep open.
       </p>
       <div className="mt-3 flex items-stretch gap-1.5">
@@ -166,7 +167,7 @@ function HowItWorks({ presetLabel, onDismiss }: { presetLabel: string; onDismiss
 }
 
 function RouteBadge({ endpoint }: { endpoint: AutomationWebhookEndpoint }) {
-  if (endpoint.route === "relay") return <span className={tagCls("ok")}>PUBLIC · ADE RELAY</span>;
+  if (endpoint.route === "relay") return <span className={tagCls("ok")}>PUBLIC · {BRAND.NAME} RELAY</span>;
   if (endpoint.route === "gateway") return <span className={tagCls("ok")}>PUBLIC · YOUR ADDRESS</span>;
   return <span className={tagCls("warn")}>THIS COMPUTER ONLY</span>;
 }
@@ -293,7 +294,7 @@ export function WebhookTriggerPanel({
         const latest = latestTriggerRef.current;
         latestOnChangeRef.current({ ...latest, webhook: { preset: "generic", ...(latest.webhook ?? {}), hookId: created.hookId } });
       })
-      .catch((error: unknown) => setEndpointError(plainErrorText(error, "ADE couldn't make the webhook URL.")))
+      .catch((error: unknown) => setEndpointError(plainErrorText(error, `${BRAND.NAME} couldn't make the webhook URL.`)))
       .finally(() => {
         creatingRef.current = false;
         setCreating(false);
@@ -307,7 +308,7 @@ export function WebhookTriggerPanel({
       setEndpoint(await api.getEndpoint({ hookId }, runtimePin));
       setEndpointError(null);
     } catch (error) {
-      setEndpointError(plainErrorText(error, "ADE couldn't read the webhook URL."));
+      setEndpointError(plainErrorText(error, `${BRAND.NAME} couldn't read the webhook URL.`));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api, hookId, runtimePin?.key]);
@@ -404,7 +405,7 @@ export function WebhookTriggerPanel({
       showToast({ tone: "success", title: `Saved ${signature.secretName}`, message: "Encrypted in this project's secrets." });
       return true;
     } catch (error) {
-      showToast({ tone: "error", title: "Couldn't save the secret", message: plainErrorText(error, "ADE couldn't save the secret.") });
+      showToast({ tone: "error", title: "Couldn't save the secret", message: plainErrorText(error, `${BRAND.NAME} couldn't save the secret.`) });
       return false;
     } finally {
       setSavingSecret(false);
@@ -432,7 +433,7 @@ export function WebhookTriggerPanel({
       setEndpoint(await api.rotateEndpoint({ hookId }, runtimePin));
       showToast({ tone: "success", title: "New URL ready", message: "Paste it into the service to replace the old one." });
     } catch (error) {
-      showToast({ tone: "error", title: "Couldn't make a new URL", message: plainErrorText(error, "ADE couldn't make a new URL.") });
+      showToast({ tone: "error", title: "Couldn't make a new URL", message: plainErrorText(error, `${BRAND.NAME} couldn't make a new URL.`) });
     } finally {
       setRotating(false);
     }
@@ -446,7 +447,7 @@ export function WebhookTriggerPanel({
       setEndpoint(created);
       patchConfig({ hookId: created.hookId });
     } catch (error) {
-      setEndpointError(plainErrorText(error, "ADE couldn't make the webhook URL."));
+      setEndpointError(plainErrorText(error, `${BRAND.NAME} couldn't make the webhook URL.`));
     } finally {
       setCreating(false);
     }
@@ -461,7 +462,7 @@ export function WebhookTriggerPanel({
       setTestResult(await api.sendTest({ hookId, config }, runtimePin));
       void refreshDeliveries();
     } catch (error) {
-      setTestError(plainErrorText(error, "ADE couldn't send the test."));
+      setTestError(plainErrorText(error, `${BRAND.NAME} couldn't send the test.`));
     } finally {
       setTesting(false);
     }
@@ -475,7 +476,7 @@ export function WebhookTriggerPanel({
   const promptIsEmpty = !agentPrompt?.trim();
 
   if (!api) {
-    return <p className="text-[11px] text-muted-fg/70">Webhooks need a newer ADE runtime on this machine.</p>;
+    return <p className="text-[11px] text-muted-fg/70">Webhooks need a newer {BRAND.NAME} runtime on this machine.</p>;
   }
 
   return (
@@ -547,7 +548,7 @@ export function WebhookTriggerPanel({
               </div>
               <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-fg">
                 <RouteBadge endpoint={endpoint} />
-                {endpoint.route === "relay" ? <span>If this computer is asleep, ADE keeps requests for up to 3 days and runs them when it wakes.</span> : null}
+                {endpoint.route === "relay" ? <span>If this computer is asleep, {BRAND.NAME} keeps requests for up to 3 days and runs them when it wakes.</span> : null}
               </div>
               {endpoint.route === "local" && endpoint.setupError ? (
                 <Banner layout="inline" model={{ id: "webhook-local-only", tone: "warning", title: endpoint.setupError }} />
@@ -593,8 +594,8 @@ export function WebhookTriggerPanel({
           hint={
             signature
               ? preset.secretSource === "you"
-                ? `${preset.label === "Anything else" ? "The service" : preset.label} signs every request with a secret you choose. ADE rejects anything without the right signature.`
-                : `${preset.label} gives you a signing secret. Paste it here and ADE rejects anything not signed with it.`
+                ? `${preset.label === "Anything else" ? "The service" : preset.label} signs every request with a secret you choose. ${BRAND.NAME} rejects anything without the right signature.`
+                : `${preset.label} gives you a signing secret. Paste it here and ${BRAND.NAME} rejects anything not signed with it.`
               : "Optional, but recommended: without it, anyone with the URL can start a run."
           }
           done={Boolean(signature && secretSaved)}
@@ -623,7 +624,7 @@ export function WebhookTriggerPanel({
                 ) : generatedSecret ? (
                   <div className="space-y-1.5">
                     <div className="text-[11px] text-fg/85">
-                      Here's your new secret. Paste it into {preset.label === "Anything else" ? "the service" : preset.label}'s <b>Secret</b> field now. ADE saved it
+                      Here's your new secret. Paste it into {preset.label === "Anything else" ? "the service" : preset.label}'s <b>Secret</b> field now. {BRAND.NAME} saved it
                       as <span className="font-mono">{signature.secretName}</span> and won't show it again.
                     </div>
                     <div className="flex items-center gap-1.5">
@@ -806,7 +807,7 @@ export function WebhookTriggerPanel({
                 <span className={cn("text-[11.5px]", testResult.ok ? toneTextCls.ok : toneTextCls.warn)}>
                   {testResult.ok
                     ? testResult.route === "relay"
-                      ? "Delivered to ADE's relay. It shows up below in a moment."
+                      ? `Delivered to ${BRAND.NAME}'s relay. It shows up below in a moment.`
                       : "Delivered. See it below."
                     : `Your URL answered ${testResult.status}. Open it below to see why.`}
                 </span>

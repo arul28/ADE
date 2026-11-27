@@ -3,6 +3,8 @@
 // truth for the action allowlist lives in
 // `src/main/services/adeActions/registry.ts`.
 
+import { BRAND } from "../../../shared/brand";
+
 export type AdeActionParamType =
   | "string"
   | "number"
@@ -64,7 +66,7 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
     action: "sendNotification",
     label: "Send notification to mobile app",
     description:
-      "Push a message to the ADE app on your phone. A tap can open a chat, a pull request, Activity and more. Phones with notifications off, in quiet hours, or muting this machine stay quiet. At most 60 an hour.",
+      `Push a message to the ${BRAND.NAME} app on your phone. A tap can open a chat, a pull request, Activity and more. Phones with notifications off, in quiet hours, or muting this machine stay quiet. At most 60 an hour.`,
     params: [
       {
         name: "title",
@@ -584,7 +586,7 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
     domain: "pr",
     action: "linkToLane",
     label: "Link existing PR to lane",
-    description: "Associate an existing GitHub PR (URL or number) with an ADE lane.",
+    description: `Associate an existing GitHub PR (URL or number) with a ${BRAND.NAME} lane.`,
     params: [LANE_ID_PARAM, { name: "prUrlOrNumber", type: "string", required: true }],
   },
   {
@@ -1515,11 +1517,11 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
   // ---------------------------------------------------------------------------
   // github
   // ---------------------------------------------------------------------------
-  { domain: "github", action: "clearToken", label: "Clear stored GitHub PAT", description: "Clear the stored GitHub personal access token. ADE falls back to environment or gh auth when available.", params: [] },
+  { domain: "github", action: "clearToken", label: "Clear stored GitHub PAT", description: `Clear the stored GitHub personal access token. ${BRAND.NAME} falls back to environment or gh auth when available.`, params: [] },
   { domain: "github", action: "getRepoOrThrow", label: "Get GitHub repo (or throw)", description: "Return the detected GitHub repo or throw if missing.", params: [] },
   { domain: "github", action: "getStatus", label: "Get GitHub status", description: "Return the GitHub auth status (source, scopes, repo).", params: [] },
   { domain: "github", action: "setToken", label: "Set GitHub PAT", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "github", action: "setGhAccountSharing", label: "Share GitHub CLI sign-in with the account", description: "Share this computer's GitHub CLI sign-in with your ADE account (enabled: true), or take it off the account (enabled: false). Advanced action — pass arguments as JSON.", params: [] },
+  { domain: "github", action: "setGhAccountSharing", label: "Share GitHub CLI sign-in with the account", description: `Share this computer's GitHub CLI sign-in with your ${BRAND.NAME} account (enabled: true), or take it off the account (enabled: false). Advanced action — pass arguments as JSON.`, params: [] },
 
   // ---------------------------------------------------------------------------
   // usage
@@ -1545,7 +1547,7 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
   { domain: "update", action: "checkForUpdates", label: "Check for updates", description: "Trigger an auto-update check.", params: [] },
   { domain: "update", action: "dismissInstalledNotice", label: "Dismiss installed notice", description: "Dismiss the post-install update notice.", params: [] },
   { domain: "update", action: "getSnapshot", label: "Get auto-update snapshot", description: "Return the current auto-update state.", params: [] },
-  { domain: "update", action: "quitAndInstall", label: "Quit and install update", description: "Quit ADE and install the pending update.", params: [] },
+  { domain: "update", action: "quitAndInstall", label: "Quit and install update", description: `Quit ${BRAND.NAME} and install the pending update.`, params: [] },
 
   // ---------------------------------------------------------------------------
   // pty

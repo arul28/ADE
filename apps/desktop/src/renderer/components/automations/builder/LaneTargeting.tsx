@@ -10,6 +10,7 @@ import { labelCls, recessedCls, selectCls } from "../designTokens";
 import { VariableInput } from "./VariableMenu";
 import { gatedOption, LANE_MODE_LABELS, useAutomationFeatureGate } from "../automationFeatureGate";
 import { laneDisplayName } from "../../../../shared/laneDisplayName";
+import { BRAND } from "../../../../shared/brand";
 
 export type LaneTargetingValue = {
   laneMode: string;
@@ -156,7 +157,7 @@ export function LaneTargeting({
               <GitBranch size={12} weight="regular" className="mt-0.5 shrink-0 text-accent" />
               <span>
                 Runs on the PR's own branch, so the agent can push to the PR. If the PR already has a lane, the run
-                uses it. Otherwise ADE opens the branch as a new lane with this name.
+                uses it. Otherwise {BRAND.NAME} opens the branch as a new lane with this name.
               </span>
             </div>
           ) : (

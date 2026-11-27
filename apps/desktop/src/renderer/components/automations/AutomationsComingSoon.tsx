@@ -3,6 +3,7 @@ import { ArrowRight } from "@phosphor-icons/react";
 import { Button } from "../ui/Button";
 import { WebhookOverview } from "./WebhookOverview";
 import { eyebrowCls } from "./webhookSurface";
+import { BRAND } from "../../../shared/brand";
 
 export function ProductionAutomationsComingSoon() {
   const navigate = useNavigate();
@@ -19,7 +20,7 @@ export function ProductionAutomationsComingSoon() {
             <h1 className="text-[26px] font-semibold leading-tight text-fg">Automations are disabled on this build.</h1>
             <p className="mt-3 max-w-[58ch] text-[13px] leading-6 text-muted-fg/75">
               This runtime was started with ADE_DISABLE_AUTOMATIONS set, so automation rules, webhook ingress, and agent
-              automation commands are switched off. Unset the flag and restart ADE to turn them back on.
+              automation commands are switched off. Unset the flag and restart {BRAND.NAME} to turn them back on.
             </p>
           </div>
         </section>
@@ -47,8 +48,8 @@ export function WebAutomationsOverview() {
           <div className={eyebrowCls}>Automations</div>
           <h1 className="mt-1.5 text-[15px] font-semibold tracking-[-0.01em] text-fg">Webhooks</h1>
           <p className="mt-1 max-w-[62ch] text-[12.5px] leading-[1.45] text-muted-fg">
-            Automations run in ADE on your computer. Here you can see each webhook&apos;s URL and every request that rang it,
-            including the ones ADE skipped and why. To make or change one, open Automations in ADE on your computer.
+            Automations run in {BRAND.NAME} on your computer. Here you can see each webhook&apos;s URL and every request that rang it,
+            including the ones {BRAND.NAME} skipped and why. To make or change one, open Automations in {BRAND.NAME} on your computer.
           </p>
         </div>
         <WebhookOverview />

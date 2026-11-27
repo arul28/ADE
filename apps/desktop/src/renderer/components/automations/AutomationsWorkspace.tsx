@@ -57,6 +57,7 @@ import {
   useAutomationMachineSupport,
 } from "./automationFeatureGate";
 import { automationRunLaneNeed } from "../../../shared/automationRunLane";
+import { BRAND } from "../../../shared/brand";
 
 const CHOOSE_MACHINE_HINT = "Choose the machine this automation runs on.";
 /** Zero machines: no computer with this project is online, so nothing is read or sent. */
@@ -828,12 +829,12 @@ export function AutomationsWorkspace({
         ? needsNewerAde.filter((feature) => feature.key.startsWith("adeAction:"))
         : [];
       if (refused.length > 0) {
-        setError(`${machineName} can't run ${refused.map((feature) => feature.label).join(", ")}. Update ADE there, or remove the step.`);
+        setError(`${machineName} can't run ${refused.map((feature) => feature.label).join(", ")}. Update ${BRAND.NAME} there, or remove the step.`);
         return;
       }
       const ok = await confirmDialog({
         title: `${machineName} can't run this rule yet.`,
-        message: `It needs a newer ADE for ${needsNewerAde.map((feature) => feature.label).join(", ")}. Until ADE there is updated, the rule fails when it runs.`,
+        message: `It needs a newer ${BRAND.NAME} for ${needsNewerAde.map((feature) => feature.label).join(", ")}. Until ${BRAND.NAME} there is updated, the rule fails when it runs.`,
         confirmLabel: "Save anyway",
       });
       if (!ok) return;
@@ -947,8 +948,8 @@ export function AutomationsWorkspace({
         if (run.triggerMetadata?.runsOn === "ade-cloud" && (run.status === "failed" || run.status === "cancelled")) {
           showToast({
             tone: "warning",
-            title: run.status === "failed" ? `"${entry.rule.name}" didn't start on ADE Cloud` : `"${entry.rule.name}" was skipped on ADE Cloud`,
-            message: run.errorMessage ?? "ADE Cloud didn't start this run.",
+            title: run.status === "failed" ? `"${entry.rule.name}" didn't start on ${BRAND.CLOUD_NAME}` : `"${entry.rule.name}" was skipped on ${BRAND.CLOUD_NAME}`,
+            message: run.errorMessage ?? `${BRAND.CLOUD_NAME} didn't start this run.`,
             report: false,
           });
         }
@@ -1168,10 +1169,10 @@ export function AutomationsWorkspace({
                 id: "automation-needs-newer-ade",
                 tone: "warning",
                 title: ruleMachine.brainVersion
-                  ? `${ruleMachine.machineName} runs ADE ${ruleMachine.brainVersion}, which is too old for this rule.`
-                  : `The ADE on ${ruleMachine.machineName} is too old for this rule.`,
-                detail: `Update ADE on ${ruleMachine.machineName} to use ${needsNewerAde
-                  .map((feature) => (feature.minVersion ? `${feature.label} (ADE ${feature.minVersion})` : feature.label))
+                  ? `${ruleMachine.machineName} runs ${BRAND.NAME} ${ruleMachine.brainVersion}, which is too old for this rule.`
+                  : `The ${BRAND.NAME} on ${ruleMachine.machineName} is too old for this rule.`,
+                detail: `Update ${BRAND.NAME} on ${ruleMachine.machineName} to use ${needsNewerAde
+                  .map((feature) => (feature.minVersion ? `${feature.label} (${BRAND.NAME} ${feature.minVersion})` : feature.label))
                   .join(", ")}. Until then the rule cannot run there.`,
               }}
             />
@@ -1185,8 +1186,8 @@ export function AutomationsWorkspace({
                 id: "automation-rule-newer-ade",
                 tone: "warning",
                 icon: <CloudArrowDown size={16} weight="duotone" />,
-                title: "Made with a newer ADE",
-                detail: "This ADE can't read all of it, so it's view-only here and left as it is in your account. Update ADE to edit or run it.",
+                title: `Made with a newer ${BRAND.NAME}`,
+                detail: `This ${BRAND.NAME} can't read all of it, so it's view-only here and left as it is in your account. Update ${BRAND.NAME} to edit or run it.`,
               }}
             />
           ) : null}
@@ -1252,9 +1253,9 @@ export function AutomationsWorkspace({
                   !selectedRule
                     ? "Save this automation to test it."
                     : selectedRule.needsNewerAde
-                      ? "Made with a newer ADE. Update ADE on this computer to test it."
+                      ? `Made with a newer ${BRAND.NAME}. Update ${BRAND.NAME} on this computer to test it.`
                       : needsNewerAde.length > 0
-                        ? `${ruleMachineName ?? "The machine that runs this rule"} can't run this rule yet. Update ADE there to test it.`
+                        ? `${ruleMachineName ?? "The machine that runs this rule"} can't run this rule yet. Update ${BRAND.NAME} there to test it.`
                         : null
                 }
                 onRunNow={selectedRule ? () => beginRunRule(selectedRule) : undefined}
@@ -1305,7 +1306,7 @@ export function AutomationsWorkspace({
                 }
                 saveBlockedReason={
                   selectedRule?.needsNewerAde
-                    ? "Made with a newer ADE. Update ADE on this computer to change it."
+                    ? `Made with a newer ${BRAND.NAME}. Update ${BRAND.NAME} on this computer to change it.`
                     : draftMachineChosen || draftRehomeChosen || Boolean(selectedRule && followsAccount(selectedRule))
                       ? null
                       : CHOOSE_MACHINE_HINT
@@ -1397,7 +1398,7 @@ function EmptyDetail({ onNew, onOpenTemplates }: { onNew: () => void; onOpenTemp
       <div className="max-w-md rounded-xl border border-fg/[0.07] bg-fg/[0.03] p-6 text-center shadow-card">
         <div className="text-[16px] font-semibold text-fg">Build an automation</div>
         <div className="mt-2 text-sm leading-relaxed text-muted-fg/70">
-          Pick a trigger and a workflow, then let ADE run it — on a schedule or when a product event fires.
+          Pick a trigger and a workflow, then let {BRAND.NAME} run it — on a schedule or when a product event fires.
         </div>
         <div className="mt-4 flex justify-center gap-2">
           <Button size="sm" variant="primary" onClick={onNew}>
