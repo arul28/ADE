@@ -5,9 +5,11 @@ import UIKit
 /// or the lane's Mac Desktop. Each lane tool chip opens its own tool; the Apple
 /// device has its own full-screen viewer and no sheet.
 ///
-/// Watching only, with two exceptions: a browser tab can be closed (its ×,
-/// with a few seconds to undo before the close is sent), and Mac Desktop takes
-/// a finger when the host allows takeover.
+/// Watching only, with these exceptions: a browser tab can be closed (its ×,
+/// with a few seconds to undo before the close is sent), a lane's dev server can
+/// be opened in a background desktop tab and watched here, a watched tab takes
+/// a finger after Take control, and Mac Desktop takes a finger when the host
+/// allows takeover.
 ///
 /// The browser is a `WebContentsView` in ADE Desktop and App Control is a CDP
 /// socket to a local process; neither can be driven from a phone. App Control
@@ -95,6 +97,23 @@ struct WorkToolsSheet: View {
   @State private var liveFrameInfo: WorkToolsBrowserTabFrame?
   /// "Take control" is on: taps, drags and typing go to the tab.
   @State private var browserInControl = false
+  /// Lay the watched page out at the phone's size (the default) or show the
+  /// desktop's own layout. Kept across launches.
+  @AppStorage("ade.workTools.browserPhoneSize") private var browserPhoneSize = true
+  /// The width of the sheet's content column and the height of its visible
+  /// area, in points: what the live picture is sized from.
+  @State private var contentWidth: CGFloat = 0
+  @State private var visibleHeight: CGFloat = 0
+  @Environment(\.displayScale) private var displayScale
+  /// The lane's dev servers, from `workTools.listDevServers`, refreshed with the state.
+  @State private var devServers: [WorkToolsDevServer] = []
+  /// The last fresh read of the dev servers failed.
+  @State private var devServersLoadFailed = false
+  /// The desktop answered a phone-size read without saying whether it laid
+  /// the page out (it predates phone size), so the switch would do nothing.
+  @State private var desktopIgnoresPhoneSize = false
+  /// Goes up on each lane switch, so work started for the old lane can tell.
+  @State private var laneGeneration = 0
 
   /// Live frame cadence. One request is in flight at a time, so a slow link
   /// simply gets fewer frames.
@@ -132,6 +151,25 @@ struct WorkToolsSheet: View {
     return syncService.supportsWorkToolsBrowserTabFrame(laneId: laneId)
   }
 
+  /// A DEBUG fixture that draws the browser cards with no host behind them.
+  private var previewBrowserFixtures: Bool {
+    #if DEBUG
+    return previewLiveBrowser || previewAllowsTabClose
+    #else
+    return false
+    #endif
+  }
+
+  /// The host lists the lane's dev servers to the phone.
+  private var supportsDevServers: Bool {
+    previewBrowserFixtures || syncService.supportsWorkToolsDevServers(laneId: laneId)
+  }
+
+  /// The host lets this phone open a dev server in the desktop browser.
+  private var canOpenDevServers: Bool {
+    previewBrowserFixtures || syncService.canOpenWorkToolsBrowserTab(laneId: laneId)
+  }
+
   /// The host lets this phone click and type into a browser tab.
   private var canControlBrowser: Bool {
     #if DEBUG
@@ -157,7 +195,7 @@ struct WorkToolsSheet: View {
 
   var body: some View {
     chrome
-    .task(id: laneId) { await refresh() }
+    .task(id: laneId) { await refresh(.fresh) }
     .task(id: laneId) {
       // The poll lives beside the initial load rather than inside it so a slow
       // first response cannot delay the cadence, and cancellation on dismiss
@@ -187,6 +225,9 @@ struct WorkToolsSheet: View {
       // must not hide a tab in the new one.
       sendPendingTabClosesNow(laneId: previousLaneId)
       closedTabIds = []
+      // Another lane can be on another machine, with its own desktop.
+      desktopIgnoresPhoneSize = false
+      laneGeneration += 1
     }
     #if DEBUG
     .onChange(of: loaded) { _, isLoaded in
@@ -260,6 +301,9 @@ struct WorkToolsSheet: View {
         switch tool {
         case .browser:
           browserCard
+          if supportsDevServers {
+            devServersCard
+          }
           if let liveFrame, liveFrameTabId == liveTabId, let tabId = liveTabId {
             WorkToolsBrowserLiveCard(
               image: liveFrame,
@@ -268,7 +312,9 @@ struct WorkToolsSheet: View {
               isLoading: liveFrameInfo?.isLoading == true,
               canControl: canControlBrowser,
               inControl: $browserInControl,
-              send: { event in sendBrowserInput(event, tabId: tabId) }
+              send: { event in sendBrowserInput(event, tabId: tabId) },
+              phoneSize: desktopIgnoresPhoneSize ? nil : $browserPhoneSize,
+              sizeNote: browserPhoneSize ? liveFrameInfo?.viewportNote : nil
             )
           } else {
             lastFrameCard
@@ -300,10 +346,68 @@ struct WorkToolsSheet: View {
             .padding(.top, 2)
         }
       }
+      // The column the cards fill, before the page margin: the live picture
+      // is this wide less the card's own inset.
+      .onGeometryChange(for: CGFloat.self) { proxy in
+        proxy.size.width
+      } action: { width in
+        if abs(contentWidth - width) >= 1 { contentWidth = width }
+      }
       .padding(.horizontal, 16)
       .padding(.vertical, 16)
     }
-    .refreshable { await refresh() }
+    .onGeometryChange(for: CGFloat.self) { proxy in
+      proxy.size.height
+    } action: { height in
+      if abs(visibleHeight - height) >= 1 { visibleHeight = height }
+    }
+    .refreshable { await refresh(.fresh) }
+  }
+
+  // MARK: - Dev servers
+
+  /// The lane's dev servers, each with Open: the page opens in a background tab
+  /// of the desktop browser on the lane's machine, and the live picture below
+  /// switches to it.
+  private var devServersCard: some View {
+    let laneId = laneId
+    let tabs = visibleTabs
+    let isFixture = previewBrowserFixtures
+    let generation = laneGeneration
+    return WorkToolsDevServersCard(
+      servers: devServers,
+      tabs: tabs,
+      loadFailed: devServersLoadFailed,
+      canOpen: canOpenDevServers,
+      open: { server in
+        // The DEBUG fixtures have no host: Open watches the fixture's tab.
+        if isFixture {
+          return WorkToolsOpenedBrowserTab(tabId: tabs.first { workToolsLoopbackPort($0.url) == server.port }?.id)
+        }
+        return try await syncService.openWorkToolsBrowserTab(laneId: laneId, url: server.url)
+      },
+      watch: { tabId in
+        // An Open that answers after a lane switch is about the old lane.
+        guard generation == laneGeneration else { return }
+        watchedTabId = tabId
+        await refresh()
+      }
+    )
+    .id(laneId)
+  }
+
+  /// The picture the live frame is laid out for, in points: the card's width,
+  /// and most of the visible height. Nil when the person picked desktop size
+  /// or the sheet has not been measured yet.
+  private var browserViewport: WorkToolsBrowserViewport? {
+    guard browserPhoneSize, contentWidth > 0 else { return nil }
+    let width = (contentWidth - ADEKit.inset * 2).rounded(.down)
+    guard width >= 240 else { return nil }
+    let tall = visibleHeight > 0 ? visibleHeight * 0.72 : width * 1.8
+    let height = min(max(tall, width * 1.2), width * 2.4).rounded(.down)
+    // At most 2x: the desktop renders the page at this scale for a frame
+    // capped near 1,000 px wide, so a phone's 3x only costs it memory.
+    return WorkToolsBrowserViewport(width: Int(width), height: Int(height), deviceScaleFactor: min(Double(displayScale), 2))
   }
 
   // MARK: - Cards
@@ -499,10 +603,13 @@ struct WorkToolsSheet: View {
       let started = ContinuousClock.now
       var delay = Self.liveFrameInterval
       do {
+        // Read each time: the toggle and a rotation change it mid-watch.
+        let askedViewport = browserViewport
         let answer = try await syncService.readWorkToolsBrowserTabFrame(
           tabId: tabId,
           laneId: laneId,
-          maxWidth: Self.liveFrameMaxWidth
+          maxWidth: Self.liveFrameMaxWidth,
+          viewport: askedViewport
         )
         guard !Task.isCancelled else { return }
         var image: UIImage?
@@ -515,6 +622,9 @@ struct WorkToolsSheet: View {
           liveFrameTabId = tabId
           liveFrameInfo = answer
           lastFrameAt = Date()
+          // A desktop that knows phone size always says whether it applied it.
+          // Judged by what this read asked: the switch may have moved since.
+          if askedViewport != nil, answer?.viewportApplied == nil { desktopIgnoresPhoneSize = true }
         } else {
           if let answer { liveFrameInfo = answer }
           if Date().timeIntervalSince(lastFrameAt) > Self.liveFrameStaleAfter { dropLiveFrame() }
@@ -682,10 +792,25 @@ struct WorkToolsSheet: View {
     return "couldn't move to the lane screen"
   }
 
-  private func refresh() async {
+  /// Where `refresh` takes the dev-server list from.
+  private enum DevServerRead {
+    /// The list the lane state carries: no scan on the host (the 3 s poll).
+    case carried
+    /// A fresh read, which also finds a server started outside ADE's
+    /// terminals (opening the sheet, pull to refresh).
+    case fresh
+  }
+
+  private func refresh(_ devServerRead: DevServerRead = .carried) async {
     #if DEBUG
     if let previewState {
       state = previewState
+      if previewBrowserFixtures {
+        devServers = [
+          WorkToolsDevServer(port: 5173, url: "http://localhost:5173/"),
+          WorkToolsDevServer(port: 4180, url: "http://localhost:4180/"),
+        ]
+      }
       frame = previewFrame
       loadedFramePath = previewFrame == nil ? nil : latestObservation?.path
       loaded = true
@@ -704,6 +829,29 @@ struct WorkToolsSheet: View {
     guard !Task.isCancelled else { return }
     state = next
     loaded = true
+    if tool == .browser, syncService.supportsWorkToolsDevServers(laneId: laneId) {
+      // The poll takes the list the lane state carries (no scan on the host);
+      // opening the sheet and pulling to refresh ask for a fresh one, which
+      // also finds a server started outside ADE's terminals.
+      switch devServerRead {
+      case .carried:
+        if let known = next?.devServers {
+          devServers = known
+          devServersLoadFailed = false
+        }
+      case .fresh:
+        do {
+          let servers = try await syncService.listWorkToolsDevServers(laneId: laneId)
+          guard !Task.isCancelled else { return }
+          devServers = servers
+          devServersLoadFailed = false
+        } catch {
+          // Keeps the last list rather than blanking it; the card says the
+          // read failed only when it has nothing to show.
+          devServersLoadFailed = true
+        }
+      }
+    }
     await loadFrameIfNeeded()
     // The card retries a stopped stream and reloads its still on this tick.
     // While a live session is mounted that still is not polled: the picture
@@ -787,218 +935,5 @@ struct WorkToolsSheet: View {
       payload,
       maxBytes: observationPreviewMaxBytes
     )
-  }
-}
-
-private struct WorkToolsTabRow: View {
-  let tab: WorkToolsBrowserTab
-  /// The × was tapped and the close is waiting out its undo window.
-  var isClosing = false
-  /// This tab is the one in the live picture.
-  var isWatched = false
-  /// Nil when there is nothing to pick (no live view, or only one tab).
-  var onSelect: (() -> Void)?
-  /// Nil when this machine does not let the phone close tabs.
-  var onClose: (() -> Void)?
-  var onUndo: () -> Void = {}
-
-  var body: some View {
-    if isClosing {
-      closingRow
-    } else {
-      HStack(alignment: .center, spacing: 10) {
-        if let onSelect {
-          Button(action: onSelect) { details }
-            .buttonStyle(.plain)
-            .accessibilityHint(isWatched ? "Shown in the live picture" : "Shows this tab in the live picture")
-        } else {
-          details
-        }
-        if let onClose {
-          Button(action: onClose) {
-            Image(systemName: "xmark")
-              .font(.system(size: 11, weight: .bold))
-              .foregroundStyle(ADEColor.textSecondary)
-              .frame(width: 28, height: 28)
-              .background(ADEKit.track, in: Circle())
-              // A full-size target around the small circle.
-              .frame(width: 44, height: 44)
-              .contentShape(Rectangle())
-          }
-          .buttonStyle(.plain)
-          .accessibilityLabel("Close tab \(displayTitle)")
-        }
-      }
-      .contentShape(Rectangle())
-      .contextMenu {
-        if let onClose {
-          Button(role: .destructive, action: onClose) {
-            Label("Close tab", systemImage: "xmark")
-          }
-        }
-        if let url = tab.url, !url.isEmpty {
-          Button {
-            UIPasteboard.general.string = url
-          } label: {
-            Label("Copy link", systemImage: "link")
-          }
-        }
-      }
-    }
-  }
-
-  /// "Closing “Docs”… Undo", in place of the row, until the close is sent.
-  private var closingRow: some View {
-    HStack(spacing: 10) {
-      Text("Closing “\(displayTitle)”…")
-        .font(.subheadline)
-        .foregroundStyle(ADEColor.textMuted)
-        .lineLimit(1)
-        .truncationMode(.middle)
-      Spacer(minLength: 0)
-      Button("Undo", action: onUndo)
-        .font(.subheadline.weight(.semibold))
-        .foregroundStyle(ADEColor.accent)
-        .buttonStyle(.plain)
-        .accessibilityLabel("Undo closing \(displayTitle)")
-    }
-    .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
-    .transition(.opacity)
-  }
-
-  private var details: some View {
-    VStack(alignment: .leading, spacing: 2) {
-      HStack(spacing: 6) {
-        Text(displayTitle)
-          .font(.subheadline.weight(.medium))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-        if isWatched {
-          Image(systemName: "eye.fill")
-            .font(.caption2)
-            .foregroundStyle(ADEColor.accent)
-            .accessibilityLabel("Watching")
-        }
-        if tab.active {
-          ADEKitTag(text: "Active", color: ADEColor.accent)
-        }
-        if tab.recording {
-          ADEKitTag(text: "Recording", color: ADEColor.danger)
-        }
-        Spacer(minLength: 0)
-      }
-      if let url = tab.url, !url.isEmpty {
-        Text(url)
-          .font(.caption)
-          .foregroundStyle(ADEColor.textMuted)
-          .lineLimit(1)
-          .truncationMode(.middle)
-      }
-      if tab.ownerChatSessionId?.isEmpty == false {
-        Text("Claimed by a chat in this lane")
-          .font(.caption2)
-          .foregroundStyle(ADEColor.textMuted)
-      }
-    }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .accessibilityElement(children: .combine)
-  }
-
-  private var displayTitle: String {
-    if let title = tab.title, !title.isEmpty { return title }
-    return "Untitled tab"
-  }
-}
-
-/// What the "open tool" card should draw where the last captured frame goes.
-///
-/// A separate type because one of its cases is otherwise unreachable in the
-/// app: a brain can advertise `workTools.getLaneState` without
-/// `workTools.readObservationPreview` (the two are feature-detected apart, see
-/// `SyncService.supportsWorkToolsObservationPreview`), and in that state the
-/// lane state still names an observation the phone can never fetch. Deciding
-/// this inside the view meant "frame is nil but an observation exists" fell to
-/// the loading branch, so that host showed a spinner that could not finish.
-enum WorkToolsFrameState: Equatable {
-  case image
-  case loading
-  /// There is a frame on the Mac and no way to get it. Carries the sentence.
-  case unavailable(String)
-  case empty
-}
-
-/// The host cannot send bytes at all — it is missing the preview command.
-/// Worded like the sheet's other absences: what is true, not what to do, since
-/// the fix is to update ADE on the Mac and this sheet cannot say that usefully
-/// about a version it is only inferring.
-let workToolsFramesUnsupportedMessage = "Frames aren't available from this machine."
-
-/// The host answered about this specific frame and had nothing to give.
-let workToolsFrameUnreadableMessage = "Couldn't load the last frame."
-
-/// Pure resolution of the four inputs the card has.
-///
-/// `loadedFramePath` is the path the currently held image was decoded from —
-/// pass nil when there is no image, so a stale path can never claim a frame the
-/// view does not have. `unreadableFramePath` is only ever set from a definitive
-/// answer, never from a transport failure, so a timeout keeps the spinner and
-/// retries rather than declaring the frame gone.
-func workToolsFrameState(
-  observationPath: String?,
-  loadedFramePath: String?,
-  unreadableFramePath: String?,
-  supportsObservationPreview: Bool
-) -> WorkToolsFrameState {
-  guard let observationPath else { return .empty }
-  if loadedFramePath == observationPath { return .image }
-  guard supportsObservationPreview else { return .unavailable(workToolsFramesUnsupportedMessage) }
-  if unreadableFramePath == observationPath { return .unavailable(workToolsFrameUnreadableMessage) }
-  return .loading
-}
-
-/// Why there is no browser to show. The desktop distinguishes five cases
-/// (`WorkToolsUnavailableReason`) and only one of them is "open ADE on your
-/// Mac" — telling a user to open an app that is already open, because the read
-/// failed, sends them chasing the wrong thing. An unknown or absent reason
-/// falls back to the common case rather than inventing a diagnosis.
-///
-/// Keep these sentences byte-identical to `workToolsUnavailableMessage` in
-/// `apps/desktop/src/shared/types/workTools.ts`: this switch cannot import it,
-/// so a reason worded there and not here silently reads as the default. It is a
-/// free function rather than a view-private computed property so the parity
-/// test can hold the two wordings against each other.
-func workToolsBrowserUnavailableMessage(_ reason: String?) -> String {
-  switch reason {
-  case "unsupported":
-    return "The browser isn't available on this machine."
-  case "error":
-    return "Couldn't read the browser's state."
-  case "desktop_not_attached_for_project":
-    // Distinct from the default on purpose: ADE Desktop *is* running, it just
-    // doesn't have this project open, so "open ADE on your Mac" would send the
-    // user to look at an app that is already in front of them.
-    return "ADE Desktop doesn't have this project open. Open it on your Mac to see its tabs."
-  case "browser_pane_not_opened":
-    // Narrower still: the project IS open on the desktop, only the Browser pane
-    // is unused, so the instruction is one click — not "open the project",
-    // which would be a lie about something already in front of them.
-    return "Open the Browser tool on the desktop to see tabs here."
-  default:
-    return "The browser runs in ADE Desktop. Open ADE on your Mac to see its tabs."
-  }
-}
-
-/// Who has the lane's screen, in the sheet's one line.
-///
-/// Worded identically to the desktop's takeover strip so the two surfaces
-/// cannot describe one lease two ways. An unknown holder from a newer host
-/// falls back to the neutral sentence rather than guessing which side it is.
-func macDesktopLeaseLine(_ lease: WorkToolsMacDesktopLease?) -> String {
-  guard let lease else { return "Nobody has taken control." }
-  let label = lease.holderLabel.flatMap { $0.isEmpty ? nil : " · \($0)" } ?? ""
-  switch lease.holder {
-  case "user": return "You have control\(label)"
-  case "agent": return "Agent driving\(label)"
-  default: return "Nobody has taken control."
   }
 }

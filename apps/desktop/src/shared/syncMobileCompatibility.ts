@@ -308,6 +308,11 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // older brain omits them and the phone shows the last screenshot instead.
   "workTools.readBrowserTabFrame",
   "workTools.sendBrowserTabInput",
+  // The lane's dev servers, and opening one in a background desktop tab to
+  // watch from the phone. Optional: an older brain omits them and the phone
+  // hides its Dev servers list.
+  "workTools.listDevServers",
+  "workTools.openBrowserTab",
   // Edit your own PR comment. Optional: the phone hides Edit against an older brain.
   "prs.updateComment",
   // A skill chip's SKILL.md, read from the chat's machine. Optional: an older

@@ -1242,6 +1242,7 @@ export function ChatBuiltInBrowserPanel({
               url: request.url,
               ...(request.openPanel ? { openPanel: true } : {}),
               ...(request.laneId ? { laneId: request.laneId } : {}),
+              ...(request.groupLaneId ? { groupLaneId: request.groupLaneId } : {}),
               ...(request.chatSessionId ? { chatSessionId: request.chatSessionId } : {}),
               // Which tab, as the agent asked: its named tab, a new one, or
               // the one this chat already owns. An older daemon sends none.

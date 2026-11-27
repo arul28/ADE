@@ -2184,6 +2184,29 @@ actions and personal action names.
   `chat.createDraft`, Schedule send hides.
 - Context usage is on the latest turn-end marker, not the composer.
 
+### Select, copy and comment on a reply
+
+Long replies are split into one transcript cell per markdown block, so a
+long-press lifts one block. The menu (`WorkMessageTextMenuItems` in
+`WorkMessageTextSelection.swift`) offers **Copy message** (the whole reply),
+**Copy this part** (the held block, laid out as the sheet lays it out),
+**Select text**, and **Comment on this part** (Comment… on a whole-reply row)
+when the chat's host takes `chat.createThreadComment`. The person's own
+messages offer Select text too.
+
+Select text opens one sheet per chat (`WorkMessageTextSelectionModel`, presented
+by the session view) with the reply in a read-only `UITextView`, because SwiftUI
+`Text` cannot select a range. The held block starts selected. A floating glass
+pill offers Copy and Comment for the selection, and the edit menu has Comment
+first. On a wide screen the text keeps a readable column. Comment shows a small
+card with the quote and a note field; Add sends `chat.createThreadComment` with
+a text anchor built by `WorkMessageSelectableDocument.swift` (the twin of
+desktop `captureTextAnchor`), the message key desktop uses
+(`workThreadCommentMessageKey`, the twin of `sceneRowIdentity`), and one
+`clientId` per draft, so a retry after a lost answer returns the same comment.
+A still-streaming reply, or one with no shared key, says why it can't take a
+comment. Fixture: `-adePreviewScreen chat-comments`.
+
 ### Importing sessions
 
 Work imports CLI sessions from the 11 import providers (Claude, Codex, Cursor,
@@ -2537,6 +2560,32 @@ display that is off.
   close goes to the lane's machine. Closing the sheet sends pending closes. A
   failure restores the row with an alert. Fixtures: `tools-close`,
   `tools-close-pending`.
+- **Dev servers.** With `workTools.listDevServers`, the browser sheet shows a
+  **Dev servers** card under the tabs: each server's `:port` and address, and
+  **Open** (**Watch** when a lane tab is already on that port). The sheet asks
+  for a fresh list when it opens and on pull to refresh, and otherwise takes
+  the `devServers` the lane state carries. Open sends `workTools.openBrowserTab`
+  (controller-only, not queued, 20 s) to the lane's machine; the page opens in
+  a background desktop tab and the live picture switches to the returned
+  `tabId`. When a desktop on another computer took it (no desktop on the lane's
+  machine), the card says where it opened instead. Without the action there is
+  no Open, and a host without `listDevServers` shows no card. The Browser chip
+  also shows ("Browser") for a lane with a known dev server when the phone may
+  open it. Fixtures `tools-live` and `tools-close` show the card.
+- **Phone size.** The live card has a **Phone size / Desktop size** switch
+  (default Phone size, kept in `ade.workTools.browserPhoneSize`). With Phone
+  size each frame read sends `viewport`: the card's width in points, most of
+  the visible height, and the screen scale. The desktop lays the page out at
+  that size while the phone watches (see
+  [Chat › Tabs on other machines](../chat/README.md#built-in-browser-chrome-identity-tab-ownership-cleanup-and-other-machines));
+  when it keeps its own size the card shows its `viewportNote`. The scale is
+  capped at 2x (the desktop renders the page at it for a frame near 1,000 px
+  wide). A frame answer to a phone-size read that lacks `viewportApplied`
+  (an older desktop or brain, or a read-only viewer pairing, whose `viewport`
+  the host drops) hides the switch until the sheet changes lane. Input stays
+  frame fractions, so Take control works at either size. The Dev servers card
+  is `WorkToolsDevServersCard.swift`; a failed fresh read says it couldn't load
+  the list instead of "no dev servers".
 
 #### macOS card and viewer
 

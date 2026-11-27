@@ -104,7 +104,9 @@ import {
   builtInBrowserEmulationUserAgentMetadata,
   resolveBuiltInBrowserEmulation,
 } from "../../../shared/builtInBrowserEmulation";
+import type { BuiltInBrowserRemoteViewport } from "../../../shared/types/builtInBrowser";
 import { awaitFoundInPage } from "./builtInBrowserFind";
+import { createRemoteViewport } from "./builtInBrowserRemoteViewport";
 import { createBuiltInBrowserPreviewStreams } from "./builtInBrowserPreviewStream";
 import {
   createBuiltInBrowserRecordingSession,
@@ -328,6 +330,14 @@ export type BuiltInBrowserTabCapabilityDeps = {
   onPreviewWatchersChanged?: (tabId: string) => void;
   /** A device preset changed the size this tab is drawn at, so a parked view must be re-placed. */
   onTabEmulationChanged?: (tabId: string) => void;
+  /**
+   * The person at the desktop is looking at this tab right now: it is the
+   * pane's tab and the window is in front. A remote viewer's phone size then
+   * yields to the desktop's own size.
+   */
+  isTabOnScreen?: (tabId: string) => boolean;
+  /** A phone-size layout came off the tab: put the recording viewport back if it applies. */
+  onRemoteEmulationCleared?: (tab: BrowserTabState) => void;
   /**
    * Whether this tab's view currently holds a compositor surface.
    *
@@ -602,6 +612,9 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       }
       tab.emulation = next;
     });
+    // A person or an agent chose this tab's size: a phone watching it stops
+    // laying it out at phone size until its watch ends.
+    remoteViewport.yieldTo(tab.id);
     deps.onTabEmulationChanged?.(tab.id);
     emitStatus();
     return {
@@ -771,6 +784,9 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
         // lays out at its box while DevTools is open, and the service re-pins
         // it when DevTools closes (`tabUsesRecordingViewport`).
         if (tab.debuggerHolds.has("recording-viewport")) releaseDebuggerHold(tab, "recording-viewport");
+        // A phone's phone-size layout is not the person's ask either: it comes
+        // off (and stays off while DevTools is open) instead of refusing.
+        await remoteViewport.release(tab);
         if (tab.debuggerHolds.size > 0) {
           const owner = tab.debuggerHolds.has("network") ? "network" : "emulation";
           const fix = owner === "network"
@@ -1512,8 +1528,15 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
   */
   const REMOTE_WATCH_LEASE_MS = 6_000;
   const remoteWatchTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  function watchTabForRemote(input: { tabId: string; maxWidth?: number | null; fps?: number | null }): {
+  function watchTabForRemote(input: {
+    tabId: string;
+    maxWidth?: number | null;
+    fps?: number | null;
+    viewport?: BuiltInBrowserRemoteViewport | null;
+  }): {
     frame: { dataUrl: string; width: number; height: number; capturedAt: string } | null;
+    viewportApplied?: boolean;
+    viewportNote?: string | null;
   } {
     const tabId = input.tabId;
     const existing = remoteWatchTimers.get(tabId);
@@ -1526,23 +1549,47 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       remoteWatchTimers.delete(tabId);
       remoteWatchedTabs.delete(tabId);
       stopPreviewStream({ tabId }, "remote");
+      remoteViewport.end(tabId);
     }, REMOTE_WATCH_LEASE_MS);
     (timer as { unref?: () => void }).unref?.();
     remoteWatchTimers.set(tabId, timer);
-    return { frame: latestPreviewFrames.get(tabId) ?? null };
+    const tab = tabById(tabId);
+    const viewport = tab ? remoteViewport.sync(tab, input.viewport ?? null) : {};
+    return { frame: latestPreviewFrames.get(tabId) ?? null, ...viewport };
   }
   function stopRemoteWatches(): void {
     for (const [tabId, timer] of remoteWatchTimers) {
       clearTimeout(timer);
+      // Before `end`: the watch is over by the time phone size comes off.
+      remoteWatchTimers.delete(tabId);
       remoteWatchedTabs.delete(tabId);
       try {
         stopPreviewStream({ tabId }, "remote");
       } catch {
         // tab already gone
       }
+      remoteViewport.end(tabId);
     }
-    remoteWatchTimers.clear();
   }
+
+  /** Phone size for a remote viewer that sends its picture size (`builtInBrowserRemoteViewport.ts`). */
+  const remoteViewport = createRemoteViewport({
+    logger,
+    tabById,
+    isWatched: (tabId) => remoteWatchTimers.has(tabId),
+    isTabOnScreen: deps.isTabOnScreen,
+    acquireDebuggerHold,
+    releaseDebuggerHold,
+    sendEmulationCommands,
+    reapplyTabEmulation,
+    onLayoutChanged: (tab) => {
+      // The newest frame is at the old size; the next capture is at the new one.
+      latestPreviewFrames.delete(tab.id);
+      deps.onTabEmulationChanged?.(tab.id);
+      emitStatus();
+    },
+    onCleared: deps.onRemoteEmulationCleared,
+  });
 
   /* ── Recording ─────────────────────────────────────────────────────────── */
 
@@ -1610,6 +1657,9 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     // the pane's size and jumps to 1280×800 part-way through.
     tab.recordingStarting = true;
     try {
+      // A phone watching at phone size gives the tab back first (the tab is
+      // now blocked for it), or the recording opens at the phone's layout.
+      await remoteViewport.release(tab);
       await deps.prepareRecordingViewport?.(tab);
     } catch (error) {
       tab.recordingStarting = false;
@@ -1936,6 +1986,8 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     stopPreviewStream,
     watchTabForRemote,
     stopRemoteWatches,
+    /** Takes a phone-size layout off the tab and waits for it (a sign-in handoff starting). */
+    releaseRemoteViewport: (tab: BrowserTabState): Promise<void> => remoteViewport.release(tab),
     startRecording,
     stopRecording,
     /** Drops any preview stream watching a tab the service just closed. */
@@ -1946,6 +1998,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       if (remoteTimer) clearTimeout(remoteTimer);
       remoteWatchTimers.delete(tabId);
       remoteWatchedTabs.delete(tabId);
+      remoteViewport.forget(tabId);
     },
     /**
      * Drops every preview subscription one renderer holds, and reports the tabs

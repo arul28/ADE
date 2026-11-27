@@ -86,6 +86,10 @@ enum ADEAnalyticsFeature: String, CaseIterable {
   case githubConnect = "github_connect"
   /// An ADE Cloud plan landed (bought, or moved up) and the phone said so: `completed` only.
   case cloudPlan = "cloud_plan"
+  /// The host took a thread comment made on the phone: `completed` only.
+  case threadComment = "thread_comment"
+  /// A lane's dev server opened in a desktop browser from the phone: `completed` only.
+  case devServerOpen = "dev_server_open"
 }
 
 /// What the person did in the invite funnel, in the desktop's action names.

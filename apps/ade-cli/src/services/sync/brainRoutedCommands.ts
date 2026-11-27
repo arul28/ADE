@@ -11,7 +11,9 @@ import type { SyncPairingRecord } from "./syncPairingStore";
 import {
   commandErrorResult,
   evaluateRemoteCommandPolicy,
+  isInteractiveControllerPeer,
   remoteCommandArgsFingerprint,
+  type SyncRemoteCommandExecutionContext,
 } from "./syncRemoteCommandService";
 import { ROSTER_DIRTYING_COMMAND_ACTIONS } from "./syncRosterFanout";
 
@@ -30,7 +32,10 @@ export type BrainProjectCommandRouter = {
    */
   listDescriptors(): Promise<SyncRemoteCommandDescriptor[]>;
   getDescriptor(projectId: string, action: string): Promise<SyncRemoteCommandDescriptor | null>;
-  execute(payload: SyncCommandPayload & { projectId: string }, context: { signal?: AbortSignal }): Promise<unknown>;
+  execute(
+    payload: SyncCommandPayload & { projectId: string },
+    context: Pick<SyncRemoteCommandExecutionContext, "signal" | "controller">,
+  ): Promise<unknown>;
 };
 
 /** What routing needs from the handler's peer record. */
@@ -217,7 +222,11 @@ export function createBrainRoutedCommandHandler<P extends BrainRoutedCommandPeer
       send(peer.ws, "command_ack", record.ack, requestId);
       let result: SyncCommandResultPayload;
       try {
-        const created = await router.execute({ ...payload, action, projectId }, {});
+        // The pairing decides, as the policy gate above did; never the wire.
+        const created = await router.execute(
+          { ...payload, action, projectId },
+          isInteractiveControllerPeer(peer) ? { controller: true } : {},
+        );
         result = { commandId, ok: true, result: created };
         if (ROSTER_DIRTYING_COMMAND_ACTIONS.has(action)) args.onRosterDirty();
       } catch (error) {

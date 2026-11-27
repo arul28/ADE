@@ -322,9 +322,10 @@ import {
   commandErrorResult,
   createSyncRemoteCommandService,
   evaluateRemoteCommandPolicy,
+  isInteractiveControllerPeer,
   remoteCommandArgsFingerprint,
   stableJsonKey,
-  type SyncBrowserTabCloser,
+  type SyncBrowserTabControl,
   type SyncRemoteCommandService,
 } from "./syncRemoteCommandService";
 import type { WorkToolsStateService } from "../workTools/workToolsStateService";
@@ -1276,8 +1277,8 @@ type SyncHostServiceArgs = {
    * optional action that is never advertised is one a phone can never adopt.
    */
   workToolsStateService?: WorkToolsStateService | null;
-  /** Threaded like `workToolsStateService`: backs `workTools.closeBrowserTab`. */
-  builtInBrowserService?: SyncBrowserTabCloser | null;
+  /** Threaded like `workToolsStateService`: backs `workTools.closeBrowserTab` and `workTools.openBrowserTab`. */
+  builtInBrowserService?: SyncBrowserTabControl | null;
   /**
    * The runtime's Mac Desktop service, when this host can hold a display.
    * Threaded for the same reason as `workToolsStateService`: the fallback
@@ -7540,6 +7541,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
                 ...(appControlStreamSink ? { appControlStream: appControlStreamSink } : {}),
                 // Credits an update to the paired device, never the client's claim.
                 ...(payload.action.startsWith("machine.") ? { requester: peer.pairingRecord } : {}),
+                // The pairing decides, as the policy gate above did; never the wire.
+                ...(isInteractiveControllerPeer(peer) ? { controller: true } : {}),
               });
           if (payload.action === "files.writeTextAtomic") args.onRemoteFileWrite?.();
         } finally {

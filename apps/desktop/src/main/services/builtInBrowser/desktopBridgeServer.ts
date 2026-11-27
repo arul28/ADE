@@ -522,6 +522,8 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
       return service.captureTabFrameForRuntime({
         tabId: normalizedString(rawParams.tabId),
         maxWidth: Number.isFinite(maxWidth) ? maxWidth : null,
+        // Normalized by the service: this is the phone's picture size, untrusted.
+        viewport: rawParams.viewport,
       });
     }
     if (name === BUILT_IN_BROWSER_SEND_TAB_INPUT_METHOD) {
