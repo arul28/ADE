@@ -5347,6 +5347,7 @@ app.whenReady().then(async () => {
     laneTeardownDeps.ptyService = {
       countActiveForLane: (laneId) => ptyService.countActiveForLane(laneId),
       disposeForLane: (laneId) => ptyService.disposeForLane(laneId),
+      listAdditionalLiveSessionsForLane: ptyService.listAdditionalLiveSessionsForLane,
     };
     laneTeardownDeps.fileWatcherService = {
       countActiveForWorkspace: (id) => fileService.countActiveWatchersForWorkspace(id),
@@ -5783,6 +5784,7 @@ app.whenReady().then(async () => {
     });
     laneTeardownDeps.agentChatService = {
       countActiveForLane: (laneId) => agentChatService.countActiveForLane(laneId),
+      listArchivedWorkingChats: agentChatService.listArchivedWorkingChats,
       disposeForLane: (laneId) => agentChatService.disposeForLane(laneId),
     };
     lateSettle.bind(createSettleWiring({

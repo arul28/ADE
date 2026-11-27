@@ -890,6 +890,7 @@ import type {
   RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
+  PtyDisposeArgs,
   PtyDisposeResult,
   PtyResumeSessionArgs,
   PtyResumeSessionResult,
@@ -4644,7 +4645,7 @@ declare global {
           },
           pin: OpenProjectBinding,
         ) => Promise<void>;
-        dispose: (args: { ptyId: string; sessionId?: string }, pin: OpenProjectBinding) => Promise<PtyDisposeResult>;
+        dispose: (args: PtyDisposeArgs, pin: OpenProjectBinding) => Promise<PtyDisposeResult>;
         /** The terminal machine's installed shells and its default for new shells. */
         getShellSettings: (pin?: OpenProjectBinding | null) => Promise<TerminalShellSettings>;
         /** Save that machine's default shell: a reported id, or null for Automatic. */

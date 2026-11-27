@@ -333,6 +333,50 @@
   padding: 18px 18px 22px;
   min-height: 170px;
 }
+/* A three-line transcript above the composer, so a hovered theme shows how a chat reads. */
+.ade-ap-preview-transcript {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 9px;
+  border-radius: 10px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--color-fg);
+  background: color-mix(in srgb, var(--color-bg) 82%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-fg) 8%, transparent);
+  backdrop-filter: blur(10px);
+}
+.ade-ap-preview-transcript code {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  padding: 0 3px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--color-fg) 8%, transparent);
+}
+.ade-ap-preview-user {
+  align-self: flex-end;
+  max-width: 82%;
+  padding: 5px 8px;
+  border-radius: 9px;
+  background: var(--chat-glass-bg, color-mix(in srgb, var(--color-surface) 80%, transparent));
+  border: 1px solid color-mix(in srgb, var(--color-fg) 10%, transparent);
+}
+.ade-ap-preview-worklog {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 9.5px;
+  color: var(--color-muted-fg);
+}
+.ade-ap-preview-reply {
+  padding: 0 2px;
+}
+.ade-ap-preview[data-previewing] .ade-ap-preview-stage {
+  outline: 1px solid color-mix(in srgb, var(--color-accent) 45%, transparent);
+  outline-offset: -1px;
+}
 .ade-ap-preview-logo { width: 84px; height: auto; filter: drop-shadow(0 0 10px color-mix(in srgb, var(--color-accent) 35%, transparent)); }
 .ade-ap-preview-composer {
   width: 100%;
@@ -745,3 +789,52 @@
 .ade-ap-sched-name:hover { border-color: color-mix(in srgb, var(--color-fg) 14%, transparent); }
 .ade-ap-sched-name:focus { outline: none; border-color: var(--color-accent); background: color-mix(in srgb, var(--color-fg) 4%, transparent); }
 .ade-ap-sched-name:focus::placeholder { opacity: 0.45; }
+
+/* Theme shelves: label and one-line blurb on one baseline. */
+.ade-theme-shelf-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 10px;
+  font-family: var(--font-sans);
+  min-width: 0;
+}
+.ade-theme-shelf-head > span:first-child { font-size: 12px; font-weight: 600; color: var(--color-secondary-fg); flex-shrink: 0; }
+.ade-theme-shelf-head > span:last-child {
+  font-size: 11.5px;
+  color: var(--color-muted-fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Theme files: a label column and one line per fact. */
+.ade-theme-files {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  column-gap: 12px;
+  row-gap: 8px;
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.ade-theme-files dt { font-weight: 600; color: var(--color-secondary-fg); }
+.ade-theme-files dd { margin: 0; color: var(--color-muted-fg); }
+.ade-theme-files code { font-family: var(--font-mono); font-size: 11px; color: var(--color-secondary-fg); }
+.ade-theme-files-links { display: flex; flex-wrap: wrap; gap: 6px; }
+.ade-theme-files-link {
+  all: unset;
+  cursor: pointer;
+  height: 22px;
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  font-size: 11.5px;
+  color: var(--color-fg);
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-fg) 10%, transparent);
+}
+.ade-theme-files-link:hover { background: color-mix(in srgb, var(--color-fg) 10%, transparent); }
+.ade-theme-files-link:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }

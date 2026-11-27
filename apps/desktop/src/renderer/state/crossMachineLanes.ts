@@ -726,6 +726,78 @@ export function seedCrossMachineOptimisticSession(
   });
 }
 
+/**
+ * Show a pin change on another machine's rows at once. The write goes to that
+ * machine; the next read of its chats confirms or replaces this.
+ */
+export function patchCrossMachineSessionsPinned(
+  binding: OpenProjectBinding,
+  sessionIds: ReadonlySet<string>,
+  pinned: boolean,
+  writing = false,
+): string | null {
+  // Held until that machine's read agrees, so a read that started before the
+  // write cannot flip the row back.
+  const held = pendingForeignPinsByBinding.get(binding.key) ?? new Map();
+  const expiresAtMs = Date.now() + FOREIGN_PENDING_PIN_TTL_MS;
+  const optimistic = pendingForeignOptimisticSessionsByBinding.get(binding.key);
+  for (const id of sessionIds) {
+    held.set(id, { pinned, expiresAtMs, writing });
+    const entry = optimistic?.get(id);
+    if (entry && Boolean(entry.session.pinned) !== pinned) {
+      optimistic?.set(id, { ...entry, session: { ...entry.session, pinned } });
+    }
+  }
+  pendingForeignPinsByBinding.set(binding.key, held);
+  const store = rootAppStoreApi.getState();
+  const existing = machineEntryForBinding(store, binding);
+  if (!existing) return null;
+  let changed = false;
+  const sessions = existing.sessions.map((session) => {
+    if (!sessionIds.has(session.id) || Boolean(session.pinned) === pinned) return session;
+    changed = true;
+    return { ...session, pinned };
+  });
+  if (changed) {
+    store.mergeCrossMachineLanes({
+      machineId: existing.machineId,
+      machineName: existing.machineName,
+      sessions,
+    });
+  }
+  return existing.machineId;
+}
+
+/** A pin shown before its write lands, per machine binding and session id. */
+const pendingForeignPinsByBinding = new Map<string, Map<string, { pinned: boolean; expiresAtMs: number; writing: boolean }>>();
+const FOREIGN_PENDING_PIN_TTL_MS = 15_000;
+
+/** Keep a pin the person just set over a read of that machine that predates it. */
+function applyPendingForeignPins(
+  binding: OpenProjectBinding,
+  sessions: TerminalSessionSummary[],
+  nowMs: number,
+): TerminalSessionSummary[] {
+  const held = pendingForeignPinsByBinding.get(binding.key);
+  if (!held?.size) return sessions;
+  for (const [id, entry] of held) {
+    if (!entry.writing && entry.expiresAtMs <= nowMs) held.delete(id);
+  }
+  let changed = false;
+  const next = sessions.map((session) => {
+    const entry = held.get(session.id);
+    if (!entry) return session;
+    if (Boolean(session.pinned) === entry.pinned) {
+      if (!entry.writing) held.delete(session.id);
+      return session;
+    }
+    changed = true;
+    return { ...session, pinned: entry.pinned };
+  });
+  if (held.size === 0) pendingForeignPinsByBinding.delete(binding.key);
+  return changed ? next : sessions;
+}
+
 /** Chat-shaped entry point for {@link seedCrossMachineOptimisticSession}. */
 export function seedCrossMachineOptimisticChatSession(
   session: AgentChatSession,
@@ -765,9 +837,10 @@ export function cancelCrossMachineOptimisticChatSession(
 /** Retains foreign optimistic rows across stale in-flight list responses. */
 export function reconcileCrossMachineOptimisticSessions(
   binding: OpenProjectBinding,
-  sessions: TerminalSessionSummary[],
+  incoming: TerminalSessionSummary[],
   nowMs: number = Date.now(),
 ): TerminalSessionSummary[] {
+  const sessions = applyPendingForeignPins(binding, incoming, nowMs);
   const pending = pendingForeignOptimisticSessionsByBinding.get(binding.key);
   if (!pending?.size) return sessions;
   const authoritativeIds = new Set(sessions.map((session) => session.id));
@@ -3150,6 +3223,7 @@ export function resetCrossMachineLaneSyncForTest(): void {
   runtime.refCount = 0;
   runtime.connections = [];
   pendingForeignOptimisticSessionsByBinding.clear();
+  pendingForeignPinsByBinding.clear();
   retainedSlots.clear();
   projectListReadAtMs.clear();
   runtime.scope = {

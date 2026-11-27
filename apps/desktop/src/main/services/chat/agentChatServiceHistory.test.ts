@@ -2858,6 +2858,7 @@ describe("createAgentChatService", () => {
         );
 
         await service.archiveSession({ sessionId: session.id });
+        expect(service.listArchivedWorkingChats("lane-1")).toEqual([]);
 
         const unsubscribeIndex = mockState.codexRequestPayloads.findIndex((payload) =>
           payload.method === "thread/unsubscribe"
@@ -2942,12 +2943,21 @@ describe("createAgentChatService", () => {
         expect((turnStarts[4]?.params as { input?: Array<{ text?: unknown }> } | undefined)?.input?.some(
           (item) => typeof item.text === "string" && item.text.includes("Deliver this queued follow-up."),
         )).toBe(true);
+        expect(service.listArchivedWorkingChats("lane-1")).toEqual([
+          expect.objectContaining({ id: queuedSession.id, runtimeState: "running" }),
+        ]);
 
         mockState.emitCodexPayload({
           jsonrpc: "2.0",
           method: "turn/completed",
           params: { threadId: queuedThreadId, turn: { id: "turn-5", status: "completed" } },
         });
+        await waitForEvent(
+          events,
+          (event): event is AgentChatEventEnvelope =>
+            event.event.type === "status" && event.event.turnStatus === "completed" && event.event.turnId === "turn-5",
+        );
+        expect(service.listArchivedWorkingChats("lane-1")).toEqual([]);
       } finally {
         queuedTurnCompletion.release?.();
         service.forceDisposeAll();

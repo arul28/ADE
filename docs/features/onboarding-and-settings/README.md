@@ -672,9 +672,12 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
   - `ADE_THEME_FAMILIES` each have a dark and light variant. `dark` and
     `light` use the stylesheet palettes; others set inline `--color-*` on
     `<html>`.
-  - **Only `<html>` carries `data-theme` / `data-theme-id`**; the stylesheet
-    re-declares `--color-*` under `[data-theme]`, so the attribute lower down
-    resets the palette.
+  - The app theme uses `data-theme` and `data-theme-id` on `<html>`. The
+    Appearance preview sets its own `data-theme` and resolves the surface
+    kit's card colours inside that preview.
+  - Hover or focus a theme swatch to see its colours in the composer and
+    transcript preview. Select the swatch to apply it. Theme files groups
+    import, export, and links to theme libraries under one disclosure.
   - `LEGACY_THEME_ID_ALIASES` maps retired ids (obsidian, high-contrast,
     midnight, evergreen, parchment, blush). `themeFollowsSystem` paints the
     family's variant for `systemColorScheme` (`effectiveThemeId`).

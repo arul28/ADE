@@ -73865,12 +73865,14 @@ export function createAgentChatService(args: {
       /** Side chats live inside their main chat and are left out unless asked for. */
       includeSideChats?: boolean;
       sessionIds?: readonly string[];
+      openOnly?: boolean;
     },
   ): Promise<AgentChatSessionSummary[]> => {
     await scheduledWorkReady;
     const rows = sessionService.list({
       ...(laneId ? { laneId } : {}),
-      limit: 500,
+      limit: options?.openOnly ? null : 500,
+      ...(options?.openOnly ? { openOnly: true, includeArchived: false } : {}),
       toolTypes: CHAT_SESSION_TOOL_TYPES,
     });
     const chatRows = rows.filter((row) => isChatToolType(row.toolType));
@@ -76008,6 +76010,22 @@ export function createAgentChatService(args: {
       if (managedSessionBelongsToLane(managed, laneId)) count += 1;
     }
     return count;
+  };
+
+  /** Archiving changes the Work roster while a live turn can still use its lane. */
+  const listArchivedWorkingChats = (laneId: string): TerminalSessionSummary[] => {
+    const rows: TerminalSessionSummary[] = [];
+    for (const managed of managedSessions.values()) {
+      if (managed.closed || managed.deleted || managed.session.laneId !== laneId) continue;
+      const running = sessionTurnRunning(managed) || hasRuntimeActiveWorkload(managed.runtime);
+      const backgroundWork = runtimeBackgroundWork(managed.runtime);
+      if (!running && backgroundWork.workingCount === 0) continue;
+      const row = sessionService.get(managed.session.id);
+      if (row?.archivedAt && !row.endedAt && row.laneId === laneId) {
+        rows.push({ ...row, runtimeState: running ? "running" : "idle", backgroundWork });
+      }
+    }
+    return rows;
   };
 
   const disposeForLane = async (laneId: string): Promise<number> => {
@@ -86381,6 +86399,7 @@ ${schedule.prompt}`
       for (const envelope of envelopes) recordChatEventInHistory(envelope);
     },
     countActiveForLane,
+    listArchivedWorkingChats,
     disposeForLane,
     getChatTranscript,
     getChatTranscriptPage,

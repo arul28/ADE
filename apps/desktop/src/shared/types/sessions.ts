@@ -397,6 +397,8 @@ export type TerminalSessionSummary = {
   currentTurnStartedAt?: string | null;
   summary: string | null;
   runtimeState: TerminalRuntimeState;
+  /** Open-work reads include closing terminals until their process tree exits. */
+  ptyExitPending?: boolean;
   pendingInputItemId?: string | null;
   /** Live-only Codex steering pip. Never persisted. */
   steeringInput?: boolean;
@@ -792,9 +794,18 @@ export type PtyCreateResult = {
   pid: number | null;
 };
 
+export type PtyDisposeArgs = {
+  ptyId: string;
+  sessionId?: string;
+  /** Return a process-exit receipt before a caller changes the worktree. */
+  confirmProcessExit?: boolean;
+};
+
 export type PtyDisposeResult = {
   disposed: boolean;
   reason: "disposed" | "orphaned" | "missing" | "not-running" | "session-mismatch" | "owned-by-peer" | "already-disposed";
+  /** A missing receipt means the runtime did not confirm the process tree exited. */
+  processTreeExited?: boolean;
 };
 
 /**
@@ -1109,6 +1120,8 @@ export type ListSessionsArgs = {
    * machine's Work list) gets a short page that misses live chats.
    */
   includeArchived?: boolean;
+  /** For lane work checks, exclude ended sessions and include side chats. */
+  openOnly?: boolean;
   /**
    * Caps settled rows on their own. When set, every unsettled row comes back
    * (up to `limit`) and at most this many settled ones fill what is left, so

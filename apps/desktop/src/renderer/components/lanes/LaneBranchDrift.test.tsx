@@ -14,10 +14,13 @@ const lanesApi = {
   getBranchDrift: vi.fn(),
   resolveBranchDrift: vi.fn(),
 };
+const sessionsApi = { list: vi.fn(), onChanged: vi.fn(() => () => undefined) };
+const agentChatApi = { interrupt: vi.fn() };
 let emitLifecycle: (event: LaneLifecycleEvent) => void = () => undefined;
 
 /** The tab's copy: its lanes' branches are read and switched there. */
 const TAB_PIN = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
+const ACTIVE_WORK_REFUSAL = "This lane has active sessions. Confirm the branch switch to continue.";
 
 function seedLane(overrides: Partial<LaneSummary>) {
   useAppStore.setState({
@@ -32,13 +35,15 @@ beforeAll(() => {
     emitLifecycle = callback;
     return () => undefined;
   });
-  (window as unknown as { ade: unknown }).ade = { lanes: lanesApi };
+  (window as unknown as { ade: unknown }).ade = { lanes: lanesApi, sessions: sessionsApi, agentChat: agentChatApi };
 });
 
 beforeEach(() => {
   lanesApi.switchBranch.mockReset().mockResolvedValue({});
   lanesApi.getBranchDrift.mockReset().mockResolvedValue(null);
   lanesApi.resolveBranchDrift.mockReset().mockResolvedValue({});
+  sessionsApi.list.mockReset().mockResolvedValue([]);
+  agentChatApi.interrupt.mockReset().mockResolvedValue({});
 });
 
 afterEach(() => {
@@ -47,8 +52,20 @@ afterEach(() => {
 });
 
 describe("LaneBranchComposerChip", () => {
-  it("shows where ADE moved the lane after its agent switched branches, and Switch back checks the old branch out", async () => {
+  it.each(["settled", "archived"] as const)("switches back after stopping the background work from a %s chat", async (filing) => {
     seedLane({ branchRef: "ade/follow-up" });
+    lanesApi.switchBranch.mockRejectedValueOnce(new Error(ACTIVE_WORK_REFUSAL));
+    sessionsApi.list.mockResolvedValue([{
+      id: "settled-chat",
+      laneId: "lane-1",
+      title: "Settled chat",
+      toolType: "codex-chat",
+      status: "running",
+      runtimeState: "idle",
+      ...(filing === "settled" ? { settledAt: "2026-11-26T15:00:00Z" } : { archivedAt: "2026-11-26T15:00:00Z" }),
+      backgroundWork: { workingCount: 1, monitoringCount: 0 },
+    }]);
+    agentChatApi.interrupt.mockImplementation(async () => { sessionsApi.list.mockResolvedValue([]); });
     render(<LaneBranchComposerChip laneId="lane-1" />);
     expect(screen.queryByTestId("lane-branch-adopted-chip")).toBeNull();
 
@@ -71,6 +88,19 @@ describe("LaneBranchComposerChip", () => {
       branchName: "ade/lane",
       mode: "existing",
     }, TAB_PIN));
+    const stop = await screen.findByRole("button", { name: "Stop and switch" });
+    expect(lanesApi.switchBranch).toHaveBeenCalledTimes(1);
+    fireEvent.click(stop);
+    await waitFor(() => expect(agentChatApi.interrupt).toHaveBeenCalledWith({
+      sessionId: "settled-chat",
+      mode: "stop_and_clear_and_background",
+    }, TAB_PIN));
+    await waitFor(() => expect(lanesApi.switchBranch).toHaveBeenLastCalledWith({
+      laneId: "lane-1",
+      branchName: "ade/lane",
+      mode: "existing",
+      acknowledgeActiveWork: true,
+    }, TAB_PIN));
     await waitFor(() => expect(screen.queryByTestId("lane-branch-adopted-chip")).toBeNull());
   });
 
@@ -92,5 +122,32 @@ describe("LaneBranchComposerChip", () => {
       resolution: "keep-head",
       expectedHeadBranchRef: "ade/elsewhere",
     }, TAB_PIN));
+  });
+
+  it("clears an open branch confirmation when another branch is adopted in the same lane", async () => {
+    seedLane({ branchRef: "ade/second" });
+    lanesApi.switchBranch.mockRejectedValueOnce(new Error(ACTIVE_WORK_REFUSAL));
+    render(<LaneBranchComposerChip laneId="lane-1" />);
+    const event = {
+      type: "lane-branch-updated",
+      laneId: "lane-1",
+      laneName: "cu md",
+      previousBranchRef: "ade/first",
+      branchRef: "ade/second",
+      adoptedByAgent: true,
+    } as const;
+    act(() => emitLifecycle(event));
+    fireEvent.click(await screen.findByRole("button", { name: /Switch back/ }));
+    expect(await screen.findByRole("alertdialog")).toBeTruthy();
+
+    act(() => {
+      seedLane({ branchRef: "ade/third" });
+      emitLifecycle({ ...event, previousBranchRef: "ade/second", branchRef: "ade/third" });
+    });
+
+    expect((await screen.findByTestId("lane-branch-adopted-chip")).textContent).toContain("ade/third");
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(lanesApi.switchBranch).toHaveBeenCalledTimes(1);
+    act(() => emitLifecycle({ ...event, previousBranchRef: "ade/third", branchRef: "ade/fourth", adoptedByAgent: false }));
   });
 });

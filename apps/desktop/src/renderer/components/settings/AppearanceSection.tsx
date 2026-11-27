@@ -35,6 +35,7 @@ import { ModernRow, ModernSection, SettingsColumn, SettingsSectionAction, Settin
 import { Banner } from "../ui/notice";
 import { TerminalSettings } from "./AppearanceTerminal";
 import { ThemeGallery, useThemeMode, type ThemeMode } from "./ThemeGallery";
+import { clearThemeHoverPreview, useHoveredThemeId } from "./themeHoverPreview";
 import { ThemeCustomizer } from "./ThemeCustomizer";
 import { ThemeFilesHelp, ThemeImportExport } from "./ThemeImportExport";
 import { BUNDLED_SCENES, sceneFitsScreen, type ScreenPixels } from "../../scene/sceneLibrary";
@@ -787,19 +788,36 @@ function SpecimenGrid<T extends string>({
  * The live preview: a small ADE window. It is painted with the app's own CSS
  * variables, so it is always exactly the active theme; the backdrop is the
  * active scene's picture (veiled and textured the same way) or the theme mesh.
+ *
+ * While a theme swatch is pointed at or focused, the window shows that theme
+ * instead: its variables are set on the preview alone (with `data-theme` for
+ * its base tokens), so the app keeps the active theme until a click.
  */
 function AppearancePreview() {
   const scene = useActiveScene();
   const themeId = useAppStore(selectEffectiveThemeId);
   const customThemes = useAppStore((s) => s.customThemes);
   const sansFont = useAppStore((s) => s.interfacePreferences.sansFont);
-  const painted = useMemo(() => resolveThemeById(themeId, customThemes), [themeId, customThemes]);
-  const palette = useMemo(() => resolveTheme(painted).palette, [painted]);
+  const hoveredId = useHoveredThemeId();
+  const previewing = hoveredId != null && hoveredId !== themeId;
+  const painted = useMemo(
+    () => resolveThemeById(previewing ? hoveredId : themeId, customThemes),
+    [customThemes, hoveredId, previewing, themeId],
+  );
+  const resolved = useMemo(() => resolveTheme(painted), [painted]);
+  const palette = resolved.palette;
   const sceneLabel = sceneStatus(scene);
+  // Leaving Appearance mid-hover must not leave a preview behind.
+  useEffect(() => clearThemeHoverPreview, []);
 
   return (
-    <div className="ade-ap-preview" data-active-theme={painted.id}>
-      <div className="ade-ap-preview-stage">
+    <div className="ade-ap-preview" data-active-theme={painted.id} data-previewing={previewing || undefined}>
+      <div
+        className="ade-ap-preview-stage"
+        data-theme={previewing ? painted.baseMode : undefined}
+        data-kit-theme-scope={previewing ? (scene.kind === "image" && scene.showImage ? "image" : "flat") : undefined}
+        style={previewing ? (resolved.cssVars as React.CSSProperties) : undefined}
+      >
         <PreviewBackdrop scene={scene} palette={palette} />
         <div className="ade-ap-preview-top">
           <span className="ade-ap-dots"><i /><i /><i /></span>
@@ -808,6 +826,11 @@ function AppearancePreview() {
         </div>
         <div className="ade-ap-preview-hero">
           {scene.kind === "image" && scene.showImage ? null : <AdeWordmark alt="" className="ade-ap-preview-logo" draggable={false} />}
+          <div className="ade-ap-preview-transcript" aria-hidden>
+            <div className="ade-ap-preview-user">Make the flaky e2e test pass</div>
+            <div className="ade-ap-preview-worklog"><span className="kit-dot" data-state="ok" />Ran <code>npm test</code> · 2 files changed</div>
+            <div className="ade-ap-preview-reply">Fixed the race in <code>waitForIdle</code>. All 48 tests pass.</div>
+          </div>
           <div className="ade-ap-preview-composer">
             <span className="ade-ap-preview-placeholder">Describe a task…</span>
             <div className="ade-ap-preview-composer-row">
@@ -846,7 +869,7 @@ function AppearancePreview() {
         </div>
       </div>
       <div className="ade-ap-preview-foot">
-        <span className="kit-eyebrow">{painted.name} · {painted.baseMode}</span>
+        <span className="kit-eyebrow">{previewing ? `Preview · ${painted.name}` : `${painted.name} · ${painted.baseMode}`}</span>
         <span className="kit-eyebrow">{sceneLabel} · {sansFont === "geist-mono" ? "mono" : sansFont}</span>
       </div>
     </div>

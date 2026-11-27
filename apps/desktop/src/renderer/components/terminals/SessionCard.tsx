@@ -15,7 +15,6 @@ import {
   GridFour,
   PaperPlaneTilt,
   PencilSimple,
-  PushPin,
   Tag,
   TreeStructure,
   UsersThree,
@@ -126,6 +125,7 @@ import {
   wakingSessionView,
 } from "../../../shared/sessionStatusPresentation";
 import { LaneNamingLabel, NamingPendingLabel } from "./LaneNamingLabel";
+import { PinnedMark } from "./PinnedMark";
 import {
   AI_STATUS_CACHE_INVALIDATED_EVENT,
   AI_STATUS_CACHE_UPDATED_EVENT,
@@ -940,15 +940,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
     );
   }
   if (session.pinned) {
-    whereParts.push(
-      <PushPin
-        key="pinned"
-        size={11}
-        weight="fill"
-        className="shrink-0 text-muted-fg/55"
-        aria-label="Pinned"
-      />,
-    );
+    whereParts.push(<PinnedMark key="pinned" />);
   }
   if (githubStack) {
     whereParts.push(
