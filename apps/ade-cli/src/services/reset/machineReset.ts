@@ -30,6 +30,7 @@ import {
   type ProjectTarget,
   type ServiceTarget,
 } from "./machineResetInventory";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 export {
   defaultMachineResetDeps,
@@ -212,7 +213,7 @@ async function stopProcesses(deps: MachineResetDeps, receipt: MachineResetReceip
       // gone between the check and the kill
     }
   }
-  if (targets.length) receipt.notes.push(`Stopped ${targets.length} ADE process${targets.length === 1 ? "" : "es"}.`);
+  if (targets.length) receipt.notes.push(`Stopped ${targets.length} ${BRAND.NAME} process${targets.length === 1 ? "" : "es"}.`);
 }
 
 
@@ -248,11 +249,11 @@ function commitLaneWork(deps: MachineResetDeps, rootPath: string, lane: MachineR
   if (lane.uncommittedFiles > 0 || lane.workUnknown) {
     const added = deps.run("git", ["-C", lane.path, "add", "-A"]);
     if (added.status !== 0) return { ok: false, error: added.stderr.trim() || "git add failed" };
-    const message = "ADE reset: saved lane work before removing the lane";
+    const message = `${BRAND.NAME} reset: saved lane work before removing the lane`;
     let committed = deps.run("git", ["-C", lane.path, "commit", "--no-verify", "-m", message]);
     if (committed.status !== 0 && /identity|user\.email|user\.name/i.test(committed.stderr)) {
       committed = deps.run("git", [
-        "-C", lane.path, "-c", "user.name=ADE reset", "-c", "user.email=reset@ade.invalid",
+        "-C", lane.path, "-c", `user.name=${BRAND.NAME} reset`, "-c", "user.email=reset@ade.invalid",
         "commit", "--no-verify", "-m", message,
       ]);
     }
@@ -458,11 +459,15 @@ function clearWindowsRegistrations(deps: MachineResetDeps, receipt: MachineReset
     "  if ($kept -ne $p) { [Environment]::SetEnvironmentVariable('Path', $kept, 'User'); 'path' }",
     "}",
     "$k = 'HKCU:\\Software\\Classes\\ade'",
-    "if (Test-Path $k) { $c = (Get-ItemProperty -Path ($k + '\\shell\\open\\command') -ErrorAction SilentlyContinue).'(default)'; if ($c -match 'ADE') { Remove-Item -Path $k -Recurse -Force; 'scheme' } }",
+    `if (Test-Path $k) { $c = (Get-ItemProperty -Path ($k + '\\shell\\open\\command') -ErrorAction SilentlyContinue).'(default)'; if ($c -match 'ADE') { Remove-Item -Path $k -Recurse -Force; 'scheme' } }`,
+    // The app registers daex:// too; its command still runs the installed ADE app.
+    "$k = 'HKCU:\\Software\\Classes\\daex'",
+    `if (Test-Path $k) { $c = (Get-ItemProperty -Path ($k + '\\shell\\open\\command') -ErrorAction SilentlyContinue).'(default)'; if ($c -match 'ADE') { Remove-Item -Path $k -Recurse -Force; 'newlink' } }`,
   ].join("\n");
   const result = deps.run(resolveTrustedWindowsTool("powershell"), ["-NoProfile", "-NonInteractive", "-Command", script], { timeoutMs: 30_000 });
-  if (result.stdout.includes("path")) receipt.removed.push("Windows user PATH entry for ADE");
+  if (result.stdout.includes("path")) receipt.removed.push(`Windows user PATH entry for ${BRAND.NAME}`);
   if (result.stdout.includes("scheme")) receipt.removed.push("ade:// link");
+  if (result.stdout.includes("newlink")) receipt.removed.push("daex:// link");
 }
 
 function clearConfigEntries(found: Inventory, receipt: MachineResetReceipt): void {
@@ -471,7 +476,7 @@ function clearConfigEntries(found: Inventory, receipt: MachineResetReceipt): voi
       const next = stripAdeShellLines(fs.readFileSync(file, "utf8"));
       if (next !== null) {
         fs.writeFileSync(file, next, "utf8");
-        receipt.removed.push(`${file} (ADE PATH lines)`);
+        receipt.removed.push(`${file} (${BRAND.NAME} PATH lines)`);
       }
     } catch (error) {
       receipt.failed.push({ target: file, error: error instanceof Error ? error.message : String(error) });
@@ -482,7 +487,7 @@ function clearConfigEntries(found: Inventory, receipt: MachineResetReceipt): voi
       const next = cursorHooksWithoutAde(fs.readFileSync(found.cursorHooksJson, "utf8"));
       if (next !== null) {
         fs.writeFileSync(found.cursorHooksJson, next, "utf8");
-        receipt.removed.push(`${found.cursorHooksJson} (ADE hooks)`);
+        receipt.removed.push(`${found.cursorHooksJson} (${BRAND.NAME} hooks)`);
       }
     } catch (error) {
       receipt.failed.push({ target: found.cursorHooksJson, error: error instanceof Error ? error.message : String(error) });
@@ -512,12 +517,12 @@ async function stopStuckDesktop(pid: number, deps: MachineResetDeps, receipt: Ma
     // anything while an unknown process may still be ADE is the one unsafe
     // choice.
     if (deps.pidAlive(pid)) {
-      throw new Error(`ADE (process ${pid}) may still be running and the process list could not be read, so the reset stopped before changing anything. Quit ADE, then run the reset again.`);
+      throw new Error(`${BRAND.NAME} (process ${pid}) may still be running and the process list could not be read, so the reset stopped before changing anything. Quit ${BRAND.NAME}, then run the reset again.`);
     }
     return;
   }
   if (!isAdeProcessCommand(entry.command)) {
-    receipt.notes.push(`Process ${pid} is no longer ADE; it was left alone.`);
+    receipt.notes.push(`Process ${pid} is no longer ${BRAND.NAME}; it was left alone.`);
     return;
   }
   for (const signal of ["SIGTERM", "SIGKILL"] as const) {
@@ -527,11 +532,11 @@ async function stopStuckDesktop(pid: number, deps: MachineResetDeps, receipt: Ma
       // gone between the check and the signal
     }
     if (await waitForExit(deps, pid, 5_000)) {
-      receipt.notes.push(`ADE did not quit by itself, so the reset stopped it (${signal}).`);
+      receipt.notes.push(`${BRAND.NAME} did not quit by itself, so the reset stopped it (${signal}).`);
       return;
     }
   }
-  throw new Error(`ADE (process ${pid}) would not quit, so the reset stopped before changing anything. Quit ADE, then run the reset again.`);
+  throw new Error(`${BRAND.NAME} (process ${pid}) would not quit, so the reset stopped before changing anything. Quit ${BRAND.NAME}, then run the reset again.`);
 }
 
 export async function executeMachineReset(
@@ -620,7 +625,7 @@ export async function executeMachineReset(
 
 
 export function formatMachineResetReceipt(receipt: MachineResetReceipt): string {
-  const lines = [receipt.ok ? "ADE reset finished." : "ADE reset finished with problems.", ""];
+  const lines = [receipt.ok ? `${BRAND.NAME} reset finished.` : `${BRAND.NAME} reset finished with problems.`, ""];
   lines.push(`Removed ${receipt.removed.length} items.`);
   for (const rescued of receipt.rescued) {
     lines.push(`Saved lane ${rescued.lane}: ${rescued.mode === "move" ? `moved to ${rescued.location}` : `committed on branch ${rescued.branch}`}`);

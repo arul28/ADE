@@ -1,4 +1,5 @@
 import type { AccountProjectMainResult } from "./accountProjectSync";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * "Use for new lanes": the folder of a project that new lanes on this
@@ -30,7 +31,7 @@ export async function setAccountProjectMainCheckout(checkoutId: unknown): Promis
   const id = typeof checkoutId === "string" ? checkoutId.trim() : "";
   if (!id) return { ok: false, code: "not_a_copy", message: "Name the folder to use for new lanes." };
   if (!handler) {
-    return { ok: false, code: "not_publishing", message: "This computer is not sending its projects to your ADE account right now." };
+    return { ok: false, code: "not_publishing", message: `This computer is not sending its projects to your ${BRAND.NAME} account right now.` };
   }
   return await handler(id);
 }

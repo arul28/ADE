@@ -50,6 +50,7 @@ import {
 } from "./moveJournal";
 import { copyLocation } from "./projectMovePreflight";
 import { readMoveVolume } from "./moveVolumes";
+import { BRAND } from "../../../../../desktop/src/shared/brand";
 
 const execFileAsync = promisify(execFile);
 
@@ -202,7 +203,7 @@ async function prepare(run: MoveRun): Promise<WorktreeLink[]> {
   const holders = await waitUntilReleased(dbPath, 20_000);
   if (holders.length) {
     const names = await Promise.all(holders.map(processName));
-    throw new Error(`${[...new Set(names)].join(", ")} still has the project's data open. Quit it (or other copies of ADE), then try again.`);
+    throw new Error(`${[...new Set(names)].join(", ")} still has the project's data open. Quit it (or other copies of ${BRAND.NAME}), then try again.`);
   }
   return listWorktreeLinks(run.sourceRoot, run.oldSpellings);
 }
@@ -248,14 +249,14 @@ async function copy(run: MoveRun, links: WorktreeLink[], leftoverIsOurs: boolean
     await assertSameDrive(run, "was disconnected during the copy. Your project wasn't changed. Reconnect the drive and try again.");
     throw error;
   });
-  run.progress("Copying ADE's project data");
+  run.progress(`Copying ${BRAND.NAME}'s project data`);
   const copiedDb = projectDatabasePath(copyRoot);
   await snapshotProjectDatabase(projectDatabasePath(run.sourceRoot), copiedDb).catch((error) => {
-    throw new Error(`Copying ADE's project data failed: ${errorText(error)}`);
+    throw new Error(`Copying ${BRAND.NAME}'s project data failed: ${errorText(error)}`);
   });
   // Read from the snapshot: it holds everything the write-ahead log held.
   const before = readProjectDatabaseSummary(copiedDb);
-  if (before.projectCount !== 1 || !before.projectId) throw new Error("ADE's data for this project needs a repair first.");
+  if (before.projectCount !== 1 || !before.projectId) throw new Error(`${BRAND.NAME}'s data for this project needs a repair first.`);
   record.resume = {
     sourceSpellings: run.oldSpellings,
     knownPaths: [run.sourceRoot, ...before.lanes.map((lane) => lane.worktreePath).filter(Boolean)],
@@ -278,7 +279,7 @@ async function rewrite(run: MoveRun): Promise<WorktreeLink[]> {
   const relinked = await relinkAbsoluteSymlinks({ copyRoot, finalRoot, oldSpellings, includeDependencies: run.record.copiedDependencies === true });
   run.progress(`Updated ${plural(links.inside.length, "lane link")}, ${plural(configKeys.length, "git setting")}, ${plural(relinked, "symlink")}`);
 
-  enter(run, "data", "Updating ADE's project data");
+  enter(run, "data", `Updating ${BRAND.NAME}'s project data`);
   rewriteProjectDatabasePaths({ dbPath: projectDatabasePath(copyRoot), oldSpellings, finalRoot });
   rewriteAdeJsonFiles(copyRoot, oldSpellings, finalRoot);
   return links.inside;
@@ -342,7 +343,7 @@ async function switchOver(run: MoveRun): Promise<string> {
   } catch (error) {
     // The copy is in place: recovery recognises that from the folders alone
     // (parked original, destination present, no partial copy).
-    record.problems.push(`ADE couldn't save the move's progress: ${errorText(error)}`);
+    record.problems.push(`${BRAND.NAME} couldn't save the move's progress: ${errorText(error)}`);
   }
   return parked;
 }
@@ -434,7 +435,7 @@ async function executeMove(
       try {
         fs.rmSync(copyRoot, { recursive: true, force: true });
       } catch (cleanupError) {
-        record.problems.push(`ADE couldn't remove the partial copy at ${copyRoot} (${errorText(cleanupError)}). You can delete it.`);
+        record.problems.push(`${BRAND.NAME} couldn't remove the partial copy at ${copyRoot} (${errorText(cleanupError)}). You can delete it.`);
       }
     }
     record.state = "failed";
@@ -452,7 +453,7 @@ async function executeMove(
   try {
     writeMoveRecord(record);
   } catch (error) {
-    record.problems.push(`ADE couldn't save the move's record: ${errorText(error)}`);
+    record.problems.push(`${BRAND.NAME} couldn't save the move's record: ${errorText(error)}`);
   }
   record.originalBytes = await diskUsageBytes(parked);
   recordOriginalBytes(record.moveId, record.originalBytes);
@@ -478,19 +479,19 @@ function finishSwitch(record: ProjectMoveRecord): void {
       record.problems.push(`${what}: ${errorText(error)}`);
     }
   };
-  attempt("ADE couldn't mark the old copy so it isn't opened by mistake", () =>
+  attempt(`${BRAND.NAME} couldn't mark the old copy so it isn't opened by mistake`, () =>
     writeMovedMarker(parked, { movedTo: finalRoot, moveId: record.moveId }));
   for (const lane of resume.outsideLanes) {
     attempt(`The lane at ${lane.lanePath} couldn't be linked to the moved project`, () => {
       if (fs.existsSync(lane.lanePath)) pointOutsideLaneAt({ ...lane, relativePath: null, exists: true }, finalRoot);
     });
   }
-  attempt("ADE couldn't update its project list", () => new ProjectRegistry().relocate(resume.sourceSpellings, finalRoot));
-  attempt("ADE couldn't update the lane simulators", () => {
+  attempt(`${BRAND.NAME} couldn't update its project list`, () => new ProjectRegistry().relocate(resume.sourceSpellings, finalRoot));
+  attempt(`${BRAND.NAME} couldn't update the lane simulators`, () => {
     const simulators = rewriteSimulatorMarkers(resume.sourceSpellings, finalRoot);
     if (simulators) record.followUps.push(`${plural(simulators, "lane simulator")} now point at the new location.`);
   });
-  attempt("ADE couldn't move the chat history", () => {
+  attempt(`${BRAND.NAME} couldn't move the chat history`, () => {
     const plans = planAgentHistoryRenames({
       oldSpellings: resume.sourceSpellings,
       newRoot: finalRoot,
@@ -500,17 +501,17 @@ function finishSwitch(record: ProjectMoveRecord): void {
     if (history.moved) record.followUps.push(`Moved ${plural(history.moved, "chat history folder")} to the new location.`);
     record.problems.push(...history.problems);
   });
-  attempt("ADE couldn't carry Codex's folder trust over", () => {
+  attempt(`${BRAND.NAME} couldn't carry Codex's folder trust over`, () => {
     if (carryCodexTrust({ oldSpellings: resume.sourceSpellings, newRoot: finalRoot })) {
       record.followUps.push("Codex trusts the new location, as it did the old one.");
     }
   });
-  attempt("ADE couldn't carry Claude's folder settings over", () => {
+  attempt(`${BRAND.NAME} couldn't carry Claude's folder settings over`, () => {
     if (carryClaudeProjectSettings({ oldSpellings: resume.sourceSpellings, newRoot: finalRoot })) {
       record.followUps.push("Claude trusts the new location and keeps its allowed tools and MCP approvals.");
     }
   });
-  attempt("ADE couldn't carry Copilot's folder trust over", () => {
+  attempt(`${BRAND.NAME} couldn't carry Copilot's folder trust over`, () => {
     if (carryCopilotTrust({ oldSpellings: resume.sourceSpellings, newRoot: finalRoot })) {
       record.followUps.push("Copilot trusts the new location, as it did the old one.");
     }
@@ -542,7 +543,7 @@ export async function recoverInterruptedMoves(): Promise<{ settled: ProjectMoveR
         record.switched = true;
         finishSwitch(record);
         record.state = "done";
-        record.followUps.push("ADE stopped during the switch-over and finished it when it started again.");
+        record.followUps.push(`${BRAND.NAME} stopped during the switch-over and finished it when it started again.`);
         const parked = record.originalParkedAt;
         if (parked) slowWork.push(async () => recordOriginalBytes(record.moveId, await diskUsageBytes(parked)));
       } else {
@@ -558,11 +559,11 @@ export async function recoverInterruptedMoves(): Promise<{ settled: ProjectMoveR
           slowWork.push(() => removeTreeOffProcess(removing));
         }
         record.state = "failed";
-        record.error = "ADE stopped during the move. Your project wasn't changed.";
+        record.error = `${BRAND.NAME} stopped during the move. Your project wasn't changed.`;
       }
     } catch (error) {
       record.state = "failed";
-      record.error = `ADE stopped during the move and couldn't tidy up: ${errorText(error)}`;
+      record.error = `${BRAND.NAME} stopped during the move and couldn't tidy up: ${errorText(error)}`;
     }
     record.finishedAt = Date.now();
     writeMoveRecord(record);
@@ -630,7 +631,7 @@ async function verifyGit(args: {
  */
 export async function deleteParkedOriginal(record: ProjectMoveRecord): Promise<void> {
   const parked = record.originalParkedAt;
-  if (!parked) throw new Error("ADE has no record of where the original was kept.");
+  if (!parked) throw new Error(`${BRAND.NAME} has no record of where the original was kept.`);
   try {
     await nonAsarFs.promises.lstat(parked);
   } catch (error) {
@@ -639,19 +640,19 @@ export async function deleteParkedOriginal(record: ProjectMoveRecord): Promise<v
     // waiting for). Only when its parent is there: a missing parent is a
     // drive that isn't connected, not a deleted folder.
     if (fs.existsSync(path.dirname(parked))) return;
-    throw new Error(`The drive that holds ${parked} isn't connected, so ADE can't delete it now.`);
+    throw new Error(`The drive that holds ${parked} isn't connected, so ${BRAND.NAME} can't delete it now.`);
   }
   if (readMovedMarker(parked)?.moveId !== record.moveId) {
-    throw new Error(`The folder at ${parked} isn't the original ADE kept, so ADE won't delete it.`);
+    throw new Error(`The folder at ${parked} isn't the original ${BRAND.NAME} kept, so ${BRAND.NAME} won't delete it.`);
   }
   if (!fs.existsSync(record.destinationRoot)) {
-    throw new Error("The moved project isn't at its new location right now, so ADE won't delete the original.");
+    throw new Error(`The moved project isn't at its new location right now, so ${BRAND.NAME} won't delete the original.`);
   }
   const parkedSpellings = rootSpellings(parked);
   for (const lane of record.resume?.outsideLanes ?? []) {
     const gitDir = readGitDirPointer(lane.lanePath);
     if (gitDir && relativeToRoot(gitDir, parkedSpellings) !== null) {
-      throw new Error(`The lane at ${lane.lanePath} still keeps its git data in the old copy, so ADE won't delete it yet.`);
+      throw new Error(`The lane at ${lane.lanePath} still keeps its git data in the old copy, so ${BRAND.NAME} won't delete it yet.`);
     }
   }
   await removeKeepingMarkerLast(parked, record.destinationRoot, record.moveId);
@@ -668,7 +669,7 @@ async function removeKeepingMarkerLast(root: string, movedTo: string, moveId: st
   for (const directory of [root, path.dirname(marker)]) {
     const stat = await nonAsarFs.promises.lstat(directory);
     if (!stat.isDirectory() || stat.isSymbolicLink()) {
-      throw new Error(`ADE won't delete ${root} because ${directory} isn't a directory it can safely remove.`);
+      throw new Error(`${BRAND.NAME} won't delete ${root} because ${directory} isn't a directory it can safely remove.`);
     }
   }
   const keep = new Set([root, path.dirname(marker), marker]);
@@ -691,13 +692,13 @@ async function removeKeepingMarkerLast(root: string, movedTo: string, moveId: st
       throw error;
     }
     if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
-      throw new Error(`ADE won't restore the moved marker because ${root} isn't a directory it can safely write to.`);
+      throw new Error(`${BRAND.NAME} won't restore the moved marker because ${root} isn't a directory it can safely write to.`);
     }
     const adeDir = path.dirname(marker);
     try {
       const adeStat = await nonAsarFs.promises.lstat(adeDir);
       if (!adeStat.isDirectory() || adeStat.isSymbolicLink()) {
-        throw new Error(`ADE won't restore the moved marker because ${adeDir} isn't a directory it can safely write to.`);
+        throw new Error(`${BRAND.NAME} won't restore the moved marker because ${adeDir} isn't a directory it can safely write to.`);
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -713,13 +714,13 @@ async function removeKeepingMarkerLast(root: string, movedTo: string, moveId: st
     } catch (restoreError) {
       throw new AggregateError(
         [error, restoreError],
-        `ADE couldn't remove everything in ${root}, and couldn't restore the moved marker. Try again, or delete what's left in Finder.`,
+        `${BRAND.NAME} couldn't remove everything in ${root}, and couldn't restore the moved marker. Try again, or delete what's left in Finder.`,
       );
     }
     throw error;
   }
   if (fs.existsSync(root)) {
     await restoreMarkerIfNeeded();
-    throw new Error(`ADE couldn't remove everything in ${root}. Try again, or delete what's left in Finder.`);
+    throw new Error(`${BRAND.NAME} couldn't remove everything in ${root}. Try again, or delete what's left in Finder.`);
   }
 }

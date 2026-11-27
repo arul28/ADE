@@ -17,6 +17,7 @@ import { projectDatabasePath, readProjectDatabaseSummary, type DatabaseSummary }
 import { listWorktreeLinks, rootSpellings, type WorktreeLink } from "./moveGitLinks";
 import { ownsLeftoverCopy } from "./moveJournal";
 import { nearestExistingDir, readMoveVolume } from "./moveVolumes";
+import { BRAND } from "../../../../../desktop/src/shared/brand";
 
 const execFileAsync = promisify(execFile);
 
@@ -299,9 +300,9 @@ function destinationCheck(sourceRoot: string, destinationRoot: string): ProjectM
     problems.push(`A folder from an earlier attempt is at ${copyLocation(destinationRoot)}. Delete it, then try again.`);
   }
   if (Buffer.byteLength(path.join(destinationRoot, ".ade", "ade.sock")) > MAX_SOCKET_PATH_BYTES) {
-    problems.push("That path is too long for ADE's project connection. Pick a shorter folder.");
+    problems.push(`That path is too long for ${BRAND.NAME}'s project connection. Pick a shorter folder.`);
   }
-  if (detectCloudStorageProvider(destinationRoot)) problems.push("That folder is synced by a cloud service, which can evict files ADE needs. Pick a local folder.");
+  if (detectCloudStorageProvider(destinationRoot)) problems.push(`That folder is synced by a cloud service, which can evict files ${BRAND.NAME} needs. Pick a local folder.`);
   return problems.length
     ? { id: "destination", status: "blocked", title: "The new location can't be used", detail: problems.join(" ") }
     : { id: "destination", status: "ok", title: `New location: ${destinationRoot}` };
@@ -316,15 +317,15 @@ function measureCheck(): ProjectMoveCheck {
   return {
     id: "space",
     status: "blocked",
-    title: "ADE couldn't measure the project",
-    detail: `It either took longer than ${DISK_USAGE_TIMEOUT_MS / 60_000} minutes or the project folder couldn't be read at all. Check that its drive is connected and ADE can read the folder, then check again.`,
+    title: `${BRAND.NAME} couldn't measure the project`,
+    detail: `It either took longer than ${DISK_USAGE_TIMEOUT_MS / 60_000} minutes or the project folder couldn't be read at all. Check that its drive is connected and ${BRAND.NAME} can read the folder, then check again.`,
   };
 }
 
 function spaceCheck(sizes: { copyBytes: number; dependencyBytes: number }, free: number, where: string, sameDrive: boolean): ProjectMoveCheck {
   if (sameDrive) {
     return free < SPACE_MARGIN_BYTES
-      ? { id: "space", status: "blocked", title: `Not enough space on ${where}`, detail: `A move on the same drive takes almost no space, but ADE needs ${formatBytes(SPACE_MARGIN_BYTES)} free to work and ${where} has ${formatBytes(free)}.` }
+      ? { id: "space", status: "blocked", title: `Not enough space on ${where}`, detail: `A move on the same drive takes almost no space, but ${BRAND.NAME} needs ${formatBytes(SPACE_MARGIN_BYTES)} free to work and ${where} has ${formatBytes(free)}.` }
       : { id: "space", status: "ok", title: "Same drive: the move takes almost no space", detail: "Files are cloned, not duplicated, and dependencies come along." };
   }
   const needed = sizes.copyBytes + SPACE_MARGIN_BYTES;
@@ -378,7 +379,7 @@ async function holdersCheck(sourceRoot: string): Promise<ProjectMoveCheck> {
     if (command.startsWith("/Applications/ADE") || command.includes("/ADE.app/Contents/")) continue;
     others.push(`${pid}: ${command.length > 120 ? `${command.slice(0, 117)}…` : command}`);
   }
-  if (!others.length) return { id: "holders", status: "ok", title: "Only ADE has the project's data open" };
+  if (!others.length) return { id: "holders", status: "ok", title: `Only ${BRAND.NAME} has the project's data open` };
   return {
     id: "holders",
     // A warning, not a block: one of these can be the background service of
@@ -386,7 +387,7 @@ async function holdersCheck(sourceRoot: string): Promise<ProjectMoveCheck> {
     // that don't stop the move before it changes anything.
     status: "warning",
     title: `${others.length === 1 ? "Another program has" : `${others.length} other programs have`} the project's data open`,
-    detail: "Usually a dev build of ADE started from a lane. Quit those first (stop their dev app or `ade serve`): if one still holds the data, the move stops before changing anything.",
+    detail: `Usually a dev build of ${BRAND.NAME} started from a lane. Quit those first (stop their dev app or \`daex serve\`): if one still holds the data, the move stops before changing anything.`,
     items: others,
   };
 }
@@ -396,7 +397,7 @@ function quietCheck(activity: ProjectActivity): ProjectMoveCheck {
     return {
       id: "quiet",
       status: "blocked",
-      title: "ADE couldn't check whether agents are working",
+      title: `${BRAND.NAME} couldn't check whether agents are working`,
       detail: `${activity.unknownReason} Check again in a moment.`,
     };
   }
@@ -429,8 +430,8 @@ function gitCheck(args: {
   links: WorktreeLink[];
 }): ProjectMoveCheck {
   const problems: string[] = [];
-  if (!args.isMainCheckout) problems.push("This project is itself a lane of another repository, so ADE can't move it on its own.");
-  if (!args.git) problems.push("ADE couldn't run git.");
+  if (!args.isMainCheckout) problems.push(`This project is itself a lane of another repository, so ${BRAND.NAME} can't move it on its own.`);
+  if (!args.git) problems.push(`${BRAND.NAME} couldn't run git.`);
   else if (args.git[0] < MIN_GIT[0] || (args.git[0] === MIN_GIT[0] && args.git[1] < MIN_GIT[1])) {
     problems.push(`Git ${args.git.join(".")} is too old. Update to git ${MIN_GIT.join(".")} or later.`);
   }
@@ -461,7 +462,7 @@ function lanesCheck(sourceRoot: string, links: WorktreeLink[]): { check: Project
     summary = readProjectDatabaseSummary(projectDatabasePath(sourceRoot));
   } catch {
     return {
-      check: { id: "lanes", status: "blocked", title: "ADE couldn't read this project's data", detail: "Open the project once so ADE can check it, then try again." },
+      check: { id: "lanes", status: "blocked", title: `${BRAND.NAME} couldn't read this project's data`, detail: `Open the project once so ${BRAND.NAME} can check it, then try again.` },
       laneCount: 0,
       knownLanePaths: [],
     };
@@ -470,7 +471,7 @@ function lanesCheck(sourceRoot: string, links: WorktreeLink[]): { check: Project
   const knownLanePaths = summary.lanes.map((lane) => lane.worktreePath).filter(Boolean);
   if (summary.projectCount !== 1) {
     return {
-      check: { id: "lanes", status: "blocked", title: "ADE's data for this project needs a repair first", detail: `It lists ${summary.projectCount} projects instead of one.` },
+      check: { id: "lanes", status: "blocked", title: `${BRAND.NAME}'s data for this project needs a repair first`, detail: `It lists ${summary.projectCount} projects instead of one.` },
       laneCount,
       knownLanePaths,
     };
@@ -481,7 +482,7 @@ function lanesCheck(sourceRoot: string, links: WorktreeLink[]): { check: Project
         id: "lanes",
         status: "warning",
         title: `${outside.length === 1 ? "1 lane lives" : `${outside.length} lanes live`} outside the project`,
-        detail: "Not copied. ADE links it to the moved project.",
+        detail: `Not copied. ${BRAND.NAME} links it to the moved project.`,
         items: outside.map((link) => link.lanePath),
       }
     : { id: "lanes", status: "ok", title: `${laneCount} lane${laneCount === 1 ? "" : "s"} move with the project` };
@@ -504,7 +505,7 @@ async function afterMoveNotes(sourceRoot: string, links: WorktreeLink[], oldSpel
       title: hasDependencies ? `Dependencies: copy them, or run ${command} after` : `Dependencies: run ${command} after`,
       detail: hasDependencies
         ? [
-            `${formatBytes(sizes.dependencyBytes)} of dependencies. Copy them with the project and nothing needs reinstalling; leave them out and ADE offers to run ${command} in each checkout after the move.`,
+            `${formatBytes(sizes.dependencyBytes)} of dependencies. Copy them with the project and nothing needs reinstalling; leave them out and ${BRAND.NAME} offers to run ${command} in each checkout after the move.`,
             lockfile === "pnpm" ? "pnpm keeps one store per drive: on another drive, the first pnpm install reinstalls once into a store there." : "",
             linked.length ? `${linked.length} lane link${linked.length === 1 ? "" : "s"} to the main checkout's dependencies only work once those are there:\n${linked.map((file) => path.relative(sourceRoot, file)).join("\n")}` : "",
           ].filter(Boolean).join("\n")
@@ -516,7 +517,7 @@ async function afterMoveNotes(sourceRoot: string, links: WorktreeLink[], oldSpel
     notes.push({
       id: "mentions",
       title: `${mentions.length === MAX_MENTIONS ? `${MAX_MENTIONS}+` : mentions.length} file${mentions.length === 1 ? "" : "s"} name the old path`,
-      detail: `ADE doesn't edit your files. The check agent after the move lists them with the change it would make.\n${mentions.join("\n")}`,
+      detail: `${BRAND.NAME} doesn't edit your files. The check agent after the move lists them with the change it would make.\n${mentions.join("\n")}`,
     });
   }
   if (hasPythonEnvironment(checkouts)) {
@@ -564,13 +565,13 @@ async function driveNotes(sourceRoot: string, destination: ProjectMoveVolume | n
   const notes: ProjectMoveNote[] = [{
     id: "drive-connected",
     title: `Keep ${destination.name} connected while you work`,
-    detail: `With ${destination.name} unplugged the project shows as offline, and its agents and scheduled wake-ups wait until it is back. ADE won't open a different drive that appears under the same name.`,
+    detail: `With ${destination.name} unplugged the project shows as offline, and its agents and scheduled wake-ups wait until it is back. ${BRAND.NAME} won't open a different drive that appears under the same name.`,
   }];
   if (hasAppleProject(sourceRoot)) {
     notes.push({
       id: "simulator",
-      title: "Simulator screenshots go through ADE",
-      detail: `macOS doesn't let the Simulator's own service write to ${destination.name}, so \`xcrun simctl io … screenshot\` or \`recordVideo\` into the project fails with "Operation not permitted". ADE's Apple tools capture on the internal disk and save the file for you; a hand-run simctl command should write to /tmp. Builds, installs and tests work from ${destination.name}.`,
+      title: `Simulator screenshots go through ${BRAND.NAME}`,
+      detail: `macOS doesn't let the Simulator's own service write to ${destination.name}, so \`xcrun simctl io … screenshot\` or \`recordVideo\` into the project fails with "Operation not permitted". ${BRAND.NAME}'s Apple tools capture on the internal disk and save the file for you; a hand-run simctl command should write to /tmp. Builds, installs and tests work from ${destination.name}.`,
     });
   }
   const backedUp = await timeMachineBacksUp(destination.mountPath);
@@ -578,16 +579,16 @@ async function driveNotes(sourceRoot: string, destination: ProjectMoveVolume | n
     notes.push({
       id: "backup",
       title: `Time Machine doesn't back up ${destination.name}`,
-      detail: "Your pushed branches are safe on GitHub, but unpushed work, ADE's chats and proof on that drive have no backup. Add the drive in System Settings → General → Time Machine if you want one.",
+      detail: `Your pushed branches are safe on GitHub, but unpushed work, ${BRAND.NAME}'s chats and proof on that drive have no backup. Add the drive in System Settings → General → Time Machine if you want one.`,
     });
   }
   return notes;
 }
 
 function driveCheck(source: ProjectMoveVolume | null, destination: ProjectMoveVolume | null): ProjectMoveCheck {
-  if (!destination) return { id: "drive", status: "blocked", title: "ADE couldn't read the new location's drive", detail: "Check that the drive is connected." };
+  if (!destination) return { id: "drive", status: "blocked", title: `${BRAND.NAME} couldn't read the new location's drive`, detail: "Check that the drive is connected." };
   if (NETWORK_FILE_SYSTEMS.has(destination.fileSystem)) {
-    return { id: "drive", status: "blocked", title: `${destination.name} is a network drive`, detail: "Projects need a local drive: git and ADE's database are not safe over a network share." };
+    return { id: "drive", status: "blocked", title: `${destination.name} is a network drive`, detail: `Projects need a local drive: git and ${BRAND.NAME}'s database are not safe over a network share.` };
   }
   if (destination.fileSystem && destination.fileSystem !== "apfs" && destination.fileSystem !== "hfs") {
     return { id: "drive", status: "blocked", title: `${destination.name} isn't formatted for a Mac`, detail: `It uses ${destination.fileSystem}, which loses permissions git needs. Format it as APFS.` };
@@ -600,7 +601,7 @@ function driveCheck(source: ProjectMoveVolume | null, destination: ProjectMoveVo
   if (source && destination.uuid && destination.uuid === source.uuid) {
     return { id: "drive", status: "ok", title: `Same drive (${destination.name})` };
   }
-  return { id: "drive", status: "ok", title: `${destination.internal ? "Internal disk" : destination.name} is ready`, detail: destination.internal ? undefined : "ADE remembers this drive, so it won't use a different drive that later appears under the same name." };
+  return { id: "drive", status: "ok", title: `${destination.internal ? "Internal disk" : destination.name} is ready`, detail: destination.internal ? undefined : `${BRAND.NAME} remembers this drive, so it won't use a different drive that later appears under the same name.` };
 }
 
 function accessCheck(destinationRoot: string, where: string): ProjectMoveCheck {
@@ -609,15 +610,15 @@ function accessCheck(destinationRoot: string, where: string): ProjectMoveCheck {
   try {
     fs.writeFileSync(probe, "");
     fs.rmSync(probe, { force: true });
-    return { id: "access", status: "ok", title: `ADE can write to ${where}` };
+    return { id: "access", status: "ok", title: `${BRAND.NAME} can write to ${where}` };
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     return {
       id: "access",
       status: "blocked",
-      title: `ADE can't write to ${where}`,
+      title: `${BRAND.NAME} can't write to ${where}`,
       detail: code === "EPERM"
-        ? "macOS is blocking access. Open System Settings → Privacy & Security → Files and Folders, allow ADE to use removable and external volumes, then check again."
+        ? `macOS is blocking access. Open System Settings → Privacy & Security → Files and Folders, allow ${BRAND.NAME} to use removable and external volumes, then check again.`
         : `Writing to ${probeDir} failed (${code ?? "unknown error"}). Check the folder's permissions.`,
     };
   }

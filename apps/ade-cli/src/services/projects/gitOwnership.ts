@@ -13,6 +13,7 @@
  * the user's decision, made in the desktop open flow.
  */
 
+import { BRAND } from "../../../../desktop/src/shared/brand";
 export type GitOwnershipProblem = {
   /** The folder git refused, exactly as git names it (forward slashes on Windows). */
   path: string;
@@ -117,6 +118,6 @@ export function gitOwnershipMessage(
   problem: GitOwnershipProblem,
   platform: NodeJS.Platform = process.platform,
 ): string {
-  return `${gitOwnershipReason(problem)} Open the folder in ADE to trust it, or run: `
+  return `${gitOwnershipReason(problem)} Open the folder in ${BRAND.NAME} to trust it, or run: `
     + `git config --global --add safe.directory ${quoteShellArg(gitSafeDirectorySpec(problem.path), platform)}`;
 }

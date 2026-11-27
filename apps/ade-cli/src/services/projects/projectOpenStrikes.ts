@@ -5,6 +5,7 @@ import { codedError, PROJECT_FOLDER_TOO_SLOW_CODE } from "../../../../desktop/sr
 import { markExpected } from "../../../../desktop/src/shared/expectedError";
 import type { BrainLoopWatchdogBreadcrumb } from "../runtime/brainLoopWatchdog";
 import { projectFilesystemKind, type ProjectFilesystemKind } from "./projectFilesystemKind";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * Projects whose open froze the brain until the freeze guard killed it.
@@ -115,8 +116,8 @@ function projectFolderTooSlowError(args: {
   const drive = args.networkDrive ? "a network drive" : "a drive";
   return markExpected(
     codedError(
-      `ADE can't open ${args.displayName} right now. Its folder is on ${drive} that is too slow for ADE: `
-        + "ADE stopped responding more than once while opening it. Your other projects are not affected. "
+      `${BRAND.NAME} can't open ${args.displayName} right now. Its folder is on ${drive} that is too slow for ${BRAND.NAME}: `
+        + `${BRAND.NAME} stopped responding more than once while opening it. Your other projects are not affected. `
         + `Clone or move the project to this computer's own disk, or try again in ${describeRefusalWait(args.waitMs)}.`,
       PROJECT_FOLDER_TOO_SLOW_CODE,
     ),
