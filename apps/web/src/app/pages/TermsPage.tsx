@@ -12,33 +12,33 @@ const sections: Array<{ title: string; body: string[] }> = [
   {
     title: "Accepting these terms",
     body: [
-      "By creating an ADE account, signing in, or using ADE's apps, ADE Cloud or this website, you agree to these Terms and to the Privacy Policy. If you do not agree, do not use ADE.",
+      "By creating a Daex account, signing in, or using Daex's apps, Daex Cloud or this website, you agree to these Terms and to the Privacy Policy. If you do not agree, do not use Daex.",
     ],
   },
   {
     title: "Your account and your data",
     body: [
-      "ADE needs an account. You are responsible for what happens under your account and for keeping your sign-in methods safe.",
-      "You let ADE handle your data as the Privacy Policy describes. That includes: saving your GitHub CLI login and the logins of AI coding tools on your computers to your ADE account so your other computers and ADE Cloud can use them; sending short parts of your chats and terminals to the Smart decisions model; keeping the sync data and ADE Cloud data the policy lists; sending product analytics, error reports and diagnostic reports; and, on the ADE Cloud Free plan while sponsored cards are on, sending parts of ADE Cloud chats to Gravity for those cards.",
+      "Daex needs an account. You are responsible for what happens under your account and for keeping your sign-in methods safe.",
+      "You let Daex handle your data as the Privacy Policy describes. That includes: saving your GitHub CLI login and the logins of AI coding tools on your computers to your Daex account so your other computers and Daex Cloud can use them; sending short parts of your chats and terminals to the Smart decisions model; keeping the sync data and Daex Cloud data the policy lists; sending product analytics, error reports and diagnostic reports; and, on the Daex Cloud Free plan while sponsored cards are on, sending parts of Daex Cloud chats to Gravity for those cards.",
       "You can turn off the features that have a switch, as the Privacy Policy's “Your choices” section says, and you can delete your account at any time.",
     ],
   },
   {
     title: "Other services",
     body: [
-      "ADE works with services you choose, such as AI providers, GitHub, Linear and AI coding tools. Their own terms apply to your use of them. You are responsible for using your logins and keys with ADE, on your computers and on ADE Cloud, in a way those terms allow.",
+      "Daex works with services you choose, such as AI providers, GitHub, Linear and AI coding tools. Their own terms apply to your use of them. You are responsible for using your logins and keys with Daex, on your computers and on Daex Cloud, in a way those terms allow.",
     ],
   },
   {
     title: "No warranty",
     body: [
-      "ADE is provided as is, without warranties of any kind, to the extent the law allows. Agents can make mistakes and can run commands on your computers.",
+      "Daex is provided as is, without warranties of any kind, to the extent the law allows. Agents can make mistakes and can run commands on your computers.",
     ],
   },
   {
     title: "Changes to these terms",
     body: [
-      "ADE may change these Terms. When it does, it updates the date on this page. If you keep using ADE after a change, you accept the changed Terms.",
+      "Daex may change these Terms. When it does, it updates the date on this page. If you keep using Daex after a change, you accept the changed Terms.",
     ],
   },
   {
@@ -50,13 +50,13 @@ const sections: Array<{ title: string; body: string[] }> = [
   {
     title: "Responsibility",
     body: [
-      "ADE operates on your local repository and can run commands and processes. Review changes and diffs, especially those suggested by hosted or BYOK LLM providers, before applying them.",
+      "Daex operates on your local repository and can run commands and processes. Review changes and diffs, especially those suggested by hosted or BYOK LLM providers, before applying them.",
     ],
   },
 ];
 
 export function TermsPage() {
-  useDocumentTitle("ADE Terms");
+  useDocumentTitle("Daex Terms");
 
   return (
     <Page>
@@ -66,7 +66,7 @@ export function TermsPage() {
             <h1 className="text-4xl font-semibold tracking-tight text-fg sm:text-5xl">Terms</h1>
             <p className="mt-3 text-sm text-muted-fg">Updated {UPDATED_DATE}</p>
             <p className="mt-4 max-w-2xl text-sm leading-relaxed text-muted-fg">
-              ADE is under active development. These Terms and the Privacy Policy apply to your use of ADE. The
+              Daex (formerly ADE) is under active development. These Terms and the Privacy Policy apply to your use of Daex. The
               project’s repository holds the software license and the technical docs.
             </p>
           </Reveal>
@@ -86,29 +86,29 @@ export function TermsPage() {
             ))}
             <Reveal delay={0.08}>
               <div className="rounded-[22px] border border-border bg-card/60 p-6 shadow-glass-sm">
-                <div className="text-sm font-semibold text-fg">ADE Cloud: ads, age and fair use</div>
+                <div className="text-sm font-semibold text-fg">Daex Cloud: ads, age and fair use</div>
                 <div className="mt-2 space-y-3 text-sm leading-relaxed text-muted-fg">
                   <p>
-                    The ADE Cloud Free plan is ad-supported. Chats on ADE Cloud computers may show a sponsored card from
-                    Gravity (IRIS Inc.), ADE’s ad partner, labeled “Sponsored”, and an agent may suggest a sponsored
-                    tool. In the United States, except California, the cards start on and ADE tells you so; in
-                    California and elsewhere they show only after you agree. You can turn them off at any time in Settings › ADE Cloud; Small computers on Free then
+                    The Daex Cloud Free plan is ad-supported. Chats on Daex Cloud computers may show a sponsored card from
+                    Gravity (IRIS Inc.), Daex’s ad partner, labeled “Sponsored”, and an agent may suggest a sponsored
+                    tool. In the United States, except California, the cards start on and Daex tells you so; in
+                    California and elsewhere they show only after you agree. You can turn them off at any time in Settings › Daex Cloud; Small computers on Free then
                     use credits. Sponsored cards keep Small computers free only while, in the last 7 days, you turned them on or
-                    opened an ADE Cloud chat from the United States; otherwise, outside the United States included, they use
+                    opened a Daex Cloud chat from the United States; otherwise, outside the United States included, they use
                     credits until you next open one there. Chats on your own computer and paid plans have no ads.{" "}
                     <a className="focus-ring rounded-md text-fg underline underline-offset-2" href="/privacy#sponsored">
                       The Privacy page
                     </a>{" "}
                     lists what is shared with Gravity.
                   </p>
-                  <p>ADE Cloud is for people 18 or older.</p>
+                  <p>Daex Cloud is for people 18 or older.</p>
                   <p>
-                    “Unlimited Small computers” is subject to fair use. ADE may limit an account whose use is far
+                    “Unlimited Small computers” is subject to fair use. Daex may limit an account whose use is far
                     outside normal development work, for example running an always-on service, mining, or automated
-                    traffic. ADE gives notice where possible.
+                    traffic. Daex gives notice where possible.
                   </p>
                   <p>
-                    ADE gives no rewards for viewing or clicking ads. You must not view or click ads automatically,
+                    Daex gives no rewards for viewing or clicking ads. You must not view or click ads automatically,
                     or for pay.
                   </p>
                 </div>
