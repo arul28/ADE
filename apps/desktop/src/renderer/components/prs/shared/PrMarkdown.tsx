@@ -22,7 +22,7 @@ import {
 } from "../../chat/chatMarkdown";
 import { HighlightedCode } from "../../chat/CodeHighlighter";
 import { COLORS, fgTint } from "../../lanes/laneDesignTokens";
-import { ADE_DEEPLINK_FOOTER_LOGO_URL } from "../../../../shared/adeDeeplinkFooter";
+import { ADE_DEEPLINK_FOOTER_LEGACY_LOGO_URL, ADE_DEEPLINK_FOOTER_LOGO_URL } from "../../../../shared/adeDeeplinkFooter";
 import { normalizeEscapedMarkdownNewlines } from "../../../../shared/prMarkdownText";
 import { MermaidDiagram } from "../../shared/MermaidDiagram";
 import {
@@ -350,6 +350,7 @@ function PrImage({
   // that still point at the removed blue mark to the bundled app logo.
   if (
     src === ADE_DEEPLINK_FOOTER_LOGO_URL
+    || src === ADE_DEEPLINK_FOOTER_LEGACY_LOGO_URL
     || (src.includes("ade-app.dev") && src.includes("ade-mark"))
   ) {
     return (
