@@ -1,5 +1,5 @@
 import { useEffect, useSyncExternalStore } from "react";
-import type { CloudAccountState, CloudMachinesResult, CloudSponsoredChoice, CloudSponsoredState } from "../../shared/adeCloud";
+import type { CloudAccountState, CloudFreeModelsState, CloudMachinesResult, CloudSponsoredChoice, CloudSponsoredConsent, CloudSponsoredState } from "../../shared/adeCloud";
 import { useAdeCloudEnabled } from "./cloudAccess";
 import { BRAND } from "../../shared/brand";
 
@@ -106,6 +106,31 @@ export async function setCloudSponsoredConsent(consent: CloudSponsoredChoice, co
   // Small's rate in the account's catalog (here, or abroad within a week of a
   // US look): read the account again so Small's hours show it.
   if (next.smallNeedsCards || next.smallOutsideUS) refreshCloudAccount();
+}
+
+/**
+ * Saves the account's answer to the ADE Free Models sheet on the server, then
+ * every surface here sees it. Throws when it couldn't save. Account level: the
+ * answer holds on every machine, the phone and the web.
+ */
+export async function setCloudFreeModelsConsent(consent: CloudSponsoredConsent): Promise<CloudFreeModelsState> {
+  const set = window.ade?.cloud?.setFreeModelsConsent;
+  if (!set) throw new Error("ADE can't save that here.");
+  const current = generation;
+  let next: CloudFreeModelsState | null;
+  try {
+    next = await set(consent);
+  } catch (error) {
+    if (current === generation) refreshCloudAccount();
+    throw error;
+  }
+  if (!next) throw new Error("ADE couldn't reach your account. Try again in a moment.");
+  // Another account signed in meanwhile: this answer was the old account's.
+  if (current === generation) {
+    if (account) publish({ ...account, freeModels: next });
+    else refreshCloudAccount();
+  }
+  return next;
 }
 
 let noticeSave: Promise<void> | null = null;

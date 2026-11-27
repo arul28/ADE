@@ -487,6 +487,29 @@ it.
   (`agentToolDemand.ts`).
 - Every read and download goes to the composer's machine (remote:
   `ai.pinnedToolStatus` / `ai.pinnedToolDownload`).
+- **ADE Free Models.** Gravity's hosted models (`shared/adeFreeModels.ts`,
+  ids `opencode/ade-free/<alias>`), free because their chats show sponsored
+  cards, on any plan. They come from the account (`CloudAccountState.freeModels`),
+  not the machine, so every machine, ADE Cloud and the web list them under
+  **ADE Free Models** with the **Ad-supported** badge while `available`.
+  Only the Work chat composer offers them; never in CLI mode, a subagent's
+  composer, a parallel set, Cursor Cloud or the CTO. They run in OpenCode on
+  the chat's machine. Outside the US and Canada they are not listed.
+  - **Consent.** The first pick opens `AdeFreeModelsConsentDialog.tsx`
+    (cards, what Gravity receives, US and Canada only). The answer is per
+    account (`PUT /cloud/free-models/consent`).
+  - **Cards.** `SponsoredReplySlot` with `freeModelChat` shows a card per
+    finished reply once the answer is `granted`, with no ADE Cloud computer
+    (`instanceId: null`). Never in a subagent view.
+  - **Watched only.** `useFreeModelViewer` reports the open chat
+    (`POST /cloud/free-models/seen`) at once and every 4 minutes while
+    visible; a send reports first when the last report is over 8 minutes old.
+  - **Account level.** Consent, the viewer report and card requests take no
+    pin; only the chat's launch and turns go to its machine.
+- **ADE Cloud drafts.** A new chat on ADE Cloud lists `GET /cloud/models`
+  (free rows carry `free: { source, badge }`). The picker gets
+  `openCodeAssumed`, so the tab's machine is never probed, and the sign-in
+  check never asks for a key for a free model.
 
 ## Voice conversations
 

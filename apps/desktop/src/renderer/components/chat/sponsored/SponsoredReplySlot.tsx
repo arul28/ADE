@@ -33,9 +33,15 @@ import { BRAND } from "../../../../shared/brand";
  * is on screen. Gravity's view link goes once half of the card is on screen.
  * Nothing here rewards a view or a click.
  *
- * Never mounted in a subagent view, a CLI terminal, the Work list, a
- * notification, or a chat on the person's own machine (no ADE Cloud lane for
- * its pin).
+ * An ADE Free Models chat (`shared/adeFreeModels.ts`) shows the same cards on
+ * any machine and any plan, once the account said yes to their sheet: those
+ * models are paid for by these cards. It asks with no ADE Cloud computer
+ * (`instanceId` null), in the free models' own format, and never shows the
+ * Free plan's question or notice (the sheet was the question).
+ *
+ * Never mounted in a subagent view, a CLI terminal, the Work list, or a
+ * notification; on the person's own machine (no ADE Cloud lane for its pin)
+ * only for an ADE Free Models chat.
  */
 
 const ANSWER_CACHE_LIMIT = 50;
@@ -115,15 +121,42 @@ export type SponsoredReplySlotProps = {
   turnActive: boolean;
   /** The pane is on screen (its tile is visible): a hidden pane neither asks nor counts as watched. */
   paneVisible: boolean;
+  /** The chat runs on an ADE Free Model: its cards follow that answer, on any machine and plan. */
+  freeModelChat?: boolean;
 };
 
-export function SponsoredReplySlot({ instanceId, sessionId, events, turnActive, paneVisible }: SponsoredReplySlotProps) {
-  const account = useCloudAccount(Boolean(instanceId && sessionId));
+export function SponsoredReplySlot({ instanceId, sessionId, events, turnActive, paneVisible, freeModelChat = false }: SponsoredReplySlotProps) {
+  const account = useCloudAccount(Boolean((instanceId || freeModelChat) && sessionId));
   const sponsored = account?.sponsored;
-  if (!instanceId || !sessionId || !sponsored?.ads || sponsored.consent === "declined") return null;
+  // The Free plan's cards on this ADE Cloud computer: the Index still hears that someone watches it.
+  const cloudCardsOn = Boolean(instanceId && sponsored?.ads && sponsored.consent !== "declined");
+  if (!sessionId) return null;
+  if (freeModelChat) {
+    const freeModels = account?.freeModels;
+    // No yes, no free-model chat to show a card in: the server refuses its requests.
+    if (freeModels?.consent !== "granted") return null;
+    return (
+      <SponsoredReplySlotOn
+        instanceId={null}
+        viewerInstanceId={cloudCardsOn ? instanceId : null}
+        sessionId={sessionId}
+        events={events}
+        turnActive={turnActive}
+        paneVisible={paneVisible}
+        consent="granted"
+        startsOn={false}
+        test={freeModels.test}
+        smallNeedsCards={false}
+        confirmYes={false}
+        format={freeModels.format ?? "below_reply"}
+      />
+    );
+  }
+  if (!instanceId || !sponsored || !cloudCardsOn) return null;
   return (
     <SponsoredReplySlotOn
       instanceId={instanceId}
+      viewerInstanceId={instanceId}
       sessionId={sessionId}
       events={events}
       turnActive={turnActive}
@@ -140,6 +173,7 @@ export function SponsoredReplySlot({ instanceId, sessionId, events, turnActive, 
 
 function SponsoredReplySlotOn({
   instanceId,
+  viewerInstanceId,
   sessionId,
   events,
   turnActive,
@@ -150,8 +184,11 @@ function SponsoredReplySlotOn({
   smallNeedsCards,
   confirmYes,
   format,
-}: Omit<SponsoredReplySlotProps, "instanceId" | "sessionId"> & {
-  instanceId: string;
+}: Omit<SponsoredReplySlotProps, "instanceId" | "sessionId" | "freeModelChat"> & {
+  /** The ADE Cloud computer the card is asked for; null for an ADE Free Models chat, on any machine. */
+  instanceId: string | null;
+  /** The ADE Cloud computer whose Index hears that someone watches it, or null. */
+  viewerInstanceId: string | null;
   sessionId: string;
   consent: CloudSponsoredConsent | null;
   /** Cards start on for this person: the notice that they are on shows instead of the question. */
@@ -213,7 +250,7 @@ function SponsoredReplySlotOn({
 
   // Someone is watching this computer's chat: the Index may answer its agents.
   // Shown only until a no (see `SponsoredReplySlot`), so it reports while unanswered too (`useSponsoredViewer`).
-  useSponsoredViewer(instanceId, visible);
+  useSponsoredViewer(viewerInstanceId, visible);
 
   // One sponsored card on screen in the whole window. A pane whose place
   // another card holds doesn't even ask: its card could never show.

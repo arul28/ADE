@@ -115,9 +115,12 @@ import {
   type CloudJiraSearchResult,
   type CloudLinearQueryRequest,
   type CloudLinearQueryResult,
+  type CloudFreeModelsSeenRequest,
+  type CloudFreeModelsState,
   type CloudSponsoredAdAnswer,
   type CloudSponsoredAdRequest,
   type CloudSponsoredChoice,
+  type CloudSponsoredConsent,
   type CloudSponsoredSeenRequest,
   type CloudSponsoredHideRequest,
   type CloudSponsoredState,
@@ -269,6 +272,12 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     sponsoredHide: (input: CloudSponsoredHideRequest) => request<{ ok: boolean }>("POST", CLOUD_PATHS.sponsoredHide, { body: input }),
     /** One card under a finished reply, or none (always a 200). */
     sponsoredAd: (input: CloudSponsoredAdRequest) => request<CloudSponsoredAdAnswer>("POST", CLOUD_PATHS.sponsoredAd, { body: input, timeoutMs: 10_000 }),
+    /* ---- ADE Free Models (account level, `freeModels.ts`) ---- */
+    /** The account's answer to the one-time ADE Free Models sheet, on every machine. */
+    freeModelsConsent: (consent: CloudSponsoredConsent) =>
+      request<CloudFreeModelsState>("PUT", CLOUD_PATHS.freeModelsConsent, { body: { consent } }),
+    /** A person has this ADE Free Models chat open on this device: its requests may run for a while. */
+    freeModelsSeen: (input: CloudFreeModelsSeenRequest) => request<{ ok: boolean }>("POST", CLOUD_PATHS.freeModelsSeen, { body: input }),
     listComputers: async () => (await request<{ data: CloudInstance[] }>("GET", CLOUD_PATHS.instances)).data,
 
     /* ---- A lane on a new computer (the server launcher) ---- */

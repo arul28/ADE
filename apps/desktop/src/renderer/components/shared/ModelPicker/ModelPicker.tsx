@@ -41,6 +41,9 @@ import {
 } from "./runtimeCatalogCache";
 import { fetchSharedRuntimeCatalog } from "./sharedCatalogFetch";
 import { useRuntimeCatalogVersion } from "./useRuntimeCatalogVersion";
+import { isAdeFreeModelId } from "../../../../shared/adeFreeModels";
+import { useCloudAccount } from "../../../state/cloudAccountStore";
+import { askAdeFreeModelsConsent } from "./AdeFreeModelsConsentDialog";
 
 /** The saved preset (or ad-hoc route) a surface is running on, for the trigger. */
 export type ModelPickerActivePreset = {
@@ -192,6 +195,20 @@ export type ModelPickerProps = {
   hidePermissionRail?: boolean;
   /** Opens Settings › Providers › Custom from the Custom empty state. */
   onOpenHarnessSettings?: () => void;
+  /**
+   * The surface starts or runs a chat a person watches, so it may offer ADE
+   * Free Models (`shared/adeFreeModels.ts`): the ones the account lists as
+   * available, on any machine. Never in CLI mode. The first pick opens the
+   * one-time sheet (`AdeFreeModelsConsentDialog`); the model is picked only
+   * after a yes.
+   */
+  offersAdeFreeModels?: boolean;
+  /**
+   * The chat runs where OpenCode is always there (a new chat on ADE Cloud),
+   * not on `runtimePin`'s machine: free models never read as needing OpenCode
+   * there, and that machine is not probed for them.
+   */
+  openCodeAssumed?: boolean;
   className?: string;
   triggerClassName?: string;
   openRequestKey?: number;
@@ -238,6 +255,8 @@ export const ModelPicker = memo(function ModelPicker({
   cursorAvailabilityMode = allowCliOnlyModels ? "cli" : "chat",
   hidePermissionRail = false,
   onOpenHarnessSettings,
+  offersAdeFreeModels = false,
+  openCodeAssumed = false,
   className,
   triggerClassName,
   openRequestKey,
@@ -261,6 +280,14 @@ export const ModelPicker = memo(function ModelPicker({
   catalogScopeKeyRef.current = catalogScopeKey;
   const providerRefreshTokenRef = useRef(0);
   const [open, setOpen] = useState(false);
+  // ADE Free Models come from the account (account level, no pin), read only
+  // while the list is open: the ids it lists as available here, chat only.
+  const adeFreeOffered = offersAdeFreeModels && harnessLaunchMode === "chat" && !allowCliOnlyModels;
+  const adeFreeState = useCloudAccount(adeFreeOffered && open)?.freeModels ?? null;
+  const adeFreeIdsKey = adeFreeOffered && adeFreeState?.available ? adeFreeState.modelIds.filter(isAdeFreeModelId).join("\n") : "";
+  const adeFreeModelIds = useMemo(() => (adeFreeIdsKey ? adeFreeIdsKey.split("\n") : []), [adeFreeIdsKey]);
+  const adeFreeConsentRef = useRef(adeFreeState?.consent ?? null);
+  adeFreeConsentRef.current = adeFreeState?.consent ?? null;
   /**
    * The rendered catalog is tagged with the machine it came from, and a tag
    * mismatch is resolved synchronously against that machine's bucket.
@@ -504,6 +531,16 @@ export const ModelPicker = memo(function ModelPicker({
           ...(options.serviceTier === "fast" ? { serviceTier: "standard" as const } : {}),
         }
         : options;
+      // An ADE Free Model before the account's yes: the sheet first, and the pick only after a yes.
+      if (isAdeFreeModelId(modelId) && adeFreeConsentRef.current !== "granted") {
+        setOpen(false);
+        void askAdeFreeModelsConsent().then((granted) => {
+          if (!granted) return;
+          if (selection) onChange(modelId, selection);
+          else onChange(modelId);
+        });
+        return;
+      }
       if (selection) {
         onChange(modelId, selection);
       } else {
@@ -657,6 +694,8 @@ export const ModelPicker = memo(function ModelPicker({
                 {...(onOpenSignIn ? { onOpenSignIn: handleOpenSignIn } : {})}
                 {...(hideSignInFamilies ? { hideSignInFamilies } : {})}
                 {...(runtimePin ? { runtimePin } : {})}
+                {...(adeFreeModelIds.length > 0 ? { adeFreeModelIds } : {})}
+                {...(openCodeAssumed ? { openCodeAssumed } : {})}
               />
             ) : null}
           </Popover.Content>
