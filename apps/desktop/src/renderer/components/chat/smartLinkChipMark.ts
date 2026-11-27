@@ -20,11 +20,15 @@ const GITHUB_PATH =
 // Linear mark reuses the canonical path exported from lanes/linearBrand.tsx so
 // LinearMark and this imperative renderer stay in lockstep.
 
-// ADE monogram — the wordmark's angular "A" (two legs + crossbar) with a
-// triangular counter, echoing the ADE app icon. Rendered with evenodd so the
-// counter reads as a hole.
-const ADE_PATH =
-  "M12 2.5 2.6 21.5H6.4L8 18.1H16L17.6 21.5H21.4L12 2.5ZM12 8.4 14.4 13.4H9.6L12 8.4Z";
+// Daex mark: the app icon's "æ" glyph (assets/brand/daex/glyph-mask.png)
+// drawn as two round-capped strokes, which reads cleaner at chip size than a
+// traced outline. One stroke runs from the top-left arch down through the
+// crossing into the e's tail; the other draws the a's bowl, the diagonal, the
+// e's top and its crossbar.
+const DAEX_MARK_PATHS = [
+  "M4.6 8.6C5.5 6.7 6.9 5.8 8.5 5.8C10.3 5.8 11.3 7.6 12.1 10.2C13 13.4 14 18.3 16.6 18.3C18.4 18.3 19.7 16.9 20.5 15.4",
+  "M12.6 10.8C8.6 10.8 3.4 12.2 3.4 15.6C3.4 17.3 4.4 18.3 5.6 18.3C6.7 18.3 7.6 17.6 8.4 16.5L14.4 8.3C15.6 6.6 17 5.6 18.6 5.6C20.4 5.6 21.6 6.8 21.6 8.3C21.6 9.8 20.6 10.8 19 10.8L12.6 10.8",
+];
 
 function svg(inner: string): string {
   return `<svg viewBox="0 0 24 24" width="100%" height="100%" fill="currentColor" aria-hidden="true" focusable="false" style="display:block">${inner}</svg>`;
@@ -43,7 +47,7 @@ export function smartLinkChipMarkSvg(provider: SmartLinkProvider): string | null
     case "jira":
       return svg(`<path d="${JIRA_LOGO_PATH}" />`);
     case "ade":
-      return svg(`<path fill-rule="evenodd" clip-rule="evenodd" d="${ADE_PATH}" />`);
+      return `<svg viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" style="display:block">${DAEX_MARK_PATHS.map((d) => `<path d="${d}" />`).join("")}</svg>`;
     case "generic":
       // Globe (lucide-style, stroke-based) as the offline fallback for web
       // pages. A resolved favicon replaces this in the composer.
