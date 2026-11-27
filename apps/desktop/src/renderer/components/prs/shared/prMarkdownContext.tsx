@@ -1,10 +1,13 @@
 import React from "react";
 import { GitMerge, GitPullRequest, Info, Lightbulb, Warning, WarningOctagon, XCircle, Megaphone, type Icon } from "@phosphor-icons/react";
+import type { LinearIssueRef } from "../../../../shared/issueRefs";
 import type { OpenProjectBinding } from "../../../../shared/types/core";
 import type { PrState } from "../../../../shared/types/prs";
 import { getFileIcon } from "../../files/filePresentation";
 import { COLORS, fgTint } from "../../lanes/laneDesignTokens";
 import { noticeTone, type NoticeTone } from "../../ui/notice";
+import { openIssueRef } from "../../../lib/issueNavigation";
+import { openExternalUrl, openLinkFromUi } from "../../../lib/openExternal";
 
 /**
  * What PR markdown knows about the PR it is rendered in. Provided by the PR
@@ -134,6 +137,32 @@ export function PrRefPill({ number, state, onOpen, href }: { number: number; sta
       style={{ color: tone, background: `color-mix(in srgb, ${tone} 14%, transparent)`, textDecoration: "none" }}
     >
       <Glyph size={11} weight="bold" />#{number}
+    </a>
+  );
+}
+
+/**
+ * A Linear issue link: opens in ADE's issue viewer, like an issue link in chat.
+ * Mod/Shift+Click keep the link's usual meaning (the web page).
+ */
+export function PrLinearIssueLink({ href, issue, branch, children }: { href: string; issue: LinearIssueRef; branch: string | null; children?: React.ReactNode }) {
+  return (
+    <a
+      href={href}
+      onClick={(event) => {
+        event.preventDefault();
+        if (event.metaKey || event.ctrlKey || event.shiftKey) {
+          openLinkFromUi(href, event);
+          return;
+        }
+        if (!openIssueRef({ ref: issue, branch, source: "pr" })) openExternalUrl(href);
+      }}
+      title={`Open ${issue.identifier} in ADE`}
+      className="rounded-[4px] px-[3px] transition-colors"
+      style={{ color: COLORS.accent, background: COLORS.accentSubtle, textDecoration: "none" }}
+      data-pr-link-kind="linear-issue"
+    >
+      {children}
     </a>
   );
 }

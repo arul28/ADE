@@ -280,22 +280,27 @@ function refreshTeamKeys(projectRoot: string, pin: OpenProjectBinding): void {
   teamKeyReads.set(projectRoot, promise);
 }
 
-/** The keys this session holds for the project, filled from localStorage on first use. */
-function knownTeamKeys(projectRoot: string): TeamKeysEntry | null {
-  const held = teamKeys.get(projectRoot);
-  if (held) return held;
-  const stored = readStoredTeamKeys(projectRoot);
-  if (stored) {
-    teamKeys.set(projectRoot, stored);
-    notify();
+// A project whose keys were never read: empty, and due for a read.
+const NEVER_READ_TEAM_KEYS: TeamKeysEntry = { keys: EMPTY_TEAM_KEYS, checkedAt: 0 };
+
+/**
+ * The keys this session holds for the project, filled from localStorage on the
+ * first read. Filling here, not in an effect, means a page of PR comments
+ * parses once with the keys instead of once without and again with them.
+ */
+function teamKeysEntryFor(projectRoot: string): TeamKeysEntry {
+  let entry = teamKeys.get(projectRoot);
+  if (!entry) {
+    entry = readStoredTeamKeys(projectRoot) ?? NEVER_READ_TEAM_KEYS;
+    teamKeys.set(projectRoot, entry);
   }
-  return stored;
+  return entry;
 }
 
 function useTeamKeysEntry(projectRoot: string | null): TeamKeysEntry | null {
   return useSyncExternalStore(
     subscribe,
-    () => (projectRoot ? teamKeys.get(projectRoot) ?? null : null),
+    () => (projectRoot ? teamKeysEntryFor(projectRoot) : null),
     () => null,
   );
 }
@@ -309,9 +314,9 @@ export function useLinearWorkspaceTeamKeys(): string[] {
   const entry = useTeamKeysEntry(projectRoot);
   useEffect(() => {
     if (!projectRoot) return;
-    const known = knownTeamKeys(projectRoot);
+    const known = teamKeysEntryFor(projectRoot);
     const readPin = pinRef.current;
-    if (readPin && (!known || Date.now() - known.checkedAt > TEAM_KEYS_REFRESH_MS)) refreshTeamKeys(projectRoot, readPin);
+    if (readPin && Date.now() - known.checkedAt > TEAM_KEYS_REFRESH_MS) refreshTeamKeys(projectRoot, readPin);
   }, [pinKey, projectRoot]);
   return entry?.keys ?? EMPTY_TEAM_KEYS;
 }
@@ -322,12 +327,7 @@ export function useLinearWorkspaceTeamKeys(): string[] {
  * `useLinearWorkspaceTeamKeys`.
  */
 export function useCachedLinearWorkspaceTeamKeys(): string[] {
-  const projectRoot = useActiveProjectRoot();
-  const entry = useTeamKeysEntry(projectRoot);
-  useEffect(() => {
-    if (projectRoot) knownTeamKeys(projectRoot);
-  }, [projectRoot]);
-  return entry?.keys ?? EMPTY_TEAM_KEYS;
+  return useTeamKeysEntry(useActiveProjectRoot())?.keys ?? EMPTY_TEAM_KEYS;
 }
 
 /** Every issue this cache holds, for the create form's "similar issues" hint. */

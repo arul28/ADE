@@ -1,3 +1,4 @@
+import { parseDeeplink } from "./deeplinks";
 import { deriveSmartLinkPreview } from "./smartLinks";
 
 /**
@@ -17,6 +18,7 @@ export type IssueRef =
   | { provider: "jira"; siteUrl: string; key: string; url?: string | null };
 
 export type IssueProvider = IssueRef["provider"];
+export type LinearIssueRef = Extract<IssueRef, { provider: "linear" }>;
 
 const LINEAR_IDENTIFIER_RE = /^[A-Z][A-Z0-9]{0,9}-\d+$/;
 const JIRA_ISSUE_KEY_RE = /^[A-Z][A-Z0-9_]{0,9}-\d+$/;
@@ -26,7 +28,7 @@ export function normalizeLinearIdentifier(value: string | null | undefined): str
   return LINEAR_IDENTIFIER_RE.test(identifier) ? identifier : null;
 }
 
-export function linearIssueRef(identifier: string, url?: string | null): IssueRef | null {
+export function linearIssueRef(identifier: string, url?: string | null): LinearIssueRef | null {
   const normalized = normalizeLinearIdentifier(identifier);
   return normalized ? { provider: "linear", identifier: normalized, url: url ?? null } : null;
 }
@@ -110,6 +112,33 @@ export function issueRefFromUrl(rawUrl: string | null | undefined): IssueRef | n
     return { provider: "github", owner, repo: repo.replace(/\.git$/i, ""), number: issueNumber, url: preview.url };
   }
   return null;
+}
+
+/**
+ * An issue key as Linear and Jira print it in prose (`ADE-123`), never inside a
+ * path, branch name or version: `feat/ADE-1`, `ade-1-fix` and `ADE-1.2` are not
+ * references. Group 1 is the key. Callers still check the key's team or project
+ * against the workspace. A new RegExp per call, since a global one keeps state.
+ */
+export function proseIssueKeyPattern(): RegExp {
+  return /(?<![\w/#.-])([A-Z][A-Z0-9_]{0,9}-\d{1,9})(?![\w-]|\.\d)/g;
+}
+
+/**
+ * The Linear issue a link opens: a linear.app issue URL, or ADE's own
+ * linear-issue link (with its branch hint). `adeLink` tells them apart: a
+ * linear.app link may point at another workspace.
+ */
+export function linearIssueLinkTarget(
+  href: string | null | undefined,
+): { ref: LinearIssueRef; branch: string | null; adeLink: boolean } | null {
+  if (!href) return null;
+  const fromUrl = issueRefFromUrl(href);
+  if (fromUrl) return fromUrl.provider === "linear" ? { ref: fromUrl, branch: null, adeLink: false } : null;
+  const parsed = parseDeeplink(href);
+  if (!parsed.ok || parsed.target.kind !== "linear-issue") return null;
+  const ref = linearIssueRef(parsed.target.issueIdentifier);
+  return ref ? { ref, branch: parsed.target.branch ?? null, adeLink: true } : null;
 }
 
 /** Plain JSON for persistence; anything that is not a valid ref reads as null. */

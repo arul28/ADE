@@ -16,7 +16,7 @@ export const GITHUB_AUTOLINKS_REFUSED = /^GitHub would not show the autolinks of
 export const GITHUB_AUTOLINKS_NOT_ADMIN = /^Only admins of \S+ can see or add its GitHub links\./;
 export const GITHUB_AUTOLINKS_SIGN_IN_LACKS_ADMIN = /^You're an admin of \S+, but ADE's GitHub sign-in can't read its links\./;
 
-/** Any of the refusals above: the page hides Add and offers the commands to send to an admin. */
+/** Any of the refusals above: the page hides the links and Add, and says who can add them. */
 export function isGithubAutolinksRefusal(text: string): boolean {
   return GITHUB_AUTOLINKS_REFUSED.test(text)
     || GITHUB_AUTOLINKS_NOT_ADMIN.test(text)
