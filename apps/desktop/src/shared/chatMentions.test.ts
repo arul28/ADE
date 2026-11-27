@@ -205,7 +205,7 @@ describe("chat mention expansion format", () => {
   it("appends blocks after the user text", () => {
     const expanded = appendChatMentionBlocks("look at @chat:a", ["<ade-mention kind=\"chat\" id=\"a\">\nx\n</ade-mention>"]);
     expect(expanded.startsWith("look at @chat:a")).toBe(true);
-    expect(expanded).toContain("Referenced ADE entities");
+    expect(expanded).toContain("Referenced Daex entities");
     // No blocks means the text is returned untouched.
     expect(appendChatMentionBlocks("plain text", [])).toBe("plain text");
   });

@@ -252,6 +252,9 @@ function sanitizeMentionAttribute(value: string, max = 160): string {
 }
 
 const CHAT_MENTION_BLOCK_HEADER =
+  "Referenced Daex entities (pointers, not attachments — read more with the commands below):";
+/** The header before the rename. Old transcripts and terminals still hold it, so previews defang it too. */
+const LEGACY_CHAT_MENTION_BLOCK_HEADER =
   "Referenced ADE entities (pointers, not attachments — read more with the commands below):";
 
 /**
@@ -272,7 +275,9 @@ function neutralizeMentionPreviewBody(body: string): string {
     .replace(/<\/ade-mention/gi, "‹/ade-mention")
     .replace(/<ade-mention/gi, "‹ade-mention")
     .split(CHAT_MENTION_BLOCK_HEADER)
-    .join(`› ${CHAT_MENTION_BLOCK_HEADER}`);
+    .join(`› ${CHAT_MENTION_BLOCK_HEADER}`)
+    .split(LEGACY_CHAT_MENTION_BLOCK_HEADER)
+    .join(`› ${LEGACY_CHAT_MENTION_BLOCK_HEADER}`);
 }
 
 /**
@@ -560,7 +565,7 @@ export function renderUnresolvedChatMentionBlock(
     ? "This person is not in the Linear workspace or the GitHub repository this machine can read right now. "
       + "The integration may be disconnected. Do not guess who they are."
     : kind === "machine"
-    ? "No machine with this id is in the ADE account directory right now. The account may be signed out, "
+    ? "No machine with this id is in the Daex account directory right now. The account may be signed out, "
       + "the directory unreachable, or the machine removed. Do not guess its state."
     : kind === "pr"
       ? "No pull request with this id is tracked in the active project on this machine. "
