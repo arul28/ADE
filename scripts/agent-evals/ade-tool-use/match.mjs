@@ -24,7 +24,7 @@ const EXPANDS = /\$[({A-Za-z_]|\x60/;
 // Nothing but separators (or nothing) before the quote: it is the command name.
 const AT_COMMAND_NAME = /(?:^|[;&|({\x60\n]|\$\()\s*(?:[A-Za-z_]\w*=\S*\s+)*$/;
 // The simple command so far starts with a tool whose subcommand words the rules match.
-const TOOL_ARGS = /(?:^|[;&|({\x60\n]|\$\()\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:[\w.~-]*\/)*(?:gh|ade)\s[^;&|\n]*$/;
+const TOOL_ARGS = /(?:^|[;&|({\x60\n]|\$\()\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:[\w.~-]*\/)*(?:gh|daex|ade)\s[^;&|\n]*$/;
 const BARE_WORD = /^[\w.\/@:=+-]+$/;
 
 /**
@@ -74,12 +74,13 @@ export function transcriptPattern(runPattern) {
 }
 
 /**
- * Every `ade …` invocation in a command, normalized the way the CLI reads it.
+ * Every `daex …` (or `ade …`, its alias) invocation in a command, normalized
+ * to `ade …` the way the CLI reads it.
  * `"$ADE_CLI_PATH" …` counts: ADE's prompt gives agents that variable.
  */
 export function adeInvocations(commandText) {
   const found = [];
-  const re = new RegExp(`${CMD_POS}(?:ade|\\$\\{?ADE_CLI_PATH\\}?"?)\\s+([^;&|\\n\\x60)]*)`, "gm");
+  const re = new RegExp(`${CMD_POS}(?:daex|ade|\\$\\{?ADE_CLI_PATH\\}?"?)\\s+([^;&|\\n\\x60)]*)`, "gm");
   for (const m of executableText(commandText).matchAll(re)) found.push(normalizeAdeCall(`ade ${m[1].trim().replace(/['"]+$/, "")}`));
   return found;
 }
