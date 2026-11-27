@@ -298,7 +298,7 @@ export async function githubRepoVisibility(origin: string): Promise<RepoVisibili
   if (!owner || !repo) return "unknown";
   try {
     const response = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, {
-      headers: { accept: "application/vnd.github+json", "user-agent": "ADE" },
+      headers: { accept: "application/vnd.github+json", "user-agent": "Daex" },
       signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
     });
     if (response.status === 404) return "private";
@@ -344,7 +344,7 @@ async function githubAppRepoAccess(env: GithubAppEnv, userId: string, origin: st
     if (outcome.kind === "not_connected" || outcome.kind === "needs_reauth") return "not_connected";
     if (outcome.kind !== "token") return "unknown";
     const response = await fetch(`${rt.config.apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, {
-      headers: { accept: "application/vnd.github+json", authorization: `Bearer ${outcome.token.accessToken}`, "user-agent": "ADE" },
+      headers: { accept: "application/vnd.github+json", authorization: `Bearer ${outcome.token.accessToken}`, "user-agent": "Daex" },
       signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
     });
     await response.body?.cancel().catch(() => {});

@@ -361,14 +361,15 @@ function readDevice(value: unknown): CloudSponsoredDevice | null {
 
 /**
  * The account's hashed email for Gravity, when this device may send it. The
- * ADE iPhone and iPad app (its own `ADE-iOS/` user agent) sends it only once
- * the person allowed tracking in Apple's prompt (App Tracking Transparency);
+ * Daex iPhone and iPad app (its own `Daex-iOS/` user agent, `ADE-iOS/` before
+ * the rename) sends it only once the person allowed tracking in Apple's
+ * prompt (App Tracking Transparency);
  * any other answer, or none from an older app, leaves it out. Desktop and the
  * web, a browser on an iPhone included, have no such prompt and send it.
  */
 function hashedEmailFor(device: { os: string; ua?: string | null; tracking?: string | null } | null, emailHash: string | null): string | null {
   if (!emailHash) return null;
-  const iosApp = device?.os === "ios" && /^ADE-iOS\//.test(device.ua ?? "");
+  const iosApp = device?.os === "ios" && /^(?:Daex|ADE)-iOS\//.test(device.ua ?? "");
   if (iosApp && device?.tracking !== "authorized") return null;
   return emailHash;
 }

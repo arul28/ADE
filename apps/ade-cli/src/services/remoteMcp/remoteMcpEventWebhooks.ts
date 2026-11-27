@@ -109,7 +109,7 @@ function signedHeaders(args: { secrets: string[]; webhookId: string; subscriptio
   });
   return {
     "content-type": "application/json",
-    "user-agent": "ADE MCP events",
+    "user-agent": "Daex MCP events",
     "webhook-id": args.webhookId,
     "webhook-timestamp": String(timestamp),
     "webhook-signature": signatures.join(" "),

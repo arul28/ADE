@@ -346,7 +346,7 @@ export function createRemoteMcpOAuthRoutes(deps: {
         headers: {
           "content-type": header(request, "content-type") || "application/x-www-form-urlencoded",
           accept: "application/json",
-          "user-agent": "ADE MCP",
+          "user-agent": "Daex MCP",
           [REMOTE_MCP_VIA_HEADER]: encodeViaHeader(deps.machineName()),
           [REMOTE_MCP_CALL_ID_HEADER]: randomUUID(),
         },

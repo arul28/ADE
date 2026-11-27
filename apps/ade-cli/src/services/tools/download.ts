@@ -11,7 +11,7 @@ import { BRAND } from "../../../../desktop/src/shared/brand";
 /** Idle-socket timeout. Matches the ADE brain updater's download budget. */
 export const TOOL_DOWNLOAD_IDLE_TIMEOUT_MS = 30_000;
 const MAX_REDIRECTS = 5;
-const USER_AGENT = "ADE agent tools fetcher";
+const USER_AGENT = `${BRAND.NAME} agent tools fetcher`;
 
 export type ToolDownloadResult = {
   bytes: number;

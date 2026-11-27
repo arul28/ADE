@@ -243,7 +243,7 @@ export async function linearOrganizationOf(env: RelayEnv, authorization: string,
   try {
     response = await fetch(LINEAR_GRAPHQL_URL, {
       method: "POST",
-      headers: { "content-type": "application/json", accept: "application/json", authorization: token.authorization, "user-agent": "ADE" },
+      headers: { "content-type": "application/json", accept: "application/json", authorization: token.authorization, "user-agent": "Daex" },
       body: JSON.stringify({ query: "query AdeCloudOrganization { organization { id } }" }),
       redirect: "manual",
       signal: AbortSignal.timeout(LINEAR_TIMEOUT_MS),
@@ -375,7 +375,7 @@ export async function routeLinearQuery(request: Request, env: LinearRenewalEnv, 
   try {
     response = await fetch(LINEAR_GRAPHQL_URL, {
       method: "POST",
-      headers: { "content-type": "application/json", accept: "application/json", authorization: token.authorization, "user-agent": "ADE" },
+      headers: { "content-type": "application/json", accept: "application/json", authorization: token.authorization, "user-agent": "Daex" },
       body: JSON.stringify({ query: document.query, variables: vars }),
       redirect: "manual",
       signal: AbortSignal.timeout(LINEAR_TIMEOUT_MS),
@@ -424,7 +424,7 @@ async function jiraCall(env: RelayEnv, prepared: { authorization: string; scope:
       headers: {
         accept: "application/json",
         authorization: connection.authorization,
-        "user-agent": "ADE",
+        "user-agent": "Daex",
         ...(init.body === undefined ? {} : { "content-type": "application/json" }),
       },
       ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),

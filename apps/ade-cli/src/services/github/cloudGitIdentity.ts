@@ -108,7 +108,7 @@ export function validGithubUser(login: unknown, id: unknown): GithubUser | null 
 
 async function readUserWithToken(token: string): Promise<GithubUser | null> {
   const response = await fetch("https://api.github.com/user", {
-    headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}`, "user-agent": "ADE" },
+    headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}`, "user-agent": BRAND.NAME },
     signal: AbortSignal.timeout(GITHUB_USER_TIMEOUT_MS),
   });
   if (!response.ok) return null;

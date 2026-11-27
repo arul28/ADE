@@ -838,7 +838,7 @@ async function fetchGitHubApiJson(apiBaseUrl: string, path: string, token: strin
     headers: {
       accept: "application/vnd.github+json",
       authorization: `Bearer ${token}`,
-      "user-agent": "ADE GitHub Webhook Relay",
+      "user-agent": "Daex GitHub Webhook Relay",
       "x-github-api-version": GITHUB_REST_API_VERSION,
     },
   });
@@ -1188,7 +1188,7 @@ async function fetchGitHubAppApiStatus(
     headers: {
       accept: "application/vnd.github+json",
       authorization: `Bearer ${jwt}`,
-      "user-agent": "ADE GitHub Webhook Relay",
+      "user-agent": "Daex GitHub Webhook Relay",
       "x-github-api-version": GITHUB_REST_API_VERSION,
     },
   });
@@ -1803,7 +1803,7 @@ async function handleWebhookHeal(request: Request, env: RelayEnv, repo: { owner:
       accept: "application/vnd.github+json",
       authorization: `Bearer ${appAuth.jwt}`,
       "content-type": "application/json",
-      "user-agent": "ADE GitHub Webhook Relay",
+      "user-agent": "Daex GitHub Webhook Relay",
       "x-github-api-version": GITHUB_REST_API_VERSION,
     },
     body: JSON.stringify({ secret: webhookSecret }),
@@ -1844,7 +1844,7 @@ async function handleWebhookDeliveries(request: Request, env: RelayEnv, repo: { 
     headers: {
       accept: "application/vnd.github+json",
       authorization: `Bearer ${appAuth.jwt}`,
-      "user-agent": "ADE GitHub Webhook Relay",
+      "user-agent": "Daex GitHub Webhook Relay",
       "x-github-api-version": GITHUB_REST_API_VERSION,
     },
   });

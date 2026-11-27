@@ -44,7 +44,7 @@ const execFileAsync = promisify(execFile) as BrainUpdateExecFile;
 const DEFAULT_RELEASE_REPO = DEFAULT_ADE_RELEASE_REPO;
 const CHECKSUMS_ASSET = RELEASE_CHECKSUMS_ASSET;
 const UPDATE_STATUS_FILE = "update-status.json";
-const UPDATE_USER_AGENT = "ADE brain updater";
+const UPDATE_USER_AGENT = `${BRAND.NAME} brain updater`;
 
 export class BrainUpdateUsageError extends Error {}
 

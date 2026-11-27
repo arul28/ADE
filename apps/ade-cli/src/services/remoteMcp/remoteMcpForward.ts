@@ -376,7 +376,7 @@ export function createRemoteMcpMachineRouter(deps: {
           accept: "application/json",
           "mcp-protocol-version": context.protocolVersion || REMOTE_MCP_DEFAULT_PROTOCOL_VERSION,
           // Cloudflare's bot check refuses some default library agents (error 1010).
-          "user-agent": `ADE/${remoteMcpAdeVersion()} (ADE MCP forward)`,
+          "user-agent": `Daex/${remoteMcpAdeVersion()} (Daex MCP forward)`,
           [REMOTE_MCP_VIA_HEADER]: encodeViaHeader(thisMachine().name),
           // The same id on a retry, so a target that knows it runs the call once.
           [REMOTE_MCP_CALL_ID_HEADER]: randomUUID(),

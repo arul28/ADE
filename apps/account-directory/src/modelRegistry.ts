@@ -75,7 +75,7 @@ export const AA_MEDIA_URLS: Record<ModelRegistryMediaKind, string> = {
   "speech-to-speech": "https://artificialanalysis.ai/speech-to-speech",
 };
 export const MODELS_DEV_URL = "https://models.dev/api.json";
-export const MODEL_REGISTRY_USER_AGENT = "ADE model registry (+https://ade-app.dev)";
+export const MODEL_REGISTRY_USER_AGENT = "Daex model registry (+https://daex.dev)";
 
 /**
  * A refresh whose two model pages yield fewer variants than this together is
