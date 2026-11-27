@@ -3661,8 +3661,10 @@ function parseCustomNotification(
     } catch {
       parsed = null;
     }
-    if (!parsed || parsed.protocol !== "ade:" || raw.length > CUSTOM_NOTIFICATION_LINK_MAX) {
-      return { error: "deepLink must be an ade:// link" };
+    // `ade://` (accepted forever) and `daex://`; the desktop's `ADE_DEEPLINK_SCHEMES`,
+    // inlined because a Worker cannot import desktop code.
+    if (!parsed || (parsed.protocol !== "ade:" && parsed.protocol !== "daex:") || raw.length > CUSTOM_NOTIFICATION_LINK_MAX) {
+      return { error: "deepLink must be an ade:// or daex:// link" };
     }
     deepLink = raw;
   }
