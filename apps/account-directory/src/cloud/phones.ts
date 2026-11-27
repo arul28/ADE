@@ -723,7 +723,7 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
   const plan = planIdOf(context.account);
   const body = await readJson(request);
   if (!body) return fail("bad_request", "That request could not be read.", 400);
-  const device = readDevice(body.device);
+  let device = readDevice(body.device);
   if (device === null) return fail("bad_request", `device is one of ${CLOUD_PHONE_DEVICES.join(", ")}.`, 400);
   const drives = clientDrives(body.providers);
   const needs = cloudPhoneAbilitiesOf(body.needs);
@@ -733,8 +733,8 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
     await recordBuildGap(env, userId, missing.phoneId, missing.need, now);
     if (!builds.includes(missing.need)) builds.push(missing.need);
   }
-  const gapped = await buildGaps(env, builds, now);
   const free = accountRules(context.account) === "free";
+  const gapped = await buildGaps(env, builds, now, free ? userId : null);
   // A phone from an earlier period ran under that period's terms: it ends, and a new one starts on this period's.
   // Not for `attach` (Keep on): the allowance check ends that phone on its own schedule.
   if (context.live && startedBeforePeriod(context) && body.attach !== true) {
@@ -783,6 +783,8 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
       return fail("phone_unavailable", "Your ADE Cloud iPhone couldn't be swapped for one that can build this app yet. Try again in a moment.", 503);
     }
     logCloud("cloud.phone_build_swap", { userId, phoneId: session.id, from: provider, builds });
+    // The new phone is the same model as the one it replaces (a launch names none).
+    device ??= isCloudPhoneDevice(session.device) ? session.device : undefined;
     const fresh = await phoneContext(env, userId, now);
     if (fresh instanceof Response) return fresh;
     context = { ...fresh, live: null };

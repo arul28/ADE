@@ -4534,6 +4534,14 @@ describe("ADE Cloud iPhone", () => {
     expect(back).toEqual(["nomac"]);
   });
 
+  it("another account's report never refuses a free plan: only its own does", async () => {
+    seedPhoneTester("auto", "on", { free: true });
+    harness.insert("cloud_phone_build_gaps", { provider: "nomac", need: "metal", seen_at: clock - HOUR });
+    const asked = phoneStartNetwork("ok");
+    expect((await startForMetal()).status).toBe(200);
+    expect(asked).toEqual(["nomac"]);
+  });
+
   it("a second start while one runs for the account is told to try again, and then gets the same phone", async () => {
     seedPhoneTester("auto", "on");
     let during: Response | null = null;

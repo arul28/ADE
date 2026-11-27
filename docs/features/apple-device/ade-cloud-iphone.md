@@ -185,8 +185,12 @@ both used, without changing anything an agent or a person sees.
   for every account, with no account in it). For a day after the last
   report (`CLOUD_PHONE_BUILD_GAP_MS`), a start that names the tool
   (`builds: ["metal"]`) leaves that provider out (`routeForBuilds`), and a
-  live phone there is swapped for one that has it (stopped only once the new
-  start may go there). Past the day, one start tries the provider again, so a
+  live phone there is swapped for one of the same model that has it (stopped
+  only once the new start may go there). The shared row only moves a paid
+  plan's starts; a free plan is refused only on its own report (the phone
+  row's `build_gap`), so a false report can't block another account's
+  builds, only send paid Metal builds to Revyl for a day (logged with who
+  sent it). Past the day, one start tries the provider again, so a
   provider that added the tool gets the work back by itself; a new failure
   starts the day again. Only a paid plan's route has Revyl, so a free plan
   is told, before any phone minute when the gap is known, "This app needs a
@@ -198,7 +202,9 @@ both used, without changing anything an agent or a person sees.
   `--env`) is named as both at once (409 `phone_lacks`). A tester's pick is
   never filtered. The brain names `metal` for a project with a `.metal` file
   in its build folder, or whose build here needed it before (`metalProjects`,
-  in memory, 200 projects: a Swift package's shaders show only in a build).
+  in memory, 200 builds, keyed by checkout, folder and scheme: a Swift
+  package's shaders show only in a build). The retry runs only under the
+  account the first build ran under.
   `launch` then builds once more on the swapped phone, its answer led by
   "Moved to another cloud iPhone…"; a refusal leads the first build's
   failure with the server's sentence. `test` is never moved (Revyl has no
@@ -359,10 +365,15 @@ action on this machine's brain:
   same flag), the brain finds the project in the files that go up, where a
   Mac's own launch looks (`discoverXcodeProjectPaths`): the top, each top
   folder and `apps/*`, by a `.xcodeproj`, `.xcworkspace` or `project.yml`
-  (`cloudPhoneBuildFolder`). Two or more, none, or a `--path` that doesn't
-  go up is refused before the upload, naming `--path`. Launch arguments
-  after `--` are refused on a build (the phone starts the app without them):
-  build, then `relaunch --bundle-id B -- …`; `launch --no-build --bundle-id B [-- …]`,
+  (`cloudPhoneBuildFolder`). A folder's workspace carries its project, and a
+  top `Package.swift` counts when the top has no project. Two or more things
+  to build (two projects in one folder, a top project and a nested one),
+  none, or a `--path` that isn't a folder or bundle that goes up is refused
+  before the upload, naming `--path`. Revyl's build takes any folder name
+  but `..`, an absolute path, a control character or a backslash (`SUB_PATH`).
+  Launch arguments after `--` are refused on a build (the phone starts the
+  app without them): build, then `relaunch --bundle-id B -- …`, which a Revyl
+  phone refuses with a sentence (its launch takes no arguments); `launch --no-build --bundle-id B [-- …]`,
   `relaunch --bundle-id B [-- …]` and `terminate --bundle-id B` use an app
   already on the phone. `install --app <path to a Simulator .app>
   [--no-launch]` uploads and installs an app built elsewhere (Expo/EAS with
@@ -515,7 +526,10 @@ to read with `snapshot`, batch steps in one `act`, and mind the idle stop.
   fails there. Revyl's runner has it (a Metal test app built there
   2026-11-27), and its build step, which ADE writes (`buildCommand` in
   `phoneRevyl.ts`), fetches it anyway when a build fails for want of it (at
-  most 420 s, inside the build's 900 s) and builds once more. What ADE does
+  most 420 s, bounded by the shell, inside the build's 900 s) and builds
+  once more; the first build's toolchain line is left out of the output, so
+  a later error is never blamed on it. A named workspace still gets its
+  folder's `pod install`. What ADE does
   about it is in **Build tools a provider lacks**.
 - No Android. The cloud phone is iOS only.
 - **ADE Web.** The hosted web client's phone is a flat iframe of NoMac's view,

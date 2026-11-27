@@ -180,13 +180,16 @@ For one command, `ade apple … --machine cloud`. What differs:
 - `launch` and `test` (on a phone that runs tests: `status` says) pack this checkout as it is (uncommitted changes too,
   git-ignored files left out), upload it, and build it with Xcode there
   (Xcode projects only). With no `--path`, the project is found where a
-  Mac looks (the top, each top folder, `apps/*`); with two or more, pass
-  `--path <folder>`. Launch arguments (`-- …`) don't go with a build: build,
-  then `ade apple relaunch --bundle-id <id> -- <args>`. A project with Metal
-  shaders (a `.metal` file, also in a Swift package such as SwiftTerm) is
-  built on a cloud iPhone whose Xcode has them: the first build may move to
-  another phone ("Moved to another cloud iPhone…"). When none can (a free
-  plan, `--env`), the answer says why; build on a Mac and `install --app` it.
+  Mac looks (the top, each top folder, `apps/*`); with two or more things to
+  build, pass `--path <folder or .xcodeproj>`. Launch arguments (`-- …`)
+  don't go with a build: build, then `ade apple relaunch --bundle-id <id> --
+  <args>` (a phone that can't pass them says so). A project with Metal
+  shaders (a `.metal` file, also in a Swift package such as SwiftTerm):
+  `launch` builds it on a cloud iPhone whose Xcode has them, so its first
+  build may move to another phone ("Moved to another cloud iPhone…"). When
+  none can (a free plan, `--env`), the answer says why. `test` never moves:
+  on a phone without the toolchain it fails with that sentence. Then build on
+  a Mac and `install --app` it.
   For an app built elsewhere, install its Simulator
   `.app` instead: `ade apple install --app <path>` (`--no-launch` installs
   without starting it). From any machine, Expo builds one in its cloud:

@@ -216,11 +216,21 @@ async function startAlongRoute(env: CloudEnv, route: PhoneRoute, userId: string,
 
 /* ---- Build tools a provider's hosts lack (`cloud_phone_build_gaps`) ---- */
 
-/** The providers found without any of `needs` in the last day: a start that needs them goes elsewhere. */
-export async function buildGaps(env: Pick<CloudEnv, "DB">, needs: readonly CloudPhoneBuildNeed[], now: number): Promise<Set<CloudPhoneProvider>> {
+/**
+ * The providers found without any of `needs` in the last day: a start that
+ * needs them goes elsewhere. `ownOnly` (a free plan, whose start can only be
+ * refused, never moved): only the account's own reports, on its own phones'
+ * rows, so another account's report can't block it; any account's report
+ * only ever moves a paid plan's start to a provider that builds it.
+ */
+export async function buildGaps(env: Pick<CloudEnv, "DB">, needs: readonly CloudPhoneBuildNeed[], now: number, ownOnly: string | null = null): Promise<Set<CloudPhoneProvider>> {
   if (!needs.length) return new Set();
-  const rows = await env.DB.prepare(`select provider from cloud_phone_build_gaps where seen_at > ? and need in (${needs.map(() => "?").join(", ")})`)
-    .bind(now - CLOUD_PHONE_BUILD_GAP_MS, ...needs).all<{ provider: string }>();
+  const listed = needs.map(() => "?").join(", ");
+  const rows = ownOnly
+    ? await env.DB.prepare(`select distinct coalesce(provider, 'nomac') as provider from cloud_phones where user_id = ? and created_at > ? and build_gap in (${listed})`)
+      .bind(ownOnly, now - CLOUD_PHONE_BUILD_GAP_MS, ...needs).all<{ provider: string }>()
+    : await env.DB.prepare(`select provider from cloud_phone_build_gaps where seen_at > ? and need in (${listed})`)
+      .bind(now - CLOUD_PHONE_BUILD_GAP_MS, ...needs).all<{ provider: string }>();
   return new Set((rows.results ?? []).map((row) => row.provider).filter(isCloudPhoneProvider));
 }
 
@@ -235,8 +245,12 @@ export async function recordBuildGap(env: Pick<CloudEnv, "DB">, userId: string, 
     .bind(phoneId, userId, now - BUILD_REPORT_MS).first<{ provider: string | null }>();
   const provider = row ? (isCloudPhoneProvider(row.provider) ? row.provider : "nomac") : null;
   if (!provider) return null;
-  await env.DB.prepare("insert into cloud_phone_build_gaps (provider, need, seen_at) values (?, ?, ?) on conflict(provider, need) do update set seen_at = excluded.seen_at")
-    .bind(provider, need, now).run();
+  await env.DB.batch([
+    env.DB.prepare("insert into cloud_phone_build_gaps (provider, need, seen_at) values (?, ?, ?) on conflict(provider, need) do update set seen_at = excluded.seen_at")
+      .bind(provider, need, now),
+    // The account's own record, on its phone's row (a free plan's refusals read only these).
+    env.DB.prepare("update cloud_phones set build_gap = ? where phone_id = ? and user_id = ?").bind(need, phoneId, userId),
+  ]);
   logCloud("cloud.phone_build_gap", { userId, phoneId, provider, need });
   return provider;
 }

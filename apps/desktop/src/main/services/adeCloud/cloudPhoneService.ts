@@ -208,29 +208,47 @@ async function packWithTar(noun: "project" | "app", tarArgs: (out: string) => st
  */
 function cloudPhoneBuildFolder(files: readonly string[], requested: string | undefined, root: string): string | undefined {
   if (requested) {
-    const named = requested.replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
+    // `ios/.`, `./ios/` and `ios` are one folder; `..` never gets here (`projectArgs`).
+    const named = path.posix.normalize(requested.replace(/\\/g, "/")).replace(/\/+$/, "");
     if (!named || named === ".") return undefined;
-    if (!files.some((file) => file === named || file.startsWith(`${named}/`))) {
-      throw new CloudPhoneError(`Nothing in ${requested} goes up from ${root}: it isn't there, or git doesn't track it. Pass --path <folder>: the folder inside the project with the .xcodeproj or .xcworkspace.`, "bad_request");
+    // A folder, or a .xcodeproj / .xcworkspace bundle, with files under it: never a file.
+    if (!files.some((file) => file.startsWith(`${named}/`))) {
+      throw new CloudPhoneError(`${requested} isn't a folder that goes up from ${root}: it isn't there, it's a file, or git doesn't track it. Pass --path <folder>: the folder inside the project with the .xcodeproj or .xcworkspace.`, "bad_request");
     }
-    return requested;
+    return named;
   }
-  const folders = new Set<string>();
+  // Each folder's build choices: its workspaces (a workspace carries its project), else its projects, else a project.yml.
+  const folders = new Map<string, { workspaces: Set<string>; projects: Set<string>; spec: boolean }>();
   let packageAtTop = false;
   for (const file of files) {
-    const parts = file.split("/");
     if (file === "Package.swift") packageAtTop = true;
+    const parts = file.split("/");
+    // The first bundle on the path: a project's own inner project.xcworkspace sits inside it and is never a choice.
     const marker = parts.findIndex((part, index) => /\.(xcodeproj|xcworkspace)$/i.test(part) || (part === "project.yml" && index === parts.length - 1));
     if (marker < 0) continue;
     const folder = parts.slice(0, marker);
-    if (folder.length <= 1 || (folder.length === 2 && folder[0] === "apps")) folders.add(folder.join("/"));
+    if (!(folder.length <= 1 || (folder.length === 2 && folder[0] === "apps"))) continue;
+    const key = folder.join("/");
+    const entry = folders.get(key) ?? { workspaces: new Set<string>(), projects: new Set<string>(), spec: false };
+    folders.set(key, entry);
+    const bundle = parts[marker]!;
+    if (/\.xcworkspace$/i.test(bundle)) entry.workspaces.add(bundle);
+    else if (/\.xcodeproj$/i.test(bundle)) entry.projects.add(bundle);
+    else entry.spec = true;
   }
-  if (folders.has("") || packageAtTop) return undefined;
-  const found = [...folders].sort();
-  if (found.length === 1) return found[0];
-  if (found.length > 1) {
-    const shown = found.slice(0, 8).join(", ");
-    throw new CloudPhoneError(`This project has ${found.length} Xcode projects (${shown}${found.length > 8 ? ", …" : ""}). Pass --path <folder> to build one, e.g. --path ${found[0]}.`, "bad_request");
+  const choices: string[] = [];
+  const within = (folder: string, bundle: string): string => (folder ? `${folder}/${bundle}` : bundle);
+  for (const [folder, entry] of folders) {
+    const bundles = entry.workspaces.size ? entry.workspaces : entry.projects;
+    if (bundles.size > 1) choices.push(...[...bundles].map((bundle) => within(folder, bundle)));
+    else choices.push(folder);
+  }
+  // A Swift package at the top is a choice of its own when the top has no project.
+  if (packageAtTop && !folders.has("")) choices.push("");
+  if (choices.length === 1) return choices[0] || undefined;
+  if (choices.length > 1) {
+    const shown = choices.sort().map((choice) => choice || ".");
+    throw new CloudPhoneError(`This project has ${shown.length} things to build (${shown.slice(0, 8).join(", ")}${shown.length > 8 ? ", …" : ""}). Pass --path to pick one, e.g. --path ${shown.find((choice) => choice !== ".") ?? shown[0]}.`, "bad_request");
   }
   throw new CloudPhoneError(`No Xcode project, workspace or XcodeGen project.yml in ${root}, its folders, or apps/*. Pass --path <folder>: the folder inside the project with the .xcodeproj or .xcworkspace.`, "no_project");
 }
@@ -429,7 +447,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
   const announced = new Set<string>();
   /** One start at a time: a second caller of the same account waits for the same phone. */
   let starting: { account: string | null; phone: Promise<Held> } | null = null;
-  /** Projects (`cloudPhoneProjectName`) whose build needed the Metal Toolchain: their next start names it. */
+  /** Builds (the project, its folder and scheme) that needed the Metal Toolchain: their next start names it. */
   const metalProjects = new Set<string>();
 
   const accountOf = (client: CloudProvider | null): string | null => client?.account ?? null;
@@ -661,7 +679,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     chatSessionId: string | null,
     run: (phone: Held, driver: CloudPhoneDriver) => Promise<T>,
     need?: CloudPhoneAbility,
-    build: { builds?: readonly CloudPhoneBuildNeed[]; missing?: { phoneId: string; need: CloudPhoneBuildNeed } } = {},
+    build: { builds?: readonly CloudPhoneBuildNeed[]; missing?: { phoneId: string; need: CloudPhoneBuildNeed }; account?: string | null } = {},
   ): Promise<T> {
     const needs = need ? [need] : [];
     const phone = await ensure({ chatSessionId, needs, ...build });
@@ -910,7 +928,9 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
         // env values need a phone that passes them to the app.
         const need = env ? "launchEnv" as const : undefined;
         // A project known to compile Metal names it, so the server starts (or swaps to) a phone whose Xcode has the toolchain.
-        const builds: CloudPhoneBuildNeed[] = packed.metal || metalProjects.has(name) ? ["metal"] : [];
+        // The build, not the checkout: another app in the same checkout may have no shaders.
+        const buildKey = `${name}\0${packed.sub ?? ""}\0${scheme ?? ""}`;
+        const builds: CloudPhoneBuildNeed[] = packed.metal || metalProjects.has(buildKey) ? ["metal"] : [];
         const ran: { phone?: Held } = {};
         const answer = await withPhone(chatSessionId, (phone, driver) => {
           ran.phone = phone;
@@ -918,7 +938,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
         }, need, { builds });
         const failedOn = ran.phone;
         if (!missedMetal(answer) || !failedOn) return { ...explainBuildFailure(answer), files: packed.count, bytes: packed.size };
-        metalProjects.add(name);
+        metalProjects.add(buildKey);
         if (metalProjects.size > METAL_PROJECTS_LIMIT) metalProjects.delete(metalProjects.values().next().value as string);
         // Told to the server, which keeps that provider out of Metal builds for a day and moves this phone to one with
         // the toolchain when the plan allows (a refusal says why, and the phone stays). Built once more there, never again.
@@ -928,6 +948,8 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
           moved = await withPhone(chatSessionId, async (phone, driver) => (phone.phoneId === failedOn.phoneId ? null : await driver.run(phone, input)), need, {
             builds: ["metal"],
             missing: { phoneId: failedOn.phoneId, need: "metal" },
+            // Only under the account the first build ran under: after a switch, never on another account's phone.
+            account: failedOn.account,
           });
         } catch (error) {
           if (!(error instanceof CloudProviderError) && !(error instanceof CloudPhoneError)) throw error;

@@ -538,8 +538,12 @@ const BUILD_ENDED = new Set(["success", "succeeded", "completed", "failed", "err
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SCHEME = /^[A-Za-z0-9 _.+()-]{1,200}$/;
-/** A folder inside the uploaded project: no `..`, no absolute path, no shell quote. */
-const SUB_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9 _.+@()/-]{1,500}$/;
+/**
+ * A folder inside the uploaded project: no `..`, no absolute path, no control
+ * character or backslash. Any other name is fine (`buildCommand` single-quotes
+ * it), so whatever folder the brain finds or a person names, the build takes.
+ */
+const SUB_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[^\u0000-\u001f\u007f\\]{1,500}$/;
 
 /** The passthrough: Revyl's status, type and body as they are (a screenshot's PNG, a recording's video). */
 function passthrough(response: Response): Response {
@@ -569,8 +573,10 @@ function buildCommand(input: { sub: string; scheme: string | null; configuration
   // A `path` that names the project or workspace itself builds that one, from its folder.
   const named = /\.(xcodeproj|xcworkspace)\/?$/i.test(input.sub) ? input.sub.replace(/\/+$/, "") : null;
   const folder = named ? (named.includes("/") ? named.slice(0, named.lastIndexOf("/")) : ".") : input.sub;
+  // A named workspace keeps its folder's pods (uploads never carry `Pods/`), without trading the named one for another.
+  const pods = "if [ -f Podfile ] && [ ! -d Pods ] && command -v pod >/dev/null 2>&1; then pod install; fi";
   const find = named
-    ? [named.toLowerCase().endsWith(".xcworkspace") ? `WS=${shellQuote(`./${named.slice(named.lastIndexOf("/") + 1)}`)}; PJ=` : `WS=; PJ=${shellQuote(`./${named.slice(named.lastIndexOf("/") + 1)}`)}`]
+    ? [pods, named.toLowerCase().endsWith(".xcworkspace") ? `WS=${shellQuote(`./${named.slice(named.lastIndexOf("/") + 1)}`)}; PJ=` : `WS=; PJ=${shellQuote(`./${named.slice(named.lastIndexOf("/") + 1)}`)}`]
     : [
       "WS=$(find . -maxdepth 1 -name '*.xcworkspace' ! -name 'project.xcworkspace' | head -n 1)",
       "PJ=$(find . -maxdepth 1 -name '*.xcodeproj' | head -n 1)",
@@ -592,14 +598,22 @@ function buildCommand(input: { sub: string; scheme: string | null; configuration
     "CODE_FILE=\"$ROOT/build/ade-xcodebuild.code\"",
     `ACTION=${shellQuote(input.clean ? "clean build" : "build")}`,
     // The log is kept to tell why it failed; the exit code goes through a file because a pipe answers tee's.
-    `ade_build() { { if xcodebuild "$@" -scheme "$SCHEME" -configuration ${input.configuration} -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$ROOT/build" ARCHS=arm64 CODE_SIGNING_ALLOWED=NO $ACTION; then echo 0 > "$CODE_FILE"; else echo $? > "$CODE_FILE"; fi; } 2>&1 | tee "$LOG"; return "$(cat "$CODE_FILE")"; }`,
-    "if ade_build \"$@\"; then exit 0; else CODE=$?; fi",
+    `ade_xcodebuild() { if xcodebuild "$@" -scheme "$SCHEME" -configuration ${input.configuration} -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$ROOT/build" ARCHS=arm64 CODE_SIGNING_ALLOWED=NO $ACTION; then echo 0 > "$CODE_FILE"; else echo $? > "$CODE_FILE"; fi; }`,
+    // The first build's toolchain line stays out of the build's output: a fetch follows it, and a failure there says so
+    // itself, so a later error is never blamed on a toolchain that was fetched.
+    "{ ade_xcodebuild \"$@\"; } 2>&1 | tee \"$LOG\" | sed '/missing Metal Toolchain/d'",
+    "CODE=$(cat \"$CODE_FILE\")",
+    "if [ \"$CODE\" = 0 ]; then exit 0; fi",
     "if ! grep -q 'missing Metal Toolchain' \"$LOG\"; then exit \"$CODE\"; fi",
     `echo "ADE: this project compiles Metal shaders and the runner's Xcode has no Metal Toolchain; fetching it (up to ${METAL_DOWNLOAD_SECONDS} s), then building again."`,
-    `if command -v perl >/dev/null 2>&1; then FETCH="perl -e 'alarm shift; exec @ARGV' ${METAL_DOWNLOAD_SECONDS}"; else FETCH=""; fi`,
-    "if ! eval \"$FETCH xcodebuild -downloadComponent MetalToolchain\"; then echo \"error: The build runner couldn't fetch Apple's Metal Toolchain, which this project needs for its .metal shaders (missing Metal Toolchain).\" >&2; exit \"$CODE\"; fi",
+    // Bounded by the shell alone: the fetch is stopped at the limit, and its failure is the one error below.
+    "xcodebuild -downloadComponent MetalToolchain & FETCH=$!",
+    `WAITED=0; while kill -0 "$FETCH" 2>/dev/null; do if [ "$WAITED" -ge ${METAL_DOWNLOAD_SECONDS} ]; then kill "$FETCH" 2>/dev/null || true; break; fi; sleep 2; WAITED=$((WAITED + 2)); done`,
+    "if ! wait \"$FETCH\"; then echo \"error: The build runner couldn't fetch Apple's Metal Toolchain, which this project needs for its .metal shaders (missing Metal Toolchain).\" >&2; exit \"$CODE\"; fi",
+    "echo 'ADE: fetched the Metal Toolchain; building again.'",
     "ACTION=build",
-    "ade_build \"$@\"",
+    "{ ade_xcodebuild \"$@\"; } 2>&1 | tee \"$LOG\"",
+    "exit \"$(cat \"$CODE_FILE\")\"",
   ].join("\n");
 }
 
