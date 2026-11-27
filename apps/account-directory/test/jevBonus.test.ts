@@ -128,6 +128,8 @@ describe("POST /jev/systemone", () => {
     ["a spent ADE key", () => upstream(402, { error: "nope" }), 429],
     ["a refused ADE key", () => upstream(401, { error: "nope" }), 503],
     ["a Jev outage", () => upstream(500, { error: "nope" }), 502],
+    // One request refused, not an outage: a 400 keeps the brain's breaker closed.
+    ["a request Jev refuses (451)", () => upstream(451, { error: "nope" }), 400],
     ["a reply body that fails to read", () => upstreamBodyFails(), 502],
     ["a fleet count that cannot be written", (env: JevBonusEnv & { DB: FakeD1Database }) => {
       upstream();

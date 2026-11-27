@@ -1,6 +1,7 @@
 import { machineLabelForBinding } from "../../state/adeCloudLaneIndex";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { showToast } from "../app/toast/toastStore";
+import { plainErrorText } from "../../lib/plainError";
 
 /**
  * Path actions that only this computer can do: open a file in Finder or in an
@@ -35,7 +36,7 @@ export function runPathActionHere(
     showToast({
       tone: "error",
       title: options.failTitle,
-      message: error instanceof Error ? error.message : String(error),
+      message: plainErrorText(error, "ADE couldn't do that."),
     });
   });
 }

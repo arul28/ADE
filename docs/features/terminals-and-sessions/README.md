@@ -766,6 +766,9 @@ Renderer surfaces:
     `snoozedUntil`. One `setTimeout` at the soonest deadline (at most 10 min)
     re-derives the partition.
   - The board model (`buildWorkBoardModel`, `lanePrWaitingReason`).
+  - Pinned chats move to the top of their lane or board column immediately.
+    Status and Time show a Pinned group across machines. A chat's pin is
+    saved on its owning runtime and appears on other connected devices.
   - Chips, pins and sort are saved per project; a deeplink override is
     transient and clears on any change. `reorderWorkLanes` switches to Manual.
 - `apps/desktop/src/renderer/components/terminals/workLaneOrder.ts`,
@@ -1001,9 +1004,12 @@ lifecycle.
 
 Fields that feed UI and downstream systems:
 
-- identity: `id`, `laneId`, `laneName`, `ptyId`, `tracked`, `pinned`,
-  `manuallyNamed`, `chatSessionId` (the owner of an attached terminal: a chat
-  or a tracked CLI; `chat_session_id`, indexed)
+- identity: `id`, `laneId`, `laneName`, `laneType` (the lane's kind, so a
+  screen names the main checkout "Main checkout" through
+  `sessionLaneDisplayName`; a row from an older brain has none and keeps its
+  stored name), `ptyId`, `tracked`, `pinned`, `manuallyNamed`,
+  `chatSessionId` (the owner of an attached terminal: a chat or a tracked
+  CLI; `chat_session_id`, indexed)
 - title and intent: `title`, `goal`, `toolType`
 - lifecycle: `status`, `startedAt`, `endedAt`, `exitCode`, `runtimeState`
   (derived), `chatIdleSinceAt`, `settledAt`, `statusNote`,

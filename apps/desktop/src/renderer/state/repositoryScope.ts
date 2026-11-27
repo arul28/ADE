@@ -24,6 +24,7 @@ import {
 import type { OpenProjectBinding } from "../../shared/types";
 import { useAppStore } from "./appStore";
 import { isAdeCloudBinding } from "../../shared/adeCloud/binding";
+import { THIS_MACHINE_NAME } from "../../shared/machineIdentity";
 import { originUrlForBinding, subscribeProjectOriginMemory } from "../components/lanes/laneMachines";
 import { useStableBinding } from "./laneMachineRouting";
 import { useRemoteTargetState, withMachineTimeout } from "./projectMachines";
@@ -165,6 +166,19 @@ export function useOnlineCopyPins(active = true): readonly MachineAddress[] {
   const held = useRef<readonly MachineAddress[]>(next);
   held.current = holdPins(held.current, next);
   return held.current;
+}
+
+/**
+ * The name of a copy's machine: the copy list's name when the list has it,
+ * else the name its pin carries.
+ */
+export function copyMachineName(
+  pin: OpenProjectBinding,
+  listedName?: string | null,
+  thisMachineName?: string | null,
+): string {
+  if (listedName) return listedName;
+  return pin.kind === "remote" ? pin.runtimeName || pin.hostname || pin.displayName : thisMachineName ?? THIS_MACHINE_NAME;
 }
 
 /** One string for a list of pins: the dependency of an effect over them. */

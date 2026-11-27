@@ -21,6 +21,7 @@ import { MachineChip } from "../../shared/MachineChip";
 import { PrRuntimePinProvider, foreignLinkForItem, usePrMachineIndexContext, usePrRuntimePin } from "../state/prMachines";
 import { requestCrossMachineLanesForMachine } from "../../../state/crossMachineLanes";
 import { PrLabelPill } from "./PrLabelPill";
+import { laneDisplayName } from "../../../../shared/laneDisplayName";
 
 /**
  * Presentation for one row of the GitHub PR list, and the period header that groups
@@ -154,7 +155,7 @@ function PrRowLaneChip({
     return (
       <span style={{ display: "inline-flex", alignItems: "center", gap: 4, minWidth: 0 }}>
         <LaneChip
-          laneName={foreign.lane?.name ?? foreign.pr.headBranch ?? "Lane"}
+          laneName={(foreign.lane ? laneDisplayName(foreign.lane) : null) ?? foreign.pr.headBranch ?? "Lane"}
           laneColor={foreign.lane?.color ?? null}
           maxWidth="100%"
           data-testid="pr-row-lane"

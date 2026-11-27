@@ -188,8 +188,15 @@ the shelf, the headers and the board.
 - A deleting lane (`laneDeleteProgressByLaneId`) has a spinner header
   (`Deleting`, `Deleted`, `Deleted with warnings`), and its cards get a
   `disabledReason` in every grouping.
+- iOS files a row whose lane is not in the lane list first
+  (`workFileSessionsWithoutLane`): a lane the focused computer's roster lists
+  joins the lanes; an archived lane groups its rows as "<name> · Archived"
+  with no lane actions and is never a lane to start a chat in; a row whose
+  lane no computer has is left out once this connection received the focused
+  computer's roster (`rosterLiveOnConnection`). Nothing is deleted.
 - Orphaned sessions (a `laneId` not in the lane list) group under their
-  `laneName` (`missingLaneSessionGroups`) with a warning icon, a note that the
+  lane's UI name (`sessionLaneDisplayName`, `missingLaneSessionGroups`) with a
+  warning icon, a note that the
   chat history is kept, and a lane refresh. ADE never deletes anything from
   this row.
 

@@ -248,7 +248,7 @@ export function createIssueTrackerService(args: IssueTrackerServiceArgs): IssueT
       if (!adapter || !(await isConnected(tracker))) throw new IssueTrackerError(tracker, "getViewer", "not-connected", `${tracker} is not connected on this machine.`);
       return await withIssueTrackerError(tracker, "getViewer", () => adapter.getViewer());
     },
-    async list(input: IssueListArgs) {
+    async list(input: IssueListArgs = {}) {
       const limit = Math.min(100, Math.max(1, Math.floor(input.limit ?? 25)));
       if (input.tracker) {
         const adapter = adapters.get(input.tracker);
@@ -258,7 +258,14 @@ export function createIssueTrackerService(args: IssueTrackerServiceArgs): IssueT
       const connected = await Promise.all([...adapters.values()].map(async (adapter) => ({ adapter, connected: await isConnected(adapter.kind) })));
       const active = connected.filter((entry) => entry.connected);
       if (!active.length) throw new IssueTrackerError("linear", "list", "not-connected", "No issue tracker is connected on this machine.");
-      const pages = await Promise.all(active.map(async ({ adapter }) => await withIssueTrackerError(adapter.kind, "list", () => adapter.listIssues({ ...input, cursor: null, limit }))));
+      const settled = await Promise.allSettled(active.map(async ({ adapter }) => await withIssueTrackerError(adapter.kind, "list", () => adapter.listIssues({ ...input, cursor: null, limit }))));
+      // A signed-in tracker with nothing set up for this project (GitHub with
+      // no repository) is left out of an unscoped list; any other failure fails it.
+      const pages = settled.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+      const failures = settled.flatMap((result) => result.status === "rejected" ? [result.reason as unknown] : []);
+      const realFailure = failures.find((error) => !(error instanceof IssueTrackerError && error.reason === "not-connected"));
+      if (realFailure !== undefined) throw realFailure;
+      if (!pages.length) throw failures[0];
       return {
         issues: pages.flatMap((page) => page.issues).sort((left, right) => (right.updatedAt ?? "").localeCompare(left.updatedAt ?? "")).slice(0, limit),
         nextCursor: null,
@@ -311,7 +318,7 @@ export function createIssueTrackerService(args: IssueTrackerServiceArgs): IssueT
         return await adapter.getIssue(created.reference);
       });
     },
-    async listStates(input) {
+    async listStates(input = {}) {
       let adapter: IssueTrackerAdapter | undefined;
       let reference: IssueRef | undefined;
       if (input.reference) {

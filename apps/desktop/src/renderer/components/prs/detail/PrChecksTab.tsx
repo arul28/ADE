@@ -89,6 +89,7 @@ import {
 import { groupChecksForList, rowLabel } from "./prChecksListModel";
 import { PrChecksGraphSkeleton } from "./PrChecksGraphSkeleton";
 import { OpenOnGitHubButton, STATE_COLOR, STATE_LABEL, StateIcon, fmtMs, tint } from "./prChecksVisuals";
+import { plainErrorText } from "../../../lib/plainError";
 
 /**
  * React Flow is ~100 KB of JavaScript plus a stylesheet, and the PR detail pane
@@ -728,7 +729,7 @@ export function PrChecksTab({
       .catch((err: unknown) => {
         if (cancelled) return;
         setExcerpt(null);
-        setLogError(err instanceof Error ? err.message : String(err));
+        setLogError(plainErrorText(err, "ADE couldn't load that log."));
       })
       .finally(() => { if (!cancelled) setLogLoading(false); });
     return () => { cancelled = true; };

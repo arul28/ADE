@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo } from "react";
+import React, { useCallback, useEffect, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { CaretRight, Coffee, Notebook, X } from "@phosphor-icons/react";
 import type {
@@ -18,6 +18,7 @@ import { CtoLibrary } from "./CtoLibrary";
 import type { CtoActivityData, CtoChildChat } from "./useCtoActivityData";
 import { openCtoChat } from "./ctoNavigation";
 import { CtoEmptyLine } from "./ctoSettingsUi";
+import { laneDisplayName } from "../../../shared/laneDisplayName";
 
 export type CtoPanelTab = "activity" | "library";
 
@@ -31,6 +32,17 @@ function noteLines(text: string | null | undefined): string[] {
     .filter((line) => !/^\s*(#|```|---|\*\*\*)/.test(line))
     .map((line) => line.replace(/^\s*[-*]\s+/, "").trim())
     .filter(Boolean);
+}
+
+/**
+ * The line under a child chat's title: its own live status line ("Waiting for
+ * CI on 57628e0"), else its lane when that says something the title does not.
+ */
+function childDetail(child: CtoChildChat, title: string, laneName: string | null): string | null {
+  const status = child.summary.statusNote?.trim();
+  if (status && status.toLowerCase() !== title.toLowerCase()) return status;
+  if (laneName && laneName.trim().toLowerCase() !== title.toLowerCase()) return laneName;
+  return null;
 }
 
 function childStatusWord(child: CtoChildChat): string {
@@ -97,6 +109,25 @@ export function CtoSidePanel({
     if (turnsFinished > 0) void refreshMemory();
   }, [refreshMemory, turnsFinished]);
 
+  // A child chat that comes to rest may close the open work linked to it; the
+  // read closes it on the host. Keyed on which children rest, and read only
+  // when one more does, not per render or when one starts again.
+  const restingChildKey = useMemo(
+    () => data.children
+      .filter((child) => !child.running && child.summary.awaitingInput !== true)
+      .map((child) => child.summary.sessionId)
+      .sort()
+      .join(","),
+    [data.children],
+  );
+  const restingChildrenRef = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    const previous = restingChildrenRef.current;
+    const resting = new Set(restingChildKey ? restingChildKey.split(",") : []);
+    restingChildrenRef.current = resting;
+    if (previous && [...resting].some((id) => !previous.has(id))) void refreshMemory();
+  }, [refreshMemory, restingChildKey]);
+
   // "Now" is what is happening: chats still working or waiting on the person.
   // A helper that finished its turn is history (its lane and PR are in Library).
   const openChildren = useMemo(
@@ -160,13 +191,13 @@ export function CtoSidePanel({
                   {shownChildren.map((child) => {
                     const lane = lanesById.get(child.summary.laneId);
                     const childTitle = child.summary.title?.trim() || "Untitled chat";
+                    const detail = childDetail(child, childTitle, lane ? laneDisplayName(lane) : null);
                     return (
                       <li key={child.summary.sessionId}>
                         <button
                           type="button"
                           className="ade-cto-row"
-                          title={lane?.name ? `${childTitle}
-${lane.name}` : childTitle}
+                          title={detail ? `${childTitle}\n${detail}` : childTitle}
                           onClick={() => openCtoChat(navigate, child.summary.sessionId, child.summary.laneId, pin, pinTargetsTab)}
                         >
                           <span className="ade-cto-row-icon">
@@ -174,7 +205,7 @@ ${lane.name}` : childTitle}
                           </span>
                           <span className="ade-cto-row-body">
                             <span className="ade-cto-row-title">{childTitle}</span>
-                            {lane?.name ? <span className="ade-cto-row-detail">{lane.name}</span> : null}
+                            {detail ? <span className="ade-cto-row-detail">{detail}</span> : null}
                           </span>
                           <span className="ade-cto-row-meta" data-state={child.summary.awaitingInput ? "warn" : child.running ? "live" : undefined}>
                             {childStatusWord(child)}

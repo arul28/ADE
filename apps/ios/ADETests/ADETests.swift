@@ -2144,6 +2144,33 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(args["name"] as? String, "Feature lane")
   }
 
+  /// A command's project to the host: a machine-wide action stays projectless
+  /// unless it keeps the project it names (the phone's answer to a size
+  /// request is read in the chat's project), and never borrows the active one.
+  func testCommandProjectScopeKeepsOnlyTheNamedProjectForMachineWideActions() {
+    struct Case { let name: String; let runtime: Bool; let keeps: Bool; let target: String?; let root: String?; let id: String?; let path: String? }
+    let cases = [
+      Case(name: "machine-wide drops a named project", runtime: true, keeps: false, target: "project-b", root: "/b", id: nil, path: nil),
+      Case(name: "machine-wide keeps the project it names", runtime: true, keeps: true, target: "project-b", root: "/b", id: "project-b", path: "/b"),
+      Case(name: "machine-wide never borrows the active project", runtime: true, keeps: true, target: " ", root: nil, id: nil, path: nil),
+      Case(name: "project action falls back to the active project", runtime: false, keeps: false, target: nil, root: nil, id: "project-a", path: "/a"),
+      Case(name: "another project with no root sends none", runtime: false, keeps: false, target: "project-b", root: nil, id: "project-b", path: nil),
+    ]
+    for c in cases {
+      let scope = syncCommandProjectScope(
+        actionIsRuntimeScoped: c.runtime,
+        keepsProjectForRuntimeAction: c.keeps,
+        fallbackToActiveProjectScope: true,
+        targetProjectId: c.target,
+        targetProjectRootPath: c.root,
+        activeProjectId: "project-a",
+        activeProjectRootPath: "/a"
+      )
+      XCTAssertEqual(scope.projectId, c.id, c.name)
+      XCTAssertEqual(scope.rootPath, c.path, c.name)
+    }
+  }
+
   func testCommandEnvelopePayloadOmitsBlankProjectScope() {
     let payload = syncCommandEnvelopePayload(
       commandId: "cmd-1",
@@ -17592,6 +17619,58 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(groups.map(\.isOrphaned), [false, true, true])
     XCTAssertEqual(groups.map(\.icon), [.laneBranch, .warning, .warning])
     XCTAssertEqual(groups.last?.sessions.count, 2)
+  }
+
+  /// A phone showed five chats of a lane deleted on its computer as
+  /// "Orphaned sessions: <lane id>", and Refresh could not clear them.
+  func testWorkFileSessionsWithoutLaneFilesArchivedLanesAndLeavesOutLanesNoComputerHas() {
+    func lane(_ id: String, archived: Bool) -> LaneSummary {
+      LaneSummary(
+        id: id, name: id, description: nil, laneType: "worktree", baseRef: "main", branchRef: id,
+        worktreePath: "/tmp/\(id)", attachedRootPath: nil, isEditProtected: false,
+        status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
+        color: nil, icon: nil, tags: [], folder: nil, createdAt: "2026-03-17T00:00:00.000Z",
+        archivedAt: archived ? "2026-03-20T00:00:00.000Z" : nil
+      )
+    }
+    func session(_ id: String, lane: String) -> TerminalSessionSummary {
+      makeTerminalSessionSummary(id: id, laneId: lane, laneName: "", toolType: "codex-chat", startedAt: "2026-03-25T12:00:00.000Z")
+    }
+    let sessions = [
+      session("in-live-lane", lane: "live"),
+      session("shell-in-roster-lane", lane: "roster-only"),
+      session("in-archived-lane", lane: "old"),
+      session("in-deleting-lane", lane: "going"),
+      session("in-lane-nobody-has", lane: "gone"),
+    ]
+
+    for (rosterLive, expectedIds) in [
+      (true, ["in-live-lane", "shell-in-roster-lane", "in-archived-lane", "in-deleting-lane"]),
+      // Until the focused computer's roster is live, nothing is left out.
+      (false, ["in-live-lane", "shell-in-roster-lane", "in-archived-lane", "in-deleting-lane", "in-lane-nobody-has"]),
+    ] {
+      let filed = workFileSessionsWithoutLane(
+        sessions: sessions,
+        lanes: [lane("live", archived: false)],
+        rosterLanes: [lane("roster-only", archived: false)],
+        archivedLanes: [lane("old", archived: true), lane("unused", archived: true)],
+        deletingLaneIds: ["going"],
+        focusedRosterLive: rosterLive
+      )
+      XCTAssertEqual(filed.sessions.map(\.id), expectedIds)
+      // A roster lane holding a row joins the lanes; an archived one stays
+      // apart, so it is never offered as a lane to start a chat in.
+      XCTAssertEqual(filed.lanes.map(\.id), ["live", "roster-only"])
+      XCTAssertEqual(filed.archivedLanes.map(\.id), ["old"])
+      let groups = workSessionGroupsByLane(
+        sessions: filed.sessions,
+        orderedLanes: filed.lanes,
+        deletingLaneIds: ["going"],
+        archivedLanes: filed.archivedLanes
+      )
+      XCTAssertEqual(groups.first { $0.id == "lane:old" }?.isOrphaned, false)
+      XCTAssertEqual(groups.first { $0.id == "lane:roster-only" }?.isOrphaned, false)
+    }
   }
 
   func testWorkSessionGroupsByLaneShowsUpdatingPlaceholderForPendingLaneDeletion() {

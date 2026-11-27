@@ -3,6 +3,7 @@ import { updateTrackOfVersion, type UpdateTrack } from "../../../shared/updateTr
 import type {
   AdeAccountMachine,
   RemoteRuntimeConnectErrorInfo,
+  RemoteRuntimeConnectionAttempt,
   RemoteRuntimeConnectionAttemptFailure,
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectionStatus,
@@ -25,6 +26,7 @@ import {
   encodePairingQrUrl,
 } from "../../../shared/pairingQr";
 import type {
+  SyncAccountDirectoryFailedLeg,
   SyncAccountDirectoryState,
   SyncAddressCandidate,
   SyncPeerPlatform,
@@ -241,6 +243,8 @@ export type LocalPublishHealth = {
    */
   lastHttpStatus?: number | null;
   lastHttpReason?: string | null;
+  /** The step the current failure happened on; decides "no internet" from a sign-in refresh failure. */
+  failedLeg?: SyncAccountDirectoryFailedLeg | null;
 };
 
 /**
@@ -338,6 +342,7 @@ function accountDirectoryHealthFromPublishHealth(
   return createSyncAccountDirectoryHealth(publishHealth.state, null, {
     lastHttpStatus: publishHealth.lastHttpStatus ?? null,
     lastHttpReason: publishHealth.lastHttpReason ?? null,
+    failedLeg: publishHealth.failedLeg ?? null,
   });
 }
 
@@ -627,6 +632,22 @@ export type MachineErrorCard = {
  */
 export function isMachineStateConnectError(kind: RemoteRuntimeConnectErrorInfo["kind"] | null | undefined): boolean {
   return kind != null && kind !== "generic";
+}
+
+/**
+ * The connect never reached the machine: it may be asleep, or this computer
+ * may be offline. A `timeout` also covers a transport that opened and then
+ * stalled on the handshake (a LAN route works with no internet), which is the
+ * remote ADE's problem; its attempts say so, and that one does not count.
+ */
+export function connectNeverReachedMachine(
+  failure: RemoteRuntimeConnectionAttemptFailure | null | undefined,
+  attempts: readonly RemoteRuntimeConnectionAttempt[] | null | undefined,
+): boolean {
+  if (failure !== "unreachable" && failure !== "timeout") return false;
+  return !(attempts ?? []).some(
+    (attempt) => attempt.outcome === "connected" || attempt.errorCode === "handshake_timeout",
+  );
 }
 
 /**

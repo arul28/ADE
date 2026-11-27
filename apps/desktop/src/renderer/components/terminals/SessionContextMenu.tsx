@@ -84,6 +84,8 @@ import {
   snoozeSessionForDuration,
   unsettleSession,
   wakeSessionNow,
+  SESSION_PIN_TOOLTIP,
+  SESSION_UNPIN_TOOLTIP,
 } from "./sessionLifecycleActions";
 import {
   AutoHandoffModal,
@@ -701,6 +703,7 @@ function SessionContextMenuPanel({
         <button
           type="button"
           className={MENU_ITEM_CLASS}
+          title={pinned ? SESSION_UNPIN_TOOLTIP : SESSION_PIN_TOOLTIP}
           onClick={() => { onTogglePinned(session); onClose(); }}
         >
           <MenuRowIcon icon={pinned ? PushPinSlash : PushPin} />

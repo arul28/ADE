@@ -40,6 +40,7 @@ import {
   RECORDING_MAX_MS,
 } from "../../../shared/demoVideo/demoContract";
 import type { Logger } from "../logging/logger";
+import { isStuckMediaProcessError, stopMediaChild } from "./demoChildStop";
 
 const READABLE_EXTENSIONS = new Set([".mp4", ".mov", ".m4v"]);
 
@@ -49,8 +50,6 @@ const RENDER_MIN_TIMEOUT_MS = 60_000;
 /** Each tile is one seek and one decode from the nearest key frame. */
 const CONTACT_SHEET_BASE_TIMEOUT_MS = 30_000;
 const CONTACT_SHEET_PER_TIME_MS = 2_000;
-/** After SIGTERM, how long `ade-media` gets to delete its partial file before SIGKILL. */
-const KILL_GRACE_MS = 3_000;
 /** The analysis of a five-minute 60 fps file is well under a megabyte. */
 const MAX_STDOUT_BYTES = 64 * 1024 * 1024;
 const STDERR_TAIL_LINES = 20;
@@ -122,6 +121,8 @@ export function createSwiftDemoEngine(deps: SwiftDemoEngineDeps): DemoEngine {
     async render(request, options) {
       assertSupported();
       const requestPath = await writeRequestFile(request);
+      // Stuck on a drive that stopped answering: no cleanup may wait on it.
+      let stuck = false;
       const startedAt = Date.now();
       try {
         const stdout = await runAdeMedia({
@@ -151,16 +152,21 @@ export function createSwiftDemoEngine(deps: SwiftDemoEngineDeps): DemoEngine {
         });
         return result;
       } catch (error) {
-        await removePartialOutputs(request.output);
+        // A process stuck on the output's drive: the sweep would wait on it too.
+        stuck = isStuckMediaProcessError(error);
+        if (!stuck) await removePartialOutputs(request.output);
         throw error;
       } finally {
-        await fs.promises.rm(requestPath, { force: true }).catch(() => undefined);
+        // The temp folder can share that drive.
+        if (!stuck) await fs.promises.rm(requestPath, { force: true }).catch(() => undefined);
       }
     },
 
     async contactSheet(request, options) {
       assertSupported();
       const requestPath = await writeRequestFile(request);
+      // Stuck on a drive that stopped answering: no cleanup may wait on it.
+      let stuck = false;
       try {
         const stdout = await runAdeMedia({
           binaryPath,
@@ -176,10 +182,12 @@ export function createSwiftDemoEngine(deps: SwiftDemoEngineDeps): DemoEngine {
         }
         return result;
       } catch (error) {
-        await removePartialOutputs(request.output);
+        stuck = isStuckMediaProcessError(error);
+        if (!stuck) await removePartialOutputs(request.output);
         throw error;
       } finally {
-        await fs.promises.rm(requestPath, { force: true }).catch(() => undefined);
+        // The temp folder can share that drive.
+        if (!stuck) await fs.promises.rm(requestPath, { force: true }).catch(() => undefined);
       }
     },
   };
@@ -267,11 +275,16 @@ function runAdeMedia(args: {
     const stop = (reason: Error): void => {
       if (stopReason || settled) return;
       stopReason = reason;
-      child.kill("SIGTERM");
-      killTimer = setTimeout(() => {
-        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-      }, KILL_GRACE_MS);
-      killTimer.unref?.();
+      stopMediaChild({
+        child,
+        reason,
+        label,
+        stuckEvent: "demo_video.swift_unkillable",
+        logger,
+        isSettled: () => settled,
+        settle: finish,
+        onTimer: (timer) => { killTimer = timer; },
+      });
     };
 
     const onAbort = (): void => stop(abortError(label));

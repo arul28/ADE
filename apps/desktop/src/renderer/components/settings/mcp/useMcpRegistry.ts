@@ -96,10 +96,6 @@ const EMPTY: McpRegistryView = {
   skipped: [],
 };
 
-function errorSentence(error: unknown): string {
-  return error instanceof Error ? error.message : String(error ?? "Something went wrong.");
-}
-
 export function useMcpRegistry(): McpRegistryApi {
   // A project tab bound to another computer has no checkout here to read a
   // remote from, so "this project" has nothing to file a row under.
@@ -187,7 +183,7 @@ export function useMcpRegistry(): McpRegistryApi {
     try {
       next = await readAll(syncFirst);
     } catch (error) {
-      next = { ...EMPTY, phase: "unavailable", message: errorSentence(error) };
+      next = { ...EMPTY, phase: "unavailable", message: plainErrorText(error, "ADE couldn't read the MCP servers.") };
     }
     if (seq === loadSeq.current) {
       setView(next);
@@ -239,11 +235,12 @@ export function useMcpRegistry(): McpRegistryApi {
 
   /** Runs one change, then shows what the brain holds now, whatever the outcome. */
   const mutate = useCallback(async (run: () => Promise<string | null>): Promise<string | null> => {
-    let outcome: string | null;
+    // A returned refusal and a thrown error read the same way.
+    let outcome: unknown;
     try {
       outcome = await run();
     } catch (error) {
-      outcome = errorSentence(error);
+      outcome = error;
     }
     await reload();
     return outcome == null ? null : plainErrorText(outcome, "ADE couldn't save the MCP server change.");

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { openReadOnlyDatabase } from "../../../../desktop/src/main/services/projects/readOnlySqlite";
+import { unansweringRootOf } from "../../../../desktop/src/main/services/state/unansweringRoots";
 import {
   onProjectRootStorageWaitChange,
   readProjectRootStorageWait,
@@ -65,4 +66,48 @@ describe("projectRootAccessMonitor", () => {
       }
     },
   );
+
+  // Mac Studio, 2026-11-26: a hung external drive held two projects. Each
+  // restarted brain marked only the project the last one died on, froze on the
+  // other, and was killed: seven hours of restarts. The whole drive is marked.
+  it("marks the whole drive, so a sibling project on it fails fast too, until the drive answers", async () => {
+    const id = `ade-drive-wait-${process.pid}-${Date.now()}`;
+    // A drive that can stall on each platform, which no machine running this
+    // has. On Windows, a letter holding neither the system, the home folder
+    // nor ADE_HOME: the monitor never marks those as a whole.
+    const usedLetters = new Set(
+      [process.env.SystemDrive ?? "C:", os.homedir(), process.env.ADE_HOME ?? ""]
+        .map((value) => value.charAt(0).toUpperCase()),
+    );
+    const freeLetter = [..."QRSTUVWXYZ"].find((letter) => !usedLetters.has(letter)) ?? "Z";
+    const drive = process.platform === "darwin"
+      ? `/Volumes/${id}`
+      : process.platform === "win32"
+        ? `${freeLetter}:\\`
+        : `/mnt/${id}`;
+    const hungProject = path.join(drive, id, "hung-project");
+    const siblingProject = path.join(drive, id, "sibling-project");
+    // The drive does not exist, so the probe's open fails at once and clears
+    // the wait: the guard is read before that, synchronously.
+    // Resolves on the change that clears the wait, however many come first.
+    const cleared = new Promise<void>((resolve) => {
+      const stop = onProjectRootStorageWaitChange(() => {
+        if (readProjectRootStorageWait() !== null) return;
+        stop();
+        resolve();
+      });
+    });
+    reportProjectRootNotAnswering(hungProject, "previous_brain_wedge", {
+      path: path.join(hungProject, ".git", "config"),
+    });
+
+    expect(unansweringRootOf(path.join(siblingProject, ".git", "config"))).not.toBeNull();
+    expect(() => openReadOnlyDatabase(path.join(siblingProject, ".ade", "ade.db"))).toThrow(
+      expect.objectContaining({ code: "storage_read_failed" }),
+    );
+
+    await cleared;
+    expect(unansweringRootOf(path.join(siblingProject, ".git", "config"))).toBeNull();
+    expect(readProjectRootStorageWait()).toBeNull();
+  });
 });

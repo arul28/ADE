@@ -3,6 +3,7 @@ import { WarningCircle } from "@phosphor-icons/react";
 import type { ChatErrorPresentation } from "../../../shared/chatErrorPresentation";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { noticeTone } from "../ui/notice";
+import { plainErrorText } from "../../lib/plainError";
 
 const LINK_CLASS = "rounded px-1 text-fg/55 underline decoration-fg/20 underline-offset-2 transition-colors hover:text-fg/85 disabled:pointer-events-none disabled:opacity-40";
 
@@ -47,7 +48,7 @@ export function TurnFailureLine({
     try {
       setRetryError(await onRetry());
     } catch (error) {
-      setRetryError(error instanceof Error ? error.message : String(error));
+      setRetryError(plainErrorText(error, "ADE couldn't retry."));
     } finally {
       setRetryPending(false);
     }

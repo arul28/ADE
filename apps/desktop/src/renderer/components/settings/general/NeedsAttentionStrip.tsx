@@ -13,6 +13,7 @@ import { STANDALONE_TAB_IDS } from "../settingsTabContent";
 import { attentionAgentPrompt, attentionHideId, attentionLines, canHideAttention, type AttentionItem, type useNeedsAttention } from "../overview/useNeedsAttention";
 import "../health/health.css";
 import "../overview/overview.css";
+import { plainErrorText } from "../../../lib/plainError";
 
 // The notice tones' glyphs (`defaultNoticeIcon`); a note stays outlined and quiet.
 const SEVERITY_ICON: Record<AttentionItem["severity"], React.ReactNode> = {
@@ -182,7 +183,7 @@ export function NeedsAttentionStrip({
       showToast({ tone: "success", title: `${fix.label}: done` });
       void attention.reload();
     } catch (err) {
-      showToast({ tone: "error", title: `Couldn't ${fix.label.toLowerCase()}`, message: err instanceof Error ? err.message : String(err) });
+      showToast({ tone: "error", title: `Couldn't ${fix.label.toLowerCase()}`, message: plainErrorText(err, "ADE couldn't finish that fix.") });
     } finally {
       setFixingId(null);
     }

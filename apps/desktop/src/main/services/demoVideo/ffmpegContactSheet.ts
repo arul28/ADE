@@ -15,6 +15,7 @@ import type { DemoContactSheetRequest, DemoContactSheetResult } from "../../../s
 import { DEMO_CONTACT_SHEET_FILL, DEMO_CONTACT_SHEET_GAP } from "../../../shared/demoVideo/demoContract";
 import type { Logger } from "../logging/logger";
 import type { FfmpegRun, FfmpegTools, FfmpegVideoProbe } from "./ffmpegDemoEngine";
+import { isStuckMediaProcessError } from "./demoChildStop";
 
 /** A time past the end shows the frame this far before the end. */
 const END_BACKOFF_SECONDS = 0.05;
@@ -79,7 +80,7 @@ export async function ffmpegContactSheet(
     await fs.promises.rename(partial, request.output);
     return { width, height };
   } catch (error) {
-    await fs.promises.rm(partial, { force: true }).catch(() => undefined);
+    if (!isStuckMediaProcessError(error)) await fs.promises.rm(partial, { force: true }).catch(() => undefined);
     throw error;
   }
 }

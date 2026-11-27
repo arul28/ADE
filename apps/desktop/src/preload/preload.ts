@@ -965,6 +965,7 @@ import type {
   RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
+  PtyDisposeArgs,
   PtyDisposeResult,
   PtyResumeSessionArgs,
   PtyResumeSessionResult,
@@ -5706,6 +5707,12 @@ const adeBridge = {
       paneId: SystemSettingsPaneId,
     ): Promise<AppOpenSystemSettingsPaneResult> =>
       ipcRenderer.invoke(IPC.appOpenSystemSettingsPane, { paneId } satisfies AppOpenSystemSettingsPaneArgs),
+    /**
+     * Open the Tailscale app on THIS computer (Settings > Account > Connections,
+     * which shows this computer's own Tailscale). Machine-global: no pin.
+     */
+    openTailscale: async (): Promise<{ opened: boolean; message?: string }> =>
+      ipcRenderer.invoke(IPC.appOpenTailscale),
     revealPath: async (path: string, pin?: OpenProjectBinding | null): Promise<void> => {
       await assertNotRemoteProjectPathAction("Reveal path", [path], pin);
       return ipcRenderer.invoke(IPC.appRevealPath, { path });
@@ -12979,10 +12986,7 @@ const adeBridge = {
       );
       if (!runtime.handled) await ipcRenderer.invoke(IPC.ptyResize, arg);
     },
-    dispose: async (arg: {
-      ptyId: string;
-      sessionId?: string;
-    }, pin?: OpenProjectBinding | null): Promise<PtyDisposeResult> => {
+    dispose: async (arg: PtyDisposeArgs, pin?: OpenProjectBinding | null): Promise<PtyDisposeResult> => {
       if (pin) {
         return callPinnedRuntimeAction<PtyDisposeResult>(pin, "pty", "dispose", { args: arg });
       }

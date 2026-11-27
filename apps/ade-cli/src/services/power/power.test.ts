@@ -35,7 +35,8 @@ import {
   type SuspendGapDetector,
 } from "./suspendGapDetector";
 import { createBrainKeepAwakeService } from "./brainKeepAwakeService";
-import { cloudKeepAwakePaths, createCloudKeepAwake, decideCloudBusy, type CloudBusyTerminal } from "./cloudKeepAwake";
+import { cloudBusyHolds, cloudKeepAwakePaths, createCloudKeepAwake, decideCloudBusy, holdCloudBusy, type CloudBusyTerminal } from "./cloudKeepAwake";
+import { createCloudRemoteWorkHold, type CloudWorkHolder } from "./cloudRemoteWorkHold";
 import { createCloudDiskGrower } from "./cloudDiskGrow";
 import { createCloudSetupUpsizer } from "./cloudSetupUpsize";
 import { CloudProviderError } from "../../../../desktop/src/main/services/adeCloud/cloudProvider";
@@ -44,6 +45,7 @@ import { cloudCatalogOf } from "../../../../desktop/src/shared/adeCloud";
 import { prepareCloudComputerToStop } from "./cloudPrepareStop";
 import { CLOUD_COMPUTER_REMOVING_SENTENCE, CLOUD_COMPUTER_SLEEPING_SENTENCE, CLOUD_DELETE_FREEZE_MS, CLOUD_SLEEP_FREEZE_AFTER_PREPARE_MS, cloudDeleteFreezeRefusal, liftCloudDeleteFreeze } from "./cloudDeleteFreeze";
 import { cloudChatStoppedForRest } from "../cloudChats/cloudChatUploader";
+import { pushCloudComputerWork } from "./cloudPushWork";
 
 // The brain's power surface as one contract: reading what the hardware says
 // (machinePowerReader), noticing a suspend nobody announced (suspendGapDetector),
@@ -1026,6 +1028,104 @@ describe("cloud keep awake", () => {
   });
 });
 
+describe("cloud remote work hold", () => {
+  // Work another machine sends counts as use when it comes, which keeps the
+  // computer awake for minutes. A push with a slow hook outlasts that: without
+  // a hold the computer sleeps in its middle. A hold per key typed in a
+  // terminal would write a file per key, and a grow that took its own
+  // request's hold for other work would refuse itself forever.
+  const deferred = <T,>() => {
+    let resolve!: (value: T) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  };
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("holds remote work awake only once it outlasts the wait, until it answers or fails", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cloud-remote-hold-"));
+    const hold: CloudWorkHolder = async (reason, ttlMs, run) => {
+      const release = holdCloudBusy(home, reason, ttlMs);
+      try {
+        return await run();
+      } finally {
+        release();
+      }
+    };
+    const remote = createCloudRemoteWorkHold({ hold: () => hold, holdAfterMs: 10_000 });
+    vi.useFakeTimers();
+    try {
+      await expect(remote.run(async () => "typed")).resolves.toBe("typed");
+      expect(fs.existsSync(path.join(cloudKeepAwakePaths(home).dir, "holds"))).toBe(false);
+
+      const push = deferred<string>();
+      const pushed = remote.run(() => push.promise);
+      await vi.advanceTimersByTimeAsync(9_000);
+      expect(cloudBusyHolds(home)).toEqual([]);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(cloudBusyHolds(home)).toEqual(["remote_action"]);
+      push.resolve("pushed");
+      await expect(pushed).resolves.toBe("pushed");
+      expect(cloudBusyHolds(home)).toEqual([]);
+
+      const failing = deferred<string>();
+      const failed = expect(remote.run(() => failing.promise)).rejects.toThrow("hook failed");
+      await vi.advanceTimersByTimeAsync(11_000);
+      expect(cloudBusyHolds(home)).toEqual(["remote_action"]);
+      failing.reject(new Error("hook failed"));
+      await failed;
+      expect(cloudBusyHolds(home)).toEqual([]);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("counts remote work for a grow's restart from its first moment, except the request the grow is asked from", async () => {
+    const remote = createCloudRemoteWorkHold({ hold: () => async (_reason, _ttlMs, run) => await run(), holdAfterMs: 10_000 });
+    vi.useFakeTimers();
+    // A push that just started, long before its hold file: an agent's grow (in no request) must wait.
+    const push = deferred<void>();
+    const pushed = remote.run(() => push.promise);
+    expect(remote.otherRunning()).toBe(true);
+    push.resolve();
+    await pushed;
+    expect(remote.otherRunning()).toBe(false);
+
+    // An Android start that asks for a grow, before and after its wait: never blocked by itself.
+    const androidStart = deferred<void>();
+    const seen: boolean[] = [];
+    const start = remote.run(async () => {
+      seen.push(remote.otherRunning());
+      await androidStart.promise;
+      seen.push(remote.otherRunning());
+    });
+    await vi.advanceTimersByTimeAsync(11_000);
+    androidStart.resolve();
+    await start;
+    expect(seen).toEqual([false, false]);
+
+    // A setup a remote launch started in the background asks for a grow while a push runs:
+    // the launch that started it already answered, so the push counts.
+    const secondPush = deferred<void>();
+    const setupAsks = deferred<void>();
+    let setupCheck: Promise<boolean> | null = null;
+    await remote.run(async () => {
+      setupCheck = setupAsks.promise.then(() => remote.otherRunning());
+    });
+    const secondPushed = remote.run(() => secondPush.promise);
+    setupAsks.resolve();
+    await expect(setupCheck).resolves.toBe(true);
+    secondPush.resolve();
+    await secondPushed;
+    expect(remote.otherRunning()).toBe(false);
+  });
+});
+
 describe("cloud busy terminals", () => {
   // What a terminal runs decides whether a restart (a disk grow, an update) may cut it. ADE reopens its own agent
   // CLIs after a restart; a command, or an agent CLI someone started by hand, would be cut. An `ade` command that
@@ -1331,5 +1431,80 @@ describe("cloud prepare-stop before a delete", () => {
     await expect(prepareCloudComputerToStop({ runtimes: [broken], timeoutMs: 40_000, forDelete: true })).rejects.toThrow("chat service gone");
 
     expect(cloudDeleteFreezeRefusal()).toBeNull();
+  });
+});
+
+describe("cloud push-work tally reasons", () => {
+  // The free and the delete on the server name the cause from `reason`; a lane
+  // with no reason gets "open the lane". Only GitHub's own refusal or silence
+  // earns one.
+  const lanes = [
+    { id: "main", name: "Primary", branchRef: "main", laneType: "primary" },
+    { id: "lane-1", name: "Fix login", branchRef: "ade/fix-login", laneType: "worktree" },
+  ];
+  const project = (fail: { fetch?: Error; commit?: Error; push?: Error }) => async () =>
+    ({
+      laneService: {
+        invalidateListCache() {},
+        list: async () => lanes,
+        readUnsavedWork: async (id: string) => ({ dirty: id === "lane-1", unpushedCommits: 0 }),
+      },
+      gitService: {
+        fetch: async () => { if (fail.fetch) throw fail.fetch; },
+        stageAll: async () => {},
+        commit: async () => { if (fail.commit) throw fail.commit; },
+        push: async () => { if (fail.push) throw fail.push; },
+      },
+    }) as never;
+
+  it.each<[string, { fetch?: Error; commit?: Error; push?: Error }, string[]]>([
+    [
+      "GitHub says the repository is gone at the fetch",
+      { fetch: new Error("remote: Repository not found.\nfatal: repository 'https://x-access-token:t@github.com/o/r.git/' not found") },
+      ["main:failed:github_refused", "lane-1:failed:github_refused"],
+    ],
+    [
+      "GitHub isn't reachable at the fetch",
+      { fetch: new Error("fatal: unable to access 'https://github.com/o/r.git/': Could not resolve host: github.com") },
+      ["main:failed:github_unreachable", "lane-1:failed:github_unreachable"],
+    ],
+    [
+      "GitHub answers but another remote refuses the fetch",
+      {
+        fetch: new Error([
+          "Fetching origin",
+          "From https://github.com/o/r",
+          "   1a2b3c4..5d6e7f8  main       -> origin/main",
+          "Fetching mirror",
+          "fatal: unable to access 'https://gitlab.com/o/r.git/': The requested URL returned error: 403",
+          "error: could not fetch mirror",
+        ].join("\n")),
+      },
+      ["main:failed:-", "lane-1:failed:-"],
+    ],
+    [
+      "ssh can't find another remote's host",
+      { fetch: new Error("ssh: Could not resolve hostname git.example.com: nodename nor servname provided, or not known\nfatal: Could not read from remote repository.") },
+      ["main:failed:-", "lane-1:failed:-"],
+    ],
+    [
+      "GitHub refuses the push",
+      { push: new Error("remote: Permission to o/r.git denied to bot.\nfatal: unable to access 'https://github.com/o/r.git/': The requested URL returned error: 403") },
+      ["main:clean:-", "lane-1:failed:github_refused"],
+    ],
+    [
+      "the commit hook times out on the computer",
+      { commit: Object.assign(new Error("git commit timed out"), { name: "GitTimeoutError" }) },
+      ["main:clean:-", "lane-1:failed:-"],
+    ],
+    [
+      "GitHub rejects a push that is behind",
+      { push: new Error(" ! [rejected] ade/fix-login -> ade/fix-login (fetch first)") },
+      ["main:clean:-", "lane-1:failed:-"],
+    ],
+  ])("%s", async (_label, fail, expected) => {
+    const tally = await pushCloudComputerWork({ projects: [project(fail)] });
+
+    expect(tally.lanes.map((lane) => `${lane.laneId}:${lane.state}:${lane.reason ?? "-"}`)).toEqual(expected);
   });
 });

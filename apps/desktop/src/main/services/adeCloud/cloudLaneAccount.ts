@@ -12,7 +12,13 @@ import type { CloudSavedChatRow } from "../../../shared/cloudSavedChats";
 import { sameMachineKey } from "../../../shared/machineAddress";
 import { expectedErrorKind } from "../../../shared/expectedError";
 import { getErrorMessage } from "../shared/utils";
-import { KEEP_AWAKE_STATE_COMMAND, keepAwakeOf } from "../../../../../account-directory/src/cloud/computerCommands";
+import {
+  KEEP_AWAKE_STATE_COMMAND,
+  LANE_NOT_ON_COMPUTER_MESSAGE,
+  keepAwakeOf,
+  pushWorkGithubMessage,
+  pushWorkGithubProblem,
+} from "../../../../../account-directory/src/cloud/computerCommands";
 import type { CloudFreeRecord, CloudLaneBackup } from "../../../../../account-directory/src/cloud/contract";
 import { CLOUD_MACHINE_KEY_METADATA, formerMachineKeysOf, type createCloudMachines } from "./cloudMachines";
 import { CloudProviderError, type CloudInstance, type CloudLogger, type CloudProvider } from "./cloudProvider";
@@ -151,6 +157,8 @@ export function createCloudLaneAccount(deps: CloudLaneAccountDeps) {
     // An older computer answers counts without the lane list: it can't say, so the caller warns.
     if (!ran.tally.lanes) return { unpushed: null, unpushedLanes: [], message: "This computer's ADE is too old to say what isn't pushed." };
     const unpushedLanes = cloudWorkLanesAtRisk(ran.tally.lanes);
+    const github = pushWorkGithubProblem(unpushedLanes);
+    if (github) return { unpushed: null, unpushedLanes, message: pushWorkGithubMessage(github, "unknown") };
     // A project it couldn't open listed no lanes: its work is unknown, not saved.
     if (ran.tally.failed > 0) return { unpushed: null, unpushedLanes, message: "ADE couldn't read every project on this computer." };
     return { unpushed: unpushedLanes.length > 0, unpushedLanes, message: null, checkedBy: "computer" };
@@ -329,6 +337,8 @@ export function createCloudLaneAccount(deps: CloudLaneAccountDeps) {
     if (!ran.tally) return fail(`ADE couldn't push this lane's work, so the computer stays: ${(ran.error ?? "no answer").replace(/\.$/, "")}.`);
     const left = cloudWorkLanesAtRisk(ran.tally.lanes);
     if (ran.tally.failed > 0 || left.length > 0 || (!ran.tally.lanes && ran.tally.skipped > 0)) {
+      const github = pushWorkGithubProblem(left);
+      if (github) return fail(pushWorkGithubMessage(github, "kept"));
       const names = left.map(cloudWorkLaneName).filter(Boolean);
       return fail(`ADE couldn't push all work on this computer${names.length ? ` (${names.join(", ")})` : ""}, so it stays. Open the lane to see why, then try again.`);
     }
@@ -344,7 +354,7 @@ export function createCloudLaneAccount(deps: CloudLaneAccountDeps) {
       ?? (ran.tally.lanes ?? []).filter((entry) => !entry.primary).at(0)
       ?? null;
     const branchRef = ownLane?.branchRef || instance.metadata[CLOUD_LANE_BRANCH_METADATA] || null;
-    if (!branchRef) return fail("ADE couldn't tell which branch this lane is on, so the computer stays.");
+    if (!branchRef) return fail(ran.tally.lanes && !ownLane ? LANE_NOT_ON_COMPUTER_MESSAGE : "ADE couldn't tell which branch this lane is on, so the computer stays.");
     const machineKey = instance.metadata[CLOUD_MACHINE_KEY_METADATA] ?? null;
     // A refusal (the server couldn't read the lane, or knows none) deleted
     // nothing: its sentence is shown as it is, and the lane is not freed.

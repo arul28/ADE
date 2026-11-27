@@ -64,6 +64,7 @@ import type { IssueTracker } from "../../cto/issueTracker";
 import type { createFileService } from "../../files/fileService";
 import type { createLaneService } from "../../lanes/laneService";
 import type { createPrService } from "../../prs/prService";
+import { collectLivePullRequests } from "../../cto/ctoLivePullRequests";
 import type { createSessionService } from "../../sessions/sessionService";
 import { parseSnoozeDeadline } from "../../sessions/sessionRequestValidation";
 import type { CtoMemoryService } from "../../cto/ctoMemoryService";
@@ -1507,9 +1508,12 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
 
   defineLazyTool(tools, "listPullRequests", () => core({
     description:
-      "List ADE-managed pull requests so the CTO can inspect active review state. Lists open and draft PRs by "
-      + "default, newest first; pass state 'merged', 'closed' or 'all' for the history. 'count' is the total that "
-      + "matched, 'truncated' says the list was cut at limit.",
+      "List pull requests so the CTO can inspect active review state. Lists open and draft PRs by "
+      + "default, newest first; pass state 'merged', 'closed' or 'all' for the history. 'prs' are the PRs a lane "
+      + "here owns (with checks and review); for open PRs, 'otherOpenPrs' are the rest of the repo's open PRs, each "
+      + "with origin 'other-machine' (a lane on another machine, matched by branch) or 'not-in-ade', with 'otherOpenCount' and "
+      + "'otherOpenTruncated' for that list. 'count' is the total of 'prs' that matched, 'truncated' says that "
+      + "list was cut at limit.",
     inputSchema: z.object({
       refresh: z.boolean().optional().default(true),
       state: z.enum(["open", "merged", "closed", "all"]).optional().default("open"),
@@ -1528,7 +1532,32 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
           .filter((pr) => state === "all" || pr.state === state || (state === "open" && pr.state === "draft"))
           .sort((a, b) => updatedEpoch(b.updatedAt) - updatedEpoch(a.updatedAt));
         const prs = matched.slice(0, limit);
-        return { success: true, state, count: matched.length, truncated: matched.length > prs.length, prs };
+        const wantsOpen = state === "open" || state === "all";
+        // `refresh` above re-reads only the PRs a lane owns. The repo's open
+        // list (PRs from other machines or outside ADE) comes from the GitHub
+        // snapshot, which serves its cache while fresh.
+        let repoListNote = null as string | null;
+        if (refresh && wantsOpen) {
+          await deps.prService.getGithubSnapshot().catch((error: unknown) => {
+            repoListNote = `The repo's open PR list could not be refreshed (${getErrorMessage(error)}); otherOpenPrs is from the last read.`;
+          });
+        }
+        const otherOpen = wantsOpen
+          ? collectLivePullRequests(deps.prService, deps.crossMachine?.peekRemoteWork?.() ?? null, new Map())
+            .filter((pr) => pr.origin !== "this-machine")
+          : [];
+        const otherOpenPrs = otherOpen.slice(0, limit);
+        return {
+          success: true,
+          state,
+          count: matched.length,
+          truncated: matched.length > prs.length,
+          prs,
+          ...(otherOpenPrs.length
+            ? { otherOpenPrs, otherOpenCount: otherOpen.length, otherOpenTruncated: otherOpen.length > otherOpenPrs.length }
+            : {}),
+          ...(repoListNote ? { note: repoListNote } : {}),
+        };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }
@@ -3378,18 +3407,53 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
 
   defineLazyTool(tools, "trackWork", () => core({
     description:
-      "Add an open-work item for something you started that outlives this turn: a chat you launched, a PR to land, "
-      + "a check to make. The open list is shown to you on every turn. Returns the item's id for finishWork.",
+      "Add an open-work item for something that outlives this turn: a chat you launched, a PR to land, a check to "
+      + "make, or something only the person can do. The open list is shown to you on every turn. Give it a short "
+      + "title, say who it waits on (owner 'cto' = you are tracking it, 'user' = waiting on the person), and link "
+      + "the chat or PR it is about: a linked item closes itself, with an outcome line, when the PR merges or "
+      + "closes or the chat settles as done. Returns the item's id for finishWork.",
     inputSchema: z.object({
-      text: z.string().trim().min(1).max(300).describe("What the work is, in a few words."),
+      title: z.string().trim().min(1).max(60).optional()
+        .describe("A short name for the sidebar row, a few words, e.g. \"Land #2641\". Start with what differs, not a shared prefix."),
+      text: z.string().trim().min(1).max(300).describe("What the work is: the detail under the title."),
+      owner: z.enum(["cto", "user"]).optional().default("cto")
+        .describe("'cto' when you are tracking it; 'user' when it waits on the person (a decision, a sign-in, a review)."),
+      chatSessionId: z.string().trim().min(1).optional().describe("The chat this item is about. Closes the item when that chat settles as done."),
+      machine: z.string().trim().min(1).optional().describe("The machine (id or name) the linked chat runs on, when it is not your home machine."),
+      prNumber: z.number().int().positive().optional().describe("The PR this item is about. Closes the item when the PR merges or closes."),
     }),
-    execute: async ({ text }) => {
+    execute: async ({ title, text, owner, chatSessionId, machine, prNumber }) => {
       const memory = deps.ctoMemoryService;
       if (!memory) return { success: false, error: "Memory is not available on this runtime." };
+      if (chatSessionId && prNumber) {
+        return { success: false, error: "Link one thing: a chat or a PR, not both. Track the other as its own item." };
+      }
       try {
-        const result = memory.trackWork(text, "cto");
+        let machineId: string | null = null;
+        if (chatSessionId && machine) {
+          const target = deps.crossMachine
+            ? await deps.crossMachine.resolveMachine(machine)
+            : null;
+          if (!target) return { success: false, error: "Other machines are not reachable from this runtime; leave machine out for a chat here." };
+          machineId = target.isThisMachine ? null : target.machineId;
+        }
+        // A link that names no chat here would never close; say so now.
+        if (chatSessionId && !machineId && typeof deps.sessionService?.get === "function" && !deps.sessionService.get(chatSessionId)) {
+          return { success: false, error: `No chat '${chatSessionId}' on this machine. Pass machine for a chat on another machine.` };
+        }
+        const link = chatSessionId
+          ? { kind: "chat" as const, sessionId: chatSessionId, ...(machineId ? { machineId } : {}) }
+          : prNumber ? { kind: "pr" as const, number: prNumber } : null;
+        const result = memory.trackWork(text, "cto", { title: title ?? null, owner, link });
         if (!result.ok) return { success: false, error: result.error };
-        return { success: true, id: result.item.id, text: result.item.text };
+        return {
+          success: true,
+          id: result.item.id,
+          title: result.item.title ?? null,
+          text: result.item.text,
+          owner: result.item.owner,
+          link: result.item.link ?? null,
+        };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }

@@ -914,6 +914,16 @@ enum SyncRequestTimeout {
   static let modelCatalogTimeoutNanoseconds: UInt64 = 6_000_000_000
   static let chatSendTimeoutNanoseconds: UInt64 = 120_000_000_000
   static let laneDeleteTimeoutNanoseconds: UInt64 = 240_000_000_000
+  /// A deleted lane's restore checks its branch out into a new worktree and
+  /// reopens the chats its delete took. The desktop allows the same 47 min
+  /// (`LANE_GIT_WRITE_ACTION_TIMEOUT_MS`).
+  static let laneRestoreDeletedTimeoutNanoseconds: UInt64 = 2_820_000_000_000
+  /// Archive › Restore: one lane at the full git bound plus the batch's other
+  /// items. The desktop allows the same 57 min (`ARCHIVE_RESTORE_TIMEOUT_MS`).
+  static let archiveRestoreTimeoutNanoseconds: UInt64 = 3_420_000_000_000
+  /// Archive › Delete: a lane's folder removal at the full git bound. The
+  /// desktop allows the same 62 min (`ARCHIVE_DELETE_TIMEOUT_MS`).
+  static let archiveDeleteTimeoutNanoseconds: UInt64 = 3_720_000_000_000
   /// A launch cancel waits up to 15 s for an in-flight checkout, then runs a
   /// full lane delete — the desktop gives it 5 minutes for the same reason.
   static let chatLaunchCancelTimeoutNanoseconds: UInt64 = 300_000_000_000
@@ -922,9 +932,12 @@ enum SyncRequestTimeout {
 
   static func commandTimeoutNanoseconds(for action: String) -> UInt64 {
     switch action {
-    case "lanes.delete", "lanes.restoreDeleted":
-      // A restore checks the branch out into a new worktree on the host.
+    case "lanes.delete":
       return laneDeleteTimeoutNanoseconds
+    case "lanes.restoreDeleted":
+      return laneRestoreDeletedTimeoutNanoseconds
+    case "archive.restore":
+      return archiveRestoreTimeoutNanoseconds
     case "chat.cancelLaunch":
       // Waits out an in-flight checkout, then deletes the lane (worktree,
       // local and remote branch) on the host.
@@ -3888,6 +3901,32 @@ func syncNormalizedProjectRootScope(_ rootPath: String?) -> String? {
   return root
 }
 
+/// The project a command names to the host. A machine-wide action names
+/// none, unless it is asked to keep a project it names (a chat's card read in
+/// that chat's project), and then only that one, never the active one. Else
+/// `targetProjectId` lets a command act in a NON-active project (mobile hub
+/// composer): the host routes it to that project's scope without switching the
+/// phone's active project. Most callers default to the active project; shell
+/// launches opt out when the selected lane has no trustworthy project scope.
+func syncCommandProjectScope(
+  actionIsRuntimeScoped: Bool,
+  keepsProjectForRuntimeAction: Bool,
+  fallbackToActiveProjectScope: Bool,
+  targetProjectId: String?,
+  targetProjectRootPath: String?,
+  activeProjectId: String?,
+  activeProjectRootPath: String?
+) -> (runtimeScoped: Bool, projectId: String?, rootPath: String?) {
+  let namesProject = syncNormalizedCommandScopeValue(targetProjectId) != nil
+  let runtimeScoped = actionIsRuntimeScoped && !(keepsProjectForRuntimeAction && namesProject)
+  if runtimeScoped { return (true, nil, nil) }
+  guard fallbackToActiveProjectScope else { return (false, targetProjectId, targetProjectRootPath) }
+  // The active project's root only stands in for the active project itself:
+  // another target project with no root sends none.
+  let activeRootFallback = (!namesProject || targetProjectId == activeProjectId) ? activeProjectRootPath : nil
+  return (false, targetProjectId ?? activeProjectId, targetProjectRootPath ?? activeRootFallback)
+}
+
 func syncCommandEnvelopePayload(
   commandId: String,
   action: String,
@@ -4642,20 +4681,37 @@ final class SyncService: ObservableObject {
   var rosterSeq: Int?
   /// Whether `roster_subscribe` has been sent on the current connection.
   var rosterSubscribed = false
+  /// Whether the host has sent a roster snapshot or delta on the current
+  /// connection: the roster is live, not the copy saved from an earlier one.
+  @Published private(set) var rosterLiveOnConnection = false
   /// True once the host has answered at least one roster push this launch, so
   /// the hub knows the feed is supported (older hosts never answer → fallback).
   @Published private(set) var rosterSupported = false
   /// Debounces persistence of the roster snapshot to the App Group cache.
   var rosterPersistTask: Task<Void, Never>?
-  @Published var settingsPresented = false
+  @Published var settingsPresented = false {
+    // A Deleted & Archived link that Settings closed before showing is spent.
+    didSet { if !settingsPresented { deletedArchivedRequest = nil } }
+  }
   /// The Settings page to open with the sheet (a row title), taken by the
   /// Settings host when it presents.
   @Published var settingsRequestedPage: String?
+
+  /// The tab and filter Settings › Deleted & Archived opens on. The page
+  /// takes it when it shows, or at once when it already shows.
+  @Published var deletedArchivedRequest: DeletedArchivedRequest?
 
   /// Opens Settings on one page, such as Machines from "Connect a computer".
   func presentSettings(_ route: SettingsRoute) {
     settingsRequestedPage = route.title
     settingsPresented = true
+  }
+
+  /// Opens Settings › Deleted & Archived on one tab and filter, such as Work's
+  /// "Recently deleted chats" link.
+  func presentDeletedArchived(_ tab: DeletedArchivedTab, filter: DeletedKindFilter = .all) {
+    deletedArchivedRequest = DeletedArchivedRequest(tab: tab, filter: filter)
+    presentSettings(.deletedArchived)
   }
   @Published var projectHubPresented = true {
     didSet {
@@ -12904,11 +12960,13 @@ final class SyncService: ObservableObject {
   }
 
   /// `op`: add (with `text`), complete, reopen or remove (with `id`).
-  func updateCtoOpenWork(op: String, text: String? = nil, id: String? = nil) async throws -> CtoMemory {
+  /// `owner` ("user" or "cto") on an add; an older host ignores it and files the item as the CTO's.
+  func updateCtoOpenWork(op: String, text: String? = nil, id: String? = nil, owner: String? = nil) async throws -> CtoMemory {
     let target = try ctoCommandTarget()
     var args: [String: Any] = ["op": op]
     if let text { args["text"] = text }
     if let id { args["id"] = id }
+    if let owner { args["owner"] = owner }
     return try await sendDecodableCommand(
       action: "cto.updateOpenWork",
       args: args,
@@ -13321,15 +13379,20 @@ final class SyncService: ObservableObject {
   func fetchWorkListProjection() async -> (
     sessions: [TerminalSessionSummary],
     lanes: [LaneSummary],
-    pullRequests: [PullRequestListItem]
+    pullRequests: [PullRequestListItem],
+    /// Archived lanes: Work files their kept chats under the lane's name
+    /// instead of listing them as orphaned.
+    archivedLanes: [LaneSummary]
   ) {
     let database = self.database
     let read = {
       await Task.detached(priority: .userInitiated) {
-        (
+        let allLanes = database.fetchLanes(includeArchived: true)
+        return (
           sessions: database.fetchSessions(),
-          lanes: database.fetchLanes(includeArchived: false),
-          pullRequests: database.fetchPullRequestListItems()
+          lanes: allLanes.filter { $0.archivedAt == nil },
+          pullRequests: database.fetchPullRequestListItems(),
+          archivedLanes: allLanes.filter { $0.archivedAt != nil }
         )
       }.value
     }
@@ -13338,7 +13401,7 @@ final class SyncService: ObservableObject {
     // An account change during the read reset the replica: these rows are
     // the former account's. Read the new replica instead.
     if accountGeneration != accountDataGeneration { rows = await read() }
-    return (overlayLocalSessions(rows.sessions), rows.lanes, rows.pullRequests)
+    return (overlayLocalSessions(rows.sessions), rows.lanes, rows.pullRequests, rows.archivedLanes)
   }
 
   func fetchSession(id sessionId: String) async throws -> TerminalSessionSummary? {
@@ -16104,9 +16167,11 @@ final class SyncService: ObservableObject {
   /// Brings a deleted lane back (or puts a freed lane's files back) from its
   /// saved work. Never pushes.
   func restoreDeletedLane(_ id: String, targetProjectId: String? = nil, targetProjectRootPath: String? = nil) async throws -> RestoreDeletedLaneResult {
+    // A timeout must not drop the link: the restore keeps running there.
     let result = try await sendDecodableCommand(
       action: "lanes.restoreDeleted",
       args: ["id": id],
+      disconnectOnTimeout: false,
       targetProjectId: targetProjectId,
       targetProjectRootPath: targetProjectRootPath,
       as: RestoreDeletedLaneResult.self
@@ -16124,6 +16189,128 @@ final class SyncService: ObservableObject {
       targetProjectRootPath: targetProjectRootPath
     )
     laneDeletionsKept.removeAll { $0.id == id }
+  }
+
+  // MARK: Recently deleted chats and the archive
+  //
+  // Each call takes the address of the machine the row lives on: nil for the
+  // focused machine, a machine-marked project id (and its root) for another
+  // one, which `routeOrStripFleetTarget` sends over that machine's link. A
+  // decoded call that gets queued instead throws `QueuedRemoteCommandError`,
+  // so a row never reads as done before its machine did it.
+
+  /// Locating each chat's conversation can take a while on a machine with many.
+  static let deletedChatsReadTimeoutNanoseconds: UInt64 = 20_000_000_000
+
+  /// Deleted chats and CLIs whose conversation the agent still keeps.
+  func listDeletedChats(targetProjectId: String? = nil, targetProjectRootPath: String? = nil) async throws -> [DeletedChat] {
+    try await sendDecodableCommand(
+      action: "chat.listDeleted",
+      args: [:],
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: Self.deletedChatsReadTimeoutNanoseconds,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: DeletedChatListResult.self
+    ).chats
+  }
+
+  /// One page of a deleted chat's conversation, newest first; `before` is the
+  /// previous page's `olderCursor`.
+  func deletedChatDetail(
+    _ id: String,
+    before: String? = nil,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
+  ) async throws -> ExternalSessionDetail {
+    var args: [String: Any] = ["id": id]
+    if let before, !before.isEmpty { args["before"] = before }
+    return try await sendDecodableCommand(
+      action: "chat.getDeletedDetail",
+      args: args,
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: Self.deletedChatsReadTimeoutNanoseconds,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: ExternalSessionDetail.self
+    )
+  }
+
+  /// Reopens a deleted chat: in its own lane, or (`laneId`) as a copy in
+  /// another lane of the same machine.
+  func reopenDeletedChat(
+    _ id: String,
+    laneId: String? = nil,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
+  ) async throws -> DeletedChatReopenResult {
+    var args: [String: Any] = ["id": id]
+    if let laneId, !laneId.isEmpty { args["laneId"] = laneId }
+    return try await sendDecodableCommand(
+      action: "chat.reopenDeleted",
+      args: args,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: DeletedChatReopenResult.self
+    )
+  }
+
+  /// Takes deleted chats off the list for good. The agent keeps its own copy.
+  func removeDeletedChats(_ ids: [String], targetProjectId: String? = nil, targetProjectRootPath: String? = nil) async throws {
+    _ = try await sendCommand(
+      action: "chat.removeDeleted",
+      args: ["ids": ids],
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath
+    )
+  }
+
+  /// Every archived lane, chat and shell of the project on one machine.
+  func listArchive(targetProjectId: String? = nil, targetProjectRootPath: String? = nil) async throws -> ArchiveListResult {
+    try await sendDecodableCommand(
+      action: "archive.list",
+      args: [:],
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: 15_000_000_000,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: ArchiveListResult.self
+    )
+  }
+
+  /// Brings archived items back. A timeout must not drop the link: the
+  /// restore keeps running there.
+  func restoreArchived(_ items: [ArchiveItemRef], targetProjectId: String? = nil, targetProjectRootPath: String? = nil) async throws -> ArchiveActionResult {
+    try await sendDecodableCommand(
+      action: "archive.restore",
+      args: ["items": items.map { ["kind": $0.kind, "id": $0.id] }],
+      disconnectOnTimeout: false,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: ArchiveActionResult.self
+    )
+  }
+
+  /// Deletes archived items for good. `force` removes a lane folder that still
+  /// holds unsaved work.
+  func deleteArchived(
+    _ items: [ArchiveItemRef],
+    force: Bool = false,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
+  ) async throws -> ArchiveActionResult {
+    var args: [String: Any] = ["items": items.map { ["kind": $0.kind, "id": $0.id] }]
+    if force { args["force"] = true }
+    // A lane's folder removal can take minutes; a timeout must not drop the link.
+    return try await sendDecodableCommand(
+      action: "archive.delete",
+      args: args,
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: SyncRequestTimeout.archiveDeleteTimeoutNanoseconds,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: ArchiveActionResult.self
+    )
   }
 
   /// Kept-work notices for the project on screen.
@@ -17312,7 +17499,15 @@ final class SyncService: ObservableObject {
     // the server holds the message, wakes the lane's own computer (or makes
     // a new one that continues this chat), and delivers it once. The phone
     // may close meanwhile. An older server has no queue: wake, then send.
+    // Thread comments skip the queue while the computer still exists, as on
+    // the desktop (`sendThroughAdeCloudQueue`): the host adds them to the
+    // message, and a held message reaches it without them. The computer
+    // wakes and the send goes direct. A deleted computer took its comments
+    // with it, so its chat still queues the text for the new one.
+    let threadCommentsNeedComputer = includeThreadComments
+      && chatThreadKey(for: sessionId)?.machineKey.hasPrefix(ADECloudMachine.savedFleetKeyPrefix) == false
     if (attachments ?? []).isEmpty,
+       !threadCommentsNeedComputer,
        let key = chatThreadKey(for: sessionId),
        let accountKey = savedCloudChatAccountKey(forThreadKey: key) {
       let messageId = (args["clientSendId"] as? String) ?? UUID().uuidString
@@ -17328,8 +17523,17 @@ final class SyncService: ObservableObject {
         if !cloudFiles.isEmpty { throw CloudChatFilesNeedLiveLink() }
       }
     } else if let key = chatThreadKey(for: sessionId), savedCloudChatAccountKey(forThreadKey: key) != nil {
-      // Files ride a live link only: wake the computer first.
+      // Files and thread comments ride a live link only: wake the computer first.
       await wakeSavedCloudChatComputer(key)
+      // Still no link (a wake ADE Cloud refused, or one that timed out): say
+      // why and keep the draft, never fall into this phone's own queue, which
+      // neither wakes the computer nor carries the comments there.
+      if savedCloudChatAccountKey(forThreadKey: key) != nil {
+        throw NSError(domain: "ADE", code: 47, userInfo: [
+          NSLocalizedDescriptionKey: cloudWakeFailure(fleetKey: key.machineKey)
+            ?? "This chat's ADE Cloud computer didn't wake. Your message is still here; try again.",
+        ])
+      }
     }
     // Files read for the queue, but the computer came back meanwhile: the
     // caller uploads them over the live link instead of sending text alone.
@@ -25467,6 +25671,7 @@ final class SyncService: ObservableObject {
     // restarted, or past its resume window) answers with a full snapshot, and
     // `reloadRosterForActiveHost` drops the seq when the machine changes.
     rosterSubscribed = false
+    rosterLiveOnConnection = false
     // Pipelined hello answers belong to the socket that carried them.
     acceptedPipelinedHello = nil
     pipelinedHelloReplies.removeAll()
@@ -25857,6 +26062,7 @@ final class SyncService: ObservableObject {
     targetProjectId: String? = nil,
     targetProjectRootPath: String? = nil,
     fallbackToActiveProjectScope: Bool = true,
+    keepsProjectForRuntimeAction: Bool = false,
     as type: T.Type
   ) async throws -> T {
     let response = try await sendCommand(
@@ -25866,7 +26072,8 @@ final class SyncService: ObservableObject {
       timeoutNanoseconds: timeoutNanoseconds,
       targetProjectId: targetProjectId,
       targetProjectRootPath: targetProjectRootPath,
-      fallbackToActiveProjectScope: fallbackToActiveProjectScope
+      fallbackToActiveProjectScope: fallbackToActiveProjectScope,
+      keepsProjectForRuntimeAction: keepsProjectForRuntimeAction
     )
     if let payload = response as? [String: Any], payload["queued"] as? Bool == true {
       throw QueuedRemoteCommandError(action: action)
@@ -26239,7 +26446,8 @@ final class SyncService: ObservableObject {
     timeoutNanoseconds: UInt64? = nil,
     targetProjectId rawTargetProjectId: String? = nil,
     targetProjectRootPath rawTargetProjectRootPath: String? = nil,
-    fallbackToActiveProjectScope: Bool = true
+    fallbackToActiveProjectScope: Bool = true,
+    keepsProjectForRuntimeAction: Bool = false
   ) async throws -> Any {
     // Field diagnostics: one line per host command (name and round trip), so
     // a screen's request fan-out can be counted. No-op unless enabled.
@@ -26266,7 +26474,16 @@ final class SyncService: ObservableObject {
       args = focusedArgs
     }
     try refuseAccountProjectScopeCommand(action: action, targetProjectId: targetProjectId)
-    let runtimeScoped = commandIsRuntimeScoped(action)
+    let scope = syncCommandProjectScope(
+      actionIsRuntimeScoped: commandIsRuntimeScoped(action),
+      keepsProjectForRuntimeAction: keepsProjectForRuntimeAction,
+      fallbackToActiveProjectScope: fallbackToActiveProjectScope,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      activeProjectId: self.activeProjectId,
+      activeProjectRootPath: self.activeProjectRootPath
+    )
+    let runtimeScoped = scope.runtimeScoped
     if !runtimeScoped && !fallbackToActiveProjectScope && syncNormalizedCommandScopeValue(targetProjectId) == nil {
       throw NSError(domain: "ADE", code: 26, userInfo: [NSLocalizedDescriptionKey: "This action needs the lane's project scope. Refresh lanes and try again."])
     }
@@ -26276,16 +26493,8 @@ final class SyncService: ObservableObject {
     let requestId = commandId ?? makeRequestId()
     let effectiveTimeoutNanoseconds = timeoutNanoseconds ?? SyncRequestTimeout.commandTimeoutNanoseconds(for: action)
     ScrollDiagnostics.shared.event("sync.command", ["id": requestId, "action": action])
-    // `targetProjectId` lets a command create-in-place in a NON-active project
-    // (mobile hub composer): the host routes the command to that project's scope
-    // via the command-payload projectId without switching the phone's active
-    // sync project. Most callers default to the active project; shell launches
-    // opt out when the selected lane does not carry trustworthy project scope.
-    let resolvedProjectId = runtimeScoped ? nil : (fallbackToActiveProjectScope ? (targetProjectId ?? self.activeProjectId) : targetProjectId)
-    // The active project's root only stands in for the active project itself:
-    // another target project with no root sends none.
-    let activeRootFallback = (syncNormalizedCommandScopeValue(targetProjectId) == nil || targetProjectId == self.activeProjectId) ? self.activeProjectRootPath : nil
-    let resolvedProjectRootPath = runtimeScoped ? nil : (fallbackToActiveProjectScope ? (targetProjectRootPath ?? activeRootFallback) : targetProjectRootPath)
+    let resolvedProjectId = scope.projectId
+    let resolvedProjectRootPath = scope.rootPath
     // The host already ran this exact request from the hello: wait for that
     // answer (or take it, if it came first) instead of asking again.
     if let pipelinedRequestId = takePipelinedHelloCommand(
@@ -26335,7 +26544,10 @@ final class SyncService: ObservableObject {
     targetProjectId rawTargetProjectId: String? = nil,
     targetProjectRootPath rawTargetProjectRootPath: String? = nil,
     fallbackToActiveProjectScope: Bool = true,
-    attemptedLiveFailurePolicy: SyncAttemptedLiveFailurePolicy = .enqueueSafely
+    attemptedLiveFailurePolicy: SyncAttemptedLiveFailurePolicy = .enqueueSafely,
+    /// A machine-wide action that still acts in one project of the focused
+    /// machine (an answer read from a chat there): its target project goes along.
+    keepsProjectForRuntimeAction: Bool = false
   ) async throws -> Any {
     let targetProjectId: String?
     let targetProjectRootPath: String?
@@ -26369,7 +26581,8 @@ final class SyncService: ObservableObject {
           timeoutNanoseconds: timeoutNanoseconds,
           targetProjectId: targetProjectId,
           targetProjectRootPath: targetProjectRootPath,
-          fallbackToActiveProjectScope: fallbackToActiveProjectScope
+          fallbackToActiveProjectScope: fallbackToActiveProjectScope,
+          keepsProjectForRuntimeAction: keepsProjectForRuntimeAction
         )
       } catch {
         let stillLive = canSendLiveRequests()
@@ -28788,6 +29001,7 @@ extension SyncService {
     let changedProjectIds = rosterChangedProjectIds(previous: rosterProjects, next: nextProjects)
     rosterProjects = nextProjects
     rosterSeq = snapshot.seq
+    if !rosterLiveOnConnection { rosterLiveOnConnection = true }
     // A full snapshot is a fresh start: older chats loaded before it may have
     // changed or gone, so the user loads them again.
     dropRosterOlderChats()
@@ -28808,6 +29022,7 @@ extension SyncService {
     case .dropped:
       break // duplicate / out-of-order replay
     case let .applied(projects, seq):
+      if !rosterLiveOnConnection { rosterLiveOnConnection = true }
       let nextProjects = sortRosterProjects(projects.map { $0.excludingIdentityChats() })
       // A delta already carries its changed/removed project ids. Avoid a deep
       // all-project chat-array comparison on the MainActor every 250 ms.
@@ -29064,6 +29279,7 @@ extension SyncService {
     rosterSeq = nil
     rosterSupported = false
     rosterSubscribed = false
+    rosterLiveOnConnection = false
     rosterProjectRevisions.removeAll()
     rosterRevision &+= 1
     markRosterProjectsChanged(Set(rosterProjects.map(\.projectId)))

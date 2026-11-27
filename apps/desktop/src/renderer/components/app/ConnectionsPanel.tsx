@@ -18,7 +18,9 @@ import type {
   RemoteRuntimeTarget,
 } from "../../../shared/types";
 import { RemoteTargetList } from "../remoteTargets/RemoteTargetList";
+import type { MachineSection } from "../remoteTargets/remoteMachineModel";
 import { ThisComputerStatus } from "../remoteTargets/ThisComputerStatus";
+import { useThisComputerOffline } from "../../lib/thisComputerOffline";
 import { HostReachabilityCheck } from "../remoteTargets/HostReachabilityCheck";
 import {
   PhoneConnectionsTab,
@@ -409,6 +411,7 @@ function HostedConnectionsPanel({
           onOpenCloudSettings={goToCloudSettings}
           accountEmail={accountStatus.email ?? null}
           thisComputerCode={null}
+          focusMachineKey={machineId}
         />
       </div>
       <div style={{ borderTop: `1px solid ${COLORS.border}`, padding: "8px 12px" }}>
@@ -436,9 +439,19 @@ function DesktopConnectionsPanel({
 }: ConnectionsPanelProps) {
   const { status: accountStatus } = useAccountStatus();
   const [tab, setTab] = useState<ConnectionsPanelTab>(initialTab);
+  // Machines' Show/Hide per folded section: kept across tab switches, reset
+  // with the panel (it unmounts when Connections closes).
+  const [machineSectionOverrides, setMachineSectionOverrides] = useState<Partial<Record<MachineSection, boolean>>>({});
+  const machineSectionOverridesProp = useMemo(
+    () => ({ value: machineSectionOverrides, set: setMachineSectionOverrides }),
+    [machineSectionOverrides],
+  );
   const [connectionSnapshot, setConnectionSnapshot] =
     useState<RemoteRuntimeConnectionSnapshot | null>(null);
   const sync = useSyncConnections();
+  // `sync.status` is always this physical computer's snapshot, so a
+  // remote-bound tab still asks whether THIS computer is offline.
+  const thisComputerOffline = useThisComputerOffline(sync.status?.routeHealth);
   // GitHub status comes from the reader copy of the open repository.
   // No copy online: no status, and the GitHub row shows "not connected".
   const githubStatus = usePanelGitHubStatus();
@@ -552,7 +565,10 @@ function DesktopConnectionsPanel({
             onAccountRequested={goToAccount}
             onAccountMachinesChanged={reloadAccountMachines}
             onOpenCloudSettings={goToCloudSettings}
+            thisComputerOffline={thisComputerOffline}
             accountEmail={accountStatus.email ?? null}
+            focusMachineKey={machineId}
+            sectionOverrides={machineSectionOverridesProp}
             thisComputerCode={sync.isRemoteBound || !canShowPairingCode(sync) ? null : <ThisComputerPairingCode sync={sync} />}
           />
         ) : null}

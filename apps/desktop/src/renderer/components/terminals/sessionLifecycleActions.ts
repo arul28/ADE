@@ -35,6 +35,11 @@ import { requireChatPin, withChatPin } from "../chat/chatMachinePin";
 
 const UNDO_TOAST_MS = 5_000;
 
+/** What pinning does, said where the user pins and where a pin shows. */
+export const SESSION_PIN_TOOLTIP = "Keep this chat at the top of its lane and of the Work list, on every machine";
+export const SESSION_UNPIN_TOOLTIP = "Let this chat move with the rest of the list again";
+export const SESSION_PINNED_TOOLTIP = "Pinned: stays at the top of its lane and of the Work list, on every machine";
+
 /** Rename either a chat or a terminal through its owning runtime binding. */
 export async function renameSession(
   session: Pick<TerminalSessionSummary, "id" | "toolType" | "cursorCloudAgentId">,
@@ -511,7 +516,7 @@ export async function setChatGoal(
 /**
  * Archive an agent CLI (Claude Code, Codex, …) on the machine that owns it,
  * like a chat: one at its prompt stops and resumes later; one mid-turn
- * finishes first. Settings › Archive brings it back.
+ * finishes first. Settings › Deleted & Archived › Archive brings it back.
  */
 export async function archiveAgentCliSession(
   session: Pick<TerminalSessionSummary, "id">,
@@ -522,7 +527,7 @@ export async function archiveAgentCliSession(
     showToast({
       id: `archive-cli:${session.id}`,
       title: "CLI session archived",
-      message: "Restore it from Settings › Archive.",
+      message: "Restore it from Settings › Deleted & Archived › Archive.",
     });
     return true;
   } catch (error) {

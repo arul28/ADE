@@ -23,6 +23,7 @@ import { showToast } from "../../app/toast/toastStore";
 import { confirmDialog } from "../../ui/dialog";
 import { IntegrationCard } from "../integrations/IntegrationChrome";
 import { BindingCaps, KeyCaps } from "./keyboardParts";
+import { plainErrorText } from "../../../lib/plainError";
 
 /**
  * Settings › Keyboard › Shortcuts: rebind any action in `shared/keybindings.ts`.
@@ -120,7 +121,7 @@ export function ShortcutsCard({
       showToast({
         tone: "error",
         title: "Could not save the shortcut",
-        message: error instanceof Error ? error.message : String(error),
+        message: plainErrorText(error, "ADE couldn't save the shortcut."),
       });
     }
   }, []);

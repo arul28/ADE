@@ -1,5 +1,5 @@
 import React from "react";
-import { laneDisplayName } from "../../../shared/laneDisplayName";
+import { laneDisplayName, sessionLaneDisplayName } from "../../../shared/laneDisplayName";
 import { memoWithLatestHandlers } from "../../lib/stableIdentity";
 import {
   Alarm,
@@ -15,7 +15,6 @@ import {
   GridFour,
   PaperPlaneTilt,
   PencilSimple,
-  PushPin,
   Tag,
   TreeStructure,
   UsersThree,
@@ -126,6 +125,7 @@ import {
   wakingSessionView,
 } from "../../../shared/sessionStatusPresentation";
 import { LaneNamingLabel, NamingPendingLabel } from "./LaneNamingLabel";
+import { PinnedMark } from "./PinnedMark";
 import {
   AI_STATUS_CACHE_INVALIDATED_EVENT,
   AI_STATUS_CACHE_UPDATED_EVENT,
@@ -940,15 +940,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
     );
   }
   if (session.pinned) {
-    whereParts.push(
-      <PushPin
-        key="pinned"
-        size={11}
-        weight="fill"
-        className="shrink-0 text-muted-fg/55"
-        aria-label="Pinned"
-      />,
-    );
+    whereParts.push(<PinnedMark key="pinned" />);
   }
   if (githubStack) {
     whereParts.push(
@@ -956,7 +948,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
     );
   }
   // The main checkout reads "Main checkout", never its stored name "Primary".
-  const inlineLaneName = lane ? laneDisplayName(lane) : session.laneName;
+  const inlineLaneName = lane ? laneDisplayName(lane) : sessionLaneDisplayName(session);
   if (showLaneIdentity && inlineLaneName) {
     whereParts.push(
       <span
@@ -1157,7 +1149,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
     value: (
       <span style={laneAccent ? { color: toneText(laneAccent) } : undefined}>
         <LaneNamingLabel
-          laneName={lane ? laneDisplayName(lane) : session.laneName}
+          laneName={lane ? laneDisplayName(lane) : sessionLaneDisplayName(session)}
           naming={namingLane}
         />
       </span>

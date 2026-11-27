@@ -183,18 +183,59 @@ export async function uploadPendingCloudChats(timeoutMs = 45_000): Promise<Cloud
   );
 }
 
-function redactValue(value: unknown, redact: (text: string) => string, depth: number): unknown {
+/**
+ * A value a provider reads back byte for byte: a Claude thinking signature or
+ * image `data`, a Codex `encrypted_content` or `image_url`, an OpenCode file
+ * `url`. Kept only under these names and only when it has a blob's shape, so
+ * a change can't break the resume and a key elsewhere still goes.
+ */
+const OPAQUE_KEYS: ReadonlySet<string> = new Set(["signature", "data", "encrypted_content", "image_url", "url"]);
+const OPAQUE_BLOB = /^(?:[A-Za-z0-9+/_-]{256,}={0,2}|data:[\w.+-]+\/[\w.+-]+;base64,[A-Za-z0-9+/]+={0,2})$/;
+
+/** Node 22's lossless JSON numbers (`JSON.rawJSON`, the reviver's source text); absent on an older runtime. */
+const jsonWithRaw = JSON as unknown as { rawJSON?: (text: string) => object; isRawJSON?: (value: unknown) => boolean };
+const isRawJson = (value: unknown): boolean => jsonWithRaw.isRawJSON?.(value) === true;
+
+/** `raw` parsed with each number kept as its own text (`9007199254740993`, `1.0`); null when the runtime can't, or it isn't JSON. */
+function parseJsonExact(raw: string): unknown {
+  const rawJSON = jsonWithRaw.rawJSON;
+  if (!rawJSON) return null;
+  try {
+    return JSON.parse(raw, ((_key: string, value: unknown, context?: { source?: string }) =>
+      typeof value === "number" && context?.source !== undefined && context.source !== String(value) ? rawJSON(context.source) : value) as (key: string, value: unknown) => unknown);
+  } catch {
+    return null;
+  }
+}
+
+type RedactShape = { maxStringChars: number | null; maxDepth: number; keepOpaque: boolean };
+const TRANSCRIPT_SHAPE: RedactShape = { maxStringChars: MAX_STRING_CHARS, maxDepth: MAX_LINE_DEPTH, keepOpaque: false };
+/** A provider's own history: nothing is cut, since its resume reads every string back. */
+const HISTORY_SHAPE: RedactShape = { maxStringChars: null, maxDepth: 200, keepOpaque: true };
+
+/** `value` redacted; `redact` sees every string, and `mark` hears each field replaced by its name alone. */
+function redactValue(value: unknown, redact: (text: string) => string, depth: number, shape: RedactShape, mark?: () => void): unknown {
   if (typeof value === "string") {
-    const cut = value.length > MAX_STRING_CHARS ? `${value.slice(0, MAX_STRING_CHARS)}\n[truncated]` : value;
+    const cut = shape.maxStringChars !== null && value.length > shape.maxStringChars ? `${value.slice(0, shape.maxStringChars)}\n[truncated]` : value;
     return redact(cut);
   }
-  if (!value || typeof value !== "object") return value;
-  if (depth >= MAX_LINE_DEPTH) return "[truncated]";
-  if (Array.isArray(value)) return value.map((entry) => redactValue(entry, redact, depth + 1));
+  if (!value || typeof value !== "object" || isRawJson(value)) return value;
+  if (depth >= shape.maxDepth) {
+    mark?.();
+    return "[truncated]";
+  }
+  if (Array.isArray(value)) return value.map((entry) => redactValue(entry, redact, depth + 1, shape, mark));
   const out: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-    // A JSON field that holds a credential: the value alone looks like nothing.
-    out[key] = typeof entry === "string" && SENSITIVE_KEY.test(key) && entry.length >= 4 ? REDACTED : redactValue(entry, redact, depth + 1);
+    if (typeof entry === "string" && shape.keepOpaque && OPAQUE_KEYS.has(key) && OPAQUE_BLOB.test(entry)) {
+      out[key] = entry;
+    } else if (typeof entry === "string" && SENSITIVE_KEY.test(key) && entry.length >= 4) {
+      // A JSON field that holds a credential: the value alone looks like nothing.
+      mark?.();
+      out[key] = REDACTED;
+    } else {
+      out[key] = redactValue(entry, redact, depth + 1, shape, mark);
+    }
   }
   return out;
 }
@@ -207,7 +248,68 @@ export function redactChatTranscriptLine(line: string, redact: (text: string) =>
   } catch {
     return null;
   }
-  return JSON.stringify(redactValue(parsed, redact, 0));
+  return JSON.stringify(redactValue(parsed, redact, 0, TRANSCRIPT_SHAPE));
+}
+
+/**
+ * One file of a provider's own history (a Claude session or subagent file, a
+ * tool result, a Codex rollout, an OpenCode export), redacted before it
+ * leaves the computer in a fork capsule. JSON stays JSON field by field (one
+ * document, or one line at a time), so the provider still resumes from it;
+ * anything else is redacted as text.
+ */
+export function redactProviderHistoryFile(text: string, redact: (text: string) => string): string {
+  let changed = false;
+  const mark = () => {
+    changed = true;
+  };
+  const tracked = (entry: string) => {
+    const next = redact(entry);
+    if (next !== entry) changed = true;
+    return next;
+  };
+  /** One JSON value redacted, or null when nothing in it changed (its text stays byte for byte). */
+  const redactJson = (raw: string, value: object): string | null => {
+    changed = false;
+    const out = redactValue(value, tracked, 0, HISTORY_SHAPE, mark);
+    if (!changed) return null;
+    // Parsed again with each number's own text, so a large id or a `1.0` is written back as it was.
+    const exact = parseJsonExact(raw);
+    return JSON.stringify(exact && typeof exact === "object" ? redactValue(exact, redact, 0, HISTORY_SHAPE) : out);
+  };
+  const parseObject = (raw: string): object | null => {
+    try {
+      const value: unknown = JSON.parse(raw);
+      return value && typeof value === "object" ? value : null;
+    } catch {
+      return null;
+    }
+  };
+  const whole = text.trim() ? parseObject(text) : null;
+  if (whole) {
+    const out = redactJson(text, whole);
+    return out === null ? text : `${out}${text.endsWith("\n") ? "\n" : ""}`;
+  }
+  // One JSON record per line. The lines between records are text, redacted
+  // together, so a key across lines (a private key) goes too; with no record
+  // at all that is the whole file (a plain tool result).
+  const out: string[] = [];
+  let block: string[] = [];
+  const endBlock = () => {
+    if (block.length) out.push(redact(block.join("\n")));
+    block = [];
+  };
+  for (const line of text.split("\n")) {
+    const value = line.trim() ? parseObject(line) : null;
+    if (!value) {
+      block.push(line);
+      continue;
+    }
+    endBlock();
+    out.push(redactJson(line, value) ?? line);
+  }
+  endBlock();
+  return out.join("\n");
 }
 
 type Reader = { size: number; read: (position: number, length: number) => Buffer };
@@ -540,6 +642,41 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
     persist();
   }
 
+  /**
+   * Before a rest: a chat whose transcript grew after its last part gets
+   * marked. Only `done` marks a chat during work, and some lines come after
+   * it: the turn's diff summary (it waits on git), a notice or card written
+   * while the chat is idle. One stat per saved chat, once per rest save, so
+   * a streaming turn still uploads once.
+   */
+  async function markGrownTranscripts(): Promise<string[]> {
+    const marked: string[] = [];
+    for (const sessionId of Object.keys(state.chats)) {
+      if (disposed) break;
+      if (restoringChats.has(sessionId)) continue;
+      // An upload still running sets `dirty` from the text it read, not from the file now.
+      await running.get(sessionId)?.catch(() => {});
+      const entry = state.chats[sessionId];
+      if (!entry || entry.dirty) continue;
+      // A line still queued in memory counts too.
+      await deps.flushTranscript(sessionId).catch((error: unknown) => {
+        log?.warn("cloud.chat_upload_flush_failed", { sessionId, error: error instanceof Error ? error.name : "unknown" });
+      });
+      let size: number;
+      try {
+        // Only the live file: a `.jsonl.gz` is not written to.
+        size = fs.statSync(path.join(deps.chatTranscriptsDir, `${sessionId}.jsonl`)).size;
+      } catch {
+        continue;
+      }
+      if (size === entry.offset) continue;
+      entry.dirty = true;
+      marked.push(sessionId);
+    }
+    if (marked.length) persist();
+    return marked;
+  }
+
   async function deleteAndRestart(sessionId: string, base: string, machineKey: string, headers: Record<string, string>, entry: Entry): Promise<void> {
     try {
       const response = await fetcher(cloudSavedChatUrl(base, machineKey, sessionId), { method: "DELETE", headers, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
@@ -643,12 +780,13 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
         // Dirty chats plus any upload already running, so a turn that just ended is waited for.
         pending = [...new Set([...Object.entries(state.chats).filter(([, entry]) => entry.dirty).map(([id]) => id), ...running.keys()])];
         await flush(pending);
-        // Then rows whose settings changed with no new text: new turns go first.
+        // Then lines written after a turn's end, and rows whose settings changed with no new text.
+        const grown = await markGrownTranscripts();
         await markChangedSettings().catch((error: unknown) => {
           log?.warn("cloud.chat_settings_check_failed", { error: error instanceof Error ? error.name : "unknown" });
         });
-        const changed = Object.entries(state.chats).filter(([id, entry]) => entry.dirty && !pending.includes(id)).map(([id]) => id);
-        pending = [...pending, ...changed];
+        const changed = [...new Set([...grown, ...Object.entries(state.chats).filter(([id, entry]) => entry.dirty && !pending.includes(id)).map(([id]) => id)])];
+        pending = [...new Set([...pending, ...changed])];
         await flush(changed);
       })();
       let timer: ReturnType<typeof setTimeout> | null = null;

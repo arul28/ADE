@@ -1,3 +1,4 @@
+import { plainErrorText } from "../../lib/plainError";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
@@ -295,7 +296,7 @@ export function CrossMachineHandoffModal({
         return pickable.find(machineAvailable)?.machineKey ?? null;
       });
     } catch (loadError) {
-      if (request === loadRequestRef.current) setError(errorText(loadError));
+      if (request === loadRequestRef.current) setError(plainErrorText(loadError, "ADE couldn't read the move options."));
     } finally {
       if (request === loadRequestRef.current) setLoading(false);
     }
@@ -360,7 +361,7 @@ export function CrossMachineHandoffModal({
       }
       setStage(next.hasRepository ? "review" : "clone");
     } catch (previewError) {
-      setError(errorText(previewError));
+      setError(plainErrorText(previewError, "ADE couldn't preview the move."));
     } finally {
       setBusyLabel(null);
     }
@@ -412,7 +413,7 @@ export function CrossMachineHandoffModal({
       // A fork that can't be packed still works as a brief: offer the swap.
       const fallbackReason = moveMode === "fork" ? forkFallbackReasonForPrepareError(message) : null;
       if (fallbackReason) setForkFallbackReason(fallbackReason);
-      else setError(message);
+      else setError(plainErrorText(startError, "ADE couldn't start the move."));
     } finally {
       setBusyLabel(null);
     }
@@ -450,7 +451,7 @@ export function CrossMachineHandoffModal({
       await action(runtimePinRef.current);
       await loadOptions();
     } catch (fixError) {
-      setError(errorText(fixError));
+      setError(plainErrorText(fixError, "ADE couldn't fix that."));
     } finally {
       setBusyLabel(null);
     }

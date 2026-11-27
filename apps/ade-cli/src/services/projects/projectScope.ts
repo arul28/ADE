@@ -14,6 +14,7 @@ import { markExpected } from "../../../../desktop/src/shared/expectedError";
 import { DIAGNOSTIC_ATTACH_TAG } from "../../../../desktop/src/shared/sentry/diagnostics";
 import { createReportOnce, PROJECT_REGISTRY_ATTACH, wasRemovedFromRegistry } from "./projectRegistryJournal";
 import { createPhaseClock, type PhaseClock } from "../../../../desktop/src/shared/phaseClock";
+import { unansweringRootOf } from "../../../../desktop/src/main/services/state/unansweringRoots";
 import { resolveBrainLoopWatchdogThresholdMs, trackBrainLoopWatchdogProjectOpen } from "../runtime/brainLoopWatchdog";
 import { logSlowProjectOpen } from "./projectFilesystemKind";
 import { QUEUED_OPEN_PHASE, type ProjectOpenStrikes } from "./projectOpenStrikes";
@@ -244,6 +245,8 @@ export class ProjectScopeRegistry {
   private syncHostTransitionTail: Promise<void> = Promise.resolve();
   private latestSyncHostTransitionId = 0;
   private latestSyncHostTransitionProjectId: ProjectId | null = null;
+  /** Sync-host switches still running (the requested id above outlives a failed one). */
+  private syncHostSwitchesInFlight = 0;
   private readonly remoteCommandExecutor = {
     execute: async (
       payload: SyncCommandPayload,
@@ -926,6 +929,16 @@ export class ProjectScopeRegistry {
   }
 
   /**
+   * Whether a sync host is active or a switch toward one is still running:
+   * what a caller that got no scope back may wait for. A failed switch leaves
+   * its requested id behind (status reads use it), so that id alone is not a
+   * host in progress.
+   */
+  hasSyncHostOrSwitchInFlight(): boolean {
+    return this.syncHostProjectId !== null || this.syncHostSwitchesInFlight > 0;
+  }
+
+  /**
    * Waits for a sync-host switch that superseded ours to land, and adopts its
    * result.
    *
@@ -985,6 +998,11 @@ export class ProjectScopeRegistry {
       })
       .find((candidate) => {
         if (this.isOpenBlocked(candidate.projectId)) return false;
+        // On a drive that is not answering, the open fails fast and the
+        // startup loop would retry it forever, with nothing hosting sync and
+        // the machine off the account. The probe clears the drive when it
+        // answers, and the next start can choose the project again.
+        if (unansweringRootOf(candidate.rootPath) !== null) return false;
         if (!this.projectRegistry.isProjectDataMissing(candidate)) return true;
         onSkippedMissingProject?.(candidate);
         return false;
@@ -1030,6 +1048,18 @@ export class ProjectScopeRegistry {
     options: SwitchSyncHostOptions = {},
   ): Promise<ProjectScope | null> {
     if (!this.options.syncRuntime?.enabled) return null;
+    this.syncHostSwitchesInFlight += 1;
+    try {
+      return await this.runSwitchSyncHost(projectId, options);
+    } finally {
+      this.syncHostSwitchesInFlight -= 1;
+    }
+  }
+
+  private async runSwitchSyncHost(
+    projectId: ProjectId,
+    options: SwitchSyncHostOptions,
+  ): Promise<ProjectScope | null> {
     const transitionId = ++this.latestSyncHostTransitionId;
     this.latestSyncHostTransitionProjectId = projectId;
 

@@ -72,12 +72,16 @@ export function cloudTierRequestCardId(requestId: string): string {
   return `${TIER_REQUEST_CARD_PREFIX}${requestId}`;
 }
 
+/**
+ * `labels.rate` is the size row's words, rates now and after
+ * (`cloudTierRequestRateText`: "1 credit an hour on Medium (4 now)").
+ */
 export function buildCloudTierRequestCard(request: CloudTierRequest, labels: { from: string | null; rate: string | null }): AdeCardPayload {
   const to = request.toLabel;
   const rows: AdeCardRow[] = [
     { key: ROW.computer, icon: "info", text: request.computerName, detail: request.instanceId },
     // Its text is for people; an older ADE reads the size id from its detail.
-    { key: ROW.size, icon: "info", text: `To ${to}${labels.rate ? `, ${labels.rate}` : ""}`, detail: request.toSizeId },
+    { key: ROW.size, icon: "info", text: labels.rate ?? `To ${to}`, detail: request.toSizeId },
     { key: ROW.toLabel, icon: "info", text: to, detail: null },
     ...(request.fromSizeId ? [{ key: ROW.from, icon: "info" as const, text: `Now ${labels.from ?? request.fromSizeId}`, detail: request.fromSizeId }] : []),
     { key: ROW.reason, icon: "info", text: request.reason, detail: null },

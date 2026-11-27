@@ -1,6 +1,7 @@
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import { isLaneShareGuestCommand } from "./laneShareGuestPolicy";
-import { fallbackUnprojectedChatSession } from "../../../../desktop/src/main/services/sessions/chatSessionProjection";
+import { fallbackUnprojectedChatSession, listSessionsWithChatProjection } from "../../../../desktop/src/main/services/sessions/chatSessionProjection";
+import { awaitCliProviderLogin } from "../../../../desktop/src/main/services/providerLogins/providerLoginHooks";
 import { readGithubContributionCalendar } from "../../../../desktop/src/main/services/usage/githubActivityStats";
 import { buildProviderLoginsDomainService } from "../../../../desktop/src/main/services/providerLogins/providerLoginActions";
 import { PROVIDER_LOGIN_ACCOUNT_WRITES } from "../../../../desktop/src/shared/types/providerLogins";
@@ -459,6 +460,7 @@ export type ExternalSessionsRemoteService = {
   importExternalSession(args: ExternalSessionImportArgs): Promise<ExternalSessionImportResult>;
   getDetail(args: ExternalSessionDetailArgs, options?: { maxEvents?: number }): Promise<ExternalSessionDetail>;
 };
+
 
 const EXTERNAL_SESSION_PROVIDERS = new Set<ExternalSessionProvider>(EXTERNAL_SESSION_PROVIDER_LIST);
 
@@ -1223,6 +1225,7 @@ async function buildLinearConnectionStatus(
     organizationName: status.organizationName,
     organizationUrlKey: status.organizationUrlKey,
     organizationLogoUrl: status.organizationLogoUrl,
+    viewerIsAdmin: status.viewerIsAdmin,
     checkedAt,
     authMode: credentialStatus.authMode,
     oauthAvailable: credentialStatus.oauthConfigured,
@@ -2286,7 +2289,9 @@ function parseListSessionsArgs(value: Record<string, unknown>): ListSessionsArgs
   return {
     ...(laneId ? { laneId } : {}),
     ...(status ? { status } : {}),
-    ...(typeof limit === "number" ? { limit } : {}),
+    ...(value.limit === null ? { limit: null } : typeof limit === "number" ? { limit } : {}),
+    ...(value.openOnly === true ? { openOnly: true } : {}),
+    ...(value.includeArchived === false ? { includeArchived: false } : {}),
   };
 }
 
@@ -4680,7 +4685,10 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("work.getSessionDelta", { viewerAllowed: true }, async (payload) =>
     args.sessionDeltaService?.getSessionDelta(parseSessionIdArgs(payload, "work.getSessionDelta").sessionId) ?? null);
   register("work.listSessions", { viewerAllowed: true }, async (payload) => {
-    const sessions = await listRemoteWorkSessions(args, parseListSessionsArgs(payload));
+    const filters = parseListSessionsArgs(payload);
+    const sessions = filters.openOnly
+      ? await listSessionsWithChatProjection(args, filters)
+      : await listRemoteWorkSessions(args, filters);
     // `conditional: true` (newer phones) asks for `{ sessions, signature,
     // notModified }`, so a reconnect whose list did not change downloads a
     // signature instead of up to 200 rows. Without it the reply stays the bare
@@ -4889,6 +4897,10 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
     const permissionMode = parsed.permissionMode ?? "default";
     validateLaunchProfilePermissionMode(provider, permissionMode);
     const toolType = LAUNCH_PROFILE_TOOL_TYPE[provider] as TerminalToolType;
+    // On a cloud computer, the account's sign-in for this CLI is written before
+    // it starts, as on the desktop path (P5 §4.4). Null everywhere else: no await.
+    // At most 20 s, under the phone's 30 s budget (`awaitCliProviderLogin`).
+    await awaitCliProviderLogin(provider, { event: "sync_remote.start_cli.provider_login", logger: args.logger });
     const initialInputMeta = deriveTrackedCliInitialInputSessionMeta({
       provider,
       title: parsed.title,
@@ -5104,6 +5116,11 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("work.stopRuntime", { viewerAllowed: true, queueable: true }, async (payload) => {
     const { sessionId } = parseStopRuntimeArgs(payload);
     const session = args.sessionService.get(sessionId);
+    if (payload.confirmProcessExit === true) {
+      const ptyId = requireString(payload.ptyId, "A terminal is required to confirm its exit.");
+      if (session?.ptyId !== ptyId) return { disposed: false, reason: "session-mismatch", processTreeExited: false };
+      return args.ptyService.disposeWithExitReceipt({ ptyId, sessionId });
+    }
     if (session?.ptyId) {
       await args.ptyService.dispose({ ptyId: session.ptyId, sessionId });
     }
@@ -7284,8 +7301,9 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
   register("cto.getMemory", { viewerAllowed: true }, async () => {
     const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
     // Returns the CtoMemorySnapshot the iOS client decodes (every field
-    // defaulted there); the v1-only fields are sent empty.
-    return ctoMemoryService.getSnapshot();
+    // defaulted there); the v1-only fields are sent empty. Linked work that
+    // finished closes first, as on the desktop.
+    return ctoMemoryService.getReconciledSnapshot();
   });
   // Not queueable: a whole-file write replayed later would overwrite whatever
   // the CTO or another device saved in between. `baseHash` refuses that too.
@@ -7303,13 +7321,19 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
     const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
     const op = payload.op;
     if (op === "add") {
-      ctoMemoryService.updateOpenWork({ op, text: requireString(payload.text, "cto.updateOpenWork add requires text.") });
+      const owner = payload.owner === "user" || payload.owner === "cto" ? payload.owner : undefined;
+      ctoMemoryService.updateOpenWork({
+        op,
+        text: requireString(payload.text, "cto.updateOpenWork add requires text."),
+        ...(owner ? { owner } : {}),
+      });
     } else if (op === "complete" || op === "reopen" || op === "remove") {
       ctoMemoryService.updateOpenWork({ op, id: requireString(payload.id, `cto.updateOpenWork ${op} requires id.`) });
     } else {
       throw new Error("cto.updateOpenWork requires op: add, complete, reopen or remove.");
     }
-    return ctoMemoryService.getSnapshot();
+    // The phone replaces its list with this, so it is reconciled like a read.
+    return ctoMemoryService.getReconciledSnapshot();
   });
   register("cto.getSkill", { viewerAllowed: true }, async (payload) => {
     const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
@@ -7456,6 +7480,7 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
       organizationName: status.organizationName,
       organizationUrlKey: status.organizationUrlKey,
       organizationLogoUrl: status.organizationLogoUrl,
+      viewerIsAdmin: status.viewerIsAdmin,
       checkedAt,
       authMode: credentialStatus.authMode,
       oauthAvailable: credentialStatus.oauthConfigured,

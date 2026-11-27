@@ -100,7 +100,10 @@ describe("settings manifest", () => {
     "general.project-location": "location",
     "storage.project-health": "location",
     "storage.diagnostics": "advanced",
-    "archive.items": "storage",
+    // Storage & cleanup was split: the Archive and Recently deleted rows moved
+    // to Deleted & Archived and keep their ids for old links and telemetry.
+    "archive.items": "deleted",
+    "storage.recentlyDeleted": "deleted",
     "lanes-git.pr-chat-transcripts": "project-agents",
     // ADE Cloud left Integrations for its own tab; the ids stay so old links land.
     "integrations.ade-cloud": "ade-cloud",

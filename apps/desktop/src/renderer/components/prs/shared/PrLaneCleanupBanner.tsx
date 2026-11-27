@@ -7,6 +7,7 @@ import type { LaneSummary, PrSummary } from "../../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton, primaryButton, dangerButton, fgTint } from "../../lanes/laneDesignTokens";
 import { branchNameFromRef } from "./laneBranchTargets";
 import { requirePin } from "../../../state/repositoryScope";
+import { plainErrorText } from "../../../lib/plainError";
 
 type PrLaneCleanupBannerProps = {
   pr: { id?: string | null; state: PrSummary["state"]; headBranch?: string | null; baseBranch?: string | null } | null;
@@ -50,7 +51,7 @@ export function PrLaneCleanupBanner({
       await window.ade.lanes.archive({ laneId: lane.id }, requirePin(runtimePin));
       setDone("Lane archived successfully");
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(plainErrorText(err, "ADE couldn't archive the lane."));
     } finally {
       setBusy(false);
     }
@@ -77,7 +78,7 @@ export function PrLaneCleanupBanner({
         setDone(parts.length ? parts.join(" + ") : "No matching branch found to delete");
       }
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(plainErrorText(err, "ADE couldn't delete the branch."));
     } finally {
       setBusy(false);
     }

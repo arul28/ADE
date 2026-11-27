@@ -361,6 +361,7 @@ describe("createSyncRemoteCommandService", () => {
       conflictService,
       ctoMemoryService: {
         getSnapshot: () => CTO_MEMORY_SNAPSHOT,
+        getReconciledSnapshot: async () => CTO_MEMORY_SNAPSHOT,
       } as any,
       logger: createLogger() as any,
     });

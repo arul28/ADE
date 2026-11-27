@@ -216,6 +216,7 @@ import { abbreviatePathTail } from "../../desktop/src/shared/pathDisplay";
 import { isUuid } from "../../desktop/src/shared/uuid";
 import { proofCitationMarkdown } from "../../desktop/src/shared/proofCitation";
 import {
+  ghUploadEnv,
   publishProofIntoPullRequestBody,
   publishProofToPullRequest,
   readPullRequestBody,
@@ -762,9 +763,11 @@ import { createDiskPressureMonitor } from "../../desktop/src/main/services/stora
 import { cloudDiskGrowStatePath, cloudDiskGuardOptions, readCloudDiskGrowState } from "./services/power/cloudDiskGuard";
 import { cloudDeleteFreezeRefusal, liftCloudDeleteFreeze, liftCloudSleepFreeze } from "./services/power/cloudDeleteFreeze";
 import { cloudMoveSendRefusal, isCloudMoveRefusal, isRemoteTurnStart } from "./services/power/cloudMoveMark";
+import { REMOTE_WORK_HOLD_REASON, createCloudRemoteWorkHold } from "./services/power/cloudRemoteWorkHold";
 import { CLOUD_COMPUTER_MOVING_CODE, CLOUD_COMPUTER_MOVING_SENTENCE } from "../../account-directory/src/cloud/contract";
 import { encodeCodedErrorMessage } from "../../desktop/src/shared/codedError";
 import { isAdeCloudComputer } from "../../desktop/src/main/services/adeCloud/cloudComputerRules";
+import { endProviderLoginGateHold, holdProviderLoginGate } from "../../desktop/src/main/services/providerLogins/providerLoginHooks";
 import { isUrgentDiskPressure } from "../../desktop/src/shared/types/storage";
 import { boundServiceOutputLogs } from "./services/runtime/runtimeLogMaintenance";
 import { brainStartIsInRestartLoop, markBrainStoppedCleanly, startBrainRestartLoopWatch } from "./sentry/brainRestartLoop";
@@ -964,6 +967,8 @@ export type InvocationStep = {
   key: string;
   method: string;
   params?: JsonObject | ((values: JsonObject) => JsonObject);
+  /** Awaited before `params` is read, in the same try (a lookup `params` cannot wait for). */
+  prepare?: (values: JsonObject) => Promise<void>;
   unwrapToolResult?: boolean;
   optional?: boolean;
   /** An optional step's budget: after this long it counts as failed, and the plan goes on. */
@@ -4939,7 +4944,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
 
   Reports what ADE is holding on disk (chats/terminal history, lane worktrees,
   build output, caches, proof attachments, recovery backups, database) and the
-  volume's free space, like Settings → Project → Storage & cleanup on the
+  volume's free space, like Settings → Project → Disk space on the
   desktop. The snapshot is read-only; compression is lossless and safe.
   Maintenance runs the policy-driven ledger sweep (prune/compress/vacuum).
   Target-scoped cleanup (which deletes files) is left to the action bridge.
@@ -8465,7 +8470,7 @@ function buildLanePlan(args: string[]): CliPlan {
     };
   }
   if (sub === "deleted") {
-    // Lanes whose unsaved work a delete kept (Settings › Storage › Recently deleted).
+    // Lanes whose unsaved work a delete kept (Settings › Deleted & Archived › Recently deleted).
     const verb = firstPositional(args) ?? "list";
     if (verb === "list" || verb === "ls") {
       return {
@@ -8490,7 +8495,7 @@ function buildLanePlan(args: string[]): CliPlan {
     }
     if (verb === "remove" || verb === "rm" || verb === "delete") {
       throw new CliUsageError(
-        "Drop a deleted lane's saved work in ADE: Settings › Storage › Recently deleted. The command line can list and restore them.",
+        "Drop a deleted lane's saved work in ADE: Settings › Deleted & Archived › Recently deleted. The command line can list and restore them.",
       );
     }
     throw new CliUsageError("lanes deleted supports list or restore <id>.");
@@ -10328,17 +10333,22 @@ function proofIntoPrBodySteps(options: {
   const fail = (error: unknown): never => {
     throw new CliToolError(`proof publish failed — ${error instanceof Error ? error.message : String(error)}`, {});
   };
+  // The login the upload will use reads the text too: the App token may not see the repository.
+  let env: NodeJS.ProcessEnv = process.env;
   return [
     {
       key: "proofList",
       method: "ade/actions/call",
       unwrapToolResult: true,
       optional: options.optional,
+      prepare: async () => {
+        env = await ghUploadEnv().catch(fail);
+      },
       params: (values) => {
         let ids = options.ids ?? [];
         if (!options.ids) {
           try {
-            ids = prBodyProofIds(readPullRequestBody(options.pr(values), { cwd: roots().cwd }).body);
+            ids = prBodyProofIds(readPullRequestBody(options.pr(values), { cwd: roots().cwd, env }).body);
           } catch (error) {
             fail(error);
           }
@@ -10371,6 +10381,7 @@ function proofIntoPrBodySteps(options: {
           published = publishProofIntoPullRequestBody({
             pr: options.pr(values),
             ...roots(),
+            env,
             artifacts: listed.map(publishableArtifact),
           });
         } catch (error) {
@@ -12585,7 +12596,7 @@ function buildChatDeletedPlan(args: string[]): CliPlan {
   }
   if (verb === "remove" || verb === "rm" || verb === "delete") {
     throw new CliUsageError(
-      "Remove chats from the list in ADE: Settings › Storage › Recently deleted. The command line can list and reopen them.",
+      "Remove chats from the list in ADE: Settings › Deleted & Archived › Recently deleted. The command line can list and reopen them.",
     );
   }
   throw new CliUsageError("chat deleted supports list [--query <text>] or reopen <id> [--lane <lane-id>].");
@@ -16108,6 +16119,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
       };
     }
     if (!ids.length) throw new CliUsageError("proof publish needs one or more artifact ids. Copy them from the cite: lines or the `id` fields of `ade proof list --json`.");
+    let uploadEnv: NodeJS.ProcessEnv = process.env;
     return {
       kind: "execute",
       label: "proof publish",
@@ -16126,6 +16138,13 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
           // The comment is already on the PR when this runs. A failed link must
           // not hide that; the summary reports it as a warning instead.
           optional: true,
+          prepare: async () => {
+            try {
+              uploadEnv = await ghUploadEnv();
+            } catch (error) {
+              throw new CliToolError(`proof publish failed — ${error instanceof Error ? error.message : String(error)}`, {});
+            }
+          },
           params: (values) => {
             const listed = firstArray(unwrapActionEnvelope(values.list) as JsonObject, ["artifacts"]);
             const byId = new Map(listed.map((artifact) => [asString(artifact.id) ?? "", artifact]));
@@ -16149,6 +16168,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
                 note,
                 replace,
                 cwd: explicitProjectRoot ?? roots.workspaceRoot,
+                env: uploadEnv,
                 artifacts: ids.map((id) => publishableArtifact(byId.get(id)!)),
               });
             } catch (error) {
@@ -21725,7 +21745,7 @@ function buildArchivePlan(args: string[]): CliPlan {
     // The runtime cannot tell this terminal from an agent's (both are `ade`
     // clients), and only the person may delete from the archive.
     throw new CliUsageError(
-      "Delete archived items in ADE: Project → Storage & cleanup → Archive (desktop or web). The command line can list and restore them.",
+      "Delete archived items in ADE: Project → Deleted & Archived → Archive (desktop or web). The command line can list and restore them.",
     );
   }
   throw new CliUsageError("archive supports list, summary, or restore.");
@@ -29508,7 +29528,7 @@ async function verifyMachinePublished(
       };
     }
     const { describeUnpublishedMachine } = await import("./commands/setup");
-    const described = describeUnpublishedMachine(state, asString(directory?.skipReason));
+    const described = describeUnpublishedMachine(state, asString(directory?.skipReason), directory?.failedLeg);
     return { ok: false, ...described };
   } catch {
     return {
@@ -30845,23 +30865,27 @@ async function runServe(
   const personalChatScope = createPersonalChatScope(
     runtimeProfile ? { runtimeProfile } : undefined,
   );
-  // Off the boot path: the first pass waits for the vault's first tick anyway.
+  // Fixed for this process: an embedded runtime, a development build and a
+  // brain with sync off never open a store for it. Every other gate (an
+  // account with ADE Cloud, its switch, a synced vault) is checked on each pass.
+  const providerLoginStaticOff = embedded ? "embedded" : !brainReportsAsRelease(process.env) ? "dev_brain" : !syncEnabled ? "sync_off" : null;
+  // The install runs off the boot path, so on a cloud computer a turn that
+  // comes first waits for its gate instead of starting with no sign-in written.
+  if (!providerLoginStaticOff && isAdeCloudComputer()) holdProviderLoginGate();
   void import("./services/account/brainProviderLoginSync").then(({ installBrainProviderLoginSync }) => installBrainProviderLoginSync({
-    // Fixed for this process: an embedded runtime, a development build and a
-    // brain with sync off never open a store for it. Every other gate (an
-    // account with ADE Cloud, its switch, a synced vault) is checked on each pass.
-    staticOff: embedded ? "embedded" : !brainReportsAsRelease(process.env) ? "dev_brain" : !syncEnabled ? "sync_off" : null,
+    staticOff: providerLoginStaticOff,
     adeDir: layout.adeDir,
     secretsDir: layout.secretsDir,
     accountAuthService: brainAccountAuthService,
     logger: headlessProjectLogger,
   })).catch((error: unknown) => {
+    endProviderLoginGateHold();
     headlessProjectLogger.warn("provider_login.install_failed", { name: error instanceof Error ? error.name : "unknown" });
   });
   // Claude passes use the sign-in sync's hooks (its pass, its gate, its
   // status). The same fixed conditions turn both off; the boot token then stays.
   void import("../../desktop/src/main/services/claudePass/installClaudePassSync").then(({ installClaudePassSync }) => installClaudePassSync({
-    staticOff: embedded ? "embedded" : !brainReportsAsRelease(process.env) ? "dev_brain" : !syncEnabled ? "sync_off" : null,
+    staticOff: providerLoginStaticOff,
     adeDir: layout.adeDir,
     logger: headlessProjectLogger,
   })).catch((error: unknown) => {
@@ -31177,6 +31201,16 @@ async function runServe(
         };
       }
     : null;
+  // Remote work another machine sent (`cloudRemoteWorkHold.ts`). A restart
+  // reads it in memory from its first moment, not from its hold file, which
+  // only comes after a wait and only for the sleep; and never the request
+  // the grow is asked from. `holdCloudWork` is read at call time: it is made
+  // further down.
+  const remoteWorkHold = createCloudRemoteWorkHold({ hold: () => holdCloudWork });
+  const restartWouldCut = (reasons: string[]): string[] => [
+    ...reasons.filter((reason) => reason !== REMOTE_WORK_HOLD_REASON),
+    ...(remoteWorkHold.otherRunning() ? [REMOTE_WORK_HOLD_REASON] : []),
+  ];
   // A lane launch's setup filled the disk: grow it now, while nothing else
   // runs, and the launch's setup runs again after the restart. The launch
   // itself still reads as `lane_setup` while it waits, so that one setup
@@ -31185,7 +31219,7 @@ async function runServe(
   const laneSetupOnlyRuns = async (): Promise<boolean> => {
     if (!readCloudBusy) return false;
     const busy = await readCloudBusy();
-    const others = busy.reasons.filter((reason) => reason !== "lane_setup");
+    const others = restartWouldCut(busy.reasons).filter((reason) => reason !== "lane_setup");
     if (others.length || busy.waitingOnPerson || busy.laneSetups > 1) {
       headlessProjectLogger.info("cloud.disk_grow_for_setup_busy", {
         reasons: others,
@@ -31230,7 +31264,7 @@ async function runServe(
     if (!readCloudBusy) return false;
     const busy = await readCloudBusy();
     // What continues after the restart (chats, ADE's agent CLIs), and the `ade` command that asked for the grow.
-    const cut = busy.reasons.filter((reason) => reason !== "chat" && reason !== "agent_cli" && reason !== "disk_grow_command");
+    const cut = restartWouldCut(busy.reasons).filter((reason) => reason !== "chat" && reason !== "agent_cli" && reason !== "disk_grow_command");
     if (cut.length || busy.waitingOnPerson) {
       headlessProjectLogger.info("cloud.disk_grow_to_fit_busy", { reasons: cut, waitingOnPerson: Boolean(busy.waitingOnPerson) });
       return false;
@@ -31869,6 +31903,9 @@ async function runServe(
   // scope's sync service owns its own lease). Machine-exclusive subsystems
   // gate on holding one or the other.
   let brainSyncHostLease: SyncHostSingletonLease | null = null;
+  // Set while the projectless lease is held beside a viewer scope: hands the
+  // lease back when that scope starts hosting on its own.
+  let stopWatchingScopeHostLease: (() => void) | null = null;
   // A brain hosting phone sync with no project scope follows the shared
   // listener's port moves itself (a scope's sync service does this when one
   // hosts): the lease records the port and the account directory re-publishes.
@@ -33328,7 +33365,8 @@ async function runServe(
     if (!peerDeviceId || !cloudKeepAwake) return handler;
     const keepAwake = cloudKeepAwake;
     return Object.assign(async (request: Parameters<JsonRpcHandler>[0]) => {
-      if (request.method === "ade/actions/call" && isRemoteWork(request.params)) {
+      const remoteWork = request.method === "ade/actions/call" && isRemoteWork(request.params);
+      if (remoteWork) {
         // The server deletes this computer next (`cloudDeleteFreeze.ts`): work that came now would be lost with it.
         const frozen = cloudDeleteFreezeRefusal();
         if (frozen) throw new JsonRpcError(JsonRpcErrorCode.policyDenied, frozen);
@@ -33345,7 +33383,8 @@ async function runServe(
         const refusal = await cloudRest?.noteRemoteWork();
         if (refusal) throw new JsonRpcError(JsonRpcErrorCode.policyDenied, refusal);
       }
-      return await handler(request);
+      // Counted for a grow's restart now; held awake once it outlasts a short wait (a push with a slow hook).
+      return remoteWork ? await remoteWorkHold.run(() => handler(request)) : await handler(request);
     }, handler);
   };
   const createHandler = (context?: { peerDeviceId: string | null; peerDeviceName?: string | null }) =>
@@ -33438,6 +33477,7 @@ async function runServe(
       accountAuthService: brainAccountAuthService,
       getAccountDirectoryHealth,
       getProjectlessSyncSnapshot: projectlessSyncSnapshot,
+      holdsProjectlessSyncHostLease: () => brainSyncHostLease != null,
       repairMachinePairing,
       // The desktop's "Start sync" button: the same repair the phone's "Fix
       // connection" runs, so a brain that lost the lease can be re-hosted from
@@ -33471,6 +33511,7 @@ async function runServe(
             lastLegDurations: { ...publishHealth.lastLegDurations },
             lastHttpStatus: publishHealth.lastHttpStatus,
             lastHttpReason: publishHealth.lastHttpReason,
+            failedLeg: publishHealth.failedLeg ?? null,
           },
           lastWedge: readBrainLoopWatchdogLastWedge(layout.runtimeDir),
           lastUnplannedRestart: brainUnplannedRestart(),
@@ -33614,7 +33655,7 @@ async function runServe(
         });
       });
     }
-    if (!activeScope && scopeRegistry.getRequestedSyncHostProjectId()) {
+    if (!activeScope && scopeRegistry.hasSyncHostOrSwitchInFlight()) {
       // A null here can mean "superseded" rather than "no host"; adopt the
       // switch that overtook ours instead of clobbering it with the
       // projectless lease. See `adoptRequestedSyncHost`.
@@ -33623,27 +33664,9 @@ async function runServe(
         throw new Error("Sync host switch superseded by a concurrent project switch; retrying.");
       }
     }
-    if (!activeScope && sharedSyncListener) {
-      // Binding the shared listener IS hosting phone sync, even with no project
-      // scope to attach to it. Take the machine-wide lease first so this path
-      // has the same exclusivity as the scoped one — otherwise a projectless
-      // brain would bind the port, publish itself, and dial the relay while
-      // another brain legitimately held the lease. Throwing here is correct:
-      // the startup loop treats a conflict as retryable and waits the other
-      // brain out.
-      const { acquireSyncHostSingletonAsync } = await import("./services/sync/syncHostSingleton");
-      brainSyncHostLease ??= await acquireSyncHostSingletonAsync({ projectRoot: null });
-      const listenerPort = await sharedSyncListener.ensureListening(
-        Array.from(
-          { length: SYNC_HOST_MAX_PORT - DEFAULT_SYNC_HOST_PORT + 1 },
-          (_, index) => DEFAULT_SYNC_HOST_PORT + index,
-        ),
-      );
-      brainSyncHostLease.updatePort(listenerPort);
-      await ensureProjectlessRelayTunnel();
-    } else if (activeScope) {
-      releaseProjectlessHostLease();
-    }
+    // Whether the chosen scope hosts sync on this machine. A scope with no sync
+    // service cannot say otherwise, so it counts as the host, as it always has.
+    let scopeHostsSync = false;
     if (activeScope) {
       // Activating a scope is not the same as hosting. Its sync service makes
       // its own host/viewer call from the project database: when that
@@ -33669,6 +33692,69 @@ async function runServe(
           }
         }
       }
+      scopeHostsSync = !scopeSync || Boolean(scopeSync.getHostService());
+    }
+    if (!scopeHostsSync && sharedSyncListener) {
+      // Binding the shared listener IS hosting phone sync, even with no project
+      // scope to attach to it. Take the machine-wide lease first so this path
+      // has the same exclusivity as the scoped one — otherwise a projectless
+      // brain would bind the port, publish itself, and dial the relay while
+      // another brain legitimately held the lease. Throwing here is correct:
+      // the startup loop treats a conflict as retryable and waits the other
+      // brain out.
+      //
+      // The same holds beside a scope the user set to follow another machine
+      // (a saved connection): that project is a viewer by choice, but the
+      // machine is still this machine. With nothing holding the lease it
+      // published nothing and dropped off the account until a restart chose
+      // a different project (Mac Studio, 2026-11-26: the most recently
+      // opened project followed another machine).
+      const { acquireSyncHostSingletonAsync, isSyncHostLeaseHeld, onSyncHostSingletonLeaseAcquired } = await import("./services/sync/syncHostSingleton");
+      // The viewer scope can start hosting by itself later (it stops following
+      // the other machine, or reclaims a stale draft) and takes its own lease.
+      // Keeping this one then leaves two leases and two relay gates, and the
+      // scope's later release deletes the lock file this one still counts on.
+      // Subscribed before the acquire below: on Windows its listener probes
+      // take seconds, and a scope that takes its lease meanwhile must count.
+      let scopeTookLeaseDuringAcquire = false;
+      stopWatchingScopeHostLease ??= onSyncHostSingletonLeaseAcquired((ownerId) => {
+        if (!brainSyncHostLease) {
+          scopeTookLeaseDuringAcquire = true;
+          return;
+        }
+        if (ownerId === brainSyncHostLease.owner.id) return;
+        // Released again before this ran (the notice comes a microtask later):
+        // handing over now would leave this process with no lease at all. A
+        // release after the hand-over drops authority, which the rehost watch
+        // answers by hosting projectless again.
+        if (!isSyncHostLeaseHeld(ownerId)) return;
+        headlessProjectLogger.info("sync.projectless_lease_handed_to_scope", {});
+        releaseProjectlessHostLease();
+      });
+      brainSyncHostLease ??= await acquireSyncHostSingletonAsync({ projectRoot: null });
+      if (scopeTookLeaseDuringAcquire && activeScope?.runtime.syncService?.getHostService()) {
+        headlessProjectLogger.info("sync.projectless_lease_handed_to_scope", { duringAcquire: true });
+        releaseProjectlessHostLease();
+        return activeScope;
+      }
+      const listenerPort = await sharedSyncListener.ensureListening(
+        Array.from(
+          { length: SYNC_HOST_MAX_PORT - DEFAULT_SYNC_HOST_PORT + 1 },
+          (_, index) => DEFAULT_SYNC_HOST_PORT + index,
+        ),
+      );
+      // A scope may have taken its own lease while the port was bound, and this
+      // one was handed to it: that scope hosts now.
+      if (!brainSyncHostLease) return activeScope ?? null;
+      brainSyncHostLease.updatePort(listenerPort);
+      await ensureProjectlessRelayTunnel();
+      if (activeScope) {
+        headlessProjectLogger.info("sync.projectless_host_beside_viewer", {
+          projectId: activeScope.registryProjectId,
+        });
+      }
+    } else if (scopeHostsSync) {
+      releaseProjectlessHostLease();
     }
     // A ProjectScope is a complete runtime (DB, search, chat, automation,
     // polling, PTY, and sync services), not a lightweight metadata cache.
@@ -33692,6 +33778,8 @@ async function runServe(
     cloudMemoryGuard?.dispose();
     releaseAccountPublisherAuthoritySubscription?.();
     releaseAccountPublisherAuthoritySubscription = null;
+    stopWatchingScopeHostLease?.();
+    stopWatchingScopeHostLease = null;
     stopSyncHostRehostWatch?.();
     stopSyncHostRehostWatch = null;
     machinePairingAutoRecovery?.stop();
@@ -34341,7 +34429,10 @@ async function runServe(
             // The registration never carries the pairing token or PIN.
             includePairingSecrets: false,
           }) ?? null;
-          if (scoped) return scoped;
+          // A viewer scope beside the projectless lease (a project that
+          // follows another machine) describes that other machine, not this
+          // one: publish what this brain hosts.
+          if (scoped && !(brainSyncHostLease && scoped.role === "viewer")) return scoped;
           // Hosting sync without a project is a supported state, not the
           // absence of one. Falling through to null here is what kept a
           // signed-in machine with an empty projects.json out of the account
@@ -43419,6 +43510,7 @@ async function executePlan(
     for (const step of plan.steps) {
       if (step.skipWhen?.(values)) continue;
       try {
+        await step.prepare?.(values);
         const resolvedParams =
           typeof step.params === "function" ? step.params(values) : step.params;
         const params = step.injectProjectRootIntoArgs

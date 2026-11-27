@@ -2868,6 +2868,12 @@ export type AgentChatEventEnvelope = {
      */
     timestampSynthetic?: boolean;
   };
+  /**
+   * Set by the renderer on a row read from an ADE Cloud chat's saved copy,
+   * which redacts and cuts what it stores. Such a row gives way to the live
+   * row it was copied from (`reconcileAgentChatSavedCopies`). Never on the wire.
+   */
+  savedCopy?: true;
 };
 
 export type AgentChatEventHistorySnapshot = {
@@ -3565,6 +3571,7 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
    * session summary instead.
    */
   activityStatus?: SessionActivityReport | null;
+  /** The agent's status line (`ade chat note`), from the session row; absent when it set none. */
   statusNote?: string | null;
   attentionRequestedAt?: string | null;
   attentionMessage?: string | null;

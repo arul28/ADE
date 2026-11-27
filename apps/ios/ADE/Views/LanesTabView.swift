@@ -137,6 +137,9 @@ struct LanesTabView: View, Equatable {
   /// Live lane actions have been waiting long enough to say so (see
   /// `liveActionNoticePresentation`).
   @State var laneLiveActionWaitIsLong = false
+  /// The Archived filter's Recently deleted rows, kept across filter changes
+  /// so switching back shows them at once while they read again.
+  @State var recentlyDeletedStore = RecentlyDeletedStore()
 
   var scope: LaneListScope { quickFilter.scope }
 

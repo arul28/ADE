@@ -653,9 +653,18 @@ describe.skipIf(process.platform !== "win32")("verified kill on win32", () => {
     fs.writeFileSync(script, "setInterval(() => {}, 1000);\n");
     const child = spawn(process.execPath, [script, "serve"], { stdio: "ignore", windowsHide: true });
     try {
+      await once(child, "spawn");
       const pid = child.pid!;
-      const read = await readWindowsProcessFacts(pid);
-      if (read.state !== "found") throw new Error(`the stand-in was not readable: ${read.state}`);
+      // The first PowerShell and CIM start of a busy runner can pass the
+      // query's own 10 s deadline; a stand-in that is still unreadable on the
+      // third read is a real failure.
+      let read = await readWindowsProcessFacts(pid);
+      for (let attempt = 1; read.state === "unreadable" && attempt < 3; attempt += 1) {
+        read = await readWindowsProcessFacts(pid);
+      }
+      if (read.state !== "found") {
+        throw new Error(`the stand-in was not readable: ${read.state === "unreadable" ? read.reason : read.state}`);
+      }
       // Listen before the kill: the exit can land while the kill is still in flight.
       const exited = killed ? once(child, "exit") : null;
       const outcome = await killVerifiedWindowsProcess(change(read.facts));
@@ -671,7 +680,8 @@ describe.skipIf(process.platform !== "win32")("verified kill on win32", () => {
       child.kill();
       fs.rmSync(dir, { recursive: true, force: true });
     }
-  });
+    // A ceiling for up to three reads and one kill of real PowerShell, not a wait.
+  }, 60_000);
 });
 
 

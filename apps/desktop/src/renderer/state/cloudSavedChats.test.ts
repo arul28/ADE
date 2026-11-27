@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mergeAgentChatHistorySnapshot } from "../../shared/chatHistoryMerge";
+import { mergeAgentChatHistorySnapshot, mergeAgentChatLiveEvents } from "../../shared/chatHistoryMerge";
 import type { CloudSavedChatPage, CloudSavedChatRow } from "../../shared/cloudSavedChats";
 import type { AgentChatEventEnvelope, OpenProjectBinding } from "../../shared/types";
 import type { AgentChatApi } from "../components/chat/agentChatApi";
-import { readOlderHistoryBatch, resolveMergedSnapshotHistoryCursor, resolveSnapshotHistoryCursor } from "../components/chat/chatHistoryWindow";
-import { CLOUD_SEND_ANSWER_WAIT_MS, replaceCloudConnectionTargets, replaceSavedChatLocations, withSavedChatReads } from "./cloudSavedChats";
+import { prependOlderChatHistoryPage, readOlderHistoryBatch, resolveMergedSnapshotHistoryCursor, resolveSnapshotHistoryCursor } from "../components/chat/chatHistoryWindow";
+import { CLOUD_SEND_ANSWER_WAIT_MS, replaceCloudConnectionTargets, replaceSavedChatLocations, savedChatSnapshot, withSavedChatReads } from "./cloudSavedChats";
 
 const PIN = {
   kind: "remote",
@@ -154,5 +154,79 @@ describe("a chat's older history while its ADE Cloud computer sleeps and wakes",
     expect(read).toHaveBeenLastCalledWith(expect.objectContaining({ before: 5 }));
     expect(live.getEventHistoryPage).not.toHaveBeenCalled();
     expect(older?.nextCursor).toBeGreaterThan(0);
+  });
+});
+
+describe("a chat's saved rows and the live rows they were copied from", () => {
+  // The computer's transcript, as the awake computer reads it.
+  const at = (second: number) => `2026-11-26T01:00:0${second}.000Z`;
+  const longOutput = `${"log line\n".repeat(30_000)}tail`;
+  const live: AgentChatEventEnvelope[] = [
+    { sessionId: "chat-1", timestamp: at(1), sequence: 1, event: { type: "user_message", text: "deploy with token=ghp_abcdefghijklmnopqrstuvwxyz0123456789" } },
+    { sessionId: "chat-1", timestamp: at(2), sequence: 2, event: { type: "tool_call", tool: "bash", args: { token: "abcd-1234", deep: { level: { list: [1, 2] } } }, itemId: "tool-1", turnId: "turn-1" } },
+    { sessionId: "chat-1", timestamp: at(3), sequence: 3, event: { type: "command", command: "cat build.log", cwd: "/repo", output: longOutput, itemId: "cmd-1", turnId: "turn-1", status: "completed" } },
+    { sessionId: "chat-1", timestamp: at(4), sequence: 4, event: { type: "text", text: "Deployed." } },
+  ];
+  // The same lines as the uploader saved them: a secret redacted, a
+  // credential field replaced, a deep value and a long string cut. The plain
+  // text line is unchanged.
+  const savedLines: AgentChatEventEnvelope[] = [
+    { ...live[0]!, event: { type: "user_message", text: "deploy with token=[REDACTED]" } },
+    { ...live[1]!, event: { type: "tool_call", tool: "bash", args: { token: "[REDACTED]", deep: "[truncated]" }, itemId: "tool-1", turnId: "turn-1" } },
+    { ...live[2]!, event: { type: "command", command: "cat build.log", cwd: "/repo", output: `${longOutput.slice(0, 1000)}\n[truncated]`, itemId: "cmd-1", turnId: "turn-1", status: "completed" } },
+    live[3]!,
+  ];
+  const savedRead = (lines: AgentChatEventEnvelope[]) => savedChatSnapshot({
+    chat: { chatId: "chat-1", machineKey: "machine-key-1", lastSeq: 1 } as CloudSavedChatRow,
+    parts: [{ seq: 1, text: `${lines.map((line) => JSON.stringify(line)).join("\n")}\n` }],
+    hasMore: false,
+    nextBefore: null,
+  }, "chat-1").events;
+  const saved = savedRead(savedLines);
+  // A live row that already says `[REDACTED]`; its saved copy redacts more.
+  const literal: AgentChatEventEnvelope = { sessionId: "chat-1", timestamp: at(5), sequence: 5, event: { type: "text", text: "Explain [REDACTED] in the header Bearer demo123" } };
+  const [literalSaved] = savedRead([{ ...literal, event: { type: "text", text: "Explain [REDACTED] in the header [REDACTED]" } }]);
+  // The same time, kind and number as the saved line, but a real difference
+  // outside what the uploader marks: a different event, never hidden.
+  const otherCommand: AgentChatEventEnvelope = { ...live[2]!, event: { type: "command", command: "cat other.log", cwd: "/repo", output: longOutput, itemId: "cmd-1", turnId: "turn-1", status: "completed" } };
+
+  it.each<{ seam: string; merge: () => AgentChatEventEnvelope[]; shows: AgentChatEventEnvelope[] }>([
+    {
+      seam: "the computer wakes and the chat reads its history from it",
+      merge: () => mergeAgentChatHistorySnapshot(live, saved),
+      shows: live,
+    },
+    {
+      seam: "the computer sleeps and the chat reads its saved copy",
+      merge: () => mergeAgentChatHistorySnapshot(saved, live),
+      shows: live,
+    },
+    {
+      seam: "the woken computer streams events the saved copy holds",
+      merge: () => mergeAgentChatLiveEvents(saved, live),
+      shows: live,
+    },
+    {
+      seam: "a live event that differs for real arrives over a saved row",
+      merge: () => mergeAgentChatLiveEvents(saved, [otherCommand]),
+      shows: [saved[0]!, saved[1]!, saved[2]!, otherCommand, saved[3]!],
+    },
+    {
+      seam: "an older saved page loads above the computer's own rows",
+      merge: () => prependOlderChatHistoryPage(saved, live.slice(2), true),
+      shows: [saved[0]!, saved[1]!, live[2]!, live[3]!],
+    },
+    {
+      seam: "an older page from the computer loads above saved rows",
+      merge: () => prependOlderChatHistoryPage(live.slice(0, 2), saved),
+      shows: [live[0]!, live[1]!, saved[2]!, saved[3]!],
+    },
+    {
+      seam: "a saved page repeats a live row that already says [REDACTED]",
+      merge: () => prependOlderChatHistoryPage([literalSaved!], [literal], true),
+      shows: [literal],
+    },
+  ])("$seam: each event shows once, as the computer wrote it when it has it", ({ merge, shows }) => {
+    expect(merge()).toEqual(shows);
   });
 });

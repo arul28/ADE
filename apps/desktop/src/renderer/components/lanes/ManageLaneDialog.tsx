@@ -881,7 +881,7 @@ export function ManageLaneDialog({
                           disabled={reclaimBusy || laneActionBusy}
                           className="mt-0.5"
                         />
-                        <span>Discard uncommitted changes in this lane. ADE keeps a copy for {DELETED_LANE_KEEP_DAYS} days in Settings › Storage › Recently deleted.</span>
+                        <span>Discard uncommitted changes in this lane. ADE keeps a copy for {DELETED_LANE_KEEP_DAYS} days in Settings › Deleted & Archived.</span>
                       </label>
                     ) : null}
                     <label className="mt-3 block text-[11px] text-muted-fg/80">
@@ -984,7 +984,7 @@ export function ManageLaneDialog({
                     {isBatch
                       ? `Also delete ${dirtyLanes.length === 1 ? "the lane" : `the ${dirtyLanes.length} lanes`} with uncommitted work: ${dirtyLanes.map((lane) => lane.name).join(", ")}`
                       : "Force delete: remove the uncommitted work too"}
-                    <span className="block text-muted-fg/50">ADE keeps a copy for {DELETED_LANE_KEEP_DAYS} days. Restore it from Settings › Storage › Recently deleted.</span>
+                    <span className="block text-muted-fg/50">ADE keeps a copy for {DELETED_LANE_KEEP_DAYS} days. Restore it from Settings › Deleted & Archived.</span>
                   </span>
                 </label>
               )}

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Banner } from "../ui/notice";
 import { captureError } from "../../../shared/sentry/capture";
 import type { OpenProjectBinding, ProjectConfigAccountNotice } from "../../../shared/types";
+import { plainErrorText } from "../../lib/plainError";
 
 /**
  * Settings that follow the ADE account and need the person, on the computer
@@ -79,7 +80,7 @@ export function AccountSettingNotices({
         fingerprint: ["project_config", "resolve_account_notice"],
         handled: true,
       });
-      if (current()) setError(cause instanceof Error ? cause.message : String(cause));
+      if (current()) setError(plainErrorText(cause, "ADE couldn't apply your choice."));
     } finally {
       if (current()) setBusyKey(null);
     }

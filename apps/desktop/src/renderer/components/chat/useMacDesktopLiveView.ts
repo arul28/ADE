@@ -9,6 +9,7 @@ import {
   startMacDesktopLiveStream,
 } from "./macDesktopLiveViewLease";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { macDesktopErrorText } from "./macDesktopErrorText";
 
 /**
  * The lane display's live view: one H.264 reader, one address, one budget.
@@ -453,7 +454,9 @@ export function useMacDesktopLiveView(args: {
     void run().catch((caught: unknown) => {
       if (cancelled) return;
       setStatus("error");
-      setError(caught instanceof Error ? caught.message : String(caught));
+      // The Mac desktop formatter: a missing domain there can mean the host is
+      // newer than this viewer, so it is not always "update ADE".
+      setError(macDesktopErrorText(caught instanceof Error ? caught.message : String(caught)) ?? "ADE couldn't start the live view.");
     });
 
     return () => {

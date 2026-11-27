@@ -318,6 +318,8 @@ func buildWorkRootSessionPresentation(
   outputSearchBySessionId: [String: String] = [:],
   organization: WorkSessionOrganization,
   orderedLanes: [LaneSummary],
+  /// Archived lanes that still hold rows: grouped by name, never lanes to act on.
+  archivedLanes: [LaneSummary] = [],
   pullRequests: [PullRequestListItem] = [],
   githubPrs: [GitHubPrListItem] = [],
   deletingLaneIds: Set<String> = [],
@@ -331,7 +333,9 @@ func buildWorkRootSessionPresentation(
 ) -> WorkRootSessionPresentation {
   let committedIds = Set(sessions.map(\.id))
   let draftValues = optimisticSessions.values.filter { !committedIds.contains($0.id) }
-  let laneById = Dictionary(orderedLanes.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
+  // Archived lanes too, for a row's lane chip, color and search; lane actions
+  // check `archivedAt` (`WorkRootScreen`).
+  let laneById = Dictionary((orderedLanes + archivedLanes).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
   let lanePrTagsByLaneId = lanePrTagByLaneId(
     lanes: orderedLanes,
     pullRequests: pullRequests,
@@ -426,6 +430,7 @@ func buildWorkRootSessionPresentation(
     chatSummaries: chatSummaries,
     archivedSessionIds: archivedSessionIds,
     orderedLanes: workOrderedLanes,
+    archivedLanes: archivedLanes,
     deletingLaneIds: deletingLaneIds,
     headerlessLaneIds: headerlessLaneIds,
     laneWaitingReasonByLaneId: laneWaitingReasonByLaneId,
@@ -736,6 +741,7 @@ func workSessionGroups(
   chatSummaries: [String: AgentChatSessionSummary],
   archivedSessionIds: Set<String>,
   orderedLanes: [LaneSummary],
+  archivedLanes: [LaneSummary] = [],
   deletingLaneIds: Set<String> = [],
   headerlessLaneIds: Set<String> = [],
   /// Lane → PR-derived wait, from `workLaneWaitingReasonByLaneId`. Only
@@ -813,7 +819,8 @@ func workSessionGroups(
       sessions: awake,
       orderedLanes: orderedLanes,
       deletingLaneIds: deletingLaneIds,
-      headerlessLaneIds: headerlessLaneIds
+      headerlessLaneIds: headerlessLaneIds,
+      archivedLanes: archivedLanes
     ).map { group in
       var group = group
       // A pinned lane opts out of the quiet treatment, as on desktop.
@@ -1119,11 +1126,68 @@ func workSessionGroupsByStatus(
   return groups
 }
 
+/// Where Work files a row whose lane is not in the lane list.
+///
+/// The phone keeps chat rows in its own copy of the project, and a lane can
+/// go while its rows stay: archived (its chats are kept on purpose), deleted
+/// on a computer, or listed only by a computer this phone no longer focuses.
+/// Such rows stood at the top of Work as "Orphaned sessions: <lane id>" with a
+/// warning that no refresh could clear.
+///
+/// - A row in a lane the focused computer's roster lists (a lane no roster
+///   chat uses yet, such as one holding only a shell) is filed under that
+///   lane: it joins the returned lanes.
+/// - A row in an archived lane is filed under that lane by name, as a
+///   history-only group: the lane is returned apart, so it never becomes a
+///   lane to start a chat in or act on.
+/// - A row in a lane being deleted keeps its place ("Updating lane…").
+/// - Any other row with no lane is left out once the focused computer's
+///   roster is live (received on this connection, not the copy saved from an
+///   earlier one): no computer lists its lane, so there is nothing to file it
+///   under and nowhere to open it. Until then it stays, so a slow first load
+///   never hides real work. Nothing is deleted, and a row whose lane comes
+///   back shows again.
+func workFileSessionsWithoutLane(
+  sessions: [TerminalSessionSummary],
+  lanes: [LaneSummary],
+  rosterLanes: [LaneSummary],
+  archivedLanes: [LaneSummary],
+  deletingLaneIds: Set<String>,
+  focusedRosterLive: Bool
+) -> (sessions: [TerminalSessionSummary], lanes: [LaneSummary], archivedLanes: [LaneSummary]) {
+  let knownLaneIds = Set(lanes.map(\.id))
+  let rosterById = Dictionary(rosterLanes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+  let archivedById = Dictionary(archivedLanes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+  var addedLanes: [LaneSummary] = []
+  var filedArchivedLanes: [LaneSummary] = []
+  var filedLaneIds = Set<String>()
+  var kept: [TerminalSessionSummary] = []
+  kept.reserveCapacity(sessions.count)
+  for session in sessions {
+    let laneId = session.laneId
+    if knownLaneIds.contains(laneId) || deletingLaneIds.contains(laneId) {
+      kept.append(session)
+    } else if let lane = rosterById[laneId] {
+      if filedLaneIds.insert(laneId).inserted { addedLanes.append(lane) }
+      kept.append(session)
+    } else if let archived = archivedById[laneId] {
+      if filedLaneIds.insert(laneId).inserted { filedArchivedLanes.append(archived) }
+      kept.append(session)
+    } else if !focusedRosterLive {
+      kept.append(session)
+    }
+  }
+  return (kept, addedLanes.isEmpty ? lanes : lanes + addedLanes, filedArchivedLanes)
+}
+
 func workSessionGroupsByLane(
   sessions: [TerminalSessionSummary],
   orderedLanes: [LaneSummary],
   deletingLaneIds: Set<String> = [],
-  headerlessLaneIds: Set<String> = []
+  headerlessLaneIds: Set<String> = [],
+  /// Archived lanes that still hold rows: each is a history-only group after
+  /// the live lanes (`workFileSessionsWithoutLane`).
+  archivedLanes: [LaneSummary] = []
 ) -> [WorkSessionGroup] {
   var byLaneId: [String: [TerminalSessionSummary]] = [:]
   for session in sessions {
@@ -1131,7 +1195,7 @@ func workSessionGroupsByLane(
   }
 
   var groups: [WorkSessionGroup] = []
-  let knownLaneIds = Set(orderedLanes.map(\.id))
+  let knownLaneIds = Set(orderedLanes.map(\.id)).union(archivedLanes.map(\.id))
   for lane in orderedLanes {
     guard let list = byLaneId[lane.id], !list.isEmpty else { continue }
     groups.append(WorkSessionGroup(
@@ -1147,6 +1211,19 @@ func workSessionGroupsByLane(
       // lane to one hit never collapses its header mid-keystroke. `list` may
       // still hold that row's terminal children — they render nested under it.
       isHeaderless: headerlessLaneIds.contains(lane.id)
+    ))
+  }
+  for lane in archivedLanes {
+    guard let list = byLaneId[lane.id], !list.isEmpty else { continue }
+    groups.append(WorkSessionGroup(
+      id: "lane:\(lane.id)",
+      label: "\(lane.displayName) · Archived",
+      icon: .laneBranch,
+      tint: ADEColor.textMuted,
+      sessions: list,
+      laneColor: lane.color,
+      laneIcon: lane.icon,
+      laneEmoji: lane.emoji
     ))
   }
   // Surface any sessions whose lane isn't in the ordered list (e.g., soft-deleted lanes)

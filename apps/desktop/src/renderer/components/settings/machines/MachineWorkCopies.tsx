@@ -9,6 +9,7 @@ import { rendererRuntimeTarget } from "../../../lib/platform";
 import { arePathsEqual } from "../../../lib/pathUtils";
 import { showToast } from "../../app/toast/toastStore";
 import { confirmDialog } from "../../ui/dialog/confirm";
+import { plainErrorText } from "../../../lib/plainError";
 
 /**
  * "Work from other machines": the copies this machine keeps for chats on other
@@ -66,7 +67,7 @@ export function MachineWorkCopies({
       await window.ade.remoteWork.delete({ owner: copy.owner, projectId: copy.projectId }, target);
       setEpoch((value) => value + 1);
     } catch (error) {
-      showToast({ tone: "error", title: "Couldn't delete the work copy", message: error instanceof Error ? error.message : String(error) });
+      showToast({ tone: "error", title: "Couldn't delete the work copy", message: plainErrorText(error, "ADE couldn't delete the work copy.", copy.machineName) });
     } finally {
       setDeleting(null);
     }

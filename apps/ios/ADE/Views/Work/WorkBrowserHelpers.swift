@@ -178,6 +178,10 @@ func compareWorkSessionSortOrder(
   _ rhs: TerminalSessionSummary,
   chatSummaries: [String: AgentChatSessionSummary]
 ) -> Bool {
+  // A pinned chat leads its list, as it does on the desktop.
+  if lhs.pinned != rhs.pinned {
+    return lhs.pinned
+  }
   let lhsSummary = chatSummaries[lhs.id]
   let rhsSummary = chatSummaries[rhs.id]
   let lhsRank = workSessionStatusSortRank(normalizedWorkChatSessionStatus(session: lhs, summary: lhsSummary))

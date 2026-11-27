@@ -946,7 +946,7 @@ describe("describeUnpublishedMachine", () => {
     expect(describeUnpublishedMachine("http_error", "directory returned 503").detail)
       .not.toContain("directory returned 503");
     expect(describeUnpublishedMachine("http_error", null).detail)
-      .toContain("can't reach your ADE account");
+      .toContain("account service is having trouble");
   });
 
   it("hands an unrecognised state from a newer runtime to ade doctor", async () => {

@@ -1,3 +1,4 @@
+import { plainErrorText } from "../../lib/plainError";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from "react";
 import {
   ArrowClockwise,
@@ -873,7 +874,7 @@ export function ChatAppControlPanel({
     try {
       await action();
     } catch (error) {
-      setMessage({ tone: "error", text: errorMessage(error) });
+      setMessage({ tone: "error", text: plainErrorText(error, "ADE couldn't finish that.") });
     } finally {
       setBusy(null);
     }
@@ -1240,7 +1241,7 @@ export function ChatAppControlPanel({
       window.ade.appControl
         .click({ ...laneArgsRef.current, x: point.viewportX, y: point.viewportY, coordinateSpace: "viewport" }, pin)
         .catch((error) => {
-          setMessage({ tone: "error", text: `Click failed: ${errorMessage(error)}` });
+          setMessage({ tone: "error", text: `Click failed: ${plainErrorText(error, "the app did not answer.")}` });
         });
       setMessage(null);
     },
@@ -1292,7 +1293,7 @@ export function ChatAppControlPanel({
         try {
           await refreshSnapshot();
         } catch (error) {
-          setMessage({ tone: "info", text: `Typed into focused element. Snapshot refresh failed: ${errorMessage(error)}` });
+          setMessage({ tone: "info", text: `Typed into focused element. Snapshot refresh failed: ${plainErrorText(error, "the app did not answer.")}` });
           return;
         }
         setMessage({ tone: "info", text: "Typed into focused element." });

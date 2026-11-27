@@ -277,7 +277,12 @@ export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps
             demo: video.demo,
             lastError: video.unusable ? video.unusable : recording.lastError,
           };
-          if (video.files.length > 0) {
+          if (video.driveStuck) {
+            // The drive stopped answering mid-render: the sidecar and proof
+            // filing write to it, and would freeze this process with it.
+            logger?.warn("android.recording_drive_stuck_not_filed", { laneId });
+            recording = { ...recording, lastError: recording.lastError ?? "The recording's drive stopped answering, so the video was not filed." };
+          } else if (video.files.length > 0) {
             // A disk or proof error must not keep the lane marked as recording.
             try {
               writeAndroidRecordingSidecar(deps.dataDir, recording);

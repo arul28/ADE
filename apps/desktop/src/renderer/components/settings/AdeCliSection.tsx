@@ -4,6 +4,7 @@ import type { AdeCliStatus } from "../../../shared/types";
 import { rendererPlatformAttribute } from "../../lib/platform";
 import { ModernRow, ModernRows, ModernSection } from "./primitives";
 import { Banner } from "../ui/notice";
+import { plainErrorText } from "../../lib/plainError";
 
 /**
  * The terminal installer this card's button mirrors: it drops the same `ade`
@@ -41,7 +42,7 @@ export function AdeCliSection({ embedded = false }: Props) {
     try {
       setStatus(await api.getStatus());
     } catch (error) {
-      setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+      setNotice({ kind: "error", text: plainErrorText(error, "ADE couldn't check the command line tool.") });
     } finally {
       setLoading(false);
     }
@@ -61,7 +62,7 @@ export function AdeCliSection({ embedded = false }: Props) {
       setStatus(result.status);
       setNotice({ kind: result.ok ? "success" : "error", text: result.message });
     } catch (error) {
-      setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+      setNotice({ kind: "error", text: plainErrorText(error, "ADE couldn't install the command line tool.") });
     } finally {
       setInstalling(false);
     }

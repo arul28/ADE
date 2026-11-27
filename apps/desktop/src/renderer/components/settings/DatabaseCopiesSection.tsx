@@ -6,6 +6,7 @@ import { confirmDialog } from "../ui/dialog";
 import { Banner } from "../ui/notice";
 import { ModernRow, ModernRows, ModernSection } from "./primitives";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
+import { plainErrorText } from "../../lib/plainError";
 
 function databaseName(copy: DatabaseCopyInfo): string {
   if (copy.databaseKind === "machine") return "This computer";
@@ -58,7 +59,7 @@ export function DatabaseCopiesSection() {
     try {
       setCopies(await api.list());
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(plainErrorText(err, "ADE couldn't list the database copies."));
       setCopies([]);
     }
   }, []);
@@ -92,7 +93,7 @@ export function DatabaseCopiesSection() {
       const result = await window.ade?.databaseCopies?.delete(copy.path);
       if (result && !result.deleted) setError(result.reason);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(plainErrorText(err, "ADE couldn't delete that database copy."));
     } finally {
       setBusyPath(null);
       void refresh();

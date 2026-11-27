@@ -302,6 +302,25 @@ describe("sync host authority", () => {
     expect(holdsSyncHostSingleton()).toBe(false);
     unsubscribe();
   });
+
+  // The brain's machine-level lease and a project scope's own can both be held
+  // by one process for a moment, and either may take the lock file last. When
+  // the one the file names is released, the file must name the other: a
+  // missing file lets a second brain take sync while this one still hosts.
+  it("keeps the lock file naming a lease this process still holds", () => {
+    const lockPath = tempLockPath();
+    const lockOwnerId = () =>
+      (JSON.parse(fs.readFileSync(lockPath, "utf8")) as { owner: SyncHostSingletonOwner }).owner.id;
+    const scope = acquire(lockPath);
+    const brain = acquire(lockPath);
+    expect(lockOwnerId()).toBe(brain.owner.id);
+
+    brain.dispose();
+    expect(lockOwnerId()).toBe(scope.owner.id);
+
+    scope.dispose();
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
 });
 
 describe("isSameChannelSyncHostOwner", () => {

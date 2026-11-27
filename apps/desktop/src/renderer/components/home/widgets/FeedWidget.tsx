@@ -40,6 +40,7 @@ import { Banner } from "../../ui/notice";
 import { relativeTimeShort } from "./widgetHooks";
 import "../homeWidgets.css";
 import { useActiveRepositoryReader } from "../../../state/repositoryScope";
+import { useAccountUserId } from "../../../lib/account";
 
 /**
  * One timeline across projects and machines. Reads what the page already
@@ -134,16 +135,21 @@ function useUpdateSnapshot(): AutoUpdateSnapshot | null {
 const PRESENCE_KEY = "ade.home.feed.machines.v1";
 const PRESENCE_KEEP_MS = 8 * 86_400_000;
 
-type PresenceStore = { last: Record<string, { name: string; online: boolean }>; log: MachinePresenceEntry[] };
+const NO_PRESENCE: MachinePresenceEntry[] = [];
 
-function readPresence(): PresenceStore {
+/** Kept per account: another account signed in here never sees the last one's machines come and go. */
+type PresenceStore = { userId: string | null; last: Record<string, { name: string; online: boolean }>; log: MachinePresenceEntry[] };
+
+function readPresence(userId: string | null): PresenceStore {
+  const empty: PresenceStore = { userId, last: {}, log: [] };
+  if (!userId) return empty;
   try {
     const raw = JSON.parse(window.localStorage.getItem(PRESENCE_KEY) ?? "null") as PresenceStore | null;
-    if (raw && typeof raw === "object" && raw.last && Array.isArray(raw.log)) return raw;
+    if (raw && typeof raw === "object" && raw.userId === userId && raw.last && Array.isArray(raw.log)) return raw;
   } catch {
     // Unreadable: start over.
   }
-  return { last: {}, log: [] };
+  return empty;
 }
 
 /**
@@ -153,18 +159,24 @@ function readPresence(): PresenceStore {
  * connection's own connect time) dates an online event when it is known.
  */
 function useMachinePresence(rows: readonly MachineRow[], onlineSince: ReadonlyMap<string, number>): MachinePresenceEntry[] {
-  const [log, setLog] = useState<MachinePresenceEntry[]>(() => readPresence().log);
+  const userId = useAccountUserId();
+  const [shown, setShown] = useState(() => ({ userId, log: readPresence(userId).log }));
+  // Another account (or none): its log, not the last one's.
+  useEffect(() => {
+    setShown({ userId, log: readPresence(userId).log });
+  }, [userId]);
   // Another window logged a transition: show it here too.
   useEffect(() => {
     const onStorage = (event: StorageEvent) => {
-      if (event.key === PRESENCE_KEY) setLog(readPresence().log);
+      if (event.key === PRESENCE_KEY) setShown({ userId, log: readPresence(userId).log });
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
-  }, []);
+  }, [userId]);
   useEffect(() => {
+    if (!userId) return;
     const now = Date.now();
-    const store = readPresence();
+    const store = readPresence(userId);
     let changed = false;
     for (const row of rows) {
       if (row.key === "this-machine" || row.dot === "busy") continue;
@@ -186,9 +198,10 @@ function useMachinePresence(rows: readonly MachineRow[], onlineSince: ReadonlyMa
     } catch {
       // Full or unavailable storage: this session still shows the change.
     }
-    setLog(store.log);
-  }, [onlineSince, rows]);
-  return log;
+    setShown({ userId, log: store.log });
+  }, [onlineSince, rows, userId]);
+  // Until the effect above reads the new account's log, the last one's never shows.
+  return shown.userId === userId ? shown.log : NO_PRESENCE;
 }
 
 // ── "While you were away" ────────────────────────────────────────────

@@ -20,6 +20,7 @@ import {
   type LaneFilter,
 } from "./laneListModel";
 import { requirePin } from "../../../state/repositoryScope";
+import { plainErrorText } from "../../../lib/plainError";
 
 const ARCHIVE_TOAST_ID = "settings-lanes-archive";
 /** Rows shown before "Show N more". */
@@ -139,9 +140,9 @@ export function LaneList({
           }
           const result = await window.ade.lanes.archiveAndReclaim({ laneId: lane.laneId, confirmation: "RECLAIM" }, requirePin(pin));
           freed += result.reclaimedBytes;
-          archived.push(lane.name);
+          archived.push(laneDisplayName(lane));
         } catch (err) {
-          failed.push(`${lane.name}: ${err instanceof Error ? err.message : String(err)}`);
+          failed.push(`${laneDisplayName(lane)}: ${plainErrorText(err, "the archive did not finish.")}`);
         }
       }
     } finally {

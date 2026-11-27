@@ -21,6 +21,8 @@ export type CloudUnitWords = {
   short: (milli: number) => string;
   /** A size's rate in words, lowercase: "uses no credits", "uses 2.5 credits an hour". */
   rate: (rate: number) => string;
+  /** A size's rate, short and lowercase, for a before → after line: "0 credits an hour", "1 credit an hour", "2.5 credits an hour". */
+  hourly: (rate: number) => string;
   /** A size's rate as a line: "Never uses your credits", "1 hour of work uses 2.5 credits". */
   rateLine: (rate: number) => string;
   /** "Extra credits": the paid plan's switch past the plan. */
@@ -65,6 +67,7 @@ function wordsFor(phoneMilliPerMinute: number): CloudUnitWords {
     milli,
     short: milli,
     rate: (rate) => (rate > 0 ? `uses ${count(rate)} an hour` : "uses no credits"),
+    hourly: (rate) => `${count(rate > 0 ? rate : 0)} an hour`,
     rateLine: (rate) => (rate > 0 ? `1 hour of work uses ${count(rate)}` : "Never uses your credits"),
     extra: "Extra credits",
     perUnit: "a credit",

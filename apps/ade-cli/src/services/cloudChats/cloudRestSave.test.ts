@@ -38,7 +38,7 @@ describe("splitCapsule", () => {
 
 describe("createCloudRestSave capsules", () => {
   /** One Claude chat on an open project; the account server keeps what it is sent. */
-  const setup = () => {
+  const setup = (forkTransport: Record<string, unknown> = { provider: "claude", kind: "claude-jsonl", nativeSessionId: "native-1", mainFile: { name: "native-1.jsonl", contentBase64Gzip: gzipSync("hi").toString("base64"), uncompressedBytes: 2 } }) => {
     const chat = { lastActivityAt: "2026-11-20T10:00:00.000Z" };
     let idle = true;
     let onPrepare = () => {};
@@ -60,7 +60,7 @@ describe("createCloudRestSave capsules", () => {
         capsule: {
           version: 1,
           source: { provider: "claude", sessionId: args.sourceSessionId },
-          forkTransport: { provider: "claude", kind: "claude-jsonl", nativeSessionId: "native-1", mainFile: { name: "native-1.jsonl", contentBase64Gzip: "aGk=", uncompressedBytes: 2 } },
+          forkTransport,
           transcriptEnvelopes: { contentBase64Gzip: transcript, uncompressedBytes: 2, truncated: false },
         },
       };
@@ -90,8 +90,9 @@ describe("createCloudRestSave capsules", () => {
       }),
       putEventWakes: async () => null,
     } as unknown as CloudApiClient;
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-rest-save-"));
     const saver = createCloudRestSave({
-      adeHome: fs.mkdtempSync(path.join(os.tmpdir(), "ade-rest-save-")),
+      adeHome,
       instanceId: "instance-1",
       logger: { info: () => {}, warn: () => {} },
       api: async () => api,
@@ -102,6 +103,7 @@ describe("createCloudRestSave capsules", () => {
     });
     const idleSave = () => saver.save({ budgetMs: 60_000, reason: "idle", stillIdle: () => idle });
     return {
+      adeHome,
       chat,
       hangPrepare: (next: boolean) => {
         hang = next;
@@ -167,5 +169,62 @@ describe("createCloudRestSave capsules", () => {
     rest.hangPrepare(false);
     expect((await rest.idleSave()).capsules).toBe(1);
     expect(rest.prepareCloudRestCapsule).toHaveBeenCalledTimes(2);
+  });
+
+  it("sends the provider's history redacted: a key in a tool result is gone, and every line still parses for the resume", async () => {
+    const key = "sk-ant-api03-" + "a".repeat(40);
+    const signature = "Ab+/".repeat(100);
+    const pack = (text: string) => ({ contentBase64Gzip: gzipSync(Buffer.from(text, "utf8")).toString("base64"), uncompressedBytes: Buffer.byteLength(text, "utf8") });
+    const main = [
+      { type: "assistant", uuid: "u1", message: { content: [{ type: "thinking", thinking: "Use the key.", signature }] } },
+      { type: "user", uuid: "u2", parentUuid: "u1", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: `ANTHROPIC_API_KEY=${key}` }] }, toolUseResult: { stdout: `export TOKEN=${key}`, token: "plain-value" } },
+    ].map((line) => JSON.stringify(line)).join("\n")
+      // A number JavaScript can't hold, on a line that is redacted: written back as it was.
+      + `\n{"type":"user","uuid":"u3","runId":9007199254740993,"ratio":1.0,"message":{"content":"key ${key}"}}\n`;
+    const privateKey = `-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----`;
+    const rest = setup({
+      provider: "claude",
+      kind: "claude-jsonl",
+      nativeSessionId: "native-1",
+      mainFile: { name: "native-1.jsonl", ...pack(main) },
+      sideFiles: [
+        { relPath: "native-1/subagents/agent-1.jsonl", ...pack(`${JSON.stringify({ type: "user", message: { content: `key ${key}` } })}\n`) },
+        { relPath: "native-1/tool-results/t1.txt", ...pack(`line one\nkey=${key}\n`) },
+        // A JSON record, then a private key over several lines of text.
+        { relPath: "native-1/tool-results/t2.txt", ...pack(`{"ok":true}\n${privateKey}\nafter\n`) },
+      ],
+    });
+    // A capsule saved before this redaction, for the chat as it is now: it is sent again, redacted.
+    fs.mkdirSync(path.join(rest.adeHome, "cloud"), { recursive: true });
+    fs.writeFileSync(path.join(rest.adeHome, "cloud", "rest-save.json"), JSON.stringify({
+      v: 1,
+      machineKey: "machine-1",
+      capsules: { "chat-1": `${rest.chat.lastActivityAt}|anthropic/claude-sonnet-5` },
+    }));
+    expect((await rest.idleSave()).capsules).toBe(1);
+    const saved = JSON.parse(gunzipSync(Buffer.from(rest.uploaded[0]!.bytes)).toString("utf8")) as {
+      capsule: { forkTransport: { mainFile: { contentBase64Gzip: string; uncompressedBytes: number }; sideFiles: Array<{ relPath: string; contentBase64Gzip: string; uncompressedBytes: number }> } };
+    };
+    const unpack = (file: { contentBase64Gzip: string; uncompressedBytes: number }) => {
+      const text = gunzipSync(Buffer.from(file.contentBase64Gzip, "base64")).toString("utf8");
+      // The restore refuses a file whose size does not match.
+      expect(Buffer.byteLength(text, "utf8")).toBe(file.uncompressedBytes);
+      return text;
+    };
+    const { forkTransport } = saved.capsule;
+    const all = [forkTransport.mainFile, ...forkTransport.sideFiles].map(unpack).join("\n");
+    expect(all).not.toContain(key);
+    expect(all).not.toContain("plain-value");
+    expect(all).not.toContain("MIIEvQIBADANBgkqhkiG9w0BAQEFAASC");
+
+    const lines = unpack(forkTransport.mainFile).trim().split("\n").map((line) => JSON.parse(line) as Record<string, any>);
+    expect(lines).toHaveLength(3);
+    expect(unpack(forkTransport.mainFile)).toContain('"runId":9007199254740993,"ratio":1.0,');
+    // What the resume reads back as it is: ids and the thinking signature.
+    expect(lines[0]!.message.content[0].signature).toBe(signature);
+    expect(lines[1]).toMatchObject({ uuid: "u2", parentUuid: "u1", message: { content: [{ type: "tool_result", tool_use_id: "t1" }] } });
+    expect(forkTransport.sideFiles.map((file) => file.relPath)).toEqual(["native-1/subagents/agent-1.jsonl", "native-1/tool-results/t1.txt", "native-1/tool-results/t2.txt"]);
+    expect(unpack(forkTransport.sideFiles[1]!)).toContain("line one");
+    expect(unpack(forkTransport.sideFiles[2]!)).toMatch(/^\{"ok":true\}\n[\s\S]*\nafter\n$/);
   });
 });

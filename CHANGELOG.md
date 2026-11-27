@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.137] - 2026-11-26
+
+### Desktop and web
+
+- CTO: every open PR on the repository and other machines' chats, linked work closes itself, calmer Learned rows (#2652).
+- Settings › Machines lists ADE Cloud; sizes say "Uses no credits" (#2651).
+- Machines stay online through a hung drive; a quieter Machines menu (#2641).
+- Sign-up sends Clerk legal acceptance, so new accounts complete (#2654).
+- `ade issue list` without flags works; an unscoped list skips a tracker with nothing set up; the Jev bonus answers a refused request as 400 (#2655).
+
+### iOS
+
+- Project logos with a Windows computer; no orphaned sessions for deleted lanes (#2642).
+- Sign-up sends legal acceptance (#2654).
+
+## [1.2.136] - 2026-11-26
+
+### Desktop and web
+
+- CTO: learns rules and skills with a Learned row and Undo, stuck-child nudges and "Waiting on you", routine checks, inline child proof, notes archive, reactions as feedback (#2523, #2499, #2496, #2522, #2521, #2520, #2524).
+- Chat: child chats report back in full and survive restarts; @ mention Linear and GitHub people; prompt history, solid bubbles (#2519, #2619, #2597).
+- Settings: Deleted & Archived and Disk space pages, lane restore brings chats back, Xcode and simulators per Mac, Needs attention ignore/hide (#2638, #2623, #2621).
+- ADE Cloud: launch pricing, sleeping-chat settings and @ menu, truthful screens, no wake on project open, per-account caches, real-bill free-use cap, many sleep/wake fixes (#2563, #2554, #2643, #2614, #2617, #2607, #2640, #2610, #2615, #2644, #2594, #2613, #2645).
+- Plain-sentence errors everywhere; Integrations and Connections clarity; per-machine Stable/Beta (#2648, #2647, #2595, #2646, #2620, #2593).
+
+### iOS
+
+- Comments wake a sleeping cloud chat, @ menu while it sleeps, size-request answers, saved composer settings (#2649, #2636, #2554, #2650).
+
 ## [1.2.135] - 2026-11-25
 
 ### Desktop and web
@@ -2943,7 +2972,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.135...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.137...HEAD
+[1.2.137]: https://github.com/arul28/ADE/compare/v1.2.136...v1.2.137
+[1.2.136]: https://github.com/arul28/ADE/compare/v1.2.135...v1.2.136
 [1.2.135]: https://github.com/arul28/ADE/compare/v1.2.134...v1.2.135
 [1.2.134]: https://github.com/arul28/ADE/compare/v1.2.133...v1.2.134
 [1.2.133]: https://github.com/arul28/ADE/compare/v1.2.132...v1.2.133

@@ -216,7 +216,10 @@ export function savedChatLane(row: CloudSavedChatRow): LaneSummary {
 function eventsFromPage(page: CloudSavedChatPage, sessionId: string): AgentChatEventEnvelope[] {
   // Parts come newest first; a transcript reads oldest first.
   const text = [...page.parts].reverse().map((part) => part.text).join("");
-  return parseAgentChatTranscript(text).filter((event) => event.sessionId === sessionId);
+  // Marked as saved rows, so the live rows they were copied from replace them.
+  return parseAgentChatTranscript(text)
+    .filter((event) => event.sessionId === sessionId)
+    .map((event): AgentChatEventEnvelope => ({ ...event, savedCopy: true }));
 }
 
 /** The history cursor of the parts before a page; 0 when it reached the first part. */

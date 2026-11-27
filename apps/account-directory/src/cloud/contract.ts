@@ -1137,9 +1137,9 @@ export function idleCleanupWhen(deletesAt: number, now: number): string {
  */
 export const CLOUD_IDLE_CLEANUP_DAYS: Readonly<Record<"free" | "paid", number>> = { free: 3, paid: 10 };
 
-/** What happens before the delete, in ADE and the emails. */
+/** What happens before the delete, in ADE and the emails. ADE never commits or pushes for the person: it saves the lane's work in ADE Cloud. */
 export function idleCleanupSaveSentence(branch: string | null | undefined): string {
-  return `Before that, ADE commits its work and pushes it to ${branch ? `the lane's branch, ${branch},` : "the lane's branch"} on GitHub. The lane and its chats stay, and your next message makes a new computer from the branch.`;
+  return `ADE deletes it only once its work that isn't on GitHub is saved in ADE Cloud; it never commits or pushes for you. The lane and its chats stay, and your next message makes a new computer from ${branch ? `the lane's branch, ${branch},` : "the lane's branch"} with that work back on it.`;
 }
 
 /**

@@ -162,6 +162,7 @@ export function createAdeCloudIntegrationReads(accountCall: () => AdeCloudAccoun
           connected: true,
           viewerId: str(viewer.id),
           viewerName: str(viewer.displayName) ?? str(viewer.name),
+          viewerIsAdmin: typeof viewer.admin === "boolean" ? viewer.admin : null,
           organizationId: organization ? str(organization.id) : null,
           organizationName: organization ? str(organization.name) : null,
           organizationUrlKey: organization ? str(organization.urlKey) : null,

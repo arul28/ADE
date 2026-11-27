@@ -13,6 +13,7 @@ import {
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { ThemePreview } from "./ThemePreview";
 import { sentenceCase } from "../../lib/format";
+import { clearThemeHoverPreview, themeHoverPreviewProps } from "./themeHoverPreview";
 
 /**
  * The theme picker, as two independent choices.
@@ -215,6 +216,7 @@ function SwatchHalf({
       className="ade-swatch-half"
       data-side={side}
       onClick={onPick}
+      {...themeHoverPreviewProps(theme.id)}
       style={{ background: `linear-gradient(${isLight ? "160deg" : "340deg"}, ${p.surface}, ${p.bg})` }}
     >
       {/* A hint of the UI: an accent control and a line of text. */}
@@ -261,12 +263,15 @@ function FamilyTile({
   effectiveId,
   onSelect,
   onPickVariant,
+  previewThemeId,
 }: {
   family: AdeThemeFamily;
   active: boolean;
   effectiveId: string;
   onSelect: () => void;
   onPickVariant: (theme: AdeTheme) => void;
+  /** The variant a click on the name would apply, previewed while pointed at. */
+  previewThemeId: string;
 }) {
   const lightAccent = useMemo(() => resolveTheme(family.light).palette.accent, [family]);
   const darkAccent = useMemo(() => resolveTheme(family.dark).palette.accent, [family]);
@@ -282,6 +287,7 @@ function FamilyTile({
         aria-label={`Use the ${family.name} theme`}
         className="ade-swatch-name"
         onClick={onSelect}
+        {...themeHoverPreviewProps(previewThemeId)}
       >
         <span>{family.name}</span>
         <span aria-hidden style={{ display: "inline-flex", gap: 3, marginLeft: "auto" }}>
@@ -294,10 +300,11 @@ function FamilyTile({
 }
 
 function CustomTile({ theme, active, onSelect }: { theme: AdeTheme; active: boolean; onSelect: () => void }) {
+  const hoverPreview = themeHoverPreviewProps(theme.id);
   const p = useMemo(() => resolveTheme(theme).palette, [theme]);
   const badge = theme.source === "vscode" ? "VS Code" : theme.source === "imported" ? "Imported" : "Custom";
   return (
-    <div className="ade-swatch-tile" data-active={active}>
+    <div className="ade-swatch-tile" data-active={active} {...hoverPreview}>
       <div className="ade-swatch">
         <button
           type="button"
@@ -349,10 +356,13 @@ function FamilySwatchDot({
   family,
   active,
   onSelect,
+  previewThemeId,
 }: {
   family: AdeThemeFamily;
   active: boolean;
   onSelect: () => void;
+  /** The variant a click would apply, previewed while pointed at or focused. */
+  previewThemeId: string;
 }) {
   const light = useMemo(() => resolveTheme(family.light).palette, [family]);
   const dark = useMemo(() => resolveTheme(family.dark).palette, [family]);
@@ -366,6 +376,7 @@ function FamilySwatchDot({
       aria-label={`Use the ${family.name} theme`}
       title={family.name}
       onClick={onSelect}
+      {...themeHoverPreviewProps(previewThemeId)}
     >
       <span
         className="ade-swatch-dot-circle"
@@ -392,14 +403,6 @@ export function ThemeGallery({ compact = false }: { compact?: boolean } = {}) {
   const visibleCustom = customThemes.filter((theme) => matchesSearch(theme.name.toLowerCase(), needle));
   const nothing = visible.length === 0 && visibleCustom.length === 0;
 
-  const shelfLabel: React.CSSProperties = {
-    display: "flex",
-    alignItems: "baseline",
-    gap: 8,
-    margin: "0 0 10px",
-    fontFamily: SANS_FONT,
-  };
-
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
       <label className="ade-theme-search">
@@ -419,9 +422,9 @@ export function ThemeGallery({ compact = false }: { compact?: boolean } = {}) {
         if (entries.length === 0) return null;
         return (
           <section key={collection.id} aria-label={collection.label}>
-            <h3 style={shelfLabel}>
-              <span style={{ fontSize: 12, fontWeight: 600, color: COLORS.textSecondary }}>{collection.label}</span>
-              <span style={{ fontSize: 11.5, color: COLORS.textDim }}>{collection.blurb}</span>
+            <h3 className="ade-theme-shelf-head">
+              <span>{collection.label}</span>
+              <span>{collection.blurb}</span>
             </h3>
             <div role="group" aria-label={`${collection.label} themes`} className={compact ? "ade-swatch-dots" : "ade-swatch-grid"}>
               {entries.map(({ entry }) => compact ? (
@@ -429,7 +432,11 @@ export function ThemeGallery({ compact = false }: { compact?: boolean } = {}) {
                   key={entry.id}
                   family={entry}
                   active={family?.id === entry.id}
-                  onSelect={() => setTheme(entry[mode].id)}
+                  previewThemeId={entry[mode].id}
+                  onSelect={() => {
+                    clearThemeHoverPreview();
+                    setTheme(entry[mode].id);
+                  }}
                 />
               ) : (
                 <FamilyTile
@@ -437,9 +444,14 @@ export function ThemeGallery({ compact = false }: { compact?: boolean } = {}) {
                   family={entry}
                   active={family?.id === entry.id}
                   effectiveId={effectiveId}
+                  previewThemeId={entry[mode].id}
                   // The name keeps the mode; a swatch half picks its variant and pins it.
-                  onSelect={() => setTheme(entry[mode].id)}
+                  onSelect={() => {
+                    clearThemeHoverPreview();
+                    setTheme(entry[mode].id);
+                  }}
                   onPickVariant={(variant) => {
+                    clearThemeHoverPreview();
                     setThemeFollowsSystem(false);
                     setTheme(variant.id);
                   }}
@@ -452,9 +464,9 @@ export function ThemeGallery({ compact = false }: { compact?: boolean } = {}) {
 
       {visibleCustom.length > 0 ? (
         <section aria-label="Your themes">
-          <h3 style={shelfLabel}>
-            <span style={{ fontSize: 12, fontWeight: 600, color: COLORS.textSecondary }}>Yours</span>
-            <span style={{ fontSize: 11.5, color: COLORS.textDim }}>Imported and customized, kept on this computer.</span>
+          <h3 className="ade-theme-shelf-head">
+            <span>Yours</span>
+            <span>Imported and customized, on this computer.</span>
           </h3>
           <div role="group" aria-label="Your themes" className="ade-swatch-grid">
             {visibleCustom.map((theme) => (
@@ -464,6 +476,7 @@ export function ThemeGallery({ compact = false }: { compact?: boolean } = {}) {
                 active={themeId === theme.id}
                 // A custom theme has one mode, so "follow the system" does not apply.
                 onSelect={() => {
+                  clearThemeHoverPreview();
                   setThemeFollowsSystem(false);
                   setTheme(theme.id);
                 }}

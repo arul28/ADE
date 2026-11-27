@@ -3,11 +3,18 @@
  * step that fits, never Electron's "Error invoking remote method '…':" text,
  * a JSON-RPC code, or the name of an internal part.
  *
- * Settings › Integrations reads its failures through here (the MCP servers
- * banner, GitHub links on the Linear page, the GitHub connect choice), and so
- * can the Machines pages (ADE-225: "Update ADE on <machine>" with an Update
- * button is the `update` next step with `machine`). A sentence a service
- * wrote for a person is kept as it is; only text written for logs is replaced.
+ * Every error line a person reads should come through here: Settings, PRs,
+ * chat, Files, terminals, Work, lanes and onboarding already do. Pass
+ * `machine` when the call went to another computer, so an older brain reads
+ * "Update ADE on <machine>". A sentence a service wrote for a person is kept
+ * as it is; only text written for logs is replaced.
+ *
+ * Not for text code then inspects (a retry decision, an error-kind check):
+ * keep the raw message for that, and convert only what is shown. Areas with
+ * their own formatter (Mac desktop, iOS, Music, Git actions) keep it.
+ *
+ * After a label ("Delete failed: …"), pass a fallback that reads as a reason
+ * ("the chat did not answer."), not a second "couldn't" sentence.
  */
 
 import { isUnsupportedAdeActionError } from "../../shared/codedError";

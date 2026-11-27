@@ -119,6 +119,8 @@ import type {
   RemoveDeletedLaneArgs,
   RestoreDeletedLaneArgs,
   RestoreDeletedLaneResult,
+  RestoredLaneChats,
+  RestoredLaneChatsArgs,
   LaneDeleteEvent,
   LaneDeleteLeftoverWorktree,
   LaneLifecycleEvent,
@@ -131,6 +133,7 @@ import type {
   LaneDeleteStepName,
   LaneIcon,
   LaneBranchActiveWorkItem,
+  TerminalSessionSummary,
   LaneBranchDrift,
   LaneBranchDriftKind,
   LaneBranchProfile,
@@ -173,7 +176,7 @@ import type {
 } from "../../../shared/types";
 import { legacyLaneEmojiIcon, legacyLaneIconEmoji, normalizeLaneEmoji } from "../../../shared/laneEmoji";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
-import { recordChatsDeletedWithLane } from "../chat/deletedChats";
+import { readLaneChatRecords, recordChatsDeletedWithLane } from "../chat/deletedChats";
 import { requireNormalizedUuid } from "../../../shared/uuid";
 import {
   classifyMissingLaneBranchDriftKind,
@@ -187,6 +190,7 @@ import { DEFAULT_NEW_LANE_DEFAULTS, normalizeLaneStart, plainLaneStartBranch, ty
 import { createLaneBranchNaming } from "./laneBranchNaming";
 
 import { appleLaneDerivedDataPath, endLaneDeviceOnDisk, releaseLaneAppleDevice } from "../ios/laneDeviceRelease";
+import { sessionActiveKind } from "../../../shared/sessionSpawnNesting";
 import { anotherLaneHoldsUdid, readLaneAppleDeviceRecord } from "../ios/laneDeviceRows";
 import { bareSimulatorPowerOff } from "../ios/simulatorPower";
 import {
@@ -530,11 +534,13 @@ function stablePathThroughExistingAncestor(targetPath: string): string {
 const STALE_WORKTREE_ROOT_MESSAGE = "Lane worktree is missing or no longer points at its Git worktree root.";
 const CHECKOUT_LEFTOVER_HINT = "The lane folder may hold files from both branches. Open a terminal in the lane and run `git status` before you continue.";
 /**
- * Each git read in `readUnsavedWork`. Only an ADE Cloud free or delete reads
- * it (`ade cloud push-work` / `work-state`), in the background with minutes
- * to spare, and "unreadable" keeps the computer. A big repository's first
- * `git status` on a Small computer just woken or set up (a cold index)
- * measured 5.6 s and ran past 8 s, which refused the free for nothing.
+ * Each git read in `readUnsavedWork`. Only ADE Cloud reads it: a free or a
+ * delete (`ade cloud push-work` / `work-state`) and a computer's idle report
+ * (`cloudComputerReports.ts`), in the background with minutes to spare.
+ * "Unreadable" keeps the computer and shows its work as not on GitHub. A big
+ * repository's first `git status` on a Small computer just woken or set up
+ * (a cold index) measured 5.6 s and ran past 8 s, which refused the free for
+ * nothing.
  */
 const UNSAVED_WORK_GIT_TIMEOUT_MS = 45_000;
 const CHECKOUT_TIMEOUT_MESSAGE = `Git stopped making progress, or did not finish within ${GIT_TREE_WRITE_TIMEOUT_MS / 60_000} minutes, so ADE stopped the checkout. ${CHECKOUT_LEFTOVER_HINT}`;
@@ -1569,6 +1575,7 @@ export type LaneCreateRuntimeOptions = {
 export type LaneDeleteTeardownDeps = {
   agentChatService?: {
     countActiveForLane: (laneId: string) => number;
+    listArchivedWorkingChats?: (laneId: string) => TerminalSessionSummary[];
     disposeForLane: (laneId: string) => Promise<number>;
     /** The lane's chats' work on other machines is removed there (not awaited). */
     releaseRemoteWorkForLane?: (laneId: string, ended: "archived" | "deleted") => void;
@@ -1576,6 +1583,7 @@ export type LaneDeleteTeardownDeps = {
   ptyService?: {
     countActiveForLane: (laneId: string) => number;
     disposeForLane: (laneId: string) => number;
+    listAdditionalLiveSessionsForLane?: (laneId: string) => TerminalSessionSummary[];
   };
   fileWatcherService?: {
     countActiveForWorkspace: (workspaceId: string) => number;
@@ -1704,6 +1712,12 @@ export function createLaneService({
   // storage auto-archive — one list, not six. Best-effort: a failed `compose
   // down` warns and never fails the archive.
   let onLaneArchivedEnvTeardown: ((laneId: string) => Promise<void>) | null = null;
+
+  // Late-bound: a deleted lane restored as a new lane takes back the chats its
+  // delete put in Recently deleted. Set via `setOnDeletedLaneRestored` because
+  // the chat service is constructed after the lane service. Null where no chat
+  // service runs; the restore then leaves the chats in Recently deleted.
+  let onDeletedLaneRestored: ((args: RestoredLaneChatsArgs) => Promise<RestoredLaneChats>) | null = null;
 
   const resolveSessionTitle = (sessionId: string): string | null => {
     const id = sessionId.trim();
@@ -2809,9 +2823,9 @@ export function createLaneService({
   };
 
   const getActiveWorkForLane = (laneId: string): LaneBranchActiveWorkItem[] => {
-    const terminalRows = db.all<{ id: string; title: string; status: string }>(
+    const terminalRows = db.all<{ id: string; title: string; status: string; tool_type: string | null }>(
       `
-        select id, title, status
+        select id, title, status, tool_type
         from terminal_sessions
         where lane_id = ?
           and archived_at is null
@@ -2821,14 +2835,24 @@ export function createLaneService({
       `,
       [laneId],
     );
+    const archivedWorkingChats = teardownDeps?.agentChatService?.listArchivedWorkingChats?.(laneId) ?? [];
+    const additionalLiveSessions = teardownDeps?.ptyService?.listAdditionalLiveSessionsForLane?.(laneId) ?? [];
     return [
-      ...terminalRows.map((row) => ({
+      ...[...archivedWorkingChats, ...additionalLiveSessions].map((row): LaneBranchActiveWorkItem => ({
         id: row.id,
-        kind: "terminal" as const,
+        kind: sessionActiveKind(row.toolType),
+        toolType: row.toolType ?? null,
+        title: row.title || row.id,
+        status: "running",
+      })),
+      ...terminalRows.map((row): LaneBranchActiveWorkItem => ({
+        id: row.id,
+        kind: sessionActiveKind(row.tool_type),
+        toolType: row.tool_type ?? null,
         title: row.title || row.id,
         status: row.status,
       })),
-    ];
+    ].slice(0, 10);
   };
 
   const findActiveBranchOwner = (branchRef: string, laneId: string): { id: string; name: string } | null => {
@@ -5007,7 +5031,11 @@ export function createLaneService({
    */
   const cleanupLaneDatabaseRows = (
     laneId: string,
-    options?: { tombstoneMode?: LaneUsageTombstoneMode },
+    options?: {
+      tombstoneMode?: LaneUsageTombstoneMode;
+      /** The lane's chat records from before its chats stopped (`readLaneChatRecords`). */
+      chatRecordsBeforeStop?: ReadonlyMap<string, Record<string, unknown>>;
+    },
   ): void => {
     const tombstoneMode = options?.tombstoneMode ?? "deleted";
     if (tombstoneMode !== "none") {
@@ -5180,6 +5208,7 @@ export function createLaneService({
           laneName: lane?.name ?? null,
           worktreePath: lane?.worktreePath ?? null,
           chatSessionsDir: resolveAdeLayout(projectRoot).chatSessionsDir,
+          recordsBeforeStop: options?.chatRecordsBeforeStop,
         });
       } catch (error) {
         logger.warn("lanes.deleted_chats_record_failed", {
@@ -5955,6 +5984,18 @@ export function createLaneService({
       // it finishes here even when the caller that started it is gone.
       onAccepted();
 
+      // Stopping a chat drops its agent's id from the chat's record, and
+      // Recently deleted needs that id to bring the chat back with the lane.
+      let chatRecordsBeforeStop: Map<string, Record<string, unknown>> | undefined;
+      try {
+        chatRecordsBeforeStop = readLaneChatRecords(db, {
+          laneId,
+          chatSessionsDir: resolveAdeLayout(projectRoot).chatSessionsDir,
+        });
+      } catch (error) {
+        logger.warn("lane.delete.chat_records_read_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
+      }
+
       await runStep("stop_chats", async () => {
         const svc = teardownDeps?.agentChatService;
         if (!svc) return { detail: "no service" };
@@ -6484,7 +6525,7 @@ export function createLaneService({
         const laneArtifactFiles = collectLaneArtifactFilePaths(laneId);
         db.run("begin immediate");
         try {
-          cleanupLaneDatabaseRows(laneId);
+          cleanupLaneDatabaseRows(laneId, { chatRecordsBeforeStop });
           db.run("commit");
         } catch (error) {
           try {
@@ -9468,7 +9509,22 @@ export function createLaneService({
           logger.warn("lane.deleted_snapshot.rebind_failed", { id: snapshot.id, laneId: lane.id, error: error instanceof Error ? error.message : String(error) });
         });
       }
-      return { lane, branchName, restoredUncommitted: files.restored, warning: files.warning, extraBranches };
+      // The lane is back; so are the chats its delete put in Recently deleted.
+      // A failure here never fails the restore: those chats stay listed.
+      const chats = onDeletedLaneRestored
+        ? await onDeletedLaneRestored({ fromLaneId: snapshot.laneId, toLaneId: lane.id }).catch((error: unknown) => {
+            logger.warn("lane.deleted_restore.chats_failed", { id: snapshot.id, laneId: lane.id, error: error instanceof Error ? error.message : String(error) });
+            return null;
+          })
+        : null;
+      return {
+        lane,
+        branchName,
+        restoredUncommitted: files.restored,
+        warning: files.warning,
+        extraBranches,
+        ...(chats ? { reopenedChats: chats.reopened, chatsNotReopened: chats.failed } : {}),
+      };
     },
 
     /** Stops the git checkout of a create, import or branch switch started with this operation id. */
@@ -10001,6 +10057,14 @@ export function createLaneService({
      */
     setOnLaneArchivedEnvTeardown(hook: ((laneId: string) => Promise<void>) | null): void {
       onLaneArchivedEnvTeardown = hook ?? null;
+    },
+
+    /**
+     * Late-bind the step that reopens a restored lane's chats into it. Wired
+     * by the host once the chat service exists.
+     */
+    setOnDeletedLaneRestored(hook: typeof onDeletedLaneRestored): void {
+      onDeletedLaneRestored = hook ?? null;
     },
 
 

@@ -19,6 +19,7 @@ import { ComposerPopover, PopItem } from "../lanes/createLaneComposerChips";
 import { useLaneStartMenuData } from "../lanes/useLaneStartMenuData";
 import { captureLaneSetupAnalytics } from "../../lib/laneSetupAnalytics";
 import "./machineSettings.css";
+import { plainErrorText } from "../../lib/plainError";
 
 /** Which kind of pattern a project chose, for analytics: never its text. */
 function patternKind(pattern: string): "pattern_ade" | "pattern_user" | "pattern_none" | "pattern_custom" {
@@ -73,7 +74,7 @@ export function NewLaneSettingsSection() {
       captureLaneSetupAnalytics({ action: "start_default_changed", outcome: `start_${next.from}` });
       flash();
     } catch (error) {
-      fail(error instanceof Error ? error.message : String(error));
+      fail(plainErrorText(error, "ADE couldn't save the new lane setting."));
     } finally {
       setPending(null);
     }

@@ -890,6 +890,7 @@ import type {
   DeletedChatRemoveArgs,
   DeletedChatReopenArgs,
   EffectiveProjectConfig,
+  RestoredLaneChatsArgs,
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { MODEL_CATALOG_REFRESH_PROVIDERS, PROOF_LISTING_ARTIFACT_FILTER } from "../../../shared/types";
@@ -21451,7 +21452,26 @@ export function createAgentChatService(args: {
     managed.turnBeforeTree = captureWorkingTreeFingerprint(managed.laneWorktreePath).catch(() => null);
   };
 
+  /**
+   * Chats whose diff summary is still being worked out after their turn
+   * ended. The line lands after `done`, so the cloud busy list counts them
+   * (`listBusyFacts`): a stop's chat save waits for it.
+   */
+  const turnDiffSummariesInFlight = new Map<string, number>();
+
   const emitTurnDiffSummaryIfChanged = async (managed: ManagedChatSession, turnId: string): Promise<void> => {
+    const sessionId = managed.session.id;
+    turnDiffSummariesInFlight.set(sessionId, (turnDiffSummariesInFlight.get(sessionId) ?? 0) + 1);
+    try {
+      await emitTurnDiffSummary(managed, turnId);
+    } finally {
+      const left = (turnDiffSummariesInFlight.get(sessionId) ?? 1) - 1;
+      if (left > 0) turnDiffSummariesInFlight.set(sessionId, left);
+      else turnDiffSummariesInFlight.delete(sessionId);
+    }
+  };
+
+  const emitTurnDiffSummary = async (managed: ManagedChatSession, turnId: string): Promise<void> => {
     const beforeSha = managed.turnBeforeSha;
     const beforeTreePromise = managed.turnBeforeTree;
     managed.turnBeforeSha = null;
@@ -73421,6 +73441,8 @@ export function createAgentChatService(args: {
       ...(crossMachineBatchApproval ? { crossMachineBatchApproval } : {}),
       sessionProfile: liveSession?.sessionProfile ?? persisted?.sessionProfile,
       title: row.title ?? null,
+      // The agent's own glanceable status line (`ade chat note`), already on the row.
+      ...(row.statusNote?.trim() ? { statusNote: row.statusNote.trim() } : {}),
       goal: row.goal ?? null,
       reasoningEffort: liveSession?.reasoningEffort ?? persisted?.reasoningEffort ?? null,
       // Effective, not stored: an account that forbids Fast reports Standard
@@ -73843,12 +73865,14 @@ export function createAgentChatService(args: {
       /** Side chats live inside their main chat and are left out unless asked for. */
       includeSideChats?: boolean;
       sessionIds?: readonly string[];
+      openOnly?: boolean;
     },
   ): Promise<AgentChatSessionSummary[]> => {
     await scheduledWorkReady;
     const rows = sessionService.list({
       ...(laneId ? { laneId } : {}),
-      limit: 500,
+      limit: options?.openOnly ? null : 500,
+      ...(options?.openOnly ? { openOnly: true, includeArchived: false } : {}),
       toolTypes: CHAT_SESSION_TOOL_TYPES,
     });
     const chatRows = rows.filter((row) => isChatToolType(row.toolType));
@@ -75802,7 +75826,12 @@ export function createAgentChatService(args: {
     for (const managed of managedSessions.values()) {
       if (managed.closed || managed.deleted) continue;
       const waitingOnPerson = hasLivePendingInput(managed);
-      if (!waitingOnPerson && managed.session.status !== "active" && !hasRuntimeActiveWorkload(managed.runtime)) continue;
+      if (
+        !waitingOnPerson
+        && managed.session.status !== "active"
+        && !hasRuntimeActiveWorkload(managed.runtime)
+        && !turnDiffSummariesInFlight.has(managed.session.id)
+      ) continue;
       facts.push({ waitingOnPerson, lastActivityAt: managed.lastActivityTimestamp });
     }
     return facts;
@@ -75981,6 +76010,22 @@ export function createAgentChatService(args: {
       if (managedSessionBelongsToLane(managed, laneId)) count += 1;
     }
     return count;
+  };
+
+  /** Archiving changes the Work roster while a live turn can still use its lane. */
+  const listArchivedWorkingChats = (laneId: string): TerminalSessionSummary[] => {
+    const rows: TerminalSessionSummary[] = [];
+    for (const managed of managedSessions.values()) {
+      if (managed.closed || managed.deleted || managed.session.laneId !== laneId) continue;
+      const running = sessionTurnRunning(managed) || hasRuntimeActiveWorkload(managed.runtime);
+      const backgroundWork = runtimeBackgroundWork(managed.runtime);
+      if (!running && backgroundWork.workingCount === 0) continue;
+      const row = sessionService.get(managed.session.id);
+      if (row?.archivedAt && !row.endedAt && row.laneId === laneId) {
+        rows.push({ ...row, runtimeState: running ? "running" : "idle", backgroundWork });
+      }
+    }
+    return rows;
   };
 
   const disposeForLane = async (laneId: string): Promise<number> => {
@@ -86354,6 +86399,7 @@ ${schedule.prompt}`
       for (const envelope of envelopes) recordChatEventInHistory(envelope);
     },
     countActiveForLane,
+    listArchivedWorkingChats,
     disposeForLane,
     getChatTranscript,
     getChatTranscriptPage,
@@ -86442,6 +86488,8 @@ ${schedule.prompt}`
     findDeletedChat: (id: string) => deletedChats.find(id),
     getDeletedChatDetail: (detailArgs: DeletedChatDetailArgs) => deletedChats.detail(detailArgs),
     reopenDeletedChat: (reopenArgs: DeletedChatReopenArgs) => deletedChats.reopen(reopenArgs),
+    /** A deleted lane came back as `toLaneId`: its chats go back into it. Host-wired, not an action. */
+    reopenDeletedChatsWithLane: (restoreArgs: RestoredLaneChatsArgs) => deletedChats.reopenWithRestoredLane(restoreArgs),
     removeDeletedChats: (removeArgs: DeletedChatRemoveArgs) => deletedChats.remove(removeArgs),
     archiveSession,
     unarchiveSession,

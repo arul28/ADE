@@ -45,6 +45,7 @@ import {
   type SearchCandidate as Candidate
 } from "./searchIndexQuery";
 import { chunkTerminalTranscript, sanitizeIndexedText } from "./terminalChunking";
+import { laneDisplayName } from "../../../shared/laneDisplayName";
 
 /**
  * Universal search over ADE state. Heavy text (chat messages, terminal
@@ -1198,6 +1199,8 @@ export function createSearchService(deps: SearchServiceDeps) {
       const match =
         lanes.find((lane) => lane.id === requested) ??
         lanes.find((lane) => lane.name.toLowerCase() === needle) ??
+        // The UI's name ("Main checkout"), which the command palette offers as a lane filter.
+        lanes.find((lane) => laneDisplayName(lane).toLowerCase() === needle) ??
         lanes.find((lane) => lane.name.toLowerCase().includes(needle));
       return match?.id ?? requested;
     } catch {

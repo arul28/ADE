@@ -186,6 +186,7 @@ import type {
   LaneListSnapshot,
   LanePreviewInfo,
   ListSessionsArgs,
+  PtyDisposeArgs,
   ListLanesArgs,
   UpdateSessionMetaArgs,
   ReadTranscriptTailArgs,
@@ -1835,7 +1836,7 @@ function buildCtoMemoryDomainService(runtime: AdeRuntime): OpaqueService | null 
   const ctoMemoryService = runtime.ctoMemoryService;
   if (!ctoMemoryService) return null;
   return {
-    getSnapshot: () => ctoMemoryService.getSnapshot(),
+    getSnapshot: () => ctoMemoryService.getReconciledSnapshot(),
     updateNotes: (args?: Partial<CtoUpdateNotesArgs>) => {
       if (!args || !isCtoNotesFile(args.scope)) {
         throw new Error("updateNotes requires `scope`: \"project\", \"user\" or \"rules\".");
@@ -1846,11 +1847,12 @@ function buildCtoMemoryDomainService(runtime: AdeRuntime): OpaqueService | null 
       });
       return ctoMemoryService.getSnapshot();
     },
-    updateOpenWork: (args?: Partial<{ op: string; text: string; id: string }>) => {
+    updateOpenWork: (args?: Partial<{ op: string; text: string; id: string; owner: string }>) => {
       const op = args?.op;
       if (op === "add") {
         if (typeof args?.text !== "string" || !args.text.trim()) throw new Error("updateOpenWork add requires `text`.");
-        ctoMemoryService.updateOpenWork({ op, text: args.text });
+        const owner = args.owner === "user" || args.owner === "cto" ? args.owner : undefined;
+        ctoMemoryService.updateOpenWork({ op, text: args.text, ...(owner ? { owner } : {}) });
       } else if (op === "complete" || op === "reopen" || op === "remove") {
         if (typeof args?.id !== "string" || !args.id.trim()) throw new Error(`updateOpenWork ${op} requires \`id\`.`);
         ctoMemoryService.updateOpenWork({ op, id: args.id });
@@ -3952,6 +3954,7 @@ async function buildRuntimeLinearConnectionStatus(runtime: AdeRuntime): Promise<
       organizationName: status.organizationName ?? null,
       organizationUrlKey: status.organizationUrlKey ?? null,
       organizationLogoUrl: status.organizationLogoUrl ?? null,
+      viewerIsAdmin: status.viewerIsAdmin,
       checkedAt: nowIso(),
       authMode: credentialStatus.authMode,
       oauthAvailable: credentialStatus.oauthConfigured,
@@ -5435,7 +5438,14 @@ export function getAdeActionDomainServices(
     budget: toService(runtime.budgetCapService),
     update: toService(runtime.autoUpdateService),
     file: toService(buildFileDomainService(runtime)),
-    pty: toService(runtime.ptyService),
+    pty: runtime.ptyService ? toService({
+      ...runtime.ptyService,
+      dispose(args: PtyDisposeArgs) {
+        return args.confirmProcessExit === true
+          ? runtime.ptyService.disposeWithExitReceipt(args)
+          : runtime.ptyService.dispose(args);
+      },
+    }) : null,
     terminal: toService(buildTerminalDomainService(runtime)),
     layout: toService(buildLayoutDomainService(runtime)),
     tiling_tree: toService(buildTilingTreeDomainService(runtime)),

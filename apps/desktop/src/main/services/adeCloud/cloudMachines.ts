@@ -157,6 +157,8 @@ export type CloudPushWorkLane = {
   dirty: boolean;
   ahead: number;
   state: "clean" | "pushed" | "failed" | "unpushed";
+  /** Why GitHub stopped a failed lane (`pushWorkGithubProblem`); null when it didn't. */
+  reason: string | null;
 };
 
 export type CloudPushWorkTally = { pushed: number; failed: number; skipped: number; lanes: CloudPushWorkLane[] | null };
@@ -179,6 +181,7 @@ function readPushWorkLanes(raw: unknown): CloudPushWorkLane[] | null {
       dirty: lane.dirty === true,
       ahead: Number(lane.ahead) || 0,
       state,
+      reason: typeof lane.reason === "string" ? lane.reason : null,
     });
   }
   return lanes;

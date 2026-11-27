@@ -689,7 +689,12 @@ Reused desktop renderer (web-mode adaptation):
   code, sign-up, and "Continue as". If Clerk cannot be reached or needs a step
   the card does not show (a second factor), the card's button opens Clerk's
   hosted page. A fallback that is not a second factor is a Sentry warning
-  (`clerk_sign_in_unavailable`).
+  (`clerk_sign_in_unavailable`). Every sign-up it creates (email or a
+  Google/GitHub/Apple transfer) sends `legal_accepted: true`, which the card's
+  "By continuing, you agree…" line stands for, so Clerk's "Require express
+  consent to legal documents" setting cannot stall it. A sign-up Clerk still
+  leaves short of an account is a Sentry error (`clerk_sign_up_incomplete`,
+  tagged with the missing fields).
 - `apps/desktop/src/renderer/components/onboarding/GateBackdrop.tsx` - on ADE
   Web a visitor with no picked scene sees "Mountain vista"
   (`useActiveScene({ untouched })`). The desktop shuffles.
@@ -1166,8 +1171,14 @@ account switch.
 ## ADE Cloud reads
 
 A project tab binds to ADE Cloud when no own computer with a copy is online
-(`openAdeCloudProject`). A cloud lane whose computer sleeps is read through a
-`cloud-saved:<machineKey>` pin. Both are account-answered pins:
+(`openAdeCloudProject`). Opening a tab whose copy is on an ADE Cloud computer
+that sleeps (a reload, a tab switch, a Home row, a link) never wakes it: the
+federated adapter's `openProject` asks the account server, and binds the tab
+to its repository's ADE Cloud tab instead. The tab moves to the copy when the
+computer is back (`useAdeCloudTabFollowsCopy`). A folder with no repository
+does not open and says the computer is asleep. A cloud lane whose computer
+sleeps is read through a `cloud-saved:<machineKey>` pin. Both are
+account-answered pins:
 
 | Surface | Source while the computer sleeps |
 |---|---|

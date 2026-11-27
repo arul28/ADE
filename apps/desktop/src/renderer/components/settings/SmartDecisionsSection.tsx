@@ -12,6 +12,7 @@ import { ModernRow, ModernRows, ModernSection, SettingsSegmented, SettingsToggle
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { useChatConfigToggle } from "./useChatConfigToggle";
 import { requirePin } from "../../state/repositoryScope";
+import { plainErrorText } from "../../lib/plainError";
 
 type HintMode = NonNullable<AiChatConfig["modelHintMode"]>;
 
@@ -89,7 +90,7 @@ export function SmartDecisionsSection() {
     } catch (error) {
       showToast({
         title: "Couldn't start the OpenCode sign-in",
-        message: error instanceof Error ? error.message : String(error),
+        message: plainErrorText(error, "ADE couldn't start the sign-in."),
         tone: "error",
       });
     } finally {
@@ -304,7 +305,7 @@ function ModelHintRow() {
       setMode(previous);
       showToast({
         title: "Couldn't save the setting",
-        message: error instanceof Error ? error.message : String(error),
+        message: plainErrorText(error, "ADE couldn't save the setting."),
         tone: "error",
       });
     } finally {

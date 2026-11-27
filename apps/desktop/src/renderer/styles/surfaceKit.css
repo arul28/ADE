@@ -12,7 +12,8 @@
  * image stays the hero and the text keeps its contrast.
  */
 
-:root {
+/* A preview resolves derived values from its own palette, just as the root does. */
+:root, [data-kit-theme-scope] {
   --kit-card-bg: color-mix(in srgb, var(--color-bg) 58%, transparent);
   --kit-card-edge: color-mix(in srgb, var(--color-fg) 7%, transparent);
   --kit-card-blur: none;
@@ -46,13 +47,13 @@
   --pr-closed: #cf222e;
 }
 
-html[data-scene="image"] {
+html[data-scene="image"], [data-kit-theme-scope="image"] {
   --kit-card-bg: color-mix(in srgb, var(--color-bg) 74%, transparent);
   --kit-card-edge: color-mix(in srgb, white 9%, transparent);
   --kit-card-blur: blur(20px) saturate(1.25);
 }
 
-html[data-scene="image"][data-theme="light"] {
+html[data-scene="image"][data-theme="light"], [data-kit-theme-scope="image"][data-theme="light"] {
   --kit-card-bg: color-mix(in srgb, var(--color-bg) 80%, transparent);
   --kit-card-edge: color-mix(in srgb, white 45%, transparent);
 }

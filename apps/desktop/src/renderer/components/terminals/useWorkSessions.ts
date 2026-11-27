@@ -78,7 +78,7 @@ import {
 } from "./cliLaunch";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { setPendingSessionAnchor } from "./pendingSessionAnchors";
-import { requestCrossMachineLanesForMachine, seedCrossMachineOptimisticSession, unionSlotIdForBinding, useRetainedCrossMachineSlices } from "../../state/crossMachineLanes";
+import { patchCrossMachineSessionsPinned, requestCrossMachineLanesForMachine, seedCrossMachineOptimisticSession, unionSlotIdForBinding, useRetainedCrossMachineSlices } from "../../state/crossMachineLanes";
 import { cachedGitRemoteIdentity, originUrlForBinding } from "../lanes/laneMachines";
 import { useWorkMachineRouter } from "./useWorkMachineRouter";
 import { clearChatCompanionUiState } from "../chat/chatCompanionUiState";
@@ -101,6 +101,8 @@ type WorkStatusNavigation = "all" | "running" | "awaiting-input" | "ended" | "se
 const DEFAULT_PROJECT_WORK_STATE: WorkProjectViewState = createDefaultWorkProjectViewState();
 
 const OPTIMISTIC_PTY_SESSION_TTL_MS = 2 * 60 * 1000;
+/** How long a pin shown before its write lands outranks a read that disagrees. */
+const PENDING_PIN_TTL_MS = 15_000;
 /** Upper bound on the single snooze-expiry timer (setTimeout overflows past ~24.8 days). */
 const SNOOZE_TICK_MAX_DELAY_MS = 10 * 60 * 1000;
 const STOPPED_RUNTIME_GUARD_TTL_MS = 12_000;
@@ -261,6 +263,7 @@ import { lanePrWaitingReason } from "../../../shared/sessionCanonicalState";
 import { useTabCopyPin } from "../../state/repositoryScope";
 import { useRemoteTargetReconnecting } from "../../state/projectMachines";
 import { noChatMachineError } from "../chat/chatMachinePin";
+import { laneDisplayName, sessionLaneDisplayName } from "../../../shared/laneDisplayName";
 
 export type { WorkBoardWaitingReason };
 export { lanePrWaitingReason };
@@ -325,8 +328,8 @@ export function partitionRosterForBoard(
     needsYouFiltered: pinnedFirst(loud),
     restingFiltered: pinnedFirst(quiet),
     endedFiltered: pinnedFirst(ended),
-    settledFiltered: settled.sort(compareSessionsBySettledAtDesc),
-    snoozedFiltered: snoozed.sort(compareSessionsByWakeAtAsc),
+    settledFiltered: pinnedFirst(settled.sort(compareSessionsBySettledAtDesc)),
+    snoozedFiltered: pinnedFirst(snoozed.sort(compareSessionsByWakeAtAsc)),
   };
 }
 
@@ -335,7 +338,7 @@ export function partitionRosterForBoard(
  * The pin is the synced `terminal_sessions.pinned` column, so a pin made on
  * one machine or on the phone orders the list everywhere.
  */
-function pinnedFirst(sessions: TerminalSessionSummary[]): TerminalSessionSummary[] {
+export function pinnedFirst<T extends Pick<TerminalSessionSummary, "pinned">>(sessions: T[]): T[] {
   if (!sessions.some((session) => session.pinned)) return sessions;
   return [
     ...sessions.filter((session) => session.pinned),
@@ -397,6 +400,11 @@ export function appendForeignMachinesToBoard(args: {
     for (const [sessionId, reason] of model.waitingReasonBySessionId) {
       waitingReasons.set(sessionId, reason);
     }
+  }
+  // Another machine's pinned chat leads the column too, above this machine's
+  // unpinned ones.
+  for (const column of Object.keys(buckets) as WorkBoardColumn[]) {
+    buckets[column] = pinnedFirst(buckets[column]);
   }
   return { buckets, waitingReasons };
 }
@@ -478,13 +486,14 @@ export function buildWorkBoardModel(args: {
 
   return {
     buckets: {
-      needs_you: [...args.needsYouFiltered, ...failed],
-      working,
-      waiting,
+      needs_you: pinnedFirst([...args.needsYouFiltered, ...failed]),
+      working: pinnedFirst(working),
+      waiting: pinnedFirst(waiting),
       // Loudest tier first. Resting rows are live sessions that just finished a
       // turn, so they are the ones worth looking at; ended is a dead process;
-      // settled is the quietest, because the user already filed it.
-      done: [...resting, ...ended, ...args.settledFiltered],
+      // settled is the quietest, because the user already filed it. A pin
+      // outranks all three.
+      done: pinnedFirst([...resting, ...ended, ...args.settledFiltered]),
     },
     waitingReasonBySessionId,
   };
@@ -519,7 +528,7 @@ export function buildWorkTabGroupModel(args: {
       const groupId = `lane:${session.laneId}`;
       const group = laneGroups.get(groupId) ?? {
         id: groupId,
-        label: lane?.name ?? session.laneName,
+        label: lane ? laneDisplayName(lane) : sessionLaneDisplayName(session),
         kind: "lane" as const,
         sessions: [],
       };
@@ -917,6 +926,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const refreshQueuedRef = useRef<QueuedRefresh | null>(null);
   const pendingOptimisticSessionsRef = useRef<Map<string, PendingOptimisticSession>>(new Map());
   const stoppedRuntimeSessionsRef = useRef<Map<string, StoppedRuntimeSession>>(new Map());
+  // Pins shown before the owning machine confirms them. A read that started
+  // before the write must not flip the row back.
+  const pendingPinsRef = useRef<Map<string, { pinned: boolean; expiresAtMs: number }>>(new Map());
+  const pinWritesRef = useRef(new Map<string, { confirmed: { pinned: boolean }; done: Promise<void> }>());
   // A pin that differs from the active binding used to mean "stale detached
   // launch", so its updates were dropped. Under per-chat runtime routing that
   // is the normal, correct state for every chat whose lane lives on another
@@ -1593,16 +1606,82 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const setSessionsPinned = useCallback(
     /** Resolves to the ids that now hold `pinned`, already-matching rows included. */
     async (targetSessions: ReadonlyArray<TerminalSessionSummary>, pinned: boolean): Promise<string[]> => {
-      const already = targetSessions.filter((session) => Boolean(session.pinned) === pinned).map((session) => session.id);
-      const changing = targetSessions.filter((session) => Boolean(session.pinned) !== pinned);
+      const writes = pinWritesRef.current;
+      const already: string[] = [];
+      const changing = targetSessions.filter((session) => {
+        if (writes.has(session.id) || Boolean(session.pinned) !== pinned) return true;
+        already.push(session.id);
+        return false;
+      });
       if (!changing.length) return already;
-      // The write emits a session change on the owning machine, which
-      // refreshes the roster; no local refresh is needed.
-      const written = await setSessionsPinnedAction(
-        changing.map((session) => ({ session, pin: machineRouter.pinForSession(session) })),
-        pinned,
-      );
-      return [...already, ...written.map(({ session }) => session.id)];
+      const targets = changing.map((session) => ({ session, pin: machineRouter.pinForSession(session) }));
+      // Show the pin now, on this machine's rows and on another machine's copy,
+      // so the row moves the moment it is pinned. The write below confirms it.
+      const tabPinKey = tabCopyPinRef.current?.key ?? null;
+      const showPinned = (rows: typeof targets, value: boolean, writing = false) => {
+        const ids = new Set(rows.map(({ session }) => session.id));
+        const expiresAtMs = Date.now() + PENDING_PIN_TTL_MS;
+        const foreignByPinKey = new Map<string, { pin: OpenProjectBinding; ids: Set<string> }>();
+        for (const { session, pin } of rows) {
+          if (!pin || pin.key === tabPinKey) {
+            // This tab's machine: held over the host roster's reads below.
+            pendingPinsRef.current.set(session.id, { pinned: value, expiresAtMs });
+            continue;
+          }
+          const group = foreignByPinKey.get(pin.key) ?? { pin, ids: new Set<string>() };
+          group.ids.add(session.id);
+          foreignByPinKey.set(pin.key, group);
+        }
+        setHostSessions((prev) => (prev.some((row) => ids.has(row.id) && Boolean(row.pinned) !== value)
+          ? prev.map((row) => (ids.has(row.id) && Boolean(row.pinned) !== value ? { ...row, pinned: value } : row))
+          : prev));
+        const foreignMachineIds = new Set<string>();
+        for (const { pin, ids: machineIds } of foreignByPinKey.values()) {
+          try {
+            const machineId = patchCrossMachineSessionsPinned(pin, machineIds, value, writing);
+            if (machineId) foreignMachineIds.add(machineId);
+          } catch (error) {
+            // Showing it early is a nicety; it must never stop the write.
+            console.warn("[work] could not show the pin before it was written", error);
+          }
+        }
+        return foreignMachineIds;
+      };
+      const previous = targets.map(({ session }) => writes.get(session.id));
+      let finish!: () => void;
+      const done = new Promise<void>((resolve) => { finish = resolve; });
+      const batch = targets.map(({ session }, index) => ({
+        confirmed: previous[index]?.confirmed ?? { pinned: Boolean(session.pinned) },
+        done,
+      }));
+      targets.forEach(({ session }, index) => writes.set(session.id, batch[index]!));
+      try {
+        const foreignMachineIds = showPinned(targets, pinned, true);
+        // Overlapping choices reach the owning runtime in the order the user made them.
+        await Promise.all(previous.map((write) => write?.done));
+        const written = await setSessionsPinnedAction(targets, pinned);
+        const writtenIds = new Set(written.map(({ session }) => session.id));
+        targets.forEach((target, index) => {
+          const write = batch[index]!;
+          const { id } = target.session;
+          if (writtenIds.has(id)) write.confirmed.pinned = pinned;
+        });
+        // The local change feed refreshes its rows. Ask foreign machines to refresh now.
+        for (const machineId of foreignMachineIds) requestCrossMachineLanesForMachine(machineId);
+        return [...already, ...writtenIds];
+      } finally {
+        const pin: typeof targets = [];
+        const unpin: typeof targets = [];
+        targets.forEach((target, index) => {
+          const write = batch[index]!;
+          if (writes.get(target.session.id) !== write) return;
+          writes.delete(target.session.id);
+          (write.confirmed.pinned ? pin : unpin).push(target);
+        });
+        if (pin.length) showPinned(pin, true);
+        if (unpin.length) showPinned(unpin, false);
+        finish();
+      }
     },
     [machineRouter],
   );
@@ -1905,6 +1984,23 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
           rowIndexById.set(sessionId, rows.length - 1);
         }
         rows.sort(compareSessionsByStartedAtDesc);
+      }
+      const pendingPins = pendingPinsRef.current;
+      if (pendingPins.size > 0) {
+        const now = Date.now();
+        for (const [sessionId, pending] of [...pendingPins.entries()]) {
+          if (pending.expiresAtMs <= now && !pinWritesRef.current.has(sessionId)) pendingPins.delete(sessionId);
+        }
+        for (let index = 0; index < rows.length; index += 1) {
+          const row = rows[index];
+          const pending = row ? pendingPins.get(row.id) : undefined;
+          if (!row || !pending) continue;
+          if (Boolean(row.pinned) === pending.pinned) {
+            if (!pinWritesRef.current.has(row.id)) pendingPins.delete(row.id);
+            continue;
+          }
+          rows[index] = { ...row, pinned: pending.pinned };
+        }
       }
       const stoppedRuntimeSessions = stoppedRuntimeSessionsRef.current;
       if (stoppedRuntimeSessions.size > 0) {
@@ -2393,6 +2489,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         session.goal,
         session.title,
         session.laneName,
+        sessionLaneDisplayName(session),
         session.toolType,
         session.lastOutputPreview,
         session.summary,
@@ -2404,7 +2501,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       // vocabulary. The machine facet is resolved by the palette's cross-
       // machine index; this active-binding list has no machine dimension.
       return matchesWorkSearchFilters(parsedQuery.filters, {
-        lane: [session.laneName],
+        lane: [session.laneName, sessionLaneDisplayName(session)],
         provider: [session.toolType ?? ""],
         status: [effectiveFilingBuckets.get(session.id) ?? sessionFilingBucket(session, nowMs)],
         type: [
@@ -2554,6 +2651,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       list.push(s);
       map.set(s.laneId, list);
     }
+    // A pinned chat leads its lane.
+    for (const [laneId, list] of map) map.set(laneId, pinnedFirst(list));
     return map;
   }, [sessionListOrganization, chipFiltered]);
 

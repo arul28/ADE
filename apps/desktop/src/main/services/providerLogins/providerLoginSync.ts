@@ -84,6 +84,8 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     ghCliStatus: allow.ghCliStatus,
     ghCliMessage: allow.ghCliMessage,
     leaveTicks: access.leaveTicks,
+    refreshAccess: access.refreshAccess,
+    nextAccessRead: access.nextAccessRead,
   };
   Object.assign(s.jobs, jobs);
   const { pass } = capture;
@@ -160,6 +162,8 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
       apply.forgetApplied();
       bundleMemos.clear();
       localStates.clear();
+      // The next account's settings are pulled again before a turn applies its sign-in.
+      s.settingsReady = false;
       metaMemo.clear();
       s.stateCache = null;
       // The GitHub CLI choice leaves with the marks file: another account starts with it off.

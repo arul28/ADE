@@ -5,6 +5,7 @@ import { isWebClientMode } from "../../lib/webClientMode";
 import { showToast } from "../app/toast/toastStore";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { requirePin } from "../../state/repositoryScope";
+import { plainErrorText } from "../../lib/plainError";
 
 type BooleanChatKey = {
   [K in keyof AiChatConfig]-?: NonNullable<AiChatConfig[K]> extends boolean ? K : never;
@@ -72,7 +73,7 @@ export function useChatConfigToggle(
       setEnabled(!value);
       showToast({
         title: "Couldn't save the setting",
-        message: error instanceof Error ? error.message : String(error),
+        message: plainErrorText(error, "ADE couldn't save the setting."),
         tone: "error",
       });
     } finally {

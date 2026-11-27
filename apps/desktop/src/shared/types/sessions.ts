@@ -23,7 +23,7 @@ import type {
 import type { ClaudePromptCache } from "../claudePromptCache";
 import type { SessionActivePrWatch } from "../prWatch";
 import type { ModelId } from "./core";
-import type { LaneLinearIssue } from "./lanes";
+import type { LaneLinearIssue, LaneType } from "./lanes";
 import type { SessionBackgroundWork } from "../sessionCanonicalState";
 
 /**
@@ -343,6 +343,8 @@ export type TerminalSessionSummary = {
   cloudSavedCopy?: boolean;
   laneId: string;
   laneName: string;
+  /** The lane's kind, so a screen shows the main checkout as "Main checkout" (`sessionLaneDisplayName`); an older brain sends none. */
+  laneType?: LaneType | null;
   ptyId: string | null;
   ownerPid?: number | null;
   ownerProcessStartedAt?: string | null;
@@ -395,6 +397,8 @@ export type TerminalSessionSummary = {
   currentTurnStartedAt?: string | null;
   summary: string | null;
   runtimeState: TerminalRuntimeState;
+  /** Open-work reads include closing terminals until their process tree exits. */
+  ptyExitPending?: boolean;
   pendingInputItemId?: string | null;
   /** Live-only Codex steering pip. Never persisted. */
   steeringInput?: boolean;
@@ -623,6 +627,46 @@ export type SessionBoardMoveUndoResult =
   };
 export type SessionSettleSource = "agent_explicit" | "user" | "pr_merge" | "operator";
 
+/**
+ * A session the person would call done: settled, archived, or its process
+ * finished. A detached session is still alive somewhere, so it is not done.
+ */
+export function isTerminalSessionDone(
+  row: { settledAt?: unknown; archivedAt?: unknown; status?: unknown },
+): boolean {
+  return Boolean(row.settledAt) || Boolean(row.archivedAt)
+    || row.status === "completed" || row.status === "failed" || row.status === "disposed";
+}
+
+/**
+ * When a live session came to rest after a clean turn (the Work row's "Done"),
+ * or null while it works, waits on someone, still runs background work or a
+ * PR watch, or its last turn failed. Prefers the chat's own "idle since" (the
+ * end of its last turn); else its last activity. A chat rests between turns,
+ * so a caller that wants "finished the work it was given" compares this with
+ * when it handed the work over.
+ */
+export function sessionRestedAt(row: {
+  status?: unknown;
+  runtimeState?: unknown;
+  pendingInputItemId?: unknown;
+  attentionRequestedAt?: unknown;
+  lastTurnFailedAt?: unknown;
+  activeBackgroundTaskCount?: unknown;
+  turnOpenWorkCount?: unknown;
+  activePrWatch?: unknown;
+  chatIdleSinceAt?: unknown;
+  lastActivityAt?: unknown;
+}): string | null {
+  if (row.status !== "running" || row.runtimeState !== "idle") return null;
+  if (row.pendingInputItemId || row.attentionRequestedAt || row.lastTurnFailedAt) return null;
+  if (Number(row.activeBackgroundTaskCount ?? 0) > 0 || Number(row.turnOpenWorkCount ?? 0) > 0 || row.activePrWatch) return null;
+  for (const at of [row.chatIdleSinceAt, row.lastActivityAt]) {
+    if (typeof at === "string" && at) return at;
+  }
+  return null;
+}
+
 export type TerminalSessionDetail = TerminalSessionSummary & {
   // Reserved for future expansion (goal/tool templates, derived deltas, etc.)
 };
@@ -750,9 +794,18 @@ export type PtyCreateResult = {
   pid: number | null;
 };
 
+export type PtyDisposeArgs = {
+  ptyId: string;
+  sessionId?: string;
+  /** Return a process-exit receipt before a caller changes the worktree. */
+  confirmProcessExit?: boolean;
+};
+
 export type PtyDisposeResult = {
   disposed: boolean;
   reason: "disposed" | "orphaned" | "missing" | "not-running" | "session-mismatch" | "owned-by-peer" | "already-disposed";
+  /** A missing receipt means the runtime did not confirm the process tree exited. */
+  processTreeExited?: boolean;
 };
 
 /**
@@ -1067,6 +1120,8 @@ export type ListSessionsArgs = {
    * machine's Work list) gets a short page that misses live chats.
    */
   includeArchived?: boolean;
+  /** For lane work checks, exclude ended sessions and include side chats. */
+  openOnly?: boolean;
   /**
    * Caps settled rows on their own. When set, every unsettled row comes back
    * (up to `limit`) and at most this many settled ones fill what is left, so

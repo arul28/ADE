@@ -31,6 +31,7 @@ import { cn } from "../ui/cn";
 import { noChatMachineError, requireChatPin } from "../chat/chatMachinePin";
 import { Banner } from "../ui/notice/Banner";
 import { ChatAccountNote } from "../chat/ChatAccountNote";
+import { plainErrorText } from "../../lib/plainError";
 
 /**
  * A tracked agent CLI gets a chat's actions pane: the same header button, the
@@ -196,7 +197,7 @@ function CliActionsStateProvider({
         setProblem({
           key: "cards",
           title: "Couldn't check this CLI for cards waiting on you.",
-          message: readError instanceof Error ? readError.message : String(readError),
+          message: plainErrorText(readError, "ADE couldn't read the CLI."),
           retry: () => readCardsRef.current(),
         });
       });
@@ -233,7 +234,7 @@ function CliActionsStateProvider({
       setProblem({
         key: "action",
         title: "That answer didn't reach the CLI.",
-        message: answerError instanceof Error ? answerError.message : String(answerError),
+        message: plainErrorText(answerError, "ADE couldn't reach the CLI."),
       });
     } finally {
       setRespondingIds((current) => {
@@ -262,7 +263,7 @@ function CliActionsStateProvider({
       setProblem({
         key: "action",
         title: "Couldn't stop that agent.",
-        message: stopError instanceof Error ? stopError.message : String(stopError),
+        message: plainErrorText(stopError, "ADE couldn't reach the agent."),
       });
     });
   }, [machineSessions]);
@@ -290,7 +291,7 @@ function CliActionsStateProvider({
         setProblem({
           key: "proof",
           title: "Couldn't load this CLI's proof.",
-          message: readError instanceof Error ? readError.message : String(readError),
+          message: plainErrorText(readError, "ADE couldn't read the CLI."),
           retry: () => readProofRef.current(),
         });
       });

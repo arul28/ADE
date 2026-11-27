@@ -6,7 +6,7 @@ import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { requirePin } from "../../state/repositoryScope";
 
 /**
- * The "Chats" group of Storage & cleanup → Rules: settle a lane's chats when
+ * The "Chats" group of Disk space → Rules: settle a lane's chats when
  * its PR merges, and optionally release what they were using once settled. Stored in each machine's runtime; read and written on the
  * machine shown (`useSettingsMachineScope().pin`).
  */

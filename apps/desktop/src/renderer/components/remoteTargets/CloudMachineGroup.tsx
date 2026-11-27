@@ -19,9 +19,12 @@ import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import { cloudUnitWords, type CloudUnitWords } from "../../../shared/cloudUnitWords";
 import { CloudLaneSavedWork } from "../cloudLane/CloudLaneSavedWork";
 import { openCloudComputerLimitCard } from "../cloudLane/CloudComputerLimitCard";
+import { cloudLaneLifeAvailable } from "../cloudLane/cloudLaneActions";
+import { useCloudLanesWithoutComputer } from "../cloudLane/cloudLaneStores";
 import type { NoticeAction } from "../ui/notice/NoticeParts";
 import { CloudMark, ADE_CLOUD_NAME } from "./cloudBrand";
 import {
+  adeCloudMachineLine,
   CLOUD_STATE_LABELS,
   cloudGroupTotals,
   cloudStateTone,
@@ -287,17 +290,21 @@ export function AdeCloudMachineRow({
   known: boolean;
   onOpenSettings?: (() => void) | null;
 }) {
-  const lanes = boxes.filter((box) => (box as CloudLaneMachine).lane).length;
+  // A lane kept without a computer (its computer freed) is still a lane.
+  const kept = useCloudLanesWithoutComputer(cloudLaneLifeAvailable()).lanes;
+  const laneIds = [
+    ...boxes.flatMap((box) => {
+      const laneId = (box as CloudLaneMachine).lane?.laneId;
+      return laneId ? [laneId] : [];
+    }),
+    ...kept.map((lane) => lane.laneId),
+  ];
   const awake = cloudGroupTotals(boxes).running;
   const words = cloudUnitWords(account);
   const hoursLeft = account ? words.short(cloudHoursLeftMilli(account)) : null;
   // Parts of one line, each its own phrase: a sentence never gets the hours
   // joined onto it with a comma ("…start one., 0 h left").
-  const line = !known
-    ? "Your account's cloud machine"
-    : lanes === 0
-      ? "No lanes yet: pick ADE Cloud in Run on to start one"
-      : `${lanes} ${lanes === 1 ? "lane" : "lanes"}, ${awake === 0 ? "all asleep" : `${awake} awake`}`;
+  const line = adeCloudMachineLine({ known, laneIds, awake });
   return (
     <div style={machineRowStyle} data-ade-cloud-machine="">
       <div className="ade-cx-row-grid">

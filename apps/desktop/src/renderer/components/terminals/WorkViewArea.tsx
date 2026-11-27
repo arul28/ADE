@@ -84,6 +84,8 @@ import { useSentPromptHistory } from "../chat/chatPromptHistory";
 import { isImeComposing } from "../../lib/imeComposition";
 import { noChatMachineError, withChatPin } from "../chat/chatMachinePin";
 import { useWorkInputFocusOnChatSwitch } from "../work/workShortcuts";
+import { sessionLaneDisplayName } from "../../../shared/laneDisplayName";
+import { plainErrorText } from "../../lib/plainError";
 
 function isRunningPtySession(
   session: TerminalSessionSummary | null | undefined,
@@ -557,7 +559,7 @@ function WorkCliContinuationComposer({
       setDraft("");
       setCommandMenuTrigger(null);
     } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : String(err));
+      setSubmitError(plainErrorText(err, "ADE couldn't send that."));
     } finally {
       setSending(false);
     }
@@ -696,7 +698,7 @@ function ClosedCliSessionSurface({
     try {
       await onResume?.(session);
     } catch (err) {
-      setResumeError(err instanceof Error ? err.message : String(err));
+      setResumeError(plainErrorText(err, "ADE couldn't resume the session."));
     } finally {
       setResuming(false);
     }
@@ -723,7 +725,7 @@ function ClosedCliSessionSurface({
         if (!cancelled) setReplayedRows(rows);
       })
       .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        if (!cancelled) setError(plainErrorText(err, "ADE couldn't read the session history."));
       });
     return () => {
       cancelled = true;
@@ -994,7 +996,7 @@ function SessionSurfaceBody({
     return (
       <AgentChatPane
         laneId={session.laneId}
-        laneLabel={session.laneName}
+        laneLabel={sessionLaneDisplayName(session)}
         lockSessionId={session.id}
         // The row knows the provider on the switch frame; the pane does not (see
         // AgentChatPane's `lockSessionProvider` doc).

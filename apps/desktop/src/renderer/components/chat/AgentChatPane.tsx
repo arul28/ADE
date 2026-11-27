@@ -310,6 +310,7 @@ import {
   residentChatEventBytes,
   trimChatEventHistory,
 } from "./chatHistoryWindow";
+import { laneDisplayName } from "../../../shared/laneDisplayName";
 /** No nesting to resolve in the pane's own shell filter: one hop, the chat. */
 const NO_NESTING: ReadonlyMap<string, string> = new Map();
 /** A pane locked to one chat has no spawned children in its session list. */
@@ -687,6 +688,11 @@ import { useSaveBeforeQuit } from "../../lib/useSaveBeforeQuit";
 import { useActiveRepositoryTab, useActiveStartOn, useTabCopyPin } from "../../state/repositoryScope";
 import { repositoryReaderAddress, type StartOnChoice } from "../../../shared/repositoryTab";
 import { recordStartOnLastMachine } from "./startOnLastMachine";
+import { plainErrorText } from "../../lib/plainError";
+
+/** The reason after a label such as "Delete failed:" when the error says nothing a person can use. */
+const CHAT_NO_ANSWER = "the chat did not answer.";
+const STOP_TASK_FAILED = "ADE couldn't stop the task.";
 
 /**
  * The pin a draft's new-lane defaults are read with: the machine the draft
@@ -703,8 +709,7 @@ function newLaneDefaultsPin(
 
 /** A Devin Cloud failure without Electron's `Error invoking remote method` wrapper. */
 function devinCloudErrorMessage(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  return stripElectronErrorWrapper(raw) || "Devin Cloud request failed.";
+  return plainErrorText(error, "Devin Cloud request failed.");
 }
 
 /**
@@ -6976,7 +6981,7 @@ export function AgentChatPane({
         ));
       return result.restored;
     } catch (error) {
-      setError(error instanceof Error ? error.message : String(error));
+      setError(plainErrorText(error, "ADE couldn't restore the queued messages."));
       return false;
     }
   }, [selectedSessionId]);
@@ -12379,7 +12384,7 @@ export function AgentChatPane({
       addAttachment({ path: saved.path, type: inferAttachmentType(saved.path, "image/png") });
       return { path: saved.path, cancelled: false };
     } catch (error) {
-      setError(error instanceof Error ? error.message : String(error));
+      setError(plainErrorText(error, "ADE couldn't save the screenshot."));
       return { path: null, cancelled: false };
     }
   }, [addAttachment]);
@@ -13508,7 +13513,7 @@ export function AgentChatPane({
     try {
       await onOpenShellSession(laneId, draftExecutionBindingRef.current);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(plainErrorText(err, "ADE couldn't open the terminal."));
     } finally {
       setShellLaunchBusy(false);
     }
@@ -16272,7 +16277,7 @@ export function AgentChatPane({
       invalidateCurrentChatSessionList();
       void refreshSessions({ force: true }).catch(() => {});
     } catch (handoffError) {
-      const rawMessage = handoffError instanceof Error ? handoffError.message : String(handoffError);
+      const rawMessage = plainErrorText(handoffError, "ADE couldn't hand off the chat.");
       // A transport timeout abandons the RPC but does not cancel the
       // daemon-side handoff, which usually still completes. Say so instead of
       // reporting a hard failure, and re-poll the session list so a late
@@ -16381,7 +16386,7 @@ export function AgentChatPane({
         await refreshSessions({ force: true }).catch(() => {});
       })
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = plainErrorText(err, CHAT_NO_ANSWER);
         setError(`Delete failed: ${message}`);
       })
       .finally(() => {
@@ -16401,7 +16406,7 @@ export function AgentChatPane({
         await refreshSessions({ force: true }).catch(() => {});
       })
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = plainErrorText(err, CHAT_NO_ANSWER);
         setError(`Archive failed: ${message}`);
       });
   }, [invalidateCurrentChatSessionList, refreshSessions, setSelectedSessionId]);
@@ -16427,7 +16432,7 @@ export function AgentChatPane({
         await refreshSessions({ force: true }).catch(() => {});
       })
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = plainErrorText(err, CHAT_NO_ANSWER);
         setError(`Restore failed: ${message}`);
       });
   }, [invalidateCurrentChatSessionList, refreshSessions]);
@@ -16553,8 +16558,7 @@ export function AgentChatPane({
         ).catch((error: unknown) => console.warn("Could not open the implementation chat", error));
       }
     } catch (approvalError) {
-      const rawApprovalError = approvalError instanceof Error ? approvalError.message : String(approvalError);
-      const message = stripElectronErrorWrapper(rawApprovalError) || rawApprovalError;
+      const message = plainErrorText(approvalError, "ADE couldn't send your answer.");
       if (options?.inlineError) {
         // The card shows it itself, beside the fields the person retries.
         setInlineApprovalError({ sessionId: selectedSessionId, itemId, message });
@@ -16600,7 +16604,7 @@ export function AgentChatPane({
       return true;
     } catch (dismissError) {
       setRespondingApprovalIds((prev) => { const next = new Set(prev); next.delete(itemId); return next; });
-      setError(dismissError instanceof Error ? dismissError.message : String(dismissError));
+      setError(plainErrorText(dismissError, "ADE couldn't dismiss that request."));
       return false;
     }
   }, [refreshSessions, selectedSessionId, touchSession]);
@@ -16732,7 +16736,7 @@ export function AgentChatPane({
       showToast({
         tone: "warning",
         title: `Couldn't send to ${where}`,
-        message: `${stripElectronErrorWrapper(routeError instanceof Error ? routeError.message : String(routeError))} Your draft is still here.`,
+        message: `${plainErrorText(routeError, "ADE couldn't reach that computer.", where)} Your draft is still here.`,
       });
       return true;
     } finally {
@@ -17258,7 +17262,7 @@ export function AgentChatPane({
             : async () => {},
           onCleanupError: logParallelLaunchCleanupError,
         });
-        const message = submitError instanceof Error ? submitError.message : String(submitError);
+        const message = plainErrorText(submitError, "ADE couldn't start the parallel chats.");
         if (cleanupIssues.length === 0) {
           await persistParallelLaunchState(null, launchBinding);
         } else {
@@ -17428,7 +17432,7 @@ export function AgentChatPane({
         await withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.getContextUsage({ sessionId: selectedSessionId }, chatPin));
       } catch (contextError) {
         setDraft((current) => (current.trim().length ? current : draft));
-        setError(contextError instanceof Error ? contextError.message : String(contextError));
+        setError(plainErrorText(contextError, "ADE couldn't read the context usage."));
       } finally {
         setBusy(false);
       }
@@ -17456,7 +17460,7 @@ export function AgentChatPane({
         void refreshSessions().catch(() => {});
       } catch (outputStyleError) {
         setDraft((current) => (current.trim().length ? current : draft));
-        setError(outputStyleError instanceof Error ? outputStyleError.message : String(outputStyleError));
+        setError(plainErrorText(outputStyleError, "ADE couldn't change the output style."));
       } finally {
         setBusy(false);
       }
@@ -17478,7 +17482,7 @@ export function AgentChatPane({
         await withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.codex.resetMemory({ sessionId: selectedSessionId }, chatPin));
       } catch (resetError) {
         setDraft((current) => (current.trim().length ? current : text));
-        setError(resetError instanceof Error ? resetError.message : String(resetError));
+        setError(plainErrorText(resetError, "ADE couldn't reset Codex memory."));
       } finally {
         setBusy(false);
       }
@@ -18297,7 +18301,7 @@ export function AgentChatPane({
         text: "/compact",
       }, chatPin)));
     } catch (compactError) {
-      const message = compactError instanceof Error ? compactError.message : String(compactError);
+      const message = plainErrorText(compactError, "ADE couldn't compact the chat.");
       setError(message);
     } finally {
       submitInFlightRef.current = false;
@@ -18325,7 +18329,7 @@ export function AgentChatPane({
   const dispatchSteerSafely = useCallback(
     (args: { sessionId: string; steerId: string; mode: AgentChatDispatchSteerMode }) => {
       void withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.dispatchSteer(args, chatPin)).catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = plainErrorText(error, CHAT_NO_ANSWER);
         setError(`Couldn't deliver the message to the running turn: ${message}`);
       });
     },
@@ -18453,7 +18457,7 @@ export function AgentChatPane({
         }, chatPin));
         void refreshSessions().catch(() => {});
       } catch (runError) {
-        const message = runError instanceof Error ? runError.message : String(runError);
+        const message = plainErrorText(runError, "ADE couldn't send that message.");
         setError(message);
         throw runError;
       } finally {
@@ -18534,7 +18538,7 @@ export function AgentChatPane({
         chatPin,
       ));
     } catch (interruptError) {
-      setError(interruptError instanceof Error ? interruptError.message : String(interruptError));
+      setError(plainErrorText(interruptError, "ADE couldn't stop the turn."));
     }
   }, [selectedSessionId, touchSession]);
 
@@ -18656,7 +18660,7 @@ export function AgentChatPane({
         void refreshSessions().catch(() => {});
       } catch (err) {
         void refreshSessions().catch(() => {});
-        setError(err instanceof Error ? err.message : String(err));
+        setError(plainErrorText(err, "ADE couldn't change that chat setting."));
         throw err;
       } finally {
         const pending = pendingNativeControlUpdateRef.current;
@@ -18757,7 +18761,7 @@ export function AgentChatPane({
         patchSessionSummary(targetSessionId, { reasoningEffort: previousReasoningEffort });
       }
       void refreshSessions().catch(() => {});
-      setError(err instanceof Error ? err.message : String(err));
+      setError(plainErrorText(err, "ADE couldn't change the reasoning effort."));
     });
   }, [
     draftLaunchConfigScopeKey,
@@ -18806,7 +18810,7 @@ export function AgentChatPane({
           patchSessionSummary(targetSessionId, { codexDaybreak: current.confirmed });
           if (selectedSessionIdRef.current === targetSessionId) setCodexDaybreak(current.confirmed);
         }
-        setError(err instanceof Error ? err.message : String(err));
+        setError(plainErrorText(err, "ADE couldn't change that setting."));
       });
     updates.set(targetSessionId, { latest: updateId, chain, confirmed: entry.confirmed });
   }, [patchSessionSummary, selectedSessionCodexDaybreak, selectedSessionId]);
@@ -18865,7 +18869,7 @@ export function AgentChatPane({
         patchSessionSummary(targetSessionId, { fastMode: previousFastMode, fastTier: previousFastTier });
       }
       void refreshSessions().catch(() => {});
-      setError(err instanceof Error ? err.message : String(err));
+      setError(plainErrorText(err, "ADE couldn't change fast mode."));
       throw err;
     }).finally(() => {
       const pending = pendingFastModeUpdateRef.current;
@@ -18912,7 +18916,7 @@ export function AgentChatPane({
       });
       void refreshSessions().catch(() => {});
     }).catch((err) => {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(plainErrorText(err, "ADE couldn't change the speed tier."));
       void refreshSessions().catch(() => {});
     });
   }, [
@@ -20504,7 +20508,7 @@ export function AgentChatPane({
             sessionId: selectedSessionId,
             taskId,
           }, chatPin)).catch((stopError) => {
-            setError(stopError instanceof Error ? stopError.message : String(stopError));
+            setError(plainErrorText(stopError, STOP_TASK_FAILED));
           });
         }
       : undefined,
@@ -20731,7 +20735,7 @@ export function AgentChatPane({
             nextWakeAt: result.nextWakeAt,
           });
         }).catch((pauseError) => {
-          setError(pauseError instanceof Error ? pauseError.message : String(pauseError));
+          setError(plainErrorText(pauseError, "ADE couldn't pause the scheduled work."));
         });
       } : undefined}
       onCancelScheduledWork={selectedSessionId ? (schedule) => {
@@ -20747,7 +20751,7 @@ export function AgentChatPane({
           });
           scheduleSessionsRefresh();
         }).catch((cancelError) => {
-          setError(cancelError instanceof Error ? cancelError.message : String(cancelError));
+          setError(plainErrorText(cancelError, "ADE couldn't cancel the schedule."));
         });
       } : undefined}
       onStopBackgroundTask={selectedSessionId ? (snapshot) => {
@@ -20762,7 +20766,7 @@ export function AgentChatPane({
             sessionId: selectedSessionId,
             processId,
           }, chatPin)).catch((stopError) => {
-            setError(stopError instanceof Error ? stopError.message : String(stopError));
+            setError(plainErrorText(stopError, "ADE couldn't stop the process."));
           });
           return;
         }
@@ -20771,7 +20775,7 @@ export function AgentChatPane({
             sessionId: selectedSessionId,
             taskId: processId,
           }, chatPin)).catch((stopError) => {
-            setError(stopError instanceof Error ? stopError.message : String(stopError));
+            setError(plainErrorText(stopError, STOP_TASK_FAILED));
           });
           return;
         }
@@ -20785,7 +20789,7 @@ export function AgentChatPane({
             sessionId: selectedSessionId,
             taskId,
           }, chatPin)).catch((stopError) => {
-            setError(stopError instanceof Error ? stopError.message : String(stopError));
+            setError(plainErrorText(stopError, STOP_TASK_FAILED));
           });
         }
         : undefined}
@@ -21866,7 +21870,7 @@ export function AgentChatPane({
               spawnKind: "subagent",
               subagentTakeoverPromptShownAt: previousShownAt,
             });
-            setError(err instanceof Error ? err.message : String(err));
+            setError(plainErrorText(err, "ADE couldn't take over the subagent."));
           });
         }}
         onKeepReporting={() => {
@@ -21885,7 +21889,7 @@ export function AgentChatPane({
             void refreshSessions({ force: true }).catch(() => {});
           }).catch((err) => {
             patchSessionSummary(sessionId, { subagentTakeoverPromptShownAt: null });
-            setError(err instanceof Error ? err.message : String(err));
+            setError(plainErrorText(err, "ADE couldn't take over the subagent."));
           });
         }}
       />
@@ -22354,7 +22358,7 @@ export function AgentChatPane({
                 void withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current
                   .cancelSteer({ sessionId: selectedSessionId, steerId }, chatPin))
                   .catch((error: unknown) => {
-                    setError(`Couldn't remove the queued message: ${error instanceof Error ? error.message : String(error)}`);
+                    setError(`Couldn't remove the queued message: ${plainErrorText(error, CHAT_NO_ANSWER)}`);
                   });
               }
             }}
@@ -22424,7 +22428,7 @@ export function AgentChatPane({
                   showToast({ tone: "info", title: "That message is no longer queued." });
                   return;
                 }
-                setError(`Couldn't move the queued message back to the composer: ${error instanceof Error ? error.message : String(error)}`);
+                setError(`Couldn't move the queued message back to the composer: ${plainErrorText(error, CHAT_NO_ANSWER)}`);
               });
             }}
             onMoveSteer={selectedSessionId && queuedSteersCanReorder(selectedSession?.provider)
@@ -22435,7 +22439,7 @@ export function AgentChatPane({
                   if (isSteerNoLongerQueuedError(error)) {
                     showToast({ tone: "info", title: "That message is no longer queued." });
                   } else {
-                    setError(`Couldn't reorder the queued message: ${error instanceof Error ? error.message : String(error)}`);
+                    setError(`Couldn't reorder the queued message: ${plainErrorText(error, CHAT_NO_ANSWER)}`);
                   }
                   throw error;
                 }
@@ -23764,7 +23768,7 @@ export function AgentChatPane({
           open={importBrowserOpen}
           onOpenChange={setImportBrowserOpen}
           laneId={importTargetLane.id}
-          laneName={importTargetLane.name}
+          laneName={laneDisplayName(importTargetLane)}
           lanes={importTargetLanes}
           sources={importSources}
           onImported={onImportedSession}

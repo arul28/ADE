@@ -10,6 +10,7 @@ import { getAppResourceUsageCoalesced } from "../../../lib/resourcePressure";
 import { baseName } from "../storage/storageView";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { saveProjectLocalConfig } from "../../../lib/projectLocalConfig";
+import { plainErrorText } from "../../../lib/plainError";
 
 export type StorageData = {
   snapshot: StorageSnapshot | null;
@@ -75,7 +76,7 @@ export type HealthDataParts = { storage?: boolean; diagnostics?: boolean; report
 const ALL_PARTS: HealthDataParts = { storage: true, diagnostics: true, report: true };
 
 /**
- * What the project and service pages read (Project → Lanes, Storage & cleanup and Location,
+ * What the project and service pages read (Project → Lanes, Disk space and Location,
  * Computer → ADE service), loaded once when the page opens and again on
  * demand (Check again, after a cleanup). No polling.
  *
@@ -145,7 +146,7 @@ export function useHealthData(
         ...current,
         loading: false,
         refreshing: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: plainErrorText(err, "ADE couldn't read storage use."),
       }));
     }
   }, [isThisMachine, pin, wantStorage]);
@@ -215,7 +216,7 @@ export function useHealthData(
         ...current,
         loading: false,
         checking: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: plainErrorText(err, "ADE couldn't check the project."),
       }));
     }
   }, [pin, reportAvailable, wantReport]);

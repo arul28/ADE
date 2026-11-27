@@ -29,6 +29,7 @@ import type {
   UpdateSessionMetaArgs,
   SessionActivityReport,
   SessionActivityValue,
+  LaneType,
 } from "../../../shared/types";
 import { normalizeSessionStatusNote } from "../../../shared/sessionStatusNote";
 import {
@@ -61,6 +62,7 @@ type SessionRow = {
   id: string;
   laneId: string;
   laneName: string;
+  laneType: LaneType | null;
   ptyId: string | null;
   ownerPid: number | null;
   ownerProcessStartedAt: string | null;
@@ -140,6 +142,7 @@ const SESSION_COLUMNS = `
   s.id as id,
   s.lane_id as laneId,
   l.name as laneName,
+  l.lane_type as laneType,
   s.pty_id as ptyId,
   s.owner_pid as ownerPid,
   s.owner_process_started_at as ownerProcessStartedAt,
@@ -986,7 +989,7 @@ export function createSessionService({
     updatedAt: row.updatedAt,
   });
 
-  const list =({ laneId, status, limit, toolTypes, chatSessionId, includeArchived, settledLimit }: ListSessionsArgs = {}) => {
+  const list =({ laneId, status, limit, toolTypes, chatSessionId, includeArchived, openOnly, settledLimit }: ListSessionsArgs = {}) => {
     const where: string[] = [];
     const params: (string | number | null)[] = [];
     const effectiveLimit = limit === null ? null : typeof limit === "number" ? limit : 200;
@@ -1010,6 +1013,7 @@ export function createSessionService({
       params.push(trimmedChatSessionId);
     }
     if (includeArchived === false) where.push("s.archived_at is null");
+    if (openOnly) where.push("s.ended_at is null");
     const normalizedToolTypes = normalizeToolTypes(toolTypes);
     const queryRows = (
       extraWhere: string[],

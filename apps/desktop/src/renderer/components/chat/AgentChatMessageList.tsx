@@ -352,6 +352,7 @@ import { CtoSpawnRows } from "./cto/CtoSpawnRows";
 import { ctoTranscriptRows } from "./cto/ctoSpawnRules";
 import { drawsCtoChips, keepCtoChipRowsVisible } from "./cto/ctoToolWords";
 import { SponsoredInlineOutlet } from "./sponsored/sponsoredOutlets";
+import { plainErrorText } from "../../lib/plainError";
 
 /**
  * A line that opens a scene fence, as `chatScene.ts`'s scanner reads one: up to
@@ -649,7 +650,7 @@ function QuietTurnCard({
       const result = await onRecover({ sessionId: targetSessionId, turnId: event.turnId, action });
       setResultMessage(resultLabels[result.status]);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : String(error));
+      setErrorMessage(plainErrorText(error, "ADE couldn't recover the chat."));
     } finally {
       setPendingAction(null);
     }
@@ -1347,7 +1348,7 @@ function UnprocessedMessageAction({
       await onRun(event);
       setResolved("run_next");
     } catch (runError) {
-      setError(runError instanceof Error ? runError.message : String(runError));
+      setError(plainErrorText(runError, "ADE couldn't run that message."));
     } finally {
       setRunning(false);
     }
@@ -1360,7 +1361,7 @@ function UnprocessedMessageAction({
       await onDismiss(event);
       setResolved("dismiss");
     } catch (dismissError) {
-      setError(dismissError instanceof Error ? dismissError.message : String(dismissError));
+      setError(plainErrorText(dismissError, "ADE couldn't dismiss that message."));
     } finally {
       setRunning(false);
     }

@@ -38,6 +38,8 @@ import {
   formerMachineKeysOf,
   prepareStopCommand,
   pushWorkCommand,
+  pushWorkGithubMessage,
+  pushWorkGithubProblem,
   readPushWorkTally,
   shellJobId,
 } from "../../../../../account-directory/src/cloud/computerCommands";
@@ -117,6 +119,7 @@ function workTallyOf(stdout: string): PushWorkTally | null {
       dirty: raw[lane.laneId]?.dirty === true,
       ahead: Number(raw[lane.laneId]?.ahead) || 0,
       state: WORK_LANE_STATES.has(lane.state as CloudLaneWorkLane["state"]) ? lane.state as CloudLaneWorkLane["state"] : "unpushed",
+      reason: lane.reason,
     })) ?? null,
   };
 }
@@ -212,6 +215,8 @@ export function createWebCloudLaneLife(deps: WebCloudLaneLifeDeps) {
     // An older computer answers counts without the lane list: it can't say, so the caller warns.
     if (!ran.tally.lanes) return { unpushed: null, unpushedLanes: [], message: WORK_CHECK_TOO_OLD };
     const unpushedLanes = leftLanes(ran.tally.lanes);
+    const github = pushWorkGithubProblem(unpushedLanes);
+    if (github) return { unpushed: null, unpushedLanes, message: pushWorkGithubMessage(github, "unknown") };
     // A project it couldn't open listed no lanes: its work is unknown, not saved.
     if (ran.tally.failed > 0) return { unpushed: null, unpushedLanes, message: "ADE couldn't read every project on this computer." };
     return { unpushed: unpushedLanes.length > 0, unpushedLanes, message: null };

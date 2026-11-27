@@ -86,7 +86,9 @@ import {
   type DesktopAlert,
 } from "./services/attention/desktopAlertPresenter";
 import {
+  adeCloudNavigationForCopy,
   appNavigationOwnership,
+  type AccountProjectCopyRef,
   dispatchOwnerAwareNavigation,
   resolveAccountProjectNavigation,
   ownerNavigationFailureCopy,
@@ -97,6 +99,7 @@ import {
   selectWindowForProjectNavigation,
 } from "./services/deeplinks/projectNavigationWindowSelection";
 import { registerIpc } from "./services/ipc/registerIpc";
+import { CloudComputerAsleepError } from "./services/ipc/runtimeBridge";
 import { isTrustedAdeRendererSender } from "./services/ipc/trustedRendererSender";
 import { connectBrowserToNowPlaying, registerHomeWidgetsIpc } from "./services/home/registerHomeWidgetsIpc";
 import { registerAppBundleOwnershipIpc } from "./services/updates/registerAppBundleOwnershipIpc";
@@ -479,6 +482,8 @@ import {
 } from "./services/runtime/machineTrustResetMigration";
 import { createCtoStateService } from "./services/cto/ctoStateService";
 import { createCtoMemoryService } from "./services/cto/ctoMemoryService";
+import { isTerminalSessionDone, sessionRestedAt } from "../shared/types/sessions";
+import { getSessionWithChatProjection } from "./services/sessions/chatSessionProjection";
 import { createLinearCredentialService } from "./services/cto/linearCredentialService";
 import { createAccountVaultBridge } from "./services/account/accountVaultBridge";
 import { createMcpRegistryAuthTokenResolver } from "./services/mcp/mcpRegistryService";
@@ -5342,6 +5347,7 @@ app.whenReady().then(async () => {
     laneTeardownDeps.ptyService = {
       countActiveForLane: (laneId) => ptyService.countActiveForLane(laneId),
       disposeForLane: (laneId) => ptyService.disposeForLane(laneId),
+      listAdditionalLiveSessionsForLane: ptyService.listAdditionalLiveSessionsForLane,
     };
     laneTeardownDeps.fileWatcherService = {
       countActiveForWorkspace: (id) => fileService.countActiveWatchersForWorkspace(id),
@@ -5372,6 +5378,23 @@ app.whenReady().then(async () => {
     const ctoMemoryService = createCtoMemoryService({
       adeDir: adePaths.adeDir,
       logger,
+    });
+
+    // Linked work items close themselves on this runtime too (no other
+    // machines here: a chat on another machine stays open until the brain sees it).
+    ctoMemoryService.setLinkedWorkResolver({
+      prState: (prNumber) => prServiceRef?.getRepoPullRequestState(prNumber) ?? null,
+      chatState: async (link) => {
+        if (link.machineId) return null;
+        // The row with its chat's live state: a stored chat row reads "running"
+        // between turns, so only the projection can say it came to rest.
+        const row = await getSessionWithChatProjection(
+          { sessionService, ptyService, agentChatService: agentChatServiceRef, logger },
+          link.sessionId,
+        );
+        if (!row) return null;
+        return { done: isTerminalSessionDone(row), restedAt: sessionRestedAt(row), statusLine: row.statusNote?.trim() || null };
+      },
     });
 
     const ctoStateService = createCtoStateService({
@@ -5717,6 +5740,8 @@ app.whenReady().then(async () => {
       },
     });
     agentChatServiceRef = agentChatService;
+    // A restored deleted lane takes back the chats its delete kept.
+    laneService.setOnDeletedLaneRestored((args) => agentChatService.reopenDeletedChatsWithLane(args));
     // A new CLI session that names no account starts where a new chat would.
     ptyService.setNewCliSessionAccountPicker((provider, modelId) =>
       agentChatService.pickNewCliSessionAccount(provider, modelId));
@@ -5759,6 +5784,7 @@ app.whenReady().then(async () => {
     });
     laneTeardownDeps.agentChatService = {
       countActiveForLane: (laneId) => agentChatService.countActiveForLane(laneId),
+      listArchivedWorkingChats: agentChatService.listArchivedWorkingChats,
       disposeForLane: (laneId) => agentChatService.disposeForLane(laneId),
     };
     lateSettle.bind(createSettleWiring({
@@ -10649,6 +10675,11 @@ app.whenReady().then(async () => {
           handle.focus();
           handle.webContents.send(IPC.appNavigate, ownedRequest);
         },
+        openAsleepOnAdeCloud: (error, ownership, ownedRequest) => openAsleepCopyOnAdeCloud(error, {
+          machineKey: ownership.accountMachineKey,
+          projectId: ownership.projectId,
+          rootPath: ownership.projectRoot ?? null,
+        }, ownedRequest),
       });
       if (handledByOwner) return;
 
@@ -11108,6 +11139,29 @@ app.whenReady().then(async () => {
     return opened.windowId == null ? null : BrowserWindow.fromId(opened.windowId);
   };
 
+  /**
+   * An open failed. When it failed because the copy's ADE Cloud computer is
+   * asleep (opening never wakes one), the repository opens on ADE Cloud in a
+   * host window instead, as the top bar's tab does: its saved chats and Git
+   * summary read from the account, and a send wakes the computer. False for
+   * any other failure, or when the account lists no project for the copy.
+   */
+  const openAsleepCopyOnAdeCloud = async (
+    error: unknown,
+    copy: AccountProjectCopyRef,
+    request: AppNavigationRequest,
+  ): Promise<boolean> => {
+    if (!(error instanceof CloudComputerAsleepError) || !ipcBridge) return false;
+    const list = await ipcBridge.readAccountProjectList().catch(() => null);
+    const adeCloud = list ? adeCloudNavigationForCopy(request, list, copy) : null;
+    if (!adeCloud) return false;
+    const win = await acquireRemoteAttentionHostWindow();
+    if (!win || win.isDestroyed()) return false;
+    foregroundAttentionWindow(win);
+    win.webContents.send(IPC.appNavigate, adeCloud);
+    return true;
+  };
+
   const navigateFromAttentionItem = async (
     item: AttentionItem,
     request: AppNavigationRequest,
@@ -11138,14 +11192,21 @@ app.whenReady().then(async () => {
       if (!win || win.isDestroyed() || !ipcBridge) {
         throw new Error("ADE could not open the remote Activity destination.");
       }
-      const binding = await ipcBridge.openAttentionProject({
-        machineKey: accountMachineKey,
-        projectId: item.project.projectId,
-        // The item's uuid is not an id this runtime knows; its root path is.
-        rootPath: item.project.rootPath ?? null,
-        machineName: item.machine.name,
-        windowId: win.id,
-      });
+      let binding: Awaited<ReturnType<typeof ipcBridge.openAttentionProject>>;
+      try {
+        binding = await ipcBridge.openAttentionProject({
+          machineKey: accountMachineKey,
+          projectId: item.project.projectId,
+          // The item's uuid is not an id this runtime knows; its root path is.
+          rootPath: item.project.rootPath ?? null,
+          machineName: item.machine.name,
+          windowId: win.id,
+        });
+      } catch (error) {
+        const copy = { machineKey: accountMachineKey, projectId: item.project.canonicalId ?? null, rootPath: item.project.rootPath ?? null };
+        if (await openAsleepCopyOnAdeCloud(error, copy, request)) return;
+        throw error;
+      }
       remoteWindow = matchingRemoteProjectWindow(binding.targetId, item.project) ?? win;
     }
 

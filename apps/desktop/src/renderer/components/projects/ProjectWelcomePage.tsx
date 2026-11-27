@@ -56,6 +56,7 @@ import {
 } from "./ProjectWelcomeWebNotices";
 import { MergeWorktreeProjectDialog } from "./MergeWorktreeProjectDialog";
 import type {
+  OpenProjectBinding,
   RecentProjectSummary,
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectionState,
@@ -67,6 +68,7 @@ import { GetStartedCard, InstallAdeChip, useGetStartedState } from "./GetStarted
 import { useHasOwnComputer, useOwnWebComputers } from "../../state/ownComputers";
 import type { HomeWebComputer } from "./homeProjectRows";
 import { useHomeRowRemoval } from "./useHomeRowRemoval";
+import { plainErrorText } from "../../lib/plainError";
 
 // Edit mode's toolbar, gallery and appearance sliders: loaded the first time
 // someone customizes the page, never on the boot path.
@@ -76,10 +78,9 @@ function recentKey(rp: RecentProjectSummary): string {
   return recentProjectLocationKey(rp);
 }
 
-/** Whether the tab in front is this remote project (no later choice replaced the open). */
-function isOpenRemoteProject(targetId: string, projectId: string): boolean {
-  const binding = useAppStore.getState().projectBinding;
-  return binding?.kind === "remote" && binding.targetId === targetId && binding.projectId === projectId;
+/** Whether the tab in front is still the binding an open returned (no later choice replaced it). */
+function isOpenBinding(opened: OpenProjectBinding): boolean {
+  return useAppStore.getState().projectBinding?.key === opened.key;
 }
 
 export function ProjectWelcomePage() {
@@ -185,7 +186,7 @@ export function ProjectWelcomePage() {
       })
       .catch((error: unknown) => {
         if (recentReadRef.current !== request) return;
-        setRecentListError(error instanceof Error ? error.message : String(error));
+        setRecentListError(plainErrorText(error, "ADE couldn't read your recent projects."));
         setRecentsLoaded(true);
       });
   }, []);
@@ -319,14 +320,16 @@ export function ProjectWelcomePage() {
       if (!machine) {
         // The row of an open tab names that tab's saved machine, which the
         // list does not hold while its computer is asleep or not answering:
-        // open the tab, which wakes a sleeping ADE Cloud computer first.
+        // open the tab (a sleeping ADE Cloud computer opens from ADE Cloud).
         void (async () => {
           try {
-            await switchRemoteProject(machineKey, projectId);
-            if (isOpenRemoteProject(machineKey, projectId)) navigate(workspace.consumePendingProjectPath() ?? "/work");
+            // The open can land on the repository's ADE Cloud tab (a sleeping
+            // ADE Cloud computer): the binding it returned is the one to find.
+            const opened = await switchRemoteProject(machineKey, projectId);
+            if (isOpenBinding(opened)) navigate(workspace.consumePendingProjectPath() ?? "/work");
           } catch (error) {
             if (onUnreachable?.()) return;
-            setRowError(error instanceof Error ? error.message : String(error));
+            setRowError(plainErrorText(error, "ADE couldn't open that project."));
           }
         })();
         return;
@@ -340,7 +343,7 @@ export function ProjectWelcomePage() {
         } catch (error) {
           // An account row whose computer did not answer opens with no machine.
           if (onUnreachable?.()) return;
-          setRowError(error instanceof Error ? error.message : String(error));
+          setRowError(plainErrorText(error, "ADE couldn't open that project."));
         } finally {
           setOpeningRowKey((current) => (current === rowKey ? null : current));
         }
@@ -364,7 +367,7 @@ export function ProjectWelcomePage() {
             setDirectoryRetryError(null);
             void workspace.retryDirectory().catch((error) => {
               setDirectoryRetryError(
-                error instanceof Error ? error.message : String(error),
+                plainErrorText(error, "ADE couldn't reload the computers."),
               );
             });
           },
@@ -387,7 +390,7 @@ export function ProjectWelcomePage() {
         await workspace.adapter.activateChats(targetId);
         navigate("/chats");
       } catch (error) {
-        setRowError(error instanceof Error ? error.message : String(error));
+        setRowError(plainErrorText(error, "ADE couldn't open the chats."));
       }
     })();
   }, [activeWebMachine, navigate, workspace]);
@@ -398,7 +401,8 @@ export function ProjectWelcomePage() {
       if (webMode && rp.kind === "remote" && rp.remote) {
         // A tab of this repository is open, or waiting, on a computer this
         // browser cannot reach now (asleep, or not answering): the row opens
-        // that tab, which wakes a sleeping ADE Cloud computer first.
+        // that tab. A sleeping ADE Cloud computer is not woken: the tab opens
+        // as the repository's ADE Cloud tab.
         const origin = normalizeGitRemoteIdentity(rp.gitOriginUrl ?? null);
         const unreachableTab = [...useAppStore.getState().openRemoteProjectTabs, ...webStoppedTabCopies()].find((binding) => (
           (origin ? normalizeGitRemoteIdentity(binding.gitOriginUrl ?? null) === origin : binding.rootPath === rp.rootPath)
@@ -408,14 +412,15 @@ export function ProjectWelcomePage() {
           const rowKey = recentKey(rp);
           setOpeningRowKey(rowKey);
           void switchRemoteProject(unreachableTab.targetId, unreachableTab.projectId).then(
-            () => {
-              // A later choice can supersede this open while the computer wakes.
-              if (isOpenRemoteProject(unreachableTab.targetId, unreachableTab.projectId)) {
+            (opened) => {
+              // A later choice can supersede this open. The open can land on
+              // the repository's ADE Cloud tab, so it checks what it returned.
+              if (isOpenBinding(opened)) {
                 navigate(workspace?.consumePendingProjectPath() ?? "/work");
               }
             },
             (error: unknown) => {
-              if (!openNoMachineTab(rp)) setRowError(error instanceof Error ? error.message : String(error));
+              if (!openNoMachineTab(rp)) setRowError(plainErrorText(error, "ADE couldn't open that project."));
             },
           ).finally(() => setOpeningRowKey((current) => (current === rowKey ? null : current)));
           return;
@@ -453,20 +458,20 @@ export function ProjectWelcomePage() {
         const state = connectionByTarget.get(targetId) ?? null;
         if (state === "connected") {
           void switchRemoteProject(targetId, projectId).catch((error) => {
-            setRowError(error instanceof Error ? error.message : String(error));
+            setRowError(plainErrorText(error, "ADE couldn't open that project."));
           });
           return;
         }
-        // Offline: establish the SSH connection first, then bind the project.
+        // Offline: the open connects the machine first (it never wakes a
+        // sleeping ADE Cloud computer: that one opens with no machine below).
         setConnectingKeys((prev) => new Set(prev).add(key));
         void (async () => {
           try {
-            await window.ade.remoteRuntime.connect(targetId);
             await switchRemoteProject(targetId, projectId);
           } catch (error) {
             // The machine did not come online: the repository still opens, as
             // a tab with no machine that opens a copy when one is online.
-            if (!openNoMachineTab(rp)) setRowError(error instanceof Error ? error.message : String(error));
+            if (!openNoMachineTab(rp)) setRowError(plainErrorText(error, "ADE couldn't open that project."));
           } finally {
             setConnectingKeys((prev) => {
               const next = new Set(prev);
@@ -507,7 +512,7 @@ export function ProjectWelcomePage() {
       }
       setRecentProjects(next);
     } catch (error) {
-      setRowError(error instanceof Error ? error.message : String(error));
+      setRowError(plainErrorText(error, "ADE couldn't pin that project."));
     }
   }, [recentProjects]);
 
@@ -526,7 +531,7 @@ export function ProjectWelcomePage() {
           void switchProjectToPath(path);
         }
       } catch (error) {
-        setRowError(error instanceof Error ? error.message : String(error));
+        setRowError(plainErrorText(error, "ADE couldn't open that folder."));
       }
     },
     [switchProjectToPath],
@@ -584,7 +589,7 @@ export function ProjectWelcomePage() {
               void window.ade.app
                 .openProjectInNewWindow(remoteBinding ?? localBindingFromRecent(rp))
                 .catch((error: unknown) =>
-                  setRowError(error instanceof Error ? error.message : String(error)),
+                  setRowError(plainErrorText(error, "ADE couldn't open a new window.")),
                 );
             },
           }
