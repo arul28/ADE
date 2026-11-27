@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isEnoent } from "../credentials/credentialFileIo";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 export const MAX_LAUNCHD_LOG_BYTES = 10 * 1024 * 1024;
 export const ROTATED_LAUNCHD_LOG_BYTES = 1024 * 1024;
@@ -39,7 +40,7 @@ export function copytruncateLogIfOversized(
     // noise, carrying the full `home` path, in front of every embedder's log.
     if (!isEnoent(error)) {
       try {
-        process.stderr.write(`ADE could not bound runtime log ${path.basename(filePath)}: ${error instanceof Error ? error.message : String(error)}\n`);
+        process.stderr.write(`${BRAND.NAME} could not bound runtime log ${path.basename(filePath)}: ${error instanceof Error ? error.message : String(error)}\n`);
       } catch {}
     }
     return false;

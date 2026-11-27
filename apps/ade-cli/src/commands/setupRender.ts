@@ -12,6 +12,7 @@
  *     only when something actually needs the user
  */
 
+import { BRAND } from "../../../desktop/src/shared/brand";
 export type SetupStepId =
   | "runtime"
   | "native"
@@ -274,8 +275,8 @@ export type SetupTotals = {
  * What a stuck user needs is what the command is *for*.
  */
 const NEXT_ACTION_PURPOSE: Record<SetupStepId, string> = {
-  runtime: "reinstall the ADE runtime",
-  native: "reinstall the ADE runtime",
+  runtime: `reinstall the ${BRAND.NAME} runtime`,
+  native: `reinstall the ${BRAND.NAME} runtime`,
   tools: "fetch the agent CLIs",
   account: "link this machine to your account",
   desktop: "install the desktop app",
@@ -301,8 +302,8 @@ export function renderSummary(
   const failed = steps.filter((step) => step.state === "failed");
   const dash = caps.unicode ? "—" : "-";
   const heading = failed.length === 0
-    ? "ADE is ready"
-    : `ADE installed ${dash} ${failed.length} step${failed.length === 1 ? "" : "s"} need${failed.length === 1 ? "s" : ""} you`;
+    ? `${BRAND.NAME} is ready`
+    : `${BRAND.NAME} installed ${dash} ${failed.length} step${failed.length === 1 ? "" : "s"} need${failed.length === 1 ? "s" : ""} you`;
 
   const lines: string[] = ["", `  ${heading}`, ""];
   for (const step of steps) {

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { withExclusiveFileLock } from "../../lib/exclusiveFileLock";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * Cross-process mutual exclusion for "spawn a brain for this socket".
@@ -53,6 +54,6 @@ export async function withSocketSpawnLock<T>(socketPath: string, task: () => Pro
   if (socketPath.startsWith("tcp://")) return await task();
   return await withExclusiveFileLock(socketSpawnLockPath(socketPath), task, {
     waitMs: 10_000,
-    label: "ADE socket spawn lock",
+    label: `${BRAND.NAME} socket spawn lock`,
   });
 }

@@ -28,6 +28,7 @@ import type {
   DesktopAppUpdateInstallResult,
   DesktopAppUpdateRouting,
 } from "./desktopAppUpdateBridge";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 export type MachineUpdateAndRestartResult = {
   ok: boolean;
@@ -463,7 +464,7 @@ async function runStandaloneUpdateAndRestart(
       targetVersion: check.targetVersion,
       steps,
       message: updateApplied
-        ? `Updated ADE, but the background service didn't restart — ${restart.detail}`
+        ? `Updated ${BRAND.NAME}, but the background service didn't restart — ${restart.detail}`
         : `The background service didn't restart — ${restart.detail}`,
       route: "standalone",
       pendingVersion: null,
@@ -506,11 +507,11 @@ function desktopAppResult(
         ok: true,
         updateApplied: true,
         steps: [
-          step("check", "ok", `The ADE app on this machine has ${named} ready.`),
-          step("apply", "pending", answer.message || `The ADE app is installing ${named}.`),
+          step("check", "ok", `The ${BRAND.NAME} app on this machine has ${named} ready.`),
+          step("apply", "pending", answer.message || `The ${BRAND.NAME} app is installing ${named}.`),
           step("restart", "pending", "The app restarts the background service after it installs."),
         ],
-        message: `Installing ADE ${named} — the app on that machine restarts, then reconnecting…`,
+        message: `Installing ${BRAND.NAME} ${named} — the app on that machine restarts, then reconnecting…`,
         pendingVersion: version,
       };
     case "downloading":
@@ -519,11 +520,11 @@ function desktopAppResult(
         ok: true,
         updateApplied: false,
         steps: [
-          step("check", "ok", `The ADE app on this machine found ${named}.`),
+          step("check", "ok", `The ${BRAND.NAME} app on this machine found ${named}.`),
           step("apply", "pending", answer.message || `Downloading ${named}; it installs when the download finishes.`),
           step("restart", "pending", "The app restarts the background service after it installs."),
         ],
-        message: `Downloading ADE ${named} on that machine — it installs and restarts when the download finishes.`,
+        message: `Downloading ${BRAND.NAME} ${named} on that machine — it installs and restarts when the download finishes.`,
         pendingVersion: version,
       };
     case "no_update":
@@ -531,9 +532,9 @@ function desktopAppResult(
         ...base,
         ok: false,
         updateApplied: false,
-        steps: [step("check", "failed", answer.message || "The ADE app found no newer version.")],
+        steps: [step("check", "failed", answer.message || `The ${BRAND.NAME} app found no newer version.`)],
         message: answer.message
-          || `The ADE app on that machine found no newer version than ${answer.currentVersion ?? "the one it runs"}.`,
+          || `The ${BRAND.NAME} app on that machine found no newer version than ${answer.currentVersion ?? "the one it runs"}.`,
         pendingVersion: null,
       };
     case "failed":
@@ -542,8 +543,8 @@ function desktopAppResult(
         ...base,
         ok: false,
         updateApplied: false,
-        steps: [step("apply", "failed", answer.message || "The ADE app could not install the update.")],
-        message: `Couldn't update the ADE app on that machine — ${answer.message || "it did not say why"}`,
+        steps: [step("apply", "failed", answer.message || `The ${BRAND.NAME} app could not install the update.`)],
+        message: `Couldn't update the ${BRAND.NAME} app on that machine — ${answer.message || "it did not say why"}`,
         pendingVersion: null,
       };
   }
@@ -683,7 +684,7 @@ async function routeMachineUpdateAndRestart(
             ownVersion,
             covered,
             "desktop_app",
-            answer.message || `The ADE app is already on ${answer.currentVersion ?? ownVersion}.`,
+            answer.message || `The ${BRAND.NAME} app is already on ${answer.currentVersion ?? ownVersion}.`,
           );
         }
         const restart = deps.requestRestart();
@@ -693,12 +694,12 @@ async function routeMachineUpdateAndRestart(
           currentVersion: answer.currentVersion,
           targetVersion: answer.version ?? targetVersion,
           steps: [
-            step("check", "ok", answer.message || "The ADE app is already on the newest version."),
+            step("check", "ok", answer.message || `The ${BRAND.NAME} app is already on the newest version.`),
             step("apply", "skipped", "Already on the newest version."),
             step("restart", restart.ok ? "pending" : "failed", restart.detail),
           ],
           message: restart.ok
-            ? "The ADE app is already up to date — restarting its background service, reconnecting…"
+            ? `The ${BRAND.NAME} app is already up to date — restarting its background service, reconnecting…`
             : `The background service didn't restart — ${restart.detail}`,
           route: "desktop_app",
           pendingVersion: restart.ok ? answer.currentVersion : null,
@@ -733,7 +734,7 @@ export async function runMachineTrackSwitch(
   const refuse = (message: string, route: RemoteRuntimeUpdateRoute = "standalone"): MachineUpdateAndRestartResult =>
     failedCheckResult(message, { currentVersion: ownVersion, route });
   const switcher = deps.trackSwitch;
-  if (!switcher) return refuse("This ADE can't change its update track from another computer.");
+  if (!switcher) return refuse(`This ${BRAND.NAME} can't change its update track from another computer.`);
   if (await switcher.isInstalling?.()) return refuse(TRACK_SWITCH_INSTALLING);
   if (deps.updateInstallMode?.()?.updateInstallMode === "manual_download") {
     return refuse("This Linux package is installed by hand, so its track can't be switched from here.");
@@ -742,7 +743,7 @@ export async function runMachineTrackSwitch(
   try {
     check = await switcher.check(target);
   } catch (error) {
-    return refuse(`ADE couldn't check this computer's projects before switching: ${error instanceof Error ? error.message : String(error)}`);
+    return refuse(`${BRAND.NAME} couldn't check this computer's projects before switching: ${error instanceof Error ? error.message : String(error)}`);
   }
   if (!check.allowed) return refuse(check.reason);
 
@@ -751,11 +752,11 @@ export async function runMachineTrackSwitch(
     try {
       routing = await switcher.requestDesktopApp(target, requestedBy);
     } catch (error) {
-      return refuse(`ADE couldn’t reach this computer’s updater. ${error instanceof Error ? error.message : String(error)}`, "desktop_app");
+      return refuse(`${BRAND.NAME} couldn’t reach this computer’s updater. ${error instanceof Error ? error.message : String(error)}`, "desktop_app");
     }
     if (routing.attached) {
       const answer = routing.result;
-      if (answer.outcome === "unsupported") return refuse(answer.message || "This ADE app can't switch tracks.", "desktop_app");
+      if (answer.outcome === "unsupported") return refuse(answer.message || `This ${BRAND.NAME} app can't switch tracks.`, "desktop_app");
       if (answer.outcome === "already_current") {
         if (updateTrackOfVersion(ownVersion) === target) {
           return followsTrackAgainResult(label, answer.currentVersion ?? ownVersion, "desktop_app", answer.message);
@@ -770,7 +771,7 @@ export async function runMachineTrackSwitch(
           targetVersion: answer.currentVersion,
           steps: [step("check", "ok", answer.message), step("restart", restart.ok ? "pending" : "failed", restart.detail)],
           message: restart.ok
-            ? `Restarting ADE’s background service to finish switching to ${label}.`
+            ? `Restarting ${BRAND.NAME}’s background service to finish switching to ${label}.`
             : restart.detail,
           route: "desktop_app",
           pendingVersion: restart.ok ? answer.currentVersion : null,
@@ -787,7 +788,7 @@ export async function runMachineTrackSwitch(
   const runningTrack = updateTrackOfVersion(ownVersion);
   const targetVersion = check.targetVersion;
   if (target !== runningTrack && !targetVersion) {
-    return refuse(`ADE couldn't find the newest ${label} build to install. Try again later.`);
+    return refuse(`${BRAND.NAME} couldn't find the newest ${label} build to install. Try again later.`);
   }
   // Back to the track the running build is on: saved, nothing to install.
   // Otherwise saved as pending: the brain's next start keeps it only if the
@@ -798,7 +799,7 @@ export async function runMachineTrackSwitch(
       ? { pendingSwitchFrom: runningTrack, pendingSwitchVersion: targetVersion }
       : undefined);
   } catch (error) {
-    return refuse(`ADE couldn't save the choice: ${error instanceof Error ? error.message : String(error)}`);
+    return refuse(`${BRAND.NAME} couldn't save the choice: ${error instanceof Error ? error.message : String(error)}`);
   }
   if (target === runningTrack) return followsTrackAgainResult(label, ownVersion, "standalone", null);
   const result = await runStandaloneUpdateAndRestart(deps, targetVersion, { updateRequested: true, requestedBy, trackSwitch: true });
@@ -809,7 +810,7 @@ export async function runMachineTrackSwitch(
     switcher.save(runningTrack);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    return { ...result, message: `${result.message} ADE also couldn't go back to ${updateTrackLabel(runningTrack)}: ${detail}` };
+    return { ...result, message: `${result.message} ${BRAND.NAME} also couldn't go back to ${updateTrackLabel(runningTrack)}: ${detail}` };
   }
   return result;
 }

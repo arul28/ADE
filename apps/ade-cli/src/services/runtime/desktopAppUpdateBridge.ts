@@ -4,6 +4,7 @@ import { electronMacAppBundlePath } from "../../serviceManager/brainExecutable";
 import { JsonRpcClient, JsonRpcResponseError } from "../../lib/jsonRpcClient";
 import type { UpdateRequestedBy } from "../../../../desktop/src/shared/types/remoteRuntime";
 import type { UpdateTrack } from "../../../../desktop/src/shared/updateTrack";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * "Update & restart" for a machine whose ADE desktop app is open.
@@ -158,7 +159,7 @@ export async function requestDesktopAppTrackSwitch(args: {
       outcome: "failed",
       currentVersion: null,
       version: null,
-      message: "The ADE app on this computer could not answer the track switch. Update it, then switch again.",
+      message: `The ${BRAND.NAME} app on this computer could not answer the track switch. Update it, then switch again.`,
     },
   };
 }
@@ -178,7 +179,7 @@ async function requestDesktopApp(args: {
         JsonRpcClient.connect(args.socketPath),
         new Promise<never>((_, reject) => {
           timer = setTimeout(
-            () => reject(new Error("Timed out reaching the ADE desktop app.")),
+            () => reject(new Error(`Timed out reaching the ${BRAND.NAME} desktop app.`)),
             args.connectTimeoutMs ?? CONNECT_TIMEOUT_MS,
           );
         }),
@@ -186,7 +187,7 @@ async function requestDesktopApp(args: {
     } catch (error) {
       return {
         attached: false,
-        detail: `The ADE desktop app is not reachable: ${error instanceof Error ? error.message : String(error)}`,
+        detail: `The ${BRAND.NAME} desktop app is not reachable: ${error instanceof Error ? error.message : String(error)}`,
       };
     } finally {
       if (timer) clearTimeout(timer);
@@ -211,12 +212,12 @@ async function requestDesktopApp(args: {
             outcome: "failed",
             currentVersion: null,
             version: null,
-            message: `The ADE desktop app declined the request: ${error.message}`,
+            message: `The ${BRAND.NAME} desktop app declined the request: ${error.message}`,
           },
         };
       }
       if (error instanceof JsonRpcResponseError) {
-        return { attached: false, refused: true, detail: `The ADE desktop app declined the request: ${error.message}` };
+        return { attached: false, refused: true, detail: `The ${BRAND.NAME} desktop app declined the request: ${error.message}` };
       }
       return {
         attached: true,
@@ -224,13 +225,13 @@ async function requestDesktopApp(args: {
           outcome: "failed",
           currentVersion: null,
           version: null,
-          message: `The ADE app on this machine did not answer: ${error instanceof Error ? error.message : String(error)}`,
+          message: `The ${BRAND.NAME} app on this machine did not answer: ${error instanceof Error ? error.message : String(error)}`,
         },
       };
     }
     const result = readResult(raw);
     if (!result) {
-      return { attached: false, refused: true, detail: "The ADE desktop app sent an answer this brain does not understand." };
+      return { attached: false, refused: true, detail: `The ${BRAND.NAME} desktop app sent an answer this brain does not understand.` };
     }
     return { attached: true, result };
   } finally {
@@ -367,7 +368,7 @@ async function requestThroughClosedApp(
       outcome: "failed",
       currentVersion: null,
       version: null,
-      message: `ADE is closed on this computer and could not be opened to update itself (${detail}). Open ADE there, then update again.`,
+      message: `${BRAND.NAME} is closed on this computer and could not be opened to update itself (${detail}). Open ${BRAND.NAME} there, then update again.`,
     },
   });
   try {
@@ -384,7 +385,7 @@ async function requestThroughClosedApp(
       // "unsupported" would send the caller to the standalone update, the very
       // switch this route exists to avoid.
       return routing.result.outcome === "unsupported"
-        ? refuse(routing.result.message || "this ADE build cannot update itself")
+        ? refuse(routing.result.message || `this ${BRAND.NAME} build cannot update itself`)
         : routing;
     }
     detail = routing.detail;

@@ -47,6 +47,7 @@ import {
 } from "../../../desktop/src/shared/types/sync";
 import fs from "node:fs";
 import path from "node:path";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 export class SetupUsageError extends Error {}
 
@@ -70,14 +71,14 @@ export function describeUnpublishedMachine(
   failedLeg?: unknown,
 ): { detail: string; nextAction: string } {
   if (!isSyncAccountDirectoryState(state)) {
-    return { detail: "not published to your account", nextAction: "ade doctor" };
+    return { detail: "not published to your account", nextAction: "daex doctor" };
   }
   const leg = SYNC_ACCOUNT_DIRECTORY_FAILED_LEGS.find((candidate) => candidate === failedLeg) ?? null;
   const { summary, nextAction } = describeUnpublishedAccountDirectory(
     state,
     createSyncAccountDirectoryHealth(state, null, { failedLeg: leg }),
   );
-  return { detail: summary, nextAction: nextAction ?? "ade doctor" };
+  return { detail: summary, nextAction: nextAction ?? "daex doctor" };
 }
 
 export type SetupOptions = {
@@ -267,7 +268,7 @@ export async function askOnStdin(
 }
 
 const STEP_LABELS: Record<string, string> = {
-  runtime: "ADE runtime",
+  runtime: `${BRAND.NAME} runtime`,
   native: "Native dependencies",
   tools: "Agent CLIs",
   account: "Account",
@@ -335,7 +336,7 @@ export async function runSetupCommand(
   } catch (error) {
     toolsStep.state = "failed";
     toolsStep.detail = describeError(error);
-    toolsStep.nextAction = "ade tools ensure";
+    toolsStep.nextAction = "daex tools ensure";
   }
   reporter.completeStep(toolsStep);
 
@@ -352,7 +353,7 @@ export async function runSetupCommand(
         onStarting: () => {
           if (announced) return;
           announced = true;
-          reporter.line("  Starting ADE's background service...");
+          reporter.line(`  Starting ${BRAND.NAME}'s background service...`);
         },
       });
       serviceStarting = readiness.starting && !readiness.ready;
@@ -369,15 +370,15 @@ export async function runSetupCommand(
   } catch (error) {
     accountStep.state = "failed";
     accountStep.detail = describeError(error);
-    accountStep.nextAction = "ade connect";
+    accountStep.nextAction = "daex connect";
   }
   // A brain that is still starting is the reason this step could not finish,
   // and "sign-in didn't finish" is not a true account of that. Say what is
   // actually happening and leave the same recovery command.
   if (serviceStarting && accountStep.state === "failed") {
     accountStep.state = "skipped";
-    accountStep.detail = "ADE's background service is still starting";
-    accountStep.nextAction = "ade connect";
+    accountStep.detail = `${BRAND.NAME}'s background service is still starting`;
+    accountStep.nextAction = "daex connect";
   }
   reporter.completeStep(accountStep);
 
@@ -400,7 +401,7 @@ export async function runSetupCommand(
     } catch (error) {
       desktopStep.state = "failed";
       desktopStep.detail = describeError(error);
-      desktopStep.nextAction = "ade setup";
+      desktopStep.nextAction = "daex setup";
     }
   }
   reporter.completeStep(desktopStep);
@@ -418,7 +419,7 @@ export async function runSetupCommand(
   try {
     const result = await deps.verify();
     verified = result.ok;
-    const nextAction = result.nextAction ?? "ade connect";
+    const nextAction = result.nextAction ?? "daex connect";
     const alreadyOffered = accountStep.state === "skipped" &&
       accountStep.nextAction === nextAction;
     // `serviceStarting` is the one case where a failed check is not a failed
@@ -434,7 +435,7 @@ export async function runSetupCommand(
 
   if (serviceStarting) {
     reporter.line(
-      "  ADE's background service is still starting. Give it a moment, then run `ade connect`.",
+      `  ${BRAND.NAME}'s background service is still starting. Give it a moment, then run \`daex connect\`.`,
     );
   }
 
@@ -488,7 +489,7 @@ async function runAccountStep(args: {
   if (status.signedIn) {
     // A null answer means no usable terminal, which reads as "keep what works".
     const choice = interactive
-      ? await ask(`  Already linked to ${status.identity ?? "an ADE account"}`, [
+      ? await ask(`  Already linked to ${status.identity ?? `a ${BRAND.NAME} account`}`, [
         "Keep this account",
         "Sign in as someone else",
         "Skip for now",
@@ -501,13 +502,13 @@ async function runAccountStep(args: {
       step.state = "skipped";
       step.detail = "left as-is";
     } else {
-      applyStepResult(step, await deps.runConnect(), "ade connect");
+      applyStepResult(step, await deps.runConnect(), "daex connect");
     }
     return;
   }
 
   const choice = interactive
-    ? await ask("  Sign in or create your ADE account to link this machine?", [
+    ? await ask(`  Sign in or create your ${BRAND.NAME} account to link this machine?`, [
       "Yes",
       "No",
     ])
@@ -515,12 +516,12 @@ async function runAccountStep(args: {
   if (choice === 0) {
     // No live line here: `ade connect` prints its own step checklist, and an
     // animated line underneath it would be drawn over and orphaned.
-    applyStepResult(step, await deps.runConnect(), "ade connect");
+    applyStepResult(step, await deps.runConnect(), "daex connect");
     return;
   }
   step.state = "skipped";
   step.detail = "not linked";
-  step.nextAction = "ade connect";
+  step.nextAction = "daex connect";
 }
 
 /** The manifest is a few kilobytes; anything slower than this is a dead feed. */
@@ -608,9 +609,9 @@ async function runDesktopStep(args: {
     const { isMacDesktopAppRunningAt } = await import("./macDesktopUpdate");
     if (isMacDesktopAppRunningAt(installed.path)) {
       step.state = "skipped";
-      step.detail = `ADE ${installed.version} is open; use Restart and install in ADE to move it to ${releaseVersion ?? "the latest build"}`;
+      step.detail = `${BRAND.NAME} ${installed.version} is open; use Restart and install in ${BRAND.NAME} to move it to ${releaseVersion ?? "the latest build"}`;
       step.location = installed.path;
-      step.nextAction = "Restart and install in ADE";
+      step.nextAction = `Restart and install in ${BRAND.NAME}`;
       return 0;
     }
   }
@@ -618,18 +619,18 @@ async function runDesktopStep(args: {
   if (!interactive) {
     step.state = "skipped";
     step.detail = keptDetail;
-    step.nextAction = "ade setup";
+    step.nextAction = "daex setup";
     return 0;
   }
 
   const question = installed.version
-    ? `  Update the ADE desktop app to ${releaseVersion ?? "the latest build"}? (about 1 GB download)`
-    : "  Install the ADE desktop app? (about 1 GB download)";
+    ? `  Update the ${BRAND.NAME} desktop app to ${releaseVersion ?? "the latest build"}? (about 1 GB download)`
+    : `  Install the ${BRAND.NAME} desktop app? (about 1 GB download)`;
   const choice = await ask(question, ["Yes", "No"]);
   if (choice !== 0) {
     step.state = "skipped";
     step.detail = keptDetail;
-    step.nextAction = "ade setup";
+    step.nextAction = "daex setup";
     return 0;
   }
 
@@ -675,7 +676,7 @@ async function downloadAndInstallDesktop(args: {
     onWait: () => {
       reporter.updateStep(step, {
         fraction: null,
-        item: "waiting for another ADE install",
+        item: `waiting for another ${BRAND.NAME} install`,
       });
     },
   });

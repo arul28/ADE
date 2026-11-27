@@ -10,6 +10,7 @@ import {
 } from "../services/tools";
 import { resolveToolsRootLayout } from "../services/tools/paths";
 import { selectDemandedAgentTools } from "../../../desktop/src/main/services/tools/agentToolDemand";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 export class ToolsUsageError extends Error {}
 
@@ -47,7 +48,7 @@ function describeProgress(progress: ToolProgress): string {
     case "cached":
       return `${label} already installed`;
     case "waiting":
-      return `${label} waiting for another ADE process to finish installing`;
+      return `${label} waiting for another ${BRAND.NAME} process to finish installing`;
     case "downloading": {
       const { receivedBytes, totalBytes } = progress;
       if (typeof receivedBytes !== "number") return `${label} downloading`;
@@ -140,7 +141,7 @@ export async function runToolsCommand(
     for (const name of requested) {
       if (!pinned.includes(name)) {
         throw new ToolsUsageError(
-          `Unknown ADE agent tool ${JSON.stringify(name)}. Pinned tools: ${pinned.join(", ")}.`,
+          `Unknown ${BRAND.NAME} agent tool ${JSON.stringify(name)}. Pinned tools: ${pinned.join(", ")}.`,
         );
       }
     }

@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { captureProblem } from "../../../../desktop/src/shared/sentry/capture";
 import { BRAIN_LOOP_WATCHDOG_NEAR_MISS_MS } from "./brainLoopWatchdog";
 import { BRAIN_LOOP_FREEZE_LIMITS, brainLoopFreezeCause } from "./brainLoopWatchdogWorker";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * Names the code behind a brain freeze.
@@ -103,7 +104,7 @@ const FIXED_CAUSE_TITLES = {
   network: "a network request",
   "worker-message": "a worker message",
   "node-internals": "Node's own code",
-  "ade-code": "ADE code",
+  "ade-code": `${BRAND.NAME} code`,
   unknown: "unknown code",
 } as const;
 

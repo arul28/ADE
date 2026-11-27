@@ -7,6 +7,7 @@
 import { renderTerminalQr } from "../lib/terminalQr";
 import { detectTerminalCapabilities } from "./setupRender";
 import { PRIVACY_URL, TERMS_URL } from "../../../desktop/src/shared/legalLinks";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 type Json = Record<string, unknown>;
 
@@ -73,7 +74,7 @@ export function readDeviceSignInPoll(poll: Json): DeviceSignInPoll {
 }
 
 /** The agree line every ADE sign-in shows, as `ade login` prints it. */
-export const SIGN_IN_LEGAL_LINE = `By continuing, you agree to ADE's Terms (${TERMS_URL}) and Privacy Policy (${PRIVACY_URL}).`;
+export const SIGN_IN_LEGAL_LINE = `By continuing, you agree to ${BRAND.NAME}'s Terms (${TERMS_URL}) and Privacy Policy (${PRIVACY_URL}).`;
 
 /**
  * How to finish a device sign-in on a phone or another computer. A phone can
@@ -149,7 +150,7 @@ export async function waitForBrowserOrDeviceSignIn(args: {
     if (status === "signed_in") return { winner: "browser", authStatus: authStatusOf(poll) };
     if (status !== "pending") {
       browserStatus = authStatusOf(poll);
-      args.write(`${text(poll.message) ?? "ADE account sign-in failed."}\n`);
+      args.write(`${text(poll.message) ?? `${BRAND.NAME} account sign-in failed.`}\n`);
       if (device) args.write("Still waiting for the sign-in on another device…\n");
     }
     return null;

@@ -12,6 +12,7 @@ import { compareUpdateVersions } from "../../../../desktop/src/shared/updateVers
 import { isAdeCloudComputer } from "../../../../desktop/src/main/services/adeCloud/cloudComputerRules";
 import { fetchReleaseManifestJson } from "../../lib/releaseAssets";
 import { getSharedAccountDirectoryBaseUrl } from "../account/sharedAccountAuthService";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 const READ_INTERVAL_MS = 3 * 60 * 60_000;
 
@@ -61,11 +62,11 @@ export function startBrainClientUpdateCheck(args: {
     if (announced === requirement.targetVersion) return;
     announced = requirement.targetVersion;
     const how = isAdeCloudComputer(env)
-      ? "ADE Cloud updates this computer on its own"
+      ? `${BRAND.CLOUD_NAME} updates this computer on its own`
       : env.ELECTRON_RUN_AS_NODE === "1"
-        ? "update the ADE app, and it updates this brain too"
+        ? `update the ${BRAND.NAME} app, and it updates this brain too`
         : `download it from ${answer?.links.download ?? "https://ade-app.dev/download"}`;
-    writeStderr(`ADE ${version} is no longer supported. Update to ${requirement.targetVersion}: ${how}.\n`);
+    writeStderr(`${BRAND.NAME} ${version} is no longer supported. Update to ${requirement.targetVersion}: ${how}.\n`);
     forwardLogToSentry("warn", "client_update.required", {
       surface: "brain",
       currentVersion: version,

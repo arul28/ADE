@@ -8,6 +8,7 @@ import { terminateProcessTree } from "../../../desktop/src/main/services/shared/
 import { manifestNameForPlatform, releaseAssetUrl, sha512Base64 } from "../lib/releaseAssets";
 import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
 import { readInstalledDesktopApp } from "../../../desktop/src/main/services/native/nativeHelperPaths";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 /**
  * Installs the ADE desktop app's own update on a Windows machine whose app
@@ -79,7 +80,7 @@ export function planWindowsDesktopRescue(args: {
   | { plan: WindowsDesktopRescuePlan }
   | { skipped: string; reason: "no_app" | "app_incomplete" | "version_unreadable" | "app_current"; appExe?: string } {
   const app = locateStableDesktopApp(args.env);
-  if (!app) return { skipped: "no stable ADE desktop app was found on this machine", reason: "no_app" };
+  if (!app) return { skipped: `no stable ${BRAND.NAME} desktop app was found on this machine`, reason: "no_app" };
   // The update check sees this app, so leaving it alone would report success
   // while the machine stays behind: a missing CLI is a failure, not "no app".
   const cli = path.win32.join(app.installDir, "resources", "ade-cli", "cli.cjs");
@@ -90,7 +91,7 @@ export function planWindowsDesktopRescue(args: {
     return { skipped: `the version of ${app.appExe} could not be read`, reason: "version_unreadable", appExe: app.appExe };
   }
   if (compareUpdateVersions(app.version, args.targetVersion) >= 0) {
-    return { skipped: `the ADE app is already on ${app.version}`, reason: "app_current", appExe: app.appExe };
+    return { skipped: `the ${BRAND.NAME} app is already on ${app.version}`, reason: "app_current", appExe: app.appExe };
   }
   return {
     plan: { appExe: app.appExe, installDir: app.installDir, installedVersion: app.version, targetVersion: args.targetVersion },
@@ -107,7 +108,7 @@ export function planWindowsDesktopRescue(args: {
 function appStillBehind(plan: WindowsDesktopRescuePlan, env: NodeJS.ProcessEnv): string | null {
   const app = readInstalledDesktopApp({ platform: "win32", env });
   if (!app?.version || compareUpdateVersions(app.version, plan.targetVersion) >= 0) return null;
-  return `The ADE ${plan.targetVersion} installer finished, but ${app.path} is still on ${app.version}: the installer updates the copy it installed, not this one. Remove that copy or install ADE ${plan.targetVersion} over it by hand.`;
+  return `The ${BRAND.NAME} ${plan.targetVersion} installer finished, but ${app.path} is still on ${app.version}: the installer updates the copy it installed, not this one. Remove that copy or install ${BRAND.NAME} ${plan.targetVersion} over it by hand.`;
 }
 
 /** The installer's sha512 as the release's update feed publishes it. */
@@ -153,7 +154,7 @@ function verifyInstallerSigner(installerPath: string, appExe: string, env: NodeJ
   // Fail closed: with no valid signer on the installed app there is nothing to
   // match, and any publisher's valid certificate would pass.
   if (facts.appStatus !== "Valid") {
-    throw new Error(`The installed ADE app's signature is not valid (${facts.appStatus || "unknown"}), so the installer's publisher can't be confirmed.`);
+    throw new Error(`The installed ${BRAND.NAME} app's signature is not valid (${facts.appStatus || "unknown"}), so the installer's publisher can't be confirmed.`);
   }
   if (facts.installerSubject !== facts.appSubject) {
     throw new Error(`The downloaded installer is signed by "${facts.installerSubject}", not by the installed app's signer.`);
@@ -208,7 +209,7 @@ export async function runWindowsDesktopRescue(
   const installerPath = path.join(args.stagingDir, installerName);
   const feedPath = path.join(args.stagingDir, UPDATE_FEED_ASSET);
 
-  await args.onStep(`Downloading the ADE ${plan.targetVersion} app installer.`);
+  await args.onStep(`Downloading the ${BRAND.NAME} ${plan.targetVersion} app installer.`);
   await args.downloadFile(releaseAssetUrl(args.repo, plan.targetVersion, installerName), installerPath);
   await args.downloadFile(releaseAssetUrl(args.repo, plan.targetVersion, UPDATE_FEED_ASSET), feedPath);
   const expected = feedSha512(await fsp.readFile(feedPath, "utf8"), installerName, plan.targetVersion);
@@ -221,13 +222,13 @@ export async function runWindowsDesktopRescue(
   // Reopen the app afterwards only if it was open: the person is not here to
   // be surprised by a window, but someone who had it open expects it back.
   const reopen = isDesktopAppRunning(plan.appExe, args.env);
-  await args.onStep(`Stopping the ADE background service to install ${plan.targetVersion}.`);
+  await args.onStep(`Stopping the ${BRAND.NAME} background service to install ${plan.targetVersion}.`);
   const stopped = args.stopService();
   if (!stopped.ok) {
     return { ok: false, message: `The background service could not be stopped, so nothing was installed: ${stopped.message}` };
   }
 
-  await args.onStep(`Installing ADE ${plan.targetVersion} over ${plan.installedVersion}.`);
+  await args.onStep(`Installing ${BRAND.NAME} ${plan.targetVersion} over ${plan.installedVersion}.`);
   // The same arguments electron-updater gives the installer: an update, silent.
   // The installer stops whatever still runs from the install folder. On an
   // update its setup step leaves the background service to the relaunched app,
@@ -241,11 +242,11 @@ export async function runWindowsDesktopRescue(
       if (!reopen) startAppService(plan, args.env);
       return { ok: false, message: behind };
     }
-    if (reopen) return { ok: true, message: `Installed ADE ${plan.targetVersion}; it is reopening and starts its background service.` };
+    if (reopen) return { ok: true, message: `Installed ${BRAND.NAME} ${plan.targetVersion}; it is reopening and starts its background service.` };
     const started = startAppService(plan, args.env);
     return started.ok
-      ? { ok: true, message: `Installed ADE ${plan.targetVersion} and started its background service.` }
-      : { ok: false, message: `Installed ADE ${plan.targetVersion}, but its background service did not start (${started.detail}). Open ADE on this PC to start it.` };
+      ? { ok: true, message: `Installed ${BRAND.NAME} ${plan.targetVersion} and started its background service.` }
+      : { ok: false, message: `Installed ${BRAND.NAME} ${plan.targetVersion}, but its background service did not start (${started.detail}). Open ${BRAND.NAME} on this PC to start it.` };
   }
 
   // The old app is still in place. Put its service back so the machine stays
@@ -255,7 +256,7 @@ export async function runWindowsDesktopRescue(
     : "Restarting its previous background service also failed.";
   return {
     ok: false,
-    message: `The ADE ${plan.targetVersion} installer ${exitCode === null ? "did not finish" : `exited with code ${exitCode}`}. ${restored}`,
+    message: `The ${BRAND.NAME} ${plan.targetVersion} installer ${exitCode === null ? "did not finish" : `exited with code ${exitCode}`}. ${restored}`,
   };
 }
 
@@ -352,12 +353,12 @@ export async function applyWindowsDesktopUpdate(args: {
     const ok = decision.reason === "app_current";
     const message = ok
       ? `Nothing to install: ${decision.skipped}.`
-      : `The ADE app was not updated because ${decision.skipped}. Nothing was changed.`;
+      : `The ${BRAND.NAME} app was not updated because ${decision.skipped}. Nothing was changed.`;
     await args.writeStatus(ok ? "succeeded" : "failed", message, ok ? undefined : message);
     return { finished: { ok, applied: false, message } };
   }
   const { plan } = decision;
-  await args.writeStatus("applying", `Updating the ADE app from ${plan.installedVersion} to ${plan.targetVersion}.`);
+  await args.writeStatus("applying", `Updating the ${BRAND.NAME} app from ${plan.installedVersion} to ${plan.targetVersion}.`);
   const outcome = await runWindowsDesktopRescue(plan, {
     repo: args.repo,
     stagingDir: args.stagingDir,

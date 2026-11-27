@@ -9,6 +9,7 @@ import {
 import type { DoctorCommandResult, DoctorRow } from "./doctor";
 import { TriageCommandError } from "./triageErrors";
 import type { TriagePlaybook, TriagePlaybookSource } from "./triagePlaybook";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 /**
  * The two files `ade triage` writes, and the prompt that points at them.
@@ -74,7 +75,7 @@ function bullet(label: string, value: unknown): string {
 }
 
 function describeBrain(doctor: DoctorCommandResult | null): string[] {
-  if (!doctor) return ["- brain: not probed (ade doctor did not run — see the error above)"];
+  if (!doctor) return ["- brain: not probed (daex doctor did not run — see the error above)"];
   const brain = doctor.brain;
   return [
     bullet("responding", brain.running ? "yes" : "no"),
@@ -101,9 +102,9 @@ export function buildTriageContext(input: TriageContextInput): string {
   const doctorRows = input.doctor ? orderTriageDoctorRows(input.doctor.rows) : [];
   const failing = doctorRows.filter((row) => row.status === "fail");
   const lines: string[] = [
-    "# ADE triage context",
+    `# ${BRAND.NAME} triage context`,
     "",
-    `Generated ${input.generatedAt.toISOString()} by \`ade triage\`.`,
+    `Generated ${input.generatedAt.toISOString()} by \`daex triage\`.`,
     "",
     "This file is redacted: home directories, user and host names, emails, IP",
     "addresses and token-shaped strings have been replaced with placeholders.",
@@ -114,13 +115,13 @@ export function buildTriageContext(input: TriageContextInput): string {
     "",
     "## Install",
     "",
-    bullet("ADE CLI version", input.cliVersion),
+    bullet(`${BRAND.NAME} CLI version`, input.cliVersion),
     bullet("desktop app version", input.doctor?.app.installedVersion ?? null),
     bullet("latest known desktop version", input.doctor?.app.latestKnownVersion ?? null),
     bullet("platform", `${input.platform} ${input.arch}`),
     bullet("OS release", input.osRelease),
     bullet("node", input.nodeVersion),
-    bullet("ADE home", input.adeHome),
+    bullet(`${BRAND.NAME} home`, input.adeHome),
     bullet("brain endpoint", input.socketPath),
     bullet("project", input.projectRoot ?? "none open"),
     "",
@@ -128,19 +129,19 @@ export function buildTriageContext(input: TriageContextInput): string {
 
   if (input.layoutError) {
     lines.push(
-      `The ADE home and brain endpoint could not be resolved: ${input.layoutError}`,
+      `The ${BRAND.NAME} home and brain endpoint could not be resolved: ${input.layoutError}`,
       "",
-      "That is itself a finding — an unreadable or unset ADE home explains most of",
-      "what follows. Ask the user where their ADE home is before assuming a path.",
+      `That is itself a finding — an unreadable or unset ${BRAND.NAME} home explains most of`,
+      `what follows. Ask the user where their ${BRAND.NAME} home is before assuming a path.`,
       "",
     );
   }
 
-  lines.push("## Health checks (ade doctor)", "");
+  lines.push("## Health checks (daex doctor)", "");
 
   if (input.doctorError) {
     lines.push(
-      `\`ade doctor\` could not complete: ${input.doctorError}`,
+      `\`daex doctor\` could not complete: ${input.doctorError}`,
       "",
       "Treat that as the first failure to explain — the checks below are missing,",
       "not passing.",
@@ -186,13 +187,13 @@ export function buildTriageContext(input: TriageContextInput): string {
       `The diagnostic report could not be collected: ${input.reportError}`,
       "",
       "Nothing below it was gathered — no log tails, no service definition, no disk",
-      "space. `ade report-issue --text` reproduces the same collection by hand and",
+      "space. `daex report-issue --text` reproduces the same collection by hand and",
       "will fail the same way; that failure is a finding, not a detour.",
       "",
     );
   } else {
     lines.push(
-      "The same redacted report `ade report-issue` prints: versions, service",
+      "The same redacted report `daex report-issue` prints: versions, service",
       "definition, log tails, disk space, and storage environment.",
       "",
       input.report.trimEnd(),
@@ -209,7 +210,7 @@ export function buildTriageContext(input: TriageContextInput): string {
 
 export function buildTriagePrompt(args: { contextPath: string; playbookPath: string }): string {
   return [
-    "My ADE install is broken and I need you to fix it on this machine.",
+    `My ${BRAND.NAME} install is broken and I need you to fix it on this machine.`,
     "",
     `1. Read the playbook first: ${args.playbookPath}`,
     `2. Then read the machine context: ${args.contextPath}`,
@@ -217,7 +218,7 @@ export function buildTriagePrompt(args: { contextPath: string; playbookPath: str
     "Follow the playbook's safety rules exactly. In short: diagnose with the",
     "read-only commands first; never delete anything under ~/.ade, $ADE_HOME, or a",
     "project's .ade/ directory; never kill processes by name or pattern; prefer the",
-    "`ade` command over the raw OS command; and tell me what you are about to run and",
+    "`daex` command over the raw OS command; and tell me what you are about to run and",
     "what it changes before you run anything that mutates state.",
     "",
     "Start by telling me which doctor rows are failing and what you think the cause",

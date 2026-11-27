@@ -1,4 +1,5 @@
 import type { MachineUpdateAndRestartResult } from "./machineUpdateAndRestart";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * The one "Update & restart" run this process will do at a time.
@@ -22,7 +23,7 @@ export function joinOrStartMachineUpdate(
 ): Promise<MachineUpdateAndRestartResult> {
   if (inFlight) {
     if (trackSwitch || inFlight.trackSwitch) {
-      return Promise.reject(new Error("An ADE update or track switch is already running. Try again after it finishes."));
+      return Promise.reject(new Error(`A ${BRAND.NAME} update or track switch is already running. Try again after it finishes.`));
     }
     return inFlight.run;
   }
