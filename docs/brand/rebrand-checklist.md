@@ -102,6 +102,8 @@ OAuth preview errors, cloud sign-in retry, `expectedFailure.ts`,
 
 ### 2b. Matchers that must accept both names the day their producer changes
 
+**Also flipped by the CLI and Workers (daex-flip-server):** `Failed to initialize the Daex brain …` and `Daex kept trying` (reader: `cloudBoxSignInStart.ts`), the `daex --version` output (readers accept `ade` and `daex`), the `daex:` CLI error prefix (readers accept `ade:` and `daex:`), and the CLI and Worker user agents (`Daex MCP events`, …). Producers now write Daex; readers accept both.
+
 **Update (2026-11-27, the flip):** every producer below now writes Daex and
 every matcher accepts both names; see "Old names in output" in `README.md`
 for the list. The minimum version must be set at launch first (README,
@@ -122,10 +124,10 @@ commit, and keep accepting "ADE" forever where the text is stored.
 | iOS simulator names `ADE · <lane>` (`ios/laneDeviceRegistry.ts:315,692`) | `ios/appleDeviceMarker.ts:111` `looksLikeAdeDeviceName` (storage view ownership) | Yes (Xcode device list). See 3, item W6. |
 | macOS virtual display names `ADE · <lane>` (`native/ADEDesktopDriver/.../VirtualDisplayHost.swift:28`) | any cleanup that finds displays by prefix | Yes (System Settings > Displays). |
 | `A device choice is kept for ADE chats` (`agentChatService.ts:85665`) | `apps/ade-cli/src/cliDevices.ts:217` | No: change both together. |
-| `Unknown ADE action: <name>` (`apps/ade-cli/src/adeRpcServer.ts:10211`) | already both in `ProvidersSection.tsx`, `chatLaunchActions.ts` | Older brains say ADE forever: keep both. |
-| `ADE brain listening on` (brain log line) | `apps/desktop/scripts/old-database-launch-check.mjs:167` | Log line; keep the log line as is. |
-| CLI `--help` lead "Agent-focused command-line interface for ADE." (`apps/ade-cli/src/cli.ts:1673`, `apps/ade-cli/package.json:4`) | `apps/ade-cli/scripts/verify-built-cli.mjs:25,131`, `apps/desktop/scripts/validate-mac-artifacts.mjs:615`, `validate-win-artifacts.mjs:542`, CI digest `apps/desktop/resources/ade-cli-help.txt` (`scripts/regen-ade-cli-help.cjs`, CI step "Check the ADE CLI help digest is current") | **Release blocker if changed alone**: the release validators fail. Change all five together. |
-| `ADE Sync <host> <port>` Bonjour instance name (`ade-cli/src/services/sync/syncHostService.ts:4632`) | `syncHostService.ts:2140` (`-R ADE Sync`) | Visible only in Bonjour browsers. Keep (see 3). |
+| `Unknown Daex action: <name>`, `… is not exposed through Daex actions` (`apps/ade-cli/src/adeRpcServer.ts`) | `ProvidersSection.tsx`, `chatLaunchActions.ts`, `codedError.ts`, `useGitHubPrFilterSearch.ts` | Done: the brain writes Daex; readers accept both (older brains say ADE). |
+| `Daex brain listening on` (brain log line) | `apps/desktop/scripts/old-database-launch-check.mjs` | Done: the brain writes Daex; the check accepts the old release's ADE line and the new Daex one. |
+| CLI `--help` lead "Agent-focused command-line interface for Daex." (`apps/ade-cli/src/cli.ts`, `apps/ade-cli/package.json`) | `apps/ade-cli/scripts/verify-built-cli.mjs`, `apps/desktop/scripts/validate-mac-artifacts.mjs`, `validate-win-artifacts.mjs`, the help digest `apps/desktop/resources/ade-cli-help.txt` | Done: changed together with the validators and the digest. |
+| `Daex Sync <host> <port>` Bonjour instance name (`ade-cli/src/services/sync/syncHostService.ts`) | `syncHostService.ts` orphan cleanup | Done: new brains announce Daex Sync; the cleanup also finds an older brain's "ADE Sync …". The service type `_ade-sync._tcp` stays (frozen). |
 
 ### 2c. Shared constants and helpers that render later (the lint rule cannot see them)
 
@@ -332,8 +334,8 @@ display time, and accept both names wherever stored text is parsed.**
 
 1. M1 `chatNotice.ts:68` and M2 `plainError.ts:39`: accept "Daex" (the
    rename broke the dropped-connection notice and the update button).
-2. Do not change the CLI help lead "Agent-focused command-line interface for
-   ADE" without the four release validators and the help digest (2b).
+2. Done: the CLI help lead says Daex, changed together with the release
+   validators and the help digest (2b).
 3. Keep `.ade/.gitignore` content byte-for-byte (W5).
 4. L2 remote MCP consent logo is squashed (fixed 62x30 for a 1138x868 image).
 

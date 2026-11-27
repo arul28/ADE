@@ -126,10 +126,14 @@ What flipped, with the reader that still accepts the old form:
 | Handoff default prompt (`another Daex machine`) | `another ADE machine` | `isCrossMachineHandoffDefaultPrompt` |
 | Sync skipReason `Another Daex app …`; autolinks `Daex's GitHub sign-in` | ADE | `readCompetingSyncHostOwner`, `GITHUB_AUTOLINKS_SIGN_IN_LACKS_ADMIN` |
 | `daex:` CLI error prefix (CLI and desktop-written lines) | `ade:` | `computerUseActionOutput.ts`, `runtimeRpcClient.ts`, iOS `WorkComputerUseOutput.swift` |
+| `daex --version` output (`daex X.Y.Z`) | `ade X.Y.Z` | desktop and CLI version checks |
+| Brain messages `Daex brain listening on`, `Failed to initialize the Daex brain …`, `Daex kept trying` | ADE | `old-database-launch-check.mjs`, `cloudBoxSignInStart.ts` |
+| `Unknown Daex action: …`, `… not exposed through Daex actions` | ADE | `codedError.ts`, `chatLaunchActions.ts`, `ProvidersSection.tsx`, `useGitHubPrFilterSearch.ts` |
+| Bonjour instance name `Daex Sync <host> <port>` (type `_ade-sync._tcp` stays) | `ADE Sync …` | `syncHostService.ts` orphan cleanup |
 | Lane simulators `Daex · <lane>`, virtual display prefix `Daex` | `ADE · <lane>` | `looksLikeAdeDeviceName` |
 | Deleted-lane trailers `Daex-Lane-Id` …, snapshot author Daex | `ADE-Lane-Id` …, ADE | `deletedLaneSnapshots.ts` |
 | Stored cloud computer default `Daex Cloud computer` | `ADE Cloud computer` | `isCloudMachineDefaultName`, `displayLegacyDefaultName` (desktop, iOS, CLI) |
-| User agents `Daex-Agent/1.0`, `Daex-LinkPreview/1.0`, `Daex-iOS/<v>`, … | ADE | Gravity `hashedEmailFor` |
+| User agents `Daex-Agent/1.0`, `Daex-LinkPreview/1.0`, `Daex-iOS/<v>`, `Daex MCP events`, the Worker agents, … | ADE | Gravity `hashedEmailFor` |
 | MCP Apps `hostInfo.name` and `userAgent` Daex | ADE | none |
 
 Kept on purpose: the lowercase machine tokens (`ade-desktop`, `ade-cli`,
