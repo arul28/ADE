@@ -56,15 +56,20 @@ export const WINDOWS_DESKTOP_SHARED_SEAT_DESCRIPTION =
  * main desktop needs the user's consent. One table: the status `next` line,
  * the CLI error hints and the RPC refusals all read it, and service errors
  * state only the fact, so no surface prints the same advice twice.
+ *
+ * The `ade screen start --shared …` asks keep the old command word on
+ * purpose: the CLI on another machine, older releases included, cuts that
+ * exact phrase out of a remote hint (`withoutSharedDesktopAsk`), and `ade`
+ * still runs Daex's CLI.
  */
 export const WINDOWS_DESKTOP_NEXT_STEP: Record<WindowsDesktopPrivateUnavailableReason | "consent", string> = {
   setup_required:
-    "Ask the user to set up Windows Desktop once (the setup card in the Windows Desktop pane, or `ade screen setup --allow-prompt` from a trusted ADE client). An agent cannot do this step.",
-  locked: "Ask the user to unlock the PC, then retry the same command (ade screen start --text when the lane has no screen yet).",
+    "Ask the user to set up Windows Desktop once (the setup card in the Windows Desktop pane, or `daex screen setup --allow-prompt` from a trusted Daex client). An agent cannot do this step.",
+  locked: "Ask the user to unlock the PC, then retry the same command (daex screen start --text when the lane has no screen yet).",
   held:
     "Ask the user to take over the private screen (Take over in the Windows Desktop pane), or ask for their main desktop: ade screen start --shared --reason \"<what for>\" --text",
   not_console_session:
-    "The private screen needs ADE's brain in the PC's console session, and it is running in another one (Remote Desktop or SSH). Ask the user to sign in at the PC, or ask for the main desktop instead: ade screen start --shared --reason \"<what for>\" --text",
+    "The private screen needs Daex's brain in the PC's console session, and it is running in another one (Remote Desktop or SSH). Ask the user to sign in at the PC, or ask for the main desktop instead: ade screen start --shared --reason \"<what for>\" --text",
   unsupported_platform:
     "This Windows edition has no private screens. Ask for the main desktop instead: ade screen start --shared --reason \"<what for>\" --text",
   consent:
@@ -115,7 +120,7 @@ export const LINUX_DESKTOP_SEAT_DESCRIPTION =
  * point at.
  */
 export const LINUX_DESKTOP_SETUP_USER_STEP =
-  "Linux Desktop setup installs the lane screen's system packages on that machine, and only its user can run it. Ask the user to run `ade screen setup --allow-prompt` from a trusted ADE client, or to run the `install with` line `ade screen status --text` prints. An agent cannot do this step.";
+  "Linux Desktop setup installs the lane screen's system packages on that machine, and only its user can run it. Ask the user to run `daex screen setup --allow-prompt` from a trusted Daex client, or to run the `install with` line `daex screen status --text` prints. An agent cannot do this step.";
 
 export function describeDesktopSeat(
   status: Pick<MacDesktopStatus, "supported" | "display" | "windowsDesktop" | "linuxDesktop"> & {
@@ -145,8 +150,8 @@ export function describeDesktopSeat(
       nextStep: !status.supported
         ? null
         : install && !display
-          ? `Ask the user to install what a Linux lane screen needs (ade screen setup --allow-prompt from a trusted ADE client, or on this machine: ${install}). An agent cannot do this step.`
-          : !display ? "ade screen start --text" : null,
+          ? `Ask the user to install what a Linux lane screen needs (daex screen setup --allow-prompt from a trusted Daex client, or on this machine: ${install}). An agent cannot do this step.`
+          : !display ? "daex screen start --text" : null,
     };
   }
   if (status.platform !== "win32") {
@@ -160,7 +165,7 @@ export function describeDesktopSeat(
           ? "off-screen region of the user's main display (this Mac has no virtual display)"
           : "a private virtual display on this Mac; the user's screen and pointer are not touched by accessibility actions",
       realInputNeedsLease: true,
-      realInputSentence: display ? "needs the user's lease (ade screen lease)" : null,
+      realInputSentence: display ? "needs the user's lease (daex screen lease)" : null,
       privateAvailable: null,
       privateUnavailable: null,
       heldBy: null,
@@ -169,7 +174,7 @@ export function describeDesktopSeat(
       locked: null,
       nextStep: !status.supported
         ? null
-        : !display ? "ade screen start --text" : null,
+        : !display ? "daex screen start --text" : null,
     };
   }
   const windows = status.windowsDesktop ?? null;
@@ -187,8 +192,8 @@ export function describeDesktopSeat(
     if (reason === "held") return `Lane ${heldBy ?? "another lane"} holds the private screen. ${WINDOWS_DESKTOP_NEXT_STEP.held}`;
     if (reason) return WINDOWS_DESKTOP_NEXT_STEP[reason];
     return windows && windows.passwordSaved === false
-      ? "ade screen start --text (Windows asks the user to sign in on the PC; ask them to save their password in the Windows Desktop pane so later starts are automatic)"
-      : "ade screen start --text";
+      ? "daex screen start --text (Windows asks the user to sign in on the PC; ask them to save their password in the Windows Desktop pane so later starts are automatic)"
+      : "daex screen start --text";
   })();
   return {
     product,

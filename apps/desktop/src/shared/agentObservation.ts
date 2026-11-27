@@ -1074,7 +1074,7 @@ export function compareAgentEffectFingerprints(
   if (!before || !after) {
     return {
       status: "not_checked",
-      reason: options.missingReason ?? "ADE had no earlier state to compare with",
+      reason: options.missingReason ?? "Daex had no earlier state to compare with",
     };
   }
   const ignoreLayout = options.ignoreLayout === true;
