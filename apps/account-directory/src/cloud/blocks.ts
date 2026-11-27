@@ -26,8 +26,8 @@ const CREATES_PER_HOUR = 10;
 /** Server launches one account may start in an hour. */
 const LAUNCHES_PER_HOUR = 15;
 
-export const ACCOUNT_BLOCKED_MESSAGE = "ADE Cloud is turned off for this account. Contact ADE support if you think this is a mistake.";
-const CREATES_PAUSED_MESSAGE = "ADE Cloud isn't making new computers right now. Your computers keep working. Try again later.";
+export const ACCOUNT_BLOCKED_MESSAGE = "Daex Cloud is turned off for this account. Contact Daex support if you think this is a mistake.";
+const CREATES_PAUSED_MESSAGE = "Daex Cloud isn't making new computers right now. Your computers keep working. Try again later.";
 const TOO_MANY_CREATES_MESSAGE = `You made ${CREATES_PER_HOUR} computers in the last hour. Wait a little, then try again.`;
 const TOO_MANY_LAUNCHES_MESSAGE = `You started ${LAUNCHES_PER_HOUR} cloud launches in the last hour. Wait a little, then try again.`;
 
@@ -173,7 +173,7 @@ export async function claimCardForFreeUnlock(env: CloudEnv, userId: string, fing
       key: `card_reused:${userId}:${cardKey}`,
       kind: "card_reused",
       userId,
-      subject: "ADE Cloud: a card was used again for free credits",
+      subject: "Daex Cloud: a card was used again for free credits",
       reason: `A card that already unlocked free credits on account ${holder ?? "(unknown)"} was tried again for account ${userId}. The unlock was refused.`,
       counts: { "Account that holds the card": holder ?? "(unknown)" },
       step: "card_reused",
@@ -183,7 +183,7 @@ export async function claimCardForFreeUnlock(env: CloudEnv, userId: string, fing
       key: `blocked_card:${userId}:${cardKey}`,
       kind: "blocked_card_returned",
       userId,
-      subject: "ADE Cloud: a blocked card came back",
+      subject: "Daex Cloud: a blocked card came back",
       reason: `A card on the block list was used to unlock free credits for account ${userId}. The unlock was refused.`,
       step: "blocked_returned",
       abuse: true,
@@ -237,14 +237,14 @@ async function accountAlertLines(env: CloudDb, userId: string, now: number): Pro
     plan: AccountRow["plan"] | null; paid_plan: AccountRow["paid_plan"] | null; stripe_status: string | null; created_at: number | null;
     github_login: string | null; github_user_id: number | null; github_created_at: number | null;
   }>();
-  const plan = row?.plan ? planIdOf({ plan: row.plan, paid_plan: row.paid_plan ?? "plus", stripe_status: row.stripe_status }) : "free (no ADE Cloud account row yet)";
+  const plan = row?.plan ? planIdOf({ plan: row.plan, paid_plan: row.paid_plan ?? "plus", stripe_status: row.stripe_status }) : "free (no Daex Cloud account row yet)";
   const github = row?.github_login
     ? `${row.github_login} (GitHub id ${row.github_user_id}${row.github_created_at != null ? `, GitHub account ${ageText(now - row.github_created_at)} old` : ", age unknown"})`
     : "not connected";
   return [
     `Account: ${userId}`,
     `Plan: ${plan}`,
-    ...(row?.created_at != null ? [`ADE account age: ${ageText(now - row.created_at)}`] : []),
+    ...(row?.created_at != null ? [`Daex account age: ${ageText(now - row.created_at)}`] : []),
     `GitHub: ${github}`,
   ];
 }

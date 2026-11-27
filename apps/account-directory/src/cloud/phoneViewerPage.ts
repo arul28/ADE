@@ -23,7 +23,7 @@ export function phoneViewerPage(): Response {
 
 const VIEWER_HTML = `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
-<title>ADE Cloud iPhone</title>
+<title>Daex Cloud iPhone</title>
 <style>
 html,body{margin:0;height:100%;background:#000;overflow:hidden;font:14px -apple-system,system-ui,sans-serif;color:#aaa}
 #stage{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}

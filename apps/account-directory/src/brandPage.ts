@@ -336,7 +336,7 @@ export function identityChain(input: {
  * apps' sign-in card.
  */
 export const LEGAL_AGREEMENT_HTML =
-  `<p class="legal">By continuing, you agree to ADE's <a href="${TERMS_URL}" target="_blank" rel="noreferrer">Terms</a> and <a href="${PRIVACY_URL}" target="_blank" rel="noreferrer">Privacy Policy</a>.</p>`;
+  `<p class="legal">By continuing, you agree to Daex's <a href="${TERMS_URL}" target="_blank" rel="noreferrer">Terms</a> and <a href="${PRIVACY_URL}" target="_blank" rel="noreferrer">Privacy Policy</a>.</p>`;
 
 /**
  * The whole document. `card` is the card's inner HTML after the heading;
@@ -363,6 +363,6 @@ export function brandDocument(input: {
 <title>${escapeHtml(input.title)}</title>
 <style>${STYLE}</style>
 </head>
-<body><main class="stack"><div class="card"><span class="logo" role="img" aria-label="ADE"></span><h1>${escapeHtml(heading)}</h1>${input.card}</div>${input.foot ? `<p class="foot">${input.foot}</p>` : ""}</main></body>
+<body><main class="stack"><div class="card"><span class="logo" role="img" aria-label="Daex"></span><h1>${escapeHtml(heading)}</h1>${input.card}</div>${input.foot ? `<p class="foot">${input.foot}</p>` : ""}</main></body>
 </html>`;
 }

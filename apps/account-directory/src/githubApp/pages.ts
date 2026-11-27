@@ -34,7 +34,7 @@ function page(document: string, status: number, csp: string = PAGE_CSP): Respons
 }
 
 const GITHUB_LABEL = "GitHub account";
-const ADE_LABEL = "ADE account";
+const ADE_LABEL = "Daex account";
 
 /**
  * The question before the grant is saved: connect this GitHub login to this
@@ -56,19 +56,19 @@ export function confirmPage(input: {
 }): Response {
   const { identity, replacedLogin } = input;
   const replaced = replacedLogin && replacedLogin.toLowerCase() !== identity.githubLogin.toLowerCase()
-    ? `<p class="note">This replaces GitHub @${escapeHtml(replacedLogin)}, which is connected to this ADE account now.</p>`
+    ? `<p class="note">This replaces GitHub @${escapeHtml(replacedLogin)}, which is connected to this Daex account now.</p>`
     : "";
   const formAction = ["'self'", input.returnTarget].filter(Boolean).join(" ");
   const document = brandDocument({
-    title: "Connect GitHub to ADE?",
+    title: "Connect GitHub to Daex?",
     // Without a verified email the page cannot name the ADE account, so it
     // sends the person to ADE to check which account is signed in.
     card: `<p class="sub">${identity.adeAccount
-      ? "Check both accounts. Connect only if you started this in ADE."
-      : "Check the GitHub account. This page cannot show the ADE account, so check in ADE which account is signed in. Connect only if you started this in ADE."}</p>
+      ? "Check both accounts. Connect only if you started this in Daex."
+      : "Check the GitHub account. This page cannot show the Daex account, so check in Daex which account is signed in. Connect only if you started this in Daex."}</p>
 ${identityChain({
     github: { label: GITHUB_LABEL, value: `@${identity.githubLogin}` },
-    ade: { label: ADE_LABEL, value: identity.adeAccount ?? "Not shown here. Check in ADE.", dim: !identity.adeAccount },
+    ade: { label: ADE_LABEL, value: identity.adeAccount ?? "Not shown here. Check in Daex.", dim: !identity.adeAccount },
     state: "pending",
   })}
 ${replaced}
@@ -78,7 +78,7 @@ ${replaced}
 <button class="primary" type="submit" name="choice" value="connect">Connect GitHub</button>
 <button class="quiet" type="submit" name="choice" value="cancel">Cancel</button>
 </form>
-<p class="stop"><strong>Not you, or not your ADE account?</strong> Close this page. Nothing connects until you press Connect GitHub.</p>`,
+<p class="stop"><strong>Not you, or not your Daex account?</strong> Close this page. Nothing connects until you press Connect GitHub.</p>`,
     foot: "This page works for 10 minutes.",
   });
   return page(document, 200,
@@ -88,19 +88,19 @@ ${replaced}
 /** Desktop and CLI: the grant is saved. `replacedLogin`: the account was connected to another GitHub user before. */
 export function connectedPage(identity: PageIdentity, replacedLogin: string | null): Response {
   const replaced = replacedLogin && replacedLogin.toLowerCase() !== identity.githubLogin.toLowerCase()
-    ? `<p class="note">This replaced GitHub @${escapeHtml(replacedLogin)}. If you did not want that, disconnect GitHub in ADE Settings and connect again.</p>`
+    ? `<p class="note">This replaced GitHub @${escapeHtml(replacedLogin)}. If you did not want that, disconnect GitHub in Daex Settings and connect again.</p>`
     : "";
   const document = brandDocument({
     title: "GitHub is connected",
-    card: `<p class="sub">ADE can use GitHub for you on every device where you use this ADE account.</p>
+    card: `<p class="sub">Daex can use GitHub for you on every device where you use this Daex account.</p>
 ${identityChain({
     github: { label: GITHUB_LABEL, value: `@${identity.githubLogin}` },
-    ade: { label: ADE_LABEL, value: identity.adeAccount ?? "Your ADE account", dim: !identity.adeAccount },
+    ade: { label: ADE_LABEL, value: identity.adeAccount ?? "Your Daex account", dim: !identity.adeAccount },
     state: "linked",
   })}
 ${replaced}
-<p class="stop"><strong>Not you?</strong> Disconnect GitHub in ADE Settings.</p>`,
-    foot: "You can close this page and go back to ADE.",
+<p class="stop"><strong>Not you?</strong> Disconnect GitHub in Daex Settings.</p>`,
+    foot: "You can close this page and go back to Daex.",
   });
   return page(document, 200);
 }
@@ -119,50 +119,50 @@ const FAILURES: Record<FailureKind, { title: string; lead: string; next: string;
   denied: {
     title: "GitHub was not connected",
     lead: "You cancelled, so nothing changed.",
-    next: "To connect GitHub, start again in ADE.",
+    next: "To connect GitHub, start again in Daex.",
     status: 200,
   },
   error: {
     title: "GitHub was not connected",
-    lead: "ADE could not finish this sign-in.",
-    next: "Start again in ADE.",
+    lead: "Daex could not finish this sign-in.",
+    next: "Start again in Daex.",
     status: 500,
   },
   refused: {
     title: "GitHub was not connected",
     lead: "GitHub refused this sign-in.",
-    next: "Start again in ADE. If GitHub refuses it again, wait a few minutes, then try once more.",
+    next: "Start again in Daex. If GitHub refuses it again, wait a few minutes, then try once more.",
     status: 502,
   },
   github_busy: {
     title: "GitHub was not connected",
     lead: "GitHub did not finish the sign-in. It did not refuse it.",
-    next: "Wait a minute, then start again in ADE.",
+    next: "Wait a minute, then start again in Daex.",
     status: 503,
   },
   expired: {
     title: "This link has expired",
     lead: "A GitHub sign-in link works for 10 minutes.",
-    next: "Start again in ADE to get a new link.",
+    next: "Start again in Daex to get a new link.",
     status: 410,
   },
   used: {
     title: "This link was already used",
     lead: "A GitHub sign-in link works only once.",
-    next: "If ADE shows GitHub as connected, you are done. If not, start again in ADE.",
+    next: "If Daex shows GitHub as connected, you are done. If not, start again in Daex.",
     status: 410,
     connectionKnown: false,
   },
   unknown: {
     title: "This link does not work",
-    lead: "ADE does not know this sign-in link.",
-    next: "Start again in ADE to get a new link.",
+    lead: "Daex does not know this sign-in link.",
+    next: "Start again in Daex to get a new link.",
     status: 400,
   },
   not_configured: {
     title: "GitHub sign-in is not available",
-    lead: "ADE cannot connect GitHub here right now.",
-    next: "Try again later, or add a GitHub token in ADE Settings.",
+    lead: "Daex cannot connect GitHub here right now.",
+    next: "Try again later, or add a GitHub token in Daex Settings.",
     status: 503,
   },
 };
@@ -188,10 +188,10 @@ ${copy.connectionKnown === false ? "" : identityChain({
 /** The App's Setup URL. It ignores `installation_id`, which anyone can change (GitHub docs). */
 export function installedPage(): Response {
   const document = brandDocument({
-    title: "ADE GitHub App installed",
-    heading: "The ADE GitHub App is installed",
-    card: `<p class="sub">Go back to ADE to keep working with your repositories.</p>
-<a class="primary" href="ade://github/installed">Open ADE</a>`,
+    title: "Daex GitHub App installed",
+    heading: "The Daex GitHub App is installed",
+    card: `<p class="sub">Go back to Daex to keep working with your repositories.</p>
+<a class="primary" href="ade://github/installed">Open Daex</a>`,
     foot: "On a computer, you can close this page.",
   });
   return page(document, 200);

@@ -90,7 +90,7 @@ export class CloudBillingError extends Error {
 /** A plan switch retried inside this window reuses its Stripe idempotency key, so it switches once. */
 const PLAN_CHANGE_RETRY_WINDOW_MS = 10 * 60_000;
 
-export const unavailable = () => new CloudBillingError("billing_unavailable", "ADE Cloud can't reach billing right now. Try again soon.", 503);
+export const unavailable = () => new CloudBillingError("billing_unavailable", "Daex Cloud can't reach billing right now. Try again soon.", 503);
 
 export class StripeRequestError extends Error {
   constructor(readonly status: number, readonly stripeMessage: string) {
@@ -321,7 +321,7 @@ async function detachRefusedCard(env: CloudEnv, userId: string, paymentMethodId:
   }
 }
 
-const CARD_USED_MESSAGE = "This card already unlocked free credits on another ADE account. Pick a plan, or wait until your GitHub account is 30 days old.";
+const CARD_USED_MESSAGE = "This card already unlocked free credits on another Daex account. Pick a plan, or wait until your GitHub account is 30 days old.";
 const CARD_REFUSED_MESSAGE = "This card can't unlock free credits. Pick a plan, or wait until your GitHub account is 30 days old.";
 
 /**
@@ -422,7 +422,7 @@ async function onFreeUnlockCompleted(env: CloudEnv, session: StripeObject, now: 
     const paymentMethodId = textOf(paymentMethod?.id);
     if (paymentMethodId) await detachRefusedCard(env, userId, paymentMethodId);
     // Told why only when the card is another account's: a blocked card is never named as blocked.
-    await sendCloudEmail(env, { userId, subject: "Your card didn't unlock ADE Cloud free credits", text: claim === "taken" ? CARD_USED_MESSAGE : CARD_REFUSED_MESSAGE });
+    await sendCloudEmail(env, { userId, subject: "Your card didn't unlock Daex Cloud free credits", text: claim === "taken" ? CARD_USED_MESSAGE : CARD_REFUSED_MESSAGE });
     return;
   }
   const account = await loadAccount(env, userId, now);
@@ -582,7 +582,7 @@ async function changePaidPlan(
         step: "restore_in_force",
         status: error instanceof StripeRequestError ? error.status : 0,
       });
-      throw new CloudBillingError("plan_change_refused", "ADE Cloud couldn't change your plan right now. Nothing changed. Try again later.", 409);
+      throw new CloudBillingError("plan_change_refused", "Daex Cloud couldn't change your plan right now. Nothing changed. Try again later.", 409);
     }
   }
   if (planItem.price !== toPrice) {
@@ -621,7 +621,7 @@ async function changePaidPlan(
           status: error instanceof StripeRequestError ? error.status : 0,
           message: error instanceof StripeRequestError ? error.stripeMessage : error instanceof Error ? error.name : error == null ? "item_not_on_target_price" : "unknown",
         });
-        throw new CloudBillingError("plan_change_refused", "ADE Cloud couldn't change your plan right now. Nothing changed. Try again later.", 409);
+        throw new CloudBillingError("plan_change_refused", "Daex Cloud couldn't change your plan right now. Nothing changed. Try again later.", 409);
       }
       reportCloudFailure("cloud.plan_change_unconfirmed", { userId: account.user_id, to });
     }
@@ -663,11 +663,11 @@ export async function pickPlanCleanup(env: CloudEnv, userId: string, planId: unk
   const computers = await listComputers(env, userId);
   const target = planCleanupTargetOf(env, account, computers);
   if (!target) throw new CloudBillingError("nothing_to_free", "Your computers already fit your plan.", 409);
-  if (planId !== target) throw new CloudBillingError("cleanup_changed", "Your plan changed since ADE showed this. Look again.", 409);
+  if (planId !== target) throw new CloudBillingError("cleanup_changed", "Your plan changed since Daex showed this. Look again.", 409);
   const check = checkPlanCleanupPick(env, account, computers, target, pick);
   if (!check.ok) throw new CloudBillingError(check.code, check.message, check.code === "bad_request" ? 400 : 409);
   if (!(await recordPlanCleanupPick(env, userId, target, { push: pick.push, instanceIds: check.instanceIds }, now))) {
-    throw new CloudBillingError("cleanup_running", "ADE is still freeing the computers you picked. Try again when it's done.", 409);
+    throw new CloudBillingError("cleanup_running", "Daex is still freeing the computers you picked. Try again when it's done.", 409);
   }
 }
 
@@ -934,8 +934,8 @@ async function announceChange(env: CloudEnv, before: AccountRow, after: AccountR
     logCloud("cloud.billing_past_due", { userId: after.user_id });
     await sendCloudEmail(env, {
       userId: after.user_id,
-      subject: "Your ADE Cloud payment didn't go through",
-      text: "We couldn't charge your card, so your account is on the free plan's credits and extra credits are off. Update your card in ADE to get your plan back.",
+      subject: "Your Daex Cloud payment didn't go through",
+      text: "We couldn't charge your card, so your account is on the free plan's credits and extra credits are off. Update your card in Daex to get your plan back.",
     });
     return;
   }
@@ -943,7 +943,7 @@ async function announceChange(env: CloudEnv, before: AccountRow, after: AccountR
     logCloud("cloud.billing_restored", { userId: after.user_id });
     await sendCloudEmail(env, {
       userId: after.user_id,
-      subject: "Your ADE Cloud plan is back",
+      subject: "Your Daex Cloud plan is back",
       text: "Your payment went through, so your plan and its credits are back.",
     });
   }
@@ -1050,7 +1050,7 @@ async function onCheckoutCompleted(env: CloudEnv, session: StripeObject, now: nu
     // Two Checkouts finished: keep the first plan and don't leave the person paying twice.
     await stripeRequest(env, "DELETE", `/subscriptions/${encodeURIComponent(subscription.id)}`);
     reportCloudFailure("cloud.duplicate_subscription_cancelled", { userId, subscriptionId });
-    await sendCloudEmail(env, { owner: true, subject: "ADE Cloud double purchase to refund", text: `Subscription ${subscription.id} duplicated an existing plan and was cancelled. Refund its first invoice.` });
+    await sendCloudEmail(env, { owner: true, subject: "Daex Cloud double purchase to refund", text: `Subscription ${subscription.id} duplicated an existing plan and was cancelled. Refund its first invoice.` });
     return;
   }
   if (account.stripe_subscription_id !== subscription.id || account.plan !== "paid") {

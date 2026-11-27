@@ -166,7 +166,7 @@ export function idleStateOf(computer: IdleColumns, account: AccountRow, liveUsed
   const heldValid = computer.idle_held_at != null && computer.idle_held_at >= since;
   const heldCount = Math.max(1, computer.idle_held_count ?? 1);
   const held = heldValid
-    ? { at: computer.idle_held_at!, reason: computer.idle_held_reason ?? "ADE couldn't save its work.", retryAt: computer.idle_held_at! + backoffMs(HELD_RETRY_MS, HELD_RETRY_MAX_MS, heldCount), count: heldCount }
+    ? { at: computer.idle_held_at!, reason: computer.idle_held_reason ?? "Daex couldn't save its work.", retryAt: computer.idle_held_at! + backoffMs(HELD_RETRY_MS, HELD_RETRY_MAX_MS, heldCount), count: heldCount }
     : null;
   // A run that failed after the save waits before the next one.
   const failedUntil = computer.idle_failed_at != null && computer.idle_failed_at >= since
@@ -274,7 +274,7 @@ function logStep(env: CloudEnv, computer: Pick<ComputerRow, "instance_id" | "use
 }
 
 const labelOf = (computer: Pick<ComputerRow, "lane_name" | "name">): string =>
-  computer.lane_name ? `The computer for ${computer.lane_name}` : computer.name ? `${computer.name}` : "An ADE Cloud computer";
+  computer.lane_name ? `The computer for ${computer.lane_name}` : computer.name ? `${computer.name}` : "A Daex Cloud computer";
 
 const daysText = (ms: number): string => {
   const days = Math.max(1, Math.floor(ms / DAY));
@@ -287,10 +287,10 @@ export function idleWarningEmail(computer: ComputerRow, state: Pick<IdleState, "
   return {
     subject: `${label} will be ${idleCleanupWhen(state.deletesAt, now)}`,
     text: [
-      `${label} hasn't been used for ${daysText(now - state.since)}, so ADE Cloud will delete it on ${formatCloudDate(state.deletesAt)} (UTC).`,
+      `${label} hasn't been used for ${daysText(now - state.since)}, so Daex Cloud will delete it on ${formatCloudDate(state.deletesAt)} (UTC).`,
       idleCleanupSaveSentence(computer.lane_branch),
       ignoredFilesSentence(ignoredFilesOf(computer)),
-      "To keep it, open ADE and choose Keep it in Settings › ADE Cloud, or send a message in the lane.",
+      "To keep it, open Daex and choose Keep it in Settings › Daex Cloud, or send a message in the lane.",
     ].join("\n"),
   };
 }
@@ -299,9 +299,9 @@ export function idleWarningEmail(computer: ComputerRow, state: Pick<IdleState, "
 export function idleHeldEmail(computer: ComputerRow, reason: string, retryAt: number, now: number): { subject: string; text: string } {
   const label = labelOf(computer);
   return {
-    subject: `ADE Cloud didn't delete ${computer.lane_name ?? computer.name ?? "your computer"}: its work couldn't be saved`,
+    subject: `Daex Cloud didn't delete ${computer.lane_name ?? computer.name ?? "your computer"}: its work couldn't be saved`,
     text: [
-      `${label} was due to be deleted because it hasn't been used, but ADE couldn't save each lane's work first, so it kept the computer. ADE doesn't start the computer to save it.`,
+      `${label} was due to be deleted because it hasn't been used, but Daex couldn't save each lane's work first, so it kept the computer. Daex doesn't start the computer to save it.`,
       `Why: ${reason}`,
       idleCleanupHeldNext(retryAt, now),
     ].join("\n"),
@@ -313,7 +313,7 @@ function idleDeletedEmail(computer: ComputerRow, branch: string | null, laneKept
   return {
     subject: `${label} was deleted after ${daysText(idleMs)} unused`,
     text: [
-      `ADE Cloud deleted ${label.charAt(0).toLowerCase()}${label.slice(1)} after ${daysText(idleMs)} without use. ADE saved its work that wasn't on GitHub first (nothing was pushed)${branch ? `; the lane's branch is ${branch}` : ""}. A new computer for the lane gets that work back, and you can download it in ADE.`,
+      `Daex Cloud deleted ${label.charAt(0).toLowerCase()}${label.slice(1)} after ${daysText(idleMs)} without use. Daex saved its work that wasn't on GitHub first (nothing was pushed)${branch ? `; the lane's branch is ${branch}` : ""}. A new computer for the lane gets that work back, and you can download it in Daex.`,
       laneKept ? "The lane and its chats stay. Your next message to the lane makes a new computer from the branch." : "",
     ].filter(Boolean).join("\n"),
   };
@@ -676,7 +676,7 @@ async function saveAndDelete(env: CloudEnv, provider: CloudProvider, waitUntil: 
     try {
       work = await saveBeforeDelete(env, provider, computer, "idle_cleanup");
     } catch (error) {
-      work = { ok: false, reason: "ADE Cloud couldn't reach the computer to check its saved work.", code: error instanceof CloudProviderError ? error.code : "unknown" };
+      work = { ok: false, reason: "Daex Cloud couldn't reach the computer to check its saved work.", code: error instanceof CloudProviderError ? error.code : "unknown" };
     }
     if (!work.ok) {
       await hold(env, waitUntil, fresh, work.reason, work.code, now);
@@ -762,5 +762,5 @@ export async function idleCleanupReportLine(env: CloudEnv, day: string): Promise
   ]);
   const count = new Map((steps.results ?? []).map((row) => [row.step, row.n]));
   const n = (step: string) => count.get(step) ?? 0;
-  return `Idle cleanup: ${n("warned")} warned, ${n("emailed")} follow-up emails, ${n("saved")} saved, ${n("deleted")} deleted, ${n("push_refused")} not deleted because the save failed (${held?.n ?? 0} kept now), ${n("kept")} kept by their owner, ${n("failed")} ADE failures (an email or a delete; retried later).`;
+  return `Idle cleanup: ${n("warned")} warned, ${n("emailed")} follow-up emails, ${n("saved")} saved, ${n("deleted")} deleted, ${n("push_refused")} not deleted because the save failed (${held?.n ?? 0} kept now), ${n("kept")} kept by their owner, ${n("failed")} Daex failures (an email or a delete; retried later).`;
 }

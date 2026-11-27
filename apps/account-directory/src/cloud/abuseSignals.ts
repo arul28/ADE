@@ -139,7 +139,7 @@ export async function alertSignupBurst(env: OwnerAlertEnv, userId: string, ipHas
       key: `${prefix}${Math.floor(now / SIGNUP_BURST_WINDOW_MS)}`,
       kind: "signup_burst",
       userId,
-      subject: `ADE: ${accounts.length} sign-ups from one address in an hour`,
+      subject: `Daex: ${accounts.length} sign-ups from one address in an hour`,
       reason: `${accounts.length} accounts signed up from one IP address in the last hour (alarm at ${SIGNUP_BURST_PER_IP_HOUR}). Nothing was held. The facts below are about the newest; block any of them with the same command and its id.`,
       counts: { "Sign-ups in the last hour from this address": accounts.length },
       more: accounts.slice(-20),

@@ -192,7 +192,7 @@ function page(args: { title: string; body: string; status?: number; head?: strin
  */
 function approvalForm(userCode = ""): Response {
   return page({
-    title: "Sign in to ADE",
+    title: "Sign in to Daex",
     body: `<p class="sub">Enter the code shown by <code>ade login</code> in your terminal.</p>
       <form method="post" action="/device">
         <label class="field-label" for="user_code">Device code</label>
@@ -217,9 +217,9 @@ function confirmationPage(userCode: string, machineName: string | null): Respons
   // reader's own computer.
   const name = machineName?.trim();
   const who = name
-    ? `<p class="sub">A computer named <strong>${escapeHtml(name)}</strong> asked to sign in to ADE.</p>
+    ? `<p class="sub">A computer named <strong>${escapeHtml(name)}</strong> asked to sign in to Daex.</p>
       <p class="sub">Continue only if you started this on that computer.</p>`
-    : `<p class="sub">A computer that did not give its name asked to sign in to ADE as you.</p>
+    : `<p class="sub">A computer that did not give its name asked to sign in to Daex as you.</p>
       <p class="sub">Continue only if you just started this yourself.</p>`;
   return page({
     title: "Confirm this sign-in",
@@ -487,7 +487,7 @@ async function handleDeviceApproval(
   }
   if (request.method !== "POST") return new Response("method not allowed", { status: 405 });
   if (!isSameOriginConfirmation(request, url)) {
-    return approvalMessage("Confirmation required", "Open the ADE sign-in page and confirm this device code.", 403);
+    return approvalMessage("Confirmation required", "Open the Daex sign-in page and confirm this device code.", 403);
   }
 
   let rawUserCode: string | null = null;
@@ -510,7 +510,7 @@ async function handleDeviceApproval(
     return approvalMessage("Try again shortly", "Too many device-code attempts were made from this browser.", 429);
   }
   const row = await findByUserCode(env, userCode);
-  if (!row) return approvalMessage("Code not found", "Check the code shown by ADE and try again.", 404);
+  if (!row) return approvalMessage("Code not found", "Check the code shown by Daex and try again.", 404);
   if (isDeviceAuthorizationExpired(row, now)) {
     await env.DB.prepare(`
       update device_authorizations
@@ -520,19 +520,19 @@ async function handleDeviceApproval(
     `)
       .bind(row.device_code)
       .run();
-    return approvalMessage("Code expired", "Return to ADE and start sign-in again.", 410);
+    return approvalMessage("Code expired", "Return to Daex and start sign-in again.", 410);
   }
   if (row.status !== "pending") {
-    return approvalMessage("Code already used", "Return to ADE to continue.", 409);
+    return approvalMessage("Code already used", "Return to Daex to continue.", 409);
   }
   if (row.code_verifier || row.oauth_state_hash) {
     return approvalMessage("Sign-in already started", "Finish the Clerk sign-in already open in this browser.", 409);
   }
 
   const oauth = clerkOAuthConfig(env);
-  if (!oauth) return approvalMessage("Sign-in unavailable", "ADE account login is not configured.", 503);
+  if (!oauth) return approvalMessage("Sign-in unavailable", "Daex account login is not configured.", 503);
   const authorizeUrl = await claimForClerkSignIn(env, oauth, row.device_code, url.origin, options);
-  if (!authorizeUrl) return approvalMessage("Code unavailable", "Return to ADE and start sign-in again.", 409);
+  if (!authorizeUrl) return approvalMessage("Code unavailable", "Return to Daex and start sign-in again.", 409);
   return continueToSignIn(authorizeUrl);
 }
 
@@ -611,7 +611,7 @@ async function handleDeviceCallback(
     `)
       .bind(row.device_code)
       .run();
-    return approvalMessage("Code expired", "Return to ADE and start sign-in again.", 410);
+    return approvalMessage("Code expired", "Return to Daex and start sign-in again.", 410);
   }
 
   // Browser retries can race while Clerk is consuming the one-time code. Clear
@@ -623,24 +623,24 @@ async function handleDeviceCallback(
        and code_verifier is not null and expires_at > ?
   `).bind(row.device_code, stateHash, now).run();
   if (changes(claimed) < 1) {
-    return approvalMessage("Sign-in already processing", "Finish the ADE sign-in already open in this browser.", 409);
+    return approvalMessage("Sign-in already processing", "Finish the Daex sign-in already open in this browser.", 409);
   }
 
   const oauthError = nonEmptyString(url.searchParams.get("error"));
   const code = nonEmptyString(url.searchParams.get("code"));
   if (oauthError || !code) {
     await env.DB.prepare("update device_authorizations set status = 'error', error_message = ? where device_code = ? and status = 'pending'")
-      .bind("ADE account sign-in was not completed.", row.device_code)
+      .bind("Daex account sign-in was not completed.", row.device_code)
       .run();
-    return approvalMessage("Sign-in cancelled", "Return to ADE and try again.", 400);
+    return approvalMessage("Sign-in cancelled", "Return to Daex and try again.", 400);
   }
 
   const oauth = clerkOAuthConfig(env);
   if (!oauth) {
     await env.DB.prepare("update device_authorizations set status = 'error', error_message = ? where device_code = ? and status = 'pending'")
-      .bind("ADE account login is not configured.", row.device_code)
+      .bind("Daex account login is not configured.", row.device_code)
       .run();
-    return approvalMessage("Sign-in unavailable", "ADE account login is not configured.", 503);
+    return approvalMessage("Sign-in unavailable", "Daex account login is not configured.", 503);
   }
   const { issuer, clientId } = oauth;
   const redirectUri = `${url.origin}/device/callback`;
@@ -661,7 +661,7 @@ async function handleDeviceCallback(
     await env.DB.prepare("update device_authorizations set status = 'error', error_message = ? where device_code = ? and status = 'pending'")
       .bind("OAuth token exchange failed.", row.device_code)
       .run();
-    return approvalMessage("Sign-in failed", "Return to ADE and try again.", 502);
+    return approvalMessage("Sign-in failed", "Return to Daex and try again.", 502);
   }
   const rawTokenBody: unknown = await tokenResponse.json().catch(() => ({}));
   const tokenBody = isRecord(rawTokenBody) ? rawTokenBody : {};
@@ -670,7 +670,7 @@ async function handleDeviceCallback(
     await env.DB.prepare("update device_authorizations set status = 'error', error_message = ? where device_code = ? and status = 'pending'")
       .bind(message, row.device_code)
       .run();
-    return approvalMessage("Sign-in failed", "Return to ADE and try again.", 502);
+    return approvalMessage("Sign-in failed", "Return to Daex and try again.", 502);
   }
   const accessToken = nonEmptyString(tokenBody.access_token);
   const expiresIn = positiveInteger(tokenBody.expires_in);
@@ -678,7 +678,7 @@ async function handleDeviceCallback(
     await env.DB.prepare("update device_authorizations set status = 'error', error_message = ? where device_code = ? and status = 'pending'")
       .bind("OAuth token response was missing required fields.", row.device_code)
       .run();
-    return approvalMessage("Sign-in failed", "Return to ADE and try again.", 502);
+    return approvalMessage("Sign-in failed", "Return to Daex and try again.", 502);
   }
 
   const approved = await env.DB.prepare(`
@@ -695,8 +695,8 @@ async function handleDeviceCallback(
     row.device_code,
     now,
   ).run();
-  if (changes(approved) < 1) return approvalMessage("Code unavailable", "Return to ADE and start sign-in again.", 409);
-  return approvalMessage("You're signed in", "Go back to ADE.");
+  if (changes(approved) < 1) return approvalMessage("Code unavailable", "Return to Daex and start sign-in again.", 409);
+  return approvalMessage("You're signed in", "Go back to Daex.");
 }
 
 async function handleDeviceToken(
@@ -731,7 +731,7 @@ async function handleDeviceToken(
   }
   if (row.status === "consumed") return json({ error: "invalid_grant" }, { status: 401 });
   if (row.status === "error") {
-    return json({ error: "access_denied", error_description: row.error_message ?? "ADE account sign-in failed." }, { status: 400 });
+    return json({ error: "access_denied", error_description: row.error_message ?? "Daex account sign-in failed." }, { status: 400 });
   }
 
   const intervalMs = row.poll_interval_seconds * 1000;

@@ -527,7 +527,7 @@ async function runOwnerChecks(env: CloudEnv, provider: CloudProvider, instances:
   logCloud("cloud.owner_alert", { alerts });
   if (now - lastAlert < OWNER_ALERT_REPEAT_MS) return;
   await writeSetting(env, "owner_alert_at", String(now), now);
-  await sendCloudEmail(env, { owner: true, subject: "ADE Cloud needs attention", text: alerts.join("\n") });
+  await sendCloudEmail(env, { owner: true, subject: "Daex Cloud needs attention", text: alerts.join("\n") });
 }
 
 /**
@@ -579,7 +579,7 @@ async function runDaily(env: CloudEnv, provider: CloudProvider, computers: TickC
     const lines = unexplained.map((entry) => `${entry.instanceId} on ${entry.day}: ${entry.minutes} minutes`);
     // A billing mismatch: the provider counted awake time ADE didn't.
     reportCloudFailure("cloud.reconcile_unexplained", { count: unexplained.length });
-    await sendCloudEmail(env, { owner: true, subject: "ADE Cloud minutes the power log can't explain", text: lines.join("\n") });
+    await sendCloudEmail(env, { owner: true, subject: "Daex Cloud minutes the power log can't explain", text: lines.join("\n") });
   }
   const yesterday = utcDay(Date.parse(`${today}T00:00:00Z`) - 86_400_000);
   // Each step stands alone: one failing must not cost the others or the day's mark.

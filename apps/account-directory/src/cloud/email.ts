@@ -6,7 +6,7 @@
 
 export const RESEND_URL = "https://api.resend.com/emails";
 const CLERK_USERS_URL = "https://api.clerk.com/v1/users";
-export const FROM_ADDRESS = "ADE <notifications@ade-app.dev>";
+export const FROM_ADDRESS = "Daex <notifications@ade-app.dev>";
 export const REQUEST_TIMEOUT_MS = 10_000;
 export const LOGO_URL = "https://ade-app.dev/logo.png";
 export const SITE_URL = "https://ade-app.dev";
@@ -43,7 +43,7 @@ function hoursMeter(percentUsed: number): string {
 <p style="margin:0 0 24px;font:13px/18px ${FONT};color:#8b8b9a;">${percent}% of this period's credits used</p>`;
 }
 
-const CLOUD_FOOTER = "ADE Cloud account notice, sent automatically. Replies to this address aren't read.";
+const CLOUD_FOOTER = "Daex Cloud account notice, sent automatically. Replies to this address aren't read.";
 
 type RenderedEmail = {
   subject: string;
@@ -73,7 +73,7 @@ function renderCloudEmail(email: RenderedEmail): string {
 <div style="display:none;max-height:0;overflow:hidden;opacity:0;">${escapeHtml(lines[0] ?? email.subject)}</div>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#0a0a0f" style="background:#0a0a0f;"><tr><td align="center" style="padding:40px 16px;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:520px;">
-<tr><td style="padding:0 4px 20px;"><a href="${SITE_URL}" style="text-decoration:none;"><img src="${LOGO_URL}" width="72" height="35" alt="ADE" style="display:block;border:0;font:700 24px ${FONT};color:#f5f5f7;"></a></td></tr>
+<tr><td style="padding:0 4px 20px;"><a href="${SITE_URL}" style="text-decoration:none;"><img src="${LOGO_URL}" width="72" height="35" alt="Daex" style="display:block;border:0;font:700 24px ${FONT};color:#f5f5f7;"></a></td></tr>
 <tr><td bgcolor="#16161e" style="background:#16161e;border:1px solid #27273a;border-radius:12px;padding:32px;">
 <h1 style="margin:0 0 16px;font:600 22px/30px ${FONT};color:#f5f5f7;">${escapeHtml(email.subject)}</h1>
 ${meter}${paragraphs}
@@ -221,7 +221,7 @@ export type LaneShareInviteEmail = {
   link: string;
 };
 
-const INVITE_SENDER_FALLBACK = "An ADE user";
+const INVITE_SENDER_FALLBACK = "A Daex user";
 const MAX_INVITE_SENDER_NAME = 60;
 
 /**
@@ -282,10 +282,10 @@ export async function sendLaneShareInviteEmail(env: CloudEmailEnv, invite: LaneS
     return "not_configured";
   }
   const who = inviteSenderName(invite.giverLabel);
-  const subject = `${who} shared a lane with you in ADE`;
+  const subject = `${who} shared a lane with you in Daex`;
   const text = [
-    `${who} invited you to a lane in ADE.`,
-    "Open the invite to see what you can do in it. The invite works for 24 hours, and only when you sign in to ADE with this email address.",
+    `${who} invited you to a lane in Daex.`,
+    "Open the invite to see what you can do in it. The invite works for 24 hours, and only when you sign in to Daex with this email address.",
     "If you did not expect this, you can ignore this email.",
     `Open the invite: ${invite.link}`,
   ].join("\n");
@@ -302,7 +302,7 @@ export async function sendLaneShareInviteEmail(env: CloudEmailEnv, invite: LaneS
           subject,
           text: text.split("\n").slice(0, -1).join("\n"),
           action: { label: "Open the invite", url: invite.link },
-          footer: "ADE lane share invite, sent because an ADE user entered this address. Replies to this address aren't read.",
+          footer: "Daex lane share invite, sent because a Daex user entered this address. Replies to this address aren't read.",
         }),
       }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),

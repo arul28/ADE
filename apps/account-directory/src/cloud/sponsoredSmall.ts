@@ -182,9 +182,9 @@ export async function smallLookTripwire(env: GravityEnv, account: AccountRow, as
       key: `small_cloud_look:${account.user_id}:${Math.floor(now / TRIPWIRE_ALERT_MS)}`,
       kind: "small_cloud_look",
       userId: account.user_id,
-      subject: "ADE Cloud: free Small kept free from an ADE Cloud computer's network",
-      reason: "A US view of a cloud chat (or a turn-on of sponsored cards) that keeps this Free account's Small computers free came from the network ADE Cloud computers call from, not from a phone or laptop. It may be a script on a cloud computer keeping Small free with nobody watching. Nothing was refused: it still counts.",
-      counts: { Network: `AS${network}`, "Its computers on that network": seen.own, "ADE Cloud computers that joined from it (30 days)": seen.joined, "Its Small computers": seen.smalls },
+      subject: "Daex Cloud: free Small kept free from a Daex Cloud computer's network",
+      reason: "A US view of a cloud chat (or a turn-on of sponsored cards) that keeps this Free account's Small computers free came from the network Daex Cloud computers call from, not from a phone or laptop. It may be a script on a cloud computer keeping Small free with nobody watching. Nothing was refused: it still counts.",
+      counts: { Network: `AS${network}`, "Its computers on that network": seen.own, "Daex Cloud computers that joined from it (30 days)": seen.joined, "Its Small computers": seen.smalls },
       step: "small_cloud_look",
       abuse: true,
     }, now, waitUntil);
@@ -241,7 +241,7 @@ export async function smallCloudLookAlarms(env: GravityEnv, now: number): Promis
     limit ?
   `).bind(freeLookSince(now), mode, mode, now - JOINED_NETWORK_MS, SMALL_SHAPE.cpu, SMALL_SHAPE.memoryGb, TRIPWIRE_REPORT_LIMIT).all<{ user_id: string; looked_asn: number }>();
   return (rows.results ?? []).map((row) =>
-    `Free account ${row.user_id}: its Small stays free through a US view or turn-on from an ADE Cloud computer's network (AS${row.looked_asn}), not a phone or laptop. Block it: ${blockCommand(env, row.user_id, "small_cloud_look")}`);
+    `Free account ${row.user_id}: its Small stays free through a US view or turn-on from a Daex Cloud computer's network (AS${row.looked_asn}), not a phone or laptop. Block it: ${blockCommand(env, row.user_id, "small_cloud_look")}`);
 }
 
 /** The rate a computer of `size` runs at for this account: Small's is 0, or `SMALL_NO_CARDS_RATE_MILLI`. */

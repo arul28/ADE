@@ -28,19 +28,19 @@ const WARNINGS: Record<Exclude<CloudHoursState, "none">, {
 }> = {
   zero: {
     column: "warned_zero_at",
-    subject: "You're out of ADE Cloud credits",
+    subject: "You're out of Daex Cloud credits",
     text: {
-      all: "Your ADE Cloud computers have stopped. You can add credits, or wait for your credits to reset.",
+      all: "Your Daex Cloud computers have stopped. You can add credits, or wait for your credits to reset.",
       small: "Your computers bigger than Small have stopped. Small computers don't use credits, so they keep working. You can add credits, or wait for your credits to reset.",
     },
     phone: {
-      all: "Your ADE Cloud computers and iPhone have stopped. You can add credits, or wait for your credits to reset.",
-      small: "Your ADE Cloud iPhone and computers bigger than Small have stopped. Small computers don't use credits, so they keep working. You can add credits, or wait for your credits to reset.",
+      all: "Your Daex Cloud computers and iPhone have stopped. You can add credits, or wait for your credits to reset.",
+      small: "Your Daex Cloud iPhone and computers bigger than Small have stopped. Small computers don't use credits, so they keep working. You can add credits, or wait for your credits to reset.",
     },
   },
   warn95: {
     column: "warned_95_at",
-    subject: "You've used 95% of your ADE Cloud credits",
+    subject: "You've used 95% of your Daex Cloud credits",
     text: {
       all: "You're almost out. When your credits run out, your computers stop until you add credits or they reset.",
       small: "You're almost out. When your credits run out, your computers bigger than Small stop until you add credits or they reset. Small computers keep working.",
@@ -52,7 +52,7 @@ const WARNINGS: Record<Exclude<CloudHoursState, "none">, {
   },
   warn80: {
     column: "warned_80_at",
-    subject: "You've used 80% of your ADE Cloud credits",
+    subject: "You've used 80% of your Daex Cloud credits",
     text: {
       all: "Your computers keep working for now. When your credits run out, they stop until you add credits or they reset.",
       small: "Your computers keep working for now. When your credits run out, the ones bigger than Small stop until you add credits or they reset. Small computers keep working.",

@@ -99,7 +99,7 @@ describe("device authorization bridge", () => {
     expect(callback.status).toBe(200);
     const callbackBody = await callback.text();
     expect(callbackBody).toMatch(/You(?:'|&#39;)re signed in/);
-    expect(callbackBody).toContain("Go back to ADE.");
+    expect(callbackBody).toContain("Go back to Daex.");
 
     const wrongSecret = await handleRequest(
       request("POST", "/device/token", undefined, {
@@ -366,7 +366,7 @@ describe("device authorization bridge", () => {
 
     const preview = await handleRequest(new Request(String(device.verification_uri_complete)), env, { now: () => now });
     const html = await preview.text();
-    expect(html).toContain("A computer named <strong>MacBook Pro · Alpha &lt;script&gt;x&lt;/script&gt;</strong> asked to sign in to ADE.");
+    expect(html).toContain("A computer named <strong>MacBook Pro · Alpha &lt;script&gt;x&lt;/script&gt;</strong> asked to sign in to Daex.");
     expect(html).toContain("Continue only if you started this on that computer.");
     expect(html).not.toContain("<script>x");
 
@@ -533,7 +533,7 @@ describe("device authorization bridge", () => {
 
     expect(preview.status).toBe(200);
     const body = await preview.text();
-    expect(body).toContain("Sign in to ADE");
+    expect(body).toContain("Sign in to Daex");
     expect(body).toContain('id="user_code"');
     expect(body).toContain("Enter the code shown by <code>ade login</code> in your terminal.");
     expect(body).not.toContain("Confirm this sign-in");

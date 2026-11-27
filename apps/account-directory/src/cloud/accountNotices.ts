@@ -54,7 +54,7 @@ export async function cancelTimedWakes(env: CloudEnv, blocked: Map<string, { rea
     }
     await sendCloudEmail(env, {
       userId,
-      subject: "Your ADE Cloud timed wake-ups were cancelled",
+      subject: "Your Daex Cloud timed wake-ups were cancelled",
       text: timedWakesCancelledSentence({ count, reason }),
     });
   }

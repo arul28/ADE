@@ -207,7 +207,7 @@ export async function refreshCostEstimate(env: CloudEnv, awake: ComputerRow[], n
       key: `free_cap:${month}:${limitUsd}:${step}`,
       kind: "free_cap",
       userId: null,
-      subject: step >= 100 ? `ADE Cloud free use reached your $${limitUsd} cap` : `ADE Cloud free use passed ${step}% of your cap`,
+      subject: step >= 100 ? `Daex Cloud free use reached your $${limitUsd} cap` : `Daex Cloud free use passed ${step}% of your cap`,
       reason: step >= 100
         ? `Free use this month is ${usd(freeMicros)}, at your cap of $${limitUsd}. Free accounts get no new computers or disk growth until next month or until you raise it. Paid accounts and wakes are not affected.`
         : `Free use this month is ${usd(freeMicros)}, ${Math.round(percent)}% of your $${limitUsd} cap. At the cap, free accounts get no new computers or disk growth; paid accounts never are refused.`,
@@ -251,7 +251,7 @@ async function alertCostStep(env: CloudEnv, micros: number, limitUsd: number | n
   const topLines = top.map((row) => `${row.user_id}: ${usd(row.cost)}`);
   const result = await sendCloudEmail(env, {
     owner: true,
-    subject: `ADE Cloud passed $${step} this month`,
+    subject: `Daex Cloud passed $${step} this month`,
     text: [
       `This month's estimated cost passed $${step}. It is ${usd(micros)} now.`,
       limitLine,
@@ -391,7 +391,7 @@ async function allCostsLines(env: CloudEnv, day: string, monthCostMicros: number
   const gaps = [...(cloudflare ? [] : ["Cloudflare's invoice can't be read (CLOUDFLARE_BILLING_TOKEN)"]), ...(fixed.length ? [] : [`no fixed costs set (${FIXED_COSTS_KEY})`])];
   return [
     `Fixed costs a month: ${items.length ? `${items.map((item) => `${item.name} $${item.usd.toFixed(2)}`).join(", ")} = ${usd(monthlyMicros)}` : "none known"}${gaps.length ? `; ${gaps.join("; ")}` : ""}.`,
-    `All costs this month so far: ${usd(allMicros)} (ADE Cloud use ${usd(monthCostMicros)}, fixed costs to date ${usd(toDateMicros)}), income ${usd(monthIncomeMicros)}, margin ${monthIncomeMicros > 0 ? `${Math.round(((monthIncomeMicros - allMicros) / monthIncomeMicros) * 100)}%` : "none"}.`,
+    `All costs this month so far: ${usd(allMicros)} (Daex Cloud use ${usd(monthCostMicros)}, fixed costs to date ${usd(toDateMicros)}), income ${usd(monthIncomeMicros)}, margin ${monthIncomeMicros > 0 ? `${Math.round(((monthIncomeMicros - allMicros) / monthIncomeMicros) * 100)}%` : "none"}.`,
   ];
 }
 
@@ -590,11 +590,11 @@ export async function runDailyCostReport(env: CloudEnv, day: string): Promise<vo
     "Accounts that cost the most against what they pay (day):",
     ...worst.map((row) => `${row.userId} (${row.planId}): cost ${usd(row.costMicros)}, income ${usd(row.incomeMicros)}`),
     "",
-    "ADE Cloud use is each provider's own bill where it gives one (Agent 37 after its daily reconcile, NoMac and Revyl per phone, Revyl's builds) and public prices otherwise, before Stripe's fees and taxes.",
+    "Daex Cloud use is each provider's own bill where it gives one (Agent 37 after its daily reconcile, NoMac and Revyl per phone, Revyl's builds) and public prices otherwise, before Stripe's fees and taxes.",
   ];
   await sendCloudEmail(env, {
     owner: true,
-    subject: alarms.length ? `ADE Cloud daily report: ${alarms.length} alarm${alarms.length === 1 ? "" : "s"}` : "ADE Cloud daily report",
+    subject: alarms.length ? `Daex Cloud daily report: ${alarms.length} alarm${alarms.length === 1 ? "" : "s"}` : "Daex Cloud daily report",
     text: lines.join("\n"),
   });
 }

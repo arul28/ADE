@@ -322,12 +322,12 @@ function startBody(): Body {
     {
       title: "In your browser",
       // The free plan's offer (Pricing v2): Small computers never use hours.
-      body: "Nothing to install. Runs free on ADE Cloud, with unlimited Small computers. Works from your phone too.",
+      body: "Nothing to install. Runs free on Daex Cloud, with unlimited Small computers. Works from your phone too.",
       label: "Start in the browser",
       url: WEB_APP_URL,
       primary: true,
     },
-    { title: "On your computer", body: "Mac, Windows or Linux.", label: "Download ADE", url: DOWNLOAD_URL, primary: false },
+    { title: "On your computer", body: "Mac, Windows or Linux.", label: "Download Daex", url: DOWNLOAD_URL, primary: false },
   ];
   const after = "Then open a repo, pick an agent you use, and ask it something.";
   return {
@@ -340,11 +340,11 @@ function startBody(): Body {
 /** `first_chat`: the first two steps done, then one button. */
 function firstChatBody(): Body {
   const steps: Step[] = [
-    { title: "Set up ADE", body: "On a computer or ADE Cloud.", done: true },
+    { title: "Set up Daex", body: "On a computer or Daex Cloud.", done: true },
     { title: "Sign in", body: "Use this account.", done: true },
     { title: "Start a chat", body: "Open a repo, pick an agent you use, and ask it something.", done: false },
   ];
-  const action = { label: "Open ADE", url: WEB_APP_URL };
+  const action = { label: "Open Daex", url: WEB_APP_URL };
   return {
     html: `${rowsTable(steps.map((step, index) => stepRow(step, index, index === steps.length - 1)))}
 <div style="margin:28px 0 0;">${button(action.label, action.url, true)}</div>`,
@@ -366,13 +366,13 @@ function renderWelcomeEmail(input: {
 }): RenderedWelcomeEmail {
   const name = input.firstName?.trim() || null;
   const start = input.variant === "start";
-  const subject = start ? "Run your first agent in ADE" : "One step left in ADE";
+  const subject = start ? "Run your first agent in Daex" : "One step left in Daex";
   const heading = start
     ? `${name ? `Hi ${name}, let’s` : "Let’s"} run your first agent`
     : `${name ? `Hi ${name}, one` : "One"} step left`;
-  const intro = start ? "Pick where ADE runs. You don’t need your own computer." : "ADE is set up. Now start a chat.";
+  const intro = start ? "Pick where Daex runs. You don’t need your own computer." : "Daex is set up. Now start a chat.";
   const body = start ? startBody() : firstChatBody();
-  const footer = `You signed up for ADE on ${signupDay(input.signedUpAtMs)}. This is our only getting-started email.`;
+  const footer = `You signed up for Daex on ${signupDay(input.signedUpAtMs)}. This is our only getting-started email.`;
   const text = [heading, intro, "", ...body.text, "", "--", footer, `Unsubscribe: ${input.unsubscribeUrl}`].join("\n");
   return { subject, text, html: renderHtml({ subject, heading, intro, body: body.html, footer, unsubscribeUrl: input.unsubscribeUrl }) };
 }
@@ -425,7 +425,7 @@ function renderHtml(email: { subject: string; heading: string; intro: string; bo
 <div style="display:none;max-height:0;overflow:hidden;opacity:0;">${escapeHtml(email.intro)}</div>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="${COLORS.page}" style="background:${COLORS.page};"><tr><td align="center" style="padding:40px 16px;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:480px;">
-<tr><td style="padding:0 4px 20px;"><a href="${SITE_URL}/?${UTM}" style="text-decoration:none;"><img src="${LOGO_URL}" width="72" height="35" alt="ADE" style="display:block;border:0;font:700 24px ${FONT};color:${COLORS.heading};"></a></td></tr>
+<tr><td style="padding:0 4px 20px;"><a href="${SITE_URL}/?${UTM}" style="text-decoration:none;"><img src="${LOGO_URL}" width="72" height="35" alt="Daex" style="display:block;border:0;font:700 24px ${FONT};color:${COLORS.heading};"></a></td></tr>
 <tr><td bgcolor="${COLORS.card}" style="background:${COLORS.card};border:1px solid ${COLORS.border};border-radius:14px;padding:32px;">
 <h1 style="margin:0 0 8px;font:700 24px/31px ${FONT};color:${COLORS.heading};">${escapeHtml(email.heading)}</h1>
 <p style="margin:0 0 24px;font:16px/24px ${FONT};color:${COLORS.muted};">${escapeHtml(email.intro)}</p>
@@ -450,7 +450,7 @@ function page(status: number, title: string, body: string, form?: { action: stri
     : "";
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${escapeHtml(title)}</title></head>
 <body style="margin:0;background:${COLORS.page};"><div style="max-width:480px;margin:80px auto;padding:0 16px;">
-<img src="${LOGO_URL}" width="72" height="35" alt="ADE" style="display:block;margin:0 0 20px;">
+<img src="${LOGO_URL}" width="72" height="35" alt="Daex" style="display:block;margin:0 0 20px;">
 <div style="background:${COLORS.card};border:1px solid ${COLORS.border};border-radius:14px;padding:32px;">
 <h1 style="margin:0 0 12px;font:700 22px/30px ${FONT};color:${COLORS.heading};">${escapeHtml(title)}</h1>
 <p style="margin:0;font:15px/23px ${FONT};color:${COLORS.body};">${escapeHtml(body)}</p>${button}
@@ -478,7 +478,7 @@ export async function handleUnsubscribeRequest(request: Request, env: WelcomeEma
     && constantTimeEqual(token, await unsubscribeToken(env, userId));
   if (!valid) return page(400, "This link doesn’t work", "It’s incomplete or was changed. Open the unsubscribe link from the email again.");
   if (request.method === "GET") {
-    return page(200, "Unsubscribe from ADE tips?", "Billing and account notices still come.", { action: `${UNSUBSCRIBE_PATH}${url.search}` });
+    return page(200, "Unsubscribe from Daex tips?", "Billing and account notices still come.", { action: `${UNSUBSCRIBE_PATH}${url.search}` });
   }
   const now = Date.now();
   // Only an account that still has its email row: a deleted account's rows

@@ -333,7 +333,7 @@ export function readPlanCleanupPick(value: unknown): CloudPlanCleanupPick | null
 export function checkPlanCleanupPick(env: CloudEnv, account: AccountRow, computers: ComputerRow[], planId: CloudPlanId, pick: CloudPlanCleanupPick): PickCheck {
   const planName = CLOUD_PLAN_SENTENCE_NAMES[planId];
   if (choiceOf(account)) {
-    return { ok: false, code: "cleanup_running", message: "ADE is still freeing the computers you picked. Try again when it's done." };
+    return { ok: false, code: "cleanup_running", message: "Daex is still freeing the computers you picked. Try again when it's done." };
   }
   if (!planCleanupFor(env, account, computers, planId)) {
     return pick.instanceIds.length
@@ -342,7 +342,7 @@ export function checkPlanCleanupPick(env: CloudEnv, account: AccountRow, compute
   }
   const allowed = new Set(pickable(computers).map((computer) => computer.instance_id));
   if (pick.instanceIds.some((id) => !allowed.has(id))) {
-    return { ok: false, code: "cleanup_changed", message: "Your computers changed since ADE showed them. Look at the list again." };
+    return { ok: false, code: "cleanup_changed", message: "Your computers changed since Daex showed them. Look at the list again." };
   }
   const picked = new Set(pick.instanceIds);
   const rest = computers.filter((computer) => !picked.has(computer.instance_id));
@@ -376,7 +376,7 @@ export async function recordPlanCleanupPick(env: CloudEnv, userId: string, planI
 const utcDate = (ms: number): string => new Date(ms).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
 
 /** Where in ADE the person picks, and what ADE does with a pick: every email says it the same. */
-const WAYS_OUT = "ADE deletes nothing on its own. In ADE, delete computers yourself, or open Settings › ADE Cloud › Plans to pick the ones ADE frees. It pushes their work to GitHub first, and their lanes and chats stay.";
+const WAYS_OUT = "Daex deletes nothing on its own. In Daex, delete computers yourself, or open Settings › Daex Cloud › Plans to pick the ones Daex frees. It pushes their work to GitHub first, and their lanes and chats stay.";
 
 /**
  * The email when a downgrade or cancel is made outside ADE's question (the
@@ -392,11 +392,11 @@ export async function warnPlanCleanupAhead(env: CloudEnv, account: AccountRow, c
   logCloud("cloud.plan_cleanup_warned_ahead", { userId: account.user_id, to: toPlan, computers: cleanup.computerCount, limit: cleanup.computerLimit });
   await sendCloudEmail(env, {
     userId: account.user_id,
-    subject: `You have more ADE Cloud computers than ${planName} allows from ${starts}`,
+    subject: `You have more Daex Cloud computers than ${planName} allows from ${starts}`,
     text: [
       `You move to ${planName} on ${starts}.`,
       cleanup.sentence,
-      `From then, ADE can't make a new computer until you have no more than ${cloudComputersPhrase(cleanup.computerLimit ?? 0)}.`,
+      `From then, Daex can't make a new computer until you have no more than ${cloudComputersPhrase(cleanup.computerLimit ?? 0)}.`,
       WAYS_OUT,
     ].join("\n"),
   });
@@ -413,8 +413,8 @@ async function tellPlanCleanupDone(env: CloudEnv, userId: string, done: CloudPla
   await sendCloudEmail(env, {
     userId,
     subject: done.freed.length
-      ? `ADE Cloud freed ${done.freed.length === 1 ? "a computer" : `${done.freed.length} computers`} to fit ${CLOUD_PLAN_SENTENCE_NAMES[done.planId]}`
-      : "ADE Cloud couldn't push a computer's work",
+      ? `Daex Cloud freed ${done.freed.length === 1 ? "a computer" : `${done.freed.length} computers`} to fit ${CLOUD_PLAN_SENTENCE_NAMES[done.planId]}`
+      : "Daex Cloud couldn't push a computer's work",
     text: lines.join("\n"),
   });
 }
@@ -460,11 +460,11 @@ async function tellOver(env: CloudEnv, account: AccountRow, over: Omit<CloudPlan
   if ((claim.meta?.changes ?? 0) !== 1) return;
   const sent = await sendCloudEmail(env, {
     userId: account.user_id,
-    subject: `You have more ADE Cloud computers than ${CLOUD_PLAN_SENTENCE_NAMES[over.planId]} allows`,
+    subject: `You have more Daex Cloud computers than ${CLOUD_PLAN_SENTENCE_NAMES[over.planId]} allows`,
     text: [
       `Your account is on ${CLOUD_PLAN_SENTENCE_NAMES[over.planId]} now and you have more cloud computers than it allows.`,
       over.sentence,
-      "ADE can't make a new computer until you have fewer. Your computers and their work stay as they are.",
+      "Daex can't make a new computer until you have fewer. Your computers and their work stay as they are.",
       WAYS_OUT,
     ].join("\n"),
   });
@@ -701,7 +701,7 @@ async function freeComputer(env: CloudEnv, provider: CloudProvider, choice: Plan
     return { kind: "freed", name: nameOf(computer), branch: lane.branch, laneKept };
   } catch (error) {
     const code = error instanceof CloudProviderError ? error.code : "unknown";
-    return keep(choice.push ? "ADE Cloud couldn't reach the computer to save its work." : "ADE Cloud couldn't reach the computer to delete it.", code);
+    return keep(choice.push ? "Daex Cloud couldn't reach the computer to save its work." : "Daex Cloud couldn't reach the computer to delete it.", code);
   }
 }
 
@@ -761,7 +761,7 @@ export async function saveBeforeDelete(env: CloudEnv, provider: CloudProvider, c
   if (!prepareConfirmed(prepared.exitCode, prepared.stdout)) {
     // A readable answer that is not confirmed: the computer ended its own freeze. Any other answer may hide one.
     if (freezes && (prepared.exitCode !== 0 || readResult(prepared.stdout) == null)) await unfreezeComputer(provider, computer.instance_id);
-    return { ok: false, reason: "ADE on the computer couldn't stop its agents and save its chats.", code: "prepare_stop_failed" };
+    return { ok: false, reason: "Daex on the computer couldn't stop its agents and save its chats.", code: "prepare_stop_failed" };
   }
   const kept = async (outcome: SaveBeforeDeleteOutcome): Promise<SaveBeforeDeleteOutcome> => {
     if (freezes) await unfreezeComputer(provider, computer.instance_id);
@@ -779,7 +779,7 @@ export async function saveBeforeDelete(env: CloudEnv, provider: CloudProvider, c
     git: Number(report?.git) || 0,
     backups: report?.backups?.state ?? "none",
   });
-  if (!reportId) return await kept({ ok: false, reason: "This computer's ADE is too old to save its lanes' work. It saves them after it updates, the next time it rests.", code: "backup_unsupported" });
+  if (!reportId) return await kept({ ok: false, reason: "This computer's Daex is too old to save its lanes' work. It saves them after it updates, the next time it rests.", code: "backup_unsupported" });
   const row = await backupRestRow(env, computer.instance_id);
   if (row?.backup_report_id === reportId && row.backup_report_state === "current") return { ok: true, metadata: instance.metadata, resting: false };
   return await kept({ ok: false, reason: backupNotSavedReason(row ?? {}), code: "backup_not_current" });
