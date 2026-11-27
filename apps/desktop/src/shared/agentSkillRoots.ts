@@ -173,6 +173,24 @@ export function isAgentSkillNamed(name: string, skills: readonly string[]): bool
 }
 
 /**
+ * A message that opens with an old bundled-skill command, sent under the
+ * Daex name: `/ade:ade-browser go` → `/daex:daex-browser go` (Claude's plugin
+ * form) and `/ade-browser go` → `/daex-browser go` (the bare form Codex,
+ * Copilot and the `/` menus use). Saved prompts, automations and muscle memory
+ * still type the old names, and no provider knows them any more. Any other
+ * text, including an old-looking name that is not a bundled skill, is
+ * returned unchanged.
+ */
+export function rewriteLegacyBundledSkillCommand(text: string): string {
+  const match = /^(\s*)\/(ade:)?(ade-[a-z0-9-]+)(?=\s|$)/.exec(text);
+  if (!match) return text;
+  const target = LEGACY_BUNDLED_AGENT_SKILL_ALIASES[match[3]!];
+  if (!target) return text;
+  const command = match[2] ? `/${BUNDLED_AGENT_SKILL_PLUGIN}:${target}` : `/${target}`;
+  return `${match[1]}${command}${text.slice(match[0].length)}`;
+}
+
+/**
  * A withheld list with each bundled skill under both its Daex and its old
  * name, so a root that still carries an old folder (an older brain's
  * `agent-skills` on another machine, an `ADE_AGENT_SKILLS_DIRS` from an older

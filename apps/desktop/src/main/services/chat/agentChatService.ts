@@ -1475,6 +1475,7 @@ import {
   type TranscriptHistoryPageRead,
 } from "./chatTranscriptHistoryPager";
 import { extractLeadingSlashCommand, isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
+import { rewriteLegacyBundledSkillCommand } from "../../../shared/agentSkillRoots";
 import { CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE, cursorOwnsSessionName } from "../../../shared/cursorCloudNaming";
 import { COMPACT_BLOCKED_TURN_ACTIVE, isManualCompactCommand, manualCompactInstructions } from "../../../shared/contextCompaction";
 import {
@@ -67867,6 +67868,12 @@ export function createAgentChatService(args: {
       return;
     }
     args = withSideChatRole(managed, args);
+    // `/ade:ade-browser` and `/ade-browser` (saved prompts, automations, habit)
+    // name skills that are `daex:daex-browser` / `daex-browser` now.
+    if (!options?.preparedMessage && typeof args.text === "string") {
+      const renamed = rewriteLegacyBundledSkillCommand(args.text);
+      if (renamed !== args.text) args = { ...args, text: renamed };
+    }
     await accountSwitchesInFlight.get(args.sessionId)?.catch(() => undefined);
     // The CTO has no Compact first offer: when its cache has gone cold and
     // this send would re-read a big thread at full price, it moves to a fresh
