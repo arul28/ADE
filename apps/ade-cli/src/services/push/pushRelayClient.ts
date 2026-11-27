@@ -862,7 +862,7 @@ export function createPushRelayClient(args: {
         accountAuthorized: true,
         expectedAccountUserId,
       });
-      if (response.status === 401 && response.body?.error === "ADE account is not signed in") {
+      if (response.status === 401 && response.body?.error === NO_ACCOUNT_TOKEN_REASONS.signedOut) {
         return null;
       }
       // A removed machine keeps a valid signature and a valid account token —
@@ -901,7 +901,7 @@ export function createPushRelayClient(args: {
           ...(callOptions?.signal ? { signal: callOptions.signal } : {}),
         },
       );
-      if (response.status === 401 && response.body?.error === "ADE account is not signed in") {
+      if (response.status === 401 && response.body?.error === NO_ACCOUNT_TOKEN_REASONS.signedOut) {
         return null;
       }
       return requireAttentionSnapshot(response);
@@ -938,7 +938,7 @@ export function createPushRelayClient(args: {
         deadlineMs: PUSH_RELAY_FOREGROUND_DEADLINE_MS,
         expectedAccountUserId: expectedAccountUserId ?? undefined,
       });
-      if (response.status === 401 && response.body?.error === "ADE account is not signed in") {
+      if (response.status === 401 && response.body?.error === NO_ACCOUNT_TOKEN_REASONS.signedOut) {
         return null;
       }
       const body = requireOk("acknowledgeAttention", response);
@@ -969,7 +969,7 @@ export function createPushRelayClient(args: {
         deadlineMs: PUSH_RELAY_FOREGROUND_DEADLINE_MS,
         expectedAccountUserId,
       });
-      if (response.status === 401 && response.body?.error === "ADE account is not signed in") return;
+      if (response.status === 401 && response.body?.error === NO_ACCOUNT_TOKEN_REASONS.signedOut) return;
       requireOk("reportAttentionPresence", response);
     },
 
@@ -1027,7 +1027,7 @@ export function createPushRelayClient(args: {
         deadlineMs: PUSH_RELAY_FOREGROUND_DEADLINE_MS,
         expectedAccountUserId,
       });
-      if (response.status === 401 && response.body?.error === "ADE account is not signed in") {
+      if (response.status === 401 && response.body?.error === NO_ACCOUNT_TOKEN_REASONS.signedOut) {
         return null;
       }
       const body = requireOk("getAttentionPreferences", response);
@@ -1051,7 +1051,7 @@ export function createPushRelayClient(args: {
         deadlineMs: PUSH_RELAY_FOREGROUND_DEADLINE_MS,
         expectedAccountUserId,
       });
-      if (response.status === 401 && response.body?.error === "ADE account is not signed in") return;
+      if (response.status === 401 && response.body?.error === NO_ACCOUNT_TOKEN_REASONS.signedOut) return;
       requireOk("putAttentionPreferences", response);
     },
 
@@ -1108,7 +1108,7 @@ export function createPushRelayClient(args: {
           deadlineMs: PUSH_RELAY_FOREGROUND_DEADLINE_MS,
         },
       );
-      if (response.status === 401 && response.body?.error === "ADE account is not signed in") {
+      if (response.status === 401 && response.body?.error === NO_ACCOUNT_TOKEN_REASONS.signedOut) {
         return;
       }
       requireOk("putActivityMachinePreferences", response);
