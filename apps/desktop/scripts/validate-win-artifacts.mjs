@@ -341,7 +341,9 @@ function validatePreflight() {
   // release and reads as a different product each time. Windows expects
   // DisplayName to carry the product and DisplayVersion to carry the version,
   // and Stable/Beta side-by-side installs are only distinguishable when each
-  // channel owns one stable DisplayName.
+  // channel owns one stable DisplayName. run-electron-builder.mjs overrides it
+  // with the channel's display name ("Daex", "Daex Beta"), also
+  // version-independent; this is the fallback for a build outside the wrapper.
   // eslint-disable-next-line no-template-curly-in-string
   if (pkg.build?.nsis?.uninstallDisplayName !== "${productName}") {
     fail(

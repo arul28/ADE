@@ -119,7 +119,7 @@
     ${EndIf}
     InitPluginsDir
     File "/oname=$PLUGINSDIR\ade-update-holders.ps1" "${BUILD_RESOURCES_DIR}\ade-update-holders.ps1"
-    DetailPrint "Looking for what kept the old ADE files in use..."
+    DetailPrint "Looking for what kept the old Daex files in use..."
     ; Bounded: nothing may hold a silent update that nobody is watching.
     nsExec::Exec /TIMEOUT=60000 '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\ade-update-holders.ps1" -InstallDir "$INSTDIR" -PackageChannel "$1" -TargetVersion "${VERSION}"'
     Pop $1
@@ -130,9 +130,9 @@
       nsExec::Exec `${ADE_RELEASE_UPDATE_WINDOW}`
       Pop $0
       ${If} $0 == 1
-        DetailPrint "The update ran on quit: leaving ADE closed."
+        DetailPrint "The update ran on quit: leaving Daex closed."
       ${Else}
-        DetailPrint "Reopening the installed ADE so its background service comes back."
+        DetailPrint "Reopening the installed Daex so its background service comes back."
         Exec '"$INSTDIR\${APP_EXECUTABLE_FILENAME}"'
       ${EndIf}
     ${EndIf}
@@ -156,7 +156,33 @@
   ${EndIf}
 !macroend
 
+; The Start menu shortcut is named Daex (nsis.shortcutName, set per channel by
+; run-electron-builder.mjs) while productName, the exe and the install folder
+; stay ADE. On an update electron-builder's addStartMenuLink renames the old
+; shortcut (its name comes from ShortcutName in the install key, "ADE" before
+; the rename) to the new one and stamps the AUMID on it again. That Rename
+; fails when a shortcut with the new name already exists, which would leave
+; both in the Start menu. Then the old one goes, but only when it opens this
+; install's exe. Exit 0 = it does. Runs only in that rare case.
+!define ADE_OLD_SHORTCUT_OPENS_APP `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "try{$$t=(New-Object -ComObject WScript.Shell).CreateShortcut($$env:ADE_OLD_SHORTCUT).TargetPath;if($$t -and [IO.Path]::GetFullPath($$t) -eq [IO.Path]::GetFullPath($$env:ADE_SHORTCUT_APP_EXE)){exit 0}}catch{};exit 1"`
+!macro adeRemoveStaleStartMenuLink
+  ${If} $oldStartMenuLink != $newStartMenuLink
+  ${AndIf} ${FileExists} "$oldStartMenuLink"
+  ${AndIf} ${FileExists} "$newStartMenuLink"
+    System::Call 'kernel32::SetEnvironmentVariable(t "ADE_OLD_SHORTCUT", t "$oldStartMenuLink")i'
+    System::Call 'kernel32::SetEnvironmentVariable(t "ADE_SHORTCUT_APP_EXE", t "$appExe")i'
+    nsExec::Exec `${ADE_OLD_SHORTCUT_OPENS_APP}`
+    Pop $0
+    ${If} $0 == 0
+      Delete "$oldStartMenuLink"
+      DetailPrint "Removed the old $oldShortcutName Start menu shortcut."
+    ${EndIf}
+  ${EndIf}
+!macroend
+
 !macro customInstall
+  !insertmacro adeRemoveStaleStartMenuLink
+
   StrCpy $2 "stable"
   ${If} "${PRODUCT_NAME}" == "ADE Alpha"
     StrCpy $2 "alpha"
@@ -172,14 +198,14 @@
     StrCpy $3 "-Updating"
   ${EndIf}
 
-  DetailPrint "Step 1 of 2: configuring the ADE terminal command and starting the background service..."
+  DetailPrint "Step 1 of 2: configuring the Daex terminal command and starting the background service..."
   nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\resources\ade-cli\windows-install-setup.ps1" -InstallDir "$INSTDIR" -AppExecutableName "${APP_EXECUTABLE_FILENAME}" -PackageChannel "$2" $3'
   Pop $0
   ${If} $0 != 0
     DetailPrint "Step 1 of 2 failed with exit code $0."
-    MessageBox MB_ICONSTOP|MB_OK "ADE could not configure its terminal command or background startup.$\r$\n$\r$\nThe setup step exited with code $0. Run the installer again. If it fails the same way, install from PowerShell with:$\r$\n$\r$\nirm https://ade-app.dev/install.ps1 | iex$\r$\n$\r$\nThat path prints the full error." /SD IDOK
+    MessageBox MB_ICONSTOP|MB_OK "Daex could not configure its terminal command or background startup.$\r$\n$\r$\nThe setup step exited with code $0. Run the installer again. If it fails the same way, install from PowerShell with:$\r$\n$\r$\nirm https://ade-app.dev/install.ps1 | iex$\r$\n$\r$\nThat path prints the full error." /SD IDOK
     ${If} $adeHadPreviousInstall != "1"
-      DetailPrint "Rolling back the incomplete ADE product installation..."
+      DetailPrint "Rolling back the incomplete Daex installation..."
       ExecWait '"$INSTDIR\${UNINSTALL_FILENAME}" /currentuser /S' $3
       ${If} $3 != 0
         DetailPrint "Incomplete product rollback exited with code $3."
@@ -199,11 +225,11 @@
   ; false), so the script usually reports that it skipped the change instead of
   ; making one. Never fatal: a missing firewall rule costs one Windows prompt,
   ; it does not break the install.
-  DetailPrint "Step 2 of 2: pre-authorizing ADE local network sync in Windows Firewall..."
+  DetailPrint "Step 2 of 2: pre-authorizing Daex local network sync in Windows Firewall..."
   nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\resources\ade-cli\windows-firewall-rules.ps1" -Action install -InstallDir "$INSTDIR" -AppExecutableName "${APP_EXECUTABLE_FILENAME}" -PackageChannel "$2"'
   Pop $0
   ${If} $0 != 0
-    DetailPrint "ADE could not pre-authorize local network sync. Windows will ask once when you first use sync on this network."
+    DetailPrint "Daex could not pre-authorize local network sync. Windows will ask once when you first use sync on this network."
   ${EndIf}
   DetailPrint "Step 2 of 2 done."
 !macroend
@@ -223,12 +249,12 @@
   ; terminal command, PATH, ade:// and file associations stay for the new
   ; version, which would put each one straight back.
   ${If} ${isUpdated}
-    DetailPrint "Stopping the ADE background service for the update..."
+    DetailPrint "Stopping the Daex background service for the update..."
     nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\resources\ade-cli\windows-uninstall-cleanup.ps1" -InstallDir "$INSTDIR" -AppExecutableName "${APP_EXECUTABLE_FILENAME}" -PackageChannel "$2" -Updating'
     Pop $0
     ${If} $0 != 0
       DetailPrint "Stopping the background service exited with code $0."
-      MessageBox MB_ICONSTOP|MB_OK "ADE could not stop its background service for the update. Close ADE and try again.$\r$\n$\r$\nThe cleanup step exited with code $0." /SD IDOK
+      MessageBox MB_ICONSTOP|MB_OK "Daex could not stop its background service for the update. Close Daex and try again.$\r$\n$\r$\nThe cleanup step exited with code $0." /SD IDOK
       Abort
     ${EndIf}
     Goto adeUninstallCleanupDone
@@ -237,7 +263,7 @@
   ; Take the inbound allowance back out before the product goes away, so an
   ; uninstall never leaves a rule pointing at a deleted executable. Same
   ; elevation caveat as install, and same non-fatal handling.
-  DetailPrint "Step 1 of 2: removing the ADE local network sync firewall rules..."
+  DetailPrint "Step 1 of 2: removing the Daex local network sync firewall rules..."
   nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\resources\ade-cli\windows-firewall-rules.ps1" -Action uninstall -InstallDir "$INSTDIR" -AppExecutableName "${APP_EXECUTABLE_FILENAME}" -PackageChannel "$2"'
   Pop $0
   ${If} $0 != 0
@@ -245,12 +271,12 @@
   ${EndIf}
   DetailPrint "Step 1 of 2 done."
 
-  DetailPrint "Step 2 of 2: removing the ADE background service and terminal command..."
+  DetailPrint "Step 2 of 2: removing the Daex background service and terminal command..."
   nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\resources\ade-cli\windows-uninstall-cleanup.ps1" -InstallDir "$INSTDIR" -AppExecutableName "${APP_EXECUTABLE_FILENAME}" -PackageChannel "$2"'
   Pop $0
   ${If} $0 != 0
     DetailPrint "Step 2 of 2 failed with exit code $0."
-    MessageBox MB_ICONSTOP|MB_OK "ADE could not remove its background service or terminal command. Close ADE and try uninstalling again.$\r$\n$\r$\nThe cleanup step exited with code $0." /SD IDOK
+    MessageBox MB_ICONSTOP|MB_OK "Daex could not remove its background service or terminal command. Close Daex and try uninstalling again.$\r$\n$\r$\nThe cleanup step exited with code $0." /SD IDOK
     Abort
   ${EndIf}
   DetailPrint "Step 2 of 2 done."

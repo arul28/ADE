@@ -176,6 +176,14 @@ const args = [
   // three different names. Pin the artifact name to the space-free channel base
   // so the updater feed can only ever reference the file published beside it.
   `--config.win.artifactName=${windowsInstallerArtifactName(channelIdentity)}`,
+  // Show Daex in the Start menu and the installed apps list without moving
+  // anything: shortcutName names only the .lnk (SHORTCUT_NAME, stored as
+  // ShortcutName in the install key, so an update renames the old ADE.lnk and
+  // keeps its AUMID), and uninstallDisplayName is only the Uninstall key's
+  // DisplayName. The exe, install folder and uninstall key GUID come from
+  // productName and appId, which stay. See docs/brand/desktop-packaging.md.
+  `--config.nsis.shortcutName=${channelIdentity.displayName}`,
+  `--config.nsis.uninstallDisplayName=${channelIdentity.displayName}`,
   `--config.fileAssociations.name=${channelIdentity.fileClass}`,
   `--config.fileAssociations.description=${configuredFileAssociation.description ?? "Daex files"}`,
   ...configuredFileAssociation.ext.map((extension) => `--config.fileAssociations.ext=${extension}`),
