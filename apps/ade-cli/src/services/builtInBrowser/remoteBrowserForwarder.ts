@@ -10,6 +10,7 @@ import {
   builtInBrowserRemoteCallDoneTimeoutMs,
   isBuiltInBrowserRemoteCallMethod,
   type BuiltInBrowserForwardedToDesktop,
+  type BuiltInBrowserForwardRouting,
   type BuiltInBrowserHostNote,
   type BuiltInBrowserRemoteCall,
   type BuiltInBrowserRemoteCallMethod,
@@ -368,10 +369,8 @@ export function createRemoteBrowserForwarder(args: {
       url,
       laneId: stringOrNull(record.laneId),
       chatSessionId: stringOrNull(record.chatSessionId),
-      // `revealWhenForwarded`: a quiet open here that the person still wants
-      // to see (the phone's Open). A desktop elsewhere only takes a quiet
-      // request into a Browser pane already on screen, so it shows its pane.
-      openPanel: record.openPanel !== false || record.revealWhenForwarded === true,
+      // See `BuiltInBrowserForwardRouting.revealWhenForwarded`.
+      openPanel: record.openPanel !== false || (record as BuiltInBrowserForwardRouting).revealWhenForwarded === true,
       requestedAt: new Date().toISOString(),
       targetClientId,
       ...(groupLaneId ? { groupLaneId } : {}),

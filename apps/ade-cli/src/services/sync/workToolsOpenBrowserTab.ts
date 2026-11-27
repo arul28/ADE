@@ -9,22 +9,17 @@
 
 import { BUILT_IN_BROWSER_NO_PROJECT_WINDOW_MESSAGE } from "../../../../desktop/src/shared/types/builtInBrowser";
 import type { BuiltInBrowserCreateTabArgs } from "../../../../desktop/src/shared/types/builtInBrowser";
-import { isBuiltInBrowserForwardedToDesktop } from "../../../../desktop/src/shared/types/builtInBrowserRemote";
+import {
+  isBuiltInBrowserForwardedToDesktop,
+  type BuiltInBrowserForwardRouting,
+} from "../../../../desktop/src/shared/types/builtInBrowserRemote";
 import { parseLoopbackUrl } from "../../../../desktop/src/shared/remoteLoopbackUrl";
 import { DesktopBridgeUnavailableError } from "../builtInBrowser/desktopBridgeClient";
 import type { WorkToolsStateService } from "../workTools/workToolsStateService";
 
 /** The browser call this needs: open a tab, as the person would. */
 export type WorkToolsBrowserTabOpener = {
-  createTab(input: BuiltInBrowserCreateTabArgs & {
-    /**
-     * Routing only, read by the remote-browser forwarder: when this machine
-     * has no desktop and the page goes to one elsewhere, that desktop brings
-     * its Browser pane up for it (it takes a quiet open only into a pane
-     * already showing).
-     */
-    revealWhenForwarded?: boolean;
-  }): Promise<unknown>;
+  createTab(input: BuiltInBrowserCreateTabArgs & BuiltInBrowserForwardRouting): Promise<unknown>;
 };
 
 /** What `workTools.openBrowserTab` answers. */

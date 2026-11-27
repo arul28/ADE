@@ -289,6 +289,8 @@ function CodeCopyButton({ code, position, leading }: { code: string; position: C
     return (
       <div
         className="pointer-events-none sticky top-2 z-10 flex justify-end gap-1 pr-2"
+        // Controls, not reply text: a thread comment's quote must not read "Copy".
+        data-thread-comment-ignore=""
         // -mb keeps the sticky row from pushing the code text down on its first line.
         style={{ marginBottom: -24 }}
       >
@@ -313,6 +315,7 @@ function CodeCopyButton({ code, position, leading }: { code: string; position: C
   const button = (
     <button
       type="button"
+      data-thread-comment-ignore=""
       className={`${CODE_BLOCK_ACTION_BUTTON_CLASS} ${leading ? "" : `absolute right-2 z-10 ${posClass} `}opacity-0 group-hover/code:opacity-100 group-hover/code:backdrop-blur-sm [@media(hover:none)]:opacity-100`}
       style={CODE_BLOCK_ACTION_BUTTON_STYLE}
       onClick={() => void copy(code)}
@@ -325,7 +328,7 @@ function CodeCopyButton({ code, position, leading }: { code: string; position: C
   );
   if (!leading) return button;
   return (
-    <div className={`pointer-events-none absolute right-2 z-10 flex gap-1 ${posClass}`}>
+    <div className={`pointer-events-none absolute right-2 z-10 flex gap-1 ${posClass}`} data-thread-comment-ignore="">
       {button}
       <div className="order-first flex empty:hidden">{leading}</div>
     </div>

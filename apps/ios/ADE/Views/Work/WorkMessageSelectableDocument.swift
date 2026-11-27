@@ -178,11 +178,51 @@ private struct WorkSelectableDocumentBuilder {
       output.append(NSAttributedString(string: piece, attributes: attributes))
       // Desktop's soft space follows a text node whose parent is the block
       // (plain text, not inside a link, bold or italic) or a `code` element.
-      if intent.contains(.code) || (intent.isEmpty && run.link == nil) {
+      // Inline code that names a file is a path link there (a `span`), so it
+      // gets none.
+      let codeElement = intent.contains(.code) && !workLooksLikeWorkspacePath(piece)
+      if codeElement || (intent.isEmpty && run.link == nil) {
         softBreaks.insert(output.length)
       }
     }
   }
+}
+
+/// Desktop `looksLikeWorkspacePath` (`chatWorkspacePaths.tsx`): inline code
+/// that desktop draws as a clickable path rather than a `code` element. Keep
+/// the two in step.
+func workLooksLikeWorkspacePath(_ value: String) -> Bool {
+  var text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !text.isEmpty else { return false }
+  let lower = text.lowercased()
+  if ["http:", "https:", "mailto:", "tel:", "ade:", "#"].contains(where: { lower.hasPrefix($0) }) { return false }
+  if lower.hasPrefix("file://") {
+    text = String(text.dropFirst(7))
+  } else if lower.hasPrefix("file:") {
+    text = String(text.dropFirst(5))
+  }
+  text = String(text.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first ?? "")
+  text = String(text.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first ?? "")
+  text = (text.trimmingCharacters(in: .whitespaces).removingPercentEncoding ?? text)
+    .replacingOccurrences(of: "\\", with: "/")
+  if text.range(of: #"^/[A-Za-z]:/"#, options: .regularExpression) != nil { text.removeFirst() }
+  // A `:12` or `:12:3` line suffix.
+  if let suffix = text.range(of: #":\d+(:\d+)?$"#, options: .regularExpression), suffix.lowerBound != text.startIndex {
+    text = String(text[..<suffix.lowerBound])
+  }
+  if text.hasPrefix("./") { text.removeFirst(2) }
+  guard !text.isEmpty else { return false }
+  if text == ".." || text.hasPrefix("../") || text.hasPrefix("~/") { return false }
+  // A shortened path (`/tmp/claude-501/.../out.txt`) names no real file.
+  if text.split(separator: "/").contains(where: { $0 == "..." || $0 == "\u{2026}" }) { return false }
+  let bare = text.hasPrefix("/") ? String(text.dropFirst()) : text
+  if bare.contains("/") { return true }
+  // A bare token must end in something file-shaped that is not a version
+  // number or a domain.
+  guard let dot = bare.range(of: #"\.[A-Za-z0-9]{1,8}$"#, options: .regularExpression) else { return false }
+  let ext = bare[dot].dropFirst().lowercased()
+  if ext.allSatisfy(\.isNumber) { return false }
+  return !["com", "org", "net", "io", "ai", "dev", "gov", "edu"].contains(ext)
 }
 
 // MARK: - The anchor

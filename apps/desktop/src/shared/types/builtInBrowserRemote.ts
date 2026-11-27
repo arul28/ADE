@@ -66,6 +66,20 @@ export type BuiltInBrowserRemoteRequestAck = {
   reason?: string | null;
 };
 
+/**
+ * Routing-only fields on a browser call. The brain's remote-browser forwarder
+ * reads them and strips them before the local call.
+ */
+export type BuiltInBrowserForwardRouting = {
+  /**
+   * A quiet open (`openPanel: false`) that the person still wants to see: when
+   * the page goes to a desktop on another machine, that desktop brings its
+   * Browser pane up for it (it takes a quiet open only into a pane already
+   * showing). The phone's Open sets it.
+   */
+  revealWhenForwarded?: boolean;
+};
+
 /** What `built_in_browser.navigate` returns instead of a status on a headless box. */
 export type BuiltInBrowserForwardedToDesktop = {
   status: "forwarded_to_desktop";

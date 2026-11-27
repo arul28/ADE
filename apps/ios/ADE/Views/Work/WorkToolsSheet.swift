@@ -112,6 +112,8 @@ struct WorkToolsSheet: View {
   /// The desktop answered a phone-size read without saying whether it laid
   /// the page out (it predates phone size), so the switch would do nothing.
   @State private var desktopIgnoresPhoneSize = false
+  /// Goes up on each lane switch, so work started for the old lane can tell.
+  @State private var laneGeneration = 0
 
   /// Live frame cadence. One request is in flight at a time, so a slow link
   /// simply gets fewer frames.
@@ -223,6 +225,9 @@ struct WorkToolsSheet: View {
       // must not hide a tab in the new one.
       sendPendingTabClosesNow(laneId: previousLaneId)
       closedTabIds = []
+      // Another lane can be on another machine, with its own desktop.
+      desktopIgnoresPhoneSize = false
+      laneGeneration += 1
     }
     #if DEBUG
     .onChange(of: loaded) { _, isLoaded in
@@ -365,19 +370,30 @@ struct WorkToolsSheet: View {
   /// of the desktop browser on the lane's machine, and the live picture below
   /// switches to it.
   private var devServersCard: some View {
-    WorkToolsDevServersCard(
-      laneId: laneId,
+    let laneId = laneId
+    let tabs = visibleTabs
+    let isFixture = previewBrowserFixtures
+    let generation = laneGeneration
+    return WorkToolsDevServersCard(
       servers: devServers,
-      tabs: visibleTabs,
+      tabs: tabs,
       loadFailed: devServersLoadFailed,
       canOpen: canOpenDevServers,
-      isFixture: previewBrowserFixtures,
-      open: { server in try await syncService.openWorkToolsBrowserTab(laneId: laneId, url: server.url) },
+      open: { server in
+        // The DEBUG fixtures have no host: Open watches the fixture's tab.
+        if isFixture {
+          return WorkToolsOpenedBrowserTab(tabId: tabs.first { workToolsLoopbackPort($0.url) == server.port }?.id)
+        }
+        return try await syncService.openWorkToolsBrowserTab(laneId: laneId, url: server.url)
+      },
       watch: { tabId in
+        // An Open that answers after a lane switch is about the old lane.
+        guard generation == laneGeneration else { return }
         watchedTabId = tabId
         await refresh()
       }
     )
+    .id(laneId)
   }
 
   /// The picture the live frame is laid out for, in points: the card's width,
@@ -588,11 +604,12 @@ struct WorkToolsSheet: View {
       var delay = Self.liveFrameInterval
       do {
         // Read each time: the toggle and a rotation change it mid-watch.
+        let askedViewport = browserViewport
         let answer = try await syncService.readWorkToolsBrowserTabFrame(
           tabId: tabId,
           laneId: laneId,
           maxWidth: Self.liveFrameMaxWidth,
-          viewport: browserViewport
+          viewport: askedViewport
         )
         guard !Task.isCancelled else { return }
         var image: UIImage?
@@ -606,7 +623,8 @@ struct WorkToolsSheet: View {
           liveFrameInfo = answer
           lastFrameAt = Date()
           // A desktop that knows phone size always says whether it applied it.
-          if browserViewport != nil, answer?.viewportApplied == nil { desktopIgnoresPhoneSize = true }
+          // Judged by what this read asked: the switch may have moved since.
+          if askedViewport != nil, answer?.viewportApplied == nil { desktopIgnoresPhoneSize = true }
         } else {
           if let answer { liveFrameInfo = answer }
           if Date().timeIntervalSince(lastFrameAt) > Self.liveFrameStaleAfter { dropLiveFrame() }

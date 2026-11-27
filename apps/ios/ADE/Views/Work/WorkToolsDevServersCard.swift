@@ -7,7 +7,6 @@ import SwiftUI
 /// may take it instead (no desktop on the lane's machine); then the card can
 /// only say where it opened.
 struct WorkToolsDevServersCard: View {
-  let laneId: String
   let servers: [WorkToolsDevServer]
   /// The lane's open tabs, to tell Open from Watch.
   let tabs: [WorkToolsBrowserTab]
@@ -15,8 +14,6 @@ struct WorkToolsDevServersCard: View {
   let loadFailed: Bool
   /// False for a read-only viewer: the rows show no Open.
   let canOpen: Bool
-  /// A DEBUG fixture: Open watches the fixture's tab on that port instead.
-  let isFixture: Bool
   let open: @MainActor (WorkToolsDevServer) async throws -> WorkToolsOpenedBrowserTab
   /// Watches a tab in the sheet's live picture.
   let watch: @MainActor (String) async -> Void
@@ -72,17 +69,13 @@ struct WorkToolsDevServersCard: View {
     guard openingId == nil else { return }
     ADEHaptics.light()
     notice = nil
-    if isFixture {
-      if let tab = tab(on: server) { Task { await watch(tab.id) } }
-      return
-    }
     openingId = server.id
-    let laneId = laneId
+    // The sheet keys this card on its lane, so a lane switch gives a fresh
+    // card and this task's answer lands on a card nobody shows.
     Task { @MainActor in
       defer { openingId = nil }
       do {
         let opened = try await open(server)
-        guard laneId == self.laneId else { return }
         if let tabId = opened.tabId {
           await watch(tabId)
         } else if let desktop = opened.openedOn {
@@ -93,7 +86,6 @@ struct WorkToolsDevServersCard: View {
           notice = "Opened in ADE on another computer."
         }
       } catch {
-        guard laneId == self.laneId else { return }
         openError = error.localizedDescription
       }
     }

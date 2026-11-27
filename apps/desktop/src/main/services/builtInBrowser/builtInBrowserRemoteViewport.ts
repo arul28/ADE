@@ -70,9 +70,7 @@ export type RemoteViewportDeps = {
   onCleared?: (tab: BrowserTabState) => void;
 };
 
-export type RemoteViewportAnswer = { viewportApplied?: boolean; viewportNote?: string | null };
-
-export type RemoteViewport = ReturnType<typeof createRemoteViewport>;
+type RemoteViewportAnswer = { viewportApplied?: boolean; viewportNote?: string | null };
 
 export function createRemoteViewport(deps: RemoteViewportDeps) {
   const slots = new Map<string, RemoteViewportSlot>();
