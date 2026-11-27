@@ -19,7 +19,6 @@ function parentFolderOf(path: string): string | null {
   return /^[A-Za-z]:$/.test(parent) ? `${parent}\\` : parent;
 }
 
-
 const LAST_FOLDER_KEY = "ade.cloneFolder.byMachine.v1";
 
 function readLastFolders(): Record<string, string> {

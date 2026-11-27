@@ -425,9 +425,11 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
   says "<repo> is ready on <machine>" with **Open**, or a toast names the
   machine that failed. A computer with no copy can still be picked when work
   starts (the composer's clone step). Signed out (or an address only the
-  cloning computer can read), the form opens a copy instead: one already
-  there, else the first ticked one once it is cloned. `CloneLocallyDialog`
-  passes `opensCopy` to open the new copy rather than the project's tab.
+  cloning computer can read), the list reads **Put a copy on** and the form
+  opens a copy instead: the first ticked one once it is cloned, else one
+  already there. A failed clone ends that wait, so its folder can change
+  before Retry. `CloneLocallyDialog` passes `opensCopy` to open the new copy
+  rather than the project's tab.
   **Open a folder…** and **New empty project…** sit under it
   (`AddProjectMoreActions.tsx`), with a computer picker beside them when
   others are connected.

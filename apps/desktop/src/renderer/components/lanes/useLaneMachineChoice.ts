@@ -31,8 +31,8 @@ export type LaneMachineTarget = {
  * batch launch).
  *
  * The default is the "Start on" choice of the open repository
- * (`useActiveStartOn`): this computer's copy, then the computer used last,
- * then another online copy. When that choice cannot hold a lane here, and
+ * (`useActiveStartOn`): the copy on the computer used last, then this
+ * computer's copy, then another online copy. When that choice cannot hold a lane here, and
  * exactly one machine can (once the connection snapshot has answered), that
  * one is selected. Otherwise `selectedMachineId` is "" until the user picks.
  * The dialog names the selected computer. Picking never rebinds the project
