@@ -789,6 +789,16 @@ final class AccountCloudStore: ObservableObject {
     account = next
   }
 
+  /// The account's ADE Free Models answer as the server just returned it
+  /// (`PUT /cloud/free-models/consent`): every chat and the picker read it at
+  /// once. Nil (the switch no longer reaches the account) hides them.
+  func noteFreeModels(_ state: CloudFreeModelsState?, generation: Int) {
+    guard generation == accountGeneration else { return }
+    guard var next = account, next.freeModels != state else { return }
+    next.freeModels = state
+    account = next
+  }
+
   /// A tester's pick of who runs their ADE Cloud iPhones (`auto`, `nomac`,
   /// `revyl`), saved on the account, then the account read again so every
   /// screen shows the server's answer. Nil when it worked, else the server's

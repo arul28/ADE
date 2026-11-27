@@ -105,6 +105,64 @@ struct CloudSponsoredState: Decodable, Equatable {
   var smallUsesHoursWithoutCards: Bool { smallNeedsCards == true }
 }
 
+/// ADE Free Models for the account (`CloudFreeModelsState`,
+/// `CloudPhoneAccount.freeModels`): Gravity's hosted models, paid for by the
+/// sponsored cards in the chats that use them, on any plan and any machine. The
+/// account server decides; the phone shows the answer. Absent from the account
+/// while the server's switch or key is off: nothing of them shows.
+struct CloudFreeModelsState: Decodable, Equatable {
+  /// The ADE model ids the account may pick (`opencode/ade-free/<alias>`).
+  let modelIds: [String]
+  /// They run for this person from where they are now. False with `reason`
+  /// (`country`, `unavailable`).
+  let available: Bool
+  let reason: String?
+  /// `granted`, `declined`, or nil when the one-time sheet was never answered
+  /// (or was for an older terms version).
+  let consent: String?
+  /// Where cards show in these chats. An unknown value reads as under the reply.
+  let format: CloudSponsoredFormat
+  /// Gravity's test ads: nothing is paid.
+  let test: Bool
+
+  init(modelIds: [String], available: Bool, reason: String? = nil, consent: String? = nil, format: CloudSponsoredFormat = .belowReply, test: Bool = false) {
+    self.modelIds = modelIds
+    self.available = available
+    self.reason = reason
+    self.consent = consent
+    self.format = format
+    self.test = test
+  }
+
+  private enum CodingKeys: String, CodingKey { case modelIds, available, reason, consent, format, test }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    modelIds = c.lenient([String].self, forKey: .modelIds) ?? []
+    available = c.lenient(Bool.self, forKey: .available) ?? false
+    reason = c.lenient(String.self, forKey: .reason)
+    let raw = c.lenient(String.self, forKey: .consent)
+    consent = raw == CloudSponsoredState.granted || raw == CloudSponsoredState.declined ? raw : nil
+    format = c.lenient(String.self, forKey: .format).flatMap(CloudSponsoredFormat.init(rawValue:)) ?? .belowReply
+    test = c.lenient(Bool.self, forKey: .test) ?? false
+  }
+
+  var granted: Bool { consent == CloudSponsoredState.granted }
+
+  /// The account lists this model and it runs here now.
+  func lists(_ modelId: String) -> Bool {
+    guard available, let model = workAdeFreeModel(modelId: modelId) else { return false }
+    return modelIds.contains { workAdeFreeModel(modelId: $0)?.alias == model.alias }
+  }
+
+  /// What the one-time sheet says, as the server's terms say it
+  /// (`CLOUD_FREE_MODELS_TERMS_VERSION`).
+  static let sheetTitle = "ADE Free Models show sponsored cards"
+  static let sheetLead = "These models are free because each chat that uses one shows sponsored cards."
+  static let sheetReceives = "Gravity, our ad partner, receives the recent messages in these chats, your IP address and a hashed copy of your account email, and keeps a license to what is sent."
+  static let sheetRegion = "Available in the US and Canada only."
+}
+
 /// The places a sponsored card can show (`CloudSponsoredFormat`), one per
 /// account at a time. Each is display only: nothing of a card reaches the agent.
 enum CloudSponsoredFormat: String, Equatable {
@@ -301,8 +359,11 @@ extension CloudServerClient {
   private struct ConsentBody: Encodable { let consent: String; let confirmed: Bool? }
   private struct SeenBody: Encodable { let instanceId: String; let device: CloudSponsoredDevice }
   private struct HideBody: Encodable { let chatId: String; let turnId: String }
+  private struct FreeConsentBody: Encodable { let consent: String }
+  private struct FreeSeenBody: Encodable { let chatId: String; let device: CloudSponsoredDevice }
   private struct AdBody: Encodable {
-    let instanceId: String
+    /// The chat's ADE Cloud computer; null for an ADE Free Models chat on any other machine.
+    let instanceId: String?
     let chatId: String
     let turnId: String
     let messages: [CloudSponsoredMessage]
@@ -312,6 +373,21 @@ extension CloudServerClient {
     let surface: String
     /// Gravity's renderer the card is drawn with: the answer carries Gravity's own ad.
     let renderer: String
+
+    private enum CodingKeys: String, CodingKey { case instanceId, chatId, turnId, messages, device, format, surface, renderer }
+
+    /// `instanceId` is sent as an explicit null, not left out.
+    func encode(to encoder: Encoder) throws {
+      var c = encoder.container(keyedBy: CodingKeys.self)
+      try c.encode(instanceId, forKey: .instanceId)
+      try c.encode(chatId, forKey: .chatId)
+      try c.encode(turnId, forKey: .turnId)
+      try c.encode(messages, forKey: .messages)
+      try c.encode(device, forKey: .device)
+      try c.encode(format, forKey: .format)
+      try c.encode(surface, forKey: .surface)
+      try c.encode(renderer, forKey: .renderer)
+    }
   }
 
   /// `PUT /cloud/sponsored/consent`: the account's answer, on every device at
@@ -336,12 +412,58 @@ extension CloudServerClient {
 
   /// `POST /cloud/sponsored/ad`: one card for a finished reply, in the
   /// format it will be drawn in. Asking again for the same turn answers the same card.
-  func sponsoredAd(instanceId: String, chatId: String, turn: CloudSponsoredTurn, device: CloudSponsoredDevice, format: CloudSponsoredFormat) async throws -> CloudSponsoredAdAnswer {
+  func sponsoredAd(instanceId: String?, chatId: String, turn: CloudSponsoredTurn, device: CloudSponsoredDevice, format: CloudSponsoredFormat) async throws -> CloudSponsoredAdAnswer {
     let body = try JSONEncoder().encode(AdBody(
       instanceId: instanceId, chatId: chatId, turnId: turn.turnId, messages: turn.messages, device: device,
       format: format.rawValue, surface: cloudSponsoredSurface, renderer: cloudSponsoredRenderer
     ))
     return try decode(CloudSponsoredAdAnswer.self, from: try await send("POST", "cloud/sponsored/ad", body: body))
+  }
+
+  /// `PUT /cloud/free-models/consent`: the account's answer to the ADE Free
+  /// Models sheet, on every device at once. Answers the account's free models state.
+  func setFreeModelsConsent(_ consent: String) async throws -> CloudFreeModelsState {
+    let body = try JSONEncoder().encode(FreeConsentBody(consent: consent))
+    return try decode(CloudFreeModelsState.self, from: try await send("PUT", "cloud/free-models/consent", body: body))
+  }
+
+  /// `POST /cloud/free-models/seen`: a person has this ADE Free Models chat on
+  /// screen. The model runs only while someone does.
+  func freeModelsSeen(chatId: String, device: CloudSponsoredDevice) async throws {
+    let body = try JSONEncoder().encode(FreeSeenBody(chatId: chatId, device: device))
+    _ = try await send("POST", "cloud/free-models/seen", body: body)
+  }
+}
+
+/// Saves the account's ADE Free Models answer and shows it everywhere at once:
+/// the state the server answered, or the sentence to show when it didn't save.
+@MainActor
+func cloudSaveFreeModelsConsent(_ consent: String) async -> Result<CloudFreeModelsState, CloudSponsoredSaveFailure> {
+  let generation = AccountCloudStore.shared.generation
+  guard let client = await SyncMenuSafePublisher.shared.service.cloudServerClient() else {
+    return .failure(CloudSponsoredSaveFailure(message: "Sign in to ADE, then try again."))
+  }
+  do {
+    let state = try await client.setFreeModelsConsent(consent)
+    guard generation == AccountCloudStore.shared.generation else {
+      return .failure(CloudSponsoredSaveFailure(message: "You signed in to another account. Try again."))
+    }
+    // A no deletes the account's viewer rows on the server.
+    if !state.granted { CloudSponsoredStore.shared.forgetSeen() }
+    AccountCloudStore.shared.noteFreeModels(state, generation: generation)
+    return .success(state)
+  } catch {
+    cloudSponsoredLog.notice("free models consent save failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+    // A refusal often means this app's copy is stale: read the account again so the next try asks right.
+    if generation == AccountCloudStore.shared.generation {
+      SyncMenuSafePublisher.shared.service.refreshCloudServerIfStale(force: true)
+    }
+    switch error as? CloudServerClient.Failure {
+    case .refused(_, let message), .server(_, .some(let message)):
+      return .failure(CloudSponsoredSaveFailure(message: message))
+    default:
+      return .failure(CloudSponsoredSaveFailure(message: "ADE couldn't save that. Try again."))
+    }
   }
 }
 
@@ -779,6 +901,46 @@ final class CloudSponsoredStore: ObservableObject {
         lastSeenTracking[instanceId] = nil
       }
       cloudSponsoredLog.notice("sponsored seen failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+    }
+  }
+
+  /// Someone is watching this ADE Free Models chat: the model runs only while
+  /// they do. Same pacing as `noteSeen`, keyed by the chat. The key never
+  /// meets a computer's id, so the two share the bookkeeping.
+  func noteFreeModelsSeen(chatId: String) async {
+    guard appActive else { return }
+    let key = "free:\(chatId)"
+    let now = Date()
+    let tracking = CloudSponsoredTracking.status
+    if let last = lastSeenAt[key], now.timeIntervalSince(last) < Self.seenEvery, lastSeenTracking[key] == tracking { return }
+    lastSeenAt[key] = now
+    let previous = seenInFlight[key]
+    let send = Task { @MainActor [self] in
+      await previous?.value
+      await sendFreeModelsSeen(chatId: chatId, key: key, at: now)
+    }
+    seenInFlight[key] = send
+    await send.value
+    if seenInFlight[key] == send { seenInFlight[key] = nil }
+  }
+
+  private func sendFreeModelsSeen(chatId: String, key: String, at now: Date) async {
+    guard let client = await SyncMenuSafePublisher.shared.service.cloudServerClient() else {
+      lastSeenAt[key] = nil
+      lastSeenTracking[key] = nil
+      return
+    }
+    let device = CloudSponsoredDevice.current
+    lastSeenTracking[key] = device.tracking
+    do {
+      try await client.freeModelsSeen(chatId: chatId, device: device)
+    } catch {
+      // Not said: the next look tries again instead of waiting out the interval.
+      if lastSeenAt[key] == now {
+        lastSeenAt[key] = nil
+        lastSeenTracking[key] = nil
+      }
+      cloudSponsoredLog.notice("free models seen failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
     }
   }
 

@@ -423,10 +423,14 @@ struct CloudPhoneAccount: Decodable, Equatable {
   /// Absent while the server's switch doesn't reach the account: nothing
   /// shows. A consent answer replaces it (`AccountCloudStore.noteSponsored`).
   var sponsored: CloudSponsoredState?
+  /// ADE Free Models (`CloudFreeModelsState`), on any plan and machine. Absent
+  /// while the server's switch or key is off: no ADE Free Model shows. A
+  /// consent answer replaces it (`AccountCloudStore.noteFreeModels`).
+  var freeModels: CloudFreeModelsState?
 
   private enum CodingKeys: String, CodingKey {
     case plan, planId, hours, extraHours, disk, computers, recentUse, billing, catalog
-    case earnedHours, freePlan, planCleanup, planCleanupDone, timedWakesCancelled, dueForDeletion, referral, phone, credits, sponsored
+    case earnedHours, freePlan, planCleanup, planCleanupDone, timedWakesCancelled, dueForDeletion, referral, phone, credits, sponsored, freeModels
   }
 
   init(from decoder: Decoder) throws {
@@ -451,6 +455,7 @@ struct CloudPhoneAccount: Decodable, Equatable {
     // A rate of 0 or less is no rate: read as absent (one credit a minute) rather than divide by it.
     credits = c.lenient(Credits.self, forKey: .credits).flatMap { $0.phoneMilliPerMinute > 0 ? $0 : nil }
     sponsored = c.lenient(CloudSponsoredState.self, forKey: .sponsored)
+    freeModels = c.lenient(CloudFreeModelsState.self, forKey: .freeModels)
   }
 
   /// The plan's computer limit (`docs/features/ade-cloud/README.md`, "Plans, credits and sizes").

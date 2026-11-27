@@ -129,6 +129,13 @@ struct WorkModelPickerSheet: View {
   }
 
   @StateObject private var picker = ModelPickerStore()
+  /// The account's ADE Free Models answer (`CloudPhoneAccount.freeModels`):
+  /// their rows show on any machine, only while it lists them.
+  @ObservedObject private var accountStore = AccountCloudStore.shared
+  /// ADE Cloud's own free marking of its models, by id.
+  @State private var cloudFreeEntries: [String: WorkFreeModelEntry] = [:]
+  /// The ADE Free Model the person picked before agreeing to the sheet.
+  @State private var consentModel: WorkModelOption?
   @State private var selection: ModelPickerRailSelection = .favorites
   @State private var searchText: String = ""
   /// `scopedCatalog` is O(models) and `catalog` is read ~10x per body pass, which
@@ -197,17 +204,42 @@ struct WorkModelPickerSheet: View {
   /// The Free page lists the free machine's models only. Until that machine
   /// answers, it lists none, never the main catalog's machine's.
   private func freeGroups(scopedMain: [WorkModelCatalogGroup]) -> [WorkFreeModelGroup] {
-    guard separateFreeModelsHost != nil else { return workFreeModelGroups(scopedMain) }
-    return workFreeModelGroups(scopedCatalog(freeHostCatalogGroups ?? []))
+    // The ADE Free Models come from the account: any machine, never a CLI launch.
+    let adeFree = accountStore.account?.freeModels
+    let include = cursorAvailabilityMode != .cli
+    let fill = modelFilter == nil && availableModelIds == nil
+    guard separateFreeModelsHost != nil else {
+      return workFreeModelGroups(scopedMain, adeFree: adeFree, cloudFree: cloudFreeEntries, includeAdeFree: include, fillFromAccount: fill)
+    }
+    return workFreeModelGroups(scopedCatalog(freeHostCatalogGroups ?? []), adeFree: adeFree, includeAdeFree: include, fillFromAccount: fill)
   }
 
-  /// The machine the Free page reads and downloads on.
+  /// Drops the ADE Free Models the account doesn't list (or that can't run in
+  /// a CLI launch) from every page, so none is picked around the account's answer.
+  private func gatingAdeFreeModels(_ groups: [WorkModelCatalogGroup]) -> [WorkModelCatalogGroup] {
+    let adeFree = accountStore.account?.freeModels
+    let allowed = cursorAvailabilityMode != .cli
+    return groups.compactMap { group -> WorkModelCatalogGroup? in
+      let providers = group.providers.compactMap { provider -> WorkModelProvider? in
+        let models = provider.models.filter { !workIsAdeFreeModel($0.id) || (allowed && adeFree?.lists($0.id) == true) }
+        guard !models.isEmpty else { return nil }
+        guard models.count != provider.models.count else { return provider }
+        return WorkModelProvider(key: provider.key, displayName: provider.displayName, models: models)
+      }
+      guard !providers.isEmpty else { return nil }
+      return WorkModelCatalogGroup(key: group.key, displayName: group.displayName, providers: providers)
+    }
+  }
+
+  /// The machine the Free page reads and downloads on. ADE Cloud's own models
+  /// have none: they list the catalog's free models, and never look for
+  /// OpenCode on a machine.
   private var freeModelsHost: ProviderAccountsHost? {
+    guard cloudCatalog == nil else { return nil }
     switch freeModelsMachine {
     case .host(let host): return host
     case .unreachable: return nil
     case .automatic:
-      guard cloudCatalog == nil else { return nil }
       if commandScope == .personal, let personalMachineKey, personalMachineKey != syncService.focusedMachineKey {
         return syncService.machineFleet?.connection(for: personalMachineKey)
       }
@@ -454,6 +486,24 @@ struct WorkModelPickerSheet: View {
     // survives, so neither can be assumed constant for the sheet's lifetime.
     .onChange(of: availableModelIds) { _, _ in rescopeCatalog() }
     .onChange(of: cursorAvailabilityMode) { _, _ in rescopeCatalog() }
+    // The account's ADE Free Models answer (a consent, a country) moves their rows.
+    .onChange(of: accountStore.account?.freeModels) { _, _ in rescopeCatalog() }
+    .sheet(item: $consentModel) { model in
+      WorkFreeModelsConsentSheet(modelName: model.displayName) {
+        let result = await cloudSaveFreeModelsConsent(CloudSponsoredState.granted)
+        switch result {
+        case .success(let state):
+          guard state.granted else { return "ADE couldn't save that. Try again." }
+          consentModel = nil
+          select(model: model, consentConfirmed: true)
+          return nil
+        case .failure(let failure):
+          return failure.message
+        }
+      } onNotNow: {
+        consentModel = nil
+      }
+    }
     // A machine with nothing signed in opens the picker on the Free page.
     .task(id: freeModelsHost.map { WorkFreeModelsStatusStore.key(for: $0) } ?? "") {
       freeModelsHostKey = freeModelsHost.map { WorkFreeModelsStatusStore.key(for: $0) }
@@ -497,6 +547,10 @@ struct WorkModelPickerSheet: View {
   }
 
   private func scopedCatalog(_ groups: [WorkModelCatalogGroup]) -> [WorkModelCatalogGroup] {
+    gatingAdeFreeModels(scopedCatalogByAvailability(groups))
+  }
+
+  private func scopedCatalogByAvailability(_ groups: [WorkModelCatalogGroup]) -> [WorkModelCatalogGroup] {
     let availabilityScoped = applyModelFilter(
       workFilterCatalogForCursorAvailability(groups, mode: cursorAvailabilityMode)
     )
@@ -890,6 +944,7 @@ struct WorkModelPickerSheet: View {
           cloudCatalogError = launches.catalogError ?? "Check your connection, then try again."
         }
       }
+      cloudFreeEntries = workCloudFreeEntries(cloudCatalog)
       setHostGroups(workModelCatalogGroups(cloudCatalog: cloudCatalog))
       return
     }
@@ -1088,8 +1143,14 @@ struct WorkModelPickerSheet: View {
     }
   }
 
-  private func select(model: WorkModelOption) {
+  private func select(model: WorkModelOption, consentConfirmed: Bool = false) {
     guard model.isAvailable else { return }
+    // An ADE Free Model shows sponsored cards in its chats: the one-time sheet
+    // comes first, and the model is not picked until the person agrees.
+    if workIsAdeFreeModel(model.id), !consentConfirmed, accountStore.account?.freeModels?.granted != true {
+      consentModel = model
+      return
+    }
 
     selectedModelId = model.id
     selectedRuntimeProvider = runtimeProvider(for: model)
