@@ -229,6 +229,8 @@ export const CLOUD_PATHS = {
   backups: "/cloud/backups",
   /** The account lane index of every machine (`accountLanes/`): not under `/cloud`, so a blocked account's brains keep it. */
   accountLanes: "/account/lanes",
+  /** The model picker's favorites, one list per account (`accountModelFavorites/`): not under `/cloud`, as `accountLanes`. */
+  accountModelFavorites: "/account/model-favorites",
   /**
    * The ADE Cloud iPhone (`phones.ts`): `GET` its `CloudPhoneState`; `POST`
    * `{ device?, attach?, providers?, needs? }` starts the account's phone or
@@ -1493,6 +1495,8 @@ export type CloudChatTranscriptPage = {
  *   DELETE /cloud/capsules/:m/:c                     { deleted: true }      (a restore used it)
  *   PUT    /account/lanes                            AccountLaneIndexPutResult   (from every brain: AccountLaneIndexPut)
  *   GET    /account/lanes?project=&pr=               { lanes: AccountLaneIndexRow[] }
+ *   GET    /account/model-favorites                  AccountModelFavorites
+ *   PUT    /account/model-favorites                  AccountModelFavorites   (AccountModelFavoritesChange)
  */
 
 /**
@@ -2141,6 +2145,32 @@ export type AccountLaneIndexRow = AccountLaneIndexEntry & {
   /** The machine is one of the account's ADE Cloud computers (a resting one is asleep, not offline). Older servers leave it out. */
   cloud?: boolean;
   updatedAt: number;
+};
+
+/** The most favorites one account keeps, and the longest model id the list takes. */
+export const ACCOUNT_MODEL_FAVORITES_MAX = 200;
+export const ACCOUNT_MODEL_FAVORITE_ID_MAX = 300;
+
+/**
+ * The model picker's favorites (`GET`/`PUT /account/model-favorites`): model
+ * ids in the order they were starred. `revision` is 0 before the first save.
+ */
+export type AccountModelFavorites = { favorites: string[]; revision: number };
+
+/**
+ * `PUT /account/model-favorites`: stars to take off and stars to add, applied
+ * to the list as the server holds it, so two devices changing it at once both
+ * land. Removals go first; an added id already on the list keeps its place.
+ */
+export type AccountModelFavoritesChange = {
+  add?: string[];
+  remove?: string[];
+  /**
+   * The account the change was made under (its user id). A caller signed in
+   * as another account is refused (403 `account_changed`), so a change queued
+   * before an account switch never lands on the new account's list.
+   */
+  account?: string;
 };
 
 /* ---- The server launcher (C6): a lane on a new computer for a caller with no computer ---- */

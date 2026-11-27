@@ -47,6 +47,7 @@ import { handleSignupAnalyticsRequest, isSignupAnalyticsRequest, type SignupAnal
 import { cleanupLaneShares, handleLaneShareRequest, isLaneShareRequest, type LaneShareEnv } from "./laneShares/routes";
 import { handleAccountProjectRequest, isAccountProjectRequest, type AccountProjectEnv } from "./accountProjects/routes";
 import { handleAccountLanesRequest, isAccountLanesRequest } from "./accountLanes/routes";
+import { handleAccountModelFavoritesRequest, isAccountModelFavoritesRequest } from "./accountModelFavorites/routes";
 import { handleGithubAppRequest, isGithubAppRequest, type GithubAppEnv } from "./githubApp/routes";
 import { handleLatestReleasesRequest, isLatestReleasesRequest, type LatestReleasesEnv } from "./latestReleases";
 import { handleClientMinimumRequest, isClientMinimumRequest } from "./clientMinimum";
@@ -138,6 +139,9 @@ function route(request: Request, env: WorkerEnv, ctx?: ExecutionContext): Promis
   // The account lane index (src/accountLanes): account bearer, exact-origin
   // CORS for the read only; brains publish. Matched before the directory.
   if (isAccountLanesRequest(url)) return handleAccountLanesRequest(request, env);
+  // The model picker's favorites (src/accountModelFavorites): account bearer,
+  // exact-origin CORS for the read and the change. Matched before the directory.
+  if (isAccountModelFavoritesRequest(url)) return handleAccountModelFavoritesRequest(request, env);
   // The account's GitHub App sign-in (src/githubApp): account bearer and the
   // same exact-origin CORS, except the callback and Setup URL pages that a
   // browser opens. 503 for every bearer route until its two secrets are set.

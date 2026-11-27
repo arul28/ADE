@@ -173,7 +173,8 @@ export function registerAdeCloudReadIpc(args: {
       return { ok: false, code: "untrusted", status: 0, message: "Only the ADE window can read this." };
     }
     const answer = await runAdeCloudAccountCall(client(), call);
-    if (!answer.ok && answer.status !== 404) {
+    // Signed out is a state, not a refusal: a surface that syncs on open keeps its local copy.
+    if (!answer.ok && answer.status !== 404 && answer.code !== "signed_out") {
       const name = (call as { call?: unknown } | null)?.call;
       logger.warn("ade_cloud.account_call_refused", {
         call: typeof name === "string" ? name.slice(0, 40) : "unknown",
