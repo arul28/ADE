@@ -933,7 +933,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     --runtime <id|name>          Runtime, e.g. "iOS 26.3".
     --device-type, --model <id|name>  Device type, e.g. "iPhone 17 Pro".
     --from, --simulator <id>     Copy this installed simulator's model and runtime (not its data).
-    --name <name>                Device name; defaults to "ADE · <lane>".
+    --name <name>                Device name; defaults to "Daex · <lane>".
     --lane, --lane-id <id>       Lane that will own the device.
 `,
   "device-cleanup": `${ADE_BANNER}
