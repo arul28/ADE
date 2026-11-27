@@ -95,7 +95,7 @@ export type McpRegistryVaultStore = {
   remove(scope: string, kind: string, key: string): boolean;
 };
 
-const VAULT_UNAVAILABLE = "This machine has no account vault (it is not signed in to ADE, or sync is off), so it cannot hold MCP server values.";
+const VAULT_UNAVAILABLE = "This machine has no account vault (it is not signed in to Daex, or sync is off), so it cannot hold MCP server values.";
 const VAULT_REJECTED = "The account vault did not take the change.";
 
 /** The registry service's vault, over a runtime's synchronous account vault store. */
@@ -168,10 +168,10 @@ async function readRegistryForWrite(deps: McpServerRequestDeps, orElse: string):
     return "failed" as const;
   });
   if ((synced === "failed" || synced === "unavailable") && deps.settings?.get(ACCOUNT_SCOPE_ALL, MCP_SERVERS_SETTING_KEY) === undefined) {
-    throw new Error(`ADE could not load your MCP servers from your account. Try again in a moment${orElse}.`);
+    throw new Error(`Daex could not load your MCP servers from your account. Try again in a moment${orElse}.`);
   }
   const current = readRegistry(deps);
-  if (!current.live || !deps.settings) throw new Error(`This machine lost its ADE account connection. Try again${orElse}.`);
+  if (!current.live || !deps.settings) throw new Error(`This machine lost its Daex account connection. Try again${orElse}.`);
   return { servers: current.servers, off: current.off, settings: deps.settings };
 }
 
@@ -302,7 +302,7 @@ export function listMcpRegistry(deps: McpServerRequestDeps): McpRegistryListing 
     skipped: [...scan.skipped],
     notice: live
       ? null
-      : "This machine is not signed in to an ADE account, or its sync is off: this is the last list it saved, and it cannot be changed from here.",
+      : "This machine is not signed in to a Daex account, or its sync is off: this is the last list it saved, and it cannot be changed from here.",
   };
 }
 
@@ -329,7 +329,7 @@ function stringList(value: unknown, label: string): string[] {
 function fieldNameList(value: unknown, label: string): string[] {
   const names = stringList(value, label).map((name) => name.trim()).filter(Boolean);
   const bad = names.find((name) => !isValidMcpFieldName(name));
-  if (bad) throw new Error(`"${bad}" is not a name ADE can store a value under (letters, digits, _ and - only).`);
+  if (bad) throw new Error(`"${bad}" is not a name Daex can store a value under (letters, digits, _ and - only).`);
   return [...new Set(names)];
 }
 
@@ -352,7 +352,7 @@ async function connectNative(
   provider: ConnectProviderId,
 ): Promise<McpServerRequestResult> {
   if (!deps.connectIntegration) {
-    throw new Error(`${provider} is built into ADE. Run \`ade integrations connect ${provider} --reason "…"\` instead.`);
+    throw new Error(`${provider} is built into Daex. Run \`daex integrations connect ${provider} --reason "…"\` instead.`);
   }
   const result = await deps.connectIntegration({
     chatSessionId: args.chatSessionId,
@@ -361,14 +361,14 @@ async function connectNative(
     ...(typeof args.timeoutMs === "number" ? { timeoutMs: args.timeoutMs } : {}),
   });
   return result.connected
-    ? { name, added: false, integration: provider, connected: true, next: `${provider} is built into ADE, so it is connected as an integration, not an MCP server. ${result.next}` }
+    ? { name, added: false, integration: provider, connected: true, next: `${provider} is built into Daex, so it is connected as an integration, not an MCP server. ${result.next}` }
     : { name, added: false, integration: provider, connected: false, next: `The user declined to connect ${provider}.` };
 }
 
 function proposeImported(deps: McpServerRequestDeps, name: string): Proposal {
   const found = deps.scanConfigs(deps.projectRoot).servers.find((server) => server.name === name);
   if (!found) {
-    throw new Error(`No other tool on this machine has an MCP server named "${name}". Run \`ade mcp servers\` to see the ones it found, or describe the server yourself (--command or --url).`);
+    throw new Error(`No other tool on this machine has an MCP server named "${name}". Run \`daex mcp servers\` to see the ones it found, or describe the server yourself (--command or --url).`);
   }
   const server = normalizeMcpRegistryServer({
     ...found,
@@ -376,7 +376,7 @@ function proposeImported(deps: McpServerRequestDeps, name: string): Proposal {
     headerNames: Object.keys(found.headers),
     enabled: true,
   });
-  if (!server) throw new Error(`ADE cannot hold the server "${name}" as the other tool defines it.`);
+  if (!server) throw new Error(`Daex cannot hold the server "${name}" as the other tool defines it.`);
   return {
     source: "imported",
     server,
@@ -434,7 +434,7 @@ function proposeAgent(args: Record<string, unknown>, name: string): Proposal {
     headerNames,
     enabled: true,
   });
-  if (!server) throw new Error("ADE cannot save that server. Check its name, and its command or URL.");
+  if (!server) throw new Error("Daex cannot save that server. Check its name, and its command or URL.");
   return { source: "agent", server, providers: [], secrets: secretsFor(server, () => false) };
 }
 
@@ -447,8 +447,8 @@ function already(match: NonNullable<ReturnType<typeof findSameMcpServer>>, name:
     existing: match.server.name,
     matchedBy: match.by,
     next: match.server.name === name
-      ? `The person already has ${name} in ADE. No card was raised.`
-      : `The person already has this server in ADE ${how}, as ${match.server.name}. No card was raised.`,
+      ? `The person already has ${name} in Daex. No card was raised.`
+      : `The person already has this server in Daex ${how}, as ${match.server.name}. No card was raised.`,
   };
 }
 
@@ -468,13 +468,13 @@ export async function requestMcpServer(
   const args = readCardArgs(rawArgs);
   const chatSessionId = typeof args.chatSessionId === "string" ? args.chatSessionId.trim() : "";
   if (!chatSessionId) {
-    throw new Error("Adding an MCP server needs a chat to ask in. Run `ade mcp servers add` from inside an ADE chat.");
+    throw new Error("Adding an MCP server needs a chat to ask in. Run `daex mcp servers add` from inside a Daex chat.");
   }
   const name = typeof args.name === "string" ? args.name.trim() : "";
   if (!isValidMcpRegistryName(name)) {
     throw new Error("Name the server: letters, digits, _ and -, starting with a letter or digit, up to 64 characters.");
   }
-  if (ADE_RESERVED_MCP_SERVER_NAMES.includes(name)) throw new Error(`"${name}" is one of ADE's own servers. Pick another name.`);
+  if (ADE_RESERVED_MCP_SERVER_NAMES.includes(name)) throw new Error(`"${name}" is one of Daex's own servers. Pick another name.`);
   const reason = (typeof args.reason === "string" ? args.reason.trim() : "").slice(0, MCP_SERVER_REQUEST_REASON_MAX_CHARS);
   if (!reason) throw new Error("Say why you want the server (--reason). The person decides from that one line.");
   const sourceArg = typeof args.source === "string" ? args.source.trim().toLowerCase() : "";
@@ -489,7 +489,7 @@ export async function requestMcpServer(
     ? sourceArg as McpServerRequestSource
     : describes ? "agent" : entry ? "catalog" : "imported";
   if (source === "catalog" && !entry) {
-    throw new Error(`ADE's catalogue has no server named "${name}". Run \`ade mcp servers --help\` for its names, or describe the server yourself (--command or --url).`);
+    throw new Error(`Daex's catalogue has no server named "${name}". Run \`daex mcp servers --help\` for its names, or describe the server yourself (--command or --url).`);
   }
   const proposal = source === "catalog" ? proposeCatalogue(entry!)
     : source === "imported" ? proposeImported(deps, name)
@@ -501,7 +501,7 @@ export async function requestMcpServer(
   if (native) return await connectNative(deps, args, name, native);
   // The connect card above stores on the device; an MCP server lives in the account.
   if (!deps.settings || !deps.vault) {
-    throw new Error("This machine is not signed in to an ADE account, or its sync is off, so it cannot add MCP servers. The person can add one at ade://settings/mcp.servers.");
+    throw new Error("This machine is not signed in to a Daex account, or its sync is off, so it cannot add MCP servers. The person can add one at ade://settings/mcp.servers.");
   }
   const match = findSameMcpServer(readRegistry(deps).servers, proposal.server);
   if (match) return already(match, name);
@@ -593,7 +593,7 @@ async function askToAdd(
     const next = addMcpRegistryServer(current.servers, saved);
     if (typeof next === "string") throw new Error(next);
     if (!current.settings.set(ACCOUNT_SCOPE_ALL, MCP_SERVERS_SETTING_KEY, next)) {
-      throw new Error("Your ADE account did not take the change. Try again, or add the server at ade://settings/mcp.servers.");
+      throw new Error("Your Daex account did not take the change. Try again, or add the server at ade://settings/mcp.servers.");
     }
     // Values the server does not name. A failure leaves an unused value, not a broken server.
     await deps.registry.pruneSecrets(saved.name, saved).catch((error: unknown) => {
@@ -647,21 +647,21 @@ export async function requestMcpServerRemoval(
   const args = readCardArgs(rawArgs);
   const chatSessionId = typeof args.chatSessionId === "string" ? args.chatSessionId.trim() : "";
   if (!chatSessionId) {
-    throw new Error("Removing an MCP server needs a chat to ask in. Run `ade mcp servers remove` from inside an ADE chat.");
+    throw new Error("Removing an MCP server needs a chat to ask in. Run `daex mcp servers remove` from inside a Daex chat.");
   }
   const name = typeof args.name === "string" ? args.name.trim() : "";
-  if (!isValidMcpRegistryName(name)) throw new Error("Name the server to remove, as `ade mcp servers` lists it.");
+  if (!isValidMcpRegistryName(name)) throw new Error("Name the server to remove, as `daex mcp servers` lists it.");
   if (!deps.settings || !deps.vault) {
-    throw new Error("This machine is not signed in to an ADE account, or its sync is off, so it cannot change MCP servers. Send the person ade://settings/mcp.servers.");
+    throw new Error("This machine is not signed in to a Daex account, or its sync is off, so it cannot change MCP servers. Send the person ade://settings/mcp.servers.");
   }
   const server = (await readRegistryForWrite(deps, "")).servers.find((entry) => entry.name === name);
   if (!server) {
     // `atlassian` is the catalogue's name for Jira; `jira` is the integration's.
     const native = mcpCatalogueEntry(name)?.native ?? (isConnectProviderId(name) ? name : undefined);
     if (native) {
-      throw new Error(`${name} is an ADE integration, not an MCP server. To disconnect it, send the person ade://settings/integrations.${native} and let them press Disconnect there.`);
+      throw new Error(`${name} is a Daex integration, not an MCP server. To disconnect it, send the person ade://settings/integrations.${native} and let them press Disconnect there.`);
     }
-    throw new Error(`The person has no MCP server named "${name}" in ADE. Run \`ade mcp servers\` for the names. A server only another tool's config has is removed in that tool.`);
+    throw new Error(`The person has no MCP server named "${name}" in Daex. Run \`daex mcp servers\` for the names. A server only another tool's config has is removed in that tool.`);
   }
   const reason = (typeof args.reason === "string" ? args.reason.trim() : "").slice(0, MCP_SERVER_REQUEST_REASON_MAX_CHARS);
   const label = mcpCatalogueEntry(matchMcpCatalogue(server)?.id)?.name ?? name;
@@ -701,7 +701,7 @@ async function askToRemove(
     if (now) {
       const next = current.servers.filter((entry) => entry.name !== server.name);
       if (!settings.set(ACCOUNT_SCOPE_ALL, MCP_SERVERS_SETTING_KEY, next)) {
-        throw new Error("Your ADE account did not take the change. Try again in a moment.");
+        throw new Error("Your Daex account did not take the change. Try again in a moment.");
       }
     }
     // A later server of the same name must not start out switched off. A

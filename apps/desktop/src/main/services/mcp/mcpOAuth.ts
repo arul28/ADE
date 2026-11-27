@@ -137,7 +137,7 @@ export async function probeMcpAuth(url: string, fetchImpl: McpFetch = fetch, sig
         jsonrpc: "2.0",
         id: 1,
         method: "initialize",
-        params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "ADE", version: "1" } },
+        params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "Daex", version: "1" } },
       }),
     }, signal), redirect: "follow" });
   } catch (error) {
@@ -241,7 +241,7 @@ async function registerClient(
       method: "POST",
       headers: { "content-type": "application/json", accept: "application/json" },
       body: JSON.stringify({
-        client_name: "ADE",
+        client_name: "Daex",
         redirect_uris: [redirectUri],
         grant_types: ["authorization_code", "refresh_token"],
         response_types: ["code"],

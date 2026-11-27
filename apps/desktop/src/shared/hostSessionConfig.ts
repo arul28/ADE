@@ -118,9 +118,9 @@ export const INSTRUCTIONS_SUPPORT = {
   },
   cursor: {
     level: "best-effort",
-    mechanism: "merged into the system text ADE prefixes into the first user prompt",
+    mechanism: "merged into the system text Daex prefixes into the first user prompt",
     detail:
-      "The Cursor SDK's AgentOptions carries no system-prompt field, so ADE already prefixes its "
+      "The Cursor SDK's AgentOptions carries no system-prompt field, so Daex already prefixes its "
       + "own personal-chat text into the first user prompt. The host text joins that same text — "
       + "after it for append, instead of it for replace. It is therefore part of the prompt the "
       + "model sees rather than a separate system channel, and it does not persist across a "
@@ -128,18 +128,18 @@ export const INSTRUCTIONS_SUPPORT = {
   },
   droid: {
     level: "best-effort",
-    mechanism: "merged into the harness prompt ADE prefixes onto every turn",
+    mechanism: "merged into the harness prompt Daex prefixes onto every turn",
     detail:
-      "The Factory SDK's session settings carry no instruction field, so ADE already prefixes a "
+      "The Factory SDK's session settings carry no instruction field, so Daex already prefixes a "
       + "harness prompt onto each user turn. The host text joins that prompt — after it for "
       + "append, instead of it for replace. It is repeated every turn rather than pinned as a "
       + "system prompt, so it competes with the turn's own text.",
   },
   muse: {
     level: "best-effort",
-    mechanism: "merged into the guidance ADE prefixes onto the session's first turn",
+    mechanism: "merged into the guidance Daex prefixes onto the session's first turn",
     detail:
-      "MSP session/start carries no instruction field, so ADE prefixes the host text onto the "
+      "MSP session/start carries no instruction field, so Daex prefixes the host text onto the "
       + "first turn of each Muse session (and again after the session is rebuilt) — after its own "
       + "guidance for append, instead of it for replace. It is part of the conversation, not a "
       + "pinned system prompt, so Muse's compaction can summarize it away in a long session.",
@@ -158,15 +158,15 @@ export const SETTING_SOURCES_SUPPORT = {
     detail:
       "Codex always discovers AGENTS.md in the thread's cwd and always loads ~/.codex/AGENTS.md, "
       + "and the app-server exposes no switch for either. 'project' and 'all' therefore describe "
-      + "what Codex already does rather than something ADE turns on, and 'none' and 'user' cannot "
+      + "what Codex already does rather than something Daex turns on, and 'none' and 'user' cannot "
       + "be honored at all.",
   },
   cursor: {
     levelFor: { none: "ignored", project: "ignored", user: "ignored", all: "ignored" },
-    mechanism: "none — ADE pins the Cursor SDK's own settingSources from the session permission policy",
+    mechanism: "none — Daex pins the Cursor SDK's own settingSources from the session permission policy",
     detail:
-      "The Cursor SDK's settingSources is derived from ADE's permission policy, because dropping "
-      + "the user layer would also drop ADE's own tool-gate hook. A host value would contradict "
+      "The Cursor SDK's settingSources is derived from Daex's permission policy, because dropping "
+      + "the user layer would also drop Daex's own tool-gate hook. A host value would contradict "
       + "that and is not applied.",
   },
   droid: {
@@ -176,9 +176,9 @@ export const SETTING_SOURCES_SUPPORT = {
   },
   opencode: {
     levelFor: { none: "ignored", project: "ignored", user: "ignored", all: "ignored" },
-    mechanism: "none — ADE authors the OpenCode server config itself",
+    mechanism: "none — Daex authors the OpenCode server config itself",
     detail:
-      "ADE runs a dedicated OpenCode server with an ADE-authored config and "
+      "Daex runs a dedicated OpenCode server with a Daex-authored config and "
       + "OPENCODE_DISABLE_PROJECT_CONFIG=1. There is no per-session switch to re-enable layers.",
   },
   pi: {
@@ -188,10 +188,10 @@ export const SETTING_SOURCES_SUPPORT = {
   },
   muse: {
     levelFor: { none: "ignored", project: "best-effort", user: "ignored", all: "best-effort" },
-    mechanism: "Muse always reads ~/.config/muse; ADE starts muse serve with --trust-workspace",
+    mechanism: "Muse always reads ~/.config/muse; Daex starts muse serve with --trust-workspace",
     detail:
       "Muse loads the user's ~/.config/muse settings on every run and a workspace's rules and "
-      + "skills only when the workspace is trusted. ADE trusts the lane worktree for the host it "
+      + "skills only when the workspace is trusted. Daex trusts the lane worktree for the host it "
       + "starts, so 'project' and 'all' describe what already happens; MSP has no per-session "
       + "switch, so 'none' and 'user' cannot be honored.",
   },
@@ -217,11 +217,11 @@ export const SETTING_SOURCES_SUPPORT = {
  * (`settingSources`) that pre-approves a tool before the gate is asked.
  */
 const CLAUDE_ASK_FALLBACK_RESIDUAL =
-  "the ask verdict depends on the Agent SDK calling ADE's gate (canUseTool), which it does on "
+  "the ask verdict depends on the Agent SDK calling Daex's gate (canUseTool), which it does on "
   + "Agent SDK 0.3.280 for MCP tools and for commands that change things, but not for a command "
   + "Claude Code itself classifies as read-only, which runs without an approval. A Claude setting "
   + "loaded through settingSources (permissions.allow, or permissions.defaultMode: auto) can also "
-  + "pre-approve an unlisted tool before ADE's gate runs. deniedTools/allowedTools are enforced "
+  + "pre-approve an unlisted tool before Daex's gate runs. deniedTools/allowedTools are enforced "
   + "either way.";
 
 export const PERMISSION_POLICY_SUPPORT = {
@@ -285,7 +285,7 @@ export const PERMISSION_POLICY_SUPPORT = {
   },
   pi: {
     level: "unsupported",
-    mechanism: "none — the Pi SDK takes a tool policy ADE derives from the session mode",
+    mechanism: "none — the Pi SDK takes a tool policy Daex derives from the session mode",
     residual: null,
   },
   muse: {
@@ -378,7 +378,7 @@ export function resolveInstructionsCapability(
       level: "ignored",
       mode: instructions.mode,
       mechanism: `No instructions decision is recorded for provider '${String(provider)}'.`,
-      detail: "ADE does not know this provider's instruction channel, so the text was not sent.",
+      detail: "Daex does not know this provider's instruction channel, so the text was not sent.",
     };
   }
   return {
@@ -406,7 +406,7 @@ export function resolveSettingSourcesCapability(
       level: "ignored",
       value,
       mechanism: `No settingSources decision is recorded for provider '${String(provider)}'.`,
-      detail: "ADE does not know this provider's configuration layers, so the request was dropped.",
+      detail: "Daex does not know this provider's configuration layers, so the request was dropped.",
     };
   }
   const level = Object.prototype.hasOwnProperty.call(support.levelFor, value)
