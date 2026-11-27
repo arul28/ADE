@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://ade-app.dev">
-    <img src="assets/logo.png" alt="Daex" width="200" />
+    <img src="assets/logo.png" alt="Daex" width="480" />
   </a>
 </p>
 

@@ -12,8 +12,8 @@
   },
   "favicon": "/favicon.png",
   "logo": {
-    "light": "/logo/ade-wordmark.png",
-    "dark": "/logo/ade-wordmark.png",
+    "light": "/logo/daex-light.png",
+    "dark": "/logo/daex-dark.png",
     "href": "https://ade-app.dev"
   },
   "seo": {
