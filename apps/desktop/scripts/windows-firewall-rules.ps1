@@ -51,7 +51,7 @@ function Test-Elevated {
 function Get-NetshPath {
   $systemRoot = $env:SystemRoot
   if ([string]::IsNullOrWhiteSpace($systemRoot)) {
-    throw "SystemRoot is unavailable; ADE cannot locate netsh.exe."
+    throw "SystemRoot is unavailable; Daex cannot locate netsh.exe."
   }
   $netsh = Join-Path $systemRoot "System32\netsh.exe"
   if (-not (Test-Path -LiteralPath $netsh -PathType Leaf)) {
@@ -83,7 +83,7 @@ $resolvedInstallDir = [IO.Path]::GetFullPath($InstallDir).TrimEnd("\")
 $normalizedExecutableName = [IO.Path]::GetFileName($AppExecutableName)
 if (-not [string]::Equals($normalizedExecutableName, $AppExecutableName, [StringComparison]::Ordinal) -or
     -not $normalizedExecutableName.EndsWith(".exe", [StringComparison]::OrdinalIgnoreCase)) {
-  throw "The installer did not provide a valid ADE executable name."
+  throw "The installer did not provide a valid Daex executable name."
 }
 $appExe = Join-Path $resolvedInstallDir $normalizedExecutableName
 
@@ -101,10 +101,10 @@ if ($Action -eq "uninstall") {
   if (-not $elevated) {
     $leftovers = @($syncRuleName, $discoveryRuleName) | Where-Object { Test-RuleExists $netsh $_ }
     if ($leftovers.Count -gt 0) {
-      Write-Output "ADE left its Windows Firewall rule(s) in place because the uninstaller is not running as Administrator: $($leftovers -join '; '). Remove them from Windows Defender Firewall > Inbound Rules, or re-run the uninstaller elevated."
+      Write-Output "Daex left its Windows Firewall rule(s) in place because the uninstaller is not running as Administrator: $($leftovers -join '; '). Remove them from Windows Defender Firewall > Inbound Rules, or re-run the uninstaller elevated."
       exit 0
     }
-    Write-Output "No ADE Windows Firewall rules to remove."
+    Write-Output "No Daex Windows Firewall rules to remove."
     exit 0
   }
   $failures = [Collections.Generic.List[string]]::new()
@@ -115,19 +115,19 @@ if ($Action -eq "uninstall") {
     }
   }
   if ($failures.Count -gt 0) {
-    Write-Output "ADE could not remove Windows Firewall rule(s): $($failures -join '; ')"
+    Write-Output "Daex could not remove Windows Firewall rule(s): $($failures -join '; ')"
     exit 1
   }
-  Write-Output "Removed the ADE Windows Firewall rules."
+  Write-Output "Removed the Daex Windows Firewall rules."
   exit 0
 }
 
 if (-not (Test-Path -LiteralPath $appExe -PathType Leaf)) {
-  throw "The packaged ADE install is incomplete: missing $appExe"
+  throw "The packaged Daex install is incomplete: missing $appExe"
 }
 
 if (-not $elevated) {
-  Write-Output "Skipped the ADE Windows Firewall rules: a per-user ADE install does not run as Administrator, and Windows has no per-user firewall rule store. Windows will ask once, the first time you use LAN sync on a network."
+  Write-Output "Skipped the Daex Windows Firewall rules: a per-user Daex install does not run as Administrator, and Windows has no per-user firewall rule store. Windows will ask once, the first time you use LAN sync on a network."
   exit 0
 }
 
@@ -150,7 +150,7 @@ $ruleSpecs = @(
       "protocol=TCP",
       "localport=$SYNC_HOST_MIN_PORT-$SYNC_HOST_MAX_PORT"
     )
-    Description = "Lets devices on your local network reach the ADE sync host."
+    Description = "Lets devices on your local network reach the Daex sync host."
   },
   @{
     Name = $discoveryRuleName
@@ -158,7 +158,7 @@ $ruleSpecs = @(
       "protocol=UDP",
       "localport=$MDNS_PORT"
     )
-    Description = "Lets devices on your local network discover this ADE host over mDNS."
+    Description = "Lets devices on your local network discover this Daex host over mDNS."
   }
 )
 
@@ -182,11 +182,11 @@ foreach ($spec in $ruleSpecs) {
     foreach ($cleanupName in @($syncRuleName, $discoveryRuleName)) {
       Remove-Rule $netsh $cleanupName | Out-Null
     }
-    Write-Output "ADE could not add the Windows Firewall rule '$($spec.Name)': $($result.Output)"
+    Write-Output "Daex could not add the Windows Firewall rule '$($spec.Name)': $($result.Output)"
     exit 1
   }
   $applied.Add($spec.Name)
 }
 
-Write-Output "Added the ADE Windows Firewall rules: $($applied -join '; ')"
+Write-Output "Added the Daex Windows Firewall rules: $($applied -join '; ')"
 exit 0

@@ -183,7 +183,7 @@ function Remove-OwnedStableProtocolRegistration([string]$ExpectedExecutablePath)
       Remove-Item -LiteralPath $protocolRoot -Recurse -Force -ErrorAction Stop
     }
   } catch {
-    throw "ADE could not remove its owned ade:// protocol registration: $($_.Exception.Message)"
+    throw "Daex could not remove its owned ade:// protocol registration: $($_.Exception.Message)"
   }
 }
 
@@ -246,7 +246,7 @@ function Stop-ChannelSupervisorsForUpdate([string]$AdeHome, [string]$Channel) {
   $deadline = (Get-Date).AddSeconds(5)
   while (($survivors = & $findSupervisors).Count -gt 0) {
     if ((Get-Date) -gt $deadline) {
-      throw "ADE could not stop its background service for the update (PID $(($survivors | ForEach-Object { $_.ProcessId }) -join ', '))."
+      throw "Daex could not stop its background service for the update (PID $(($survivors | ForEach-Object { $_.ProcessId }) -join ', '))."
     }
     Start-Sleep -Milliseconds 200
   }
@@ -259,7 +259,7 @@ function Remove-ChannelStartupWithoutPackagedCli(
   $serviceName = Get-ChannelServiceName $Channel
   $baseUserName = $env:USERNAME
   if ([string]::IsNullOrWhiteSpace($baseUserName)) {
-    throw "ADE could not resolve the current Windows user for startup cleanup."
+    throw "Daex could not resolve the current Windows user for startup cleanup."
   }
   $userName = if ([string]::IsNullOrWhiteSpace($env:USERDOMAIN) -or $baseUserName.Contains("\")) {
     $baseUserName
@@ -294,13 +294,13 @@ function Remove-ChannelStartupWithoutPackagedCli(
           if ($killExitCode -ne 0) {
             $survivor = Get-CimInstance Win32_Process -Filter "ProcessId = $supervisorPid" -ErrorAction SilentlyContinue
             if ($survivor -and ([string]$survivor.CommandLine).IndexOf($launcherPath, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
-              Write-Warning "ADE could not stop its background service (PID $supervisorPid). Sign out or restart to finish removing it."
+              Write-Warning "Daex could not stop its background service (PID $supervisorPid). Sign out or restart to finish removing it."
             }
           }
         }
       }
     } catch {
-      Write-Warning "ADE could not verify its stale startup PID record: $($_.Exception.Message)"
+      Write-Warning "Daex could not verify its stale startup PID record: $($_.Exception.Message)"
     }
   }
 
@@ -310,7 +310,7 @@ function Remove-ChannelStartupWithoutPackagedCli(
     $command = [string]$key.GetValue($taskName, "")
     if (-not [string]::IsNullOrWhiteSpace($command)) {
       if ($command.IndexOf($launcherPath, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
-        throw "ADE refused to remove a startup entry that is not owned by this channel."
+        throw "Daex refused to remove a startup entry that is not owned by this channel."
       }
       Remove-ItemProperty -LiteralPath $runKey -Name $taskName -ErrorAction Stop
     }
@@ -348,7 +348,7 @@ function Write-AdeUninstallStep([string]$Step, [double]$Seconds, [string]$Detail
 $resolvedInstallDir = Resolve-NormalizedPath $InstallDir
 $normalizedPackageChannel = $PackageChannel.Trim().ToLowerInvariant()
 if (@("stable", "alpha", "beta") -notcontains $normalizedPackageChannel) {
-  throw "Unsupported ADE package channel: $PackageChannel"
+  throw "Unsupported Daex package channel: $PackageChannel"
 }
 $homeName = if ($normalizedPackageChannel -eq "stable") { ".ade" } else { ".ade-$normalizedPackageChannel" }
 $channelAdeHome = if ([string]::IsNullOrWhiteSpace($AdeHome)) {
@@ -366,7 +366,7 @@ if (-not $SkipServiceRemoval) {
     -not [string]::Equals($normalizedAppExecutableName, $AppExecutableName, [System.StringComparison]::Ordinal) -or
     -not $normalizedAppExecutableName.EndsWith(".exe", [System.StringComparison]::OrdinalIgnoreCase)
   ) {
-    throw "The installer did not provide a valid ADE executable name."
+    throw "The installer did not provide a valid Daex executable name."
   }
 
   $appExe = Join-Path $resolvedInstallDir $normalizedAppExecutableName
@@ -409,7 +409,7 @@ if (-not $SkipServiceRemoval) {
         -Wait `
         -PassThru
       if ($cleanupProcess.ExitCode -ne 0) {
-        throw "The ADE background service cleanup command exited with code $($cleanupProcess.ExitCode)."
+        throw "The Daex background service cleanup command exited with code $($cleanupProcess.ExitCode)."
       }
     } finally {
       Restore-EnvironmentValue "ELECTRON_RUN_AS_NODE" $electronRunAsNode $electronRunAsNodePresent
@@ -419,7 +419,7 @@ if (-not $SkipServiceRemoval) {
       Restore-EnvironmentValue "NODE_PATH" $previousNodePath $nodePathPresent
     }
   } else {
-    Write-Warning "The packaged ADE executable or CLI is missing; removing only validated per-user startup state."
+    Write-Warning "The packaged Daex executable or CLI is missing; removing only validated per-user startup state."
     Remove-ChannelStartupWithoutPackagedCli $channelAdeHome $normalizedPackageChannel
   }
   Write-AdeUninstallStep "service_removal" $serviceRemovalTimer.Elapsed.TotalSeconds "ok mode=$cleanupMode"
@@ -431,7 +431,7 @@ if ($Updating) {
 
 if ([string]::IsNullOrWhiteSpace($CliBinDir)) {
   if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
-    throw "LOCALAPPDATA is unavailable; ADE cannot safely locate its terminal command."
+    throw "LOCALAPPDATA is unavailable; Daex cannot safely locate its terminal command."
   }
   $CliBinDir = Join-Path $env:LOCALAPPDATA "ADE\bin"
 }
@@ -546,6 +546,6 @@ foreach ($captureTempDir in $captureTempRoots) {
   if ($foreignEntries.Count -eq 0) {
     Remove-Item -LiteralPath $captureTempDir -Recurse -Force -ErrorAction SilentlyContinue
   } else {
-    Write-Warning "Leaving $captureTempDir in place; it holds files ADE did not create."
+    Write-Warning "Leaving $captureTempDir in place; it holds files Daex did not create."
   }
 }

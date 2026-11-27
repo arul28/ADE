@@ -342,7 +342,7 @@ test("Windows uninstall still cleans a corrupted product whose executable is mis
   ], { encoding: "utf8" });
 
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-  assert.match(`${result.stdout}\n${result.stderr}`, /packaged ADE executable or CLI is missing/i);
+  assert.match(`${result.stdout}\n${result.stderr}`, /packaged Daex executable or CLI is missing/i);
 });
 
 test("Windows bundled CLI wrapper resolves the Beta executable and identity", {

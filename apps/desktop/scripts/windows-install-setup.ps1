@@ -103,7 +103,7 @@ function Stop-BrainProcessPreservingStartup([string]$HomePath, [string]$Channel)
   })) {
     & taskkill.exe /PID ([string]$process.ProcessId) /T /F | Out-Null
     if ($LASTEXITCODE -ne 0) {
-      throw "Could not restore the previous stopped ADE brain state."
+      throw "Could not restore the previous stopped Daex brain state."
     }
   }
 }
@@ -112,7 +112,7 @@ $resolvedInstallDir = [IO.Path]::GetFullPath($InstallDir).TrimEnd("\")
 $normalizedExecutableName = [IO.Path]::GetFileName($AppExecutableName)
 if (-not [string]::Equals($normalizedExecutableName, $AppExecutableName, [StringComparison]::Ordinal) -or
     -not $normalizedExecutableName.EndsWith(".exe", [StringComparison]::OrdinalIgnoreCase)) {
-  throw "The installer did not provide a valid ADE executable name."
+  throw "The installer did not provide a valid Daex executable name."
 }
 
 $appExe = Join-Path $resolvedInstallDir $normalizedExecutableName
@@ -122,7 +122,7 @@ $cliWrapper = Join-Path $cliRoot "bin\$cliName"
 $pathInstaller = Join-Path $cliRoot "install-path.cmd"
 $cleanupScript = Join-Path $cliRoot "windows-uninstall-cleanup.ps1"
 $cliTarget = if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
-  throw "LOCALAPPDATA is unavailable; ADE cannot safely install its terminal command."
+  throw "LOCALAPPDATA is unavailable; Daex cannot safely install its terminal command."
 } else {
   Join-Path $env:LOCALAPPDATA "ADE\bin\$cliName"
 }
@@ -144,7 +144,7 @@ $previousUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
 
 foreach ($required in @($appExe, $cliWrapper, $pathInstaller, $cleanupScript, (Join-Path $cliRoot "cli.cjs"))) {
   if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
-    throw "The packaged ADE install is incomplete: missing $required"
+    throw "The packaged Daex install is incomplete: missing $required"
   }
 }
 
@@ -179,7 +179,7 @@ try {
   if ($Updating) {
     Invoke-AdeTimedStep "path_shim_install" { & $pathInstaller $cliTarget }
     if ($LASTEXITCODE -ne 0) {
-      throw "The ADE terminal command installer exited with code $LASTEXITCODE."
+      throw "The Daex terminal command installer exited with code $LASTEXITCODE."
     }
     return
   }
@@ -189,18 +189,18 @@ try {
     $script:serviceStatusJson = Invoke-CliQuiet @("serve", "--service-status", "--json")
   }
   if ($LASTEXITCODE -ne 0) {
-    throw "The ADE per-user brain startup state could not be read before setup."
+    throw "The Daex per-user brain startup state could not be read before setup."
   }
   try {
     $serviceStatus = $serviceStatusJson | ConvertFrom-Json -ErrorAction Stop
   } catch {
-    throw "The ADE per-user brain startup state was invalid before setup."
+    throw "The Daex per-user brain startup state was invalid before setup."
   }
   if ($serviceStatus.installed -isnot [bool]) {
-    throw "The ADE per-user brain startup state was incomplete before setup."
+    throw "The Daex per-user brain startup state was incomplete before setup."
   }
   if ($serviceStatus.running -isnot [bool]) {
-    throw "The ADE per-user brain running state was incomplete before setup."
+    throw "The Daex per-user brain running state was incomplete before setup."
   }
   $previousServiceInstalled = $serviceStatus.installed
   $previousServiceRunning = $serviceStatus.running
@@ -208,7 +208,7 @@ try {
 
   Invoke-AdeTimedStep "path_shim_install" { & $pathInstaller $cliTarget }
   if ($LASTEXITCODE -ne 0) {
-    throw "The ADE terminal command installer exited with code $LASTEXITCODE."
+    throw "The Daex terminal command installer exited with code $LASTEXITCODE."
   }
   # `brain start`, NOT `serve --install-service`: the latter registers the
   # service at whatever ADE_DEFAULT_ROLE happens to be, which is unset here,
@@ -217,7 +217,7 @@ try {
   # `cto`, the same as `install-runtime.ps1`.
   Invoke-AdeTimedStep "brain_start" { & $cliWrapper brain start }
   if ($LASTEXITCODE -ne 0) {
-    throw "The ADE per-user brain startup installer exited with code $LASTEXITCODE."
+    throw "The Daex per-user brain startup installer exited with code $LASTEXITCODE."
   }
 } catch {
   $setupError = $_
@@ -271,7 +271,7 @@ try {
     $rollbackErrors.Add("could not restore the previous user PATH: $($_.Exception.Message)")
   }
   $failureMessage = if ($rollbackErrors.Count -gt 0) {
-    "ADE setup failed ($($setupError.Exception.Message)) and compensation failed: $($rollbackErrors -join '; ')"
+    "Daex setup failed ($($setupError.Exception.Message)) and compensation failed: $($rollbackErrors -join '; ')"
   } else {
     $setupError.Exception.Message
   }
@@ -300,7 +300,7 @@ try {
       }
     }
     Write-AdeInstallStep "update_continues" 0 "terminal command not refreshed: $failureMessage"
-    Write-Warning "ADE could not refresh its terminal command during the update; continuing so ADE can reopen. $failureMessage"
+    Write-Warning "Daex could not refresh its terminal command during the update; continuing so Daex can reopen. $failureMessage"
     exit 0
   }
   if ($rollbackErrors.Count -gt 0) {
