@@ -41,7 +41,30 @@ if errorlevel 1 (
   exit /b 1
 )
 
-call :write_git_bash_shim
+rem `daex` is the command's name now and `ade` stays as an alias, so the same
+rem shim is written under both names in one folder: `ade.cmd` and `daex.cmd`,
+rem or `ade-beta.cmd` and `daex-beta.cmd` for a channel. A target not named
+rem ade or ade-<channel> gets no second name. Best effort: `ade` already works
+rem when this fails. windows-uninstall-cleanup.ps1 removes both.
+for %%I in ("%TARGET_PATH%") do set "TARGET_NAME=%%~nI"
+for %%I in ("%TARGET_PATH%") do set "TARGET_EXT=%%~xI"
+set "ALIAS_PATH="
+if /I "%TARGET_NAME%"=="ade" set "ALIAS_PATH=%TARGET_DIR%daex%TARGET_EXT%"
+if /I "%TARGET_NAME:~0,4%"=="ade-" set "ALIAS_PATH=%TARGET_DIR%daex%TARGET_NAME:~3%%TARGET_EXT%"
+if defined ALIAS_PATH (
+  (
+    echo @echo off
+    echo "%ADE_BIN%" %%*
+    echo exit /b %%ERRORLEVEL%%
+  ) > "%ALIAS_PATH%"
+  if errorlevel 1 (
+    echo ade install: could not write %ALIAS_PATH%; the ade command still works. 1>&2
+    set "ALIAS_PATH="
+  )
+)
+
+call :write_git_bash_shim "%TARGET_PATH%"
+if defined ALIAS_PATH call :write_git_bash_shim "%ALIAS_PATH%"
 
 if not "%ADE_SKIP_USER_PATH_UPDATE%"=="1" (
   call :ensure_user_path "%TARGET_DIR%"
@@ -49,12 +72,15 @@ if not "%ADE_SKIP_USER_PATH_UPDATE%"=="1" (
   if errorlevel 1 exit /b 1
 )
 
-echo Installed ade -^> %ADE_BIN%
+set "DOCTOR_NAME=%TARGET_NAME%"
+if defined ALIAS_PATH for %%I in ("%ALIAS_PATH%") do set "DOCTOR_NAME=%%~nI"
+echo Installed %TARGET_NAME% -^> %ADE_BIN%
+if defined ALIAS_PATH echo Installed %DOCTOR_NAME% -^> %ADE_BIN%
 if "%ADE_SKIP_USER_PATH_UPDATE%"=="1" (
-  echo Ensure %TARGET_DIR% is on PATH, then run: ade doctor
+  echo Ensure %TARGET_DIR% is on PATH, then run: %DOCTOR_NAME% doctor
 ) else (
   echo Added %TARGET_DIR% to the user PATH if it was missing.
-  echo Open a new terminal, then run: ade doctor
+  echo Open a new terminal, then run: %DOCTOR_NAME% doctor
 )
 exit /b 0
 
@@ -66,9 +92,11 @@ rem So an extensionless sh command sits next to the .cmd (as npm does) and
 rem runs the packaged POSIX wrapper, bin\ade, with "$@" whole. PowerShell
 rem writes it: a sh script needs LF line ends, and echo writes CRLF. Paths
 rem travel through the environment so quotes and spaces stay data. Best
-rem effort: cmd.exe and PowerShell users have the .cmd either way.
+rem effort: cmd.exe and PowerShell users have the .cmd either way. %1 is the
+rem .cmd it sits beside (the `ade` one, then the `daex` one); both run the
+rem same packaged bin\ade.
 for %%I in ("%ADE_BIN%") do set "ADE_GIT_BASH_SOURCE=%%~dpIade"
-for %%I in ("%TARGET_PATH%") do set "ADE_GIT_BASH_TARGET=%%~dpnI"
+for %%I in ("%~1") do set "ADE_GIT_BASH_TARGET=%%~dpnI"
 if not exist "%ADE_GIT_BASH_SOURCE%" exit /b 0
 "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command "$q=[string][char]39; $s=$env:ADE_GIT_BASH_SOURCE.Replace([string][char]92, '/').Replace($q, $q + [char]92 + $q + $q); [IO.File]::WriteAllText($env:ADE_GIT_BASH_TARGET, '#!/bin/sh' + [char]10 + 'exec ' + $q + $s + $q + ' ' + [char]34 + '$@' + [char]34 + [char]10)" >nul 2>nul
 exit /b 0

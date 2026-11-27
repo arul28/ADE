@@ -128,6 +128,18 @@ $cliTarget = if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
 }
 $cliTargetExisted = Test-Path -LiteralPath $cliTarget -PathType Leaf
 $previousCliTargetBytes = if ($cliTargetExisted) { [IO.File]::ReadAllBytes($cliTarget) } else { $null }
+# install-path.cmd also writes the `daex` twins (daex.cmd and the Git Bash
+# daex beside it); a rollback puts them back as they were too.
+$daexShimTargets = @(
+  (Join-Path (Split-Path $cliTarget -Parent) ("daex" + $cliName.Substring(3))),
+  (Join-Path (Split-Path $cliTarget -Parent) ("daex" + [IO.Path]::GetFileNameWithoutExtension($cliName).Substring(3)))
+)
+$previousDaexShimBytes = @{}
+foreach ($daexShimTarget in $daexShimTargets) {
+  if (Test-Path -LiteralPath $daexShimTarget -PathType Leaf) {
+    $previousDaexShimBytes[$daexShimTarget] = [IO.File]::ReadAllBytes($daexShimTarget)
+  }
+}
 $previousUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
 
 foreach ($required in @($appExe, $cliWrapper, $pathInstaller, $cleanupScript, (Join-Path $cliRoot "cli.cjs"))) {
@@ -238,6 +250,17 @@ try {
     }
   } catch {
     $rollbackErrors.Add("could not restore the previous terminal shim: $($_.Exception.Message)")
+  }
+  foreach ($daexShimTarget in $daexShimTargets) {
+    try {
+      if ($previousDaexShimBytes.ContainsKey($daexShimTarget)) {
+        [IO.File]::WriteAllBytes($daexShimTarget, $previousDaexShimBytes[$daexShimTarget])
+      } else {
+        Remove-Item -LiteralPath $daexShimTarget -Force -ErrorAction SilentlyContinue
+      }
+    } catch {
+      $rollbackErrors.Add("could not restore the previous daex terminal shim: $($_.Exception.Message)")
+    }
   }
   try {
     $currentUserPath = [Environment]::GetEnvironmentVariable("Path", "User")

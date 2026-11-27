@@ -442,8 +442,14 @@ $expectedWrapperNames = @("ade.cmd")
 if ($normalizedPackageChannel -ne "stable") {
   $expectedWrapperNames += "ade-$normalizedPackageChannel.cmd"
 }
+# `daex` is the command's name and `ade` its alias: install-path.cmd writes
+# both shims (daex.cmd beside ade.cmd, both running this install's packaged
+# ade wrapper), so both are this install's to remove. The packaged daex twins
+# count as this install's wrappers too.
+$expectedWrapperNames += @($expectedWrapperNames | ForEach-Object { "daex" + $_.Substring(3) })
+$shimFilters = @("ade*.cmd", "daex*.cmd")
 if (Test-Path -LiteralPath $resolvedCliBinDir -PathType Container) {
-  foreach ($shim in Get-ChildItem -LiteralPath $resolvedCliBinDir -Filter "ade*.cmd" -File -ErrorAction Stop) {
+  foreach ($shim in @($shimFilters | ForEach-Object { Get-ChildItem -LiteralPath $resolvedCliBinDir -Filter $_ -File -ErrorAction Stop })) {
     if (Test-CliShimOwnedByInstall $shim.FullName $packagedCliDir $expectedWrapperNames) {
       Remove-Item -LiteralPath $shim.FullName -Force -ErrorAction Stop
     }
@@ -456,7 +462,7 @@ if (Test-Path -LiteralPath $resolvedCliBinDir -PathType Container) {
   $expectedGitBashNames = @(
     $expectedWrapperNames | ForEach-Object { [System.IO.Path]::GetFileNameWithoutExtension($_) }
   )
-  foreach ($gitBashShim in Get-ChildItem -LiteralPath $resolvedCliBinDir -Filter "ade*" -File -ErrorAction Stop) {
+  foreach ($gitBashShim in @(@("ade*", "daex*") | ForEach-Object { Get-ChildItem -LiteralPath $resolvedCliBinDir -Filter $_ -File -ErrorAction Stop })) {
     if ($gitBashShim.Extension -ne "") { continue }
     if ($expectedGitBashNames -notcontains $gitBashShim.Name) { continue }
     if (Test-GitBashShimOwnedByInstall $gitBashShim.FullName $packagedCliDir) {
@@ -467,7 +473,7 @@ if (Test-Path -LiteralPath $resolvedCliBinDir -PathType Container) {
 
 $remainingAdeShims = @(
   if (Test-Path -LiteralPath $resolvedCliBinDir -PathType Container) {
-    Get-ChildItem -LiteralPath $resolvedCliBinDir -Filter "ade*.cmd" -File -ErrorAction Stop
+    $shimFilters | ForEach-Object { Get-ChildItem -LiteralPath $resolvedCliBinDir -Filter $_ -File -ErrorAction Stop }
   }
 )
 

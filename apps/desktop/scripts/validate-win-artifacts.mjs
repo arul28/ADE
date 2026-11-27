@@ -805,6 +805,18 @@ async function validatePackagedRuntime(appDir) {
   });
   assertAdeCliHelp(defaultHelp.stdout, "Bundled ADE CLI wrapper");
 
+  // `daex` is the command's name; `ade` stays as an alias. afterPack writes
+  // the twin, and it must run the same CLI.
+  const cliVersion = async (commandPath) => (await runCommand(commandPath, ["--version"], {
+    cwd: resourcesPath,
+    env: { ...process.env },
+  })).stdout.trim().replace(/^(?:ade|daex)\S*\s+/i, "");
+  const bundledAdeVersion = await cliVersion(adeCliBinPath);
+  const bundledDaexVersion = await cliVersion(path.join(resourcesPath, "ade-cli", "bin", "daex.cmd"));
+  if (!bundledAdeVersion || bundledAdeVersion !== bundledDaexVersion) {
+    fail(`Bundled daex.cmd does not run the same CLI as ade.cmd (${JSON.stringify(bundledDaexVersion)} vs ${JSON.stringify(bundledAdeVersion)})`);
+  }
+
   // Agents read the exit code. The wrapper once returned 0 for every command,
   // so a failed one looked like a success.
   const unknownCommand = await runCommand(adeCliBinPath, ["ade-validate-unknown-command"], {
@@ -866,6 +878,14 @@ async function validatePackagedRuntime(appDir) {
       env: { ...process.env },
     });
     assertAdeCliHelp(installedHelp.stdout, "Installed ADE CLI shim");
+
+    // The installer writes the same shim as daex.cmd (and a Git Bash `daex`).
+    const installedDaexPath = path.join(installRoot, "bin", "daex.cmd");
+    await assertPathExists(installedDaexPath, "installed daex CLI shim");
+    await assertPathExists(path.join(installRoot, "bin", "daex"), "installed Git Bash daex command");
+    if (await cliVersion(installedDaexPath) !== bundledAdeVersion) {
+      fail("Installed daex.cmd does not run the same CLI as the bundled ade.cmd");
+    }
 
     // Git Bash runs only an extensionless `ade`, and only with LF line ends;
     // through `ade.cmd` it would cut every multi-line argument at cmd.exe.

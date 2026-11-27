@@ -29,12 +29,12 @@ case "$(uname -s 2>/dev/null || echo unknown)" in
 esac
 
 case "$CLI_NAME:$CHANNEL" in
-  ade-alpha:*|ade:alpha)
+  ade-alpha:*|ade:alpha|daex-alpha:*|daex:alpha)
     export ADE_PACKAGE_CHANNEL=${ADE_PACKAGE_CHANNEL:-alpha}
     export ADE_HOME=${ADE_HOME:-"$USER_HOME/.ade-alpha"}
     export ADE_DESKTOP_APP_NAME=${ADE_DESKTOP_APP_NAME:-"ADE Alpha"}
     ;;
-  ade-beta:*|ade:beta)
+  ade-beta:*|ade:beta|daex-beta:*|daex:beta)
     export ADE_PACKAGE_CHANNEL=${ADE_PACKAGE_CHANNEL:-beta}
     export ADE_HOME=${ADE_HOME:-"$USER_HOME/.ade-beta"}
     export ADE_DESKTOP_APP_NAME=${ADE_DESKTOP_APP_NAME:-"ADE Beta"}
@@ -99,7 +99,7 @@ case "$(uname -s 2>/dev/null || echo unknown)" in
     if node_is_22; then
       NODE_PATH="$NODE_PATH_VALUE" exec node "$CLI_JS" "$@"
     fi
-    echo "ade: Node.js 22+ or the packaged ADE.exe runtime is required to run this CLI." >&2
+    echo "$CLI_NAME: Node.js 22+ or the packaged Daex app runtime is required to run this CLI." >&2
     exit 127
     ;;
 esac
@@ -120,7 +120,7 @@ if [ "$(uname -s 2>/dev/null || echo unknown)" = Linux ]; then
   if [ -x "$APP_EXE" ]; then
     ELECTRON_RUN_AS_NODE=1 NODE_PATH="$NODE_PATH_VALUE" exec "$APP_EXE" "$CLI_JS" "$@"
   fi
-  echo "ade: packaged ADE runtime is missing: $APP_EXE" >&2
+  echo "$CLI_NAME: the packaged Daex app runtime is missing: $APP_EXE" >&2
   exit 127
 fi
 
@@ -165,5 +165,5 @@ if command -v node >/dev/null 2>&1; then
   fi
 fi
 
-echo "ade: Node.js 22+ or the packaged ADE.app runtime is required to run this CLI." >&2
+echo "$CLI_NAME: Node.js 22+ or the packaged Daex app runtime is required to run this CLI." >&2
 exit 127

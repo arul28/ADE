@@ -517,6 +517,8 @@ async function validatePackagedRuntime(appPath, description, expectedArch, optio
   await assertBundledAgentSkills(bundledAgentSkillsRoot);
   await assertPathExists(triagePlaybookPath, "packaged ade triage playbook");
   await assertExecutable(adeCliBinPath, "bundled ADE CLI wrapper");
+  // `daex` is the command's name; `ade` stays as an alias. afterPack writes the twin.
+  await assertExecutable(path.join(resourcesPath, "ade-cli", "bin", "daex"), "bundled daex CLI wrapper");
   await assertExecutable(adeCliInstallerPath, "bundled ADE CLI PATH installer");
   await assertPathExists(nodePtyModulePath, "unpacked node-pty module");
   await assertPathExists(smokeScriptPath, "unpacked packaged runtime smoke script");
@@ -614,6 +616,15 @@ async function validatePackagedRuntime(appPath, description, expectedArch, optio
   });
   if (!adeCliHelp.includes("Agent-focused command-line interface for ADE")) {
     throw new Error("[release:mac] Bundled ADE CLI wrapper did not print ADE CLI help");
+  }
+  const versionOf = async (binPath) => (await execFileAsync(binPath, ["--version"], {
+    cwd: resourcesPath,
+    env: { ...process.env },
+  })).stdout.trim().replace(/^(?:ade|daex)\S*\s+/i, "");
+  const adeVersion = await versionOf(adeCliBinPath);
+  const daexVersion = await versionOf(path.join(resourcesPath, "ade-cli", "bin", "daex"));
+  if (!adeVersion || adeVersion !== daexVersion) {
+    throw new Error(`[release:mac] Bundled daex wrapper does not run the same CLI as ade (${JSON.stringify(daexVersion)} vs ${JSON.stringify(adeVersion)})`);
   }
 
   console.log(`[release:mac] Packaged runtime smoke passed for ${description}: ${path.relative(appPath, nodePtyAddon)}`);

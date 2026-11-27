@@ -71,7 +71,7 @@ if not errorlevel 1 (
   )
 )
 
-echo ade: Node.js 22+ or the packaged ADE.exe runtime is required to run this CLI. 1>&2
+echo %~n0: Node.js 22+ or the packaged Daex app runtime is required to run this CLI. 1>&2
 exit /b 127
 
 :run

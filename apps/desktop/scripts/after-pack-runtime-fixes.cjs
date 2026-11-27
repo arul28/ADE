@@ -156,6 +156,29 @@ function materializeChannelCliWrapper(resourcesRoot, channel, platform = "darwin
   return targetPath;
 }
 
+/**
+ * `daex` is the CLI's name and `ade` stays as a permanent alias, so every
+ * packaged wrapper (`ade`, `ade.cmd`, `ade-<channel>`, `ade-<channel>.cmd`)
+ * gets a `daex` twin beside it: the same file, so it reads the same channel
+ * file and runs the same cli.cjs. Agents get this bin directory on PATH
+ * (adeCliService.ts), so they can type either name. Returns the twins written.
+ */
+function materializeDaexCliAliases(resourcesRoot) {
+  const binRoot = path.join(resourcesRoot, "ade-cli", "bin");
+  const written = [];
+  for (const name of fs.readdirSync(binRoot)) {
+    const match = /^ade((?:-[a-z0-9]+)?(?:\.cmd)?)$/i.exec(name);
+    if (!match) continue;
+    const sourcePath = path.join(binRoot, name);
+    if (!fs.statSync(sourcePath).isFile()) continue;
+    const targetPath = path.join(binRoot, `daex${match[1]}`);
+    fs.copyFileSync(sourcePath, targetPath);
+    fs.chmodSync(targetPath, 0o755);
+    written.push(targetPath);
+  }
+  return written;
+}
+
 // The product's shown name; twin of BRAND.NAME in src/shared/brand.ts (a
 // CommonJS hook cannot import TypeScript). The installed name it replaces stays.
 const DISPLAY_NAME = "Daex";
@@ -541,6 +564,11 @@ module.exports = async function afterPack(context) {
     requireFile(path.join(resourcesRoot, "ade-cli", "bin", "ade.cmd"), "bundled ADE CLI Windows wrapper");
     requireFile(path.join(resourcesRoot, "ade-cli", "install-path.cmd"), "bundled ADE CLI Windows PATH installer");
   }
+  const daexAliases = materializeDaexCliAliases(resourcesRoot);
+  if (!daexAliases.some((aliasPath) => /^daex(?:\.cmd)?$/i.test(path.basename(aliasPath)))) {
+    throw new Error(`[afterPack] No daex CLI wrapper was written in ${path.join(resourcesRoot, "ade-cli", "bin")}`);
+  }
+  console.log(`[afterPack] Added daex CLI wrappers: ${daexAliases.map((aliasPath) => path.basename(aliasPath)).join(", ")}`);
 
   pruneUnneededRuntimePayload(runtimeRoot, platform, runtimeFetchedToolPackageNames);
   pruneForeignDarwinArchPackages(runtimeRoot, context, platform);
