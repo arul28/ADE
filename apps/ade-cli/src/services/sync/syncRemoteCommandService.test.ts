@@ -3944,6 +3944,7 @@ describe("workTools.openBrowserTab", () => {
     { name: "refuses a public site", url: "https://example.com/", opens: null, result: /localhost/ },
     { name: "refuses a LAN address on a dev server's port", url: "http://192.168.1.20:5173/", opens: null, result: /localhost/ },
     { name: "refuses a port the lane does not serve", url: "http://localhost:6000/", opens: null, result: /port 6000/ },
+    { name: "refuses a server the lane state still lists but that stopped", url: "http://localhost:7000/", opens: null, result: /port 7000/ },
     { name: "refuses a non-web scheme", url: "file:///etc/passwd", opens: null, result: /localhost/ },
     { name: "refuses an address with a sign-in", url: "http://user:pw@localhost:5173/", opens: null, result: /sign-in/ },
   ])("$name", async ({ url, opens, result }) => {
@@ -3954,6 +3955,8 @@ describe("workTools.openBrowserTab", () => {
     const getLaneState = vi.fn(async ({ laneId }: { laneId: string }) => ({
       laneId,
       browser: { tabs: [{ id: "tab-a", url: "http://localhost:4180/settings" }] },
+      // What the runtime knew earlier: the server on 7000 has since stopped.
+      devServers: [{ port: 7000, url: "http://localhost:7000/" }],
     }));
     const { service } = createService({
       workToolsStateService: { getLaneState, listDevServers, readObservationPreview: vi.fn() },

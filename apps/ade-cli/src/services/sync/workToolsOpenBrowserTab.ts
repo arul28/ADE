@@ -88,16 +88,15 @@ export async function openLaneDevServerInBrowser(input: {
   const { laneId, workTools, browser } = input;
   if (!browser) throw new Error("The browser isn't available on this machine.");
   const { url, port } = loopbackPageUrl(input.rawUrl);
-  // The lane state has the tabs to reuse and the servers already known; a
-  // fresh scan only when the port is not among them (a server just started).
-  const state = await workTools.getLaneState({ laneId });
-  const servesPort = state.devServers?.some((server) => server.port === port) === true
-    || (await workTools.listDevServers({ laneId })).servers.some((server) => server.port === port);
-  if (!servesPort) {
+  // A fresh read, never the list the lane state carries: that one does not
+  // notice a server that stopped, and an Open is a rare, deliberate tap.
+  const { servers } = await workTools.listDevServers({ laneId });
+  if (!servers.some((server) => server.port === port)) {
     throw new Error(`Nothing in this lane is serving port ${port}. Start the dev server, then try again.`);
   }
   // The page is already up in this lane: watch that tab rather than open a
   // second copy of the same server.
+  const state = await workTools.getLaneState({ laneId });
   const existing = state.browser?.tabs.find((tab) => tab.url && parseLoopbackUrl(tab.url)?.port === port);
   if (existing) return { ok: true, tabId: existing.id, reused: true };
   let opened: unknown;
