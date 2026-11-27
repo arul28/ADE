@@ -334,7 +334,7 @@ describe("runtime domain services behind the allowlist", () => {
     });
     const activityDescription = getAdeActionInputContract("session", "setSessionActivity")?.description;
     expect(activityDescription).toContain("fixed activity label");
-    expect(activityDescription).toContain("ADE-bound tracked session");
+    expect(activityDescription).toContain("Daex-bound tracked session");
     expect(activityDescription).toContain("tracked terminal owned by that chat");
   });
 
