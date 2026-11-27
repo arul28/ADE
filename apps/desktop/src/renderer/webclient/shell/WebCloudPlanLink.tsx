@@ -6,6 +6,7 @@ import { READABLE_TOAST_DURATION_MS, showToast, type ToastInput } from "../../co
 import type { BrowserAccountClient } from "../account/client";
 import { createWebCloudBilling, type WebCloudBilling } from "../adapter/cloudBilling";
 import { takeCloudLink, type WebCloudLink } from "./cloudPlanLink";
+import { BRAND } from "../../../shared/brand";
 
 /** What the web app says when Stripe sends the person back (the account server's own page says the same). */
 const RETURN_TOASTS: Record<CloudBillingReturnOutcome, ToastInput> = {
@@ -52,7 +53,7 @@ async function finishCloudLink(link: WebCloudLink, billing: WebCloudBilling, acc
   const userId = accountClient.getSnapshot().userId;
   try {
     if (!(await billing.accessEnabled())) {
-      showToast({ title: "ADE Cloud isn't open to your account yet", message: `ADE didn't start checkout for ${label}.`, durationMs: READABLE_TOAST_DURATION_MS });
+      showToast({ title: `${BRAND.CLOUD_NAME} isn't open to your account yet`, message: `${BRAND.NAME} didn't start checkout for ${label}.`, durationMs: READABLE_TOAST_DURATION_MS });
       return;
     }
     const account = await billing.readAccount();
@@ -61,7 +62,7 @@ async function finishCloudLink(link: WebCloudLink, billing: WebCloudBilling, acc
       return;
     }
     if (!userId || accountClient.getSnapshot().userId !== userId) {
-      showToast({ title: "You signed in as someone else", message: `ADE didn't start checkout for ${label}.`, durationMs: READABLE_TOAST_DURATION_MS });
+      showToast({ title: "You signed in as someone else", message: `${BRAND.NAME} didn't start checkout for ${label}.`, durationMs: READABLE_TOAST_DURATION_MS });
       return;
     }
     showToast({ title: `Opening checkout for ${label}…` });

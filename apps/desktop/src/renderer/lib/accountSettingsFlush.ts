@@ -22,6 +22,7 @@
 
 import type { AccountSettingsResult } from "../../shared/types/accountSettings";
 import type { AccountSettingsSyncHandle } from "./accountSettingsSync";
+import { BRAND } from "../../shared/brand";
 
 let current: AccountSettingsSyncHandle | null = null;
 
@@ -54,7 +55,7 @@ export async function flushAccountSettingKey(
     const result = await current.flushKey(key);
     // The runtime's own wording names an internal action domain; say what it means.
     if (!result.ok && /^Domain '[^']+' is unavailable in this runtime/.test(result.message ?? "")) {
-      return { ...result, message: "ADE's background service on this computer is not syncing with your account." };
+      return { ...result, message: `${BRAND.NAME}'s background service on this computer is not syncing with your account.` };
     }
     return result;
   } catch (error) {

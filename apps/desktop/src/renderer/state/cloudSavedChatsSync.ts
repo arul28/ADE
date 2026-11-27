@@ -42,6 +42,7 @@ import {
 import { sendThroughAdeCloudQueue } from "./adeCloudChatQueue";
 import { startAdeCloudRestingReads } from "./adeCloudRestingReads";
 import { isSavedTerminalSession, savedTerminalSession } from "./cloudSavedTerminals";
+import { BRAND } from "../../shared/brand";
 
 /** Computers a reach found off the account (contract C2 `not_in_account`): gone, whatever the lists say. */
 const goneMachineKeys = new Set<string>();
@@ -521,7 +522,7 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
       if (previous && previous.lanes.length > 0 && connection && !isSavedChatsMachineId(machineId) && !savedSliceIds.has(machineId)) continue;
       if (!connection) keptSyntheticIds.add(machineId);
       laneSliceIds.add(machineId);
-      const machineName = connection?.target.name ?? previous?.machineName ?? "ADE Cloud";
+      const machineName = connection?.target.name ?? previous?.machineName ?? BRAND.CLOUD_NAME;
       const binding: OpenProjectBinding = previous?.binding ?? {
         kind: "remote",
         key: `${machineId}:${context.projectKey}`,
@@ -568,7 +569,7 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
       const previous = rootAppStoreApi.getState().crossMachineLanesByMachineId[machineId] ?? null;
       if (!connection) keptSyntheticIds.add(machineId);
       savedSliceIds.add(machineId);
-      const machineName = connection?.target.name ?? previous?.machineName ?? "ADE Cloud";
+      const machineName = connection?.target.name ?? previous?.machineName ?? BRAND.CLOUD_NAME;
       const binding: OpenProjectBinding = previous?.binding ?? {
         kind: "remote",
         key: `${machineId}:${context.projectKey}`,

@@ -17,6 +17,7 @@ import { scrubFreeText, scrubString } from "../../../shared/sentry/scrub";
 import { webClientVersion } from "../../lib/webClientMode";
 import type { WebAnalyticsNamespace } from "./analytics";
 import type { AdeNamespace } from "./types";
+import { BRAND } from "../../../shared/brand";
 
 /** A report sent with no screen behind it; the desktop's equivalent is `settings_manual`. */
 const MANUAL_SURFACE = "web_manual";
@@ -210,12 +211,12 @@ function recordSend(): void {
 function buildWebReport(context?: DiagnosticReportRequestPayload): string {
   const detail = context?.technicalDetail?.trim();
   const lines = [
-    "ADE web report",
+    `${BRAND.NAME} web report`,
     "",
     `- Surface: ${scrubString(context?.surface ?? MANUAL_SURFACE)}`,
     ...(context?.headline ? [`- What went wrong: ${scrubFreeText(context.headline, { maxLength: 300 })}`] : []),
     ...(context?.code ? [`- Code: ${scrubString(context.code)}`] : []),
-    `- ADE web version: ${webClientVersion() ?? "unknown"}`,
+    `- ${BRAND.NAME} web version: ${webClientVersion() ?? "unknown"}`,
     `- Browser: ${navigator.userAgent}`,
     `- Screen: ${scrubString(window.location.pathname)}`,
     `- Time: ${new Date().toISOString()}`,

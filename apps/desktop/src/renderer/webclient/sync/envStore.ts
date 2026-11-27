@@ -3,6 +3,7 @@ import type {
   SyncMobileProjectSummary,
   SyncPairingHostIdentity,
 } from "../../../shared/types/sync";
+import { BRAND } from "../../../shared/brand";
 
 export type WebClientStorageArea = "environments" | "meta" | "account" | "catalogs";
 
@@ -280,7 +281,7 @@ export class IndexedDbStorage implements WebClientStorage {
             : DB_UPGRADE_BLOCKED_TIMEOUT_MS;
           blockedTimer = globalThis.setTimeout(() => {
             rejectOpen(new IndexedDbOpenError(
-              "ADE browser storage couldn't be upgraded. Close other ADE tabs and try again.",
+              `${BRAND.NAME} browser storage couldn't be upgraded. Close other ${BRAND.NAME} tabs and try again.`,
               "blocked",
             ));
           }, timeoutMs);
@@ -304,7 +305,7 @@ export class IndexedDbStorage implements WebClientStorage {
           resolve(db);
         };
         request.onerror = () => rejectOpen(new IndexedDbOpenError(
-          "Failed to open ADE web client browser storage.",
+          `Failed to open ${BRAND.NAME} web client browser storage.`,
           "failed",
           { cause: request.error },
         ));

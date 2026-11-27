@@ -8,6 +8,7 @@ import {
   type AttentionSnapshot,
   type AttentionTombstone,
 } from "../../shared/types";
+import { BRAND } from "../../shared/brand";
 
 export type ActivitySyncStatus = "idle" | "syncing" | "ready" | "error";
 
@@ -290,7 +291,7 @@ export function resetActivityStoreForTests(): void {
 }
 
 const ACTIVITY_STALE_MESSAGE =
-  "This changed on the machine that owns it, so ADE left it alone. Refresh Activity to see where it got to.";
+  `This changed on the machine that owns it, so ${BRAND.NAME} left it alone. Refresh Activity to see where it got to.`;
 
 /**
  * The other reason a row rolls back, and the reason it needed its own sentence.
@@ -302,11 +303,11 @@ const ACTIVITY_STALE_MESSAGE =
  * them to refresh a list that is already correct.
  */
 const ACTIVITY_UNREACHED_MESSAGE =
-  "ADE couldn’t reach Activity for this one, so nothing changed. Try again in a moment.";
+  `${BRAND.NAME} couldn’t reach Activity for this one, so nothing changed. Try again in a moment.`;
 
 function activityErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message.trim();
-  return "ADE couldn’t update this Activity item.";
+  return `${BRAND.NAME} couldn’t update this Activity item.`;
 }
 
 /**

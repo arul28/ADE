@@ -44,6 +44,7 @@ import {
   shellJobId,
 } from "../../../../../account-directory/src/cloud/computerCommands";
 import type { CloudFreeRecord, CloudInstance } from "../../../../../account-directory/src/cloud/contract";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * ADE Web's life of a lane's computer, through the account server with this
@@ -79,10 +80,10 @@ const RESTART_POLL_MS = 5_000;
 const SAVED_CHAT_PAGE = 200;
 const SAVED_CHAT_PAGES = 20;
 const WORK_CHECK_UNKNOWN = /unknown (cloud )?command|method not found|can't read this computer's work/i;
-const WORK_CHECK_TOO_OLD = "This computer's ADE is too old to say what isn't pushed.";
+const WORK_CHECK_TOO_OLD = `This computer's ${BRAND.NAME} is too old to say what isn't pushed.`;
 /** The same sentence as `CLOUD_LANE_LIFE_UNAVAILABLE` (cloudLaneActions.ts). */
-const ON_DESKTOP = "Do this in the ADE desktop app. This window can't change ADE Cloud lanes.";
-const DELETE_UNCONFIRMED = "ADE Cloud took the delete but hasn't finished it yet. Check again in a minute; if the computer is still there, delete it again.";
+const ON_DESKTOP = `Do this in the ${BRAND.NAME} desktop app. This window can't change ${BRAND.CLOUD_NAME} lanes.`;
+const DELETE_UNCONFIRMED = `${BRAND.CLOUD_NAME} took the delete but hasn't finished it yet. Check again in a minute; if the computer is still there, delete it again.`;
 
 const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 const withoutStop = (text: string): string => text.trim().replace(/[.!?…]+$/, "");
@@ -129,7 +130,7 @@ const leftLanes = (lanes: readonly CloudLaneWorkLane[] | null): CloudLaneWorkLan
 
 /** "Pushed 2 lanes to GitHub." and the rest, as the desktop says it (`pushAllWorkResult`). */
 function pushAllWorkResult(exitCode: number, tally: PushWorkTally | null): CloudMachineActionResult {
-  if (exitCode !== 0 || !tally) return { ok: false, blocker: null, message: "ADE couldn't push this computer's work. Try again." };
+  if (exitCode !== 0 || !tally) return { ok: false, blocker: null, message: `${BRAND.NAME} couldn't push this computer's work. Try again.` };
   const { pushed, failed, skipped } = tally;
   if (pushed === 0 && failed === 0) {
     return { ok: true, blocker: null, message: skipped ? `Nothing new to push. ${skipped === 1 ? "One primary lane has" : `${skipped} primary lanes have`} local work left on the computer.` : "All work is already on GitHub." };
@@ -192,7 +193,7 @@ export type WebCloudLaneLifeDeps = {
 export function createWebCloudLaneLife(deps: WebCloudLaneLifeDeps) {
   const need = () => {
     const api = deps.api();
-    if (!api) throw new Error("Sign in to ADE to change your ADE Cloud lanes.");
+    if (!api) throw new Error(`Sign in to ${BRAND.NAME} to change your ${BRAND.CLOUD_NAME} lanes.`);
     return api;
   };
 
@@ -203,7 +204,7 @@ export function createWebCloudLaneLife(deps: WebCloudLaneLifeDeps) {
       const tally = ran.exitCode === 0 ? workTallyOf(ran.stdout) : null;
       if (tally) return { tally, error: null };
       if (check && ran.exitCode !== 0 && WORK_CHECK_UNKNOWN.test(`${ran.stderr}\n${ran.stdout}`)) return { tally: null, error: WORK_CHECK_TOO_OLD };
-      return { tally: null, error: "ADE couldn't read this computer's work." };
+      return { tally: null, error: `${BRAND.NAME} couldn't read this computer's work.` };
     } catch (error) {
       return { tally: null, error: errorText(error) };
     }
@@ -211,14 +212,14 @@ export function createWebCloudLaneLife(deps: WebCloudLaneLifeDeps) {
 
   const workStateWith = async (api: CloudApiClient, instanceId: string): Promise<CloudLaneWorkState> => {
     const ran = await runPushWork(api, instanceId, true);
-    if (!ran.tally) return { unpushed: null, unpushedLanes: [], message: ran.error ?? "ADE couldn't read this computer's work." };
+    if (!ran.tally) return { unpushed: null, unpushedLanes: [], message: ran.error ?? `${BRAND.NAME} couldn't read this computer's work.` };
     // An older computer answers counts without the lane list: it can't say, so the caller warns.
     if (!ran.tally.lanes) return { unpushed: null, unpushedLanes: [], message: WORK_CHECK_TOO_OLD };
     const unpushedLanes = leftLanes(ran.tally.lanes);
     const github = pushWorkGithubProblem(unpushedLanes);
     if (github) return { unpushed: null, unpushedLanes, message: pushWorkGithubMessage(github, "unknown") };
     // A project it couldn't open listed no lanes: its work is unknown, not saved.
-    if (ran.tally.failed > 0) return { unpushed: null, unpushedLanes, message: "ADE couldn't read every project on this computer." };
+    if (ran.tally.failed > 0) return { unpushed: null, unpushedLanes, message: `${BRAND.NAME} couldn't read every project on this computer.` };
     return { unpushed: unpushedLanes.length > 0, unpushedLanes, message: null };
   };
 
@@ -275,7 +276,7 @@ export function createWebCloudLaneLife(deps: WebCloudLaneLifeDeps) {
       const api = need();
       try {
         if (!(await deleteComputerConfirmed(api, instanceId))) return { ok: false, blocker: null, message: DELETE_UNCONFIRMED };
-        return { ok: true, blocker: null, message: "Deleted on ADE Cloud and removed from ADE." };
+        return { ok: true, blocker: null, message: `Deleted on ${BRAND.CLOUD_NAME} and removed from ${BRAND.NAME}.` };
       } catch (error) {
         return { ok: false, blocker: null, message: errorText(error) };
       }
@@ -299,8 +300,8 @@ export function createWebCloudLaneLife(deps: WebCloudLaneLifeDeps) {
       // Without the person's go-ahead (`skipCheck`), work that may not be on GitHub keeps the lane.
       if (state && state.unpushed !== false) {
         return refuse(state.unpushed
-          ? "This lane has work that isn't on GitHub, so ADE kept it. Push it first, or delete anyway."
-          : `ADE couldn't check this lane for work that isn't on GitHub, so it stays: ${withoutStop(state.message ?? "no answer")}.`, state);
+          ? `This lane has work that isn't on GitHub, so ${BRAND.NAME} kept it. Push it first, or delete anyway.`
+          : `${BRAND.NAME} couldn't check this lane for work that isn't on GitHub, so it stays: ${withoutStop(state.message ?? "no answer")}.`, state);
       }
       let gone: boolean;
       try {
@@ -315,7 +316,7 @@ export function createWebCloudLaneLife(deps: WebCloudLaneLifeDeps) {
         : null;
       return {
         ok: true,
-        message: "Deleted on ADE Cloud and removed from ADE.",
+        message: `Deleted on ${BRAND.CLOUD_NAME} and removed from ${BRAND.NAME}.`,
         unpushed: state?.unpushed ?? null,
         unpushedLanes: state?.unpushedLanes ?? [],
         chatsKept: args.keepChats === true || chatsDeleted == null,
@@ -336,7 +337,7 @@ export function createWebCloudLaneLife(deps: WebCloudLaneLifeDeps) {
       } catch (error) {
         return fail(errorText(error));
       }
-      if (!instance) return fail("ADE Cloud has no such computer.");
+      if (!instance) return fail(`${BRAND.CLOUD_NAME} has no such computer.`);
       let record: CloudFreeRecord;
       try {
         record = await api.startFree(args.instanceId, crypto.randomUUID());
@@ -348,13 +349,13 @@ export function createWebCloudLaneLife(deps: WebCloudLaneLifeDeps) {
       const since = Date.now();
       while (record.state !== "done" && record.state !== "failed" && record.state !== "cancelled") {
         if (Date.now() - since > FREE_WAIT_MAX_MS) {
-          return fail("ADE Cloud is still freeing the computer. Check again in a few minutes.");
+          return fail(`${BRAND.CLOUD_NAME} is still freeing the computer. Check again in a few minutes.`);
         }
         await wait(FREE_POLL_MS);
         // A read that fails is read again on the next round, until the wait runs out.
         record = await api.free(record.freeId).catch(() => record);
       }
-      if (record.state !== "done") return fail(record.error || record.message || "ADE Cloud couldn't free the computer.");
+      if (record.state !== "done") return fail(record.error || record.message || `${BRAND.CLOUD_NAME} couldn't free the computer.`);
       const kept = record.laneKept && record.laneId
         ? (await api.lanesWithoutComputer().catch(() => [])).find((lane) => lane.laneId === record.laneId) ?? null
         : null;
@@ -495,7 +496,7 @@ type ResizeRecord = {
 function diskGrowOf(raw: unknown, currentGb: number | null, tier: CloudTier): number | null {
   if (raw == null) return null;
   if (typeof raw !== "number" || !Number.isInteger(raw) || raw <= 0) throw new Error("Pick a disk size in whole GB.");
-  if (currentGb == null) throw new Error("ADE Cloud didn't say how big this computer's disk is, so ADE can't grow it.");
+  if (currentGb == null) throw new Error(`${BRAND.CLOUD_NAME} didn't say how big this computer's disk is, so ${BRAND.NAME} can't grow it.`);
   if (raw <= currentGb) return null;
   if (tier.diskMaxGb != null && raw > tier.diskMaxGb) throw new Error(`${tier.label} lets the disk grow to ${tier.diskMaxGb} GB.`);
   return raw;
@@ -548,7 +549,7 @@ export function createWebCloudResizes(deps: {
     const api = deps.api();
     let active: CloudLaneJobStageId = "save";
     try {
-      if (!api) throw new Error("Sign in to ADE to change your ADE Cloud lanes.");
+      if (!api) throw new Error(`Sign in to ${BRAND.NAME} to change your ${BRAND.CLOUD_NAME} lanes.`);
       // Save work: wait for the agent (or stop its turn), then write the chats' saved copy.
       const growOnly = cloudLaneJobGrowsDiskOnly(job);
       setStage(record, "save", "running", growOnly ? "Saving the chats" : job.timing === "now" ? "Stopping the running turn" : "Waiting for the agent to finish. Keep this page open.");
@@ -602,7 +603,7 @@ export function createWebCloudResizes(deps: {
         setStage(record, "start", "running");
         const since = Date.now();
         while (status !== "running") {
-          if (status === "failed") throw new Error("ADE Cloud couldn't start the computer again.");
+          if (status === "failed") throw new Error(`${BRAND.CLOUD_NAME} couldn't start the computer again.`);
           // A resize leaves it asleep on some sizes: wake it, as a send would.
           if (status === "sleeping" || status === "stopped") await api.wake(job.instanceId).catch(() => null);
           if (Date.now() - since > RESTART_WAIT_MS) throw new Error("The computer didn't start again in time.");
@@ -612,7 +613,7 @@ export function createWebCloudResizes(deps: {
         setStage(record, "start", "done");
         // This page has no connection to make: ADE on the computer is starting again.
         active = "connect";
-        setStage(record, "connect", "done", "ADE on it is starting again");
+        setStage(record, "connect", "done", `${BRAND.NAME} on it is starting again`);
       }
       job.phase = "online";
       job.endedAt = nowIso();

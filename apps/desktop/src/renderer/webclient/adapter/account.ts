@@ -14,6 +14,7 @@ import type { AdapterInfra } from "./types";
 import type { AccountSettingRow } from "../../../shared/types/accountSettings";
 import { relayBaseUrl } from "./attention";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
+import { BRAND } from "../../../shared/brand";
 
 function loginStatus(state: BrowserAccountState): "pending" | "signed_in" | "expired" {
   if (browserAccountIsSignedIn(state)) return "signed_in";
@@ -77,11 +78,11 @@ export function createAccountNamespace(
     // re-pair; the affordance that uses this is hidden in web mode, and this
     // says why rather than starting a sign-in that could never help.
     startDeviceLogin: async () => {
-      throw new Error("Open ADE on the computer you want to reconnect, then try again there.");
+      throw new Error(`Open ${BRAND.NAME} on the computer you want to reconnect, then try again there.`);
     },
     pollDeviceLogin: async () => ({
       status: "error" as const,
-      message: "Open ADE on the computer you want to reconnect, then try again there.",
+      message: `Open ${BRAND.NAME} on the computer you want to reconnect, then try again there.`,
       intervalSec: null,
       authStatus: browserAccountStatus(accountClient.getSnapshot()),
     }),
@@ -103,7 +104,7 @@ export function createAccountNamespace(
     // browser has no brain of its own, so it cannot repair anything; the action
     // is hidden in web mode rather than left to fail here.
     repairMachinePairing: async () => {
-      throw new Error("Open ADE on the computer you want to reconnect, then try again there.");
+      throw new Error(`Open ${BRAND.NAME} on the computer you want to reconnect, then try again there.`);
     },
   };
 }
@@ -155,7 +156,7 @@ export function createAccountSettingsNamespace(
   const unavailable = {
     ok: false as const,
     unavailable: true as const,
-    message: "Your ADE account settings didn't load. Try again.",
+    message: `Your ${BRAND.NAME} account settings didn't load. Try again.`,
   };
   const isSeenKey = (args: { scope: string; key: string }) =>
     args.scope === ACCOUNT_SCOPE_ALL && args.key === ANNOUNCEMENTS_SEEN_SETTING_KEY;

@@ -39,7 +39,7 @@ describe("web-client trust reset migration", () => {
     expect(request.onblocked).toBeTypeOf("function");
     request.onblocked?.(new Event("blocked") as IDBVersionChangeEvent);
 
-    await expect(pendingRead).rejects.toThrow("Close other ADE tabs and try again");
+    await expect(pendingRead).rejects.toThrow("Close other Daex tabs and try again");
   });
 
   it("closes an open database when a future schema version requests an upgrade", async () => {

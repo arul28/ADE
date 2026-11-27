@@ -11,6 +11,7 @@ import { isCloudPhoneProviderChoice, type CloudPhoneProviderChoice, type CloudPh
 import { captureError } from "../../../shared/sentry/capture";
 import type { BrowserAccountClient } from "../account/client";
 import { stashCloudLink, type WebCloudLink } from "../shell/cloudPlanLink";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * ADE Cloud's plan and billing in the web app: the same server calls the
@@ -48,9 +49,9 @@ function accessAnswerOf(body: unknown): WebCloudAccessAnswer {
   return { enabled, reason: reason || null };
 }
 
-const UNREACHABLE = "ADE couldn't reach ADE Cloud. Try again in a moment.";
-const BAD_ANSWER = "ADE Cloud answered with something ADE could not read.";
-const SIGN_IN_AGAIN = "Your ADE sign-in ended. Sign in again to change your plan.";
+const UNREACHABLE = `${BRAND.NAME} couldn't reach ${BRAND.CLOUD_NAME}. Try again in a moment.`;
+const BAD_ANSWER = `${BRAND.CLOUD_NAME} answered with something ${BRAND.NAME} could not read.`;
+const SIGN_IN_AGAIN = `Your ${BRAND.NAME} sign-in ended. Sign in again to change your plan.`;
 
 /** The server's one sentence (`{ error: { message } }`). */
 function errorMessageOf(body: unknown): string | null {
@@ -108,10 +109,10 @@ export function createWebCloudBilling(accountClient: CloudBillingAccountClient) 
       throw new Error(parsed.code === "unavailable" || !parsed.message ? UNREACHABLE : parsed.message);
     }
     // Refused after a fresh token: signing in again would be refused the same way.
-    if (answer.status === 401) throw new Error(errorMessageOf(answer.body) ?? "ADE Cloud didn't accept your sign-in. Sign out of ADE and sign in again.");
+    if (answer.status === 401) throw new Error(errorMessageOf(answer.body) ?? `${BRAND.CLOUD_NAME} didn't accept your sign-in. Sign out of ${BRAND.NAME} and sign in again.`);
     if (answer.status < 200 || answer.status >= 300) {
       throw new Error(errorMessageOf(answer.body)
-        ?? (answer.status >= 500 ? "ADE Cloud is having trouble right now. Try again in a moment." : `ADE Cloud answered with an error (${answer.status}).`));
+        ?? (answer.status >= 500 ? `${BRAND.CLOUD_NAME} is having trouble right now. Try again in a moment.` : `${BRAND.CLOUD_NAME} answered with an error (${answer.status}).`));
     }
     return answer;
   };

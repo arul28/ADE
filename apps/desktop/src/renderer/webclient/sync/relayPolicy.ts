@@ -3,6 +3,7 @@ import {
   type BrowserDialCandidate,
 } from "./endpoints";
 import type { WebClientEnvironmentRecord } from "./envStore";
+import { BRAND } from "../../../shared/brand";
 
 export type WebRelayAccess =
   | { kind: "signed_out" }
@@ -19,7 +20,7 @@ export const SIGNED_OUT_RELAY_ACCESS: WebRelayAccess = { kind: "signed_out" };
 export class WebRelayAuthRequiredError extends Error {
   readonly code = "web_relay_auth_required";
 
-  constructor(message = "Sign in with the same ADE account as this machine.") {
+  constructor(message = `Sign in with the same ${BRAND.NAME} account as this machine.`) {
     super(message);
     this.name = "WebRelayAuthRequiredError";
   }

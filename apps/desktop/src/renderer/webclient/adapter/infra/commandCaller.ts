@@ -5,6 +5,7 @@ import { noteBootCriticalRead, waitForBootPriority } from "./bootPriority";
 import { stableCacheKey } from "./cacheKey";
 import { createCoalescingReadCache } from "./coalescingReadCache";
 import type { AdapterProjectState } from "./projectState";
+import { BRAND } from "../../../../shared/brand";
 
 type Fallback<T> = T | (() => T | Promise<T>);
 
@@ -81,7 +82,7 @@ export class UnsupportedRemoteCommandError extends Error {
   constructor(readonly action: string) {
     // Matches the phrasing the explicit `callRequired` fallbacks already use,
     // so every "the host can't do this" failure reads the same way.
-    super(`Action '${action}' is unavailable on the connected ADE host. Update ADE on that machine to use it.`);
+    super(`Action '${action}' is unavailable on the connected ${BRAND.NAME} host. Update ${BRAND.NAME} on that machine to use it.`);
     this.name = "UnsupportedRemoteCommandError";
   }
 }
@@ -189,7 +190,7 @@ export class CommandCaller {
       // Same rule as above: nothing was dispatched, so a mutation must reject
       // rather than resolve an answer the host never gave.
       if (options.authoritative || options.idempotent === false) {
-        throw new Error(`Action '${action}' needs a project open on the connected ADE host.`);
+        throw new Error(`Action '${action}' needs a project open on the connected ${BRAND.NAME} host.`);
       }
       return await resolveOfflineAnswer();
     }

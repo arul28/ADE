@@ -13,6 +13,7 @@ import { cloudTierRequestIdsOf } from "../../../shared/cloudTierRequest";
 import { cloudTier, isCloudTierId, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import type { CloudInstance, CloudMoveRecord } from "../../../../../account-directory/src/cloud/contract";
 import { webTierRequestOf, type WebTierRequest, type WebTierRequestInput, type WebTierRequestTeller } from "./cloudLaneLifeWeb";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * ADE Web's moves of a lane's computer to the other kind (Standard ↔ Full):
@@ -177,7 +178,7 @@ export function createWebCloudMoves(api: () => CloudApiClient | null, options: {
 
   const need = () => {
     const client = api();
-    if (!client) throw new Error("Sign in to ADE to change your ADE Cloud lanes.");
+    if (!client) throw new Error(`Sign in to ${BRAND.NAME} to change your ${BRAND.CLOUD_NAME} lanes.`);
     return client;
   };
 
@@ -194,7 +195,7 @@ export function createWebCloudMoves(api: () => CloudApiClient | null, options: {
       const [computer, account] = await Promise.all([client.computer(instanceId), client.account()]);
       const catalog = cloudCatalogOf(account);
       const tier = cloudTier(catalog, args.sizeId);
-      if (!tier) throw new Error("ADE Cloud doesn't offer that size now.");
+      if (!tier) throw new Error(`${BRAND.CLOUD_NAME} doesn't offer that size now.`);
       if ((computer.type === "vm" ? "vm" : "default") === tier.type) {
         return options.resizeInPlace({
           computer,

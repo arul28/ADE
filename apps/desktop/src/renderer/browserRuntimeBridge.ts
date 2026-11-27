@@ -1,3 +1,4 @@
+import { BRAND } from "../shared/brand";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 type BridgeHealth = {
@@ -137,7 +138,7 @@ function patchLinearMethods(ade: any) {
 function patchJiraMethods(ade: any, health: BridgeHealth) {
   const call = (action: string, args?: Record<string, unknown>, pin?: any) => {
     if (pin && (pin.kind !== "local" || pin.rootPath !== health.projectRoot)) {
-      throw new Error("Jira needs a connected ADE runtime for the pinned project.");
+      throw new Error(`Jira needs a connected ${BRAND.NAME} runtime for the pinned project.`);
     }
     return bridgePost("/action", {
       domain: "jira",

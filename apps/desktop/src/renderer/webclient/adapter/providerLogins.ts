@@ -4,12 +4,13 @@ import { savedChatsMachineKey } from "../../../shared/cloudSavedChats";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
 import type { AdapterInfra } from "./types";
+import { BRAND } from "../../../shared/brand";
 
 type ProviderLoginsBridge = NonNullable<Window["ade"]["providerLogins"]>;
 
-const NO_COMPUTER = "ADE Web reads your sign-ins through one of your computers, and none is connected here.";
+const NO_COMPUTER = `${BRAND.NAME} Web reads your sign-ins through one of your computers, and none is connected here.`;
 
-const DESKTOP_ONLY = "Do this in the ADE desktop app on that computer: only that computer's own ADE can read its OS keyring or its GitHub CLI login.";
+const DESKTOP_ONLY = `Do this in the ${BRAND.NAME} desktop app on that computer: only that computer's own ${BRAND.NAME} can read its OS keyring or its GitHub CLI login.`;
 
 /**
  * `window.ade.providerLogins` for the web app: the account's sign-ins for
@@ -46,7 +47,7 @@ export function createWebProviderLoginsNamespace(infra: Pick<AdapterInfra, "clie
     }
     return await commands.call<ProviderLoginStatus>(`providerLogins.${method}`, (args ?? {}) as Record<string, unknown>, {
       fallback: () => {
-        throw new Error("Update ADE on that computer to see your sign-ins here.");
+        throw new Error(`Update ${BRAND.NAME} on that computer to see your sign-ins here.`);
       },
       authoritative: true,
       retainLastRead: false,

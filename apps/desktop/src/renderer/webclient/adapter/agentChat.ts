@@ -62,6 +62,7 @@ import { noteChatHistorySettled, noteChatHistoryStarted } from "./infra/bootPrio
 import { chatEventDedupKey } from "./infra/chatEventDedup";
 import { chatSessionFromRemoteSummary } from "./infra/chatSessionShape";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
+import { BRAND } from "../../../shared/brand";
 
 // The browser gets authoritative ordered history through
 // chat.getChatEventHistory. chat_subscribe snapshots still matter as bounded
@@ -189,7 +190,7 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     if (!idempotent) return commands.call<T>(action, asRecord(args), mutation);
     return commands.call<T>(action, asRecord(args), {
       fallback: () => {
-        throw new Error(`${capability} action '${action}' is unavailable on the connected ADE host.`);
+        throw new Error(`${capability} action '${action}' is unavailable on the connected ${BRAND.NAME} host.`);
       },
     });
   }
@@ -452,7 +453,7 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
         asRecord(args),
         {
           fallback: () => {
-            throw new Error("Chat history action 'chat.crossMachineBatchSourceChanged' is unavailable on the connected ADE host.");
+            throw new Error(`Chat history action 'chat.crossMachineBatchSourceChanged' is unavailable on the connected ${BRAND.NAME} host.`);
           },
           authoritative: true,
           retainLastRead: false,
@@ -488,7 +489,7 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     typeIntoCli: async (args: AgentCliTypeArgs, pin?: RuntimePinArg): Promise<AgentCliTypeResult> => {
       guardPin("typeIntoCli", pin);
       // Typing a line at once is the old desktop terminal's path; ADE Web never had it.
-      if (args.when === "now") throw new Error("ADE Web cannot type a line into a CLI at once. Send it from the CLI input box.");
+      if (args.when === "now") throw new Error(`${BRAND.NAME} Web cannot type a line into a CLI at once. Send it from the CLI input box.`);
       const result = await callRequiredMutation<{ outcome?: AgentCliTypeResult["outcome"]; typedAtOnce?: boolean }>("chat.typeIntoCli", {
         sessionId: args.sessionId,
         text: args.text,
@@ -497,7 +498,7 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       });
       const outcome = result?.outcome;
       if (outcome !== "delivered" && outcome !== "deferred" && outcome !== "held" && outcome !== "ended") {
-        throw new Error("This ADE host cannot type into a CLI session yet. Update ADE on that computer.");
+        throw new Error(`This ${BRAND.NAME} host cannot type into a CLI session yet. Update ${BRAND.NAME} on that computer.`);
       }
       return { outcome, ...(outcome === "delivered" && result?.typedAtOnce === true ? { typedAtOnce: true as const } : {}) };
     },
@@ -515,7 +516,7 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
         queued: false,
       }, false);
       if (result.steerId === UNSENT_SENTINEL) {
-        throw new Error("Couldn't reach the ADE host to send this message. Check the connection and resend.");
+        throw new Error(`Couldn't reach the ${BRAND.NAME} host to send this message. Check the connection and resend.`);
       }
       return result;
     },
@@ -567,7 +568,7 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       guardPin("getDeletedDetail", pin);
       // A transcript page: not kept as a reconnect answer once the preview closes.
       return await callLargeRead<ExternalSessionDetail>("chat.getDeletedDetail", args, () => {
-        throw new Error("Chat history action 'chat.getDeletedDetail' is unavailable on the connected ADE host.");
+        throw new Error(`Chat history action 'chat.getDeletedDetail' is unavailable on the connected ${BRAND.NAME} host.`);
       });
     },
     reopenDeleted: async (args, pin) => {
@@ -835,7 +836,7 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       return await callLargeRead<{ dataUrl: string }>("chat.getImageDataUrl", { path }, () => {
         // Reject, never `{ dataUrl: "" }`: the attachment reader caches a
         // resolved answer, so an empty one would outlive the reconnect.
-        throw new Error("Image previews are unavailable on the connected ADE host.");
+        throw new Error(`Image previews are unavailable on the connected ${BRAND.NAME} host.`);
       });
     },
     resolveSmartLinkPreview: (args: unknown) => {
@@ -900,7 +901,7 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
           maxBytes: WEB_CHAT_HISTORY_PAGE_BYTES,
         },
         () => {
-          throw new Error(`Chat history action '${historyPageAction}' is unavailable on the connected ADE host.`);
+          throw new Error(`Chat history action '${historyPageAction}' is unavailable on the connected ${BRAND.NAME} host.`);
         },
       );
     },

@@ -1089,7 +1089,7 @@ describe("browser sync connection and client", () => {
     });
 
     expect(script.sockets).toHaveLength(1);
-    expect(script.sockets[0]?.closeHistory).toContainEqual({ code: 4000, reason: "Incompatible ADE host" });
+    expect(script.sockets[0]?.closeHistory).toContainEqual({ code: 4000, reason: "Incompatible Daex host" });
     expect(connection.getStatus()).toMatchObject({
       state: "error",
       error: INVALIDATION_ONLY_V1_HOST_UPDATE_MESSAGE,
@@ -1138,7 +1138,7 @@ describe("browser sync connection and client", () => {
 
     expect(buildEnvironment).not.toHaveBeenCalled();
     expect(script.sockets).toHaveLength(1);
-    expect(script.sockets[0]?.closeHistory).toContainEqual({ code: 4000, reason: "Incompatible ADE host" });
+    expect(script.sockets[0]?.closeHistory).toContainEqual({ code: 4000, reason: "Incompatible Daex host" });
     expect(connection.getStatus()).toMatchObject({
       state: "error",
       error: INVALIDATION_ONLY_V1_HOST_UPDATE_MESSAGE,
@@ -2601,7 +2601,7 @@ describe("browser sync connection and client", () => {
   for (const scenario of [
     {
       code: "account_session_changed" as const,
-      message: "Your ADE account changed while connecting. Sign in again.",
+      message: "Your Daex account changed while connecting. Sign in again.",
     },
     {
       code: "host_update_required" as const,
@@ -2728,7 +2728,7 @@ describe("browser sync connection and client", () => {
     const result = await reconcileActiveAccountLease({
       accountClient: {
         getAccessToken: async () => {
-          throw new Error("ADE account session expired.");
+          throw new Error("Daex account session expired.");
         },
         getSnapshot: () => ({
           state: "auth_expired",
@@ -2739,7 +2739,7 @@ describe("browser sync connection and client", () => {
           expiresAt: null,
           machines: [],
           relayBaseUrls: [],
-          message: "Your ADE account session expired. Sign in again.",
+          message: "Your Daex account session expired. Sign in again.",
         }),
       },
       syncClient: client,
@@ -2780,7 +2780,7 @@ describe("browser sync connection and client", () => {
     const result = await reconcileActiveAccountLease({
       accountClient: {
         getAccessToken: async () => {
-          throw new Error("ADE account session expired.");
+          throw new Error("Daex account session expired.");
         },
         getSnapshot: () => ({
           state: "auth_expired",
@@ -2791,7 +2791,7 @@ describe("browser sync connection and client", () => {
           expiresAt: null,
           machines: [],
           relayBaseUrls: [],
-          message: "Your ADE account session expired. Sign in again.",
+          message: "Your Daex account session expired. Sign in again.",
         }),
       },
       syncClient: client,
@@ -2843,7 +2843,7 @@ describe("browser sync connection and client", () => {
     const result = await reconcileActiveAccountLease({
       accountClient: {
         getAccessToken: async () => {
-          throw new Error("ADE account session expired.");
+          throw new Error("Daex account session expired.");
         },
         getSnapshot: () => ({
           state: "auth_expired",
@@ -2854,7 +2854,7 @@ describe("browser sync connection and client", () => {
           expiresAt: null,
           machines: [],
           relayBaseUrls: [],
-          message: "Your ADE account session expired. Sign in again.",
+          message: "Your Daex account session expired. Sign in again.",
         }),
       },
       syncClient: client,

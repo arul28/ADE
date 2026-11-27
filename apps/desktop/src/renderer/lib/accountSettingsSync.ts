@@ -53,6 +53,7 @@ import { applyAccountHarnessPresets, type AppState } from "../state/appStore";
 import { withUnreadableHarnessPresets } from "./harnessPresetCarry";
 import { mergeStarPillPrefs } from "./starPill";
 import { isPageHidden, observePageVisibility } from "./pageVisibility";
+import { BRAND } from "../../shared/brand";
 
 /** How often a signed-in machine reconciles with the account. */
 export const ACCOUNT_SETTINGS_POLL_MS = 30_000;
@@ -397,8 +398,8 @@ function unsyncedResult(
     ok: false,
     unavailable: true,
     message: override || detail || (signedOut
-      ? "Sign in to ADE to sync this setting to your account."
-      : "This computer could not reach ADE's account settings service."),
+      ? `Sign in to ${BRAND.NAME} to sync this setting to your account.`
+      : `This computer could not reach ${BRAND.NAME}'s account settings service.`),
   };
 }
 

@@ -20,6 +20,7 @@ import {
 } from "../lib/cloudMachineWake";
 import { rootAppStoreApi } from "./appStore";
 import { savedChatLocationForSession } from "./cloudSavedChats";
+import { BRAND } from "../../shared/brand";
 
 export type AdeCloudLaneWakeState = "idle" | "waking" | "failed";
 
@@ -42,7 +43,7 @@ export function wakeAdeCloudLane(
   const machineKey = adeCloudLaneMachineKey(pin);
   if (!machineKey) return false;
   clearCloudMachineWakeFailure(machineKey);
-  wakeRestingCloudMachine({ machineId: pin.targetId, machineName: "your ADE Cloud computer", hostname: pin.hostname ?? null }, intent);
+  wakeRestingCloudMachine({ machineId: pin.targetId, machineName: `your ${BRAND.CLOUD_NAME} computer`, hostname: pin.hostname ?? null }, intent);
   return true;
 }
 

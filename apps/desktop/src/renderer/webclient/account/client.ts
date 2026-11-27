@@ -34,6 +34,7 @@ import {
   type BrowserAccountSessionPersistence,
   type PersistedBrowserAccountSession,
 } from "./sessionStore";
+import { BRAND } from "../../../shared/brand";
 
 // The pending-authorization stash lives in localStorage, not sessionStorage.
 // Embedded browsers (ADE's own built-in browser included) do not guarantee that
@@ -576,7 +577,7 @@ export class BrowserAccountClient {
     (this.options.history ?? window.history).replaceState(null, "", returnPath);
 
     if (oauthError || !code) {
-      await this.expireSession("ADE account sign-in was not completed.");
+      await this.expireSession(`${BRAND.NAME} account sign-in was not completed.`);
       return this.getSnapshot();
     }
     if (!pending) {
@@ -585,7 +586,7 @@ export class BrowserAccountClient {
       // browser that discarded our storage.
       await this.expireSession(
         otherAttemptsPending
-          ? "ADE account sign-in could not be verified. Try again."
+          ? `${BRAND.NAME} account sign-in could not be verified. Try again.`
           : "Sign-in couldn't complete in this browser: it discarded the pending sign-in before the redirect returned. Try signing in again, or use your system browser.",
       );
       return this.getSnapshot();
@@ -603,7 +604,7 @@ export class BrowserAccountClient {
       this.writeSignedOutByUser(false);
       return await this.loadMachines();
     } catch {
-      await this.expireSession("ADE account sign-in expired or was rejected. Try again.");
+      await this.expireSession(`${BRAND.NAME} account sign-in expired or was rejected. Try again.`);
       return this.getSnapshot();
     }
   }
@@ -724,8 +725,8 @@ export class BrowserAccountClient {
     try {
       answer = await this.allowedDirectoryRequest({ method: "POST", path: ACCOUNT_DELETE_PATH, body: { confirm: "delete" } });
     } catch (cause) {
-      if (parseCodedErrorMessage(cause).code === "signed_out") throw new Error("Sign in to ADE to delete your account.");
-      throw new Error("ADE couldn't reach your account. Check your connection and try again.");
+      if (parseCodedErrorMessage(cause).code === "signed_out") throw new Error(`Sign in to ${BRAND.NAME} to delete your account.`);
+      throw new Error(`${BRAND.NAME} couldn't reach your account. Check your connection and try again.`);
     }
     const body = answer.body && typeof answer.body === "object" ? answer.body as Record<string, unknown> : {};
     if (answer.status < 200 || answer.status >= 300 || body.deleted !== true) {
@@ -760,7 +761,7 @@ export class BrowserAccountClient {
   async getAccessToken(options: { forceRefresh?: boolean } = {}): Promise<string> {
     const config = this.config;
     const session = this.session;
-    if (!config || !session) throw new Error("ADE account sign-in is required.");
+    if (!config || !session) throw new Error(`${BRAND.NAME} account sign-in is required.`);
     if (
       !options.forceRefresh
       && session.expiresAtMs - (this.options.now?.() ?? Date.now()) > REFRESH_SKEW_MS
@@ -781,7 +782,7 @@ export class BrowserAccountClient {
         return session.accessToken;
       }
       await this.expireSession();
-      throw new Error("ADE account session expired.");
+      throw new Error(`${BRAND.NAME} account session expired.`);
     }
     if (this.refreshPromise) return await this.refreshPromise;
     const refreshPromise = this.refreshSession(config, session).finally(() => {
@@ -803,18 +804,18 @@ export class BrowserAccountClient {
       }, session.refreshToken);
       if (this.session !== session) {
         if (this.session) return this.session.accessToken;
-        throw new Error("ADE account sign-in is required.");
+        throw new Error(`${BRAND.NAME} account sign-in is required.`);
       }
       const applied = await this.setSession(token, config, session);
       if (!applied) {
         if (this.session) return await this.getAccessToken();
-        throw new Error("ADE account sign-in is required.");
+        throw new Error(`${BRAND.NAME} account sign-in is required.`);
       }
       const refreshed = this.session;
-      if (!refreshed) throw new Error("ADE account session expired.");
+      if (!refreshed) throw new Error(`${BRAND.NAME} account session expired.`);
       if (refreshed.expiresAtMs <= (this.options.now?.() ?? Date.now())) {
         await this.expireSession();
-        throw new Error("ADE account session expired.");
+        throw new Error(`${BRAND.NAME} account session expired.`);
       }
       return refreshed.accessToken;
     } catch (error) {
@@ -824,7 +825,7 @@ export class BrowserAccountClient {
         && this.session === session
       ) {
         await this.expireSession();
-        throw new Error("ADE account session expired.");
+        throw new Error(`${BRAND.NAME} account session expired.`);
       }
       throw error;
     }
@@ -1058,7 +1059,7 @@ export class BrowserAccountClient {
         ...this.snapshot,
         state: "directory_unavailable",
         machines: [],
-        message: "Couldn't refresh your ADE account session. Try again.",
+        message: `Couldn't refresh your ${BRAND.NAME} account session. Try again.`,
       };
       return this.getSnapshot();
     }
@@ -1137,7 +1138,7 @@ export class BrowserAccountClient {
       answer = await this.allowedDirectoryRequest({ method: "POST", path: ACCOUNT_PROJECT_PATHS.root, body: { ...request } });
     } catch (error) {
       const code = parseCodedErrorMessage(error).code === "signed_out" ? "signed_out" : "unavailable";
-      return { ok: false, code, message: code === "signed_out" ? "Sign in to ADE to change your projects." : "ADE couldn't reach your account. Try again." };
+      return { ok: false, code, message: code === "signed_out" ? `Sign in to ${BRAND.NAME} to change your projects.` : `${BRAND.NAME} couldn't reach your account. Try again.` };
     }
     const body = answer.body && typeof answer.body === "object" ? answer.body as Record<string, unknown> : {};
     if (answer.status < 200 || answer.status >= 300) {
@@ -1150,7 +1151,7 @@ export class BrowserAccountClient {
     }
     const raw = body.project && typeof body.project === "object" ? body.project as Record<string, unknown> : null;
     const project = raw ? coerceAccountProjectView({ ...raw, removedAt: null, mergedInto: null }) : null;
-    if (!project) return { ok: false, code: "bad_answer", message: "Your account sent an answer ADE can't read." };
+    if (!project) return { ok: false, code: "bad_answer", message: `Your account sent an answer ${BRAND.NAME} can't read.` };
     return { ok: true, project, created: body.created === true, revived: body.revived === true };
   }
 
@@ -1214,7 +1215,7 @@ export class BrowserAccountClient {
   }, options: { timeoutMs?: number } = {}): Promise<{ status: number; body: unknown }> {
     const config = this.config;
     if (!config) throw new Error(encodeCodedErrorMessage("no_directory", "Account sign-in isn't configured for this web client."));
-    const signedOut = () => new Error(encodeCodedErrorMessage("signed_out", "Sign in to your ADE account."));
+    const signedOut = () => new Error(encodeCodedErrorMessage("signed_out", `Sign in to your ${BRAND.NAME} account.`));
     let token: string;
     try {
       token = await this.getAccessToken();
@@ -1455,7 +1456,7 @@ export class BrowserAccountClient {
       );
       if (response.status === 401 || response.status === 403) {
         await this.expireSession();
-        throw new Error("ADE account session expired.");
+        throw new Error(`${BRAND.NAME} account session expired.`);
       }
       if (!response.ok) {
         let payload: unknown = null;
@@ -1528,7 +1529,7 @@ export class BrowserAccountClient {
       );
       if (response.status === 401 || response.status === 403) {
         await this.expireSession();
-        throw new Error("ADE account session expired.");
+        throw new Error(`${BRAND.NAME} account session expired.`);
       }
       if (!response.ok) throw new Error(`Couldn't rename that machine (${response.status}).`);
       const machine = parseAccountMachine(
@@ -1548,7 +1549,7 @@ export class BrowserAccountClient {
   }
 
   private async expireSession(
-    message = "Your ADE account session expired. Sign in again.",
+    message = `Your ${BRAND.NAME} account session expired. Sign in again.`,
   ): Promise<void> {
     this.session = null;
     this.sessionGeneration += 1;

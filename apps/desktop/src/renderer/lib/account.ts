@@ -6,6 +6,7 @@ import type {
   AdeAccountSessionState,
   AdeAccountStatus,
 } from "../../shared/types";
+import { BRAND } from "../../shared/brand";
 
 // ---------------------------------------------------------------------------
 // Machine-owned ADE account (Clerk identity) — renderer helpers.
@@ -131,7 +132,7 @@ const ACCOUNT_SESSION_LABELS: Record<
 > = {
   active: {
     notice: null,
-    title: "Signed in to ADE",
+    title: `Signed in to ${BRAND.NAME}`,
     shortLabel: "Account",
     connectionsSubtitle: "Manage your account",
     connectionsAction: "Account settings",
@@ -145,23 +146,23 @@ const ACCOUNT_SESSION_LABELS: Record<
     shortLabel: "Signed out",
     connectionsSubtitle: "Sign in to easily connect your machines",
     connectionsAction: "Sign in",
-    connectionsActionAria: "Sign in to ADE",
+    connectionsActionAria: `Sign in to ${BRAND.NAME}`,
     banner: {
-      title: "Signed out of ADE",
+      title: `Signed out of ${BRAND.NAME}`,
       detail: "Your settings and secrets are not syncing to this computer.",
       action: "Sign in",
     },
     gate: "required",
   },
   expired: {
-    notice: "Your ADE sign-in expired — sign in again.",
+    notice: `Your ${BRAND.NAME} sign-in expired — sign in again.`,
     title: "Signed out",
     shortLabel: "Signed out",
     connectionsSubtitle: "Sign in to easily connect your machines",
     connectionsAction: "Sign in",
-    connectionsActionAria: "Sign in to ADE",
+    connectionsActionAria: `Sign in to ${BRAND.NAME}`,
     banner: {
-      title: "Your ADE sign-in expired",
+      title: `Your ${BRAND.NAME} sign-in expired`,
       detail: "Your settings and secrets are not syncing to this computer.",
       action: "Sign in",
     },
@@ -176,7 +177,7 @@ const ACCOUNT_SESSION_LABELS: Record<
     connectionsAction: "Fix sign-in",
     connectionsActionAria: "Fix your sign-in",
     banner: {
-      title: "ADE can't read your sign-in",
+      title: `${BRAND.NAME} can't read your sign-in`,
       detail: "Your session is still there. Repair it before you sign in again.",
       action: "Repair",
     },

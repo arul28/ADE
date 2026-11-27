@@ -14,6 +14,7 @@ import { createBackoffPoller, type BackoffPoller } from "../lib/backoffPoller";
 import { isAdeAvailable } from "../lib/adeAvailability";
 import { refreshCloudMachines } from "../components/remoteTargets/useCloudMachines";
 import { accountProjectListUserId, onAccountProjectListAccountChange } from "./accountProjectListClient";
+import { BRAND } from "../../shared/brand";
 
 /**
  * Chats started on ADE Cloud from the account server (`window.ade.cloudLaunches`),
@@ -385,7 +386,7 @@ const unsentFiles = new Map<string, AccountCloudLaunchFile[]>();
 /** Sends each file, then names them all on the start request. Throws a sentence that names the file. */
 async function sendLaunchFiles(launchId: string, files: readonly AccountCloudLaunchFile[]): Promise<CloudLaunchAttachment[]> {
   const upload = bridge()?.uploadFile;
-  if (!upload) throw new Error("This ADE can't send files to ADE Cloud with a first message. Send the message without them.");
+  if (!upload) throw new Error(`This ${BRAND.NAME} can't send files to ${BRAND.CLOUD_NAME} with a first message. Send the message without them.`);
   const sent: CloudLaunchAttachment[] = [];
   for (const [index, file] of files.entries()) {
     try {
@@ -395,7 +396,7 @@ async function sendLaunchFiles(launchId: string, files: readonly AccountCloudLau
       sent.push({ fileId, name: file.name, contentType, sizeBytes: uploaded.sizeBytes });
     } catch (error) {
       const reason = (error instanceof Error ? error.message : String(error)).replace(/[.\s]+$/, "");
-      throw new Error(`ADE couldn't send ${file.name} to ADE Cloud: ${reason}. Retry to send it again.`);
+      throw new Error(`${BRAND.NAME} couldn't send ${file.name} to ${BRAND.CLOUD_NAME}: ${reason}. Retry to send it again.`);
     }
   }
   return sent;
@@ -425,7 +426,7 @@ async function withSentFiles(launchId: string, request: CloudLaunchStartRequest)
  */
 export async function startAccountCloudChat(input: StartAccountCloudChat): Promise<string> {
   const api = bridge();
-  if (!api) throw new Error("ADE Cloud chats start from the web app here.");
+  if (!api) throw new Error(`${BRAND.CLOUD_NAME} chats start from the web app here.`);
   const launchId = input.launchId ?? newCloudLaunchId();
   const messageId = newCloudMessageId();
   const request: CloudLaunchStartRequest = {

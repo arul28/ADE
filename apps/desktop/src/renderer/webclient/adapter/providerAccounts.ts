@@ -6,6 +6,7 @@ import type {
   ProviderLoginStatus,
 } from "../../../shared/types/providerInstances";
 import type { AdeNamespace, MiscCall } from "./types";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The host's provider accounts, for the Accounts panel in the hosted web client.
@@ -22,7 +23,7 @@ import type { AdeNamespace, MiscCall } from "./types";
  */
 export function createProviderAccountsNamespace(call: MiscCall): AdeNamespace<"providerInstances"> {
   const unavailable = (): never => {
-    throw new Error("This ADE host cannot manage provider accounts remotely yet. Update ADE on the host.");
+    throw new Error(`This ${BRAND.NAME} host cannot manage provider accounts remotely yet. Update ${BRAND.NAME} on the host.`);
   };
   // A read may be answered from the last good reply while the host is away.
   const cached = <T>(method: string, args: unknown): Promise<T> =>

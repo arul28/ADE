@@ -7,6 +7,7 @@ import { isProviderSlashCommandInput } from "../../shared/chatSlashCommands";
 import { stripElectronErrorWrapper } from "../../shared/codedError";
 import { cursorOwnsSessionName as cursorOwnsCloudAgentId } from "../../shared/cursorCloudNaming";
 import { isChatToolType } from "../../shared/sessionSpawnNesting";
+import { BRAND } from "../../shared/brand";
 
 export { CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE } from "../../shared/cursorCloudNaming";
 export { isChatToolType };
@@ -63,8 +64,8 @@ export function formatSessionActionError(error: unknown, action: string): string
     // showing the raw id for.
     return `${action} failed: that session is no longer on the machine this tab is connected to. Refresh the list, or switch to the machine that owns it and try again.`;
   }
-  if (/is still owned by another ADE runtime/i.test(message)) {
-    return `${action} failed: another ADE runtime still owns this session. Stop it from that machine first.`;
+  if (/is still owned by another (?:ADE|Daex) runtime/i.test(message)) {
+    return `${action} failed: another ${BRAND.NAME} runtime still owns this session. Stop it from that machine first.`;
   }
   return `${action} failed: ${message}`;
 }

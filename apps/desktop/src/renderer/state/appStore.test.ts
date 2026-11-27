@@ -1803,7 +1803,7 @@ describe("appStore", () => {
       expect(useAppStore.getState().projectTransition).toBeNull();
       expect(useAppStore.getState().projectTransitionError).toEqual({
         message:
-          "Switching projects took longer than 30 seconds, so ADE kept the current project open. It's still working on it in the background — you can try again now.",
+          "Switching projects took longer than 30 seconds, so Daex kept the current project open. It's still working on it in the background — you can try again now.",
         // The banner offers "Try again" for uncoded switch failures.
         retryRootPath: "/tmp/slow-project",
       });
@@ -1892,7 +1892,7 @@ describe("appStore", () => {
       const transitionError = useAppStore.getState().projectTransitionError;
       expect(transitionError).toEqual({
         code,
-        message: "ADE ran into a problem with this project.",
+        message: "Daex ran into a problem with this project.",
         rootPath: "/tmp/project",
       });
       expectNoJargon(transitionError?.message ?? "");

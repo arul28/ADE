@@ -54,6 +54,7 @@ import { COLORS, SANS_FONT, primaryButton } from "./shellTokens";
 import { requirePin } from "../../lib/requirePin";
 import { showToast } from "../../components/app/toast/toastStore";
 import { claimWindowStripForAccount } from "../../components/app/windowStripStorage";
+import { BRAND } from "../../../shared/brand";
 
 async function loadFederatedAdapter(
   manager: WebMachineSessionManager,
@@ -351,7 +352,7 @@ export function WebClientRoot({
         setConnectingMachineKey(null);
       }
     }
-    throw new Error("This machine has no connection ADE Web can dial.");
+    throw new Error(`This machine has no connection ${BRAND.NAME} Web can dial.`);
   }, [refreshVisibleEnvironments, sessionManager]);
 
   /** The account's machines merged with the live sessions, read fresh. */
@@ -673,7 +674,7 @@ export function WebClientRoot({
         setPhase({
           kind: "signed-out",
           SignIn: function ComputerSignIn() {
-            return <WebSignInScreen clerk={setup} subtitle="Sign in to finish setting up ADE on your computer." />;
+            return <WebSignInScreen clerk={setup} subtitle={`Sign in to finish setting up ${BRAND.NAME} on your computer.`} />;
           },
         });
         return;
@@ -1064,10 +1065,10 @@ export function WebClientRoot({
     case "signing-in":
       return <ProgressScreen title="Signing in…" message="Completing secure sign-in…" />;
     case "booting":
-      return <ProgressScreen title={phase.title ?? "Starting ADE"} message={phase.message} done={phase.done} />;
+      return <ProgressScreen title={phase.title ?? `Starting ${BRAND.NAME}`} message={phase.message} done={phase.done} />;
     case "error":
       return (
-        <ScreenShell title="ADE Web couldn't start" subtitle={phase.message}>
+        <ScreenShell title={`${BRAND.NAME} Web couldn't start`} subtitle={phase.message}>
           <button
             type="button"
             style={primaryButton({ height: 36 })}
@@ -1083,7 +1084,7 @@ export function WebClientRoot({
     }
     case "ready": {
       if (!workspaceContext) {
-        return <ProgressScreen title="Starting ADE" message="Preparing your workspace…" />;
+        return <ProgressScreen title={`Starting ${BRAND.NAME}`} message="Preparing your workspace…" />;
       }
       const AppRoot = phase.AppRoot;
       return (

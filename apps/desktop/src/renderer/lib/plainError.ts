@@ -20,6 +20,7 @@
 import { isUnsupportedAdeActionError } from "../../shared/codedError";
 import { isConnectionTroubleText } from "./format";
 import { machineErrorText } from "./machineErrorText";
+import { BRAND } from "../../shared/brand";
 
 /**
  * What the person can do about it:
@@ -53,8 +54,8 @@ export function plainError(error: unknown, options: { fallback: string; machine?
     const where = options.machine?.trim();
     return {
       text: where
-        ? `${where} runs an older ADE that can't do this. Update ADE on ${where}, then try again.`
-        : "That computer runs an older ADE that can't do this. Update ADE on it, then try again.",
+        ? `${where} runs an older ${BRAND.NAME} that can't do this. Update ${BRAND.NAME} on ${where}, then try again.`
+        : `That computer runs an older ${BRAND.NAME} that can't do this. Update ${BRAND.NAME} on it, then try again.`,
       next: "update",
     };
   }

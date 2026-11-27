@@ -12,6 +12,7 @@
 import type { AiProviderSignInCheck, OpenProjectBinding } from "../../shared/types";
 import { isUnsupportedAdeActionError } from "../../shared/codedError";
 import { invalidateAiDiscoveryCache } from "./aiDiscoveryCache";
+import { BRAND } from "../../shared/brand";
 
 function unknownCheck(provider: string, reason: string): AiProviderSignInCheck {
   return { provider, state: "unknown", reason, account: null, checkedAt: new Date().toISOString() };
@@ -25,7 +26,7 @@ export async function checkProviderSignIn(
   try {
     const verify = window.ade?.ai?.verifyProviderSignIn;
     if (typeof verify !== "function") {
-      return unknownCheck(provider, "This ADE cannot check a sign-in. The status shows what is saved.");
+      return unknownCheck(provider, `This ${BRAND.NAME} cannot check a sign-in. The status shows what is saved.`);
     }
     return await verify({ provider }, pin ?? null);
   } catch (error) {
@@ -33,7 +34,7 @@ export async function checkProviderSignIn(
     if (isUnsupportedAdeActionError(error)) {
       return unknownCheck(
         provider,
-        "That computer runs an older ADE that cannot check a sign-in. The status shows what is saved there.",
+        `That computer runs an older ${BRAND.NAME} that cannot check a sign-in. The status shows what is saved there.`,
       );
     }
     const message = error instanceof Error ? error.message : String(error);

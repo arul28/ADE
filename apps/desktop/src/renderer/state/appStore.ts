@@ -108,6 +108,7 @@ import { READABLE_TOAST_DURATION_MS, showToast } from "../components/app/toast/t
 import { temporaryFolderWarning } from "../../shared/temporaryFolder";
 import { adeCloudBinding, isAdeCloudBinding, isAdeCloudTargetId, type AdeCloudBindingProject } from "../../shared/adeCloud/binding";
 import { applyInterfacePreferences } from "../theme/applyInterface";
+import { BRAND } from "../../shared/brand";
 
 export const DEFAULT_TERMINAL_FONT_FAMILY = [
   "ui-monospace",
@@ -2306,21 +2307,21 @@ function withPreservedLaneStatus(
 const RECOVERY_MESSAGE_BY_CODE: Partial<Record<AdeRecoveryErrorCode, string>> = {
   disk_full: "Your computer is out of space. Free up some space, then try again.",
   insufficient_headroom: "Your computer is almost out of space. Free up a few GB, then try again.",
-  brain_crash_looping: "ADE's background service keeps stopping. Open the project to fix it.",
+  brain_crash_looping: `${BRAND.NAME}'s background service keeps stopping. Open the project to fix it.`,
   migration_incomplete: "This project needs a quick fix before it can open.",
   migration_unknown_state: "This project needs a quick fix before it can open.",
   db_integrity: "This project needs a quick fix before it can open.",
-  brain_not_installed: "ADE's background service is missing. Open the project to fix it.",
-  background_item_blocked: "macOS isn't letting ADE's background service run.",
-  brain_not_running: "ADE's background service didn't start. Open the project to fix it.",
-  socket_stale_no_owner: "ADE didn't close properly last time. Open the project to fix it.",
-  socket_owned_by_other: "Another copy of ADE is open. Quit it, then try again.",
-  project_data_missing: "ADE's data for this project is missing. Open the project to restore it or start fresh.",
-  db_path_changed: "ADE's data for this project was swapped out. Open the project to choose what to use.",
+  brain_not_installed: `${BRAND.NAME}'s background service is missing. Open the project to fix it.`,
+  background_item_blocked: `macOS isn't letting ${BRAND.NAME}'s background service run.`,
+  brain_not_running: `${BRAND.NAME}'s background service didn't start. Open the project to fix it.`,
+  socket_stale_no_owner: `${BRAND.NAME} didn't close properly last time. Open the project to fix it.`,
+  socket_owned_by_other: `Another copy of ${BRAND.NAME} is open. Quit it, then try again.`,
+  project_data_missing: `${BRAND.NAME}'s data for this project is missing. Open the project to restore it or start fresh.`,
+  db_path_changed: `${BRAND.NAME}'s data for this project was swapped out. Open the project to choose what to use.`,
   project_not_git_repository: "This project's folder is no longer a Git repository. Put its .git folder back, or clone the repository again.",
 };
 
-const GENERIC_RECOVERY_MESSAGE = "ADE ran into a problem with this project.";
+const GENERIC_RECOVERY_MESSAGE = `${BRAND.NAME} ran into a problem with this project.`;
 
 function formatProjectTransitionError(
   kind: "opening" | "switching" | "closing",
@@ -2335,18 +2336,18 @@ function formatProjectTransitionError(
     if (kind === "opening") {
       return {
         message:
-          "Opening this project took longer than 30 seconds, so ADE stopped waiting. It's still working on it in the background — you can try again now.",
+          `Opening this project took longer than 30 seconds, so ${BRAND.NAME} stopped waiting. It's still working on it in the background — you can try again now.`,
       };
     }
     if (kind === "switching") {
       return {
         message:
-          "Switching projects took longer than 30 seconds, so ADE kept the current project open. It's still working on it in the background — you can try again now.",
+          `Switching projects took longer than 30 seconds, so ${BRAND.NAME} kept the current project open. It's still working on it in the background — you can try again now.`,
       };
     }
     return {
       message:
-        "Closing the current project took longer than 30 seconds. ADE is still finishing in the background.",
+        `Closing the current project took longer than 30 seconds. ${BRAND.NAME} is still finishing in the background.`,
     };
   }
   // Not a recovery-screen code: the brain's message says what to do, and the
@@ -2941,7 +2942,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     set({
       gitFolderTrustPrompt: null,
       projectTransitionError: {
-        message: `ADE did not open this folder. ${prompt.message} Nothing was changed; open it again to trust it.`,
+        message: `${BRAND.NAME} did not open this folder. ${prompt.message} Nothing was changed; open it again to trust it.`,
         retryRootPath: prompt.rootPath,
       },
     });

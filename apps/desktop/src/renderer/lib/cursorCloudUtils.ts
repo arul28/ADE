@@ -3,6 +3,7 @@
 import { stripElectronErrorWrapper } from "../../shared/codedError";
 import { repoMatchKey } from "../../shared/cursorCloudRepoMatch";
 import type { GitUpstreamSyncStatus } from "../../shared/types/git";
+import { BRAND } from "../../shared/brand";
 
 export { repoMatchKey };
 
@@ -49,13 +50,13 @@ export function describeCursorCloudPushFailure(error: unknown, branch?: string |
   const raw = cursorCloudErrorMessage(error);
   const subject = branch?.trim() ? `Branch ${branch.trim()}` : "This lane's branch";
   if (/non-fast-forward|\[rejected\]|fetch first|behind its remote/i.test(raw)) {
-    return `${subject} is behind origin, so ADE could not push it. Pull or rebase in the lane, then send again.`;
+    return `${subject} is behind origin, so ${BRAND.NAME} could not push it. Pull or rebase in the lane, then send again.`;
   }
   if (/permission denied|authentication failed|could not read from remote|\b403\b/i.test(raw)) {
-    return `ADE could not push ${subject.toLowerCase()} to origin: GitHub refused the push. Check your access, then send again.`;
+    return `${BRAND.NAME} could not push ${subject.toLowerCase()} to origin: GitHub refused the push. Check your access, then send again.`;
   }
   const firstLine = raw.split(/\r?\n/u).map((line) => line.trim()).find((line) => line.length > 0) ?? raw;
-  return `ADE could not push ${subject.toLowerCase()} to origin: ${firstLine}`;
+  return `${BRAND.NAME} could not push ${subject.toLowerCase()} to origin: ${firstLine}`;
 }
 
 export type CursorCloudLaunchGit = {

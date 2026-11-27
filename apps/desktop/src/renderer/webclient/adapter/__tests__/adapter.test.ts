@@ -332,7 +332,7 @@ describe("createAdeWebAdapter", () => {
     // to reach one. So it fails loudly with copy that names the real next step
     // instead of resolving into a no-op that would look like a repair.
     await expect(adapter.ade.account.repairMachinePairing()).rejects.toThrow(
-      "Open ADE on the computer you want to reconnect, then try again there.",
+      "Open Daex on the computer you want to reconnect, then try again there.",
     );
 
     await expect(adapter.ade.account.status()).resolves.toEqual({
@@ -648,7 +648,7 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient(), undefined, accountClient);
 
     await expect(adapter.ade.attention.getSnapshot()).rejects.toThrow(
-      "ADE Activity returned an incompatible response. Update ADE and retry.",
+      "Daex Activity returned an incompatible response. Update Daex and retry.",
     );
     adapter.dispose();
   });
@@ -705,7 +705,7 @@ describe("createAdeWebAdapter", () => {
       .resolves.toEqual(DEFAULT_ATTENTION_PREFERENCES);
     await expect(adapter.ade.attention.getPreferences("account-a"))
       .rejects.toThrow(
-        "Activity preferences were incompatible. Update ADE and retry.",
+        "Activity preferences were incompatible. Update Daex and retry.",
       );
     adapter.dispose();
   });
@@ -980,7 +980,7 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient(), undefined, accountClient);
 
     await expect(adapter.ade.attention.getSnapshot()).rejects.toThrow(
-      "ADE Activity returned an incompatible response. Update ADE and retry.",
+      "Daex Activity returned an incompatible response. Update Daex and retry.",
     );
     adapter.dispose();
   });

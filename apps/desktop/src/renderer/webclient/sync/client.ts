@@ -78,6 +78,7 @@ import {
   noteProjectHostDisconnected,
   releaseProjectHostRecoveryClient,
 } from "./projectHostRecoveryStore";
+import { BRAND } from "../../../shared/brand";
 
 export class AdeSyncError extends Error {
   constructor(message: string, readonly code: string, readonly details?: unknown) {
@@ -311,7 +312,7 @@ function mapRelayAuthError(error: unknown): never {
 
 function timeout<T>(pending: PendingRequest<T>, requests: Map<string, PendingRequest<T>>, requestId: string): void {
   requests.delete(requestId);
-  pending.reject(new AdeSyncError("Timed out waiting for ADE machine response.", "timeout"));
+  pending.reject(new AdeSyncError(`Timed out waiting for ${BRAND.NAME} machine response.`, "timeout"));
 }
 
 export class AdeSyncClient {
@@ -526,12 +527,12 @@ export class AdeSyncClient {
     };
     const deviceName = args.deviceName.trim();
     const expectedHostDeviceId = args.machine.deviceId?.trim() ?? "";
-    if (!accessToken) throw new AdeSyncError("ADE account sign-in is required.", "account_signed_out");
+    if (!accessToken) throw new AdeSyncError(`${BRAND.NAME} account sign-in is required.`, "account_signed_out");
     if (!accountOwnerUserId) throw new AdeSyncError("Sign in again to connect this machine.", "account_signed_out");
     if (!args.isAccountSessionLeaseCurrent(args.accountSessionLease)) {
       this.disconnect();
       throw new AdeSyncError(
-        "Your ADE account changed while connecting. Sign in again.",
+        `Your ${BRAND.NAME} account changed while connecting. Sign in again.`,
         "account_session_changed",
       );
     }
@@ -651,7 +652,7 @@ export class AdeSyncClient {
       },
     });
     const accountSessionChangedError = () => new AdeSyncError(
-      "Your ADE account changed while connecting. Sign in again.",
+      `Your ${BRAND.NAME} account changed while connecting. Sign in again.`,
       "account_session_changed",
     );
     const accountSessionIsCurrent = () => args.isAccountSessionLeaseCurrent(
@@ -783,7 +784,7 @@ export class AdeSyncClient {
     options: { preserveTerminalInputs?: boolean } = {},
   ): Promise<void> {
     const environment = await this.envStore.getEnvironment(envId);
-    if (!environment) throw new AdeSyncError(`Unknown ADE web-client environment: ${envId}`, "unknown_environment");
+    if (!environment) throw new AdeSyncError(`Unknown ${BRAND.NAME} web-client environment: ${envId}`, "unknown_environment");
     const originalEndpoints = deriveBrowserSyncEndpoints({ environment });
     const authorizedEndpoints = filterEnvironmentEndpoints(environment, originalEndpoints, relayAccess);
     requireDialableAuthorizedEndpoint(originalEndpoints, authorizedEndpoints);
@@ -812,7 +813,7 @@ export class AdeSyncClient {
     this.relayAccess = SIGNED_OUT_RELAY_ACCESS;
     this.currentCatalog = null;
     this.latestHello = null;
-    this.invalidateGeneration(new AdeSyncError("Disconnected from ADE machine.", "disconnected"));
+    this.invalidateGeneration(new AdeSyncError(`Disconnected from ${BRAND.NAME} machine.`, "disconnected"));
     this.emitStatus();
   }
 

@@ -1,13 +1,14 @@
 import type { TerminalSessionSummary } from "../../shared/types";
 import { isChatToolType } from "./sessions";
 import { sessionLaneDisplayName } from "../../shared/laneDisplayName";
+import { BRAND } from "../../shared/brand";
 
 function markdownLine(value: string | null | undefined): string {
   return (value ?? "").replace(/\s+/g, " ").trim();
 }
 
 export function formatSessionBundleMarkdown(sessions: TerminalSessionSummary[]): string {
-  const header = `# ADE session bundle\n\nExported: ${new Date().toISOString()}\nSessions: ${sessions.length}\n\n---\n\n`;
+  const header = `# ${BRAND.NAME} session bundle\n\nExported: ${new Date().toISOString()}\nSessions: ${sessions.length}\n\n---\n\n`;
   const parts = sessions.map((session) => {
     const kind = isChatToolType(session.toolType) ? "Chat" : "Terminal";
     const title = markdownLine(session.title) || session.id;

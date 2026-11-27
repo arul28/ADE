@@ -26,6 +26,7 @@ import type { CloudTierId } from "../../shared/cloudTiers";
 import type { AgentChatSendArgs } from "../../shared/types/chat";
 import type { OpenProjectBinding } from "../../shared/types/core";
 import { noteQueuedChatPicksSent, peekQueuedChatPicks, savedChatLocation, savedChatLocationForSession, type SavedChatQueueTarget } from "./cloudSavedChats";
+import { BRAND } from "../../shared/brand";
 
 export type AdeCloudChatQueueState = {
   /** Messages the chat shows as its own rows: queued, sending, or waiting for a sign-in. Oldest first. */
@@ -185,7 +186,7 @@ export function noteAdeCloudQueuedSend(
 /** Takes a queued message back. Throws the server's sentence when the computer already has it. */
 export async function cancelAdeCloudQueuedMessage(machineKey: string, chatId: string, messageId: string): Promise<void> {
   const cancel = window.ade?.adeCloud?.cancelChatMessage;
-  if (!cancel) throw new Error("This version of ADE can't take a queued message back.");
+  if (!cancel) throw new Error(`This version of ${BRAND.NAME} can't take a queued message back.`);
   const answer = await cancel({ machineKey, chatId, messageId });
   if (!answer.ok) throw new Error(answer.message);
   const key = keyOf(machineKey, chatId);

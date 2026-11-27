@@ -1,3 +1,4 @@
+import { BRAND } from "../../shared/brand";
 /**
  * Whether a `window.ade` member really exists in this window.
  *
@@ -12,7 +13,7 @@ export const ADE_UNAVAILABLE: unique symbol = Symbol.for("ade.unavailable") as n
 export class AdeUnavailableError extends Error {
   readonly code = "ade_unavailable";
   constructor(readonly member: string) {
-    super(`${member} is not available in the ADE web app.`);
+    super(`${member} is not available in the ${BRAND.NAME} web app.`);
     this.name = "AdeUnavailableError";
   }
 }

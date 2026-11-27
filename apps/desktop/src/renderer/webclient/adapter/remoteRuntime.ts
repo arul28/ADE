@@ -4,6 +4,7 @@ import type {
   RemoteRuntimeLocalPairingInfo,
 } from "../../../shared/types";
 import type { AdapterInfra, AdeNamespace } from "./types";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The hosted client is already attached to one paired machine. It has no
@@ -22,7 +23,7 @@ export function createRemoteRuntimeNamespace(infra: AdapterInfra): AdeNamespace<
   };
 
   const unsupported = async (): Promise<never> => {
-    throw new Error("Desktop machine management is unavailable in ADE Web.");
+    throw new Error(`Desktop machine management is unavailable in ${BRAND.NAME} Web.`);
   };
 
   return {

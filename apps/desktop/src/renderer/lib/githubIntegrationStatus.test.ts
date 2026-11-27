@@ -358,7 +358,7 @@ describe("deriveGithubRepoConnectionState", () => {
     const copy = githubRepoIssueCopy("waiting_on_account", "arul28/ADE", "blocked");
     expect(copy.title).toContain("Waiting on GitHub authorization");
     expect(copy.detail).not.toMatch(/auth token/i);
-    expect(githubRepoIssueCopy("waiting_on_account", null, "missing").detail).toContain("Authorize ADE");
+    expect(githubRepoIssueCopy("waiting_on_account", null, "missing").detail).toContain("Authorize Daex");
   });
 });
 
@@ -498,7 +498,7 @@ describe("describeGithubCliBanner", () => {
 
     expect(copy?.subState).toBe("renewing");
     expect(copy?.title).toBe("Renewing GitHub authorization");
-    expect(copy?.detail).toBe("ADE is renewing this authorization — this takes a moment.");
+    expect(copy?.detail).toBe("Daex is renewing this authorization — this takes a moment.");
     expect(copy?.action).not.toMatch(/reconnect/i);
   });
 

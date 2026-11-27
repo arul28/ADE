@@ -310,7 +310,7 @@ export async function listRemoteWorkShells(
  */
 export function remoteWorkReadErrorText(error: unknown, machineName: string): string {
   const raw = stripElectronErrorWrapper(error instanceof Error ? error.message : String(error ?? ""));
-  if (/Local runtime project is not available for this window|Local ADE runtime connection is not available/i.test(raw)) {
+  if (/Local runtime project is not available for this window|Local (?:ADE|Daex) runtime connection is not available/i.test(raw)) {
     return `This window hasn't opened this chat's project folder on ${machineName}. Open that project here once, then try again.`;
   }
   return raw || `${machineName} did not answer.`;

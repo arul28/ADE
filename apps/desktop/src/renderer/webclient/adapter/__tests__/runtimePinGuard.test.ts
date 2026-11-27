@@ -101,7 +101,7 @@ describe("assertWebRuntimePinRoutable", () => {
   it("explains a desktop-local pin instead of reporting an unknown binding", () => {
     const { infra } = scopeFixture();
     expect(() => assertWebRuntimePinRoutable("terminal.write", localPin(), infra))
-      .toThrow("This chat runs on a machine ADE Web can't reach directly.");
+      .toThrow("This chat runs on a machine Daex Web can't reach directly.");
   });
 });
 
@@ -120,7 +120,7 @@ describe("git namespace pin guard", () => {
     const { infra, call } = scopeFixture();
     const { diff } = createGitNamespaces(infra);
     await expect(diff.getChanges!({ laneId: "lane-1" }, localPin()))
-      .rejects.toThrow("This chat runs on a machine ADE Web can't reach directly.");
+      .rejects.toThrow("This chat runs on a machine Daex Web can't reach directly.");
     expect(call).not.toHaveBeenCalled();
   });
 
@@ -167,7 +167,7 @@ describe("sessions namespace pin guard", () => {
     const { infra, call } = namespaceFixture();
     const { sessions } = createSessionsPtyNamespaces(infra);
     await expect(sessions.snoozeSession!("session-1", new Date().toISOString(), localPin()))
-      .rejects.toThrow("This chat runs on a machine ADE Web can't reach directly.");
+      .rejects.toThrow("This chat runs on a machine Daex Web can't reach directly.");
     expect(call).not.toHaveBeenCalled();
   });
 
@@ -204,7 +204,7 @@ describe("lanes namespace pin guard", () => {
     const { infra, call } = namespaceFixture();
     const lanes = createLanesNamespace(infra);
     await expect(lanes.create!({ name: "lane" }, localPin()))
-      .rejects.toThrow("This chat runs on a machine ADE Web can't reach directly.");
+      .rejects.toThrow("This chat runs on a machine Daex Web can't reach directly.");
     expect(call).not.toHaveBeenCalled();
   });
 

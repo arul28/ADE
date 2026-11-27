@@ -28,6 +28,7 @@ import type { CloudKeptLaneRestorePreview, CloudKeptLaneRestoreRecord } from "..
 import { isAccountAnsweredPin } from "../../../shared/adeCloud/binding";
 import { markExpected } from "../../../shared/expectedError";
 import type { OpenProjectBinding } from "../../../shared/types";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * `window.ade.cloud` for the web app: enough for Settings › ADE Cloud (the
@@ -151,7 +152,7 @@ export function createWebCloudAccessNamespace(
 /** Sleep, wake, resize, backup and update through the account server, with the desktop's sentences. */
 async function webMachineAction(api: CloudApiClient, args: CloudMachineActionArgs): Promise<CloudMachineActionResult> {
   const instanceId = typeof args?.instanceId === "string" ? args.instanceId.trim() : "";
-  if (!isCloudInstanceId(instanceId)) return { ok: false, blocker: null, message: "ADE doesn't know that computer." };
+  if (!isCloudInstanceId(instanceId)) return { ok: false, blocker: null, message: `${BRAND.NAME} doesn't know that computer.` };
   try {
     const result = await runCloudMachineLifecycleAction({
       computer: (id) => api.computer(id),
@@ -161,7 +162,7 @@ async function webMachineAction(api: CloudApiClient, args: CloudMachineActionArg
       backup: (id) => api.backup(id),
       update: (id) => api.update(id),
     }, instanceId, args);
-    return result ?? { ok: false, blocker: null, message: "ADE can't do that to a computer." };
+    return result ?? { ok: false, blocker: null, message: `${BRAND.NAME} can't do that to a computer.` };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     // A refusal (plans, hours, the backup window) is an answer, not a failure.
@@ -180,11 +181,11 @@ async function webMachineAction(api: CloudApiClient, args: CloudMachineActionArg
 /** A kept lane's move names the computer it goes to: one of the person's own, never ADE Cloud. */
 function keptLaneDestination(pin: OpenProjectBinding | null | undefined): void {
   if (!pin) throw markExpected(new Error("Pick the computer to move the lane to."), "user");
-  if (isAccountAnsweredPin(pin)) throw markExpected(new Error("A kept lane moves to one of your own computers, not to ADE Cloud."), "user");
+  if (isAccountAnsweredPin(pin)) throw markExpected(new Error(`A kept lane moves to one of your own computers, not to ${BRAND.CLOUD_NAME}.`), "user");
 }
 
 const keptLaneUnsupported = (): Error =>
-  markExpected(new Error("ADE on that computer can't take a kept lane yet. Update ADE there, then try again."), "user");
+  markExpected(new Error(`${BRAND.NAME} on that computer can't take a kept lane yet. Update ${BRAND.NAME} there, then try again.`), "user");
 
 export function createWebCloudNamespace(
   infra: Pick<AdapterInfra, "client" | "commands">,
@@ -213,7 +214,7 @@ export function createWebCloudNamespace(
     },
     pinOnMachine: async (machineKey, ref) => {
       const { pin } = await projectPinOnMachine(machineKey, ref);
-      if (!pin) throw new Error("ADE couldn't reach the chat's computer from this window.");
+      if (!pin) throw new Error(`${BRAND.NAME} couldn't reach the chat's computer from this window.`);
       return pin;
     },
   });
@@ -307,7 +308,7 @@ export function createWebCloudNamespace(
         signedOut: false,
         instanceCount: result.instanceCount ?? result.machines.length,
         runningCount: result.runningCount ?? null,
-        error: result.state === "ok" ? null : result.message ?? "ADE couldn't reach ADE Cloud.",
+        error: result.state === "ok" ? null : result.message ?? `${BRAND.NAME} couldn't reach ${BRAND.CLOUD_NAME}.`,
       };
     } catch (error) {
       return { connected: true, signedOut: false, instanceCount: null, runningCount: null, error: error instanceof Error ? error.message : String(error) };
@@ -324,13 +325,13 @@ export function createWebCloudNamespace(
     const api = accountClient.cloudApi();
     if (args.action === "delete") {
       const instanceId = typeof args?.instanceId === "string" ? args.instanceId.trim() : "";
-      if (!api) return { ok: false, blocker: null, message: "Sign in to your ADE account here to change this computer." };
-      if (!isCloudInstanceId(instanceId)) return { ok: false, blocker: null, message: "ADE doesn't know that computer." };
+      if (!api) return { ok: false, blocker: null, message: `Sign in to your ${BRAND.NAME} account here to change this computer.` };
+      if (!isCloudInstanceId(instanceId)) return { ok: false, blocker: null, message: `${BRAND.NAME} doesn't know that computer.` };
       return await life.deleteComputer(instanceId);
     }
     if (!api) {
       if (args.action !== "sleep" && args.action !== "wake") {
-        return { ok: false, blocker: null, message: "Sign in to your ADE account here to change this computer." };
+        return { ok: false, blocker: null, message: `Sign in to your ${BRAND.NAME} account here to change this computer.` };
       }
       return await commands.call<CloudMachineActionResult>(
         "cloud.write",
@@ -385,12 +386,12 @@ export function createWebCloudNamespace(
     // A lane's computer, all through the account server (no computer of the person's needed).
     laneLife: (async ({ method, args }: { method: string; args?: unknown }) => {
       const api = accountClient.cloudApi();
-      if (!api) throw new Error("Sign in to ADE to see your ADE Cloud lanes.");
+      if (!api) throw new Error(`Sign in to ${BRAND.NAME} to see your ${BRAND.CLOUD_NAME} lanes.`);
       const record = args && typeof args === "object" ? args as Record<string, unknown> : {};
       const instanceId = typeof record.instanceId === "string" ? record.instanceId.trim() : "";
       const jobId = typeof record.jobId === "string" ? record.jobId : "";
       const needInstance = () => {
-        if (!isCloudInstanceId(instanceId)) throw new Error("ADE doesn't know that computer.");
+        if (!isCloudInstanceId(instanceId)) throw new Error(`${BRAND.NAME} doesn't know that computer.`);
         return instanceId;
       };
       switch (method) {
@@ -404,7 +405,7 @@ export function createWebCloudNamespace(
           return await api.lanesWithoutComputer();
         case "forgetLaneWithoutComputer": {
           const laneId = args && typeof args === "object" ? (args as { laneId?: unknown }).laneId : null;
-          if (typeof laneId !== "string" || !laneId.trim()) throw new Error("ADE doesn't know that lane.");
+          if (typeof laneId !== "string" || !laneId.trim()) throw new Error(`${BRAND.NAME} doesn't know that lane.`);
           return { forgotten: (await api.forgetLaneWithoutComputer(laneId.trim())).forgotten === true };
         }
         // A move to the other kind runs on ADE's server (`cloudMoves.ts`); one of the same kind runs here.
@@ -420,7 +421,7 @@ export function createWebCloudNamespace(
           return resizes.has(jobId) ? resizes.dismiss(jobId) : await moves.dismissJob(args);
         default:
           // The same sentence as `CLOUD_LANE_LIFE_UNAVAILABLE` (cloudLaneActions.ts).
-          throw new Error("Do this in the ADE desktop app. This window can't change ADE Cloud lanes.");
+          throw new Error(`Do this in the ${BRAND.NAME} desktop app. This window can't change ${BRAND.CLOUD_NAME} lanes.`);
       }
     }) as NonNullable<Window["ade"]["cloud"]>["laneLife"],
     // A server move's progress, read while one runs, and a resize's from this tab.
@@ -435,17 +436,17 @@ export function createWebCloudNamespace(
     // Every lane's work on the computer, pushed (`ade cloud push-work`); it wakes a resting computer.
     pushAllWork: async (instanceId: string) => {
       const id = typeof instanceId === "string" ? instanceId.trim() : "";
-      if (!isCloudInstanceId(id)) return { ok: false, blocker: null, message: "ADE doesn't know that computer." };
-      if (!accountClient.cloudApi()) return { ok: false, blocker: null, message: "Sign in to your ADE account here to change this computer." };
+      if (!isCloudInstanceId(id)) return { ok: false, blocker: null, message: `${BRAND.NAME} doesn't know that computer.` };
+      if (!accountClient.cloudApi()) return { ok: false, blocker: null, message: `Sign in to your ${BRAND.NAME} account here to change this computer.` };
       return await life.pushAllWork(id);
     },
     // A lane's saved work at rest (`laneBackups.ts`): the list and its patch only; the bundle stays native.
     laneBackups: async (laneId?: string | null) => (await accountClient.cloudApi()?.laneBackups(laneId ?? null)) ?? [],
     saveLaneBackupPatch: async (machineKey: string, laneId: string) => {
       const api = accountClient.cloudApi();
-      if (!api) throw new Error("Sign in to ADE to download your lane's work.");
+      if (!api) throw new Error(`Sign in to ${BRAND.NAME} to download your lane's work.`);
       const backup = await api.laneBackup(machineKey, laneId);
-      if (!backup || !backup.patchParts) throw new Error("ADE Cloud has no saved work for that lane to download.");
+      if (!backup || !backup.patchParts) throw new Error(`${BRAND.CLOUD_NAME} has no saved work for that lane to download.`);
       const parts: ArrayBuffer[] = [];
       for (let part = 1; part <= backup.patchParts; part += 1) parts.push(await api.readLaneBackupPart(machineKey, laneId, "patch", part));
       const blob = new Blob(parts, { type: "text/x-patch" });
@@ -461,15 +462,15 @@ export function createWebCloudNamespace(
     },
     forgetLaneBackup: async (machineKey: string, laneId: string) => {
       const api = accountClient.cloudApi();
-      if (!api) throw new Error("Sign in to ADE to delete your lane's work.");
+      if (!api) throw new Error(`Sign in to ${BRAND.NAME} to delete your lane's work.`);
       return await api.forgetLaneBackup(machineKey, laneId);
     },
     // The person's answer to an agent's size request, on the chat's own machine: the
     // federated adapter sends the pinned call to the pin's machine, so it runs here.
     // An account-answered pin (a saved chat read from the account) has no machine to tell.
     answerTierRequest: async (pin, args) => {
-      if (isAccountAnsweredPin(pin)) throw markExpected(new Error("This chat's computer isn't connected, so ADE can't tell its agent. Open the chat once its computer is awake."), "environment");
-      if (!commands.hasAction("cloud.write")) throw markExpected(new Error("ADE on that computer can't take this answer yet. Update ADE there, then try again."), "user");
+      if (isAccountAnsweredPin(pin)) throw markExpected(new Error(`This chat's computer isn't connected, so ${BRAND.NAME} can't tell its agent. Open the chat once its computer is awake.`), "environment");
+      if (!commands.hasAction("cloud.write")) throw markExpected(new Error(`${BRAND.NAME} on that computer can't take this answer yet. Update ${BRAND.NAME} there, then try again.`), "user");
       return await commands.call<{ answered: boolean; toldAgent: boolean }>("cloud.write", { action: "tier_request_answer", args }, { idempotent: false });
     },
     // A kept lane moved to one of the person's computers, run by that computer's brain in the
@@ -513,7 +514,7 @@ export function createWebCloudNamespace(
         ?? null,
       delete: async ({ machineKey, chatId }) => {
         const api = accountClient.cloudApi();
-        if (!api) throw new Error("Sign in to ADE to delete a saved chat.");
+        if (!api) throw new Error(`Sign in to ${BRAND.NAME} to delete a saved chat.`);
         await api.deleteSavedChat(machineKey, chatId);
       },
     },

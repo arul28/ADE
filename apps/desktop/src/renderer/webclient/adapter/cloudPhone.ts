@@ -1,6 +1,7 @@
 import type { CloudPhoneStatusView, CloudPhoneView } from "../../../shared/cloudPhone";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
 import type { AdapterInfra } from "./types";
+import { BRAND } from "../../../shared/brand";
 
 type CloudPhoneBridge = Window["ade"]["cloudPhone"];
 
@@ -24,7 +25,7 @@ export function createWebCloudPhoneNamespace(infra: Pick<AdapterInfra, "client" 
     assertWebRuntimePinRoutable(`cloudPhone.${action}`, pin, infra);
     return await commands.call<T>(`cloudPhone.${action}`, args, {
       fallback: () => {
-        throw new Error("Update ADE on that computer to see the ADE Cloud iPhone here.");
+        throw new Error(`Update ${BRAND.NAME} on that computer to see the ${BRAND.CLOUD_NAME} iPhone here.`);
       },
       authoritative: true,
       retainLastRead: false,
@@ -46,7 +47,7 @@ export function createWebCloudPhoneNamespace(infra: Pick<AdapterInfra, "client" 
     // Recording needs the desktop's offscreen view, which a browser has no
     // main process to paint. Say so rather than leaving a calling pane stuck.
     record: async () => {
-      throw new Error("Record the ADE Cloud iPhone in the ADE desktop app on that computer.");
+      throw new Error(`Record the ${BRAND.CLOUD_NAME} iPhone in the ${BRAND.NAME} desktop app on that computer.`);
     },
   };
 }

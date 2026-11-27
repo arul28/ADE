@@ -12,6 +12,7 @@ import { playableVideoMime } from "../../lib/playableMedia";
 import { requestArtifactRange, requestDataUrl } from "./infra/fileBlob";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
 import type { AdapterInfra, AdeNamespace } from "./types";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The `computerUse` namespace for the hosted web client: the proof reads a chat's
@@ -30,7 +31,7 @@ export function createComputerUseNamespace(infra: AdapterInfra): AdeNamespace<"c
   const { client, commands, state } = infra;
   const scope = { client, state };
   const unavailable = () => {
-    throw new Error("The proof list needs the ADE machine that owns this chat, and it did not answer.");
+    throw new Error(`The proof list needs the ${BRAND.NAME} machine that owns this chat, and it did not answer.`);
   };
 
   const listArtifacts = (args: ComputerUseArtifactListArgs, pin?: RuntimePinArg): Promise<ComputerUseArtifactView[]> => {
@@ -104,7 +105,7 @@ export function createComputerUseNamespace(infra: AdapterInfra): AdeNamespace<"c
       const slice = await requestArtifactRange(client, state, { uri, offset });
       total = slice.totalSize;
       if (total > WEB_LARGE_MEDIA_MAX_BYTES) {
-        throw new Error(`This proof is ${Math.round(total / (1024 * 1024))} MB, too large to play in the browser. Open it in the ADE app.`);
+        throw new Error(`This proof is ${Math.round(total / (1024 * 1024))} MB, too large to play in the browser. Open it in the ${BRAND.NAME} app.`);
       }
       const bytes = base64ToBytes(slice.content);
       if (!bytes.length) {

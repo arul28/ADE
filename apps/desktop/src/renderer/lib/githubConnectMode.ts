@@ -16,6 +16,7 @@ import { ACCOUNT_SCOPE_ALL } from "../../shared/accountSettingsScope";
 import { plainErrorText } from "./plainError";
 
 import { GITHUB_CONNECT_MODE_SETTING_KEY, githubConnectMode, type GithubConnectMode } from "../../shared/githubConnectMode";
+import { BRAND } from "../../shared/brand";
 
 export type { GithubConnectMode } from "../../shared/githubConnectMode";
 
@@ -40,7 +41,7 @@ async function read(): Promise<void> {
   if (saving) return;
   const settings = window.ade?.accountSettings;
   const seq = ++latest;
-  const fallback = "ADE couldn't check how GitHub connects.";
+  const fallback = `${BRAND.NAME} couldn't check how GitHub connects.`;
   if (!settings) {
     publish({ ...snapshot, error: fallback });
     return;
@@ -83,18 +84,18 @@ function subscribe(listener: () => void): () => void {
 export async function setGithubConnectMode(mode: GithubConnectMode): Promise<string | null> {
   const settings = window.ade?.accountSettings;
   if (!settings) return "This window can't change account settings.";
-  if (saving) return "ADE is already saving this choice.";
+  if (saving) return `${BRAND.NAME} is already saving this choice.`;
   saving = true;
   latest += 1;
   try {
     const written = await settings.set({ scope: ACCOUNT_SCOPE_ALL, key: GITHUB_CONNECT_MODE_SETTING_KEY, value: mode });
-    if (!written.ok) return plainErrorText(written.message, "ADE couldn't save this choice.");
+    if (!written.ok) return plainErrorText(written.message, `${BRAND.NAME} couldn't save this choice.`);
     publish({ mode, loaded: true, error: null });
     // Let the other computers receive the selection without waiting for the next tick.
     void settings.sync().catch(() => undefined);
     return null;
   } catch (error) {
-    return plainErrorText(error, "ADE couldn't save this choice.");
+    return plainErrorText(error, `${BRAND.NAME} couldn't save this choice.`);
   } finally {
     saving = false;
   }

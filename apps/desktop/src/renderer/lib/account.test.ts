@@ -218,7 +218,7 @@ describe("account session state", () => {
 
     expect(accountSessionNotice("signed_out")).toBeNull();
     expect(accountSessionNotice("active")).toBeNull();
-    expect(accountSessionNotice("expired")).toBe("Your ADE sign-in expired — sign in again.");
+    expect(accountSessionNotice("expired")).toBe("Your Daex sign-in expired — sign in again.");
     expect(accountSessionNotice("unreadable")).toBe(
       "Can't read your sign-in right now — your session is still there. Try Repair before signing in again.",
     );

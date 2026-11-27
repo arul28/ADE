@@ -16,7 +16,7 @@ export function isBranchDiffUnsupported(error: unknown): boolean {
   return code === "unsupported_action"
     || errorCode === "unsupported_action"
     || code === "unsupported_command"
-    || /is unavailable on the connected ADE host|Unsupported remote command/i.test(message);
+    || /is unavailable on the connected (?:ADE|Daex) host|Unsupported remote command/i.test(message);
 }
 
 const supportByLane = new Map<string, Promise<boolean>>();

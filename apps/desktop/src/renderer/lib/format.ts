@@ -1,6 +1,7 @@
 /** Shared formatting utilities for the renderer. */
 
 import { stripElectronErrorWrapper, withoutRefusalCode } from "../../shared/codedError";
+import { BRAND } from "../../shared/brand";
 
 // Lives in shared so main-process and renderer text can use the same sizes.
 export { formatBytes } from "../../shared/formatting";
@@ -214,7 +215,7 @@ export function ipcErrorMessage(err: unknown): string {
   const text = err instanceof Error ? stripElectronErrorWrapper(err.message) : "";
   // The bridge's own timeout ("IPC handler for '…' timed out after 30000ms (callId=…)")
   // is for logs; a person reads what it means.
-  return IPC_TIMEOUT_TEXT.test(text) ? "ADE didn't hear back in time. Try again in a moment." : withoutRefusalCode(text);
+  return IPC_TIMEOUT_TEXT.test(text) ? `${BRAND.NAME} didn't hear back in time. Try again in a moment.` : withoutRefusalCode(text);
 }
 
 /**

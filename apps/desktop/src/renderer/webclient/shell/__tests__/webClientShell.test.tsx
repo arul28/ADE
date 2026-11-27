@@ -229,7 +229,7 @@ describe("WebClientRoot workspace bootstrap", () => {
       const { WebClientRoot: Root } = await import("../WebClientRoot");
       render(<Root client={syncClient()} accountClient={accountClient(signedOutAccount)} />);
       await screen.findByRole("button", { name: "Retry" });
-      expect(screen.getByRole("heading", { name: "ADE Web couldn't start" })).toBeTruthy();
+      expect(screen.getByRole("heading", { name: "Daex Web couldn't start" })).toBeTruthy();
       expect(screen.queryByTestId("app-root")).toBeNull();
     } finally {
       vi.doMock("../../../components/onboarding/WebSignInGate", () => ({

@@ -133,6 +133,7 @@ import type {
   AgentCliLoginStatus,
   AgentCliLoginSubmitCodeArgs,
 } from "../../../shared/types";
+import { BRAND } from "../../../shared/brand";
 
 /** The web client's answer for the Muse binary actions: nothing known, nothing fetched. */
 const MUSE_BINARY_STATUS_UNAVAILABLE: MuseBinaryStatus = {
@@ -172,7 +173,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     const localDevice = {
       deviceId: status.selectedEnvId ?? "ade-web",
       siteId: status.selectedEnvId ?? "ade-web",
-      name: typeof navigator === "undefined" ? "ADE Web" : `ADE Web (${navigator.platform || "browser"})`,
+      name: typeof navigator === "undefined" ? `${BRAND.NAME} Web` : `${BRAND.NAME} Web (${navigator.platform || "browser"})`,
       platform: "unknown",
       deviceType: "browser",
       createdAt: status.connectedAt ?? now,
@@ -238,7 +239,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
       ...routed.localDevice,
       deviceId: "ade-web",
       siteId: "ade-web",
-      name: typeof navigator === "undefined" ? "ADE Web" : `ADE Web (${navigator.platform || "browser"})`,
+      name: typeof navigator === "undefined" ? `${BRAND.NAME} Web` : `${BRAND.NAME} Web (${navigator.platform || "browser"})`,
       createdAt: now,
       updatedAt: now,
       lastSeenAt: now,
@@ -251,7 +252,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
       localDevice,
       currentBrain: null,
       currentRuntime: null,
-      runtimeName: "ADE Web",
+      runtimeName: `${BRAND.NAME} Web`,
       connectedPeers: [],
       tailnetDiscovery: {
         ...routed.tailnetDiscovery,
@@ -774,7 +775,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     // binary download above.
     museSettings: async (_args: unknown, pin?: RuntimePinArg): Promise<never> => {
       assertWebRuntimePinRoutable("ai.museSettings", pin, infra);
-      throw new Error("Muse Code settings are available in the ADE desktop app.");
+      throw new Error(`Muse Code settings are available in the ${BRAND.NAME} desktop app.`);
     },
     museSettingsClose: async (_args: unknown, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("ai.museSettingsClose", pin, infra);
@@ -792,7 +793,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     // `ai.storeApiKey` (see syncRemoteCommandService): say so instead of
     // sending a placeholder that a future handler would save as the key.
     storeApiKey: async () => {
-      throw new Error("Saving this API key is only available in the ADE desktop app on that machine.");
+      throw new Error(`Saving this API key is only available in the ${BRAND.NAME} desktop app on that machine.`);
     },
     deleteApiKey: async (provider: string) => {
       await call("ai.deleteApiKey", { provider }, undefined, false);
@@ -804,7 +805,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     verifyProviderSignIn: async (args: { provider: string }) => ({
       provider: args.provider,
       state: "unknown" as const,
-      reason: "Checking a sign-in needs the ADE desktop app.",
+      reason: `Checking a sign-in needs the ${BRAND.NAME} desktop app.`,
       account: null,
       checkedAt: new Date().toISOString(),
     }),
@@ -1019,7 +1020,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     save: (candidate: unknown) => call<Record<string, unknown>>(
       "projectConfig.save",
       { candidate },
-      unavailableOnHost("That machine is running an older ADE that can't save these settings."),
+      unavailableOnHost(`That machine is running an older ${BRAND.NAME} that can't save these settings.`),
       false,
     ),
     // A fallback snapshot would hide the notice without answering it, so a
@@ -1029,7 +1030,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
       return await call(
         "projectConfig.resolveAccountSettingNotice",
         { key: args.key, choice: args.choice },
-        unavailableOnHost("That machine is running an older ADE that can't answer this notice."),
+        unavailableOnHost(`That machine is running an older ${BRAND.NAME} that can't answer this notice.`),
         false,
       );
     },
@@ -1086,7 +1087,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
         format,
         rows: filteredRows,
         exportedAt,
-        project: { rootPath: project?.rootPath ?? "", displayName: project?.displayName ?? "ADE" },
+        project: { rootPath: project?.rootPath ?? "", displayName: project?.displayName ?? BRAND.NAME },
         filters: { laneId: listArgs.laneId, kind: listArgs.kind, status },
       });
       triggerBrowserDownload(fileName, content, format === "json" ? "application/json" : "text/csv");
@@ -1129,7 +1130,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
           items: [],
           fetchedAt: new Date(0).toISOString(),
           capabilities: { stop: false, archive: false, vmShell: false, web: false },
-          unavailableReason: "Cloud agents are unavailable: the host is offline or runs an older ADE.",
+          unavailableReason: `Cloud agents are unavailable: the host is offline or runs an older ${BRAND.NAME}.`,
           models: [],
         }),
       open: (args: CloudAgentRef) =>
@@ -1290,7 +1291,7 @@ function createCtoNamespace(
     getState: () => call<CtoSnapshot>(
       "cto.getState",
       {},
-      unavailableOnHost("The CTO isn't available on the connected ADE host."),
+      unavailableOnHost(`The CTO isn't available on the connected ${BRAND.NAME} host.`),
     ),
     // Materializes the primary lane's CTO chat session, so it is a write: never
     // let it resolve to a fabricated session the chat pane would then address.
@@ -1298,7 +1299,7 @@ function createCtoNamespace(
       const summary = await call<Record<string, unknown>>(
         "cto.ensureSession",
         args,
-        unavailableOnHost("The CTO chat isn't available on the connected ADE host."),
+        unavailableOnHost(`The CTO chat isn't available on the connected ${BRAND.NAME} host.`),
         false,
       );
       return chatSessionFromRemoteSummary(summary);
@@ -1317,41 +1318,41 @@ function createCtoNamespace(
     getMemory: () => call<CtoMemorySnapshot>(
       "cto.getMemory",
       {},
-      unavailableOnHost("The CTO's memory isn't available on the connected ADE host."),
+      unavailableOnHost(`The CTO's memory isn't available on the connected ${BRAND.NAME} host.`),
     ),
     updateNotes: (args: CtoUpdateNotesArgs) => call<CtoMemorySnapshot>(
       "cto.updateNotes",
       args,
-      unavailableOnHost("The CTO's notes can't be changed on the connected ADE host."),
+      unavailableOnHost(`The CTO's notes can't be changed on the connected ${BRAND.NAME} host.`),
       false,
     ),
     updateOpenWork: (args: CtoUpdateOpenWorkArgs) => call<CtoMemorySnapshot>(
       "cto.updateOpenWork",
       args,
-      unavailableOnHost("The CTO's open work can't be changed on the connected ADE host."),
+      unavailableOnHost(`The CTO's open work can't be changed on the connected ${BRAND.NAME} host.`),
       false,
     ),
     getSkill: (args: CtoGetSkillArgs) => call<CtoSkillFile | null>(
       "cto.getSkill",
       args,
-      unavailableOnHost("The CTO's skills aren't available on the connected ADE host."),
+      unavailableOnHost(`The CTO's skills aren't available on the connected ${BRAND.NAME} host.`),
     ),
     writeSkill: (args: CtoWriteSkillArgs) => call<CtoWriteSkillResult>(
       "cto.writeSkill",
       args,
-      unavailableOnHost("The CTO's skills can't be changed on the connected ADE host."),
+      unavailableOnHost(`The CTO's skills can't be changed on the connected ${BRAND.NAME} host.`),
       false,
     ),
     deleteSkill: (args: CtoDeleteSkillArgs) => call<CtoMemorySnapshot>(
       "cto.deleteSkill",
       args,
-      unavailableOnHost("The CTO's skills can't be changed on the connected ADE host."),
+      unavailableOnHost(`The CTO's skills can't be changed on the connected ${BRAND.NAME} host.`),
       false,
     ),
     undoLearned: (args: CtoUndoLearnedArgs) => call<CtoUndoLearnedResult>(
       "cto.undoLearned",
       args,
-      unavailableOnHost("Undo isn't available on the connected ADE host."),
+      unavailableOnHost(`Undo isn't available on the connected ${BRAND.NAME} host.`),
       false,
     ),
     // An older host has no archive: the section stays hidden rather than erroring.
@@ -1363,20 +1364,20 @@ function createCtoNamespace(
     recallArchivedNote: (args: CtoRecallArchivedArgs) => call<CtoMemorySnapshot>(
       "cto.recallArchivedNote",
       args,
-      unavailableOnHost("The CTO's archive can't be changed on the connected ADE host."),
+      unavailableOnHost(`The CTO's archive can't be changed on the connected ${BRAND.NAME} host.`),
       false,
     ),
     // `crossMachineEnabled` is the desktop's alone; the host strips it.
     updateIdentity: (args: CtoUpdateIdentityArgs) => call<CtoSnapshot>(
       "cto.updateIdentity",
       { patch: args?.patch ?? {} },
-      unavailableOnHost("The CTO's settings can't be changed on the connected ADE host."),
+      unavailableOnHost(`The CTO's settings can't be changed on the connected ${BRAND.NAME} host.`),
       false,
     ),
     adoptAccountCopy: (args: CtoAdoptAccountCopyArgs) => call<CtoAdoptAccountCopyResult>(
       "cto.adoptAccountCopy",
       { home: args?.home ?? null },
-      unavailableOnHost("The connected ADE host can't take the CTO in yet."),
+      unavailableOnHost(`The connected ${BRAND.NAME} host can't take the CTO in yet.`),
       false,
     ),
     getAccountCopyStatus: () => call<CtoAccountCopyStatus>(
@@ -1387,13 +1388,13 @@ function createCtoNamespace(
     refreshContext: () => call<CtoRefreshContextResult>(
       "cto.refreshContext",
       {},
-      unavailableOnHost("The CTO can't be refreshed on the connected ADE host."),
+      unavailableOnHost(`The CTO can't be refreshed on the connected ${BRAND.NAME} host.`),
       false,
     ),
     previewSystemPrompt: (args?: CtoPreviewSystemPromptArgs) => call<CtoSystemPromptPreview>(
       "cto.previewSystemPrompt",
       args?.identityOverride ? { identityOverride: args.identityOverride } : {},
-      unavailableOnHost("The CTO's prompt isn't available on the connected ADE host."),
+      unavailableOnHost(`The CTO's prompt isn't available on the connected ${BRAND.NAME} host.`),
     ),
     // The host registers this one `viewerAllowed`, and the CTO tab ships on web
     // now, so leaving it unwired made the Linear panel fall through to the
@@ -1422,14 +1423,14 @@ function createCtoNamespace(
     cancelLinearIssue: (issueId: string) => call(
       "linear_issue_tracker.cancelIssue",
       { argsList: [issueId] },
-      unavailableOnHost("Linear issue cancellation is unavailable on the connected ADE host."),
+      unavailableOnHost(`Linear issue cancellation is unavailable on the connected ${BRAND.NAME} host.`),
       false,
     ),
     countLinearIssues: (args?: unknown) => call("cto.countLinearIssues", args, { counts: {} }),
     getLinearCustomViews: () => call("cto.getLinearCustomViews", {}, []),
     getLinearAgentOverview: () => call("linear_agent.getOverview", {}, {
       available: false,
-      message: "The ADE Linear agent is unavailable on the connected ADE host.",
+      message: `The ${BRAND.NAME} Linear agent is unavailable on the connected ${BRAND.NAME} host.`,
       status: null,
       rules: [],
       activeSessions: [],
@@ -1437,53 +1438,53 @@ function createCtoNamespace(
     startLinearAgentInstall: () => call(
       "linear_agent.startInstall",
       {},
-      unavailableOnHost("Linear agent installation is unavailable on the connected ADE host."),
+      unavailableOnHost(`Linear agent installation is unavailable on the connected ${BRAND.NAME} host.`),
       false,
     ),
     getLinearAgentInstallSession: (sessionId: string) => call(
       "linear_agent.getInstallSession",
       { args: { sessionId } },
-      unavailableOnHost("Linear agent installation is unavailable on the connected ADE host."),
+      unavailableOnHost(`Linear agent installation is unavailable on the connected ${BRAND.NAME} host.`),
     ),
     registerLinearAgentMember: (args?: { replace?: boolean }) => call(
       "linear_agent.registerMember",
       { args: { replace: args?.replace === true } },
-      unavailableOnHost("Linear agent routing is unavailable on the connected ADE host."),
+      unavailableOnHost(`Linear agent routing is unavailable on the connected ${BRAND.NAME} host.`),
       false,
     ),
     unregisterLinearAgentMember: () => call(
       "linear_agent.unregisterMember",
       {},
-      unavailableOnHost("Linear agent routing is unavailable on the connected ADE host."),
+      unavailableOnHost(`Linear agent routing is unavailable on the connected ${BRAND.NAME} host.`),
       false,
     ),
     updateLinearAgentSettings: (args: { fallbackMode: "reply" | "runner"; runner: "self" | null }) => call(
       "linear_agent.updateSettings",
       { args },
-      unavailableOnHost("Linear agent settings are unavailable on the connected ADE host."),
+      unavailableOnHost(`Linear agent settings are unavailable on the connected ${BRAND.NAME} host.`),
       false,
     ),
     uninstallLinearAgent: () => call(
       "linear_agent.uninstall",
       {},
-      unavailableOnHost("Linear agent installation is unavailable on the connected ADE host."),
+      unavailableOnHost(`Linear agent installation is unavailable on the connected ${BRAND.NAME} host.`),
       false,
     ),
     getLinearInbox: (args?: { first?: number; includeRead?: boolean }) => call(
       "linear_issue_tracker.listNotifications",
       { args: args ?? {} },
-      unavailableOnHost("Linear inbox reads are unavailable on the connected ADE host."),
+      unavailableOnHost(`Linear inbox reads are unavailable on the connected ${BRAND.NAME} host.`),
     ),
     markLinearNotification: (args: { notificationId: string; action: "read" | "archive" }) => call(
       "linear_issue_tracker.markNotification",
       { args },
-      unavailableOnHost("Linear inbox updates are unavailable on the connected ADE host."),
+      unavailableOnHost(`Linear inbox updates are unavailable on the connected ${BRAND.NAME} host.`),
       false,
     ),
     getLinearIssueRelationsIssue: (issueId: string) => call(
       "linear_issue_tracker.fetchIssueById",
       { argsList: [issueId] },
-      unavailableOnHost("Linear issue relations are unavailable on the connected ADE host."),
+      unavailableOnHost(`Linear issue relations are unavailable on the connected ${BRAND.NAME} host.`),
     ),
   } as unknown as NonNullable<Window["ade"]["cto"]>, "cto", CTO_PINNED_MEMBER_ARG_INDEX, scope);
 }
@@ -1545,7 +1546,7 @@ function createLoginImportUnavailableStub(): Record<string, unknown> {
     ok: false as const,
     sourceId,
     status: "unsupported" as const,
-    reason: "Login import needs the ADE desktop app on the machine holding the browser.",
+    reason: `Login import needs the ${BRAND.NAME} desktop app on the machine holding the browser.`,
     settingsPaneId: null,
   });
   return {
@@ -1721,7 +1722,7 @@ function createAutomationStubs(
   infra: Parameters<typeof assertWebRuntimePinRoutable>[2] & Pick<AdapterInfra, "commands">,
 ): Record<string, unknown> {
   const onComputer = async () => {
-    throw new Error("Make or change webhooks in ADE on your computer.");
+    throw new Error(`Make or change webhooks in ${BRAND.NAME} on your computer.`);
   };
   return {
     // The host's auto-handoff rule commands (the same ones the phone's session

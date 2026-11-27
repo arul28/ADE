@@ -101,6 +101,7 @@ import signInOnceShot from "../components/onboarding/tips/assets/sign-in-once.we
 import subagentsShot from "../components/onboarding/tips/assets/subagents.webp";
 import themesShot from "../components/onboarding/tips/assets/themes.webp";
 import widgetsShot from "../components/onboarding/tips/assets/widgets.webp";
+import { BRAND } from "../../shared/brand";
 
 /**
  * ADE Tips: the things worth knowing about ADE, browsable from the help menu
@@ -135,7 +136,7 @@ export const ADE_TIP_GROUPS: readonly AdeTipGroup[] = [
   { id: "brain", label: "Project brain", blurb: "A lead for each project, and work that runs while you're away.", icon: Brain, hue: "#f59e0b" },
   { id: "machines", label: "Machines", blurb: "Every computer you own, and your phone, from one window.", icon: Laptop, hue: "#0ea5e9" },
   { id: "integrations", label: "Integrations", blurb: "Your tracker, other agents and other AI apps.", icon: PlugsConnected, hue: "#22c55e" },
-  { id: "git", label: "Git", blurb: "Lanes, files, pull requests and history, without leaving ADE.", icon: GitBranch, hue: "#f0643c" },
+  { id: "git", label: "Git", blurb: `Lanes, files, pull requests and history, without leaving ${BRAND.NAME}.`, icon: GitBranch, hue: "#f0643c" },
   { id: "yours", label: "Make it yours", blurb: "Home, themes, music and how Work is laid out.", icon: PaintBrush, hue: "#ec4899" },
   { id: "safety", label: "Safety", blurb: "Keys kept out of chats, proof of the work, and a screen of their own.", icon: ShieldCheck, hue: "#14b8a6" },
 ];
@@ -248,7 +249,7 @@ const TIP_LIST = [
   {
     id: "import-chats", group: "agents", icon: DownloadSimple, title: "Import your chats",
     size: "screen", shot: { src: importShot, alt: "The import window: past Claude, Codex and Cursor chats on this computer" },
-    sentence: "Bring in past chats from Claude Code, Codex, Cursor and more, and keep going in ADE.",
+    sentence: `Bring in past chats from Claude Code, Codex, Cursor and more, and keep going in ${BRAND.NAME}.`,
     action: draft(
       spot("import-pill", "Import past chats from Claude Code, Codex, Cursor and more."),
       spot("import-button", "Import past chats from Claude Code, Codex, Cursor and more."),
@@ -262,7 +263,7 @@ const TIP_LIST = [
   },
   {
     id: "chat-tools", group: "agents", icon: Toolbox, title: "Chat tools", size: "wide",
-    sentence: "Agents can use the ADE browser, drive your app and run ADE itself, so they can check their own work.",
+    sentence: `Agents can use the ${BRAND.NAME} browser, drive your app and run ${BRAND.NAME} itself, so they can check their own work.`,
     action: inAChat(
       "Open a chat, then its Tools: the browser and app controls agents use too.",
       "Start a chat; its Tools pane holds the browser and app controls agents use.",
@@ -346,7 +347,7 @@ const TIP_LIST = [
     // Keeps its first id, so a "done" stored before Android joined it still holds.
     id: "ios-simulator", group: "agents", icon: DeviceMobileCamera, title: "Phone simulators", size: "wide",
     shot: { src: iosSimulatorShot, alt: "iPhone Duo in the simulator, half open" },
-    sentence: "Run your app on an Android emulator or the iOS simulator inside ADE, foldables and iPhone Duo included.",
+    sentence: `Run your app on an Android emulator or the iOS simulator inside ${BRAND.NAME}, foldables and iPhone Duo included.`,
     desktopOnly: true,
     action: inAChat(
       "Open a chat, then Tools: Apple Development and Android Development run your app.",
@@ -376,7 +377,7 @@ const TIP_LIST = [
   {
     id: "cto", group: "brain", icon: Crown, title: "CTO",
     size: "screen", shot: { src: ctoShot, alt: "The CTO saying hi, with starters and what it remembers" },
-    sentence: "One CTO for each project. It remembers what you tell it, runs work on a schedule, and lives on a machine you pick: this computer or ADE Cloud.",
+    sentence: `One CTO for each project. It remembers what you tell it, runs work on a schedule, and lives on a machine you pick: this computer or ${BRAND.CLOUD_NAME}.`,
     action: page("/cto", spot("composer", "Tell your CTO something to remember, or give it something to do every morning.")),
   },
   {
@@ -387,7 +388,7 @@ const TIP_LIST = [
   },
   {
     id: "scheduled-sends", group: "brain", icon: CalendarCheck, title: "Scheduled sends", size: "wide",
-    sentence: "Write a message now and let ADE send it later, from the composer's send menu.",
+    sentence: `Write a message now and let ${BRAND.NAME} send it later, from the composer's send menu.`,
     action: draft(
       spot("composer-send-menu", "Write your message, then pick Scheduled send from this menu."),
       spot("composer", "Write your message, then open the send menu beside Send."),
@@ -396,12 +397,12 @@ const TIP_LIST = [
 
   // Machines
   {
-    id: "ade-cloud", group: "machines", icon: CloudArrowUp, title: "ADE Cloud", size: "wide",
-    sentence: "Pick ADE Cloud in a new chat's Run on menu and the work runs on its own cloud computer, so yours can sleep.",
+    id: "ade-cloud", group: "machines", icon: CloudArrowUp, title: BRAND.CLOUD_NAME, size: "wide",
+    sentence: `Pick ${BRAND.CLOUD_NAME} in a new chat's Run on menu and the work runs on its own cloud computer, so yours can sleep.`,
     action: {
       ...draft(
-        spot("run-on", "Pick ADE Cloud here. The chat's lane gets its own cloud computer."),
-        spot("lane-picker", "Pick ADE Cloud in Run on, beside the lane. The chat's lane gets its own cloud computer."),
+        spot("run-on", `Pick ${BRAND.CLOUD_NAME} here. The chat's lane gets its own cloud computer.`),
+        spot("lane-picker", `Pick ${BRAND.CLOUD_NAME} in Run on, beside the lane. The chat's lane gets its own cloud computer.`),
       ),
       // Offered only while the account has ADE Cloud (its Settings hide until then).
       settingId: "integrations.ade-cloud",
@@ -415,9 +416,9 @@ const TIP_LIST = [
   },
   {
     id: "sign-in-once", group: "machines", icon: Key, title: "Sign in once",
-    size: "screen", shot: { src: signInOnceShot, alt: "Providers on ADE Cloud: each sign-in shows where it came from" },
-    sentence: "Sign in to an agent once, and the sign-in follows your account to your other computers and ADE Cloud.",
-    action: setting("agents.providers", "Sign in to a provider here. Pick ADE Cloud at the top to see where each sign-in came from."),
+    size: "screen", shot: { src: signInOnceShot, alt: `Providers on ${BRAND.CLOUD_NAME}: each sign-in shows where it came from` },
+    sentence: `Sign in to an agent once, and the sign-in follows your account to your other computers and ${BRAND.CLOUD_NAME}.`,
+    action: setting("agents.providers", `Sign in to a provider here. Pick ${BRAND.CLOUD_NAME} at the top to see where each sign-in came from.`),
   },
   {
     id: "keep-awake", group: "machines", icon: Moon, title: "Keep awake",
@@ -426,8 +427,8 @@ const TIP_LIST = [
     action: setting("general.keep-awake", "Keep this computer awake while agents work."),
   },
   {
-    id: "phone", group: "machines", icon: DeviceMobile, title: "ADE on your phone", size: "wide",
-    shot: { src: phoneShot, alt: "A pull request open in the ADE iPhone app" },
+    id: "phone", group: "machines", icon: DeviceMobile, title: `${BRAND.NAME} on your phone`, size: "wide",
+    shot: { src: phoneShot, alt: `A pull request open in the ${BRAND.NAME} iPhone app` },
     sentence: "Check on agents and answer them from the iPhone app when you are away.",
     action: connections("mobile", "Pair the iPhone app here."),
   },
@@ -439,7 +440,7 @@ const TIP_LIST = [
   {
     id: "web-app", group: "machines", icon: Globe, title: "The web app", size: "wide",
     sentence: "Control every machine and agent from a browser, the same way as here.",
-    action: connections("web", "Open ADE in your browser from here, and sign in with your ADE account."),
+    action: connections("web", `Open ${BRAND.NAME} in your browser from here, and sign in with your ${BRAND.NAME} account.`),
   },
   {
     id: "other-machine-commands", group: "machines", icon: ShareNetwork, title: "Work on another machine", size: "wide",
@@ -448,16 +449,16 @@ const TIP_LIST = [
   },
   {
     id: "beta-track", group: "machines", icon: Flask, title: "Beta track", size: "wide",
-    shot: { src: betaShot, alt: "ADE 1.2.128-beta.2 with the Beta chip, above the Update track setting" },
+    shot: { src: betaShot, alt: `${BRAND.NAME} 1.2.128-beta.2 with the Beta chip, above the Update track setting` },
     sentence: "Get new features first: the Beta track is built from main every few hours, on every machine you pick.",
     card: false,
     action: setting("general.update-track", "Switch to Beta to get new features first."),
   },
   {
     id: "headless", group: "machines", icon: HardDrives, title: "Headless brain", size: "small",
-    sentence: "Run ADE on a server with no screen; once it signs in it joins your other machines.",
+    sentence: `Run ${BRAND.NAME} on a server with no screen; once it signs in it joins your other machines.`,
     card: false,
-    action: connections("machines", "A server running ADE headless shows up here once it signs in."),
+    action: connections("machines", `A server running ${BRAND.NAME} headless shows up here once it signs in.`),
   },
   {
     id: "notifications", group: "machines", icon: Bell, title: "Notifications", size: "small",
@@ -475,7 +476,7 @@ const TIP_LIST = [
   {
     id: "mcp-once", group: "integrations", icon: Plugs, title: "One MCP setup for every agent",
     size: "screen", shot: { src: mcpShot, alt: "Settings, MCP servers found on this computer, ready to import" },
-    sentence: "Pick an MCP server from the catalogue or add your own, once; every ADE agent gets it, on every computer.",
+    sentence: `Pick an MCP server from the catalogue or add your own, once; every ${BRAND.NAME} agent gets it, on every computer.`,
     action: setting("mcp.servers", "Pick one from the catalogue or add your own; every agent gets it, on every computer."),
   },
   {
@@ -489,9 +490,9 @@ const TIP_LIST = [
     action: setting("agents.providers", "Connect Cursor or Devin here."),
   },
   {
-    id: "ade-mcp", group: "integrations", icon: Plug, title: "ADE MCP", size: "small",
-    sentence: "Connect AI apps to ADE across your computers, with interactive views in supported apps.",
-    action: setting("ade-mcp.server", "Let other AI apps use ADE on your computers."),
+    id: "ade-mcp", group: "integrations", icon: Plug, title: `${BRAND.NAME} MCP`, size: "small",
+    sentence: `Connect AI apps to ${BRAND.NAME} across your computers, with interactive views in supported apps.`,
+    action: setting("ade-mcp.server", `Let other AI apps use ${BRAND.NAME} on your computers.`),
   },
 
   // Git
@@ -554,7 +555,7 @@ const TIP_LIST = [
   },
   {
     id: "deep-links", group: "git", icon: LinkSimple, title: "Deep links", size: "wide",
-    sentence: "Share a link to a chat, file or PR; it opens right there in ADE, on the machine it lives on.",
+    sentence: `Share a link to a chat, file or PR; it opens right there in ${BRAND.NAME}, on the machine it lives on.`,
     action: inAChat("Right-click a chat to copy its deep link.", FIRST_CHAT),
   },
 
@@ -568,7 +569,7 @@ const TIP_LIST = [
   {
     id: "themes", group: "yours", icon: Palette, title: "Themes and backgrounds",
     size: "screen", shot: { src: themesShot, alt: "Appearance settings: the theme gallery and a live preview" },
-    sentence: "Choose a theme, your own colours and fonts, and a picture behind ADE, or shuffle pictures sized for your screen.",
+    sentence: `Choose a theme, your own colours and fonts, and a picture behind ${BRAND.NAME}, or shuffle pictures sized for your screen.`,
     action: setting("appearance.theme", "Pick a theme. Your own colours, fonts and backgrounds are further down."),
   },
   {
@@ -580,7 +581,7 @@ const TIP_LIST = [
   {
     id: "music", group: "yours", icon: MusicNotes, title: "Music", size: "wide",
     shot: { src: musicShot, alt: "An album open in the Music tab, ready to play" },
-    sentence: "Play, pause and skip what you are listening to without leaving ADE.",
+    sentence: `Play, pause and skip what you are listening to without leaving ${BRAND.NAME}.`,
     card: false,
     action: {
       place: { kind: "music" },
@@ -680,8 +681,8 @@ export function tipOfferedAsCard(tip: AdeTip): boolean {
 
 /** Where a page-of-a-project tip sends someone with no project open. */
 const OPEN_PROJECT_SPOTS: readonly SpotlightSpot[] = [
-  spot("project-row", "Open a project first, then try it again from ADE Tips."),
-  spot("add-project", "Add a project first, then try it again from ADE Tips."),
+  spot("project-row", `Open a project first, then try it again from ${BRAND.NAME} Tips.`),
+  spot("add-project", `Add a project first, then try it again from ${BRAND.NAME} Tips.`),
 ];
 
 /** How long Try it waits for Work's chat list before giving up on opening a chat. */

@@ -51,6 +51,7 @@ import {
   parseEnvelopeChunkPayload,
   type EncodeEnvelopeInput,
 } from "./wireProtocol";
+import { BRAND } from "../../../shared/brand";
 
 const SOCKET_OPEN = 1;
 const DEFAULT_TRANSPORT_OPEN_TIMEOUT_MS = 8_000;
@@ -94,7 +95,7 @@ const FULL_INVALIDATION_TABLES = [
   "rebase",
 ] as const;
 export const INVALIDATION_ONLY_V1_HOST_UPDATE_MESSAGE =
-  "Update ADE on this computer via Settings → ADE service → Check for updates, then retry.";
+  `Update ${BRAND.NAME} on this computer via Settings → ${BRAND.NAME} service → Check for updates, then retry.`;
 
 function invalidationTables(payload: SyncInvalidationBatchPayload): Set<string> {
   if (!payload || typeof payload !== "object") return new Set(FULL_INVALIDATION_TABLES);
@@ -231,9 +232,9 @@ function protocolVersionMismatchMessage(
   payload: Extract<SyncHelloErrorPayload, { code: "protocol_version_mismatch" }>,
 ): string {
   if (payload.updateTarget === "host") {
-    return "Update ADE on your computer to connect to this browser.";
+    return `Update ${BRAND.NAME} on your computer to connect to this browser.`;
   }
-  return "Update ADE in this browser to connect to your computer.";
+  return `Update ${BRAND.NAME} in this browser to connect to your computer.`;
 }
 
 function hostAcceptedInvalidationOnlyV1(payload: SyncHelloOkPayload): boolean {
@@ -410,7 +411,7 @@ export class SyncConnection {
         if (this.isTerminalConnectionError(lastError)) throw lastError;
       }
     }
-    throw lastError ?? new Error("Failed to connect to the ADE account machine.");
+    throw lastError ?? new Error(`Failed to connect to the ${BRAND.NAME} account machine.`);
   }
 
   send(input: EncodeEnvelopeInput): void {
@@ -532,7 +533,7 @@ export class SyncConnection {
         }
       }
     }
-    const message = lastError?.message ?? "Failed to connect to ADE machine.";
+    const message = lastError?.message ?? `Failed to connect to ${BRAND.NAME} machine.`;
     if (this.isTerminalConnectionError(lastError)) {
       this.emit("error", lastError);
       throw lastError;
@@ -676,7 +677,7 @@ export class SyncConnection {
               }
               const compatibilityError = this.requireInvalidationOnlyV1(payload);
               if (compatibilityError) {
-                fail(compatibilityError, "Incompatible ADE host");
+                fail(compatibilityError, `Incompatible ${BRAND.NAME} host`);
                 return;
               }
               if (!this.finishConnected(socket, environment, endpoint, payload, generation)) {
@@ -875,7 +876,7 @@ export class SyncConnection {
               }
               const compatibilityError = this.requireInvalidationOnlyV1(payload);
               if (compatibilityError) {
-                fail(compatibilityError, "Incompatible ADE host");
+                fail(compatibilityError, `Incompatible ${BRAND.NAME} host`);
                 return;
               }
               let environment: WebClientEnvironmentRecord;
@@ -983,7 +984,7 @@ export class SyncConnection {
   private async getRelayAccountToken(throughRelay: boolean): Promise<string> {
     if (!throughRelay) return "";
     const token = await this.relayAccountTokenProvider?.() ?? "";
-    if (!token.trim()) throw new Error("Sign in again to connect through ADE Relay.");
+    if (!token.trim()) throw new Error(`Sign in again to connect through ${BRAND.NAME} Relay.`);
     return token;
   }
 
@@ -1200,7 +1201,7 @@ export class SyncConnection {
     const preparation = (async () => {
       try {
         const relayAccountToken = await provider();
-        if (!relayAccountToken.trim()) throw new Error("Sign in again to continue through ADE Relay.");
+        if (!relayAccountToken.trim()) throw new Error(`Sign in again to continue through ${BRAND.NAME} Relay.`);
         const proof = await this.relayReauthorizationSigner({
           privateKey: environment.dpopKeys.privateKey,
           deviceId: environment.pairedDeviceId,
@@ -1322,7 +1323,7 @@ export class SyncConnection {
       this.relayAuthorizationTerminalError = payload.error.message;
       this.setStatus({ state: "auth_failed", error: payload.error.message });
       try {
-        socket?.close(4003, "ADE account session changed");
+        socket?.close(4003, `${BRAND.NAME} account session changed`);
       } catch {
         // The terminal state is already recorded even if close throws.
       }
@@ -1385,7 +1386,7 @@ export class SyncConnection {
       this.shouldReconnect = false;
       this.setStatus({
         state: "auth_failed",
-        error: "Pairing invalid. Pair this browser with your ADE machine again.",
+        error: `Pairing invalid. Pair this browser with your ${BRAND.NAME} machine again.`,
       });
       return new SyncConnectionError(payload.message, "terminal_auth_failed", payload);
     }
@@ -1487,7 +1488,7 @@ export class SyncConnection {
       case 4501:
         // The relay answered: it is the computer that is not connected to it.
         return new SyncConnectionError(
-          `${host} isn't connected to ADE's relay. Make sure it's awake, online, and ADE is open there. Retrying…`,
+          `${host} isn't connected to ${BRAND.NAME}'s relay. Make sure it's awake, online, and ${BRAND.NAME} is open there. Retrying…`,
           "relay_host_offline",
         );
       case 4507:

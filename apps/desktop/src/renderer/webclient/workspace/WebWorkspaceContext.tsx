@@ -9,6 +9,7 @@ import type {
 } from "./WebMachineSessionManager";
 import { mergeWebMachines, type WebMachineEntry } from "./webWorkspaceModel";
 import type { OwnedLinkFailure } from "../shell/ownedLinkResolution";
+import { BRAND } from "../../../shared/brand";
 
 export type WebOwnedLinkState =
   | { status: "resolving"; message: string }
@@ -89,7 +90,7 @@ export function WebWorkspaceProvider({
 
 export function useWebWorkspace(): WebWorkspaceContextValue {
   const value = useContext(WebWorkspaceContext);
-  if (!value) throw new Error("Web workspace is not available outside ADE Web.");
+  if (!value) throw new Error(`Web workspace is not available outside ${BRAND.NAME} Web.`);
   return value;
 }
 

@@ -6,6 +6,7 @@ import type {
   GitHubAppUserAuthStatus,
   GitHubStatus,
 } from "../../../shared/types";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * What the standalone web client answers for GitHub.
@@ -95,7 +96,7 @@ export function createGithubNamespace(deps: {
     commentOnIssue: (args?: unknown) => call("github.commentOnIssue", args ?? {}, null, false),
     listRepoMilestones: (args?: unknown) => call("github.listRepoMilestones", args ?? {}, []),
     listRepoAutolinks: (args?: unknown) => call("github.listRepoAutolinks", args ?? {}, () => {
-      throw new Error("ADE couldn't read this repository's links. Check the connection to its computer and try again.");
+      throw new Error(`${BRAND.NAME} couldn't read this repository's links. Check the connection to its computer and try again.`);
     }),
     getAppInstallationStatus: async () => ({
       installed: false,
