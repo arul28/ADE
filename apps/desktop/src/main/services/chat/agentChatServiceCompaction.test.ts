@@ -755,14 +755,17 @@ describe("createAgentChatService", () => {
         expect(summary?.usageLimitParkedUntil).toBe(summary?.usageLimitResume?.fireAt);
       });
 
-      it("Continue on another account keeps this chat and carries its thread over", async () => {
+      /**
+       * Two signed-in Claude logins, with the base one the chat starts on, and
+       * usage showing room on the other. Written as the registry file so the
+       * test never touches a real provider login.
+       */
+      const twoClaudeLogins = () => {
         const adeHome = process.env.ADE_HOME!;
         const homeConfig = path.join(adeHome, "provider-homes", "claude", "home");
         const otherConfig = path.join(adeHome, "provider-homes", "claude", "other");
         fs.mkdirSync(homeConfig, { recursive: true });
         fs.mkdirSync(otherConfig, { recursive: true });
-        // Two signed-in logins, with the base one the chat starts on. Written as
-        // the registry file so the test never touches a real provider login.
         fs.writeFileSync(path.join(adeHome, "provider-instances.json"), JSON.stringify({
           version: 1,
           instances: [
@@ -779,6 +782,124 @@ describe("createAgentChatService", () => {
           settings: {},
           presetBindings: [],
         }), "utf8");
+        const now = Date.now();
+        const getAccountUsage = () => ({
+          resolveBalancedInstance: () => null,
+          getUsageSnapshot: () => ({
+            windows: [
+              {
+                provider: "claude", windowType: "five_hour", accountId: "claude:other",
+                percentUsed: 1, resetsAt: new Date(now + 3_600_000).toISOString(), resetsInMs: 3_600_000,
+              },
+              {
+                provider: "claude", windowType: "weekly", accountId: "claude:other",
+                percentUsed: 2, resetsAt: new Date(now + 86_400_000).toISOString(), resetsInMs: 86_400_000,
+              },
+            ],
+            accounts: [{
+              id: "claude:other", provider: "claude", email: "other@example.com", instanceId: "other",
+            }],
+            pacing: {},
+            costs: [],
+          }),
+          getAccountBalanceLoad: () => ({}),
+        });
+        return { homeConfig, otherConfig, getAccountUsage };
+      };
+
+      // A thread that cannot move starts a new chat on the other account. The
+      // messages (and comments) the limit held go with the work, after the
+      // continuation, instead of being cancelled with the old chat's queue.
+      it("a move to a new chat on another account takes the held queue with it", async () => {
+        const { getAccountUsage } = twoClaudeLogins();
+        const events: AgentChatEventEnvelope[] = [];
+        const send = vi.fn().mockResolvedValue(undefined);
+        const resetsAt = Math.floor((Date.now() + 3_600_000) / 1000);
+        let streamCall = 0;
+        let finishActiveTurn!: () => void;
+        const activeTurnGate = new Promise<void>((resolve) => { finishActiveTurn = resolve; });
+        const stream = vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 2) {
+            yield {
+              type: "assistant",
+              message: { content: [{ type: "text", text: "Still working" }], usage: { input_tokens: 1, output_tokens: 1 } },
+            };
+            await activeTurnGate;
+            yield {
+              type: "rate_limit_event",
+              session_id: "sdk-limit-handoff",
+              rate_limit_info: { status: "rejected", utilization: 1, resetsAt },
+            };
+          }
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        })());
+        const sdkSession = { send, stream, close: vi.fn(), sessionId: "sdk-limit-handoff", setPermissionMode: vi.fn() };
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(sdkSession as any);
+        vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(sdkSession as any);
+
+        const { service } = createService({
+          getAccountUsage,
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+        const activeTurn = service.runSessionTurn({ sessionId: session.id, text: "Foreground work", timeoutMs: 15_000 });
+        await waitForEvent(
+          events,
+          (event): event is AgentChatEventEnvelope =>
+            event.event.type === "text" && event.event.text.includes("Still working"),
+        );
+        await service.createThreadComment({
+          sessionId: session.id,
+          messageKey: "message:1",
+          messageExcerpt: "an earlier reply",
+          anchor: { kind: "text", quote: "the quoted part", prefix: "", suffix: "" },
+          body: "my review note",
+        });
+        expect((await service.steer({ sessionId: session.id, text: "first queued", includeThreadComments: true })).queued).toBe(true);
+        expect((await service.steer({ sessionId: session.id, text: "second queued" })).queued).toBe(true);
+        finishActiveTurn();
+        await activeTurn;
+        await vi.waitFor(async () => {
+          expect((await service.getSessionSummary(session.id))?.usageLimitResume?.alternateAccount)
+            .toEqual({ instanceId: "other", label: "other@example.com" });
+        });
+        const sentText = () => JSON.stringify(send.mock.calls);
+        expect(sentText()).not.toContain("first queued");
+
+        // No thread file on this login, so the move falls back to a new chat.
+        const result = await service.continueUsageLimitOnAlternate({ sessionId: session.id });
+        expect(result.ok).toBe(true);
+        const newId = result.ok ? result.sessionId : null;
+        expect(newId).toBeTruthy();
+        expect(newId).not.toBe(session.id);
+
+        // Both reach the new chat, in order, behind the continuation, the comment with the first.
+        await vi.waitFor(() => expect(sentText()).toContain("second queued"), { timeout: 5_000 });
+        const sent = sentText();
+        expect(sent).toContain("my review note");
+        expect(sent.indexOf("Continue the interrupted task")).toBeGreaterThanOrEqual(0);
+        expect(sent.indexOf("Continue the interrupted task")).toBeLessThan(sent.indexOf("first queued"));
+        expect(sent.indexOf("first queued")).toBeLessThan(sent.indexOf("second queued"));
+        // The new chat shows them queued until they go.
+        const queuedOnNewChat = events.filter((event) =>
+          event.sessionId === newId && event.event.type === "user_message"
+          && event.event.deliveryState === "queued");
+        expect(queuedOnNewChat.map((event) => (event.event as { displayText?: string; text: string }).displayText
+          ?? (event.event as { text: string }).text)).toEqual(expect.arrayContaining([
+          expect.stringContaining("first queued"),
+          expect.stringContaining("second queued"),
+        ]));
+        // The old chat cancelled nothing; its rows say where they went.
+        const oldNotices = events
+          .filter((event) => event.sessionId === session.id && event.event.type === "system_notice")
+          .map((event) => (event.event as { message?: string }).message ?? "");
+        expect(oldNotices.some((message) => message.startsWith("Queued message cancelled"))).toBe(false);
+        service.forceDisposeAll();
+      });
+
+      it("Continue on another account keeps this chat and carries its thread over", async () => {
+        const { homeConfig, otherConfig, getAccountUsage } = twoClaudeLogins();
 
         const resetsAt = Math.floor((Date.now() + 3_600_000) / 1000);
         const threadId = "sdk-session-continue";
@@ -803,30 +924,7 @@ describe("createAgentChatService", () => {
           send, stream, close, sessionId: threadId,
         } as any);
 
-        const now = Date.now();
-        const { service } = createService({
-          getAccountUsage: () => ({
-            resolveBalancedInstance: () => null,
-            getUsageSnapshot: () => ({
-              windows: [
-                {
-                  provider: "claude", windowType: "five_hour", accountId: "claude:other",
-                  percentUsed: 1, resetsAt: new Date(now + 3_600_000).toISOString(), resetsInMs: 3_600_000,
-                },
-                {
-                  provider: "claude", windowType: "weekly", accountId: "claude:other",
-                  percentUsed: 2, resetsAt: new Date(now + 86_400_000).toISOString(), resetsInMs: 86_400_000,
-                },
-              ],
-              accounts: [{
-                id: "claude:other", provider: "claude", email: "other@example.com", instanceId: "other",
-              }],
-              pacing: {},
-              costs: [],
-            }),
-            getAccountBalanceLoad: () => ({}),
-          }),
-        });
+        const { service } = createService({ getAccountUsage });
         const session = await service.createSession({
           laneId: "lane-1",
           provider: "claude",

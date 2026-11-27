@@ -16867,9 +16867,14 @@ export function AgentChatPane({
    * The session update a model pick kept local needs: the model (or preset),
    * and the fast, thinking and native controls that came with it. Send applies
    * it right before it sends; a chat stopped at a usage limit applies it as
-   * soon as the pick renders (`usageLimitSwitch`).
+   * soon as the pick renders (`usageLimitSwitch`). Send passes the controls
+   * it read before its first await, so a chat opened meanwhile cannot lend
+   * this one its controls.
    */
-  const buildDeferredSessionUpdate = useCallback((sessionId: string) => {
+  const buildDeferredSessionUpdate = useCallback((
+    sessionId: string,
+    nativeControls: NativeControlState = nativeControlsRef.current,
+  ) => {
     // A pick can move the chat onto a preset or off one, which the model id
     // alone cannot show: the row can already name the model while the
     // preset decides what launches.
@@ -16903,9 +16908,9 @@ export function AgentChatPane({
           ? { fastMode, fastTier: fastMode && fastTier === "ultrafast" ? "ultrafast" as const : null }
           : {}),
         ...(reasoningChanged ? { reasoningEffort } : {}),
-        ...(modelChanged ? summarizeNativeControls(sessionProvider, nativeControlsRef.current) : {}),
+        ...(modelChanged ? summarizeNativeControls(sessionProvider, nativeControls) : {}),
         ...(modelChanged && sessionProvider === "cursor"
-          ? { cursorConfigValues: nativeControlsRef.current.cursorConfigValues }
+          ? { cursorConfigValues: nativeControls.cursorConfigValues }
           : {}),
       },
     };
@@ -16914,6 +16919,12 @@ export function AgentChatPane({
   // Apply the pick on a limited chat after its model and controls render.
   const latestComposerPick = useRef(0);
   const [usageLimitSwitch, setUsageLimitSwitch] = useState<{ sessionId: string; pick: number } | null>(null);
+  // Switches write one at a time, and one a newer pick of the same chat
+  // replaced while it waited is never written. An earlier write still in
+  // flight (a Cursor model check) cannot land after a later one and leave
+  // the released queue on the earlier model.
+  const usageLimitSwitchChainRef = useRef<Promise<void>>(Promise.resolve());
+  const usageLimitSwitchNewestRef = useRef(new Map<string, number>());
   useEffect(() => {
     if (!usageLimitSwitch) return;
     const { sessionId, pick } = usageLimitSwitch;
@@ -16922,15 +16933,25 @@ export function AgentChatPane({
     const { modelChanged, update } = buildDeferredSessionUpdate(sessionId);
     if (!modelChanged) return;
     const routePick = sessionRoutePickRef.current;
-    void withChatPin(
-      chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current),
-      (chatPin) => agentChatApiRef.current.updateSession({
+    // The chat's machine as the pick rendered, kept for the queued write.
+    const switchPin = chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current);
+    const newest = usageLimitSwitchNewestRef.current;
+    newest.set(sessionId, pick);
+    const write = usageLimitSwitchChainRef.current.then(async () => {
+      if (newest.get(sessionId) !== pick) return false;
+      await withChatPin(switchPin, (chatPin) => agentChatApiRef.current.updateSession({
         sessionId,
         ...update,
         ...(sessionProvider === "cursor" ? { cursorCloudServiceTier } : {}),
-      }, chatPin),
-    )
-      .then(() => {
+      }, chatPin));
+      return true;
+    });
+    usageLimitSwitchChainRef.current = write.then(() => {}, () => {}).finally(() => {
+      if (newest.get(sessionId) === pick) newest.delete(sessionId);
+    });
+    void write
+      .then((written) => {
+        if (!written) return;
         if (latestComposerPick.current === pick && renderSelectedSessionIdRef.current === sessionId) {
           if (deferredComposerSessionIdRef.current === sessionId) deferredComposerSessionIdRef.current = null;
           setSessionRoutePick((current) => current === routePick ? null : current);
@@ -17708,6 +17729,8 @@ export function AgentChatPane({
     let handedOff: { sessionId: string; submittedAt: string; texts: string[]; alreadyThere: number; identityKey: string; clientSendId: string } | null = null;
     // The send's identity (chat + payload) and client id, once a send (not a steer) went out.
     let sendIdentity: { identityKey: string; record: UnconfirmedSend } | null = null;
+    // Read before the first await: the person can open another chat while it waits.
+    const nativeControlsAtSend = nativeControlsRef.current;
     try {
       // Files and comments kept on this device while the chat's computer
       // rested go to it now, before the message and before the exclusion
@@ -17764,7 +17787,7 @@ export function AgentChatPane({
 
       let sessionId = selectedSessionId;
       const shouldPromoteLightSession = shouldPromoteSessionForComputerUse(selectedSession);
-      const deferredUpdate = selectedSessionId ? buildDeferredSessionUpdate(selectedSessionId) : null;
+      const deferredUpdate = selectedSessionId ? buildDeferredSessionUpdate(selectedSessionId, nativeControlsAtSend) : null;
       const selectedModelChanged = deferredUpdate?.modelChanged === true;
       const selectedFastModeChanged = deferredUpdate?.fastModeChanged === true;
       const selectedAttachments = isLiteralSlashCommand ? [] : attachmentsSnapshot;
