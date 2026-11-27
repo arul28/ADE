@@ -101,6 +101,11 @@ export function ChatTerminalsReadNotice({
     );
   }
   const what = [shellsFailure && "shells", watchesFailure && "terminal watches"].filter(Boolean).join(" and ");
+  // Both reads really failed: keep both raw errors, each with its read's name.
+  const watchesReal = watchesFailure && !watchesFailure.unreachable && watchesFailure !== failure ? watchesFailure : null;
+  const detail = watchesReal
+    ? [`Shells: ${failure.detail}`, `Terminal watches: ${watchesReal.detail}`].join("\n")
+    : failure.detail;
   return (
     <div className="px-2 pb-3">
       <Banner
@@ -113,7 +118,7 @@ export function ChatTerminalsReadNotice({
           report: {
             surface: "chat_terminals_read",
             code: failure === shellsFailure ? "chat_shells_read_failed" : "chat_terminal_watches_read_failed",
-            technicalDetail: failure.detail || null,
+            technicalDetail: detail || null,
           },
           actions,
         }}
