@@ -274,7 +274,7 @@ extension WindowControl {
         let theirs = others.map { String($0.processIdentifier) }.joined(separator: ", ")
         throw DriverError(
             code: DriverErrorCode.invalidArgument,
-            message: "\(appName) runs on this lane (pid \(mine)) and outside it too (pid \(theirs)). macOS chooses which running copy opens a document, and it may be the user's, so ADE did not open it. Open the file from the lane's copy (its File menu), or pass --new-instance for a separate copy."
+            message: "\(appName) runs on this lane (pid \(mine)) and outside it too (pid \(theirs)). macOS chooses which running copy opens a document, and it may be the user's, so Daex did not open it. Open the file from the lane's copy (its File menu), or pass --new-instance for a separate copy."
         )
     }
 

@@ -85,7 +85,7 @@ struct OffLaneWindow {
 
     func warning(windowId: CGWindowID) -> String {
         let name = title.map { "\(appName) (\"\($0)\")" } ?? appName
-        return "Window \(windowId) of \(name) is on the user's display, and ADE could not move it to this lane (\(reason)). Ask the user to close it or drag it onto this lane's screen."
+        return "Window \(windowId) of \(name) is on the user's display, and Daex could not move it to this lane (\(reason)). Ask the user to close it or drag it onto this lane's screen."
     }
 }
 
@@ -701,7 +701,7 @@ final class WindowControl {
         }
         let app = (listed[kCGWindowOwnerName as String] as? String) ?? "its app"
         return "Window \(windowId) is a panel of \(app) at window layer \(layer) that \(app) does not publish through "
-            + "Accessibility, so ADE cannot claim or move it. Move it from the app itself, or open it while the "
+            + "Accessibility, so Daex cannot claim or move it. Move it from the app itself, or open it while the "
             + "app runs on the lane's screen."
     }
 
@@ -901,7 +901,7 @@ final class WindowControl {
         if WindowLayerPolicy.isOpenSavePanelService(bundleId: window.bundleId) {
             throw DriverError(
                 code: DriverErrorCode.invalidArgument,
-                message: "Window \(windowId) is a macOS Open/Save panel, drawn by the system for another app, and ADE cannot move it. Cancel it, put the app's window on the lane's display, and open the panel again: it opens over that window."
+                message: "Window \(windowId) is a macOS Open/Save panel, drawn by the system for another app, and Daex cannot move it. Cancel it, put the app's window on the lane's display, and open the panel again: it opens over that window."
             )
         }
         let hold: WindowOwnership

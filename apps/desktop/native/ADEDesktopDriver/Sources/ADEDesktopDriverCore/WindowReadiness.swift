@@ -73,8 +73,8 @@ public enum WindowReadinessFailure: Error, Equatable, Sendable {
         case .notTrusted:
             return DriverError(
                 code: DriverErrorCode.permissionRequired,
-                message: "ADE is not trusted for Accessibility, so window \(windowId) cannot be moved. "
-                    + "Grant Accessibility to ADE in System Settings."
+                message: "Daex is not trusted for Accessibility, so window \(windowId) cannot be moved. "
+                    + "Grant Accessibility to Daex in System Settings."
             )
         case .notReady:
             return DriverError(

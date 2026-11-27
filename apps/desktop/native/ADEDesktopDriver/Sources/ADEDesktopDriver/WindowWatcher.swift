@@ -164,7 +164,7 @@ extension WindowControl {
                         case .retryLater(let isFirst):
                             if isFirst {
                                 log("window \(windowId) of pid \(pid) is still not ready; the lane launched it, so it keeps retrying on a slower schedule")
-                                noteOffLane(laneId: laneId, windowId: windowId, in: current, reason: "it does not answer accessibility yet; ADE keeps trying")
+                                noteOffLane(laneId: laneId, windowId: windowId, in: current, reason: "it does not answer accessibility yet; Daex keeps trying")
                             }
                         case .giveUp:
                             log("window \(windowId) of pid \(pid) never became ready; leaving it where it is")
