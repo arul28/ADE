@@ -569,7 +569,7 @@ describe("ADE CLI", () => {
       { state: "signed_out", machines: [], message: null },
       { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
       "account-machines",
-    )).toContain("run `ade login`");
+    )).toContain("run `daex login`");
     expect(formatOutput(
       {
         state: "ok",
@@ -655,7 +655,7 @@ describe("ADE CLI", () => {
       workspaceRoot: null,
       text: true,
     }, inferFormatter(statusPlan))).toBe(
-      "Not signed in — run `ade login`.\n",
+      "Not signed in — run `daex login`.\n",
     );
 
     // Signed in, but the directory refuses this computer: the answer names the
@@ -688,8 +688,8 @@ describe("ADE CLI", () => {
     });
     expect(formatOutput(removed, { text: true } as any, "account-auth")).toBe(
       "Signed in as person@example.com (device)\n"
-        + "This computer was removed from your ADE account on 2026-08-14. "
-        + "ADE stopped trying to reconnect it on its own. Run `ade machines reconnect` to rejoin.\n",
+        + "This computer was removed from your Daex account on 2026-08-14. "
+        + "Daex stopped trying to reconnect it on its own. Run `daex machines reconnect` to rejoin.\n",
     );
     // A failed sync read (the step is optional) leaves the answer as it was.
     const unknown = summarizeExecution({
@@ -831,7 +831,7 @@ describe("ADE CLI", () => {
     }, { text: true } as any, "account-machines");
     expect(rejectedMachineDirectory).toContain("Reason: invalid issuer");
     expect(rejectedMachineDirectory).toContain("Local and explicit remote paths still work.");
-    expect(rejectedMachineDirectory).not.toContain("ADE account session expired —");
+    expect(rejectedMachineDirectory).not.toContain("Daex account session expired —");
   });
 
   it("parses global options without stealing command flags", () => {
@@ -1009,7 +1009,7 @@ describe("ADE CLI", () => {
         const plan = buildCliPlan(["--help"]);
         expect(plan.kind).toBe("help");
         if (plan.kind !== "help") return;
-        expect(plan.text).not.toContain("ade automations");
+        expect(plan.text).not.toContain("daex automations");
       },
     );
   });
@@ -1078,7 +1078,7 @@ describe("ADE CLI", () => {
       rest: ["status"],
     });
     expect(() => buildCliPlan(["runtime", "run"])).toThrow(
-      "ade runtime run requires --socket <path>.",
+      "daex runtime run requires --socket <path>.",
     );
     // One parser for --profile. There used to be two with different
     // strictness: the router rejected unknown values while runServe silently
@@ -1202,7 +1202,7 @@ describe("ADE CLI", () => {
       });
 
       await expect(runCli(["serve", "--socket", socketPath])).rejects.toThrow(
-        "ADE brain refusing to run without mobile sync.",
+        "Daex brain refusing to run without mobile sync.",
       );
       expect(fs.existsSync(socketPath)).toBe(false);
     } finally {
@@ -1664,7 +1664,7 @@ describe("ADE CLI", () => {
     });
     expect(snapshot.state).toBe("unavailable");
     expect(snapshot.recoveryEligible).toBe(false);
-    expect(snapshot.body).toContain("ade brain start");
+    expect(snapshot.body).toContain("daex brain start");
   });
 
   it("reports the GitHub App credential state, not the access-token expiry", () => {
@@ -1722,7 +1722,7 @@ describe("ADE CLI", () => {
       lastRefreshError: null,
       checkedAt: "2026-08-20T12:00:00.000Z",
       error: null,
-    })).toContain("ade --role cto github app-auth login");
+    })).toContain("daex --role cto github app-auth login");
 
     // An older host sends no credentialState at all. The shared derivation
     // judges by the refresh token, so a lapsed 8-hour access token next to a
@@ -1737,7 +1737,7 @@ describe("ADE CLI", () => {
       lastRefreshError: null,
       checkedAt: "2026-08-20T12:00:00.000Z",
       error: null,
-    })).toContain("ADE renews this credential on its own");
+    })).toContain("Daex renews this credential on its own");
   });
 
   it("prints the account line and the provider limits link for a quota snapshot", () => {
@@ -2396,7 +2396,7 @@ describe("ADE CLI", () => {
       blockingStateText: "Live sessions must stop first.",
     }, { text: true } as any, inferFormatter(plan));
 
-    expect(output).toContain("ADE sync status");
+    expect(output).toContain("Daex sync status");
     expect(output).toContain("Relay control closed (1011): upstream restart");
     expect(output).toContain("2026-07-16T11:58:00.000Z");
     expect(output).toContain("2026-07-16T11:57:30.000Z");
@@ -2424,9 +2424,9 @@ describe("ADE CLI", () => {
         },
       },
     }, { text: true } as any, inferFormatter(plan));
-    expect(removedOutput).toMatch(/this computer\s+removed from your ADE account on 2026-08-14/);
+    expect(removedOutput).toMatch(/this computer\s+removed from your Daex account on 2026-08-14/);
     expect(removedOutput).toMatch(/auto repair stopped\s+2026-08-15T10:00:00\.000Z/);
-    expect(removedOutput).toMatch(/reconnect with\s+ade machines reconnect/);
+    expect(removedOutput).toMatch(/reconnect with\s+daex machines reconnect/);
   });
 
   it("formats the authoritative relay blocker without mistaking historical control errors for one", () => {
@@ -2558,11 +2558,11 @@ describe("ADE CLI", () => {
     const output = formatOutput(result, { text: true } as any, inferFormatter(plan));
     expect(output).toContain("  Code   (PIN configured but hidden after runtime restart)");
     expect(output).toContain("  Known  Use the existing code if you already know it.");
-    expect(output).toContain("  New    ade brain pin generate");
-    expect(output).toContain("  Set    ade brain pin set <6-digit-code>");
+    expect(output).toContain("  New    daex brain pin generate");
+    expect(output).toContain("  Set    daex brain pin set <6-digit-code>");
     expect(output).toContain(
       "Open the link and enter the existing code if you know it. " +
-        "Generate or set a new code only if you need ADE to display or copy one.",
+        "Generate or set a new code only if you need Daex to display or copy one.",
     );
     expect(output).not.toContain("no PIN set");
   });
@@ -2573,7 +2573,7 @@ describe("ADE CLI", () => {
     expect(formatOutput({ pin: "123456" }, { text: true } as any, inferFormatter(getPlan)))
       .toContain("Pairing code 123456");
     expect(formatOutput({ pin: null }, { text: true } as any, inferFormatter(getPlan)))
-      .toContain("No pairing code is set — run: ade brain pin generate");
+      .toContain("No pairing code is set — run: daex brain pin generate");
 
     // generate/set/clear answer with the whole snapshot, not { pin }.
     const generatePlan = expectExecutePlan(buildCliPlan(["brain", "pin", "generate"]));
@@ -2590,7 +2590,7 @@ describe("ADE CLI", () => {
         { text: true } as any,
         inferFormatter(generatePlan),
       ),
-    ).toContain("ADE cannot show it");
+    ).toContain("Daex cannot show it");
     const clearPlan = expectExecutePlan(buildCliPlan(["brain", "pin", "clear"]));
     expect(
       formatOutput(
@@ -2598,7 +2598,7 @@ describe("ADE CLI", () => {
         { text: true } as any,
         inferFormatter(clearPlan),
       ),
-    ).toContain("No pairing code is set — run: ade brain pin generate");
+    ).toContain("No pairing code is set — run: daex brain pin generate");
   });
 
   it("reports pairing state in sync status --text for a machine with no project", () => {
@@ -2625,7 +2625,7 @@ describe("ADE CLI", () => {
     expect(output).toContain("mode");
     expect(output).toContain("standalone");
     expect(output).toContain("pairing code");
-    expect(output).toContain("not set — run: ade brain pin generate");
+    expect(output).toContain("not set — run: daex brain pin generate");
     expect(output).toContain("This machine hosts phone sync without an open project.");
 
     const paired = formatOutput(
@@ -2640,7 +2640,7 @@ describe("ADE CLI", () => {
     const plan = expectExecutePlan(buildCliPlan(["sync", "devices"]));
     expect(inferFormatter(plan)).toBe("sync-devices");
     expect(formatOutput([], { text: true } as any, inferFormatter(plan)))
-      .toContain("No paired devices yet — run: ade brain pin generate");
+      .toContain("No paired devices yet — run: daex brain pin generate");
     expect(
       formatOutput(
         [{ name: "Arul's iPhone", deviceType: "phone", platform: "iOS", lastSeenAt: "2026-08-06T00:00:00.000Z" }],
@@ -2682,7 +2682,7 @@ describe("ADE CLI", () => {
     expect(output).toContain("status");
     expect(output).toContain("1.2.38 did not land");
     expect(output).toContain("attempt 2");
-    expect(output).toContain("ade update install");
+    expect(output).toContain("daex update install");
     expect(output).toContain("last checked");
     expect(output).toContain("2026-09-30T12:00:00.000Z");
     expect(output).toContain("check failed");
@@ -2840,7 +2840,7 @@ describe("ADE CLI", () => {
     });
 
     expect(formatOutput(result, { text: true } as any, inferFormatter(plan)))
-      .toBe("No machine addresses are published yet — is the sync host running? (ade sync status)\n");
+      .toBe("No machine addresses are published yet — is the sync host running? (daex sync status)\n");
   });
 
   it("removes the sync relay command and keeps security commands", () => {
@@ -3043,7 +3043,7 @@ describe("ADE CLI", () => {
       { text: true } as never,
       inferFormatter(snapshotPlan),
     );
-    expect(snapshotText).toContain("ADE storage");
+    expect(snapshotText).toContain("Daex storage");
     expect(snapshotText).toContain("GB free of");
     expect(snapshotText).toContain("chats_history");
 
@@ -3073,7 +3073,7 @@ describe("ADE CLI", () => {
       { text: true } as never,
       inferFormatter(maintenancePlan),
     );
-    expect(maintenanceText).toContain("ADE storage maintenance");
+    expect(maintenanceText).toContain("Daex storage maintenance");
     expect(maintenanceText).toContain("manual");
     expect(maintenanceText).toContain("automation_ingress_events");
     expect(maintenanceText).toContain("skipped: not due");
@@ -3177,7 +3177,7 @@ describe("ADE CLI", () => {
       { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
       formatter,
     );
-    expect(importText).toContain("ADE external session import");
+    expect(importText).toContain("Daex external session import");
     expect(importText).toContain("terminal-1");
     expect(importText).toContain("pty-1");
   });
@@ -3910,15 +3910,15 @@ describe("ADE CLI", () => {
       throw new Error("Expected the mixed-version kickoff to fail.");
     } catch (error) {
       expect(error).toMatchObject({
-        message: "ADE created chat chat-new, but the connected brain could not start its first turn.",
+        message: "Daex created chat chat-new, but the connected brain could not start its first turn.",
         details: {
           cause: expect.stringContaining("chat.messageSession"),
           sessionId: "chat-new",
-          nextAction: expect.stringContaining("Update and restart ADE"),
+          nextAction: expect.stringContaining("Update and restart Daex"),
         },
       });
       expect((error as { details?: { nextAction?: string } }).details?.nextAction)
-        .toContain("ade chat message chat-new --kind auto");
+        .toContain("daex chat message chat-new --kind auto");
       expect(actions).toEqual(["createSession", "messageSession"]);
     } finally {
       stop?.();
@@ -4678,7 +4678,7 @@ describe("ADE CLI", () => {
       opts,
       "pr-checks",
     );
-    expect(notRun).toContain("ADE PR checks - not run");
+    expect(notRun).toContain("Daex PR checks - not run");
     expect(notRun).toContain("3 checks reported");
     // The raw enum must never reach the reader — the phrase is the point.
     expect(notRun).not.toContain("not_run");
@@ -4697,7 +4697,7 @@ describe("ADE CLI", () => {
       opts,
       "pr-checks",
     );
-    expect(passing).toContain("ADE PR checks - passing (2 passing");
+    expect(passing).toContain("Daex PR checks - passing (2 passing");
   });
 
   describe("chat create parent lineage", () => {
@@ -5200,16 +5200,16 @@ describe("ADE CLI", () => {
     const help = buildCliPlan(["chat", "--help"]);
     expect(help.kind).toBe("help");
     if (help.kind === "help") {
-      expect(help.text).toContain("ade chat note");
-      expect(help.text).toContain("ade chat activity debugging");
+      expect(help.text).toContain("daex chat note");
+      expect(help.text).toContain("daex chat activity debugging");
       expect(help.text).toContain("planning | exploring | implementing | testing | debugging | reviewing | shipping | monitoring");
       expect(help.text).toContain(
-        "Agent callers need a bound ADE Work chat; --session may target that chat or a tracked terminal it owns. CTO callers may target sessions explicitly.",
+        "Agent callers need a bound Daex Work chat; --session may target that chat or a tracked terminal it owns. CTO callers may target sessions explicitly.",
       );
-      expect(help.text).toContain("ade chat ask");
-      expect(help.text).toContain("ade chat generate-names");
-      expect(help.text).toContain("ade chat demote");
-      expect(help.text).toContain("ade chat promote");
+      expect(help.text).toContain("daex chat ask");
+      expect(help.text).toContain("daex chat generate-names");
+      expect(help.text).toContain("daex chat demote");
+      expect(help.text).toContain("daex chat promote");
       expect(help.text).toContain("--session <id>");
     }
   });
@@ -6548,7 +6548,7 @@ describe("ADE CLI", () => {
       "chat-read",
     );
 
-    expect(text).toContain("ADE chat transcript");
+    expect(text).toContain("Daex chat transcript");
     expect(text).toContain("user 2026-06-29T12:00:00.000Z");
     expect(text).toContain("hello");
     expect(text).toContain("assistant 2026-06-29T12:00:01.000Z");
@@ -6828,7 +6828,7 @@ describe("ADE CLI", () => {
       error: null,
     };
     const text = formatChatLaunch(snapshot);
-    expect(text).toContain("ADE chat launch l-1 · running");
+    expect(text).toContain("Daex chat launch l-1 · running");
     expect(text).toContain("fetch done · checkout running 42% · agent pending");
     expect(text).toContain("flaky-test (lane-1)");
     expect(formatChatLaunch({ ok: false, error: "timed_out", elapsedMs: 5000, launch: snapshot })).toContain("timed out after 5000ms");
@@ -7276,7 +7276,7 @@ describe("ADE CLI", () => {
       workspaceRoot: null,
       text: true,
     }, actions.formatter)).toContain(
-      "ade chat action --personal <action>",
+      "daex chat action --personal <action>",
     );
 
     const rawTerminalDispose = expectExecutePlan(buildCliPlan([
@@ -7449,7 +7449,7 @@ describe("ADE CLI", () => {
       "chat",
       "list",
       "--personal",
-    ])).rejects.toThrow(/require the machine-owned ADE brain/);
+    ])).rejects.toThrow(/require the machine-owned Daex brain/);
 
     // `--arg personalProfile=embedded` asks for the SDK-host surface instead
     // of the assistant default a chat started from ADE's own CLI gets.
@@ -8233,7 +8233,7 @@ describe("ADE CLI", () => {
         "--text",
       ]);
       expect(staleAccountResult).toEqual({
-        output: "Not signed in — run `ade login`.\n",
+        output: "Not signed in — run `daex login`.\n",
         exitCode: 1,
       });
       expect(requests.filter((request) => request.method === "account.call")
@@ -8504,7 +8504,7 @@ describe("ADE CLI", () => {
       throw new Error("Expected the personal chat command to fail without a machine brain.");
     } catch (error) {
       expect((error as { details?: { nextAction?: string } }).details?.nextAction).toContain(
-        "ade brain start",
+        "daex brain start",
       );
     } finally {
       fs.rmSync(path.dirname(socketPath), { recursive: true, force: true });
@@ -9293,7 +9293,7 @@ describe("ADE CLI", () => {
       .toEqual(entries[1]);
     expect(() => show.shapeResult?.({ result: { domain: "chat", action: "listDrafts", result: [] } }))
       .toThrow(/No draft draft-2/);
-    expect(formatOutput(entries[0], textOptions, show.formatter)).toMatch(/ADE draft draft-1[\s\S]*Standup digest/);
+    expect(formatOutput(entries[0], textOptions, show.formatter)).toMatch(/Daex draft draft-1[\s\S]*Standup digest/);
 
     expect(() => buildCliPlan(["drafts", "frobnicate"])).toThrow(/Unknown drafts subcommand/);
     expect(() => buildCliPlan(["drafts", "delete"])).toThrow(/a draft id is required/);
@@ -9572,7 +9572,7 @@ describe("ADE CLI", () => {
       "doctor",
     );
 
-    expect(output).toContain("ADE doctor");
+    expect(output).toContain("Daex doctor");
     expect(output).toContain("cli version");
     expect(output).toContain("service actions");
     expect(output).toContain("Git repository detected");
@@ -9719,7 +9719,7 @@ describe("ADE CLI", () => {
     });
 
     expect(listed.split("\n")).toEqual([
-      "ADE lanes",
+      "Daex lanes",
       "main (id: main) [main]",
       "feature (id: feature) [feature-1]",
     ]);
@@ -11333,10 +11333,10 @@ describe("ADE CLI", () => {
       { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
       "pr-create",
     );
-    expect(text).toContain("ADE pull request created");
+    expect(text).toContain("Daex pull request created");
     expect(text).toContain("GitHub URL");
     expect(text).toContain("https://github.com/acme/ade/pull/42");
-    expect(text).toContain("ADE URL");
+    expect(text).toContain("Daex URL");
     expect(text).toContain("https://ade-app.dev/open?type=pr&repo=acme%2Fade&number=42");
   });
 
@@ -12492,8 +12492,8 @@ describe("ADE CLI", () => {
   });
 
   it("renders an empty lane graph placeholder when no lanes are returned", () => {
-    expect(renderLaneGraph({ lanes: [] })).toBe("ADE lanes\n(no lanes)");
-    expect(renderLaneGraph(null)).toBe("ADE lanes\n(no lanes)");
+    expect(renderLaneGraph({ lanes: [] })).toBe("Daex lanes\n(no lanes)");
+    expect(renderLaneGraph(null)).toBe("Daex lanes\n(no lanes)");
   });
 
   it("automations list maps to the automations.list action", () => {
@@ -14143,7 +14143,7 @@ describe("ADE CLI", () => {
       text: true,
       pretty: false,
     } as any, "ios-sim-preview");
-    expect(output).toContain("ADE iOS Preview match");
+    expect(output).toContain("Daex iOS Preview match");
     expect(output).toMatch(/status\s+missing-preview/);
     expect(output).toMatch(/suggested file\s+apps\/ios\/ADE\/Views\/HomePreviews\.swift/);
 
@@ -14164,7 +14164,7 @@ describe("ADE CLI", () => {
       text: true,
       pretty: false,
     } as any, "ios-sim-preview");
-    expect(currentOutput).toContain("ADE iOS Preview current");
+    expect(currentOutput).toContain("Daex iOS Preview current");
     expect(currentOutput).toMatch(/status\s+no-context/);
   });
 
@@ -14914,10 +14914,10 @@ describe("ADE CLI", () => {
       "pty-create",
     );
 
-    expect(text).toContain("ADE shell session");
+    expect(text).toContain("Daex shell session");
     expect(text).toContain("session-1");
     expect(text).toContain("pty-1");
-    expect(text).toContain("ade terminal read --terminal session-1 --text");
+    expect(text).toContain("daex terminal read --terminal session-1 --text");
   });
 
   it("app-control logs and terminal write use the active App Control terminal", () => {
@@ -15535,7 +15535,7 @@ describe("ADE CLI", () => {
     const help = buildCliPlan(["ui", "--help"]);
     expect(help.kind).toBe("help");
     if (help.kind === "help") {
-      expect(help.text).toContain("ade ui show floating-apple");
+      expect(help.text).toContain("daex ui show floating-apple");
       expect(help.text).toContain("no_desktop");
     }
     const appleHelp = buildCliPlan(["apple", "show", "--help"]);
@@ -15545,7 +15545,7 @@ describe("ADE CLI", () => {
     withEnv({ ADE_CHAT_SESSION_ID: undefined }, () => {
       expect(() => buildCliPlan(["ui", "show", "apple"])).toThrow(/pass --session/);
       // An OpenCode shell has no chat identity: say so and send it to the user.
-      expect(() => buildCliPlan(["apple", "show"])).toThrow(/no ADE chat identity.*Ask the user to open the tool/);
+      expect(() => buildCliPlan(["apple", "show"])).toThrow(/no Daex chat identity.*Ask the user to open the tool/);
     });
   }));
 
@@ -16180,14 +16180,14 @@ describe("ADE CLI", () => {
       // asked to open or close a DEVICE to run it sends them at the wrong
       // session entirely.
       const owned = "IOS_SIMULATOR_OWNED_BY_OTHER_SESSION: simulator is owned by chat session chat-A.";
-      expect(iosSimulatorErrorHint(owned, "open-device")).toContain("ade apple open-device --force");
-      expect(iosSimulatorErrorHint(owned, "close-device")).toContain("ade apple close-device --force");
+      expect(iosSimulatorErrorHint(owned, "open-device")).toContain("daex apple open-device --force");
+      expect(iosSimulatorErrorHint(owned, "close-device")).toContain("daex apple close-device --force");
       expect(iosSimulatorErrorHint(owned, "uninstall")).toContain("--chat-session");
       for (const sub of ["open-device", "close-device", "uninstall"]) {
         expect(iosSimulatorErrorHint(owned, sub)).not.toContain("shutdown --force");
       }
       // Everything else keeps the app-session advice.
-      expect(iosSimulatorErrorHint(owned, "screenshot")).toContain("ade apple shutdown --force");
+      expect(iosSimulatorErrorHint(owned, "screenshot")).toContain("daex apple shutdown --force");
     });
 
     it("turns the new simulator error codes into one actionable line", () => {
@@ -16195,7 +16195,7 @@ describe("ADE CLI", () => {
         iosSimulatorErrorHint(
           "IOS_SIMULATOR_TARGET_ROOT_MISMATCH: launch target x is outside the build root /tmp/a.",
         ),
-      ).toContain("ade apple apps");
+      ).toContain("daex apple apps");
       // The service message already carries the launch id; the hint adds only
       // the command, so it no longer re-extracts the id with a regex over
       // someone else's prose.
@@ -16203,7 +16203,7 @@ describe("ADE CLI", () => {
         iosSimulatorErrorHint(
           "IOS_SIMULATOR_LAUNCH_IN_PROGRESS: an iOS simulator launch (launch-7) is already running.",
         ),
-      ).toContain("ade apple shutdown --force");
+      ).toContain("daex apple shutdown --force");
       expect(
         iosSimulatorErrorHint("IOS_SIMULATOR_NO_BUILDABLE_TARGET: none under /tmp/a."),
       ).toContain("--target-id");
@@ -16213,7 +16213,7 @@ describe("ADE CLI", () => {
         iosSimulatorErrorHint(
           "IOS_SIMULATOR_OWNED_BY_OTHER_SESSION: simulator is owned by chat session chat-A on lane lane-A.",
         ),
-      ).toContain("ade apple shutdown --force");
+      ).toContain("daex apple shutdown --force");
       expect(
         iosSimulatorErrorHint("IOS_SIMULATOR_LANE_NOT_RESOLVED: no worktree resolved for lane lane-x."),
       ).toContain("--project-root");
@@ -17115,7 +17115,7 @@ describe("ade proxy", () => {
       workspaceRoot: null,
       text: true,
     }, "proxy-status");
-    expect(output).toContain("ADE subscription proxy");
+    expect(output).toContain("Daex subscription proxy");
     expect(output).toContain("codex · user@example.test · plus · sub-0123abcd · disabled · login-1");
     expect(output).not.toContain("apiKey");
     expect(output).not.toContain("managementKey");
@@ -17320,7 +17320,7 @@ describe("ade providers accounts", () => {
     // never a list. Falling through to the table branch printed
     // "(no provider accounts found)" after a change that had succeeded.
     const renamed = formatOutput({ instance }, textOpts, "provider-accounts");
-    expect(renamed).toContain("ADE provider account");
+    expect(renamed).toContain("Daex provider account");
     expect(renamed).toContain("work@example.com");
     expect(renamed).not.toContain("no provider accounts found");
 
@@ -17897,6 +17897,6 @@ describe("ade github issue writes", () => {
 
   it("refuses a write when the issue cannot be read", () => {
     const send = writeStep(["close", "12"]);
-    expect(() => send(null as unknown as Record<string, unknown>)).toThrow(/was not found, or ADE could not read it/);
+    expect(() => send(null as unknown as Record<string, unknown>)).toThrow(/was not found, or Daex could not read it/);
   });
 });

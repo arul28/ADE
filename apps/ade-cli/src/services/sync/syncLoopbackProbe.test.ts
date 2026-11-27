@@ -124,7 +124,7 @@ describe("probeAdeLoopbackListener per-instance identity enforcement", () => {
     expect(result.ok).toBe(false);
     expect(result.statusCode).toBe(404);
     expect(result.markerValue).toBe(expectedNonce);
-    expect(result.reason).toMatch(/Expected ADE 426 Upgrade Required/);
+    expect(result.reason).toMatch(/Expected Daex 426 Upgrade Required/);
   });
 });
 
@@ -198,7 +198,7 @@ describe("assertAdeLoopbackListener shadow verdicts", () => {
       .then(() => null, (error: unknown) => error);
     expect(isLoopbackShadowedError(failure)).toBe(true);
     expect((failure as Error).message).toMatch(
-      new RegExp(`Loopback ADE probe timed out after ${PROBE_DEADLINE_MS}ms`),
+      new RegExp(`Loopback Daex probe timed out after ${PROBE_DEADLINE_MS}ms`),
     );
   });
 });

@@ -3626,7 +3626,7 @@ describe("web-reachable settings and lane-risk commands", () => {
     }));
 
     const createArg = create.mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(JSON.stringify(createArg)).not.toContain("Activity detail for this tracked ADE CLI session");
+    expect(JSON.stringify(createArg)).not.toContain("Activity detail for this tracked Daex CLI session");
   });
 
   it("omits work-session activity guidance when the runtime cannot accept activity reports", async () => {
@@ -3647,7 +3647,7 @@ describe("web-reachable settings and lane-risk commands", () => {
     }));
 
     const createArg = create.mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(JSON.stringify(createArg)).not.toContain("Activity detail for this tracked ADE CLI session");
+    expect(JSON.stringify(createArg)).not.toContain("Activity detail for this tracked Daex CLI session");
   });
 
   it("persists the selected account and preset for remote CLI resume and reattach", async () => {

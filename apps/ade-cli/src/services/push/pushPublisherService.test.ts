@@ -2554,7 +2554,7 @@ describe("createPushPublisherService flush", () => {
       eventKind: "agent_running",
       activityTier: "ambient",
     });
-    expect(working.privacyPreview).toBe("An ADE agent is working.");
+    expect(working.privacyPreview).toBe("A Daex agent is working.");
 
     // Draining the last background task is what finally settles the run.
     emit(backgroundTask("s-bg", "task-1", "completed"));
@@ -2562,7 +2562,7 @@ describe("createPushPublisherService flush", () => {
 
     const done = (await publisher.getMachineAttentionSnapshot()).items[0]!;
     expect(done).toMatchObject({ phase: "completed", eventKind: "agent_completed" });
-    expect(done.privacyPreview).toBe("An ADE agent is done.");
+    expect(done.privacyPreview).toBe("A Daex agent is done.");
     publisher.dispose();
   });
 

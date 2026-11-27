@@ -215,7 +215,7 @@ describe("syncHostRecovery", () => {
     expect(redacted.recoveryEligible).toBe(false);
     expect(redacted.conflict).toMatchObject({
       ownerKind: "unknown",
-      ownerLabel: "Another ADE runtime",
+      ownerLabel: "Another Daex runtime",
       projectLabel: null,
       impact: null,
       recoveryEligible: false,

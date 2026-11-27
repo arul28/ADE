@@ -643,7 +643,7 @@ describe("the new sources go through redaction", () => {
       const sources = collect({ home, projectRoot: root });
 
       expect(sources.storageEnvironment.roots.map((entry) => entry.label))
-        .toEqual(["ADE home", "Project"]);
+        .toEqual(["Daex home", "Project"]);
       for (const entry of sources.storageEnvironment.roots) {
         expect(entry.location).toBe("local");
         expect(entry.datalessFiles).toBe(0);

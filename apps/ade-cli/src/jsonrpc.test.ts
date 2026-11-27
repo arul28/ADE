@@ -464,7 +464,7 @@ describe("internal error replies", () => {
 
     expect(response.error.code).toBe(-32603);
     expect(response.error.message).toBe(
-      "storage_read_failed: ADE couldn't read this project's data at /tmp/p/.ade/ade.db.",
+      "storage_read_failed: Daex couldn't read this project's data at /tmp/p/.ade/ade.db.",
     );
     expect(response.error.data?.code).toBe("storage_read_failed");
     // An answer marked expected carries the mark beside `data`, so the caller

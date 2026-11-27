@@ -2172,7 +2172,7 @@ describe("account machine registration publisher", () => {
     );
     const health = service.getPublisherHealth();
     expect(health.lastHttpStatus).toBe(403);
-    expect(health.skipReason).toMatch(/removed from your ADE account/i);
+    expect(health.skipReason).toMatch(/removed from your Daex account/i);
 
     // Terminal: further heartbeats are no-ops, not retries.
     await service.publishNow();

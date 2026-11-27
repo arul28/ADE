@@ -157,7 +157,7 @@ describe("doctor row evaluation", () => {
     expect(result.syncStatus).toBeNull();
     expect(result.account).toMatchObject({
       signedIn: null,
-      error: "ADE brain health reads timed out.",
+      error: "Daex brain health reads timed out.",
     });
   });
 
@@ -257,7 +257,7 @@ describe("doctor row evaluation", () => {
     };
     const lockedRow = evaluateDoctorRows(lockedOut).find((row) => row.key === "credentials");
     expect(lockedRow?.status).toBe("fail");
-    expect(lockedRow?.detail).toContain("open the ADE app");
+    expect(lockedRow?.detail).toContain("open the Daex app");
 
     const corrupt = healthyInput();
     corrupt.credentials = {
@@ -283,7 +283,7 @@ describe("doctor row evaluation", () => {
     };
     const quarantinedRow = evaluateDoctorRows(quarantined).find((row) => row.key === "credentials");
     expect(quarantinedRow?.status).toBe("warn");
-    expect(quarantinedRow?.detail).toContain("open the ADE app");
+    expect(quarantinedRow?.detail).toContain("open the Daex app");
   });
 
   it("warns for a recent wedge and alternate port with diagnosed holders", () => {
@@ -349,7 +349,7 @@ describe("doctor row evaluation", () => {
     }));
     // Only the brain-session states get the restart remedy; a slow HTTP leg is
     // not fixed by restarting.
-    expect(rows.find((row) => row.key === "publish")?.detail).not.toContain("ade brain restart");
+    expect(rows.find((row) => row.key === "publish")?.detail).not.toContain("daex brain restart");
   });
 
   it("keeps the directory refusal sentence on a long-failing publish row", () => {
@@ -392,9 +392,9 @@ describe("doctor row evaluation", () => {
     const publish = evaluateDoctorRows(input).find((row) => row.key === "publish");
 
     expect(publish?.status).toBe("fail");
-    expect(publish?.detail).toContain("This computer was removed from your ADE account on 2026-07-17.");
-    expect(publish?.detail).toContain("ADE stopped trying to reconnect it on its own.");
-    expect(publish?.detail).toContain("ade machines reconnect");
+    expect(publish?.detail).toContain("This computer was removed from your Daex account on 2026-07-17.");
+    expect(publish?.detail).toContain("Daex stopped trying to reconnect it on its own.");
+    expect(publish?.detail).toContain("daex machines reconnect");
   });
 
   it("points an unreadable account session at `ade brain restart`", () => {
@@ -412,13 +412,13 @@ describe("doctor row evaluation", () => {
     expect(evaluateDoctorRows(warning).find((row) => row.key === "publish")).toEqual(
       expect.objectContaining({
         status: "warn",
-        detail: expect.stringContaining("ade brain restart"),
+        detail: expect.stringContaining("daex brain restart"),
       }),
     );
     expect(evaluateDoctorRows(failing).find((row) => row.key === "publish")).toEqual(
       expect.objectContaining({
         status: "fail",
-        detail: expect.stringContaining("ade brain restart"),
+        detail: expect.stringContaining("daex brain restart"),
       }),
     );
   });
@@ -584,7 +584,7 @@ describe("doctor row evaluation", () => {
     const deniedRow = evaluateDoctorRows(denied).find((row) => row.key === "storage");
     expect(deniedRow?.status).toBe("fail");
     expect(deniedRow?.detail).toContain("Project: 47 of 120 sampled files are not downloaded (icloud)");
-    expect(deniedRow?.detail).toContain("ade runtime install-service");
+    expect(deniedRow?.detail).toContain("daex runtime install-service");
 
     // The same evicted files with the policy granted are a provider taking its
     // time, not a machine that cannot read its own data.
@@ -603,7 +603,7 @@ describe("doctor row evaluation", () => {
     });
     const allowedRow = evaluateDoctorRows(allowed).find((row) => row.key === "storage");
     expect(allowedRow?.status).toBe("warn");
-    expect(allowedRow?.detail).not.toContain("ade runtime install-service");
+    expect(allowedRow?.detail).not.toContain("daex runtime install-service");
   });
 
   it("keeps a denied download policy quiet unless this machine has bytes in the cloud", () => {
@@ -672,7 +672,7 @@ describe("doctor row evaluation", () => {
         {},
         "linux",
       );
-      expect(environment?.roots.map((root) => root.label)).toEqual(["ADE home", "Project"]);
+      expect(environment?.roots.map((root) => root.label)).toEqual(["Daex home", "Project"]);
       // Both roots were really walked, and neither reported a path.
       expect(environment?.roots[1]?.sampledFiles).toBeGreaterThan(0);
       expect(JSON.stringify(environment)).not.toContain(project);

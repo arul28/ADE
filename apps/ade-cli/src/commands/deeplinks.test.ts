@@ -253,9 +253,9 @@ describe("runDeeplinkCommand", () => {
   it("returns help when no args", () => {
     const r = runDeeplinkCommand([]);
     expect(r.exitCode).toBe(0);
-    expect(r.output).toContain("ade open");
-    expect(r.output).toContain("ade link");
-    expect(r.output).toContain("ade linear");
+    expect(r.output).toContain("daex open");
+    expect(r.output).toContain("daex link");
+    expect(r.output).toContain("daex linear");
   });
 
   it("rejects unknown verbs", () => {

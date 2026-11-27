@@ -681,7 +681,7 @@ describe("account adoption of a legacy manual pairing", () => {
 
     expect(() => store.pairPeerViaAccount(peer, attestation, {
       dpopPublicKey: VALID_DPOP_PUBLIC_KEY,
-    })).toThrow(/different ADE account/i);
+    })).toThrow(/different Daex account/i);
     expect(store.getPairingRecord(peer.deviceId)?.accountOwnerUserId).toBe(OTHER_USER_ID);
     expect(store.verifySecret(peer.deviceId, owned.secret)).toBe("committed");
   });

@@ -1286,7 +1286,7 @@ describe("brain project actions fallback handler", () => {
       await waitForEnvelope(envelopes, "hello_ok", "spoofed-hello");
       await expect(closed).resolves.toEqual({
         code: 4003,
-        reason: "ADE Relay account proof expired",
+        reason: "Daex Relay account proof expired",
       });
     } finally {
       client?.close();
@@ -2880,7 +2880,7 @@ describe("sync host account authentication", () => {
       );
       expect(incompatible.payload).toEqual({
         message:
-          "No compatible account adoption cipher is available. Update ADE on both devices.",
+          "No compatible account adoption cipher is available. Update Daex on both devices.",
       });
       expect(incompatibleClient.envelopes.some(
         (entry) => entry.type === "account_challenge_ok",
@@ -3277,7 +3277,7 @@ describe("sync host account authentication", () => {
       );
       expect(bootstrapRejected.payload).toMatchObject({
         code: "relay_account_required",
-        message: "Sign in with the same ADE account on both machines.",
+        message: "Sign in with the same Daex account on both machines.",
       });
       const rejection = vi.mocked(logger.warn).mock.calls.find(([event]) => event === "sync_host.hello_rejected")?.[1];
       expect(rejection).toMatchObject({ code: "relay_account_required", authKind: "bootstrap" });
@@ -3630,7 +3630,7 @@ describe("sync host account authentication", () => {
         }),
       ])).resolves.toEqual({
         code: 4003,
-        reason: "ADE Relay account proof expired",
+        reason: "Daex Relay account proof expired",
       });
     } finally {
       client.ws.close();
@@ -3701,7 +3701,7 @@ describe("sync host account authentication", () => {
       );
       expect(directAccountRejected.payload).toMatchObject({
         code: "auth_failed",
-        message: expect.stringMatching(/Connect through ADE Relay, or pair this device with a PIN/),
+        message: expect.stringMatching(/Connect through Daex Relay, or pair this device with a PIN/),
       });
       expect(pairingStore.getPairingRecord(peer.deviceId)?.dpopPublicKey).toBe(legitimateKey.publicKeyX963);
 
@@ -3805,7 +3805,7 @@ describe("sync host account authentication", () => {
       );
       expect(missingRelayProof.payload).toMatchObject({
         code: "relay_account_required",
-        message: "Sign in with the same ADE account on both machines.",
+        message: "Sign in with the same Daex account on both machines.",
       });
 
       const relayWrongAccount = await openAccountClient(port, listener.getRelayBridgeProof());
@@ -3828,7 +3828,7 @@ describe("sync host account authentication", () => {
       );
       expect(wrongRelayProof.payload).toMatchObject({
         code: "relay_account_required",
-        message: "Sign in with the same ADE account on both machines.",
+        message: "Sign in with the same Daex account on both machines.",
       });
 
       const relayPairedClient = await openAccountClient(port, listener.getRelayBridgeProof());
@@ -4256,7 +4256,7 @@ describe("sync host account authentication", () => {
         );
         expect(rejected.payload).toMatchObject({
           code: "auth_failed",
-          message: expect.stringMatching(/already paired to this machine under a different ADE account/i),
+          message: expect.stringMatching(/already paired to this machine under a different Daex account/i),
         });
         expect(harness.pairingStore.getPairingRecord(legacyPeer.deviceId)?.accountOwnerUserId)
           .toBe(otherUserId);
@@ -7822,7 +7822,7 @@ describe("sync host account authentication", () => {
           recoveryEligible: false,
           conflict: {
             ownerKind: "unknown",
-            ownerLabel: "Another ADE runtime",
+            ownerLabel: "Another Daex runtime",
             projectLabel: null,
             technicalDetail: expect.not.stringContaining("19621"),
           },

@@ -149,7 +149,7 @@ describe("repairMachinePairing", () => {
       published: false,
       pushRestored: false,
     });
-    expect(result.reason).toMatch(/removed from your ADE account|did not accept/i);
+    expect(result.reason).toMatch(/removed from your Daex account|did not accept/i);
     expect(push.clearMachineRevocation).not.toHaveBeenCalled();
     expect(push.state.revoked).toBe(true);
     directory.dispose();

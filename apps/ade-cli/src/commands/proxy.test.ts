@@ -17,7 +17,7 @@ describe("formatProxyStatus", () => {
         disabled: false,
       }],
     })).toBe([
-      "ADE subscription proxy",
+      "Daex subscription proxy",
       "installed: yes",
       "running: yes",
       "port: 43123",

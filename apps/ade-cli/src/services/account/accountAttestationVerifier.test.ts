@@ -306,7 +306,7 @@ describe("pairPeerViaAccount", () => {
     store.pairPeerViaAccount(accountPeer, attestation, { dpopPublicKey: publicKey });
     expect(() => store.pairPeerViaAccount(accountPeer, otherAttestation, {
       dpopPublicKey: publicKey,
-    })).toThrow(/different ADE account/i);
+    })).toThrow(/different Daex account/i);
     store.pairPeerViaAccount({ ...phonePeer, deviceId: "other-account" }, otherAttestation, {
       dpopPublicKey: publicKey,
     });

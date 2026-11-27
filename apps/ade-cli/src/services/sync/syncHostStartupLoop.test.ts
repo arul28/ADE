@@ -63,8 +63,8 @@ describe("runSyncHostStartupLoop", () => {
     expect(attempts).toBe(3);
     // The identical failure is logged once, not once per retry.
     expect(logs).toEqual([
-      "ADE brain sync host failed: port busy",
-      "ADE brain mobile sync host recovered.",
+      "Daex brain sync host failed: port busy",
+      "Daex brain mobile sync host recovered.",
     ]);
   });
 
@@ -84,8 +84,8 @@ describe("runSyncHostStartupLoop", () => {
     });
 
     expect(logs).toEqual([
-      "ADE brain sync host failed: port busy on attempt 1",
-      "ADE brain mobile sync host recovered.",
+      "Daex brain sync host failed: port busy on attempt 1",
+      "Daex brain mobile sync host recovered.",
     ]);
   });
 
@@ -290,7 +290,7 @@ describe("runSyncHostStartupLoop", () => {
     expect(attempts).toBe(4);
     // Never kills a foreign-channel owner; just waits it out.
     expect(killed).toEqual([]);
-    expect(logs.at(-1)).toBe("ADE brain mobile sync host recovered.");
+    expect(logs.at(-1)).toBe("Daex brain mobile sync host recovered.");
   });
 
   it("logs a persistent sync-host conflict once, then at most once per ten minutes in one line", async () => {
@@ -317,8 +317,8 @@ describe("runSyncHostStartupLoop", () => {
     });
 
     // First occurrence keeps the full detail, quit command included.
-    expect(logs[0]).toContain("Another ADE brain is already hosting mobile sync");
-    expect(logs[0]).toContain("Quit that brain before starting this ADE brain");
+    expect(logs[0]).toContain("Another Daex brain is already hosting mobile sync");
+    expect(logs[0]).toContain("Quit that brain before starting this Daex brain");
     const repeats = logs.slice(1);
     expect(repeats).toHaveLength(3);
     for (const line of repeats) {
@@ -381,7 +381,7 @@ describe("runSyncHostStartupLoop", () => {
     expect(recorded[0]?.detail).toContain("Unknown system error -11");
     expect(logs[0]).toContain("iCloud Drive");
     expect(logs[0]).not.toContain("Unknown system error");
-    expect(logs.at(-1)).toBe("ADE brain mobile sync host recovered.");
+    expect(logs.at(-1)).toBe("Daex brain mobile sync host recovered.");
   });
 
   /**
@@ -521,7 +521,7 @@ describe("runSyncHostStartupLoop", () => {
         meta: { attempts: 3, lastFailureSignature: "storage_read_failed" },
       });
       // The human-readable line is kept, not replaced.
-      expect(logs[0]).toContain("ADE brain sync host failed");
+      expect(logs[0]).toContain("Daex brain sync host failed");
     });
 
     it("keeps running when the structured emitter throws", async () => {

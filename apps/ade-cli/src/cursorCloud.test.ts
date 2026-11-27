@@ -81,7 +81,7 @@ describe("ADE CLI cursor cloud surface", () => {
   });
 
   it("rejects an unknown ade cursor surface", () => {
-    expect(() => buildCliPlan(["cursor", "local", "agents", "list"])).toThrow(/'ade cursor' surface 'local'/);
+    expect(() => buildCliPlan(["cursor", "local", "agents", "list"])).toThrow(/'daex cursor' surface 'local'/);
   });
 });
 

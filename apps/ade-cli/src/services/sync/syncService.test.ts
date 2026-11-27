@@ -833,7 +833,7 @@ describe("buildProjectlessSyncSnapshot", () => {
     }));
 
     expect(signedOut.routeHealth.relay.enabled).toBe(false);
-    expect(signedOut.routeHealth.relay.skipReason).toBe("Sign in to ADE to use ADE Relay.");
+    expect(signedOut.routeHealth.relay.skipReason).toBe("Sign in to Daex to use Daex Relay.");
     expect(signedIn.routeHealth.relay).toMatchObject({
       enabled: true,
       relayControlConnected: true,
@@ -907,7 +907,7 @@ describe("syncRouteHealth", () => {
     });
 
     expect(health.loopbackAdeValidated).toBe(false);
-    expect(health.listener.reason).toBe("127.0.0.1:8792 did not answer as ADE.");
+    expect(health.listener.reason).toBe("127.0.0.1:8792 did not answer as Daex.");
   });
 
   it("fills probe timestamps from accumulated history only where the current result has none", () => {
@@ -944,10 +944,10 @@ describe("syncRouteHealth", () => {
       lastFailureAtFallback: null,
     });
 
-    expect(skipped.skipReason).toBe("Relay tunnel status is unavailable in this ADE process.");
+    expect(skipped.skipReason).toBe("Relay tunnel status is unavailable in this Daex process.");
     expect(skipped.lastFailureAt).toBe("2026-07-15T00:00:00.000Z");
     // Relay is not enabled at all, so there is no relay failure to date-stamp.
-    expect(signedOut.skipReason).toBe("Sign in to ADE to use ADE Relay.");
+    expect(signedOut.skipReason).toBe("Sign in to Daex to use Daex Relay.");
     expect(signedOut.lastFailureAt).toBeNull();
     // A caller with no probe history reports no time rather than borrowing one.
     expect(noFallback.lastFailureAt).toBeNull();

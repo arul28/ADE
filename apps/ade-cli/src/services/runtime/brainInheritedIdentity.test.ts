@@ -60,7 +60,7 @@ describe("brain startup sentences", () => {
 
   it("warns only for a ceiling that refuses cto clients, and never for an embedded runtime", () => {
     expect(describeBrainRoleCeiling("cto")).toBeNull();
-    expect(describeBrainRoleCeiling("agent")).toContain("ade --role cto serve");
+    expect(describeBrainRoleCeiling("agent")).toContain("daex --role cto serve");
 
     // An embedded runtime is a guest inside one host's process. It serves that
     // host at `agent` on purpose, so the desktop, phone and web clients the

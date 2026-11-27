@@ -479,7 +479,7 @@ describe("syncCloudRelayStore", () => {
 
     const store = await storeInNewProcess({ filePath, lockWaitMs: 0 });
     expect(() => store.getConfig())
-      .toThrow("configuration is being updated by another live ADE process");
+      .toThrow("configuration is being updated by another live Daex process");
   });
 
   it("serializes relay URL writes behind the identity rotation lock", () => {
@@ -494,7 +494,7 @@ describe("syncCloudRelayStore", () => {
     })}\n`, { flag: "wx", mode: 0o600 });
 
     expect(() => store.setRelayUrl("https://new-relay.example.com")).toThrow(
-      "configuration is being updated by another live ADE process",
+      "configuration is being updated by another live Daex process",
     );
     expect(JSON.parse(fs.readFileSync(filePath, "utf8"))).toEqual(first);
 

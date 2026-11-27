@@ -96,7 +96,7 @@ describe("sync host singleton", () => {
       },
     });
     expect(formatSyncHostSingletonConflictMessage(conflict!)).toContain(
-      "Another ADE brain is already hosting mobile sync on port 8801.",
+      "Another Daex brain is already hosting mobile sync on port 8801.",
     );
     expect(formatSyncHostSingletonConflictMessage(conflict!)).toContain(
       "/Applications/ADE.app/Contents/Resources/ade-cli/bin/ade' brain stop --text",

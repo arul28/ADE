@@ -134,10 +134,10 @@ describe("describeOtherBrains", () => {
       { pid: 100, endpoint: "/tmp/a.sock", startedAtMs: 1, label: "stable", recordedAt: "" },
       { pid: 200, endpoint: "/tmp/b.sock", startedAtMs: 2, label: null, recordedAt: "" },
     ]);
-    expect(sentence).toContain("2 other ADE brains");
+    expect(sentence).toContain("2 other Daex brains");
     expect(sentence).toContain("stable (pid 100, /tmp/a.sock)");
     // An unlabelled brain still gets a readable name rather than "null".
-    expect(sentence).toContain("ADE brain (pid 200, /tmp/b.sock)");
+    expect(sentence).toContain("Daex brain (pid 200, /tmp/b.sock)");
     // Not phrased as a failure: sharing a home is the documented dev loop.
     expect(sentence).not.toMatch(/error|refus|cannot start/i);
   });

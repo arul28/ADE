@@ -602,7 +602,7 @@ describe("brain update command", () => {
     expect(result).toMatchObject({
       ok: false,
       applied: false,
-      message: expect.stringContaining("ADE runtime asset promotion failed (binary promotion denied)"),
+      message: expect.stringContaining("Daex runtime asset promotion failed (binary promotion denied)"),
     });
     expect(String(result.message)).toContain("previous native runtime restoration: native rollback denied");
     expect(String(result.message)).toContain("Recovery files were retained");
@@ -647,12 +647,12 @@ describe("brain update command", () => {
       ok: false,
       applied: false,
       restarted: false,
-      message: "Staged ADE native runtime dependencies are missing node_modules.",
+      message: "Staged Daex native runtime dependencies are missing node_modules.",
     });
     expect(fs.readFileSync(installedBinary, "utf8")).toBe("old-binary");
     expect(readBrainUpdateStatus({ ADE_HOME: root })).toMatchObject({
       state: "failed",
-      error: "Staged ADE native runtime dependencies are missing node_modules.",
+      error: "Staged Daex native runtime dependencies are missing node_modules.",
     });
   });
 
