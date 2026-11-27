@@ -116,7 +116,7 @@ export const CURSOR_HOOK_SCRIPT_NAMES: readonly string[] = [ADE_HOOK_SCRIPT_NAME
  */
 export async function runCursorHookScript(scriptPath: string | undefined): Promise<void> {
   if (!scriptPath || !path.isAbsolute(scriptPath) || !CURSOR_HOOK_SCRIPT_NAMES.includes(path.basename(scriptPath))) {
-    process.stderr.write(`ade: ${CURSOR_HOOK_RUNNER_COMMAND} runs only ${BRAND.NAME}'s Cursor hook scripts.\n`);
+    process.stderr.write(`${BRAND.CLI}: ${CURSOR_HOOK_RUNNER_COMMAND} runs only ${BRAND.NAME}'s Cursor hook scripts.\n`);
     process.exitCode = 2;
     return;
   }
@@ -134,7 +134,7 @@ export async function runCursorHookScript(scriptPath: string | undefined): Promi
   try {
     createRequire(scriptPath)(scriptPath);
   } catch (error) {
-    process.stderr.write(`ade: could not run ${scriptPath}: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.stderr.write(`${BRAND.CLI}: could not run ${scriptPath}: ${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
     return;
   }

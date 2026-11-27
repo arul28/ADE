@@ -69,7 +69,7 @@ func workComputerUseTextOfContent(_ value: Any?, depth: Int = 0) -> String {
   }
   if parts.isEmpty {
     let error = (record["error"] as? String) ?? ((record["error"] as? [String: Any])?["message"] as? String)
-    if let error { parts.append("ade: \(error)") }
+    if let error { parts.append("\(Brand.cliName): \(error)") }
   }
   return parts.joined(separator: "\n")
 }

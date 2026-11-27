@@ -81,8 +81,8 @@ export function parseWorkspacePathLocation(value: string): WorkspacePathLocation
   const trimmed = value.trim();
   if (!trimmed.length) return null;
   if (/^(?:https?|mailto|tel):/i.test(trimmed)) return null;
-  // `ade://settings/agents.providers` is a link, not a path with an extension.
-  if (/^ade:/i.test(trimmed)) return null;
+  // `daex://settings/agents.providers` (or `ade://…`) is a link, not a path with an extension.
+  if (/^(?:ade|daex):/i.test(trimmed)) return null;
   if (/^#/.test(trimmed)) return null;
 
   let rawPath: string;
