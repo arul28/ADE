@@ -1086,6 +1086,9 @@ function workTabCliPreamblePrompt(
   sessionGuidance: string,
   hasInitialPrompt = false,
 ): string {
+  // "ADE session guidance" stays as written: title cleanup here and
+  // external-session discovery (this build's and older ones') find Daex's
+  // preamble in provider session files by that phrase.
   const launchInstruction = hasInitialPrompt
     ? [
         "ADE session guidance. Treat this as operating guidance for the CLI session",
@@ -1465,7 +1468,7 @@ export function buildTrackedCliLaunchCommand(args: {
     const guidance = [
       sessionGuidance,
       activityGuidance,
-      `ADE permission policy for this Pi session: ${permissionMode}. Pi has no supported native ADE permission flag, so follow this policy and the ADE guidance without bypassing it.`,
+      `Daex permission policy for this Pi session: ${permissionMode}. Pi has no supported native Daex permission flag, so follow this policy and the Daex guidance without bypassing it.`,
     ].filter((part): part is string => Boolean(part)).join("\n\n");
     const commandArgs = [
       ...modelToCliFlag(resolvePiCliModelForLaunch(modelForLaunch)),

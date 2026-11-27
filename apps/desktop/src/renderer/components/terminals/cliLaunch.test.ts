@@ -1422,7 +1422,7 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.args.join("\n")).toContain(buildAdeCliAgentGuidance());
       expect(launch.startupCommand).toBe("pi --model \"openai/gpt-5.4\" --thinking high --tools read,bash,edit,write,grep,find,ls --tui-mode regular");
       expect(launch.initialInput).toBe("Run the Pi path.");
-      expect(launch.args.join("\n")).toContain("ADE permission policy for this Pi session: full-auto");
+      expect(launch.args.join("\n")).toContain("Daex permission policy for this Pi session: full-auto");
       expect(launch.initialInput).not.toContain("--dangerously");
       expect(launch.args).not.toEqual(expect.arrayContaining(["--permission-mode", "full-auto"]));
       expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]).toContain("agent-skills");
