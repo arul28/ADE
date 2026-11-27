@@ -95,8 +95,8 @@ export function AdeCliSection({ embedded = false }: Props) {
       anchor="ade-cli"
       title={embedded ? "Terminal CLI" : "Command line"}
       hint={embedded
-        ? <>Use <code className="ade-modern-code">ade</code> in your own Terminal. Agents launched by {BRAND.NAME} already get the bundled CLI.</>
-        : <>Agents launched by {BRAND.NAME} get the bundled CLI automatically. Installing it here makes <code className="ade-modern-code">ade</code> available in your Terminal.</>}
+        ? <>Use <code className="ade-modern-code">{BRAND.CLI}</code> in your own Terminal (<code className="ade-modern-code">{BRAND.LEGACY_CLI}</code> still works). Agents launched by {BRAND.NAME} already get the bundled CLI.</>
+        : <>Agents launched by {BRAND.NAME} get the bundled CLI automatically. Installing it here makes <code className="ade-modern-code">{BRAND.CLI}</code> available in your Terminal; <code className="ade-modern-code">{BRAND.LEGACY_CLI}</code> still works too.</>}
       actions={(
         <>
           <button
@@ -149,7 +149,7 @@ export function AdeCliSection({ embedded = false }: Props) {
             <span className="kit-num" style={{ fontSize: 11 }}>{installTargetDir}</span> is not on this shell PATH. Agents still get the bundled command; add that directory to your shell PATH for Terminal use.
             {embedded ? null : (
               <>
-                {" "}Installing here puts the same <code className="ade-modern-code">ade</code> in your Terminal
+                {" "}Installing here puts the same <code className="ade-modern-code">{BRAND.CLI}</code> command (and its <code className="ade-modern-code">{BRAND.LEGACY_CLI}</code> alias) in your Terminal
                 that {BRAND.NAME} uses everywhere else. On a machine without the desktop app,{" "}
                 <code className="ade-modern-code">{TERMINAL_INSTALL_COMMAND}</code> installs it and sets up
                 PATH for you.

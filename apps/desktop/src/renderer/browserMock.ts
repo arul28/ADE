@@ -11258,6 +11258,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     adeCli: {
       getStatus: resolved({
         command: "ade",
+        aliasCommand: "daex",
         platform: "darwin",
         isPackaged: false,
         bundledAvailable: true,
@@ -11271,14 +11272,15 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         installTargetPath: "~/.local/bin/ade",
         installTargetDirOnPath: false,
         message:
-          "ADE-launched agents can use ade. Terminal access is not installed yet.",
+          "Daex-launched agents can use daex. Terminal access is not installed yet.",
         nextAction: "Run npm link in apps/ade-cli for local development.",
       }),
       installForUser: resolved({
         ok: false,
-        message: "Terminal install is available from packaged ADE builds.",
+        message: "Terminal install is available from packaged Daex builds.",
         status: {
           command: "ade",
+          aliasCommand: "daex",
           platform: "darwin",
           isPackaged: false,
           bundledAvailable: true,
@@ -11292,7 +11294,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           installTargetPath: "~/.local/bin/ade",
           installTargetDirOnPath: false,
           message:
-            "ADE-launched agents can use ade. Terminal access is not installed yet.",
+            "Daex-launched agents can use daex. Terminal access is not installed yet.",
           nextAction: "Run npm link in apps/ade-cli for local development.",
         },
       }),
