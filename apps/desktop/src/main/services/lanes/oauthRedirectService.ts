@@ -11,6 +11,7 @@ import type {
   ProxyRoute,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
+import { BRAND } from "../../../shared/brand";
 
 const STATE_PREFIX = "ade";
 const STATE_SEP = ":";
@@ -357,7 +358,7 @@ export function createOAuthRedirectService({
         completeSession(
           tracked,
           "failed",
-          "OAuth callback did not return before the ADE session expired.",
+          `OAuth callback did not return before the ${BRAND.NAME} session expired.`,
         );
       }
     }
@@ -809,14 +810,14 @@ p{font-size:13px;color:#A1A1AA;line-height:1.5;margin:0 0 8px}
     const token = requestUrl.searchParams.get("token");
     if (!token) {
       res.writeHead(400, { "Content-Type": "text/html" });
-      res.end(proxyErrorPage("OAuth finalize request is missing its ADE token."));
+      res.end(proxyErrorPage(`OAuth finalize request is missing its ${BRAND.NAME} token.`));
       return;
     }
 
     const pending = pendingFinalize.get(token);
     if (!pending) {
       res.writeHead(410, { "Content-Type": "text/html" });
-      res.end(proxyErrorPage("This ADE OAuth finalize token has expired. Start the sign-in flow again from the lane preview URL."));
+      res.end(proxyErrorPage(`This ${BRAND.NAME} OAuth finalize token has expired. Start the sign-in flow again from the lane preview URL.`));
       return;
     }
 
@@ -859,7 +860,7 @@ p{font-size:13px;color:#A1A1AA;line-height:1.5;margin:0 0 8px}
           const message =
             error instanceof Error
               ? error.message
-              : "ADE could not forward the OAuth callback back to the lane.";
+              : `${BRAND.NAME} could not forward the OAuth callback back to the lane.`;
           if (trackedSession) {
             completeSession(trackedSession, "failed", message);
           }
@@ -887,7 +888,7 @@ p{font-size:13px;color:#A1A1AA;line-height:1.5;margin:0 0 8px}
         const message =
           error instanceof Error
             ? error.message
-            : "ADE could not inspect the auth start response from the lane preview.";
+            : `${BRAND.NAME} could not inspect the auth start response from the lane preview.`;
         logger.warn("oauth_redirect.auth_start_failed", {
           laneId: routeForHost.laneId,
           error: message,
@@ -982,7 +983,7 @@ p{font-size:13px;color:#A1A1AA;line-height:1.5;margin:0 0 8px}
               provider: "Google",
               uris: [`${base}${FIXED_CALLBACK_PATH}`],
               instructions:
-                "Add this URI in Google Cloud Console → APIs & Services → Credentials → OAuth 2.0 Client → Authorized redirect URIs. Start sign-in from the lane preview URL so ADE can route the callback back to the correct lane.",
+                `Add this URI in Google Cloud Console → APIs & Services → Credentials → OAuth 2.0 Client → Authorized redirect URIs. Start sign-in from the lane preview URL so ${BRAND.NAME} can route the callback back to the correct lane.`,
             },
           ];
         case "github":
@@ -991,7 +992,7 @@ p{font-size:13px;color:#A1A1AA;line-height:1.5;margin:0 0 8px}
               provider: "GitHub",
               uris: [`${base}${FIXED_CALLBACK_PATH}`],
               instructions:
-                "Set this as the Authorization callback URL in your GitHub OAuth App settings. Start sign-in from the lane preview URL so ADE can route the callback back to the correct lane.",
+                `Set this as the Authorization callback URL in your GitHub OAuth App settings. Start sign-in from the lane preview URL so ${BRAND.NAME} can route the callback back to the correct lane.`,
             },
           ];
         case "auth0":
@@ -1000,7 +1001,7 @@ p{font-size:13px;color:#A1A1AA;line-height:1.5;margin:0 0 8px}
               provider: "Auth0",
               uris: [`${base}${FIXED_CALLBACK_PATH}`],
               instructions:
-                "Add this URI to your Auth0 Application → Settings → Allowed Callback URLs. Start sign-in from the lane preview URL so ADE can route the callback back to the correct lane.",
+                `Add this URI to your Auth0 Application → Settings → Allowed Callback URLs. Start sign-in from the lane preview URL so ${BRAND.NAME} can route the callback back to the correct lane.`,
             },
           ];
         default:
@@ -1013,7 +1014,7 @@ p{font-size:13px;color:#A1A1AA;line-height:1.5;margin:0 0 8px}
         provider: provider ?? "Generic",
         uris: [`${base}${FIXED_CALLBACK_PATH}`],
         instructions:
-          "Register this ADE-managed callback URL with your OAuth provider. Start sign-in from the lane preview URL so ADE can route the callback back to the correct lane.",
+          `Register this ${BRAND.NAME}-managed callback URL with your OAuth provider. Start sign-in from the lane preview URL so ${BRAND.NAME} can route the callback back to the correct lane.`,
       },
     ];
   }

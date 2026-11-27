@@ -352,7 +352,7 @@ describe("registerRuntimeBridge", () => {
 
     await expect(
       ipcHandlers.get(IPC.remoteRuntimeGetLocalPairingInfo)?.(eventForSender()),
-    ).rejects.toThrow("Local ADE runtime did not return pairing information.");
+    ).rejects.toThrow("Local Daex runtime did not return pairing information.");
     expect(callSync).toHaveBeenCalledWith("sync.getDesktopPairingInfo");
   });
 
@@ -2423,7 +2423,7 @@ describe("registerIpc usage bridge", () => {
     await expect(handler({
       sender: sender(),
       senderFrame: { url: "https://example.com/" },
-    })).rejects.toThrow(/only available to the ADE window/);
+    })).rejects.toThrow(/only available to the Daex window/);
   });
 
   it("treats a closing window as an expected refusal, not an untrusted page", async () => {
@@ -3153,9 +3153,9 @@ describe("registerIpc sync bridge", () => {
         streamId: null,
       });
     await expect(readSnapshot()).rejects.toThrow(
-      /requires a newer connected ADE brain.*update and restart ADE.*host machine/i,
+      /requires a newer connected Daex brain.*update and restart Daex.*host machine/i,
     );
-    await expect(readSnapshot()).rejects.toThrow(/requires a newer connected ADE brain/i);
+    await expect(readSnapshot()).rejects.toThrow(/requires a newer connected Daex brain/i);
 
     expect(callAttention).toHaveBeenCalledTimes(2);
     expect(logger.warn).toHaveBeenCalledTimes(1);
@@ -4384,7 +4384,7 @@ describe("registerIpc Activity click-through failure stage", () => {
     remoteConnectMock.mockRejectedValue(new Error("remote project catalog RPC failed"));
 
     await expect(openAttentionProject()).rejects.toThrow(
-      "ADE could not connect to Studio Mac. Make sure ADE is running there, then try again.",
+      "Daex could not connect to Studio Mac. Make sure Daex is running there, then try again.",
     );
   });
 });

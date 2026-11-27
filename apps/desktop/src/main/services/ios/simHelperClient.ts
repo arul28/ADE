@@ -9,6 +9,7 @@ import {
   standaloneNativeHelperCandidates,
   withSpotlightFallback,
 } from "../native/nativeHelperPaths";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Supervisor and NDJSON client for the vendored simulator helper
@@ -260,7 +261,7 @@ export function simHelperMissingMessage(binaryPath: string): string {
 /** The one line ADE says when the helper on disk speaks another protocol. */
 export function simHelperProtocolMessage(binaryPath: string, protocol: number): string {
   const newer = protocol > SIM_HELPER_PROTOCOL_VERSION;
-  return `The simulator helper at ${binaryPath} speaks protocol ${protocol}, and this ADE brain speaks protocol ${SIM_HELPER_PROTOCOL_VERSION}. `
+  return `The simulator helper at ${binaryPath} speaks protocol ${protocol}, and this ${BRAND.NAME} brain speaks protocol ${SIM_HELPER_PROTOCOL_VERSION}. `
     + (newer
       ? "The helper is newer than the brain: run `ade brain update` (or update ADE.app if it runs the brain), then restart the brain."
       : "The helper is older than the brain: update ADE.app on this Mac (or run `ade brain update`), then restart the brain.");

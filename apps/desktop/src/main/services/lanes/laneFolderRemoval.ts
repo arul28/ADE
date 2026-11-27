@@ -10,6 +10,7 @@ import {
   removeTrashInBackground,
   sweepDeletingTrash,
 } from "../shared/deletingTrash";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Removing lane folders: the delete-with-recovery every lane removal uses,
@@ -139,7 +140,7 @@ export class LaneUnsavedWorkError extends AdeExpectedError {
 }
 
 export class LaneFolderBusyError extends Error {
-  constructor(message = "Some files in this lane are still in use. ADE kept the folder and will try again later.") {
+  constructor(message = `Some files in this lane are still in use. ${BRAND.NAME} kept the folder and will try again later.`) {
     super(message);
     this.name = "LaneFolderBusyError";
   }
@@ -218,7 +219,7 @@ export async function moveWorktreeAsideAndPrune(
     await fs.promises.rename(trashPath, target);
   } catch (restoreError) {
     throw new Error(
-      `ADE moved the lane folder to ${trashPath} and could not move it back: ${
+      `${BRAND.NAME} moved the lane folder to ${trashPath} and could not move it back: ${
         restoreError instanceof Error ? restoreError.message : String(restoreError)
       }`,
     );

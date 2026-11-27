@@ -1191,6 +1191,7 @@ import type {
 import { buildPublicIssueUrl, osFamilyOf } from "../../../shared/publicIssueLink";
 import { listWebhookAutomations } from "../automations/webhookAutomationFactory";
 import { rendererCspHookCounts } from "../../rendererCsp";
+import { BRAND } from "../../../shared/brand";
 
 const APP_RESOURCE_USAGE_CACHE_MS = 900;
 type AppResourceUsageMode = "fresh" | "calm-ok";
@@ -1515,7 +1516,7 @@ function requireAppContextValue<K extends keyof AppContext>(
   const value = ctx[key];
   if (value == null) {
     throw new Error(
-      "This project action is unavailable until ADE is connected to the project runtime. Reopen the project or wait for the runtime to connect.",
+      `This project action is unavailable until ${BRAND.NAME} is connected to the project runtime. Reopen the project or wait for the runtime to connect.`,
     );
   }
   return value as NonNullable<AppContext[K]>;
@@ -2843,7 +2844,7 @@ export function registerIpc({
     if (!service) {
       // Expected, like Mac Desktop above: the emulator service lives in the
       // project's brain, and no project is open yet.
-      throw new AdeExpectedError("The Android emulator service is not available. Open a project so ADE can reach the machine that runs its emulators.", "environment");
+      throw new AdeExpectedError(`The Android emulator service is not available. Open a project so ${BRAND.NAME} can reach the machine that runs its emulators.`, "environment");
     }
     return service;
   };
@@ -2989,7 +2990,7 @@ export function registerIpc({
     // The registration wrapper already proved the sender is live and trusted;
     // this guard only owns the rate limit and the panel's window.
     const win = BrowserWindow.fromWebContents(event.sender);
-    if (!win) throw new AdeExpectedError("Built-in browser is only available to the ADE renderer.", "user");
+    if (!win) throw new AdeExpectedError(`Built-in browser is only available to the ${BRAND.NAME} renderer.`, "user");
     assertBuiltInBrowserRateLimit(event, channel, limit);
     return win;
   };
@@ -3864,7 +3865,7 @@ export function registerIpc({
           .map((dir) => path.win32.join(dir, "Tailscale", "tailscale-ipn.exe"))
         : [];
     const target = candidates.find((candidate) => fs.existsSync(candidate));
-    if (!target) return { opened: false, message: "ADE couldn't find the Tailscale app on this computer." };
+    if (!target) return { opened: false, message: `${BRAND.NAME} couldn't find the Tailscale app on this computer.` };
     const failure = await shell.openPath(target);
     if (failure) {
       getCtx().logger.warn("app.open_tailscale_failed", { reason: failure });
@@ -4356,7 +4357,7 @@ export function registerIpc({
   // does not — the renderer cannot observe brain readiness itself.
   handle(IPC.appRestartBackgroundService, async (): Promise<void> => {
     if (!projectRecoveryService) {
-      throw new Error("This window does not manage the ADE background service.");
+      throw new Error(`This window does not manage the ${BRAND.NAME} background service.`);
     }
     await restartBrainForRepair(projectRecoveryService, productAnalyticsService);
   });
@@ -5336,7 +5337,7 @@ export function registerIpc({
     const requested = typeof arg?.projectRoot === "string" ? arg.projectRoot.trim() : "";
     if (!requested) throw new Error("Project root path is required.");
     const projectRoot = resolveRequestedProjectRoot(requested);
-    if (!projectRoot) throw new Error("That folder is not a project ADE has open or has opened before.");
+    if (!projectRoot) throw new Error(`That folder is not a project ${BRAND.NAME} has open or has opened before.`);
     if (!projectRecoveryService) throw new Error("Project recovery is unavailable in this runtime mode.");
     return { projectRoot, service: projectRecoveryService };
   };
@@ -5526,11 +5527,11 @@ export function registerIpc({
     const owner = BrowserWindow.fromWebContents(event.sender);
     const confirmOptions: Electron.MessageBoxOptions = {
       type: "warning",
-      buttons: ["Cancel", "Reset ADE"],
+      buttons: ["Cancel", `Reset ${BRAND.NAME}`],
       defaultId: 0,
       cancelId: 0,
-      message: "Reset ADE completely?",
-      detail: "ADE quits, removes everything it put on this computer, and opens again as a new install. Your code and repositories stay.",
+      message: `Reset ${BRAND.NAME} completely?`,
+      detail: `${BRAND.NAME} quits, removes everything it put on this computer, and opens again as a new install. Your code and repositories stay.`,
     };
     if (machineResetConfirmPending) return { started: false, cancelled: true };
     machineResetConfirmPending = true;
@@ -5555,7 +5556,7 @@ export function registerIpc({
   handle(IPC.machineResetChooseRescueDir, async (event): Promise<string | null> => {
     const owner = BrowserWindow.fromWebContents(event.sender);
     const options: Electron.OpenDialogOptions = {
-      title: "Where should ADE move the lane folders?",
+      title: `Where should ${BRAND.NAME} move the lane folders?`,
       buttonLabel: "Move lanes here",
       properties: ["openDirectory", "createDirectory"],
     };
@@ -6841,7 +6842,7 @@ export function registerIpc({
   // reach the computer you are sitting at", answered by its own brain.
   handle(IPC.syncCheckLocalReachability, async (): Promise<HostReachabilityReport> => {
     if (!localRuntimeConnectionPool) {
-      throw new Error("ADE's background service isn't running on this computer. Restart ADE, then check again.");
+      throw new Error(`${BRAND.NAME}'s background service isn't running on this computer. Restart ${BRAND.NAME}, then check again.`);
     }
     return await localRuntimeConnectionPool.callSync<HostReachabilityReport>(
       "sync.checkReachability",
@@ -11855,7 +11856,7 @@ export function registerIpc({
     const ctx = getCtx();
     const service = ctx.ptyService;
     if (!service) {
-      const message = "ADE terminal service is not available for this project window. Reopen the project and try again.";
+      const message = `${BRAND.NAME} terminal service is not available for this project window. Reopen the project and try again.`;
       // Expected only in the no-project window, which has no terminals. A
       // project context without one is a wiring bug: report it.
       if (!ctx.projectId) throw new AdeExpectedError(message, "environment");
@@ -13093,7 +13094,7 @@ export function registerIpc({
   ): Promise<unknown> => {
     const pool = localRuntimeConnectionPool;
     if (!pool) {
-      throw new AdeExpectedError("ADE's background service isn't running on this computer yet. Try again in a moment.", "environment");
+      throw new AdeExpectedError(`${BRAND.NAME}'s background service isn't running on this computer yet. Try again in a moment.`, "environment");
     }
     try {
       const response = await pool.callSync<{ result?: unknown }>(route, {
@@ -13239,7 +13240,7 @@ export function registerIpc({
     brainAction: async (action, actionArgs) => {
       const pool = localRuntimeConnectionPool;
       if (!pool) {
-        throw new AdeExpectedError("ADE's background service isn't running on this computer yet. Try again in a moment.", "environment");
+        throw new AdeExpectedError(`${BRAND.NAME}'s background service isn't running on this computer yet. Try again in a moment.`, "environment");
       }
       try {
         const response = await pool.callSync<{ result?: unknown }>("cloud.call", {
@@ -13321,13 +13322,13 @@ export function registerIpc({
     // told how the change ended. Only a project this computer knows.
     callLocalAction: async (rootPath, request) => {
       const pool = localRuntimeConnectionPool;
-      if (!pool) throw new Error("This ADE has no local runtime to tell the chat.");
+      if (!pool) throw new Error(`This ${BRAND.NAME} has no local runtime to tell the chat.`);
       const given = path.resolve(rootPath);
       // The root as this computer knows it, compared as the platform compares paths (Windows and macOS fold case).
       const known = listLocalRecentProjectSummaries().find((project) => pathsEqual(path.resolve(project.rootPath), given))?.rootPath
         ?? (localProjectRegistryForAuthorization ??= new ProjectRegistry()).findAtRootPath(given)?.rootPath
         ?? null;
-      if (!known) throw new Error("ADE doesn't know that project on this computer.");
+      if (!known) throw new Error(`${BRAND.NAME} doesn't know that project on this computer.`);
       return (await pool.callActionForRoot(path.resolve(known), request)).result;
     },
     analytics: productAnalyticsService ?? null,
@@ -13644,7 +13645,7 @@ export function registerIpc({
   handle(
     IPC.accountSetRelayEnabled,
     async (_event, arg: { machineKey?: string | null; enabled?: unknown }): Promise<MachineConnectionRoutes> => {
-      if (typeof arg?.enabled !== "boolean") throw new Error("Choose on or off for ADE Relay.");
+      if (typeof arg?.enabled !== "boolean") throw new Error(`Choose on or off for ${BRAND.NAME} Relay.`);
       const routes = await accountConnectionRoutes.setRelayEnabled({
         machineKey: typeof arg?.machineKey === "string" ? arg.machineKey : null,
         enabled: arg.enabled,
@@ -14808,9 +14809,9 @@ export function registerIpc({
   // the project tab's bound runtime (which may be another machine). A pinned
   // machine goes straight from the preload to its runtime action instead.
   handle(IPC.remoteMcpCall, async (_event, action: unknown, args: unknown): Promise<unknown> => {
-    if (!isRemoteMcpAction(action)) throw new Error("Unknown ADE MCP action.");
+    if (!isRemoteMcpAction(action)) throw new Error(`Unknown ${BRAND.NAME} MCP action.`);
     const call = getCtx().remoteMcpAction;
-    if (!call) throw new Error("ADE MCP isn't available until this computer's ADE brain is running.");
+    if (!call) throw new Error(`${BRAND.NAME} MCP isn't available until this computer's ${BRAND.NAME} brain is running.`);
     const actionArgs = args && typeof args === "object" && !Array.isArray(args) ? args as Record<string, unknown> : {};
     return await call(action, actionArgs);
   });
@@ -14856,7 +14857,7 @@ export function registerIpc({
       }
     }
     if (service) return await service.fixSystemSleep();
-    throw new Error("ADE can't change this right now.");
+    throw new Error(`${BRAND.NAME} can't change this right now.`);
   });
 
   handle(IPC.keepAwakeMigrateLegacy, async (): Promise<boolean> => {
@@ -14895,7 +14896,7 @@ export function registerIpc({
   handle(IPC.updateSwitchTrack, async (_event, target: unknown): Promise<UpdateTrackSwitchResult> => {
     const track = requireUpdateTrack(target);
     const service = getCtx().autoUpdateService;
-    if (!service) return { ok: false, target: track, reason: "This build of ADE can't change its update track." };
+    if (!service) return { ok: false, target: track, reason: `This build of ${BRAND.NAME} can't change its update track.` };
     // Checked again here, not trusted from the dialog: the databases may have
     // changed since the dialog opened.
     const check = await checkTrackSwitch({ target: track, runningVersion: app.getVersion(), logger: getCtx().logger });

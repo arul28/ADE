@@ -16,6 +16,7 @@ import { DELETING_TRASH_NAME, deletingTrashName, removeTrashInBackground, sweepD
 import { nonAsarFs } from "../shared/nonAsarFs";
 import { pathsEqual } from "../shared/pathCompare";
 import { removeTreeOffProcess } from "../shared/removeTreeOffProcess";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Xcode's DerivedData: list its folders (one per project, plus the shared
@@ -243,7 +244,7 @@ export function createXcodeDerivedData(deps: XcodeDerivedDataDeps) {
       const code = (error as NodeJS.ErrnoException | null)?.code;
       if (code === "ENOENT" || code === "ENOTDIR") return { exists: false, entries: [] };
       // A folder that is there but unreadable is a failure to say, never an empty list.
-      throw new AdeExpectedError(`ADE couldn't read Xcode's DerivedData folder: ${getErrorMessage(error)}`, "environment");
+      throw new AdeExpectedError(`${BRAND.NAME} couldn't read Xcode's DerivedData folder: ${getErrorMessage(error)}`, "environment");
     }
     const folders = dirents.filter((entry) => entry.isDirectory() && !entry.name.startsWith(".") && !DELETING_TRASH_NAME.test(entry.name));
     const read = await mapLimit(folders, 8, async (dirent): Promise<XcodeDerivedDataEntry | null> => {
@@ -371,7 +372,7 @@ export function createXcodeDerivedData(deps: XcodeDerivedDataDeps) {
     }
     const running = await buildRunning();
     if (running === true) throw new AdeExpectedError(XCODE_DERIVED_DATA_BUILD_RUNNING_MESSAGE, "user");
-    if (running === null) throw new AdeExpectedError("ADE couldn't check whether Xcode is building, so nothing was deleted. Try again.", "environment");
+    if (running === null) throw new AdeExpectedError(`${BRAND.NAME} couldn't check whether Xcode is building, so nothing was deleted. Try again.`, "environment");
 
     const root = await resolveRoot();
     const realRoot = await realpathOrNull(root);
@@ -403,7 +404,7 @@ export function createXcodeDerivedData(deps: XcodeDerivedDataDeps) {
         continue;
       }
       if (stat.isSymbolicLink()) {
-        fail("A link, not a folder; ADE never deletes through links.");
+        fail(`A link, not a folder; ${BRAND.NAME} never deletes through links.`);
         continue;
       }
       if (!stat.isDirectory()) {
@@ -417,7 +418,7 @@ export function createXcodeDerivedData(deps: XcodeDerivedDataDeps) {
       }
       // The same rule as the list: only a folder Xcode made, never one of the person's that sits here.
       if (!isXcodeCacheFolder(path.basename(realTarget)) && !(await readInfoPlist(realTarget)).workspacePath) {
-        fail("Not a folder Xcode made, so ADE leaves it alone.");
+        fail(`Not a folder Xcode made, so ${BRAND.NAME} leaves it alone.`);
         continue;
       }
       const trashPath = path.join(realRoot, deletingTrashName(path.basename(realTarget)));

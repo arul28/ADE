@@ -2241,7 +2241,7 @@ describe("local runtime connection pool", () => {
     }
     pool.dispose();
 
-    await expect(poll).rejects.toThrow("Remote ADE service connection closed.");
+    await expect(poll).rejects.toThrow("Remote Daex service connection closed.");
     expect(createConnection).toHaveBeenCalledTimes(1);
     expect(call.mock.calls.filter(([method]) => method === "ade/actions/call")).toHaveLength(1);
     expect(logger.warn).toHaveBeenCalledWith(
@@ -2301,7 +2301,7 @@ describe("local runtime connection pool", () => {
     // Admitted before the quit: it ends with the connection the quit closed,
     // an answer and not the pool's invariant. A call made after it still
     // trips the invariant.
-    await expect(pendingWrite).rejects.toThrow("Remote ADE service connection closed because ADE is quitting.");
+    await expect(pendingWrite).rejects.toThrow("Remote Daex service connection closed because Daex is quitting.");
     await expect(pool.callActionForRoot(rootPath, { domain: "pty", action: "write", args: {} })).rejects.toThrow(
       "Local runtime connection pool is disposed.",
     );

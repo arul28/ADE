@@ -16,6 +16,7 @@ import {
   plainLaneStartBranch,
   type LaneStart,
 } from "../../../shared/laneStart";
+import { BRAND } from "../../../shared/brand";
 
 /** A lane folder that may hold uncommitted changes for a branch. */
 export type LaneStartFolder = {
@@ -49,10 +50,10 @@ async function verifyCommit(ref: string, cwd: string): Promise<string | null> {
  * trust, is the user's to fix; any other failure stays reported.
  */
 function branchListingError(result: GitRunResult): Error {
-  if (result.timedOut) return new Error("ADE couldn't read this repository's branches: Git took too long to answer.");
+  if (result.timedOut) return new Error(`${BRAND.NAME} couldn't read this repository's branches: Git took too long to answer.`);
   // A message, not a log: git's first lines say why.
   const raw = (result.stderr.trim() || result.stdout.trim() || `git exited with code ${result.exitCode}`).slice(0, 1_000);
-  const error = gitCommandError(raw, `ADE couldn't read this repository's branches. ${formatGitExecutionError(raw)}`);
+  const error = gitCommandError(raw, `${BRAND.NAME} couldn't read this repository's branches. ${formatGitExecutionError(raw)}`);
   return error instanceof GitUntrustedFolderError ? markExpected(error, "user") : error;
 }
 
@@ -84,7 +85,7 @@ async function missingStartBranchError(projectRoot: string, refs: readonly strin
     : retry.exitCode === 0
       ? "Git answered only on a second try"
       : (retry.stderr.trim().split(/\r?\n/, 1)[0] ?? "").slice(0, 300) || `git exited with code ${retry.exitCode}`;
-  return new Error(`ADE found ${listed} but couldn't read its commit (${reason}). Try again.`);
+  return new Error(`${BRAND.NAME} found ${listed} but couldn't read its commit (${reason}). Try again.`);
 }
 
 /**

@@ -257,7 +257,7 @@ export function ownerNavigationFailureCopy(
       detail: `${detail}\n\nUpdate and restart ${BRAND.NAME} there, then open it again.`,
     };
   }
-  if (/project .* no longer available on this ADE machine/i.test(detail)) {
+  if (/project .* no longer available on this (?:ADE|Daex) machine/i.test(detail)) {
     return {
       title: "Project not on this computer",
       message: `This belongs to a project that is no longer open in ${BRAND.NAME} on this computer.`,

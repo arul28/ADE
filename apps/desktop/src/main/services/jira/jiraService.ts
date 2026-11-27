@@ -32,6 +32,7 @@ import { createJiraClient, normalizeJiraSiteUrl, type JiraClient } from "./jiraC
 
 export { buildJiraIssueJql, quoteJiraJqlValue } from "../../../shared/jiraIssueMapping";
 import type { JiraCredentialService } from "./jiraCredentialService";
+import { BRAND } from "../../../shared/brand";
 
 type RecordValue = Record<string, unknown>;
 type JiraServiceClient = Pick<JiraClient, "get" | "post" | "put" | "delete">;
@@ -380,7 +381,7 @@ export function createJiraService(args: {
       if (!issueType) throw createJiraError("invalid", `Issue type '${input.issueTypeId}' is not available in ${meta.projectKey}.`);
       const unsupportedRequired = issueType.fields.filter((field) => field.required && !field.supported);
       if (unsupportedRequired.length) {
-        throw createJiraError("invalid", `Jira requires ${unsupportedRequired.map((field) => field.name).join(", ")}, which ADE cannot set. Choose another issue type or update the Jira create screen.`);
+        throw createJiraError("invalid", `Jira requires ${unsupportedRequired.map((field) => field.name).join(", ")}, which ${BRAND.NAME} cannot set. Choose another issue type or update the Jira create screen.`);
       }
       const values: Record<string, unknown> = {
         project: { key: meta.projectKey },

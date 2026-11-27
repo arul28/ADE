@@ -802,7 +802,7 @@ describe("reclaim accepts either spelling of the managed worktrees folder", () =
     await expect(service.archiveAndReclaim({
       laneId: "12345678-lane",
       confirmation: "RECLAIM",
-    })).resolves.not.toThrow(/outside ADE's managed worktree folder/i);
+    })).resolves.not.toThrow(/outside Daex's managed worktree folder/i);
   });
 });
 

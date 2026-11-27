@@ -72,11 +72,11 @@ const JSON_RPC_CODE_NAMES: Readonly<Record<number, string>> = {
  */
 function uncodedErrorClass(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error ?? "");
-  if (/^Remote ADE service timed out\b/.test(message)) return "rpc_timeout";
-  if (/^Remote ADE service connection (?:closed|failed)\b/.test(message)) return "rpc_connection_lost";
-  if (/^Failed to parse remote ADE service response\b/.test(message)) return "rpc_bad_response";
-  if (/^Remote ADE service response for method \S+ exceeded\b/.test(message)) return "rpc_response_too_large";
-  const rpc = message.match(/^Remote ADE service method \S+ failed \(code (-?\d+)\):\s*(.*)$/s);
+  if (/^Remote (?:ADE|Daex) service timed out\b/.test(message)) return "rpc_timeout";
+  if (/^Remote (?:ADE|Daex) service connection (?:closed|failed)\b/.test(message)) return "rpc_connection_lost";
+  if (/^Failed to parse remote (?:ADE|Daex) service response\b/.test(message)) return "rpc_bad_response";
+  if (/^Remote (?:ADE|Daex) service response for method \S+ exceeded\b/.test(message)) return "rpc_response_too_large";
+  const rpc = message.match(/^Remote (?:ADE|Daex) service method \S+ failed \(code (-?\d+)\):\s*(.*)$/s);
   if (rpc) {
     const named = JSON_RPC_CODE_NAMES[Number(rpc[1])];
     if (named) return named;

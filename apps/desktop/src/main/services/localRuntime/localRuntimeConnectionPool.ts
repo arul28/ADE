@@ -101,6 +101,7 @@ import {
 import { callerReportsFailureParam, isInCapturedIpcCall } from "../../sentry/ipcCallScope";
 import { addSentryBreadcrumb } from "../../../shared/sentry/capture";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
+import { BRAND } from "../../../shared/brand";
 
 /** The machine scope as a project record, so the per-root calls reach it unchanged. */
 const MACHINE_SCOPE_PROJECT_RECORD: RemoteRuntimeProjectRecord = {
@@ -361,8 +362,8 @@ function isPrimaryMachineRuntimeSocketPath(
 
 function primaryRuntimeSpawnBlockedMessage(socketPath: string): string {
   return (
-    `ADE runtime is unavailable at ${socketPath}; refusing to spawn an app-owned brain ` +
-    "on a primary channel socket. Start or repair the ADE background service instead."
+    `${BRAND.NAME} runtime is unavailable at ${socketPath}; refusing to spawn an app-owned brain ` +
+    `on a primary channel socket. Start or repair the ${BRAND.NAME} background service instead.`
   );
 }
 
@@ -671,7 +672,7 @@ export async function defaultQueryServiceStatusAsync(): Promise<ServiceManagerSt
     installed: null,
     running: null,
     path: null,
-    message: "ADE background service status could not be read in this session.",
+    message: `${BRAND.NAME} background service status could not be read in this session.`,
   } as ServiceManagerStatusResult;
 }
 
@@ -717,7 +718,7 @@ function openSocketTransport(socketPath: string, timeoutMs = 3_000): Promise<Run
       if (settled) return;
       settled = true;
       socket.destroy();
-      reject(new Error(`Timed out connecting to ADE service socket: ${socketPath}`));
+      reject(new Error(`Timed out connecting to ${BRAND.NAME} service socket: ${socketPath}`));
     }, timeoutMs);
     const closeCallbacks = new Set<() => void>();
     const errorCallbacks = new Set<(error: Error) => void>();
@@ -1102,7 +1103,7 @@ function closeRuntimeClient(client: RuntimeRpcClient): void {
 // messages (see RuntimeRpcClient.failConnection). A drop happens whenever the
 // daemon restarts or is recycled — e.g. when a desktop rebuild changes the
 // expected build hash and the running daemon is deemed incompatible.
-const LOCAL_RUNTIME_TRANSPORT_DROP_PATTERN = /Remote ADE service connection (closed|failed)/i;
+const LOCAL_RUNTIME_TRANSPORT_DROP_PATTERN = /Remote (?:ADE|Daex) service connection (closed|failed)/i;
 
 // A `Remote ADE service method X failed (code …)` error is the daemon's own
 // JSON-RPC reply: the socket answered, so whatever went wrong is the brain's,
@@ -1248,7 +1249,7 @@ async function waitForSocket(socketPath: string, timeoutMs = 10_000): Promise<vo
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
   }
-  throw lastError ?? new Error(`ADE service socket did not become available: ${socketPath}`);
+  throw lastError ?? new Error(`${BRAND.NAME} service socket did not become available: ${socketPath}`);
 }
 
 export function parseRuntimeServiceManagerOutput(output: string): RuntimeServiceManagerOutput | null {
@@ -1948,13 +1949,13 @@ export class LocalRuntimeConnectionPool {
       throw error;
     }
     if (result.timedOut) {
-      const message = "ADE service login item removal timed out.";
+      const message = `${BRAND.NAME} service login item removal timed out.`;
       this.logger.warn("local_runtime.service_uninstall_failed", { cliPath, reason: "timeout", message });
       throw new Error(message);
     }
     const { code, stdout: output, stderr: errorOutput, parsed } = result;
     if (code !== 0 || parsed?.ok === false) {
-      const message = parsed?.message || errorOutput || output || "ADE service login item removal failed.";
+      const message = parsed?.message || errorOutput || output || `${BRAND.NAME} service login item removal failed.`;
       this.logger.warn("local_runtime.service_uninstall_failed", { cliPath, exitCode: code, message });
       throw new Error(message);
     }
@@ -1962,7 +1963,7 @@ export class LocalRuntimeConnectionPool {
       state: "not_attempted",
       attempted: false,
       path: parsed?.path ?? cliPath,
-      message: parsed?.message || output || "ADE service login item was removed.",
+      message: parsed?.message || output || `${BRAND.NAME} service login item was removed.`,
       exitCode: code,
       updatedAt: new Date().toISOString(),
     };
@@ -2085,8 +2086,8 @@ export class LocalRuntimeConnectionPool {
         attempted: false,
         path: cliPath,
         message: runningProbe.compatibleNewer
-          ? "Skipped ADE service install because the newer running brain is protocol-compatible."
-          : "Skipped ADE service install because a compatible brain is already running.",
+          ? `Skipped ${BRAND.NAME} service install because the newer running brain is protocol-compatible.`
+          : `Skipped ${BRAND.NAME} service install because a compatible brain is already running.`,
         exitCode: null,
         updatedAt: new Date().toISOString(),
       };
@@ -2106,7 +2107,7 @@ export class LocalRuntimeConnectionPool {
         state: "skipped",
         attempted: false,
         path: cliPath,
-        message: "Skipped ADE service install because a newer ADE brain is already running.",
+        message: `Skipped ${BRAND.NAME} service install because a newer ${BRAND.NAME} brain is already running.`,
         exitCode: null,
         updatedAt: new Date().toISOString(),
       };
@@ -2180,7 +2181,7 @@ export class LocalRuntimeConnectionPool {
       state: "installing",
       attempted: true,
       path: cliPath,
-      message: "Installing the ADE service login item.",
+      message: `Installing the ${BRAND.NAME} service login item.`,
       exitCode: null,
       // This transition is happening now; `attemptStartedAt` is the streak
       // marker and the only field that reaches back to the first attempt.
@@ -2218,7 +2219,7 @@ export class LocalRuntimeConnectionPool {
       return;
     }
     if (result.timedOut) {
-      const message = "ADE service login item installation timed out.";
+      const message = `${BRAND.NAME} service login item installation timed out.`;
       this.serviceInstallStatus = {
         state: "failed",
         attempted: true,
@@ -2246,7 +2247,7 @@ export class LocalRuntimeConnectionPool {
         state: "installed",
         attempted: true,
         path: statusPath,
-        message: parsed?.message || output || "ADE service login item is installed.",
+        message: parsed?.message || output || `${BRAND.NAME} service login item is installed.`,
         exitCode: code,
         updatedAt: new Date().toISOString(),
         starting: parsed?.starting === true,
@@ -2267,7 +2268,7 @@ export class LocalRuntimeConnectionPool {
         state: "failed",
         attempted: true,
         path: statusPath,
-        message: parsed?.message || errorOutput || output || "ADE service login item installation failed.",
+        message: parsed?.message || errorOutput || output || `${BRAND.NAME} service login item installation failed.`,
         exitCode: code,
         updatedAt: new Date().toISOString(),
         attemptStartedAt,
@@ -2346,7 +2347,7 @@ export class LocalRuntimeConnectionPool {
       const entry = await this.connect();
       this.assertNotDisposed();
       if (entry.client.isClosed()) {
-        const error = new Error("Remote ADE service connection closed.");
+        const error = new Error(`Remote ${BRAND.NAME} service connection closed.`);
         this.logger.warn("local_runtime.ensure_project_connection_dropped", {
           rootPath: normalizedRoot,
           socketPath: entry.socketPath,
@@ -2370,7 +2371,7 @@ export class LocalRuntimeConnectionPool {
         );
         this.assertNotDisposed();
         const record = coerceProjects([project])[0];
-        if (!record) throw new Error("Local ADE service did not return a project record.");
+        if (!record) throw new Error(`Local ${BRAND.NAME} service did not return a project record.`);
         this.projectsByRoot.set(normalizedRoot, record);
         return record;
       } catch (error) {
@@ -2394,7 +2395,7 @@ export class LocalRuntimeConnectionPool {
 
     // Unreachable: the loop always returns or throws on the final attempt.
     // Required here only for TypeScript's control-flow narrowing.
-    throw lastError ?? new Error("Local ADE service did not return a project record.");
+    throw lastError ?? new Error(`Local ${BRAND.NAME} service did not return a project record.`);
   }
 
   /**
@@ -2699,7 +2700,7 @@ export class LocalRuntimeConnectionPool {
       return await this.callActionForRootAdmitted(rootPath, request);
     } catch (error) {
       if (error instanceof LocalRuntimePoolClosedError) {
-        throw new Error("Remote ADE service connection closed because ADE is quitting.");
+        throw new Error(`Remote ${BRAND.NAME} service connection closed because ${BRAND.NAME} is quitting.`);
       }
       throw error;
     }
@@ -2808,7 +2809,7 @@ export class LocalRuntimeConnectionPool {
           if (record.ok === false) {
             // The reply's code, expected mark and the brain's top frames ride
             // on the rebuilt error (`runtimeActionReplyError.ts`).
-            throw runtimeActionReplyError(record.error, "Local ADE service action failed.");
+            throw runtimeActionReplyError(record.error, `Local ${BRAND.NAME} service action failed.`);
           }
         }
       } catch (error) {
@@ -2899,7 +2900,7 @@ export class LocalRuntimeConnectionPool {
 
     // Loop only falls through here after exhausting retries on a dropped
     // connection (it returns or throws on every other path).
-    const finalError = lastError ?? new Error("Local ADE service action failed.");
+    const finalError = lastError ?? new Error(`Local ${BRAND.NAME} service action failed.`);
     this.recordFailedAction(request, finalError);
     throw finalError;
   }
@@ -2945,7 +2946,7 @@ export class LocalRuntimeConnectionPool {
         const error = record.error && typeof record.error === "object" && !Array.isArray(record.error)
           ? record.error as Record<string, unknown>
           : {};
-        throw new Error(typeof error.message === "string" ? error.message : "Local ADE service event stream failed.");
+        throw new Error(typeof error.message === "string" ? error.message : `Local ${BRAND.NAME} service event stream failed.`);
       }
 
       const eventEpoch = typeof record.eventEpoch === "string" && record.eventEpoch.trim()
@@ -3435,7 +3436,7 @@ export class LocalRuntimeConnectionPool {
       } else {
         this.noteRuntimeIdentityMismatch(runtimeInfo);
         return new LocalRuntimeCompatibilityError(
-          `ADE service version ${runtimeInfo.version} does not match desktop version ${this.appVersion}.`,
+          `${BRAND.NAME} service version ${runtimeInfo.version} does not match desktop version ${this.appVersion}.`,
           runtimeInfo,
           comparison == null || comparison === 0
             ? "unknown"
@@ -3457,7 +3458,7 @@ export class LocalRuntimeConnectionPool {
       });
       this.noteRuntimeIdentityMismatch(runtimeInfo);
       return new LocalRuntimeCompatibilityError(
-        "ADE service build does not match the packaged desktop runtime.",
+        `${BRAND.NAME} service build does not match the packaged desktop runtime.`,
         runtimeInfo,
         "build_mismatch",
       );
@@ -3470,7 +3471,7 @@ export class LocalRuntimeConnectionPool {
         runtimePid: runtimeInfo.pid,
       });
       return new LocalRuntimeCompatibilityError(
-        `ADE service default role ${runtimeInfo.defaultRole ?? "missing"} does not match desktop role cto.`,
+        `${BRAND.NAME} service default role ${runtimeInfo.defaultRole ?? "missing"} does not match desktop role cto.`,
         runtimeInfo,
         "role_mismatch",
       );
@@ -3674,7 +3675,7 @@ export class LocalRuntimeConnectionPool {
       state: "failed",
       attempted: true,
       path: null,
-      message: "ADE could not stop its temporary brain before starting the background service.",
+      message: `${BRAND.NAME} could not stop its temporary brain before starting the background service.`,
       exitCode: null,
       updatedAt: new Date().toISOString(),
       failureStep: "predecessor_exit",
@@ -3692,7 +3693,7 @@ export class LocalRuntimeConnectionPool {
     if (lateService) return lateService;
     if (await probeSocketHasOwner(socketPath)) {
       throw codedRecoveryError(
-        "ADE's background service still owns the runtime socket but is not responding.",
+        `${BRAND.NAME}'s background service still owns the runtime socket but is not responding.`,
         "socket_owned_by_other",
       );
     }
@@ -3803,7 +3804,7 @@ export class LocalRuntimeConnectionPool {
         return this.startAppFallback(socketPath, fallbackReason);
       }
       const message = this.options.preferServiceRepair
-        ? `ADE service repair did not restore the runtime endpoint at ${socketPath}; ` +
+        ? `${BRAND.NAME} service repair did not restore the runtime endpoint at ${socketPath}; ` +
           "refusing to spawn an app-owned sync-enabled brain on the primary service socket."
         : primaryRuntimeSpawnBlockedMessage(socketPath);
       this.logger.warn(this.options.preferServiceRepair
@@ -3861,7 +3862,7 @@ export class LocalRuntimeConnectionPool {
         + `health ${this.serviceHealthStatus.state}${this.serviceHealthStatus.running == null ? "" : `, running ${this.serviceHealthStatus.running}`}.`
         + installReason;
       const recoveryError = codedRecoveryError(
-        `ADE's background service could not open this project. Technical details: ${message}${serviceDetail}${crashLoopDetail}${reportDetail}`,
+        `${BRAND.NAME}'s background service could not open this project. Technical details: ${message}${serviceDetail}${crashLoopDetail}${reportDetail}`,
         recoveryCode,
       );
       // "Allow in the Background" is off for ADE: a macOS setting the person
@@ -4370,7 +4371,7 @@ export class LocalRuntimeConnectionPool {
     if (options.expectedPid != null && runtimeInfo.pid !== options.expectedPid) {
       closeRuntimeClient(client);
       throw new Error(
-        `ADE service socket is still owned by runtime PID ${runtimeInfo.pid ?? "unknown"}; ` +
+        `${BRAND.NAME} service socket is still owned by runtime PID ${runtimeInfo.pid ?? "unknown"}; ` +
         `waiting for spawned runtime PID ${options.expectedPid}.`,
       );
     }
@@ -4440,7 +4441,7 @@ export class LocalRuntimeConnectionPool {
         // says why only there.
         const stderrTail = spawnedRuntimeStderrTails.get(child)?.trim();
         const exited = new Error(
-          `Spawned ADE runtime PID ${child.pid ?? "unknown"} exited before becoming ready ` +
+          `Spawned ${BRAND.NAME} runtime PID ${child.pid ?? "unknown"} exited before becoming ready ` +
           `(${child.signalCode ? `signal ${child.signalCode}` : `exit code ${child.exitCode}`}).` +
           (lastError ? ` Last connection error: ${lastError.message}` : "") +
           (stderrTail ? ` Last output: ${stderrTail}` : ""),
@@ -4489,7 +4490,7 @@ export class LocalRuntimeConnectionPool {
       }
     }
     throw new Error(
-      `Timed out waiting for spawned ADE runtime PID ${child.pid ?? "unknown"} at ${socketPath}.` +
+      `Timed out waiting for spawned ${BRAND.NAME} runtime PID ${child.pid ?? "unknown"} at ${socketPath}.` +
       (lastError ? ` Last connection error: ${lastError.message}` : ""),
     );
   }
@@ -4608,18 +4609,18 @@ function normalizeBufferedEvent(value: unknown): RemoteRuntimeBufferedEvent | nu
 
 function normalizeAdeActionRegistry(value: unknown): AdeActionRegistryEntry[] {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("Local ADE service did not return an action registry.");
+    throw new Error(`Local ${BRAND.NAME} service did not return an action registry.`);
   }
   const record = value as Record<string, unknown>;
   if (record.ok === false) {
     const error = record.error && typeof record.error === "object" && !Array.isArray(record.error)
       ? record.error as Record<string, unknown>
       : {};
-    throw new Error(typeof error.message === "string" ? error.message : "Local ADE service action registry lookup failed.");
+    throw new Error(typeof error.message === "string" ? error.message : `Local ${BRAND.NAME} service action registry lookup failed.`);
   }
   const rawActions = Array.isArray(record.actions) ? record.actions : null;
   if (!rawActions) {
-    throw new Error("Local ADE service did not return an action registry.");
+    throw new Error(`Local ${BRAND.NAME} service did not return an action registry.`);
   }
 
   const grouped = new Map<string, Map<string, { name: string; description?: string }>>();
@@ -4750,11 +4751,11 @@ function normalizeRuntimeEventsSubscribeResult(
 
 function readSubscriptionId(value: unknown): string {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("ADE service event subscription did not return a subscription id.");
+    throw new Error(`${BRAND.NAME} service event subscription did not return a subscription id.`);
   }
   const id = (value as Record<string, unknown>).subscriptionId;
   if (typeof id !== "string" || !id.trim()) {
-    throw new Error("ADE service event subscription did not return a subscription id.");
+    throw new Error(`${BRAND.NAME} service event subscription did not return a subscription id.`);
   }
   return id.trim();
 }

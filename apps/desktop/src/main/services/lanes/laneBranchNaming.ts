@@ -40,6 +40,7 @@ import type {
 import type { NewLaneSettingsStore } from "./newLaneSettingsStore";
 import { assertLaneIdArg } from "./laneIdArg";
 import { slugify } from "./laneWorktreeNaming";
+import { BRAND } from "../../../shared/brand";
 
 /** The lane row columns branch naming reads. */
 type LaneBranchRow = {
@@ -277,7 +278,7 @@ export function createLaneBranchNaming(deps: {
       timeoutMs: 8_000,
     });
     if (currentBranch.exitCode !== 0 || branchNameFromLaneRef(currentBranch.stdout.trim()) !== branch) {
-      return blocked("checked_out_branch_changed", "The lane's folder is on a different branch than ADE recorded. Refresh the lane, then try again.");
+      return blocked("checked_out_branch_changed", `The lane's folder is on a different branch than ${BRAND.NAME} recorded. Refresh the lane, then try again.`);
     }
     const upstream = await runGit(
       ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
@@ -300,7 +301,7 @@ export function createLaneBranchNaming(deps: {
         return blocked("temporary_branch_pushed", `${branch} is already on the remote. Renaming it would leave the pushed branch behind.`);
       }
       if (remote.exitCode !== 2) {
-        return blocked("remote_state_unavailable", "ADE couldn't reach the remote to check that the branch was never pushed. Try again when you're online.");
+        return blocked("remote_state_unavailable", `${BRAND.NAME} couldn't reach the remote to check that the branch was never pushed. Try again when you're online.`);
       }
     }
     const pr = db.get<{ id: string }>(
@@ -632,7 +633,7 @@ export function createLaneBranchNaming(deps: {
       const blockedResult = (blocked: string): RenameLaneBranchResult => ({ branchRef: current, renamed: false, blocked });
       if (lane.lane_type === "primary") return blockedResult("The primary lane is your main checkout. Rename its branch with git.");
       if (lane.lane_type !== "worktree" || !lane.worktree_path) return blockedResult("Only a lane with its own folder can rename its branch.");
-      if (autoLaneIdentityInFlight.has(args.laneId)) return blockedResult("ADE is naming this lane right now. Try again in a moment.");
+      if (autoLaneIdentityInFlight.has(args.laneId)) return blockedResult(`${BRAND.NAME} is naming this lane right now. Try again in a moment.`);
       const { blocked } = await branchRenameBlocker(lane, current);
       if (blocked) return blockedResult(blocked.message);
       if (args.dryRun) return { branchRef: current, renamed: false, blocked: null };
@@ -648,12 +649,12 @@ export function createLaneBranchNaming(deps: {
       }
 
       // One branch mutation per lane at a time, shared with the auto-create rename.
-      if (autoLaneIdentityInFlight.has(args.laneId)) return blockedResult("ADE is naming this lane right now. Try again in a moment.");
+      if (autoLaneIdentityInFlight.has(args.laneId)) return blockedResult(`${BRAND.NAME} is naming this lane right now. Try again in a moment.`);
       autoLaneIdentityInFlight.add(args.laneId);
       try {
         const moved = await moveLaneBranch(lane, current, target);
         if (moved === "git_rename_failed") throw new Error(`git couldn't rename ${current} to ${target}.`);
-        if (moved === "persistence_failed_git_rolled_back") throw new Error(`ADE couldn't save the new branch name, so ${current} was kept.`);
+        if (moved === "persistence_failed_git_rolled_back") throw new Error(`${BRAND.NAME} couldn't save the new branch name, so ${current} was kept.`);
         return { branchRef: target, renamed: true, blocked: null };
       } finally {
         autoLaneIdentityInFlight.delete(args.laneId);

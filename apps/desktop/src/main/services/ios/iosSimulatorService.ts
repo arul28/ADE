@@ -223,6 +223,7 @@ import { createSimulatorPower } from "./simulatorPower";
 import type { AppleRemoteViewerProbe } from "./appleStreamRelayForService";
 import { SIMCTL_MISSING } from "../../../shared/xcodeToolchain";
 import { AdeExpectedError, carryExpected, markExpected } from "../../../shared/expectedError";
+import { BRAND } from "../../../shared/brand";
 
 const execFile = promisify(execFileCallback);
 
@@ -723,7 +724,7 @@ function formatXcodeBuildFailure(error: unknown, context: { projectPath: string;
   const resultBundle = /Writing error result bundle to\s+([^\n]+\.xcresult)/i.exec(output)?.[1]?.trim() ?? null;
   const schemeMissing = /does not contain a scheme named/i.test(output);
   const nextAction = schemeMissing
-    ? "ADE could not find that scheme in the project. Refresh the iOS simulator drawer and choose one of the listed schemes; if Xcode only has a user-local scheme, share it from Xcode so command-line builds can see it."
+    ? `${BRAND.NAME} could not find that scheme in the project. Refresh the iOS simulator drawer and choose one of the listed schemes; if Xcode only has a user-local scheme, share it from Xcode so command-line builds can see it.`
     : "Open the project in Xcode or rerun the shown xcodebuild command to see the full compiler output, then fix the build error and launch again.";
   return new Error([
     `Could not build ${context.scheme} for ${context.deviceName}.`,
@@ -2097,7 +2098,7 @@ function applySwiftUITabBarSource(projectRoot: string | null | undefined, elemen
         sourceLine: tab.sourceLine,
         metadata: {
           synthetic: true,
-          inferred: "The Tab Bar exposed no tab items, so ADE placed this tab at an equal slice of the bar, in source order. Its frame is a guess.",
+          inferred: `The Tab Bar exposed no tab items, so ${BRAND.NAME} placed this tab at an equal slice of the bar, in source order. Its frame is a guess.`,
           generatedFrom: "SwiftUI tab labels in source and the accessibility Tab Bar frame",
           tabBarElementId: tabBar.id,
           sourceSnippet: tab.snippet,
@@ -4609,7 +4610,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         status: "missing-source",
         target: null,
         confidence: "none",
-        reason: `ADE could not resolve the selected Swift source file: ${rawSourceFile}.`,
+        reason: `${BRAND.NAME} could not resolve the selected Swift source file: ${rawSourceFile}.`,
         selectedSourceFile,
         selectedSourceLine,
         ...suggestion,
@@ -5317,7 +5318,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         spawnProcess("open", ["-a", "Simulator"], { detached: true, stdio: "ignore" }).unref();
         emitLaunchProgress(launchId, "open-simulator", "complete", "Simulator.app is visible.", null, { deviceUdid: device.udid });
       } else {
-        emitLaunchProgress(launchId, "open-simulator", "skipped", "Simulator.app was not opened: the device runs inside ADE.", null, { deviceUdid: device.udid });
+        emitLaunchProgress(launchId, "open-simulator", "skipped", `Simulator.app was not opened: the device runs inside ${BRAND.NAME}.`, null, { deviceUdid: device.udid });
       }
 
       currentStep = "resolve-target";
@@ -6853,7 +6854,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const rawName = typeof buttonArgs.name === "string" ? buttonArgs.name.trim() : "";
     if (!isAppleHardwareButtonName(rawName)) {
       throw new Error(
-        `${APPLE_BUTTON_UNSUPPORTED_CODE}: '${buttonArgs.name}' is not a hardware button ADE can press. Valid names: ${APPLE_HARDWARE_BUTTONS.join(", ")}.`,
+        `${APPLE_BUTTON_UNSUPPORTED_CODE}: '${buttonArgs.name}' is not a hardware button ${BRAND.NAME} can press. Valid names: ${APPLE_HARDWARE_BUTTONS.join(", ")}.`,
       );
     }
     const runtime = resolveRuntime(buttonArgs);
@@ -6889,7 +6890,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
           );
         default: {
           const unexpected: never = rawName;
-          throw new Error(`${APPLE_BUTTON_UNSUPPORTED_CODE}: '${unexpected}' is not a hardware button ADE can press.`);
+          throw new Error(`${APPLE_BUTTON_UNSUPPORTED_CODE}: '${unexpected}' is not a hardware button ${BRAND.NAME} can press.`);
         }
       }
     });
@@ -7702,7 +7703,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         ? `${laneDevice.name} is ${poweredOff ? "powered off" : "off"} and stays registered on the Mac as this lane's device: the next ade apple start boots it again. `
           + (isAdeOwnedLaneDevice(laneDevice.origin)
             ? "It is deleted with the lane (or now: ade apple device-delete)."
-            : "It is an installed simulator ADE did not make, so the lane releases it when it ends; it is never deleted.")
+            : `It is an installed simulator ${BRAND.NAME} did not make, so the lane releases it when it ends; it is never deleted.`)
         : null,
     };
   };
@@ -7958,7 +7959,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const runtime = requireLaneScope(testArgs);
     if (testRunInFlight) {
       throw new Error(
-        `${APPLE_TEST_RUN_BUSY_CODE}: a test run is already going in this ADE runtime (${testRunInFlight.label}). `
+        `${APPLE_TEST_RUN_BUSY_CODE}: a test run is already going in this ${BRAND.NAME} runtime (${testRunInFlight.label}). `
           + "xcodebuild test runs one at a time; wait for it to finish, then run again.",
       );
     }

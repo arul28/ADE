@@ -8,6 +8,7 @@ import type { Logger } from "../logging/logger";
 import { DELETED_LANE_KEEP_DAYS } from "../../../shared/laneCleanup";
 import { laneBranchSlug } from "../../../shared/laneBranchName";
 import type { DeletedLaneSnapshot, DeletedLaneTip, RestoredLaneFiles } from "../../../shared/types/lanes";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Work a lane delete would destroy, kept as a git ref instead.
@@ -47,7 +48,7 @@ const TRAILER = {
 } as const;
 
 /** Added to a refusal: a save holds the parent repository only. */
-export const NESTED_REPO_WORK_NOT_KEPT = "ADE cannot keep work inside another git repository. Commit and push it there first.";
+export const NESTED_REPO_WORK_NOT_KEPT = `${BRAND.NAME} cannot keep work inside another git repository. Commit and push it there first.`;
 
 function oneLine(value: string): string {
   return value.replace(/[\r\n]+/g, " ").trim();

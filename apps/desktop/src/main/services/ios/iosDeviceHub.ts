@@ -61,6 +61,7 @@ import {
   isUnplacedElement,
   matchElements,
 } from "./iosSemanticActions";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The device half of the iOS simulator surface.
@@ -429,7 +430,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
       action,
       match,
       matchCount: match.matchCount,
-      message: `${JSON.stringify(match.element.label ?? "That element")} is not in the accessibility tree: ADE inferred it${where} `
+      message: `${JSON.stringify(match.element.label ?? "That element")} is not in the accessibility tree: ${BRAND.NAME} inferred it${where} `
         + "as a slice of the Tab Bar, so its place is a guess. Nothing was sent."
         + (point ? ` If the tab is drawn there, run: ade apple tap ${point.x} ${point.y}` : ""),
       waitedMs: null,

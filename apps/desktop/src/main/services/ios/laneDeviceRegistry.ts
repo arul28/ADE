@@ -63,6 +63,7 @@ import { openReadOnlyDatabase } from "../projects/readOnlySqlite";
 import { deleteAppleSimulator } from "./simulatorPower";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * One simulator per lane, many per machine.
@@ -662,7 +663,7 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
         throw new Error(
           `${APPLE_EXTRA_DEVICE_LIMIT_CODE}: this lane already has ${held.length} extra devices `
           + `(${held.map((device) => device.name).join(", ")}). Delete one first: device-delete --device <udid>. `
-          + `The limit is ${limit}; ADE_APPLE_LANE_EXTRA_DEVICES in ADE's environment raises it (up to ${APPLE_LANE_EXTRA_DEVICE_MAX}).`,
+          + `The limit is ${limit}; ADE_APPLE_LANE_EXTRA_DEVICES in ${BRAND.NAME}'s environment raises it (up to ${APPLE_LANE_EXTRA_DEVICE_MAX}).`,
         );
       }
     } else {
