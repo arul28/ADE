@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { resolvePathWithinRoot } from "../shared/utils";
+import { BRAND } from "../../../shared/brand";
 import {
   BUILT_IN_BROWSER_MAX_RECORDING_MS,
   BUILT_IN_BROWSER_RECORDING_FPS_OPTIONS,
@@ -247,12 +248,12 @@ export function buildBuiltInBrowserHar(args: {
   return {
     log: {
       version: "1.2",
-      creator: { name: "ADE built-in browser", version: args.creatorVersion },
+      creator: { name: `${BRAND.NAME} built-in browser`, version: args.creatorVersion },
       pages: [
         {
           startedDateTime: pageStartedDateTime,
           id: pageId,
-          title: args.pageTitle ?? args.pageUrl ?? "ADE browser tab",
+          title: args.pageTitle ?? args.pageUrl ?? `${BRAND.NAME} browser tab`,
           pageTimings: { onContentLoad: -1, onLoad: -1 },
         },
       ],

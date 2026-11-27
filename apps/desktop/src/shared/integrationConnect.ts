@@ -148,7 +148,7 @@ const PROVIDERS: Record<ConnectProviderId, ConnectProviderSpec> = {
         fields: [{ id: CONNECT_FIELD_IDS.githubToken, label: "Token", kind: "secret", placeholder: "github_pat_… or ghp_…" }],
         help: {
           label: "Get a token",
-          url: "https://github.com/settings/tokens/new?scopes=repo,read:org,workflow&description=ADE",
+          url: `https://github.com/settings/tokens/new?scopes=repo,read:org,workflow&description=${BRAND.NAME}`,
         },
       },
       {

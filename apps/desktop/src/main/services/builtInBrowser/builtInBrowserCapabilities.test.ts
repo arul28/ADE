@@ -192,7 +192,7 @@ describe("built-in browser HAR export", () => {
       exportedAt: "2026-09-07T10:01:00.000Z",
     });
     expect(har.log.version).toBe("1.2");
-    expect(har.log.creator).toEqual({ name: "ADE built-in browser", version: "1.2.3" });
+    expect(har.log.creator).toEqual({ name: "Daex built-in browser", version: "1.2.3" });
     expect(har.log.pages).toHaveLength(1);
     expect(har.log.pages[0]).toMatchObject({ id: "page_1", title: "Example" });
     const entry = har.log.entries[0] as Record<string, Record<string, unknown>>;

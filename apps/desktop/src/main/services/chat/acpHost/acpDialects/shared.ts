@@ -21,6 +21,7 @@ import { ACP_METHOD, type AcpPromptUsage } from "../acpProtocolTypes";
 import { readFiniteNumber } from "../acpTelemetryReaders";
 import { uncachedInputTokens } from "../../../usage/tokenSplit";
 import { asRecord } from "../../../shared/utils";
+import { BRAND } from "../../../../../shared/brand";
 
 /** ADE's full effort ladder, lowest first. */
 export const ACP_EFFORT_LADDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -28,7 +29,7 @@ export const ACP_EFFORT_LADDER = ["none", "minimal", "low", "medium", "high", "x
 /** ADE's identity at `initialize`. */
 export const ADE_CLIENT_INFO = {
   name: "ade",
-  title: "ADE",
+  title: BRAND.NAME,
   version: "1",
 } as const;
 
