@@ -96,7 +96,7 @@ image_runtime=/opt/ade/runtime/linux-x64
 home_ade="$ADE_HOME/bin/ade"
 home_runtime="$ADE_HOME/runtime/linux-x64"
 ade_version() {
-  ADE_RUNTIME_ROOT="$2" "$1" --version 2>/dev/null | sed -n 's/^ade //p' | head -n 1
+  ADE_RUNTIME_ROOT="$2" "$1" --version 2>/dev/null | sed -n -E 's/^(ade|daex) //p' | head -n 1
 }
 # The newer of two versions.
 newest_version() {

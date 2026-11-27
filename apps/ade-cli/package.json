@@ -4,6 +4,7 @@
   "description": "Agent-focused command-line interface for ADE",
   "type": "module",
   "bin": {
+    "daex": "dist/cli.cjs",
     "ade": "dist/cli.cjs"
   },
   "files": [

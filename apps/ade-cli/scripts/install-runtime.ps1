@@ -437,7 +437,7 @@ try {
   }
   New-Item -ItemType Directory -Force -Path $stagedRuntime | Out-Null
   Write-AdeBanner
-  Write-Host "  Installing ADE to $AdeHome"
+  Write-Host "  Installing Daex to $AdeHome"
   Write-Host ""
   Download-Asset $binaryAsset $downloadedBinary "ADE runtime"
   Download-Asset $nativeAsset $stagedArchive "Native dependencies"
@@ -522,9 +522,31 @@ try {
     & $destinationBinary brain start | Out-Null
     if ($LASTEXITCODE -ne 0) { Fail "ADE installed, but its per-user brain service could not be registered" }
   }
+  # `daex` is the command's name and `ade` its permanent alias. The binary
+  # stays ade.exe (released `ade brain update`s replace it by that name), and
+  # two tiny commands beside it run it as `daex`: daex.cmd for cmd and
+  # PowerShell, and an extensionless `daex` for Git Bash, which never tries
+  # .cmd and keeps a multi-line argument whole. Both name ade.exe by their own
+  # folder, so every later update of ade.exe is also daex's. A daex.cmd that is
+  # someone else's (it does not name ade.exe) is left alone. Best effort:
+  # `ade` already works.
+  try {
+    $daexCmd = Join-Path $InstallDir "daex.cmd"
+    $daexCmdOwned = -not (Test-Path -LiteralPath $daexCmd) -or ((Get-Content -LiteralPath $daexCmd -Raw -ErrorAction Stop) -match 'ade\.exe')
+    if ($daexCmdOwned) {
+      $daexCmdBody = "@echo off`r`nsetlocal`r`nrem cmd.exe ends a command at its first line feed; the CLI reads this marker to warn.`r`nset `"ADE_CLI_VIA_CMD=1`"`r`n`"%~dp0ade.exe`" %*`r`nexit /b %ERRORLEVEL%`r`n"
+      [IO.File]::WriteAllText($daexCmd, $daexCmdBody, [Text.UTF8Encoding]::new($false))
+    }
+    $daexSh = Join-Path $InstallDir "daex"
+    if (-not (Test-Path -LiteralPath $daexSh) -or ((Get-Content -LiteralPath $daexSh -Raw -ErrorAction Stop) -match 'ade\.exe')) {
+      [IO.File]::WriteAllText($daexSh, "#!/bin/sh`nexec `"`$(dirname -- `"`$0`")/ade.exe`" `"`$@`"`n", [Text.UTF8Encoding]::new($false))
+    }
+  } catch {
+    Write-Warning "Could not add the daex command beside $destinationBinary ($($_.Exception.Message)); ade still works."
+  }
   if (-not $NoPath) { Install-UserPath $InstallDir }
 
-  Write-AdeStep "+" "ADE runtime" $destinationBinary
+  Write-AdeStep "+" "Daex runtime" $destinationBinary
   Write-AdeStep "+" "Native dependencies" $runtimeDir
   $installSucceeded = $true
 } catch {
@@ -684,7 +706,7 @@ if ($installSucceeded) {
     # the summary are meant for this console.
     & $destinationBinary @setupArgs
   } catch {
-    Write-Warning "Setup did not finish ($($_.Exception.Message)). Run 'ade setup' to try again."
+    Write-Warning "Setup did not finish ($($_.Exception.Message)). Run 'daex setup' to try again."
   } finally {
     foreach ($name in $onboardingPreviousEnvironment.Keys) {
       [Environment]::SetEnvironmentVariable($name, $onboardingPreviousEnvironment[$name], "Process")
@@ -698,7 +720,7 @@ if ($installSucceeded) {
     Write-Host ""
     # Single-quoted: a backtick inside a double-quoted PowerShell string is an
     # escape character, so "`ade`" would emit a BEL instead of the word.
-    Write-Host '  ade is on your PATH in new terminals. This one still needs a restart.'
+    Write-Host '  daex (and ade) are on your PATH in new terminals. This one still needs a restart.'
   }
 
   # `ade setup`'s exit code is deliberately not propagated. Reaching here means

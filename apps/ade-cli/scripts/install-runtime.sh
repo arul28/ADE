@@ -172,7 +172,7 @@ try_install_service() {
     return 0
   fi
 
-  printf 'ade install: warning: runtime service install failed with exit status %s; ADE was installed but the login service was not registered.\n' "$status" >&2
+  printf 'ade install: warning: runtime service install failed with exit status %s; Daex was installed but the login service was not registered.\n' "$status" >&2
   if [ -s "$service_log" ]; then
     while IFS= read -r line; do
       printf 'ade install: service: %s\n' "$line" >&2
@@ -354,9 +354,9 @@ append_profile_block() {
 
 print_path_hint() {
   if [ "$path_shell" = "fish" ]; then
-    printf 'To use `ade` in your own terminal, run:\n  fish_add_path "%s"\n' "$dest_dir"
+    printf 'To use `daex` (or `ade`) in your own terminal, run:\n  fish_add_path "%s"\n' "$dest_dir"
   else
-    printf 'To use `ade` in your own terminal, add this line to your shell profile:\n  %s\n' "$(env_file_ref)"
+    printf 'To use `daex` (or `ade`) in your own terminal, add this line to your shell profile:\n  %s\n' "$(env_file_ref)"
   fi
 }
 
@@ -368,7 +368,7 @@ setup_path() {
   # that does not exist.
   if ! write_env_file; then
     printf 'ade install: could not write %s; skipping PATH setup.\n' "$(env_file_path)" >&2
-    printf 'To use `ade` in your own terminal, add %s to your PATH.\n' "$dest_dir"
+    printf 'To use `daex` (or `ade`) in your own terminal, add %s to your PATH.\n' "$dest_dir"
     return 0
   fi
   detect_profile
@@ -407,7 +407,7 @@ setup_path() {
   fi
 
   printf '\n'
-  if ! ask "Add ade to your PATH by updating $path_profile?" y; then
+  if ! ask "Add daex to your PATH by updating $path_profile?" y; then
     print_path_hint
     return 0
   fi
@@ -451,11 +451,11 @@ mkdir -p "$dest_dir" "$runtime_dir" "$ade_home/bin"
 
 install_started_at="$(date +%s)"
 print_banner
-printf '  Installing ADE to %s\n\n' "$ade_home" >&2
+printf '  Installing Daex to %s\n\n' "$ade_home" >&2
 
-if ! download_with_progress "$(asset_url "$binary_name")" "$tmp_dir/ade" "ADE runtime"; then
-  [ "$version" = "latest" ] && die "could not download the ADE runtime."
-  die "could not download ADE $version. Check that it is a published release: https://github.com/$repo/releases"
+if ! download_with_progress "$(asset_url "$binary_name")" "$tmp_dir/ade" "Daex runtime"; then
+  [ "$version" = "latest" ] && die "could not download the Daex runtime."
+  die "could not download Daex $version. Check that it is a published release: https://github.com/$repo/releases"
 fi
 download_with_progress "$(asset_url "$archive_name")" "$tmp_dir/native.tar.gz" \
   "Native dependencies"
@@ -616,18 +616,18 @@ install_stage="staged"
 die_runtime_unusable() {
   if [ "$install_stage" = "staged" ]; then
     if [ -e "$dest_dir/ade" ]; then
-      printf 'ade install: your existing ADE at %s was not touched.\n' "$dest_dir/ade" >&2
+      printf 'ade install: your existing Daex at %s was not touched.\n' "$dest_dir/ade" >&2
     else
       printf 'ade install: nothing was left installed at %s.\n' "$dest_dir/ade" >&2
     fi
   elif [ "$have_backup_binary" -eq 1 ]; then
-    printf 'ade install: the ADE you already had was put back, so nothing is broken.\n' >&2
+    printf 'ade install: the Daex you already had was put back, so nothing is broken.\n' >&2
   elif [ -e "$dest_dir/ade" ]; then
     # The rollback is best effort, so the disk is the only thing worth
     # believing here: if it could not remove the binary that just failed, the
     # broken one is still what runs, and saying "nothing was left installed"
     # sends the user looking in the wrong place.
-    printf 'ade install: the ADE at %s is the one that just failed to start.\n' "$dest_dir/ade" >&2
+    printf 'ade install: the Daex at %s is the one that just failed to start.\n' "$dest_dir/ade" >&2
   else
     printf 'ade install: nothing was left installed at %s.\n' "$dest_dir/ade" >&2
   fi
@@ -661,7 +661,7 @@ chmod 755 "$pending_binary"
 set_runtime_env "$staged_runtime_dir"
 if ! version_check "$pending_binary" "staged"; then
   rm -f "$pending_binary"
-  die_runtime_unusable "the ADE runtime that was just downloaded could not start"
+  die_runtime_unusable "the Daex runtime that was just downloaded could not start"
 fi
 
 if [ -e "$runtime_dir" ]; then
@@ -675,7 +675,7 @@ else
     rm -rf "$runtime_dir"
     mv "$backup_runtime_dir" "$runtime_dir"
   fi
-  die "failed to install ADE native runtime dependencies"
+  die "failed to install Daex native runtime dependencies"
 fi
 
 # Promote the binary last, and only by rename -- of the very copy the preflight
@@ -687,7 +687,7 @@ if [ -e "$dest_dir/ade" ]; then
     have_backup_binary=1
   else
     rm -f "$pending_binary"
-    die "could not back up the existing ADE runtime at $dest_dir/ade"
+    die "could not back up the existing Daex runtime at $dest_dir/ade"
   fi
 fi
 mv "$pending_binary" "$dest_dir/ade"
@@ -697,7 +697,7 @@ install_stage="installed"
 
 if ! version_check "$dest_dir/ade" "installed"; then
   restore_previous_install
-  die_runtime_unusable "the newly installed ADE runtime could not start"
+  die_runtime_unusable "the newly installed Daex runtime could not start"
 fi
 # The new binary has now proved it runs, so the cleanup handlers must stop
 # treating $dest_dir/ade as unverified and rolling the backup back over it.
@@ -711,13 +711,24 @@ rm -f "$backup_binary"
 rm -rf "$backup_runtime_dir"
 rm -f "$install_log"
 
+# `daex` is the command's name and `ade` its permanent alias. The binary
+# stays `ade`: released `ade brain update`s replace it by that name. `daex`
+# is a relative link to it, so every later update of `ade` is also `daex`'s.
+# A `daex` that is not a link (someone else's file) is left alone. Best
+# effort: `ade` already works.
+if [ -L "$dest_dir/daex" ] || [ ! -e "$dest_dir/daex" ]; then
+  rm -f "$dest_dir/daex" 2>/dev/null || true
+  ln -s ade "$dest_dir/daex" 2>/dev/null \
+    || printf 'ade install: could not create %s; use %s instead.\n' "$dest_dir/daex" "$dest_dir/ade" >&2
+fi
+
 if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
   try_install_service
 elif [ "$(uname -s)" = "Darwin" ]; then
   try_install_service
 fi
 
-print_step "+" "ADE runtime" "$dest_dir/ade"
+print_step "+" "Daex runtime" "$dest_dir/daex -> ade"
 print_step "+" "Native dependencies" "$runtime_dir"
 # The recovery commands in the closing summary are printed by `ade setup`, which
 # resolves its own invocation, so this script no longer needs to work out
@@ -779,7 +790,7 @@ fi
 # Only this script knows whether it edited a shell profile, so the "new
 # terminal" note belongs here rather than in the shared summary.
 if [ "$path_profile_updated" -eq 1 ]; then
-  printf '\n  ade is on your PATH in new terminals. To use it in this one, run:\n    %s\n' \
+  printf '\n  daex (and ade) are on your PATH in new terminals. To use them in this one, run:\n    %s\n' \
     "$(env_file_ref)"
 fi
 

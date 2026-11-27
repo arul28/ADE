@@ -40,14 +40,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # The released ADE, installed into the image under /opt (the home folder is
 # masked by the persistent disk at runtime). ADE_VERSION pins a release;
-# "latest" takes the newest one at build time.
+# "latest" takes the newest one at build time. `daex` is the command's name
+# and `ade` its permanent alias: both are on PATH, and both run the same binary
+# (the binary stays `ade`; `daex` links to it).
 ARG ADE_VERSION=latest
 RUN curl -fsSL https://ade-app.dev/install.sh -o /tmp/install.sh \
  && HOME=/opt ADE_HOME=/opt/ade ADE_VERSION="$ADE_VERSION" \
       ADE_INSTALL_NO_PROMPT=1 ADE_INSTALL_NO_PATH=1 sh /tmp/install.sh \
  && chmod -R a+rX /opt/ade && rm /tmp/install.sh \
  && ln -s /opt/ade/bin/ade /usr/local/bin/ade \
- && DO_NOT_TRACK=1 ADE_SENTRY_DISABLED=1 ADE_TEMPLATE_CHECK=1 ade --version
+ && ln -sf ade /opt/ade/bin/daex \
+ && ln -s /opt/ade/bin/ade /usr/local/bin/daex \
+ && DO_NOT_TRACK=1 ADE_SENTRY_DISABLED=1 ADE_TEMPLATE_CHECK=1 ade --version \
+ && DO_NOT_TRACK=1 ADE_SENTRY_DISABLED=1 ADE_TEMPLATE_CHECK=1 daex --version
 
 # The GitHub CLI. Agents run `gh` (PRs, issues, checks), and ADE's `gh` shim
 # (githubShellShim.ts) only adds the account's GitHub token and then runs the
