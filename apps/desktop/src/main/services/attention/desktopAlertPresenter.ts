@@ -68,9 +68,13 @@ const HIDDEN_DETAIL_TITLE: Record<Exclude<DesktopAlert["kind"], "activity" | "me
   goal: "Goal update",
 };
 
+/** The item and event an alert is about, whatever phase of it. */
+function alertSubjectKey(alert: DesktopAlert): string {
+  return `${alert.itemId}\u0000${alertEvent(alert) ?? alert.kind}`;
+}
+
 function alertKey(alert: DesktopAlert): string {
-  const event = alertEvent(alert) ?? alert.kind;
-  const key = `${alert.itemId}\u0000${event}`;
+  const key = alertSubjectKey(alert);
   // Snapshot-only events carry the identity of a phase entry, so two turns can
   // finish close together and still produce distinct alerts. For older rows,
   // desktopAlertFromItem supplies the phase timestamp.
@@ -127,12 +131,30 @@ export function createDesktopAlertPresenter(deps: DesktopAlertPresenterDeps) {
   /** Alert key -> when the last handled entry began. */
   const handledEntryAt = new Map<string, number>();
   /**
+   * Item and event -> the phase key last remembered for it. Only snapshots
+   * raise activity alerts, and a snapshot carries the current phase, so a newer
+   * phase retires the older key rather than leaving it to evict current ones.
+   */
+  const activityPhaseKey = new Map<string, string>();
+  /**
    * Alerts that arrived signed in before any settings loaded, re-checked once
    * settings load (the age limit still applies).
    */
   let waitingForPreferences: Array<{ alert: DesktopAlert; ownerId: string }> = [];
 
-  const remember = (key: string, at: number): void => {
+  const remember = (alert: DesktopAlert, key: string, at: number): void => {
+    if (alert.kind === "activity") {
+      const subject = alertSubjectKey(alert);
+      const superseded = activityPhaseKey.get(subject);
+      if (superseded !== undefined && superseded !== key) handledEntryAt.delete(superseded);
+      activityPhaseKey.delete(subject);
+      activityPhaseKey.set(subject, key);
+      while (activityPhaseKey.size > MAX_REMEMBERED) {
+        const oldest = activityPhaseKey.keys().next();
+        if (oldest.done) break;
+        activityPhaseKey.delete(oldest.value);
+      }
+    }
     handledEntryAt.delete(key);
     handledEntryAt.set(key, at);
     while (handledEntryAt.size > MAX_REMEMBERED) {
@@ -210,7 +232,7 @@ export function createDesktopAlertPresenter(deps: DesktopAlertPresenterDeps) {
     }
     // Remembered even when not shown, so the other source cannot show it a
     // moment later once a window loses focus.
-    remember(key, at);
+    remember(alert, key, at);
     if (!allowedByPreferences(alert)) return;
     if (deps.isAppFocused()) {
       if (alert.kind === "message") deps.toastInFocusedWindow(alert);

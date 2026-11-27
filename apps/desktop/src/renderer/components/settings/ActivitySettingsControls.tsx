@@ -349,7 +349,14 @@ export function useActivitySettings({ includeDevices = false }: { includeDevices
       byId.set(projectId, { projectId, name: item.project.name });
     }
     for (const projectId of Object.keys(preferences.projects)) {
-      if (!byId.has(projectId)) byId.set(projectId, { projectId, name: "Project not in Activity" });
+      // A repository key reads as itself; a folder's checkout id gets a short tag
+      // so two such projects stay distinguishable.
+      if (!byId.has(projectId)) {
+        byId.set(projectId, {
+          projectId,
+          name: projectId.includes("/") ? projectId : `Project not in Activity · ${projectId.slice(0, 8)}`,
+        });
+      }
     }
     return [...byId.values()].sort((left, right) => left.name.localeCompare(right.name));
   }, [itemsById, preferences.projects]);
