@@ -397,7 +397,7 @@ const TAB_GROUPS = {
   },
   cli: {
     title: "Command line",
-    description: "The ade command in your terminal.",
+    description: `The ${BRAND.CLI} command in your terminal.`,
     icon: <Terminal size={15} weight="duotone" />,
     tone: "slate",
   },
