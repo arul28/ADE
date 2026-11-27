@@ -56,6 +56,12 @@ function lazyPage(importPage: () => Promise<PageModule>): Pick<AnnouncementPageD
 
 export const ANNOUNCEMENT_PAGES: readonly AnnouncementPageDef[] = [
   {
+    id: "daex-rename",
+    added: "2026-11-27",
+    title: `${BRAND.FORMER_NAME} is now ${BRAND.NAME}`,
+    ...lazyPage(() => import("./pages/DaexRenameAnnouncement")),
+  },
+  {
     id: "ade-cloud",
     added: "2026-11-18",
     title: BRAND.CLOUD_NAME,
