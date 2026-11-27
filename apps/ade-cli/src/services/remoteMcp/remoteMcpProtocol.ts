@@ -9,7 +9,7 @@ import type {
 } from "../../../../desktop/src/shared/types/remoteMcp";
 import type { AccountProjectView } from "../../../../desktop/src/shared/accountProject";
 import { listAgentSkills, readAgentSkill } from "../skills/agentSkillCatalogService";
-import { adeWithheldAgentSkills } from "../../../../desktop/src/shared/agentSkillRoots";
+import { adeWithheldAgentSkills, isAgentSkillNamed } from "../../../../desktop/src/shared/agentSkillRoots";
 import { remoteMcpAdeVersion } from "./remoteMcpAccount";
 import { createRemoteMcpProjects, type RemoteMcpProject, type ResolvedProject } from "./remoteMcpProjects";
 import { checkRemoteAdeCommand, redactedCommandForLog, splitCommandLine } from "./remoteMcpCommandPolicy";
@@ -235,9 +235,9 @@ export function createRemoteMcpProtocol(deps: {
     "Use the typed tools; `ade` runs anything else.",
     "`machine` (a machines_list key or name) defaults to this machine, `project` to the last opened (chat_start and lanes_create need it); each result names both. A chat id finds its own.",
     // An app without MCP prompts (Grok Bot) reads the same skill through the `ade` tool.
-    "The `ade-mcp-client` prompt (or `skill show ade-mcp-client`) explains the workflow.",
-    // Only for an account with ADE Cloud: the same answer that lists the `ade-cloud` prompt.
-    ...(adeWithheldAgentSkills().includes("ade-cloud") ? [] : ["Before a Daex Cloud lane, run `cloud status` and follow the `ade-cloud` prompt."]),
+    "The `daex-mcp-client` prompt (or `skill show daex-mcp-client`) explains the workflow.",
+    // Only for an account with ADE Cloud: the same answer that lists the `daex-cloud` prompt.
+    ...(isAgentSkillNamed("daex-cloud", adeWithheldAgentSkills()) ? [] : ["Before a Daex Cloud lane, run `cloud status` and follow the `daex-cloud` prompt."]),
     ...(scope === "read" ? ["This connection is read-only."] : []),
   ].join(" ");
 

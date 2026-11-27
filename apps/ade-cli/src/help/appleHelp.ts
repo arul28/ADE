@@ -1218,7 +1218,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   app-switcher is Simulator's own App Switcher command: two home presses
   150 ms apart, sent by the helper as one command. To close an app the way a
   person does, open the switcher, then swipe the app's card up (see the
-  ade-apple skill). "apple terminate --bundle-id <id>" stops an app without
+  daex-apple skill). "apple terminate --bundle-id <id>" stops an app without
   showing anything.
 
   Flags:
