@@ -509,7 +509,7 @@ describe("runSetupCommand", () => {
       verify: async () => ({
         ok: false,
         detail: "sign-in didn't finish",
-        nextAction: "ade connect",
+        nextAction: "daex connect",
       }),
     }));
 
@@ -517,7 +517,7 @@ describe("runSetupCommand", () => {
     expect(result.verified).toBe(false);
     const account = result.steps.find((s) => s.id === "account");
     expect(account?.state).toBe("failed");
-    expect(account?.nextAction).toBe("ade connect");
+    expect(account?.nextAction).toBe("daex connect");
     expect(chunks.join("")).toContain("What's left");
   });
 
@@ -569,7 +569,7 @@ describe("runSetupCommand", () => {
       verify: async () => ({
         ok: false,
         detail: "sign-in didn't finish",
-        nextAction: "ade connect",
+        nextAction: "daex connect",
       }),
     }));
 
@@ -858,7 +858,7 @@ path: ADE-1.2.54-win-x64.exe
       verify: async () => ({
         ok: false,
         detail: "sign-in didn't finish",
-        nextAction: "ade connect",
+        nextAction: "daex connect",
       }),
     }));
 

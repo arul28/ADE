@@ -458,7 +458,7 @@ describe("internal error replies", () => {
 
   it("forwards a service's coded verdict so the caller can act on it", async () => {
     const response = await failWith(Object.assign(
-      new Error("ADE couldn't read this project's data at /tmp/p/.ade/ade.db."),
+      new Error("Daex couldn't read this project's data at /tmp/p/.ade/ade.db."),
       { code: "storage_read_failed" },
     ));
 

@@ -450,7 +450,7 @@ describe("collectMachineDiagnosticSources — project logs with no project open"
     expect(sources.logs.find((log) => log.label === "Desktop main (project)")?.text).toContain(
       "ade_cli.auto_install",
     );
-    expect(sources.logs.find((log) => log.label === "ADE CLI")?.text).toContain("cli.started");
+    expect(sources.logs.find((log) => log.label === "Daex CLI")?.text).toContain("cli.started");
     // An absence the reader was never told about is worse than no fallback.
     expect(sources.notes.join("\n")).toContain("no project was open");
   });

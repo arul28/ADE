@@ -101,7 +101,7 @@ describe("AccountMachineDirectoryService", () => {
       machines: [],
       message: null,
     });
-    await expect(service.pairMachine("mk-studio")).rejects.toThrow(/ade login.*local/i);
+    await expect(service.pairMachine("mk-studio")).rejects.toThrow(/daex login.*local/i);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 

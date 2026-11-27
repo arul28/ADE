@@ -1744,7 +1744,7 @@ describe("Windows background service helpers", () => {
       path: taskName,
     });
     expect(status.message).toBe(
-      "Daex background service startup entry is not installed for this channel. A legacy Daex "
+      "Daex background service startup entry is not installed for this channel. A legacy ADE "
       + "Runtime scheduled task belongs to a different Daex install and was left running. Run "
       + "`daex brain start` to install this channel's startup entry, and uninstall the other Daex "
       + "to clear its legacy task.",

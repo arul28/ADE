@@ -200,7 +200,7 @@ describe("lane share host service, a share made by an agent", () => {
     [
       "share again with a person who has a pending share of the lane",
       "person",
-      { code: "invalid_args", message: "This person already has a share of this lane. Change it in the ADE app." },
+      { code: "invalid_args", message: "This person already has a share of this lane. Change it in the Daex app." },
       (service) => service.create({ laneId, receiverEmail: "GUEST@example.com" }, "agent"),
     ],
   ])("refuses an agent that asks to %s", async (_label, createdBy, refusal, act) => {

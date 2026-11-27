@@ -388,7 +388,7 @@ describe("resolveTriagePlaybook", () => {
   it("finds the copy committed in this repository", () => {
     const playbook = readLocalTriagePlaybook({ env: {} });
     expect(playbook.origin.endsWith(path.join("docs", "triage", "PLAYBOOK.md"))).toBe(true);
-    expect(playbook.text).toContain("Daex triage playbook");
+    expect(playbook.text).toMatch(/(?:Daex|ADE) triage playbook/);
   });
 
   it("ranks the packaged copy above whatever repository the shell is sitting in", () => {

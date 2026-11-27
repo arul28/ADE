@@ -351,7 +351,7 @@ describe("macDesktopErrorHint", () => {
    * action that unblocks the code; the sentence around it is free to change.
    */
   function hintedAction(hint: string | null): string | null {
-    const verb = hint?.match(/ade (?:screen|mac-desktop) ([a-z-]+)/)?.[1];
+    const verb = hint?.match(/(?:daex|ade) (?:screen|mac-desktop) ([a-z-]+)/)?.[1];
     if (!verb) return null;
     const argv = ["screen", verb, ...(verb === "claim" ? ["--window", "1"] : verb === "open" ? ["Notes"] : [])];
     return actionName(plan(argv));
@@ -398,8 +398,8 @@ describe("macDesktopErrorHint", () => {
     const hint = macDesktopErrorHint(
       `${MAC_DESKTOP_NO_WINDOW_CODE}: Lane lane-1 has a display but no window to send a key to.`,
     );
-    expect(hint).toMatch(/ade screen open/);
-    expect(hint).toMatch(/ade screen claim --window/);
+    expect(hint).toMatch(/daex screen open/);
+    expect(hint).toMatch(/daex screen claim --window/);
     expect(hint).not.toMatch(/screen start/);
   });
 
@@ -886,7 +886,7 @@ describe("mac-desktop action answer lines", () => {
     const text = action({
       status: "unconfirmed",
       reason: "nothing on screen changed",
-      next: { method: "lease", reason: "ask for the lease", command: "ade mac-desktop lease --text" },
+      next: { method: "lease", reason: "ask for the lease", command: "daex mac-desktop lease --text" },
     });
     expect(text).toContain("effect: unconfirmed — nothing on screen changed");
     expect(text).not.toContain("observe again before you continue");
