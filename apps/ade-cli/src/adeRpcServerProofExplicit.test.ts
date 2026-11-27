@@ -146,7 +146,7 @@ describe("explicit proof capture", () => {
     const capturePath: string = result.structuredContent.artifact.path;
     expect(capturePath.startsWith(path.join(projectRoot, ".ade", "cache", "tmp", "computer-use"))).toBe(true);
     expect(fs.existsSync(capturePath)).toBe(true);
-    expect(result.structuredContent.note).toContain("ade proof");
+    expect(result.structuredContent.note).toContain("daex proof");
   });
 
   it("files a record for the explicit proof call `ade proof capture --caption` makes", async () => {
@@ -662,13 +662,13 @@ describe("explicit proof capture", () => {
 
   it("words the refusal for the host it runs on", () => {
     expect(describeLaneDisplayProofRefusal("screenshot", "darwin")).toMatch(
-      /^refused: this lane has no Mac Desktop display, and ADE does not capture your real screen by default\. Use `ade screen proof`.*pass --real-screen/,
+      /^refused: this lane has no Mac Desktop display, and Daex does not capture your real screen by default\. Use `daex screen proof`.*pass --real-screen/,
     );
     // Off macOS no lane can have a display and --real-screen cannot help.
     const windows = describeLaneDisplayProofRefusal("video_recording", "win32");
     expect(windows).toContain("refused");
     expect(windows).not.toContain("--real-screen");
-    expect(windows).toContain("ade browser proof");
+    expect(windows).toContain("daex browser proof");
   });
 
   it("advertises the proof flag on both capture tools so the model can tell them apart", async () => {

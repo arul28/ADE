@@ -536,7 +536,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "list_ade_actions",
-    description: "List callable ADE service methods exposed to the CLI. Actions are returned as domain.action names with CLI usage hints.",
+    description: "List callable Daex service methods exposed to the CLI. Actions are returned as domain.action names with CLI usage hints.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -551,7 +551,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "run_ade_action",
-    description: "Invoke an exposed ADE service method by domain and action. Use args for one object parameter, argsList for multiple positional parameters, or arg for one scalar parameter.",
+    description: "Invoke an exposed Daex service method by domain and action. Use args for one object parameter, argsList for multiple positional parameters, or arg for one scalar parameter.",
     inputSchema: {
       type: "object",
       required: ["domain", "action"],
@@ -565,14 +565,14 @@ const TOOL_SPECS: ToolSpec[] = [
         args: { type: "object" },
         argsList: { type: "array" },
         arg: {},
-        callerRoot: { type: "string", description: "Absolute directory the calling ade process stands in. For an ade process with no chat identity, a mac_desktop call made from inside a lane worktree is bound to that lane." },
+        callerRoot: { type: "string", description: "Absolute directory the calling daex process stands in. For a daex process with no chat identity, a mac_desktop call made from inside a lane worktree is bound to that lane." },
         callerRootSource: { type: "string", description: "Where callerRoot came from (e.g. \"cwd\" or \"env ADE_WORKSPACE_ROOT\")." },
       }
     }
   },
   {
     name: "start_cli_session",
-    description: "Start a tracked ADE Work CLI session for a provider in a lane. Pass model (not for shell).",
+    description: "Start a tracked Daex Work CLI session for a provider in a lane. Pass model (not for shell).",
     inputSchema: {
       type: "object",
       required: ["laneId", "provider"],
@@ -615,7 +615,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "send_to_session",
-    description: "Send text to an ADE Work CLI session. If the session is ended and resumable, ADE starts the provider continuation internally and attaches it to the same durable session.",
+    description: "Send text to a Daex Work CLI session. If the session is ended and resumable, Daex starts the provider continuation internally and attaches it to the same durable session.",
     inputSchema: {
       type: "object",
       required: ["sessionId", "text"],
@@ -630,7 +630,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "get_ade_action_status",
-    description: "Check status/progress for long-running ADE actions by operation, test, chat, or PR identifiers.",
+    description: "Check status/progress for long-running Daex actions by operation, test, chat, or PR identifiers.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -729,7 +729,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "get_environment_info",
-    description: "Inspect ADE local fallback computer-use capability state, frontmost app context, and ADE artifact paths.",
+    description: "Inspect Daex local fallback computer-use capability state, frontmost app context, and Daex artifact paths.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -772,7 +772,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "screenshot_environment",
-    description: "Capture a local screenshot and return its file path. Scratch by default: nothing appears in the reviewer-facing proof drawer unless `proof` is true, which is what `ade proof capture --caption \"…\"` sets. A proof call captures the caller's lane Mac Desktop display and is refused when the lane has none, unless `realScreen` is true.",
+    description: "Capture a local screenshot and return its file path. Scratch by default: nothing appears in the reviewer-facing proof drawer unless `proof` is true, which is what `daex proof capture --caption \"…\"` sets. A proof call captures the caller's lane Mac Desktop display and is refused when the lane has none, unless `realScreen` is true.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -782,15 +782,15 @@ const TOOL_SPECS: ToolSpec[] = [
         displayId: { type: "number" },
         ownerKind: { type: "string" },
         ownerId: { type: "string" },
-        proof: { type: "boolean", default: false, description: "File the capture as reviewer-visible ADE proof. Set by `ade proof capture`; leave false for your own look at the screen." },
-        realScreen: { type: "boolean", default: false, description: "With `proof`, capture the user's whole real screen instead of the lane's Mac Desktop display. Set by `ade proof capture --real-screen`." },
+        proof: { type: "boolean", default: false, description: "File the capture as reviewer-visible Daex proof. Set by `daex proof capture`; leave false for your own look at the screen." },
+        realScreen: { type: "boolean", default: false, description: "With `proof`, capture the user's whole real screen instead of the lane's Mac Desktop display. Set by `daex proof capture --real-screen`." },
         format: { type: "string", enum: ["png", "jpg"], default: "png" }
       }
     }
   },
   {
     name: "record_environment",
-    description: "Fallback-only: record a short local screen video and return its file path. Scratch by default: nothing appears in the reviewer-facing proof drawer unless `proof` is true, which is what `ade proof record` sets. A proof call records the caller's lane Mac Desktop display and is refused when the lane has none, unless `realScreen` is true.",
+    description: "Fallback-only: record a short local screen video and return its file path. Scratch by default: nothing appears in the reviewer-facing proof drawer unless `proof` is true, which is what `daex proof record` sets. A proof call records the caller's lane Mac Desktop display and is refused when the lane has none, unless `realScreen` is true.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -799,16 +799,16 @@ const TOOL_SPECS: ToolSpec[] = [
         displayId: { type: "number" },
         ownerKind: { type: "string" },
         ownerId: { type: "string" },
-        proof: { type: "boolean", default: false, description: "File the recording as reviewer-visible ADE proof. Set by `ade proof record`; leave false for your own look at the screen." },
-        realScreen: { type: "boolean", default: false, description: "With `proof`, record the user's whole real screen instead of the lane's Mac Desktop display. Set by `ade proof record --real-screen`." },
-        plain: { type: "boolean", default: false, description: "With `proof` on a lane display, keep real time: no still stretches cut, no pointer or captions. Set by `ade proof record --plain`. A real-screen recording is always real time." },
+        proof: { type: "boolean", default: false, description: "File the recording as reviewer-visible Daex proof. Set by `daex proof record`; leave false for your own look at the screen." },
+        realScreen: { type: "boolean", default: false, description: "With `proof`, record the user's whole real screen instead of the lane's Mac Desktop display. Set by `daex proof record --real-screen`." },
+        plain: { type: "boolean", default: false, description: "With `proof` on a lane display, keep real time: no still stretches cut, no pointer or captions. Set by `daex proof record --plain`. A real-screen recording is always real time." },
         durationSec: { type: "number", minimum: 1, maximum: 120, default: 10 }
       }
     }
   },
   {
     name: "ingest_computer_use_artifacts",
-    description: "Register externally-produced visual proof artifacts into ADE for ownership, closeout, and publishing. Console logs are supporting diagnostics and should not be the only proof unless explicitly requested.",
+    description: "Register externally-produced visual proof artifacts into Daex for ownership, closeout, and publishing. Console logs are supporting diagnostics and should not be the only proof unless explicitly requested.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -874,7 +874,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "list_computer_use_artifacts",
-    description: "List ADE-managed proof artifacts by owner or canonical type, including visual proof and supporting diagnostics.",
+    description: "List Daex-managed proof artifacts by owner or canonical type, including visual proof and supporting diagnostics.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -910,7 +910,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "link_computer_use_artifacts_to_pr",
-    description: "Record that proof artifacts were posted to a GitHub pull request. `ade proof publish` calls this after it posts them; the drawer then shows the PR on each item.",
+    description: "Record that proof artifacts were posted to a GitHub pull request. `daex proof publish` calls this after it posts them; the drawer then shows the PR on each item.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -924,7 +924,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "review_computer_use_artifact",
-    description: "Check a proof before a person sees it (`ade proof review`). For a video, writes a contact sheet of its key moments (the ends, each step's outcome, the biggest changes; a PNG under the project's .ade/cache/proof-review) to look at, with why each frame is there; from/to look closer at part of it. For a picture, returns its path. Both come with findings ADE can tell from the file and its record (too short, no captions, a plain recording, a thin strip). With chatSessionId instead of artifactId, reviews that chat's newest video (else its newest proof).",
+    description: "Check a proof before a person sees it (`daex proof review`). For a video, writes a contact sheet of its key moments (the ends, each step's outcome, the biggest changes; a PNG under the project's .ade/cache/proof-review) to look at, with why each frame is there; from/to look closer at part of it. For a picture, returns its path. Both come with findings Daex can tell from the file and its record (too short, no captions, a plain recording, a thin strip). With chatSessionId instead of artifactId, reviews that chat's newest video (else its newest proof).",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -942,7 +942,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "note_demo_step",
-    description: "Add a step caption to the caller's running recordings (`ade proof step`). The demo shows it at the bottom of the video from this moment, and ADE's player lists it as a chapter.",
+    description: "Add a step caption to the caller's running recordings (`daex proof step`). The demo shows it at the bottom of the video from this moment, and Daex's player lists it as a chapter.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -966,7 +966,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "preview_scene",
-    description: "Render a ```scene the way a chat will (same document, SDK, policy and sandbox) in a hidden desktop window, before putting it in a reply. Returns the path of a PNG of the drawn scene (written on this runtime's machine, under the project's .ade/cache/scene-previews) and the problems found: script errors, blocked requests, scenes that never settle, and source mistakes the scene policy turns into blanks. Needs the ADE desktop app on this machine.",
+    description: "Render a ```scene the way a chat will (same document, SDK, policy and sandbox) in a hidden desktop window, before putting it in a reply. Returns the path of a PNG of the drawn scene (written on this runtime's machine, under the project's .ade/cache/scene-previews) and the problems found: script errors, blocked requests, scenes that never settle, and source mistakes the scene policy turns into blanks. Needs the Daex desktop app on this machine.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1006,7 +1006,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "get_computer_use_backend_status",
-    description: "Describe external-first computer-use backends available to ADE and the local fallback status.",
+    description: "Describe external-first computer-use backends available to Daex and the local fallback status.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1043,7 +1043,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "list_lanes",
-    description: "List active lanes with metadata and branch status. Every git worktree of the project is a lane, so this also picks up worktrees created outside ADE and drops lanes whose worktree no longer exists.",
+    description: "List active lanes with metadata and branch status. Every git worktree of the project is a lane, so this also picks up worktrees created outside Daex and drops lanes whose worktree no longer exists.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1054,7 +1054,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "get_link_ownership",
-    description: "This computer's account machine key and this project's id, which ADE links carry so they open on the right computer and project from anywhere. Pass what the link points at (a chat, a lane, a PR's owner/repo): both come back null unless this project holds it.",
+    description: "This computer's account machine key and this project's id, which Daex links carry so they open on the right computer and project from anywhere. Pass what the link points at (a chat, a lane, a PR's owner/repo): both come back null unless this project holds it.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1067,7 +1067,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "import_lane",
-    description: "Create a lane for an existing git branch by checking it out in a new ADE-managed worktree, then set it up like create_lane. Fails when the branch is already checked out in another worktree, because that worktree is already a lane.",
+    description: "Create a lane for an existing git branch by checking it out in a new Daex-managed worktree, then set it up like create_lane. Fails when the branch is already checked out in another worktree, because that worktree is already a lane.",
     inputSchema: {
       type: "object",
       required: ["branchRef"],
@@ -1130,7 +1130,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "git_undo_last_head_change",
-    description: "Reset a lane to the pre-HEAD SHA from the latest successful head-changing git operation recorded by ADE.",
+    description: "Reset a lane to the pre-HEAD SHA from the latest successful head-changing git operation recorded by Daex.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1141,7 +1141,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "git_redo_last_head_change",
-    description: "Restore the post-HEAD SHA from the latest successful ADE git undo operation.",
+    description: "Restore the post-HEAD SHA from the latest successful Daex git undo operation.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1327,7 +1327,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "create_pr_from_lane",
-    description: "Create a PR from a lane branch. When omitted, the title defaults to \"source lane -> target lane\" and the body is empty. Returns GitHub and ADE PR URLs when available.",
+    description: "Create a PR from a lane branch. When omitted, the title defaults to \"source lane -> target lane\" and the body is empty. Returns GitHub and Daex PR URLs when available.",
     inputSchema: {
       type: "object",
       required: ["laneId"],
@@ -1401,7 +1401,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "prs_list_open",
-    description: "List every open pull request in the project's GitHub repo as flat BranchPullRequest rows keyed by head branch. Independent of ADE lane state, so it surfaces PRs whose head branch has no local lane.",
+    description: "List every open pull request in the project's GitHub repo as flat BranchPullRequest rows keyed by head branch. Independent of Daex lane state, so it surfaces PRs whose head branch has no local lane.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1496,7 +1496,7 @@ const STANDALONE_CHAT_HIDDEN_TOOL_NAMES = new Set([
 const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
   {
     name: "get_cto_state",
-    description: "Read the CTO identity ADE maintains. Prefer this over shell-reading .ade/cto files from the workspace.",
+    description: "Read the CTO identity Daex maintains. Prefer this over shell-reading .ade/cto files from the workspace.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1585,7 +1585,7 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "noReply",
-    description: "End this turn with no reply: a child chat, a schedule or ADE woke you and the person needs nothing new (progress, a push, a PR opened, checks running, a review round, a conflict the child fixed). Call it last; text after it is not shown.",
+    description: "End this turn with no reply: a child chat, a schedule or Daex woke you and the person needs nothing new (progress, a push, a PR opened, checks running, a review round, a conflict the child fixed). Call it last; text after it is not shown.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1619,7 +1619,7 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "listChats",
-    description: "List ADE Work chat sessions available to the CTO.",
+    description: "List Daex Work chat sessions available to the CTO.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1631,7 +1631,7 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "spawnChat",
-    description: "Create a Work chat session in ADE on a lane and optionally seed it with an initial prompt. modelId is required: ADE never picks a model (`ade chat models --text` lists the ids).",
+    description: "Create a Work chat session in Daex on a lane and optionally seed it with an initial prompt. modelId is required: Daex never picks a model (`daex chat models --text` lists the ids).",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1650,7 +1650,7 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "getChatStatus",
-    description: "Inspect the status of an ADE Work chat session.",
+    description: "Inspect the status of a Daex Work chat session.",
     inputSchema: {
       type: "object",
       required: ["sessionId"],
@@ -1662,7 +1662,7 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "readChatTranscript",
-    description: "Read a bounded transcript slice from an ADE Work chat session.",
+    description: "Read a bounded transcript slice from a Daex Work chat session.",
     inputSchema: {
       type: "object",
       required: ["sessionId"],
@@ -1676,7 +1676,7 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "sendChatMessage",
-    description: "Send a follow-up message to an ADE Work chat session.",
+    description: "Send a follow-up message to a Daex Work chat session.",
     inputSchema: {
       type: "object",
       required: ["sessionId", "text"],
@@ -1689,7 +1689,7 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "interruptChat",
-    description: "Interrupt an active ADE Work chat turn.",
+    description: "Interrupt an active Daex Work chat turn.",
     inputSchema: {
       type: "object",
       required: ["sessionId"],
@@ -1781,7 +1781,7 @@ function assertNewLaneTemplateExists(runtime: AdeRuntime, toolArgs: Record<strin
   if (!runtime.laneTemplateService?.getTemplate(templateId)) {
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
-      `Lane template '${templateId}' was not found on this machine. Run "ade lanes templates list".`,
+      `Lane template '${templateId}' was not found on this machine. Run "daex lanes templates list".`,
     );
   }
 }
@@ -2562,7 +2562,7 @@ function sanitizeForAudit(value: unknown, depth = 0): unknown {
 
 function requirePrService(runtime: AdeRuntime): NonNullable<AdeRuntime["prService"]> {
   if (!runtime.prService) {
-    throw new JsonRpcError(JsonRpcErrorCode.internalError, "prService is not available in this ADE runtime configuration");
+    throw new JsonRpcError(JsonRpcErrorCode.internalError, "prService is not available in this Daex runtime configuration");
   }
   return runtime.prService;
 }
@@ -2666,7 +2666,7 @@ function requireAgentChatService(runtime: AdeRuntime): NonNullable<AdeRuntime["a
   if (!runtime.agentChatService) {
     throw new JsonRpcError(
       JsonRpcErrorCode.internalError,
-      "agentChatService is not available in this ADE runtime configuration",
+      "agentChatService is not available in this Daex runtime configuration",
     );
   }
   return runtime.agentChatService;
@@ -2674,7 +2674,7 @@ function requireAgentChatService(runtime: AdeRuntime): NonNullable<AdeRuntime["a
 
 function requireLinearIssueTracker(runtime: AdeRuntime): NonNullable<AdeRuntime["linearIssueTracker"]> {
   if (!runtime.linearIssueTracker) {
-    throw new JsonRpcError(JsonRpcErrorCode.internalError, "linearIssueTracker is not available in this ADE runtime configuration");
+    throw new JsonRpcError(JsonRpcErrorCode.internalError, "linearIssueTracker is not available in this Daex runtime configuration");
   }
   return runtime.linearIssueTracker;
 }
@@ -2947,7 +2947,7 @@ async function resolveAuthorizedComputerUseIngestRoot(
       JsonRpcErrorCode.invalidParams,
       "callerRoot must be inside the server-authorized lane worktree: "
       + `used ${callerRoot} (from ${source}), authorized root is ${canonicalAuthorizedRoot}. `
-      + `Run ade from inside that worktree, or set ADE_WORKSPACE_ROOT to it.`,
+      + `Run daex from inside that worktree, or set ADE_WORKSPACE_ROOT to it.`,
     );
   }
   const canonicalRoot = canonicalAuthorizationPath(authorizedRoot);
@@ -3023,17 +3023,17 @@ export function describeLaneDisplayProofRefusal(
   if (platform === "win32") {
     // A Windows lane has its own screen once it is started; the real screen
     // is never captured from Windows.
-    return `refused: this lane has no Windows Desktop screen, and ADE does not ${noun} your real screen. `
-      + `Start the lane's screen with \`ade screen start\` and run this again, or use \`ade browser proof\`, \`ade app-control proof\` or \`ade proof attach <file>\`.`;
+    return `refused: this lane has no Windows Desktop screen, and Daex does not ${noun} your real screen. `
+      + `Start the lane's screen with \`daex screen start\` and run this again, or use \`daex browser proof\`, \`daex app-control proof\` or \`daex proof attach <file>\`.`;
   }
   if (platform !== "darwin") {
-    return `refused: ADE does not ${noun} your real screen by default, and this runtime host cannot run a Mac Desktop display. `
-      + "Use `ade browser proof`, `ade app-control proof` or `ade proof attach <file>`.";
+    return `refused: Daex does not ${noun} your real screen by default, and this runtime host cannot run a Mac Desktop display. `
+      + "Use `daex browser proof`, `daex app-control proof` or `daex proof attach <file>`.";
   }
   const lanePaths = kind === "screenshot"
-    ? "`ade screen proof`, `ade apple proof`, `ade app-control proof` or `ade browser proof`"
-    : "`ade screen record`, `ade apple record-start` or `ade browser record`";
-  return `refused: this lane has no Mac Desktop display, and ADE does not ${noun} your real screen by default. `
+    ? "`daex screen proof`, `daex apple proof`, `daex app-control proof` or `daex browser proof`"
+    : "`daex screen record`, `daex apple record-start` or `daex browser record`";
+  return `refused: this lane has no Mac Desktop display, and Daex does not ${noun} your real screen by default. `
     + `Use ${lanePaths}, or pass --real-screen to ${noun} the whole real screen.`;
 }
 
@@ -3131,7 +3131,7 @@ async function fileLaneDisplayProof(args: {
     if (status.recording?.running) {
       throw new JsonRpcError(
         JsonRpcErrorCode.toolFailed,
-        `a ${productName} recording is already running on lane ${laneId}. Stop it with \`ade screen record stop\` first.`,
+        `a ${productName} recording is already running on lane ${laneId}. Stop it with \`daex screen record stop\` first.`,
       );
     }
     // The cap is a backstop: if this call dies mid-wait, the recorder still
@@ -3263,7 +3263,7 @@ function workCopyOwner(session: SessionState): string {
   if (!owner || !parseForeignCallerSessionId(owner)) {
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
-      "A copy of a chat's code is kept here only for commands sent from another machine (`ade shell start --machine <name>`).",
+      "A copy of a chat's code is kept here only for commands sent from another machine (`daex shell start --machine <name>`).",
     );
   }
   return owner;
@@ -3362,7 +3362,7 @@ const MAC_DESKTOP_REMOTE_REFUSED_ACTIONS: Readonly<Record<string, string>> = {
   requestInputLease: "real input on this machine's screen is granted with a card in a chat on this machine, and this chat is on another one. "
     + "Use the default (accessibility) input, or ask the user to take control from the Desktop panel",
   requestSharedDesktop: "the main desktop is shared with a card in a chat on this machine, and this chat is on another one. "
-    + "Use this chat's own screen there (ade screen start --machine <name>)",
+    + "Use this chat's own screen there (daex screen start --machine <name>)",
 };
 
 /** `app_control` actions from another machine that make the chat's work copy here when it has none. */
@@ -3526,7 +3526,7 @@ async function prepareRemoteWorkShell(
     // `--scratch`: one command that needs no code, in an empty folder under
     // ADE's home, with no work copy and no git; the folder goes when it ends.
     if (remoteWork.exitWhenDone !== true || !command) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "--no-code runs one command: ade shell start --machine <name> --no-code -- <command>.");
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "--no-code runs one command: daex shell start --machine <name> --no-code -- <command>.");
     }
     const owner = workCopyOwner(session);
     const scratchDir = createRemoteWorkScratchDir(owner);
@@ -3616,7 +3616,7 @@ function existingCallerWorkCopyPath(runtime: AdeRuntime, owner: string): string 
   if (!copy || !fs.existsSync(copy.path)) {
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
-      "This chat has no copy of its code on this machine yet. `ade shell start --machine <this machine>` or `ade files push --machine <this machine>` makes it.",
+      "This chat has no copy of its code on this machine yet. `daex shell start --machine <this machine>` or `daex files push --machine <this machine>` makes it.",
       { code: "copy_missing" },
     );
   }
@@ -3847,8 +3847,8 @@ function ptyAccessDenied(method: string, session?: SessionState): never {
     callerChatSessionId,
     nextStep: foreignCaller
       ? "A caller on another machine owns no lane here, including a lane it created. "
-        + "Run `ade shell start --machine <this machine>` without --lane to use your code there, "
-        + "or start a chat in that lane with `ade chat create --machine <this machine> --lane <lane> --provider <p> --model <id>` and open the terminal from it."
+        + "Run `daex shell start --machine <this machine>` without --lane to use your code there, "
+        + "or start a chat in that lane with `daex chat create --machine <this machine> --lane <lane> --provider <p> --model <id>` and open the terminal from it."
       : null,
   });
 }
@@ -4330,11 +4330,11 @@ function crossMachineRequesterTitle(
  * for the "needs a chat" error.
  */
 const REQUEST_CARD_COMMAND: Readonly<Record<string, string>> = {
-  "project_secret.request": "ade secrets request",
-  "integration_connect.request": "ade integrations connect",
-  "mcp_registry.request": "ade mcp servers add",
-  "mcp_registry.remove": "ade mcp servers remove",
-  "passwords.requestLogin": "ade browser signin",
+  "project_secret.request": "daex secrets request",
+  "integration_connect.request": "daex integrations connect",
+  "mcp_registry.request": "daex mcp servers add",
+  "mcp_registry.remove": "daex mcp servers remove",
+  "passwords.requestLogin": "daex browser signin",
 };
 
 /** The ADE Cloud iPhone's actions that run (and so spend) its minutes: the phone checks who is asking (`cloudPhoneAgentGuard`). */
@@ -4789,7 +4789,7 @@ function scopeUserBrowserAdeActionArgs(
   const method = `run_ade_action:built_in_browser.${action}`;
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
   if (!callerChatSessionId) {
-    scopeAccessDenied("the user's browser is reached only from an ADE chat", method);
+    scopeAccessDenied("the user's browser is reached only from a Daex chat", method);
   }
   const requestedChatSessionId = asOptionalTrimmedString(browserArgs.chatSessionId);
   if (requestedChatSessionId && requestedChatSessionId !== callerChatSessionId) {
@@ -5140,7 +5140,7 @@ async function resolveUnboundCallerLane(
     throw new JsonRpcError(
       JsonRpcErrorCode.policyDenied,
       `This shell is inside lane ${standingLaneId}'s worktree (${callerRoot}); --lane ${requestedLaneId} was refused. `
-        + `Run ade from lane ${requestedLaneId}'s worktree or from the project root.`,
+        + `Run daex from lane ${requestedLaneId}'s worktree or from the project root.`,
       {
         kind: "lane_bound",
         method: options.method,
@@ -5197,8 +5197,8 @@ export async function scopeUnboundMacDesktopAdeActionArgs(
   const method = `run_ade_action:mac_desktop.${action}`;
   if (action === "requestInputLease") {
     scopeAccessDenied(
-      "mac_desktop.requestInputLease needs the chat that asks, and this ade process has none. "
-        + "Run it from an ADE chat, or take control from the Mac Desktop panel",
+      "mac_desktop.requestInputLease needs the chat that asks, and this daex process has none. "
+        + "Run it from a Daex chat, or take control from the Mac Desktop panel",
       method,
     );
   }
@@ -5213,7 +5213,7 @@ export async function scopeUnboundMacDesktopAdeActionArgs(
     callerRoot: callerRootRaw,
     requestedLaneId: asOptionalTrimmedString(rest.laneId),
     missingLaneMessage: MAC_DESKTOP_LANE_BOUND_ACTIONS.has(action)
-      ? `mac_desktop.${action} needs a lane: pass --lane <lane-id>, or run ade from inside a lane worktree.`
+      ? `mac_desktop.${action} needs a lane: pass --lane <lane-id>, or run daex from inside a lane worktree.`
       : null,
   });
   return { ...rest, ...(laneId ? { laneId } : {}) };
@@ -5256,7 +5256,7 @@ const APPLE_LANE_FREE_ACTIONS = new Set<string>([
 function appleMissingLaneMessage(action: string): string | null {
   return APPLE_LANE_FREE_ACTIONS.has(action)
     ? null
-    : `ios_simulator.${action} needs a lane: run ade from a lane worktree, or pass --lane <lane-id>.`;
+    : `ios_simulator.${action} needs a lane: run daex from a lane worktree, or pass --lane <lane-id>.`;
 }
 
 function withAppleAgentCaller(
@@ -5401,11 +5401,11 @@ const ANDROID_CODE_SYNC = new Set<string>(ANDROID_CODE_SYNC_ACTIONS);
 function androidUserOnlyReason(domain: string, action: string): string {
   if (domain !== "android_emulator") return "";
   if (action === "setMachinePreferences") {
-    return ": only the user changes this machine's Android preferences, in the ADE desktop app (Settings › Android devices)";
+    return ": only the user changes this machine's Android preferences, in the Daex desktop app (Settings › Android devices)";
   }
   if (ANDROID_SDK_PERSON_ONLY.has(action)) {
     return ": only the user installs the Android SDK and accepts Google's licences, "
-      + "in the ADE desktop app (the setup card in the Android tool, or Settings › Android devices)";
+      + "in the Daex desktop app (the setup card in the Android tool, or Settings › Android devices)";
   }
   return "";
 }
@@ -5413,7 +5413,7 @@ function androidUserOnlyReason(domain: string, action: string): string {
 function androidMissingLaneMessage(action: string): string | null {
   return ANDROID_LANE_FREE.has(action)
     ? null
-    : `android_emulator.${action} needs a lane: run ade from a lane worktree, or pass --lane <lane-id>.`;
+    : `android_emulator.${action} needs a lane: run daex from a lane worktree, or pass --lane <lane-id>.`;
 }
 
 /**
@@ -5460,7 +5460,7 @@ export function scopeAndroidAdeActionArgs(
   const restartAdbAsked = androidArgs.restartAdb != null && androidArgs.restartAdb !== false && androidArgs.restartAdb !== "false";
   if (restartAdbAsked && !isUnboundAdeCliCaller(session)) {
     scopeAccessDenied("only a person can restart adb", method, {
-      nextStep: "Ask them to press Restart adb and start in the Android pane, or to run ade android start --restart-adb in a terminal on that machine.",
+      nextStep: "Ask them to press Restart adb and start in the Android pane, or to run daex android start --restart-adb in a terminal on that machine.",
     });
   }
   const laneId = pinAgentDeviceLane(runtime, session, {
@@ -5639,7 +5639,7 @@ export async function scopeUnboundAppControlAdeActionArgs(
     callerRoot: callerRootRaw,
     requestedLaneId: asOptionalTrimmedString(rest.laneId),
     missingLaneMessage: APP_CONTROL_LANE_BOUND_ACTIONS.has(action)
-      ? `app_control.${action} needs a lane: pass --lane <lane-id>, or run ade from inside a lane worktree.`
+      ? `app_control.${action} needs a lane: pass --lane <lane-id>, or run daex from inside a lane worktree.`
       : null,
   });
   return { ...rest, ...(laneId ? { laneId } : {}), agentCaller: true };
@@ -6751,7 +6751,7 @@ async function runTool(args: {
         },
         artifacts: [],
         links: [],
-        note: "Scratch capture — no proof-drawer record was created. Use `ade proof capture --caption \"…\"`, or `ade proof attach <path> --caption \"…\"` for this file, when a reviewer should see it.",
+        note: "Scratch capture — no proof-drawer record was created. Use `daex proof capture --caption \"…\"`, or `daex proof attach <path> --caption \"…\"` for this file, when a reviewer should see it.",
       };
     }
     validateComputerUseOwnerClaims(runtime, args.sessionState, args.toolArgs);
@@ -6929,7 +6929,7 @@ async function runTool(args: {
             ...(contract?.description ? { description: contract.description } : {}),
             ...(contract?.input ? { input: contract.input } : {}),
             ...(contract?.example ? { example: contract.example } : {}),
-            usage: `ade actions run ${entry}.${action} --input-json '{"key":"value"}' (or --scalar value / --args-list-json '[...]' for scalar or positional service methods)`,
+            usage: `daex actions run ${entry}.${action} --input-json '{"key":"value"}' (or --scalar value / --args-list-json '[...]' for scalar or positional service methods)`,
           };
         });
     });
@@ -7183,7 +7183,7 @@ async function runTool(args: {
       if (!targetChatSessionId) {
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidParams,
-          `${domain}.${action} needs a chat to ask in. Run \`${cardCommand}\` from inside an ADE chat, or pass --session <chat id>.`,
+          `${domain}.${action} needs a chat to ask in. Run \`${cardCommand}\` from inside a Daex chat, or pass --session <chat id>.`,
         );
       }
       ensureAskUserAllowed(session);
@@ -7193,7 +7193,7 @@ async function runTool(args: {
       // Runs a command on THIS computer with its secrets: never for a call
       // relayed from another machine's brain, which could not otherwise run
       // commands here.
-      throw new JsonRpcError(JsonRpcErrorCode.policyDenied, "`ade secrets exec` runs only on the computer that holds the secrets. Run it in a chat on that computer.");
+      throw new JsonRpcError(JsonRpcErrorCode.policyDenied, "`daex secrets exec` runs only on the computer that holds the secrets. Run it in a chat on that computer.");
     }
     if (STAMP_OWN_CHAT_ACTIONS.has(`${domain}.${action}`)) {
       // The caller's own chat (exec's Activity row, a text's approval card)
@@ -7308,7 +7308,7 @@ async function runTool(args: {
         if (!boundChatSessionId) {
           throw new JsonRpcError(
             JsonRpcErrorCode.invalidParams,
-            "--in-this-chat needs a chat: run it from inside an ADE chat, or pass --chat <chat id>.",
+            "--in-this-chat needs a chat: run it from inside a Daex chat, or pass --chat <chat id>.",
           );
         }
         chatSessionId = boundChatSessionId;
@@ -7328,7 +7328,7 @@ async function runTool(args: {
       if (!isUserClient) {
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidParams,
-          "Product analytics capture is reserved for authenticated ADE user clients.",
+          "Product analytics capture is reserved for authenticated Daex user clients.",
         );
       }
       if (argsList || hasScalarArg) {
@@ -7779,7 +7779,7 @@ async function runTool(args: {
       // Saved logins are filled only through `passwords.signin`, which records
       // the use in Activity and the chat; never as a bare browser action.
       if (action === "signin" || action === "signup") {
-        throw new JsonRpcError(JsonRpcErrorCode.policyDenied, `Use \`ade browser ${action}\` (the \`passwords.${action}\` action).`);
+        throw new JsonRpcError(JsonRpcErrorCode.policyDenied, `Use \`daex browser ${action}\` (the \`passwords.${action}\` action).`);
       }
       // Decided once, here: the scoping authorizes the call for this
       // destination and stamps it, and the router obeys the stamp. Asking
@@ -7871,7 +7871,7 @@ async function runTool(args: {
       if (session.identity.remoteMcpConnectionId && session.identity.role !== "cto" && action !== "list") {
         throw new JsonRpcError(
           JsonRpcErrorCode.policyDenied,
-          "This ADE MCP connection is read-only, so it can list a lane's shares but not make or stop one. Ask the person for full access in ADE Settings → ADE MCP.",
+          "This Daex MCP connection is read-only, so it can list a lane's shares but not make or stop one. Ask the person for full access in Daex Settings → Daex MCP.",
         );
       }
       const { callerClass: _callerSent, ...shareArgs } = scopedObjectArgs;
@@ -9169,7 +9169,7 @@ async function runTool(args: {
       throw new JsonRpcError(
         JsonRpcErrorCode.invalidParams,
         "This proof has no lane, chat session, automation run, PR or issue, so no proof drawer could show it. Nothing was filed."
-          + " Run ade from inside the lane worktree, or pass --owner lane --owner-id <lane>.",
+          + " Run daex from inside the lane worktree, or pass --owner lane --owner-id <lane>.",
       );
     }
     const { provenance, release } = await resolveIngestProvenance(
@@ -9329,7 +9329,7 @@ async function runTool(args: {
       if (!artifact) {
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidParams,
-          `No proof ${artifactId} in this chat's or lane's proof. Copy the id from a cite: line or the \`id\` field of \`ade proof list --json\`.`,
+          `No proof ${artifactId} in this chat's or lane's proof. Copy the id from a cite: line or the \`id\` field of \`daex proof list --json\`.`,
         );
       }
     } else if (chatSessionId) {
@@ -9364,7 +9364,7 @@ async function runTool(args: {
     if (!artifact) throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "Provide the proof's id.");
     const filePath = resolveStoredProofFile(runtime.projectRoot, artifact.uri);
     if (!filePath) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Proof ${artifact.id} has no file on this machine to review (\`ade proof broken\` lists missing files).`);
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Proof ${artifact.id} has no file on this machine to review (\`daex proof broken\` lists missing files).`);
     }
     const review = await reviewProofFile({
       artifact: { id: artifact.id, kind: artifact.kind, metadata: artifact.metadata ?? null },
@@ -9403,7 +9403,7 @@ async function runTool(args: {
     if (!target.laneId && !target.chatSessionId) {
       throw new JsonRpcError(
         JsonRpcErrorCode.invalidParams,
-        "ADE could not tell which lane or chat this step belongs to. Run it from the lane's worktree or from its chat.",
+        "Daex could not tell which lane or chat this step belongs to. Run it from the lane's worktree or from its chat.",
       );
     }
     let noted = demoTrackRegistry.noteStep({ laneId: target.laneId, chatSessionId: target.chatSessionId }, text, undefined, focus);
@@ -9592,7 +9592,7 @@ async function runTool(args: {
       laneId,
       cols: DEFAULT_PTY_COLS,
       rows: DEFAULT_PTY_ROWS,
-      title: `ADE Test: ${commandText}`,
+      title: `Daex Test: ${commandText}`,
       tracked: true,
       toolType: "shell",
       startupCommand: commandText
@@ -10035,7 +10035,7 @@ async function runTool(args: {
     const promptAttemptId = attemptId ? stripInjectionChars(attemptId) : null;
     const toolWhitelist = normalizeToolWhitelist(toolArgs.toolWhitelist);
     const title = stripInjectionChars(
-      asOptionalTrimmedString(toolArgs.title) ?? `ADE Agent (${provider}${permissionMode === "plan" ? " · plan" : ""})`
+      asOptionalTrimmedString(toolArgs.title) ?? `Daex Agent (${provider}${permissionMode === "plan" ? " · plan" : ""})`
     );
     const context = safeObject(toolArgs.context);
 
@@ -10324,7 +10324,7 @@ export function createAdeRpcRequestHandler(args: {
       return await runTool({ runtime, session, name: actionName, toolArgs: actionArgs });
     }
 
-    throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported ADE action: ${actionName}`);
+    throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported Daex action: ${actionName}`);
   };
 
   const handler = (async (request: JsonRpcRequest): Promise<unknown | null> => {

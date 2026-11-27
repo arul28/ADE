@@ -964,7 +964,7 @@ describe("adeRpcServer", () => {
 
       const result = await callTool(handler, "preview_scene", { source: "<p>x</p>" });
       expect(result.isError).toBe(true);
-      expect(JSON.stringify(result.error)).toMatch(/needs the ADE desktop app/);
+      expect(JSON.stringify(result.error)).toMatch(/needs the Daex desktop app/);
     });
 
     it("sends a data snapshot only for a scene that asked for one", async () => {
@@ -1629,7 +1629,7 @@ describe("adeRpcServer", () => {
     ]) {
       const result = await callTool(handler, name, {});
       const serialized = JSON.stringify(result ?? {});
-      expect(serialized).not.toContain(`Unsupported ADE action: ${name}`);
+      expect(serialized).not.toContain(`Unsupported Daex action: ${name}`);
     }
   });
 
@@ -5131,7 +5131,7 @@ describe("adeRpcServer", () => {
 
     expect(result.isError).toBe(true);
     expect(JSON.stringify(result.error ?? result.structuredContent ?? {})).toContain(
-      "reserved for authenticated ADE user clients",
+      "reserved for authenticated Daex user clients",
     );
     expect(fixture.runtime.productAnalyticsService.capture).not.toHaveBeenCalled();
   });
@@ -9338,7 +9338,7 @@ describe("ADE Cloud actions over the brain", () => {
 
         const response = await callAsCto("run_ade_action", { domain: "cloud", action: "create", args: { kind: "vm", shape: "4x8" } });
 
-        expect(JSON.stringify(response)).toMatch(/Agents don't make ADE Cloud computers/);
+        expect(JSON.stringify(response)).toMatch(/Agents don't make Daex Cloud computers/);
         expect(create).not.toHaveBeenCalled();
       });
     } finally {
