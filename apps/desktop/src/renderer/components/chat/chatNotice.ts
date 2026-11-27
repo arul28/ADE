@@ -65,7 +65,7 @@ export function chatNoticeReducer(current: ChatNotice | null, action: ChatNotice
  * connection closed." The local brain's socket raises them too, which is why
  * the pane asks only for a chat on another machine.
  */
-const MACHINE_CONNECTION_DROPPED = /remote (?:runtime|ADE service) connection (?:(?:was )?interrupted|closed|failed)/i;
+const MACHINE_CONNECTION_DROPPED = /remote (?:runtime|(?:ADE|Daex) service) connection (?:(?:was )?interrupted|closed|failed)/i;
 
 /** The paired transport's words for a machine it cannot reach: "Can't reach <name> — it may be asleep…". */
 const MACHINE_UNREACHABLE = /^Can't reach (.+?)\s*[—-]+\s*it may be asleep/i;
