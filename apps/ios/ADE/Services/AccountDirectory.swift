@@ -1,6 +1,28 @@
 import Foundation
 import SwiftUI
 
+/// A stored machine or computer name with an old default's product name read
+/// as Daex ("ADE Cloud computer 2" → "Daex Cloud computer 2", "ADE CLI on
+/// mac" → "Daex CLI on mac"); any other name, including every name a person
+/// typed, comes back unchanged. Display only: stored rows keep the old name.
+/// Mirrors `displayLegacyDefaultName` in apps/desktop/src/shared/legacyDefaultNames.ts.
+func displayLegacyDefaultName(_ name: String) -> String {
+  let old = Brand.formerName
+  guard name.hasPrefix(old) else { return name }
+  let rest = String(name.dropFirst(old.count))
+  let isNumber = { (text: Substring) in !text.isEmpty && text.allSatisfy(\.isASCII) && text.allSatisfy(\.isNumber) }
+  if rest == " Cloud computer" { return "\(Brand.cloudName) computer" }
+  if rest.hasPrefix(" Cloud computer "), isNumber(rest.dropFirst(" Cloud computer ".count)) {
+    return "\(Brand.cloudName)\(rest.dropFirst(" Cloud".count))"
+  }
+  if rest.hasPrefix(" Cloud · "), rest.count > " Cloud · ".count { return "\(Brand.cloudName)\(rest.dropFirst(" Cloud".count))" }
+  if rest == " computer" || rest == " computer copy" { return "\(Brand.name)\(rest)" }
+  for kind in [" CLI on ", " agents on "] where rest.hasPrefix(kind) && rest.count > kind.count {
+    return "\(Brand.name)\(rest)"
+  }
+  return name
+}
+
 extension URLSession {
   /// The session for account requests (the account directory, projects,
   /// cloud computers, GitHub and password reads, device sign-in). No answer
@@ -207,7 +229,7 @@ struct AccountMachine: Codable, Equatable, Identifiable, Hashable {
       return trimmed
     }
     if let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty {
-      return trimmed
+      return displayLegacyDefaultName(trimmed)
     }
     if let platform, !platform.isEmpty {
       return platform.capitalized
@@ -249,7 +271,7 @@ struct AccountMachine: Codable, Equatable, Identifiable, Hashable {
   /// its channel suffix (" (Beta)"). Empty when neither is known.
   private var baseComputerName: String {
     if let custom = customName?.trimmingCharacters(in: .whitespacesAndNewlines), !custom.isEmpty { return custom }
-    let reported = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let reported = displayLegacyDefaultName(name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
     let suffix = channel?.nameSuffix ?? ""
     return !suffix.isEmpty && reported.hasSuffix(suffix)
       ? String(reported.dropLast(suffix.count))

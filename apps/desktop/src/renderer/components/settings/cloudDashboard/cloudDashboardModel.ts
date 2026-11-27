@@ -1,5 +1,5 @@
 import {
-  CLOUD_MACHINE_DEFAULT_NAME,
+  isCloudMachineDefaultName,
   CLOUD_PLAN_LABELS,
   cloudCatalogOf,
   cloudHoursLeftMilli,
@@ -153,7 +153,7 @@ export function dashLanes(input: {
 function noLaneName(machine: CloudMachine): string {
   const name = machine.name?.trim();
   // Never the computer's id: ADE Cloud names lanes, not computers.
-  return name && name !== CLOUD_MACHINE_DEFAULT_NAME ? name : "Computer without a lane";
+  return name && !isCloudMachineDefaultName(name) ? name : "Computer without a lane";
 }
 
 /** The plan's name, for the header tag. */
