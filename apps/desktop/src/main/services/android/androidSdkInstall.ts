@@ -30,6 +30,7 @@ import {
   type AndroidRepoPackage,
 } from "./androidSdkRepository";
 import { extractZip, readZipEntries, zipCommonRoot } from "./androidZipExtract";
+import { BRAND } from "../../../shared/brand";
 
 /*
  * The guided SDK install (plan §3.4 and §5 "SDK missing").
@@ -164,7 +165,7 @@ function checkWritable(target: string): { writable: boolean; detail: string | nu
   try {
     fs.accessSync(dir, fs.constants.W_OK);
   } catch {
-    return { writable: false, detail: `ADE cannot write to ${dir}.` };
+    return { writable: false, detail: `${BRAND.NAME} cannot write to ${dir}.` };
   }
   if (fs.existsSync(target)) {
     try {
@@ -343,7 +344,7 @@ async function planParts(
       downloadBytes: cli || !cliUrl ? 0 : 3_700_000,
       installedBytes: cli || !cliUrl ? 0 : 160_000_000,
       licenseId: ANDROID_CLI_LICENSE_ID,
-      detail: cli ? (cli.source === "path" ? cli.path : "Installed by ADE") : cliUrl ? "Optional · UI tree, Compose previews" : "Not available for this computer",
+      detail: cli ? (cli.source === "path" ? cli.path : `Installed by ${BRAND.NAME}`) : cliUrl ? "Optional · UI tree, Compose previews" : "Not available for this computer",
     },
     pkg: null,
     archive: null,
@@ -388,7 +389,7 @@ export async function buildAndroidSdkSetupPlan(
     plan: {
       hostSupported: host !== null,
       unsupportedReason: host ? null : platform === "win32" || platform === "linux"
-        ? `Google publishes no Android emulator for ${platform === "win32" ? "Windows" : "Linux"} on Arm. ADE cannot set up Android on this machine.`
+        ? `Google publishes no Android emulator for ${platform === "win32" ? "Windows" : "Linux"} on Arm. ${BRAND.NAME} cannot set up Android on this machine.`
         : `Google publishes no Android emulator for ${platform}.`,
       sdkRoot,
       sdkRootSource,
@@ -662,12 +663,12 @@ function acquireInstallLock(sdkRoot: string): { release(): void } {
       }
       const age = held.at ? Date.now() - Date.parse(held.at) : Number.POSITIVE_INFINITY;
       if (held.pid && held.pid !== process.pid && pidAlive(held.pid) && age < LOCK_STALE_MS) {
-        throw new AndroidEmulatorFailure("ANDROID_SDK_INSTALL_BUSY", `Another ADE process (pid ${held.pid}) installs into ${sdkRoot}.`);
+        throw new AndroidEmulatorFailure("ANDROID_SDK_INSTALL_BUSY", `Another ${BRAND.NAME} process (pid ${held.pid}) installs into ${sdkRoot}.`);
       }
       fs.rmSync(lockPath, { force: true });
     }
   }
-  throw new AndroidEmulatorFailure("ANDROID_SDK_INSTALL_BUSY", `ADE could not lock ${sdkRoot} for the install.`);
+  throw new AndroidEmulatorFailure("ANDROID_SDK_INSTALL_BUSY", `${BRAND.NAME} could not lock ${sdkRoot} for the install.`);
 }
 
 /* ---------- download ---------- */
@@ -803,13 +804,13 @@ async function installPackage(
         if (heldOpen) {
           throw new AndroidEmulatorFailure(
             "ANDROID_SDK_INSTALL_FAILED",
-            `ADE could not replace ${finalDir}: a program holds it open. Close the emulator and adb first, then install again.`,
+            `${BRAND.NAME} could not replace ${finalDir}: a program holds it open. Close the emulator and adb first, then install again.`,
           );
         }
         if (code === "EPERM" || code === "EACCES") {
           throw new AndroidEmulatorFailure(
             "ANDROID_SDK_INSTALL_FAILED",
-            `ADE could not replace ${finalDir}: this account may not change that folder. Check its permissions, then install again.`,
+            `${BRAND.NAME} could not replace ${finalDir}: this account may not change that folder. Check its permissions, then install again.`,
           );
         }
         throw error;

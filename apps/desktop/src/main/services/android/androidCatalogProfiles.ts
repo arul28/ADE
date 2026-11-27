@@ -3,6 +3,7 @@ import path from "node:path";
 import type { AndroidAdeProfileSpec, AndroidCatalogEntry } from "../../../shared/androidDeviceCatalog";
 import { resolveAndroidCatalogProfile } from "../../../shared/androidDeviceCatalog";
 import type { AndroidDeviceDefinition } from "./androidHardwareProfiles";
+import { BRAND } from "../../../shared/brand";
 
 /*
  * The brand catalog in the brain (plan §7.1): which hardware profile a
@@ -313,7 +314,7 @@ export function writeAndroidAdeProfile(userHome: string, spec: AndroidAdeProfile
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") return `could not read ${filePath}: ${(error as Error).message}`;
   }
   const merged = mergeAndroidDevicesXml(existing, spec);
-  if (merged.kind === "unreadable") return `${filePath} is not a device list ADE can add to (${merged.reason}); it was left as it is`;
+  if (merged.kind === "unreadable") return `${filePath} is not a device list ${BRAND.NAME} can add to (${merged.reason}); it was left as it is`;
   if (merged.kind === "unchanged") return null;
   fs.mkdirSync(userHome, { recursive: true });
   const temp = `${filePath}.ade-${process.pid}-${Date.now()}.tmp`;

@@ -16,6 +16,7 @@ import { runAdbOutput, runDeviceShell } from "./androidDeviceShell";
 import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
 import { androidJdkMissingMessage, locateAndroidJdk } from "./androidJdk";
 import { containAndroidOutPath } from "./androidScreenshot";
+import { BRAND } from "../../../shared/brand";
 
 /*
  * Apps on the lane's emulator: list, install (an APK, or a Gradle build in
@@ -236,8 +237,8 @@ export function createAndroidApps(deps: AndroidAppsDeps) {
     throw new AndroidEmulatorFailure(
       "ANDROID_PATH_OUTSIDE_LANE",
       deps.isWorkCopy(laneId)
-        ? `This chat's code on this machine is gone, so ADE has no folder to take ${what} from.`
-        : `ADE cannot find this lane's worktree, so it has no folder to take ${what} from.`,
+        ? `This chat's code on this machine is gone, so ${BRAND.NAME} has no folder to take ${what} from.`
+        : `${BRAND.NAME} cannot find this lane's worktree, so it has no folder to take ${what} from.`,
     );
   };
 
@@ -295,7 +296,7 @@ export function createAndroidApps(deps: AndroidAppsDeps) {
     if (!fs.existsSync(wrapper)) {
       throw new AndroidEmulatorFailure(
         "ANDROID_BUILD_FAILED",
-        `No ${wrapperName} at the root of ${root}. ADE runs the project's own Gradle wrapper; build the APK yourself and pass --apk <path>.`,
+        `No ${wrapperName} at the root of ${root}. ${BRAND.NAME} runs the project's own Gradle wrapper; build the APK yourself and pass --apk <path>.`,
       );
     }
     const { serial } = await deps.requireBooted(laneId);
@@ -351,7 +352,7 @@ export function createAndroidApps(deps: AndroidAppsDeps) {
         reject(new AndroidEmulatorFailure("ANDROID_BUILD_FAILED", `Gradle ${task} ${reason}.\n${tail(output, 15).join("\n")}`));
       };
       const timer = setTimeout(() => stop(`ran longer than ${GRADLE_TIMEOUT_MS / 60_000} minutes and was stopped`), GRADLE_TIMEOUT_MS);
-      const onAbort = () => stop("was stopped because ADE is shutting down");
+      const onAbort = () => stop(`was stopped because ${BRAND.NAME} is shutting down`);
       signal.addEventListener("abort", onAbort, { once: true });
       child.on("error", (error) => {
         clearTimeout(timer);
@@ -505,7 +506,7 @@ export function createAndroidApps(deps: AndroidAppsDeps) {
       if (device?.origin === "attached" && !device.adeInstalledPackages.includes(packageName)) {
         throw new AndroidEmulatorFailure(
           "ANDROID_PACKAGE_NOT_ADE_INSTALLED",
-          `${device.avdName} is an AVD this lane attached, and ADE did not install ${packageName} on it, so ADE leaves it there. Remove it yourself with adb if you mean to.`,
+          `${device.avdName} is an AVD this lane attached, and ${BRAND.NAME} did not install ${packageName} on it, so ${BRAND.NAME} leaves it there. Remove it yourself with adb if you mean to.`,
         );
       }
       const booted = await deps.requireBooted(laneId);

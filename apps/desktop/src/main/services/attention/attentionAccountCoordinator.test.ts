@@ -1069,10 +1069,10 @@ describe("AttentionAccountCoordinator", () => {
     });
 
     await expect(coordinator.getSnapshot({})).rejects.toThrow(
-      /newer connected ADE brain.*update and restart ADE.*host machine/i,
+      /newer connected Daex brain.*update and restart Daex.*host machine/i,
     );
     await expect(coordinator.getSnapshot({})).rejects.toThrow(
-      /newer connected ADE brain/i,
+      /newer connected Daex brain/i,
     );
     expect(testLogger.warn).toHaveBeenCalledTimes(1);
     expect(testLogger.warn).toHaveBeenCalledWith(

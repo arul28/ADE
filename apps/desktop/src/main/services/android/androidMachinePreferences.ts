@@ -6,6 +6,7 @@ import {
 } from "../../../shared/types/androidEmulator";
 import type { Logger } from "../logging/logger";
 import { createFileVersionTracker, writeFileAtomic } from "../state/durableFile";
+import { BRAND } from "../../../shared/brand";
 
 /*
  * The machine's Android preferences (recording overlays, auto-record, the
@@ -105,7 +106,7 @@ export function createAndroidSettingsFile(file: string | null | undefined, logge
       const current = readSettingsBody(() => fs.readFileSync(file, "utf8"));
       if (current.problem) {
         throw new AndroidSettingsFileBrokenError(
-          `The Android settings file ${file} ${SETTINGS_PROBLEM_TEXT[current.problem]}, so ADE did not change it. Fix the file or delete it, then try again.`,
+          `The Android settings file ${file} ${SETTINGS_PROBLEM_TEXT[current.problem]}, so ${BRAND.NAME} did not change it. Fix the file or delete it, then try again.`,
         );
       }
       fs.mkdirSync(path.dirname(file), { recursive: true });

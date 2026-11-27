@@ -34,6 +34,7 @@ import { releaseAndroidLaneDevice, type AndroidLaneDeviceRepo } from "./androidL
 import { androidSdkPaths, androidUserHome, listAndroidSystemImages, readableAndroidAvdHome, type AndroidEnv, type ReadyAndroidSdk } from "./androidSdk";
 import { requireLaneDeviceNamed } from "./androidLaneExtras";
 import { pickWorkCopyAvd } from "./androidWorkCopy";
+import { BRAND } from "../../../shared/brand";
 
 /*
  * The lane's AVD: the inventory, and making, attaching, releasing, deleting
@@ -190,7 +191,7 @@ export function createAndroidDeviceInventory<S extends AndroidInventoryLaneState
       // Studio). An SDK made of zips has neither, and then nothing can be made.
       throw new AndroidEmulatorFailure(
         "ANDROID_TOOL_MISSING",
-        "This machine's Android SDK has no hardware profiles, so ADE cannot make a device. Install the Android SDK Command-line Tools (`sdkmanager \"cmdline-tools;latest\"`, or Android Studio's SDK Manager), then try again. `device-attach` still works with an AVD you already have.",
+        `This machine's Android SDK has no hardware profiles, so ${BRAND.NAME} cannot make a device. Install the Android SDK Command-line Tools (\`sdkmanager "cmdline-tools;latest"\`, or Android Studio's SDK Manager), then try again. \`device-attach\` still works with an AVD you already have.`,
       );
     }
     const catalogChoice = look ? resolveAndroidCatalogDefinition(look.entry, definitions) : null;
@@ -268,7 +269,7 @@ export function createAndroidDeviceInventory<S extends AndroidInventoryLaneState
           "ANDROID_EXTRA_DEVICE_LIMIT",
           `This lane already holds ${held.length} extra device${held.length === 1 ? "" : "s"} (${held.map((row) => row.avdName).join(", ")}), its limit. `
             + "Each one holds 2 to 5 GB of RAM while it runs. Remove one with ade android device-detach --device <avd>, "
-            + "or raise ADE_ANDROID_LANE_EXTRA_DEVICES in ADE's environment.",
+            + `or raise ADE_ANDROID_LANE_EXTRA_DEVICES in ${BRAND.NAME}'s environment.`,
         );
       }
       return createLocked(laneId, profileId, { systemImage: args.systemImage?.trim() || null, displayName: args.displayName ?? null, look, asExtra: true });
@@ -412,7 +413,7 @@ export function createAndroidDeviceInventory<S extends AndroidInventoryLaneState
         const avd = listAndroidAvds(ready.avdHome).find((entry) => sameAvdName(entry.name, avdName));
         const madeFor = avd?.adeCreated ? readAdeAvdLaneId(avd) : null;
         if (madeFor !== null && deps.laneLiveness(madeFor) === "missing") {
-          throw new AndroidEmulatorFailure("ANDROID_AVD_HELD_BY_OTHER_LANE", `ADE made ${avdName} for another project. Delete it from that project.`);
+          throw new AndroidEmulatorFailure("ANDROID_AVD_HELD_BY_OTHER_LANE", `${BRAND.NAME} made ${avdName} for another project. Delete it from that project.`);
         }
         deleteAdeAndroidAvd(ready.avdHome, avdName, []);
         logger?.info("android.device_deleted", { avdName });

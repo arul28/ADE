@@ -15,6 +15,7 @@ import { markExpected } from "../../../shared/expectedError";
 import { androidEmulatorPidCheck } from "./androidEmulatorImage";
 import { androidUserHome, parseAndroidIni, type AndroidEnv } from "./androidSdk";
 import { sleep } from "../shared/utils";
+import { BRAND } from "../../../shared/brand";
 
 /*
  * Booting, finding and stopping emulators.
@@ -684,7 +685,7 @@ export async function waitForAndroidBoot(
           noteInLaunchLog(launch, `adb still refuses ${launch.serial} as unauthorized after ADE restarted the adb server. Stopping the boot.`);
           throw new AndroidEmulatorFailure(
             "ANDROID_ADB_UNAUTHORIZED",
-            `adb still refused ${name} after ADE restarted the adb server: the emulator does not trust the current adb key. `
+            `adb still refused ${name} after ${BRAND.NAME} restarted the adb server: the emulator does not trust the current adb key. `
               + "Cold boot the AVD, or wipe its data (Android Studio's Device Manager), then start it again; the log says more.",
             launch.logPath,
             true,
@@ -692,7 +693,7 @@ export async function waitForAndroidBoot(
         }
         noteInLaunchLog(launch, `adb refuses ${launch.serial} as unauthorized: the adb server uses an older adb key. Stopping the boot.`);
         const why = otherDevices > 0
-          ? ` ${otherDevices} other device(s) use that server, so ADE did not restart it.`
+          ? ` ${otherDevices} other device(s) use that server, so ${BRAND.NAME} did not restart it.`
           : "";
         throw new AndroidEmulatorFailure(
           "ANDROID_ADB_UNAUTHORIZED",
@@ -814,7 +815,7 @@ export async function stopAndroidEmulator(input: StopAndroidEmulatorInput): Prom
     // `taskkill /T` would take the whole tree of whatever holds it now.
     if (!isProcessAlive(input.pid)) break;
     if (!stillThisEmulator() || (await androidEmulatorPidCheck(input.pid)) !== "emulator") {
-      throw new Error(`Emulator ${input.serial} did not exit, and pid ${input.pid} no longer matches its discovery file; ADE will not kill it.`);
+      throw new Error(`Emulator ${input.serial} did not exit, and pid ${input.pid} no longer matches its discovery file; ${BRAND.NAME} will not kill it.`);
     }
     if (process.platform === "win32") {
       await killWindowsProcessTreeAsync(input.pid, undefined, { force });

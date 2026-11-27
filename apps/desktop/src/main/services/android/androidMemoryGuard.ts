@@ -9,6 +9,7 @@ import {
 } from "../machineStats/hostMemorySignals";
 import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
 import { ANDROID_QEMU_IMAGE_PREFIX } from "./androidEmulatorImage";
+import { BRAND } from "../../../shared/brand";
 
 /*
  * The memory guard: before a boot, refuse a start that would push the
@@ -231,7 +232,7 @@ export function describeAndroidMemoryRefusal(
       return `This machine is swapping to disk now (${facts.pagingOutMbPerSec ?? 0} MB/s${using}). ${next}`;
     case "budget":
       return `${deviceName} needs about ${formatAndroidMemoryGb(facts.costMb)}; emulators already use ${formatAndroidMemoryGb(verdict.usedMb)} `
-        + `of the ${formatAndroidMemoryGb(verdict.budgetMb)} ADE allows. Stop an emulator first.`;
+        + `of the ${formatAndroidMemoryGb(verdict.budgetMb)} ${BRAND.NAME} allows. Stop an emulator first.`;
     case "available":
       return `${deviceName} needs about ${formatAndroidMemoryGb(facts.costMb)}, and this machine has `
         + `${formatAndroidMemoryGb((facts.availableMb ?? 0) - verdict.pendingBootsMb)} free. ${next}`;

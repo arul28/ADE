@@ -63,6 +63,7 @@ import { createDemoEngineSet, type DemoEngineSet } from "../demoVideo/demoEngine
 import { finalPathForRaw, rawPathFor, recordingCapMsFor, watchDemoRecording } from "../demoVideo/demoRecordingGuard";
 import { demoLengths, produceDemoVideo, DemoRecordingUnusableError } from "../demoVideo/demoRenderService";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
+import { BRAND } from "../../../shared/brand";
 
 export const APP_CONTROL_RECORDING_NEEDS_DESKTOP_CODE = "APP_CONTROL_RECORDING_NEEDS_DESKTOP";
 export const APP_CONTROL_SCREEN_RECORDING_DENIED_CODE = "APP_CONTROL_SCREEN_RECORDING_DENIED";
@@ -389,14 +390,14 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
     if (!recorder) {
       return refuse(laneId, "window-capture", new AppControlRecordingError(
         APP_CONTROL_RECORDING_NEEDS_DESKTOP_CODE,
-        "Recording needs ADE's desktop helper (ade-desktop-driver), and this install has none.",
+        `Recording needs ${BRAND.NAME}'s desktop helper (ade-desktop-driver), and this install has none.`,
       ), args.chatSessionId);
     }
     const permissions = await recorder.readPermissions().catch(() => null);
     if (permissions?.screenRecording === "denied") {
       return refuse(laneId, "window-capture", new AppControlRecordingError(
         APP_CONTROL_SCREEN_RECORDING_DENIED_CODE,
-        "Recording the app's window needs Screen Recording permission for ADE. "
+        `Recording the app's window needs Screen Recording permission for ${BRAND.NAME}. `
           + "Grant it in System Settings > Privacy & Security > Screen Recording "
           + "(the Mac Desktop pane has a button for it), then start the recording again.",
         permissions,
@@ -406,7 +407,7 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
     if (!pid) {
       return refuse(laneId, "window-capture", new AppControlRecordingError(
         APP_CONTROL_RECORDING_NO_WINDOW_CODE,
-        `ADE could not find the process of the app on CDP port ${session.cdpPort ?? "unknown"}, so it cannot find its window.`,
+        `${BRAND.NAME} could not find the process of the app on CDP port ${session.cdpPort ?? "unknown"}, so it cannot find its window.`,
         permissions,
       ), args.chatSessionId);
     }
@@ -453,7 +454,7 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
       if (after?.screenRecording === "denied" || /-3801|declined|not authori[sz]ed/i.test(message)) {
         return refuse(laneId, "window-capture", new AppControlRecordingError(
           APP_CONTROL_SCREEN_RECORDING_DENIED_CODE,
-          "Recording the app's window needs Screen Recording permission for ADE. "
+          `Recording the app's window needs Screen Recording permission for ${BRAND.NAME}. `
             + "Grant it in System Settings > Privacy & Security > Screen Recording "
             + "(the Mac Desktop pane has a button for it), then start the recording again.",
           after ?? permissions,
@@ -476,8 +477,8 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
     if (!backend) {
       return refuse(laneId, "screencast", new AppControlRecordingError(
         APP_CONTROL_RECORDING_NEEDS_DESKTOP_CODE,
-        "Recording App Control on this machine needs the ADE desktop app open on this machine. "
-          + "Open ADE here, then start the recording again.",
+        `Recording App Control on this machine needs the ${BRAND.NAME} desktop app open on this machine. `
+          + `Open ${BRAND.NAME} here, then start the recording again.`,
       ), args.chatSessionId);
     }
     const key = appControlRecordingKey(laneId);

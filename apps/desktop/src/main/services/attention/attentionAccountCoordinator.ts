@@ -21,6 +21,7 @@ import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeCon
 import type { Logger } from "../logging/logger";
 import { withDeadline } from "../shared/withTimeout";
 import { AdeExpectedError, markExpected } from "../../../shared/expectedError";
+import { BRAND } from "../../../shared/brand";
 
 type AccountAttentionClient = Pick<
   PushRelayClient,
@@ -116,7 +117,7 @@ export class ActivityAcknowledgmentStaleError extends Error {
 
 /** No brain to ask yet: a state of this computer, not a defect. */
 function accountActivityNotReadyError(): AdeExpectedError {
-  return new AdeExpectedError("Account Activity is unavailable until this computer's ADE brain is ready.", "environment");
+  return new AdeExpectedError(`Account Activity is unavailable until this computer's ${BRAND.NAME} brain is ready.`, "environment");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -369,7 +370,7 @@ export class AttentionAccountCoordinator {
           ),
           remainingMs,
           () => new Error(
-            "This computer's ADE brain did not answer in time. Activity will retry.",
+            `This computer's ${BRAND.NAME} brain did not answer in time. Activity will retry.`,
           ),
         );
         const generatedAt = new Date().toISOString();
@@ -416,7 +417,7 @@ export class AttentionAccountCoordinator {
             : {
                 state: "signed_out",
                 title: `Showing ${machineName}`,
-                message: "Sign in to combine Activity across every ADE machine.",
+                message: `Sign in to combine Activity across every ${BRAND.NAME} machine.`,
                 recovery: "sign_in",
                 hostName: machineName,
               },
@@ -447,7 +448,7 @@ export class AttentionAccountCoordinator {
       );
     }
     throw new Error(
-      "Activity cannot reach this computer's ADE brain. Restart ADE on this computer, then try again.",
+      `Activity cannot reach this computer's ${BRAND.NAME} brain. Restart ${BRAND.NAME} on this computer, then try again.`,
     );
   }
 
@@ -488,7 +489,7 @@ export class AttentionAccountCoordinator {
     const currentAccountOwnerId = this.currentAccountOwnerId();
     if (this.lastSnapshotAccountOwnerId !== currentAccountOwnerId) {
       throw new Error(
-        "The ADE account changed after Activity loaded. Refresh Activity, then try again.",
+        `The ${BRAND.NAME} account changed after Activity loaded. Refresh Activity, then try again.`,
       );
     }
     if (this.lastSnapshotScope === "machine") {
@@ -509,7 +510,7 @@ export class AttentionAccountCoordinator {
       const pool = this.options.localRuntimeConnectionPool;
       if (!pool) {
         // A state of this computer (no brain to ask yet), not a defect; the same for the throws below.
-        throw new AdeExpectedError("Machine Activity is unavailable until this computer's ADE brain is ready.", "environment");
+        throw new AdeExpectedError(`Machine Activity is unavailable until this computer's ${BRAND.NAME} brain is ready.`, "environment");
       }
       // The host caps a batch at the same 64, so chunk here too rather than
       // report success for ids that were never sent. It answers per CHUNK, not
@@ -764,7 +765,7 @@ export class AttentionAccountCoordinator {
           { timeoutMs: ATTENTION_IPC_BUDGET_MS },
         ),
         ATTENTION_IPC_BUDGET_MS,
-        () => new Error("This computer's ADE brain did not take the presence report in time."),
+        () => new Error(`This computer's ${BRAND.NAME} brain did not take the presence report in time.`),
       );
     }
   }
@@ -803,7 +804,7 @@ export class AttentionAccountCoordinator {
         { timeoutMs: ATTENTION_IPC_BUDGET_MS },
       ),
       ATTENTION_IPC_BUDGET_MS,
-      () => new Error("This computer's ADE brain did not answer in time. Activity will retry."),
+      () => new Error(`This computer's ${BRAND.NAME} brain did not answer in time. Activity will retry.`),
     );
   }
 
@@ -835,7 +836,7 @@ export class AttentionAccountCoordinator {
         { timeoutMs: ATTENTION_IPC_BUDGET_MS },
       ),
       ATTENTION_IPC_BUDGET_MS,
-      () => new Error("This computer's ADE brain did not answer in time. Try saving again."),
+      () => new Error(`This computer's ${BRAND.NAME} brain did not answer in time. Try saving again.`),
     );
   }
 
@@ -1033,7 +1034,7 @@ export class AttentionAccountCoordinator {
       // A real switch (or sign-out) between the window's read and this call:
       // the right answer, and the window retries with the new account.
       throw markExpected(
-        new Error("The ADE account changed before Activity preferences could be used."),
+        new Error(`The ${BRAND.NAME} account changed before Activity preferences could be used.`),
         "user",
       );
     }
@@ -1056,8 +1057,8 @@ export class AttentionAccountCoordinator {
       });
     }
     return (
-      "Account Activity requires a newer connected ADE brain. "
-      + "Update and restart ADE on the host machine to see account-wide work."
+      `Account Activity requires a newer connected ${BRAND.NAME} brain. `
+      + `Update and restart ${BRAND.NAME} on the host machine to see account-wide work.`
     );
   }
 
@@ -1068,7 +1069,7 @@ export class AttentionAccountCoordinator {
       return {
         title: "Account session needs attention",
         message:
-          "ADE could not verify your account after refreshing the session. "
+          `${BRAND.NAME} could not verify your account after refreshing the session. `
           + "Sign out and back in to restore account-wide Activity.",
         recovery: "sign_in",
       };
@@ -1077,14 +1078,14 @@ export class AttentionAccountCoordinator {
       return {
         title: "Account Activity is temporarily unavailable",
         message:
-          "ADE's account service is not ready. Machine-scoped work remains available while it recovers.",
+          `${BRAND.NAME}'s account service is not ready. Machine-scoped work remains available while it recovers.`,
         recovery: "retry",
       };
     }
     return {
       title: "Account Activity is reconnecting",
       message:
-        "ADE cannot reach the account stream right now. Machine-scoped work remains available.",
+        `${BRAND.NAME} cannot reach the account stream right now. Machine-scoped work remains available.`,
       recovery: "retry",
     };
   }

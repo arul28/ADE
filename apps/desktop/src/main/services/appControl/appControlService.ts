@@ -72,6 +72,7 @@ import {
   type AppControlLaneRef,
   type CreateAppControlServiceArgs,
 } from "./appControlLaneController";
+import { BRAND } from "../../../shared/brand";
 
 export type AppControlService = ReturnType<typeof createAppControlService>;
 
@@ -526,7 +527,7 @@ export function createAppControlService(serviceArgs: CreateAppControlServiceArgs
     const laneId = controller.laneId;
     const chatSessionId = cleanClaimId(proofArgs.chatSessionId);
     if (!args.ingestArtifacts) {
-      throw new Error("App Control proof is unavailable: this ADE host has no proof store.");
+      throw new Error(`App Control proof is unavailable: this ${BRAND.NAME} host has no proof store.`);
     }
     const shot = await controller.observe({ includeDom: false, includeDiagnostics: false });
     // The page title and the lane, never the launch command.

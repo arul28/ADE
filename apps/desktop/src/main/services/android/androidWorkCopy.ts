@@ -13,6 +13,7 @@ import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
 import type { AndroidDiscoveredEmulator } from "./androidEmulatorProcess";
 import type { AndroidLaneState as LaneState } from "./androidEmulatorServiceDeps";
 import type { AndroidLaneDeviceRepo } from "./androidLaneRelease";
+import { BRAND } from "../../../shared/brand";
 
 /*
  * The lanes the Android service serves: this project's lanes, and chats on
@@ -56,7 +57,7 @@ export function createAndroidLaneScope(input: {
         "ANDROID_NOT_RUNNING",
         projectRoot
           ? "This chat has no copy of its code on this machine, so it has no Android device here. `ade android start --machine` makes the copy and its device."
-          : "This ADE cannot find work copies of chats on other machines, so it has no Android device for one.",
+          : `This ${BRAND.NAME} cannot find work copies of chats on other machines, so it has no Android device for one.`,
       );
     },
 

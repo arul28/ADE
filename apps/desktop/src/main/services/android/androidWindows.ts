@@ -11,6 +11,7 @@ import { assertPackageName } from "./androidApps";
 import { DEFAULT_DISPLAY_DUMP, runDeviceScript, type BootedDevice } from "./androidDeviceShell";
 import { requireLaneId } from "./androidEmulatorErrors";
 import { createAndroidLaneQueue } from "./androidLaneQueue";
+import { BRAND } from "../../../shared/brand";
 
 /*
  * `ade android window`: the windows of a large screen, as `ade apple window`
@@ -44,7 +45,7 @@ import { createAndroidLaneQueue } from "./androidLaneQueue";
 const WMSHELL = "dumpsys activity service SystemUIService WMShell";
 const WINDOWING_FULLSCREEN = 1;
 const WINDOWING_FREEFORM = 5;
-const SPLIT_BUSY = "Android is still ending the split screen, so ADE did not move a window (a move then restarts SystemUI and closes both apps). Try again in a moment.";
+const SPLIT_BUSY = `Android is still ending the split screen, so ${BRAND.NAME} did not move a window (a move then restarts SystemUI and closes both apps). Try again in a moment.`;
 /**
  * How long an action waits for the window manager to finish its change. A
  * split takes about 4 s to show on an API 34 emulator (under 1 s on API 37).

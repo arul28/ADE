@@ -77,7 +77,7 @@ describe("describeAttentionOpenFailure", () => {
     ]) {
       expect(
         describeAttentionOpenFailure(new Error(raw), "open", "Studio Mac").message,
-      ).toBe("Sign in to ADE again, then open this item from Studio Mac.");
+      ).toBe("Sign in to Daex again, then open this item from Studio Mac.");
     }
   });
 
@@ -90,19 +90,19 @@ describe("describeAttentionOpenFailure", () => {
         "connect",
         "Studio Mac",
       ).message,
-    ).toContain("Sign in to ADE again");
+    ).toContain("Sign in to Daex again");
   });
 
   it("names the failing step when the cause is neither offline nor auth", () => {
     const unknown = new Error("Pairing rejected by peer policy.");
     expect(describeAttentionOpenFailure(unknown, "pair", "Studio Mac").message).toBe(
-      "ADE could not pair with Studio Mac. Open ADE on that machine, then try again.",
+      "Daex could not pair with Studio Mac. Open Daex on that machine, then try again.",
     );
     expect(describeAttentionOpenFailure(unknown, "connect", "Studio Mac").message).toBe(
-      "ADE could not connect to Studio Mac. Make sure ADE is running there, then try again.",
+      "Daex could not connect to Studio Mac. Make sure Daex is running there, then try again.",
     );
     expect(describeAttentionOpenFailure(unknown, "open", "Studio Mac").message).toBe(
-      "ADE connected to Studio Mac but could not open this project.",
+      "Daex connected to Studio Mac but could not open this project.",
     );
   });
 
@@ -111,7 +111,7 @@ describe("describeAttentionOpenFailure", () => {
       expect(
         describeAttentionOpenFailure(new Error("unreachable"), "connect", name).message,
       ).toBe(
-        "The owning ADE machine is not reachable right now."
+        "The owning Daex machine is not reachable right now."
         + " Wake it or reconnect it to the network, then try again.",
       );
     }

@@ -19,6 +19,7 @@ import { createAndroidLaneQueue } from "./androidLaneQueue";
 import { fileAndroidCaptureAsProof, type AndroidArtifactFiler } from "./androidProof";
 import type { AndroidEnv } from "./androidSdk";
 import { androidLaneFolderName } from "./androidScreenshot";
+import { BRAND } from "../../../shared/brand";
 
 /*
  * Compose previews (P3): Google's Android CLI builds a Gradle module and
@@ -127,7 +128,7 @@ export function createAndroidComposePreviews(deps: AndroidComposePreviewDeps): A
   /** The lane's folder and the module in it, checked: a module is a folder inside the lane with a Gradle build file. */
   const resolveModule = (laneId: string, requested: string | null | undefined) => {
     const root = deps.laneRoot(laneId);
-    if (!root) throw new Error("ADE cannot find this lane's worktree, so it has no project to render previews from.");
+    if (!root) throw new Error(`${BRAND.NAME} cannot find this lane's worktree, so it has no project to render previews from.`);
     const module = (requested?.trim() || DEFAULT_MODULE).replace(/\\/gu, "/").replace(/^:+|\/+$/gu, "").replace(/:/gu, "/");
     if (!module || path.isAbsolute(module) || module.split("/").some((part) => part === ".." || part === ".")) {
       throw new Error(`The module must be a module folder inside the lane, such as app or feature/home, not the project's root (got "${requested}").`);
@@ -192,7 +193,7 @@ export function createAndroidComposePreviews(deps: AndroidComposePreviewDeps): A
         reject(new AndroidEmulatorFailure("ANDROID_BUILD_FAILED", `android preview ${args[1]} ${reason}.`));
       };
       const timer = setTimeout(() => stop(`ran longer than ${PREVIEW_TIMEOUT_MS / 60_000} minutes and was stopped`), PREVIEW_TIMEOUT_MS);
-      const onAbort = () => stop("was stopped because ADE is shutting down");
+      const onAbort = () => stop(`was stopped because ${BRAND.NAME} is shutting down`);
       signal.addEventListener("abort", onAbort, { once: true });
       child.on("error", (error) => {
         if (ended) return;

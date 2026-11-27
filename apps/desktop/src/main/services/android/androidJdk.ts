@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { AndroidEnv } from "./androidSdk";
+import { BRAND } from "../../../shared/brand";
 
 /*
  * The JDK a Gradle build runs on. ADE often starts without JAVA_HOME (a Dock
@@ -212,7 +213,7 @@ export async function locateAndroidJdk(options: AndroidJdkLocateOptions): Promis
 
 /** The refusal when no JDK is found: where ADE looked and how to fix it. */
 export function androidJdkMissingMessage(looked: readonly string[]): string {
-  return `Gradle needs a JDK and ADE found none. ADE looked at: ${looked.join("; ")}. `
-    + `Install Android Studio (it brings a JDK) or a JDK ${MIN_MAJOR}+, or set JAVA_HOME for ADE, then try again. `
+  return `Gradle needs a JDK and ${BRAND.NAME} found none. ${BRAND.NAME} looked at: ${looked.join("; ")}. `
+    + `Install Android Studio (it brings a JDK) or a JDK ${MIN_MAJOR}+, or set JAVA_HOME for ${BRAND.NAME}, then try again. `
     + "To skip the build, build the APK yourself and pass --apk <path>.";
 }

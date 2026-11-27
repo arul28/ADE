@@ -12,6 +12,7 @@ import {
   type AndroidRenderRequestSpec,
 } from "../../../shared/types/androidEmulator";
 import { fileAndroidCaptureAsProof, type AndroidArtifactFiler } from "./androidProof";
+import { BRAND } from "../../../shared/brand";
 
 /*
  * `ade android render` (P1 look). The brain has no GPU, so a render is drawn
@@ -111,7 +112,7 @@ export function createAndroidRenderBroker(deps: AndroidRenderBrokerDeps) {
           const entry = pending.get(requestId);
           if (!entry || entry.acked) return;
           finish(requestId, new Error(
-            "No ADE desktop window took this render. A desktop window's 3D view draws renders: open the lane's Android Development tool in ADE on a desktop, then render again.",
+            `No ${BRAND.NAME} desktop window took this render. A desktop window's 3D view draws renders: open the lane's Android Development tool in ${BRAND.NAME} on a desktop, then render again.`,
           ));
         }, RENDER_ACK_TIMEOUT_MS);
         const doneTimer = setTimeout(() => finish(requestId, new Error("The render did not finish within 3 minutes 45 seconds.")), RENDER_DONE_TIMEOUT_MS);

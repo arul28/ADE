@@ -45,6 +45,7 @@ import {
   type AndroidRepoManifest,
   type AndroidRepoPackage,
 } from "./androidSdkRepository";
+import { BRAND } from "../../../shared/brand";
 
 /*
  * The system image manager (plan §6 P3, "like Runtimes"): the images on this
@@ -427,7 +428,7 @@ export function createAndroidSystemImages(deps: AndroidSystemImagesDeps) {
           throw new AndroidEmulatorFailure("ANDROID_SDK_LICENSE_NOT_ACCEPTED", `Accept the ${androidSdkLicenseTitle(pkg.licenseId)} before the install.`);
         }
         const writable = androidSdkFolderWritable(root);
-        if (!writable.writable) throw new AndroidEmulatorFailure("ANDROID_SDK_PATH_INVALID", writable.detail ?? `ADE cannot write to ${root}.`);
+        if (!writable.writable) throw new AndroidEmulatorFailure("ANDROID_SDK_PATH_INVALID", writable.detail ?? `${BRAND.NAME} cannot write to ${root}.`);
         // The zip stays until its unpack ends, so the drive holds both for a moment.
         const needed = androidSystemImageInstalledBytes(archive.size) + archive.size;
         const free = androidFreeBytesAt(root);
@@ -492,7 +493,7 @@ export function createAndroidSystemImages(deps: AndroidSystemImagesDeps) {
       const base = fs.realpathSync(path.join(root, "system-images"));
       const dir = fs.realpathSync(image.path);
       if (!dir.startsWith(`${base}${path.sep}`)) {
-        throw new AndroidEmulatorFailure("ANDROID_SDK_PATH_INVALID", `${image.path} is not inside ${base}, so ADE does not remove it.`);
+        throw new AndroidEmulatorFailure("ANDROID_SDK_PATH_INVALID", `${image.path} is not inside ${base}, so ${BRAND.NAME} does not remove it.`);
       }
       const users = avdsUsing(image.packageId, imagesOfAvds(await readAvds(), installed));
       const running = users.filter((avd) => avd.running !== null);

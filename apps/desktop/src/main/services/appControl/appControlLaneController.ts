@@ -75,6 +75,7 @@ import {
   shellQuote,
   unquoteShellValue,
 } from "./appControlLaunchCommand";
+import { BRAND } from "../../../shared/brand";
 
 const CDP_POLL_MS = 500;
 const CDP_HEALTH_POLL_MS = 2_000;
@@ -1219,7 +1220,7 @@ export const providersFor = (activeSession: AppControlSession | null): AppContro
     && !activeSession.cdpEndpoint;
   const cdpDetail = activeSession?.cdpEndpoint
     ?? (waitingForCdp && activeSession?.cdpPort
-      ? `Waiting for CDP on 127.0.0.1:${activeSession.cdpPort}. ADE forwards debug flags for common package-script and Electron launches; if this stays blank, quit old app instances or wire ADE_APP_CONTROL_DEBUG_FLAGS into the launcher.`
+      ? `Waiting for CDP on 127.0.0.1:${activeSession.cdpPort}. ${BRAND.NAME} forwards debug flags for common package-script and Electron launches; if this stays blank, quit old app instances or wire ADE_APP_CONTROL_DEBUG_FLAGS into the launcher.`
       : "Launch Electron with --remote-debugging-port or connect to an existing CDP port.");
   return [
     {
@@ -2126,7 +2127,7 @@ export function createAppControlLaneController(context: AppControlLaneController
       throw new AdeExpectedError("App Control already has an active session on this lane. Pass --force to replace it.", "user");
     }
     if (!args.ptyService) {
-      throw new Error("App Control terminal launch requires the ADE terminal service.");
+      throw new Error(`App Control terminal launch requires the ${BRAND.NAME} terminal service.`);
     }
     const ptyService = args.ptyService;
     // Before the previous app stops and before the session exists: a lane
@@ -2429,7 +2430,7 @@ export function createAppControlLaneController(context: AppControlLaneController
         throw new Error(
           `Could not ${windowState === "normal" ? "show" : "minimize"} the controlled app window: `
           + `${browserWindowError?.message ?? "CDP window controls are unavailable."} `
-          + "ADE does not fall back to title-only macOS scripting because it can target the wrong app window.",
+          + `${BRAND.NAME} does not fall back to title-only macOS scripting because it can target the wrong app window.`,
         );
       }
       throw new Error(
@@ -3161,7 +3162,7 @@ export function createAppControlLaneController(context: AppControlLaneController
   const requireTerminalSessionId = (): string => {
     const terminalId = activeSession?.terminalSessionId;
     if (!terminalId) throw new Error("App Control has no launch terminal for the active session.");
-    if (!args.ptyService) throw new Error("App Control terminal access requires the ADE terminal service.");
+    if (!args.ptyService) throw new Error(`App Control terminal access requires the ${BRAND.NAME} terminal service.`);
     return terminalId;
   };
 

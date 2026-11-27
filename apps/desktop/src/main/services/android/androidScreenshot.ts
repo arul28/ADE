@@ -5,6 +5,7 @@ import { isPathInside } from "../shared/pathCompare";
 import { isPathEscapeError, resolvePathWithinRoot } from "../shared/utils";
 import { runAdb } from "./adb";
 import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
+import { BRAND } from "../../../shared/brand";
 
 /*
  * The lane's screenshot: one `screencap -p` over adb, written as a PNG to a
@@ -71,7 +72,7 @@ export function writeAndroidFileNoFollow(target: string, data: string | Uint8Arr
     // Missing: the open below makes it.
   }
   if (isLink) {
-    throw new AndroidEmulatorFailure("ANDROID_PATH_OUTSIDE_LANE", `${target} is a link. ADE does not write through a link; pick another path.`);
+    throw new AndroidEmulatorFailure("ANDROID_PATH_OUTSIDE_LANE", `${target} is a link. ${BRAND.NAME} does not write through a link; pick another path.`);
   }
   const handle = fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | (fs.constants.O_NOFOLLOW ?? 0), 0o644);
   try {
@@ -107,8 +108,8 @@ export async function takeAndroidScreenshot(input: TakeAndroidScreenshotInput): 
   const laneGone = () => new AndroidEmulatorFailure(
     "ANDROID_PATH_OUTSIDE_LANE",
     input.workCopy
-      ? "This chat's code on this machine is gone, so ADE will not write a screenshot to a chosen path. Leave the path out."
-      : "ADE cannot find this lane's worktree, so it will not write a screenshot to a chosen path. Leave the path out.",
+      ? `This chat's code on this machine is gone, so ${BRAND.NAME} will not write a screenshot to a chosen path. Leave the path out.`
+      : `${BRAND.NAME} cannot find this lane's worktree, so it will not write a screenshot to a chosen path. Leave the path out.`,
   );
   let outPath: string | null = null;
   let outRoot: string | null = null;
