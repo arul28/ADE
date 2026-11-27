@@ -438,7 +438,7 @@ export function evaluatePrWatch(args: {
   const unreadableSince = unreadable ? (previous.unreadableSince ?? nowIso) : null;
   if (unreadable && nowMs - timeMs(unreadableSince) >= PR_WATCH_UNREADABLE_LIMIT_MS) {
     return {
-      changes: [...held, { kind: "unreadable", reason: "GitHub no longer lets ADE read this pull request. It was removed, or this account lost access to it." }],
+      changes: [...held, { kind: "unreadable", reason: "GitHub no longer lets Daex read this pull request. It was removed, or this account lost access to it." }],
       next: { ...previous, unreadableSince, held: [] },
       exhausted: false,
       stop: "unreadable",
@@ -570,7 +570,7 @@ export function summarizePrWatchChanges(changes: readonly PrWatchChange[]): stri
  * handled and left open is a false alarm on every later visit.
  */
 export const PR_THREAD_CLOSEOUT_RULE =
-  "Close out every review thread you handle, in the same turn. Fixed it: reply with what changed (`ade prs reply <pr> --thread <id> --body \"...\"`) and resolve it (`ade prs resolve-thread <pr> --thread <id>`). Not changing it: reply with the reason and resolve it. Leave a thread open only when a person must decide, and say what you need from them in the reply.";
+  "Close out every review thread you handle, in the same turn. Fixed it: reply with what changed (`daex prs reply <pr> --thread <id> --body \"...\"`) and resolve it (`daex prs resolve-thread <pr> --thread <id>`). Not changing it: reply with the reason and resolve it. Leave a thread open only when a person must decide, and say what you need from them in the reply.";
 
 /**
  * Standing instructions for Ship. Written for any repository — it names no
@@ -582,8 +582,8 @@ export const PR_SHIP_STANDING_BRIEF = [
   "2. Verify each fix with the narrowest check that proves it — the failing test file, the touched package's typecheck or lint. Do not run the whole suite.",
   "3. Rebase or merge the base branch only when the PR has a real conflict, then re-run the affected checks.",
   `4. ${PR_THREAD_CLOSEOUT_RULE}`,
-  "5. When the required checks pass and nothing is left unaddressed, merge the PR with the repository's usual merge method (`gh pr merge` or `ade prs land`).",
-  "ADE wakes you with the next change once CI and the review bots have finished, so end your turn after you push.",
+  "5. When the required checks pass and nothing is left unaddressed, merge the PR with the repository's usual merge method (`gh pr merge` or `daex prs land`).",
+  "Daex wakes you with the next change once CI and the review bots have finished, so end your turn after you push.",
 ].join("\n");
 
 export type PrWatchWakeContext = {
@@ -639,7 +639,7 @@ function changeLines(change: PrWatchChange, ctx: PrWatchWakeContext): string[] {
           + " Do not treat this as a pass; verify the change yourself if it matters.",
       ];
     case "merge_queue_removed":
-      return [`- It was removed from the merge queue without merging${mergeQueueReasonText(change.reason)}. ADE does not re-queue it.`];
+      return [`- It was removed from the merge queue without merging${mergeQueueReasonText(change.reason)}. Daex does not re-queue it.`];
     case "merged":
       return ["- The pull request was merged."];
     case "closed":
@@ -660,18 +660,18 @@ function closingLine(ctx: PrWatchWakeContext): string {
   switch (ctx.stop) {
     case "merged":
       return ctx.mode === "ship"
-        ? "Shipping is done; ADE stopped watching. Wrap up and report what landed."
-        : "ADE stopped watching this pull request.";
+        ? "Shipping is done; Daex stopped watching. Wrap up and report what landed."
+        : "Daex stopped watching this pull request.";
     case "closed":
-      return "ADE stopped watching this pull request.";
+      return "Daex stopped watching this pull request.";
     case "unreadable":
-      return "ADE stopped watching. Check GitHub access, then run `ade prs watch` to watch it again.";
+      return "Daex stopped watching. Check GitHub access, then run `daex prs watch` to watch it again.";
     case "exhausted":
-      return `ADE stopped watching after ${PR_WATCH_COMMENT_ONLY_WAKE_LIMIT} comment-only updates in a row. Run \`ade prs watch\` to watch it again.`;
+      return `Daex stopped watching after ${PR_WATCH_COMMENT_ONLY_WAKE_LIMIT} comment-only updates in a row. Run \`daex prs watch\` to watch it again.`;
     default:
       return ctx.mode === "ship"
-        ? "Follow your shipping instructions. ADE keeps watching and wakes you on the next change."
-        : `Look into each item and act on it as your task requires. ${ctx.changes.some((change) => change.kind === "remarks") ? `${PR_THREAD_CLOSEOUT_RULE} ` : ""}ADE keeps watching and wakes you on the next change, so end your turn when you are done. Run \`ade prs unwatch\` when you no longer need updates.`;
+        ? "Follow your shipping instructions. Daex keeps watching and wakes you on the next change."
+        : `Look into each item and act on it as your task requires. ${ctx.changes.some((change) => change.kind === "remarks") ? `${PR_THREAD_CLOSEOUT_RULE} ` : ""}Daex keeps watching and wakes you on the next change, so end your turn when you are done. Run \`daex prs unwatch\` when you no longer need updates.`;
   }
 }
 
@@ -679,7 +679,7 @@ function closingLine(ctx: PrWatchWakeContext): string {
 export function buildPrWatchWakeText(ctx: PrWatchWakeContext): string {
   const verb = ctx.mode === "ship" ? "shipping" : "watching";
   const lines = [
-    `Update on pull request #${ctx.pr.githubPrNumber} (${ctx.pr.githubUrl}), which ADE is ${verb} for you:`,
+    `Update on pull request #${ctx.pr.githubPrNumber} (${ctx.pr.githubUrl}), which Daex is ${verb} for you:`,
     ...ctx.changes.flatMap((change) => changeLines(change, ctx)),
     "",
   ];

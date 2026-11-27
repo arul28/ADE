@@ -106,7 +106,8 @@ export function assertDevinCloudChatHasRelay(
  * with it.
  */
 export function stripDevinCloudBranchPin(text: string): string {
-  if (!text.trimStart().startsWith("[ADE lane]")) return text;
+  const start = text.trimStart();
+  if (!start.startsWith("[ADE lane]") && !start.startsWith("[Daex lane]")) return text;
   const markers = ["Open a pull request only if asked.", "commit and push work there."];
   for (const marker of markers) {
     const at = text.indexOf(marker);
@@ -130,12 +131,14 @@ export function buildDevinCloudBranchPin(args: {
   const branch = args.branch?.trim();
   if (!branch) return null;
   const repo = args.repo?.trim();
+  // The "[ADE lane]" marker stays as written: the session lives in Devin's
+  // cloud, and older releases on the person's other machines strip the pin by it.
   if (args.firstTurn) {
     return [
       "[ADE lane]",
-      `This chat is an ADE lane. Its branch is \`${branch}\`${repo ? ` in \`${repo}\`` : ""}.`,
+      `This chat is a Daex lane. Its branch is \`${branch}\`${repo ? ` in \`${repo}\`` : ""}.`,
       `Before anything else: fetch and check out \`${branch}\` (it exists on origin). Do not create a different branch.`,
-      `Commit your work to \`${branch}\` and push it there, so ADE can show it. Open a pull request only if asked.`,
+      `Commit your work to \`${branch}\` and push it there, so Daex can show it. Open a pull request only if asked.`,
     ].join("\n");
   }
   return `[ADE lane] Stay on branch \`${branch}\`; commit and push work there.`;
