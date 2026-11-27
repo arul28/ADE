@@ -2919,7 +2919,15 @@ struct WorkChatSessionView: View {
       },
       content: artifactContent,
       load: onLoadArtifact,
-      resolveMissing: onResolveMissingProof
+      resolveMissing: onResolveMissingProof,
+      savedProof: { [syncServiceReference, sessionId = session.id] id in
+        await syncServiceReference.service?.savedCloudChatProof(sessionId: sessionId, artifactId: id)
+      },
+      wakeComputer: { [syncServiceReference, sessionId = session.id] in
+        await syncServiceReference.service?.wakeSavedCloudChatComputer(sessionId: sessionId)
+      },
+      // Live and reachable: a link that drops turns this false, and the citations ask the account again.
+      linkLive: isLive
     )
   }
 
@@ -4540,6 +4548,14 @@ private struct WorkChatComposerDraftInput: View {
     }
     .task(id: composerDraftRestore?.id) {
       draftState.applyRestore(composerDraftRestore)
+    }
+    // A keystroke in a chat on an ADE Cloud computer keeps that computer
+    // awake (`SyncService.noteChatTyping`). Only a focused field counts: a
+    // restored or seeded draft is not typing, and a chat left open sends nothing.
+    .onReceive(draftState.$text.dropFirst()) { text in
+      guard draftState.isFocused, !isPersonalChat, let composerChatSessionId,
+            !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+      syncService.noteChatTyping(sessionId: composerChatSessionId, modelId: chatSummary.currentModelId)
     }
     // A scene's button put a reply in this chat's prompt box. Never sent here.
     .onReceive(WorkSceneReplyCenter.replies) { request in

@@ -15,10 +15,15 @@
 
 import {
   CLOUD_CAPSULE_UPLOAD_HEADER,
+  CLOUD_CHAT_PROOF_MIME,
+  CLOUD_CHAT_PROOF_SOURCE_HEADER,
   CLOUD_INSTANCE_HEADER,
   CLOUD_PATHS,
   cloudBackupPath,
   cloudCapsulePath,
+  cloudChatProofKindOf,
+  cloudChatProofPath,
+  type CloudChatProofSource,
   cloudChatMessagesPath,
   cloudChatMovePath,
   cloudGitPath,
@@ -416,6 +421,19 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     },
     deleteSavedChat: (machineKey: string, chatId: string) =>
       request<{ deleted?: boolean }>("DELETE", `${CLOUD_PATHS.chats}/${encodeURIComponent(machineKey)}/${encodeURIComponent(chatId)}`),
+    /**
+     * A saved chat's proof picture (a cited picture, or a still of a cited
+     * video: `source`), read with no wake. Null when none was saved, or from
+     * an older server. The type comes from the bytes, checked again here.
+     */
+    savedChatProof: async (machineKey: string, chatId: string, artifactId: string): Promise<CloudSavedChatProof | null> => {
+      const response = await orNullOn404(() => request<Response>("GET", cloudChatProofPath(machineKey, chatId, artifactId), { rawResponse: true, timeoutMs: timeoutMs * 2 }));
+      if (!response) return null;
+      const bytes = await response.arrayBuffer();
+      const kind = cloudChatProofKindOf(new Uint8Array(bytes));
+      if (!kind) return null;
+      return { bytes, mimeType: CLOUD_CHAT_PROOF_MIME[kind], source: response.headers.get(CLOUD_CHAT_PROOF_SOURCE_HEADER) === "video" ? "video" : "image" };
+    },
 
     /* ---- ADE without a computer: reads (never wake) ---- */
     /** One project's whole ADE Cloud view. Null from an older server: read the separate lists as before. */
@@ -546,6 +564,17 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
         headers: { [CLOUD_INSTANCE_HEADER]: instanceId, ...(upload.uploadId ? { [CLOUD_CAPSULE_UPLOAD_HEADER]: upload.uploadId } : {}) },
         timeoutMs: Math.max(1, Math.min(timeoutMs * 2, upload.timeoutMs ?? Infinity)),
       }),
+    /**
+     * From the computer at rest: one picture a saved chat cited, or a still of a cited video (`source`).
+     * 404 when the chat has no saved copy under `machineKey`; 413 `proof_too_large` or `account_full`;
+     * 415 `proof_unsupported`; 409 `proof_limit` once the chat keeps its most.
+     */
+    putSavedChatProof: (machineKey: string, chatId: string, artifactId: string, instanceId: string, bytes: Uint8Array | ArrayBuffer, upload: { source: CloudChatProofSource; contentType: string; timeoutMs?: number }) =>
+      request<{ ok: true; bytes: number }>("PUT", cloudChatProofPath(machineKey, chatId, artifactId), {
+        raw: { bytes: bytes as BodyInit, contentType: upload.contentType },
+        headers: { [CLOUD_INSTANCE_HEADER]: instanceId, [CLOUD_CHAT_PROOF_SOURCE_HEADER]: upload.source },
+        timeoutMs: Math.max(1, Math.min(timeoutMs * 2, upload.timeoutMs ?? Infinity)),
+      }),
     commitCapsule: (machineKey: string, chatId: string, commit: CloudCapsuleCommit, limit: { timeoutMs?: number } = {}) =>
       request<CloudCapsuleManifest>("POST", cloudCapsulePath(machineKey, chatId, "commit"), { body: commit, timeoutMs: Math.max(1, Math.min(timeoutMs, limit.timeoutMs ?? Infinity)) }),
     /** The capsule saved for a chat; null when there is none (replay the saved transcript). */
@@ -639,3 +668,6 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
 }
 
 export type CloudApiClient = ReturnType<typeof createCloudApiClient>;
+
+/** A saved chat's proof picture as the account server keeps it. */
+export type CloudSavedChatProof = { bytes: ArrayBuffer; mimeType: string; source: CloudChatProofSource };

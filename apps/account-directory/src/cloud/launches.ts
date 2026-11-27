@@ -35,6 +35,7 @@ import {
   type CloudTierId,
   type CloudUpdateChannel,
   CLOUD_REMOTE_SIGN_IN_KINDS,
+  cloudLaneColorOf,
   cloudRemoteSignInOf,
 } from "./contract";
 import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, badRequest, clippedText, fail, json, readJson, shortString } from "./http";
@@ -296,6 +297,8 @@ export function parseLaunchRequest(body: Record<string, unknown>): ParsedLaunchR
     : typeof lane.existingBranch === "string" && BRANCH.test(lane.existingBranch.trim()) ? lane.existingBranch.trim() : undefined;
   if (from === undefined || existingBranch === undefined) return "That branch name can't be used.";
   if (from && existingBranch) return "A lane starts from a branch or works on one, not both.";
+  // The app's pick for the lane's color; not a `#rrggbb` hex is left out (the computer picks one), never refused.
+  const laneColor = cloudLaneColorOf(lane?.color);
   let chat: ParsedLaunchRequest["chat"];
   if (kind === "chat") {
     const raw = body.chat && typeof body.chat === "object" ? body.chat as Record<string, unknown> : null;
@@ -367,6 +370,7 @@ export function parseLaunchRequest(body: Record<string, unknown>): ParsedLaunchR
       ...(existingBranch ? { existingBranch } : {}),
       // A lane on a branch keeps the branch's name.
       ...((lane?.autoName === true || laneNameOmitted) && !existingBranch ? { autoName: true } : {}),
+      ...(laneColor ? { color: laneColor } : {}),
     },
     ...(chat ? { chat } : {}),
     madeBy,

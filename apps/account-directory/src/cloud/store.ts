@@ -330,7 +330,7 @@ const REQUESTS_PER_MINUTE = {
   integrations: CLOUD_INTEGRATION_REQUESTS_PER_MINUTE,
   /**
    * A computer's saved copies: shell and CLI copies, Git summaries, fork
-   * capsule parts and commits, lane backups; and the files of a launch or a
+   * capsule parts and commits, lane backups, saved chats' proof pictures; and the files of a launch or a
    * queued message (at most ten per send). A delete's save sends one capsule per chat,
    * four at a time, from every computer of the account; this stops a loop,
    * never a real save.

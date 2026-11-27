@@ -10,7 +10,7 @@ import {
   type ComputerUseArtifactView,
 } from "../../../shared/types";
 import type { CtoMachineTarget, CtoRemoteActionCall } from "../ai/tools/ctoCrossMachine";
-import { ensurePlayableVideo, isProofVideoPath, PROOF_VIDEO_EXTENSIONS } from "../computerUse/proofPlayableVideo";
+import { ensurePlayableVideo, isProofVideoPath, PROOF_PICTURE_EXTENSIONS, PROOF_VIDEO_EXTENSIONS } from "../computerUse/proofPlayableVideo";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage, isRecord } from "../shared/utils";
 
@@ -72,7 +72,6 @@ const REMOTE_SLICE_TIMEOUT_MS = 60_000;
 const SHOWABLE_KINDS = new Set<ComputerUseArtifactKind>(["screenshot", "video_recording"]);
 /** Enough to hold every copy one CTO chat makes; the broker's own ceiling. */
 const CTO_OWNED_LIST_LIMIT = 2000;
-const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".heif", ".tif", ".tiff"]);
 
 /**
  * One conversion or pull per CTO chat and record at a time: a report's wake
@@ -190,7 +189,7 @@ export async function showFileAsCtoProof(args: {
 }): Promise<CtoShownProof> {
   const extension = path.extname(args.sourcePath).toLowerCase();
   const video = PROOF_VIDEO_EXTENSIONS.has(extension);
-  const image = IMAGE_EXTENSIONS.has(extension);
+  const image = PROOF_PICTURE_EXTENSIONS.has(extension);
   if (!video && !image) {
     throw new Error(`showMedia shows pictures and videos; ${path.basename(args.sourcePath)} is neither.`);
   }

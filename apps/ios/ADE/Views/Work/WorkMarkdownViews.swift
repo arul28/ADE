@@ -393,6 +393,8 @@ struct WorkMarkdownBlockView: View {
       Divider()
     case .proofCitation(let artifactId, let caption):
       WorkProofCitationView(artifactId: artifactId, caption: caption)
+        // Its saved-proof state belongs to this id, never to the row's place.
+        .id(artifactId)
     case .proofCompare(let compare):
       WorkProofCompareView(compare: compare)
     }

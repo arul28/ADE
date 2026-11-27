@@ -1416,6 +1416,12 @@ type SyncHostServiceArgs = {
   };
   /** A connected client just changed a file here (a save from the web or the phone). */
   onRemoteFileWrite?: () => void;
+  /**
+   * A connected client ran a command here, or typed into a terminal. The
+   * brain decides whether it is use that keeps an ADE Cloud computer awake
+   * (`cloudRemoteUseKind`), the same rule as a desktop's calls.
+   */
+  onRemoteUse?: (use: { action: string; args: unknown } | "terminal_input") => void;
   productAnalyticsService?: ProductAnalyticsService | null;
   /**
    * When true, paired hellos from devices WITHOUT a registered DPoP key are
@@ -7545,6 +7551,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
                 ...(isInteractiveControllerPeer(peer) ? { controller: true } : {}),
               });
           if (payload.action === "files.writeTextAtomic") args.onRemoteFileWrite?.();
+          args.onRemoteUse?.({ action: payload.action, args: payload.args });
         } finally {
           stopTrackingCommand();
           const durationMs = Math.max(0, Date.now() - executionStartedAtMs);
@@ -7802,6 +7809,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           args.projectId,
           hostProjectIdAliases,
         );
+        // Typed into a terminal: work that keeps a cloud computer awake, like a desktop's pty write.
+        args.onRemoteUse?.("terminal_input");
         await terminalStreams.handleInput(peer, envelope, terminalTargetFor(peer, envelope, projectScope));
       });
       peer.terminalInputQueue = work.catch((error) => {
@@ -8850,6 +8859,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       const terminalTarget = terminalTargetFor(peer, envelope, projectScope);
       if (terminalTarget) {
         if (envelope.type === "terminal_input") {
+          args.onRemoteUse?.("terminal_input");
           await terminalStreams.handleInput(peer, envelope, terminalTarget);
         } else {
           await terminalStreams.handleEnvelope(peer, envelope, terminalTarget, lifecycleGeneration, signal);
@@ -9039,6 +9049,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         break;
       }
       case "terminal_input": {
+        args.onRemoteUse?.("terminal_input");
         await terminalStreams.handleInput(peer, envelope, { kind: "hosted" });
         break;
       }

@@ -18,7 +18,7 @@ import type {
   AgentChatSessionSummary,
   AgentChatUpdateSessionArgs,
 } from "../../shared/types/chat";
-import { SAVED_CHAT_STOPPED_STATUS, savedChatSettingsSummaryFields, savedChatsMachineKey, type CloudSavedChatPage, type CloudSavedChatRow } from "../../shared/cloudSavedChats";
+import { SAVED_CHAT_STOPPED_STATUS, cloudLaneColorOf, savedChatSettingsSummaryFields, savedChatsMachineKey, type CloudSavedChatPage, type CloudSavedChatRow } from "../../shared/cloudSavedChats";
 import { REMOTE_TARGET_NOT_FOUND_MESSAGE } from "../../shared/types/remoteRuntime";
 import { isRemoteMachineAwayError } from "../../shared/runtimeErrors";
 import type { LaneSummary } from "../../shared/types/lanes";
@@ -86,6 +86,11 @@ export function subscribeCloudConnectionTargets(listener: () => void): () => voi
 
 export function isCloudConnectionTarget(machineId: string): boolean {
   return cloudConnectionKeys.has(machineId);
+}
+
+/** Whether a pin names a connection to an ADE Cloud computer. */
+export function isCloudPin(pin: OpenProjectBinding | null | undefined): pin is Extract<OpenProjectBinding, { kind: "remote" }> {
+  return pin?.kind === "remote" && isCloudConnectionTarget(pin.targetId);
 }
 
 /**
@@ -206,7 +211,8 @@ export function savedChatLane(row: CloudSavedChatRow): LaneSummary {
     worktreePath: "",
     isEditProtected: false,
     status: { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false },
-    color: null,
+    // The color its computer saved with the chat; null from an older computer.
+    color: cloudLaneColorOf(row.laneColor),
     icon: null,
     tags: [],
     createdAt: row.lastActivityAt ?? new Date(row.updatedAt).toISOString(),
@@ -464,7 +470,7 @@ export function chatQueueMachineKey(pin: OpenProjectBinding | null | undefined, 
 
 /** The queue target for a send to a chat on an ADE Cloud connection, or null. */
 function cloudConnectionQueueTarget(pin: OpenProjectBinding | null | undefined, sessionId: string): SavedChatQueueTarget | null {
-  if (pin?.kind !== "remote" || !isCloudConnectionTarget(pin.targetId)) return null;
+  if (!isCloudPin(pin)) return null;
   const saved = savedChatLocation(pin, sessionId, () => false);
   // A deleted computer's chat takes no send (`send` says so before this).
   if (saved?.computerGone) return null;
@@ -550,7 +556,7 @@ export function withSavedChatReads(
     try {
       return await run(pin);
     } catch (error) {
-      if (!refusedBeforeSend(error) || !reach?.wakeForSend || pin?.kind !== "remote" || !isCloudConnectionTarget(pin.targetId)) throw error;
+      if (!refusedBeforeSend(error) || !reach?.wakeForSend || !isCloudPin(pin)) throw error;
       const wokenPin = await reach.wakeForSend(pin, sessionId);
       if (!wokenPin) throw error;
       // The woken computer's pin: the same kind of value the caller passed.

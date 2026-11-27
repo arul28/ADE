@@ -123,6 +123,15 @@ final class AccountCloudStore: ObservableObject {
   private var transcriptPartFirstSequence: [String: [Int: Int]] = [:]
   /// Saved chats read this run, by thread key: one read per open.
   private var transcriptReads: [String: Task<Void, Never>] = [:]
+  /// Saved proof pictures read this run, by saved copy and artifact (nil:
+  /// none was saved, asked again after `savedProofNoneKept`). Kept to
+  /// `savedProofKeptBytes`, the oldest first out.
+  private var savedProofs: [String: (at: Date, proof: CloudSavedChatProof?)] = [:]
+  private var savedProofOrder: [String] = []
+  /// Each read's answer, and whether the server gave one (a failed read is not "none saved").
+  private var savedProofReads: [String: Task<(proof: CloudSavedChatProof?, answered: Bool), Never>] = [:]
+  private static let savedProofKeptBytes = 24 * 1024 * 1024
+  private static let savedProofNoneKept: TimeInterval = 300
 
   /// Where a saved chat's scroll-back stands.
   private struct TranscriptPaging {
@@ -583,6 +592,53 @@ final class AccountCloudStore: ObservableObject {
     queued[key] = list
   }
 
+  // MARK: Saved proof
+
+  /// One proof picture a saved chat cited (a still for a video), from the
+  /// account with no wake. Only for a chat read through the account
+  /// (`savedCloudChatAccountKey`): the caller passes that key.
+  func savedProof(accountMachineKey: String, chatId: String, artifactId: String, using sync: SyncService) async -> CloudSavedChatProof? {
+    let id = "\(accountMachineKey)\u{0}\(chatId)\u{0}\(artifactId)"
+    if let kept = savedProofs[id], kept.proof != nil || Date().timeIntervalSince(kept.at) < Self.savedProofNoneKept {
+      return kept.proof
+    }
+    let generation = accountGeneration
+    if let running = savedProofReads[id] {
+      let proof = await running.value.proof
+      // The account changed while it was out: none of it is this account's.
+      return generation == accountGeneration ? proof : nil
+    }
+    let read = Task { @MainActor [weak sync] () -> (proof: CloudSavedChatProof?, answered: Bool) in
+      guard let client = await sync?.cloudServerClient() else { return (nil, false) }
+      do {
+        return (try await client.savedChatProof(machineKey: accountMachineKey, chatId: chatId, artifactId: artifactId), true)
+      } catch {
+        accountCloudLog.notice("cloud_store read=proof failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+        return (nil, false)
+      }
+    }
+    savedProofReads[id] = read
+    let result = await read.value
+    // After a reset another account's read may hold this key: clear only our own.
+    if generation == accountGeneration { savedProofReads[id] = nil }
+    // The account changed while it was out: none of it is this account's.
+    guard generation == accountGeneration else { return nil }
+    // Only an answer is kept ("none saved" included); a failed read is asked again next time.
+    if result.answered { keepSavedProof(id: id, proof: result.proof) }
+    return result.proof
+  }
+
+  private func keepSavedProof(id: String, proof: CloudSavedChatProof?) {
+    savedProofOrder.removeAll { $0 == id }
+    savedProofOrder.append(id)
+    savedProofs[id] = (Date(), proof)
+    var bytes = savedProofs.values.reduce(0) { $0 + ($1.proof?.data.count ?? 0) }
+    while bytes > Self.savedProofKeptBytes, let oldest = savedProofOrder.first, oldest != id {
+      savedProofOrder.removeFirst()
+      bytes -= savedProofs.removeValue(forKey: oldest)?.proof?.data.count ?? 0
+    }
+  }
+
   // MARK: Saved transcripts
 
   /// Reads the newest part of a saved chat and hands it to the chat's thread
@@ -594,12 +650,30 @@ final class AccountCloudStore: ObservableObject {
     let generation = accountGeneration
     transcriptReads[id] = Task { @MainActor [weak self, weak sync] in
       defer { self?.transcriptReads[id] = nil }
-      guard let self, let sync, let client = await sync.cloudServerClient() else { return }
-      let page: CloudChatTranscriptPage
+      guard let self, let sync else { return }
+      // A read that can't happen or fails says so in the thread, with Retry
+      // (`markSnapshotStalled`), never an empty chat that looks like no history.
+      guard let client = await sync.cloudServerClient() else {
+        // A read started for an account that has since signed out says nothing to the next one.
+        guard generation == self.accountGeneration, !Task.isCancelled else { return }
+        sync.chatThreadRegistry.markSnapshotStalled(key, message: "Sign in to ADE to read this chat.")
+        return
+      }
+      var page: CloudChatTranscriptPage
       do {
         page = try await client.transcriptPage(machineKey: accountMachineKey, chatId: key.sessionId)
+        // A server page reads a bounded number of parts and skips empty ones,
+        // so it can come back with none while older ones remain: read on (a
+        // few pages) to the first with a part, never an empty first snapshot.
+        var extraPages = 0
+        while page.parts.isEmpty, page.hasMore, let before = page.nextBefore, extraPages < 4, !Task.isCancelled {
+          extraPages += 1
+          page = try await client.transcriptPage(machineKey: accountMachineKey, chatId: key.sessionId, before: before)
+        }
       } catch {
         accountCloudLog.notice("cloud_store read=transcript failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+        guard generation == self.accountGeneration, !Task.isCancelled else { return }
+        sync.chatThreadRegistry.markSnapshotStalled(key, message: "ADE couldn't read this chat's saved copy. \(cloudServerFailureMessage(error))")
         return
       }
       let sessionId = key.sessionId
@@ -775,6 +849,10 @@ final class AccountCloudStore: ObservableObject {
     transcriptPartFirstSequence = [:]
     for task in transcriptReads.values { task.cancel() }
     transcriptReads = [:]
+    savedProofs = [:]
+    savedProofOrder = []
+    for task in savedProofReads.values { task.cancel() }
+    savedProofReads = [:]
     CloudSponsoredStore.shared.reset()
   }
 

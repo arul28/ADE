@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleCloudBillingPublicRequest, reportExtraHours } from "../src/cloud/billing";
 import { enforcePhoneAllowance, handleNomacWebhook } from "../src/cloud/phones";
-import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_MAX_PART_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CAPSULE_MAX_PART_BYTES, CLOUD_CHAT_MAX_PART_BYTES, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT, CLOUD_LAUNCH_MAX_FILE_BYTES, CLOUD_LAUNCH_MAX_OPEN_DRAFTS, CLOUD_SESSION_MAX_BYTES, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord } from "../src/cloud/contract";
+import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_MAX_PART_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CAPSULE_MAX_PART_BYTES, CLOUD_CHAT_MAX_ACCOUNT_BYTES, CLOUD_CHAT_MAX_PART_BYTES, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_CHAT_PROOF_MAX_BYTES, CLOUD_CHAT_PROOF_MAX_PER_CHAT, CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT, CLOUD_LAUNCH_MAX_FILE_BYTES, CLOUD_LAUNCH_MAX_OPEN_DRAFTS, CLOUD_SESSION_MAX_BYTES, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord } from "../src/cloud/contract";
 import { deleteAllAccountChats } from "../src/cloud/chats";
 import { pruneSponsored } from "../src/cloud/sponsoredReport";
 import { smallCloudLookAlarms, syncAllSmallRates } from "../src/cloud/sponsoredSmall";
@@ -3383,15 +3383,17 @@ describe("ADE Cloud without a computer", () => {
     expect(queued()).toEqual([{ message_id: "m1", state: "delivered" }]);
   });
 
-  it("a fork restore moves a saved chat to the new computer with its full history and settings: it lists once, old names still read it, nothing is uploaded again", async () => {
+  it("a fork restore moves a saved chat to the new computer with its full history, settings and lane color: it lists once, old names still read it, nothing is uploaded again", async () => {
     seedAccount(harness, OWNER);
     seedComputer(harness, { machine_key: "key-old" });
-    expect((await savePart(INSTANCE, "key-old", 1, "first\n")).status).toBe(200);
+    // A lane color that isn't `#rrggbb` is left out, never a refused part.
+    expect((await savePart(INSTANCE, "key-old", 1, "first\n", { laneColor: "url(x)" })).status).toBe(200);
+    expect(((await (await harness.send(OWNER, "GET", "/cloud/chats")).json()) as { chats: Array<{ laneColor: unknown }> }).chats[0]!.laneColor).toBeNull();
     // The row's composer settings: known keys with one-token values are kept, the rest left out.
     const settings = { reasoningEffort: "xhigh", fastMode: true, modelId: "anthropic/claude-opus-4-1[1m]", presetId: "two words", permissionMode: 5, notASetting: "x" };
-    expect((await savePart(INSTANCE, "key-old", 2, "second\n", { settings })).status).toBe(200);
+    expect((await savePart(INSTANCE, "key-old", 2, "second\n", { settings, laneColor: "#60A5FA" })).status).toBe(200);
     // Sealed with the summary, never a plain column.
-    expect(JSON.stringify(harness.rows("select * from cloud_chat_copies"))).not.toContain("xhigh");
+    expect(JSON.stringify(harness.rows("select * from cloud_chat_copies"))).not.toMatch(/xhigh|60a5fa/i);
     harness.exec("update cloud_computers set deleted_at = ?, status = 'deleted' where instance_id = ?", NOW, INSTANCE);
     seedComputer(harness, { instance_id: SECOND, machine_key: "key-new" });
     const move = (caller: string, toMachineKey = "key-new") => harness.send(caller, "POST", "/cloud/chats/key-old/c1/move", { toMachineKey, instanceId: SECOND });
@@ -3402,15 +3404,20 @@ describe("ADE Cloud without a computer", () => {
     expect(moved.status).toBe(200);
     expect(await moved.json()).toEqual({ chat: expect.objectContaining({ machineKey: "key-new", lastSeq: 2, forkedFrom: { machineKey: "key-old", chatId: "c1" } }), moved: true });
     // Once, under the new key; the same move again answers the moved row.
-    const listed = (await (await harness.send(OWNER, "GET", "/cloud/chats")).json()) as { chats: Array<{ machineKey: string; chatId: string; settings: unknown }> };
+    const listed = (await (await harness.send(OWNER, "GET", "/cloud/chats")).json()) as { chats: Array<{ machineKey: string; chatId: string; settings: unknown; laneColor: unknown }> };
     expect(listed.chats.map((chat) => [chat.machineKey, chat.chatId])).toEqual([["key-new", "c1"]]);
     expect(listed.chats[0]!.settings).toEqual({ reasoningEffort: "xhigh", fastMode: true, modelId: "anthropic/claude-opus-4-1[1m]" });
+    expect(listed.chats[0]!.laneColor).toBe("#60a5fa");
     expect(((await (await move(OWNER)).json()) as { moved: boolean }).moved).toBe(false);
     // The full history reads under the new key, and under the old one (an older client), with no new upload.
     expect([await partsOf("key-new"), await partsOf("key-old")]).toEqual([["second\n", "first\n"], ["second\n", "first\n"]]);
     // The new computer's uploader goes on from the restored seq; the old key can't write over the moved parts.
     expect((await savePart(SECOND, "key-new", 3, "third\n")).status).toBe(200);
     expect(await partsOf("key-new")).toEqual(["third\n", "second\n", "first\n"]);
+    // A row sent with no new text (a lane recolored) is an empty part: a one-part page (the phone's) still reads the newest text.
+    expect((await savePart(SECOND, "key-new", 4, "", { laneColor: "#22C55E" })).status).toBe(200);
+    const newest = (await (await harness.send(OWNER, "GET", "/cloud/chats/key-new/c1?limit=1")).json()) as { chat: { laneColor: unknown }; parts: Array<{ seq: number; text: string }>; nextBefore: number | null };
+    expect([newest.chat.laneColor, newest.parts, newest.nextBefore]).toEqual(["#22c55e", [{ seq: 3, text: "third\n" }], 3]);
     seedComputer(harness, { instance_id: "thirdbox12", machine_key: "key-old" });
     expect((await savePart("thirdbox12", "key-old", 1, "other\n")).status).toBe(409);
   });
@@ -3851,6 +3858,7 @@ describe("ADE Cloud without a computer", () => {
   it.each([
     ["a launch file", CLOUD_LAUNCH_MAX_FILE_BYTES, async () => `/cloud/launches/${"4a7d2c1e-9b3f-4e8a-8c6d-2f1b0a9e8d7c"}/files/photo-1`],
     ["a chat part", CLOUD_CHAT_MAX_PART_BYTES, async () => "/cloud/chats/key-a/c1/parts/1"],
+    ["a chat's proof picture", CLOUD_CHAT_PROOF_MAX_BYTES, async () => "/cloud/chats/key-a/c1/proof/shot-1"],
     ["a session copy", CLOUD_SESSION_MAX_BYTES, async () => "/cloud/sessions/key-a/cli-1"],
     ["a fork capsule part", CLOUD_CAPSULE_MAX_PART_BYTES, async () => "/cloud/capsules/key-a/c1/parts/1"],
     ["a lane backup part", CLOUD_BACKUP_MAX_PART_BYTES, async () => {
@@ -3870,6 +3878,79 @@ describe("ADE Cloud without a computer", () => {
     const sent = await rawPut(await pathOf(), body.stream, { "x-ade-instance": INSTANCE });
     expect(sent.status).toBe(413);
     expect(body.pulled()).toBeLessThan(total);
+  });
+
+  describe("a saved chat's proof", () => {
+    const bytesOf = (...parts: Array<number[] | string>) => new Uint8Array(parts.flatMap((part) => (typeof part === "string" ? [...new TextEncoder().encode(part)] : part)));
+    const PNG = bytesOf([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], "secret-pixels");
+    const WEBP = bytesOf("RIFF", [0x10, 0, 0, 0], "WEBPVP8 still-frame");
+    const proofPath = (chat = "c1", artifact = "shot-1") => `/cloud/chats/key-a/${chat}/proof/${artifact}`;
+    const putProof = (body: Uint8Array, options: { headers?: Record<string, string>; path?: string; caller?: string } = {}) =>
+      rawPut(options.path ?? proofPath(), body, { "x-ade-instance": INSTANCE, ...options.headers }, options.caller ?? OWNER);
+    const prefix = () => (harness.row("select r2_key from cloud_chat_copies where chat_id = 'c1'") as { r2_key: string }).r2_key;
+    const copyBytes = () => (harness.row("select bytes from cloud_chat_copies where chat_id = 'c1'") as { bytes: number }).bytes;
+    const proofObjects = async () => (await harness.env.CLOUD_CHATS!.list({ prefix: `${prefix()}proof/` })).objects;
+    const codeOf = async (response: Response) => ((await response.json().catch(() => ({}))) as { error?: { code?: string } }).error?.code ?? null;
+
+    beforeEach(async () => {
+      seedAccount(harness, OWNER);
+      seedComputer(harness, { machine_key: "key-a" });
+      expect((await savePart(INSTANCE, "key-a", 1, "{}\n")).status).toBe(200);
+    });
+
+    it("is sealed, counted against the account, read back with a fixed picture type, written once, and goes with the chat", async () => {
+      const before = copyBytes();
+      expect((await putProof(PNG)).status).toBe(200);
+      const [stored] = await proofObjects();
+      // Sealed: the stored object holds none of the picture, and its size counts on the chat's copy.
+      const sealed = await harness.env.CLOUD_CHATS!.get(stored!.key);
+      expect(Buffer.from(await sealed!.arrayBuffer()).includes(Buffer.from("secret-pixels"))).toBe(false);
+      expect(copyBytes()).toBe(before + stored!.size);
+      // The same picture again writes nothing.
+      expect((await putProof(PNG)).status).toBe(200);
+      expect(copyBytes()).toBe(before + stored!.size);
+      const read = await harness.send(OWNER, "GET", proofPath());
+      expect([read.status, read.headers.get("content-type"), read.headers.get("x-content-type-options"), read.headers.get("content-disposition"), read.headers.get("x-ade-proof-source")])
+        .toEqual([200, "image/png", "nosniff", "inline", "image"]);
+      // A decrypted picture never sits in a shared cache.
+      expect(read.headers.get("cache-control")).toMatch(/\bprivate\b/);
+      expect(new Uint8Array(await read.arrayBuffer())).toEqual(PNG);
+      // A video's still, as WebP: the type follows the bytes, never the request's own content type.
+      expect((await putProof(WEBP, { headers: { "x-ade-proof-source": "video", "content-type": "text/html" }, path: proofPath("c1", "rec-1") })).status).toBe(200);
+      const still = await harness.send(OWNER, "GET", proofPath("c1", "rec-1"));
+      expect([still.headers.get("content-type"), still.headers.get("x-ade-proof-source")]).toEqual(["image/webp", "video"]);
+      // The chat's delete takes its proof with it.
+      expect(await (await harness.send(OWNER, "DELETE", "/cloud/chats/key-a/c1")).json()).toEqual({ deleted: true });
+      expect((await harness.send(OWNER, "GET", proofPath())).status).toBe(404);
+      expect((await harness.env.CLOUD_CHATS!.list({ prefix: "chats/" })).objects.filter((object) => object.key.includes("/proof/"))).toEqual([]);
+    });
+
+    const fillChat = async () => {
+      for (let index = 0; index < CLOUD_CHAT_PROOF_MAX_PER_CHAT; index += 1) await harness.env.CLOUD_CHATS!.put(`${prefix()}proof/old-${index}`, "x");
+    };
+    const fillAccount = async () => {
+      harness.exec("update cloud_chat_copies set bytes = ? where chat_id = 'c1'", CLOUD_CHAT_MAX_ACCOUNT_BYTES);
+    };
+    it.each<[string, (() => Promise<void>) | null, () => Promise<Response>, number, string]>([
+      ["from another account's caller", null, () => putProof(PNG, { caller: OTHER }), 404, "not_found"],
+      ["from no computer of the account", null, () => putProof(PNG, { headers: { "x-ade-instance": "notmybox99" } }), 404, "not_found"],
+      ["for a chat with no saved copy", null, () => putProof(PNG, { path: proofPath("c-none") }), 404, "copy_not_found"],
+      ["an SVG", null, () => putProof(bytesOf('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>')), 415, "proof_unsupported"],
+      ["HTML named as a picture", null, () => putProof(bytesOf("<html><body>hi</body></html>"), { headers: { "content-type": "image/png" } }), 415, "proof_unsupported"],
+      ["an empty body", null, () => putProof(new Uint8Array(0)), 400, "bad_request"],
+      ["past the size cap", null, () => putProof(bytesOf([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], "x".repeat(CLOUD_CHAT_PROOF_MAX_BYTES))), 413, "proof_too_large"],
+      ["past the chat's most pictures", fillChat, () => putProof(PNG), 409, "proof_limit"],
+      ["past the account's saved bytes", fillAccount, () => putProof(PNG), 413, "account_full"],
+      ["a read by another account", async () => { expect((await putProof(PNG)).status).toBe(200); }, () => harness.send(OTHER, "GET", proofPath()), 404, "not_found"],
+    ])("%s is refused and stores nothing", async (_label, setup, request, status, code) => {
+      await setup?.();
+      const objectsBefore = (await proofObjects()).length;
+      const bytesBefore = copyBytes();
+      const response = await request();
+      expect([response.status, await codeOf(response)]).toEqual([status, code]);
+      expect((await proofObjects()).length).toBe(objectsBefore);
+      expect(copyBytes()).toBe(bytesBefore);
+    });
   });
 
   it("a send to a chat whose computer is gone continues it on one new computer, at the size the person picked: a second send rides the same launch", async () => {

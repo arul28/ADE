@@ -36,12 +36,23 @@ const SENSITIVE_KEY = /^(?:api[_-]?key|secret|token|password|authorization)$/i;
 /**
  * `rowStale`: the chat's title, status or lane name changed after its last part; the next upload sends the row even with no new text.
  * `settings`: the composer settings the saved row last carried (`settingsKey`), so a setting changed with no turn after it still reaches the copy before a rest.
+ * `laneColor`: the lane color the saved row last carried, so a lane recolored (or a copy saved before rows carried it) gets its row again before a rest.
+ * `generation`: counts the server copies this chat started over (`deleteAndRestart`): what went with an earlier copy (its proof) went with its delete.
  */
-type Entry = { offset: number; seq: number; dirty: boolean; laneId: string | null; rowStale?: boolean; settings?: string };
+type Entry = { offset: number; seq: number; dirty: boolean; laneId: string | null; rowStale?: boolean; settings?: string; laneColor?: string | null; generation?: number };
 
 /** The settings of a row as one comparable string; "" when it has none. */
 function settingsKey(row: CloudSavedChatRowInput): string {
   return row.settings ? JSON.stringify(row.settings) : "";
+}
+
+/**
+ * A row whose lane color is unknown (`undefined`: the lane list could not be
+ * read) carries the color its saved copy has, so a failed read never clears it.
+ */
+function withSavedLaneColor(row: CloudSavedChatRowInput, entry: Entry | undefined): CloudSavedChatRowInput {
+  if (row.laneColor !== undefined || !entry || entry.laneId !== row.laneId) return row;
+  return { ...row, laneColor: entry.laneColor ?? null };
 }
 type StateFile = {
   v: 1;
@@ -103,6 +114,8 @@ export type CloudChatUploader = {
    * when this project has no such parent chat.
    */
   uploadSubagentCopy(parentSessionId: string, copy: { chatId: string; text: string; title: string | null; lastActivityAt: string | null }): Promise<boolean | null>;
+  /** The chats of this project the server holds a saved copy of (at least one part sent), each with its copy's `generation`. */
+  savedChats(): Array<{ id: string; generation: number }>;
   dispose(): void;
 };
 
@@ -153,6 +166,13 @@ export async function uploadSubagentCloudCopy(
     if (result !== null) return result;
   }
   return false;
+}
+
+/** Every chat on this computer with a saved copy on the account server, across its open projects, by its copy's generation. */
+export function savedCloudChats(): Map<string, number> {
+  const chats = new Map<string, number>();
+  for (const uploader of uploaders) for (const { id, generation } of uploader.savedChats()) chats.set(id, generation);
+  return chats;
 }
 
 /** The restored chat's upload goes on from `seq` in the project that holds it (`CloudChatUploader.adoptRestored`). */
@@ -526,11 +546,12 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
         if (delta.more) continue;
         return await sendStaleRow(sessionId, entry, base, machineKey, headers) || sent;
       }
-      const row = await deps.readChatRow(sessionId).catch((error: unknown) => {
+      const read = await deps.readChatRow(sessionId).catch((error: unknown) => {
         log?.warn("cloud.chat_upload_row_failed", { sessionId, error: error instanceof Error ? error.name : "unknown" });
         return null;
       });
-      if (!row) return sent;
+      if (!read) return sent;
+      const row = withSavedLaneColor(read, entry);
       const seq = entry.seq + 1;
       let response: Response;
       try {
@@ -567,6 +588,7 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
       // The row went with this part.
       entry.rowStale = false;
       entry.settings = settingsKey(row);
+      entry.laneColor = row.laneColor ?? null;
       persist();
       sent = true;
       if (mode === "turn" || !delta.more) return sent;
@@ -585,12 +607,13 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
       persist();
       return false;
     }
-    const row = await deps.readChatRow(sessionId).catch(() => null);
-    if (!row) {
+    const read = await deps.readChatRow(sessionId).catch(() => null);
+    if (!read) {
       entry.dirty = false;
       persist();
       return false;
     }
+    const row = withSavedLaneColor(read, entry);
     const seq = entry.seq + 1;
     try {
       const response = await fetcher(cloudSavedChatPartUrl(base, machineKey, sessionId, seq), {
@@ -612,6 +635,7 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
     entry.dirty = false;
     entry.laneId = row.laneId;
     entry.settings = settingsKey(row);
+    entry.laneColor = row.laneColor ?? null;
     persist();
     return true;
   }
@@ -632,10 +656,14 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
       });
       if (!row) continue;
       const key = settingsKey(row);
+      // A lane color the copy doesn't have yet (recolored, or saved before rows carried it).
+      // A color that went away is a lane list that could not be read, not a change.
+      const colorChanged = Boolean(row.laneColor) && row.laneColor !== entry.laneColor;
       // No key recorded yet (a copy older than settings): sent once. Settings
       // that went away are a summary that could not be read, not a change:
       // sending that row would clear the saved model too.
-      if (entry.settings !== undefined && (key === entry.settings || (!key && entry.settings))) continue;
+      if (!key && entry.settings) continue;
+      if (!colorChanged && entry.settings !== undefined && key === entry.settings) continue;
       entry.rowStale = true;
       entry.dirty = true;
     }
@@ -683,6 +711,8 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
       if (response.ok) {
         entry.offset = 0;
         entry.seq = 0;
+        // The new copy has none of the old one's proof.
+        entry.generation = (entry.generation ?? 0) + 1;
       }
     } catch (error) {
       log?.warn("cloud.chat_upload_restart_failed", { sessionId, error: error instanceof Error ? error.name : "unknown" });
@@ -807,7 +837,8 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
       const reader = openTranscript(deps.chatTranscriptsDir, sessionId);
       if (!reader) return false;
       currentMachineKey();
-      state.chats[sessionId] = { offset: reader.size, seq, dirty: false, laneId };
+      // A copy it did not save here: proof marks of an earlier copy don't hold for it.
+      state.chats[sessionId] = { offset: reader.size, seq, dirty: false, laneId, generation: (state.chats[sessionId]?.generation ?? 0) + 1 };
       persist();
       return true;
     },
@@ -821,7 +852,7 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
       const parentRow = await deps.readChatRow(parentSessionId).catch(() => null);
       if (!parentRow) return false;
       const row: CloudSavedChatRowInput = {
-        ...parentRow,
+        ...withSavedLaneColor(parentRow, state.chats[parentSessionId]),
         title: copy.title ?? parentRow.title,
         status: "idle",
         lastActivityAt: copy.lastActivityAt ?? parentRow.lastActivityAt,
@@ -849,6 +880,9 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
         persist();
       }
       return true;
+    },
+    savedChats() {
+      return disposed ? [] : Object.entries(state.chats).filter(([, entry]) => entry.seq > 0).map(([id, entry]) => ({ id, generation: entry.generation ?? 0 }));
     },
     dispose() {
       disposed = true;

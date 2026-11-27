@@ -25,7 +25,8 @@ import type { ChatLaunchArgs, ChatLaunchLaneConfig, ChatLaunchSnapshot } from ".
 import type { AgentChatFileRef } from "./types/chat";
 import { DEFAULT_LANE_START } from "./laneStart";
 import { isChatLaunchSucceeded } from "./chatLaunch";
-import { CLOUD_LANE_METADATA, CLOUD_LAUNCH_MAX_ARGS_BYTES } from "../../../account-directory/src/cloud/contract";
+import { CLOUD_LANE_METADATA, CLOUD_LAUNCH_MAX_ARGS_BYTES, cloudLaneColorOf } from "../../../account-directory/src/cloud/contract";
+import { allocateLaneColor } from "./laneColorPalette";
 
 export type { CloudLaneWithoutComputer } from "../../../account-directory/src/cloud/contract";
 
@@ -56,14 +57,37 @@ export function cloudLaneConfig(config: ChatLaunchLaneConfig | null | undefined)
 export function cloudLaunchLaneFields(
   name: string,
   config: ChatLaunchLaneConfig | null | undefined,
-): { name: string; existingBranch?: string; from?: string; autoName?: true } {
+): { name: string; existingBranch?: string; from?: string; autoName?: true; color?: string } {
   const lane = cloudLaneConfig(config);
+  const color = cloudLaneColorOf(lane.color);
   return {
     name,
     ...(lane.mode === "existing" && lane.branchRef ? { existingBranch: lane.branchRef } : {}),
     ...(lane.mode !== "existing" && lane.start?.from === "branch" && lane.start.branch ? { from: lane.start.branch } : {}),
     ...(lane.mode !== "existing" && lane.autoName ? { autoName: true as const } : {}),
+    ...(color ? { color } : {}),
   };
+}
+
+/**
+ * The lane recipe of a new ADE Cloud lane, with its color: the one the person
+ * picked, else the color the lane already shows (`laneId`, a lane kept
+ * without a computer that gets a new one), else the first palette color none
+ * of the project's listed lanes uses (this machine's and every other
+ * machine's, ADE Cloud's too). Each cloud computer holds one lane, so only
+ * the app that lists them all can tell the colors apart. No recipe stays the
+ * auto-named new lane it was.
+ */
+export function withCloudLaneColor(
+  config: ChatLaunchLaneConfig | null | undefined,
+  listedLanes: ReadonlyArray<{ id: string; color?: string | null }>,
+  laneId?: string | null,
+): ChatLaunchLaneConfig {
+  const base: ChatLaunchLaneConfig = config ?? { mode: "new", autoName: true };
+  const color = cloudLaneColorOf(base.color)
+    ?? (laneId ? cloudLaneColorOf(listedLanes.find((lane) => lane.id === laneId)?.color) : null)
+    ?? allocateLaneColor(listedLanes.map((lane) => lane.color ?? "").filter(Boolean));
+  return { ...base, color };
 }
 
 /** Only links: files from the sending computer travel as the server's files, never as its paths. */

@@ -338,7 +338,7 @@ import {
 import { redactSecrets, sha256Hex } from "../../desktop/src/main/services/shared/utils";
 import { cloudChatStoppedForRest, createCloudChatUploader } from "./services/cloudChats/cloudChatUploader";
 import { cloudDeleteFreezeRefusal } from "./services/power/cloudDeleteFreeze";
-import { SAVED_CHAT_STOPPED_STATUS, cloudChatRowSettingsOf } from "../../desktop/src/shared/cloudSavedChats";
+import { SAVED_CHAT_STOPPED_STATUS, cloudChatRowSettingsOf, cloudLaneColorOf } from "../../desktop/src/shared/cloudSavedChats";
 import { noteAccountLanesChanged } from "./services/account/accountLaneIndexPublisher";
 import { createCloudLaneNameSync, type CloudLaneNameSync } from "../../desktop/src/main/services/adeCloud/cloudLaneNameSync";
 import { createCloudServerProvider } from "../../desktop/src/main/services/adeCloud/cloudServerProvider";
@@ -538,6 +538,7 @@ export type AdeRuntimeSyncOptions = {
   phonePairingStateDir?: string;
   projectCatalogProvider?: Parameters<typeof createSyncService>[0]["projectCatalogProvider"];
   onRemoteFileWrite?: Parameters<typeof createSyncService>[0]["onRemoteFileWrite"];
+  onRemoteUse?: Parameters<typeof createSyncService>[0]["onRemoteUse"];
   rosterProvider?: Parameters<typeof createSyncService>[0]["rosterProvider"];
   activityRosterProvider?: PushPublisherDeps["activityRosterProvider"];
   foreignChatProvider?: Parameters<typeof createSyncService>[0]["foreignChatProvider"];
@@ -3192,6 +3193,13 @@ export async function createAdeRuntime(args: {
             });
             const projectKey = normalizeGitRemoteIdentity(readGitOriginUrl(projectRoot));
             const liveStatus = summary?.status ?? row.status ?? null;
+            // The lane's color, so a client shows this lane in it while the computer rests (the list is cached).
+            // Undefined when the list can't be read: unknown, so the uploader keeps the color the copy has.
+            const lanes = row.laneId ? await laneService.list({ includeArchived: false, includeStatus: false }).catch((error) => {
+              logger.warn("cloud.chat_lane_color_read_failed", { sessionId, error: error instanceof Error ? error.message : String(error) });
+              return null;
+            }) : null;
+            const laneColor = !row.laneId ? null : lanes ? cloudLaneColorOf(lanes.find((lane) => lane.id === row.laneId)?.color) : undefined;
             return {
               title: redactSecrets(row.title ?? row.goal ?? ""),
               laneId: row.laneId ?? null,
@@ -3222,6 +3230,7 @@ export async function createAdeRuntime(args: {
               // The composer's settings (thinking level, Fast, access mode):
               // a client shows them while this computer rests.
               settings: cloudChatRowSettingsOf(summary),
+              laneColor,
             };
           },
           flushTranscript: () => flushAllQueuedTranscriptWrites(),
@@ -4804,6 +4813,7 @@ export async function createAdeRuntime(args: {
         forceHostRole: syncRuntimeOptions.forceHostRole ?? false,
         projectCatalogProvider: syncRuntimeOptions.projectCatalogProvider,
         onRemoteFileWrite: syncRuntimeOptions.onRemoteFileWrite,
+        onRemoteUse: syncRuntimeOptions.onRemoteUse,
         onLaneShareEvent: (event) => pushEvent("runtime", { type: "lane_share_event", event }),
         rosterProvider: syncRuntimeOptions.rosterProvider,
         foreignChatProvider: syncRuntimeOptions.foreignChatProvider,
