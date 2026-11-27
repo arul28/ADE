@@ -19,6 +19,7 @@ import {
   useArtifactPreview,
 } from "./useArtifactPreview";
 import { withChatPin } from "./chatMachinePin";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * What the transcript already knows about proof, so a citation in an answer
@@ -309,7 +310,7 @@ export function CitedProofSlot({ artifactId, caption, compact, fallback }: {
     return (
       <CitationPlaceholder tone="warning">
         <WarningCircle size={14} aria-hidden />
-        {`ADE has no proof with the id ${artifactId}.${caption?.trim() ? ` It was cited as "${caption.trim()}".` : ""}`}
+        {`${BRAND.NAME} has no proof with the id ${artifactId}.${caption?.trim() ? ` It was cited as "${caption.trim()}".` : ""}`}
       </CitationPlaceholder>
     );
   }

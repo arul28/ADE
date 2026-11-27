@@ -1,5 +1,6 @@
 import type { NoticeKind } from "../ui/notice";
 import { SAVED_CHAT_COMPUTER_GONE_MESSAGE } from "../../state/cloudSavedChats";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The one line a chat pane shows above its composer. Its kind (see
@@ -73,7 +74,7 @@ const MACHINE_UNREACHABLE = /^Can't reach (.+?)\s*[—-]+\s*it may be asleep/i;
 const CLOUD_INSTANCE_ID = /^[a-z0-9]{8,12}$/;
 
 const CHAT_MACHINE_CONNECTION_DROPPED_NOTICE =
-  "The connection to this chat's machine dropped for a moment. The chat keeps running there, and ADE reconnects by itself. If something you just did is missing, do it again.";
+  `The connection to this chat's machine dropped for a moment. The chat keeps running there, and ${BRAND.NAME} reconnects by itself. If something you just did is missing, do it again.`;
 
 /**
  * The notice as the pane for the chat it is about shows it.

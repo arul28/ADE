@@ -61,6 +61,7 @@ import {
 } from "./useMacDesktopPanelController";
 import { MacDesktopFullscreenView } from "./MacDesktopFullscreenView";
 import { WindowsDesktopStateCard } from "./WindowsDesktopStateCard";
+import { BRAND } from "../../../shared/brand";
 
 const MAC_DESKTOP_FULLSCREEN_MARGIN = 16;
 
@@ -1015,7 +1016,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
             tone: "warning",
             icon: <WindowsLogo size={16} aria-hidden="true" />,
             title: "Using your main Windows desktop",
-            detail: "ADE takes over the window you are using while it acts. Stop gives your desktop back.",
+            detail: `${BRAND.NAME} takes over the window you are using while it acts. Stop gives your desktop back.`,
             // Same confirmation as the chrome-row Stop: it quits the lane's apps.
             actions: [{ label: "Stop", onClick: () => setConfirmStop(true) }],
           }}

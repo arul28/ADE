@@ -15,8 +15,9 @@ import type {
   BuiltInBrowserAgentAccessSnapshot,
 } from "../../../../shared/types/builtInBrowser";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
+import { BRAND } from "../../../../shared/brand";
 
-export const BROWSER_AGENT_ACCESS_TITLE = "Agents can use the ADE browser";
+export const BROWSER_AGENT_ACCESS_TITLE = `Agents can use the ${BRAND.NAME} browser`;
 
 /** Label and one-line consequence for each value, shared by the menu and Settings. */
 export const BROWSER_AGENT_ACCESS_MODE_COPY: Record<
@@ -24,8 +25,8 @@ export const BROWSER_AGENT_ACCESS_MODE_COPY: Record<
   { label: string; hint: string }
 > = {
   all: { label: "All agents, all lanes", hint: "Agents use it without asking." },
-  lanes: { label: "Agents in lanes I approve", hint: "ADE asks once for each lane." },
-  chats: { label: "Chats I approve", hint: "ADE asks once for each chat." },
+  lanes: { label: "Agents in lanes I approve", hint: `${BRAND.NAME} asks once for each lane.` },
+  chats: { label: "Chats I approve", hint: `${BRAND.NAME} asks once for each chat.` },
 };
 
 export const BROWSER_AGENT_ACCESS_MODES: readonly BuiltInBrowserAgentAccessMode[] = ["all", "lanes", "chats"];

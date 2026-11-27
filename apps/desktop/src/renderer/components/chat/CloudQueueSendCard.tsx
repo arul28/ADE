@@ -4,6 +4,7 @@ import { captureError } from "../../../shared/sentry/capture";
 import { openExternalUrl } from "../../lib/openExternal";
 import { Banner } from "../ui/notice";
 import { CloudSignInCodeField } from "./launch/CloudSignInCodeField";
+import { BRAND } from "../../../shared/brand";
 
 /** A message this pane queued for an ADE Cloud chat whose computer was asleep, gone, or moving or changing size. */
 export type CloudQueueSend = {
@@ -17,18 +18,18 @@ export type CloudQueueSend = {
 
 /** The card's title once the message is queued, by what the computer does for it. */
 const SENT_TITLE: Record<CloudQueueSend["wake"], string> = {
-  moving: "Sent. ADE Cloud keeps your message while this lane moves, and the agent gets it on the new computer.",
-  waking: "Sent. Your ADE Cloud computer is waking, and the agent gets your message when it is up.",
-  awake: "Sent to your ADE Cloud computer.",
+  moving: `Sent. ${BRAND.CLOUD_NAME} keeps your message while this lane moves, and the agent gets it on the new computer.`,
+  waking: `Sent. Your ${BRAND.CLOUD_NAME} computer is waking, and the agent gets your message when it is up.`,
+  awake: `Sent to your ${BRAND.CLOUD_NAME} computer.`,
   // A launch with no id to follow.
-  launching: "Sent to your ADE Cloud computer.",
+  launching: `Sent to your ${BRAND.CLOUD_NAME} computer.`,
 };
 
 /** The step a continue launch is at, in the chat's words. */
 function launchTitle(record: CloudLaunchRecord | null): string {
   switch (record?.state) {
     case "failed":
-      return record.error?.trim() || "ADE Cloud couldn't continue this chat on a new computer.";
+      return record.error?.trim() || `${BRAND.CLOUD_NAME} couldn't continue this chat on a new computer.`;
     case "cancelled":
       return "The new computer for this chat was cancelled. Your message wasn't sent.";
     case "waiting_for_sign_in":
@@ -37,12 +38,12 @@ function launchTitle(record: CloudLaunchRecord | null): string {
       return "Confirm the new computer's sign-in to your account.";
     case "joining":
     case "joined":
-      return "Setting up this lane's new ADE Cloud computer…";
+      return `Setting up this lane's new ${BRAND.CLOUD_NAME} computer…`;
     case "running":
     case "done":
-      return "The chat goes on on this lane's new ADE Cloud computer.";
+      return `The chat goes on on this lane's new ${BRAND.CLOUD_NAME} computer.`;
     default:
-      return "Making a new ADE Cloud computer for this lane…";
+      return `Making a new ${BRAND.CLOUD_NAME} computer for this lane…`;
   }
 }
 

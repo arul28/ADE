@@ -477,7 +477,7 @@ describe("ChatBuiltInBrowserPanel", () => {
     expect(api.onEvent).toHaveBeenCalled();
     expect(api.onRemoteRequest).toHaveBeenCalled();
 
-    const urlInput = screen.getByLabelText("ADE browser URL") as HTMLInputElement;
+    const urlInput = screen.getByLabelText("Daex browser URL") as HTMLInputElement;
     fireEvent.focus(urlInput);
     fireEvent.change(urlInput, { target: { value: "http://localhost:3000/app" } });
     // The arrow appears inside the field while there is something typed.
@@ -516,7 +516,7 @@ describe("ChatBuiltInBrowserPanel", () => {
       tabs: [makeBuiltInBrowserTab({ url: "http://127.0.0.1:52413/app" })],
     }));
 
-    const urlInput = screen.getByLabelText("ADE browser URL") as HTMLInputElement;
+    const urlInput = screen.getByLabelText("Daex browser URL") as HTMLInputElement;
     fireEvent.focus(urlInput);
     fireEvent.change(urlInput, { target: { value: "http://localhost:3000/app" } });
     fireEvent.click(screen.getByLabelText("Open URL"));
@@ -1689,7 +1689,7 @@ describe("ChatBuiltInBrowserPanel", () => {
       // The launchpad focuses the URL field; showing it for the frame before the
       // first status lands used to strand an empty, focused omnibox over a page
       // that was in fact loaded.
-      const urlInput = await screen.findByLabelText("ADE browser URL");
+      const urlInput = await screen.findByLabelText("Daex browser URL");
       await waitFor(() => {
         expect((urlInput as HTMLInputElement).value).toBe("https://example.test/");
       });
@@ -1699,7 +1699,7 @@ describe("ChatBuiltInBrowserPanel", () => {
     it("does not wear the previous tab's padlock on a blank new tab", async () => {
       const { emit } = installBrowserApi();
       render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
-      const urlInput = await screen.findByLabelText("ADE browser URL") as HTMLInputElement;
+      const urlInput = await screen.findByLabelText("Daex browser URL") as HTMLInputElement;
       await waitFor(() => expect(urlInput.value).toBe("https://example.test/"));
       expect(screen.getByLabelText("Secure connection")).toBeTruthy();
 
@@ -1728,7 +1728,7 @@ describe("ChatBuiltInBrowserPanel", () => {
       // has somewhere to send you even on a machine serving no ports.
       render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
       await waitFor(() => expect(
-        (screen.getByLabelText("ADE browser URL") as HTMLInputElement).value,
+        (screen.getByLabelText("Daex browser URL") as HTMLInputElement).value,
       ).toBe("https://example.test/"));
 
       api.getStatus.mockResolvedValue(EMPTY_STATUS);
@@ -1754,7 +1754,7 @@ describe("ChatBuiltInBrowserPanel", () => {
       expect(urlFields).toHaveLength(1);
       expect(screen.queryByLabelText("Open a page in the ADE browser")).toBeNull();
       await waitFor(() => expect(document.activeElement)
-        .toBe(screen.getByLabelText("ADE browser URL")));
+        .toBe(screen.getByLabelText("Daex browser URL")));
     });
 
     it("hides the local-servers group when this machine is serving nothing", async () => {
@@ -1802,7 +1802,7 @@ describe("ChatBuiltInBrowserPanel", () => {
       // lands afterwards and puts the tab back. One tab hides the strip, so
       // the omnibox is what says the status arrived.
       await waitFor(() => expect(
-        (screen.getByLabelText("ADE browser URL") as HTMLInputElement).value,
+        (screen.getByLabelText("Daex browser URL") as HTMLInputElement).value,
       ).toBe("https://example.test/"));
       emit({ type: "status", status: statusWith({ tabs: [], activeTabId: null, collectionProjectRoot: LOCAL_PIN.rootPath }) });
 
@@ -1819,7 +1819,7 @@ describe("ChatBuiltInBrowserPanel", () => {
       // lands afterwards and puts the tab back. One tab hides the strip, so
       // the omnibox is what says the status arrived.
       await waitFor(() => expect(
-        (screen.getByLabelText("ADE browser URL") as HTMLInputElement).value,
+        (screen.getByLabelText("Daex browser URL") as HTMLInputElement).value,
       ).toBe("https://example.test/"));
       emit({ type: "status", status: statusWith({ tabs: [], activeTabId: null }) });
 
@@ -1835,7 +1835,7 @@ describe("ChatBuiltInBrowserPanel", () => {
       vi.useFakeTimers({ shouldAdvanceTime: true });
       try {
         render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
-        const panel = await screen.findByLabelText("ADE browser URL");
+        const panel = await screen.findByLabelText("Daex browser URL");
 
         fireEvent.keyDown(panel, { key: "f", metaKey: true });
 
@@ -1916,7 +1916,7 @@ describe("ChatBuiltInBrowserPanel", () => {
       render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
       await screen.findByTestId("browser-toolbar-row");
       await waitFor(() => expect(
-        (screen.getByLabelText("ADE browser URL") as HTMLInputElement).value,
+        (screen.getByLabelText("Daex browser URL") as HTMLInputElement).value,
       ).toBe("https://example.test/"));
 
       // Clicked into the page: focus fell to <body>, which is what a native
@@ -2038,7 +2038,7 @@ describe("ChatBuiltInBrowserPanel", () => {
       render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
       await screen.findByTestId("browser-toolbar-row");
       await waitFor(() => expect(
-        (screen.getByLabelText("ADE browser URL") as HTMLInputElement).value,
+        (screen.getByLabelText("Daex browser URL") as HTMLInputElement).value,
       ).toBe("https://example.test/"));
       act(() => {
         consumeAppMenuCommand("find");
@@ -2061,7 +2061,7 @@ describe("ChatBuiltInBrowserPanel", () => {
       );
       await waitFor(() => expect(api.getStatus).toHaveBeenCalled());
 
-      fireEvent.keyDown(screen.getByLabelText("ADE browser URL").closest("div")!, {
+      fireEvent.keyDown(screen.getByLabelText("Daex browser URL").closest("div")!, {
         key: "f",
         metaKey: true,
       });
@@ -2127,19 +2127,19 @@ describe("ChatBuiltInBrowserPanel", () => {
       // 420px is where the old fixed thresholds left every control in place and
       // the omnibox at zero width.
       setToolbarWidth(420);
-      expect(screen.getByLabelText("ADE browser URL")).toBeTruthy();
+      expect(screen.getByLabelText("Daex browser URL")).toBeTruthy();
       expect(screen.getByLabelText("Browser device preset — Desktop")).toBeTruthy();
       // Icon-only from here down: the labels are what paid for the field.
       expect(screen.queryByText("Inspect")).toBeNull();
       expect(screen.queryByText("Open")).toBeNull();
 
       setToolbarWidth(300);
-      expect(screen.getByLabelText("ADE browser URL")).toBeTruthy();
+      expect(screen.getByLabelText("Daex browser URL")).toBeTruthy();
       expect(screen.getByLabelText("More browser options")).toBeTruthy();
       expect(screen.getByLabelText("Go back")).toBeTruthy();
       // Everything shed is still reachable, which is the whole point of ⋮.
       expect(screen.queryByLabelText("Browser device preset — Desktop")).toBeNull();
-      expect(screen.queryByLabelText("Select an element in the ADE browser")).toBeNull();
+      expect(screen.queryByLabelText("Select an element in the Daex browser")).toBeNull();
     });
 
     it("keeps Attach selection reachable from the menu once the button is shed", async () => {
@@ -2189,7 +2189,7 @@ describe("ChatBuiltInBrowserPanel", () => {
 
       setToolbarWidth(760);
       expect(screen.getByLabelText("Browser device preset — Desktop")).toBeTruthy();
-      expect(screen.getByLabelText("Select an element in the ADE browser")).toBeTruthy();
+      expect(screen.getByLabelText("Select an element in the Daex browser")).toBeTruthy();
       expect(screen.getByLabelText("Open this page in the system browser")).toBeTruthy();
     });
 
@@ -2198,7 +2198,7 @@ describe("ChatBuiltInBrowserPanel", () => {
       render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
       await screen.findByTestId("browser-toolbar-row");
       setToolbarWidth(760);
-      const urlInput = screen.getByLabelText("ADE browser URL");
+      const urlInput = screen.getByLabelText("Daex browser URL");
 
       // At rest the address is a label for where you are, not a form.
       expect(screen.queryByTestId("browser-url-submit")).toBeNull();
@@ -2216,7 +2216,7 @@ describe("ChatBuiltInBrowserPanel", () => {
       render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
       await screen.findByTestId("browser-toolbar-row");
       setToolbarWidth(760);
-      const urlInput = screen.getByLabelText("ADE browser URL");
+      const urlInput = screen.getByLabelText("Daex browser URL");
 
       fireEvent.focus(urlInput);
       fireEvent.change(urlInput, { target: { value: "example.com" } });
@@ -2437,7 +2437,7 @@ describe("ChatBuiltInBrowserPanel", () => {
       render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
       await screen.findByTestId("browser-toolbar-row");
       await waitFor(() => expect(
-        (screen.getByLabelText("ADE browser URL") as HTMLInputElement).value,
+        (screen.getByLabelText("Daex browser URL") as HTMLInputElement).value,
       ).toBe("https://example.test/"));
       (document.activeElement as HTMLElement | null)?.blur();
 
@@ -2518,7 +2518,7 @@ describe("ChatBuiltInBrowserPanel", () => {
       const { emit } = installBrowserApi();
       render(<ChatBuiltInBrowserPanel sessionId="chat-1" onAddContext={vi.fn()} />);
 
-      const urlInput = await screen.findByLabelText("ADE browser URL") as HTMLInputElement;
+      const urlInput = await screen.findByLabelText("Daex browser URL") as HTMLInputElement;
       await waitFor(() => expect(urlInput.value).toBe("https://example.test/"));
 
       emit({ type: "status", status: statusWith({ tabs: [], activeTabId: null }) });
@@ -2530,7 +2530,7 @@ describe("ChatBuiltInBrowserPanel", () => {
       expect(screen.getByLabelText("Go back")).toHaveProperty("disabled", true);
       expect(screen.getByLabelText("Reload")).toHaveProperty("disabled", true);
       expect(screen.getByLabelText("Screenshot · Shift-click to record")).toHaveProperty("disabled", true);
-      expect(screen.getByLabelText("Select an element in the ADE browser")).toHaveProperty("disabled", true);
+      expect(screen.getByLabelText("Select an element in the Daex browser")).toHaveProperty("disabled", true);
       expect(screen.getByLabelText("Browser device preset — Desktop")).toHaveProperty("disabled", true);
       expect(await screen.findByTestId("browser-launchpad")).toBeTruthy();
     });
@@ -2604,7 +2604,7 @@ describe("ChatBuiltInBrowserPanel", () => {
       emit({ type: "status", status: twoTabs });
 
       const strip = await screen.findByRole("tablist");
-      expect(strip.getAttribute("aria-label")).toBe("ADE browser tabs");
+      expect(strip.getAttribute("aria-label")).toBe("Daex browser tabs");
 
       const tabs = await screen.findAllByRole("tab");
       expect(tabs).toHaveLength(2);
@@ -2660,7 +2660,7 @@ describe("ChatBuiltInBrowserPanel", () => {
       });
 
       // Nothing on the row…
-      expect(screen.queryByLabelText("Select an element in the ADE browser")).toBeNull();
+      expect(screen.queryByLabelText("Select an element in the Daex browser")).toBeNull();
       expect(screen.queryByText("Inspect")).toBeNull();
       expect(screen.queryByText("Attach")).toBeNull();
       // …and nothing hiding in the ⋮ menu either, which is where a shed

@@ -353,6 +353,7 @@ import { ctoTranscriptRows } from "./cto/ctoSpawnRules";
 import { drawsCtoChips, keepCtoChipRowsVisible } from "./cto/ctoToolWords";
 import { SponsoredInlineOutlet } from "./sponsored/sponsoredOutlets";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * A line that opens a scene fence, as `chatScene.ts`'s scanner reads one: up to
@@ -650,7 +651,7 @@ function QuietTurnCard({
       const result = await onRecover({ sessionId: targetSessionId, turnId: event.turnId, action });
       setResultMessage(resultLabels[result.status]);
     } catch (error) {
-      setErrorMessage(plainErrorText(error, "ADE couldn't recover the chat."));
+      setErrorMessage(plainErrorText(error, `${BRAND.NAME} couldn't recover the chat.`));
     } finally {
       setPendingAction(null);
     }
@@ -669,7 +670,7 @@ function QuietTurnCard({
       {event.automaticRecoveryAttempted ? (
         // Only on cards from older brains, which restarted Codex once on their own.
         <div className="mt-1 text-[length:calc(var(--chat-font-size)*9.5/14)] text-amber-100/48">
-          ADE already tried one automatic restart. It will not restart again without you.
+          {BRAND.NAME} already tried one automatic restart. It will not restart again without you.
         </div>
       ) : null}
       {timing ? (
@@ -1348,7 +1349,7 @@ function UnprocessedMessageAction({
       await onRun(event);
       setResolved("run_next");
     } catch (runError) {
-      setError(plainErrorText(runError, "ADE couldn't run that message."));
+      setError(plainErrorText(runError, `${BRAND.NAME} couldn't run that message.`));
     } finally {
       setRunning(false);
     }
@@ -1361,7 +1362,7 @@ function UnprocessedMessageAction({
       await onDismiss(event);
       setResolved("dismiss");
     } catch (dismissError) {
-      setError(plainErrorText(dismissError, "ADE couldn't dismiss that message."));
+      setError(plainErrorText(dismissError, `${BRAND.NAME} couldn't dismiss that message.`));
     } finally {
       setRunning(false);
     }
@@ -1767,7 +1768,7 @@ const FOLDED_MESSAGE_KIND_LABEL: Record<FoldedMessageSource, string> = {
   agent: "Message from another agent",
   automation: "Automation prompt",
   schedule: "Scheduled prompt",
-  ade: "Message ADE sent",
+  ade: `Message ${BRAND.NAME} sent`,
 };
 
 /**

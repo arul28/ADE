@@ -20,6 +20,7 @@ import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import { pipelineStateOf } from "../../../shared/prPipelineState";
 import { prStateTone } from "../../../shared/prChatScope";
 import { NO_CI_REASON } from "../../../shared/prChecksRollup";
+import { BRAND } from "../../../shared/brand";
 
 /*
  * The chat PR pane's compact PR card (`ChatPrPane`'s pane variant): live
@@ -237,7 +238,7 @@ export function PrDetails({
       <div className="flex flex-col gap-1.5 pt-1">
         <button type="button" onClick={onOpenAde} className={paneAction}>
           <GitPullRequest size={12} weight="bold" />
-          Open in ADE
+          Open in {BRAND.NAME}
         </button>
         <button type="button" onClick={onOpenGitHub} className={paneAction}>
           <GithubLogo size={12} weight="bold" />

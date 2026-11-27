@@ -1,5 +1,6 @@
 import type { ChatTranscriptGroupedEnvelope, ChatWorkLogEntry } from "../chatTranscriptRows";
 import { humanizeProvider } from "../../usage/usageProviderNames";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * Plain words for what the CTO is doing, read off its tool calls.
@@ -133,7 +134,7 @@ export function ctoRemoteSpawnForEntry(entry: ChatWorkLogEntry): { remote: CtoRe
   if (!result || result.success === false) return null;
   const cloud = result.adeCloud === true;
   // Every ADE Cloud lane has its own computer, but the person sees one machine: ADE Cloud.
-  const machineName = cloud ? "ADE Cloud" : str(result.machineName);
+  const machineName = cloud ? BRAND.CLOUD_NAME : str(result.machineName);
   if (!machineName) return null;
   const args = record(entry.args) ?? {};
   return {

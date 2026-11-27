@@ -14,6 +14,7 @@ import { captureError } from "../../../shared/sentry/capture";
 import { useChatMachineWake } from "./useChatMachineWake";
 import { WOKEN_MACHINE_CONNECT_WAIT_MS } from "../../../shared/wokenMachine";
 import { withChatPin } from "./chatMachinePin";
+import { BRAND } from "../../../shared/brand";
 
 type RevealTerminal = (terminal: { chatSessionId: string; terminalId: string; ptyId: string; label: string }) => void;
 
@@ -234,7 +235,7 @@ async function startRun(args: {
     if (!/worktree is unavailable|Update ADE on this machine/i.test(errorText(error))) {
       captureError(error, { fingerprint: ["chat-code-block-run", "start-failed"], level: "warning", handled: true });
     }
-    updateRun(key, id, { status: "failed", error: plainErrorText(error, "ADE couldn't run that code.") });
+    updateRun(key, id, { status: "failed", error: plainErrorText(error, `${BRAND.NAME} couldn't run that code.`) });
   }
 }
 

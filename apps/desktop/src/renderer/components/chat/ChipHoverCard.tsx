@@ -80,6 +80,7 @@ import { settingsEntryById, settingsEntryLabel, settingUnavailableReason } from 
 import { settingAgentAccess, settingIsProtected } from "../../../shared/settingsAgentAccess";
 import { withChatPin } from "./chatMachinePin";
 import { sessionLaneDisplayName } from "../../../shared/laneDisplayName";
+import { BRAND } from "../../../shared/brand";
 
 /** Everything a card may read, all of it belonging to the CHAT's machine. */
 export type ChipCardSources = {
@@ -421,7 +422,7 @@ export async function loadChipCardData(
     }, { pin: sources.pin }).catch(() => []);
     const command = commands.find((entry) => entry.name.replace(/^\//, "").toLowerCase() === target.name.toLowerCase());
     return command
-      ? { kind: "skill", name: target.name, description: command.description || null, source: command.source === "local" ? "ADE" : command.origin ?? "Provider", argumentHint: command.argumentHint ?? null }
+      ? { kind: "skill", name: target.name, description: command.description || null, source: command.source === "local" ? BRAND.NAME : command.origin ?? "Provider", argumentHint: command.argumentHint ?? null }
       : { kind: "skill", name: target.name, description: null, source: "Slash command", argumentHint: null };
   }
   if (target.kind === "artifact") {

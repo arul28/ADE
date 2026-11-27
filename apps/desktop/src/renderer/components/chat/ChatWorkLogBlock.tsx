@@ -29,6 +29,7 @@ import { computerUseEntryCommand, computerUseSummaryForEntry } from "./chatCompu
 import { computerUseActionText } from "../../../shared/computerUseActionPresentation";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { withChatPin } from "./chatMachinePin";
+import { BRAND } from "../../../shared/brand";
 
 const NAVIGATION_SURFACES = new Set(["work", "lanes", "cto"]);
 const WORK_LOG_DETAIL_TRUNCATE_LIMIT = 500;
@@ -1295,8 +1296,8 @@ function LocalhostServersStrip({
   const extraCount = Math.max(0, urls.length - 1);
   const command = commandForLocalhostUrl(entries, primary);
   const openTitle = extraCount > 0
-    ? `Open ${primary.href} in ADE browser (${extraCount} more detected)`
-    : `Open ${primary.href} in ADE browser`;
+    ? `Open ${primary.href} in ${BRAND.NAME} browser (${extraCount} more detected)`
+    : `Open ${primary.href} in ${BRAND.NAME} browser`;
   const logsTitle = "Open the active chat terminal for logs. If there is no terminal yet, draft a request for the agent to run this server there.";
 
   async function handleTerminalClick() {

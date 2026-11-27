@@ -8,6 +8,7 @@ import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { copyTextToClipboard } from "../../lib/launchPromptClipboard";
 import { ContextMenuRows, type ContextMenuEntry } from "../ui/ContextMenu";
 import { useMachineFacts } from "./useMachineFacts";
+import { BRAND } from "../../../shared/brand";
 
 export function MachineChipCardBody({ machineKey }: { machineKey: string }) {
   const facts = useMachineFacts(machineKey);
@@ -24,13 +25,13 @@ export function MachineChipCardBody({ machineKey }: { machineKey: string }) {
         <span className="truncate">{facts.name}</span>
         {facts.thisComputer ? <span className="shrink-0 rounded bg-fg/8 px-1 py-0.5 text-[9px] text-fg/55">This computer</span> : null}
       </div>
-      {facts.version ? <div className="mt-1 text-[11px] text-fg/55">ADE {facts.version}</div> : null}
+      {facts.version ? <div className="mt-1 text-[11px] text-fg/55">{BRAND.NAME} {facts.version}</div> : null}
       <div className="mt-1 flex items-center gap-1.5 text-[11px] text-fg/65">
         <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} />
         <span className="truncate">{facts.route}{facts.latency ? ` · ${facts.latency}` : ""}</span>
       </div>
-      {facts.address || facts.route === "ADE relay" ? (
-        <div className="mt-0.5 truncate font-mono text-[10px] text-fg/45">{facts.address ?? "via ADE relay"}</div>
+      {facts.address || facts.route === `${BRAND.NAME} relay` ? (
+        <div className="mt-0.5 truncate font-mono text-[10px] text-fg/45">{facts.address ?? `via ${BRAND.NAME} relay`}</div>
       ) : null}
     </div>
   );

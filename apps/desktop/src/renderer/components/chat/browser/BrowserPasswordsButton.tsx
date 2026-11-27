@@ -9,6 +9,7 @@ import { cn } from "../../ui/cn";
 import { Banner } from "../../ui/notice";
 import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MENU_LABEL_CLASS, MENU_SEPARATOR_CLASS } from "../../ui/paneMenuTokens";
 import { CHROME_GHOST, CHROME_GHOST_ON, CHROME_ICON_SIZE, CHROME_STATE_DOT, TOOLBAR_FOCUS, TOOLBAR_MOTION } from "./browserChrome";
+import { BRAND } from "../../../../shared/brand";
 
 type SavedLogin = { id: string; username: string | null; sites: string[] };
 
@@ -71,7 +72,7 @@ export function BrowserPasswordsButton({ tabId, currentUrl }: { tabId: string | 
     setError(null);
     void api.fillSavedLogin({ tabId, itemId })
       .then(() => setOpen(false))
-      .catch((failure: unknown) => setError(ipcErrorMessage(failure) || "ADE could not fill that login."))
+      .catch((failure: unknown) => setError(ipcErrorMessage(failure) || `${BRAND.NAME} could not fill that login.`))
       .finally(() => setBusy(false));
   }, [api, tabId]);
 
@@ -87,7 +88,7 @@ export function BrowserPasswordsButton({ tabId, currentUrl }: { tabId: string | 
         setOpen(false);
         if (save && tabId) void api.savedLoginsForTab?.({ tabId }).then((rows) => setLogins(Array.isArray(rows) ? rows : []));
       })
-      .catch((failure: unknown) => setError(ipcErrorMessage(failure) || "ADE could not save that login."))
+      .catch((failure: unknown) => setError(ipcErrorMessage(failure) || `${BRAND.NAME} could not save that login.`))
       .finally(() => setBusy(false));
   }, [api, offer, tabId]);
 

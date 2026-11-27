@@ -15,6 +15,7 @@ import { extractError } from "../../../lib/format";
 import { showToast } from "../../app/toast/toastStore";
 import { useOptionalWebWorkspace, useWebMachines } from "../../../webclient/workspace/WebWorkspaceContext";
 import type { CloudLaunchRecord } from "../../../../shared/accountCloudLaunches";
+import { BRAND } from "../../../../shared/brand";
 
 function chatStateOfSummary(summary: AgentChatSessionSummary): LaunchChatState {
   if (summary.awaitingInput) return "waiting";
@@ -191,7 +192,7 @@ export function WebCloudSetupCards({ originUrl, className }: { originUrl: string
       if (reads >= OPEN_CHAT_READS) {
         window.clearInterval(timer);
         setOpening(null);
-        showToast({ tone: "error", title: "Couldn't open the chat yet", message: "Its ADE Cloud computer isn't listed yet. Try again in a moment." });
+        showToast({ tone: "error", title: "Couldn't open the chat yet", message: `Its ${BRAND.CLOUD_NAME} computer isn't listed yet. Try again in a moment.` });
         return;
       }
       refreshCloudMachines();

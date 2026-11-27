@@ -51,7 +51,7 @@ describe("macDesktopErrorText", () => {
       expect(macDesktopErrorText(RAW, {
         machineName: "Mac Studio",
         machineVersion: "1.2.74",
-      })).toBe("Mac Studio runs ADE 1.2.74, which has no Mac Desktop. Update ADE there.");
+      })).toBe("Mac Studio runs Daex 1.2.74, which has no Mac Desktop. Update Daex there.");
     });
 
     it("peels the IPC wrapper before recognizing it", () => {
@@ -62,15 +62,15 @@ describe("macDesktopErrorText", () => {
           + "Remote ADE service method ade/actions/call failed (code -32602): "
           + RAW,
         { machineName: "Mac Studio", machineVersion: "1.2.74" },
-      )).toBe("Mac Studio runs ADE 1.2.74, which has no Mac Desktop. Update ADE there.");
+      )).toBe("Mac Studio runs Daex 1.2.74, which has no Mac Desktop. Update Daex there.");
     });
 
     it("still says what to do when the version is not known", () => {
       expect(macDesktopErrorText(RAW, { machineName: "Mac Studio" }))
-        .toBe("Mac Studio runs an ADE without Mac Desktop. Update ADE there.");
+        .toBe("Mac Studio runs a Daex without Mac Desktop. Update Daex there.");
       // No caller-provided name at all degrades to a machine, never to the code.
       expect(macDesktopErrorText(RAW))
-        .toBe("That machine runs an ADE without Mac Desktop. Update ADE there.");
+        .toBe("That machine runs a Daex without Mac Desktop. Update Daex there.");
     });
 
     it("leaves a different unavailable domain alone", () => {

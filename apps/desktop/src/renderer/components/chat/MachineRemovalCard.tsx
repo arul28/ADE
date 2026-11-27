@@ -12,6 +12,7 @@ import { cardAskerFamily, providerDisplayName } from "../../../shared/pendingInp
 import { relativeWhen } from "../../lib/format";
 import { CardError, CardHeading, CardReceipt, cardEscapeHandler } from "./composerCardParts";
 import "./machineRemovalCard.css";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The computer removal card.
@@ -45,7 +46,7 @@ function lastSeenText(card: MachineRemovalRequestCard): string {
 
 function armedWarning(card: MachineRemovalRequestCard): string {
   return card.isThisComputer
-    ? `${card.name} runs this chat. Removing it takes this ADE off your account until someone signs in here again.`
+    ? `${card.name} runs this chat. Removing it takes this ${BRAND.NAME} off your account until someone signs in here again.`
     : `${card.name} is online. Its chats and terminals stop being reachable from your other devices.`;
 }
 
@@ -89,7 +90,7 @@ export function MachineRemovalComposer({
   return (
     <div
       role="group"
-      aria-label={`${asker} asks to remove the computer ${card.name} from your ADE account`}
+      aria-label={`${asker} asks to remove the computer ${card.name} from your ${BRAND.NAME} account`}
       data-testid="machine-removal-composer"
       data-machine={card.machineKey}
       data-armed={armed ? "true" : undefined}
@@ -183,7 +184,7 @@ export function MachineRemovalReceipt({
   // The brain removed it only for an explicit Remove (with the second yes when asked).
   const removed = resolution === "accepted" && machineRemovalAnswersApprove(card, answerMap);
   const text = removed
-    ? "removed from your ADE account"
+    ? `removed from your ${BRAND.NAME} account`
     : resolution === "cancelled" ? "· closed before it was answered" : "· kept";
   return (
     <CardReceipt

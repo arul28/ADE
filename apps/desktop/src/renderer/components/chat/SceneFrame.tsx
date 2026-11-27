@@ -59,6 +59,7 @@ import { useSceneTheme } from "./sceneTheme";
 import { useSceneOnScreen } from "./useSceneOnScreen";
 import { useSceneStillLatch } from "./useSceneStillLatch";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Host for an agent-authored scene.
@@ -449,13 +450,13 @@ export function SceneFrame({
       // was written with or that ADE sent it (a PR's GitHub link), never one
       // assembled at run time.
       if (!failed && parsed.data.length && !writtenUrls.has(url) && !urlInSceneData(latestDataRef.current, url)) {
-        setSceneError("This scene shows live ADE data, so it can only open the web links written in it.");
+        setSceneError(`This scene shows live ${BRAND.NAME} data, so it can only open the web links written in it.`);
         return;
       }
       openUrlInAdeBrowser(url, { runtimePin: pin });
       return;
     }
-    setSceneError("A scene can open ADE links (ade://) and web pages only.");
+    setSceneError(`A scene can open ${BRAND.NAME} links (ade://) and web pages only.`);
   }, [failed, parsed, writtenUrls, pin, laneId]);
 
   /**

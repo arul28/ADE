@@ -5,6 +5,7 @@ import { repoKeyForUrl } from "../projects/projectCopies";
 import { ipcErrorMessage } from "../../lib/format";
 import type { LaneMachineOption } from "../lanes/laneMachines";
 import type { DraftMachineOption } from "./DraftMachinePicker";
+import { BRAND } from "../../../shared/brand";
 
 const CLONE_ROW_PREFIX = "__ade_clone__:";
 /** A machine that has the repository shows up among the picker's machines within a moment; past this it isn't coming. */
@@ -80,7 +81,7 @@ export function useDraftMachineSetup({
   const sendAfterRef = useRef<string | null>(null);
 
   const cloneRepository = useCallback(async (targetId: string, name: string, stillWanted: () => boolean) => {
-    if (!clone) throw new Error(`${name} doesn't have this repository, and ADE sets up GitHub repositories only. Clone it there by hand.`);
+    if (!clone) throw new Error(`${name} doesn't have this repository, and ${BRAND.NAME} sets up GitHub repositories only. Clone it there by hand.`);
     const remoteRuntime = window.ade.remoteRuntime;
     setBusy({ targetId, name, phase: "cloning" });
     onNotice({ message: `Cloning ${clone.repoName} on ${name}…`, kind: "status" });
@@ -106,7 +107,7 @@ export function useDraftMachineSetup({
     } catch (error) {
       if (!stillWanted()) return;
       setBusy(null);
-      onNotice({ message: ipcErrorMessage(error) || `ADE couldn't set up ${name}.`, kind: "status" });
+      onNotice({ message: ipcErrorMessage(error) || `${BRAND.NAME} couldn't set up ${name}.`, kind: "status" });
     }
   }, [cloneRepository, onMachineReady, onNotice, selectableMachineIds]);
 
@@ -126,7 +127,7 @@ export function useDraftMachineSetup({
       sendAfterRef.current = null;
       setPendingTargetId(null);
       setBusy(null);
-      onNotice({ message: "ADE set the machine up but couldn't offer it here. Open the picker again.", kind: "status" });
+      onNotice({ message: `${BRAND.NAME} set the machine up but couldn't offer it here. Open the picker again.`, kind: "status" });
     }, SELECT_WAIT_MS);
     return () => window.clearTimeout(timer);
   }, [busy?.phase, onMachineReady, onNotice, pendingTargetId, selectableMachineIds]);
@@ -165,7 +166,7 @@ export function useDraftMachineSetup({
       id: `${CLONE_ROW_PREFIX}${option.targetId}`,
       name: option.name,
       detail: busyDetail(option.targetId!) ?? "No copy yet",
-      unavailableReason: clone ? null : "ADE sets up GitHub repositories only. Clone it there by hand.",
+      unavailableReason: clone ? null : `${BRAND.NAME} sets up GitHub repositories only. Clone it there by hand.`,
     }));
   }, [busy, clone, cloneCandidates]);
 

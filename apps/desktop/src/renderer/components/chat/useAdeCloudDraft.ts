@@ -34,6 +34,7 @@ const NO_MACHINES: readonly CloudMachine[] = [];
 
 /** The Run on menu's ADE Cloud entry. One entry for every ADE Cloud lane. */
 import { ADE_CLOUD_MACHINE_ID } from "../../../shared/adeCloudMachine";
+import { BRAND } from "../../../shared/brand";
 export { ADE_CLOUD_MACHINE_ID };
 
 /**
@@ -188,7 +189,7 @@ export function useAdeCloudDraft({
      * Web has no account sign-in in this browser. The entry still shows, off.
      */
     doBlock: adeCloudDoBlock(access)
-      ?? (isWebClientMode() && !accountCloudLaunchesAvailable() ? "Sign in to ADE in this browser to use ADE Cloud." : null),
+      ?? (isWebClientMode() && !accountCloudLaunchesAvailable() ? `Sign in to ${BRAND.NAME} in this browser to use ${BRAND.CLOUD_NAME}.` : null),
     account,
     /** The account's computers from the shared read (empty until it answers). */
     machines: result?.machines ?? NO_MACHINES,
@@ -242,7 +243,7 @@ export type AdeCloudSend = {
  * sign-in it can't do.
  */
 export const ANTIGRAVITY_NOT_CARRIED_SENTENCE =
-  "Sign in to Antigravity in ADE on your computer once (Allow the Keychain or Credential Manager if asked). ADE Cloud then uses that sign-in.";
+  `Sign in to Antigravity in ${BRAND.NAME} on your computer once (Allow the Keychain or Credential Manager if asked). ${BRAND.CLOUD_NAME} then uses that sign-in.`;
 
 /**
  * Whether the account carries an Antigravity sign-in to ADE Cloud: true,
@@ -413,7 +414,7 @@ export function useAdeCloudComposer(input: {
     }
     // Blocked or signed out: nothing can start or wake; reading still works.
     if (draft.doBlock) {
-      return { tone: "blocked", message: draft.doBlock, short: "ADE Cloud can't start work now.", actions: [] };
+      return { tone: "blocked", message: draft.doBlock, short: `${BRAND.CLOUD_NAME} can't start work now.`, actions: [] };
     }
     // A new lane's size decides whether hours matter (Small never uses them).
     const accountBlock = adeCloudAccountBlock(draft.account, { newLane, sizeId: newLane ? draft.tierId : null });
@@ -436,8 +437,8 @@ export function useAdeCloudComposer(input: {
     if (isWebClientMode() && input.isCliDraft) {
       return {
         tone: "notice",
-        message: "A CLI session on ADE Cloud starts from the ADE desktop app. Send a chat here, or pick one of your computers.",
-        short: "CLI on ADE Cloud: desktop app only.",
+        message: `A CLI session on ${BRAND.CLOUD_NAME} starts from the ${BRAND.NAME} desktop app. Send a chat here, or pick one of your computers.`,
+        short: `CLI on ${BRAND.CLOUD_NAME}: desktop app only.`,
         actions: [],
       };
     }
@@ -449,14 +450,14 @@ export function useAdeCloudComposer(input: {
       return {
         tone: "notice",
         message: cloudRemoteSignInRefusal(remoteSignIn),
-        short: `${remoteSignIn.label} on ADE Cloud: desktop app only.`,
+        short: `${remoteSignIn.label} on ${BRAND.CLOUD_NAME}: desktop app only.`,
         actions: [],
       };
     }
     if (isWebClientMode() && input.attachments.length > 0) {
       return {
         tone: "notice",
-        message: "Files go to a new ADE Cloud lane from the ADE desktop app. Remove them to send this chat from here.",
+        message: `Files go to a new ${BRAND.CLOUD_NAME} lane from the ${BRAND.NAME} desktop app. Remove them to send this chat from here.`,
         short: "Remove the files to send here.",
         actions: [],
       };

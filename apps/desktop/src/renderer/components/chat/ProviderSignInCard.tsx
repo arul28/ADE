@@ -54,6 +54,7 @@ import { CHAT_AUTH_RECOVERED_EVENT } from "./AgentCliAuthCard";
 import { CardBannerButtons, CardError, CardReceipt, cardEscapeHandler } from "./composerCardParts";
 import { ProviderCardFrame } from "./providerCardFrame";
 import "./providerSignInCard.css";
+import { BRAND } from "../../../shared/brand";
 
 const POLL_MS = 1_000;
 /** How long "Signed in" stays on the card before the composer comes back. */
@@ -192,7 +193,7 @@ const IDLE: Flow = { phase: "idle", url: null, deviceCode: null, awaitingCode: f
 
 function startFailure(err: unknown, machineName: string): string {
   if (isUnsupportedAdeActionError(err)) {
-    return `ADE on ${machineName} is too old to sign in from a chat. Update ADE there, or sign in from its Settings.`;
+    return `${BRAND.NAME} on ${machineName} is too old to sign in from a chat. Update ${BRAND.NAME} there, or sign in from its Settings.`;
   }
   return providerActionMessage(err, "That sign-in could not start.");
 }
@@ -331,7 +332,7 @@ function useProviderSignInFlow(args: {
     void (async () => {
       if (kind === "account") {
         const api = pinnedProviderInstances(p);
-        if (!api?.loginStart) throw new Error(`ADE on ${machineName} cannot sign in from a chat. Update ADE there.`);
+        if (!api?.loginStart) throw new Error(`${BRAND.NAME} on ${machineName} cannot sign in from a chat. Update ${BRAND.NAME} there.`);
         const accounts = await api.list({ provider: provider as "claude" | "codex" });
         let account = accounts.find((entry) => entry.id === instanceId) ?? accounts.find((entry) => entry.isDefault) ?? null;
         if (!account) {
@@ -357,7 +358,7 @@ function useProviderSignInFlow(args: {
       }
       if (kind === "antigravity") {
         const begin = window.ade?.ai?.antigravitySignInStart;
-        if (!begin) throw new Error(`ADE on ${machineName} cannot sign in to Antigravity yet. Update ADE there.`);
+        if (!begin) throw new Error(`${BRAND.NAME} on ${machineName} cannot sign in to Antigravity yet. Update ${BRAND.NAME} there.`);
         const next = await begin({ method: "oauth-personal" }, p);
         applyAntigravity(seq, next);
         return;

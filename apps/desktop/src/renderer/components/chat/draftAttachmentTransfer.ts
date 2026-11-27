@@ -25,6 +25,7 @@ import { draftAttachmentSource, rememberDraftAttachmentSource } from "./draftAtt
 import { readAttachmentStagingMode } from "./chatAttachmentStaging";
 import type { ChatNoticeAction } from "./chatNotice";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 
 export type DraftAttachmentMachineScope = {
@@ -123,7 +124,7 @@ export async function copyDraftAttachmentsToMachine(args: {
       // A path only travels to a host that can copy or stream it; an older
       // host (or a relay route) takes base64 alone, which this file never was.
       const { mode } = await readAttachmentStagingMode(args.targetBinding);
-      if (mode === "base64") throw new Error("ADE on that machine can't receive files from this computer; attach it again there");
+      if (mode === "base64") throw new Error(`${BRAND.NAME} on that machine can't receive files from this computer; attach it again there`);
       ({ path } = await window.ade.agentChat.stageFileAttachment(
         { sourcePath: source.sourcePath, filename: source.filename },
         args.targetBinding,

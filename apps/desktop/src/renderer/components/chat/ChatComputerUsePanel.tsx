@@ -56,6 +56,7 @@ import {
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { requireChatPin } from "./chatMachinePin";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 function kindLabel(kind: string): string {
   return kind.replace(/_/g, " ");
@@ -719,7 +720,7 @@ export function ChatComputerUsePanel({
         await run();
         await onRefresh();
       } catch (cause) {
-        setError(plainErrorText(cause, "ADE couldn't finish that action."));
+        setError(plainErrorText(cause, `${BRAND.NAME} couldn't finish that action.`));
       } finally {
         setBusyIds((current) => {
           const next = new Set(current);

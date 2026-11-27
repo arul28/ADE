@@ -877,7 +877,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     ], { showStreamingIndicator: true, wrapList: inChatScope });
 
     fireEvent.click(screen.getByRole("button", { name: "Show activity from the active turn" }));
-    const openButton = await screen.findByRole("button", { name: "Open http://localhost:5173/ in ADE browser" });
+    const openButton = await screen.findByRole("button", { name: "Open http://localhost:5173/ in Daex browser" });
     fireEvent.click(openButton);
 
     await waitFor(() => {

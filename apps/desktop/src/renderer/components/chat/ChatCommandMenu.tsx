@@ -58,6 +58,7 @@ import { ModelRowLogo, ProviderLogo } from "../shared/ProviderLogos";
 import type { PrChecksStatus, PrSummary } from "../../../shared/types";
 import { fixedFrameOf, fixedPoint, fixedRect, fixedViewport } from "../../lib/webZoom";
 import { ipcErrorMessage } from "../../lib/format";
+import { BRAND } from "../../../shared/brand";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -257,7 +258,7 @@ function useDebouncedSuggestions<T>(
         setState({ search, query, results: results.slice(0, max), error: null });
       } catch (error) {
         if (seqRef.current === seq && !cached) {
-          setState({ search, query, results: [], error: ipcErrorMessage(error) || "ADE couldn't search right now. Try again." });
+          setState({ search, query, results: [], error: ipcErrorMessage(error) || `${BRAND.NAME} couldn't search right now. Try again.` });
         }
       } finally {
         if (seqRef.current === seq) setLoading(false);

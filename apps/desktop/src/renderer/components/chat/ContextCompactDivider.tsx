@@ -4,6 +4,7 @@ import type { AgentChatEvent } from "../../../shared/types";
 import { compactionFailLabel, formatCompactTokenCount, formatCompactDuration } from "../../../shared/contextCompaction";
 import { cn } from "../ui/cn";
 import { useTicker } from "../../lib/ticker";
+import { BRAND } from "../../../shared/brand";
 
 /** English ordinal suffix: 1st, 2nd, 3rd, 4th, 11th, 12th, 13th, 21st. */
 function ordinalSuffix(n: number): "st" | "nd" | "rd" | "th" {
@@ -62,7 +63,7 @@ export function ContextCompactDivider({ event, startedAt, onRetry }: {
   const trigger = event.trigger === "manual"
     ? "You asked"
     : event.trigger === "ade_fallback"
-      ? "ADE compacted — the chat was almost full"
+      ? `${BRAND.NAME} compacted — the chat was almost full`
       : "Automatic";
   const count = event.sessionCompactionCount;
   const facts = [

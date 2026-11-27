@@ -4,6 +4,7 @@ import type { ChatErrorPresentation } from "../../../shared/chatErrorPresentatio
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { noticeTone } from "../ui/notice";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 const LINK_CLASS = "rounded px-1 text-fg/55 underline decoration-fg/20 underline-offset-2 transition-colors hover:text-fg/85 disabled:pointer-events-none disabled:opacity-40";
 
@@ -48,7 +49,7 @@ export function TurnFailureLine({
     try {
       setRetryError(await onRetry());
     } catch (error) {
-      setRetryError(plainErrorText(error, "ADE couldn't retry."));
+      setRetryError(plainErrorText(error, `${BRAND.NAME} couldn't retry.`));
     } finally {
       setRetryPending(false);
     }

@@ -24,6 +24,7 @@ import type { WorkToolsAgentBrowserPresence, WorkToolsBrowserTab } from "../../.
 import { cn } from "../../ui/cn";
 import { TOOLBAR_FOCUS } from "./browserChrome";
 import { captureBrowserFact } from "./browserAnalytics";
+import { BRAND } from "../../../../shared/brand";
 
 type RemotePin = Extract<OpenProjectBinding, { kind: "remote" }>;
 
@@ -122,7 +123,7 @@ export function RemoteBrowserTabRow({
       aria-label={`Browser tabs on ${machineName}`}
       data-testid="browser-remote-tabs"
     >
-      <span className="inline-flex shrink-0 items-center gap-1 pr-1 text-[11px] text-muted-fg/60" title={`These tabs are open in ADE on ${machineName}. Pick one to watch it live.`}>
+      <span className="inline-flex shrink-0 items-center gap-1 pr-1 text-[11px] text-muted-fg/60" title={`These tabs are open in ${BRAND.NAME} on ${machineName}. Pick one to watch it live.`}>
         <Desktop size={11} />
         {machineName}
       </span>

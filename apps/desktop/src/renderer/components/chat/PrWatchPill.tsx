@@ -10,6 +10,7 @@ import { Z_LAYERS } from "../ui/zLayers";
 import { MENU_ITEM_CLASS, MENU_LABEL_CLASS, MENU_SEPARATOR_CLASS, MENU_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { withChatPin } from "./chatMachinePin";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 type Choice = { mode: PrWatchMode | null; label: string; hint: string };
 
@@ -109,7 +110,7 @@ export function PrWatchPill({
     } catch (cause) {
       showToast({
         title: `Couldn't change PR #${pr.githubPrNumber} watch`,
-        message: plainErrorText(cause, "ADE couldn't change the watch."),
+        message: plainErrorText(cause, `${BRAND.NAME} couldn't change the watch.`),
         tone: "error",
       });
     } finally {

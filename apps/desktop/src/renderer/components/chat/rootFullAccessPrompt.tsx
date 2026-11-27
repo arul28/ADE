@@ -1,6 +1,7 @@
 import { ShieldWarning } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { confirmDialog } from "../ui/dialog/confirm";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Full access for Claude on a machine where ADE runs as root (the brain's
@@ -12,7 +13,7 @@ import { confirmDialog } from "../ui/dialog/confirm";
  */
 
 const ROOT_FULL_ACCESS_MESSAGE =
-  "ADE runs as root on this machine. Claude only allows Full access as root on a machine set aside for agents. Allowing it covers every chat on this machine, and agents there can then change anything on it without asking.";
+  `${BRAND.NAME} runs as root on this machine. Claude only allows Full access as root on a machine set aside for agents. Allowing it covers every chat on this machine, and agents there can then change anything on it without asking.`;
 
 /** Asks the person and saves a yes. True when Full access can run on the chat's machine. */
 export async function confirmRootFullAccess(pin: OpenProjectBinding | null): Promise<boolean> {

@@ -15,6 +15,7 @@ import { SponsoredOutletsContext, useSponsoredOutlet } from "./sponsoredOutlets"
 import { SPONSORED_TURN_FRESH_MS, lastFinishedTurn, sponsoredDevice } from "./sponsoredTurn";
 import { useDocumentVisible, useSponsoredViewer } from "./useSponsoredViewer";
 import "./sponsored.css";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * One sponsored card for a finished reply, in a Free-plan chat on an ADE
@@ -359,11 +360,11 @@ function SponsoredConsentCard({ smallNeedsCards, confirmYes, format, notice, onD
   };
   const title = notice ? "Sponsored cards are on" : smallNeedsCards ? "Keep Small computers free" : "Free cloud chats are ad-supported";
   const lead = smallNeedsCards
-    ? notice ? "They keep your Small cloud computers free." : "Sponsored cards pay for Small computers on ADE Cloud Free."
-    : "Sponsored cards help keep ADE Cloud free.";
+    ? notice ? "They keep your Small cloud computers free." : `Sponsored cards pay for Small computers on ${BRAND.CLOUD_NAME} Free.`
+    : `Sponsored cards help keep ${BRAND.CLOUD_NAME} free.`;
   const no = notice ? "Turn off" : "No thanks";
   return (
-    <section className="ade-sponsored ade-sponsored--consent" aria-label="Sponsored cards on ADE Cloud Free">
+    <section className="ade-sponsored ade-sponsored--consent" aria-label={`Sponsored cards on ${BRAND.CLOUD_NAME} Free`}>
       <span className="ade-sponsored-consent-icon" aria-hidden><Megaphone size={16} weight="duotone" /></span>
       <div className="ade-sponsored-consent-body">
         <p className="ade-sponsored-title">{title}</p>
@@ -374,7 +375,7 @@ function SponsoredConsentCard({ smallNeedsCards, confirmYes, format, notice, onD
             <Coins size={14} aria-hidden />
             <span>
               {smallNeedsCards ? `${notice ? "Turn them off" : "Say no"} and Small computers use your credits, half a credit for each hour awake. ` : null}
-              You can change this any time in {"Settings\u00a0›\u00a0ADE\u00a0Cloud"}.
+              You can change this any time in {`Settings\u00a0›\u00a0${BRAND.NAME}\u00a0Cloud`}.
             </span>
           </li>
           <li data-fine=""><ShareNetwork size={14} aria-hidden /><span>{SPONSORED_SENDS}</span></li>
@@ -404,7 +405,7 @@ function SponsoredConsentCard({ smallNeedsCards, confirmYes, format, notice, onD
 
 /** What Gravity gets, as the question, the notice and Settings say it. */
 const SPONSORED_SENDS =
-  "To pick them, ADE sends Gravity, our ad partner, your last message and the reply (or the agent's search), your IP address, your device type and a hashed copy of your account email. Sponsored cards are for people 18 or older.";
+  `To pick them, ${BRAND.NAME} sends Gravity, our ad partner, your last message and the reply (or the agent's search), your IP address, your device type and a hashed copy of your account email. Sponsored cards are for people 18 or older.`;
 
 /**
  * Turns sponsored cards on, from the question or Settings. When the server
@@ -417,7 +418,7 @@ export async function turnOnSponsoredCards(confirmYes: boolean): Promise<void> {
   if (confirmYes) {
     const ok = await confirmDialog({
       title: "Turn on sponsored cards?",
-      message: `${SPONSORED_SENDS} You can turn them off any time in Settings\u00a0›\u00a0ADE\u00a0Cloud.`,
+      message: `${SPONSORED_SENDS} You can turn them off any time in Settings\u00a0›\u00a0${BRAND.NAME}\u00a0Cloud.`,
       confirmLabel: "Turn on",
       cancelLabel: "Keep them off",
       icon: <Megaphone size={18} weight="duotone" />,

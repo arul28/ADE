@@ -11,6 +11,7 @@ import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { chatMachineMediaSentence, chatMachineReach, useChatMachineWake, type ChatMachineReach } from "./useChatMachineWake";
 import { withChatPin } from "./chatMachinePin";
 import { useSlowLinkActive } from "../../state/projectMachines";
+import { BRAND } from "../../../shared/brand";
 
 export function isImageArtifact(artifact: ComputerUseArtifactView): boolean {
   return artifact.kind === "screenshot" || (artifact.mimeType?.startsWith("image/") ?? false);
@@ -93,8 +94,8 @@ function artifactPreviewExplanation(
   const where = shortSourcePath(artifact);
   if (artifactAvailability(artifact) === "unimported") {
     return where
-      ? `Never copied into ADE's storage — it was left at ${where} in the lane it was captured in.`
-      : "Never copied into ADE's storage, so there are no bytes to show.";
+      ? `Never copied into ${BRAND.NAME}'s storage — it was left at ${where} in the lane it was captured in.`
+      : `Never copied into ${BRAND.NAME}'s storage, so there are no bytes to show.`;
   }
   if (artifactAvailability(artifact) === "missing_file") {
     return "The stored file has since been deleted.";
@@ -110,7 +111,7 @@ function artifactPreviewExplanation(
     case "unsent":
       return `${problem.machineName} could not send this ${noun}.`;
     case "unplayable":
-      return noun === "video" ? "ADE could not play this video." : `ADE could not show this ${noun}.`;
+      return noun === "video" ? `${BRAND.NAME} could not play this video.` : `${BRAND.NAME} could not show this ${noun}.`;
     default:
       return "A preview is unavailable, but the stored proof is still attached.";
   }

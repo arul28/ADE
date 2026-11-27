@@ -688,10 +688,11 @@ import { useActiveRepositoryTab, useActiveStartOn, useTabCopyPin } from "../../s
 import { repositoryReaderAddress, type StartOnChoice } from "../../../shared/repositoryTab";
 import { recordStartOnLastMachine } from "./startOnLastMachine";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 /** The reason after a label such as "Delete failed:" when the error says nothing a person can use. */
 const CHAT_NO_ANSWER = "the chat did not answer.";
-const STOP_TASK_FAILED = "ADE couldn't stop the task.";
+const STOP_TASK_FAILED = `${BRAND.NAME} couldn't stop the task.`;
 
 /**
  * The pin a draft's new-lane defaults are read with: the machine the draft
@@ -1791,7 +1792,7 @@ function draftLaunchJobMessage(job: DraftLaunchJob): string {
 }
 
 function staleDraftLaunchJobMessage(job: DraftLaunchJob): string {
-  return `${draftLaunchJobMessage(job)} Still working. You can hide this status while ADE continues in the background.`;
+  return `${draftLaunchJobMessage(job)} Still working. You can hide this status while ${BRAND.NAME} continues in the background.`;
 }
 
 /**
@@ -4468,7 +4469,7 @@ async function readMachineFile(filePath: string, pin: OpenProjectBinding | null)
   if (!pin) throw new Error("the machine that holds it is not connected");
   const { dataUrl } = await window.ade.agentChat.getImageDataUrl(filePath, pin);
   const match = /^data:([^;,]*)(;base64)?,(.*)$/s.exec(dataUrl ?? "");
-  if (!match) throw new Error("ADE couldn't read the file on this machine");
+  if (!match) throw new Error(`${BRAND.NAME} couldn't read the file on this machine`);
   const body = match[3] ?? "";
   const bytes = match[2]
     ? Uint8Array.from(atob(body), (char) => char.charCodeAt(0))
@@ -6980,7 +6981,7 @@ export function AgentChatPane({
         ));
       return result.restored;
     } catch (error) {
-      setError(plainErrorText(error, "ADE couldn't restore the queued messages."));
+      setError(plainErrorText(error, `${BRAND.NAME} couldn't restore the queued messages.`));
       return false;
     }
   }, [selectedSessionId]);
@@ -7930,7 +7931,7 @@ export function AgentChatPane({
       return {
         tone: "warning" as const,
         title: `${localRuntimeState.label} runtime`,
-        message: `ADE could not read ${localRuntimeState.label} status right now. It will still try the OpenCode runtime path, but refresh settings if the runtime changed.`,
+        message: `${BRAND.NAME} could not read ${localRuntimeState.label} status right now. It will still try the OpenCode runtime path, but refresh settings if the runtime changed.`,
       };
     }
     if (localRuntimeState.blocker) {
@@ -7944,7 +7945,7 @@ export function AgentChatPane({
       return {
         tone: "warning" as const,
         title: `${localRuntimeState.label} runtime`,
-        message: `${localRuntimeState.label} is not detected at ${localRuntimeState.endpoint}. Start it, load a model, then refresh so ADE can use the local runtime.`,
+        message: `${localRuntimeState.label} is not detected at ${localRuntimeState.endpoint}. Start it, load a model, then refresh so ${BRAND.NAME} can use the local runtime.`,
       };
     }
     if (!localRuntimeState.modelIds.length) {
@@ -8053,9 +8054,9 @@ export function AgentChatPane({
     : "codex";
   const cliRuntimeBody = activeProviderConnection?.blocker
     ?? (activeProviderConnection?.provider === "droid"
-      ? "Droid is not available. Let ADE finish downloading Droid for this machine, then sign in to Factory or set FACTORY_API_KEY."
+      ? `Droid is not available. Let ${BRAND.NAME} finish downloading Droid for this machine, then sign in to Factory or set FACTORY_API_KEY.`
       : activeProviderConnection?.provider === "muse"
-        ? "Muse Code is not available. Let ADE finish downloading its pinned Muse, then sign in with `" + MUSE_LOGIN_COMMAND + "` or set META_API_KEY."
+        ? `Muse Code is not available. Let ${BRAND.NAME} finish downloading its pinned Muse, then sign in with \`` + MUSE_LOGIN_COMMAND + "` or set META_API_KEY."
       : activeProviderConnection?.provider === "cursor"
         ? "Cursor agent is not available. Sign in with Cursor or add a Cursor API key in Settings > Providers."
       : null);
@@ -12383,7 +12384,7 @@ export function AgentChatPane({
       addAttachment({ path: saved.path, type: inferAttachmentType(saved.path, "image/png") });
       return { path: saved.path, cancelled: false };
     } catch (error) {
-      setError(plainErrorText(error, "ADE couldn't save the screenshot."));
+      setError(plainErrorText(error, `${BRAND.NAME} couldn't save the screenshot.`));
       return { path: null, cancelled: false };
     }
   }, [addAttachment]);
@@ -12686,7 +12687,7 @@ export function AgentChatPane({
     }
     if (!userEvent) {
       rejectAuthRetry(sessionId);
-      return "ADE could not find the original message for this failed turn.";
+      return `${BRAND.NAME} could not find the original message for this failed turn.`;
     }
     const text = userEvent.text;
     const displayText = typeof userEvent.displayText === "string" ? userEvent.displayText : text;
@@ -13512,7 +13513,7 @@ export function AgentChatPane({
     try {
       await onOpenShellSession(laneId, draftExecutionBindingRef.current);
     } catch (err) {
-      setError(plainErrorText(err, "ADE couldn't open the terminal."));
+      setError(plainErrorText(err, `${BRAND.NAME} couldn't open the terminal.`));
     } finally {
       setShellLaunchBusy(false);
     }
@@ -13644,7 +13645,7 @@ export function AgentChatPane({
     // unreachable host resolving to a fallback) used to surface three calls
     // later as the host rejecting `chat.send` for a missing sessionId.
     if (!created?.id) {
-      throw new Error("The chat was not created: this ADE runtime returned a session with no id.");
+      throw new Error(`The chat was not created: this ${BRAND.NAME} runtime returned a session with no id.`);
     }
     invalidateAgentChatSessionListCache({ laneId: targetLaneId });
     // ADE's pick stays its own until a person picks a model. Read from the
@@ -14578,8 +14579,8 @@ export function AgentChatPane({
         invalidateAgentChatSessionListCache({ laneId: targetLane.laneId });
         throw new Error(
           reconciled?.outcome === "waiting"
-            ? "The chat started, but ADE could not confirm that your message reached it. Open the chat to check before you send it again."
-            : "ADE could not confirm whether the chat started. Check the chat list before you send it again.",
+            ? `The chat started, but ${BRAND.NAME} could not confirm that your message reached it. Open the chat to check before you send it again.`
+            : `${BRAND.NAME} could not confirm whether the chat started. Check the chat list before you send it again.`,
         );
       }
     }
@@ -14867,14 +14868,14 @@ export function AgentChatPane({
   ): boolean => {
     const origin = normalizeGitRemoteIdentity(cloud.originUrl);
     if (!origin) {
-      setError({ message: "This project has no GitHub repository for ADE Cloud to clone.", kind: "status" });
+      setError({ message: `This project has no GitHub repository for ${BRAND.CLOUD_NAME} to clone.`, kind: "status" });
       return false;
     }
     const prepared = prepareDraftLaunch(snapshot);
     // Only images can be read back from the machine that holds them; another file would be lost on the way.
     const notImages = prepared.selectedAttachments.filter((file) => file.type === "file").map((file) => file.path.split(/[\\/]/).pop() || "file");
     if (notImages.length) {
-      setError({ message: `A new ADE Cloud chat from here can carry images, not other files. Remove ${notImages.join(", ")} to start it.`, kind: "status" });
+      setError({ message: `A new ${BRAND.CLOUD_NAME} chat from here can carry images, not other files. Remove ${notImages.join(", ")} to start it.`, kind: "status" });
       return false;
     }
     let built: ReturnType<typeof buildChatCreateArgs>;
@@ -15096,7 +15097,7 @@ export function AgentChatPane({
     const sentDraft = draftStore.get();
     const text = sentDraft.trim();
     if (attachments.length > 0 || contextAttachments.length > 0) {
-      setError({ message: "Files can't go with this message while the chat moves to a new ADE Cloud computer. Send the text first, then the files once it is up.", kind: "hint" });
+      setError({ message: `Files can't go with this message while the chat moves to a new ${BRAND.CLOUD_NAME} computer. Send the text first, then the files once it is up.`, kind: "hint" });
       return "refused";
     }
     if (!text) return "refused";
@@ -15150,7 +15151,7 @@ export function AgentChatPane({
       ?? cloudLaneStartBlock(account, { newLane: true })?.message
       ?? null;
     if (problem || !tabBinding || !lane.branchRef) {
-      setError({ message: problem ?? "Open the lane's project in ADE to start it.", kind: "status" });
+      setError({ message: problem ?? `Open the lane's project in ${BRAND.NAME} to start it.`, kind: "status" });
       return;
     }
     if (!modelId) {
@@ -15169,7 +15170,7 @@ export function AgentChatPane({
       snapshot,
       tabBinding,
       null,
-      () => setError({ message: "This ADE can't start an ADE Cloud lane. Update ADE, then send again.", kind: "status" }),
+      () => setError({ message: `This ${BRAND.NAME} can't start a ${BRAND.CLOUD_NAME} lane. Update ${BRAND.NAME}, then send again.`, kind: "status" }),
       {
         sizeId: cloudLaneRestartTier(lane, account, rootAppStoreApi.getState().cloudDefaultTier),
         originUrl,
@@ -15200,7 +15201,7 @@ export function AgentChatPane({
     if (!cloudSend && draftMachineUnavailableRef.current) {
       setError({
         message: draftCloudRecoveryAvailableRef.current
-          ? "The selected machine is not currently available. Choose ADE Cloud to run it there."
+          ? `The selected machine is not currently available. Choose ${BRAND.CLOUD_NAME} to run it there.`
           : "The selected machine is not currently available.",
         kind: "status",
       });
@@ -15282,7 +15283,7 @@ export function AgentChatPane({
         const tabBinding = cloudSend.tabBinding;
         if (!tabBinding) {
           draftLaunchInFlightKeysRef.current.delete(cloudRequestKey);
-          setError({ message: "Open a project to start a lane on ADE Cloud.", kind: "status" });
+          setError({ message: `Open a project to start a lane on ${BRAND.CLOUD_NAME}.`, kind: "status" });
           return;
         }
         // A start from a branch the person picked: it must be on GitHub
@@ -15320,7 +15321,7 @@ export function AgentChatPane({
           tabBinding,
           draftNewLaneConfig,
           // Main owns every ADE Cloud launch; there is no older path to fall back to.
-          () => setError({ message: "This ADE can't start an ADE Cloud lane. Update ADE, then send again.", kind: "status" }),
+          () => setError({ message: `This ${BRAND.NAME} can't start a ${BRAND.CLOUD_NAME} lane. Update ${BRAND.NAME}, then send again.`, kind: "status" }),
           { sizeId: cloudSend.tierId, sizeChoice: cloudSend.sizeChoice, originUrl: cloudSend.originUrl },
           newDraftMarkAtSend,
         );
@@ -15388,7 +15389,7 @@ export function AgentChatPane({
         refreshLanes: refreshLanesStore,
         openLaunchedDraftSession,
         clearSelectedSession: () => setSelectedSessionId(null),
-        launchMachineName: () => "ADE Cloud",
+        launchMachineName: () => BRAND.CLOUD_NAME,
       });
       return;
     }
@@ -16276,7 +16277,7 @@ export function AgentChatPane({
       invalidateCurrentChatSessionList();
       void refreshSessions({ force: true }).catch(() => {});
     } catch (handoffError) {
-      const rawMessage = plainErrorText(handoffError, "ADE couldn't hand off the chat.");
+      const rawMessage = plainErrorText(handoffError, `${BRAND.NAME} couldn't hand off the chat.`);
       // A transport timeout abandons the RPC but does not cancel the
       // daemon-side handoff, which usually still completes. Say so instead of
       // reporting a hard failure, and re-poll the session list so a late
@@ -16286,7 +16287,7 @@ export function AgentChatPane({
       // but those are real failures that must surface as errors.
       const isTransportTimeout = isRuntimeTransportTimeoutError(handoffError);
       const message = isTransportTimeout
-        ? "The handoff is taking longer than expected. ADE is still finishing it in the background — if it completes, the new chat will appear in the session list."
+        ? `The handoff is taking longer than expected. ${BRAND.NAME} is still finishing it in the background — if it completes, the new chat will appear in the session list.`
         : rawMessage;
       setError({ message: message, kind: isTransportTimeout ? "status" : "failure" });
       setLocalHandoffError(message);
@@ -16557,7 +16558,7 @@ export function AgentChatPane({
         ).catch((error: unknown) => console.warn("Could not open the implementation chat", error));
       }
     } catch (approvalError) {
-      const message = plainErrorText(approvalError, "ADE couldn't send your answer.");
+      const message = plainErrorText(approvalError, `${BRAND.NAME} couldn't send your answer.`);
       if (options?.inlineError) {
         // The card shows it itself, beside the fields the person retries.
         setInlineApprovalError({ sessionId: selectedSessionId, itemId, message });
@@ -16603,7 +16604,7 @@ export function AgentChatPane({
       return true;
     } catch (dismissError) {
       setRespondingApprovalIds((prev) => { const next = new Set(prev); next.delete(itemId); return next; });
-      setError(plainErrorText(dismissError, "ADE couldn't dismiss that request."));
+      setError(plainErrorText(dismissError, `${BRAND.NAME} couldn't dismiss that request.`));
       return false;
     }
   }, [refreshSessions, selectedSessionId, touchSession]);
@@ -16735,7 +16736,7 @@ export function AgentChatPane({
       showToast({
         tone: "warning",
         title: `Couldn't send to ${where}`,
-        message: `${plainErrorText(routeError, "ADE couldn't reach that computer.", where)} Your draft is still here.`,
+        message: `${plainErrorText(routeError, `${BRAND.NAME} couldn't reach that computer.`, where)} Your draft is still here.`,
       });
       return true;
     } finally {
@@ -17261,7 +17262,7 @@ export function AgentChatPane({
             : async () => {},
           onCleanupError: logParallelLaunchCleanupError,
         });
-        const message = plainErrorText(submitError, "ADE couldn't start the parallel chats.");
+        const message = plainErrorText(submitError, `${BRAND.NAME} couldn't start the parallel chats.`);
         if (cleanupIssues.length === 0) {
           await persistParallelLaunchState(null, launchBinding);
         } else {
@@ -17431,7 +17432,7 @@ export function AgentChatPane({
         await withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.getContextUsage({ sessionId: selectedSessionId }, chatPin));
       } catch (contextError) {
         setDraft((current) => (current.trim().length ? current : draft));
-        setError(plainErrorText(contextError, "ADE couldn't read the context usage."));
+        setError(plainErrorText(contextError, `${BRAND.NAME} couldn't read the context usage.`));
       } finally {
         setBusy(false);
       }
@@ -17459,7 +17460,7 @@ export function AgentChatPane({
         void refreshSessions().catch(() => {});
       } catch (outputStyleError) {
         setDraft((current) => (current.trim().length ? current : draft));
-        setError(plainErrorText(outputStyleError, "ADE couldn't change the output style."));
+        setError(plainErrorText(outputStyleError, `${BRAND.NAME} couldn't change the output style.`));
       } finally {
         setBusy(false);
       }
@@ -17481,7 +17482,7 @@ export function AgentChatPane({
         await withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.codex.resetMemory({ sessionId: selectedSessionId }, chatPin));
       } catch (resetError) {
         setDraft((current) => (current.trim().length ? current : text));
-        setError(plainErrorText(resetError, "ADE couldn't reset Codex memory."));
+        setError(plainErrorText(resetError, `${BRAND.NAME} couldn't reset Codex memory.`));
       } finally {
         setBusy(false);
       }
@@ -18300,7 +18301,7 @@ export function AgentChatPane({
         text: "/compact",
       }, chatPin)));
     } catch (compactError) {
-      const message = plainErrorText(compactError, "ADE couldn't compact the chat.");
+      const message = plainErrorText(compactError, `${BRAND.NAME} couldn't compact the chat.`);
       setError(message);
     } finally {
       submitInFlightRef.current = false;
@@ -18456,7 +18457,7 @@ export function AgentChatPane({
         }, chatPin));
         void refreshSessions().catch(() => {});
       } catch (runError) {
-        const message = plainErrorText(runError, "ADE couldn't send that message.");
+        const message = plainErrorText(runError, `${BRAND.NAME} couldn't send that message.`);
         setError(message);
         throw runError;
       } finally {
@@ -18502,7 +18503,7 @@ export function AgentChatPane({
         const message = reactError instanceof Error ? reactError.message : String(reactError);
         // A machine on an older ADE does not know the action yet.
         setError(/unknown action|not callable/i.test(message)
-          ? "This chat's machine runs an older ADE. Update ADE there to react to messages."
+          ? `This chat's machine runs an older ${BRAND.NAME}. Update ${BRAND.NAME} there to react to messages.`
           : message);
         throw reactError;
       }
@@ -18537,7 +18538,7 @@ export function AgentChatPane({
         chatPin,
       ));
     } catch (interruptError) {
-      setError(plainErrorText(interruptError, "ADE couldn't stop the turn."));
+      setError(plainErrorText(interruptError, `${BRAND.NAME} couldn't stop the turn.`));
     }
   }, [selectedSessionId, touchSession]);
 
@@ -18659,7 +18660,7 @@ export function AgentChatPane({
         void refreshSessions().catch(() => {});
       } catch (err) {
         void refreshSessions().catch(() => {});
-        setError(plainErrorText(err, "ADE couldn't change that chat setting."));
+        setError(plainErrorText(err, `${BRAND.NAME} couldn't change that chat setting.`));
         throw err;
       } finally {
         const pending = pendingNativeControlUpdateRef.current;
@@ -18760,7 +18761,7 @@ export function AgentChatPane({
         patchSessionSummary(targetSessionId, { reasoningEffort: previousReasoningEffort });
       }
       void refreshSessions().catch(() => {});
-      setError(plainErrorText(err, "ADE couldn't change the reasoning effort."));
+      setError(plainErrorText(err, `${BRAND.NAME} couldn't change the reasoning effort.`));
     });
   }, [
     draftLaunchConfigScopeKey,
@@ -18809,7 +18810,7 @@ export function AgentChatPane({
           patchSessionSummary(targetSessionId, { codexDaybreak: current.confirmed });
           if (selectedSessionIdRef.current === targetSessionId) setCodexDaybreak(current.confirmed);
         }
-        setError(plainErrorText(err, "ADE couldn't change that setting."));
+        setError(plainErrorText(err, `${BRAND.NAME} couldn't change that setting.`));
       });
     updates.set(targetSessionId, { latest: updateId, chain, confirmed: entry.confirmed });
   }, [patchSessionSummary, selectedSessionCodexDaybreak, selectedSessionId]);
@@ -18868,7 +18869,7 @@ export function AgentChatPane({
         patchSessionSummary(targetSessionId, { fastMode: previousFastMode, fastTier: previousFastTier });
       }
       void refreshSessions().catch(() => {});
-      setError(plainErrorText(err, "ADE couldn't change fast mode."));
+      setError(plainErrorText(err, `${BRAND.NAME} couldn't change fast mode.`));
       throw err;
     }).finally(() => {
       const pending = pendingFastModeUpdateRef.current;
@@ -18915,7 +18916,7 @@ export function AgentChatPane({
       });
       void refreshSessions().catch(() => {});
     }).catch((err) => {
-      setError(plainErrorText(err, "ADE couldn't change the speed tier."));
+      setError(plainErrorText(err, `${BRAND.NAME} couldn't change the speed tier.`));
       void refreshSessions().catch(() => {});
     });
   }, [
@@ -19414,7 +19415,7 @@ export function AgentChatPane({
             ? {
                 detail: "Offline",
                 unavailableReason: adeCloudRow.length && !adeCloudUnavailableReason
-                  ? `${standInName} is offline. Choose ADE Cloud to continue.`
+                  ? `${standInName} is offline. Choose ${BRAND.CLOUD_NAME} to continue.`
                   : `${standInName} is offline.`,
               }
             : {}),
@@ -19691,7 +19692,7 @@ export function AgentChatPane({
             }), recoveryBinding);
             if (!cancelled) {
               setError(formatParallelLaunchFailureMessage({
-                launchError: "Recovered an unfinished parallel launch from before ADE closed.",
+                launchError: `Recovered an unfinished parallel launch from before ${BRAND.NAME} closed.`,
                 cleanupIssues,
               }));
             }
@@ -20218,7 +20219,7 @@ export function AgentChatPane({
     return null;
   }, [readVisibleTranscript]);
   const continueSwitchInNewThread = useCallback(async (): Promise<string | null> => {
-    if (!selectedSessionId || !selectedSessionModelId) return "ADE could not tell this chat's model.";
+    if (!selectedSessionId || !selectedSessionModelId) return `${BRAND.NAME} could not tell this chat's model.`;
     const note = lastParentUserText();
     // A brief hand-off: the new chat gets the history as text, then the message.
     const result = await withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.handoff({
@@ -20234,7 +20235,7 @@ export function AgentChatPane({
   }, [invalidateCurrentChatSessionList, lastParentUserText, notifySessionCreated, refreshSessions, selectedSessionId, selectedSessionModelId]);
   const changeSwitchBack = useCallback(async (): Promise<string | null> => {
     const instanceId = accountSwitchShown?.notice.from?.instanceId;
-    if (!selectedSessionId || !instanceId) return "ADE could not tell the account to change back to.";
+    if (!selectedSessionId || !instanceId) return `${BRAND.NAME} could not tell the account to change back to.`;
     const result = await withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.switchAccount({ sessionId: selectedSessionId, instanceId }, chatPin));
     if (!result.ok) return result.message;
     const failure = await resendLastUserMessage(selectedSessionId, null);
@@ -20263,7 +20264,7 @@ export function AgentChatPane({
         <ProviderSignInStrip
           key={adeCloudSignInNeed.key}
           provider={adeCloudSignInNeed.provider}
-          machineName="ADE Cloud"
+          machineName={BRAND.CLOUD_NAME}
           runsHere={false}
           adeCloudPass={adeCloudSignInNeed.kind === "claude-pass"}
           onSignIn={openAdeCloudSignIn}
@@ -20734,7 +20735,7 @@ export function AgentChatPane({
             nextWakeAt: result.nextWakeAt,
           });
         }).catch((pauseError) => {
-          setError(plainErrorText(pauseError, "ADE couldn't pause the scheduled work."));
+          setError(plainErrorText(pauseError, `${BRAND.NAME} couldn't pause the scheduled work.`));
         });
       } : undefined}
       onCancelScheduledWork={selectedSessionId ? (schedule) => {
@@ -20750,7 +20751,7 @@ export function AgentChatPane({
           });
           scheduleSessionsRefresh();
         }).catch((cancelError) => {
-          setError(plainErrorText(cancelError, "ADE couldn't cancel the schedule."));
+          setError(plainErrorText(cancelError, `${BRAND.NAME} couldn't cancel the schedule.`));
         });
       } : undefined}
       onStopBackgroundTask={selectedSessionId ? (snapshot) => {
@@ -20765,7 +20766,7 @@ export function AgentChatPane({
             sessionId: selectedSessionId,
             processId,
           }, chatPin)).catch((stopError) => {
-            setError(plainErrorText(stopError, "ADE couldn't stop the process."));
+            setError(plainErrorText(stopError, `${BRAND.NAME} couldn't stop the process.`));
           });
           return;
         }
@@ -21430,7 +21431,7 @@ export function AgentChatPane({
             <SmartTooltip
               content={{
                 label: appControlOpen ? "Close App Control" : "Open App Control",
-                description: "Launch or attach to a local Electron app. ADE can click, type, read its logs, answer its prompts, and capture screenshots and DOM context for the chat.",
+                description: `Launch or attach to a local Electron app. ${BRAND.NAME} can click, type, read its logs, answer its prompts, and capture screenshots and DOM context for the chat.`,
                 effect: appControlContextItems.length
                   ? `${appControlContextItems.length} element context attached`
                   : undefined,
@@ -21633,8 +21634,8 @@ export function AgentChatPane({
             type="button"
             data-testid="devin-cloud-header-link"
             className="inline-flex shrink-0 items-center gap-1 rounded-md border border-sky-300/20 bg-sky-500/[0.08] px-1.5 py-0.5 font-sans text-[10px] font-medium text-sky-100/80 transition-colors hover:border-sky-300/35 hover:text-sky-50"
-            title="Open this Devin session's live view inside ADE"
-            aria-label="Open Devin session in ADE browser"
+            title={`Open this Devin session's live view inside ${BRAND.NAME}`}
+            aria-label={`Open Devin session in ${BRAND.NAME} browser`}
             onClick={() => {
               void navigateUrlInAdeBrowser(
                 `https://app.devin.ai/sessions/${selectedSession.devinSessionId}`,
@@ -21869,7 +21870,7 @@ export function AgentChatPane({
               spawnKind: "subagent",
               subagentTakeoverPromptShownAt: previousShownAt,
             });
-            setError(plainErrorText(err, "ADE couldn't take over the subagent."));
+            setError(plainErrorText(err, `${BRAND.NAME} couldn't take over the subagent.`));
           });
         }}
         onKeepReporting={() => {
@@ -21888,7 +21889,7 @@ export function AgentChatPane({
             void refreshSessions({ force: true }).catch(() => {});
           }).catch((err) => {
             patchSessionSummary(sessionId, { subagentTakeoverPromptShownAt: null });
-            setError(plainErrorText(err, "ADE couldn't take over the subagent."));
+            setError(plainErrorText(err, `${BRAND.NAME} couldn't take over the subagent.`));
           });
         }}
       />
@@ -22986,7 +22987,7 @@ export function AgentChatPane({
                   ? [{ label: "Use this computer", onClick: useThisComputerForDraft }]
                   : []),
                 ...(draftCloudRecoveryAvailable && !adeCloudMode
-                  ? [{ label: "Use ADE Cloud", onClick: useAdeCloudForDraft }]
+                  ? [{ label: `Use ${BRAND.CLOUD_NAME}`, onClick: useAdeCloudForDraft }]
                   : []),
                 ...(restorableErrorDraftLaunchJob
                   ? [{
@@ -23395,7 +23396,7 @@ export function AgentChatPane({
                           exit={{ opacity: 0, scale: 0.8, transition: { duration: 0.3, ease: "easeOut" } }}
                         >
                           {emptyStateHero ?? <AdeWordmark
-                            alt="ADE"
+                            alt={BRAND.NAME}
                             className="relative z-10 h-full w-full object-contain"
                           />}
                         </motion.div>
@@ -23457,7 +23458,7 @@ export function AgentChatPane({
                                 disabled={shellLaunchBusy}
                                 onOpen={handleDraftMachinePickerOpen}
                                 autoPick={draftAutoMachine}
-                                autoPickUnavailableReason={adeCloudMode ? "Each ADE Cloud lane has its own computer." : null}
+                                autoPickUnavailableReason={adeCloudMode ? `Each ${BRAND.CLOUD_NAME} lane has its own computer.` : null}
                                 onPointerClose={returnFocusToComposer}
                                 side="bottom"
                                 menuLabel="Run on"

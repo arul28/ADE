@@ -26,6 +26,7 @@ import {
   type BrowserTabStripItem,
 } from "./browserTabOwnership";
 import type { BrowserTab } from "./browserPanelTypes";
+import { BRAND } from "../../../../shared/brand";
 
 /** The `layoutId` spring the tools rail uses for its sliding indicator. */
 const TAB_INDICATOR_SPRING = { type: "spring", stiffness: 520, damping: 38, mass: 0.7 } as const;
@@ -340,7 +341,7 @@ export function BrowserTabStrip({
             type="button"
             tabIndex={-1}
             aria-label={`Keep ${label}`}
-            title="Keep this tab: ADE won't close it"
+            title={`Keep this tab: ${BRAND.NAME} won't close it`}
             data-testid="browser-tab-keep"
             className={cn(
               "relative inline-flex h-[15px] w-[15px] shrink-0 items-center justify-center rounded-[4px]",
@@ -434,7 +435,7 @@ export function BrowserTabStrip({
         ref={stripRef}
         onScroll={onScroll}
         role="tablist"
-        aria-label="ADE browser tabs"
+        aria-label={`${BRAND.NAME} browser tabs`}
         className="scrollbar-none flex min-w-0 flex-1 flex-nowrap items-center gap-1 overflow-x-auto px-2"
       >
         {items.map((item) => (item.kind === "tab" ? renderTab(item.tab, null) : renderGroup(item)))}

@@ -12,6 +12,7 @@ import {
 } from "../terminals/LaneCombobox";
 import { CursorCloudSecretsList, isInjectableCloudSecretName } from "./CursorCloudSecretsPicker";
 import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
+import { BRAND } from "../../../shared/brand";
 
 const MENU_WIDTH = 260;
 
@@ -106,8 +107,8 @@ export function CursorCloudAdvancedMenu({
         content={{
           label: "Advanced",
           description: attachPr
-            ? "This branch already has a PR, so Cursor will work on it. Optionally attach ADE secrets as env vars."
-            : "Open a PR when the run finishes, or attach ADE secrets as cloud env vars.",
+            ? `This branch already has a PR, so Cursor will work on it. Optionally attach ${BRAND.NAME} secrets as env vars.`
+            : `Open a PR when the run finishes, or attach ${BRAND.NAME} secrets as cloud env vars.`,
         }}
       >
         <button
@@ -182,7 +183,7 @@ export function CursorCloudAdvancedMenu({
                   forceEnabled
                   content={{
                     label: "Open a PR",
-                    description: "When the cloud run finishes, Cursor opens a pull request from this lane's branch. Creation-time only — it cannot be added later. If this branch already has a PR, ADE attaches to that one instead.",
+                    description: `When the cloud run finishes, Cursor opens a pull request from this lane's branch. Creation-time only — it cannot be added later. If this branch already has a PR, ${BRAND.NAME} attaches to that one instead.`,
                   }}
                 >
                   <span

@@ -47,6 +47,7 @@ import { Z_LAYERS } from "../ui/zLayers";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { useTicker } from "../../lib/ticker";
+import { BRAND } from "../../../shared/brand";
 
 export const MAC_DESKTOP_FULLSCREEN_Z = Z_LAYERS.macDesktop;
 
@@ -591,7 +592,7 @@ export function useMacDesktopPanelController({
     setBusy(true);
     try {
       const next = await macDesktopApi().takeControl(
-        { laneId, controllerId: macDesktopControllerId(), controllerLabel: webClient ? "ADE Web" : "You" },
+        { laneId, controllerId: macDesktopControllerId(), controllerLabel: webClient ? `${BRAND.NAME} Web` : "You" },
         pinRef.current,
       );
       if (webClient) {

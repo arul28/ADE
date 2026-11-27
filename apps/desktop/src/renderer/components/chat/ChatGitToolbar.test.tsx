@@ -365,7 +365,7 @@ describe("ChatGitToolbar", () => {
 
     const badge = await screen.findByRole("button", { name: /PR #/ });
     fireEvent.click(badge);
-    fireEvent.click(screen.getByRole("button", { name: /ADE/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Daex/ }));
 
     await waitFor(() => {
       expect(screen.getByTestId("location").textContent).toBe("/prs?tab=normal&prId=pr-1");

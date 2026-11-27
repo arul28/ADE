@@ -1,4 +1,5 @@
 import { redactCommandLine } from "../../../shared/secretRedaction";
+import { BRAND } from "../../../shared/brand";
 
 type ToolDisplay = {
   label: string;
@@ -77,7 +78,7 @@ const TOOL_NAMESPACE_LABELS: Record<string, string> = {
 };
 
 const TOKEN_LABELS: Record<string, string> = {
-  ade: "ADE",
+  ade: BRAND.NAME,
   api: "API",
   cli: "CLI",
   cto: "CTO",

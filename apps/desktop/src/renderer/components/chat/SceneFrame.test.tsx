@@ -710,7 +710,7 @@ describe("SceneFrame", () => {
 
       sendOpen(frame, "javascript:alert(1)");
       await waitFor(() =>
-        expect(screen.getByTestId("chat-scene-toolbar").textContent).toContain("ADE links"),
+        expect(screen.getByTestId("chat-scene-toolbar").textContent).toContain("Daex links"),
       );
       expect(openExternal).not.toHaveBeenCalled();
     });

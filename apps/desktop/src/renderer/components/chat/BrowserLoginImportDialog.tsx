@@ -26,6 +26,7 @@ import { STANDARD_EASE } from "../../lib/motion";
 import { cn } from "../ui/cn";
 import { Banner } from "../ui/notice";
 import { extractError } from "../../lib/format";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Import the logins you already have.
@@ -119,7 +120,7 @@ export function BrowserLoginImportDialog({
   const loadSources = useCallback(async () => {
     const api = loginImportApi();
     if (!api) {
-      setError("This ADE build does not expose browser login import.");
+      setError(`This ${BRAND.NAME} build does not expose browser login import.`);
       return;
     }
     setBusy(true);
@@ -298,10 +299,10 @@ export function BrowserLoginImportDialog({
                 </div>
                 <Dialog.Description className="px-3.5 pt-2.5 text-[11px] leading-[16px] text-muted-fg">
                   {step === "sources"
-                    ? "Copy cookies from a browser you are already signed in to, so ADE's browser opens those sites signed in too. Passwords are never read."
+                    ? `Copy cookies from a browser you are already signed in to, so ${BRAND.NAME}'s browser opens those sites signed in too. Passwords are never read.`
                     : step === "domains"
                       ? "Pick the sites worth carrying over. Everything else stays where it is."
-                      : "Here is what landed in ADE's browser profile."}
+                      : `Here is what landed in ${BRAND.NAME}'s browser profile.`}
                 </Dialog.Description>
 
                 <AnimatePresence initial={false}>
@@ -495,7 +496,7 @@ function SourceList({
   if (sources.length === 0) {
     return (
       <div className="py-6 text-[11px] leading-[17px] text-muted-fg">
-        No browser profiles turned up on this machine. If you use a browser ADE did not find, open it
+        No browser profiles turned up on this machine. If you use a browser {BRAND.NAME} did not find, open it
         once and check again.
       </div>
     );
@@ -609,7 +610,7 @@ function DomainPicker({
       {domains.length === 0 ? (
         <div className="py-5 text-[11px] text-muted-fg">
           {totalCount === 0
-            ? "That profile has no cookies ADE can import."
+            ? `That profile has no cookies ${BRAND.NAME} can import.`
             : "No sites match that search."}
         </div>
       ) : (
@@ -676,7 +677,7 @@ function ImportSummary({
         </ul>
       ) : null}
       <p className="text-[10.5px] leading-[15px] text-muted-fg">
-        Open one of these sites in ADE's browser to check you are signed in. Nothing was changed in the
+        Open one of these sites in {BRAND.NAME}'s browser to check you are signed in. Nothing was changed in the
         browser you imported from.
       </p>
     </div>

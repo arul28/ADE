@@ -203,7 +203,7 @@ describe("ChatMacDesktopPanel against an older remote brain", () => {
     renderPanel();
 
     expect(await screen.findByText(
-      "Arul's Mac Studio runs ADE 1.2.74, which has no Mac Desktop. Update ADE there.",
+      "Arul's Mac Studio runs Daex 1.2.74, which has no Mac Desktop. Update Daex there.",
     )).toBeTruthy();
     // The read carried the focused chat's machine, not the project tab.
     expect(macDesktop.getStatus).toHaveBeenCalledWith(

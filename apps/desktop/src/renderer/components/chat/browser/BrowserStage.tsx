@@ -34,6 +34,7 @@ import type {
   BrowserFrame,
   BuiltInBrowserScreenshot,
 } from "./browserPanelTypes";
+import { BRAND } from "../../../../shared/brand";
 
 /** One row in a launchpad group — a local server, a recent page, the clipboard. */
 export type BrowserLaunchpadRow = {
@@ -422,7 +423,7 @@ export function BrowserStage({
                   )
                 ) : (
                   <div className="flex flex-col gap-1.5 text-center">
-                    <div className="text-[13px] font-medium text-fg/80">ADE browser unavailable</div>
+                    <div className="text-[13px] font-medium text-fg/80">{BRAND.NAME} browser unavailable</div>
                     <div className="text-[11.5px] text-muted-fg/65">
                       This renderer does not expose window.ade.builtInBrowser.
                     </div>
