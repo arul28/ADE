@@ -153,7 +153,7 @@ function versionNote(input: BrainSkewInput): string | null {
     : order < 0
       ? "; run `daex brain update` (or restart ADE.app) to update the brain"
       : "";
-  return `ade ${label(input.cliVersion, input.placeholderVersion)} is using the ${BRAND.NAME} brain ${label(brainVersion, input.placeholderVersion)}${where}${fix}.`;
+  return `This daex is ${label(input.cliVersion, input.placeholderVersion)} and is using the ${BRAND.NAME} brain ${label(brainVersion, input.placeholderVersion)}${where}${fix}.`;
 }
 
 function incompatibleMessage(input: BrainSkewInput): string {

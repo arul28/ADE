@@ -15495,7 +15495,7 @@ function warnInlineChatTextThroughCmd(args: string[], inlineFlags: readonly stri
   inlineChatTextThroughCmdWarned = true;
   try {
     process.stderr.write(
-      `ade: note: this ran through ade.cmd, and cmd.exe cuts a command at its first line break. `
+      `${BRAND.CLI}: note: this ran through a .cmd launcher (daex.cmd or ade.cmd), and cmd.exe cuts a command at its first line break. `
       + `If ${inlineFlag} had more than one line, it was sent cut short: send it again with ${fileFlags[0]} <path|-> `
       + `(stdin with -), or run "$ADE_CLI_PATH" (or "$env:ADE_CLI_PATH" in PowerShell), which keeps every line.\n`,
     );

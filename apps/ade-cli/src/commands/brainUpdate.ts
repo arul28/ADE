@@ -908,7 +908,7 @@ async function applyStagedBrainUpdate(
     ensureDaexCommandBesideBinary(manifest.binaryPath);
 
     if (macAppOutcome != null) {
-      const successMessage = `${macAppOutcome} The standalone daex at ${manifest.binaryPath} is on ${manifest.version} too.`;
+      const successMessage = `${macAppOutcome} The standalone runtime at ${manifest.binaryPath} is on ${manifest.version} too.`;
       await writeStatus("succeeded", successMessage);
       await discardPromotedBackups();
       const message = await cleanupStagingAfterSuccess(successMessage);
