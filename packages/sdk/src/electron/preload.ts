@@ -35,7 +35,7 @@ export type ExposeDaexBridgeOptions = {
 };
 
 /**
- * Expose the ADE bridge on `window[key]`.
+ * Expose the Daex bridge on `window[key]`.
  *
  * Call it once, at the top level of your preload:
  *

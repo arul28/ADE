@@ -1,6 +1,6 @@
 ---
 title: "Types"
-description: "Every type and interface exported by @ade-dev/sdk — generated from the published TypeScript declarations."
+description: "Every type and interface exported by @daex-dev/sdk — generated from the published TypeScript declarations."
 icon: "shapes"
 ---
 
@@ -47,590 +47,50 @@ export type AccountUsage = {
 
 ### `AdeChatClient`
 
-RULE FOR ANYTHING ADDED TO THIS SURFACE — destructive while streaming.
-
-An SDK caller has no ambient signal that a turn is live. `send()` resolves as
-soon as the turn is dispatched, not when it completes, so nothing in the API
-tells a settings handler or a render effect that a reply is mid-flight. And
-when a turn dies from a runtime teardown it emits neither `error` nor `done`
-— subscribers just stop receiving. Silent truncation is therefore the default
-failure mode of every destructive operation here, not an edge case.
-
-So any new operation that can end a running turn must pick one, explicitly:
-  - refuse mid-turn and name the way out (`setModel`, which throws and points
-    at `interrupt()` or `{ force: true }`); or
-  - proceed, and say plainly in its own docs that in-flight turns end without
-    a completion event (`dispose`, because a shutdown that can refuse is
-    worse than a lost reply).
-
-What is not acceptable is the third option: destroying the turn quietly and
-letting the consumer discover it as a response that stopped mid-sentence.
+@deprecated Use DaexChatClient.
 
 ````ts
-export interface AdeChatClient {
-  accounts: AccountManagement["accounts"];
-  credentials: AccountManagement["credentials"];
-  presets: AccountManagement["presets"];
-  providers: {
-    /**
-     * Per-provider install, auth and availability.
-     *
-     * Served from the runtime's probe cache when the runtime supports it, and
-     * derived from the model catalog when it does not. Read `source` on each
-     * record before presenting any of it as a fact about the machine.
-     */
-    status(): Promise<Record<string, ProviderStatus>>;
-    /**
-     * The same map, with the runtime's probe cache bypassed.
-     *
-     * This is the "I just installed it" button. It spawns `--version` for every
-     * provider, so it is the slow path — `status()` and the `onChange` poll
-     * never bypass the cache.
-     */
-    refresh(): Promise<Record<string, ProviderStatus>>;
-    onChange(cb: (status: Record<string, ProviderStatus>) => void): Unsubscribe;
-    /** Runtime-derived controls for a provider, or `unsupported` when absent. */
-    capabilities(provider: string): Promise<ProviderCapabilities>;
-  };
-  models: {
-    list(): Promise<ModelCatalogEntry[]>;
-    /**
-     * Called with the whole catalog when it changes: a provider signs in or
-     * out, or the runtime's catalog gains or drops a model. Driven by the same
-     * poll as `providers.onChange`, and called only when a model's id,
-     * `isAvailable`, `connected` or `isDefault` changed. Not called with the
-     * current list on subscribe; call `list()` for that. SDK >= 0.4.
-     */
-    onChange(cb: (models: ModelCatalogEntry[]) => void): Unsubscribe;
-    /**
-     * The model a new thread should use, or null when none qualifies. See
-     * `pickDefaultModel` for the rule; this reads a fresh catalog first.
-     * SDK >= 0.4.
-     */
-    defaultModel(opts?: DefaultModelOptions): Promise<ModelCatalogEntry | null>;
-  };
-  threads: {
-    /** Open a thread, creating it when the key is new to this home. */
-    open(key: string, opts: ThreadOpenOptions): Promise<AdeThread>;
-    /**
-     * Reopen a key this home already stores. The provider and model come from
-     * the stored record, so an app that reopens `"support"` after a restart
-     * does not have to remember how it was created.
-     */
-    open(key: string, opts?: ThreadResumeOptions): Promise<AdeThread>;
-    /**
-     * Every chat in this home, archived ones included, newest activity first
-     * is NOT guaranteed — sort on `updatedAt` yourself.
-     */
-    list(): Promise<ThreadSummary[]>;
-    /**
-     * One thread's summary, by key, or null when the runtime has no session for
-     * it: a key this home never opened, a deleted key, or a key whose session
-     * the runtime lost (the next `open` recreates it). The same row `list()`
-     * would return, without reading every chat. SDK >= 0.4.
-     */
-    get(key: string): Promise<ThreadSummary | null>;
-    /**
-     * Delete a thread: its runtime session, its transcript, and its key.
-     *
-     * A running turn is interrupted FIRST, so subscribers receive the turn's
-     * `done` before the session goes away rather than a stream that simply
-     * stops. Then the runtime deletes the session, the key is removed from the
-     * thread store, and a live `AdeThread` for the key is released — it throws
-     * `disposed`-style errors from the runtime afterwards, so drop it.
-     *
-     * A key whose session the runtime already lost is still removed. A key the
-     * store does not know and no live thread holds throws `thread_not_found`.
-     * Throws `invalid_option` on a runtime without the `delete` action.
-     */
-    delete(key: string): Promise<void>;
-    /**
-     * Archive a thread. The key and transcript are kept; `list()` reports it
-     * with `archived: true`, and `unarchive` brings it back.
-     *
-     * Like `delete`, a running turn is interrupted first so it ends with a
-     * `done` event rather than silently. Throws `thread_not_found` for a key
-     * the store does not know, and `invalid_option` on a runtime without the
-     * `archive` action.
-     */
-    archive(key: string): Promise<void>;
-    /** Reverse `archive`. Same errors. */
-    unarchive(key: string): Promise<void>;
-  };
-  doctor(): Promise<DoctorReport>;
-  exportThread(key: string): Promise<string>;
-  /** Run a temporary thread and delete it after the final answer is received. */
-  run<T = unknown>(prompt: string, options: RunOptions): Promise<T | string>;
-  /**
-   * Listen for runtime lifecycle events: `"exit"`, `"transport"`, `"restart"`.
-   * See {@link AdeClientEventMap} for the payloads. Returns the unsubscribe.
-   *
-   * Listeners survive an `autoRestart`, because the client object does.
-   */
-  on<E extends AdeClientEvent>(event: E, cb: (payload: AdeClientEventMap[E]) => void): Unsubscribe;
-  /**
-   * Stop the runtime and release this client. Idempotent.
-   *
-   * Ends any turn still in flight, and — like every teardown on this surface —
-   * without an `error` or `done` event first: the child process goes away, so
-   * subscribers simply stop receiving. Deliberately NOT guarded the way
-   * `setModel` is, because dispose is the teardown path and a shutdown that can
-   * refuse is worse than a truncated reply. If a caller needs the reply, it
-   * must await the turn before disposing; the transcript is durable either way
-   * and `exportThread` still returns everything that was persisted.
-   */
-  dispose(): Promise<void>;
-}
+export type AdeChatClient = DaexChatClient;
 ````
 
 ### `AdeClientEvent`
 
-The client-level event names. See AdeClientEventMap.
+@deprecated Use DaexClientEvent.
 
 ````ts
-export type AdeClientEvent = (typeof ADE_CLIENT_EVENTS)[number];
+export type AdeClientEvent = DaexClientEvent;
 ````
 
 ### `AdeClientEventMap`
 
-Payloads of the client-level events, by name.
-
-These are about the RUNTIME, not about any one thread. A thread learns that
-its runtime died from the synthetic `status` envelope on its own `status`
-channel; a host learns it here, once.
+@deprecated Use DaexClientEventMap.
 
 ````ts
-export type AdeClientEventMap = {
-  /**
-   * The runtime process this client spawned exited without `dispose()`.
-   * `error` is the tail of its stderr, when it wrote any. Not emitted in attach
-   * mode, where the client owns no process — watch `transport` there.
-   */
-  exit: { code: number | null; signal: string | null; error: string | null };
-  /**
-   * The socket to the runtime closed unexpectedly (`"closed"`), or an
-   * `autoRestart` brought it back (`"reconnected"`).
-   */
-  transport: { state: "closed" | "reconnected"; error: string | null };
-  /**
-   * One `autoRestart` attempt finished. `attempt` counts from 1 per outage.
-   * `final` is true when no further attempt follows for this outage: the
-   * attempt succeeded (`ok: true`), or it failed and was the last one
-   * `maxAttempts` allows (the client gave up; the runtime stays down until the
-   * host creates a new client). SDK >= 0.4.
-   */
-  restart: { attempt: number; ok: boolean; error: string | null; final: boolean };
-  /**
-   * A thread left, or came back to, the host's active list through this
-   * client: `threads.delete` (`"deleted"`), `threads.archive` (`"archived"`)
-   * or `threads.unarchive` (`"unarchived"`). Emitted after the action
-   * succeeds, whoever called it: host code in the main process, or a renderer
-   * over the Electron bridge. A change made by another client of the same
-   * runtime (Daex desktop) is not reported. SDK >= 0.4.
-   */
-  threadLifecycle: { key: string; change: "deleted" | "archived" | "unarchived" };
-  /** A provider turn stopped because its current account reached a usage limit. */
-  usageLimit: import("./types.js").UsageLimitEvent;
-};
+export type AdeClientEventMap = DaexClientEventMap;
 ````
 
 ### `AdeErrorCode`
 
-Every error this package throws carries a stable machine-readable code.
-
-Kept as its own union rather than derived from ADE_ERROR_CODES so
-each member can carry its own doc comment; a test asserts the two agree.
+@deprecated Use DaexErrorCode.
 
 ````ts
-export type AdeErrorCode =
-  | "binary_not_found"
-  | "download_failed"
-  | "checksum_mismatch"
-  | "spawn_failed"
-  | "connect_failed"
-  | "handshake_failed"
-  | "rpc_error"
-  | "rpc_timeout"
-  | "transport_closed"
-  | "protocol_error"
-  | "thread_not_found"
-  | "invalid_option"
-  /**
-   * No runtime could be resolved and `allowDownload: false` forbade fetching
-   * one. A packaging mistake must fail here, loudly, rather than work on the
-   * developer's machine through a silent download and fail on a locked-down
-   * user's.
-   */
-  | "runtime_unavailable"
-  /**
-   * `approve()` named an item that is not pending. A stop, a teardown, or an
-   * earlier call already settled it; the engine settles unknown items silently,
-   * so the SDK checks first and says so rather than letting a no-op look like
-   * a success.
-   */
-  | "approval_not_found"
-  /**
-   * A bridge refused the call before it reached the SDK — the host's
-   * `authorize` hook said no. Used by `@ade-dev/sdk/electron`.
-   */
-  | "unauthorized"
-  | "disposed"
-  /**
-   * The runtime's version is outside `SUPPORTED_RUNTIME_RANGE` and the host
-   * asked `createAdeChat` to refuse it (`requireCompatibleRuntime: true`).
-   * Without that option an unsupported runtime connects with a logged warning.
-   */
-  | "runtime_incompatible"
-  /**
-   * The call was refused only because a turn is running on the thread:
-   * `setModel`, a reasoning `update`, `retry`, `editLast`, or a runtime action
-   * that must wait for the turn to end. Nothing changed. Wait for the turn to
-   * finish (or `interrupt()` it), then call again. `setModel` and `update`
-   * also accept `{ force: true }`. Before SDK 0.4 these refusals used
-   * `invalid_option`.
-   */
-  | "turn_in_flight"
-  /**
-   * The thread's provider, or the runtime, cannot do what was asked. Nothing
-   * changed. `retry` and `editLast` throw it for a provider other than Claude
-   * or Codex, and for a runtime older than the `rerunLastTurn` action.
-   */
-  | "unsupported"
-  | "invalid_output"
-  /**
-   * A provider sign-in ended without signing in: it failed, was cancelled, or
-   * expired. The handle's last status says which (`state`) and why (`message`).
-   */
-  | "sign_in_failed";
+export type AdeErrorCode = DaexErrorCode;
 ````
 
 ### `AdeProvider`
 
-Known provider ids for autocomplete; provider strings remain open for newer runtimes.
+@deprecated Use DaexProvider.
 
 ````ts
-export type AdeProvider =
-  | "claude"
-  | "codex"
-  | "cursor"
-  | "droid"
-  | "opencode"
-  | "pi"
-  | "muse"
-  | "qwen"
-  | "kimi"
-  | "grok"
-  | "copilot"
-  | "devin"
-  | "antigravity"
-  | (string & {});
+export type AdeProvider = DaexProvider;
 ````
 
 ### `AdeThread`
 
+@deprecated Use DaexThread.
+
 ````ts
-export interface AdeThread {
-  /**
-   * The runtime session id. Stable for the life of the thread, EXCEPT across a
-   * recreate: if an `autoRestart` finds the runtime lost the session, the key
-   * is rebuilt on a new session and this id changes. Key your own state on
-   * `key`, not on this.
-   */
-  readonly id: string;
-  readonly key: string;
-  /**
-   * The thread's title, or null. Updated by `update({ title })`; the runtime
-   * may also retitle a thread after its first turn, which this reflects at the
-   * next open or `update`.
-   */
-  readonly title: string | null;
-  /**
-   * What the thread's model resolved to, with the catalog display name.
-   *
-   * Kept current by `setModel`. Null only when the runtime reported no model.
-   * Show `displayName` rather than the id when it is non-null: after a CLI
-   * update retires a model the runtime resolves the id forward, and the raw id
-   * a host stored is then the wrong label.
-   */
-  readonly model: ThreadModelSelection | null;
-  /**
-   * What the provider did with this thread's `mcpServers` / strict-mode request.
-   *
-   * Only Claude enforces strict mode outright. Every other provider is
-   * best-effort with a named `residual`, so an embedder that promised its users
-   * an isolated tool surface must read this rather than assume the request
-   * landed whole. Populated on create AND on resume — a reopened thread rebuilds
-   * the same tool surface it started with, and reports the same caveat.
-   *
-   * Null means one of two things, and they are NOT equivalent:
-   *   - the thread asked for neither `mcpServers` nor strict mode; or
-   *   - the runtime did not report one. Older runtimes omit the field
-   *     entirely. The SDK logs a warning in that case rather than letting a
-   *     missing report read as "nothing was requested" — if you asked for
-   *     servers and got null here, treat the guarantee as unverified.
-   */
-  readonly mcpCapability: McpCapabilityReport | null;
-  /**
-   * What the provider did with this thread's `instructions`.
-   *
-   * Null when the thread asked for none, or when an older runtime reported
-   * nothing — the same two-case ambiguity `mcpCapability` has, and for the same
-   * reason: the SDK does not invent a verdict it did not receive.
-   *
-   * `level` is `"applied"` on Claude, Codex, OpenCode and Pi, which all take
-   * instructions through a channel of their own; `"best-effort"` on Cursor and
-   * Droid, where Daex merges the text into a prompt it already prefixes.
-   */
-  readonly instructionsCapability: InstructionsCapability | null;
-  /**
-   * What the provider did with this thread's `settingSources`.
-   *
-   * Only Claude has a real switch. Codex reports `"best-effort"` for `project`
-   * and `all` because it always reads its own user-level file too, and every
-   * other provider reports `"ignored"` — the value did not reach it.
-   */
-  readonly settingSourcesCapability: SettingSourcesCapability | null;
-  /**
-   * What the provider could enforce of this thread's permission policy.
-   *
-   * Null when the thread opened with a preset rather than a policy. Read
-   * `level` before telling a user their rules are in force: only Claude gates
-   * every tool call against the policy, Codex approximates it with containment
-   * and approval settings, and the rest cannot express it at all.
-   */
-  readonly permissionCapability: PermissionCapability | null;
-  /**
-   * Queue a message for the agent.
-   *
-   * DISPATCH-RESOLUTION ASYMMETRY: this resolves when the turn has been
-   * DISPATCHED, not when the reply is complete. Nothing in the returned promise
-   * tells you a turn is still streaming, so code that runs after an `await
-   * send(...)` must not assume the thread is idle. Before any destructive
-   * operation — `setModel`, `dispose` — either await the completion event on
-   * `on("status")` or check the thread's status; `setModel` enforces this for
-   * you and throws rather than silently ending the turn.
-   *
-   * With an `mcpHeaders` callback and remote MCP servers, the headers are
-   * resolved again first (see `refreshMcpHeaders`), so a token that expired
-   * since the last turn is replaced before this one. A refresh that fails is
-   * logged and the message is still sent, on the headers the session has.
-   */
-  send(text: string, opts?: SendOptions): Promise<void>;
-  /**
-   * Add input to the turn in flight, without waiting for it to end.
-   *
-   * Needs text, attachments, or both. Attachments follow the same rules as
-   * `send`. Resolves once the runtime accepted the steer, not once the agent
-   * read it.
-   */
-  steer(text: string, opts?: SteerOptions): Promise<void>;
-  interrupt(): Promise<void>;
-  /**
-   * Rename the thread, or change its reasoning effort or fast mode.
-   *
-   * A title-only update is allowed at any time. `reasoningEffort` and
-   * `fastMode` are refused while a turn is in flight (`AdeError` code
-   * `turn_in_flight`, SDK >= 0.4) unless `{ force: true }`:
-   * on Codex a settings change the provider rejects tears the provider down,
-   * which ends the turn without `error` or `done` — the silent truncation the
-   * client's destructive-while-streaming rule forbids. Await the turn or
-   * `interrupt()` first.
-   *
-   * Resolves with the title and model as the runtime reports them afterwards.
-   */
-  update(patch: ThreadUpdate, opts?: ThreadUpdateOptions): Promise<ThreadUpdateResult>;
-  /**
-   * Run the last user turn again, as if the first attempt never happened.
-   *
-   * The runtime rolls the provider conversation back to just before the last
-   * user message, removes that message and everything after it from the
-   * thread's history, and sends the same message (text and attachments) again.
-   * The history then holds the message once. Files the old turn changed are
-   * NOT restored: the rollback covers the conversation, not the disk.
-   *
-   * The result does not say whether the old turn wrote files, because the
-   * runtime cannot tell which of YOUR tools write. A host that lets the agent
-   * write can find them itself: the removed events are the ones at or after
-   * `retractedFromSequence` in your own copy of the history, so inspect their
-   * tool calls and warn the user if any of them was a write.
-   *
-   * What a subscriber sees, in order: `session_meta_updated` with
-   * `historyInvalidated: true` and the new `historyGeneration` (drop your copy
-   * of the events at or after `retractedFromSequence`, or re-read `history()`),
-   * then the new turn's `user_message`, `status: started`, and the rest of the
-   * turn. A `history()` or `historyPage()` read after the call returns only the
-   * new attempt.
-   *
-   * Claude and Codex only. Throws `turn_in_flight` while a turn runs or waits
-   * on an approval (nothing changed; await it or `interrupt()` first),
-   * `unsupported` for another provider or a runtime without the action, and
-   * `rpc_error` when the thread has no user message yet.
-   *
-   * Resolves once the new turn is dispatched, not once it ends.
-   */
-  retry(): Promise<ThreadRerunResult>;
-  /**
-   * Replace the last user message with `text` and run it again.
-   *
-   * Everything `retry` says applies: same rollback, same event sequence, same
-   * errors, and the history shows only the edited message. `text` may be empty
-   * only when `opts.attachments` is non-empty. Attachments default to the
-   * original message's.
-   */
-  editLast(text: string, opts?: EditLastOptions): Promise<ThreadRerunResult>;
-  /**
-   * Replace this thread's caller MCP servers wholesale.
-   *
-   * For a credential or URL that changed: a rotated bearer token, a port that
-   * moved. The provider picks the new servers up on the next turn. Header
-   * values are sent to the runtime and never persisted by the SDK — the thread
-   * store keeps header names only.
-   *
-   * A remote server passed without `headers` gets them from the client's
-   * `mcpHeaders` callback, when there is one.
-   *
-   * Mid-turn, the runtime validates the servers at once (a bad map still
-   * rejects) and queues them for the end of the running turn — completed,
-   * interrupted or failed — and the call resolves. A later call replaces a
-   * queued map. Until the swap the summary reports `mcpServersPending: true`,
-   * and `mcpCapability` keeps describing the servers the running turn has. A
-   * runtime without `capabilities.personalChats.deferredMcpUpdates` refuses
-   * mid-turn instead (`turn_in_flight`).
-   *
-   * Refused by the SDK on a runtime that does not advertise
-   * `capabilities.personalChats.updateMcpServers` (`invalid_option`) — an older
-   * runtime would ignore the field and leave the old credentials in place,
-   * which is worse than failing. The same goes for `allowedTools` /
-   * `disallowedTools` on a runtime without `mcpToolFilters`, and for a filter
-   * the thread's provider cannot enforce (see `McpToolFilter`).
-   *
-   * A map identical to the one this client last sent for the thread — header
-   * values included — is not sent again: the call resolves with the current
-   * `mcpCapability` and the provider is left alone. So a renderer that reloads
-   * and repeats the same `refresh` does not restart anything.
-   *
-   * Resolves with the thread's new `mcpCapability`.
-   */
-  updateMcpServers(servers: Record<string, McpServerConfig>): Promise<McpCapabilityReport | null>;
-  /**
-   * Resolve this thread's MCP header values again through the client's
-   * `mcpHeaders` callback and push them when they changed.
-   *
-   * `send`, `retry` and `editLast` already do this before every turn; call it
-   * yourself right after rotating a token, so the swap does not wait for the
-   * next message. The servers are the thread's own (the last map it was
-   * opened or updated with); only the header values of its remote servers
-   * that carry headers are re-resolved, and a thread with none is a no-op. Values
-   * identical to the last ones sent push nothing. Mid-turn the push is queued
-   * for the end of the turn, as `updateMcpServers` is.
-   *
-   * Throws `invalid_option` without an `mcpHeaders` callback, on a runtime
-   * without `updateMcpServers`, and when the callback supplies nothing for a
-   * server that needs headers: pushing would replace that server's live
-   * credentials with none. A callback that throws rejects this call with its
-   * error. Resolves with the thread's `mcpCapability`.
-   */
-  refreshMcpHeaders(): Promise<McpCapabilityReport | null>;
-  /**
-   * Switch this thread's model, including across providers — the runtime tears
-   * the old one down and replays the transcript into the new one.
-   *
-   * Refused while a turn is in flight (code `turn_in_flight`, SDK >= 0.4)
-   * unless `{ force: true }`: the switch would
-   * end that turn without emitting `error` or `done`, so a caller who did not
-   * know a turn was running would see the response simply stop. Await the turn
-   * or `interrupt()` first.
-   *
-   * Returns what the model actually resolved to — the runtime resolves aliases
-   * and CLI-wrapped ids, so it can differ from what you passed — together with
-   * the four capability reports on the new provider. The same reports are
-   * emitted as a `capabilities_changed` envelope on the `status` channel.
-   */
-  setModel(modelId: string, opts?: SetModelOptions): Promise<SetModelResult>;
-  /**
-   * The durable transcript, newest `limit` events (all of them when omitted,
-   * up to the runtime's own cap of about 20,000 events / 2 MB). For a long
-   * thread prefer `historyPage`, which reads one bounded page at a time.
-   */
-  history(opts?: { limit?: number }): Promise<AgentChatEventEnvelope[]>;
-  /** Token totals observed on this thread; cost is present only when reported by the provider. */
-  usage(): ThreadUsage;
-  /**
-   * One page of the durable transcript, for "load older" on scroll.
-   *
-   * Without `beforeSequence` this is the newest page. Each page reports the
-   * cursor for the one before it. Events are oldest-first within a page.
-   *
-   * On a runtime without the `getEventHistoryPage` action, only the newest page
-   * is available: an older-page request returns an empty page with
-   * `hasMore: false` and logs once.
-   */
-  historyPage(opts?: HistoryPageOptions): Promise<ThreadHistoryPage>;
-  /**
-   * Answer an approval this thread emitted.
-   *
-   * AN UNANSWERED APPROVAL BLOCKS THE TURN, with no timeout anywhere in the
-   * runtime. This call and `interrupt()` are the only two ways out, and they
-   * are not the same: this one answers the request and lets the turn continue,
-   * while `interrupt()` aborts the turn without answering anything. A policy
-   * with `approvalTimeoutMs` adds a third: the SDK declines the request itself
-   * when the time runs out.
-   *
-   * Resolves once the runtime accepts the decision, NOT once the tool has run —
-   * the same dispatch-resolution asymmetry `send()` has.
-   *
-   * Throws `approval_not_found` when the item is not pending: a stop, a
-   * teardown, or an earlier call already settled it. The engine settles unknown
-   * items silently, so without this check an answer to a dead card would look
-   * like it worked.
-   *
-   * Use `respond()` for questions and plan approvals. This method accepts only
-   * `"approval"` and `"permissions"` requests; an MCP elicitation that only
-   * asks "may this tool run?" arrives as `"approval"` and is answerable here.
-   *
-   * `accept_always` settles this request and every later one the provider
-   * considers the same, for the life of the session.
-   */
-  approve(itemId: string, decision: ApprovalDecision, responseText?: string): Promise<void>;
-  /**
-   * Every request this thread is currently blocked on.
-   *
-   * Call it after a reload to restore approval cards: the requests outlive the
-   * client that saw the events. The `answerable` field identifies whether the
-   * runtime supports a response for each request. Questions and plan approvals
-   * use `respond()` when that action is available; tool approvals use
-   * `approve()`.
-   */
-  pendingApprovals(): Promise<ApprovalRequest[]>;
-  /**
-   * Answer a question, structured question, or plan approval through the
-   * runtime's `respondToInput` action. Question answers are keyed by question
-   * id. Plan approval uses an explicit `decision` (`accept` or `decline`); the
-   * SDK never infers it from option labels.
-   */
-  respond(requestId: string, response: ThreadRespondOptions): Promise<void>;
-  /** Mutable queued sends belonging to this thread. */
-  readonly queue: {
-    list(): Promise<ThreadQueueItem[]>;
-    cancel(id: string): Promise<void>;
-    edit(id: string, text: string): Promise<void>;
-    move(id: string, index: number): Promise<void>;
-    dispatch(id: string): Promise<void>;
-    cancelDispatched(id: string): Promise<void>;
-    restore(): Promise<void>;
-  };
-  interrupt(options?: ThreadInterruptOptions): Promise<void>;
-  stopTask(taskId: string): Promise<void>;
-  slashCommands(): Promise<AgentChatSlashCommand[]>;
-  recover(options?: { turnId?: string; action?: "wait" | "nudge" | "retry_same_runtime" | "restart_resume" }): Promise<AgentChatRecoverTurnResult>;
-  resolveUnprocessed(args: { steerId: string; action: "run_next" | "dismiss" }): Promise<AgentChatResolveUnprocessedMessageResult>;
-  readonly usageLimit: {
-    resumeNow(): Promise<AgentChatUsageLimitResult>;
-    continueOnAlternate(): Promise<AgentChatUsageLimitResult>;
-  };
-  switchAccount(instanceId: string): Promise<AgentChatSwitchAccountResult>;
-  on(event: ThreadEventChannel, cb: (envelope: AgentChatEventEnvelope) => void): Unsubscribe;
-}
+export type AdeThread = DaexThread;
 ````
 
 ### `AgentChatCodexCollaborationMode`
@@ -908,7 +368,7 @@ export type ApprovalRequest = {
   /** Provider payload: the command string, the patch, the tool input. */
   detail?: unknown;
   /** Which provider raised it. */
-  provider: AdeProvider;
+  provider: DaexProvider;
   /** The original prompts for requests answered through `respond()`. */
   questions?: PendingInputRequest["questions"];
   /** False when the runtime cannot answer this request through the SDK. */
@@ -953,7 +413,8 @@ Layout, which this module both expects and documents:
 
   @ade-dev/runtime-&lt;target&gt;/
     package.json          &#123; os: [...], cpu: [...], version: &lt;ade release&gt; &#125;
-    bin/ade[.exe]         the runtime binary, mode 0755
+    bin/daex[.exe]        the runtime binary, mode 0755 (bin/ade[.exe] before
+                          the Daex rename; still accepted)
     native/               the extracted contents of &lt;binary&gt;.native.tar.gz
       node_modules/       the modules the binary dlopens
       vendor/crsqlite/... the cr-sqlite extension
@@ -964,7 +425,7 @@ Layout, which this module both expects and documents:
 at; `nodeModulesPath` is `<pkg>/native/node_modules`, which is
 `ADE_RUNTIME_NODE_MODULES`. The two are reported separately rather than
 derived at the call site because an embedder is free to relocate either half
-inside their bundle, and `createAdeChat` accepts both.
+inside their bundle, and `createDaexChat` accepts both.
 
 ````ts
 export type BundledRuntime = {
@@ -999,8 +460,16 @@ export type CapabilitiesChangedEvent = {
 
 ### `CreateAdeChatOptions`
 
+@deprecated Use CreateDaexChatOptions.
+
 ````ts
-export type CreateAdeChatOptions = {
+export type CreateAdeChatOptions = CreateDaexChatOptions;
+````
+
+### `CreateDaexChatOptions`
+
+````ts
+export type CreateDaexChatOptions = {
   /** Isolated per-app Daex state root. Created if missing. */
   home: string;
   /** Pin a specific `ade` build. Skips PATH discovery and the downloader. */
@@ -1086,7 +555,7 @@ export type CreateAdeChatOptions = {
   autoRestart?: boolean | { maxAttempts?: number; backoffMs?: number };
   /**
    * Refuse a runtime whose version is outside `SUPPORTED_RUNTIME_RANGE`,
-   * throwing `AdeError("runtime_incompatible")` from `createAdeChat` (and
+   * throwing `DaexError("runtime_incompatible")` from `createDaexChat` (and
    * failing an `autoRestart` attempt the same way).
    *
    * Off by default: an unsupported runtime connects, logs one warning, and
@@ -1121,10 +590,598 @@ export type CreateAdeChatOptions = {
    * The value is pushed to the runtime for the live session and never saved
    * in the SDK thread record.
    */
-  resolveSecret?: (provider: AdeProvider, credentialId: string) => string | undefined | Promise<string | undefined>;
+  resolveSecret?: (provider: DaexProvider, credentialId: string) => string | undefined | Promise<string | undefined>;
   /** Usage-limit behavior for new threads. Defaults to `wait`. */
   onUsageLimit?: "failover" | "wait" | "ask";
 };
+````
+
+### `DaexChatClient`
+
+RULE FOR ANYTHING ADDED TO THIS SURFACE — destructive while streaming.
+
+An SDK caller has no ambient signal that a turn is live. `send()` resolves as
+soon as the turn is dispatched, not when it completes, so nothing in the API
+tells a settings handler or a render effect that a reply is mid-flight. And
+when a turn dies from a runtime teardown it emits neither `error` nor `done`
+— subscribers just stop receiving. Silent truncation is therefore the default
+failure mode of every destructive operation here, not an edge case.
+
+So any new operation that can end a running turn must pick one, explicitly:
+  - refuse mid-turn and name the way out (`setModel`, which throws and points
+    at `interrupt()` or `{ force: true }`); or
+  - proceed, and say plainly in its own docs that in-flight turns end without
+    a completion event (`dispose`, because a shutdown that can refuse is
+    worse than a lost reply).
+
+What is not acceptable is the third option: destroying the turn quietly and
+letting the consumer discover it as a response that stopped mid-sentence.
+
+````ts
+export interface DaexChatClient {
+  accounts: AccountManagement["accounts"];
+  credentials: AccountManagement["credentials"];
+  presets: AccountManagement["presets"];
+  providers: {
+    /**
+     * Per-provider install, auth and availability.
+     *
+     * Served from the runtime's probe cache when the runtime supports it, and
+     * derived from the model catalog when it does not. Read `source` on each
+     * record before presenting any of it as a fact about the machine.
+     */
+    status(): Promise<Record<string, ProviderStatus>>;
+    /**
+     * The same map, with the runtime's probe cache bypassed.
+     *
+     * This is the "I just installed it" button. It spawns `--version` for every
+     * provider, so it is the slow path — `status()` and the `onChange` poll
+     * never bypass the cache.
+     */
+    refresh(): Promise<Record<string, ProviderStatus>>;
+    onChange(cb: (status: Record<string, ProviderStatus>) => void): Unsubscribe;
+    /** Runtime-derived controls for a provider, or `unsupported` when absent. */
+    capabilities(provider: string): Promise<ProviderCapabilities>;
+  };
+  models: {
+    list(): Promise<ModelCatalogEntry[]>;
+    /**
+     * Called with the whole catalog when it changes: a provider signs in or
+     * out, or the runtime's catalog gains or drops a model. Driven by the same
+     * poll as `providers.onChange`, and called only when a model's id,
+     * `isAvailable`, `connected` or `isDefault` changed. Not called with the
+     * current list on subscribe; call `list()` for that. SDK >= 0.4.
+     */
+    onChange(cb: (models: ModelCatalogEntry[]) => void): Unsubscribe;
+    /**
+     * The model a new thread should use, or null when none qualifies. See
+     * `pickDefaultModel` for the rule; this reads a fresh catalog first.
+     * SDK >= 0.4.
+     */
+    defaultModel(opts?: DefaultModelOptions): Promise<ModelCatalogEntry | null>;
+  };
+  threads: {
+    /** Open a thread, creating it when the key is new to this home. */
+    open(key: string, opts: ThreadOpenOptions): Promise<DaexThread>;
+    /**
+     * Reopen a key this home already stores. The provider and model come from
+     * the stored record, so an app that reopens `"support"` after a restart
+     * does not have to remember how it was created.
+     */
+    open(key: string, opts?: ThreadResumeOptions): Promise<DaexThread>;
+    /**
+     * Every chat in this home, archived ones included, newest activity first
+     * is NOT guaranteed — sort on `updatedAt` yourself.
+     */
+    list(): Promise<ThreadSummary[]>;
+    /**
+     * One thread's summary, by key, or null when the runtime has no session for
+     * it: a key this home never opened, a deleted key, or a key whose session
+     * the runtime lost (the next `open` recreates it). The same row `list()`
+     * would return, without reading every chat. SDK >= 0.4.
+     */
+    get(key: string): Promise<ThreadSummary | null>;
+    /**
+     * Delete a thread: its runtime session, its transcript, and its key.
+     *
+     * A running turn is interrupted FIRST, so subscribers receive the turn's
+     * `done` before the session goes away rather than a stream that simply
+     * stops. Then the runtime deletes the session, the key is removed from the
+     * thread store, and a live `DaexThread` for the key is released — it throws
+     * `disposed`-style errors from the runtime afterwards, so drop it.
+     *
+     * A key whose session the runtime already lost is still removed. A key the
+     * store does not know and no live thread holds throws `thread_not_found`.
+     * Throws `invalid_option` on a runtime without the `delete` action.
+     */
+    delete(key: string): Promise<void>;
+    /**
+     * Archive a thread. The key and transcript are kept; `list()` reports it
+     * with `archived: true`, and `unarchive` brings it back.
+     *
+     * Like `delete`, a running turn is interrupted first so it ends with a
+     * `done` event rather than silently. Throws `thread_not_found` for a key
+     * the store does not know, and `invalid_option` on a runtime without the
+     * `archive` action.
+     */
+    archive(key: string): Promise<void>;
+    /** Reverse `archive`. Same errors. */
+    unarchive(key: string): Promise<void>;
+  };
+  doctor(): Promise<DoctorReport>;
+  exportThread(key: string): Promise<string>;
+  /** Run a temporary thread and delete it after the final answer is received. */
+  run<T = unknown>(prompt: string, options: RunOptions): Promise<T | string>;
+  /**
+   * Listen for runtime lifecycle events: `"exit"`, `"transport"`, `"restart"`.
+   * See {@link DaexClientEventMap} for the payloads. Returns the unsubscribe.
+   *
+   * Listeners survive an `autoRestart`, because the client object does.
+   */
+  on<E extends DaexClientEvent>(event: E, cb: (payload: DaexClientEventMap[E]) => void): Unsubscribe;
+  /**
+   * Stop the runtime and release this client. Idempotent.
+   *
+   * Ends any turn still in flight, and — like every teardown on this surface —
+   * without an `error` or `done` event first: the child process goes away, so
+   * subscribers simply stop receiving. Deliberately NOT guarded the way
+   * `setModel` is, because dispose is the teardown path and a shutdown that can
+   * refuse is worse than a truncated reply. If a caller needs the reply, it
+   * must await the turn before disposing; the transcript is durable either way
+   * and `exportThread` still returns everything that was persisted.
+   */
+  dispose(): Promise<void>;
+}
+````
+
+### `DaexClientEvent`
+
+The client-level event names. See DaexClientEventMap.
+
+````ts
+export type DaexClientEvent = (typeof DAEX_CLIENT_EVENTS)[number];
+````
+
+### `DaexClientEventMap`
+
+Payloads of the client-level events, by name.
+
+These are about the RUNTIME, not about any one thread. A thread learns that
+its runtime died from the synthetic `status` envelope on its own `status`
+channel; a host learns it here, once.
+
+````ts
+export type DaexClientEventMap = {
+  /**
+   * The runtime process this client spawned exited without `dispose()`.
+   * `error` is the tail of its stderr, when it wrote any. Not emitted in attach
+   * mode, where the client owns no process — watch `transport` there.
+   */
+  exit: { code: number | null; signal: string | null; error: string | null };
+  /**
+   * The socket to the runtime closed unexpectedly (`"closed"`), or an
+   * `autoRestart` brought it back (`"reconnected"`).
+   */
+  transport: { state: "closed" | "reconnected"; error: string | null };
+  /**
+   * One `autoRestart` attempt finished. `attempt` counts from 1 per outage.
+   * `final` is true when no further attempt follows for this outage: the
+   * attempt succeeded (`ok: true`), or it failed and was the last one
+   * `maxAttempts` allows (the client gave up; the runtime stays down until the
+   * host creates a new client). SDK >= 0.4.
+   */
+  restart: { attempt: number; ok: boolean; error: string | null; final: boolean };
+  /**
+   * A thread left, or came back to, the host's active list through this
+   * client: `threads.delete` (`"deleted"`), `threads.archive` (`"archived"`)
+   * or `threads.unarchive` (`"unarchived"`). Emitted after the action
+   * succeeds, whoever called it: host code in the main process, or a renderer
+   * over the Electron bridge. A change made by another client of the same
+   * runtime (Daex desktop) is not reported. SDK >= 0.4.
+   */
+  threadLifecycle: { key: string; change: "deleted" | "archived" | "unarchived" };
+  /** A provider turn stopped because its current account reached a usage limit. */
+  usageLimit: import("./types.js").UsageLimitEvent;
+};
+````
+
+### `DaexErrorCode`
+
+Every error this package throws carries a stable machine-readable code.
+
+Kept as its own union rather than derived from ADE_ERROR_CODES so
+each member can carry its own doc comment; a test asserts the two agree.
+
+````ts
+export type DaexErrorCode =
+  | "binary_not_found"
+  | "download_failed"
+  | "checksum_mismatch"
+  | "spawn_failed"
+  | "connect_failed"
+  | "handshake_failed"
+  | "rpc_error"
+  | "rpc_timeout"
+  | "transport_closed"
+  | "protocol_error"
+  | "thread_not_found"
+  | "invalid_option"
+  /**
+   * No runtime could be resolved and `allowDownload: false` forbade fetching
+   * one. A packaging mistake must fail here, loudly, rather than work on the
+   * developer's machine through a silent download and fail on a locked-down
+   * user's.
+   */
+  | "runtime_unavailable"
+  /**
+   * `approve()` named an item that is not pending. A stop, a teardown, or an
+   * earlier call already settled it; the engine settles unknown items silently,
+   * so the SDK checks first and says so rather than letting a no-op look like
+   * a success.
+   */
+  | "approval_not_found"
+  /**
+   * A bridge refused the call before it reached the SDK — the host's
+   * `authorize` hook said no. Used by `@daex-dev/sdk/electron`.
+   */
+  | "unauthorized"
+  | "disposed"
+  /**
+   * The runtime's version is outside `SUPPORTED_RUNTIME_RANGE` and the host
+   * asked `createDaexChat` to refuse it (`requireCompatibleRuntime: true`).
+   * Without that option an unsupported runtime connects with a logged warning.
+   */
+  | "runtime_incompatible"
+  /**
+   * The call was refused only because a turn is running on the thread:
+   * `setModel`, a reasoning `update`, `retry`, `editLast`, or a runtime action
+   * that must wait for the turn to end. Nothing changed. Wait for the turn to
+   * finish (or `interrupt()` it), then call again. `setModel` and `update`
+   * also accept `{ force: true }`. Before SDK 0.4 these refusals used
+   * `invalid_option`.
+   */
+  | "turn_in_flight"
+  /**
+   * The thread's provider, or the runtime, cannot do what was asked. Nothing
+   * changed. `retry` and `editLast` throw it for a provider other than Claude
+   * or Codex, and for a runtime older than the `rerunLastTurn` action.
+   */
+  | "unsupported"
+  | "invalid_output"
+  /**
+   * A provider sign-in ended without signing in: it failed, was cancelled, or
+   * expired. The handle's last status says which (`state`) and why (`message`).
+   */
+  | "sign_in_failed";
+````
+
+### `DaexProvider`
+
+Known provider ids for autocomplete; provider strings remain open for newer runtimes.
+
+````ts
+export type DaexProvider =
+  | "claude"
+  | "codex"
+  | "cursor"
+  | "droid"
+  | "opencode"
+  | "pi"
+  | "muse"
+  | "qwen"
+  | "kimi"
+  | "grok"
+  | "copilot"
+  | "devin"
+  | "antigravity"
+  | (string & {});
+````
+
+### `DaexThread`
+
+````ts
+export interface DaexThread {
+  /**
+   * The runtime session id. Stable for the life of the thread, EXCEPT across a
+   * recreate: if an `autoRestart` finds the runtime lost the session, the key
+   * is rebuilt on a new session and this id changes. Key your own state on
+   * `key`, not on this.
+   */
+  readonly id: string;
+  readonly key: string;
+  /**
+   * The thread's title, or null. Updated by `update({ title })`; the runtime
+   * may also retitle a thread after its first turn, which this reflects at the
+   * next open or `update`.
+   */
+  readonly title: string | null;
+  /**
+   * What the thread's model resolved to, with the catalog display name.
+   *
+   * Kept current by `setModel`. Null only when the runtime reported no model.
+   * Show `displayName` rather than the id when it is non-null: after a CLI
+   * update retires a model the runtime resolves the id forward, and the raw id
+   * a host stored is then the wrong label.
+   */
+  readonly model: ThreadModelSelection | null;
+  /**
+   * What the provider did with this thread's `mcpServers` / strict-mode request.
+   *
+   * Only Claude enforces strict mode outright. Every other provider is
+   * best-effort with a named `residual`, so an embedder that promised its users
+   * an isolated tool surface must read this rather than assume the request
+   * landed whole. Populated on create AND on resume — a reopened thread rebuilds
+   * the same tool surface it started with, and reports the same caveat.
+   *
+   * Null means one of two things, and they are NOT equivalent:
+   *   - the thread asked for neither `mcpServers` nor strict mode; or
+   *   - the runtime did not report one. Older runtimes omit the field
+   *     entirely. The SDK logs a warning in that case rather than letting a
+   *     missing report read as "nothing was requested" — if you asked for
+   *     servers and got null here, treat the guarantee as unverified.
+   */
+  readonly mcpCapability: McpCapabilityReport | null;
+  /**
+   * What the provider did with this thread's `instructions`.
+   *
+   * Null when the thread asked for none, or when an older runtime reported
+   * nothing — the same two-case ambiguity `mcpCapability` has, and for the same
+   * reason: the SDK does not invent a verdict it did not receive.
+   *
+   * `level` is `"applied"` on Claude, Codex, OpenCode and Pi, which all take
+   * instructions through a channel of their own; `"best-effort"` on Cursor and
+   * Droid, where Daex merges the text into a prompt it already prefixes.
+   */
+  readonly instructionsCapability: InstructionsCapability | null;
+  /**
+   * What the provider did with this thread's `settingSources`.
+   *
+   * Only Claude has a real switch. Codex reports `"best-effort"` for `project`
+   * and `all` because it always reads its own user-level file too, and every
+   * other provider reports `"ignored"` — the value did not reach it.
+   */
+  readonly settingSourcesCapability: SettingSourcesCapability | null;
+  /**
+   * What the provider could enforce of this thread's permission policy.
+   *
+   * Null when the thread opened with a preset rather than a policy. Read
+   * `level` before telling a user their rules are in force: only Claude gates
+   * every tool call against the policy, Codex approximates it with containment
+   * and approval settings, and the rest cannot express it at all.
+   */
+  readonly permissionCapability: PermissionCapability | null;
+  /**
+   * Queue a message for the agent.
+   *
+   * DISPATCH-RESOLUTION ASYMMETRY: this resolves when the turn has been
+   * DISPATCHED, not when the reply is complete. Nothing in the returned promise
+   * tells you a turn is still streaming, so code that runs after an `await
+   * send(...)` must not assume the thread is idle. Before any destructive
+   * operation — `setModel`, `dispose` — either await the completion event on
+   * `on("status")` or check the thread's status; `setModel` enforces this for
+   * you and throws rather than silently ending the turn.
+   *
+   * With an `mcpHeaders` callback and remote MCP servers, the headers are
+   * resolved again first (see `refreshMcpHeaders`), so a token that expired
+   * since the last turn is replaced before this one. A refresh that fails is
+   * logged and the message is still sent, on the headers the session has.
+   */
+  send(text: string, opts?: SendOptions): Promise<void>;
+  /**
+   * Add input to the turn in flight, without waiting for it to end.
+   *
+   * Needs text, attachments, or both. Attachments follow the same rules as
+   * `send`. Resolves once the runtime accepted the steer, not once the agent
+   * read it.
+   */
+  steer(text: string, opts?: SteerOptions): Promise<void>;
+  interrupt(): Promise<void>;
+  /**
+   * Rename the thread, or change its reasoning effort or fast mode.
+   *
+   * A title-only update is allowed at any time. `reasoningEffort` and
+   * `fastMode` are refused while a turn is in flight (`DaexError` code
+   * `turn_in_flight`, SDK >= 0.4) unless `{ force: true }`:
+   * on Codex a settings change the provider rejects tears the provider down,
+   * which ends the turn without `error` or `done` — the silent truncation the
+   * client's destructive-while-streaming rule forbids. Await the turn or
+   * `interrupt()` first.
+   *
+   * Resolves with the title and model as the runtime reports them afterwards.
+   */
+  update(patch: ThreadUpdate, opts?: ThreadUpdateOptions): Promise<ThreadUpdateResult>;
+  /**
+   * Run the last user turn again, as if the first attempt never happened.
+   *
+   * The runtime rolls the provider conversation back to just before the last
+   * user message, removes that message and everything after it from the
+   * thread's history, and sends the same message (text and attachments) again.
+   * The history then holds the message once. Files the old turn changed are
+   * NOT restored: the rollback covers the conversation, not the disk.
+   *
+   * The result does not say whether the old turn wrote files, because the
+   * runtime cannot tell which of YOUR tools write. A host that lets the agent
+   * write can find them itself: the removed events are the ones at or after
+   * `retractedFromSequence` in your own copy of the history, so inspect their
+   * tool calls and warn the user if any of them was a write.
+   *
+   * What a subscriber sees, in order: `session_meta_updated` with
+   * `historyInvalidated: true` and the new `historyGeneration` (drop your copy
+   * of the events at or after `retractedFromSequence`, or re-read `history()`),
+   * then the new turn's `user_message`, `status: started`, and the rest of the
+   * turn. A `history()` or `historyPage()` read after the call returns only the
+   * new attempt.
+   *
+   * Claude and Codex only. Throws `turn_in_flight` while a turn runs or waits
+   * on an approval (nothing changed; await it or `interrupt()` first),
+   * `unsupported` for another provider or a runtime without the action, and
+   * `rpc_error` when the thread has no user message yet.
+   *
+   * Resolves once the new turn is dispatched, not once it ends.
+   */
+  retry(): Promise<ThreadRerunResult>;
+  /**
+   * Replace the last user message with `text` and run it again.
+   *
+   * Everything `retry` says applies: same rollback, same event sequence, same
+   * errors, and the history shows only the edited message. `text` may be empty
+   * only when `opts.attachments` is non-empty. Attachments default to the
+   * original message's.
+   */
+  editLast(text: string, opts?: EditLastOptions): Promise<ThreadRerunResult>;
+  /**
+   * Replace this thread's caller MCP servers wholesale.
+   *
+   * For a credential or URL that changed: a rotated bearer token, a port that
+   * moved. The provider picks the new servers up on the next turn. Header
+   * values are sent to the runtime and never persisted by the SDK — the thread
+   * store keeps header names only.
+   *
+   * A remote server passed without `headers` gets them from the client's
+   * `mcpHeaders` callback, when there is one.
+   *
+   * Mid-turn, the runtime validates the servers at once (a bad map still
+   * rejects) and queues them for the end of the running turn — completed,
+   * interrupted or failed — and the call resolves. A later call replaces a
+   * queued map. Until the swap the summary reports `mcpServersPending: true`,
+   * and `mcpCapability` keeps describing the servers the running turn has. A
+   * runtime without `capabilities.personalChats.deferredMcpUpdates` refuses
+   * mid-turn instead (`turn_in_flight`).
+   *
+   * Refused by the SDK on a runtime that does not advertise
+   * `capabilities.personalChats.updateMcpServers` (`invalid_option`) — an older
+   * runtime would ignore the field and leave the old credentials in place,
+   * which is worse than failing. The same goes for `allowedTools` /
+   * `disallowedTools` on a runtime without `mcpToolFilters`, and for a filter
+   * the thread's provider cannot enforce (see `McpToolFilter`).
+   *
+   * A map identical to the one this client last sent for the thread — header
+   * values included — is not sent again: the call resolves with the current
+   * `mcpCapability` and the provider is left alone. So a renderer that reloads
+   * and repeats the same `refresh` does not restart anything.
+   *
+   * Resolves with the thread's new `mcpCapability`.
+   */
+  updateMcpServers(servers: Record<string, McpServerConfig>): Promise<McpCapabilityReport | null>;
+  /**
+   * Resolve this thread's MCP header values again through the client's
+   * `mcpHeaders` callback and push them when they changed.
+   *
+   * `send`, `retry` and `editLast` already do this before every turn; call it
+   * yourself right after rotating a token, so the swap does not wait for the
+   * next message. The servers are the thread's own (the last map it was
+   * opened or updated with); only the header values of its remote servers
+   * that carry headers are re-resolved, and a thread with none is a no-op. Values
+   * identical to the last ones sent push nothing. Mid-turn the push is queued
+   * for the end of the turn, as `updateMcpServers` is.
+   *
+   * Throws `invalid_option` without an `mcpHeaders` callback, on a runtime
+   * without `updateMcpServers`, and when the callback supplies nothing for a
+   * server that needs headers: pushing would replace that server's live
+   * credentials with none. A callback that throws rejects this call with its
+   * error. Resolves with the thread's `mcpCapability`.
+   */
+  refreshMcpHeaders(): Promise<McpCapabilityReport | null>;
+  /**
+   * Switch this thread's model, including across providers — the runtime tears
+   * the old one down and replays the transcript into the new one.
+   *
+   * Refused while a turn is in flight (code `turn_in_flight`, SDK >= 0.4)
+   * unless `{ force: true }`: the switch would
+   * end that turn without emitting `error` or `done`, so a caller who did not
+   * know a turn was running would see the response simply stop. Await the turn
+   * or `interrupt()` first.
+   *
+   * Returns what the model actually resolved to — the runtime resolves aliases
+   * and CLI-wrapped ids, so it can differ from what you passed — together with
+   * the four capability reports on the new provider. The same reports are
+   * emitted as a `capabilities_changed` envelope on the `status` channel.
+   */
+  setModel(modelId: string, opts?: SetModelOptions): Promise<SetModelResult>;
+  /**
+   * The durable transcript, newest `limit` events (all of them when omitted,
+   * up to the runtime's own cap of about 20,000 events / 2 MB). For a long
+   * thread prefer `historyPage`, which reads one bounded page at a time.
+   */
+  history(opts?: { limit?: number }): Promise<AgentChatEventEnvelope[]>;
+  /** Token totals observed on this thread; cost is present only when reported by the provider. */
+  usage(): ThreadUsage;
+  /**
+   * One page of the durable transcript, for "load older" on scroll.
+   *
+   * Without `beforeSequence` this is the newest page. Each page reports the
+   * cursor for the one before it. Events are oldest-first within a page.
+   *
+   * On a runtime without the `getEventHistoryPage` action, only the newest page
+   * is available: an older-page request returns an empty page with
+   * `hasMore: false` and logs once.
+   */
+  historyPage(opts?: HistoryPageOptions): Promise<ThreadHistoryPage>;
+  /**
+   * Answer an approval this thread emitted.
+   *
+   * AN UNANSWERED APPROVAL BLOCKS THE TURN, with no timeout anywhere in the
+   * runtime. This call and `interrupt()` are the only two ways out, and they
+   * are not the same: this one answers the request and lets the turn continue,
+   * while `interrupt()` aborts the turn without answering anything. A policy
+   * with `approvalTimeoutMs` adds a third: the SDK declines the request itself
+   * when the time runs out.
+   *
+   * Resolves once the runtime accepts the decision, NOT once the tool has run —
+   * the same dispatch-resolution asymmetry `send()` has.
+   *
+   * Throws `approval_not_found` when the item is not pending: a stop, a
+   * teardown, or an earlier call already settled it. The engine settles unknown
+   * items silently, so without this check an answer to a dead card would look
+   * like it worked.
+   *
+   * Use `respond()` for questions and plan approvals. This method accepts only
+   * `"approval"` and `"permissions"` requests; an MCP elicitation that only
+   * asks "may this tool run?" arrives as `"approval"` and is answerable here.
+   *
+   * `accept_always` settles this request and every later one the provider
+   * considers the same, for the life of the session.
+   */
+  approve(itemId: string, decision: ApprovalDecision, responseText?: string): Promise<void>;
+  /**
+   * Every request this thread is currently blocked on.
+   *
+   * Call it after a reload to restore approval cards: the requests outlive the
+   * client that saw the events. The `answerable` field identifies whether the
+   * runtime supports a response for each request. Questions and plan approvals
+   * use `respond()` when that action is available; tool approvals use
+   * `approve()`.
+   */
+  pendingApprovals(): Promise<ApprovalRequest[]>;
+  /**
+   * Answer a question, structured question, or plan approval through the
+   * runtime's `respondToInput` action. Question answers are keyed by question
+   * id. Plan approval uses an explicit `decision` (`accept` or `decline`); the
+   * SDK never infers it from option labels.
+   */
+  respond(requestId: string, response: ThreadRespondOptions): Promise<void>;
+  /** Mutable queued sends belonging to this thread. */
+  readonly queue: {
+    list(): Promise<ThreadQueueItem[]>;
+    cancel(id: string): Promise<void>;
+    edit(id: string, text: string): Promise<void>;
+    move(id: string, index: number): Promise<void>;
+    dispatch(id: string): Promise<void>;
+    cancelDispatched(id: string): Promise<void>;
+    restore(): Promise<void>;
+  };
+  interrupt(options?: ThreadInterruptOptions): Promise<void>;
+  stopTask(taskId: string): Promise<void>;
+  slashCommands(): Promise<AgentChatSlashCommand[]>;
+  recover(options?: { turnId?: string; action?: "wait" | "nudge" | "retry_same_runtime" | "restart_resume" }): Promise<AgentChatRecoverTurnResult>;
+  resolveUnprocessed(args: { steerId: string; action: "run_next" | "dismiss" }): Promise<AgentChatResolveUnprocessedMessageResult>;
+  readonly usageLimit: {
+    resumeNow(): Promise<AgentChatUsageLimitResult>;
+    continueOnAlternate(): Promise<AgentChatUsageLimitResult>;
+  };
+  switchAccount(instanceId: string): Promise<AgentChatSwitchAccountResult>;
+  on(event: ThreadEventChannel, cb: (envelope: AgentChatEventEnvelope) => void): Unsubscribe;
+}
 ````
 
 ### `DefaultModelOptions`
@@ -1243,7 +1300,7 @@ export type DoctorReport = {
      *
      * An unsupported runtime still connects: features it lacks are detected
      * and degrade with a logged line. Pass `requireCompatibleRuntime: true` to
-     * `createAdeChat` to refuse it instead. A dev build (`0.0.0`, or no version
+     * `createDaexChat` to refuse it instead. A dev build (`0.0.0`, or no version
      * at all) counts as supported and says so in `note`.
      */
     compatibility: RuntimeCompatibility;
@@ -1630,18 +1687,18 @@ export type ModelCatalogEntry = {
   displayName: string;
   /**
    * The provider group this model belongs to. One of the six
-   * {@link AdeProvider} values for every model this SDK can open a thread on;
+   * {@link DaexProvider} values for every model this SDK can open a thread on;
    * typed open because the runtime's catalog is downloaded and can list a
    * provider group newer than this SDK.
    *
-   * Because it is open, `ThreadOpenOptions.provider` (typed `AdeProvider`) will
+   * Because it is open, `ThreadOpenOptions.provider` (typed `DaexProvider`) will
    * not take it without narrowing. Narrow it with `isSupportedProvider` — an
    * SDK export since 0.4 — rather than a cast:
    *
    *   if (!isSupportedProvider(entry.provider)) return;
-   *   ade.threads.open(key, { provider: entry.provider, model: entry.id });
+   *   daex.threads.open(key, { provider: entry.provider, model: entry.id });
    */
-  provider: AdeProvider | (string & {});
+  provider: DaexProvider | (string & {});
   /** Provider-native model ref Daex sends under the hood. */
   runtimeModelId: string;
   isDefault: boolean;
@@ -1656,17 +1713,17 @@ export type ModelCatalogEntry = {
 
 ### `PackagedRuntime`
 
-Spread straight into `createAdeChat`:
+Spread straight into `createDaexChat`:
 
-  createAdeChat(&#123; ...resolvePackagedRuntime(process.resourcesPath), home, allowDownload: false &#125;)
+  createDaexChat(&#123; ...resolvePackagedRuntime(process.resourcesPath), home, allowDownload: false &#125;)
 
-The field names ARE the `createAdeChat` option names, which is the point:
+The field names ARE the `createDaexChat` option names, which is the point:
 no host-side mapping to get wrong. `source: "packaged"` makes
 `doctor().runtime.source` report `"packaged"`.
 
 ````ts
 export type PackagedRuntime = {
-  /** Absolute path of `bin/ade` (`bin/ade.exe` on Windows). */
+  /** Absolute path of `bin/daex`, or `bin/ade` in an older bundle (`.exe` on Windows). */
   binaryPath: string;
   /** Absolute path of `native/`, which becomes `ADE_RUNTIME_ROOT`. */
   runtimeRoot: string;
@@ -1931,7 +1988,7 @@ export type ResolveBundledRuntimeOptions = {
   /**
    * Directory or file to resolve the package from. Defaults to this module's
    * own location, which is what an embedder wants: the runtime package sits
-   * beside `@ade-dev/sdk` in the same `node_modules` tree.
+   * beside `@daex-dev/sdk` in the same `node_modules` tree.
    */
   resolveFrom?: string;
   platform?: NodeJS.Platform;
@@ -1978,7 +2035,7 @@ export type ResolvePackagedRuntimeOptions = {
 
 ````ts
 export type RunOptions = Omit<ThreadOpenOptions, "provider" | "model"> & {
-  provider: AdeProvider;
+  provider: DaexProvider;
   model: string;
   schema?: JsonSchema;
   budget?: ThreadBudget;
@@ -2008,7 +2065,7 @@ export type RuntimeCompatibility = {
 
 ### `RuntimeDownloader`
 
-Injectable so tests never touch the network. `createAdeChat` accepts one via
+Injectable so tests never touch the network. `createDaexChat` accepts one via
 the internal options bag; the default is `downloadRuntime`.
 
 ````ts
@@ -2208,7 +2265,7 @@ export type ThreadBudget = {
 The four capability reports a thread carries, as one object.
 
 Returned by `setModel` and carried by `capabilities_changed`. Each report
-keeps its own null rule — see the matching field on `AdeThread`.
+keeps its own null rule — see the matching field on `DaexThread`.
 
 ````ts
 export type ThreadCapabilities = {
@@ -2229,7 +2286,7 @@ export type ThreadEventChannel = "event" | "usage" | "status";
 
 One page of a thread's durable transcript, newest page first.
 
-Returned by `AdeThread.historyPage`. `events` are in transcript order
+Returned by `DaexThread.historyPage`. `events` are in transcript order
 (oldest first) within the page.
 
 ````ts
@@ -2296,7 +2353,7 @@ export type ThreadModelSelection = {
 ````ts
 export type ThreadOpenOptions = {
   /** A provider id present in this runtime's model catalog. */
-  provider: AdeProvider | (string & {});
+  provider: DaexProvider | (string & {});
   model: string;
   /** Stop a turn when cumulative reported usage reaches either limit. */
   budget?: ThreadBudget;
@@ -2316,7 +2373,7 @@ export type ThreadOpenOptions = {
    * MCP servers to attach to this thread.
    *
    * Refused outright by providers with no MCP surface (Pi), so a thread never
-   * opens silently tool-less. Read {@link AdeThread.mcpCapability} afterwards
+   * opens silently tool-less. Read {@link DaexThread.mcpCapability} afterwards
    * for what the provider actually delivered.
    *
    * Supplying servers also turns on strict mode unless you set
@@ -2364,7 +2421,7 @@ export type ThreadOpenOptions = {
    * and are not what strict mode excludes.
    *
    * Do not present this to your users as "only your tools are loaded" without
-   * checking {@link AdeThread.mcpCapability}: it names the exact residual for
+   * checking {@link DaexThread.mcpCapability}: it names the exact residual for
    * the thread you actually got, and it is authoritative where this table is
    * only a summary.
    *
@@ -2396,9 +2453,9 @@ export type ThreadOpenOptions = {
    * that may not, and what happens to everything else. `fallback: "deny"`
    * guarantees a turn never parks, which is what a host with no approval UI
    * wants. `fallback: "ask"` emits `approval_request` and needs
-   * {@link AdeThread.approve} wired to a card.
+   * {@link DaexThread.approve} wired to a card.
    *
-   * Read {@link AdeThread.permissionCapability} afterwards: only Claude gates
+   * Read {@link DaexThread.permissionCapability} afterwards: only Claude gates
    * every tool call against the policy.
    *
    * IGNORED ON RESUME: a key this home already knows re-applies the value it
@@ -2417,7 +2474,7 @@ export type ThreadOpenOptions = {
    * This does NOT put the text in the transcript: `exportThread` returns no
    * user message carrying it, which is the whole difference from the
    * hidden-first-message workaround it replaces. Falls back to the client-level
-   * `instructions` when omitted; check {@link AdeThread.instructionsCapability}
+   * `instructions` when omitted; check {@link DaexThread.instructionsCapability}
    * for what the provider did with it.
    *
    * IGNORED ON RESUME: a key this home already knows re-applies the value it
@@ -2483,7 +2540,7 @@ export type ThreadOpenOptions = {
    * `"project"` is usually the right choice for an embedder. Loading a user's
    * personal `~/.claude` into an app-branded assistant is a surprise, and it
    * should take an explicit `"user"` or `"all"` to get it. Only Claude has a
-   * real switch — see {@link AdeThread.settingSourcesCapability}.
+   * real switch — see {@link DaexThread.settingSourcesCapability}.
    *
    * IGNORED ON RESUME: a key this home already knows re-applies the value it
    * was created with, and the SDK logs one line when the value passed here
@@ -2821,7 +2878,7 @@ export type UsageLimitEvent = {
   /** Thread key; empty when the session is not one this client opened by key. */
   key: string;
   sessionId: string;
-  provider: AdeProvider;
+  provider: DaexProvider;
   /** The current state, or null when the limit cleared. */
   status: UsageLimitResume | null;
 };
@@ -2837,7 +2894,7 @@ every transition and sends null when the limit clears.
 ````ts
 export type UsageLimitResume = {
   state: "armed" | "resuming" | "paused" | "opted_out" | "no_reset" | (string & {});
-  provider: AdeProvider;
+  provider: DaexProvider;
   /** When the resume prompt is sent (reset + buffer). Null when unknown. */
   fireAt: string | null;
   /** The reset the provider published. Null when unknown. */

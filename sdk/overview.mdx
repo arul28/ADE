@@ -1,6 +1,6 @@
 ---
 title: "Daex SDK"
-description: "Embed Daex chat in your own app. A sidecar runtime, durable named threads, and optional React UI — published as @ade-dev/sdk and @ade-dev/chat-ui."
+description: "Embed Daex chat in your own app. A sidecar runtime, durable named threads, and optional React UI — published as @daex-dev/sdk and @daex-dev/chat-ui."
 icon: "cube"
 ---
 
@@ -10,7 +10,7 @@ This is not Daex desktop or personal chats in the Daex app. Those stay first-par
 
 <CardGroup cols={2}>
   <Card title="Install" icon="download" href="/sdk/install">
-    `npm install @ade-dev/sdk` — Node 22, then a 10-line client.
+    `npm install @daex-dev/sdk` — Node 22, then a 10-line client.
   </Card>
   <Card title="Quickstart" icon="rocket" href="/sdk/quickstart">
     Open a thread, send a message, resume by key after a restart.
@@ -30,8 +30,8 @@ This is not Daex desktop or personal chats in the Daex app. Those stay first-par
 
 | Package | What it is |
 |---|---|
-| [`@ade-dev/sdk`](https://www.npmjs.com/package/@ade-dev/sdk) | Node / Electron-main client. Spawns and owns the sidecar. Zero runtime dependencies. |
-| [`@ade-dev/chat-ui`](https://www.npmjs.com/package/@ade-dev/chat-ui) | React components. React is a peer; the SDK is an optional peer used for types. No lanes, projects, or worktrees in any prop. |
+| [`@daex-dev/sdk`](https://www.npmjs.com/package/@daex-dev/sdk) | Node / Electron-main client. Spawns and owns the sidecar. Zero runtime dependencies. |
+| [`@daex-dev/chat-ui`](https://www.npmjs.com/package/@daex-dev/chat-ui) | React components. React is a peer; the SDK is an optional peer used for types. No lanes, projects, or worktrees in any prop. |
 
 Both packages are MIT. The runtime binary and Daex itself are AGPL-3.0-only, and an embedding exception lets a proprietary app ship an unmodified runtime binary. See [License](/sdk/license) for the per-artifact table and the exact conditions.
 
@@ -40,8 +40,8 @@ Both packages are MIT. The runtime binary and Daex itself are AGPL-3.0-only, and
 ```mermaid
 flowchart TB
   Host["Your app"]
-  Sdk["@ade-dev/sdk"]
-  Ui["@ade-dev/chat-ui"]
+  Sdk["@daex-dev/sdk"]
+  Ui["@daex-dev/chat-ui"]
   Runtime["ade runtime --profile embedded"]
 
   Host --> Sdk
@@ -50,7 +50,7 @@ flowchart TB
   Sdk -->|"NDJSON JSON-RPC"| Runtime
 ```
 
-The client downloads (or you pin) an `ade` binary, spawns `ade runtime run --socket <path> --profile embedded`, and exposes `threads.open(key)`. Reopening the same key after a restart continues the conversation. [`doctor()`](/sdk/reference#doctor) reports the SDK version, the runtime version, the socket, and provider auth.
+The client downloads (or you pin) the runtime binary (`daex`, or `ade` from before the rename), spawns `daex runtime run --socket <path> --profile embedded`, and exposes `threads.open(key)`. Reopening the same key after a restart continues the conversation. [`doctor()`](/sdk/reference#doctor) reports the SDK version, the runtime version, the socket, and provider auth.
 
 SDK 0.7 uses isolated provider logins by default; set `useMachineLogin: true`
 to reuse the host machine's Claude or Codex login. `doctor()` reports the active
@@ -88,7 +88,7 @@ SDK 0.5.1 supports runtime `>=1.2.82 <2.0.0`. The lower bound did **not** move a
 
 ## What's new in 0.4
 
-`@ade-dev/sdk` 0.4.0, `@ade-dev/chat-ui` 0.4.0 and runtime 1.2.82 are available together. SDK 0.4.0 supports runtime `>=1.2.82 <2.0.0`. An older runtime still connects, and the features below that need 1.2.82 throw `unsupported` or do nothing. See [Version compatibility](/sdk/runtime#version-compatibility).
+`@daex-dev/sdk` 0.4.0, `@daex-dev/chat-ui` 0.4.0 and runtime 1.2.82 are available together. SDK 0.4.0 supports runtime `>=1.2.82 <2.0.0`. An older runtime still connects, and the features below that need 1.2.82 throw `unsupported` or do nothing. See [Version compatibility](/sdk/runtime#version-compatibility).
 
 - **Retry and edit.** `thread.retry()` and `thread.editLast(text)` run the last user message again, and the transcript shows it once. Claude and Codex. See [Retry and edit](/sdk/threads#retry-and-edit).
 - **Links.** `onLinkClick` on `<AdeChat>`, `<Transcript>`, `<ProviderCard>` and `<ProviderCards>`, so a host decides what opens and where. In Electron, pass it. See [Links](/sdk/chat-ui#links).
@@ -101,12 +101,12 @@ SDK 0.5.1 supports runtime `>=1.2.82 <2.0.0`. The lower bound did **not** move a
 ### Breaking changes
 
 - Refusals caused by a running turn (`setModel`, a reasoning `update`) now throw `turn_in_flight`, not `invalid_option`. Branch on `turn_in_flight`.
-- `window.ade` from `@ade-dev/sdk/electron/global` is optional. `createAdeIpcClient(window.ade)` still compiles; code that reads `window.ade.invoke` directly needs a check.
+- `window.ade` from `@daex-dev/sdk/electron/global` is optional. `createAdeIpcClient(window.ade)` still compiles; code that reads `window.ade.invoke` directly needs a check.
 - The `restart` event payload has a new `final` field, and `ADE_CLIENT_EVENTS` has `threadLifecycle`. A listener table typed on the old list must add it.
 
 ## What's new in 0.3
 
-`@ade-dev/sdk` 0.3.0 and `@ade-dev/chat-ui` 0.3.0 release together. SDK 0.3.0 supports runtime `>=1.2.81 <2.0.0`. See [Version compatibility](/sdk/runtime#version-compatibility).
+`@daex-dev/sdk` 0.3.0 and `@daex-dev/chat-ui` 0.3.0 release together. SDK 0.3.0 supports runtime `>=1.2.81 <2.0.0`. See [Version compatibility](/sdk/runtime#version-compatibility).
 
 - **Thread lifecycle.** `threads.delete`, `threads.archive`, `threads.unarchive`, and `thread.update()` for a rename, reasoning effort or fast mode. `ThreadSummary` and the thread carry `title`, the resolved model with its display name, and `updatedAt`. See [Threads](/sdk/threads#list-rename-archive-delete).
 - **Attachments.** `type` (`"file"` or `"image"`, inferred when absent), so images reach the model as images. `hydrate: false` sends the path only. `steer()` takes attachments. See [Attachments](/sdk/threads#attachments).
@@ -114,7 +114,7 @@ SDK 0.5.1 supports runtime `>=1.2.82 <2.0.0`. The lower bound did **not** move a
 - **Credentials that change.** MCP header values are no longer stored. `refresh.mcpServers`, `thread.updateMcpServers()` and the `mcpHeaders` callback supply current tokens. See [MCP servers](/sdk/mcp#credentials-that-change).
 - **Codex MCP approvals.** The permission policy now judges Codex MCP tool calls, and `approve()` answers them. `approvalTimeoutMs` lets the SDK decline an approval that nobody answers. See [Permissions](/sdk/permissions#codex-mcp-tool-calls).
 - **Runtime exits.** `client.on("exit" | "transport" | "restart")`, a synthetic error status on each live thread, and opt-in `autoRestart`. See [Runtime](/sdk/runtime#when-the-runtime-exits).
-- **Electron bridge.** The renderer no longer configures threads: an `openOptions` hook in main decides, or only four fields cross. `allowModel`, `threads.list` and the lifecycle calls over IPC, a client getter, `@ade-dev/sdk/electron/global`, and a copy-paste sandboxed preload. See [Electron](/sdk/electron).
+- **Electron bridge.** The renderer no longer configures threads: an `openOptions` hook in main decides, or only four fields cross. `allowModel`, `threads.list` and the lifecycle calls over IPC, a client getter, `@daex-dev/sdk/electron/global`, and a copy-paste sandboxed preload. See [Electron](/sdk/electron).
 - **Packaging.** `resolvePackagedRuntime()` and `doctor().runtime.source: "packaged"`. See [Bundling](/sdk/bundling#inside-a-packaged-app).
 - **Chat UI.** Composer rail slots and controlled attachments on `<AdeChat>`, a windowed transcript, tool identity and tool-result slots. See [Chat UI](/sdk/chat-ui).
 

@@ -4,7 +4,7 @@ import { DaexError, toError } from "./errors.js";
 /**
  * Newline-delimited JSON-RPC 2.0 over a unix socket or Windows named pipe.
  *
- * ADE's server mirrors the transport mode of the first frame it receives
+ * Daex's server mirrors the transport mode of the first frame it receives
  * (`apps/ade-cli/src/jsonrpc.ts` → `writeMessage`), so a client that only ever
  * writes NDJSON only ever gets NDJSON back. That is why this reimplementation
  * does not carry the reference client's `Content-Length` reader: unreachable

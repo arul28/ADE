@@ -5,7 +5,7 @@
  * `apps/desktop/src/renderer/components/shared/ModelPicker/modelPickerSearch.ts`.
  * The scoring behaviour (exact > prefix > word-boundary > substring > fuzzy
  * subsequence, per-field bases, multi-token AND) is carried over unchanged; the
- * only edits are dropping the ADE `ProviderFamily` import in favour of a plain
+ * only edits are dropping the Daex `ProviderFamily` import in favour of a plain
  * provider id, and dropping the favourites boost (this package has no
  * favourites store).
  */

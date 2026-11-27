@@ -300,7 +300,7 @@ function AdeChatInner({
    * then the update) and the runtime lands on the same selection. That is what
    * makes it safe to run from an effect — it is idempotent, not free. A local
    * short-circuit is deliberately not done in the SDK, because the runtime
-   * session is shared: another client (ADE desktop on the same runtime) can
+   * session is shared: another client (Daex desktop on the same runtime) can
    * change the model out from under a cached value, and a stale cache would
    * then swallow a real switch.
    */

@@ -264,7 +264,7 @@ export async function resolveBinary(options: ResolveBinaryOptions): Promise<Reso
  * Both directories are checked here rather than at spawn time, because the
  * failure they cause is a dlopen error from inside a child process that names
  * no path. `runtimeRoot` defaults to the parent of `runtimeNodeModules` since
- * that is the layout every ADE installer and the platform packages produce.
+ * that is the layout every Daex installer and the platform packages produce.
  */
 function resolveExplicitRuntimeLayout(options: {
   runtimeNodeModules?: string;
@@ -352,7 +352,7 @@ export async function readBinaryVersion(
     const spawnEnv = runtimeRoot
       ? runtimeSpawnEnv(runtimeRoot, env, nodeModulesPath ?? undefined)
       : env;
-    // An `ade` started from inside another ADE (a host launched from an ADE
+    // An `ade` started from inside another Daex (a host launched from a Daex
     // terminal inherits `ADE_CLI_PATH`) hands most commands, `--version`
     // included on runtime 1.2.81 and older, to THAT CLI. The probe then
     // reported the desktop app's version, not this binary's.

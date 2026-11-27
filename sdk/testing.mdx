@@ -4,10 +4,10 @@ description: "Exercise SDK consumers without launching Daex or spending provider
 icon: "flask"
 ---
 
-`@ade-dev/sdk/testing` exports `createMockAdeChat()`. It implements the SDK client and thread shapes in memory, with no runtime process, credentials or network calls.
+`@daex-dev/sdk/testing` exports `createMockAdeChat()`. It implements the SDK client and thread shapes in memory, with no runtime process, credentials or network calls.
 
 ```ts
-import { createMockAdeChat } from "@ade-dev/sdk/testing";
+import { createMockAdeChat } from "@daex-dev/sdk/testing";
 
 const client = createMockAdeChat();
 client.queueReply("The incident is resolved.");

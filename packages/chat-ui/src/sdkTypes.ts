@@ -5,11 +5,11 @@
  * `apps/desktop/src/shared/types/chat.ts` (`AgentChatEvent`,
  * `AgentChatEventEnvelope`), reduced to the card set this package draws:
  * user text, assistant text, reasoning, tool call/result, error, status, and
- * the two approval events. ADE-internal event kinds (subagent lifecycle,
+ * the two approval events. Daex-internal event kinds (subagent lifecycle,
  * scheduled work, plans, todo updates, delegation, ade_card, work-log grouping)
- * are deliberately absent — this package has no ADE dev concepts in it.
+ * are deliberately absent — this package has no Daex dev concepts in it.
  *
- * Approvals are the exception to "internal", because they are not an ADE dev
+ * Approvals are the exception to "internal", because they are not a Daex dev
  * concept at all: they are the provider asking the person at the keyboard for
  * permission, and the turn stays blocked until someone answers.
  *
@@ -34,7 +34,7 @@ export type ProviderStatus = {
    * reports it directly (`source: "probed"`), and `installed: false` then means
    * "looked, found nothing". A runtime that cannot probe leaves the adapter to
    * derive it from the model catalog (`source: "derived"`), where the same
-   * `false` only means "ADE knows no models for it" — which is why the card
+   * `false` only means "Daex knows no models for it" — which is why the card
    * says "Not detected" rather than "Not installed" in that case.
    */
   installed: boolean;
@@ -139,7 +139,7 @@ export type ChatAttachment = {
    * `false` makes the attachment reference-only: the runtime never reads its
    * bytes (no staging copy, no download of a cloud placeholder) and the model
    * gets the path. An image sent this way arrives as a path, not as pixels.
-   * Omitted means the runtime default (read the file). Needs an ADE runtime
+   * Omitted means the runtime default (read the file). Needs a Daex runtime
    * that understands the flag; an older one ignores it and reads the file.
    */
   hydrate?: boolean;
@@ -519,7 +519,7 @@ export type RenderedChatEvent =
 /**
  * Any other event kind, carried but not drawn.
  *
- * ADE's own event union has ~60 members and grows every release, and `@daex-dev/sdk`
+ * Daex's own event union has ~60 members and grows every release, and `@daex-dev/sdk`
  * models it as exactly this open record. Closing it here would make an SDK
  * envelope unassignable to this one — a compile error for every embedder — and
  * would invite a runtime cast at the boundary. Open instead: the renderer

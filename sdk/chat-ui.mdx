@@ -1,19 +1,19 @@
 ---
 title: "Chat UI"
-description: "Embeddable React chat for @ade-dev/sdk: AdeChat, Composer, Transcript, ModelPicker, link handling, CSS-token theming, and activity labels."
+description: "Embeddable React chat for @daex-dev/sdk: AdeChat, Composer, Transcript, ModelPicker, link handling, CSS-token theming, and activity labels."
 icon: "window-restore"
 ---
 
-`@ade-dev/chat-ui` renders an agent conversation for **your** users. There are no lanes, projects, repos, or worktrees in any prop or any string it can display.
+`@daex-dev/chat-ui` renders an agent conversation for **your** users. There are no lanes, projects, repos, or worktrees in any prop or any string it can display.
 
 ```bash
-npm install @ade-dev/chat-ui
+npm install @daex-dev/chat-ui
 ```
 
-React and React DOM are peers (`^18` or `^19`). `@ade-dev/sdk` is an optional peer used for types only.
+React and React DOM are peers (`^18` or `^19`). `@daex-dev/sdk` is an optional peer used for types only.
 
 ```tsx
-import { AdeChat, createTheme, adaptSdkClient } from "@ade-dev/chat-ui";
+import { AdeChat, createTheme, adaptSdkClient } from "@daex-dev/chat-ui";
 
 <AdeChat
   client={adaptSdkClient(ade)}
@@ -25,7 +25,7 @@ import { AdeChat, createTheme, adaptSdkClient } from "@ade-dev/chat-ui";
 
 `<AdeChat>` is transcript above, composer with the model rail below. No header bar. Changing `threadKey` opens a different conversation.
 
-`adaptSdkClient` maps a real `@ade-dev/sdk` client onto the view contract. Any SDK-shaped proxy works — for example a renderer that talks to main over a WebSocket.
+`adaptSdkClient` maps a real `@daex-dev/sdk` client onto the view contract. Any SDK-shaped proxy works — for example a renderer that talks to main over a WebSocket.
 
 ## Links
 
@@ -83,7 +83,7 @@ A "Retry" button calls `thread.retry()`, and an "Edit" flow calls `thread.editLa
 
 ### Reasoning effort
 
-`ThreadState.update(patch)` changes the title, the reasoning effort or fast mode of the open thread (`thread.update` on `@ade-dev/sdk` 0.3 and later). `canUpdate` is `false` on a client whose thread has no `update`. Use it with the built-in effort control:
+`ThreadState.update(patch)` changes the title, the reasoning effort or fast mode of the open thread (`thread.update` on `@daex-dev/sdk` 0.3 and later). `canUpdate` is `false` on a client whose thread has no `update`. Use it with the built-in effort control:
 
 ```tsx
 <AdeChat

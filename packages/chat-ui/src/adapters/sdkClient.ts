@@ -244,7 +244,7 @@ export interface SdkLikeChatClient {
  *
  * A runtime that probes providers already knows how to install and sign in to
  * each one, and those strings arrive on the status record. Use this to change
- * ADE's wording — not to supply it. A hint always wins over the record, so a
+ * Daex's wording — not to supply it. A hint always wins over the record, so a
  * host that set these in 0.1.x keeps the exact copy it had.
  */
 export type ProviderCommandHints = Record<
@@ -384,7 +384,7 @@ export function providerStatusesFromSdk(
       id: entry.provider,
       displayName: entry.displayName || entry.provider,
       // A runtime that probes the filesystem answers this directly. Only when
-      // it does not does "ADE knows models for it" stand in — the closest
+      // it does not does "Daex knows models for it" stand in — the closest
       // honest reading available from a catalog alone. It is never inferred
       // from `authenticated`: that would render an unauthenticated provider as
       // "not installed" and send the user to the wrong copyable command.
@@ -404,7 +404,7 @@ export function providerStatusesFromSdk(
     if (entry.version) status.version = entry.version;
     if (entry.checkedAt) status.checkedAt = entry.checkedAt;
 
-    // Record first, hint last: the hint is an override of ADE's wording.
+    // Record first, hint last: the hint is an override of Daex's wording.
     const installCommand = hint.installCommand ?? entry.installCommand;
     const loginCommand = hint.loginCommand ?? entry.loginCommand;
     const docsUrl = hint.docsUrl ?? entry.docsUrl;

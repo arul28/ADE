@@ -7,7 +7,7 @@ import { DaexError } from "./errors.js";
 /**
  * POSIX `sun_path` is 104 bytes on macOS/BSD and 108 on Linux. A unix socket
  * path over the limit fails at `bind()` with ENAMETOOLONG, and an app that puts
- * its ADE home under a deep Application Support path hits this easily — so the
+ * its Daex home under a deep Application Support path hits this easily — so the
  * derivation falls back to a short hashed path in the temp dir instead of
  * handing the runtime a path it cannot bind.
  */

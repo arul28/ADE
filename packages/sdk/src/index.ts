@@ -1,6 +1,6 @@
 /**
  * `@daex-dev/sdk` — a typed Node/Electron-main client that spawns and owns a slim
- * ADE runtime and exposes chat as durable named threads.
+ * Daex runtime and exposes chat as durable named threads.
  *
  *   const daex = await createDaexChat({ home: app.getPath("userData") + "/ade" });
  *   const thread = await daex.threads.open("support", {
@@ -18,7 +18,7 @@
  * ONE CAVEAT WORTH READING BEFORE YOU SHIP. `loadUserMcpServers: false` (the
  * default) is a real guarantee only on Claude. On Codex, Cursor, Droid and
  * OpenCode it is best-effort — the gap is in those providers' own SDKs, not in
- * ADE — and Pi has no MCP surface at all, so it refuses injected servers rather
+ * Daex — and Pi has no MCP surface at all, so it refuses injected servers rather
  * than opening a tool-less thread. Every thread that requested MCP reports what
  * it actually got:
  *
@@ -29,7 +29,7 @@
  *
  * Do not tell your users "only your tools are loaded" without checking that.
  * See `ThreadOpenOptions.loadUserMcpServers` for the per-provider table, whose
- * source of truth is `CALLER_MCP_SUPPORT` in ADE itself
+ * source of truth is `CALLER_MCP_SUPPORT` in Daex itself
  * (`apps/desktop/src/shared/callerMcpServers.ts`).
  */
 

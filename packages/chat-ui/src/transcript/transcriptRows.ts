@@ -2,7 +2,7 @@
  * Transcript row collapsing and grouping.
  *
  * PROVENANCE: ported from
- * `apps/desktop/src/renderer/components/chat/chatTranscriptRows.ts` (ADE
+ * `apps/desktop/src/renderer/components/chat/chatTranscriptRows.ts` (Daex
  * desktop renderer). That module is dependency-free by design; this is a
  * trimmed copy carrying over only the row kinds `@daex-dev/chat-ui` renders.
  *
@@ -17,7 +17,7 @@
  *    `groupConsecutiveWorkLogRows`
  *  - `formatStructuredValue`, `eventHasPayload`, `readRecord`
  *
- * Deliberately dropped (ADE-internal, unsupported here): work-log entries and
+ * Deliberately dropped (Daex-internal, unsupported here): work-log entries and
  * work-log groups, activity bundles, subagent spawn/result/stopped rows,
  * background job lines, scheduled-wake dividers, plan and todo rows,
  * `ade_card` merging, localhost URL extraction, and diff stats.
@@ -183,7 +183,7 @@ function readPendingInputQuestions(value: unknown): PendingInputQuestion[] | und
 /**
  * What an approval request is asking for: the top-level `requestKind` a
  * current host sends, else the `detail.request.kind` older hosts sent (the
- * same rule as ADE's `approvalRequestKind`). Without the fallback, an older
+ * same rule as Daex's `approvalRequestKind`). Without the fallback, an older
  * host's questions and plan reviews render as Allow/Reject approvals.
  */
 function approvalRequestKind(event: { requestKind?: string; detail?: unknown }): ApprovalRow["requestKind"] | undefined {

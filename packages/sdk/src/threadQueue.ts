@@ -9,8 +9,8 @@ export type ThreadQueueItem = {
 
 /**
  * The thread's queued messages, in order, folded from its event history with
- * the same rules ADE's own composer uses (`chatRuntimeState.ts`), so an SDK host
- * and ADE never disagree about what is still waiting.
+ * the same rules Daex's own composer uses (`chatRuntimeState.ts`), so an SDK host
+ * and Daex never disagree about what is still waiting.
  */
 export function pendingQueue(events: readonly AgentChatEventEnvelope[]): ThreadQueueItem[] {
   const queued = new Map<string, ThreadQueueItem>();
@@ -26,7 +26,7 @@ export function pendingQueue(events: readonly AgentChatEventEnvelope[]): ThreadQ
         });
       } else {
         queued.delete(event.steerId);
-        // The same rule as ADE's own queue (`isSettledSteerDeliveryState`):
+        // The same rule as Daex's own queue (`isSettledSteerDeliveryState`):
         // `accepted` is not final, because a Cursor or OpenCode turn can
         // refuse an inline steer and the same steerId comes back `queued`.
         if (event.deliveryState !== "accepted") settled.add(event.steerId);
@@ -41,7 +41,7 @@ export function pendingQueue(events: readonly AgentChatEventEnvelope[]): ThreadQ
       queued.delete(event.steerId);
       settled.add(event.steerId);
     } else if (event.type === "system_notice" && typeof event.steerId === "string" && typeof event.message === "string" && /cancelled|delivering/i.test(event.message)) {
-      // ADE's own queue resolves a steer on exactly these two notices.
+      // Daex's own queue resolves a steer on exactly these two notices.
       queued.delete(event.steerId);
       settled.add(event.steerId);
     } else if (event.type === "command_lifecycle" && typeof event.steerId === "string" && event.status !== "queued") {

@@ -1,6 +1,6 @@
 ---
 title: "API reference"
-description: "Every function, error, and constant exported by @ade-dev/sdk — generated from the published TypeScript declarations."
+description: "Every function, error, and constant exported by @daex-dev/sdk — generated from the published TypeScript declarations."
 icon: "code"
 ---
 
@@ -36,7 +36,7 @@ locks every chat. Use this to test a candidate before you send it:
 
 `root` is the canonical, validated spelling, so it is what
 `validateAttachmentRoots` and the runtime will accept. `sdkHome` is the same
-`home` you pass to `createAdeChat`.
+`home` you pass to `createDaexChat`.
 
 ````ts
 export function checkAttachmentRoot(value: unknown, sdkHome: string): AttachmentRootCheck
@@ -56,7 +56,7 @@ supported — the SDK cannot vouch for a build it cannot place.
 export function checkRuntimeCompatibility(version: string | null | undefined, range: string = SUPPORTED_RUNTIME_RANGE): RuntimeCompatibility
 ````
 
-### `createAdeChat`
+### `createDaexChat`
 
 Boots an isolated Daex runtime and returns a chat client that owns it.
 
@@ -73,7 +73,7 @@ Muse and OpenCode. Check `thread.mcpCapability.strictRequested === true` AND
 loaded — on a delivery-only thread the level says nothing about isolation.
 
 ````ts
-export async function createAdeChat(options: CreateAdeChatOptions | InternalAdeChatOptions): Promise<AdeChatClient>
+export async function createDaexChat(options: CreateDaexChatOptions | InternalAdeChatOptions): Promise<DaexChatClient>
 ````
 
 ### `endpointComparisonKey`
@@ -121,7 +121,7 @@ export function inferAttachmentType(filePath: string, mimeType?: string | null):
 
 True for the two kinds `approve()` can actually settle.
 
-The canonical partition of `PendingInputKind`. `@ade-dev/chat-ui` states the
+The canonical partition of `PendingInputKind`. `@daex-dev/chat-ui` states the
 complement of this set in `transcript/ApprovalCard.tsx` because it takes this
 package only as an OPTIONAL peer and cannot import the function; that copy
 points back here.
@@ -141,11 +141,11 @@ export function isNamedPipePath(value: string): boolean
 ### `isSupportedProvider`
 
 Narrow a provider string (for example `ModelCatalogEntry.provider`, typed
-open for catalog groups newer than this SDK) to `AdeProvider` without a cast.
+open for catalog groups newer than this SDK) to `DaexProvider` without a cast.
 Exported from the package root since SDK 0.4.
 
 ````ts
-export function isSupportedProvider(value: string): value is AdeProvider
+export function isSupportedProvider(value: string): value is DaexProvider
 ````
 
 ### `parseChecksums`
@@ -180,7 +180,7 @@ an `mcp__` or `mcp:` prefix but has an empty server or tool segment
 split into an invented server: a half-formed MCP name is not evidence of
 which server owns it.
 
-`@ade-dev/chat-ui` keeps a copy of this rule for its tool chips (it takes
+`@daex-dev/chat-ui` keeps a copy of this rule for its tool chips (it takes
 this package only as an optional peer); the two must agree.
 
 ````ts
@@ -232,14 +232,14 @@ Resolve the runtime a host bundled under its resources directory.
 
 Returns null — so the caller can fall back to `resolveBundledRuntime()` in
 development — when:
-  - `<resourcesPath>/<dir>/bin/ade[.exe]` does not exist; or
+  - neither `<resourcesPath>/<dir>/bin/daex[.exe]` nor `bin/ade[.exe]` exists; or
   - on macOS, the binary's Mach-O header names no slice for `arch`. An
     arm64-only runtime inside an app running under Rosetta on Intel would
     otherwise fail at spawn with an error that names neither architecture.
     A universal binary matches when it contains the arch. A header this
     function does not recognize is not treated as a mismatch.
 
-Throws `AdeError("binary_not_found")`, naming the path, when the binary is
+Throws `DaexError("binary_not_found")`, naming the path, when the binary is
 there but `native/node_modules` is not: the binary dlopens those modules,
 so a bundle missing them is a packaging mistake to fail on, not a fallback
 to take quietly.
@@ -299,13 +299,13 @@ export function validateJsonSchema(value: unknown, schema: JsonSchema, path = "$
 
 ## Classes
 
-### `AdeError`
+### `DaexError`
 
 ````ts
-export class AdeError extends Error {
-    readonly code: AdeErrorCode;
+export class DaexError extends Error {
+    readonly code: DaexErrorCode;
     override readonly cause?: unknown;
-    constructor(code: AdeErrorCode, message: string, options?: {
+    constructor(code: DaexErrorCode, message: string, options?: {
         cause?: unknown;
     });
 }
@@ -314,7 +314,7 @@ export class AdeError extends Error {
 ### `InvalidOutputError`
 
 ````ts
-export class InvalidOutputError extends AdeError {
+export class InvalidOutputError extends DaexError {
     readonly rawText: string;
     constructor(rawText: string, reason: string);
 }
@@ -324,16 +324,40 @@ export class InvalidOutputError extends AdeError {
 
 ### `ADE_CLIENT_EVENTS`
 
-Every client-level event name, once. See AdeClientEventMap.
+@deprecated Use DAEX_CLIENT_EVENTS.
 
 ````ts
 export const ADE_CLIENT_EVENTS: readonly ["exit", "transport", "restart", "threadLifecycle", "usageLimit"];
+````
+
+### `AdeError`
+
+@deprecated Use DaexError.
+
+````ts
+export const AdeError: typeof DaexError;
 ````
 
 ### `APPROVAL_DECISIONS`
 
 ````ts
 export const APPROVAL_DECISIONS: readonly ApprovalDecision[];
+````
+
+### `createAdeChat`
+
+@deprecated Use createDaexChat.
+
+````ts
+export const createAdeChat: (options: CreateDaexChatOptions | InternalAdeChatOptions) => Promise<DaexChatClient>;
+````
+
+### `DAEX_CLIENT_EVENTS`
+
+Every client-level event name, once. See DaexClientEventMap.
+
+````ts
+export const DAEX_CLIENT_EVENTS: readonly ["exit", "transport", "restart", "threadLifecycle", "usageLimit"];
 ````
 
 ### `DEFAULT_RELEASE_REPO`
@@ -361,7 +385,7 @@ export const SDK_VERSION: string;
 ### `SUPPORTED_PROVIDERS`
 
 ````ts
-export const SUPPORTED_PROVIDERS: readonly AdeProvider[];
+export const SUPPORTED_PROVIDERS: readonly DaexProvider[];
 ````
 
 ### `SUPPORTED_RUNTIME_RANGE`
@@ -374,7 +398,7 @@ handshake compares the runtime's self-reported version with this range. A
 runtime outside it still connects — features it lacks are feature-detected
 and degrade with a logged line — unless the host passes
 `requireCompatibleRuntime: true`, which refuses it with
-`AdeError("runtime_incompatible")`.
+`DaexError("runtime_incompatible")`.
 
 The lower bound is the first runtime that carries every wire change this
 SDK uses: `updateSession.mcpServers`, attachment `type` / `hydrate`, the

@@ -186,7 +186,7 @@ export interface DaexChatClient {
 }
 
 /**
- * Boots an isolated ADE runtime and returns a chat client that owns it.
+ * Boots an isolated Daex runtime and returns a chat client that owns it.
  *
  * The returned client owns the child process: `dispose()` stops it, and the
  * process exit hooks stop it if the host dies first. Two clients on one `home`
@@ -802,7 +802,7 @@ export async function createDaexChat(
       assertUsable();
       const { sessionId } = await sessionForKey(key);
       const snapshot = await chats.getEventHistory({ sessionId });
-      // JSONL: one envelope per line, in transcript order. The same shape ADE
+      // JSONL: one envelope per line, in transcript order. The same shape Daex
       // writes to its own durable transcripts, so the output drops straight
       // into any tool that already reads those.
       return (snapshot?.events ?? []).map((envelope) => JSON.stringify(envelope)).join("\n");

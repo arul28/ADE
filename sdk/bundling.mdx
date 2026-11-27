@@ -48,7 +48,8 @@ native tree measured 191,403,602 B (191.404 MB).
 ```
 @ade-dev/runtime-darwin-arm64/
   package.json          { "os": ["darwin"], "cpu": ["arm64"] }
-  bin/ade               the runtime binary (ade.exe on Windows), mode 0755
+  bin/ade               the runtime binary (ade.exe on Windows), mode 0755;
+                        the SDK prefers a bin/daex here when the package has one
   native/               ADE_RUNTIME_ROOT
     node_modules/       ADE_RUNTIME_NODE_MODULES — the modules the binary dlopens
     third-party-notices/ bundled package license notices
@@ -65,7 +66,7 @@ native tree measured 191,403,602 B (191.404 MB).
 With the package installed, the SDK finds it on its own. `resolveBundledRuntime()` is step 2 of the resolution order and sits above the cache, `PATH`, and any download.
 
 ```ts
-import { createAdeChat } from "@ade-dev/sdk";
+import { createAdeChat } from "@daex-dev/sdk";
 
 const ade = await createAdeChat({
   home: path.join(app.getPath("userData"), "ade"),
@@ -80,7 +81,7 @@ const ade = await createAdeChat({
 Inside a packaged app the runtime is no longer under `node_modules`. `resolvePackagedRuntime` finds the copy under your resources directory, so the layout (`bin/ade`, `native/`, `native/node_modules`) is not hardcoded in your app:
 
 ```ts
-import { createAdeChat, resolvePackagedRuntime } from "@ade-dev/sdk";
+import { createAdeChat, resolvePackagedRuntime } from "@daex-dev/sdk";
 
 const packaged = app.isPackaged ? resolvePackagedRuntime(process.resourcesPath) : null;
 
@@ -345,7 +346,7 @@ A packaged build that reports `source: "downloaded"` is a packaging bug. `allowD
 
 ## Before you redistribute it
 
-The runtime binary is AGPL-3.0-only, and putting it inside your bundle is redistribution. The ADE Runtime Embedding Exception permits it when the binary is unmodified and your application consumes it through the documented `@ade-dev/sdk` interface. Re-signing it with your own identity, as this page instructs, does not count as modifying it. Read the exact conditions before you redistribute.
+The runtime binary is AGPL-3.0-only, and putting it inside your bundle is redistribution. The ADE Runtime Embedding Exception permits it when the binary is unmodified and your application consumes it through the documented `@daex-dev/sdk` interface. Re-signing it with your own identity, as this page instructs, does not count as modifying it. Read the exact conditions before you redistribute.
 
 <Card title="License" href="/sdk/license" icon="scale-balanced" horizontal>
   What each artifact is licensed under, and the conditions the embedding exception sets.

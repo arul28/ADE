@@ -340,7 +340,7 @@ export function navigationEndsRendererWorld(args: unknown[]): boolean {
 }
 
 /**
- * Attach the ADE chat surface to an `ipcMain`.
+ * Attach the Daex chat surface to an `ipcMain`.
  *
  * Returns a disposer that removes the handler and tears down every renderer's
  * subscriptions. Call it before `client.dispose()` so no push races a closing

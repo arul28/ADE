@@ -15,7 +15,7 @@
  *
  * It is one CommonJS file whose only `require` is `"electron"`, the one module
  * a `sandbox: true` preload may load. A host that needs another key or prefix,
- * or its own channels beside ADE's, writes its own preload instead.
+ * or its own channels beside Daex's, writes its own preload instead.
  */
 
 import type { ContextBridgeLike, IpcRendererLike } from "./protocol.js";

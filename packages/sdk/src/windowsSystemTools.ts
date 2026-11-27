@@ -21,7 +21,7 @@ import { DaexError } from "./errors.js";
  *
  * Mirrors `apps/ade-cli/src/lib/trustedWindowsTools.ts`. Deliberately a copy
  * rather than an import: this package ships standalone to npm with no
- * dependency on the ADE repo, and a shared module would have to be published
+ * dependency on the Daex repo, and a shared module would have to be published
  * too. The kernel alias, the canonical check and the escape check are the parts
  * that must stay identical; if that file changes, change this one.
  */

@@ -6,8 +6,8 @@
  * `apps/desktop/src/renderer/components/shared/ModelPicker/` (ModelPickerRail,
  * ModelPickerContent, ModelListRow) — including the vertical rail with
  * per-provider status dots and arrow-key roving focus. The data layer is
- * rewritten against `DaexChatClient` rather than ADE's runtime catalog cache,
- * and ADE-only affordances (favourites, recents, per-surface defaults, cloud
+ * rewritten against `DaexChatClient` rather than Daex's runtime catalog cache,
+ * and Daex-only affordances (favourites, recents, per-surface defaults, cloud
  * launch) are out of scope for this package. Reasoning effort is in scope: a
  * row of levels under the list for the selected model, when it lists any.
  */

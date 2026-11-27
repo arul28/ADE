@@ -5,7 +5,7 @@ icon: "rocket"
 ---
 
 ```ts
-import { createAdeChat } from "@ade-dev/sdk";
+import { createAdeChat } from "@daex-dev/sdk";
 
 const ade = await createAdeChat({ home: "./.ade-embed" });
 const thread = await ade.threads.open("support", {
@@ -68,7 +68,7 @@ Read [Permissions and approvals](/sdk/permissions) before shipping a policy or e
 ## React UI
 
 ```tsx
-import { AdeChat, createTheme, adaptSdkClient } from "@ade-dev/chat-ui";
+import { AdeChat, createTheme, adaptSdkClient } from "@daex-dev/chat-ui";
 
 <AdeChat
   client={adaptSdkClient(ade)}

@@ -93,7 +93,7 @@ export type { ThreadQueueItem } from "./threadQueue.js";
 export type ThreadInterruptOptions = {
   /** Keep queued messages, or remove them along with the active turn. */
   queue?: "keep" | "drop";
-  /** Full ADE stop semantics. When set, this takes precedence over `queue`. */
+  /** Full Daex stop semantics. When set, this takes precedence over `queue`. */
   mode?: AgentChatStopMode;
 };
 
@@ -244,7 +244,7 @@ export interface DaexThread {
    *
    * `level` is `"applied"` on Claude, Codex, OpenCode and Pi, which all take
    * instructions through a channel of their own; `"best-effort"` on Cursor and
-   * Droid, where ADE merges the text into a prompt it already prefixes.
+   * Droid, where Daex merges the text into a prompt it already prefixes.
    */
   readonly instructionsCapability: InstructionsCapability | null;
   /**

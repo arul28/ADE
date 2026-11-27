@@ -45,7 +45,7 @@ export type BundledRuntime = {
   nodeModulesPath: string;
   /** e.g. `@ade-dev/runtime-darwin-arm64`. */
   packageName: string;
-  /** The ADE release version the package was cut from. */
+  /** The Daex release version the package was cut from. */
   version: string;
 };
 

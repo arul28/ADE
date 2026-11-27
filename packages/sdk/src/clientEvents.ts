@@ -41,7 +41,7 @@ export type DaexClientEventMap = {
    * or `threads.unarchive` (`"unarchived"`). Emitted after the action
    * succeeds, whoever called it: host code in the main process, or a renderer
    * over the Electron bridge. A change made by another client of the same
-   * runtime (ADE desktop) is not reported. SDK >= 0.4.
+   * runtime (Daex desktop) is not reported. SDK >= 0.4.
    */
   threadLifecycle: { key: string; change: "deleted" | "archived" | "unarchived" };
   /** A provider turn stopped because its current account reached a usage limit. */

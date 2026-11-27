@@ -224,7 +224,7 @@ export async function startSidecar(options: SidecarOptions): Promise<Sidecar> {
 
   const childEnv: NodeJS.ProcessEnv = {
     // Scrubbed: the host's own ADE_* variables are NOT this sidecar's config.
-    // A developer running the SDK from inside a configured ADE shell would
+    // A developer running the SDK from inside a configured Daex shell would
     // otherwise leak ADE_PROJECT_ROOT, ADE_DEFAULT_ROLE, ADE_SOCKET and friends
     // into an isolated runtime, silently pointing it at their real state.
     ...scrubAdeEnv(
