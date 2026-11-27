@@ -143,7 +143,7 @@ private struct ActivityColumnsLockScreenView: View {
             if presentation.isStale {
                 ActivityColumnsAgeLine(text: "Reconnecting", systemImage: "arrow.triangle.2.circlepath")
             } else if !presentation.ownershipAccepted {
-                ActivityColumnsAgeLine(text: "Updating ADE", systemImage: "arrow.triangle.2.circlepath")
+                ActivityColumnsAgeLine(text: "Updating \(Brand.name)", systemImage: "arrow.triangle.2.circlepath")
             } else if let age = presentation.freshness.label {
                 ActivityColumnsAgeLine(text: age, systemImage: "clock")
             }

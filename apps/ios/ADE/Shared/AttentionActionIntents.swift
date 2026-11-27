@@ -117,7 +117,7 @@ public enum ADEIntentCommandRegistry {
 public struct ApproveSessionIntent: LiveActivityIntent {
     public static var title: LocalizedStringResource = "Approve"
     public static var description = IntentDescription(
-        "Approve the pending action in the current ADE session."
+        "Approve the pending action in the current Daex session."
     )
     public static var openAppWhenRun: Bool = false
 
@@ -149,7 +149,7 @@ public struct ApproveSessionIntent: LiveActivityIntent {
 public struct DenySessionIntent: LiveActivityIntent {
     public static var title: LocalizedStringResource = "Deny"
     public static var description = IntentDescription(
-        "Deny the pending action in the current ADE session."
+        "Deny the pending action in the current Daex session."
     )
     public static var openAppWhenRun: Bool = false
 
@@ -180,7 +180,7 @@ public struct DenySessionIntent: LiveActivityIntent {
 public struct RestartSessionIntent: AppIntent {
     public static var title: LocalizedStringResource = "Restart"
     public static var description = IntentDescription(
-        "Restart the failed ADE session."
+        "Restart the failed Daex session."
     )
     public static var openAppWhenRun: Bool = false
 

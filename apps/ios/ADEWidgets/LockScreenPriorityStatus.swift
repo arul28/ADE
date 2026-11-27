@@ -81,9 +81,9 @@ struct LockScreenPriorityStatus {
         guard let focus = ordered.first else {
             self = .init(
                 kind: .idle,
-                title: "ADE idle",
+                title: "\(Brand.name) idle",
                 detail: "No work needs attention",
-                inlineText: "ADE · idle",
+                inlineText: "\(Brand.name) · idle",
                 count: 0,
                 symbol: "moon.zzz.fill",
                 shortLabel: "IDLE",
@@ -99,8 +99,8 @@ struct LockScreenPriorityStatus {
                 kind: .offline,
                 // A count, never a name (rule A).
                 title: machines.count == 1 ? "Computer offline" : "\(machines.count) computers offline",
-                detail: hideDetails ? "Open ADE for details" : "Last known work · \(focus.project.name)",
-                inlineText: "ADE · offline",
+                detail: hideDetails ? "Open \(Brand.name) for details" : "Last known work · \(focus.project.name)",
+                inlineText: "\(Brand.name) · offline",
                 count: 0,
                 symbol: "wifi.slash",
                 shortLabel: "OFF",
@@ -127,10 +127,10 @@ struct LockScreenPriorityStatus {
                 : focus.title,
             detail: hideDetails ? "Across your signed-in machines" : scope,
             inlineText: attentionCount > 0
-                ? "ADE · \(attentionCount) need you"
+                ? "\(Brand.name) · \(attentionCount) need you"
                 : live.isEmpty
-                    ? "ADE · \(ambientCount) recent"
-                    : "ADE · \(live.count) live",
+                    ? "\(Brand.name) · \(ambientCount) recent"
+                    : "\(Brand.name) · \(live.count) live",
             count: attentionCount > 0
                 ? attentionCount
                 : (live.isEmpty ? ambientCount : live.count),
@@ -193,7 +193,7 @@ struct LockScreenPriorityStatus {
                 // and widgets name none (rule A).
                 title: "Computer offline",
                 detail: minutes == 1 ? "Last update 1 minute ago" : "Last update \(minutes) minutes ago",
-                inlineText: "ADE · offline \(minutes)m",
+                inlineText: "\(Brand.name) · offline \(minutes)m",
                 count: 0,
                 symbol: "wifi.slash",
                 shortLabel: "OFF",
@@ -215,8 +215,8 @@ struct LockScreenPriorityStatus {
                 // guessing, and the row the user taps through to names the
                 // actual ask.
                 detail: (hideDetails ? nil : first.flatMap { Self.agentTitle($0) })
-                    ?? "Open ADE for details",
-                inlineText: "ADE · \(waitingCount) waiting",
+                    ?? "Open \(Brand.name) for details",
+                inlineText: "\(Brand.name) · \(waitingCount) waiting",
                 count: waitingCount,
                 symbol: "bell.badge.fill",
                 shortLabel: "WAIT",
@@ -228,8 +228,8 @@ struct LockScreenPriorityStatus {
             self = .init(
                 kind: .failed,
                 title: failed.count == 1 ? "Agent failed" : "\(failed.count) agents failed",
-                detail: (hideDetails ? nil : Self.agentTitle(first)) ?? "Open ADE for details",
-                inlineText: "ADE · \(failed.count) failed",
+                detail: (hideDetails ? nil : Self.agentTitle(first)) ?? "Open \(Brand.name) for details",
+                inlineText: "\(Brand.name) · \(failed.count) failed",
                 count: failed.count,
                 symbol: "xmark.octagon.fill",
                 shortLabel: "FAIL",
@@ -241,8 +241,8 @@ struct LockScreenPriorityStatus {
             self = .init(
                 kind: .ciFailing,
                 title: ciFailing.count == 1 ? "CI failing" : "\(ciFailing.count) PRs failing",
-                detail: hideDetails ? "Open ADE for details" : Self.prTitle(first),
-                inlineText: "ADE · \(ciFailing.count) CI failing",
+                detail: hideDetails ? "Open \(Brand.name) for details" : Self.prTitle(first),
+                inlineText: "\(Brand.name) · \(ciFailing.count) CI failing",
                 count: ciFailing.count,
                 symbol: "exclamationmark.triangle.fill",
                 shortLabel: "CI",
@@ -258,8 +258,8 @@ struct LockScreenPriorityStatus {
             self = .init(
                 kind: .reviewRequested,
                 title: title,
-                detail: hideDetails ? "Open ADE for details" : Self.prTitle(first),
-                inlineText: "ADE · \(reviewRequested.count) review",
+                detail: hideDetails ? "Open \(Brand.name) for details" : Self.prTitle(first),
+                inlineText: "\(Brand.name) · \(reviewRequested.count) review",
                 count: reviewRequested.count,
                 symbol: "eye.fill",
                 shortLabel: "REV",
@@ -271,8 +271,8 @@ struct LockScreenPriorityStatus {
             self = .init(
                 kind: .mergeReady,
                 title: mergeReady.count == 1 ? "Ready to merge" : "\(mergeReady.count) PRs ready",
-                detail: hideDetails ? "Open ADE for details" : Self.prTitle(first),
-                inlineText: "ADE · \(mergeReady.count) ready",
+                detail: hideDetails ? "Open \(Brand.name) for details" : Self.prTitle(first),
+                inlineText: "\(Brand.name) · \(mergeReady.count) ready",
                 count: mergeReady.count,
                 symbol: "checkmark.seal.fill",
                 shortLabel: "READY",
@@ -285,7 +285,7 @@ struct LockScreenPriorityStatus {
                 kind: .running,
                 title: running.count == 1 ? "1 agent working" : "\(running.count) agents working",
                 detail: hideDetails ? "Agent work is in progress" : Self.runningDetail(first),
-                inlineText: "ADE · \(running.count) working",
+                inlineText: "\(Brand.name) · \(running.count) working",
                 count: running.count,
                 symbol: "circle.dotted",
                 shortLabel: "WORK",
@@ -297,8 +297,8 @@ struct LockScreenPriorityStatus {
             self = .init(
                 kind: .openPullRequests,
                 title: openPrs.count == 1 ? "1 open PR" : "\(openPrs.count) open PRs",
-                detail: hideDetails ? "Open ADE for details" : Self.prTitle(first),
-                inlineText: "ADE · \(openPrs.count) PRs",
+                detail: hideDetails ? "Open \(Brand.name) for details" : Self.prTitle(first),
+                inlineText: "\(Brand.name) · \(openPrs.count) PRs",
                 count: openPrs.count,
                 symbol: "arrow.triangle.pull",
                 shortLabel: "PR",
@@ -310,8 +310,8 @@ struct LockScreenPriorityStatus {
             self = .init(
                 kind: .syncing,
                 title: "Syncing",
-                detail: "Refreshing ADE state",
-                inlineText: "ADE · syncing",
+                detail: "Refreshing \(Brand.name) state",
+                inlineText: "\(Brand.name) · syncing",
                 count: 0,
                 symbol: "arrow.triangle.2.circlepath",
                 shortLabel: "SYNC",
@@ -327,7 +327,7 @@ struct LockScreenPriorityStatus {
                 kind: .offline,
                 title: "Computer offline",
                 detail: "Reconnect to update agents and PRs",
-                inlineText: "ADE · offline",
+                inlineText: "\(Brand.name) · offline",
                 count: 0,
                 symbol: "wifi.slash",
                 shortLabel: "OFF",
@@ -344,9 +344,9 @@ struct LockScreenPriorityStatus {
         } else {
             self = .init(
                 kind: .idle,
-                title: "ADE idle",
+                title: "\(Brand.name) idle",
                 detail: "No agents or PRs need attention",
-                inlineText: "ADE · idle",
+                inlineText: "\(Brand.name) · idle",
                 count: 0,
                 symbol: "moon.zzz.fill",
                 shortLabel: "IDLE",

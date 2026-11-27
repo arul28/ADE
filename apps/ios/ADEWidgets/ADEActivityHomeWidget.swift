@@ -262,7 +262,7 @@ private struct ActivityHomeRow: View {
                 .compactMap { $0 }
                 .joined(separator: ", ")
         )
-        .accessibilityHint("Opens this chat in ADE.")
+        .accessibilityHint("Opens this chat in \(Brand.name).")
     }
 }
 
@@ -342,7 +342,7 @@ private struct ActivityHomeFooter: View {
                     .contentShape(Rectangle())
                 }
                 .accessibilityLabel(moreCount == 1 ? "1 more agent" : "\(moreCount) more agents")
-                .accessibilityHint("Opens Activity in ADE.")
+                .accessibilityHint("Opens Activity in \(Brand.name).")
             }
         }
         .padding(.top, 5)
@@ -364,7 +364,7 @@ private struct ActivityHomeAllClear: View {
                 .foregroundStyle(.secondary)
             Text(
                 freshness?.confidence == .untrusted
-                    ? "ADE hasn't heard from your machines."
+                    ? "\(Brand.name) hasn't heard from your machines."
                     : "Nothing is waiting on you."
             )
             .font(.system(size: 10.5, design: .rounded))
