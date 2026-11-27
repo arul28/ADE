@@ -376,7 +376,7 @@ describe("createAgentChatService", () => {
       }, { awaitDispatch: true });
       await cursorSendsReached(2);
 
-      const continuityHeader = "System context (ADE continuity, do not echo verbatim):";
+      const continuityHeader = "System context (Daex continuity, do not echo verbatim):";
       const retryPrompt = String(mockState.cursorSdkSendCalls[1]?.promptText ?? "");
       expect(retryPrompt.split(continuityHeader).length - 1).toBe(1);
       expect(retryPrompt).toContain(CROSS_PROVIDER_REPLAY_HEADER);
@@ -2352,7 +2352,7 @@ describe("createAgentChatService", () => {
         text: "Inspect the mobile files tab parity work.",
       });
       const firstPrompt = String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? "");
-      const laneGuidanceCount = (prompt: string): number => (prompt.match(/^## ADE$/gm) ?? []).length;
+      const laneGuidanceCount = (prompt: string): number => (prompt.match(/^## Daex$/gm) ?? []).length;
       expect(laneGuidanceCount(firstPrompt)).toBe(1);
 
       await service.runSessionTurn({
@@ -2389,7 +2389,7 @@ describe("createAgentChatService", () => {
       // turn itself stays deduped — but the rotated agent is brand new, so the
       // lane execution directive must be re-emitted on the following turn
       // instead of staying suppressed by lastLaneDirectiveKey.
-      expect(promptText).not.toContain("[ADE launch directive]");
+      expect(promptText).not.toContain("[Daex launch directive]");
       // The replay to the rotated thread already contains the original lane
       // guidance once; the next ordinary turn must not add another copy.
       expect(laneGuidanceCount(promptText)).toBe(1);
@@ -2399,7 +2399,7 @@ describe("createAgentChatService", () => {
       });
       const postRotationPrompt = String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? "");
       expect(laneGuidanceCount(postRotationPrompt)).toBe(0);
-      expect(postRotationPrompt).toContain("[ADE launch directive]");
+      expect(postRotationPrompt).toContain("[Daex launch directive]");
       // One staged replay, consumed exactly once: the rotation stage is durable,
       // so a turn that did not trigger a rotation must not replay it again.
       expect(postRotationPrompt).not.toContain("verbatim replay");

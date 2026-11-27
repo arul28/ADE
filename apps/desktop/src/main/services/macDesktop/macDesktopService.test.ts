@@ -1052,7 +1052,7 @@ describe("macDesktopService start", () => {
     const { service } = makeService({ driver });
     await service.start({ laneId: "lane-1", laneName: "Login fix" });
     const create = driver.calls.find((call) => call.op === MAC_DESKTOP_DRIVER_OPS.createDisplay);
-    expect(create?.payload.name).toBe("ADE · Login fix");
+    expect(create?.payload.name).toBe("Daex · Login fix");
     service.dispose();
   });
 });

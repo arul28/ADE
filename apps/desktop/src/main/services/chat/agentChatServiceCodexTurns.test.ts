@@ -51,7 +51,7 @@ describe("createAgentChatService", () => {
         const firstTurnStart = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
         const firstThreadId = (firstTurnStart?.params as { threadId?: string } | undefined)?.threadId;
         expect(firstThreadId).toEqual(expect.any(String));
-        expect(codexTurnStartText(firstTurnStart)).toContain("[ADE launch directive]");
+        expect(codexTurnStartText(firstTurnStart)).toContain("[Daex launch directive]");
         expect(codexAppServerSpawnIndexes().length - priorAppServerSpawnCount).toBe(1);
 
         mockState.emitCodexPayload({
@@ -83,7 +83,7 @@ describe("createAgentChatService", () => {
         ]));
         expect(turnStarts).toHaveLength(2);
         expect(codexTurnStartText(turnStarts[1])).toContain("Continue the second task.");
-        expect(codexTurnStartText(turnStarts[1])).not.toContain("[ADE launch directive]");
+        expect(codexTurnStartText(turnStarts[1])).not.toContain("[Daex launch directive]");
 
         mockState.emitCodexPayload({
           jsonrpc: "2.0",

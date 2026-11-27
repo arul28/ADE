@@ -10,14 +10,14 @@ describe("custom notification links", () => {
    * `ade://` prefix check sent as a dead tap.
    */
   it.each([
-    ["a chat", "ade://session/94a2b987-9f9f-45bc-a01c-2b2a13b20c55", "ade://session/94a2b987-9f9f-45bc-a01c-2b2a13b20c55"],
-    ["a pull request by number alone", "ade://pr/1515", "ade://pr/1515"],
-    ["a pull request in a repo", "ade://pr/arul28/ADE/1515?tab=checks", "ade://pr/arul28/ADE/1515?tab=checks"],
-    ["Activity", "ade://activity", "ade://activity"],
-    ["Activity on one column", "ade://activity?state=needs_you", "ade://activity?state=needs_you"],
-    ["just ADE", "ade://workspace", "ade://workspace"],
-    ["a Linear issue", "ade://linear-issue/ADE-123", "ade://linear-issue/ADE-123"],
-    ["a shareable https link, as ade://", "https://ade-app.dev/open?type=pr&number=12&repo=arul28/ADE", "ade://pr/arul28/ADE/12"],
+    ["a chat", "ade://session/94a2b987-9f9f-45bc-a01c-2b2a13b20c55", "daex://session/94a2b987-9f9f-45bc-a01c-2b2a13b20c55"],
+    ["a pull request by number alone", "ade://pr/1515", "daex://pr/1515"],
+    ["a pull request in a repo", "ade://pr/arul28/ADE/1515?tab=checks", "daex://pr/arul28/ADE/1515?tab=checks"],
+    ["Activity", "ade://activity", "daex://activity"],
+    ["Activity on one column", "ade://activity?state=needs_you", "daex://activity?state=needs_you"],
+    ["just ADE", "ade://workspace", "daex://workspace"],
+    ["a Linear issue", "ade://linear-issue/ADE-123", "daex://linear-issue/ADE-123"],
+    ["a shareable https link, as daex://", "https://ade-app.dev/open?type=pr&number=12&repo=arul28/ADE", "daex://pr/arul28/ADE/12"],
   ])("accepts %s", (_name, raw, link) => {
     expect(normalizeCustomNotificationLink(raw)).toEqual({ ok: true, link });
     expect(customNotificationProblem({ title: "t", open: raw })).toBeNull();

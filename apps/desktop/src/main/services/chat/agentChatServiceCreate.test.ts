@@ -2036,7 +2036,7 @@ describe("createAgentChatService", () => {
       // rule, the CLI guidance) live in the session's system prompt, not in
       // front of the message; this file mocks the prompt builder, so the
       // prompt's own wording is checked in `systemPrompt.test.ts`.
-      expect(userTurnPayload).not.toContain("[ADE launch directive]");
+      expect(userTurnPayload).not.toContain("[Daex launch directive]");
       expect(userTurnPayload).not.toContain("CLI controls Daex state");
       expect(userTurnPayload).not.toContain("daex actions list --text");
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;

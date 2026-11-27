@@ -3185,7 +3185,7 @@ describe("attention.sendNotification links", () => {
   it.each([
     ["an unfilled run chat", "ade://session/", null, true],
     ["an unfilled run lane", "ade://lane/", null, true],
-    ["a filled run chat", "ade://session/chat-1", "ade://session/chat-1", false],
+    ["a filled run chat", "ade://session/chat-1", "daex://session/chat-1", false],
   ])("%s", async (_label, open, expectedLink, skipped) => {
     const sent: Array<{ title: string; deepLink: string | null }> = [];
     const notify = buildSendNotificationAction(

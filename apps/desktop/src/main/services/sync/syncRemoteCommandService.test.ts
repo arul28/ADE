@@ -1887,7 +1887,7 @@ describe("createSyncRemoteCommandService", () => {
       expect(call?.startupCommand).not.toContain("fix the tests");
       expect(call?.startupCommand).not.toContain("cursor-agent create-chat");
       expect(call?.startupCommand).not.toContain("--resume");
-      expect(call?.initialInput).toContain("ADE session guidance");
+      expect(call?.initialInput).toContain("Daex session guidance");
       expect(call?.initialInput).toContain("fix the tests");
       expect(call?.initialInputDelayMs).toBe(750);
       expect(call).not.toHaveProperty("awaitInitialInput");

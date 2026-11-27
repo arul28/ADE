@@ -4705,7 +4705,7 @@ describe("createAgentChatService", () => {
       expect(subStopped).toBeTruthy();
       expect(subStopped?.event).toMatchObject({
         stopSource: "system",
-        stopReason: "the ADE brain restarted",
+        stopReason: "the Daex brain restarted",
       });
       expect(events2.find((e) =>
         e.event.type === "subagent_result"
@@ -4813,7 +4813,7 @@ describe("createAgentChatService", () => {
           && (e.event as any).taskId === "sub-stale"
           && (e.event as any).status === "stopped");
         expect(subStopped).toHaveLength(1);
-        expect(subStopped[0]!.event).toMatchObject({ stopSource: "system", stopReason: "the ADE brain restarted" });
+        expect(subStopped[0]!.event).toMatchObject({ stopSource: "system", stopReason: "the Daex brain restarted" });
       });
 
       it("emits each terminal row exactly once across repeated passes", async () => {

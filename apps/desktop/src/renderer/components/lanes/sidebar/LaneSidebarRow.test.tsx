@@ -138,7 +138,7 @@ describe("LaneSidebarRow", () => {
     Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
     fireEvent(row, event);
     if (expectDeeplink) {
-      expect(dataTransfer.setData).toHaveBeenCalledWith("text/uri-list", "ade://lane/lane-1");
+      expect(dataTransfer.setData).toHaveBeenCalledWith("text/uri-list", "daex://lane/lane-1");
     } else {
       expect(dataTransfer.setData).not.toHaveBeenCalled();
     }

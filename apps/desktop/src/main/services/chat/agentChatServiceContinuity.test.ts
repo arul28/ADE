@@ -1090,7 +1090,7 @@ describe("explicit provider-thread continuity recovery", () => {
       .join("\n") ?? "";
     expect(ordinaryParams?.threadId).toBe("thread-1");
     expect(ordinaryInputText).toContain("Continue after recovery failed.");
-    expect(ordinaryInputText).not.toContain("[ADE launch directive]");
+    expect(ordinaryInputText).not.toContain("[Daex launch directive]");
     service.forceDisposeAll();
   });
 
