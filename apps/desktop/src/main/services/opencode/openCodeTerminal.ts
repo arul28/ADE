@@ -21,6 +21,11 @@ import {
 import { readOpenCodeDb, resolveAdeOpenCodeDbPath } from "./openCodeCredentials";
 import { lastOpenCodeDiscoveredLocalModels } from "./openCodeInventory";
 import {
+  ADE_FREE_MODELS_CHAT_ONLY_MESSAGE,
+  argsNameAdeFreeModel,
+  isAdeFreeOpenCodeProvider,
+} from "../freeModels/adeFreeModelsLaunch";
+import {
   applyOpenCodeSessionContext,
   isOpenCodeNotFoundError,
   openCodeSessionEnvironment,
@@ -268,6 +273,15 @@ export async function attachOpenCodeTerminal(args: {
   // With no ADE mode the TUI's own agent rules apply, so the session keeps none.
   const sessionRules = agent ? openCodeSessionRulesFor(permissionMode) : null;
   const model = modelRefFor(args.model ?? intent?.model, args.reasoningEffort ?? intent?.reasoningEffort);
+  // A terminal can't show the sponsored cards that pay for an ADE Free Model,
+  // and the shared server has no provider for one.
+  if (
+    isAdeFreeOpenCodeProvider(model?.providerID)
+    || argsNameAdeFreeModel(direct?.args ?? [])
+    || argsNameAdeFreeModel(line?.args ?? [])
+  ) {
+    throw new Error(ADE_FREE_MODELS_CHAT_ONLY_MESSAGE);
+  }
   const { selector, rest } = splitOpenCodeArgs(direct?.args ?? line!.args);
   const lineRest = direct && line ? splitOpenCodeArgs(line.args).rest : rest;
 

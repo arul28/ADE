@@ -12,6 +12,7 @@ import { tailTextAtCodePoint } from "../../../shared/codePointText";
 import {
   adeBackgroundUtilityProvider,
   adeBackgroundUtilityProviderFromToolType,
+  backgroundUtilityModelAllowed,
   backgroundUtilityModelId,
 } from "../../../shared/backgroundUtilityModel";
 import {
@@ -562,7 +563,8 @@ export function buildSessionIntelligenceModelCandidates(args: {
   const pool = withSessionModelDescriptors(args.availableModels, preferred);
   const own = buildNamingModelCandidates({ availableModels: pool, preferred }).slice(0, 1);
   const cheaper = cheaperSameRouteModelId(args.availableModels, args.provider, own[0] ?? args.sessionModelId ?? args.sessionModel);
-  return cheaper ? [cheaper, ...own] : own;
+  // An ADE Free Models chat has no helper model: it keeps its deterministic title.
+  return (cheaper ? [cheaper, ...own] : own).filter(backgroundUtilityModelAllowed);
 }
 
 export type NamingAttemptFailure = {

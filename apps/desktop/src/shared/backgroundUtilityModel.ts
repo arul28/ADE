@@ -11,7 +11,18 @@
  * who turned Fast on globally does not pay Fast rates for a chat name.
  * Composer 2.5 has no effort control, only fast/standard.
  */
+import { isAdeFreeModelId } from "./adeFreeModels";
 import type { ModelDescriptor } from "./modelRegistry";
+
+/**
+ * Whether a background helper may run on this model. Never an ADE Free
+ * Model: Gravity serves those only to a chat someone has open, paid for by
+ * the cards in it, and a helper call is neither. Such a chat keeps its
+ * deterministic title, and its agent can rename it.
+ */
+export function backgroundUtilityModelAllowed(modelId: string | null | undefined): boolean {
+  return !isAdeFreeModelId(modelId);
+}
 
 /** The model ids the provider CLIs take (`claude --model`, `codex -m`). */
 export const BACKGROUND_UTILITY_CLAUDE_CLI_MODEL = "claude-haiku-5-5";

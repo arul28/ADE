@@ -32,6 +32,8 @@ import { resolveTrackedCliUserMcp, trackedCliTakesMcpServers } from "../mcp/trac
 import { runGit } from "../git/git";
 import { signalProcessGroup } from "../shared/utils";
 import { attachOpenCodeTerminal, listAdeOpenCodeSessions } from "../opencode/openCodeTerminal";
+import { isAdeFreeModelId } from "../../../shared/adeFreeModels";
+import { ADE_FREE_MODELS_CHAT_ONLY_MESSAGE } from "../freeModels/adeFreeModelsLaunch";
 import type { OpenCodeServerLease } from "../opencode/openCodeServer";
 import { SESSION_ACTIVITY_SESSION_ID_ENV } from "../../../shared/sessionActivity";
 import {
@@ -7314,6 +7316,8 @@ export function createPtyService({
       });
       const { laneWorktreePath: worktreePath, cwd } = launchContext;
       const { cols, rows } = clampDims(args.cols, args.rows);
+      // ADE Free Models are paid for by sponsored cards a terminal can't show.
+      if (isAdeFreeModelId(args.runtimeCliLaunch?.model)) throw new Error(ADE_FREE_MODELS_CHAT_ONLY_MESSAGE);
       let runtimeCliLaunch = withNewCliSessionAccount(args);
       // Claude Code exits at once when told to skip permissions as root. A
       // launch nobody could be asked about (an agent's, a batch's) starts in
