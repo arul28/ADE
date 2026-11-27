@@ -14,9 +14,12 @@
 
 import { CloudApiError, type CloudApiClient } from "../cloudApiClient";
 import {
+  ACCOUNT_MODEL_FAVORITE_ID_MAX,
+  ACCOUNT_MODEL_FAVORITES_MAX,
   CLOUD_ACCOUNT_SECRET_KINDS,
   CLOUD_LINEAR_OPS,
   type AccountLaneIndexRow,
+  type AccountModelFavorites,
   type CloudAccountSecretKind,
   type CloudAccountSecrets,
   type CloudAccountSignInsWithCarried,
@@ -44,6 +47,8 @@ export type AdeCloudAccountCall =
   | { call: "saveLimits"; update: CloudAgentLimitsUpdate }
   | { call: "accountSecrets"; kind?: CloudAccountSecretKind | null; origin?: string | null }
   | { call: "accountLanes"; project?: string | null; pr?: number | null }
+  | { call: "modelFavorites" }
+  | { call: "changeModelFavorites"; add?: string[]; remove?: string[] }
   | { call: "savedSession"; machineKey: string; sessionId: string }
   | { call: "linearQuery"; origin: string; op: CloudLinearOp; vars?: Record<string, unknown> }
   | { call: "jiraSearch"; origin: string; jql: string; fields?: string[]; maxResults?: number; nextPageToken?: string | null }
@@ -60,6 +65,8 @@ export type AdeCloudAccountResults = {
   saveLimits: CloudAgentLimitsState | null;
   accountSecrets: CloudAccountSecrets | null;
   accountLanes: { lanes: AccountLaneIndexRow[] } | null;
+  modelFavorites: AccountModelFavorites | null;
+  changeModelFavorites: AccountModelFavorites | null;
   savedSession: CloudSessionCopy | null;
   linearQuery: CloudLinearQueryResult | null;
   jiraSearch: CloudJiraSearchResult | null;
@@ -139,6 +146,19 @@ function limitsUpdate(value: unknown): CloudAgentLimitsUpdate {
   return { limits: out, ...(given.ifRevision !== undefined ? { ifRevision } : {}) };
 }
 
+/** A list of model ids for a favorites change; an empty list when none was sent. */
+function modelIds(value: unknown): string[] {
+  if (value == null) return [];
+  if (!Array.isArray(value) || value.length > ACCOUNT_MODEL_FAVORITES_MAX) throw new InvalidCall("ADE couldn't read the favorite models to save.");
+  const out: string[] = [];
+  for (const raw of value) {
+    const id = text(raw, ACCOUNT_MODEL_FAVORITE_ID_MAX);
+    if (!id) throw new InvalidCall("ADE couldn't read the favorite models to save.");
+    if (!out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
 function linearVars(value: unknown): Record<string, unknown> | undefined {
   if (value == null) return undefined;
   const vars = record(value);
@@ -196,6 +216,14 @@ async function dispatch(api: CloudApiClient, call: Record<string, unknown>): Pro
     case "accountLanes": {
       const pr = typeof call.pr === "number" && Number.isInteger(call.pr) && call.pr > 0 ? call.pr : null;
       return await api.accountLanes({ project: text(call.project, ORIGIN_MAX), pr });
+    }
+    case "modelFavorites":
+      return await api.modelFavorites();
+    case "changeModelFavorites": {
+      const add = modelIds(call.add);
+      const remove = modelIds(call.remove);
+      if (!add.length && !remove.length) throw new InvalidCall("ADE couldn't read the favorite models to save.");
+      return await api.changeModelFavorites({ add, remove });
     }
     case "savedSession":
       return await api.savedSession(id(call.machineKey, "computer"), id(call.sessionId, "session"));

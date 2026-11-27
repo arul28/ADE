@@ -75,6 +75,8 @@ export async function deleteCloudAccount(
   await env.DB.batch([
     env.DB.prepare("delete from account_lane_index where user_id = ?").bind(userId),
     env.DB.prepare("delete from account_lane_index_state where user_id = ?").bind(userId),
+    // The model picker's favorites (model ids only).
+    env.DB.prepare("delete from account_model_favorites where user_id = ?").bind(userId),
   ]);
   // Launch facts (first messages, lane names) and their files; project delete jobs.
   await deleteAccountLaunches(env, userId);

@@ -23,10 +23,10 @@ enum WorkFreeModelsMachine {
 /// or a provider family), and the trailing pane shows the matching model
 /// rows with a search field on top.
 ///
-/// Favorites and recents are sourced from the cross-surface RPC contract
-/// (`modelPicker.getFavorites` / `getRecents` / `toggleFavorite` /
-/// `pushRecent`) so the same starred and recently-used models follow the user
-/// between the desktop and the iOS app.
+/// Favorites live on the ADE account (`/account/model-favorites`), so the same
+/// starred models follow the user across the desktop, the web and this app.
+/// Recents come from the connected machine (`modelPicker.getRecents` /
+/// `pushRecent`).
 struct WorkModelPickerSheet: View {
   @Environment(\.dismiss) private var dismiss
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
@@ -1757,7 +1757,7 @@ struct ModelPickerContentPane: View {
     }
     switch selection {
     case .favorites:
-      return "Tap the star on any model to pin it here. Favorites sync between desktop and mobile."
+      return "Tap the star on any model to pin it here. Favorites sync across your ADE account."
     case .recents:
       return "Models you pick here will appear in the recents list, on every paired surface."
     case .free:
@@ -2270,9 +2270,14 @@ struct ModelPickerCurrentModelBar: View {
 // MARK: - Store
 
 /// Owns the favorites/recents lists for the picker UI. Optimistic local
-/// updates fire immediately so taps feel instant; the RPC sync runs in the
+/// updates fire immediately so taps feel instant; the sync runs in the
 /// background and reconciles when the server responds. Failures roll back to
 /// the last known-good list rather than letting the UI diverge silently.
+///
+/// Favorites live on the ADE account (`AccountModelFavoritesClient`), so the
+/// desktop on every computer, the web client and this phone share one list.
+/// Signed out, or an account server from before the route: the connected
+/// machine's list, as before. Recents stay on the connected machine.
 @MainActor
 final class ModelPickerStore: ObservableObject {
   @Published private(set) var favorites: [String] = []
@@ -2280,6 +2285,9 @@ final class ModelPickerStore: ObservableObject {
   @Published private(set) var isLoading: Bool = false
 
   private var hasLoaded = false
+  private let accountFavorites = AccountModelFavoritesClient()
+  /// Bumped by each favorites change: only the newest change's answer is shown.
+  private var favoritesGeneration = 0
 
   func load(syncService: SyncService) {
     guard !hasLoaded else { return }
@@ -2292,11 +2300,13 @@ final class ModelPickerStore: ObservableObject {
 
   func refresh(syncService: SyncService) async {
     let directoryRevision = WorkModelMentionDirectory.shared.recentsRevisionSnapshot
-    async let favTask = try? await syncService.getModelFavorites()
+    let generation = favoritesGeneration
+    async let favTask = readFavorites(syncService: syncService)
     async let recTask = try? await syncService.getModelRecents()
     let fav = await favTask
     let rec = await recTask
-    if let fav { favorites = fav }
+    // A star tapped while the read ran wins over the read.
+    if let fav, generation == favoritesGeneration { favorites = fav }
     if let rec {
       recents = rec
       // The `@` menu ranks by the same recents; only the host's answer is
@@ -2306,19 +2316,50 @@ final class ModelPickerStore: ObservableObject {
     isLoading = false
   }
 
+  /// The account's favorites; the machine's when the account can't answer
+  /// for them (signed out, older server). Nil on a failure: keep the list shown.
+  private func readFavorites(syncService: SyncService) async -> [String]? {
+    do {
+      return try await accountFavorites.fetch()
+    } catch AccountModelFavoritesClient.FavoritesError.signedOut, AccountModelFavoritesClient.FavoritesError.unsupported {
+      return try? await syncService.getModelFavorites()
+    } catch {
+      return nil
+    }
+  }
+
   func toggleFavorite(_ modelId: String, syncService: SyncService) {
     let previous = favorites
-    if favorites.contains(modelId) {
+    let removing = favorites.contains(modelId)
+    if removing {
       favorites.removeAll { $0 == modelId }
     } else {
-      favorites = [modelId] + favorites.filter { $0 != modelId }
+      // Appended, as the desktop and the account server order stars.
+      favorites = favorites.filter { $0 != modelId } + [modelId]
     }
+    favoritesGeneration &+= 1
+    let generation = favoritesGeneration
     Task { @MainActor [weak self] in
+      guard let self else { return }
       do {
-        let result = try await syncService.toggleModelFavorite(modelId)
-        self?.favorites = result.favorites
+        let next = try await self.accountFavorites.change(
+          add: removing ? [] : [modelId],
+          remove: removing ? [modelId] : []
+        )
+        if generation == self.favoritesGeneration { self.favorites = next }
+      } catch AccountModelFavoritesClient.FavoritesError.signedOut, AccountModelFavoritesClient.FavoritesError.unsupported {
+        do {
+          let result = try await syncService.toggleModelFavorite(modelId)
+          if generation == self.favoritesGeneration { self.favorites = result.favorites }
+        } catch {
+          if generation == self.favoritesGeneration { self.favorites = previous }
+        }
+      } catch AccountModelFavoritesClient.FavoritesError.refused {
+        // The account can't take it (the list is full): show its list.
+        let fresh = try? await self.accountFavorites.fetch()
+        if generation == self.favoritesGeneration { self.favorites = fresh ?? previous }
       } catch {
-        self?.favorites = previous
+        if generation == self.favoritesGeneration { self.favorites = previous }
       }
     }
   }

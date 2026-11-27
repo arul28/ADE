@@ -16790,12 +16790,13 @@ final class SyncService: ObservableObject {
     ].joined(separator: "\u{1f}")
   }
 
-  // MARK: - Cross-surface model picker (favorites + recents)
+  // MARK: - Model picker lists on the connected machine (favorites + recents)
   //
-  // Mirrors the desktop `useModelFavorites` / `useModelRecents` hooks and the
-  // desktop implementation. Backed by the per-project cr-sqlite DB on the ade-cli
-  // host so favorites and recents converge across desktop and iOS via
-  // sync. Recents are capped at 10 server-side — the client should not pre-trim.
+  // Backed by the per-project cr-sqlite DB on the ade-cli host. Recents live
+  // here. Favorites live on the ADE account (`AccountModelFavoritesClient`);
+  // the machine's favorites are only the fallback for a phone that is signed
+  // out or talks to an account server from before that route. Recents are
+  // capped at 10 server-side — the client should not pre-trim.
 
   func getModelFavorites() async throws -> [String] {
     let payload = try await sendDecodableCommand(

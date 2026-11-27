@@ -28,6 +28,8 @@ import {
   type AccountLaneIndexPut,
   type AccountLaneIndexPutResult,
   type AccountLaneIndexRow,
+  type AccountModelFavorites,
+  type AccountModelFavoritesChange,
   type CloudAccess,
   type CloudComputerActivityReport,
   type CloudComputerStatus,
@@ -454,6 +456,11 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
       const suffix = query.toString() ? `?${query.toString()}` : "";
       return orNullOn404(() => request<{ lanes: AccountLaneIndexRow[] }>("GET", `${CLOUD_PATHS.accountLanes}${suffix}`));
     },
+    /** The account's model picker favorites; null from an older server. */
+    modelFavorites: () => orNullOn404(() => request<AccountModelFavorites>("GET", CLOUD_PATHS.accountModelFavorites)),
+    /** Stars added and taken off, applied to the account's list; the list after it. Null from an older server. */
+    changeModelFavorites: (change: AccountModelFavoritesChange) =>
+      orNullOn404(() => request<AccountModelFavorites>("PUT", CLOUD_PATHS.accountModelFavorites, { body: change })),
 
     /* ---- The message queue for an existing cloud chat ---- */
     /**

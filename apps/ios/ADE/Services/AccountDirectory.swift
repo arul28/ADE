@@ -1059,3 +1059,99 @@ struct AccountAttentionRelayClient {
     }
   }
 }
+
+// MARK: - Model picker favorites
+
+/// The account's model picker favorites (`GET`/`PUT /account/model-favorites`
+/// on the account directory): one list for the desktop on every computer, the
+/// web client and this phone. Shapes mirror `AccountModelFavorites` in
+/// `apps/account-directory/src/cloud/contract.ts`. Recents stay per machine.
+struct AccountModelFavorites: Decodable, Equatable {
+  let favorites: [String]
+  let revision: Int
+}
+
+struct AccountModelFavoritesClient {
+  enum FavoritesError: Error, Equatable {
+    /// Not signed in, or no account directory in this build.
+    case signedOut
+    /// The directory has no favorites route (an older server).
+    case unsupported
+    /// The account refused the change (the list is full): sending it again can't land.
+    case refused
+    case server(Int)
+    case transport
+  }
+
+  var session: URLSession = .adeAccount
+
+  /// The account's list.
+  @MainActor
+  func fetch() async throws -> [String] {
+    try await send(method: "GET", body: nil).favorites
+  }
+
+  /// Adds and takes off stars on the account's list; answers the list after it.
+  @MainActor
+  func change(add: [String], remove: [String]) async throws -> [String] {
+    let body = try JSONSerialization.data(withJSONObject: ["add": add, "remove": remove])
+    return try await send(method: "PUT", body: body).favorites
+  }
+
+  @MainActor
+  private func send(method: String, body: Data?) async throws -> AccountModelFavorites {
+    guard let baseURL = AccountConfig.directoryBaseURL else { throw FavoritesError.signedOut }
+    let account = AccountService.shared
+    guard let pairing = await account.pairingSession() else { throw FavoritesError.signedOut }
+    let url = baseURL.appendingPathComponent("account/model-favorites")
+    let correlationID = UUID().uuidString.lowercased()
+    let urlSession = session
+    func request(_ accessToken: String) async throws -> (Data, HTTPURLResponse) {
+      var request = URLRequest(url: url)
+      request.httpMethod = method
+      request.httpBody = body
+      request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+      request.setValue("application/json", forHTTPHeaderField: "Accept")
+      if body != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
+      request.setValue(correlationID, forHTTPHeaderField: "X-ADE-Correlation-ID")
+      request.timeoutInterval = 12
+      request.cachePolicy = .reloadIgnoringLocalCacheData
+      do {
+        let (data, response) = try await urlSession.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw FavoritesError.transport }
+        return (data, http)
+      } catch let error as FavoritesError {
+        throw error
+      } catch {
+        throw FavoritesError.transport
+      }
+    }
+    var (data, http) = try await request(pairing.token)
+    if http.statusCode == 401,
+       account.isPairingCommitAuthorized(pairing.authorization),
+       let refreshed = try? await account.freshRelaySession(expectedAuthorization: pairing.authorization).token {
+      (data, http) = try await request(refreshed)
+    }
+    // An account switch while the call ran: the answer is the old account's.
+    guard account.isPairingCommitAuthorized(pairing.authorization) else { throw FavoritesError.signedOut }
+    switch http.statusCode {
+    case 200:
+      guard let decoded = try? JSONDecoder().decode(AccountModelFavorites.self, from: data) else {
+        throw FavoritesError.transport
+      }
+      return decoded
+    case 401, 403:
+      throw FavoritesError.signedOut
+    case 404:
+      throw FavoritesError.unsupported
+    case 400, 413:
+      throw FavoritesError.refused
+    case 409:
+      let code = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])
+        .flatMap { $0["error"] as? [String: Any] }?["code"] as? String
+      throw code == "favorites_busy" ? FavoritesError.server(409) : FavoritesError.refused
+    default:
+      throw FavoritesError.server(http.statusCode)
+    }
+  }
+}

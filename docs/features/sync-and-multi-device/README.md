@@ -1679,8 +1679,10 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
     `usage.getLiveQuota` are machine-level RPC to machines already connected
     (no dial, no pairing). `usage.getQuotaSnapshot` reads cached limits;
     `usage.refreshQuota` runs the quota-only path with no interactive auth.
-  - Model-picker commands use the same CRR-backed favorites store as the
-    desktop.
+  - Model-picker commands use the machine's CRR-backed store. Recents live
+    there. Favorites live on the ADE account (`/account/model-favorites`);
+    iOS reads the machine's favorites only when it is signed out or the
+    account server predates that route.
   - `personalChats.*` (from `PERSONAL_CHAT_ACTIONS`, `scope: "runtime"`) call
     `PersonalChatScope`. Only `personalChats.send` is queueable.
     `isPersonalChatActionViewerAllowed` denies `createScheduledWork` and

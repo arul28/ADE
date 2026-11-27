@@ -252,6 +252,7 @@ are in
 | Lane backups: each lane's work not on GitHub (a patch to download) | `laneBackups.ts` |
 | One project's overview | `projectOverview.ts` |
 | The account lane index (name, branch, machine, PR; only for mentions) | `accountLanes/routes.ts` |
+| The model picker's favorites, one list per account (migration `0070`) | `accountModelFavorites/routes.ts` |
 | The CTO account copy | `ctoCopy.ts` |
 | Automations whose home is ADE Cloud | `automations.ts` |
 | Linear and Jira, with the account's sign-in | `integrations.ts` |
