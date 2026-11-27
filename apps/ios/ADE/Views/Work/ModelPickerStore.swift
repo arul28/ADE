@@ -22,6 +22,8 @@ final class ModelPickerStore: ObservableObject {
   /// Stars are sent one at a time, in the order tapped, so a quick star and
   /// unstar can't reach the account in the wrong order.
   private var lastFavoriteChange: Task<Void, Never>?
+  /// The last list a server answered: what a failed star rolls back to.
+  private var confirmedFavorites: [String] = []
   /// Stars taken off since the picker opened: the machine import never adds them back.
   private var removedHere: Set<String> = []
 
@@ -43,6 +45,7 @@ final class ModelPickerStore: ObservableObject {
     async let recTask = try? await syncService.getModelRecents()
     let fav = await favTask
     let rec = await recTask
+    if let fav { confirmedFavorites = fav }
     // A star tapped while the read ran wins over the read.
     if let fav, generation == favoritesGeneration { favorites = fav }
     if let rec {
@@ -55,7 +58,6 @@ final class ModelPickerStore: ObservableObject {
   }
 
   func toggleFavorite(_ modelId: String, syncService: SyncService) {
-    let previous = favorites
     let removing = favorites.contains(modelId)
     // Appended, as the desktop and the account server order stars.
     favorites = removing ? favorites.filter { $0 != modelId } : favorites.filter { $0 != modelId } + [modelId]
@@ -69,8 +71,10 @@ final class ModelPickerStore: ObservableObject {
       await prior?.value
       guard let self else { return }
       let settled = await self.changeFavorite(modelId, removing: removing, account: account, syncService: syncService)
+      // Every answer is the server's whole list, a superseded one too.
+      if let settled { self.confirmedFavorites = settled }
       guard generation == self.favoritesGeneration else { return }
-      self.favorites = settled ?? previous
+      self.favorites = settled ?? self.confirmedFavorites
     }
   }
 
@@ -141,8 +145,8 @@ final class ModelPickerStore: ObservableObject {
       CrashReporting.breadcrumb("model-picker", message: "favorite refused by the account")
       return try? await accountFavorites.fetch()
     } catch AccountModelFavoritesClient.FavoritesError.stale {
-      // Another account now: its list comes with the next read.
-      return favorites
+      // Another account now: nothing was saved; its list comes with the next read.
+      return nil
     } catch {
       CrashReporting.breadcrumb("model-picker", message: "favorite change failed", data: ["error": String(describing: error)])
       return nil
