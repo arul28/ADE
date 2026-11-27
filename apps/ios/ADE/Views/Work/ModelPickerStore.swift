@@ -22,6 +22,8 @@ final class ModelPickerStore: ObservableObject {
   /// Stars are sent one at a time, in the order tapped, so a quick star and
   /// unstar can't reach the account in the wrong order.
   private var lastFavoriteChange: Task<Void, Never>?
+  /// Stars taken off since the picker opened: the machine import never adds them back.
+  private var removedHere: Set<String> = []
 
   func load(syncService: SyncService) {
     guard !hasLoaded else { return }
@@ -55,13 +57,16 @@ final class ModelPickerStore: ObservableObject {
     let removing = favorites.contains(modelId)
     // Appended, as the desktop and the account server order stars.
     favorites = removing ? favorites.filter { $0 != modelId } : favorites.filter { $0 != modelId } + [modelId]
+    if removing { removedHere.insert(modelId) } else { removedHere.remove(modelId) }
     favoritesGeneration &+= 1
     let generation = favoritesGeneration
+    // The account the tap was made under, read now: a later account never gets it.
+    let account = AccountService.shared.identity?.userId
     let prior = lastFavoriteChange
     lastFavoriteChange = Task { @MainActor [weak self] in
       await prior?.value
       guard let self else { return }
-      let settled = await self.changeFavorite(modelId, removing: removing, syncService: syncService)
+      let settled = await self.changeFavorite(modelId, removing: removing, account: account, syncService: syncService)
       guard generation == self.favoritesGeneration else { return }
       self.favorites = settled ?? previous
     }
@@ -93,28 +98,37 @@ final class ModelPickerStore: ObservableObject {
     guard !UserDefaults.standard.bool(forKey: key),
           let machineList = try? await syncService.getModelFavorites()
     else { return list }
-    let missing = machineList.filter { !list.contains($0) }
-    guard !missing.isEmpty else {
-      UserDefaults.standard.set(true, forKey: key)
-      return list
+    // In the same queue as taps, after any tap already sent, so a star taken
+    // off while the machine was read stays off.
+    let prior = lastFavoriteChange
+    let write = Task { @MainActor [weak self] () -> [String]? in
+      await prior?.value
+      guard let self else { return nil }
+      let missing = machineList.filter { !list.contains($0) && !self.removedHere.contains($0) }
+      guard !missing.isEmpty else {
+        UserDefaults.standard.set(true, forKey: key)
+        return nil
+      }
+      do {
+        let next = try await self.accountFavorites.change(add: Array(missing.prefix(200)), remove: [], account: userId)
+        UserDefaults.standard.set(true, forKey: key)
+        return next
+      } catch AccountModelFavoritesClient.FavoritesError.refused {
+        // The account's list is full: these can't land, so don't send them again.
+        UserDefaults.standard.set(true, forKey: key)
+        return nil
+      } catch {
+        return nil
+      }
     }
-    do {
-      let next = try await accountFavorites.change(add: Array(missing.prefix(200)), remove: [])
-      UserDefaults.standard.set(true, forKey: key)
-      return next
-    } catch AccountModelFavoritesClient.FavoritesError.refused {
-      // The account's list is full: these can't land, so don't send them again.
-      UserDefaults.standard.set(true, forKey: key)
-      return list
-    } catch {
-      return list
-    }
+    lastFavoriteChange = Task { _ = await write.value }
+    return await write.value ?? list
   }
 
   /// The list after one star, or nil when it failed (roll back).
-  private func changeFavorite(_ modelId: String, removing: Bool, syncService: SyncService) async -> [String]? {
+  private func changeFavorite(_ modelId: String, removing: Bool, account: String?, syncService: SyncService) async -> [String]? {
     do {
-      return try await accountFavorites.change(add: removing ? [] : [modelId], remove: removing ? [modelId] : [])
+      return try await accountFavorites.change(add: removing ? [] : [modelId], remove: removing ? [modelId] : [], account: account)
     } catch AccountModelFavoritesClient.FavoritesError.signedOut, AccountModelFavoritesClient.FavoritesError.unsupported {
       return try? await syncService.toggleModelFavorite(modelId).favorites
     } catch AccountModelFavoritesClient.FavoritesError.refused {

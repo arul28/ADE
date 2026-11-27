@@ -33,9 +33,13 @@ struct AccountModelFavoritesClient {
   }
 
   /// Adds and takes off stars on the account's list; answers the list after it.
+  /// `account` is the user id the change was made under: the server refuses
+  /// it (`.stale`) when this phone is signed in as another account by now.
   @MainActor
-  func change(add: [String], remove: [String]) async throws -> [String] {
-    let body = try JSONSerialization.data(withJSONObject: ["add": add, "remove": remove])
+  func change(add: [String], remove: [String], account: String?) async throws -> [String] {
+    var fields: [String: Any] = ["add": add, "remove": remove]
+    if let account { fields["account"] = account }
+    let body = try JSONSerialization.data(withJSONObject: fields)
     return try await send(method: "PUT", body: body)
   }
 
@@ -84,6 +88,8 @@ struct AccountModelFavoritesClient {
         throw FavoritesError.transport
       }
       return decoded.favorites
+    case 403 where Self.errorCode(data) == "account_changed":
+      throw FavoritesError.stale
     case 401, 403:
       // Still signed in on this phone: the token would not refresh. Try again later.
       throw FavoritesError.transport
@@ -94,5 +100,11 @@ struct AccountModelFavoritesClient {
     default:
       throw FavoritesError.server(http.statusCode)
     }
+  }
+
+  /// The `code` of an error answer (`{error: {code, message}}`).
+  private static func errorCode(_ data: Data) -> String? {
+    let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    return (object?["error"] as? [String: Any])?["code"] as? String
   }
 }

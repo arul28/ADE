@@ -48,7 +48,7 @@ export type AdeCloudAccountCall =
   | { call: "accountSecrets"; kind?: CloudAccountSecretKind | null; origin?: string | null }
   | { call: "accountLanes"; project?: string | null; pr?: number | null }
   | { call: "modelFavorites" }
-  | { call: "changeModelFavorites"; add?: string[]; remove?: string[] }
+  | { call: "changeModelFavorites"; add?: string[]; remove?: string[]; account?: string }
   | { call: "savedSession"; machineKey: string; sessionId: string }
   | { call: "linearQuery"; origin: string; op: CloudLinearOp; vars?: Record<string, unknown> }
   | { call: "jiraSearch"; origin: string; jql: string; fields?: string[]; maxResults?: number; nextPageToken?: string | null }
@@ -223,7 +223,9 @@ async function dispatch(api: CloudApiClient, call: Record<string, unknown>): Pro
       const add = modelIds(call.add);
       const remove = modelIds(call.remove);
       if (!add.length && !remove.length) throw new InvalidCall("ADE couldn't read the favorite models to save.");
-      return await api.changeModelFavorites({ add, remove });
+      // The server compares it with the caller's user id; one it can't read is left out, never a refusal.
+      const account = text(call.account, 200) ?? undefined;
+      return await api.changeModelFavorites({ add, remove, ...(account ? { account } : {}) });
     }
     case "savedSession":
       return await api.savedSession(id(call.machineKey, "computer"), id(call.sessionId, "session"));

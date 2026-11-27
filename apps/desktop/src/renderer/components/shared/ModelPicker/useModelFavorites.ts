@@ -60,11 +60,13 @@ function readStored(key: string): unknown {
   }
 }
 
-function writeStored(key: string, value: unknown): void {
+/** False when storage refused the write (full, or blocked). */
+function writeStored(key: string, value: unknown): boolean {
   try {
     window.localStorage.setItem(key, JSON.stringify(value));
+    return true;
   } catch {
-    // ignore — the copy here is convenience state; the account holds the list.
+    return false;
   }
 }
 
@@ -80,10 +82,21 @@ function idsOf(value: unknown): string[] {
   return Array.isArray(value) ? [...new Set(value.map(favoriteId).filter((id): id is string => id != null))] : [];
 }
 
-/** Read from storage each time, so a change another window queued is never overwritten. */
+/** The queue when storage refused to save it: kept here so the change is still sent. */
+let unsavedPending: Pending | null = null;
+
+/**
+ * Read from storage each time, so a change another window queued is never
+ * overwritten; the copy kept here when storage could not save the queue.
+ */
 function readPending(): Pending {
+  if (unsavedPending) return unsavedPending;
   const raw = readStored(PENDING_KEY) as Partial<Pending> | null;
   return { add: idsOf(raw?.add), remove: idsOf(raw?.remove) };
+}
+
+function savePending(pending: Pending): void {
+  unsavedPending = writeStored(PENDING_KEY, pending) ? null : pending;
 }
 
 /** `pending` with `id` queued to be added or taken off; the opposite change for it is dropped. */
@@ -155,8 +168,9 @@ type FavoritesState = {
 const useFavoritesStore = create<FavoritesState>((set, get) => {
   const setLocal = (favorites: string[], pending: Pending) => {
     set({ favorites });
+    // The list copy is convenience state (the account holds the list); the queue is not.
     writeStored(STORAGE_KEY, favorites);
-    writeStored(PENDING_KEY, pending);
+    savePending(pending);
   };
 
   /** Adds the old list on the tab's machine, once. Stars taken off here are not added back. */
@@ -207,16 +221,17 @@ const useFavoritesStore = create<FavoritesState>((set, get) => {
 
   const syncOnce = async (): Promise<void> => {
     const owner = await accountUserId();
+    if (owner) claimFor(owner);
+    // The machine's old list shows here even while signed out.
+    await importFromMachine();
     // Signed out: keep the list here and the changes for the next sync.
     if (owner === null) return;
-    if (owner) claimFor(owner);
-    await importFromMachine();
     seedAccount();
     // At most one list's worth each way per call; the rest goes with the next one.
     const queued = readPending();
     const sent: Pending = { add: queued.add.slice(0, ACCOUNT_MODEL_FAVORITES_MAX), remove: queued.remove.slice(0, ACCOUNT_MODEL_FAVORITES_MAX) };
     const answer = sent.add.length || sent.remove.length
-      ? await runAccountCall({ call: "changeModelFavorites", add: sent.add, remove: sent.remove })
+      ? await runAccountCall({ call: "changeModelFavorites", add: sent.add, remove: sent.remove, ...(owner ? { account: owner } : {}) })
       : await runAccountCall({ call: "modelFavorites" });
     // The account changed while the call ran: the answer is the old account's.
     if (owner && await accountUserId() !== owner) return;

@@ -2101,7 +2101,16 @@ export type AccountModelFavorites = { favorites: string[]; revision: number };
  * to the list as the server holds it, so two devices changing it at once both
  * land. Removals go first; an added id already on the list keeps its place.
  */
-export type AccountModelFavoritesChange = { add?: string[]; remove?: string[] };
+export type AccountModelFavoritesChange = {
+  add?: string[];
+  remove?: string[];
+  /**
+   * The account the change was made under (its user id). A caller signed in
+   * as another account is refused (403 `account_changed`), so a change queued
+   * before an account switch never lands on the new account's list.
+   */
+  account?: string;
+};
 
 /* ---- The server launcher (C6): a lane on a new computer for a caller with no computer ---- */
 

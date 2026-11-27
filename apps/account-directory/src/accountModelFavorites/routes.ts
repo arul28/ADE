@@ -122,7 +122,12 @@ async function handlePut(request: Request, env: AccountModelFavoritesEnv, userId
   const body = await readJson(request);
   const add = idList(body?.add);
   const remove = idList(body?.remove);
-  if (!body || !add || !remove) return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
+  if (!body || !add || !remove || (body.account !== undefined && typeof body.account !== "string")) {
+    return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
+  }
+  if (body.account !== undefined && body.account !== userId) {
+    return fail("account_changed", "These favorites were changed under another ADE account.", 403);
+  }
   const removed = new Set(remove);
   for (let attempt = 0; attempt < WRITE_ATTEMPTS; attempt += 1) {
     const current = await readRow(env.DB, userId);
