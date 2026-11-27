@@ -2920,7 +2920,9 @@ struct WorkChatSessionView: View {
       },
       wakeComputer: { [syncServiceReference, sessionId = session.id] in
         await syncServiceReference.service?.wakeSavedCloudChatComputer(sessionId: sessionId)
-      }
+      },
+      // Live and reachable: a link that drops turns this false, and the citations ask the account again.
+      linkLive: isLive
     )
   }
 

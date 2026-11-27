@@ -33391,7 +33391,8 @@ async function runServe(
         if (useKind === "work") void keepAwake.noteUse();
         // The server's idle cleanup may be saving this computer for its delete
         // (`/use`, cloudComputerRest.ts): once the delete started, the work is refused.
-        const refusal = await cloudRest?.noteRemoteWork();
+        // Typing is refused then too, but never reported: it is not use.
+        const refusal = await cloudRest?.noteRemoteWork({ report: useKind === "work" });
         if (refusal) throw new JsonRpcError(JsonRpcErrorCode.policyDenied, refusal);
       }
       // Counted for a grow's restart now; held awake once it outlasts a short wait (a push with a slow hook).

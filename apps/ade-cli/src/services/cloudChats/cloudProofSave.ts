@@ -57,12 +57,12 @@ const ORIGINAL_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
 /**
  * Every proof id a chat's answers cite, oldest first, the newest
  * `CLOUD_CHAT_PROOF_MAX_PER_CHAT`. Answers stream in pieces, so each
- * message's text is joined before it is read. A transcript that is missing
- * or can't be read cites nothing.
+ * message's text is joined before it is read. Null when the transcript
+ * can't be read just now: it is read again at the next save.
  */
-async function chatCitedProofIds(transcriptPath: string, maxBytes: number = SCAN_BYTES): Promise<string[]> {
+async function chatCitedProofIds(transcriptPath: string, maxBytes: number = SCAN_BYTES): Promise<string[] | null> {
   const text = await readTranscriptEnd(transcriptPath, maxBytes);
-  if (!text) return [];
+  if (text == null) return null;
   const messages = new Map<string, string>();
   for (const line of text.split("\n")) {
     if (!line.includes('"text"')) continue;
@@ -120,9 +120,9 @@ async function readTranscriptEnd(transcriptPath: string, maxBytes: number): Prom
  * ISO box: `ftyp`, `moov`, `mdat`, `wide`, `free`, `skip`, `pnot`, `uuid`),
  * WebM/MKV or AVI, or a picture filed as a recording. ffmpeg picks its input
  * format by content, so a playlist named like a picture would make it read
- * other files or URLs.
+ * other files or URLs. `"unreadable"` when the file can't be opened just now.
  */
-async function looksLikeProofMedia(filePath: string, source: CloudChatProofSource): Promise<boolean> {
+async function looksLikeProofMedia(filePath: string, source: CloudChatProofSource): Promise<boolean | "unreadable"> {
   const head = Buffer.alloc(16);
   try {
     const handle = await fs.promises.open(filePath, "r");
@@ -132,7 +132,7 @@ async function looksLikeProofMedia(filePath: string, source: CloudChatProofSourc
       await handle.close();
     }
   } catch {
-    return false;
+    return "unreadable";
   }
   const box = head.subarray(4, 8).toString("latin1");
   if (cloudChatProofKindOf(head) != null) return true;
@@ -185,19 +185,20 @@ export type ProofPicture = { bytes: Buffer; contentType: string; via: "webp" | "
 /** The scale that keeps the picture's shape with neither side past `MAX_SIDE_PX` (and never larger than it was). */
 const SCALE = `scale='min(${MAX_SIDE_PX},iw)':'min(${MAX_SIDE_PX},ih)':force_original_aspect_ratio=decrease`;
 
-/** One frame of `input` as WebP or JPEG at `output`; true when ffmpeg made it. */
+/** One frame of `input` as WebP or JPEG at `output`, both tries within `timeoutMs`; true when ffmpeg made it. */
 async function convertFrame(binary: string, input: string, output: string, codec: "webp" | "jpeg", source: CloudChatProofSource, timeoutMs: number): Promise<boolean> {
+  const endAt = Date.now() + timeoutMs;
   const encode = codec === "webp"
     ? ["-vf", SCALE, "-c:v", "libwebp", "-quality", WEBP_QUALITY, "-compression_level", "4", "-f", "webp"]
     : ["-vf", `${SCALE}:force_divisible_by=2`, "-pix_fmt", "yuvj420p", "-c:v", "mjpeg", "-q:v", JPEG_QSCALE, "-f", "image2"];
-  const run = (seek: boolean) => runFfmpeg({
+  const run = (seek: boolean, runMs: number) => runFfmpeg({
     binaryPath: binary,
     args: [
       "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
       ...(seek ? ["-ss", STILL_AT_SECONDS] : []),
       "-protocol_whitelist", "file", "-i", input, "-frames:v", "1", "-an", ...encode, output,
     ],
-    timeoutMs: Math.max(1_000, timeoutMs),
+    timeoutMs: Math.max(1_000, runMs),
     logger: null,
     label: "proof picture",
   }).then(() => true, () => false);
@@ -208,9 +209,10 @@ async function convertFrame(binary: string, input: string, output: string, codec
       return false;
     }
   };
-  if (await run(source === "video") && made()) return true;
-  // A video shorter than the seek gives no frame there: its first frame instead.
-  return source === "video" && await run(false) && made();
+  if (await run(source === "video", timeoutMs) && made()) return true;
+  // A video shorter than the seek gives no frame there: its first frame instead, in the time left.
+  const rest = endAt - Date.now();
+  return source === "video" && rest > 1_000 && await run(false, rest) && made();
 }
 
 /**
@@ -232,7 +234,9 @@ export async function proofPictureFor(input: { filePath: string; source: CloudCh
   };
   // A conversion that used the time up (ffmpeg's own time-out) or never got to start.
   let ranOut = false;
-  if (ffmpeg && await looksLikeProofMedia(filePath, source)) {
+  const media = ffmpeg ? await looksLikeProofMedia(filePath, source) : false;
+  if (media === "unreadable") return "pending";
+  if (ffmpeg && media) {
     for (const codec of ffmpeg.webp ? (["webp", "jpeg"] as const) : (["jpeg"] as const)) {
       if (left() <= 1_000) break;
       const output = path.join(os.tmpdir(), `ade-proof-save-${randomUUID()}.${codec === "webp" ? "webp" : "jpg"}`);
@@ -285,9 +289,10 @@ export type ChatProofTasks = {
  * The rest save's tasks that save the proof each saved chat cites: once per
  * file (by `state.proofs` marks), at most `PROOF_TRIES_PER_SAVE` files a
  * save, and none past the save's `deadline`. A chat's citations are read
- * again only when its transcript changed and every one before was settled
- * (`state.proofScans`). An `account_full` refusal stops the rest of this
- * save's proof. No saved chats, no tasks.
+ * again only when its transcript changed or one before was not settled (a
+ * file missing or pending, a transcript read that failed; `state.proofScans`).
+ * An `account_full` refusal stops the rest of this save's proof. No saved
+ * chats, no tasks.
  */
 export function buildChatProofTasks(input: {
   runtimes: readonly AdeRuntime[];
@@ -328,9 +333,12 @@ export function buildChatProofTasks(input: {
         stat = null;
       }
       const mark = `${PROOF_MARK_VERSION}|g${generation}|${stat ? `${stat.size}|${Math.floor(stat.mtimeMs)}` : "none"}`;
+      // A proof this computer knows whose file isn't there yet: the chat is read again next save, so the
+      // file still goes once written. A link or another computer's proof (no file path) settles.
+      if (filePath && !stat) complete = false;
       if (sent[artifactId] === mark) continue;
       const source = artifact && filePath && stat?.isFile() ? proofSourceOf(artifact, filePath) : null;
-      // No file here (a link, another computer's proof, deleted) or not a picture or video: nothing to save until it changes.
+      // No file here or not a picture or video: nothing to save until it changes.
       if (!source || !filePath) {
         sent[artifactId] = mark;
         continue;
@@ -398,7 +406,10 @@ export function buildChatProofTasks(input: {
           const scanMark = transcript ? `g${generation}|${transcript}` : null;
           if (!scanMark || proofScans[row.id] === scanMark) return;
           const sent = (proofs[row.id] ??= {});
-          if (await saveChat(broker, row.id, generation, await chatCitedProofIds(transcriptPath), sent)) proofScans[row.id] = scanMark;
+          const cited = await chatCitedProofIds(transcriptPath);
+          // Unreadable just now: no scan mark, so the next save reads it again.
+          if (!cited) return;
+          if (await saveChat(broker, row.id, generation, cited, sent)) proofScans[row.id] = scanMark;
         } catch (error) {
           logger.warn("cloud.rest_save_proof_failed", { sessionId: row.id, error: getErrorMessage(error) });
         }

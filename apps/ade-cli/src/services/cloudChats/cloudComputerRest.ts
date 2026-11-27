@@ -79,8 +79,10 @@ export type CloudComputerRest = {
   /**
    * A person's remote work reached the computer. During the cleanup it is
    * reported (`/use`). Answers the refusal sentence once the delete started.
+   * Typing (`report: false`) is refused the same way but never reported: it
+   * must not count as use for the idle cleanup.
    */
-  noteRemoteWork: () => Promise<string | null>;
+  noteRemoteWork: (options?: { report?: boolean }) => Promise<string | null>;
 };
 
 const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
@@ -166,10 +168,10 @@ export function createCloudComputerRest(deps: CloudComputerRestDeps): CloudCompu
     noteCleanupStarted() {
       cleanupUntil = now() + CLEANUP_WINDOW_MS;
     },
-    async noteRemoteWork() {
+    async noteRemoteWork(options) {
       const at = now();
       if (at >= cleanupUntil) return null;
-      if (!deleting && at - lastUseReportAt > USE_REPORT_EVERY_MS) {
+      if (options?.report !== false && !deleting && at - lastUseReportAt > USE_REPORT_EVERY_MS) {
         lastUseReportAt = at;
         await reportUse();
       }

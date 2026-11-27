@@ -602,8 +602,12 @@ final class AccountCloudStore: ObservableObject {
     if let kept = savedProofs[id], kept.proof != nil || Date().timeIntervalSince(kept.at) < Self.savedProofNoneKept {
       return kept.proof
     }
-    if let running = savedProofReads[id] { return await running.value.proof }
     let generation = accountGeneration
+    if let running = savedProofReads[id] {
+      let proof = await running.value.proof
+      // The account changed while it was out: none of it is this account's.
+      return generation == accountGeneration ? proof : nil
+    }
     let read = Task { @MainActor [weak sync] () -> (proof: CloudSavedChatProof?, answered: Bool) in
       guard let client = await sync?.cloudServerClient() else { return (nil, false) }
       do {
@@ -615,7 +619,8 @@ final class AccountCloudStore: ObservableObject {
     }
     savedProofReads[id] = read
     let result = await read.value
-    savedProofReads[id] = nil
+    // After a reset another account's read may hold this key: clear only our own.
+    if generation == accountGeneration { savedProofReads[id] = nil }
     // The account changed while it was out: none of it is this account's.
     guard generation == accountGeneration else { return nil }
     // Only an answer is kept ("none saved" included); a failed read is asked again next time.
@@ -654,9 +659,17 @@ final class AccountCloudStore: ObservableObject {
         sync.chatThreadRegistry.markSnapshotStalled(key, message: "Sign in to ADE to read this chat.")
         return
       }
-      let page: CloudChatTranscriptPage
+      var page: CloudChatTranscriptPage
       do {
         page = try await client.transcriptPage(machineKey: accountMachineKey, chatId: key.sessionId)
+        // A server page reads a bounded number of parts and skips empty ones,
+        // so it can come back with none while older ones remain: read on (a
+        // few pages) to the first with a part, never an empty first snapshot.
+        var extraPages = 0
+        while page.parts.isEmpty, page.hasMore, let before = page.nextBefore, extraPages < 4, !Task.isCancelled {
+          extraPages += 1
+          page = try await client.transcriptPage(machineKey: accountMachineKey, chatId: key.sessionId, before: before)
+        }
       } catch {
         accountCloudLog.notice("cloud_store read=transcript failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
         guard generation == self.accountGeneration, !Task.isCancelled else { return }

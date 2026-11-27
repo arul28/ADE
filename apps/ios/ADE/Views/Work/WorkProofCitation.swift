@@ -22,6 +22,9 @@ struct WorkProofCitationContext {
   var savedProof: (@MainActor (String) async -> CloudSavedChatProof?)? = nil
   /// Wakes the chat's own computer: a saved video's "Wake to play".
   var wakeComputer: (@MainActor () async -> Void)? = nil
+  /// The chat's link reads connected. `savedProof` answers nil then, so a
+  /// citation asks again when this turns false (the computer went to sleep).
+  var linkLive = false
 }
 
 private struct WorkProofCitationEnvironmentKey: EnvironmentKey {
@@ -50,6 +53,7 @@ struct WorkProofCitationView: View {
   /// What the chat's resting computer saved for this id, once asked.
   @State private var saved: CloudSavedChatProof?
   @State private var waking = false
+  @State private var retrying = false
 
   private var mediaMaxHeight: CGFloat { compact ? 220 : 360 }
 
@@ -60,7 +64,8 @@ struct WorkProofCitationView: View {
       VStack(alignment: .leading, spacing: 6) {
         Group {
           // The computer can't send it (asleep, deleted): the copy it saved before it rested.
-          if failed, let saved {
+          // It stays up while a retry of the live proof loads.
+          if failed || content == nil, let saved {
             // Once awake, the live proof loads again and takes the saved one's place.
             savedMedia(saved, label: captionText(artifact)) { await citations.load(artifact, .retry) }
           } else {
@@ -68,7 +73,7 @@ struct WorkProofCitationView: View {
           }
         }
         .task(id: artifactId) { await citations.load(artifact, .preview) }
-        .task(id: "\(artifactId)|\(failed)") { if failed { await askSaved() } }
+        .task(id: "\(artifactId)|\(failed)|\(citations.linkLive)") { if failed { await askSaved() } }
         captionRows(artifact)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -108,7 +113,7 @@ struct WorkProofCitationView: View {
           .background(ADEColor.recessedBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
       }
-      .task(id: artifactId) {
+      .task(id: "\(artifactId)|\(citations?.linkLive ?? false)") {
         await citations?.resolveMissing?(artifactId)
         await askSaved()
       }
@@ -129,7 +134,7 @@ struct WorkProofCitationView: View {
   /// The saved picture where the live proof would be. A video shows its
   /// still with "Wake to play"; the video itself plays only from the computer.
   @ViewBuilder
-  private func savedMedia(_ proof: CloudSavedChatProof, label: String, afterWake: @escaping @MainActor () async -> Void) -> some View {
+  private func savedMedia(_ proof: CloudSavedChatProof, label: String, retry: @escaping @MainActor () async -> Void) -> some View {
     let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
     VStack(alignment: .leading, spacing: 4) {
       if let image = UIImage(data: proof.data) {
@@ -146,7 +151,7 @@ struct WorkProofCitationView: View {
               waking = true
               Task {
                 await wake()
-                await afterWake()
+                await retry()
                 waking = false
               }
             } label: {
@@ -158,9 +163,23 @@ struct WorkProofCitationView: View {
           }
         }
       }
-      Text(proof.source == .video ? "A still from the video, saved while its computer rests." : "Saved copy, shown while its computer rests.")
-        .font(.caption2)
-        .foregroundStyle(ADEColor.textMuted)
+      HStack(alignment: .firstTextBaseline, spacing: 8) {
+        Text(proof.source == .video ? "A still from the video, saved while its computer rests." : "Saved copy, shown while its computer rests.")
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textMuted)
+        Spacer(minLength: 8)
+        // Asks for the live proof again; the saved copy stays until it comes.
+        Button(retrying ? "Retrying…" : "Retry") {
+          retrying = true
+          Task {
+            await retry()
+            retrying = false
+          }
+        }
+        .font(.caption2.weight(.semibold))
+        .buttonStyle(.borderless)
+        .disabled(retrying || waking)
+      }
     }
   }
 
@@ -298,6 +317,7 @@ struct WorkProofCompareView: View {
         .font(.caption2.weight(.semibold))
         .foregroundStyle(ADEColor.textMuted)
       WorkProofCitationView(artifactId: entry.artifactId, caption: entry.label, compact: true)
+        .id(entry.artifactId)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
   }

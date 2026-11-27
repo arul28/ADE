@@ -10476,7 +10476,8 @@ export function AgentChatPane({
         void request();
         return;
       }
-      if (!changed) return;
+      // A saved draft put back on switching chats is not typing (the store notifies inside that restore).
+      if (!changed || composerDraftHydratingRef.current) return;
       const pin = chatRuntimePinRef.current;
       if (!isCloudPin(pin)) return;
       const at = Date.now();

@@ -417,30 +417,34 @@ async function handlePutProof(request: Request, env: CloudEnv, userId: string, m
     logCloud("cloud.chat_proof_conflict", { userId, machineKey, chatId });
     return fail("sequence_conflict", "This chat's saved copy changed while that proof was saved.", 409);
   };
-  // Reserved before the picture goes up, in one statement: the account's total and the add are one
-  // atomic write, so pictures saved at once can't pass the cap together. Counted on the row it was
-  // read against: a copy deleted or made again since takes nothing of it.
+  // Growth is reserved before the picture goes up, in one statement: the account's total and the
+  // add are one atomic write, so pictures saved at once can't pass the cap together. A smaller
+  // replacement frees its bytes only once it is stored, so a failed put never gives back more than it
+  // took. Counted on the row it was read against: a copy deleted or made again since takes nothing of it.
+  const growth = Math.max(0, delta);
   const reserved = await env.DB.prepare(`
-    update cloud_chat_copies set bytes = max(0, bytes + ?)
+    update cloud_chat_copies set bytes = bytes + ?
     where user_id = ? and machine_key = ? and chat_id = ? and r2_key = ?
-      and (? <= 0 or (select coalesce(sum(bytes), 0) from cloud_chat_copies where user_id = ?) + ? <= ?)
-  `).bind(delta, userId, machineKey, chatId, prefix, delta, userId, delta, CLOUD_CHAT_MAX_ACCOUNT_BYTES).run();
+      and (? = 0 or (select coalesce(sum(bytes), 0) from cloud_chat_copies where user_id = ?) + ? <= ?)
+  `).bind(growth, userId, machineKey, chatId, prefix, growth, userId, growth, CLOUD_CHAT_MAX_ACCOUNT_BYTES).run();
   if ((reserved.meta?.changes ?? 0) !== 1) {
     // Refused by the cap only while the row read is still there; else the copy changed.
-    if (delta <= 0 || (await copyRow(env, userId, machineKey, chatId))?.r2_key !== prefix) return conflict();
+    if (growth === 0 || (await copyRow(env, userId, machineKey, chatId))?.r2_key !== prefix) return conflict();
     logCloud("cloud.chat_account_full", { userId, machineKey, chatId, limitBytes: CLOUD_CHAT_MAX_ACCOUNT_BYTES });
     return fail("account_full", "This account's saved chats are full. Delete some chats to save new ones.", 413);
   }
-  const refund = () => env.DB.prepare(`
+  const giveBack = (bytes: number) => env.DB.prepare(`
     update cloud_chat_copies set bytes = max(0, bytes - ?)
     where user_id = ? and machine_key = ? and chat_id = ? and r2_key = ?
-  `).bind(delta, userId, machineKey, chatId, prefix).run();
+  `).bind(bytes, userId, machineKey, chatId, prefix).run();
   try {
     await bucket.put(key, sealed, { customMetadata: { digest, kind, source } });
   } catch (error) {
-    await refund().catch((refundError) => warnCloud("cloud.chat_proof_refund_failed", { message: refundError instanceof Error ? refundError.message : "unknown" }));
+    if (growth > 0) await giveBack(growth).catch((refundError) => warnCloud("cloud.chat_proof_refund_failed", { message: refundError instanceof Error ? refundError.message : "unknown" }));
     throw error;
   }
+  // The smaller picture is stored: the bytes it freed go back now.
+  if (delta < 0) await giveBack(-delta);
   // The picture goes unless a row still reads its prefix (a move took the copy, proof and all):
   // a delete since the reservation took the bytes with its row and swept the prefix before this put.
   const kept = await env.DB.prepare("select 1 as kept from cloud_chat_copies where user_id = ? and r2_key = ?").bind(userId, prefix).first();

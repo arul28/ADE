@@ -364,6 +364,8 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
     }
     // Machines whose own saved chats show (the lane fallback below is for the rest).
     const showsSavedChats = new Set<string>();
+    // Each slice's lane colors from its saved chats, for the terminal pass below.
+    const chatLaneColorsByMachineId = new Map<string, Map<string, SavedLaneColor>>();
     for (const [machineKey, machineRows] of byMachine) {
       const { connection, gone, name, laneComputer } = machineFacts.get(machineKey)!;
       const rows = machineRows.filter((row) => {
@@ -421,9 +423,10 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
       const known = new Set(kept.map((lane) => lane.id));
       // A lane listed before its rows carried a color (or before a recolor) takes the newest saved one.
       const savedColor = savedLaneColors(rows);
+      chatLaneColorsByMachineId.set(machineId, savedColor);
       const lanes = kept.map((lane) => {
         const name = laneNow.get(lane.id)?.trim();
-        const color = savedColor.get(lane.id);
+        const color = savedColor.get(lane.id)?.color;
         const renamed = name && name !== lane.name ? { ...lane, name } : lane;
         return color && color !== renamed.color ? { ...renamed, color } : renamed;
       });
@@ -432,7 +435,7 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         if (!known.has(lane.id)) {
           known.add(lane.id);
           // The lane's color from any of its rows, not only this first one.
-          const color = savedColor.get(lane.id);
+          const color = savedColor.get(lane.id)?.color;
           lanes.push(color && color !== lane.color ? { ...lane, color } : lane);
         }
       }
@@ -590,18 +593,19 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         displayName: savedProjectName(null, context.projectKey!),
         gitOriginUrl: context.projectKey,
       };
-      // A listed lane takes the color its newest copy saved (a recolor too);
-      // with none saved it keeps its own.
-      const savedColor = savedLaneColors(rows);
+      // A listed lane takes the color its newest copy saved (a recolor too), chats on this
+      // machine included, so an older terminal copy never undoes a chat's newer color.
+      // With none saved it keeps its own.
+      const savedColor = savedLaneColors(rows, chatLaneColorsByMachineId.get(machineId));
       const lanes = (previous?.lanes ?? []).map((lane) => {
-        const color = savedColor.get(lane.id);
+        const color = savedColor.get(lane.id)?.color;
         return color && color !== lane.color ? { ...lane, color } : lane;
       });
       const known = new Set(lanes.map((lane) => lane.id));
       for (const row of rows) {
         if (!row.laneId || known.has(row.laneId)) continue;
         known.add(row.laneId);
-        lanes.push(laneComputerLane({ laneId: row.laneId, laneName: row.laneName ?? row.laneId, laneColor: savedColor.get(row.laneId) ?? null }, undefined));
+        lanes.push(laneComputerLane({ laneId: row.laneId, laneName: row.laneName ?? row.laneId, laneColor: savedColor.get(row.laneId)?.color ?? null }, undefined));
       }
       store.mergeCrossMachineLanes({
         machineId,
@@ -671,12 +675,22 @@ async function readProjectOverview(projectKey: string | null): Promise<CloudProj
   }
 }
 
-/** Each lane's color as its saved rows carry it: the first (newest) valid one per lane. */
-function savedLaneColors(rows: readonly { laneId?: string | null; laneColor?: string | null }[]): Map<string, string> {
-  const colors = new Map<string, string>();
+type SavedLaneColor = { color: string; at: number };
+
+/**
+ * Each lane's color as its saved rows carry it: the newest valid one per lane,
+ * also against `newerThan` (the machine's saved chats, for its terminal copies).
+ */
+function savedLaneColors(
+  rows: readonly { laneId?: string | null; laneColor?: string | null; updatedAt: number }[],
+  newerThan?: ReadonlyMap<string, SavedLaneColor>,
+): Map<string, SavedLaneColor> {
+  const colors = new Map<string, SavedLaneColor>(newerThan ?? []);
   for (const row of rows) {
     const color = cloudLaneColorOf(row.laneColor);
-    if (row.laneId && color && !colors.has(row.laneId)) colors.set(row.laneId, color);
+    if (!row.laneId || !color) continue;
+    const kept = colors.get(row.laneId);
+    if (!kept || row.updatedAt > kept.at) colors.set(row.laneId, { color, at: row.updatedAt });
   }
   return colors;
 }
