@@ -15,7 +15,7 @@ and `chat.cancelScheduledWork` actions. Pause or resume that session with
 `chat.getScheduledWorkState`) shows pause state, the next wake, and active
 jobs for either a chat or tracked provider CLI session.
 
-Omitting the target in an Daex-bound agent defaults create/list to
+Omitting the target in a Daex-bound agent defaults create/list to
 `ADE_CHAT_SESSION_ID`; an agent cannot schedule another session, and an
 ordinary untracked shell fails instead of creating orphaned work. Chat delivery
 starts a new turn at the next safe turn boundary. Tracked provider CLI delivery

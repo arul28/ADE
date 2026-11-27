@@ -4599,7 +4599,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         status: "no-context",
         target: null,
         confidence: "none",
-        reason: "Select a source-backed simulator element first (`ade --socket ios-sim select --x <x> --y <y> --text`) or pass `--source <swift-file> --line <n>` before opening the screen in Preview Lab.",
+        reason: "Select a source-backed simulator element first (`daex --socket ios-sim select --x <x> --y <y> --text`) or pass `--source <swift-file> --line <n>` before opening the screen in Preview Lab.",
         selectedSourceFile: null,
         selectedSourceLine,
         ...suggestion,
@@ -4745,7 +4745,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     }
     const resolvedSourceFile = resolveSwiftSourceFile(projectRoot, rawSourceFilePath);
     if (!resolvedSourceFile) {
-      throw new Error(`Swift source file was not found: ${rawSourceFilePath}. Run \`ade --socket ios-sim snapshot --text\` to confirm the current simulator screen, then \`ade --socket ios-sim previews --source <swift-file> --text\` with a real Swift file before running \`ade --socket ios-sim preview-render --source <swift-file> --text\`.`);
+      throw new Error(`Swift source file was not found: ${rawSourceFilePath}. Run \`daex --socket ios-sim snapshot --text\` to confirm the current simulator screen, then \`daex --socket ios-sim previews --source <swift-file> --text\` with a real Swift file before running \`daex --socket ios-sim preview-render --source <swift-file> --text\`.`);
     }
     const sourceFilePath = sourceFilePathForXcode(projectRoot, resolvedSourceFile);
     const capability = renderArgs.manageXcode === false

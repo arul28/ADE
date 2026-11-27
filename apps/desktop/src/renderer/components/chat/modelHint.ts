@@ -295,7 +295,7 @@ export function buildModelHintRequest(context: ModelHintContext) {
     };
     questions.wouldTake = {
       type: "noul",
-      instructions: "Would this user take a cheaper model for this request if ADE suggested it? Their past answers to such suggestions are the best evidence: if they dismissed cheaper models for requests like this one, they would not; if they accepted, they would. With no past answers, judge by whether the request is small.",
+      instructions: "Would this user take a cheaper model for this request if Daex suggested it? Their past answers to such suggestions are the best evidence: if they dismissed cheaper models for requests like this one, they would not; if they accepted, they would. With no past answers, judge by whether the request is small.",
     };
   }
   const efforts = effortsOf(context.choices);
