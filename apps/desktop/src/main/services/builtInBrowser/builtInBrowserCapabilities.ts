@@ -30,7 +30,7 @@ export const BUILT_IN_BROWSER_DEFAULT_NETWORK_LOG_LIMIT = 50;
 export const BUILT_IN_BROWSER_MAX_NETWORK_LOG_LIMIT = BUILT_IN_BROWSER_NETWORK_LOG_CAPACITY;
 export const BUILT_IN_BROWSER_OBSERVATION_NETWORK_LOG_LIMIT = 10;
 
-export const BUILT_IN_BROWSER_REDACTED_HEADER_VALUE = "[redacted by ADE]";
+export const BUILT_IN_BROWSER_REDACTED_HEADER_VALUE = `[redacted by ${BRAND.NAME}]`;
 
 /**
  * Credential-bearing headers whose values never reach an observation, a HAR

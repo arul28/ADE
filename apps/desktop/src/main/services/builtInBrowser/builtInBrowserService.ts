@@ -536,7 +536,7 @@ function navigationApprovalEffect(
   if (approval.state === "pending") {
     return {
       status: "waiting_for_approval",
-      reason: `navigation to ${approval.origin} is waiting for the user to allow this agent to use the ADE browser`,
+      reason: `navigation to ${approval.origin} is waiting for the user to allow this agent to use the ${BRAND.NAME} browser`,
     };
   }
   return {
@@ -4122,7 +4122,7 @@ function createBuiltInBrowserWindowService(args: {
         && args.agentAccessController.isUrlAccessRequiredSync(popupUrl, guard)
       ) {
         emitError(new Error(
-          `Blocked an agent-triggered popup to ${popupUrl}: the user has not allowed this agent to use the ADE browser. Open it with ade browser open so ADE can ask them.`,
+          `Blocked an agent-triggered popup to ${popupUrl}: the user has not allowed this agent to use the ${BRAND.NAME} browser. Open it with ${BRAND.CLI} browser open so ${BRAND.NAME} can ask them.`,
         ));
         return { action: "deny" };
       }

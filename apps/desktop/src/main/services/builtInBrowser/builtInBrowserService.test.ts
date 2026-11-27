@@ -3242,7 +3242,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(response?.action).toBe("deny");
     expect(collector.events.at(-1)).toMatchObject({
       type: "error",
-      message: expect.stringContaining("has not allowed this agent to use the ADE browser"),
+      message: expect.stringContaining("has not allowed this agent to use the Daex browser"),
     });
   });
 

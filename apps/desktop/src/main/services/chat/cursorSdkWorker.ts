@@ -520,7 +520,7 @@ async function handleHookSocketLine(init: CursorSdkWorkerInit, socket: net.Socke
     return;
   }
   if (localDecision === "deny") {
-    socket.end(`${JSON.stringify(denyCursorHook(request.reason ?? "ADE denied this Cursor tool call."))}\n`);
+    socket.end(`${JSON.stringify(denyCursorHook(request.reason ?? `${BRAND.NAME} denied this Cursor tool call.`))}\n`);
     return;
   }
 
