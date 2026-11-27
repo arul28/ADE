@@ -172,6 +172,14 @@ describe("resolveStartOn", () => {
       "last-used:remote:m2:p2",
     ],
     [
+      "the computer used last comes before this computer's copy",
+      tab,
+      { local: [local], connections: [machine("m1", [row("p1", "/srv/app")])] },
+      { lastUsed: "mk-m1" },
+      ["last-used:remote:m1:p1", "this-computer:local:/Users/me/app", "cloud"],
+      "last-used:remote:m1:p1",
+    ],
+    [
       "main copies before a second clone",
       tab,
       {

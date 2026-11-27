@@ -49,6 +49,7 @@ export function CloneLocallyDialog({
           key={target.gitOriginUrl}
           initialUrl={target.gitOriginUrl}
           initialMachineIds={LOCAL_ONLY}
+          opensCopy
           onCancel={onClose}
           onClose={onClose}
           onOpenProject={onOpenProject}

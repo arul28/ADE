@@ -413,15 +413,24 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
 - Opening a project with no own computer online binds the tab to ADE Cloud
   (`openAdeCloudProject`, `renderer/state/adeCloudTabs.ts`): the normal pages
   with its ADE Cloud lanes.
-- `projects/AddProjectForm.tsx`: **Add project** from GitHub. **Open a
-  folder…** and **New empty project…** sit under it
-  (`AddProjectMoreActions.tsx`), with a computer picker when others are
-  connected. The repository, then one row per machine (this computer except on
-  hosted web, and every saved machine). Offline machines cannot be ticked; the
-  form never connects or wakes one; a machine with a copy says "already here".
-  Each ticked machine clones on its own (`projectCopyJobs.ts`; a retry goes to
-  the same machine). **Opens on** picks where it opens; a closed form gets
-  "<repo> is ready on <machine>" with **Open**, or a toast naming the machine.
+- `projects/AddProjectForm.tsx`: **Add project** from GitHub. The project
+  belongs to the account, not to a computer: **Add project** puts it on the
+  account and opens its tab at once (`openAddedAccountProject`), copy or no
+  copy. **Also put a copy on** (optional) lists this computer (not on hosted
+  web) and the connected computers only; nothing is ticked by default, and
+  each row shows the full folder the copy goes to (**Change…** picks
+  another). Each ticked computer clones in the background on its own
+  (`projectCopyJobs.ts`; a retry goes to the same machine), and the tab moves
+  to the first copy that is there (`useAdeCloudTabFollowsCopy`); a closed form
+  says "<repo> is ready on <machine>" with **Open**, or a toast names the
+  machine that failed. A computer with no copy can still be picked when work
+  starts (the composer's clone step). Signed out (or an address only the
+  cloning computer can read), the form opens a copy instead: one already
+  there, else the first ticked one once it is cloned. `CloneLocallyDialog`
+  passes `opensCopy` to open the new copy rather than the project's tab.
+  **Open a folder…** and **New empty project…** sit under it
+  (`AddProjectMoreActions.tsx`), with a computer picker beside them when
+  others are connected.
 - `projects/ProjectCopiesMenu.tsx`: a project's copies (Home chip, sidebar
   computers tag, the tab's **Copies** submenu). One row per machine: the copy
   in use, another copy (moves the tab with that copy's binding), "not here"

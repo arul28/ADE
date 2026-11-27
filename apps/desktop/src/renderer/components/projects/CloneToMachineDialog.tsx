@@ -4,7 +4,7 @@ import { Dialog } from "../ui/dialog";
 import { Banner } from "../ui/notice";
 import { MENU_ITEM_CLASS } from "../ui/MenuSubmenu";
 import { copyJobKey, startCopyJob, useCopyJobs, watchCopyJobs } from "./projectCopyJobs";
-import { readMachineDefaultParentDir, type CopyOpenTarget } from "./projectCopies";
+import { joinMachinePath, readMachineDefaultParentDir, type CopyOpenTarget } from "./projectCopies";
 import { pathFlavorOf } from "../../../shared/pathCase";
 import { normalizePathForComparison } from "../../lib/pathUtils";
 
@@ -19,13 +19,6 @@ function parentFolderOf(path: string): string | null {
   return /^[A-Za-z]:$/.test(parent) ? `${parent}\\` : parent;
 }
 
-/** `parent` + `name`, joined with that machine's separator. */
-function joinMachinePath(parent: string, name: string): string {
-  const windows = pathFlavorOf(parent) === "win32";
-  const separator = windows ? "\\" : "/";
-  const base = parent.replace(windows ? /[\\/]+$/ : /\/+$/, "");
-  return `${base}${separator}${name}`;
-}
 
 const LAST_FOLDER_KEY = "ade.cloneFolder.byMachine.v1";
 

@@ -216,7 +216,7 @@ html[data-scene="image"][data-theme="light"] {
   transition: background-color 100ms ease;
 }
 button.kit-row, a.kit-row { width: 100%; border: 0; background: transparent; text-align: left; font: inherit; font-size: 12.5px; cursor: pointer; }
-button.kit-row:hover, a.kit-row:hover { background: var(--kit-hover); }
+button.kit-row:hover, a.kit-row:hover, label.kit-row:hover { background: var(--kit-hover); }
 
 /* A thin meter. Neutral until it means something. */
 .kit-meter {
