@@ -4464,6 +4464,84 @@ describe("ADE Cloud iPhone", () => {
     expect(harness.rows("select phone_id from cloud_phones where user_id = ?", OWNER)).toHaveLength(phones);
   });
 
+  /**
+   * A live NoMac phone (`ses_live`) on top of `phoneStartNetwork`: its reads answer ready until a stop. Answers the
+   * NoMac calls made on it (`GET`, `DELETE`).
+   */
+  function stoppableNomacPhone(): string[] {
+    const calls: string[] = [];
+    let state = "ready";
+    const network = globalThis.fetch;
+    const at = (ms: number) => new Date(ms).toISOString();
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (!url.startsWith("https://nomac.app/api/v1/simulator/sessions/ses_live")) return network(input, init);
+      const method = init?.method ?? "GET";
+      calls.push(method);
+      if (method === "DELETE") state = "stopped";
+      return new Response(JSON.stringify({
+        session: { id: "ses_live", state, label: `ade:${OWNER}`, device: "iphone", created_at: at(clock - 5 * 60_000), ready_at: at(clock - 5 * 60_000), cost: { billed_seconds: 300, accrued_microunits: "75000" } },
+      }), { status: 200 });
+    });
+    return calls;
+  }
+
+  const startForMetal = (missing?: { phoneId: string }) =>
+    harness.send(OWNER, "POST", "/cloud/phone", { providers: ["nomac", "revyl"], builds: ["metal"], ...(missing ? { missing: { ...missing, need: "metal" } } : {}) });
+
+  it.each([
+    { name: "a paid plan's live phone is swapped for one whose Xcode has Metal", free: false, status: 503, code: "phone_unavailable", stopped: true, asked: ["revyl"] },
+    { name: "a free plan is told a paid plan's iPhone builds it, and keeps its phone", free: true, status: 402, code: "phone_needs_paid", stopped: false, asked: [] },
+  ] as const)("a build that failed for want of Metal: $name", async ({ free, status, code, stopped, asked }) => {
+    seedPhoneTester("auto", "on", { free });
+    seedPhone("ses_live", 5, clock - 5 * 60_000, "live");
+    // Revyl's start answers 503 here: what counts is that it was asked and NoMac wasn't asked for another phone.
+    const starts = phoneStartNetwork("ok");
+    const live = stoppableNomacPhone();
+    const response = await startForMetal({ phoneId: "ses_live" });
+    expect(response.status).toBe(status);
+    expect((await response.json() as { error: { code: string } }).error.code).toBe(code);
+    expect(starts).toEqual(asked);
+    expect(live.includes("DELETE")).toBe(stopped);
+    expect(harness.row("select state from cloud_phones where phone_id = 'ses_live'").state).toBe(stopped ? "ended" : "live");
+    // The gap is NoMac's (the phone row's provider), for every account, with no account in it.
+    expect(harness.rows("select provider, need from cloud_phone_build_gaps")).toEqual([{ provider: "nomac", need: "metal" }]);
+  });
+
+  it("a Metal build goes back to NoMac a day after the last report, and a report needs a phone of the reporter's own", async () => {
+    seedPhoneTester("auto", "on");
+    // Another account's phone: reporting it records nothing.
+    harness.insert("cloud_phones", { phone_id: "ses_other", user_id: OTHER, device: "iphone", state: "ended", created_at: clock - 60_000, updated_at: clock - 60_000, provider: "nomac" });
+    phoneStartNetwork("ok");
+    expect((await startForMetal({ phoneId: "ses_other" })).status).toBe(200);
+    expect(harness.rows("select provider from cloud_phone_build_gaps")).toEqual([]);
+    harness.exec("delete from cloud_phones where user_id = ?", OWNER);
+
+    // A gap from 23 hours ago: a Metal start skips NoMac; a plain one doesn't.
+    harness.insert("cloud_phone_build_gaps", { provider: "nomac", need: "metal", seen_at: clock - 23 * HOUR });
+    const skipped = phoneStartNetwork("ok");
+    await startForMetal();
+    expect(skipped).toEqual(["revyl"]);
+    const plain = phoneStartNetwork("ok");
+    expect((await startPhone()).status).toBe(200);
+    expect(plain).toEqual(["nomac"]);
+    harness.exec("delete from cloud_phones where user_id = ?", OWNER);
+
+    // Past a day, NoMac gets the Metal build back.
+    clock += 2 * HOUR;
+    const back = phoneStartNetwork("ok");
+    expect((await startForMetal()).status).toBe(200);
+    expect(back).toEqual(["nomac"]);
+  });
+
+  it("another account's report never refuses a free plan: only its own does", async () => {
+    seedPhoneTester("auto", "on", { free: true });
+    harness.insert("cloud_phone_build_gaps", { provider: "nomac", need: "metal", seen_at: clock - HOUR });
+    const asked = phoneStartNetwork("ok");
+    expect((await startForMetal()).status).toBe(200);
+    expect(asked).toEqual(["nomac"]);
+  });
+
   it("a second start while one runs for the account is told to try again, and then gets the same phone", async () => {
     seedPhoneTester("auto", "on");
     let during: Response | null = null;

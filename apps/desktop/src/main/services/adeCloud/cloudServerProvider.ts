@@ -583,7 +583,7 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
 
     async phoneStart(input): Promise<CloudPhoneStart> {
       // `providers`: the phones this brain can drive; a server picks Revyl only for a brain that names it.
-      return await request("POST", CLOUD_PATHS.phone, { body: { ...(input.device ? { device: input.device } : {}), ...(input.attach ? { attach: true } : {}), ...(input.needs?.length ? { needs: input.needs } : {}), providers: CLOUD_PHONE_PROVIDERS } }) as CloudPhoneStart;
+      return await request("POST", CLOUD_PATHS.phone, { body: { ...(input.device ? { device: input.device } : {}), ...(input.attach ? { attach: true } : {}), ...(input.needs?.length ? { needs: input.needs } : {}), ...(input.builds?.length ? { builds: input.builds } : {}), ...(input.missing ? { missing: input.missing } : {}), providers: CLOUD_PHONE_PROVIDERS } }) as CloudPhoneStart;
     },
 
     async phoneView(input): Promise<CloudPhoneView> {

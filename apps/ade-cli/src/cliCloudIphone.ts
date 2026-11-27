@@ -127,6 +127,10 @@ function launchCall(args: Args): Call {
     if (!app) throw new CliUsageError("ade apple launch --no-build --bundle-id <id> on the ADE Cloud iPhone.");
     return { action: "control", args: { action: "launch", app, ...(args.afterDashes.length ? { value: args.afterDashes.join(" ") } : {}) }, timeoutMs: CLOUD_PHONE_CALL_TIMEOUT_MS, label: "launch" };
   }
+  // The phone's build starts the app with no arguments: refused before any upload, never dropped quietly.
+  if (args.afterDashes.length) {
+    throw new CliUsageError(`The ADE Cloud iPhone builds and starts the app without launch arguments. Build first (ade apple launch without -- …), then start it with them: ade apple relaunch --bundle-id <id> -- ${args.afterDashes.join(" ")} (a cloud iPhone that can't pass launch arguments says so).`);
+  }
   const sub = flag(args, "--path") ?? flag(args, "--project");
   const scheme = flag(args, "--scheme") ?? flag(args, "--target");
   const configuration = flag(args, "--configuration");
