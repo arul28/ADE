@@ -1208,7 +1208,7 @@ export function createMacDesktopService(serviceDeps: MacDesktopServiceDeps): Mac
     if (isLinuxSeat && args.seatMode === "shared") {
       throw new MacDesktopError(
         "MAC_DESKTOP_UNSUPPORTED_PLATFORM",
-        "A Linux lane screen is always its own private display; there is no shared desktop to use. Run: ade screen start --text",
+        `A Linux lane screen is always its own private display; there is no shared desktop to use. Run: ${BRAND.CLI} screen start --text`,
       );
     }
     if (isWindowsSeat) {
@@ -1602,8 +1602,8 @@ export function createMacDesktopService(serviceDeps: MacDesktopServiceDeps): Mac
           command: null,
           needsUser: false,
           message: driverLifecycle.linuxHostFactsUnreported()
-            ? `The Linux screen helper answered but reports no Linux facts, so ${BRAND.NAME} cannot tell what this machine is missing. Restart the helper, or update ${BRAND.NAME} on that machine, then run: ade screen status --text`
-            : "Could not read what this machine is missing: the Linux screen helper did not answer. Try again, or run: ade screen status --text",
+            ? `The Linux screen helper answered but reports no Linux facts, so ${BRAND.NAME} cannot tell what this machine is missing. Restart the helper, or update ${BRAND.NAME} on that machine, then run: ${BRAND.CLI} screen status --text`
+            : `Could not read what this machine is missing: the Linux screen helper did not answer. Try again, or run: ${BRAND.CLI} screen status --text`,
         };
       }
       const missing = facts.missing;
@@ -1770,7 +1770,7 @@ export function createMacDesktopService(serviceDeps: MacDesktopServiceDeps): Mac
       if (!isWindowsSeat) {
         throw new MacDesktopError(
           "MAC_DESKTOP_UNSUPPORTED_PLATFORM",
-          "The shared seat is a Windows Desktop feature. On a Mac, the lane screen is always private: run `ade screen start`.",
+          `The shared seat is a Windows Desktop feature. On a Mac, the lane screen is always private: run \`${BRAND.CLI} screen start\`.`,
         );
       }
       const laneId = args.laneId.trim();

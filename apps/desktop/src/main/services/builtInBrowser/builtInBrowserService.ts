@@ -3038,7 +3038,7 @@ function createBuiltInBrowserWindowService(args: {
     // mail, a form with unsaved work, another agent's idle tab) and claimed it.
     if (stringOrNull(input.chatSessionId) || stringOrNull(input.laneId)) {
       throw new BuiltInBrowserNoTabError(
-        "This chat has no browser tab here. Open your own with `ade browser open <url>`, or name a tab with --tab <id> (`ade browser status` lists them; ask the user before using one of theirs)",
+        `This chat has no browser tab here. Open your own with \`${BRAND.CLI} browser open <url>\`, or name a tab with --tab <id> (\`${BRAND.CLI} browser status\` lists them; ask the user before using one of theirs)`,
       );
     }
     const tab = activeTab();
@@ -3511,7 +3511,7 @@ function createBuiltInBrowserWindowService(args: {
     const hint = own.length + free.length > 0
       ? ` Close one with \`ade browser close --tab <id>\`. ${parts.join(" ")}${others ? ` Leave the rest (${others}).` : ""}`
       : ` None is yours or free to close (${others || "every tab is in use"}). Ask the user to close a tab, or to raise "Tabs per project" in Settings › Browser. Closing a tab another chat holds stops that chat's work, so do it only if the user agrees.`;
-    return new Error(`${BRAND.NAME} browser is limited to ${tabLimit()} tabs for this project, and all are open.${hint} \`ade browser status\` lists every tab with its owner.`);
+    return new Error(`${BRAND.NAME} browser is limited to ${tabLimit()} tabs for this project, and all are open.${hint} \`${BRAND.CLI} browser status\` lists every tab with its owner.`);
   };
 
   const reusableOwnedTabForInput = (

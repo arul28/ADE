@@ -117,7 +117,7 @@ describe("describeUnpublishedAccountDirectory competing sync host", () => {
     // truthful and the CLI still has the one command that can show the detail.
     expect(describeUnpublishedAccountDirectory("no_active_sync_scope")).toEqual({
       summary: "another Daex app on this computer owns sync for this machine",
-      nextAction: "ade doctor",
+      nextAction: "daex doctor",
     });
     expect(readCompetingSyncHostOwner(
       createSyncAccountDirectoryHealth("no_active_sync_scope", "No active sync scope is available."),

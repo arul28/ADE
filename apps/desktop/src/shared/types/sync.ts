@@ -693,7 +693,7 @@ export function describeUnpublishedAccountDirectory(
       }
       return {
         summary: `another ${BRAND.NAME} app on this computer owns sync for this machine`,
-        nextAction: "ade doctor",
+        nextAction: `${BRAND.CLI} doctor`,
       };
     }
     case "not_host":

@@ -11842,7 +11842,7 @@ app.whenReady().then(async () => {
       message: `${BRAND.NAME} now runs in the background`,
       detail: [
         "Your machine can stay available for mobile pairing and agent work after the app window closes.",
-        "You can remove the background service by running `ade serve --uninstall-service`.",
+        `You can remove the background service by running \`${BRAND.CLI} serve --uninstall-service\`.`,
       ].join("\n\n"),
     }).catch(() => {});
   }
