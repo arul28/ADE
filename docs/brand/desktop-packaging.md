@@ -55,7 +55,7 @@ or the update feed.
 | macOS bundle | `/Applications/ADE.app`, `Contents/MacOS/ADE`, `ADE Helper*.app`, Info.plist `CFBundleName` = `ADE` | Squirrel.Mac updates the bundle in place at its current path. Electron finds its helpers as `<CFBundleName> Helper.app`. Scripts, the Homebrew cask (`app "ADE.app"`) and `installedDesktopAppNames` look for `ADE.app`. |
 | Windows install | `%LOCALAPPDATA%\Programs\ADE\ADE.exe` | The installer reuses the folder recorded under `HKCU\Software\<GUID>\InstallLocation`; taskbar pins and the `ade://` registration point at this exe. |
 | Linux install | `/opt/ADE`, executable `ade-desktop`, deb package `ade-desktop`, `ade-desktop.desktop`, WM class `ade-desktop` | The deb installs to `/opt/<productName>`; the in-app updater relaunches from there; the desktop entry matches the window by WM class. |
-| URL scheme | `ade://` | Accepted forever. `daex://` is now registered beside it (`build.protocols` lists both, `registerAdeProtocolHandler` claims both) and every parser accepts both. New links are still made as `ade://` until the owner flips `BRAND.LINK_SCHEME_FOR_NEW_LINKS`, because a release that registers only `ade://` cannot open a `daex://` link. |
+| URL scheme | `ade://` | Accepted forever. `daex://` is now registered beside it (`build.protocols` lists both, `registerAdeProtocolHandler` claims both) and every parser accepts both. New links are made as `daex://` (`BRAND.LINK_SCHEME_FOR_NEW_LINKS`); the launch minimum version keeps releases that register only `ade://` from running. |
 | Update feed | GitHub `arul28/ADE`; assets `ADE-<version>-<arch>.dmg/.zip`, `ADE-<version>-win-x64.exe`, `ADE-<version>-linux-<arch>.AppImage`; `latest*.yml` | Released builds look for these exact names. The Homebrew cask and `scripts/release-tools/verify-desktop-draft.sh` use them too. |
 | Windows file type ProgID | `com.ade.desktop.files` | The registry key for file associations. |
 | `ADE_DESKTOP_APP_NAME` | `ADE` / `ADE Alpha` | Names the installed app on disk for native helper lookups and the CLI wrappers. Not a display name. |
@@ -270,8 +270,8 @@ platform for now and takes only Paradev's display-name mechanism (the
    builds have moved to a feed that knows the new ones.
 6. **`daex://`.** Done: `build.protocols` registers `ade` and `daex`, the
    protocol handler claims both, and `src/shared/deeplinks.ts` parses both.
-   Generation still writes `ade://` behind `BRAND.LINK_SCHEME_FOR_NEW_LINKS`
-   until enough releases that register `daex://` have shipped. The Windows
+   New links are `daex://` (`BRAND.LINK_SCHEME_FOR_NEW_LINKS`); set the
+   launch minimum version first (README, "Launch steps"). The Windows
    uninstaller removes both registrations when they point at the install.
 
 ## Windows update test

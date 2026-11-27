@@ -93,7 +93,59 @@ working. Later steps read both.
 | Old | New | Plan |
 |---|---|---|
 | `ADE_*` env vars | `DAEX_*` | Read `DAEX_*` first, fall back to `ADE_*`. Never stop reading `ADE_*`. |
-| `ade://` links | `daex://` | Register both schemes (desktop `build.protocols` in `apps/desktop/package.json`, iOS `ADE_URL_SCHEME` in `project.pbxproj` and `CFBundleURLSchemes` in `apps/ios/ADE/Info.plist`); parse both in `apps/desktop/src/shared/deeplinks.ts`. Accepted forever. |
+| `ade://` links | `daex://` | Register both schemes (desktop `build.protocols` in `apps/desktop/package.json`, iOS `ADE_URL_SCHEME` in `project.pbxproj` and `CFBundleURLSchemes` in `apps/ios/ADE/Info.plist`); parse both in `apps/desktop/src/shared/deeplinks.ts`. Accepted forever. Every new link is `daex://` (`BRAND.LINK_SCHEME_FOR_NEW_LINKS`, iOS `Brand.linkSchemeForNewLinks`), including links passed on to a phone or another computer. The iPhone still routes internally on `ade` (`withADEScheme`) and its sign-in callbacks (`callbackURLScheme: "ade"`) stay `ade`: they never leave the app. |
 | ade-app.dev | daex.dev | Site and open links move first (`ADE_DEEPLINK_HTTPS_HOST` in `deeplinks.ts`). Sign-in (`DEFAULT_ADE_CLERK_ISSUER` in `apps/desktop/src/shared/accountDirectory.ts`) and API hosts stay until released clients no longer call them. |
 | `ade` CLI | `daex` | `daex` becomes the binary (`bin` in `apps/ade-cli/package.json`); `ade` stays as a permanent alias. |
 | `@ade-dev/*` packages | `@daex-dev/*` | Publish under the new scope; keep the old packages pointing at it (`packages/sdk/package.json`, `packages/chat-ui/package.json`). |
+
+## Old names in output: producers write Daex, readers accept both
+
+Owner decision, 2026-11-27: at launch the account server's minimum version
+(`GET /client/minimum`, `apps/desktop/src/shared/clientUpdateGate.ts`, iOS
+`ClientUpdateGate.swift`) is set to the launch build, so released desktops and
+iPhones below it must update before they keep working. Nothing is written in
+the old form for old versions any more:
+
+- **Producers write Daex / `daex`**: links, markers, prefixes, user agents,
+  defaults and commands.
+- **Readers keep accepting the old form forever.** Transcripts, provider
+  session files, git history, PR bodies, saved automations, D1 rows and pasted
+  links keep the old text, and a machine may be mid-update.
+- **Identity stays frozen** (the table above).
+
+What flipped, with the reader that still accepts the old form:
+
+| Written now | Before | Reader that accepts both |
+|---|---|---|
+| `daex://` new links and forwarded links | `ade://` | `deeplinks.ts` (`ADE_DEEPLINK_SCHEMES`), iOS `Brand.linkSchemes`, push relay |
+| `daex` and `daex-*` skill names in renderer-written agent text | `ade`, `ade-*` | `ade` alias, `LEGACY_BUNDLED_AGENT_SKILL_ALIASES` |
+| `[Daex] …` compaction, trim and test-log notices | `[ADE] …` | `chatEventCompaction.ts`, `chatTranscriptRows.ts`, iOS `WorkEventMapping.swift` |
+| `[Daex launch directive]`, `## Daex CLI primer`, `## Daex`, `Daex session guidance.`, `System context (Daex continuity, …)` | the ADE forms | `discoveryUtils.ts`, `discoverAcpShared.ts`, `cliLaunch.ts` |
+| `[Daex lane]` (Devin pin) | `[ADE lane]` | `devinCloud.ts` |
+| Stop reasons `the Daex brain restarted`, `another Daex brain took over this chat` | ADE | `chatAutoResume.ts`, `SubagentActivityCards.tsx` |
+| Handoff default prompt (`another Daex machine`) | `another ADE machine` | `isCrossMachineHandoffDefaultPrompt` |
+| Sync skipReason `Another Daex app …`; autolinks `Daex's GitHub sign-in` | ADE | `readCompetingSyncHostOwner`, `GITHUB_AUTOLINKS_SIGN_IN_LACKS_ADMIN` |
+| `daex:` CLI error prefix (CLI and desktop-written lines) | `ade:` | `computerUseActionOutput.ts`, `runtimeRpcClient.ts`, iOS `WorkComputerUseOutput.swift` |
+| Lane simulators `Daex · <lane>`, virtual display prefix `Daex` | `ADE · <lane>` | `looksLikeAdeDeviceName` |
+| Deleted-lane trailers `Daex-Lane-Id` …, snapshot author Daex | `ADE-Lane-Id` …, ADE | `deletedLaneSnapshots.ts` |
+| Stored cloud computer default `Daex Cloud computer` | `ADE Cloud computer` | `isCloudMachineDefaultName`, `displayLegacyDefaultName` (desktop, iOS, CLI) |
+| User agents `Daex-Agent/1.0`, `Daex-LinkPreview/1.0`, `Daex-iOS/<v>`, … | ADE | Gravity `hashedEmailFor` |
+| MCP Apps `hostInfo.name` and `userAgent` Daex | ADE | none |
+
+Kept on purpose: the lowercase machine tokens (`ade-desktop`, `ade-cli`,
+`ade-harness-test` user agents and RPC client names), `TERM_PROGRAM=ADE`
+(outside tools detect terminals by it), the GitHub App slug `ade-for-github`,
+and everything in **Frozen identifiers**.
+
+## Launch steps
+
+1. **Set the minimum version first.** Before the new links and messages
+   matter, set every published kind's minimum to the launch build with
+   `scripts/release-tools/client-minimum.mjs set` (guide:
+   `docs/playbooks/update-gate.md`; account-side test switches are in
+   `docs/features/ade-cloud/account-test-tool.md`). Until then a
+   not-yet-updated app can be sent a `daex://` link it does not register.
+2. Builds released before the gate existed (v1.2.130 and older) are not
+   blocked by it and cannot open `daex://`; only their own updater moves them.
+3. Rename the GitHub App to "Daex for GitHub" in its settings; the slug
+   `ade-for-github` stays, and the app copy already says Daex.
