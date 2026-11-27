@@ -4468,7 +4468,7 @@ describe("ADE Cloud iPhone", () => {
    * A live NoMac phone (`ses_live`) on top of `phoneStartNetwork`: its reads answer ready until a stop. Answers the
    * NoMac calls made on it (`GET`, `DELETE`).
    */
-  function liveNomacPhone(): string[] {
+  function stoppableNomacPhone(): string[] {
     const calls: string[] = [];
     let state = "ready";
     const network = globalThis.fetch;
@@ -4497,7 +4497,7 @@ describe("ADE Cloud iPhone", () => {
     seedPhone("ses_live", 5, clock - 5 * 60_000, "live");
     // Revyl's start answers 503 here: what counts is that it was asked and NoMac wasn't asked for another phone.
     const starts = phoneStartNetwork("ok");
-    const live = liveNomacPhone();
+    const live = stoppableNomacPhone();
     const response = await startForMetal({ phoneId: "ses_live" });
     expect(response.status).toBe(status);
     expect((await response.json() as { error: { code: string } }).error.code).toBe(code);

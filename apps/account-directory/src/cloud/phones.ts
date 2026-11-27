@@ -684,6 +684,10 @@ export async function routePhone(request: Request, path: string, env: CloudEnv, 
   return view instanceof Response ? view : json(view satisfies CloudPhoneView);
 }
 
+/** A refusal's `error.code` (logs, PostHog). */
+const refusalCode = async (answer: Response): Promise<string> =>
+  (await answer.clone().json().catch(() => null) as { error?: { code?: string } } | null)?.error?.code ?? "refused";
+
 /**
  * The route a new phone of the account's would take now, and the minutes a
  * paid plan's Revyl use has left this period (`revylLimitMicros`, never told
@@ -774,7 +778,7 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
     if (credits) return refused(fail(credits.code, credits.message, 402, { minutes: minutesOf(context.usage) }), credits.code);
     const swap = await routeOfStart(env, userId, context, plan, picked, free, drives, now);
     const usable = swap instanceof Response ? swap : routeForBuilds(env, swap.route, { builds, gapped, needs, free, drives });
-    if (usable instanceof Response) return refused(usable, (await usable.clone().json().catch(() => null) as { error?: { code?: string } } | null)?.error?.code ?? "build_tool");
+    if (usable instanceof Response) return refused(usable, await refusalCode(usable));
     if (!(await stopPhone(env, userId, session.id, now, "build_tool"))) {
       return fail("phone_unavailable", "Your ADE Cloud iPhone couldn't be swapped for one that can build this app yet. Try again in a moment.", 503);
     }
@@ -815,7 +819,7 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
     // A project's build tool one provider lacks: the route goes where it builds, or the person is told why not.
     const routed = routeForBuilds(env, planned.route, { builds, gapped, needs, free, drives });
     if (routed instanceof Response) {
-      const code = (await routed.clone().json().catch(() => null) as { error?: { code?: string } } | null)?.error?.code ?? "build_tool";
+      const code = await refusalCode(routed);
       logCloud("cloud.phone_start_refused", { userId, code, builds });
       captureCloudPhone(env, waitUntil, userId, { step: "refused", plan, reason: code }, code, now);
       return routed;
