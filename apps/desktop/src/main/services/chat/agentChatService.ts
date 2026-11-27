@@ -24926,44 +24926,52 @@ export function createAgentChatService(args: {
     }
   };
 
-  /** The held queue, minus messages a guest may no longer send. */
-  const takeStartableHeldSteers = (managed: ManagedChatSession): QueuedSteer[] => {
-    const held = managed.usageLimitHeldSteers ?? [];
-    delete managed.usageLimitHeldSteers;
-    const startable: QueuedSteer[] = [];
-    for (const steer of held) {
-      if (queuedSteerMayStart(managed, steer)) startable.push(steer);
-      else finalizeCancelledSteer(managed, steer.steerId, null, { removedSteer: steer });
+  /**
+   * The first held message that may start now; the rest stay held. A guest's
+   * message passes the share's check (which spends its record) only here, as
+   * it starts, so each message is checked once.
+   */
+  const takeFirstStartableHeldSteer = (managed: ManagedChatSession): QueuedSteer | null => {
+    while (managed.usageLimitHeldSteers?.length) {
+      const steer = managed.usageLimitHeldSteers.shift()!;
+      if (!managed.usageLimitHeldSteers.length) delete managed.usageLimitHeldSteers;
+      if (queuedSteerMayStart(managed, steer)) return steer;
+      finalizeCancelledSteer(managed, steer.steerId, null, { removedSteer: steer });
     }
-    return startable;
+    return null;
   };
 
   const providerHeldQueueDrains = new WeakSet<ManagedChatSession>();
 
   /**
    * A turn started on a ready runtime. Put held work back ahead of later
-   * steers. OpenCode and Copilot take each item through their own send path,
+   * steers; the queue's own delivery checks a guest's message as it starts.
+   * OpenCode and Copilot take each item through their own send path,
    * keeping the unsent suffix on the session while a delivery is pending.
    * Those two restore only once the turn's own prompt reached the provider
-   * (`turnPromptSent`, and again when the turn ends): sent earlier, a held
-   * message would arrive ahead of the prompt it was queued behind.
+   * (`promptSentOn`, the runtime that sent it, and again when its turn
+   * ends): sent earlier, a held message would arrive ahead of the prompt it
+   * was queued behind. A runtime a switch replaced restores nothing; the new
+   * one restores after its own prompt.
    */
   const restoreUsageLimitHeldSteers = (
     managed: ManagedChatSession,
-    options?: { turnPromptSent?: boolean },
+    options?: { promptSentOn?: ChatRuntime },
   ): void => {
     if (!managed.usageLimitHeldSteers?.length || usageLimitHoldsQueue(managed) || providerHeldQueueDrains.has(managed)) return;
     const runtime = managed.runtime;
     if (!runtime) return;
-    if (!drainsOwnQueue(runtime) && options?.turnPromptSent !== true) return;
     if (drainsOwnQueue(runtime)) {
-      const held = takeStartableHeldSteers(managed);
+      const held = managed.usageLimitHeldSteers;
+      delete managed.usageLimitHeldSteers;
       runtime.pendingSteers.unshift(...held);
       rememberClaudeHeldSteers(runtime, held);
       persistChatState(managed);
       return;
     }
+    if (options?.promptSentOn !== runtime) return;
     providerHeldQueueDrains.add(managed);
+    let startedOwnTurn = false;
     void Promise.resolve().then(async () => {
       while (!managed.closed && managed.runtime === runtime && !usageLimitHoldsQueue(managed)) {
         const steer = managed.usageLimitHeldSteers?.shift();
@@ -24977,11 +24985,22 @@ export function createAgentChatService(args: {
         await sendUsageLimitHeldSteer(managed, steer, true);
         // With no turn running it started one of its own. The rest queue
         // behind that turn once its prompt is sent, or follow when it ends.
-        if (!behindTurn) return;
+        if (!behindTurn) {
+          startedOwnTurn = true;
+          return;
+        }
       }
     }).catch((error) => {
       logger.warn("agent_chat.usage_limit_held_send_failed", { sessionId: managed.session.id, error: getErrorMessage(error) });
-    }).finally(() => providerHeldQueueDrains.delete(managed));
+    }).finally(() => {
+      providerHeldQueueDrains.delete(managed);
+      // That turn's own restores ran while this drain still held the chat
+      // when it ended first (a prompt that failed). The rest go now; each
+      // pass sends one, so this ends.
+      if (startedOwnTurn && managed.runtime === runtime && !runtimeMidTurn(managed)) {
+        restoreUsageLimitHeldSteers(managed, { promptSentOn: runtime });
+      }
+    });
   };
 
   /**
@@ -25063,8 +25082,7 @@ export function createAgentChatService(args: {
     if (managed.turnAcceptedAt || runtimeMidTurn(managed) || managed.session.status === "active") return;
     // A new limit came in first: the queue waits for that one.
     if (usageLimitHoldsQueue(managed)) return;
-    const [first, ...rest] = takeStartableHeldSteers(managed);
-    if (rest.length) managed.usageLimitHeldSteers = rest;
+    const first = takeFirstStartableHeldSteer(managed);
     persistChatState(managed);
     if (first) {
       // Its turn start puts the rest on the new runtime's queue.
@@ -25355,7 +25373,10 @@ export function createAgentChatService(args: {
    */
   const moveUsageLimitHeldSteers = (from: ManagedChatSession, to: ManagedChatSession): number => {
     liftUsageLimitHeldSteers(from);
-    const moved = takeStartableHeldSteers(from);
+    // Moved, not started: a guest's message passes the share's check (which
+    // spends its record) only when it starts in the new chat.
+    const moved = from.usageLimitHeldSteers ?? [];
+    delete from.usageLimitHeldSteers;
     if (!moved.length) return 0;
     for (const steer of moved) {
       claimSteerSettlement(from, steer.steerId);
@@ -42497,7 +42518,7 @@ export function createAgentChatService(args: {
       turn.admittedAt = Date.now();
       args.onBackendDispatched?.();
       // OpenCode has the prompt: messages a limit held join its inbox behind it.
-      restoreUsageLimitHeldSteers(managed, { turnPromptSent: true });
+      restoreUsageLimitHeldSteers(managed, { promptSentOn: runtime });
       // A prompt OpenCode admitted but never ran would otherwise hold the chat
       // on "Working": after a bound, ask the server what happened.
       startWatchdog = setTimeout(() => {
@@ -42510,14 +42531,14 @@ export function createAgentChatService(args: {
       }
       finishOpenCodeTurn(managed, runtime, { status: "failed", error });
       // Held messages this turn never sent go next, as turns of their own.
-      restoreUsageLimitHeldSteers(managed, { turnPromptSent: true });
+      restoreUsageLimitHeldSteers(managed, { promptSentOn: runtime });
       return;
     }
     try {
       await turn.settled;
     } finally {
       if (startWatchdog) clearTimeout(startWatchdog);
-      restoreUsageLimitHeldSteers(managed, { turnPromptSent: true });
+      restoreUsageLimitHeldSteers(managed, { promptSentOn: runtime });
     }
   };
 
@@ -50673,6 +50694,20 @@ export function createAgentChatService(args: {
     failure: { message?: string | null; errorInfo?: string | { category?: string | null } | null },
   ): void => {
     if (isUsageLimitChatError(failure)) managed.usageLimitQueueHold = true;
+  };
+
+  /**
+   * A Stop that clears the queue also clears released held messages still
+   * waiting on the session for the turn's prompt (OpenCode and Copilot take
+   * them only after it): they were queued behind that turn. A queue a live
+   * limit holds stays for the resume or a switch.
+   */
+  const cancelReleasedHeldSteers = (managed: ManagedChatSession, turnId: string | null | undefined): void => {
+    const held = managed.usageLimitHeldSteers;
+    if (!held?.length || usageLimitHoldsQueue(managed)) return;
+    delete managed.usageLimitHeldSteers;
+    settleCancelledQueuedSteers(managed, held, "interrupted", turnId ?? null);
+    persistChatState(managed);
   };
 
   /** A held queue that will never run (the chat closed, or its work moved to another chat). */
@@ -66827,7 +66862,7 @@ export function createAgentChatService(args: {
       emitChatEvent(managed, { type: "status", turnStatus: "completed", turnId });
       emitChatEvent(managed, { type: "done", status: "completed", turnId, model: managed.session.model, modelId: managed.session.modelId });
       // Nothing reached Copilot: held messages go next, as turns of their own.
-      restoreUsageLimitHeldSteers(managed, { turnPromptSent: true });
+      restoreUsageLimitHeldSteers(managed, { promptSentOn: runtime });
       return;
     }
     try {
@@ -66876,7 +66911,7 @@ export function createAgentChatService(args: {
           });
           await runtime.sdk.send(managed.session.id, promptText, attachments, undefined, agentMode, displayPrompt);
           // Copilot has the prompt: messages a limit held queue behind it.
-          restoreUsageLimitHeldSteers(managed, { turnPromptSent: true });
+          restoreUsageLimitHeldSteers(managed, { promptSentOn: runtime });
         }
         runtime.interrupted = runtime.interrupted || await turnIdle;
         const metricsAfter = await runtime.sdk.request<{ totalPremiumRequestCost?: number }>("usage_metrics", { chatId: managed.session.id }).catch(() => null);
@@ -66932,7 +66967,7 @@ export function createAgentChatService(args: {
       if (runtime.reopenAfterTurn && managed.runtime === runtime) teardownRuntime(managed, "restart");
       // Held messages this turn never sent (it failed before its prompt, or
       // they arrived after it) go next, as turns of their own.
-      restoreUsageLimitHeldSteers(managed, { turnPromptSent: true });
+      restoreUsageLimitHeldSteers(managed, { promptSentOn: runtime });
     }
   };
 
@@ -72138,8 +72173,10 @@ export function createAgentChatService(args: {
       }
       if (!runtime.activeTurn && runtime.interrupted) return result;
       runtime.interrupted = true;
-      if (stopModeClearsQueue(mode)) cancelOpenCodeInboxRows(managed, runtime, "interrupted");
-      else if (runtime.activeTurn) runtime.preserveQueuedSteersOnInterrupt = true;
+      if (stopModeClearsQueue(mode)) {
+        cancelOpenCodeInboxRows(managed, runtime, "interrupted");
+        cancelReleasedHeldSteers(managed, runtime.activeTurnId);
+      } else if (runtime.activeTurn) runtime.preserveQueuedSteersOnInterrupt = true;
       // A Stop that spares background children spares their cards; the
       // modes that stop them settled them above, so their cards go here.
       const settles = (request: PendingInputRequest): boolean => !subagentCardIsLive(managed, request);
@@ -72172,7 +72209,10 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "copilot") {
       const rt = managed.runtime;
       rt.interrupted = true;
-      if (stopModeClearsQueue(mode)) cancelQueuedSteers(managed, rt, "interrupted");
+      if (stopModeClearsQueue(mode)) {
+        cancelQueuedSteers(managed, rt, "interrupted");
+        cancelReleasedHeldSteers(managed, rt.activeTurnId);
+      }
       cancelPendingInputsFrom(managed, "ade");
       await rt.sdk.abort(managed.session.id).catch(() => undefined);
       persistChatState(managed);

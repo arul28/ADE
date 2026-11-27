@@ -16869,28 +16869,37 @@ export function AgentChatPane({
    * it right before it sends; a chat stopped at a usage limit applies it as
    * soon as the pick renders (`usageLimitSwitch`). Send passes the controls
    * it read before its first await, so a chat opened meanwhile cannot lend
-   * this one its controls.
+   * this one its controls. `whole` writes every field instead of the change
+   * from the chat's summary, for a summary an unfinished switch made stale.
    */
   const buildDeferredSessionUpdate = useCallback((
     sessionId: string,
     nativeControls: NativeControlState = nativeControlsRef.current,
+    whole = false,
   ) => {
     // A pick can move the chat onto a preset or off one, which the model id
     // alone cannot show: the row can already name the model while the
     // preset decides what launches.
     const routePick = sessionRoutePickRef.current?.sessionId === sessionId ? sessionRoutePickRef.current : null;
-    const routeChanged = routePick !== null && routePick.presetId !== (selectedSession?.presetId ?? null);
+    // Whole, a preset pick names its preset again; a plain one leaves a
+    // preset only as it would otherwise (an explicit leave also ends a route).
+    const routeChanged = routePick !== null && (
+      routePick.presetId !== (selectedSession?.presetId ?? null) || (whole && Boolean(routePick.presetId))
+    );
     // With no model known for the chat yet, only a model the person picked
     // in this chat counts as a change; an empty or stale composer does not.
     const pickedWithoutSessionModel = !selectedSessionModelId
       && Boolean(modelId)
       && deferredComposerSessionIdRef.current === sessionId;
-    const modelChanged = (Boolean(selectedSessionModelId) && selectedSessionModelId !== modelId)
+    const modelChanged = (whole && Boolean(modelId))
+      || (Boolean(selectedSessionModelId) && selectedSessionModelId !== modelId)
       || pickedWithoutSessionModel
       || routeChanged;
-    const fastModeChanged = (selectedSession?.fastMode === true) !== fastMode
+    const fastModeChanged = whole
+      || (selectedSession?.fastMode === true) !== fastMode
       || (selectedSession?.fastTier === "ultrafast") !== (fastMode && fastTier === "ultrafast");
-    const reasoningChanged = (selectedSession?.reasoningEffort ?? null) !== reasoningEffort
+    const reasoningChanged = whole
+      || (selectedSession?.reasoningEffort ?? null) !== reasoningEffort
       || (routeChanged && reasoningEffort !== null && reasoningTiers.includes(reasoningEffort));
     const modelUpdate: { modelId?: string; presetId?: string | null } = !modelChanged
       ? {}
@@ -16930,12 +16939,16 @@ export function AgentChatPane({
     const { sessionId, pick } = usageLimitSwitch;
     setUsageLimitSwitch(null);
     if (sessionId !== selectedSessionId || turnActive || latestComposerPick.current !== pick) return;
-    const { modelChanged, update } = buildDeferredSessionUpdate(sessionId);
+    const newest = usageLimitSwitchNewestRef.current;
+    // With a switch of this chat still queued or unconfirmed, the summary the
+    // pick compares against is stale: the pick writes its whole state, and it
+    // replaces that switch even when it goes back to the stored model.
+    const afterUnfinishedSwitch = newest.has(sessionId);
+    const { modelChanged, update } = buildDeferredSessionUpdate(sessionId, nativeControlsRef.current, afterUnfinishedSwitch);
     if (!modelChanged) return;
     const routePick = sessionRoutePickRef.current;
     // The chat's machine as the pick rendered, kept for the queued write.
     const switchPin = chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current);
-    const newest = usageLimitSwitchNewestRef.current;
     newest.set(sessionId, pick);
     const write = usageLimitSwitchChainRef.current.then(async () => {
       if (newest.get(sessionId) !== pick) return false;
@@ -16944,6 +16957,8 @@ export function AgentChatPane({
         ...update,
         ...(sessionProvider === "cursor" ? { cursorCloudServiceTier } : {}),
       }, chatPin));
+      // The switch counts as unfinished until the summary shows it.
+      await refreshSessions().catch(() => {});
       return true;
     });
     usageLimitSwitchChainRef.current = write.then(() => {}, () => {}).finally(() => {
@@ -16956,7 +16971,6 @@ export function AgentChatPane({
           if (deferredComposerSessionIdRef.current === sessionId) deferredComposerSessionIdRef.current = null;
           setSessionRoutePick((current) => current === routePick ? null : current);
         }
-        void refreshSessions().catch(() => {});
       })
       .catch((switchError: unknown) => {
         if (latestComposerPick.current === pick && renderSelectedSessionIdRef.current === sessionId) {

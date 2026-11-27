@@ -835,8 +835,20 @@ describe("createAgentChatService", () => {
           yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
         })());
         const sdkSession = { send, stream, close: vi.fn(), sessionId: "sdk-limit-handoff", setPermissionMode: vi.fn() };
-        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(sdkSession as any);
-        vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(sdkSession as any);
+        // The new chat gets its own SDK session, so a send there is told apart from one here.
+        const newChatSend = vi.fn().mockResolvedValue(undefined);
+        const newChatSession = {
+          send: newChatSend,
+          stream: vi.fn(() => (async function* () {
+            yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          })()),
+          close: vi.fn(),
+          sessionId: "sdk-limit-handoff-new",
+          setPermissionMode: vi.fn(),
+        };
+        let handingOff = false;
+        vi.mocked(claudeSdkCreateSessionCompat).mockImplementation((() => (handingOff ? newChatSession : sdkSession)) as any);
+        vi.mocked(claudeSdkResumeSessionCompat).mockImplementation((() => (handingOff ? newChatSession : sdkSession)) as any);
 
         const { service } = createService({
           getAccountUsage,
@@ -864,10 +876,12 @@ describe("createAgentChatService", () => {
           expect((await service.getSessionSummary(session.id))?.usageLimitResume?.alternateAccount)
             .toEqual({ instanceId: "other", label: "other@example.com" });
         });
-        const sentText = () => JSON.stringify(send.mock.calls);
-        expect(sentText()).not.toContain("first queued");
+        const oldChatSent = () => JSON.stringify(send.mock.calls);
+        const newChatSent = () => JSON.stringify(newChatSend.mock.calls);
+        expect(oldChatSent()).not.toContain("first queued");
 
         // No thread file on this login, so the move falls back to a new chat.
+        handingOff = true;
         const result = await service.continueUsageLimitOnAlternate({ sessionId: session.id });
         expect(result.ok).toBe(true);
         const newId = result.ok ? result.sessionId : null;
@@ -875,12 +889,15 @@ describe("createAgentChatService", () => {
         expect(newId).not.toBe(session.id);
 
         // Both reach the new chat, in order, behind the continuation, the comment with the first.
-        await vi.waitFor(() => expect(sentText()).toContain("second queued"), { timeout: 5_000 });
-        const sent = sentText();
+        await vi.waitFor(() => expect(newChatSent()).toContain("second queued"), { timeout: 5_000 });
+        const sent = newChatSent();
         expect(sent).toContain("my review note");
         expect(sent.indexOf("Continue the interrupted task")).toBeGreaterThanOrEqual(0);
         expect(sent.indexOf("Continue the interrupted task")).toBeLessThan(sent.indexOf("first queued"));
         expect(sent.indexOf("first queued")).toBeLessThan(sent.indexOf("second queued"));
+        // Neither went into the limited account.
+        expect(oldChatSent()).not.toContain("first queued");
+        expect(oldChatSent()).not.toContain("second queued");
         // The new chat shows them queued until they go.
         const queuedOnNewChat = events.filter((event) =>
           event.sessionId === newId && event.event.type === "user_message"
@@ -1153,6 +1170,15 @@ describe("createAgentChatService", () => {
           db: scheduledWork.db,
           onEvent: (event: AgentChatEventEnvelope) => events.push(event),
         });
+        // The lane share's check, as the host runs it: it answers once per
+        // message (the record is spent), so a message checked before it
+        // starts is dropped when it does.
+        const checkedGuestSteers = new Set<string>();
+        service.installQueuedGuestSteerGate(({ steerId }: { steerId: string }) => {
+          if (checkedGuestSteers.has(steerId)) return false;
+          checkedGuestSteers.add(steerId);
+          return true;
+        });
         const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
         const activeTurn = service.runSessionTurn({ sessionId: session.id, text: "Foreground work", timeoutMs: 15_000 });
         await waitForEvent(
@@ -1168,7 +1194,12 @@ describe("createAgentChatService", () => {
           body: "my review note",
         });
         expect((await service.steer({ sessionId: session.id, text: "first queued", includeThreadComments: true })).queued).toBe(true);
-        expect((await service.steer({ sessionId: session.id, text: "second queued" })).queued).toBe(true);
+        // A guest of the shared lane queued the second.
+        const guestSteer = await service.steerUserMessage(
+          { sessionId: session.id, text: "second queued" },
+          { author: { kind: "guest", userId: "user_guest", name: "Guest" } },
+        ) as { steerId?: string; queued?: boolean };
+        expect(guestSteer.queued).toBe(true);
 
         finishActiveTurn();
         await activeTurn;
