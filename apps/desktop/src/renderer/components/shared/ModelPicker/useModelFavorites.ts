@@ -84,6 +84,8 @@ function idsOf(value: unknown): string[] {
 
 /** The queue when storage refused to save it: kept here so the change is still sent. */
 let unsavedPending: Pending | null = null;
+/** Ids the account confirmed or refused while the saved queue was stale: that copy must not replay them. */
+const settledWhileUnsaved = new Set<string>();
 
 /**
  * Read from storage each time, so a change another window queued is never
@@ -94,7 +96,7 @@ function readPending(): Pending {
   const raw = readStored(PENDING_KEY) as Partial<Pending> | null;
   const saved: Pending = { add: idsOf(raw?.add), remove: idsOf(raw?.remove) };
   if (!unsavedPending) return saved;
-  const mine = new Set([...unsavedPending.add, ...unsavedPending.remove]);
+  const mine = new Set([...unsavedPending.add, ...unsavedPending.remove, ...settledWhileUnsaved]);
   return {
     add: [...saved.add.filter((id) => !mine.has(id)), ...unsavedPending.add],
     remove: [...saved.remove.filter((id) => !mine.has(id)), ...unsavedPending.remove],
@@ -102,7 +104,12 @@ function readPending(): Pending {
 }
 
 function savePending(pending: Pending): void {
-  unsavedPending = writeStored(PENDING_KEY, pending) ? null : pending;
+  if (writeStored(PENDING_KEY, pending)) {
+    unsavedPending = null;
+    settledWhileUnsaved.clear();
+  } else {
+    unsavedPending = pending;
+  }
 }
 
 /** `pending` with `id` queued to be added or taken off; the opposite change for it is dropped. */
@@ -251,7 +258,9 @@ const useFavoritesStore = create<FavoritesState>((set, get) => {
         handled: true,
         tags: { code: answer.code },
       });
-      const left = withoutSent(readPending(), sent.add.length ? { add: sent.add, remove: [] } : sent);
+      const dropped: Pending = sent.add.length ? { add: sent.add, remove: [] } : sent;
+      for (const id of [...dropped.add, ...dropped.remove]) settledWhileUnsaved.add(id);
+      const left = withoutSent(readPending(), dropped);
       setLocal(get().favorites.filter((id) => !sent.add.includes(id)), left);
       syncAgain = true;
       return;
@@ -260,6 +269,7 @@ const useFavoritesStore = create<FavoritesState>((set, get) => {
     // the list here and the changes for the next sync.
     if (!answer || !answer.ok || !answer.result) return;
     // Changes made while the call ran stay queued; the ones it carried are done.
+    for (const id of [...sent.add, ...sent.remove]) settledWhileUnsaved.add(id);
     const left = withoutSent(readPending(), sent);
     setLocal(withPending(answer.result.favorites, left), left);
     if (left.add.length || left.remove.length) syncAgain = true;
