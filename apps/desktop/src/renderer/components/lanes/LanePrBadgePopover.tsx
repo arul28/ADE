@@ -13,6 +13,7 @@ import {
   getPrStateBadge,
 } from "../prs/shared/prVisuals";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
+import { sentenceCase } from "../../lib/format";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import { NO_CI_REASON } from "../../../shared/prChecksRollup";
 import { lanePrAggregateAttention, lanePrAttention, lanePrAttentionColor, pickPrimaryPr } from "../../lib/lanePrBadge";
@@ -130,8 +131,8 @@ export function LanePrBadgePopover({
                 <span className="min-w-0 flex-1">
                   <span className="flex items-center gap-1.5 text-[11px] font-semibold" style={{ color: COLORS.textPrimary }}>
                     <span className="font-mono">#{candidate.githubPrNumber}</span>
-                    <span style={{ color: lanePrTagColor(candidate.state) }}>{candidate.state}</span>
-                    {candidate.laneRole === "previous" ? <span className="text-[9px] font-normal" style={{ color: COLORS.textMuted }}>previous</span> : null}
+                    <span className="font-medium" style={{ color: lanePrTagColor(candidate.state) }}>{sentenceCase(candidate.state)}</span>
+                    {candidate.laneRole === "previous" ? <span className="text-[9px] font-normal" style={{ color: COLORS.textMuted }}>Previous</span> : null}
                   </span>
                   <span className="block truncate text-[10px]" style={{ color: COLORS.textMuted }}>{candidate.title || "Untitled pull request"}</span>
                 </span>

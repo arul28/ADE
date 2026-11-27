@@ -5,6 +5,8 @@ Everything the renderer draws (messages, tool calls, commands, file
 changes, plans, pending inputs, turn dividers) is derived from this one
 stream. Sessions persist the stream to disk so they survive restarts.
 
+In light themes, chat uses readable text and syntax colours for code blocks, inline code, quotes, tables, and command output. The message bubble fill is configurable under Settings → Chat.
+
 ## Event envelope
 
 ```ts

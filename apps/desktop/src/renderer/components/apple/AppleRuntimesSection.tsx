@@ -132,7 +132,7 @@ function LeftoverRuntimeRow({ leftover }: { leftover: AppleLeftoverRuntime }) {
         <div className="flex min-w-0 flex-1 flex-col">
           <span className="flex min-w-0 items-baseline gap-2">
             <span className="shrink-0 font-sans text-[12px] font-medium leading-5 text-fg">{leftover.name}</span>
-            <span className="shrink-0 font-sans text-[10px] uppercase tracking-[0.08em] text-warning">left behind</span>
+            <span className="shrink-0 font-sans text-[10px] font-medium text-warning">Left behind</span>
           </span>
           <span className="min-w-0 break-words font-sans text-[11px] leading-4 text-muted-fg">
             {[sizeOf(leftover), "not listed, so no simulator can use it"].filter(Boolean).join(" · ")}
@@ -203,7 +203,7 @@ export function AppleRuntimesSection({
               <span className="flex min-w-0 items-baseline gap-2">
                 <span className="shrink-0 font-sans text-[12px] font-medium leading-5 text-fg">{entry.name}</span>
                 {entry.newest ? (
-                  <span className="shrink-0 font-sans text-[10px] uppercase tracking-[0.08em] text-muted-fg">newest</span>
+                  <span className="shrink-0 font-sans text-[10px] font-medium text-muted-fg">Newest</span>
                 ) : null}
               </span>
               <span className="min-w-0 break-words font-sans text-[11px] leading-4 text-muted-fg">

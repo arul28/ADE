@@ -1,9 +1,11 @@
 import { useCallback, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { CaretRight } from "@phosphor-icons/react";
 import { useBannerDismissals } from "../../../lib/bannerDismiss";
 import { FLOATS_OVER_BROWSER_PROPS } from "../overlayState";
 import { Z_LAYERS } from "../zLayers";
 import { Banner, isDurableDismiss } from "./Banner";
+import { useAppBannerAnchor } from "./appBannerAnchor";
 import { useAppBannerEntries, type AppBannerEntry } from "./appBannerStore";
 import { NOTICE_TONE_RANK } from "./noticeTones";
 
@@ -18,7 +20,9 @@ import { NOTICE_TONE_RANK } from "./noticeTones";
  *   `MAX_FLOATING` at once.
  *
  * Mount exactly one, in `AppShell`, outside any project condition so account
- * and app-level banners reach the welcome screen too.
+ * and app-level banners reach the welcome screen too. With a project open the
+ * banners portal into that project's content column (`appBannerAnchor.ts`), so
+ * they start to the right of the project sidebar instead of across it.
  */
 
 const MAX_DOCKED = 2;
@@ -36,6 +40,7 @@ export function AppBannerHost(): JSX.Element | null {
   const entries = useAppBannerEntries();
   const dismissals = useBannerDismissals();
   const [expanded, setExpanded] = useState(false);
+  const anchor = useAppBannerAnchor();
 
   const { docked, floating } = useMemo(() => {
     const live = entries.filter(
@@ -66,7 +71,7 @@ export function AppBannerHost(): JSX.Element | null {
   // hang just below its bottom edge — under the top bar when nothing is docked,
   // under the last docked banner otherwise — so a prompt never covers the text
   // of a banner that is already on screen.
-  return (
+  const host = (
     <div data-testid="app-banner-host" style={{ position: "relative", flexShrink: 0 }}>
       {docked.length > 0 ? (
         <div
@@ -130,7 +135,7 @@ export function AppBannerHost(): JSX.Element | null {
             alignItems: "center",
             gap: 8,
             width: "max-content",
-            maxWidth: "min(640px, calc(100vw - 28px))",
+            maxWidth: "min(640px, calc(100% - 28px))",
             paddingTop: docked.length === 0 ? 2 : 0,
             pointerEvents: "none",
           }}
@@ -144,4 +149,5 @@ export function AppBannerHost(): JSX.Element | null {
       ) : null}
     </div>
   );
+  return anchor ? createPortal(host, anchor) : host;
 }

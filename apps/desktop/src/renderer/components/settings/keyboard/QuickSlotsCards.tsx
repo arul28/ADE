@@ -11,6 +11,7 @@ import { resolveModelDescriptor } from "../../../../shared/modelRegistry";
 import { quickSlotChordConflict, resolveBindingChords, type KeyboardPlatform } from "../../../../shared/keybindingEditor";
 import { modifierChordLabel } from "../../../lib/platform";
 import { getEffectiveBinding } from "../../../lib/keybindings";
+import { sentenceCase } from "../../../lib/format";
 import {
   QUICK_SLOT_COMMANDS,
   profileCommands,
@@ -360,7 +361,7 @@ export function QuickSlotsCards({ snapshot, platform }: { snapshot: KeybindingsS
                         <span className="ade-qs-picker-title">{command.title}</span>
                         <span className="ade-qs-picker-hint">{command.hint ?? command.title}</span>
                       </span>
-                      <span className="ade-qs-picker-kind">{command.kind.toUpperCase()}</span>
+                      <span className="ade-qs-picker-kind">{sentenceCase(command.kind)}</span>
                     </button>
                   );
                 })}

@@ -1802,7 +1802,7 @@ struct WorkTurnEndMarkerView: View {
       if completed {
         Text(workTurnSeparatorTimeLabel(marker.time))
       } else {
-        Text(status.uppercased()).fontWeight(.medium).tracking(0.4)
+        Text(status.adeSentenceCased).fontWeight(.medium)
         if let reason = marker.terminalReasonLabel {
           separator
           Text(reason)

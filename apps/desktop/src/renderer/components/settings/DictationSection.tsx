@@ -79,7 +79,7 @@ export function DictationSection() {
           {voiceInputEnabled && isDownloading ? (
             <div style={detailPanelStyle}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-                <span className="kit-eyebrow" aria-live="polite">{isWarmingUp ? "Finishing setup" : "Downloading speech model"}</span>
+                <span className="text-[11px] font-medium text-muted-fg" aria-live="polite">{isWarmingUp ? "Finishing setup" : "Downloading speech model"}</span>
                 {isWarmingUp ? null : (
                   <span className="kit-num" style={{ fontSize: 11, color: "var(--color-muted-fg)" }}>
                     {percent != null ? `${percent}%` : "Starting"}

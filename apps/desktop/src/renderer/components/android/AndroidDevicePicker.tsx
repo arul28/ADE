@@ -288,7 +288,7 @@ function StateTag({ tone, children, tooltip }: { tone: "success" | "warning" | "
   const tag = (
     <span
       className={cn(
-        "shrink-0 font-sans text-[10px] font-medium uppercase tracking-[0.08em]",
+        "shrink-0 font-sans text-[10px] font-medium",
         tone === "success" && "text-success",
         tone === "warning" && "text-warning",
         tone === "muted" && "text-muted-fg",

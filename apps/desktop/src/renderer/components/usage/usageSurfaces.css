@@ -603,9 +603,7 @@
   justify-content: center;
   gap: 8px;
   font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  font-size: 10.5px;
   white-space: nowrap;
   color: var(--kit-text-3);
 }

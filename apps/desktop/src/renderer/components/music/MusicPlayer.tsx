@@ -449,7 +449,7 @@ export function MusicPlayerCard({
       <MusicArtBackdrop artwork={nowPlaying.artwork} />
       <div className="ade-music-player-inner">
         <header className="ade-music-player-head">
-          <span className="kit-eyebrow">{suspended ? "Paused · resumes here" : "Now playing"}</span>
+          <span className="text-[11px] font-medium text-muted-fg">{suspended ? "Paused · resumes here" : "Now playing"}</span>
           <PlayerIconButton size="sm" label="Hide player" onClick={onCollapse} className="ml-auto">
             <CaretDown size={14} weight="bold" />
           </PlayerIconButton>

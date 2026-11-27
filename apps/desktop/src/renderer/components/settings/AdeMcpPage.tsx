@@ -81,11 +81,11 @@ const OUTCOME_TONE: Record<RemoteMcpActivityEntry["outcome"], string | undefined
 };
 
 const OUTCOME_LABEL: Record<RemoteMcpActivityEntry["outcome"], string> = {
-  ok: "done",
-  failed: "failed",
-  timeout: "timed out",
-  busy: "busy",
-  refused: "refused",
+  ok: "Done",
+  failed: "Failed",
+  timeout: "Timed out",
+  busy: "Busy",
+  refused: "Refused",
 };
 
 function errorText(error: unknown, fallback: string): string {

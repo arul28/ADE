@@ -210,9 +210,20 @@ struct ADEKitDot: View {
   }
 }
 
-/// A small tinted pill (`.kit-tag`): mono caps, 18pt tall. `color` tints it
-/// with a hue that already carries meaning instead of a kit tone. A
-/// user-chosen name (a lane, a machine) passes `keepsCase: true`.
+extension String {
+  /// Sentence case for a status word or a pill: the first letter capitalised,
+  /// the rest as written, so "merged" reads "Merged" and "PR #12" or
+  /// "via LAN" keep their acronyms. Status labels never shout (ADE-215).
+  var adeSentenceCased: String {
+    guard let first else { return self }
+    return first.uppercased() + dropFirst()
+  }
+}
+
+/// A small tinted pill (`.kit-tag`): mono, sentence case, 18pt tall. `color`
+/// tints it with a hue that already carries meaning instead of a kit tone. A
+/// user-chosen name (a lane, a machine) passes `keepsCase: true` so even its
+/// first letter stays as typed.
 struct ADEKitTag: View {
   let text: String
   var tone: ADEKitTone = .neutral
@@ -221,9 +232,8 @@ struct ADEKitTag: View {
 
   var body: some View {
     let tint = color ?? (tone == .neutral ? ADEColor.textSecondary : tone.color)
-    Text(keepsCase ? text : text.uppercased())
-      .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-      .tracking(0.5)
+    Text(keepsCase ? text : text.adeSentenceCased)
+      .font(.system(size: 10, weight: .medium, design: .monospaced))
       .foregroundStyle(tint)
       .padding(.horizontal, 6)
       .frame(height: 18)

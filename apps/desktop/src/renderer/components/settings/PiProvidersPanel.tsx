@@ -227,7 +227,7 @@ function PiLocalServerCard({
             {provider.name}
           </span>
         </div>
-        <span style={{ fontSize: 9, fontFamily: MONO_FONT, color: tone.color, textTransform: "uppercase", letterSpacing: "0.6px" }}>
+        <span style={{ fontSize: 10, fontFamily: SANS_FONT, fontWeight: 500, color: tone.color }}>
           {tone.label}
         </span>
       </div>

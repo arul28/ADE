@@ -84,7 +84,7 @@ export const PrDeploymentCard = memo(function PrDeploymentCard({
           {deployment.environment}
         </span>
         <span
-          className="ml-auto text-[10px] uppercase tracking-[0.8px]"
+          className="ml-auto text-[10px] font-medium"
           style={{ color, fontFamily: MONO_FONT }}
         >
           {stateLabel(deployment.state)}

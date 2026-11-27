@@ -33,9 +33,9 @@ const paneAction =
 function relTime(iso: string | null): string {
   if (!iso) return "—";
   const ms = Date.now() - new Date(iso).getTime();
-  if (!Number.isFinite(ms) || ms < 0) return "live";
+  if (!Number.isFinite(ms) || ms < 0) return "Live";
   const s = Math.floor(ms / 1000);
-  if (s < 10) return "live";
+  if (s < 10) return "Live";
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
   if (m < 60) return `${m}m`;
@@ -50,7 +50,7 @@ export type RelayState = { configured: boolean; webhookActive: boolean } | null;
 function liveDot(pr: PrSummary, relay: RelayState): { dot: string; label: string; title: string } {
   const label = relTime(pr.lastSyncedAt);
   if (relay && !relay.configured) {
-    return { dot: "bg-fg/30", label: "polling", title: "Webhook relay not connected — falling back to polling" };
+    return { dot: "bg-fg/30", label: "Polling", title: "Webhook relay not connected — falling back to polling" };
   }
   const ageMs = pr.lastSyncedAt ? Date.now() - new Date(pr.lastSyncedAt).getTime() : Infinity;
   const fresh = Number.isFinite(ageMs) && ageMs < 120_000;
@@ -176,7 +176,7 @@ export function PrDetails({
     <div className="space-y-3">
       <div className="flex items-center gap-2">
         <span className={cn("inline-block h-2 w-2 rounded-full", tone.dot)} />
-        <span className="text-[11px] font-medium uppercase tracking-wide text-fg/55">{tone.label}</span>
+        <span className="text-[11px] font-medium text-fg/55">{tone.label}</span>
         <span className="font-mono text-[11px] text-fg/45">{formatPrBadgeLabel(pr)}</span>
         <span className="ml-auto inline-flex items-center gap-1.5" title={live.title}>
           <span className={cn("inline-block h-1.5 w-1.5 rounded-full", live.dot)} />

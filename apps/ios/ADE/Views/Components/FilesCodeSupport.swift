@@ -618,19 +618,19 @@ extension SyntaxTokenRole {
   var tint: Color {
     switch self {
     case .keyword:
-      return .purple
+      return ADEColor.syntaxKeyword
     case .string:
-      return .green
+      return ADEColor.syntaxString
     case .comment:
       return ADEColor.textSecondary
     case .type:
-      return .blue
+      return ADEColor.syntaxType
     case .number:
-      return .orange
+      return ADEColor.syntaxNumber
     case .heading:
-      return .pink
+      return ADEColor.syntaxHeading
     case .link:
-      return .teal
+      return ADEColor.syntaxLink
     }
   }
 

@@ -184,10 +184,8 @@
   border-radius: 999px;
   display: inline-flex;
   align-items: center;
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  font-size: 10.5px;
+  font-weight: 500;
   color: var(--color-accent);
   background: color-mix(in srgb, var(--color-accent) 16%, transparent);
 }

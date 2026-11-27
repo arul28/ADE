@@ -20,7 +20,7 @@ import {
   type Icon,
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
-import { formatDurationMs, formatSubagentDurationMs } from "../../lib/format";
+import { formatDurationMs, formatSubagentDurationMs, sentenceCase } from "../../lib/format";
 import type { ChatScheduledWorkSnapshot, ChatSubagentSnapshot } from "./chatExecutionSummary";
 import { subagentTreeDepth } from "./chatExecutionSummary";
 import { annotateSubagentTree, shouldAutoCollapseFinishedSubtree } from "../../../shared/chatSubagentTree";
@@ -1023,7 +1023,7 @@ function SubagentRow({
   const name = isSpawnedChat
     ? (spawnedChatTitle?.trim() || snapshot.description?.trim() || chatSubagentDisplayName(snapshot))
     : chatSubagentDisplayName(snapshot);
-  // Spawned-chat rows surface the runtime as the uppercase chip (reusing the
+  // Spawned-chat rows surface the runtime as the small chip (reusing the
   // kindBadge chip idiom); other rows keep their taskType kind chip.
   const kindLabel = isSpawnedChat ? (snapshot.agentType?.trim() || null) : kindBadge(snapshot);
   const modelAttribution = subagentModelAttribution({
@@ -1111,8 +1111,8 @@ function SubagentRow({
         >
           {name}
           {snapshot.background ? (
-            <span className="ml-1.5 rounded-sm bg-cyan-300/[0.1] px-1 py-px font-sans text-[9.5px] uppercase tracking-[0.05em] text-cyan-200/70">
-              background
+            <span className="ml-1.5 rounded-sm bg-cyan-300/[0.1] px-1 py-px font-sans text-[10px] font-medium text-cyan-200/70">
+              Background
             </span>
           ) : null}
           {snapshot.workflowName ? (
@@ -1120,8 +1120,8 @@ function SubagentRow({
               {snapshot.workflowName}
             </span>
           ) : kindLabel ? (
-            <span className="ml-1.5 rounded-sm bg-fg/[0.05] px-1 py-px font-sans text-[9.5px] uppercase tracking-[0.05em] text-fg/40">
-              {kindLabel}
+            <span className="ml-1.5 rounded-sm bg-fg/[0.05] px-1 py-px font-sans text-[10px] font-medium text-fg/40">
+              {sentenceCase(kindLabel)}
             </span>
           ) : null}
           {modelAttribution ? (
