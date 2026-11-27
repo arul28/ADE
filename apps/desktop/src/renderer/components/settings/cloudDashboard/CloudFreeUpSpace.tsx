@@ -8,6 +8,7 @@ import { Dialog, confirmDialog } from "../../ui/dialog";
 import { cleanupOrder, lastRunText, type DashLane } from "./cloudDashboardModel";
 import { CLOUD_LANE_LIFE_UNAVAILABLE, cloudLaneLifeAvailable, cloudLaneWorkState, deleteCloudLane, freeCloudLane } from "../../cloudLane/cloudLaneActions";
 import { refreshCloudLanesWithoutComputer } from "../../cloudLane/cloudLaneStores";
+import { BRAND } from "../../../../shared/brand";
 
 type Choice = "keep" | "free" | "delete";
 
@@ -62,7 +63,7 @@ export function CloudFreeUpSpace({
       setBusy(false);
       const ok = await confirmDialog({
         title: risky.length === 1 ? `${risky[0]!.name} has work that isn't on GitHub` : `${risky.length} lanes have work that isn't on GitHub`,
-        message: `${risky.map((lane) => lane.name).join(", ")}: ADE found unpushed work, or couldn't check. Deleting loses it. To keep the work, pick "Keep the lane, free its computer" instead: ADE pushes it first and keeps its chats.`,
+        message: `${risky.map((lane) => lane.name).join(", ")}: ${BRAND.NAME} found unpushed work, or couldn't check. Deleting loses it. To keep the work, pick "Keep the lane, free its computer" instead: ${BRAND.NAME} pushes it first and keeps its chats.`,
         confirmLabel: "Delete anyway",
         destructive: true,
       });
@@ -91,7 +92,7 @@ export function CloudFreeUpSpace({
       return;
     }
     showToast(chatsLeft.length
-      ? { tone: "warning", title: `Freed ${formatCloudGb(freedGb)}`, message: `ADE couldn't delete all the chats of ${chatsLeft.join(", ")}. Remove the rest in Work.`, durationMs: READABLE_TOAST_DURATION_MS }
+      ? { tone: "warning", title: `Freed ${formatCloudGb(freedGb)}`, message: `${BRAND.NAME} couldn't delete all the chats of ${chatsLeft.join(", ")}. Remove the rest in Work.`, durationMs: READABLE_TOAST_DURATION_MS }
       : { tone: "success", title: `Freed ${formatCloudGb(freedGb)}`, message: "The dashboard shows what's left." });
     onClose();
   };
@@ -139,7 +140,7 @@ export function CloudFreeUpSpace({
               </div>
               <div className="adecd-fl-choices" role="radiogroup" aria-label={`What to do with ${lane.name}`}>
                 <ChoiceButton on={choice === "keep"} onPick={() => set("keep")} title="Keep it" hint="Nothing changes." />
-                <ChoiceButton on={choice === "free"} onPick={() => set("free")} title="Keep the lane, free its computer" hint="ADE pushes the work, then removes the computer. The next message makes a fresh one." />
+                <ChoiceButton on={choice === "free"} onPick={() => set("free")} title="Keep the lane, free its computer" hint={`${BRAND.NAME} pushes the work, then removes the computer. The next message makes a fresh one.`} />
                 <ChoiceButton on={choice === "delete"} onPick={() => set("delete")} title="Delete the lane" hint="The lane, its computer and its chats go." tone="crit" />
               </div>
             </div>

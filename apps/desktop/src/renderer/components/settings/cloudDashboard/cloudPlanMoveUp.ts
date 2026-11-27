@@ -7,6 +7,7 @@ import {
 import { showToast } from "../../app/toast/toastStore";
 import { confirmDialog } from "../../ui/dialog";
 import { CLOUD_PLAN_MOMENT_TOAST_ID } from "./cloudPlanMoment";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * A move to a bigger plan, as the Plans card and the computer limit card both
@@ -39,7 +40,7 @@ export async function confirmCloudPlanMoveUp(plan: CloudPlanMoveUp): Promise<boo
  */
 export async function checkoutCloudPlanUp(plan: Pick<CloudPlanMoveUp, "planId" | "computerLimit">): Promise<CloudOpenCheckoutResult | null> {
   const open = window.ade?.cloud?.openCheckout;
-  if (!open) throw new Error("Open Settings › ADE Cloud › Plans in the ADE desktop app.");
+  if (!open) throw new Error(`Open Settings › ${BRAND.CLOUD_NAME} › Plans in the ${BRAND.NAME} desktop app.`);
   const label = CLOUD_PLAN_LABELS[plan.planId];
   const result = (await open(plan.planId)) ?? null;
   const computers = `you can have ${plan.computerLimit} cloud computers.`;

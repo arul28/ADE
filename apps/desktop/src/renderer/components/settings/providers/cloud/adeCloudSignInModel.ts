@@ -37,10 +37,11 @@ import { NOT_SIGNED_IN_LABEL, SIGNED_IN_LABEL, UNKNOWN_LABEL } from "../provider
 import type { ProviderTileFact } from "../ProviderTileView";
 import { isRecord } from "../../../../../shared/agentObservationNormalizers";
 import { DAY_MS, endsInDaysText, parseTime, shortDate } from "./adeCloudTime";
+import { BRAND } from "../../../../../shared/brand";
 
 /** "Sign-ins from your computers reach …": the one sentence under the title. */
 export const ADE_CLOUD_REACH_LINE = "Sign-ins from your computers reach each cloud computer in about a minute.";
-export const ADE_CLOUD_OFF_BANNER = "Sign-ins are off for ADE Cloud. Cloud chats sign in on each cloud computer.";
+export const ADE_CLOUD_OFF_BANNER = `Sign-ins are off for ${BRAND.CLOUD_NAME}. Cloud chats sign in on each cloud computer.`;
 export const COPILOT_REPO_LINE = "This login also gives access to your GitHub repos.";
 
 /**
@@ -64,7 +65,7 @@ export function keyringAllowWords(store: ProviderLoginKeyringStore | null | unde
   return {
     where,
     label,
-    aria: `${label}: ADE copies the Antigravity sign-in from ${where}`,
+    aria: `${label}: ${BRAND.NAME} copies the Antigravity sign-in from ${where}`,
     waiting: store === "keychain" ? "Waiting for macOS…"
       : store === "credential_manager" ? "Reading Credential Manager…"
         : store === "keyring" ? "Waiting for the keyring…"
@@ -290,14 +291,14 @@ export type AdeCloudPageLine = {
  * <name> ▾" in front of `ADE_CLOUD_REACH_LINE`; the name is not in this text.
  */
 export function adeCloudPageLine(account: AdeCloudAccountPart, cloud: AdeCloudCloudPart): AdeCloudPageLine {
-  if (accountUnreadable(account)) return { text: "ADE couldn't read your ADE account.", recheck: true };
+  if (accountUnreadable(account)) return { text: `${BRAND.NAME} couldn't read your ${BRAND.NAME} account.`, recheck: true };
   switch (cloud.state) {
     case "no_computer":
       return { text: "No cloud computer yet. Each new one starts with these sign-ins.", recheck: false };
     case "none_awake":
       return { text: "Your cloud computers are asleep, so this shows your account's choices.", recheck: true };
     case "unreachable":
-      return { text: "ADE can't reach a cloud computer from this project now, so this shows your account's choices.", recheck: true };
+      return { text: `${BRAND.NAME} can't reach a cloud computer from this project now, so this shows your account's choices.`, recheck: true };
     case "no_answer":
       return { text: `${cloud.computerName} didn't answer, so this shows your account's choices.`, recheck: true };
     default:
@@ -456,7 +457,7 @@ function carriedTile(input: AdeCloudTileInput, row: ProviderLoginProviderStatus 
   const picked = account.status.cloud.inUse[provider];
   const pickGone = Boolean(picked && picked !== "key" && !signIns.some((signIn) => signIn.key === picked));
 
-  if (applied?.ownerOff) return unknown("T8", "ADE couldn't renew it in time", { kind: "recheck" });
+  if (applied?.ownerOff) return unknown("T8", `${BRAND.NAME} couldn't renew it in time`, { kind: "recheck" });
   if (applied?.state === "failed") {
     return unknown("T7", `Couldn't put it on ${cloudName ? keepWhole(cloudName) : "the cloud computer"}. Tries again soon.`, { kind: "recheck" });
   }
@@ -486,7 +487,7 @@ function carriedTile(input: AdeCloudTileInput, row: ProviderLoginProviderStatus 
     }
     return signedIn("T3", [inUseFact, ...repoLine], action);
   }
-  if (signIns.length > 0) return notSignedIn("T9", "Off for ADE Cloud", switchFor(only));
+  if (signIns.length > 0) return notSignedIn("T9", `Off for ${BRAND.CLOUD_NAME}`, switchFor(only));
   if (pickGone) return notSignedIn("T14", PICK_GONE_TEXT, { kind: "sign-in-here" });
   // Only a sign-in known to be there (or an older ADE that cannot say) offers Allow.
   const keyringHasIt = row?.keychain?.present === true || row?.keychain?.present === undefined;
@@ -525,7 +526,7 @@ function fallbackTile(input: AdeCloudTileInput): Omit<AdeCloudTile, "provider"> 
       return unknown("F5", "Sign in on the cloud computer when it is awake");
     case "unreachable":
     case "no_answer":
-      return unknown("F5", "Sign in on the cloud computer when ADE can reach it");
+      return unknown("F5", `Sign in on the cloud computer when ${BRAND.NAME} can reach it`);
     case "ok":
       // The status answered and the AI read did not (yet): the login is not known.
       if (login === null && cloud.ai == null) return CHECKING_TILE;
@@ -566,7 +567,7 @@ function claudeTile(input: AdeCloudTileInput): Omit<AdeCloudTile, "provider"> {
   const passes = readClaudePasses(account.status);
   const cloudPasses = cloud.state === "ok" ? readClaudePasses(cloud.status) : [];
   const readable = passes.filter((pass): pass is ReadableCloudPassRow => !pass.unreadable);
-  if (passes.length === 0) return notSignedIn("C1", "Approve a Claude pass for ADE Cloud", { kind: "claude-pass", renewKey: null });
+  if (passes.length === 0) return notSignedIn("C1", `Approve a Claude pass for ${BRAND.CLOUD_NAME}`, { kind: "claude-pass", renewKey: null });
   if (readable.length === 0) return unknown("C7", "Couldn't read your Claude pass");
   if (readable.every((pass) => pass.state === "ended")) {
     const newest = readable.reduce((best, pass) => ((pass.endedAt ?? 0) > (best.endedAt ?? 0) ? pass : best));
@@ -574,7 +575,7 @@ function claudeTile(input: AdeCloudTileInput): Omit<AdeCloudTile, "provider"> {
     return notSignedIn("C5", `Claude ended your pass${when}`, { kind: "claude-pass", renewKey: newest.key }, "crit");
   }
   const on = readable.filter((pass) => pass.on && pass.state !== "ended");
-  if (on.length === 0) return notSignedIn("C6", "Off for ADE Cloud");
+  if (on.length === 0) return notSignedIn("C6", `Off for ${BRAND.CLOUD_NAME}`);
   const current = on.find((pass) => pass.newChats) ?? on[0]!;
   const label = passTitle(current, now);
   const more = on.length > 1 ? ` · ${on.length} passes` : "";
@@ -601,8 +602,8 @@ function claudeTile(input: AdeCloudTileInput): Omit<AdeCloudTile, "provider"> {
 export function adeCloudTile(input: AdeCloudTileInput): AdeCloudTile {
   const { provider, account } = input;
   const decide = (): Omit<AdeCloudTile, "provider"> => {
-    if (!cloudSignInsOn(account)) return notSignedIn("T1", "Sign-ins are off for ADE Cloud");
-    if (accountUnreadable(account)) return unknown("T2", "Couldn't read your ADE account");
+    if (!cloudSignInsOn(account)) return notSignedIn("T1", `Sign-ins are off for ${BRAND.CLOUD_NAME}`);
+    if (accountUnreadable(account)) return unknown("T2", `Couldn't read your ${BRAND.NAME} account`);
     if (provider === "claude") return claudeTile(input);
     if (account.state !== "ok") return CHECKING_TILE;
     const row = providerRow(account, provider);

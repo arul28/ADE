@@ -22,6 +22,7 @@ import {
 } from "./adeCloudSignInModel";
 import { formatPiProviderLabel } from "../../../../../shared/modelRegistry";
 import { agoText, dayText, parseTime } from "./adeCloudTime";
+import { BRAND } from "../../../../../shared/brand";
 
 // ── The cards ────────────────────────────────────────────────────────────
 
@@ -235,7 +236,7 @@ export function providerPageLine(
   cloud: AdeCloudCloudPart,
 ): string {
   const page = adeCloudPageLine(account, cloud);
-  if (tile.source === "saved-key") return "ADE Cloud uses the saved key.";
+  if (tile.source === "saved-key") return `${BRAND.CLOUD_NAME} uses the saved key.`;
   if (cloud.state === "ok" && account.state === "ok") {
     const applied = (cloud.status.applied ?? []).find((entry) => entry.place === tile.provider && entry.state === "applied");
     const signIn = applied?.key ? account.status.signIns.find((entry) => entry.key === applied.key) : null;

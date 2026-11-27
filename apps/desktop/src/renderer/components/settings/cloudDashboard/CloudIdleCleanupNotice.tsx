@@ -12,6 +12,7 @@ import { ipcErrorMessage } from "../../../lib/format";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { showToast } from "../../app/toast/toastStore";
 import { Banner } from "../../ui/notice";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * The idle cleanup's notices on Settings › ADE Cloud, one per computer the
@@ -61,8 +62,8 @@ function ignoredDetail(entry: CloudIdleCleanupEntry): string {
   const list = ignoredFilesList(entry.ignoredFiles);
   if (entry.ignoredFiles.incomplete) {
     return list
-      ? ` Files git ignores aren't saved, so these won't be kept: ${list}. ADE couldn't read every lane, so there may be more.`
-      : " ADE couldn't read every lane to see which files git ignores, such as .env; those aren't saved.";
+      ? ` Files git ignores aren't saved, so these won't be kept: ${list}. ${BRAND.NAME} couldn't read every lane, so there may be more.`
+      : ` ${BRAND.NAME} couldn't read every lane to see which files git ignores, such as .env; those aren't saved.`;
   }
   return list ? ` Files git ignores aren't saved, so these won't be kept: ${list}.` : "";
 }
@@ -71,18 +72,18 @@ function idleDetail(entry: CloudIdleCleanupEntry): string {
   const when = formatCloudDate(entry.deletesAt);
   const head = entry.idleDays
     ? `Computers unused for ${entry.idleDays} days are deleted; this one goes on ${when}.`
-    : `It isn't used, so ADE Cloud deletes it on ${when}.`;
+    : `It isn't used, so ${BRAND.CLOUD_NAME} deletes it on ${when}.`;
   const save = entry.laneName
-    ? " Its work that isn't on GitHub is saved in ADE Cloud, and the lane and its chats stay."
-    : " Its work that isn't on GitHub is saved in ADE Cloud first.";
+    ? ` Its work that isn't on GitHub is saved in ${BRAND.CLOUD_NAME}, and the lane and its chats stay.`
+    : ` Its work that isn't on GitHub is saved in ${BRAND.CLOUD_NAME} first.`;
   return `${head}${save}${ignoredDetail(entry)}`;
 }
 
 /** The lane row's short mark: "Deleted in 1 day", or "Not deleted" for a computer kept after a failed save. */
 export function idleRowTag(entry: CloudIdleCleanupEntry, now: number): { label: string; title: string } {
-  if (entry.held) return { label: "Not deleted", title: `ADE didn't delete its computer: ${entry.held.reason}` };
+  if (entry.held) return { label: "Not deleted", title: `${BRAND.NAME} didn't delete its computer: ${entry.held.reason}` };
   const when = idleCleanupWhen(entry.deletesAt, now);
-  return { label: when.charAt(0).toUpperCase() + when.slice(1), title: `Unused, so ADE Cloud deletes its computer on ${formatCloudDate(entry.deletesAt)} unless you keep it. The lane stays.` };
+  return { label: when.charAt(0).toUpperCase() + when.slice(1), title: `Unused, so ${BRAND.CLOUD_NAME} deletes its computer on ${formatCloudDate(entry.deletesAt)} unless you keep it. The lane stays.` };
 }
 
 export function CloudIdleCleanupNotices({ account, now, onChanged }: { account: CloudAccountState; now: number; onChanged: () => void }) {
@@ -92,14 +93,14 @@ export function CloudIdleCleanupNotices({ account, now, onChanged }: { account: 
   const keep = async (entry: CloudIdleCleanupEntry) => {
     const bridge = window.ade.cloud?.keepIdleComputer;
     if (!isAdeAvailable(bridge)) {
-      showToast({ tone: "error", title: "This version of ADE can't keep it from here", message: "Open the lane or send a message in it to keep it." });
+      showToast({ tone: "error", title: `This version of ${BRAND.NAME} can't keep it from here`, message: "Open the lane or send a message in it to keep it." });
       return;
     }
     setBusy(entry.instanceId);
     try {
       const result = await bridge(entry.instanceId);
-      if (!result.ok) throw new Error(result.message ?? "ADE Cloud couldn't keep it.");
-      showToast({ tone: "success", title: `Kept ${idleSubject(entry)}`, message: "ADE Cloud won't delete it. Its unused days count again from now." });
+      if (!result.ok) throw new Error(result.message ?? `${BRAND.CLOUD_NAME} couldn't keep it.`);
+      showToast({ tone: "success", title: `Kept ${idleSubject(entry)}`, message: `${BRAND.CLOUD_NAME} won't delete it. Its unused days count again from now.` });
       onChanged();
     } catch (error) {
       showToast({ tone: "error", title: `Couldn't keep ${idleSubject(entry)}`, message: ipcErrorMessage(error) || "Try again in a moment, or open the lane." });
@@ -119,7 +120,7 @@ export function CloudIdleCleanupNotices({ account, now, onChanged }: { account: 
               model={{
                 id: `cloud-idle-held-${entry.instanceId}`,
                 tone: "warning",
-                title: `${idleSubject(entry)} wasn't deleted: ADE couldn't save its work`,
+                title: `${idleSubject(entry)} wasn't deleted: ${BRAND.NAME} couldn't save its work`,
                 detail: `${idleHeldDetail({ ...entry, held: entry.held }, now)}${ignoredDetail(entry)}`,
                 actions: [action],
                 report: false,

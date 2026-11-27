@@ -78,6 +78,7 @@ import { cloudLaneJobIsLive, type CloudLaneJobSnapshot } from "../../../../share
 import { CloudLaneWithoutComputerNotice } from "../../cloudLane/CloudLaneWithoutComputer";
 import { CloudSavedLaneWorkCard } from "../../cloudLane/CloudLaneSavedWork";
 import { CloudTierChangeDialog } from "../../cloudLane/CloudTierChangeDialog";
+import { BRAND } from "../../../../shared/brand";
 
 /** The dashboard's element id. */
 export const CLOUD_DASHBOARD_ID = "ade-cloud-dashboard";
@@ -227,7 +228,7 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
     const asleep = lane.state !== "awake";
     const ok = await confirmDialog({
       title: `Clear caches on ${lane.name}?`,
-      message: `${asleep ? "ADE wakes the computer, then deletes" : "ADE deletes"} package and build caches and measures the disk again. Repositories, dependencies, images and emulators stay.`,
+      message: `${asleep ? `${BRAND.NAME} wakes the computer, then deletes` : `${BRAND.NAME} deletes`} package and build caches and measures the disk again. Repositories, dependencies, images and emulators stay.`,
       confirmLabel: "Clear caches",
     });
     if (!ok) return;
@@ -481,7 +482,7 @@ function CloudHero({
               <li>
                 {`${cloudSmallHoursSentence(catalog, words)} ${cloudTierHoursAt({ multiplierMilli: smallRateMilli }, cloudHoursLeftMilli(account))} left at that size.`}
                 {account.sponsored?.smallNeedsLook
-                  ? " Opening an ADE Cloud chat in the US makes it unlimited again."
+                  ? ` Opening a ${BRAND.CLOUD_NAME} chat in the US makes it unlimited again.`
                   : account.sponsored?.smallNeedsCards ? " Sponsored cards make it unlimited." : ""}
               </li>
             ) : null}
@@ -594,7 +595,7 @@ function ComputersUnreadNotice({ onRetry }: { onRetry: () => void }) {
         model={{
           id: "cloud-computers-unread",
           tone: "warning",
-          title: "ADE Cloud couldn't list your cloud computers",
+          title: `${BRAND.CLOUD_NAME} couldn't list your cloud computers`,
           detail: "Your plan and credits are up to date. Try again to list your computers and their lanes.",
           actions: [{ label: "Try again", onClick: onRetry }],
           report: { surface: "cloud_dashboard", code: "cloud_computers_read_failed" },
@@ -773,7 +774,7 @@ type RowStatus = { state: "starting" | "failed" | "awake"; label: string; title:
 
 function deleteRowStatus(phase: CloudLaneDeletePhase): RowStatus {
   return phase === "checking"
-    ? { state: "starting", label: "Checking work", title: "ADE checks that its work is on GitHub before it deletes the lane." }
+    ? { state: "starting", label: "Checking work", title: `${BRAND.NAME} checks that its work is on GitHub before it deletes the lane.` }
     : { state: "starting", label: "Deleting", title: null };
 }
 
@@ -840,8 +841,8 @@ function LookInside({ lane, now, busy, onBack, onClear }: { lane: DashLane; now:
       ) : (
         <p className="adecd-empty">
           {usage
-            ? `${lane.name}'s files use ${formatCloudGb(total)}, too little to break down. Its computer measures again while it is awake and idle; ADE doesn't wake it to look.`
-            : `${lane.name}'s computer measures its disk while it is awake and idle, at most every few hours. Its first measure shows here then. ADE doesn't wake it to look.`}
+            ? `${lane.name}'s files use ${formatCloudGb(total)}, too little to break down. Its computer measures again while it is awake and idle; ${BRAND.NAME} doesn't wake it to look.`
+            : `${lane.name}'s computer measures its disk while it is awake and idle, at most every few hours. Its first measure shows here then. ${BRAND.NAME} doesn't wake it to look.`}
         </p>
       )}
     </div>
@@ -867,7 +868,7 @@ function PlanNotices({ account, onChanged }: { account: CloudAccountState; onCha
   const pickFor = async (pick: CloudPlanCleanupPick) => {
     if (!cleanup) return;
     const bridge = window.ade.cloud?.pickPlanCleanup;
-    if (!bridge) throw new Error("This version of ADE can't do that here.");
+    if (!bridge) throw new Error(`This version of ${BRAND.NAME} can't do that here.`);
     await bridge({ planId: cleanup.planId, ...pick });
     showToast({ tone: "success", title: planCleanupPickSentence(pick.push, pick.instanceIds.length) });
     onChanged();
@@ -881,9 +882,9 @@ function PlanNotices({ account, onChanged }: { account: CloudAccountState; onCha
             id: `cloud-plan-freeing-${freeing.at}`,
             tone: "info",
             busy: true,
-            title: `ADE is freeing ${freeingCount === 1 ? "1 computer" : `${freeingCount} computers`} to fit ${plan}`,
+            title: `${BRAND.NAME} is freeing ${freeingCount === 1 ? "1 computer" : `${freeingCount} computers`} to fit ${plan}`,
             detail: freeing.push
-              ? "Each goes once its lanes' work is saved in ADE Cloud. Nothing is pushed. Their lanes and chats stay."
+              ? `Each goes once its lanes' work is saved in ${BRAND.CLOUD_NAME}. Nothing is pushed. Their lanes and chats stay.`
               : "Their lanes and chats stay.",
             report: false,
           }}
@@ -896,8 +897,8 @@ function PlanNotices({ account, onChanged }: { account: CloudAccountState; onCha
             tone: "warning",
             title: `You have more cloud computers than ${plan} allows`,
             detail: `${cleanup.sentence} ${cleanup.startsAt != null
-              ? `You move to ${plan} on ${formatCloudDate(cleanup.startsAt)}. ADE deletes nothing on its own.`
-              : "ADE can't make a new computer until you have fewer. It deletes nothing on its own."}`,
+              ? `You move to ${plan} on ${formatCloudDate(cleanup.startsAt)}. ${BRAND.NAME} deletes nothing on its own.`
+              : `${BRAND.NAME} can't make a new computer until you have fewer. It deletes nothing on its own.`}`,
             actions: [{ label: "Choose what goes", variant: "primary", onClick: () => setAsking(true) }],
             report: false,
           }}
@@ -912,7 +913,7 @@ function PlanNotices({ account, onChanged }: { account: CloudAccountState; onCha
           onPick={pickFor}
         />
       ) : null}
-      {done ? <Banner layout="inline" model={{ id: `cloud-cleanup-done-${done.at}`, tone: "info", title: "ADE freed computers for your plan", detail: planCleanupDoneSentence(done), report: false }} /> : null}
+      {done ? <Banner layout="inline" model={{ id: `cloud-cleanup-done-${done.at}`, tone: "info", title: `${BRAND.NAME} freed computers for your plan`, detail: planCleanupDoneSentence(done), report: false }} /> : null}
       {wakes ? <Banner layout="inline" model={{ id: `cloud-wakes-${wakes.at}`, tone: "warning", title: "Timed wake-ups were cancelled", detail: timedWakesCancelledSentence(wakes), report: false }} /> : null}
     </>
   );

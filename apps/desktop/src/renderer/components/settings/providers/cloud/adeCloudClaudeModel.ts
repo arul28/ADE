@@ -23,6 +23,7 @@ import {
   type ReadableCloudPassRow,
 } from "./adeCloudSignInModel";
 import { agoText, dayText, endsInDaysText, shortDate } from "./adeCloudTime";
+import { BRAND } from "../../../../../shared/brand";
 
 export type PassLine = { text: string; tone: "warn" | "crit" | null };
 
@@ -130,8 +131,8 @@ export function stateLine(pass: ReadableCloudPassRow, now: number, { short = fal
 }
 
 const UPLOAD_LINE: Record<"pending" | "refused", string> = {
-  pending: "ADE couldn't reach your account yet. The pass is kept on this computer, and ADE sends it on its own.",
-  refused: "Your ADE account doesn't take Claude passes yet. ADE keeps the pass on this computer and tries again every hour.",
+  pending: `${BRAND.NAME} couldn't reach your account yet. The pass is kept on this computer, and ${BRAND.NAME} sends it on its own.`,
+  refused: `Your ${BRAND.NAME} account doesn't take Claude passes yet. ${BRAND.NAME} keeps the pass on this computer and tries again every hour.`,
 };
 
 /** The pass cards, in the account's order (newest first, then the rows ADE can't read). `hidden` holds the held Removes. */
@@ -148,7 +149,7 @@ export function passCards(args: {
   return readClaudePasses(account.status)
     .filter((pass) => !hidden.has(pass.key))
     .map((pass): PassCardModel => {
-      if (pass.unreadable) return { kind: "unreadable", key: pass.key, title: "Claude pass ADE can't read" };
+      if (pass.unreadable) return { kind: "unreadable", key: pass.key, title: `Claude pass ${BRAND.NAME} can't read` };
       const made = [
         pass.madeOnLabel ? `Made on ${pass.madeOnLabel}` : "Made",
         dayText(pass.createdAt, now),
@@ -162,7 +163,7 @@ export function passCards(args: {
         newChats: pass.newChats,
         ended: pass.state === "ended",
         // Only a pressed account can be unconfirmed; a pass with no email had nothing to check.
-        checkLine: pass.check === "unchecked" && pass.email ? "ADE couldn't check this account." : null,
+        checkLine: pass.check === "unchecked" && pass.email ? `${BRAND.NAME} couldn't check this account.` : null,
         madeLine: pass.renewedAt != null ? `${made} · Renewed ${dayText(pass.renewedAt, now)}` : made,
         stateLine: stateLine(pass, now),
         renewNow: pass.state !== "active",
@@ -188,10 +189,10 @@ export function claudePageLine(cards: readonly PassCardModel[], smartBalance: bo
   let lead: string;
   if (account.state === "loading") lead = "";
   else if (cards.length === 0) lead = "Approve a Claude pass so cloud chats can use your Claude plan.";
-  else if (readable.length === 0) lead = "ADE couldn't read your Claude pass.";
+  else if (readable.length === 0) lead = `${BRAND.NAME} couldn't read your Claude pass.`;
   else if (readable.every((card) => card.ended)) lead = "Claude ended your pass. Renew it so cloud chats keep working.";
-  else if (on.length === 0) lead = "Every pass is off for ADE Cloud.";
-  else if (smartBalance) lead = "Smart balance picks a pass for each new chat on ADE Cloud.";
+  else if (on.length === 0) lead = `Every pass is off for ${BRAND.CLOUD_NAME}.`;
+  else if (smartBalance) lead = `Smart balance picks a pass for each new chat on ${BRAND.CLOUD_NAME}.`;
   else {
     const current = on.find((card) => card.newChats) ?? on[0]!;
     lead = `New cloud chats use ${current.title}.`;

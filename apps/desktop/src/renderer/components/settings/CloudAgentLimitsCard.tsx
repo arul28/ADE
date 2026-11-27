@@ -14,9 +14,10 @@ import { adeCloudAccountCallFn, runAccountCall } from "../../lib/adeCloudAccount
 import { isWebClientMode } from "../../lib/webClientMode";
 import { captureError } from "../../../shared/sentry/capture";
 import { parseCodedErrorMessage } from "../../../shared/codedError";
+import { BRAND } from "../../../shared/brand";
 
 /** A save that named an older revision: another device saved first. */
-const LIMITS_CHANGED_SENTENCE = "Your limits changed on another device. ADE loaded the new ones.";
+const LIMITS_CHANGED_SENTENCE = `Your limits changed on another device. ${BRAND.NAME} loaded the new ones.`;
 
 class LimitsRouteMissing extends Error {}
 /** The account answered with its own sentence (a refusal, a conflict): news for the person, not an ADE bug. */
@@ -83,8 +84,8 @@ export function CloudAgentLimitsCard() {
         : {
             refused: true,
             text: viaAccount
-              ? "ADE couldn't read what agents may do from your ADE account. Try again soon."
-              : "ADE couldn't read what agents may do on their own. Connect a computer, or update ADE on it.",
+              ? `${BRAND.NAME} couldn't read what agents may do from your ${BRAND.NAME} account. Try again soon.`
+              : `${BRAND.NAME} couldn't read what agents may do on their own. Connect a computer, or update ${BRAND.NAME} on it.`,
           });
     } catch (loadError) {
       if (loadError instanceof LimitsRouteMissing) {
@@ -156,7 +157,7 @@ export function CloudAgentLimitsCard() {
         What agents may do alone
       </header>
       <div className="kit-card-body adecd-limits">
-        <p className="adecd-lead">An agent you're watching always asks in its chat first. These rules are for a full-auto chat or an automation, when nobody is watching. Outside agents (through ADE MCP) may use ADE Cloud on paid plans only.</p>
+        <p className="adecd-lead">An agent you're watching always asks in its chat first. These rules are for a full-auto chat or an automation, when nobody is watching. Outside agents (through {BRAND.NAME} MCP) may use {BRAND.CLOUD_NAME} on paid plans only.</p>
         <div className="kit-panel adecd-limit-rows">
           <div className="adecd-limit-row">
             <div><b>May they make or change computers?</b></div>

@@ -13,6 +13,7 @@ import { settingsRouteFor } from "../../../../shared/settingsManifest";
 import { ipcErrorMessage } from "../../../lib/format";
 import { showToast } from "../../app/toast/toastStore";
 import { Banner } from "../../ui/notice";
+import { BRAND } from "../../../../shared/brand";
 
 const GITHUB_SETTINGS_ROUTE = settingsRouteFor("integrations.github");
 
@@ -74,7 +75,7 @@ export function CloudFreeGithubNotice({ account, onChanged }: { account: CloudAc
             tone: "warning",
             icon: <GithubLogo />,
             title: "Free credits need GitHub",
-            detail: `Connect a GitHub account that is at least ${CLOUD_FREE_GITHUB_MIN_AGE_DAYS} days old. ADE Cloud uses it to get your code.`,
+            detail: `Connect a GitHub account that is at least ${CLOUD_FREE_GITHUB_MIN_AGE_DAYS} days old. ${BRAND.CLOUD_NAME} uses it to get your code.`,
             actions: [{ label: "Connect GitHub", variant: "primary", onClick: () => navigate(GITHUB_SETTINGS_ROUTE) }],
             report: false,
           }}
@@ -108,7 +109,7 @@ export function CloudFreeGithubNotice({ account, onChanged }: { account: CloudAc
             tone: "warning",
             icon: <GithubLogo />,
             title: "This GitHub account already has a free plan",
-            detail: `${github.githubLogin ? `${github.githubLogin} gives` : "It gives"} its free credits to another ADE account, so this one has none.${plusHours ? ` Plus gives you ${formatCloudHours(plusHours)} credits a month.` : ""}`,
+            detail: `${github.githubLogin ? `${github.githubLogin} gives` : "It gives"} its free credits to another ${BRAND.NAME} account, so this one has none.${plusHours ? ` Plus gives you ${formatCloudHours(plusHours)} credits a month.` : ""}`,
             actions: [{ label: "See plans", variant: "secondary", onClick: toPlans }],
             report: false,
           }}
@@ -123,7 +124,7 @@ export function CloudFreeGithubNotice({ account, onChanged }: { account: CloudAc
             tone: "info",
             icon: <GithubLogo />,
             title: "Checking your GitHub account",
-            detail: "ADE couldn't reach GitHub just now. It tries again in a few minutes; your free credits start once it can.",
+            detail: `${BRAND.NAME} couldn't reach GitHub just now. It tries again in a few minutes; your free credits start once it can.`,
             actions: [{ label: "Check again", variant: "secondary", onClick: onChanged }],
             report: false,
           }}

@@ -24,6 +24,7 @@ import { PassCard } from "./PassCard";
 import type { RunWrite } from "./signInWrites";
 import type { AdeCloudSignInsState } from "./useAdeCloudSignIns";
 import type { HeldWrites } from "./useHeldWrites";
+import { BRAND } from "../../../../../shared/brand";
 
 const identity = (id: string) => id;
 
@@ -91,7 +92,7 @@ export function AdeCloudClaudePage({
     const done = await runWrite(
       `use:${card.key}`,
       () => window.ade?.providerLogins?.use?.({ provider: "claude", key: card.key }, pin),
-      "ADE couldn't change the pass for new chats. Try again.",
+      `${BRAND.NAME} couldn't change the pass for new chats. Try again.`,
     );
     if (!done) return;
     showToast({
@@ -104,7 +105,7 @@ export function AdeCloudClaudePage({
           void runWrite(
             `use:${card.key}:undo`,
             () => window.ade?.providerLogins?.use?.({ provider: "claude", key: previous }, pin),
-            "ADE couldn't change it back. Try again.",
+            `${BRAND.NAME} couldn't change it back. Try again.`,
           );
         },
       }],
@@ -115,7 +116,7 @@ export function AdeCloudClaudePage({
   const removePass = useCallback(async (card: PassCardModel) => {
     const ok = await confirmDialog({
       title: "Remove this Claude pass?",
-      message: "ADE Cloud stops using this pass.",
+      message: `${BRAND.CLOUD_NAME} stops using this pass.`,
       confirmLabel: "Remove",
       destructive: true,
     });
@@ -128,7 +129,7 @@ export function AdeCloudClaudePage({
         void runWrite(
           `remove:${card.key}`,
           () => window.ade?.providerLogins?.remove?.({ key: card.key }, pin),
-          "ADE couldn't remove the Claude pass. It is back on the page.",
+          `${BRAND.NAME} couldn't remove the Claude pass. It is back on the page.`,
         );
       },
     });
@@ -138,7 +139,7 @@ export function AdeCloudClaudePage({
     void runWrite(
       "balance:claude",
       () => window.ade?.providerLogins?.setCloudBalance?.({ provider: "claude", on }, accountPin),
-      "ADE couldn't change smart balance for ADE Cloud. Try again.",
+      `${BRAND.NAME} couldn't change smart balance for ${BRAND.CLOUD_NAME}. Try again.`,
     );
   }, [accountPin, runWrite]);
 
@@ -175,7 +176,7 @@ export function AdeCloudClaudePage({
       <section className="kit-card">
         <header className="kit-card-head">
           <Ticket size={14} />
-          Claude passes for ADE Cloud
+          Claude passes for {BRAND.CLOUD_NAME}
           {cards.length ? <span className="kit-card-head-count">{cards.length}</span> : null}
           <span style={{ flex: 1 }} />
           {account.state === "ok" && cards.length > 0 ? (
@@ -214,11 +215,11 @@ export function AdeCloudClaudePage({
           ) : null}
 
           {account.state === "loading" ? (
-            <span style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textDim }}>Reading your ADE account…</span>
+            <span style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textDim }}>Reading your {BRAND.NAME} account…</span>
           ) : cards.length === 0 ? (
             <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
               <span style={{ flex: "1 1 240px", fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.45 }}>
-                {account.state === "failed" ? "ADE couldn't read your ADE account." : "No Claude pass yet. A pass lets cloud chats use your Claude plan."}
+                {account.state === "failed" ? `${BRAND.NAME} couldn't read your ${BRAND.NAME} account.` : "No Claude pass yet. A pass lets cloud chats use your Claude plan."}
               </span>
               {account.state === "ok" ? (
                 <button

@@ -10,13 +10,14 @@ import { ipcErrorMessage } from "../../../lib/format";
 import { Dialog, confirmDialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
 import { SettingsToggle } from "../primitives/SettingsControls";
+import { BRAND } from "../../../../shared/brand";
 
 type Path = "ade" | "self";
 
 /** What ADE does now with a pick that was sent: one sentence for the toast. */
 export function planCleanupPickSentence(push: boolean, count: number): string {
   const computers = count === 1 ? "1 computer" : `${count} computers`;
-  return push ? `ADE is checking that the work of ${computers} is saved, then freeing ${count === 1 ? "it" : "them"}.` : `ADE is deleting ${computers} now.`;
+  return push ? `${BRAND.NAME} is checking that the work of ${computers} is saved, then freeing ${count === 1 ? "it" : "them"}.` : `${BRAND.NAME} is deleting ${computers} now.`;
 }
 
 /**
@@ -81,7 +82,7 @@ export function CloudPlanLimitsDialog({
     if (!push) {
       const ok = await confirmDialog({
         title: `Delete ${count} ${many} without the check?`,
-        message: "ADE deletes them as they are, without checking that each lane's work is saved. Work since a computer last rested can be lost. Their lanes and chats stay readable.",
+        message: `${BRAND.NAME} deletes them as they are, without checking that each lane's work is saved. Work since a computer last rested can be lost. Their lanes and chats stay readable.`,
         confirmLabel: `Delete ${count} ${many}`,
         destructive: true,
       });
@@ -93,7 +94,7 @@ export function CloudPlanLimitsDialog({
       await onPick({ push, instanceIds: chosen.map((computer) => computer.instanceId) });
       onClose();
     } catch (pickError) {
-      setError(ipcErrorMessage(pickError) || "ADE Cloud couldn't do that. Nothing changed. Try again in a moment.");
+      setError(ipcErrorMessage(pickError) || `${BRAND.CLOUD_NAME} couldn't do that. Nothing changed. Try again in a moment.`);
     } finally {
       setBusy(false);
     }
@@ -112,8 +113,8 @@ export function CloudPlanLimitsDialog({
   const moveLine = mode === "downgrade" && cleanup.startsAt != null ? ` You move to ${plan} on ${formatCloudDate(cleanup.startsAt)}.` : "";
   const startLine = mode === "resolve"
     ? cleanup.startsAt != null
-      ? `You move to ${plan} on ${formatCloudDate(cleanup.startsAt)}. ADE deletes nothing on its own.`
-      : "ADE can't make a new computer until you have fewer. It deletes nothing on its own."
+      ? `You move to ${plan} on ${formatCloudDate(cleanup.startsAt)}. ${BRAND.NAME} deletes nothing on its own.`
+      : `${BRAND.NAME} can't make a new computer until you have fewer. It deletes nothing on its own.`
     : null;
 
   return (
@@ -137,7 +138,7 @@ export function CloudPlanLimitsDialog({
     >
       <div className="adecd-limits">
         <div aria-live="polite">
-          <div className="adecd-limits-list-head">{path === "ade" ? `Left after ADE frees the ${count === 1 ? "computer" : "computers"} you pick` : "Now"}</div>
+          <div className="adecd-limits-list-head">{path === "ade" ? `Left after ${BRAND.NAME} frees the ${count === 1 ? "computer" : "computers"} you pick` : "Now"}</div>
           <div className="adecd-limits-fit">
             <FitCell label="Cloud computers" fits={shown <= limit} value={String(shown)} limit={String(limit)} />
           </div>
@@ -147,10 +148,10 @@ export function CloudPlanLimitsDialog({
           <PathButton
             on={path === "ade"}
             onPick={() => setPath("ade")}
-            title="Let ADE handle it"
+            title={`Let ${BRAND.NAME} handle it`}
             hint={`${push
-              ? "ADE frees the computers you pick now, once each lane's work is saved. Nothing is pushed to GitHub."
-              : "ADE deletes the computers you pick now, without checking that their work is saved."}${moveLine}`}
+              ? `${BRAND.NAME} frees the computers you pick now, once each lane's work is saved. Nothing is pushed to GitHub.`
+              : `${BRAND.NAME} deletes the computers you pick now, without checking that their work is saved.`}${moveLine}`}
           />
           <PathButton
             on={path === "self"}
@@ -158,7 +159,7 @@ export function CloudPlanLimitsDialog({
             title="I'll clean up myself"
             hint={mode === "downgrade"
               ? `You stay on ${currentPlanLabel}. Free up or delete computers until you have ${limit} or fewer, then move to ${plan} again.`
-              : "Free up or delete computers until you have few enough. ADE frees nothing on its own."}
+              : `Free up or delete computers until you have few enough. ${BRAND.NAME} frees nothing on its own.`}
           />
         </div>
 
@@ -168,8 +169,8 @@ export function CloudPlanLimitsDialog({
               <div>
                 <b>Save each lane's work first</b>
                 <small>{push
-                  ? "A computer goes only when its lanes' work that isn't on GitHub is saved in ADE Cloud. ADE never wakes it for that and pushes nothing. A computer whose work isn't saved stays."
-                  : "ADE deletes them as they are. Work since a computer last rested can be lost."}</small>
+                  ? `A computer goes only when its lanes' work that isn't on GitHub is saved in ${BRAND.CLOUD_NAME}. ${BRAND.NAME} never wakes it for that and pushes nothing. A computer whose work isn't saved stays.`
+                  : `${BRAND.NAME} deletes them as they are. Work since a computer last rested can be lost.`}</small>
               </div>
               <SettingsToggle checked={push} disabled={busy} label="Save each lane's work first" onChange={setPush} />
             </div>
@@ -189,7 +190,7 @@ export function CloudPlanLimitsDialog({
                 <ComputerFacts computer={computer} />
               </div>
             ))}
-            <p className="adecd-plan-fine">Delete them from Lanes and computers on this page. Before a delete, ADE shows the lane's work that isn't on GitHub and offers to push it.</p>
+            <p className="adecd-plan-fine">Delete them from Lanes and computers on this page. Before a delete, {BRAND.NAME} shows the lane's work that isn't on GitHub and offers to push it.</p>
           </div>
         )}
 
