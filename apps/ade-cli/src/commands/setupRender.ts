@@ -13,6 +13,8 @@
  */
 
 import { BRAND } from "../../../desktop/src/shared/brand";
+import { ADE_BANNER } from "../help/banner";
+
 export type SetupStepId =
   | "runtime"
   | "native"
@@ -67,13 +69,8 @@ const CSI = `${String.fromCharCode(27)}[`;
 /** Carriage return + erase-whole-line: what rewrites the animated line in place. */
 const CLEAR_LINE = `\r${CSI}2K`;
 
-const BANNER = String.raw`
-     _    ____  _____
-    / \  |  _ \| ____|
-   / _ \ | | | |  _|
-  / ___ \| |_| | |___
- /_/   \_\____/|_____|
-`;
+/** The same Daex art as the top of every help page. */
+const BANNER = ADE_BANNER;
 
 export function detectTerminalCapabilities(
   stream: { isTTY?: boolean; columns?: number },

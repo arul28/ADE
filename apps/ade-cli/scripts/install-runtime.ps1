@@ -52,11 +52,11 @@ function Format-AdeBytes([double]$Bytes) {
 
 function Write-AdeBanner {
   Write-Host ""
-  Write-Host "     _    ____  _____"
-  Write-Host "    / \  |  _ \| ____|"
-  Write-Host "   / _ \ | | | |  _|"
-  Write-Host "  / ___ \| |_| | |___"
-  Write-Host " /_/   \_\____/|_____|"
+  Write-Host '  ____'
+  Write-Host ' |  _ \  __ _   ___ __  __'
+  Write-Host ' | | | |/ _` | / _ \\ \/ /'
+  Write-Host ' | |_| | (_| ||  __/ >  <'
+  Write-Host ' |____/ \__,_| \___|/_/\_\'
   Write-Host ""
 }
 
