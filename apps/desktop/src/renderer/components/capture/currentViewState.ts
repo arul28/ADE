@@ -1,4 +1,5 @@
 import { parsePrsRouteState } from "../prs/prsRouteState";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * "What is ADE showing right now", as a thing you can attach to a message.
@@ -147,9 +148,9 @@ export function formatCurrentViewState(state: CurrentViewState): string | null {
   if (state.route) lines.push(`- Route: ${state.route}`);
   if (lines.length === 0) return null;
   return [
-    "# ADE screen context",
+    `# ${BRAND.NAME} screen context`,
     "",
-    "Captured alongside the screenshot of ADE's own window.",
+    `Captured alongside the screenshot of ${BRAND.NAME}'s own window.`,
     "",
     ...lines,
     "",

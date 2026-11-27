@@ -176,7 +176,7 @@ export const TEMPLATES: AutomationTemplate[] = [
       },
       modelConfig: SONNET,
       prompt:
-        "The checks on PR #{{trigger.pr.number}} ({{trigger.pr.title}}) failed. You are on its branch. Read the failing checks (`ade prs checks {{trigger.pr.number}} --text`) and the failed jobs' logs from your CI (for GitHub Actions, `gh run view <run> --log-failed`), find the cause, and fix it with the smallest change. Run the failing checks locally where you can, then commit and push to this branch. Do not skip, disable or weaken a test to make it pass. Do not push when the failure is flaky or outside this PR, or when the last commit on this branch is already a CI fix from this automation and the same check failed again; say so and stop, so a human takes over.",
+        "The checks on PR #{{trigger.pr.number}} ({{trigger.pr.title}}) failed. You are on its branch. Read the failing checks (`daex prs checks {{trigger.pr.number}} --text`) and the failed jobs' logs from your CI (for GitHub Actions, `gh run view <run> --log-failed`), find the cause, and fix it with the smallest change. Run the failing checks locally where you can, then commit and push to this branch. Do not skip, disable or weaken a test to make it pass. Do not push when the failure is flaky or outside this PR, or when the last commit on this branch is already a CI fix from this automation and the same check failed again; say so and stop, so a human takes over.",
       toolPalette: ["repo", "git", "github"],
       guardrails: {},
       billingCode: "auto:fix-failing-ci",
@@ -205,7 +205,7 @@ export const TEMPLATES: AutomationTemplate[] = [
       },
       modelConfig: SONNET,
       prompt:
-        "A review was submitted on PR #{{trigger.pr.number}} ({{trigger.pr.title}}). You are on its branch. Read the open review work (`ade prs comments {{trigger.pr.number}}` lists each open thread with its id). If nothing in it asks for a change, or every request in every open thread (including any the reviewer added after your last reply) already has your answer, stop without pushing. Otherwise make each requested change, run the checks for what you touched, then commit and push to this branch. Reply on each thread you acted on with what you changed, or why you did not when a request is unclear or wrong (`ade prs reply {{trigger.pr.number}} --thread <id> --body \"...\"`). Do not resolve threads; the reviewer does.",
+        "A review was submitted on PR #{{trigger.pr.number}} ({{trigger.pr.title}}). You are on its branch. Read the open review work (`daex prs comments {{trigger.pr.number}}` lists each open thread with its id). If nothing in it asks for a change, or every request in every open thread (including any the reviewer added after your last reply) already has your answer, stop without pushing. Otherwise make each requested change, run the checks for what you touched, then commit and push to this branch. Reply on each thread you acted on with what you changed, or why you did not when a request is unclear or wrong (`daex prs reply {{trigger.pr.number}} --thread <id> --body \"...\"`). Do not resolve threads; the reviewer does.",
       toolPalette: ["repo", "git", "github"],
       guardrails: {},
       billingCode: "auto:fix-review-comments",
@@ -288,7 +288,7 @@ export const TEMPLATES: AutomationTemplate[] = [
       },
       modelConfig: SONNET,
       prompt:
-        "A chat in this lane ended with work and no pull request. Look at what the lane changed against its base branch. If there is nothing worth a PR (no meaningful commits and no meaningful uncommitted changes, only scratch files), stop and say so. Otherwise commit anything left uncommitted that belongs with the work, push the branch, write the description to a temporary file outside the lane (a file inside it leaves the worktree dirty, and `ade prs create` refuses a dirty worktree), open the PR (`ade prs create --lane <this lane> --title \"...\" --body-file <that file>`) and mark it a draft (`ade prs draft <pr>`). Write a plain title and a short description: what changed, why, and how it was checked. Do not change the code itself.",
+        "A chat in this lane ended with work and no pull request. Look at what the lane changed against its base branch. If there is nothing worth a PR (no meaningful commits and no meaningful uncommitted changes, only scratch files), stop and say so. Otherwise commit anything left uncommitted that belongs with the work, push the branch, write the description to a temporary file outside the lane (a file inside it leaves the worktree dirty, and `daex prs create` refuses a dirty worktree), open the PR (`daex prs create --lane <this lane> --title \"...\" --body-file <that file>`) and mark it a draft (`daex prs draft <pr>`). Write a plain title and a short description: what changed, why, and how it was checked. Do not change the code itself.",
       toolPalette: ["repo", "git", "github"],
       outputs: { disposition: "open-pr-draft", createArtifact: true },
       guardrails: {},
@@ -336,9 +336,9 @@ export const TEMPLATES: AutomationTemplate[] = [
       modelConfig: SONNET,
       prompt: [
         "Write this week's status update for the Linear project <PROJECT_ID>.",
-        "Use ADE's own record: lanes linked to that project's issues, their PRs, what merged, what is in review, and what is blocked (`ade lanes list`, `ade prs list`, `ade linear search-issues --project-id <PROJECT_ID>`).",
+        `Use ${BRAND.NAME}'s own record: lanes linked to that project's issues, their PRs, what merged, what is in review, and what is blocked (\`daex lanes list\`, \`daex prs list\`, \`daex linear search-issues --project-id <PROJECT_ID>\`).`,
         "Keep it short: Shipped, In review, Blocked, Next, each with issue ids and PR links. Choose a health: on-track, at-risk or off-track.",
-        "Post it with `ade linear project-update --project <PROJECT_ID> --health <health> --body \"<markdown>\"`.",
+        "Post it with `daex linear project-update --project <PROJECT_ID> --health <health> --body \"<markdown>\"`.",
       ].join("\n"),
       toolPalette: ["repo", "git", "linear"],
       guardrails: {},

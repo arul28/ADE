@@ -639,16 +639,16 @@ export function attentionAgentPrompt(items: readonly AttentionItem[], projectRoo
     const detail = item.detail ? `\n   ${item.detail}` : "";
     const entries = attentionLines(item);
     const list = entries.length ? `\n${entries.slice(0, 15).map((entry) => `   - ${entry}`).join("\n")}` : "";
-    const fix = item.fix ? `\n   ADE's own fix: "${item.fix.label}" in Settings.` : item.projectIssue?.fix ? `\n   ADE's own fix: "${item.projectIssue.fix.label}": ${item.projectIssue.fix.description}` : "";
+    const fix = item.fix ? `\n   ${BRAND.NAME}'s own fix: "${item.fix.label}" in Settings.` : item.projectIssue?.fix ? `\n   ${BRAND.NAME}'s own fix: "${item.projectIssue.fix.label}": ${item.projectIssue.fix.description}` : "";
     return `${head}${detail}${list}${fix}`;
   });
   return [
-    `ADE's Settings lists ${items.length === 1 ? "one thing" : `${items.length} things`} that need attention${projectRoot ? ` (project at \`${projectRoot}\`)` : ""}. Go through ${items.length === 1 ? "it" : "them"} with me: explain what each means and what happens if it is left, check it yourself, and offer a fix. Ask me before you change anything.`,
+    `${BRAND.NAME}'s Settings lists ${items.length === 1 ? "one thing" : `${items.length} things`} that need attention${projectRoot ? ` (project at \`${projectRoot}\`)` : ""}. Go through ${items.length === 1 ? "it" : "them"} with me: explain what each means and what happens if it is left, check it yourself, and offer a fix. Ask me before you change anything.`,
     "",
     ...lines,
     "",
     "Rules:",
-    "- Where ADE has its own fix, say so; I can press it in Settings. Do it by hand only if I ask.",
+    `- Where ${BRAND.NAME} has its own fix, say so; I can press it in Settings. Do it by hand only if I ask.`,
     "- Don't delete files, branches or lanes, sign anything out, or run installs without my OK.",
     "- Keep the report short: what you checked, what you fixed (only with my OK), what I need to do.",
   ].join("\n");

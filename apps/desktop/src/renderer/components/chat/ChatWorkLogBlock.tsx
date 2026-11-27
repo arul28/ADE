@@ -252,13 +252,13 @@ function terminalizePrompt(args: {
   sessionId?: string | null;
 }): string {
   const lines = [
-    `Please reopen or move the local server for ${args.url.href} into this ADE chat terminal so I can watch the logs here.`,
+    `Please reopen or move the local server for ${args.url.href} into this ${BRAND.NAME} chat terminal so I can watch the logs here.`,
   ];
   if (args.command) lines.push("", `Detected command: \`${args.command}\``);
   if (args.sessionId) lines.push("", `Chat session: \`${args.sessionId}\``);
   lines.push(
     "",
-    "Use ADE CLI terminal/app-control commands where helpful, for example `ade terminal list --chat-session <id> --text`, `ade terminal read --chat-session <id> --text`, or `ade app-control launch --command \"<command>\" --text`.",
+    `Use ${BRAND.NAME} CLI terminal/app-control commands where helpful, for example \`daex terminal list --chat-session <id> --text\`, \`daex terminal read --chat-session <id> --text\`, or \`daex app-control launch --command "<command>" --text\`.`,
     "After it is running, verify the localhost URL and keep the process logs readable from the chat terminal.",
   );
   return lines.join("\n");

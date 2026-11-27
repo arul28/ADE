@@ -1752,8 +1752,8 @@ export function ChatBuiltInBrowserPanel({
           screenshotFrame: crop.frame,
         },
         selectionExplanation: domItem
-          ? "The user dragged a browser screenshot region. ADE attached the crop as visual evidence and resolved DOM context from the element at the crop center."
-          : "The user dragged a browser screenshot region. ADE could not resolve a DOM element at the crop center, so this packet is visual context only.",
+          ? `The user dragged a browser screenshot region. ${BRAND.NAME} attached the crop as visual evidence and resolved DOM context from the element at the crop center.`
+          : `The user dragged a browser screenshot region. ${BRAND.NAME} could not resolve a DOM element at the crop center, so this packet is visual context only.`,
       },
       screenshotDataUrl: crop.dataUrl,
       selectedAt: new Date().toISOString(),

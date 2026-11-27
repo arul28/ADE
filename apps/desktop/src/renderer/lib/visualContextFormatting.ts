@@ -5,6 +5,7 @@ import {
   type ElementContextSurface,
   type IosElementContextItem,
 } from "../../shared/types";
+import { BRAND } from "../../shared/brand";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -247,7 +248,7 @@ export function formatAppControlContextForPrompt(items: AppControlContextItem[])
   });
   return [
     "App Control visual inspect context attached by the user.",
-    "Each packet came from a developer-owned app session, usually Electron launched or connected through ADE CLI with a local CDP port. Image attachments/crops are visual evidence for the same packet and use screenshot pixel coordinates.",
+    `Each packet came from a developer-owned app session, usually Electron launched or connected through the ${BRAND.NAME} CLI with a local CDP port. Image attachments/crops are visual evidence for the same packet and use screenshot pixel coordinates.`,
     "Use exactSource when sourceConfidence is exact. Treat sourceCandidates as ranked guesses from DOM text/test ids/selectors and source search, not proof. Prefer the screenshot, DOM selector, nearbyElements, console/browser context, and exact source when available.",
     ...rows,
     "",
@@ -379,7 +380,7 @@ export function formatBuiltInBrowserContextForPrompt(items: BuiltInBrowserContex
   });
   return [
     "Built-in browser visual and DOM context attached by the user.",
-    "Each packet came from ADE's global built-in browser, which is not lane-scoped. Image attachments/crops are visual evidence for the same page area and use browser viewport coordinates.",
+    `Each packet came from ${BRAND.NAME}'s global built-in browser, which is not lane-scoped. Image attachments/crops are visual evidence for the same page area and use browser viewport coordinates.`,
     "Use selectors, ARIA labels, attributes, text, URL/title, the element HTML, computedStyle, and the screenshot together. Do not assume the selected page belongs to the current lane unless the URL or user message says so.",
     "frameworkSource is what the page's own dev build reports. confidence exact (also in exactSource) is the file and line where the element itself was written; approximate is a lead (the enclosing element's JSX, or a dev-server path with a bundled line), so open the file and search near it; component-file names the component file only. componentStack lists the enclosing components, innermost first. When frameworkSource is null (production build or no framework), find the source by searching for the text, test id, or class names.",
     ...rows,

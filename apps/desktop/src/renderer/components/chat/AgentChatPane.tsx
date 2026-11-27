@@ -16162,7 +16162,7 @@ export function AgentChatPane({
    */
   const handleHandoffToDevinCloud = useCallback(() => {
     const lines = [
-      "This task was handed off from an ADE lane chat for continuation in the cloud.",
+      `This task was handed off from a ${BRAND.NAME} lane chat for continuation in the cloud.`,
       selectedSession?.title?.trim() ? `Task so far: ${selectedSession.title.trim()}` : null,
       laneDisplayLabel ? `Lane: ${laneDisplayLabel}` : null,
       "Continue the work against this lane's repository.",
