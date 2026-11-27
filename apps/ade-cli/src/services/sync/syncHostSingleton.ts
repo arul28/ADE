@@ -16,7 +16,7 @@ import { adeHomeForChannel, liveChannelFromEnv } from "../projects/machineLayout
 import { commandLineIsDevTestMachine, isDevTestMachineProcess } from "./devTestMachine";
 import { markExpected } from "../../../../desktop/src/shared/expectedError";
 import { BRAND } from "../../../../desktop/src/shared/brand";
-import { ADE_CLI_NAME_SOURCE } from "../../../../desktop/src/shared/cliCommandNames";
+import { ADE_CLI_COMMAND_NAMES, ADE_CLI_NAME_SOURCE } from "../../../../desktop/src/shared/cliCommandNames";
 const LOCK_VERSION = 1;
 
 export type SyncHostSingletonOwner = {
@@ -564,7 +564,7 @@ function currentOwner(
 function parseLsofListeners(output: string): Array<{ pid: number; port: number; processName: string }> {
   const listeners: Array<{ pid: number; port: number; processName: string }> = [];
   for (const line of output.split(/\r?\n/)) {
-    // lsof's COMMAND column can hold a space: the brain runs as `ADE Brain`
+    // lsof's COMMAND column can hold a space: the brain runs as `Daex Brain`
     // (`brainExecutable.ts`), so the name is everything before the PID.
     const match = line.match(/^(.+?)\s+(\d+)\s+.*\bTCP\s+\S+:(\d+)\s+\(LISTEN\)/);
     if (!match) continue;
@@ -615,21 +615,34 @@ function psCommandLines(pids: number[]): Map<number, string> {
 function looksLikeAdeSyncHostProcess(commandLine: string): boolean {
   // A dev test machine is another machine with its own lease; never a conflict.
   if (commandLineIsDevTestMachine(commandLine)) return false;
-  return /ADE(?: Beta| Alpha)?\.app\/Contents\/MacOS\/ADE/i.test(commandLine)
+  // The app's executable and its brain copy (`ADE`, `Daex Brain`, older `ADE Brain`).
+  return /ADE(?: Beta| Alpha)?\.app\/Contents\/MacOS\/(?:ADE|Daex)/i.test(commandLine)
     || /ade-cli\/cli\.cjs\s+serve\b/i.test(commandLine)
     || CLI_SERVE_COMMAND.test(commandLine);
 }
 
 /** The CLI serving, by either name (`daex`, alias `ade`), any channel. */
 const CLI_SERVE_COMMAND = new RegExp(String.raw`\b${ADE_CLI_NAME_SOURCE}(?:-beta|-alpha)?\b.*\bserve\b`, "i");
-const CLI_PROCESS_NAME = new RegExp(String.raw`^${ADE_CLI_NAME_SOURCE}(?:-beta|-alpha)?$`, "i");
+
+/**
+ * Every name the app's processes run under, any channel: the app (`ADE`), the
+ * brain copy (`Daex Brain`, `Daex Alpha Brain`; `ADE Brain` before the rename,
+ * `brainExecutable.ts` mode `brain-copy`), the helper (`ADE Helper`, mode
+ * `helper`) and the CLI. Without them the lockless scan cannot see the service
+ * that holds the sync port.
+ */
+const ADE_PROCESS_NAMES = ["ADE", "Daex"].flatMap((product) => ["", " Beta", " Alpha"].flatMap((channel) => (
+  ["", " Brain", " Helper"].map((role) => `${product}${channel}${role}`.toLowerCase())
+))).concat(ADE_CLI_COMMAND_NAMES.flatMap((cli) => ["", "-beta", "-alpha"].map((channel) => `${cli}${channel}`.toLowerCase())));
+/** lsof prints at most this many characters of a process name, with a space as `\x20`. */
+const LSOF_COMMAND_WIDTH = 9;
 
 function looksLikeAdeProcessName(processName: string): boolean {
-  // `ADE Brain` is the copy the brain service runs as (`brainExecutable.ts`,
-  // mode `brain-copy`); `ADE Helper` is the `helper` mode. Without them the
-  // lockless scan cannot see the service that holds the sync port.
-  return /^ADE(?:\s+Beta|\s+Alpha)?(?:\s+(?:Brain|Helper))?$/i.test(processName)
-    || CLI_PROCESS_NAME.test(processName);
+  const name = processName.replace(/\\x20/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+  if (!name) return false;
+  if (ADE_PROCESS_NAMES.includes(name)) return true;
+  // A cut-off name: `Daex Brai` (or `Daex\x20Br`) is `Daex Brain`.
+  return processName.length === LSOF_COMMAND_WIDTH && ADE_PROCESS_NAMES.some((known) => known.startsWith(name));
 }
 
 function legacyOwner(
