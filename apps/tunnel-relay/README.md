@@ -187,14 +187,14 @@ computer holding the pending sign-in.
   hop is not retried either (`fetchDurableObject`, `retry: "never"`). If the
   machine that answered is not the front, it becomes the front (`waitUntil`).
   At least one offline and none answering → `503 offline` ("None of your
-  computers with ADE MCP on are online…", `Retry-After: 30`). Otherwise
+  computers with Daex MCP on are online…", `Retry-After: 30`). Otherwise
   `404 ade_mcp_off` with a `reason`: `off` when a member answered that ADE MCP
-  is off or the account's `off` list is not empty ("ADE MCP is off for this
+  is off or the account's `off` list is not empty ("Daex MCP is off for this
   account…"); `unknown_address` when nothing ever served the address or every
   computer moved to another account, which is what an address left behind by a
-  changed account secret looks like ("No computer answers this ADE MCP
-  address. It may be an old address: copy the Server URL from ADE Settings →
-  ADE MCP."). The code stays `ade_mcp_off` for clients that read it.
+  changed account secret looks like ("No computer answers this Daex MCP
+  address. It may be an old address: copy the Server URL from Daex Settings →
+  Daex MCP."). The code stays `ade_mcp_off` for clients that read it.
   Rate limits and the other limits above stay per machine object.
 - **Trust.** The account address adds no authority to the relay. Account
   tokens, OAuth and the sign-in check still live on the brains, which check the
