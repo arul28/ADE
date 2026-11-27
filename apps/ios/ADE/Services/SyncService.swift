@@ -4740,6 +4740,12 @@ final class SyncService: ObservableObject {
   /// Last-known Linear connection status for the active project, refreshed by the
   /// Work top-bar button. `nil` until the first check. Gates the pane entry point.
   @Published private(set) var linearConnectionStatus: LinearConnectionStatus?
+  /// Which project's Linear team keys were last read, and when
+  /// (`refreshLinearWorkspaceTeamKeys`). Memory only.
+  private var linearWorkspaceTeamKeysRead: (scope: String, at: Date)?
+  /// Moves with every read that starts, so a read from before a connect,
+  /// switch or disconnect cannot land after the one that followed it.
+  private var linearWorkspaceTeamKeysGeneration = 0
   /// Last-known Cursor connection status for the active project. The Work
   /// toolbar and every mobile Cursor Cloud entry point fail closed until the
   /// host confirms that a Cursor API key/OAuth credential is available.
@@ -12465,6 +12471,9 @@ final class SyncService: ObservableObject {
   /// desktop pane's lightweight visibility poll.
   @MainActor
   func refreshLinearConnection() async {
+    // The team keys follow the status, off this path: Work's entry-point
+    // checks run after this one and must not wait on a catalog read.
+    defer { Task { await refreshLinearWorkspaceTeamKeys() } }
     // No computer answers for the project: the account server reads Linear.
     if linearReadsThroughAccount {
       linearConnectionStatus = await accountLinearConnectionStatus()
@@ -12480,6 +12489,55 @@ final class SyncService: ObservableObject {
       // Older hosts, offline, or a queued command all mean "can't confirm a
       // connection right now" — treat as not connected without logging noise.
       linearConnectionStatus = LinearConnectionStatus(connected: false)
+    }
+  }
+
+  /// The connected Linear workspace's team keys, for the thread-entity
+  /// directory: with them a bare `ADE-123` in a PR text or an agent reply
+  /// opens the issue in the Linear pane, while `UTF-8` stays text. Read through
+  /// the same route as every other Linear read (the project's machine, or the
+  /// account when no machine answers), once per project and then at most hourly
+  /// when asked again; never polled. Not connected: no keys.
+  @MainActor
+  func refreshLinearWorkspaceTeamKeys(force: Bool = false) async {
+    let readsThroughAccount = linearReadsThroughAccount
+    guard linearConnectionStatus?.connected == true, readsThroughAccount || activeProjectId != nil else {
+      linearWorkspaceTeamKeysRead = nil
+      linearWorkspaceTeamKeysGeneration &+= 1
+      WorkThreadEntityDirectory.shared.record(linearWorkspaceTeamKeys: [])
+      return
+    }
+    // Account projects have no `activeProjectId`; their own id keeps one
+    // project's teams from linking in another's.
+    let scope = readsThroughAccount
+      ? "account:\(activeProjectId ?? activeAccountProjectId ?? "")"
+      : "\(activeProjectId ?? ""):\(activeProjectHostIdentity ?? "")"
+    if let read = linearWorkspaceTeamKeysRead, read.scope == scope {
+      if !force && Date().timeIntervalSince(read.at) < 60 * 60 { return }
+    } else {
+      // Another project's keys must not link here while this one's load.
+      WorkThreadEntityDirectory.shared.record(linearWorkspaceTeamKeys: [])
+    }
+    linearWorkspaceTeamKeysRead = (scope, Date())
+    linearWorkspaceTeamKeysGeneration &+= 1
+    let generation = linearWorkspaceTeamKeysGeneration
+    guard let catalog = try? await fetchLinearIssuePickerData() else {
+      // Unreadable now: keep what is known and try again next time.
+      if linearWorkspaceTeamKeysGeneration == generation { linearWorkspaceTeamKeysRead = nil }
+      return
+    }
+    guard linearWorkspaceTeamKeysGeneration == generation else { return }
+    WorkThreadEntityDirectory.shared.record(linearWorkspaceTeamKeys: catalog.states.compactMap(\.teamKey))
+  }
+
+  /// For a screen that can open before Work has checked Linear (a PR opened
+  /// from a link): checks the connection once, else reuses the known keys.
+  @MainActor
+  func ensureLinearWorkspaceTeamKeys() async {
+    if linearConnectionStatus == nil {
+      await refreshLinearConnection()
+    } else {
+      await refreshLinearWorkspaceTeamKeys()
     }
   }
 
@@ -12809,6 +12867,7 @@ final class SyncService: ObservableObject {
       as: LinearConnectionStatus.self
     )
     linearConnectionStatus = status
+    Task { await refreshLinearWorkspaceTeamKeys(force: true) }
     return status
   }
 
@@ -12826,6 +12885,7 @@ final class SyncService: ObservableObject {
       as: LinearConnectionStatus.self
     )
     linearConnectionStatus = status
+    Task { await refreshLinearWorkspaceTeamKeys(force: true) }
     return status
   }
 
@@ -12840,6 +12900,7 @@ final class SyncService: ObservableObject {
       as: LinearConnectionStatus.self
     )
     linearConnectionStatus = status
+    Task { await refreshLinearWorkspaceTeamKeys(force: true) }
     return status
   }
 

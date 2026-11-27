@@ -13,7 +13,7 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
-import { findAndReplace } from "mdast-util-find-and-replace";
+import type { findAndReplace } from "mdast-util-find-and-replace";
 import { CaretRight, ArrowSquareOut } from "@phosphor-icons/react";
 
 import {
@@ -23,6 +23,8 @@ import {
 import { HighlightedCode } from "../../chat/CodeHighlighter";
 import { COLORS, fgTint } from "../../lanes/laneDesignTokens";
 import { ADE_DEEPLINK_FOOTER_LOGO_URL } from "../../../../shared/adeDeeplinkFooter";
+import { linearIssueLinkTarget } from "../../../../shared/issueRefs";
+import { useCachedLinearWorkspace } from "../../issues/linearIssueStore";
 import { normalizeEscapedMarkdownNewlines } from "../../../../shared/prMarkdownText";
 import { MermaidDiagram } from "../../shared/MermaidDiagram";
 import {
@@ -31,11 +33,14 @@ import {
   PrFileChip,
   PrMarkdownEnvContext,
   PrQuoteSourceContext,
+  PrLinearIssueLink,
+  PrLinearWorkspaceContext,
   PrRefPill,
   PrTaskToggleContext,
   resolveInlineFile,
   type GithubAlertKind,
 } from "./prMarkdownContext";
+import { remarkPrAutolinks } from "./prMarkdownAutolinks";
 import { PrTaskCheckbox, PrTaskScopeContext, rehypeNumberTaskBoxes } from "./PrTaskCheckbox";
 import { getFileIcon } from "../../files/filePresentation";
 import {
@@ -116,7 +121,7 @@ export const PR_SAFE_SCHEMA = (() => {
   } as typeof SAFE_PREVIEW_SCHEMA;
 })();
 
-/* ── Remark plugin: autolink #123 and @user ────────────────────────── */
+/* ── Remark plugin: keep a fence's info string ───────────────────── */
 
 /**
  * Keep a fence's info string past `rehype-raw`, which re-parses the tree and
@@ -132,49 +137,6 @@ function remarkCodeMeta() {
       for (const child of node.children ?? []) visit(child as typeof node);
     };
     visit(tree as unknown as Parameters<typeof visit>[0]);
-  };
-}
-
-function remarkPrAutolinks({
-  repoOwner,
-  repoName,
-}: {
-  repoOwner: string;
-  repoName: string;
-}) {
-  return (tree: MarkdownRoot) => {
-    findAndReplace(
-      tree,
-      [
-        [
-          /(^|[\s(\[{>])#(\d+)\b/g,
-          (_full: string, prefix: string, num: string) =>
-            [
-              { type: "text", value: prefix },
-              {
-                type: "link",
-                url: `https://github.com/${repoOwner}/${repoName}/pull/${num}`,
-                children: [{ type: "text", value: `#${num}` }],
-              },
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            ] as any,
-        ],
-        [
-          /(^|[\s(\[{>])@([A-Za-z0-9][A-Za-z0-9-]{0,38})\b/g,
-          (_full: string, prefix: string, user: string) =>
-            [
-              { type: "text", value: prefix },
-              {
-                type: "link",
-                url: `https://github.com/${user}`,
-                children: [{ type: "text", value: `@${user}` }],
-              },
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            ] as any,
-        ],
-      ],
-      { ignore: ["link", "linkReference", "code", "inlineCode"] },
-    );
   };
 }
 
@@ -618,8 +580,27 @@ function sameRepoRefPattern(repoOwner: string, repoName: string): RegExp {
   );
 }
 
-function PrRefOrLink({ href, children, repoOwner, repoName }: { href?: string; children?: ReactNode; repoOwner: string; repoName: string }) {
+function PrRefOrLink({
+  href,
+  children,
+  repoOwner,
+  repoName,
+}: {
+  href?: string;
+  children?: ReactNode;
+  repoOwner: string;
+  repoName: string;
+}) {
   const env = useContext(PrMarkdownEnvContext);
+  const workspaceUrlKey = useContext(PrLinearWorkspaceContext);
+  // ADE's own issue links always open here. A linear.app link opens here only
+  // when it names the connected workspace: another workspace's ENG-12 is not ours.
+  const linear = linearIssueLinkTarget(href);
+  const ours = linear?.adeLink
+    || (linear?.workspace != null && linear.workspace.toLowerCase() === workspaceUrlKey?.toLowerCase());
+  if (href && linear && ours) {
+    return <PrLinearIssueLink href={href} issue={linear.ref} branch={linear.branch}>{children}</PrLinearIssueLink>;
+  }
   const label = textOf(children);
   const match = env && href ? sameRepoRefPattern(repoOwner, repoName).exec(href) : null;
   if (env && match && label.trim() === `#${match[1]}`) {
@@ -901,6 +882,9 @@ export const PrMarkdown = memo(function PrMarkdown({
   dense = false,
   variant = "comment",
 }: PrMarkdownProps) {
+  // The connected workspace's team keys (cached; PRsPage keeps them fresh), so
+  // a typed `ADE-123` opens the issue in ADE without any GitHub setting.
+  const { keys: linearTeamKeys, workspaceUrlKey } = useCachedLinearWorkspace();
   const overrides = useMemo(
     () => buildPrOverrides({ tone, dense, repoOwner, repoName, variant }),
     [tone, dense, repoOwner, repoName, variant],
@@ -917,12 +901,12 @@ export const PrMarkdown = memo(function PrMarkdown({
     () => [
       remarkGfm,
       remarkCodeMeta,
-      [remarkPrAutolinks, { repoOwner, repoName }] as [
+      [remarkPrAutolinks, { repoOwner, repoName, linearTeamKeys }] as [
         typeof remarkPrAutolinks,
-        { repoOwner: string; repoName: string },
+        { repoOwner: string; repoName: string; linearTeamKeys: readonly string[] },
       ],
     ],
-    [repoOwner, repoName],
+    [repoOwner, repoName, linearTeamKeys],
   );
 
   const markdown = useMemo(
@@ -943,6 +927,7 @@ export const PrMarkdown = memo(function PrMarkdown({
       className={`pr-md-root min-w-0 max-w-full ${variant === "document" ? "text-[13.5px] leading-[1.65]" : "text-[13px] leading-[1.55]"} ${dense ? "pr-md-dense" : ""}`}
       style={{ color: COLORS.textPrimary }}
     >
+      <PrLinearWorkspaceContext.Provider value={workspaceUrlKey ?? null}>
       <PrMediaRepoContext.Provider value={mediaRepo}>
         <PrTaskScopeContext.Provider value={taskScope}>
           <ReactMarkdown
@@ -954,6 +939,7 @@ export const PrMarkdown = memo(function PrMarkdown({
           </ReactMarkdown>
         </PrTaskScopeContext.Provider>
       </PrMediaRepoContext.Provider>
+      </PrLinearWorkspaceContext.Provider>
     </div>
   );
 });

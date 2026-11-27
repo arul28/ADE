@@ -1,3 +1,4 @@
+import { parseDeeplink } from "./deeplinks";
 import { deriveSmartLinkPreview } from "./smartLinks";
 
 /**
@@ -17,6 +18,7 @@ export type IssueRef =
   | { provider: "jira"; siteUrl: string; key: string; url?: string | null };
 
 export type IssueProvider = IssueRef["provider"];
+export type LinearIssueRef = Extract<IssueRef, { provider: "linear" }>;
 
 const LINEAR_IDENTIFIER_RE = /^[A-Z][A-Z0-9]{0,9}-\d+$/;
 const JIRA_ISSUE_KEY_RE = /^[A-Z][A-Z0-9_]{0,9}-\d+$/;
@@ -26,7 +28,16 @@ export function normalizeLinearIdentifier(value: string | null | undefined): str
   return LINEAR_IDENTIFIER_RE.test(identifier) ? identifier : null;
 }
 
-export function linearIssueRef(identifier: string, url?: string | null): IssueRef | null {
+/** A Linear identifier in any case, split into team key (1) and number (2). */
+export const LINEAR_ISSUE_ID_PARTS_RE = /^([A-Za-z][A-Za-z0-9]{0,9})-(\d{1,9})$/;
+
+/** The Linear team key of an issue identifier (`ADE` for `ADE-159`), or null. */
+export function linearTeamKeyFromIdentifier(identifier: string | null | undefined): string | null {
+  const match = identifier ? LINEAR_ISSUE_ID_PARTS_RE.exec(identifier.trim()) : null;
+  return match ? match[1]!.toUpperCase() : null;
+}
+
+export function linearIssueRef(identifier: string, url?: string | null): LinearIssueRef | null {
   const normalized = normalizeLinearIdentifier(identifier);
   return normalized ? { provider: "linear", identifier: normalized, url: url ?? null } : null;
 }
@@ -110,6 +121,42 @@ export function issueRefFromUrl(rawUrl: string | null | undefined): IssueRef | n
     return { provider: "github", owner, repo: repo.replace(/\.git$/i, ""), number: issueNumber, url: preview.url };
   }
   return null;
+}
+
+/**
+ * An issue key as Linear and Jira print it in prose (`ADE-123`), never inside a
+ * path, branch name or version: `feat/ADE-1`, `ade-1-fix` and `ADE-1.2` are not
+ * references. Group 1 is the key. Callers still check the key's team or project
+ * against the workspace. A new RegExp per call, since a global one keeps state.
+ */
+export function proseIssueKeyPattern(): RegExp {
+  return /(?<![\w/#.-])([A-Z][A-Z0-9_]{0,9}-\d{1,9})(?![\w-]|\.\d)/g;
+}
+
+/**
+ * The Linear issue a link opens: a linear.app issue URL, or ADE's own
+ * linear-issue link (with its branch hint). `workspace` is the URL name in a
+ * linear.app link (`linear.app/<workspace>/issue/…`), since an identifier is
+ * only unique inside one workspace; null for ADE's links, which mean "ours".
+ */
+export function linearIssueLinkTarget(
+  href: string | null | undefined,
+): { ref: LinearIssueRef; branch: string | null; workspace: string | null; adeLink: boolean } | null {
+  if (!href) return null;
+  const fromUrl = issueRefFromUrl(href);
+  if (fromUrl) {
+    if (fromUrl.provider !== "linear") return null;
+    // Workspace URL names are plain `[a-z0-9-]`: compared raw, never decoded, so
+    // a malformed escape in a link someone posted cannot throw during render.
+    // `fromUrl.url` is the form that already parsed (trimmed of punctuation).
+    const first = new URL(fromUrl.url ?? href).pathname.split("/").filter(Boolean)[0]?.toLowerCase() ?? "";
+    const workspace = first && first !== "issue" ? first : null;
+    return { ref: fromUrl, branch: null, workspace, adeLink: false };
+  }
+  const parsed = parseDeeplink(href);
+  if (!parsed.ok || parsed.target.kind !== "linear-issue") return null;
+  const ref = linearIssueRef(parsed.target.issueIdentifier);
+  return ref ? { ref, branch: parsed.target.branch ?? null, workspace: null, adeLink: true } : null;
 }
 
 /** Plain JSON for persistence; anything that is not a valid ref reads as null. */

@@ -9,6 +9,7 @@ import { useActiveProjectRoot } from "../../state/appStore";
 import { useActiveRepositoryReader } from "../../state/repositoryScope";
 import { cacheScopePin } from "../../lib/tabBindingKey";
 import { applyIssueEdit, type LinearIssueEdit } from "../app/linearIssueBrowserModel";
+import { LINEAR_CONNECTION_CHANGED_EVENT } from "../../lib/linearConnectionEvents";
 import { createIssueEntryCache, type IssueEntry, type IssueEntryStatus } from "./issueEntryCache";
 
 /**
@@ -181,10 +182,14 @@ function loadCatalog(projectRoot: string | null, pin: OpenProjectBinding): Promi
   if (current?.data && Date.now() - current.fetchedAt < CATALOG_STALE_MS) return Promise.resolve(current.data);
   const read = window.ade?.cto?.getLinearIssuePickerData;
   if (!read) return Promise.resolve(null);
+  const generation = projectRoot ? teamKeyGeneration(projectRoot) : 0;
   const promise = read(pin)
     .then((data) => {
       catalogs.set(key, { data, fetchedAt: Date.now(), promise: null });
-      if (projectRoot) storeTeamKeys(projectRoot, { keys: teamKeysFromCatalog(data), checkedAt: Date.now() });
+      // A catalog asked for before Linear changed workspace names the old teams.
+      if (projectRoot && teamKeyGeneration(projectRoot) === generation) {
+        storeTeamKeys(projectRoot, { keys: teamKeysFromCatalog(data), checkedAt: Date.now() });
+      }
       notify();
       return data;
     })
@@ -236,10 +241,23 @@ export async function loadLinearIssueComments(issueId: string, pin: LinearPin): 
 const TEAM_KEYS_STORAGE_PREFIX = "ade.linear.teamKeys.v1:";
 const TEAM_KEYS_REFRESH_MS = 60 * 60_000;
 
-type TeamKeysEntry = { keys: string[]; checkedAt: number };
+/**
+ * `workspaceUrlKey` is the connected workspace's URL name (`linear.app/<it>/…`),
+ * so a link to another workspace's `ENG-12` is not opened as ours. Undefined
+ * until read with the keys; null when Linear is not connected.
+ */
+export type LinearWorkspaceKeys = { keys: string[]; workspaceUrlKey?: string | null; checkedAt: number };
+type TeamKeysEntry = LinearWorkspaceKeys;
 
 const teamKeys = new Map<string, TeamKeysEntry>();
+// The running read per project, and a count that moves whenever a read
+// starts over (Linear connected, switched or disconnected): a result from an
+// older count describes the old workspace and is dropped.
 const teamKeyReads = new Map<string, Promise<void>>();
+const teamKeyGenerations = new Map<string, number>();
+// The connection change each project last started over for: every mounted
+// hook hears the event, and one read is enough.
+const teamKeyRestartEvents = new Map<string, Event>();
 const EMPTY_TEAM_KEYS: string[] = [];
 
 function readStoredTeamKeys(projectRoot: string): TeamKeysEntry | null {
@@ -247,37 +265,97 @@ function readStoredTeamKeys(projectRoot: string): TeamKeysEntry | null {
     const raw = window.localStorage.getItem(`${TEAM_KEYS_STORAGE_PREFIX}${projectRoot}`);
     const parsed = raw ? (JSON.parse(raw) as Partial<TeamKeysEntry>) : null;
     if (!parsed || !Array.isArray(parsed.keys) || typeof parsed.checkedAt !== "number") return null;
-    return { keys: parsed.keys.filter((key): key is string => typeof key === "string"), checkedAt: parsed.checkedAt };
+    return {
+      keys: parsed.keys.filter((key): key is string => typeof key === "string"),
+      ...(typeof parsed.workspaceUrlKey === "string" || parsed.workspaceUrlKey === null ? { workspaceUrlKey: parsed.workspaceUrlKey } : {}),
+      checkedAt: parsed.checkedAt,
+    };
   } catch {
     return null;
   }
 }
 
-function storeTeamKeys(projectRoot: string, entry: TeamKeysEntry): void {
+/** A catalog read carries no workspace, so an entry without one keeps the known one. */
+function storeTeamKeys(projectRoot: string, next: TeamKeysEntry): void {
   const current = teamKeys.get(projectRoot);
+  const entry = next.workspaceUrlKey === undefined && current?.workspaceUrlKey !== undefined
+    ? { ...next, workspaceUrlKey: current.workspaceUrlKey }
+    : next;
   teamKeys.set(projectRoot, entry);
   try {
     window.localStorage.setItem(`${TEAM_KEYS_STORAGE_PREFIX}${projectRoot}`, JSON.stringify(entry));
   } catch {
     // Storage unavailable: the keys still work for this session.
   }
-  if (current?.keys.join(",") !== entry.keys.join(",")) notify();
+  if (current?.keys.join(",") !== entry.keys.join(",") || current?.workspaceUrlKey !== entry.workspaceUrlKey) notify();
 }
 
 function teamKeysFromCatalog(catalog: CtoGetLinearIssuePickerDataResult): string[] {
   return [...new Set(catalog.states.map((state) => state.teamKey?.trim().toUpperCase()).filter((key): key is string => Boolean(key)))].sort();
 }
 
-function refreshTeamKeys(projectRoot: string, pin: OpenProjectBinding): void {
-  if (teamKeyReads.has(projectRoot)) return;
-  const read = window.ade?.cto?.getLinearIssuePickerData;
-  if (!read) return;
+function teamKeyGeneration(projectRoot: string): number {
+  return teamKeyGenerations.get(projectRoot) ?? 0;
+}
+
+/** `restart`: the connection changed, so a running read is stale; start over. */
+function refreshTeamKeys(projectRoot: string, pin: OpenProjectBinding, restart = false): void {
+  if (teamKeyReads.has(projectRoot) && !restart) return;
+  const cto = window.ade?.cto;
+  if (!cto?.getLinearIssuePickerData) return;
+  const generation = teamKeyGeneration(projectRoot) + 1;
+  teamKeyGenerations.set(projectRoot, generation);
+  const isCurrent = () => teamKeyGeneration(projectRoot) === generation;
+  const store = (next: TeamKeysEntry) => {
+    if (isCurrent()) storeTeamKeys(projectRoot, next);
+  };
   const current = teamKeys.get(projectRoot);
-  const promise = read(pin)
-    .then((catalog) => storeTeamKeys(projectRoot, { keys: teamKeysFromCatalog(catalog), checkedAt: Date.now() }))
-    .catch(() => storeTeamKeys(projectRoot, { keys: current?.keys ?? [], checkedAt: Date.now() }))
-    .finally(() => teamKeyReads.delete(projectRoot));
+  const readPicker = cto.getLinearIssuePickerData;
+  // The status first: a disconnected workspace has no keys, so nothing it
+  // named before should keep linking. Unreadable status keeps what is known.
+  const readStatus = cto.getLinearConnectionStatus
+    ? cto.getLinearConnectionStatus(pin).then((status) => status, () => null)
+    : Promise.resolve(null);
+  const promise = readStatus
+    .then(async (status) => {
+      if (status && !status.connected) {
+        store({ keys: [], workspaceUrlKey: null, checkedAt: Date.now() });
+        return;
+      }
+      const catalog = await readPicker(pin);
+      const workspaceUrlKey = status ? status.organizationUrlKey?.trim() || null : current?.workspaceUrlKey ?? null;
+      store({ keys: teamKeysFromCatalog(catalog), workspaceUrlKey, checkedAt: Date.now() });
+    })
+    .catch(() => store({ keys: current?.keys ?? [], workspaceUrlKey: current?.workspaceUrlKey ?? null, checkedAt: Date.now() }))
+    .finally(() => {
+      if (isCurrent()) teamKeyReads.delete(projectRoot);
+    });
   teamKeyReads.set(projectRoot, promise);
+}
+
+// A project whose keys were never read: empty, and due for a read.
+const NEVER_READ_TEAM_KEYS: TeamKeysEntry = { keys: EMPTY_TEAM_KEYS, checkedAt: 0 };
+
+/**
+ * The keys this session holds for the project, filled from localStorage on the
+ * first read. Filling here, not in an effect, means a page of PR comments
+ * parses once with the keys instead of once without and again with them.
+ */
+function teamKeysEntryFor(projectRoot: string): TeamKeysEntry {
+  let entry = teamKeys.get(projectRoot);
+  if (!entry) {
+    entry = readStoredTeamKeys(projectRoot) ?? NEVER_READ_TEAM_KEYS;
+    teamKeys.set(projectRoot, entry);
+  }
+  return entry;
+}
+
+function useTeamKeysEntry(projectRoot: string | null): TeamKeysEntry | null {
+  return useSyncExternalStore(
+    subscribe,
+    () => (projectRoot ? teamKeysEntryFor(projectRoot) : null),
+    () => null,
+  );
 }
 
 export function useLinearWorkspaceTeamKeys(): string[] {
@@ -286,25 +364,34 @@ export function useLinearWorkspaceTeamKeys(): string[] {
   const pinRef = useRef(pin);
   pinRef.current = pin;
   const pinKey = pin?.key ?? null;
-  const entry = useSyncExternalStore(
-    subscribe,
-    () => (projectRoot ? teamKeys.get(projectRoot) ?? null : null),
-    () => null,
-  );
+  const entry = useTeamKeysEntry(projectRoot);
   useEffect(() => {
     if (!projectRoot) return;
-    let known = teamKeys.get(projectRoot) ?? null;
-    if (!known) {
-      known = readStoredTeamKeys(projectRoot);
-      if (known) {
-        teamKeys.set(projectRoot, known);
-        notify();
-      }
-    }
+    const known = teamKeysEntryFor(projectRoot);
     const readPin = pinRef.current;
-    if (readPin && (!known || Date.now() - known.checkedAt > TEAM_KEYS_REFRESH_MS)) refreshTeamKeys(projectRoot, readPin);
+    const due = Date.now() - known.checkedAt > TEAM_KEYS_REFRESH_MS || known.workspaceUrlKey === undefined;
+    if (readPin && due) refreshTeamKeys(projectRoot, readPin);
+    // Connecting, switching or disconnecting Linear changes the keys now, not in an hour.
+    const onConnectionChanged = (event: Event) => {
+      if (!pinRef.current || teamKeyRestartEvents.get(projectRoot) === event) return;
+      teamKeyRestartEvents.set(projectRoot, event);
+      refreshTeamKeys(projectRoot, pinRef.current, true);
+    };
+    window.addEventListener(LINEAR_CONNECTION_CHANGED_EVENT, onConnectionChanged);
+    return () => window.removeEventListener(LINEAR_CONNECTION_CHANGED_EVENT, onConnectionChanged);
   }, [pinKey, projectRoot]);
   return entry?.keys ?? EMPTY_TEAM_KEYS;
+}
+
+const NO_WORKSPACE: LinearWorkspaceKeys = { keys: EMPTY_TEAM_KEYS, workspaceUrlKey: null, checkedAt: 0 };
+
+/**
+ * The same keys and the workspace's URL name, without ever asking Linear: for
+ * a view drawn many times on one page (every PR comment). The page above it
+ * keeps them fresh with `useLinearWorkspaceTeamKeys`. Stable until they change.
+ */
+export function useCachedLinearWorkspace(): LinearWorkspaceKeys {
+  return useTeamKeysEntry(useActiveProjectRoot()) ?? NO_WORKSPACE;
 }
 
 /** Every issue this cache holds, for the create form's "similar issues" hint. */

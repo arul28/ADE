@@ -18,7 +18,6 @@ import {
   EMPTY_THREAD_ENTITY_LOOKUP,
   findProseEntities,
   formatThreadEntityTimestamp,
-  linearTeamKeyFromIdentifier,
   matchInlineCodeEntity,
   threadEntityKey,
   type ThreadEntity,
@@ -26,6 +25,7 @@ import {
   type ThreadEntityIndex,
   type ThreadEntityLookup,
 } from "../../../shared/threadEntities";
+import { linearTeamKeyFromIdentifier } from "../../../shared/issueRefs";
 import { useLanesForPin, useSessionsForPin } from "../../state/crossMachineLanes";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { TranscriptChip } from "./ChipText";
