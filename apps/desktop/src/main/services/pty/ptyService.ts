@@ -4224,7 +4224,7 @@ export function createPtyService({
     const title = sanitizeGeneratedCliTitle(typeof raw === "string" ? raw : "");
     if (!title) return null;
     const normalized = title.toLowerCase().replace(/[^\p{L}\p{N}_-]+/gu, "").trim();
-    if (/^ade-[a-z0-9_-]+$/iu.test(normalized)) return null;
+    if (/^(?:ade|daex)-[a-z0-9_-]+$/iu.test(normalized)) return null;
     return title;
   }
 
