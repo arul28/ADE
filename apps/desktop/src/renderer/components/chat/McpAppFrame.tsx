@@ -499,7 +499,7 @@ export function McpAppCard({ card }: { card: AdeCardPayload }) {
       containerDimensions: { ...(width > 0 ? { width } : {}), maxHeight: MCP_APP_LIMITS.maxHeight },
       locale: navigator.language,
       timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      userAgent: "ADE",
+      userAgent: BRAND.NAME,
       platform: "desktop",
       deviceCapabilities: { touch: false, hover: true },
     };

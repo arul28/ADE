@@ -269,7 +269,7 @@ export async function resolveRemoteRuntimeSidecars(
   const binaryName = runtimeBinaryAssetName(args.archLabel);
   const nativeArchiveName = runtimeNativeArchiveAssetName(args.archLabel);
   const download = deps.downloadFile
-    ?? ((url: string, outPath: string) => downloadReleaseAsset(url, outPath, { userAgent: "ADE remote bootstrap" }));
+    ?? ((url: string, outPath: string) => downloadReleaseAsset(url, outPath, { userAgent: `${BRAND.NAME} remote bootstrap` }));
 
   await fsp.mkdir(versionDir, { recursive: true });
   const stagingDir = await fsp.mkdtemp(path.join(versionDir, `.staging-${args.archLabel}-`));

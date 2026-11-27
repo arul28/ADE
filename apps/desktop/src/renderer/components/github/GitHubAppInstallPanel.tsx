@@ -40,7 +40,7 @@ import { isGithubServiceUnavailable } from "../../../shared/githubServiceHealth"
 import { plainErrorText } from "../../lib/plainError";
 import { BRAND } from "../../../shared/brand";
 
-const ADE_GITHUB_APP_NAME = "ADE";
+const ADE_GITHUB_APP_NAME = BRAND.NAME;
 const ADE_GITHUB_APP_INSTALL_URL = "https://github.com/apps/ade-for-github/installations/new";
 const GITHUB_APP_INSTALLATIONS_URL = "https://github.com/settings/installations";
 const POST_AUTH_STATUS_RETRY_DELAYS_MS = [1_500, 3_000, 6_000] as const;
@@ -552,7 +552,7 @@ export function GitHubAppInstallPanel({
   <div style={compact ? blocksWrapStyle(compact) : undefined} className={compact ? undefined : "ade-ig-rows"}>
     <section style={axisBlockStyle}>
       <div style={axisTopRowStyle}>
-        <span style={axisHeadingStyle}>{compact ? "Account · ADE for GitHub" : "Your authorization"}</span>
+        <span style={axisHeadingStyle}>{compact ? `Account · ${BRAND.NAME} for GitHub` : "Your authorization"}</span>
         {renderPill(accountPill(account.tone, account.label), !compact)}
       </div>
       <div style={axisBodyRowStyle}>
@@ -674,7 +674,7 @@ export function GitHubAppInstallPanel({
     return (
       <IntegrationCard
         icon={<WebhooksLogo size={16} weight="duotone" />}
-        title="ADE for GitHub app"
+        title={`${BRAND.NAME} for GitHub app`}
         hint={`A read-only GitHub app that tells ${BRAND.NAME} the moment a pull request, review or check changes.`}
         badge={repoDone && authorizedDone ? renderPill({ tone: "ok", color: "", label: "Live updates on" }, true) : null}
         tone={deviceSession ? "focus" : undefined}
@@ -752,7 +752,7 @@ export function GitHubAppInstallPanel({
           <WebhooksLogo size={15} weight="duotone" />
         </div>
         <div style={{ minWidth: 0, flex: 1 }}>
-          <span style={titleStyle}>ADE for GitHub</span>
+          <span style={titleStyle}>{BRAND.NAME} for GitHub</span>
           <p style={descriptionStyle}>Webhook-backed, real-time pull request updates — independent of your account token.</p>
         </div>
       </div>
@@ -908,7 +908,7 @@ function repoView(
       if (loading) {
         return {
           pill: { tone: "pending", color: COLORS.textMuted, label: "Checking…" },
-          subtext: "Checking whether ADE for GitHub is installed on this repo…",
+          subtext: `Checking whether ${BRAND.NAME} for GitHub is installed on this repo…`,
         };
       }
       if (isGithubRateLimitMessage(error)) {

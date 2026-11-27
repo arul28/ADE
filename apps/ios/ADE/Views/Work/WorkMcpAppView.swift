@@ -437,7 +437,7 @@ final class WorkMcpAppController: NSObject, ObservableObject {
     ]
     context["locale"] = Locale.current.identifier.replacingOccurrences(of: "_", with: "-")
     context["timeZone"] = TimeZone.current.identifier
-    context["userAgent"] = "ADE"
+    context["userAgent"] = Brand.name
     context["platform"] = "mobile"
     context["deviceCapabilities"] = ["touch": true, "hover": false]
     return context
@@ -468,7 +468,7 @@ final class WorkMcpAppController: NSObject, ObservableObject {
       case "ui/initialize":
         post(["id": id, "result": [
           "protocolVersion": WorkMcpAppLimits.protocolVersion,
-          "hostInfo": ["name": "ADE", "version": "1"],
+          "hostInfo": ["name": Brand.name, "version": "1"],
           "hostCapabilities": [
             "openLinks": [String: Any](),
             "serverTools": [String: Any](),

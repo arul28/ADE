@@ -48,6 +48,7 @@ import type { Logger } from "../logging/logger";
 import { asRecord, finiteNumberOrNull, sha256Hex } from "../shared/utils";
 import { createJevTally, type JevTallyDetails, type JevTallyStore, type JevUsage } from "./jevTally";
 import { forgetJevCredential, jevAvailability } from "./jevZenCredential";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * OpenCode's endpoints: the documented one first, then the one Jev launched
@@ -409,7 +410,7 @@ function percentile(sorted: number[], p: number): number | null {
 
 export function createJevService(deps: JevServiceDeps): JevService {
   const { logger } = deps;
-  const userAgent = `ADE/${deps.appVersion?.trim() || "dev"} (jev-helper)`;
+  const userAgent = `${BRAND.NAME}/${deps.appVersion?.trim() || "dev"} (jev-helper)`;
   const counts: JevStatus["counts"] = {};
   let window = new Map<JevFeature, { outcomes: Partial<Record<JevOutcome, number>>; latencies: number[] }>();
   let summaryTimer: ReturnType<typeof setInterval> | null = null;

@@ -158,7 +158,7 @@ async function githubRepoVisibility(
   try {
     const response = await doFetch(
       `https://api.github.com/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.repo)}`,
-      { headers: { accept: "application/vnd.github+json", "user-agent": "ADE" }, signal: controller.signal },
+      { headers: { accept: "application/vnd.github+json", "user-agent": BRAND.NAME }, signal: controller.signal },
     );
     if (response.status === 404) return "not_visible";
     if (!response.ok) return "unknown";

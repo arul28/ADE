@@ -1964,8 +1964,8 @@ export const MAC_DESKTOP_PROOF_BACKEND_NAME = "ade-mac-desktop";
  */
 export const AUTOMATION_CHAT_SESSION_PREFIX = "automation:";
 
-/** "ADE · <lane>", or "<prefix> · <lane>" for a host that names its screen differently. */
-export function macDesktopDisplayName(laneName: string | null | undefined, prefix = "ADE"): string {
+/** "Daex · <lane>", or "<prefix> · <lane>" for a host that names its screen differently. */
+export function macDesktopDisplayName(laneName: string | null | undefined, prefix: string = BRAND.NAME): string {
   const trimmed = laneName?.trim();
   return trimmed?.length ? `${prefix} · ${trimmed}` : `${prefix} lane`;
 }

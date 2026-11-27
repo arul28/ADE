@@ -106,9 +106,9 @@ export function appleMarkerIsProject(marker: AppleDeviceMarker, projectRoot: str
   return pathsEqual(path.resolve(marker.projectRoot), path.resolve(projectRoot));
 }
 
-/** `ADE · lane`, `ADE Repro`: a name ADE made, or a person named after it. Evidence only for the storage view. */
+/** `Daex · lane`, `ADE Repro`: a name Daex (or ADE before the rename) made, or a person named after it. Evidence only for the storage view. */
 export function looksLikeAdeDeviceName(name: string): boolean {
-  return /^ADE(\s|·|$)/u.test(name.trim());
+  return /^(?:ADE|Daex)(\s|·|$)/u.test(name.trim());
 }
 
 /** Who each installed simulator belongs to, for the storage view: a lane, ADE (this or another project), or unknown. */

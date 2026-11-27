@@ -242,7 +242,7 @@ struct CloudSponsoredDevice: Encodable, Equatable {
       type: UIDevice.current.userInterfaceIdiom == .pad ? "tablet" : "mobile",
       os: "ios",
       osVersion: UIDevice.current.systemVersion,
-      ua: "ADE-iOS/\(version ?? "0")",
+      ua: "\(Brand.name)-iOS/\(version ?? "0")",
       tracking: CloudSponsoredTracking.status
     )
   }

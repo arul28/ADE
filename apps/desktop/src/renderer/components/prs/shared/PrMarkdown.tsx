@@ -461,7 +461,7 @@ function PrCompareBlock({ figure }: { figure: PrCompareFigure }) {
   const quote = addToChat
     ? () => addToChat({
       text: [
-        ...figure.sides.map((side) => `${side.title}: ${side.url ? `![${side.label ?? side.title}](${side.url})` : side.label ?? "(not uploaded)"}${side.artifactId ? ` (ADE proof ${side.artifactId})` : ""}`),
+        ...figure.sides.map((side) => `${side.title}: ${side.url ? `![${side.label ?? side.title}](${side.url})` : side.label ?? "(not uploaded)"}${side.artifactId ? ` (${BRAND.NAME} proof ${side.artifactId})` : ""}`),
         ...(figure.caption ? [figure.caption] : []),
       ].join("\n"),
       from: `a before and after comparison in ${from}`,

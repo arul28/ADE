@@ -915,7 +915,7 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
       ...preset.sampleHeaders,
       ...(args.headers ?? {}),
       "content-type": "application/json",
-      "user-agent": "ADE-Webhook-Test/1",
+      "user-agent": `${BRAND.NAME}-Webhook-Test/1`,
       "x-ade-test": issueTestNonce(config?.signature?.header ?? null),
     };
     if (config?.signature) {

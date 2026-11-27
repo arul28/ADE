@@ -6,6 +6,7 @@ import { chatWaitTargetMatches } from "../../../shared/chatWait";
 import type { Logger } from "../logging/logger";
 import { createFileVersionTracker, writeFileAtomic } from "../state/durableFile";
 import { securePrivatePath } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Tells an outside URL when a chat stops needing no one: its turn is done, it
@@ -215,7 +216,7 @@ export function createChatWebhookRegistry(deps: {
   const post = async (hook: StoredChatWebhook, delivery: Delivery): Promise<boolean> => {
     const headers: Record<string, string> = {
       "content-type": "application/json",
-      "user-agent": "ADE chat webhook",
+      "user-agent": `${BRAND.NAME} chat webhook`,
       ...(hook.token ? { authorization: `Bearer ${hook.token}` } : {}),
     };
     const status = await postPinned(hook.url, headers, delivery.body);
