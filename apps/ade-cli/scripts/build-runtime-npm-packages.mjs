@@ -272,7 +272,7 @@ export function runtimePackageManifest({ target, os: osName, cpu, version }) {
   return {
     name: runtimePackageName(target),
     version,
-    description: `The ADE runtime binary and its native modules for ${target}.`,
+    description: `The Daex runtime binary and its native modules for ${target}.`,
     license: "AGPL-3.0-only",
     repository: {
       type: "git",
@@ -318,7 +318,7 @@ export function metaPackageManifest({ version }) {
     name: META_PACKAGE_NAME,
     version,
     description:
-      "Installs the ADE runtime binary for the current platform, for embedders bundling @ade-dev/sdk.",
+      "Installs the Daex runtime binary for the current platform, for embedders bundling @daex-dev/sdk.",
     license: "AGPL-3.0-only",
     repository: {
       type: "git",
@@ -344,9 +344,9 @@ export function metaPackageManifest({ version }) {
 function runtimePackageReadme(target) {
   return `# ${runtimePackageName(target)}
 
-The ADE embedded runtime binary for \`${target}\`, plus the native modules the SDK profile dlopens.
+The Daex embedded runtime binary for \`${target}\`, plus the native modules the SDK profile dlopens.
 
-You do not import this package. \`@ade-dev/sdk\` finds it automatically through
+You do not import this package. \`@daex-dev/sdk\` finds it automatically through
 \`resolveBundledRuntime()\`, which is step 2 of its runtime resolution order.
 
     bin/ade${target === "win32-x64" ? ".exe" : ""}   the runtime binary
@@ -373,7 +373,7 @@ https://ade-app.dev/docs/sdk/bundling
 AGPL-3.0-only with the ADE Runtime Embedding Exception.
 
 Shipping this binary unmodified inside a larger work, consumed through the
-documented \`@ade-dev/sdk\` interface, does not by itself make that work subject
+documented \`@daex-dev/sdk\` interface, does not by itself make that work subject
 to the AGPL. Re-signing it with your own identity does not count as modifying
 it. See \`LICENSE\` and \`${EXCEPTION_FILE_NAME}\` in this package, and
 https://ade-app.dev/docs/sdk/license
@@ -383,7 +383,7 @@ https://ade-app.dev/docs/sdk/license
 function metaPackageReadme(version) {
   return `# ${META_PACKAGE_NAME}
 
-Installs the ADE runtime for the current platform.
+Installs the Daex runtime for the current platform.
 
     npm install @ade-dev/runtime@${version}
 
@@ -396,7 +396,7 @@ npm resolves exactly one of the five platform packages through
   - @ade-dev/runtime-linux-arm64
   - @ade-dev/runtime-win32-x64
 
-\`@ade-dev/sdk\` then finds it with no configuration, and never reaches the
+\`@daex-dev/sdk\` then finds it with no configuration, and never reaches the
 network on first run. Pair it with \`allowDownload: false\` so a packaging
 mistake fails loudly rather than working through a silent download.
 
@@ -407,7 +407,7 @@ Bundling and code-signing guide: https://ade-app.dev/docs/sdk/bundling
 AGPL-3.0-only with the ADE Runtime Embedding Exception.
 
 Shipping the runtime binary unmodified inside a larger work, consumed through
-the documented \`@ade-dev/sdk\` interface, does not by itself make that work
+the documented \`@daex-dev/sdk\` interface, does not by itself make that work
 subject to the AGPL. See \`LICENSE\` and \`${EXCEPTION_FILE_NAME}\` in this
 package, and https://ade-app.dev/docs/sdk/license
 `;

@@ -23,7 +23,7 @@ async function runHelp(command, args) {
     env: process.env,
   });
   if (!stdout.includes("Agent-focused command-line interface for Daex")) {
-    throw new Error(`[ade-cli:build] CLI help output did not include the ADE banner text for ${command}`);
+    throw new Error(`[ade-cli:build] CLI help output did not include the Daex banner text for ${command}`);
   }
 }
 
@@ -129,7 +129,7 @@ async function assertPackagedResolutionCliHelp() {
       throw new Error(`[ade-cli:build] dist/cli.cjs --help failed under packaged module resolution${detail}`);
     }
     if (!stdout.includes("Agent-focused command-line interface for Daex")) {
-      throw new Error("[ade-cli:build] packaged-resolution CLI help output did not include the ADE banner text");
+      throw new Error("[ade-cli:build] packaged-resolution CLI help output did not include the Daex banner text");
     }
   } finally {
     // Remove the links themselves before the tree, so no rm implementation
