@@ -131,11 +131,11 @@ export function createDesktopAlertPresenter(deps: DesktopAlertPresenterDeps) {
   /** Alert key -> when the last handled entry began. */
   const handledEntryAt = new Map<string, number>();
   /**
-   * Item and event -> the phase key last remembered for it. Only snapshots
-   * raise activity alerts, and a snapshot carries the current phase, so a newer
-   * phase retires the older key rather than leaving it to evict current ones.
+   * Item and event -> the newest phase handled for it. A newer phase retires
+   * the older key rather than leaving it to evict current ones, and a phase
+   * older than this one (a snapshot reply that arrived late) is not news.
    */
-  const activityPhaseKey = new Map<string, string>();
+  const activityPhaseKey = new Map<string, { key: string; at: number }>();
   /**
    * Alerts that arrived signed in before any settings loaded, re-checked once
    * settings load (the age limit still applies).
@@ -145,10 +145,12 @@ export function createDesktopAlertPresenter(deps: DesktopAlertPresenterDeps) {
   const remember = (alert: DesktopAlert, key: string, at: number): void => {
     if (alert.kind === "activity") {
       const subject = alertSubjectKey(alert);
-      const superseded = activityPhaseKey.get(subject);
-      if (superseded !== undefined && superseded !== key) handledEntryAt.delete(superseded);
-      activityPhaseKey.delete(subject);
-      activityPhaseKey.set(subject, key);
+      const newest = activityPhaseKey.get(subject);
+      if (newest === undefined || at >= newest.at) {
+        if (newest !== undefined && newest.key !== key) handledEntryAt.delete(newest.key);
+        activityPhaseKey.delete(subject);
+        activityPhaseKey.set(subject, { key, at });
+      }
       while (activityPhaseKey.size > MAX_REMEMBERED) {
         const oldest = activityPhaseKey.keys().next();
         if (oldest.done) break;
@@ -217,6 +219,11 @@ export function createDesktopAlertPresenter(deps: DesktopAlertPresenterDeps) {
     const key = alertKey(alert);
     const previous = handledEntryAt.get(key);
     if (previous !== undefined && Math.abs(at - previous) < SAME_ENTRY_WINDOW_MS) return;
+    if (alert.kind === "activity") {
+      // A late snapshot reply can carry a phase older than one already handled.
+      const newest = activityPhaseKey.get(alertSubjectKey(alert));
+      if (newest !== undefined && newest.key !== key && at < newest.at) return;
+    }
     // Signed in but no settings loaded yet (startup, relay backing off): the
     // chat may be muted. Not remembered; it waits for `preferencesLoaded`.
     // Snapshot alerts wait too: snapshots are deltas, so the next poll does
