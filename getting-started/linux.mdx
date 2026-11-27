@@ -1,10 +1,10 @@
 ---
-title: "ADE on Linux"
-description: "Install the ADE desktop app on Linux, pick AppImage or .deb, and see what differs from macOS."
+title: "Daex on Linux"
+description: "Install the Daex desktop app on Linux, pick AppImage or .deb, and see what differs from macOS."
 icon: "linux"
 ---
 
-ADE runs on Linux as the same app, brain, and CLI as on macOS and Windows: lanes, agent chat, PRs, terminals, the built-in browser, and phone pairing all work. On a server with no screen you can run [just the brain](/getting-started/connect-machine) instead.
+Daex runs on Linux as the same app, brain, and CLI as on macOS and Windows: lanes, agent chat, PRs, terminals, the built-in browser, and phone pairing all work. On a server with no screen you can run [just the brain](/getting-started/connect-machine) instead.
 
 ## Requirements
 
@@ -13,10 +13,10 @@ ADE runs on Linux as the same app, brain, and CLI as on macOS and Windows: lanes
     Ubuntu 22.04, Debian 12, or newer. X11 and Wayland desktops both work.
   </Card>
   <Card title="Git" icon="git-alt">
-    ADE uses branches and worktrees to run lanes.
+    Daex uses branches and worktrees to run lanes.
   </Card>
   <Card title="One AI provider" icon="key">
-    ADE downloads its own Linux build of each agent.
+    Daex downloads its own Linux build of each agent.
   </Card>
 </CardGroup>
 
@@ -25,7 +25,7 @@ ADE runs on Linux as the same app, brain, and CLI as on macOS and Windows: lanes
 | | AppImage | `.deb` |
 | --- | --- | --- |
 | Works on | Most distributions | Debian, Ubuntu and their relatives |
-| Updates | Updates itself | ADE tells you a new version exists and links the download |
+| Updates | Updates itself | Daex tells you a new version exists and links the download |
 | Needs root to install | No | Yes |
 | Ubuntu 24.04 and newer | Needs one extra step, below | Works as is |
 
@@ -44,7 +44,7 @@ ADE runs on Linux as the same app, brain, and CLI as on macOS and Windows: lanes
     ./ADE-*.AppImage
     ```
 
-    The first launch adds ADE to your applications menu, makes `ade://` links open it, and sets up ADE's background brain under `~/.ade`, so the brain keeps running after you close the app and comes back when you log in. If you move the file, open it once from its new place to update the menu entry.
+    The first launch adds Daex to your applications menu, makes `ade://` links open it, and sets up Daex's background brain under `~/.ade`, so the brain keeps running after you close the app and comes back when you log in. If you move the file, open it once from its new place to update the menu entry.
   </Tab>
   <Tab title=".deb">
     Download for [x64](https://ade-app.dev/download/linux-x64-deb) or [arm64](https://ade-app.dev/download/linux-arm64-deb), then:
@@ -53,7 +53,7 @@ ADE runs on Linux as the same app, brain, and CLI as on macOS and Windows: lanes
     sudo apt install ./ADE-*.deb
     ```
 
-    This adds ADE to your applications menu and puts the `ade` command on your `PATH`.
+    This adds Daex to your applications menu and puts the `daex` command on your `PATH`.
   </Tab>
 </Tabs>
 
@@ -61,11 +61,11 @@ Already running the brain on this machine? The desktop app connects to it and le
 
 ## If the AppImage will not start
 
-**"ADE can't start from this AppImage."** ADE's built-in browser opens web pages inside a security sandbox. Ubuntu 24.04 and newer block what an AppImage needs for it, so ADE stops rather than running without one. The `.deb` works there:
+**"Daex can't start from this AppImage."** Daex's built-in browser opens web pages inside a security sandbox. Ubuntu 24.04 and newer block what an AppImage needs for it, so Daex stops rather than running without one. The `.deb` works there:
 
 1. Download the `.deb` for [x64](https://ade-app.dev/download/linux-x64-deb) or [arm64](https://ade-app.dev/download/linux-arm64-deb). Run `uname -m` if you're not sure: `x86_64` means x64 and `aarch64` means arm64.
 2. Run `sudo apt install ./ADE-*.deb` in the folder you downloaded it to.
-3. Open ADE from your applications menu.
+3. Open Daex from your applications menu.
 
 If you can't use a `.deb` and you accept the risk, you can run without the sandbox:
 
@@ -77,7 +77,7 @@ ADE_ALLOW_NO_SANDBOX=1 ./ADE-*.AppImage
 
 ## Saved sign-ins
 
-ADE uses your desktop's keyring, such as GNOME Keyring or KWallet, when it has one, and its own encrypted store when it doesn't.
+Daex uses your desktop's keyring, such as GNOME Keyring or KWallet, when it has one, and its own encrypted store when it doesn't.
 
 ## What is different from macOS
 
@@ -86,8 +86,8 @@ ADE uses your desktop's keyring, such as GNOME Keyring or KWallet, when it has o
 | iOS simulator | Runs on a Mac. A Linux window can still use the one on a paired Mac. |
 | Global capture gesture | Not available. |
 | Apple Music and Spotify playback | Not available. |
-| HEIC and HEIF photos | Not converted, so ADE won't attach them. Convert them to JPEG first. |
-| Keeping the machine awake | "While I'm away" stops idle sleep on systemd distributions while you're logged in to the desktop. ADE can't keep it awake with the lid closed. |
+| HEIC and HEIF photos | Not converted, so Daex won't attach them. Convert them to JPEG first. |
+| Keeping the machine awake | "While I'm away" stops idle sleep on systemd distributions while you're logged in to the desktop. Daex can't keep it awake with the lid closed. |
 
 Each lane can still have its own [Linux screen](/computer-use/overview) for agents to drive.
 
@@ -97,7 +97,7 @@ Each lane can still have its own [Linux screen](/computer-use/overview) for agen
   <Card title="Connect a machine" icon="network-wired" href="/getting-started/connect-machine">
     Reach this machine from your other computers and your phone.
   </Card>
-  <Card title="ADE Beta" icon="flask" href="/getting-started/ade-beta">
+  <Card title="Daex Beta" icon="flask" href="/getting-started/ade-beta">
     Get new builds first.
   </Card>
 </CardGroup>

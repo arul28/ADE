@@ -7,38 +7,38 @@ icon: "wrench"
 Most issues come down to one of a few things: the brain isn't running, a provider isn't authenticated, two devices aren't on the same network, or a remote SSH route is down. Two commands answer most questions:
 
 ```bash
-ade brain status --text   # endpoint, service, and sync state
-ade doctor                # local runtime, git, GitHub, Linear, and provider readiness
+daex brain status --text   # endpoint, service, and sync state
+daex doctor                # local runtime, git, GitHub, Linear, and provider readiness
 ```
 
 <Tip>
-`ade doctor` reports local readiness only — it never calls provider, GitHub, or Linear networks and never prints secret values. It's safe to run anytime.
+`daex doctor` reports local readiness only — it never calls provider, GitHub, or Linear networks and never prints secret values. It's safe to run anytime.
 </Tip>
 
-If a check fails and you'd rather not work it by hand, `ade triage` hands the whole thing to a coding agent: it writes a redacted machine context plus a repair playbook to a temp directory and starts the first agent ADE has already downloaded (`claude`, `codex`, `cursor-agent`, `opencode`, `droid`, `muse`). Inside an agent session already, run `ade triage --agent` — it prints the two file paths and a prompt instead of launching anything.
+If a check fails and you'd rather not work it by hand, `daex triage` hands the whole thing to a coding agent: it writes a redacted machine context plus a repair playbook to a temp directory and starts the first agent Daex has already downloaded (`claude`, `codex`, `cursor-agent`, `opencode`, `droid`, `muse`). Inside an agent session already, run `daex triage --agent` — it prints the two file paths and a prompt instead of launching anything.
 
 <AccordionGroup>
   <Accordion title="The app won't connect / nothing loads" icon="plug">
-    The desktop app, the web client, and the iOS app are all clients of the **brain** — the always-on ADE process for your channel. If it isn't running, clients have nothing to attach to.
+    The desktop app, the web client, and the iOS app are all clients of the **brain** — the always-on Daex process for your channel. If it isn't running, clients have nothing to attach to.
 
     ```bash
-    ade brain status --text   # is the endpoint listening? is the service loaded?
-    ade brain start           # load the login service
-    ade brain restart         # re-exec after an app update
-    ade doctor                # broader local readiness check
+    daex brain status --text   # is the endpoint listening? is the service loaded?
+    daex brain start           # load the login service
+    daex brain restart         # re-exec after an app update
+    daex doctor                # broader local readiness check
     ```
 
-    After a desktop update, the brain re-execs the new bundled CLI on first launch. If clients still look stale, `ade brain restart` forces it. Before restarting, close active chats, terminals, and mobile sessions that depend on the brain.
+    After a desktop update, the brain re-execs the new bundled CLI on first launch. If clients still look stale, `daex brain restart` forces it. Before restarting, close active chats, terminals, and mobile sessions that depend on the brain.
   </Accordion>
 
   <Accordion title="A provider shows no models" icon="brain">
     A provider only lists models once it's authenticated.
 
     - **Add the key.** Open **Settings → AI**, connect the provider (Claude subscription or Anthropic key, Cursor API key, OpenCode backend, etc.), and confirm a green status.
-    - **Give discovery a moment.** Cursor and Droid model lists are discovered live and served stale-while-revalidate — a freshly connected provider may need a refresh in **Settings → AI**, or an ADE restart.
-    - **Wait for the download.** ADE downloads its own copy of each agent the first time a machine uses it; you never install the CLI yourself. While it downloads, the provider reads "Downloading … for this machine". If the download failed, press **Retry** on the provider's page or on the chat card.
-    - **For agents that aren't downloaded or signed in yet**, ADE surfaces an inline card in chat with a Download / Retry button or a sign-in button that opens a tracked terminal on the chat's machine.
-    - **Check `ade doctor`** — it reports provider/model readiness from local config, API-key references, and whether ADE's copy of each provider CLI is downloaded.
+    - **Give discovery a moment.** Cursor and Droid model lists are discovered live and served stale-while-revalidate — a freshly connected provider may need a refresh in **Settings → AI**, or a Daex restart.
+    - **Wait for the download.** Daex downloads its own copy of each agent the first time a machine uses it; you never install the CLI yourself. While it downloads, the provider reads "Downloading … for this machine". If the download failed, press **Retry** on the provider's page or on the chat card.
+    - **For agents that aren't downloaded or signed in yet**, Daex surfaces an inline card in chat with a Download / Retry button or a sign-in button that opens a tracked terminal on the chat's machine.
+    - **Check `daex doctor`** — it reports provider/model readiness from local config, API-key references, and whether Daex's copy of each provider CLI is downloaded.
   </Accordion>
 
   <Accordion title="My phone isn't syncing" icon="mobile">
@@ -46,34 +46,34 @@ If a check fails and you'd rather not work it by hand, `ade triage` hands the wh
 
     1. **Paired with a PIN.** Generate or set a pairing PIN on the machine and enter it on the phone:
        ```bash
-       ade brain pin generate
-       ade brain pin set 123456
+       daex brain pin generate
+       daex brain pin set 123456
        ```
        You can also manage the PIN from the desktop Mobile control.
     2. **Reachable on the network.** The phone and the machine must be on the same LAN, or both on a Tailscale tailnet. Install Tailscale on both when they aren't on the same local network.
 
-    Confirm the brain's sync is up with `ade brain status --text` (it reports sync state). Note that a **manual runtime** (`ade runtime run`) has sync off by design — pairing only works against the brain.
+    Confirm the brain's sync is up with `daex brain status --text` (it reports sync state). Note that a **manual runtime** (`daex runtime run`) has sync off by design — pairing only works against the brain.
   </Accordion>
 
   <Accordion title="A lane won't delete or is stuck dirty" icon="code-branch">
     A lane is a git worktree, so a normal delete refuses when the worktree has uncommitted changes. Force it (and optionally remove the branch):
 
     ```bash
-    ade lanes list --text                            # find the lane id
-    ade lanes delete <lane-id> --force --delete-branch
+    daex lanes list --text                            # find the lane id
+    daex lanes delete <lane-id> --force --delete-branch
     ```
 
-    If the lane is an **attached external worktree** (one you created with `git worktree` outside ADE), ADE tracks it but never moves or cleans it — detach it in ADE and remove the worktree yourself with `git worktree remove`.
+    If the lane is an **attached external worktree** (one you created with `git worktree` outside Daex), Daex tracks it but never moves or cleans it — detach it in Daex and remove the worktree yourself with `git worktree remove`.
   </Accordion>
 
   <Accordion title="A remote machine won't connect over SSH" icon="server">
-    Remote machines connect over SSH and run `ade rpc --stdio` on the far side. ADE surfaces the specific failure inline on the remote target; common ones:
+    Remote machines connect over SSH and run `ade rpc --stdio` on the far side. Daex surfaces the specific failure inline on the remote target; common ones:
 
-    - **`SSH server at <host:port> closed the connection before ADE could finish the SSH handshake`** — the TCP route opened but the server reset the handshake. Check Remote Login / sshd, firewall rules, and any Tailscale SSH policy.
-    - **`Remote machine was manually disconnected. Connect again to use this remote project.`** — you explicitly disconnected; ADE won't reconnect until you press **Connect**.
-    - **`ADE stopped automatic reconnecting after 10 failed attempts. Press Connect to try again.`** — implicit reconnects were paused after repeated failures. Press **Connect** once the box is reachable.
-    - **`ADE service is not installed … no bundled ADE service is available`** — the desktop has no bundled runtime for that remote's architecture. Use a release build that includes runtime resources for it, or install `ade` on the remote.
-    - **`Remote ADE service version mismatch` / `does not support multi-project mode`** — the remote is running an older or mismatched runtime. Re-bootstrap from a current desktop build.
+    - **`SSH server at <host:port> closed the connection before Daex could finish the SSH handshake`** — the TCP route opened but the server reset the handshake. Check Remote Login / sshd, firewall rules, and any Tailscale SSH policy.
+    - **`Remote machine was manually disconnected. Connect again to use this remote project.`** — you explicitly disconnected; Daex won't reconnect until you press **Connect**.
+    - **`Daex stopped automatic reconnecting after 10 failed attempts. Press Connect to try again.`** — implicit reconnects were paused after repeated failures. Press **Connect** once the box is reachable.
+    - **`Daex service is not installed … no bundled Daex service is available`** — the desktop has no bundled runtime for that remote's architecture. Use a release build that includes runtime resources for it, or install `daex` on the remote.
+    - **`Remote Daex service version mismatch` / `does not support multi-project mode`** — the remote is running an older or mismatched runtime. Re-bootstrap from a current desktop build.
 
     An agent that is not downloaded or not signed in on the remote (Claude / Codex / Cursor / Droid and the rest) appears as an inline card whose Download / sign-in buttons act on the **remote** machine. Each machine downloads its own copy of each agent.
   </Accordion>
@@ -84,11 +84,11 @@ If a check fails and you'd rather not work it by hand, `ade triage` hands the wh
 </AccordionGroup>
 
 <Note>
-When in doubt, run `ade doctor` and `ade actions list --text`. The first reports what's ready locally; the second confirms the brain is reachable and lists every action it exposes.
+When in doubt, run `daex doctor` and `daex actions list --text`. The first reports what's ready locally; the second confirms the brain is reachable and lists every action it exposes.
 </Note>
 
 <CardGroup cols={2}>
-  <Card title="ade CLI" icon="terminal" href="/reference/cli">
+  <Card title="daex CLI" icon="terminal" href="/reference/cli">
     The full command reference behind these fixes.
   </Card>
   <Card title="Architecture" icon="diagram-project" href="/architecture">

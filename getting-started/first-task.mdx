@@ -4,15 +4,15 @@ description: "Create a lane, start an agent, watch the tool calls, and review th
 icon: "rocket"
 ---
 
-This is the shortest path from an open repository to a reviewed change. It assumes ADE is installed and at least one provider is connected — see [Set up ADE](/getting-started/install) and [Connect a provider](/getting-started/connect-provider).
+This is the shortest path from an open repository to a reviewed change. It assumes Daex is installed and at least one provider is connected — see [Set up Daex](/getting-started/install) and [Connect a provider](/getting-started/connect-provider).
 
 <Frame caption="The Work tab: lanes on the left, the active chat and composer on the right.">
-  <img src="/assets/readme/start.gif" alt="ADE's Work tab with lanes and the composer" />
+  <img src="/assets/readme/start.gif" alt="Daex's Work tab with lanes and the composer" />
 </Frame>
 
 ## 1. Create a lane
 
-A **lane** is ADE's name for a git worktree: an isolated branch and working copy for one task. It keeps agent work out of your main checkout, so you can run several tasks in parallel without colliding.
+A **lane** is Daex's name for a git worktree: an isolated branch and working copy for one task. It keeps agent work out of your main checkout, so you can run several tasks in parallel without colliding.
 
 <Note>
 Your repo root is already the **main checkout** — it always exists and is edit-protected. You don't pick a "lane type"; you add a new worktree lane for the task, branched off your default branch.
@@ -29,13 +29,13 @@ Your repo root is already the **main checkout** — it always exists and is edit
     For your first lane, use your default branch — usually `main`.
   </Step>
   <Step title="Create">
-    ADE creates a Git worktree under `.ade/worktrees/` and checks out a branch for the lane.
+    Daex creates a Git worktree under `.ade/worktrees/` and checks out a branch for the lane.
   </Step>
 </Steps>
 
-### Or let ADE create it
+### Or let Daex create it
 
-Describe a task in chat and ADE spins up a fresh worktree, auto-named from the task — no stashing, no context switch.
+Describe a task in chat and Daex spins up a fresh worktree, auto-named from the task — no stashing, no context switch.
 
 <Frame caption="A lane with its branch, open PR, CI state, and the chat that produced it.">
   <img src="/media/current/lanes.jpg" alt="A lane selected in the Lanes tab" />
@@ -53,7 +53,7 @@ Describe a task in chat and ADE spins up a fresh worktree, auto-named from the t
 
 <Steps>
   <Step title="Open a new chat">
-    In **Work**, start a new chat in your lane. You can also let ADE create the lane from the prompt.
+    In **Work**, start a new chat in your lane. You can also let Daex create the lane from the prompt.
   </Step>
   <Step title="Pick a provider and model">
     Use the default, or choose any connected provider from the model selector. Thirteen runtimes are supported; see [Agents and models](/concepts/agents-and-models).

@@ -1,14 +1,14 @@
 ---
 title: "Open your first project"
-description: "Point ADE at a Git repository — open a local folder or clone from GitHub — and let it create local project state."
+description: "Point Daex at a Git repository — open a local folder or clone from GitHub — and let it create local project state."
 icon: "folder-open"
 ---
 
-Use **Open Repository** on the welcome screen or press `Cmd+O` (`Ctrl+O` on Windows). Choose the root of a Git repository, or clone one straight from GitHub. If you pick a subfolder, ADE finds the repository root automatically.
+Use **Open Repository** on the welcome screen or press `Cmd+O` (`Ctrl+O` on Windows). Choose the root of a Git repository, or clone one straight from GitHub. If you pick a subfolder, Daex finds the repository root automatically.
 
-## What ADE creates
+## What Daex creates
 
-On first open, ADE creates a local `.ade/` directory:
+On first open, Daex creates a local `.ade/` directory:
 
 ```text
 .ade/
@@ -23,10 +23,10 @@ This holds local runtime state, lane worktrees, transcripts, proof, and credenti
 
 Your repository root becomes the **main checkout** — it always exists and is edit-protected. Every other lane you add is a separate worktree under `.ade/worktrees/`, so agent work never touches your main checkout until you choose to merge it.
 
-If the folder you pick is itself a Git worktree of another repository, ADE recognizes that and offers to open it as a lane in the owning project instead of creating a duplicate project. See [Repos and worktrees](/lanes/overview#repos-projects-and-worktrees).
+If the folder you pick is itself a Git worktree of another repository, Daex recognizes that and offers to open it as a lane in the owning project instead of creating a duplicate project. See [Repos and worktrees](/lanes/overview#repos-projects-and-worktrees).
 
 <Warning>
-Do not commit `.ade/` wholesale. It contains machine-local paths and state. If your project needs shared ADE defaults later, use the project configuration flow rather than committing local secrets or runtime files.
+Do not commit `.ade/` wholesale. It contains machine-local paths and state. If your project needs shared Daex defaults later, use the project configuration flow rather than committing local secrets or runtime files.
 </Warning>
 
 ## First setup

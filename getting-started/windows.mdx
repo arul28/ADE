@@ -1,10 +1,10 @@
 ---
-title: "ADE on Windows"
-description: "What Windows supports, what is missing compared with macOS, and how to install ADE."
+title: "Daex on Windows"
+description: "What Windows supports, what is missing compared with macOS, and how to install Daex."
 icon: "windows"
 ---
 
-ADE supports Windows 10/11 x64. The Windows build is the same app, brain, and CLI — lanes, agent chat, PRs, terminals, the built-in browser, and phone pairing all work. A short list of macOS-native capabilities has no Windows counterpart, and this page names all of them.
+Daex supports Windows 10/11 x64. The Windows build is the same app, brain, and CLI — lanes, agent chat, PRs, terminals, the built-in browser, and phone pairing all work. A short list of macOS-native capabilities has no Windows counterpart, and this page names all of them.
 
 ## Requirements
 
@@ -13,10 +13,10 @@ ADE supports Windows 10/11 x64. The Windows build is the same app, brain, and CL
     ARM64 is not supported. There is no emulated fallback.
   </Card>
   <Card title="Git" icon="git-alt">
-    Git for Windows on `PATH` — ADE uses branches and worktrees to run lanes.
+    Git for Windows on `PATH` — Daex uses branches and worktrees to run lanes.
   </Card>
   <Card title="One AI provider" icon="key">
-    Claude Code, Codex, Cursor, Factory Droid, or OpenCode. ADE downloads its own Windows build of each agent; WSL is not required.
+    Claude Code, Codex, Cursor, Factory Droid, or OpenCode. Daex downloads its own Windows build of each agent; WSL is not required.
   </Card>
 </CardGroup>
 
@@ -28,7 +28,7 @@ Download the [**signed Windows installer**](https://ade-app.dev/download/windows
 irm https://ade-app.dev/install.ps1 | iex
 ```
 
-The installer is a **per-user NSIS installer**. It does not ask for administrator rights, installs into your user profile, and adds the app, the `ade` CLI and the background ADE brain.
+The installer is a **per-user NSIS installer**. It does not ask for administrator rights, installs into your user profile, and adds the app, the `daex` CLI and the background Daex brain.
 
 The brain runs from a per-user startup entry, so it comes back at your next sign-in without a service install or an elevated shell.
 
@@ -40,7 +40,7 @@ Pull-request preview builds are unsigned and are for internal testing, not gener
 
 <CardGroup cols={2}>
   <Card title="Computer use is browser-only" icon="camera">
-    Native OS screenshot, video, and GUI automation are unavailable. App Control over CDP, the built-in browser, and attaching proof files with `ade proof attach` all work.
+    Native OS screenshot, video, and GUI automation are unavailable. App Control over CDP, the built-in browser, and attaching proof files with `daex proof attach` all work.
   </Card>
   <Card title="No iOS Simulator or Xcode Preview" icon="mobile-screen">
     Both need macOS and Xcode. The Simulator drawer is hidden on Windows.
@@ -58,8 +58,8 @@ Pull-request preview builds are unsigned and are for internal testing, not gener
 
 Two more boundaries worth knowing before you plan around them:
 
-- **Remote machines work both ways.** A Windows machine can drive a remote macOS, Linux, or Windows runtime over SSH, provided you installed a released build. Windows can also *be* the target: ADE bootstraps its runtime onto Windows 10 22H2 and Windows 11 x64 boxes over OpenSSH Server, which needs PowerShell 5.1 or newer and the built-in `tar.exe`. WSL, ARM64, and Windows Server are not supported targets.
-- **Some operations need real symlinks.** ADE uses junctions where it can. The rest require Developer Mode or an elevated shell, which Windows requires for symlink creation.
+- **Remote machines work both ways.** A Windows machine can drive a remote macOS, Linux, or Windows runtime over SSH, provided you installed a released build. Windows can also *be* the target: Daex bootstraps its runtime onto Windows 10 22H2 and Windows 11 x64 boxes over OpenSSH Server, which needs PowerShell 5.1 or newer and the built-in `tar.exe`. WSL, ARM64, and Windows Server are not supported targets.
+- **Some operations need real symlinks.** Daex uses junctions where it can. The rest require Developer Mode or an elevated shell, which Windows requires for symlink creation.
 
 Anything else that looks weaker or missing on Windows is a bug worth reporting, not a known gap.
 

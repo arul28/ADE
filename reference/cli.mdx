@@ -1,18 +1,22 @@
 ---
-title: "ade CLI"
-description: "The ade command is the typed control plane for ADE from any shell — the same lanes, chats, PRs, and tests, scriptable for humans and agents alike."
+title: "daex CLI"
+description: "The daex command is the typed control plane for Daex from any shell — the same lanes, chats, PRs, and tests, scriptable for humans and agents alike."
 icon: "terminal"
 ---
 
-`ade` is the typed control plane for ADE. Everything you do in the desktop app — create lanes, run agents, ship PRs, kick off tests, attach Linear issues — has a CLI command, so you can drive ADE from any shell. Agents running inside ADE use the same commands, which is how they inspect and operate the workspace they live in.
+`daex` is the typed control plane for Daex. Everything you do in the desktop app — create lanes, run agents, ship PRs, kick off tests, attach Linear issues — has a CLI command, so you can drive Daex from any shell. Agents running inside Daex use the same commands, which is how they inspect and operate the workspace they live in.
+
+<Note>
+The command used to be `ade`, and `ade` still works as an alias for `daex`, so existing scripts and habits keep running.
+</Note>
 
 ```bash
-ade lanes create "fix-checkout-flow"   # spin up a worktree for a task
-ade brain status --text                # check the machine runtime
+daex lanes create "fix-checkout-flow"   # spin up a worktree for a task
+daex brain status --text                # check the machine runtime
 ```
 
 <Tip>
-Two commands discover everything: `ade <group> --help` for exact flags on any command, and `ade actions list --text` for the full service-backed action catalog behind the typed commands.
+Two commands discover everything: `daex <group> --help` for exact flags on any command, and `daex actions list --text` for the full service-backed action catalog behind the typed commands.
 </Tip>
 
 ## Output modes
@@ -20,8 +24,8 @@ Two commands discover everything: `ade <group> --help` for exact flags on any co
 Most commands take an explicit output mode. Use `--text` for a human-readable summary and `--json` for stable, scriptable fields (the default when output is piped).
 
 ```bash
-ade lanes list --text   # readable summary
-ade lanes list --json   # stable JSON for scripts and agents
+daex lanes list --text   # readable summary
+daex lanes list --json   # stable JSON for scripts and agents
 ```
 
 ## Command groups
@@ -31,12 +35,12 @@ ade lanes list --json   # stable JSON for scripts and agents
     Register projects and manage worktrees (lanes).
 
     ```bash
-    ade init                                # add the current directory as a project
-    ade projects list --text                # list registered projects
-    ade lanes list --text                   # list lanes in the active project
-    ade lanes create "fix-checkout-flow"    # create a lane from the default branch
-    ade lanes create --name auth-ui --from auth-base --on local
-    ade lanes delete <lane-id> --force --delete-branch
+    daex init                                # add the current directory as a project
+    daex projects list --text                # list registered projects
+    daex lanes list --text                   # list lanes in the active project
+    daex lanes create "fix-checkout-flow"    # create a lane from the default branch
+    daex lanes create --name auth-ui --from auth-base --on local
+    daex lanes delete <lane-id> --force --delete-branch
     ```
   </Accordion>
 
@@ -44,10 +48,10 @@ ade lanes list --json   # stable JSON for scripts and agents
     Start and inspect agent chats, terminals, and CLI sessions inside a lane.
 
     ```bash
-    ade chat list --lane <lane-id> --text
-    ade chat create --lane <lane-id> --model gpt-5.5
-    ade shell start-cli codex --lane <lane-id> --permission-mode edit --message "fix failing tests"
-    ade shell start --lane <lane-id> -- npm test
+    daex chat list --lane <lane-id> --text
+    daex chat create --lane <lane-id> --model gpt-5.5
+    daex shell start-cli codex --lane <lane-id> --permission-mode edit --message "fix failing tests"
+    daex shell start --lane <lane-id> -- npm test
     ```
   </Accordion>
 
@@ -55,12 +59,12 @@ ade lanes list --json   # stable JSON for scripts and agents
     Commit, push, and turn a lane into a pull request; read CI and comments.
 
     ```bash
-    ade git commit --lane <lane-id>
-    ade git push --lane <lane-id>
-    ade prs create --lane <lane-id> --base main --title "Fix checkout flow" --text
-    ade prs list-open --text
-    ade prs checks <pr> --text              # CI status for a PR
-    ade prs comments <pr> --text
+    daex git commit --lane <lane-id>
+    daex git push --lane <lane-id>
+    daex prs create --lane <lane-id> --base main --title "Fix checkout flow" --text
+    daex prs list-open --text
+    daex prs checks <pr> --text              # CI status for a PR
+    daex prs comments <pr> --text
     ```
   </Accordion>
 
@@ -68,37 +72,37 @@ ade lanes list --json   # stable JSON for scripts and agents
     Run test suites in a lane.
 
     ```bash
-    ade tests run --lane <lane-id> --suite unit --wait
+    daex tests run --lane <lane-id> --suite unit --wait
     ```
   </Accordion>
 
   <Accordion title="Linear" icon="list-check">
-    Attach and update Linear issues through ADE's own Linear connection — no API key needed.
+    Attach and update Linear issues through Daex's own Linear connection — no API key needed.
 
     ```bash
-    ade lanes create --name ENG-431 --issue-id ENG-431 --start-chat --provider codex --type subagent
-    ade linear attach --this-session --issue-id ENG-431
-    ade linear comment "Pushed a fix; CI running"
-    ade linear set-state ENG-431 <state-id>
+    daex lanes create --name ENG-431 --issue-id ENG-431 --start-chat --provider codex --type subagent
+    daex linear attach --this-session --issue-id ENG-431
+    daex linear comment "Pushed a fix; CI running"
+    daex linear set-state ENG-431 <state-id>
     ```
   </Accordion>
 
   <Accordion title="Account & machines" icon="user">
-    Link this machine to your ADE account so you can reach it from ADE desktop,
-    the web client, and iOS. `ade connect` is idempotent — re-running it on a
+    Link this machine to your Daex account so you can reach it from Daex desktop,
+    the web client, and iOS. `daex connect` is idempotent — re-running it on a
     connected machine just prints status.
 
     ```bash
-    ade connect                             # sign in, install the service, publish this machine
-    ade connect --status --text             # report the three steps, change nothing
-    ade connect --headless                  # sign in from another device: QR code, link, and code
-    ade connect --no-login                  # service only; stay local/LAN-only
-    ade connect --no-service                # account only; skip the login service
-    ade connect --timeout 120               # seconds to wait for the machine row (default 60)
-    ade login                               # sign in without touching the service
-    ade machines list --text                # machines registered to this account
-    ade machines reconnect                  # re-pair this machine after it was removed
-    ade logout                              # undo the account half of connect
+    daex connect                             # sign in, install the service, publish this machine
+    daex connect --status --text             # report the three steps, change nothing
+    daex connect --headless                  # sign in from another device: QR code, link, and code
+    daex connect --no-login                  # service only; stay local/LAN-only
+    daex connect --no-service                # account only; skip the login service
+    daex connect --timeout 120               # seconds to wait for the machine row (default 60)
+    daex login                               # sign in without touching the service
+    daex machines list --text                # machines registered to this account
+    daex machines reconnect                  # re-pair this machine after it was removed
+    daex logout                              # undo the account half of connect
     ```
 
     The machine row is published by the running brain, not by this command — so
@@ -108,34 +112,34 @@ ade lanes list --json   # stable JSON for scripts and agents
 
     Removing a machine from your account is deliberate and terminal: heartbeats
     never re-register it, and its Activity, notifications, and Live Activities
-    stop. `ade machines reconnect` is the way back. It takes no selector — it
+    stop. `daex machines reconnect` is the way back. It takes no selector — it
     always re-pairs the machine you run it on — and it needs proof of a freshly
     completed interactive sign-in, so it prompts for one when the account
     directory asks and finishes the re-pair as soon as that lands. Only once the
     directory accepts does it lift the push gate, so Activity, alerts, and
-    badges resume without restarting the brain. A normal `ade login` runs the
-    same repair automatically, and ADE desktop offers it as **Reconnect this
+    badges resume without restarting the brain. A normal `daex login` runs the
+    same repair automatically, and Daex desktop offers it as **Reconnect this
     computer** in Settings.
   </Accordion>
 
   <Accordion title="Brain & pairing" icon="microchip">
-    Control the machine-owned ADE runtime (the brain) and pair a phone.
+    Control the machine-owned Daex runtime (the brain) and pair a phone.
 
     ```bash
-    ade brain status --text                 # endpoint, service, and sync state
-    ade brain start                         # load the login service
-    ade brain stop                          # unload the login service
-    ade brain restart                       # re-exec after an app update
-    ade brain pin generate                  # generate a phone pairing PIN
-    ade brain pin set 123456                # set an explicit pairing PIN
+    daex brain status --text                 # endpoint, service, and sync state
+    daex brain start                         # load the login service
+    daex brain stop                          # unload the login service
+    daex brain restart                       # re-exec after an app update
+    daex brain pin generate                  # generate a phone pairing PIN
+    daex brain pin set 123456                # set an explicit pairing PIN
     ```
   </Accordion>
 
   <Accordion title="Proof" icon="camera">
-    List the computer-use proof artifacts ADE captured for a chat or session.
+    List the computer-use proof artifacts Daex captured for a chat or session.
 
     ```bash
-    ade proof list --arg ownerKind=chat --arg ownerId=<session-id>
+    daex proof list --arg ownerKind=chat --arg ownerId=<session-id>
     ```
   </Accordion>
 
@@ -143,27 +147,27 @@ ade lanes list --json   # stable JSON for scripts and agents
     Find commands, flags, and the full action catalog, and check local readiness.
 
     ```bash
-    ade <group> --help                      # exact flags for any command
-    ade actions list --text                 # full service-backed action catalog
-    ade actions run git.stageFile --arg laneId=<lane-id> --arg path=src/index.ts
-    ade doctor                              # local runtime, git, provider readiness
-    ade triage                              # hand a broken install to a coding agent ADE has downloaded
-    ade triage --agent --text               # print the context + playbook paths instead of launching one
-    ade skill list --text                   # bundled agent skills
+    daex <group> --help                      # exact flags for any command
+    daex actions list --text                 # full service-backed action catalog
+    daex actions run git.stageFile --arg laneId=<lane-id> --arg path=src/index.ts
+    daex doctor                              # local runtime, git, provider readiness
+    daex triage                              # hand a broken install to a coding agent Daex has downloaded
+    daex triage --agent --text               # print the context + playbook paths instead of launching one
+    daex skill list --text                   # bundled agent skills
     ```
   </Accordion>
 </AccordionGroup>
 
 <Note>
-Prefer typed commands — they validate arguments and return stable fields. Reach for `ade actions run <domain.action>` only when no typed command covers the workflow yet.
+Prefer typed commands — they validate arguments and return stable fields. Reach for `daex actions run <domain.action>` only when no typed command covers the workflow yet.
 </Note>
 
 ## Full reference
 
 For every command, subcommand, flag, and the runtime modes behind them, see the complete CLI README on GitHub.
 
-<Card title="ade CLI README" icon="github" href="https://github.com/arul28/ADE/blob/main/apps/ade-cli/README.md">
-  The full `ade` command reference, runtime modes, and install paths.
+<Card title="daex CLI README" icon="github" href="https://github.com/arul28/ADE/blob/main/apps/ade-cli/README.md">
+  The full `daex` command reference, runtime modes, and install paths.
 </Card>
 
 <CardGroup cols={2}>

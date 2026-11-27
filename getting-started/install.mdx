@@ -1,10 +1,10 @@
 ---
-title: "Install ADE"
-description: "Install ADE with one command on macOS, Linux, or Windows, or download the desktop app. Add the iOS companion from TestFlight, then sign in on the machine or from your phone."
+title: "Install Daex"
+description: "Install Daex with one command on macOS, Linux, or Windows, or download the desktop app. Add the iOS companion from TestFlight, then sign in on the machine or from your phone."
 icon: "download"
 ---
 
-ADE is a native desktop app, a headless engine, and an iOS companion. The desktop app is available on macOS, Windows 10/11 x64, and Linux x64 and arm64. The brain can also run headless on a Linux server. The fastest path on every platform is one command.
+Daex is a native desktop app, a headless engine, and an iOS companion. The desktop app is available on macOS, Windows 10/11 x64, and Linux x64 and arm64. The brain can also run headless on a Linux server. The fastest path on every platform is one command.
 
 ## Install from your terminal
 
@@ -18,9 +18,9 @@ irm https://ade-app.dev/install.ps1 | iex
 ```
 </CodeGroup>
 
-This installs the **brain** — ADE's always-on engine. The script downloads a self-contained runtime binary, verifies it against the published `SHA256SUMS`, and stages it under `~/.ade`, rolling back if anything fails. There is no Node, npm, or other prerequisite.
+This installs the **brain** — Daex's always-on engine. The script downloads a self-contained runtime binary, verifies it against the published `SHA256SUMS`, and stages it under `~/.ade`, rolling back if anything fails. There is no Node, npm, or other prerequisite.
 
-It then registers the brain as a per-user background service, offers to sign you in with [`ade connect`](/getting-started/connect-machine), and — on macOS and Windows — offers to install the desktop app too. On Linux, [download the app](/getting-started/linux) if the machine has a screen.
+It then registers the brain as a per-user background service, offers to sign you in with [`daex connect`](/getting-started/connect-machine), and — on macOS and Windows — offers to install the desktop app too. On Linux, [download the app](/getting-started/linux) if the machine has a screen.
 
 | Platform | Background service |
 | --- | --- |
@@ -31,11 +31,11 @@ It then registers the brain as a per-user background service, offers to sign you
 None of them need an administrator or elevated shell.
 
 <Warning>
-On macOS and Linux the installer does **not** edit your shell profile. It installs `ade` to `~/.ade/bin` and prints the line to add — put that directory on your `PATH` to run `ade` from a new shell. The Windows installer adds its directory to your user `PATH` for you (pass `-NoPath` to skip that).
+On macOS and Linux the installer does **not** edit your shell profile. It installs `daex` to `~/.ade/bin` and prints the line to add — put that directory on your `PATH` to run `daex` from a new shell. The Windows installer adds its directory to your user `PATH` for you (pass `-NoPath` to skip that).
 </Warning>
 
 <Note>
-When no terminal is attached — CI, or a provisioning script — the installer skips its prompts and prints the follow-up commands instead. `ADE_INSTALL_NO_PROMPT=1` (or `-NoPrompt` for `install.ps1`) opts out explicitly. You can always run `ade connect` later.
+When no terminal is attached — CI, or a provisioning script — the installer skips its prompts and prints the follow-up commands instead. `ADE_INSTALL_NO_PROMPT=1` (or `-NoPrompt` for `install.ps1`) opts out explicitly. You can always run `daex connect` later.
 </Note>
 
 ## Or download the app
@@ -51,7 +51,7 @@ When no terminal is attached — CI, or a provisioning script — the installer 
     brew install --cask arul28/ade/ade
     ```
 
-    This taps the ADE cask and installs the latest macOS build into `/Applications`. Update later with:
+    This taps the Daex cask and installs the latest macOS build into `/Applications`. Update later with:
 
     ```bash
     brew upgrade --cask ade
@@ -60,17 +60,17 @@ When no terminal is attached — CI, or a provisioning script — the installer 
   <Accordion title="Windows" icon="windows">
     Download the [**signed Windows installer**](https://ade-app.dev/download/windows) for Windows 10/11 x64.
 
-    It is a per-user NSIS installer: no administrator rights, and it installs the app, the `ade` CLI and the background ADE brain into your user profile. Read [ADE on Windows](/getting-started/windows) for the capabilities that differ from macOS.
+    It is a per-user NSIS installer: no administrator rights, and it installs the app, the `daex` CLI and the background Daex brain into your user profile. Read [Daex on Windows](/getting-started/windows) for the capabilities that differ from macOS.
   </Accordion>
   <Accordion title="Linux" icon="linux">
-    Download the **AppImage** ([x64](https://ade-app.dev/download/linux-x64-appimage), [arm64](https://ade-app.dev/download/linux-arm64-appimage)), which updates itself, or the **`.deb`** ([x64](https://ade-app.dev/download/linux-x64-deb), [arm64](https://ade-app.dev/download/linux-arm64-deb)) for Debian and Ubuntu. Read [ADE on Linux](/getting-started/linux) for which one to pick.
+    Download the **AppImage** ([x64](https://ade-app.dev/download/linux-x64-appimage), [arm64](https://ade-app.dev/download/linux-arm64-appimage)), which updates itself, or the **`.deb`** ([x64](https://ade-app.dev/download/linux-x64-deb), [arm64](https://ade-app.dev/download/linux-arm64-deb)) for Debian and Ubuntu. Read [Daex on Linux](/getting-started/linux) for which one to pick.
 
-    On a server with no screen, install just the brain with the one-liner above and control it from another ADE desktop, your phone, or the web. See [Connect a machine](/getting-started/connect-machine).
+    On a server with no screen, install just the brain with the one-liner above and control it from another Daex desktop, your phone, or the web. See [Connect a machine](/getting-started/connect-machine).
   </Accordion>
   <Accordion title="Install the iOS companion" icon="mobile-screen">
-    Open [TestFlight](https://testflight.apple.com/join/ZSdJGKPy) on your iPhone and install ADE Mobile. Sign in with the same account to see your machines automatically, or pair directly from the desktop **Mobile** control.
+    Open [TestFlight](https://testflight.apple.com/join/ZSdJGKPy) on your iPhone and install Daex Mobile. Sign in with the same account to see your machines automatically, or pair directly from the desktop **Mobile** control.
 
-    Beta iPhone builds go to a separate app, **ADE Beta**, with an orange icon. Join it from the [public TestFlight beta](https://testflight.apple.com/join/SsxDjqbF). It installs beside the normal app and keeps its own data and pairings, so a bad beta never replaces the app you rely on. Either app connects to machines on either track. See [ADE Beta](/getting-started/ade-beta).
+    Beta iPhone builds go to a separate app, **Daex Beta**, with an orange icon. Join it from the [public TestFlight beta](https://testflight.apple.com/join/SsxDjqbF). It installs beside the normal app and keeps its own data and pairings, so a bad beta never replaces the app you rely on. Either app connects to machines on either track. See [Daex Beta](/getting-started/ade-beta).
   </Accordion>
 </AccordionGroup>
 
@@ -82,10 +82,10 @@ Want the brain binary directly, without piping a script? Download it for [`darwi
 
 <CardGroup cols={3}>
   <Card title="macOS 13+, Windows 10/11, or Linux" icon="desktop">
-    macOS on Apple Silicon or Intel, shipped as a signed, notarized app. Windows supports x64 only — see [ADE on Windows](/getting-started/windows). Linux runs the desktop app or a headless brain on x64 and arm64 — see [ADE on Linux](/getting-started/linux).
+    macOS on Apple Silicon or Intel, shipped as a signed, notarized app. Windows supports x64 only — see [Daex on Windows](/getting-started/windows). Linux runs the desktop app or a headless brain on x64 and arm64 — see [Daex on Linux](/getting-started/linux).
   </Card>
   <Card title="Git" icon="git-alt">
-    Required — ADE uses branches and worktrees to run lanes.
+    Required — Daex uses branches and worktrees to run lanes.
   </Card>
   <Card title="One AI provider" icon="key">
     Needed to run agents. Connect it after launch — guest mode lets you explore first.
@@ -93,32 +93,32 @@ Want the brain binary directly, without piping a script? Download it for [`darwi
 </CardGroup>
 
 <Note>
-Behind a company proxy, set `HTTPS_PROXY` (and `NO_PROXY` for hosts that skip it) before you start ADE; the app and the brain both use it, and local addresses always go direct. ADE also trusts the root certificates your operating system trusts, so a company CA or a TLS-inspecting proxy works without extra setup.
+Behind a company proxy, set `HTTPS_PROXY` (and `NO_PROXY` for hosts that skip it) before you start Daex; the app and the brain both use it, and local addresses always go direct. Daex also trusts the root certificates your operating system trusts, so a company CA or a TLS-inspecting proxy works without extra setup.
 </Note>
 
 ## Launch and explore
 
-Open ADE and you land on the welcome screen, then the sign-in card. ADE needs a free account: it is what connects your machines, your phone, and the web client to each other.
+Open Daex and you land on the welcome screen, then the sign-in card. Daex needs a free account: it is what connects your machines, your phone, and the web client to each other.
 
 - Select **Sign in or create account** to sign in in the browser of this machine.
 - Select **Sign in with your phone or another device** to get a QR code and a short code. Scan the QR code with your phone, or enter the code on a different computer. Your password is never typed on this machine, which is what you want on a VM or a shared computer.
 
-After you sign in, add a repository and look around. Without an AI provider ADE starts in **guest mode**, so connect a provider when you are ready to run agents.
+After you sign in, add a repository and look around. Without an AI provider Daex starts in **guest mode**, so connect a provider when you are ready to run agents.
 
 <Note>
-The Brain and the `ade` CLI work on the machine itself with no account. Run `ade connect --no-login` to install the background service only.
+The Brain and the `daex` CLI work on the machine itself with no account. Run `daex connect --no-login` to install the background service only.
 </Note>
 
 <Note>
-ADE keeps itself current with a built-in auto-updater: it downloads new releases in the background and applies them on relaunch. Installed via Homebrew? Run `brew upgrade --cask ade` instead.
+Daex keeps itself current with a built-in auto-updater: it downloads new releases in the background and applies them on relaunch. Installed via Homebrew? Run `brew upgrade --cask ade` instead.
 
-Want new builds every few hours? Switch this machine to the **Beta** track with **Update track** in **Settings › General**. Beta builds come from `main`, show an orange icon, and use the same install, data and `ade` CLI; stable releases promote a beta that has already run. See [ADE Beta](/getting-started/ade-beta).
+Want new builds every few hours? Switch this machine to the **Beta** track with **Update track** in **Settings › General**. Beta builds come from `main`, show an orange icon, and use the same install, data and `daex` CLI; stable releases promote a beta that has already run. See [Daex Beta](/getting-started/ade-beta).
 
-Each machine has its own track and is offered the newest build on that track. **Settings › General** lists an update row for every machine, and one restart dialog shows each machine with its current and target build and whether its chats continue. If an update leaves ADE unable to start, an **ADE could not start** window offers **Try again**, **Go back** to the previous version, the logs folder, and details to copy.
+Each machine has its own track and is offered the newest build on that track. **Settings › General** lists an update row for every machine, and one restart dialog shows each machine with its current and target build and whether its chats continue. If an update leaves Daex unable to start, an **Daex could not start** window offers **Try again**, **Go back** to the previous version, the logs folder, and details to copy.
 </Note>
 
 <Info>
-On Windows 10/11 x64 the app, brain, and CLI all run, but native OS computer use and the iOS Simulator drawer are macOS-only. [ADE on Windows](/getting-started/windows) lists every difference. The iOS companion is available through TestFlight.
+On Windows 10/11 x64 the app, brain, and CLI all run, but native OS computer use and the iOS Simulator drawer are macOS-only. [Daex on Windows](/getting-started/windows) lists every difference. The iOS companion is available through TestFlight.
 </Info>
 
 ## Next
@@ -131,6 +131,6 @@ On Windows 10/11 x64 the app, brain, and CLI all run, but native OS computer use
     Add Claude Code, Codex, Cursor, Factory Droid, or OpenCode.
   </Card>
   <Card title="Open a project" icon="folder-open" href="/getting-started/open-project">
-    Point ADE at the Git repository you want it to manage.
+    Point Daex at the Git repository you want it to manage.
   </Card>
 </CardGroup>
