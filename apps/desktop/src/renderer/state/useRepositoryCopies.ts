@@ -36,6 +36,7 @@ import type { RecentProjectSummary, RemoteRuntimeConnectionSnapshot, RemoteRunti
 import { foreignCopyPaths } from "../components/app/projectTabGrouping";
 import { refreshCloudMachinesIfStale } from "../components/remoteTargets/useCloudMachines";
 import { rememberProjectOriginSummaries } from "../components/lanes/laneMachines";
+import { subscribeCopyJobReady } from "../components/projects/projectCopyJobs";
 import { isWebClientMode } from "../lib/webClientMode";
 import { adeCloudMachineLabel, adeCloudLaneComputerForMachine, useAdeCloudLaneComputers } from "./adeCloudLaneIndex";
 import { useAdeCloudEnabled } from "./cloudAccess";
@@ -187,9 +188,15 @@ function useThisComputer(active: boolean): ThisComputer | null {
     };
     read();
     window.addEventListener("focus", read);
+    // A clone on this computer just finished: its copy is new to the recents,
+    // and a tab on ADE Cloud moves to it (`useAdeCloudTabFollowsCopy`).
+    const unsubscribeReady = subscribeCopyJobReady((job) => {
+      if (job.machine.targetId == null) read();
+    });
     return () => {
       cancelled = true;
       window.removeEventListener("focus", read);
+      unsubscribeReady();
     };
   }, [active, web]);
 

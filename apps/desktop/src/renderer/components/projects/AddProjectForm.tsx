@@ -289,7 +289,8 @@ export function AddProjectForm({
   // With nothing to clone and a copy already there, Add only opens it.
   const opensOnly = !opensProjectTab && cloneableTicked.length === 0 && openNowTarget != null;
 
-  const openTarget = async (target: CopyOpenTarget) => {
+  /** `notice` is said once the copy opens: the form closes with it, so the person keeps it. */
+  const openTarget = async (target: CopyOpenTarget, notice?: () => void) => {
     try {
       await onOpenProject(target);
     } catch (error) {
@@ -302,6 +303,7 @@ export function AddProjectForm({
       }
       return;
     }
+    notice?.();
     if (mountedRef.current) onClose();
   };
 
@@ -335,17 +337,17 @@ export function AddProjectForm({
    * No project tab to open: open a copy. The first ticked one once its clone
    * ends (what the line under the list promised), else one already there.
    */
-  const openCopyFallback = (started: readonly CopyMachine[]) => {
+  const openCopyFallback = (started: readonly CopyMachine[], notice?: () => void) => {
     const first = started[0];
     if (first && repoKey) {
       setWaitingOnId(first.machineId);
       whenCopyJobReady(copyJobKey(repoKey, first.machineId), (target) => {
         if (!mountedRef.current) return;
-        void openTarget(target);
+        void openTarget(target, notice);
       });
       return;
     }
-    if (openNowTarget) void openTarget(openNowTarget);
+    if (openNowTarget) void openTarget(openNowTarget, notice);
   };
 
   const handleAdd = async () => {
@@ -366,6 +368,7 @@ export function AddProjectForm({
     setTicked(new Set());
     setSubmitted(true);
 
+    let notice: (() => void) | undefined;
     if (opensProjectTab) {
       const added = await addToAccount(repoUrl, {
         openTab: true,
@@ -376,11 +379,12 @@ export function AddProjectForm({
       // Added: the tab is open and the form closed. Closed: another account
       // signed in, so nothing of this add opens. Otherwise open a copy.
       if (added === "added" || added === "closed" || !mountedRef.current) return;
-      if (added === "failed" && started.length === 0 && openNowTarget) {
-        // The copy opens and the form closes with it: the error goes with the person.
-        showToast({
+      if (added === "failed") {
+        // A copy opens and the form, with its error banner, closes: the error goes with the person.
+        const repoName = folderName;
+        notice = () => showToast({
           tone: "warning",
-          title: `Opened ${folderName}, but couldn't add it to your account`,
+          title: `Opened ${repoName}, but couldn't add it to your account`,
           message: "Add it again from Add project to see it on your other computers.",
         });
       }
@@ -388,7 +392,7 @@ export function AddProjectForm({
       // The account lists the project too; the copy does not wait for it.
       void addToAccount(repoUrl, { openTab: false });
     }
-    openCopyFallback(started);
+    openCopyFallback(started, notice);
   };
 
   const chooseLocalFolder = async (machine: CopyMachine) => {
