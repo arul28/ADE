@@ -1355,8 +1355,8 @@ CTO sessions (`identityKey: "cto"`, the only identity session):
    (`ctoStateService.ts`).
 4. `ctoOperatorTools` (with the `remember` / `forget` / `trackWork` /
    `finishWork` / `readHistory` memory tools) and Linear tools reach the live
-   session through `createCtoRuntimeToolMap`: an `ade-cto` SDK MCP server
-   (Claude), the `ade_cto` dynamic-tool namespace (Codex), or an HTTP MCP
+   session through `createCtoRuntimeToolMap`: a `daex-cto` SDK MCP server
+   (Claude), the `daex_cto` dynamic-tool namespace (Codex), or an HTTP MCP
    lease (Cursor / Droid / OpenCode). See
    [tool-system](tool-system.md#registration-on-a-live-session).
 5. `normalizeIdentityPermissionMode` (`identitySessionPolicy.ts`) pins the

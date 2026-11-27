@@ -50,9 +50,9 @@ them to the provider adapter:
   session through the per-provider transports below. Every set is
   described by one `HTTP_MCP_TOOL_SETS` table (server
   name, Codex namespace, tool factory), and the CTO entry resolves to an
-  `ade-cto` SDK MCP server for Claude (injected without
+  `daex-cto` SDK MCP server for Claude (injected without
   `allowManagedMcpServersOnly`, so the user's own MCP servers survive), the
-  `ade_cto` dynamic-tool namespace inside `refreshCodexDynamicTools` for
+  `daex_cto` dynamic-tool namespace inside `refreshCodexDynamicTools` for
   Codex, and a dedicated HTTP MCP lease (`ensureHttpMcpServer(managed,
   "cto")`, cached in `managed.httpMcpServers`) for Cursor, Droid, and
   OpenCode. `buildCtoOperatorToolDeps` was shared with

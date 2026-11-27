@@ -121,6 +121,8 @@ Under `fallback: "ask"` none of this applies: no tools are removed from the cata
 
 MCP tools are named `mcp:<server>:<tool>`, or `mcp:<server>:*` for all of them. The runtime translates to each provider's own spelling — Claude writes `mcp__server__tool`.
 
+The CTO's tool server is `daex-cto`. Its old name, `ade-cto`, is a deprecated alias: a rule naming `mcp:ade-cto:…` still matches the server, so an existing deny rule keeps refusing. Write `daex-cto` in new policies.
+
 Any other string matches the provider's own tool name, case-insensitively, with an optional trailing `*`. Built-in tool names **are** provider-specific: `Bash` and `Edit` mean something on Claude and nothing on Pi.
 
 A tool is never gated because of what its name contains. `mcp:studio:edit_clip` and `mcp:studio:list_agents` are asked about only if your policy says so.

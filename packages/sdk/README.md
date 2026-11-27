@@ -215,8 +215,8 @@ refused rather than opening a tool-less thread):
 
 The server shape is checked against the selected provider before launch. Codex
 does not support `sse`, so a Codex request containing an SSE entry is rejected.
-Server names `computer_use` and `ade-cto` are reserved, and a request may
-contain at most 32 servers.
+Server names `computer_use` and `daex-cto` are reserved (so is `ade-cto`, its
+name before the Daex rename), and a request may contain at most 32 servers.
 
 Read `thread.mcpCapability` after open. `strictRequested` first, then `level`.
 `"enforced"` is the only value that means "nothing but the servers I supplied".
@@ -304,6 +304,11 @@ On Codex, every MCP tool call raises an approval, and the policy judges it as
 `autoApproveMcpServers`, then `fallback`. `accept_always` remembers the answer
 for the session only. On Codex, `sandboxRoot` still decides command and file
 escapes, and the tool fields do not.
+
+The CTO's own tool server is `daex-cto`. `ade-cto`, its name before the Daex
+rename, is a deprecated alias: `mcp:ade-cto:*` (or `ade-cto` in
+`autoApproveMcpServers`) still matches the server, in allow and deny rules
+alike. Write `daex-cto` in new policies.
 
 On Claude (Agent SDK 0.3.280), `canUseTool` fires for MCP tools and for
 commands that change things, not for commands Claude Code classifies as

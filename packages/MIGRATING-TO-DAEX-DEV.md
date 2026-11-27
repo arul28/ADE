@@ -16,6 +16,15 @@ its import specifiers.
 The runtime platform packages (`@ade-dev/runtime`, `@ade-dev/runtime-*`) keep
 their names for now: the SDK resolves them by that name. Do not deprecate them.
 
+The CTO's in-process MCP server is now `daex-cto` (Claude tools
+`mcp__daex-cto__<tool>`, Codex namespace `daex_cto`). A permission policy that
+names `ade-cto` (`mcp:ade-cto:*`, `mcp__ade-cto__<tool>`, or `ade-cto` in
+`autoApproveMcpServers`) keeps working: the runtime treats `ade-cto` as a
+deprecated alias of `daex-cto`, in deny rules as well as allow rules. Label
+maps in `@daex-dev/chat-ui` keyed on `mcp:ade-cto:…` keep matching too. Both
+names stay reserved for `mcpServers`. Change policies to `daex-cto` when
+convenient.
+
 The steps below are for the npm owner. Run them in this order.
 
 ## 1. Before merging: create the scope and a token

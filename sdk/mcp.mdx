@@ -24,8 +24,8 @@ Supported shapes:
 
 The server shape is checked against the selected provider before launch. Codex
 does not support `sse`, so a Codex request containing an SSE entry is rejected.
-Server names `computer_use` and `ade-cto` are reserved, and a request may
-contain at most 32 servers.
+Server names `computer_use` and `daex-cto` are reserved (so is `ade-cto`, its
+name before the Daex rename), and a request may contain at most 32 servers.
 
 Supplying `mcpServers` turns on **strict mode** unless you set `loadUserMcpServers: true`. Strict means: withhold the user's and project's own MCP config, and try to load only the servers you supplied.
 

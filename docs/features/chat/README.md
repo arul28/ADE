@@ -665,7 +665,7 @@ An embedder (the ADE SDK, or `ade chat create --arg-json`) can pass MCP servers 
 - Absent `strictMcpConfig` loads the user's MCP, except on the lightweight profile every SDK/personal chat uses, which is strict by default. An explicit `false` loads it (an embedder's `loadUserMcpServers: true`).
 - The session carries `mcpCapability` (`level`, `mechanism`, `residual`, `delivered`, `strictRequested`). Read `strictRequested`, then branch on `level`; only `"enforced"` means the caller's servers are the whole MCP surface.
 - `CALLER_MCP_SUPPORT` in `shared/callerMcpServers.ts` is the source of truth. See [ADE SDK](../sdk/README.md#strict-mcp-honesty).
-- Create refuses an invalid server, a reserved name (`computer_use`, `ade-cto`), a transport the provider cannot express (Codex has no SSE client), more than 32 servers, or any injected servers on Pi. An empty `mcpServers` map is omitted, so no capability report is invented.
+- Create refuses an invalid server, a reserved name (`computer_use`, `daex-cto`, and `ade-cto`, its name before the Daex rename), a transport the provider cannot express (Codex has no SSE client), more than 32 servers, or any injected servers on Pi. An empty `mcpServers` map is omitted, so no capability report is invented.
 
 ## The MCP registry
 

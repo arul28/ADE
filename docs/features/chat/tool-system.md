@@ -233,14 +233,20 @@ identifiers from one place instead of restating them:
 
 | Tool set | `serverName` | `codexNamespace` | `buildTools` |
 | --- | --- | --- | --- |
-| `cto` | `ade-cto` | `ade_cto` | `createCtoRuntimeToolMap` |
+| `cto` | `daex-cto` | `daex_cto` | `createCtoRuntimeToolMap` |
+
+Before the Daex rename these were `ade-cto` and `ade_cto`. Old transcripts keep
+those names: the CTO tool renderers take the last segment of any namespace, a
+Codex call under the old namespace falls back by bare name, a stored "Allow for
+session" for an `ade-cto` tool still answers (`legacyCtoApprovalOverrideKey`),
+and permission policies treat `ade-cto` as an alias (`mcpServerNameAliases`).
 
 - **Claude** — `buildClaudeSdkMcpServer(managed, "cto")` produces an SDK MCP
-  server named `ade-cto`, merged into `opts.mcpServers`. It is deliberately
+  server named `daex-cto`, merged into `opts.mcpServers`. It is deliberately
   injected *without* an `allowManagedMcpServersOnly` lockdown, because the CTO
   is a daily-driver chat that must keep the user's own MCP servers.
 - **Codex** — `refreshCodexDynamicTools` walks the whole table and registers
-  each set as dynamic tools under its own namespace (`ade_cto`). Every set must
+  each set as dynamic tools under its own namespace (`daex_cto`). Every set must
   register in that one function: it clears the runtime's dynamic-tool map
   before rebuilding, so a second refresher would clobber the first. Dispatch
   falls back by bare name across namespaces when a call arrives un-namespaced.
