@@ -18,9 +18,9 @@
  */
 import { randomUUID } from "node:crypto";
 import {
-  CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT,
   CROSS_MACHINE_RETURN_REFUSED_CODE,
   decodeCrossMachineLaneImportArgs,
+  isCrossMachineHandoffDefaultPrompt,
   sanitizePortableGitRemote,
 } from "../../../shared/crossMachineHandoff";
 import { isSameGitRepository } from "../github/githubSshAlias";
@@ -722,7 +722,7 @@ export function createCrossMachineHandoffDestination<TManaged extends { session:
       parentNotice,
       capsule.batchMove?.modeFallbackReason ? `ADE used a brief because: ${capsule.batchMove.modeFallbackReason}` : null,
       capsule.batchMove?.note ? `Batch note: ${capsule.batchMove.note}` : null,
-      capsule.continuationPrompt !== CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT
+      !isCrossMachineHandoffDefaultPrompt(capsule.continuationPrompt)
         ? `Continuation instruction: ${capsule.continuationPrompt}`
         : null,
       "",
@@ -1056,7 +1056,7 @@ export function createCrossMachineHandoffDestination<TManaged extends { session:
               "## User continuation instruction",
               capsule.continuationPrompt,
             ].join("\n\n")
-          : capsule.continuationPrompt !== CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT
+          : !isCrossMachineHandoffDefaultPrompt(capsule.continuationPrompt)
             ? capsule.continuationPrompt.trim()
             : "";
         if (returnPrompt) {

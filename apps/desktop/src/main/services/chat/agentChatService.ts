@@ -1492,6 +1492,7 @@ import { resolveSubagentCapability } from "../../../shared/subagentCapabilities"
 import {
   CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT,
   decodeCrossMachineDestinationPreflightArgs,
+  isCrossMachineHandoffDefaultPrompt,
   normalizeGitRemoteIdentity,
   sanitizePortableGitRemote,
 } from "../../../shared/crossMachineHandoff";
@@ -57941,7 +57942,7 @@ export function createAgentChatService(args: {
         `This CLI session moved here from ${capsule.source.machineName}; continue its work in this folder.`,
         "",
         capsule.brief,
-        ...(capsule.continuationPrompt !== CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT ? ["", `Note: ${capsule.continuationPrompt}`] : []),
+        ...(!isCrossMachineHandoffDefaultPrompt(capsule.continuationPrompt) ? ["", `Note: ${capsule.continuationPrompt}`] : []),
       ].join("\n"),
       goal: cli.goal ?? null,
       parent,
@@ -58376,7 +58377,7 @@ export function createAgentChatService(args: {
           const continuationPrompt = batchArrivalPrompt ?? capsule.continuationPrompt.trim();
           if (
             continuationPrompt
-            && (batchArrivalPrompt !== null || capsule.continuationPrompt !== CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT)
+            && (batchArrivalPrompt !== null || !isCrossMachineHandoffDefaultPrompt(capsule.continuationPrompt))
           ) {
             await sendMessage({
               sessionId: session.id,
@@ -58408,7 +58409,7 @@ export function createAgentChatService(args: {
             `Chat handed off from ${capsule.source.machineName}`,
             capsule.batchMove
               ? `New worktree: ${destinationLane.worktreePath}`
-              : capsule.continuationPrompt !== CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT
+              : !isCrossMachineHandoffDefaultPrompt(capsule.continuationPrompt)
               ? `Continuation note: ${capsule.continuationPrompt}`
               : "Continue from the handoff brief.",
           ].join("\n\n"),

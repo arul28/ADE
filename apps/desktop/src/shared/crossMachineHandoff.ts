@@ -22,9 +22,23 @@ import type {
  */
 export const CROSS_MACHINE_RETURN_REFUSED_CODE = "cross_machine_return_refused";
 
-/** A move's continuation instruction when the person gave none (the destination then adds nothing of its own). */
+/**
+ * A move's continuation instruction when the person gave none (the destination
+ * then adds nothing of its own). It is a sentinel on the wire, never shown:
+ * older destinations compare it byte-for-byte, so the text stays as shipped.
+ */
 export const CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT =
-  "This chat was handed off from another Daex machine. Continue the same task from the handoff brief, verify the destination workspace state, and keep working from the next open action.";
+  "This chat was handed off from another ADE machine. Continue the same task from the handoff brief, verify the destination workspace state, and keep working from the next open action.";
+
+const CROSS_MACHINE_HANDOFF_DEFAULT_PROMPTS: ReadonlySet<string> = new Set([
+  CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT,
+  CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT.replace("another ADE machine", "another Daex machine"),
+]);
+
+/** Whether a capsule's continuation prompt is the default (either name), so the destination adds nothing. */
+export function isCrossMachineHandoffDefaultPrompt(prompt: string | null | undefined): boolean {
+  return typeof prompt === "string" && CROSS_MACHINE_HANDOFF_DEFAULT_PROMPTS.has(prompt);
+}
 
 /** Resolve whether target is the caller's chat or one of its descendants. */
 export function crossMachineMoveRelation(
