@@ -1,4 +1,4 @@
-import { buildDeeplink, parseDeeplink } from "./deeplinks";
+import { buildDeeplink, isAdeDeeplinkScheme, parseDeeplink, withNewLinkScheme } from "./deeplinks";
 import { isWorkBoardColumn, WORK_BOARD_COLUMN_LABEL } from "./types/chat";
 import { BRAND } from "./brand";
 
@@ -42,7 +42,9 @@ export function normalizeCustomNotificationLink(raw: string): CustomNotification
   } catch {
     return { ok: false, problem: `"${value}" is not a link. Use a ${BRAND.NAME} link such as ade://pr/123.` };
   }
-  if (url.protocol === "ade:" && PHONE_ONLY_HOSTS.has(url.host.toLowerCase())) {
+  // A `daex://` link goes out as `ade://` (`withNewLinkScheme`): a phone on an
+  // older version registers only `ade://`, and the relay sends only that.
+  if (isAdeDeeplinkScheme(url.protocol) && PHONE_ONLY_HOSTS.has(url.host.toLowerCase())) {
     if (url.pathname.replace(/\//g, "")) {
       return { ok: false, problem: `ade://${url.host} takes no path.` };
     }
@@ -53,13 +55,13 @@ export function normalizeCustomNotificationLink(raw: string): CustomNotification
         problem: `ade://activity?state= must be one of ${Object.keys(WORK_BOARD_COLUMN_LABEL).join(", ")}.`,
       };
     }
-    return { ok: true, link: value };
+    return { ok: true, link: withNewLinkScheme(value) };
   }
   // `ade://pr/<number>` names no repo. The desktop grammar wants a repo or an
   // owner for it, and the sender adds the owner (its machine and project)
   // before the push leaves; the phone opens the short form either way.
-  if (url.protocol === "ade:" && url.host.toLowerCase() === "pr" && /^\/[1-9]\d{0,8}$/.test(url.pathname)) {
-    return { ok: true, link: value };
+  if (isAdeDeeplinkScheme(url.protocol) && url.host.toLowerCase() === "pr" && /^\/[1-9]\d{0,8}$/.test(url.pathname)) {
+    return { ok: true, link: withNewLinkScheme(value) };
   }
   const parsed = parseDeeplink(value);
   if (!parsed.ok) {
@@ -70,7 +72,7 @@ export function normalizeCustomNotificationLink(raw: string): CustomNotification
     ok: true,
     // Keep the caller's exact `ade://` link (it may carry parameters the
     // desktop grammar does not model); rebuild only the https form.
-    link: url.protocol === "ade:" ? value : buildDeeplink(parsed.target, { form: "ade" }),
+    link: isAdeDeeplinkScheme(url.protocol) ? withNewLinkScheme(value) : buildDeeplink(parsed.target, { form: "ade" }),
   };
 }
 
@@ -94,7 +96,7 @@ export function stampCustomNotificationLinkOwner(
     return link;
   }
   const host = url.host.toLowerCase();
-  if (url.protocol !== "ade:" || (host !== "session" && host !== "pr" && host !== "automation-run")) return link;
+  if (!isAdeDeeplinkScheme(url.protocol) || (host !== "session" && host !== "pr" && host !== "automation-run")) return link;
   // The desktop parser takes the two only together, so a half-stamped link
   // would be refused; a link that already names either is left as written.
   if (url.searchParams.has("accountMachineKey") || url.searchParams.has("projectId")) return link;

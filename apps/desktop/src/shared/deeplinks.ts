@@ -15,6 +15,7 @@ import { LANE_SHARE_GRANT_ID_PATTERN } from "./laneShareDirectory";
 //   ade://settings/<entry-id>[?machine=<machine-id>]
 //   ade://open/<place>
 //   ade://invite/<CODE>
+//   (`daex://…` parses exactly like `ade://…`; see ADE_DEEPLINK_SCHEMES)
 //
 //   https://ade-app.dev/open?type=<lane|session|file|commit|artifact|branch|pr|linear-issue|settings>&...
 //   (param names: lane→id; session→id[+lane,event,offset]; file→path[+line,lane];
@@ -45,7 +46,45 @@ import type { AppNavigationTarget } from "./types/core";
 import { cloudInviteLink, parseCloudInviteCode } from "../../../account-directory/src/cloud/contract";
 import { BRAND } from "./brand";
 
-export const ADE_DEEPLINK_SCHEME = "ade";
+/**
+ * The scheme every link minted here uses (`BRAND.LINK_SCHEME_FOR_NEW_LINKS`,
+ * `ade` until the owner flips it to `daex`).
+ */
+export const ADE_DEEPLINK_SCHEME: string = BRAND.LINK_SCHEME_FOR_NEW_LINKS;
+/**
+ * Every scheme an inbound link may use: `ade://` (accepted forever) and
+ * `daex://`. The desktop registers each with the OS; every parser accepts each.
+ */
+export const ADE_DEEPLINK_SCHEMES: readonly string[] = BRAND.LINK_SCHEMES;
+/**
+ * Regex source for the start of a custom-scheme link (`ade://` or `daex://`),
+ * for callers that find links in text. Case-insensitive callers add the `i` flag.
+ */
+export const ADE_DEEPLINK_URL_PREFIX_SOURCE = `(?:${ADE_DEEPLINK_SCHEMES.join("|")}):\\/\\/`;
+const ADE_DEEPLINK_URL_PREFIX_RE = new RegExp(`^${ADE_DEEPLINK_URL_PREFIX_SOURCE}`, "i");
+
+/** True for `ade`, `daex`, `ade:` or `daex:` (a URL's `protocol`), any case. */
+export function isAdeDeeplinkScheme(schemeOrProtocol: string | null | undefined): boolean {
+  if (typeof schemeOrProtocol !== "string") return false;
+  const scheme = schemeOrProtocol.trim().toLowerCase().replace(/:$/, "");
+  return ADE_DEEPLINK_SCHEMES.includes(scheme);
+}
+
+/** True when the text starts with `ade://` or `daex://` (any case). */
+export function hasAdeDeeplinkScheme(rawUrl: string): boolean {
+  return ADE_DEEPLINK_URL_PREFIX_RE.test(rawUrl);
+}
+
+/**
+ * The same custom-scheme link written with {@link ADE_DEEPLINK_SCHEME}, for a
+ * link this machine passes on to another (a phone, a notification), which may
+ * run a version that registers only `ade://`. Any other text is returned as is.
+ */
+export function withNewLinkScheme(rawUrl: string): string {
+  const match = ADE_DEEPLINK_URL_PREFIX_RE.exec(rawUrl);
+  return match ? `${ADE_DEEPLINK_SCHEME}://${rawUrl.slice(match[0].length)}` : rawUrl;
+}
+
 export const ADE_DEEPLINK_HTTPS_HOST = "ade-app.dev";
 /**
  * Hosts whose `/open` links still parse: the old domain, and the web client's
@@ -705,7 +744,7 @@ export function parseDeeplink(rawUrl: string): ParseResult {
   } catch {
     return { ok: false, error: { kind: "malformed", reason: "not a URL" }, rawUrl };
   }
-  if (url.protocol === `${ADE_DEEPLINK_SCHEME}:`) return parseAdeUrl(url, rawUrl);
+  if (isAdeDeeplinkScheme(url.protocol)) return parseAdeUrl(url, rawUrl);
   if (url.protocol === "https:") {
     if (!isAdeDeeplinkHttpsHost(url.hostname)) {
       return { ok: false, error: { kind: "unsupported_host", host: url.hostname }, rawUrl };
@@ -1126,7 +1165,7 @@ export function looksLikeAdeDeeplink(rawUrl: string): boolean {
   if (!rawUrl || typeof rawUrl !== "string") return false;
   const trimmed = rawUrl.trim();
   if (trimmed.length > 2048) return false;
-  if (trimmed.startsWith(`${ADE_DEEPLINK_SCHEME}://`)) return true;
+  if (hasAdeDeeplinkScheme(trimmed)) return true;
   try {
     const parsed = new URL(trimmed);
     return parsed.protocol === "https:"

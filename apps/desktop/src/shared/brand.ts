@@ -37,6 +37,21 @@ export const BRAND = Object.freeze({
   URL_SCHEME: "daex",
   /** Old deep link scheme; accepted forever (`ade://`). */
   LEGACY_URL_SCHEME: "ade",
+  /**
+   * Every scheme the apps register with the OS and every link parser accepts.
+   * Desktop: `build.protocols` in apps/desktop/package.json and
+   * `registerAdeProtocolHandler`; iOS: `CFBundleURLSchemes` in
+   * apps/ios/ADE/Info.plist.
+   */
+  LINK_SCHEMES: ["ade", "daex"],
+  /**
+   * The scheme newly made links use. Still `ade`: a link travels to teammates
+   * and other machines, and a version that registers only `ade://` cannot open
+   * a `daex://` link. Flip to `URL_SCHEME` once enough releases that register
+   * `daex://` have shipped (the owner decides when); the iOS copy is
+   * `Brand.linkSchemeForNewLinks`. Flipping it changes no parser.
+   */
+  LINK_SCHEME_FOR_NEW_LINKS: "ade" as "ade" | "daex",
 
   NPM_SCOPE: "@daex-dev",
   LEGACY_NPM_SCOPE: "@ade-dev",

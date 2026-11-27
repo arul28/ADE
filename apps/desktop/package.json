@@ -220,7 +220,8 @@
       {
         "name": "Daex link",
         "schemes": [
-          "ade"
+          "ade",
+          "daex"
         ],
         "role": "Viewer"
       }

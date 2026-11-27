@@ -163,7 +163,7 @@ export function automationFeaturesNeedingNewerAde(
     if (step?.type !== "ade-action") continue;
     consider("adeAction", `${step.adeAction?.domain ?? ""}.${step.adeAction?.action ?? ""}`);
     const open = (step.adeAction?.args as { open?: unknown } | null | undefined)?.open;
-    if (typeof open === "string" && open.trim().startsWith(`ade://${AUTOMATION_RUN_LINK_ID}/`)) consider("notifyLink", AUTOMATION_RUN_LINK_ID);
+    if (typeof open === "string" && BRAND.LINK_SCHEMES.some((scheme) => open.trim().toLowerCase().startsWith(`${scheme}://${AUTOMATION_RUN_LINK_ID}/`))) consider("notifyLink", AUTOMATION_RUN_LINK_ID);
   }
   return [...needed.values()].sort((a, b) => {
     if (a.minVersion && b.minVersion) return compareUpdateVersions(a.minVersion, b.minVersion);

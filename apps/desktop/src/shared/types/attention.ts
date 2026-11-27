@@ -778,7 +778,7 @@ export function attentionDestinationDeepLink(
     if (destination.eventId) query.set("event", destination.eventId);
     appendOwnership(query);
     const suffix = query.size > 0 ? `?${query.toString()}` : "";
-    return `ade://session/${encodeURIComponent(destination.sessionId)}${suffix}`;
+    return `${BRAND.LINK_SCHEME_FOR_NEW_LINKS}://session/${encodeURIComponent(destination.sessionId)}${suffix}`;
   }
 
   const query = new URLSearchParams();
@@ -787,11 +787,11 @@ export function attentionDestinationDeepLink(
   appendOwnership(query);
   const suffix = query.size > 0 ? `?${query.toString()}` : "";
   if (destination.repoOwner && destination.repoName) {
-    return `ade://pr/${encodeURIComponent(destination.repoOwner)}/${encodeURIComponent(
+    return `${BRAND.LINK_SCHEME_FOR_NEW_LINKS}://pr/${encodeURIComponent(destination.repoOwner)}/${encodeURIComponent(
       destination.repoName,
     )}/${destination.number}${suffix}`;
   }
-  return `ade://pr/${destination.number}${suffix}`;
+  return `${BRAND.LINK_SCHEME_FOR_NEW_LINKS}://pr/${destination.number}${suffix}`;
 }
 
 export function sanitizeAttentionPreview(value: string, maxLength = 160): string {

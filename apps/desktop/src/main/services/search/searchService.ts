@@ -3,7 +3,7 @@ import path from "node:path";
 import { readHistoryFileSync } from "../storage/historyCompression";
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { buildDeeplink, type DeeplinkEnvelope } from "../../../shared/deeplinks";
+import { ADE_DEEPLINK_SCHEME, buildDeeplink, type DeeplinkEnvelope } from "../../../shared/deeplinks";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import type { AgentChatEventEnvelope } from "../../../shared/types/chat";
 import type { LaneSummary } from "../../../shared/types/lanes";
@@ -172,7 +172,7 @@ function sessionDeepLink(
       { form: "ade" }
     );
   } catch {
-    return `ade://session/${encodeURIComponent(session.id)}`;
+    return `${ADE_DEEPLINK_SCHEME}://session/${encodeURIComponent(session.id)}`;
   }
 }
 
@@ -1048,7 +1048,7 @@ export function createSearchService(deps: SearchServiceDeps) {
         { form: "ade" },
       );
     } catch {
-      laneLink = `ade://lane/${encodeURIComponent(laneId)}`;
+      laneLink = `${ADE_DEEPLINK_SCHEME}://lane/${encodeURIComponent(laneId)}`;
     }
     const docs: Array<Parameters<typeof upsertDoc>[0]> = [];
     for (const commit of commits) {
@@ -1248,7 +1248,7 @@ export function createSearchService(deps: SearchServiceDeps) {
           { form: "ade" }
         );
       } catch {
-        deepLink = `ade://lane/${encodeURIComponent(lane.id)}`;
+        deepLink = `${ADE_DEEPLINK_SCHEME}://lane/${encodeURIComponent(lane.id)}`;
       }
       const snippet = (lane.description || lane.branchRef).slice(0, 240);
       out.push({
@@ -1390,7 +1390,7 @@ export function createSearchService(deps: SearchServiceDeps) {
             { form: "ade" }
           );
         } catch {
-          deepLink = `ade://linear-issue/${encodeURIComponent(issue.identifier)}`;
+          deepLink = `${ADE_DEEPLINK_SCHEME}://linear-issue/${encodeURIComponent(issue.identifier)}`;
         }
         const snippet = (issue.description ?? issue.title).slice(0, 240);
         return {

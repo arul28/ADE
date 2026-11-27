@@ -126,7 +126,7 @@ export function setCloudJoinApprovalPush(next: CloudJoinApprovalPush | null): vo
 export function phoneApprovalLink(url: string): string | null {
   try {
     const code = new URL(url).searchParams.get("user_code")?.trim();
-    return code ? `ade://device?user_code=${encodeURIComponent(code)}` : null;
+    return code ? `${BRAND.LINK_SCHEME_FOR_NEW_LINKS}://device?user_code=${encodeURIComponent(code)}` : null;
   } catch {
     return null;
   }
