@@ -2138,7 +2138,8 @@ export function parseNativeLanDiscoveryProcessList(stdout: string): NativeLanDis
     const command = match[3];
     if (!Number.isFinite(pid) || !Number.isFinite(ppid)) continue;
     if (!/\bdns-sd\b/.test(command)) continue;
-    if (!/\s-R\s+ADE Sync\b/.test(command)) continue;
+    // A brain before the rename announced "ADE Sync …"; its orphans count too.
+    if (!/\s-R\s+(?:Daex|ADE) Sync\b/.test(command)) continue;
     if (!/\b_ade-sync\._tcp\b/.test(command)) continue;
     out.push({ pid, ppid, command });
   }
@@ -4630,7 +4631,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const signature = JSON.stringify({ hostName, port, txt });
     const alreadyPublished = bonjourPort === port && bonjourSignature === signature;
     if (!options?.force && alreadyPublished && (bonjourAnnouncement || nativeBonjourProcess)) return;
-    const serviceName = `ADE Sync ${hostName} ${port}`;
+    const serviceName = `${BRAND.NAME} Sync ${hostName} ${port}`;
     if (shouldUseNativeLanDiscovery()) {
       stopBonjourAnnouncement();
       bonjourPort = port;
