@@ -22,8 +22,8 @@ const LEGACY_DEFAULTS: ReadonlyArray<readonly [RegExp, (match: RegExpExecArray) 
   [new RegExp(`^${OLD} Cloud · (.+)$`), (m) => `${BRAND.CLOUD_NAME} · ${m[1]}`],
   // The account server's fallback computer names.
   [new RegExp(`^${OLD} computer((?: copy)?)$`), (m) => `${BRAND.NAME} computer${m[1]}`],
-  // Account devices the CLI and the agent bridge register.
-  [new RegExp(`^${OLD} (CLI|agents) on (.+)$`), (m) => `${BRAND.NAME} ${m[1]} on ${m[2]}`],
+  // Account devices the CLI, the agent bridge and the desktop register.
+  [new RegExp(`^${OLD} (CLI|agents|Desktop) on (.+)$`), (m) => `${BRAND.NAME} ${m[1]} on ${m[2]}`],
 ];
 
 /** A stored name with an old default's product name swapped for Daex; any other name unchanged. */
