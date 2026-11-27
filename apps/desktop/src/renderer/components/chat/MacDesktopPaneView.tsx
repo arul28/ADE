@@ -304,7 +304,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
         <MacDesktopPermissionCard
           variant="page"
           permissions={status.permissions}
-          appName={status.responsibleAppName ?? "ADE"}
+          appName={status.responsibleAppName ?? BRAND.NAME}
           signing={status.signing ?? "unknown"}
           hostIsLocal={laneHostIsLocal}
           machineName={machineFacts.machineName}
@@ -852,7 +852,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
     <MacDesktopPermissionCard
       variant="inline"
       permissions={status.permissions}
-      appName={status.responsibleAppName ?? "ADE"}
+      appName={status.responsibleAppName ?? BRAND.NAME}
       signing={status.signing ?? "unknown"}
       hostIsLocal={laneHostIsLocal}
       machineName={machineFacts.machineName}

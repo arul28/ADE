@@ -8,6 +8,7 @@ import {
 } from "../../../../../ade-cli/src/services/sync/syncHostSingleton";
 import { execFileOffThread, offThreadSpawnEnabled } from "../shared/offThreadSpawn";
 import { BRAND } from "../../../shared/brand";
+import { installedDesktopAppDisplayName } from "../../../shared/packageChannel";
 
 export type PackagedSyncHostConflictDialogContent = {
   title: string;
@@ -87,24 +88,26 @@ export function buildPackagedSyncHostConflictDialogContent(args: {
   conflict: SyncHostSingletonConflict;
 }): PackagedSyncHostConflictDialogContent {
   const owner = args.conflict.owner;
-  const ownerName = owner.appName ?? "ADE";
+  // App names name the install on disk (ADE.app); the dialog shows their Daex names.
+  const ownerName = installedDesktopAppDisplayName(owner.appName ?? "ADE");
+  const launchingAppName = installedDesktopAppDisplayName(args.launchingAppName);
   const portText = owner.port != null ? ` on sync port ${owner.port}` : "";
   const pidText = Number.isFinite(owner.pid) && owner.pid > 0 ? `pid ${owner.pid}` : "unknown pid";
   const quitCommand = owner.quitCommand.trim();
 
   return {
-    title: `Cannot launch ${args.launchingAppName}`,
+    title: `Cannot launch ${launchingAppName}`,
     message: `${ownerName} is already running with phone sync.`,
     detail: [
       `Only one official ${BRAND.NAME} build can host phone sync at a time.`,
       "",
       `Running now: ${ownerName} (${pidText})${portText}.`,
-      `Quit that brain before launching ${args.launchingAppName}.`,
+      `Quit that brain before launching ${launchingAppName}.`,
       "",
       "Run this in Terminal:",
       quitCommand,
       "",
-      `The command has been copied to your clipboard. Relaunch ${args.launchingAppName} after it finishes.`,
+      `The command has been copied to your clipboard. Relaunch ${launchingAppName} after it finishes.`,
     ].join("\n"),
     quitCommand,
   };

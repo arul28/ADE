@@ -1,3 +1,4 @@
+import { BRAND } from "./brand";
 import { updateTrackOfVersion } from "./updateTrack";
 
 /**
@@ -65,14 +66,25 @@ export function resolvePackageChannelFromProcess(source: {
   return normalizeAppPackageChannel(source.env?.ADE_PACKAGE_CHANNEL);
 }
 
+/** Display only: install folders, app bundles and IDs keep their ADE names. */
 const PACKAGE_CHANNEL_DISPLAY_NAMES: Record<AppPackageChannel, string> = {
-  stable: "ADE",
-  alpha: "ADE Alpha",
+  stable: BRAND.NAME,
+  alpha: `${BRAND.NAME} Alpha`,
 };
 
-/** "ADE" or "ADE Alpha". */
+/** "Daex" or "Daex Alpha". */
 export function appPackageChannelDisplayName(channel: AppPackageChannel): string {
   return PACKAGE_CHANNEL_DISPLAY_NAMES[channel];
+}
+
+/**
+ * The name a person sees for an installed app name (`ADE_DESKTOP_APP_NAME`):
+ * `ADE.app` keeps its file name but macOS, dialogs and copy list it as Daex.
+ * "ADE", "ADE Beta" and "ADE Alpha" map to the Daex names; any other
+ * (custom) name is shown as it is.
+ */
+export function installedDesktopAppDisplayName(installedName: string): string {
+  return installedName.replace(/^ADE(?=$| (?:Alpha|Beta)$)/, BRAND.NAME);
 }
 
 /**
