@@ -177,6 +177,48 @@ export function claudeToolNameToNeutral(name: string): string {
 }
 
 /**
+ * MCP server names that are one server. Daex's CTO tool server was named
+ * `ade-cto` before the Daex rename and is `daex-cto` now; a policy written
+ * for the old name keeps matching the new one, and above all a deny rule never
+ * silently stops matching. `ade-cto` is deprecated: write `daex-cto`.
+ */
+const MCP_SERVER_ALIAS_GROUPS: readonly (readonly string[])[] = [["daex-cto", "ade-cto"]];
+
+/** `server` and every other name of the same server, `server` first. */
+export function mcpServerNameAliases(server: string): string[] {
+  const trimmed = server.trim();
+  const folded = trimmed.toLowerCase();
+  const group = MCP_SERVER_ALIAS_GROUPS.find((names) => names.includes(folded));
+  return group ? [trimmed, ...group.filter((name) => name !== folded)] : [trimmed];
+}
+
+/** Whether two names name one MCP server: equal ignoring case, or aliases. */
+function sameMcpServer(a: string, b: string): boolean {
+  const wanted = b.trim().toLowerCase();
+  return mcpServerNameAliases(a).some((name) => name.toLowerCase() === wanted);
+}
+
+/**
+ * Claude-list entries (`mcp__<server>` or `mcp__<server>__<tool>`) plus the
+ * same entry under each alias of its server, so a list written with one name
+ * also covers the server under the other.
+ */
+function withClaudeServerAliases(entries: readonly string[]): string[] {
+  const out = [...entries];
+  for (const entry of entries) {
+    if (!entry.toLowerCase().startsWith("mcp__")) continue;
+    const parsed = parseMcpToolName(entry);
+    const server = parsed?.server ?? entry.slice("mcp__".length);
+    if (!server || server.includes("__")) continue;
+    for (const alias of mcpServerNameAliases(server).slice(1)) {
+      const aliased = parsed ? `mcp__${alias}__${parsed.tool}` : `mcp__${alias}`;
+      if (!out.includes(aliased)) out.push(aliased);
+    }
+  }
+  return out;
+}
+
+/**
  * Case-insensitive equality, or a prefix match when the pattern ends in `*`.
  *
  * A bare `*` matches every name. The comparison is literal otherwise: no
@@ -190,7 +232,10 @@ export function toolNameMatchesPattern(toolName: string, pattern: string): boole
   return name === rule;
 }
 
-/** Both spellings of one tool name, so a pattern written either way matches. */
+/**
+ * Both spellings of one tool name, so a pattern written either way matches,
+ * and both again under each alias of its server (`mcpServerNameAliases`).
+ */
 function toolNameAliases(toolName: string): string[] {
   const trimmed = toolName.trim();
   const aliases = [trimmed];
@@ -198,6 +243,14 @@ function toolNameAliases(toolName: string): string[] {
   if (neutral !== trimmed) aliases.push(neutral);
   const claude = neutralToolNameToClaude(trimmed);
   if (claude !== trimmed && !aliases.includes(claude)) aliases.push(claude);
+  const parsed = parseMcpToolName(trimmed);
+  if (parsed) {
+    for (const server of mcpServerNameAliases(parsed.server).slice(1)) {
+      for (const alias of [`mcp:${server}:${parsed.tool}`, `mcp__${server}__${parsed.tool}`]) {
+        if (!aliases.includes(alias)) aliases.push(alias);
+      }
+    }
+  }
   return aliases;
 }
 
@@ -241,9 +294,8 @@ export function evaluatePermissionPolicy(
 
   const server = serverOfToolName(toolName);
   if (server && policy.autoApproveMcpServers?.length) {
-    const wanted = server.toLowerCase();
     for (const entry of policy.autoApproveMcpServers) {
-      if (entry.trim().toLowerCase() === wanted) return "allow";
+      if (sameMcpServer(server, entry)) return "allow";
     }
   }
 
@@ -299,13 +351,15 @@ export function evaluateMcpToolApprovalPolicy(
       provider: "codex",
     });
   }
-  const serverPrefix = `mcp:${trimmedServer}:`.toLowerCase();
+  const serverPrefixes = mcpServerNameAliases(trimmedServer).map((name) => `mcp:${name}:`.toLowerCase());
   const couldDeny = (policy.deniedTools ?? []).some((pattern) => {
     const neutral = claudeToolNameToNeutral(pattern.trim()).toLowerCase();
-    if (neutral.startsWith(serverPrefix)) return true;
-    // A wildcard shorter than the server prefix ("*", "mcp:*", "mcp:ver*")
-    // covers every tool the prefix does.
-    return neutral.endsWith("*") && serverPrefix.startsWith(neutral.slice(0, -1));
+    return serverPrefixes.some((serverPrefix) => {
+      if (neutral.startsWith(serverPrefix)) return true;
+      // A wildcard shorter than the server prefix ("*", "mcp:*", "mcp:ver*")
+      // covers every tool the prefix does.
+      return neutral.endsWith("*") && serverPrefix.startsWith(neutral.slice(0, -1));
+    });
   });
   if (couldDeny) return policy.fallback === "deny" ? "deny" : "ask";
   // `mcp:<server>:*` as the name: a whole-server allowance or
@@ -336,7 +390,7 @@ export function policyToClaudeToolLists(
     const entry = `mcp__${trimmed}`;
     if (!allowedTools.includes(entry)) allowedTools.push(entry);
   }
-  const disallowedTools = translateForClaude(policy.deniedTools);
+  const disallowedTools = withClaudeServerAliases(translateForClaude(policy.deniedTools));
   // Under `fallback: "deny"` the two lists are the primary enforcement. The
   // Agent SDK removes a disallowed tool from the model's catalog outright,
   // which holds whether or not the SDK calls back into `canUseTool`. On Agent
@@ -357,7 +411,7 @@ export function policyToClaudeToolLists(
       if (!disallowedTools.includes(tool)) disallowedTools.push(tool);
     }
   }
-  return { allowedTools, disallowedTools };
+  return { allowedTools: withClaudeServerAliases(allowedTools), disallowedTools };
 }
 
 /**
@@ -405,14 +459,13 @@ export const CLAUDE_MUTATING_BUILTIN_TOOLS = [
  */
 export function policyToolLevelMcpServers(policy: AgentChatPermissionPolicy): string[] {
   const wholeServer = new Set<string>();
-  for (const server of policy.autoApproveMcpServers ?? []) {
-    const trimmed = server.trim().toLowerCase();
-    if (trimmed) wholeServer.add(trimmed);
-  }
+  const addWholeServer = (server: string | null | undefined): void => {
+    if (!server?.trim()) return;
+    for (const name of mcpServerNameAliases(server)) wholeServer.add(name.toLowerCase());
+  };
+  for (const server of policy.autoApproveMcpServers ?? []) addWholeServer(server);
   for (const entry of policy.allowedTools ?? []) {
-    if (!mcpEntryNamesWholeServer(entry)) continue;
-    const server = serverOfToolName(entry)?.toLowerCase();
-    if (server) wholeServer.add(server);
+    if (mcpEntryNamesWholeServer(entry)) addWholeServer(serverOfToolName(entry));
   }
   const partial: string[] = [];
   for (const entry of policy.allowedTools ?? []) {
@@ -442,11 +495,14 @@ function mcpEntryNamesWholeServer(entry: string): boolean {
  */
 export function policyAllowedMcpServers(policy: AgentChatPermissionPolicy): string[] {
   const servers: string[] = [];
+  // A server named by its old name is admitted under its new one too.
   const push = (name: string | null): void => {
     const trimmed = name?.trim();
     if (!trimmed) return;
-    if (servers.some((existing) => existing.toLowerCase() === trimmed.toLowerCase())) return;
-    servers.push(trimmed);
+    for (const alias of mcpServerNameAliases(trimmed)) {
+      if (servers.some((existing) => existing.toLowerCase() === alias.toLowerCase())) continue;
+      servers.push(alias);
+    }
   };
   for (const server of policy.autoApproveMcpServers ?? []) push(server);
   for (const entry of policy.allowedTools ?? []) push(serverOfToolName(entry));

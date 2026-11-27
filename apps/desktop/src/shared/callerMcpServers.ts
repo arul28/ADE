@@ -440,12 +440,15 @@ export function resolveCallerMcpCapability(
  * the only outcome that behaves the same everywhere.
  *
  * Mirrors CTO_MCP_SERVER_NAME in agentChatService.ts and the `computer_use`
- * key in codexComputerUse.ts. Kept
+ * key in codexComputerUse.ts. `ade-cto`, the CTO server's name before the
+ * Daex rename, stays reserved: permission policies still match it as an alias
+ * of `daex-cto` (permissionPolicy.ts). Kept
  * here rather than imported because this module is shared and must not pull in
  * the 49k-line service.
  */
 export const ADE_RESERVED_MCP_SERVER_NAMES: readonly string[] = [
   "computer_use",
+  "daex-cto",
   "ade-cto",
 ];
 

@@ -2809,10 +2809,10 @@ describe("createAgentChatService", () => {
       });
 
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as any;
-      const server = opts?.mcpServers?.["ade-cto"];
+      const server = opts?.mcpServers?.["daex-cto"];
       expect(server?.type).toBe("sdk");
       expect(createSdkMcpServer).toHaveBeenCalledWith(expect.objectContaining({
-        name: "ade-cto",
+        name: "daex-cto",
         // The transport only backstops; ADE's own per-tool deadline ends a call.
         timeout: 65 * 60_000,
       }));
@@ -2846,7 +2846,7 @@ describe("createAgentChatService", () => {
       });
 
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as any;
-      expect(opts?.mcpServers?.["ade-cto"]).toBeUndefined();
+      expect(opts?.mcpServers?.["daex-cto"]).toBeUndefined();
     });
 
     it("keeps lightweight sessions lean by ignoring on-disk MCP config (strictMcpConfig)", async () => {

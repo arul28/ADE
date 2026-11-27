@@ -198,7 +198,7 @@ try {
   // the agent's own answer enumerates the servers it can actually reach, and it
   // is read from the same turn rather than costing another one.
   const lowerAnswer = assistantText.toLowerCase();
-  const foreignServer = ["ade-cto", "ade-orchestration", "linear", "playwright", "sentry", "github"].find(
+  const foreignServer = ["daex-cto", "ade-cto", "ade-orchestration", "linear", "playwright", "sentry", "github"].find(
     (name) => lowerAnswer.includes(name),
   );
   check(

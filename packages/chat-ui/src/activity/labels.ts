@@ -89,6 +89,18 @@ export const DEFAULT_THINKING_LABEL = "Working…";
 const TIER = 1_000_000;
 const QUALIFIED_WILDCARD_BONUS = 10_000;
 
+/**
+ * Old MCP server names and the name they became. Daex's CTO server was
+ * `ade-cto` before the Daex rename (deprecated; write `daex-cto`): a key
+ * naming either matches the server's tools under both, so old transcripts
+ * and old label maps keep working.
+ */
+const RENAMED_SERVERS: Readonly<Record<string, string>> = { "ade-cto": "daex-cto" };
+
+function currentServerName(server: string | null): string | null {
+  return server === null ? null : RENAMED_SERVERS[server] ?? server;
+}
+
 /** Specificity of one key against one candidate, or -1 when it does not match. */
 function scoreLabelKey(
   key: string,
@@ -103,7 +115,7 @@ function scoreLabelKey(
 
   if (parsed.server !== null) {
     // A server-qualified key only ever matches that server's tools.
-    if (identity.server !== parsed.server) return -1;
+    if (currentServerName(identity.server) !== currentServerName(parsed.server)) return -1;
     if (!wildcard) return parsed.tool === identity.tool ? 3 * TIER : -1;
     if (!identity.tool.startsWith(toolPrefix)) return -1;
     return TIER + QUALIFIED_WILDCARD_BONUS + toolPrefix.length;
