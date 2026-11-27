@@ -288,11 +288,22 @@ function refreshTeamKeys(projectRoot: string, pin: OpenProjectBinding): void {
   const cto = window.ade?.cto;
   if (!cto?.getLinearIssuePickerData) return;
   const current = teamKeys.get(projectRoot);
-  const readWorkspace = cto.getLinearConnectionStatus
-    ? cto.getLinearConnectionStatus(pin).then((status) => (status.connected ? status.organizationUrlKey?.trim() || null : null), () => current?.workspaceUrlKey ?? null)
-    : Promise.resolve(current?.workspaceUrlKey ?? null);
-  const promise = Promise.all([cto.getLinearIssuePickerData(pin), readWorkspace])
-    .then(([catalog, workspaceUrlKey]) => storeTeamKeys(projectRoot, { keys: teamKeysFromCatalog(catalog), workspaceUrlKey, checkedAt: Date.now() }))
+  const readPicker = cto.getLinearIssuePickerData;
+  // The status first: a disconnected workspace has no keys, so nothing it
+  // named before should keep linking. Unreadable status keeps what is known.
+  const readStatus = cto.getLinearConnectionStatus
+    ? cto.getLinearConnectionStatus(pin).then((status) => status, () => null)
+    : Promise.resolve(null);
+  const promise = readStatus
+    .then(async (status) => {
+      if (status && !status.connected) {
+        storeTeamKeys(projectRoot, { keys: [], workspaceUrlKey: null, checkedAt: Date.now() });
+        return;
+      }
+      const catalog = await readPicker(pin);
+      const workspaceUrlKey = status ? status.organizationUrlKey?.trim() || null : current?.workspaceUrlKey ?? null;
+      storeTeamKeys(projectRoot, { keys: teamKeysFromCatalog(catalog), workspaceUrlKey, checkedAt: Date.now() });
+    })
     .catch(() => storeTeamKeys(projectRoot, { keys: current?.keys ?? [], workspaceUrlKey: current?.workspaceUrlKey ?? null, checkedAt: Date.now() }))
     .finally(() => teamKeyReads.delete(projectRoot));
   teamKeyReads.set(projectRoot, promise);

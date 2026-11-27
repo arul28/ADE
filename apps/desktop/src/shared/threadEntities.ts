@@ -29,7 +29,7 @@ import {
   type Chip,
 } from "./chips";
 import { buildDeeplink, type DeeplinkTarget } from "./deeplinks";
-import { normalizeJiraIssueKey, jiraIssueRef, proseIssueKeyPattern } from "./issueRefs";
+import { LINEAR_ISSUE_ID_PARTS_RE, normalizeJiraIssueKey, jiraIssueRef, proseIssueKeyPattern } from "./issueRefs";
 import { getModelById, resolveModelDescriptor } from "./modelRegistry";
 import { modelPermissionLabel } from "./modelPermissions";
 import { wallClockAsUtc } from "./formatting";
@@ -100,7 +100,7 @@ const UUID_RE = new RegExp(`^${UUID_SOURCE}$`, "i");
 const ID_PREFIX_RE = /^[0-9a-f]{8}(?:-[0-9a-f]{1,4}){0,3}$/i;
 const SHA_RE = /^[0-9a-f]{7,40}$/;
 const PR_NUMBER_RE = /^#(\d{1,6})$/;
-const LINEAR_ID_RE = /^([A-Za-z][A-Za-z0-9]{0,9})-(\d{1,9})$/;
+const LINEAR_ID_RE = LINEAR_ISSUE_ID_PARTS_RE;
 const SKILL_RE = /^\/([a-z][a-z0-9_-]*(?::[a-z0-9_-]+)?)$/i;
 // `3461`, `3461-3468`, or the `:201-208` form that echoes a `file:line` anchor.
 const LINE_REF_RE = /^:?(\d{1,7})(?:\s*[-–]\s*(\d{1,7}))?$/;
@@ -391,8 +391,6 @@ export function findProseEntities(text: string, lookup: ThreadEntityLookup): Thr
   }
   return out;
 }
-
-export { linearTeamKeyFromIdentifier } from "./issueRefs";
 
 // Pinned to UTC and fed wall-clock-shifted Dates (see wallClockAsUtc): a
 // formatter built without a zone would keep the load-time zone after a change.

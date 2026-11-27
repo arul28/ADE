@@ -28,9 +28,12 @@ export function normalizeLinearIdentifier(value: string | null | undefined): str
   return LINEAR_IDENTIFIER_RE.test(identifier) ? identifier : null;
 }
 
+/** A Linear identifier in any case, split into team key (1) and number (2). */
+export const LINEAR_ISSUE_ID_PARTS_RE = /^([A-Za-z][A-Za-z0-9]{0,9})-(\d{1,9})$/;
+
 /** The Linear team key of an issue identifier (`ADE` for `ADE-159`), or null. */
 export function linearTeamKeyFromIdentifier(identifier: string | null | undefined): string | null {
-  const match = identifier ? /^([A-Za-z][A-Za-z0-9]{0,9})-(\d{1,9})$/.exec(identifier.trim()) : null;
+  const match = identifier ? LINEAR_ISSUE_ID_PARTS_RE.exec(identifier.trim()) : null;
   return match ? match[1]!.toUpperCase() : null;
 }
 
@@ -143,8 +146,11 @@ export function linearIssueLinkTarget(
   const fromUrl = issueRefFromUrl(href);
   if (fromUrl) {
     if (fromUrl.provider !== "linear") return null;
-    const first = new URL(href).pathname.split("/").filter(Boolean)[0] ?? "";
-    const workspace = first && first.toLowerCase() !== "issue" ? decodeURIComponent(first) : null;
+    // Workspace URL names are plain `[a-z0-9-]`: compared raw, never decoded, so
+    // a malformed escape in a link someone posted cannot throw during render.
+    // `fromUrl.url` is the form that already parsed (trimmed of punctuation).
+    const first = new URL(fromUrl.url ?? href).pathname.split("/").filter(Boolean)[0]?.toLowerCase() ?? "";
+    const workspace = first && first !== "issue" ? first : null;
     return { ref: fromUrl, branch: null, workspace, adeLink: false };
   }
   const parsed = parseDeeplink(href);
