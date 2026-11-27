@@ -35,10 +35,10 @@ function signInCard(it: InboxItem, site: string, origin: string, showProject: bo
   wrap.appendChild(h("div", { cls: "wt trunc" }, title));
   wrap.appendChild(h("div", { cls: "q" }, "Sign in to " + site));
   wrap.appendChild(h("div", { cls: "dim", style: "margin:0 0 8px" },
-    "Answer in ADE: the login is saved to Passwords and filled into " + origin.replace(/^https:\/\//, "") + ". It never passes through this chat."));
+    "Answer in Daex: the login is saved to Passwords and filled into " + origin.replace(/^https:\/\//, "") + ". It never passes through this chat."));
   if (link) {
     wrap.appendChild(h("div", { cls: "free" },
-      h("button", { cls: "btn primary", type: "button", "data-label": "Sign in in ADE", onclick: () => openLink(link) }, "Sign in in ADE ↗")));
+      h("button", { cls: "btn primary", type: "button", "data-label": "Sign in in Daex", onclick: () => openLink(link) }, "Sign in in Daex ↗")));
   }
   return wrap;
 }
@@ -58,7 +58,7 @@ function inboxCard(it: InboxItem, scope: Scope, showProject: boolean): HTMLEleme
     str(it.lane) ? h("span", { cls: "lane", style: "margin-left:4px" }, String(it.lane)) : null,
     showProject && target.projectName ? h("span", { cls: "chip", title: "Project" }, target.projectName) : null,
     h("span", { cls: "status dim" }, rel(it.since)),
-    link ? h("button", { cls: "back", type: "button", style: "margin:0 -6px 0 0", title: "Open in ADE", onclick: () => openLink(link) }, "Open ↗") : null));
+    link ? h("button", { cls: "back", type: "button", style: "margin:0 -6px 0 0", title: "Open in Daex", onclick: () => openLink(link) }, "Open ↗") : null));
   wrap.appendChild(h("div", { cls: "wt trunc" }, title));
   const qs = itemQuestions(it);
   const multi = qs.length > 1;
@@ -86,7 +86,7 @@ function inboxCard(it: InboxItem, scope: Scope, showProject: boolean): HTMLEleme
       ? scoped(target, { session: it.sessionId, text: answer.text })
       : scoped(target, { session: it.sessionId, request_id: it.requestId, ...answer });
     callTool(tool, args).then((res) => {
-      if (!res || res.isError) throw new Error(resultText(res) || "ADE could not send that answer.");
+      if (!res || res.isError) throw new Error(resultText(res) || "Daex could not send that answer.");
       actions.textContent = "";
       actions.appendChild(h("div", { cls: "done" }, h("span", { cls: "dot big", "data-s": tone }), h("span", { cls: "grow" }, label)));
       reportSize();
@@ -123,7 +123,7 @@ function inboxCard(it: InboxItem, scope: Scope, showProject: boolean): HTMLEleme
     const hasOptions = qs.some((q) => rows(q.options).length > 0);
     if (!qs.some((q) => q.optionsOnly === true || q.secret === true)) actions.appendChild(freeText("chat_respond", hasOptions));
   }
-  if (!writable) actions.appendChild(h("div", { cls: "small dim", style: "margin-top:6px" }, "Answer this in ADE, or ask me to."));
+  if (!writable) actions.appendChild(h("div", { cls: "small dim", style: "margin-top:6px" }, "Answer this in Daex, or ask me to."));
   wrap.appendChild(actions);
   wrap.appendChild(live);
   return wrap;

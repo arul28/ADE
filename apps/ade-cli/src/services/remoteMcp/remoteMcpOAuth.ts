@@ -421,7 +421,7 @@ button,.btn{appearance:none;width:100%;height:46px;border-radius:13px;font-famil
 `;
 
 function page(title: string, body: string): string {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>${escapeHtml(title)}</title><style>${PAGE_STYLE}</style></head><body><main class="card"><img class="mark" src="${ADE_LOGO_URL}" alt="ADE" width="62" height="30">${body}</main></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>${escapeHtml(title)}</title><style>${PAGE_STYLE}</style></head><body><main class="card"><img class="mark" src="${ADE_LOGO_URL}" alt="Daex" width="39" height="30">${body}</main></body></html>`;
 }
 
 export const AUTHORIZE_PAGE_HEADERS: Record<string, string> = {
@@ -461,11 +461,11 @@ function appLine(request: AuthorizeRequest, target: SignInTarget): string {
   const appName = escapeHtml(authorizeAppName(request));
   const host = escapeHtml(redirectDisplayHost(request.redirectUri));
   if (target.kind === "machine") {
-    return `<p class="sub"><strong>${appName}</strong> (${host}) wants to use ADE on <strong>${escapeHtml(target.name)}</strong>.</p>`;
+    return `<p class="sub"><strong>${appName}</strong> (${host}) wants to use Daex on <strong>${escapeHtml(target.name)}</strong>.</p>`;
   }
   const names = [...new Set(target.machineNames.filter((name) => name.trim()))];
   const which = names.length ? `: ${computerList(names)}` : "";
-  return `<p class="sub"><strong>${appName}</strong> (${host}) wants to use your <strong>ADE account</strong>, on every machine you include in ADE MCP${which}.</p>`;
+  return `<p class="sub"><strong>${appName}</strong> (${host}) wants to use your <strong>Daex account</strong>, on every machine you include in Daex MCP${which}.</p>`;
 }
 
 /** Step 1: the app sent the person here. Signing in to ADE is the only way on. */
@@ -476,12 +476,12 @@ export function renderSignInPage(args: { request: AuthorizeRequest; target: Sign
     + hidden("redirect_uri", request.redirectUri) + hidden("code_challenge", request.codeChallenge)
     + hidden("code_challenge_method", "S256") + hidden("state", request.state)
     + hidden("scope", request.requestedScope === "read" ? "ade:read" : null);
-  return page(`Connect ${appName} to ADE`, `
+  return page(`Connect ${appName} to Daex`, `
 <h1>Connect ${escapeHtml(appName)}</h1>
 ${appLine(request, args.target)}
 ${args.error ? `<div class="notice" role="alert">${escapeHtml(args.error)}</div>` : ""}
 <form method="post" class="actions">${fields}
-<button class="primary" type="submit" name="decision" value="signin">Continue with ADE</button>
+<button class="primary" type="submit" name="decision" value="signin">Continue with Daex</button>
 <button class="link" type="submit" name="decision" value="deny">Cancel</button>
 </form>`);
 }
@@ -497,9 +497,9 @@ export function renderConsentPage(args: {
 }): string {
   const { request } = args;
   const appName = authorizeAppName(request);
-  const who = escapeHtml(args.account.email ?? args.account.name ?? "your ADE account");
+  const who = escapeHtml(args.account.email ?? args.account.name ?? "your Daex account");
   const readOnly = request.requestedScope === "read";
-  return page(`Connect ${appName} to ADE`, `
+  return page(`Connect ${appName} to Daex`, `
 <h1>Allow ${escapeHtml(appName)}?</h1>
 ${appLine(request, args.target)}
 <div class="who">Signed in as ${who}</div>
@@ -513,7 +513,7 @@ ${appLine(request, args.target)}
 <button class="link" type="submit" name="decision" value="deny">Cancel</button>
 </div>
 </form>
-<p class="fine">Change or remove it any time in ADE Settings → ADE MCP.</p>`);
+<p class="fine">Change or remove it any time in Daex Settings → Daex MCP.</p>`);
 }
 
 export function renderMessagePage(title: string, message: string): string {

@@ -125,19 +125,19 @@ export function decodeViaHeader(value: string): string | null {
 export function notServingSentence(name: string, reason: RemoteMcpNotServingReason): string {
   switch (reason) {
     case "off_for_account":
-      return "ADE MCP is off for this ADE account. The person can turn it on in Settings → ADE MCP.";
+      return "Daex MCP is off for this Daex account. The person can turn it on in Settings → Daex MCP.";
     case "left_out":
-      return `${name} is left out of ADE MCP. The person can include it in Settings → ADE MCP.`;
+      return `${name} is left out of Daex MCP. The person can include it in Settings → Daex MCP.`;
     case "signed_out":
-      return `${name} is signed out of its ADE account, so it can't take ADE MCP calls. Sign in to ADE on it.`;
+      return `${name} is signed out of its Daex account, so it can't take Daex MCP calls. Sign in to Daex on it.`;
     case "relay_disconnected":
-      return `${name} isn't connected to ADE Relay right now, so calls can't reach it. Check its internet connection, or try again in a minute.`;
+      return `${name} isn't connected to Daex Relay right now, so calls can't reach it. Check its internet connection, or try again in a minute.`;
     case "account_vault_unreachable":
-      return `${name} can't sync its ADE account vault, so it hasn't received this account's ADE MCP key. Open ADE on ${name} and check Settings → ADE MCP.`;
+      return `${name} can't sync its Daex account vault, so it hasn't received this account's Daex MCP key. Open Daex on ${name} and check Settings → Daex MCP.`;
     case "waiting_for_account_secret":
-      return `${name} hasn't received this account's ADE MCP key yet. Try again in a minute.`;
+      return `${name} hasn't received this account's Daex MCP key yet. Try again in a minute.`;
     case "older_ade":
-      return `ADE on ${name} is older and can't take account calls yet. Update ADE there.`;
+      return `Daex on ${name} is older and can't take account calls yet. Update Daex there.`;
     case "offline":
       return `${name} is offline right now. Try again when it is awake.`;
   }
@@ -150,11 +150,11 @@ export function notServingSentence(name: string, reason: RemoteMcpNotServingReas
 export const NOT_SERVING_WORDS: Readonly<Record<RemoteMcpNotServingReason, string>> = {
   off_for_account: "off for the account",
   left_out: "left out",
-  signed_out: "not serving: signed out of ADE",
-  relay_disconnected: "not serving: not connected to ADE Relay",
-  account_vault_unreachable: "not serving: its account vault can't sync, so it has no ADE MCP key",
-  waiting_for_account_secret: "not serving yet: waiting for the account's ADE MCP key",
-  older_ade: "not joined yet: update ADE on it",
+  signed_out: "not serving: signed out of Daex",
+  relay_disconnected: "not serving: not connected to Daex Relay",
+  account_vault_unreachable: "not serving: its account vault can't sync, so it has no Daex MCP key",
+  waiting_for_account_secret: "not serving yet: waiting for the account's Daex MCP key",
+  older_ade: "not joined yet: update Daex on it",
   offline: "offline",
 };
 
@@ -172,7 +172,7 @@ export function servingStateKnown(machine: Pick<RosterState, "isThisMachine" | "
 
 /** Short words for a computer's state, for lists. */
 export function rosterStateWords(machine: RosterState): string {
-  if (machine.serving) return servingStateKnown(machine) ? "serving" : "serving unknown (its ADE doesn't report it; update ADE there)";
+  if (machine.serving) return servingStateKnown(machine) ? "serving" : "serving unknown (its Daex doesn't report it; update Daex there)";
   return machine.notServingReason ? NOT_SERVING_WORDS[machine.notServingReason] : "not serving";
 }
 
@@ -338,7 +338,7 @@ export function createRemoteMcpMachineRouter(deps: {
       return { kind: "error", message: `More than one machine is called "${wanted}": ${which}. Pass one key as \`machine\`.` };
     }
     const match = matches[0];
-    if (!match) return { kind: "error", message: `No machine "${wanted}" on this ADE account. Machines: ${names}.` };
+    if (!match) return { kind: "error", message: `No machine "${wanted}" on this Daex account. Machines: ${names}.` };
     if (match.isThisMachine) return { kind: "here", machine: self };
     return { kind: "remote", machine: match };
   };
@@ -404,7 +404,7 @@ export function createRemoteMcpMachineRouter(deps: {
         break;
       case 401:
         return toolError(
-          `ADE on ${machine.name} didn't accept this connection. If ${machine.name} runs an older ADE, update ADE there; `
+          `Daex on ${machine.name} didn't accept this connection. If ${machine.name} runs an older Daex, update Daex there; `
           + "if it was just set up, try again in a minute.",
         );
       case 404:
@@ -412,10 +412,10 @@ export function createRemoteMcpMachineRouter(deps: {
         return toolError(relayError === "ade_mcp_off"
           ? machine.notServingReason
             ? notServingSentence(machine.name, machine.notServingReason)
-            : `${machine.name} isn't answering ADE MCP right now: it may have just turned off, been left out, or not received this account's key yet. machines_list shows why.`
+            : `${machine.name} isn't answering Daex MCP right now: it may have just turned off, been left out, or not received this account's key yet. machines_list shows why.`
           : notServingSentence(machine.name, "older_ade"));
       case 429:
-        return toolError(`${machine.name} is busy with other ADE MCP calls. Wait a moment, then retry.`);
+        return toolError(`${machine.name} is busy with other Daex MCP calls. Wait a moment, then retry.`);
       case 503:
         return toolError(notServingSentence(machine.name, "offline"));
       default:
@@ -423,11 +423,11 @@ export function createRemoteMcpMachineRouter(deps: {
     }
     const rpcError = parsed?.error && typeof parsed.error === "object" ? parsed.error as { message?: unknown } : null;
     if (rpcError) {
-      return toolError(`ADE on ${machine.name} refused the call: ${typeof rpcError.message === "string" ? rpcError.message : "unknown error"}.`);
+      return toolError(`Daex on ${machine.name} refused the call: ${typeof rpcError.message === "string" ? rpcError.message : "unknown error"}.`);
     }
     const result = parsed?.result;
     if (!result || typeof result !== "object" || !Array.isArray((result as { content?: unknown }).content)) {
-      return toolError(`ADE on ${machine.name} sent an answer this machine can't read.`);
+      return toolError(`Daex on ${machine.name} sent an answer this machine can't read.`);
     }
     return result as RemoteMcpToolResult;
   };

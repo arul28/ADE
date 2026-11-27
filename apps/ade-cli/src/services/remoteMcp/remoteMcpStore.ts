@@ -53,7 +53,7 @@ export const REMOTE_MCP_ACCOUNT_SECRET_KEY = "account-secret";
 const CONNECTION_KEY_PREFIX = "connection:";
 
 /** A write the account stores refused because the signed-in account changed under it. */
-export const REMOTE_MCP_SAVE_FAILED = "ADE couldn't save this to your ADE account: the signed-in account changed. Try again.";
+export const REMOTE_MCP_SAVE_FAILED = "Daex couldn't save this to your Daex account: the signed-in account changed. Try again.";
 
 /** The slice of the account vault ADE MCP uses. */
 export type RemoteMcpVault = Pick<AccountVaultStore, "list" | "get" | "set" | "remove" | "sync" | "pendingKeys" | "health">;
@@ -239,7 +239,7 @@ export function createRemoteMcpStore(args: {
         : [];
       if (current.length - replaced.length >= MAX_REMOTE_MCP_CONNECTIONS) {
         throw new Error(
-          `Your ADE account already has ${MAX_REMOTE_MCP_CONNECTIONS} ADE MCP connections. Remove one in Settings first.`,
+          `Your Daex account already has ${MAX_REMOTE_MCP_CONNECTIONS} Daex MCP connections. Remove one in Settings first.`,
         );
       }
       const token = mintRemoteMcpToken();
@@ -257,7 +257,7 @@ export function createRemoteMcpStore(args: {
         ...(input.clientKey ? { clientKey: input.clientKey } : {}),
         ...(input.machineKey && isRemoteMcpMachineKey(input.machineKey) ? { machineKey: input.machineKey } : {}),
       };
-      if (input.machineKey && !connection.machineKey) throw new Error("ADE couldn't tell which machine this connection is for.");
+      if (input.machineKey && !connection.machineKey) throw new Error("Daex couldn't tell which machine this connection is for.");
       save(connection);
       for (const old of replaced) drop(old.id);
       return { token, connection: summarize(connection) };
@@ -265,7 +265,7 @@ export function createRemoteMcpStore(args: {
 
     update(id: string, patch: { scope?: RemoteMcpScope; label?: string }): RemoteMcpConnectionSummary {
       const found = read().find((entry) => entry.id === id);
-      if (!found) throw new Error("That ADE MCP connection no longer exists.");
+      if (!found) throw new Error("That Daex MCP connection no longer exists.");
       const next: RemoteMcpConnection = {
         ...found,
         ...(patch.scope && isRemoteMcpScope(patch.scope) ? { scope: patch.scope } : {}),

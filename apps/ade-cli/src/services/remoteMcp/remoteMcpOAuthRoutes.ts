@@ -140,7 +140,7 @@ export function createRemoteMcpOAuthRoutes(deps: {
     authorization_servers: [serverBase],
     bearer_methods_supported: ["header"],
     scopes_supported: ["ade:read", "ade:write"],
-    resource_name: accountMount ? "ADE" : `ADE on ${deps.machineName()}`,
+    resource_name: accountMount ? "Daex" : `Daex on ${deps.machineName()}`,
   });
 
   const authorizationServerMetadata = (serverBase: string) => ({
@@ -203,9 +203,9 @@ export function createRemoteMcpOAuthRoutes(deps: {
       ? { oauth, callbackUrl, endpoint }
       : null;
     const unavailable = !deps.account.signedIn()
-      ? `${machineName} isn't signed in to an ADE account. Sign in to ADE on it, then try again.`
+      ? `${machineName} isn't signed in to a Daex account. Sign in to Daex on it, then try again.`
       : !ready
-        ? `${machineName} can't check ADE sign-ins right now. Update ADE on it, then try again.`
+        ? `${machineName} can't check Daex sign-ins right now. Update Daex on it, then try again.`
         : null;
     const target = signInTarget(accountMount);
     if (!isPost) return html(200, renderSignInPage({ request: authRequest, target, error: unavailable }));
@@ -231,7 +231,7 @@ export function createRemoteMcpOAuthRoutes(deps: {
   const exchangeAccountCode = async (code: string, verifier: string): Promise<string> => {
     const oauth = deps.account.oauth();
     const callbackUrl = accountCallbackUrl();
-    if (!oauth || !callbackUrl) throw new Error("ADE sign-in isn't configured on this machine.");
+    if (!oauth || !callbackUrl) throw new Error("Daex sign-in isn't configured on this machine.");
     const response = await (deps.fetchImpl ?? fetch)(`${withoutTrailingSlash(oauth.issuer)}/oauth/token`, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
@@ -245,7 +245,7 @@ export function createRemoteMcpOAuthRoutes(deps: {
       signal: AbortSignal.timeout(ACCOUNT_CODE_EXCHANGE_TIMEOUT_MS),
     });
     const body = await response.json().catch(() => null) as { access_token?: unknown } | null;
-    if (!response.ok || typeof body?.access_token !== "string") throw new Error(`ADE sign-in answered ${response.status}.`);
+    if (!response.ok || typeof body?.access_token !== "string") throw new Error(`Daex sign-in answered ${response.status}.`);
     return body.access_token;
   };
 
@@ -267,7 +267,7 @@ export function createRemoteMcpOAuthRoutes(deps: {
     const attestation = deps.account.attestation();
     if (!owner || !attestation) {
       authorization.forget(nonce);
-      return html(409, renderMessagePage("Can't connect", `${deps.machineName()} isn't signed in to an ADE account.`));
+      return html(409, renderMessagePage("Can't connect", `${deps.machineName()} isn't signed in to a Daex account.`));
     }
     try {
       const token = await exchangeAccountCode(query.get("code")!, pending.accountVerifier);
@@ -279,10 +279,10 @@ export function createRemoteMcpOAuthRoutes(deps: {
         reason: error instanceof AccountAttestationError ? error.code : "exchange_failed",
       });
       return html(mismatch ? 403 : 502, renderMessagePage(
-        mismatch ? "Different ADE account" : "Couldn't check your sign-in",
+        mismatch ? "Different Daex account" : "Couldn't check your sign-in",
         mismatch
-          ? `${deps.machineName()} belongs to ${owner.email ?? "another ADE account"}. Sign in with that account to connect apps to it.`
-          : "ADE couldn't confirm your sign-in. Go back to the app and try again.",
+          ? `${deps.machineName()} belongs to ${owner.email ?? "another Daex account"}. Sign in with that account to connect apps to it.`
+          : "Daex couldn't confirm your sign-in. Go back to the app and try again.",
       ));
     }
     const csrf = authorization.markSignedIn(nonce, owner);

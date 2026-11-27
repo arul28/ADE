@@ -30,18 +30,18 @@ const MAX_REMOTE_ARG_CHARS = 8_000;
 
 /** Never runnable remotely, at any scope. */
 const BLOCKED_COMMANDS: ReadonlyMap<string, string> = new Map([
-  ["mcp", "ADE MCP is managed on the machine itself, not by a connected app."],
+  ["mcp", "Daex MCP is managed on the machine itself, not by a connected app."],
   ["login", "Signing this machine in or out is done on the machine itself."],
   ["logout", "Signing this machine in or out is done on the machine itself."],
   ["connect", "Linking this machine to an account is done on the machine itself."],
   ["setup", "Setup is interactive and runs on the machine itself."],
-  ["reset", "Resetting ADE is done on the machine itself."],
-  ["brain", "Starting or stopping ADE's brain would cut this connection."],
-  ["serve", "Starting or stopping ADE's brain would cut this connection."],
-  ["runtime", "Running another ADE runtime is not available remotely."],
+  ["reset", "Resetting Daex is done on the machine itself."],
+  ["brain", "Starting or stopping Daex's brain would cut this connection."],
+  ["serve", "Starting or stopping Daex's brain would cut this connection."],
+  ["runtime", "Running another Daex runtime is not available remotely."],
   ["rpc", "The raw RPC stream is not available remotely."],
   ["desktop", "Opening the desktop app is done on the machine itself."],
-  ["account", "Account tokens outlive ADE MCP, so they are created on the machine itself."],
+  ["account", "Account tokens outlive Daex MCP, so they are created on the machine itself."],
 ]);
 
 /**
@@ -155,6 +155,11 @@ type RemoteCommandVerdict =
   | { ok: true; args: string[] }
   | { ok: false; reason: string };
 
+/** The CLI's own name as a first word: `daex`, or `ade`, its permanent alias. */
+function isProgramName(word: string | undefined): boolean {
+  return word === "daex" || word === "ade";
+}
+
 /**
  * Normalizes and checks one remote `ade` invocation. Returns the argv to run
  * (without the program name), or a sentence a model can act on.
@@ -181,7 +186,7 @@ export function checkRemoteAdeCommand(
   }
   // Models often include the program name.
   if (args[0] === "ade") args.shift();
-  if (args.length === 0) return { ok: false, reason: "Name an ade command, e.g. [\"help\"]." };
+  if (args.length === 0) return { ok: false, reason: "Name an daex command, e.g. [\"help\"]." };
   if (args.length > MAX_REMOTE_ARGS) return { ok: false, reason: `At most ${MAX_REMOTE_ARGS} arguments.` };
   // Only a plain command word may come first. Global flags (`--socket`,
   // `--headless`, `--role`, `--project-root`) take effect before it, and the
@@ -196,11 +201,11 @@ export function checkRemoteAdeCommand(
   }
   const command = COMMAND_ALIASES.get(args[0]!) ?? args[0]!;
   const blocked = BLOCKED_COMMANDS.get(command);
-  if (blocked) return { ok: false, reason: `\`ade ${command}\` is not available remotely. ${blocked}` };
+  if (blocked) return { ok: false, reason: `\`daex ${command}\` is not available remotely. ${blocked}` };
   if (!FULL_ACCESS_COMMANDS.has(args[0]!)) {
     return {
       ok: false,
-      reason: `\`ade ${args[0]}\` isn't enabled for ADE MCP. Run \`ade help\` for the commands it can use.`,
+      reason: `\`daex ${args[0]}\` isn't enabled for Daex MCP. Run \`daex help\` for the commands it can use.`,
     };
   }
   const words = positionalWords(args);
@@ -215,8 +220,8 @@ export function checkRemoteAdeCommand(
     return {
       ok: false,
       reason: movesChat
-        ? "Moving a chat to another machine (`--to`) is not available through ADE MCP. Use the tool's `machine` input to work on another machine."
-        : "Use the tool's `machine` input to run on another machine (machines_list names them), not --machine. Only a new ADE Cloud lane takes it: exactly `--machine cloud` on `chat create`, `lanes create` or `chat launch-status`.",
+        ? "Moving a chat to another machine (`--to`) is not available through Daex MCP. Use the tool's `machine` input to work on another machine."
+        : "Use the tool's `machine` input to run on another machine (machines_list names them), not --machine. Only a new Daex Cloud lane takes it: exactly `--machine cloud` on `chat create`, `lanes create` or `chat launch-status`.",
     };
   }
   const devicesVerdict = checkDevicesCommand(command, args);
@@ -229,22 +234,22 @@ export function checkRemoteAdeCommand(
   // Git's credential helper prints this computer's GitHub token; it is for
   // git on this computer only, never a connected app.
   if (command === "git" && words[0] === "credential") {
-    return { ok: false, reason: "`ade git credential` is git's sign-in helper on this machine and is not available remotely." };
+    return { ok: false, reason: "`daex git credential` is git's sign-in helper on this machine and is not available remotely." };
   }
   if (isServiceSignInCommand(command, words)) {
-    return { ok: false, reason: `\`ade ${command} ${words.slice(0, 2).join(" ")}\` is not available remotely. ${SERVICE_SIGN_IN_REASON}` };
+    return { ok: false, reason: `\`daex ${command} ${words.slice(0, 2).join(" ")}\` is not available remotely. ${SERVICE_SIGN_IN_REASON}` };
   }
   // Only ADE's server runs these, over exec on a cloud computer: they stop
   // its work, push every lane, save it for rest, or send its queued messages.
   if (command === "cloud" && SERVER_ONLY_CLOUD_COMMANDS.has(words[0] ?? "")) {
-    return { ok: false, reason: `\`ade cloud ${words[0]}\` is not available remotely. Only ADE's server runs it, on ADE Cloud.` };
+    return { ok: false, reason: `\`daex cloud ${words[0]}\` is not available remotely. Only Daex's server runs it, on Daex Cloud.` };
   }
   // Renaming, removing or re-pairing account machines outlives revoking the
   // connection, like account tokens; reading the roster is fine.
   if (command === "machines" && !MACHINE_READ_SUBCOMMANDS.has(words[0] ?? "list")) {
     return {
       ok: false,
-      reason: `\`ade machines ${words[0]}\` is not available remotely. Change the machines on your ADE account in ADE on that machine.`,
+      reason: `\`daex machines ${words[0]}\` is not available remotely. Change the machines on your Daex account in Daex on that machine.`,
     };
   }
   if (command === "android") {
@@ -253,10 +258,10 @@ export function checkRemoteAdeCommand(
     // (`sdk --sdk-root /x install`) cannot step around the check.
     const verb = sdkAt >= 0 ? words.slice(sdkAt + 1).find((word) => ANDROID_SDK_WRITE_VERBS.has(word)) : undefined;
     if (verb) {
-      return { ok: false, reason: `\`ade android sdk ${verb}\` is not available remotely. ${ANDROID_SDK_REASON}` };
+      return { ok: false, reason: `\`daex android sdk ${verb}\` is not available remotely. ${ANDROID_SDK_REASON}` };
     }
     if (args.some((word) => word === "--restart-adb" || word.startsWith("--restart-adb="))) {
-      return { ok: false, reason: `\`ade android start --restart-adb\` is not available remotely. ${ANDROID_RESTART_ADB_REASON}` };
+      return { ok: false, reason: `\`daex android start --restart-adb\` is not available remotely. ${ANDROID_RESTART_ADB_REASON}` };
     }
   }
   // Simulator.app on the person's Mac: once it runs, every lane's booted
@@ -266,8 +271,8 @@ export function checkRemoteAdeCommand(
     && args.some((word) => /^--(?:window|foreground|open-simulator)(?:=|$)/.test(word))) {
     return {
       ok: false,
-      reason: "Opening Simulator.app is not available through ADE MCP: the simulator runs inside ADE. "
-        + "Drop --window, --foreground and --open-simulator; `ade apple screenshot --lane <lane>` shows the screen.",
+      reason: "Opening Simulator.app is not available through Daex MCP: the simulator runs inside Daex. "
+        + "Drop --window, --foreground and --open-simulator; `daex apple screenshot --lane <lane>` shows the screen.",
     };
   }
   if (command === "actions") {
@@ -309,12 +314,12 @@ function checkDevicesCommand(command: string, args: readonly string[]): RemoteCo
   if (sub === "use") {
     return {
       ok: false,
-      reason: "`ade devices use` picks a device for a chat, and an ADE MCP app has no chat there. "
+      reason: "`daex devices use` picks a device for a chat, and a Daex MCP app has no chat there. "
         + "Pick the machine with the tool's `machine` input, then pass --lane <lane there> to the device commands.",
     };
   }
   if (sub === null) {
-    return { ok: false, reason: `\`ade devices ${first}\` is not a devices command. Use ["devices","--text"] or ["devices","current"].` };
+    return { ok: false, reason: `\`daex devices ${first}\` is not a devices command. Use ["devices","--text"] or ["devices","current"].` };
   }
   return null;
 }
@@ -363,7 +368,7 @@ function isCloudLaneMachineUse(command: string, args: readonly string[]): boolea
   return named;
 }
 const SERVICE_SIGN_IN_REASON =
-  "Signing this machine in or out of a service (GitHub, Linear, Jira, an AI provider) outlives ADE MCP, so it is done on the machine itself.";
+  "Signing this machine in or out of a service (GitHub, Linear, Jira, an AI provider) outlives Daex MCP, so it is done on the machine itself.";
 /** `ade github` groups that manage the machine's GitHub App authorization. */
 const GITHUB_AUTH_GROUPS: ReadonlySet<string> = new Set(["app-auth", "app", "auth"]);
 /** Spellings of `ade github app-auth login` and `clear`. */
@@ -436,13 +441,13 @@ const SIMULATOR_WINDOW_ACTION_ARGS: ReadonlyMap<string, { key: string; value: bo
 ]);
 
 const SIMULATOR_WINDOW_REASON =
-  "Opening Simulator.app is not available through ADE MCP: the simulator runs inside ADE, in ADE's stream.";
+  "Opening Simulator.app is not available through Daex MCP: the simulator runs inside Daex, in Daex's stream.";
 
 /** A restart of the machine's adb server cuts every other device and tool on it, so only the person decides it. */
 const ANDROID_RESTART_ADB_REASON =
-  "Only the person restarts adb: Restart adb and start in the Android pane, or `ade android start --restart-adb` in a terminal on that machine.";
+  "Only the person restarts adb: Restart adb and start in the Android pane, or `daex android start --restart-adb` in a terminal on that machine.";
 const ANDROID_SDK_REASON =
-  "Only the user installs the Android SDK and accepts Google's licences, in the ADE desktop app on that machine: "
+  "Only the user installs the Android SDK and accepts Google's licences, in the Daex desktop app on that machine: "
   + "the setup card in the Android tool, or Settings › Android devices. System images: the device picker's System images.";
 /**
  * Service credential actions, by domain; `true` means every action. The CLI
@@ -470,7 +475,7 @@ const SERVICE_SIGN_IN_ACTIONS: ReadonlyMap<string, ReadonlySet<string> | true> =
  * The whole `account_vault` domain, at every scope: it holds the account's
  * credentials, ADE MCP's own token hashes and its account secret.
  */
-const ACCOUNT_VAULT_REASON = "The account vault holds your ADE account's credentials, so it is used on the machine itself.";
+const ACCOUNT_VAULT_REASON = "The account vault holds your Daex account's credentials, so it is used on the machine itself.";
 
 /** Spellings of `ade providers opencode accounts remove`, which signs OpenCode out. */
 const OPENCODE_ACCOUNT_REMOVALS: ReadonlySet<string> = new Set(["remove", "rm", "delete"]);
@@ -519,7 +524,7 @@ function actionRunTarget(words: readonly string[]): { domain: string; action: st
 function checkActionsCommand(words: readonly string[], scope: RemoteMcpScope, args: readonly string[]): RemoteCommandVerdict | null {
   const sub = words[0] ?? "list";
   if (RAW_ACTION_DOORS.has(sub)) {
-    return { ok: false, reason: `\`ade actions ${sub}\` is not available remotely. Use \`ade actions run <domain.action>\`.` };
+    return { ok: false, reason: `\`daex actions ${sub}\` is not available remotely. Use \`daex actions run <domain.action>\`.` };
   }
   if (sub !== "run") return null;
   const target = actionRunTarget(words);
@@ -627,9 +632,9 @@ function readsFileThroughAction(command: string, args: readonly string[]): boole
 function checkReadOnly(args: string[], words: readonly string[]): RemoteCommandVerdict {
   const refuse = (): RemoteCommandVerdict => ({
     ok: false,
-    reason: `This connection is read-only, and \`ade ${args.slice(0, 3).filter((word) => !word.startsWith("-")).join(" ")}\` isn't one of the commands it can run. `
+    reason: `This connection is read-only, and \`daex ${args.slice(0, 3).filter((word) => !word.startsWith("-")).join(" ")}\` isn't one of the commands it can run. `
       + "Read-only connections can run: " + describeReadOnlyCommands() + ". "
-      + "Ask the person to give this app full access in ADE Settings → ADE MCP if it needs more.",
+      + "Ask the person to give this app full access in Daex Settings → Daex MCP if it needs more.",
   });
   const command = args[0]!;
   if (asksForHelp(args)) return { ok: true, args };
@@ -848,7 +853,7 @@ const SECRET_VALUE_VERBS: ReadonlySet<string> = new Set(["set", "put", "add", "r
  */
 export function redactedCommandForLog(rawArgs: readonly string[]): string {
   // Read as the policy reads it: the program name dropped (models often add it).
-  const args = rawArgs[0] === "ade" ? rawArgs.slice(1) : rawArgs;
+  const args = isProgramName(rawArgs[0]) ? rawArgs.slice(1) : rawArgs;
   const out: string[] = [];
   // Every word after `secrets set <key>` (the verb is the first word that is
   // not a flag), or after a Passwords or secret action
@@ -898,7 +903,7 @@ export function remoteCommandAvailability(
   scope: RemoteMcpScope,
 ): { command: string; allowed: boolean; subcommands: readonly string[] | null; reason?: string } {
   const words = topic.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  if (words[0] === "ade") words.shift();
+  if (isProgramName(words[0])) words.shift();
   const requestedCommand = words[0] ?? "";
   const command = COMMAND_ALIASES.get(requestedCommand) ?? requestedCommand;
   const blocked = BLOCKED_COMMANDS.get(command);
@@ -908,7 +913,7 @@ export function remoteCommandAvailability(
       command,
       allowed: false,
       subcommands: null,
-      reason: "This command is not enabled for ADE MCP.",
+      reason: "This command is not enabled for Daex MCP.",
     };
   }
   const group = words[1] ? `${command} ${words[1]}` : null;

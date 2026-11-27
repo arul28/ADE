@@ -36,6 +36,6 @@ export function viewWrite(w: WriteLine, scope: Scope): HTMLElement {
     h("span", { cls: "grow", style: "display:flex;flex-direction:column;min-width:0" },
       h("span", { cls: "trunc", style: "font-weight:500" }, w.line), w.note ? h("span", { cls: "small dim trunc" }, w.note) : null),
     scope.machineName ? h("span", { cls: "chip" }, scope.machineName) : null,
-    w.link ? h("button", { cls: "btn", type: "button", onclick: () => openLink(w.link!) }, "Open in ADE") : null);
+    w.link ? h("button", { cls: "btn", type: "button", onclick: () => openLink(w.link!) }, "Open in Daex") : null);
   return h("section", { cls: "card", "aria-label": w.line }, body);
 }

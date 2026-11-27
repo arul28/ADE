@@ -157,7 +157,7 @@ describe("checkRemoteAdeCommand", () => {
     "`ade %s` is classified for ADE MCP",
     (command) => {
       const verdict = checkRemoteAdeCommand([command, "--help"], "write");
-      expect(verdict.ok ? "" : verdict.reason).not.toMatch(/isn't enabled for ADE MCP/);
+      expect(verdict.ok ? "" : verdict.reason).not.toMatch(/isn't enabled for Daex MCP/);
     },
   );
 });

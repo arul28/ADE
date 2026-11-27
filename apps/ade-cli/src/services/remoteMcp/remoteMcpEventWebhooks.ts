@@ -180,7 +180,7 @@ function createSubscriptionStore(vault: RemoteMcpVault, warn: (event: string, da
     },
     save(subscription: StoredSubscription): void {
       if (!vault.set(REMOTE_MCP_VAULT_SCOPE, REMOTE_MCP_VAULT_KIND, keyOf(subscription.id), JSON.stringify(subscription))) {
-        throw new Error("ADE couldn't save the subscription to your account vault. Try again shortly.");
+        throw new Error("Daex couldn't save the subscription to your account vault. Try again shortly.");
       }
     },
     /** Best effort (expiry, revocation): a failure is logged, and the next run tries again. */
@@ -201,7 +201,7 @@ function createSubscriptionStore(vault: RemoteMcpVault, warn: (event: string, da
       } catch (error) {
         warn("remote_mcp.events_unsubscribe_failed", { id, error: getErrorMessage(error) });
       }
-      if (!removed) throw new Error("ADE couldn't remove the subscription from your account vault. Try again shortly.");
+      if (!removed) throw new Error("Daex couldn't remove the subscription from your account vault. Try again shortly.");
     },
   };
 }
@@ -276,7 +276,7 @@ export function createMcpWebhooks(deps: McpWebhooksDeps) {
     const answer = await postWebhook(url, signedHeaders({ secrets: [secret], webhookId: controlMessageId("verification"), subscriptionId, body }), body, true);
     if (answer.privateAddress) throw invalid("`delivery.url` resolves to a private address. Use a public https URL.");
     if (answer.failure || answer.status < 200 || answer.status >= 300) {
-      throw new McpEventsError(EVENTS_ERROR.callbackEndpoint, "The webhook endpoint didn't accept ADE's check.", { reason: answer.failure ?? "http_4xx" });
+      throw new McpEventsError(EVENTS_ERROR.callbackEndpoint, "The webhook endpoint didn't accept Daex's check.", { reason: answer.failure ?? "http_4xx" });
     }
     let echoed: unknown = null;
     try {
@@ -288,7 +288,7 @@ export function createMcpWebhooks(deps: McpWebhooksDeps) {
     const expected = Buffer.from(challenge);
     const given = Buffer.from(typeof echoed === "string" ? echoed : "");
     if (given.length !== expected.length || !timingSafeEqual(given, expected)) {
-      throw new McpEventsError(EVENTS_ERROR.callbackEndpoint, "The webhook endpoint didn't echo ADE's challenge.", { reason: "challenge_failed" });
+      throw new McpEventsError(EVENTS_ERROR.callbackEndpoint, "The webhook endpoint didn't echo Daex's challenge.", { reason: "challenge_failed" });
     }
   };
 
@@ -301,7 +301,7 @@ export function createMcpWebhooks(deps: McpWebhooksDeps) {
     const delivery = isRecord(params.delivery) ? params.delivery : null;
     if (!delivery) throw invalid("`delivery` is required: {mode: \"webhook\", url, secret}.");
     if (delivery.mode !== undefined && delivery.mode !== "webhook") {
-      throw new McpEventsError(EVENTS_ERROR.unsupported, "ADE delivers events by poll or webhook.", { feature: "deliveryMode", value: delivery.mode });
+      throw new McpEventsError(EVENTS_ERROR.unsupported, "Daex delivers events by poll or webhook.", { feature: "deliveryMode", value: delivery.mode });
     }
     const urlProblem = webhookUrlProblem(delivery.url);
     if (urlProblem) throw invalid(urlProblem);
@@ -602,7 +602,7 @@ export function createMcpWebhooks(deps: McpWebhooksDeps) {
       if (!connection) {
         if (owner) {
           enqueue(subscription.id, async () => {
-            await sendControl(subscription, { type: "terminated", error: { code: EVENTS_ERROR.forbidden, message: "Access revoked: the app's ADE MCP connection was removed." } });
+            await sendControl(subscription, { type: "terminated", error: { code: EVENTS_ERROR.forbidden, message: "Access revoked: the app's Daex MCP connection was removed." } });
             store.remove(subscription.id);
           });
         }

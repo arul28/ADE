@@ -132,7 +132,7 @@ function failedRun(message: string): RemoteRunResult {
 /** Why a connection kept to one computer can't reach this computer, or the one it named. */
 function onlyMachineRefusal(only: NonNullable<RemoteMcpConnectionSummary["onlyMachine"]>): string {
   return `This connection reaches only ${only.name}. `
-    + "To reach every machine, connect the app with your account's address from ADE Settings → ADE MCP.";
+    + "To reach every machine, connect the app with your account's address from Daex Settings → Daex MCP.";
 }
 
 export function createRemoteMcpProtocol(deps: {
@@ -167,9 +167,9 @@ export function createRemoteMcpProtocol(deps: {
 
   const toolDefinition = (scope: RemoteMcpScope) => ({
     name: TOOL_NAME,
-    title: "Run an ADE command",
+    title: "Run a Daex command",
     description: [
-      `Runs the \`ade\` CLI on ${deps.machineName()}, for what no other tool covers. Add --text for readable output.`,
+      `Runs the Daex CLI (\`daex\`, or its alias \`ade\`) on ${deps.machineName()}, for what no other tool covers. Add --text for readable output.`,
       `["help"] or ${COMMANDS_RESOURCE_URI} lists the commands; ["<command>","--help"] explains one.`,
       scope === "read" ? "Read-only: commands that change things are refused." : "Full access, like the person's terminal.",
     ].join(" "),
@@ -179,7 +179,7 @@ export function createRemoteMcpProtocol(deps: {
         args: {
           type: "array",
           items: { type: "string" },
-          description: "The words after `ade`, e.g. [\"lanes\",\"list\",\"--text\"].",
+          description: "The words after `daex`, e.g. [\"lanes\",\"list\",\"--text\"].",
         },
         command: { type: "string", description: "Or the same as one string. No shell runs it." },
         project: PROJECT_INPUT,
@@ -197,7 +197,7 @@ export function createRemoteMcpProtocol(deps: {
       },
     },
     annotations: {
-      title: "Run an ADE command",
+      title: "Run a Daex command",
       readOnlyHint: scope === "read",
       destructiveHint: scope === "write",
       idempotentHint: false,
@@ -231,13 +231,13 @@ export function createRemoteMcpProtocol(deps: {
     scope === "write" ? TYPED_TOOLS : TYPED_TOOLS.filter((tool) => !tool.write);
 
   const instructions = (scope: RemoteMcpScope): string => [
-    `ADE on ${deps.machineName()}: coding lanes (git worktrees), agent chats and pull requests.`,
+    `Daex on ${deps.machineName()}: coding lanes (git worktrees), agent chats and pull requests.`,
     "Use the typed tools; `ade` runs anything else.",
     "`machine` (a machines_list key or name) defaults to this machine, `project` to the last opened (chat_start and lanes_create need it); each result names both. A chat id finds its own.",
     // An app without MCP prompts (Grok Bot) reads the same skill through the `ade` tool.
     "The `ade-mcp-client` prompt (or `skill show ade-mcp-client`) explains the workflow.",
     // Only for an account with ADE Cloud: the same answer that lists the `ade-cloud` prompt.
-    ...(adeWithheldAgentSkills().includes("ade-cloud") ? [] : ["Before an ADE Cloud lane, run `cloud status` and follow the `ade-cloud` prompt."]),
+    ...(adeWithheldAgentSkills().includes("ade-cloud") ? [] : ["Before a Daex Cloud lane, run `cloud status` and follow the `ade-cloud` prompt."]),
     ...(scope === "read" ? ["This connection is read-only."] : []),
   ].join(" ");
 
@@ -307,7 +307,7 @@ export function createRemoteMcpProtocol(deps: {
     // Write tools are not listed for a read-only connection; one that calls
     // one anyway gets the reason, not a policy list.
     if (typed?.write && connection.scope !== "write") {
-      return refuseHere("", `This connection is read-only, so it can't run ${typed.name}. The person can give this app full access in ADE Settings → ADE MCP.`);
+      return refuseHere("", `This connection is read-only, so it can't run ${typed.name}. The person can give this app full access in Daex Settings → Daex MCP.`);
     }
     let words: unknown;
     let stdin: string | null = null;
@@ -477,10 +477,10 @@ export function createRemoteMcpProtocol(deps: {
       cwd: "error" in resolved ? os.homedir() : resolved.cwd,
       timeoutMs: 30_000,
       connectionId: "catalog",
-      connectionLabel: "ADE MCP",
+      connectionLabel: "Daex MCP",
       role: scope === "write" ? "cto" : "agent",
     });
-    if (result.exitCode !== 0 || result.truncated) throw new Error("ADE could not list its commands right now.");
+    if (result.exitCode !== 0 || result.truncated) throw new Error("Daex could not list its commands right now.");
     return result.stdout;
   };
 
@@ -547,7 +547,7 @@ export function createRemoteMcpProtocol(deps: {
       if (!findTypedTool(name)?.fanOut) {
         return refuse(logBase, `machine "all" works with ${FAN_OUT_TOOL_NAMES.join(", ")}. Name one machine for ${name}.`);
       }
-      if (context.via) return refuse(logBase, `This call came through ${context.via}; ADE MCP sends a call on one hop only.`);
+      if (context.via) return refuse(logBase, `This call came through ${context.via}; Daex MCP sends a call on one hop only.`);
       return await fanOut(connection, name, localParams, rest, context, only?.machineKey ?? null);
     }
     const resolved = await router.resolve(selector);
@@ -565,7 +565,7 @@ export function createRemoteMcpProtocol(deps: {
     if (context.via) {
       return refuse(
         logBase,
-        `This call came through ${context.via}; ADE MCP sends a call on one hop only, so it can't reach ${resolved.machine.name} from here.`,
+        `This call came through ${context.via}; Daex MCP sends a call on one hop only, so it can't reach ${resolved.machine.name} from here.`,
       );
     }
     const reason = router.unavailableReason(resolved.machine);
@@ -739,7 +739,7 @@ export function createRemoteMcpProtocol(deps: {
   const machinesToolDefinition = () => ({
     name: MACHINES_TOOL_NAME,
     title: "List machines",
-    description: "The machines on this ADE account: online, serving or why not, and which one answers.",
+    description: "The machines on this Daex account: online, serving or why not, and which one answers.",
     inputSchema: { type: "object", properties: {} as Record<string, unknown> },
     annotations: { readOnlyHint: true, openWorldHint: false },
   });
@@ -796,7 +796,7 @@ export function createRemoteMcpProtocol(deps: {
             // Clients built on the draft before SEP-3415 read this key.
             events: {},
           },
-          serverInfo: { name: "ade", title: `ADE on ${deps.machineName()}`, version: remoteMcpAdeVersion() },
+          serverInfo: { name: "ade", title: `Daex on ${deps.machineName()}`, version: remoteMcpAdeVersion() },
           instructions: instructions(connection.scope),
         });
       }
@@ -815,8 +815,8 @@ export function createRemoteMcpProtocol(deps: {
           resources: [{
             uri: COMMANDS_RESOURCE_URI,
             name: "commands",
-            title: "ADE commands",
-            description: "Every ade command this connection can run, with a summary and examples (ade help --json).",
+            title: "Daex commands",
+            description: "Every daex command this connection can run, with a summary and examples (daex help --json).",
             mimeType: "application/json",
           }, adeAppResourceListing()],
         });

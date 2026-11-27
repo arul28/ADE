@@ -146,7 +146,7 @@ export const invalid = (message: string): McpEventsError => new McpEventsError(E
 export function eventName(value: unknown): McpEventName {
   if (typeof value !== "string" || !value) throw invalid("Name the event: one of " + MCP_EVENT_NAMES.join(", ") + ".");
   if (!(MCP_EVENT_NAMES as readonly string[]).includes(value)) {
-    throw new McpEventsError(EVENTS_ERROR.notFound, `No event "${value}". ADE has ${MCP_EVENT_NAMES.join(", ")}.`, { kind: "event" });
+    throw new McpEventsError(EVENTS_ERROR.notFound, `No event "${value}". Daex has ${MCP_EVENT_NAMES.join(", ")}.`, { kind: "event" });
   }
   return value as McpEventName;
 }
@@ -222,7 +222,7 @@ export function encodeCursor(cursor: AccountCursor): string {
 
 export function decodeCursor(value: unknown): AccountCursor | null {
   if (value === undefined || value === null || value === "") return null;
-  if (typeof value !== "string" || !value.startsWith(CURSOR_PREFIX)) throw invalid("That cursor isn't one ADE gave. Pass null to start from now.");
+  if (typeof value !== "string" || !value.startsWith(CURSOR_PREFIX)) throw invalid("That cursor isn't one Daex gave. Pass null to start from now.");
   try {
     const parsed: unknown = JSON.parse(Buffer.from(value.slice(CURSOR_PREFIX.length), "base64url").toString("utf8"));
     if (!isRecord(parsed) || typeof parsed.t !== "number" || !isRecord(parsed.m)) throw new Error("shape");
@@ -230,7 +230,7 @@ export function decodeCursor(value: unknown): AccountCursor | null {
     for (const [key, part] of Object.entries(parsed.m)) if (typeof part === "string") m[key] = part;
     return { t: parsed.t, m };
   } catch {
-    throw invalid("That cursor isn't one ADE gave. Pass null to start from now.");
+    throw invalid("That cursor isn't one Daex gave. Pass null to start from now.");
   }
 }
 

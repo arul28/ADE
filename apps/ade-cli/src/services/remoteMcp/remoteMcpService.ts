@@ -212,22 +212,22 @@ export function createRemoteMcpService(args: {
   /** This computer's account vault sync, which the account secret and every connection ride on. */
   const vaultHealth = (): RemoteMcpVaultHealth => {
     if (!signedIn()) {
-      return { state: "unavailable", lastSyncedAt: null, pendingChanges: 0, message: "Sign in to ADE on this machine: the account vault belongs to your ADE account." };
+      return { state: "unavailable", lastSyncedAt: null, pendingChanges: 0, message: "Sign in to Daex on this machine: the account vault belongs to your Daex account." };
     }
     let reported: AccountCacheHealth;
     try {
       reported = args.vault.health();
     } catch (error) {
       warn("remote_mcp.vault_health_failed", error);
-      return { state: "unavailable", lastSyncedAt: null, pendingChanges: 0, message: "This machine can't read its ADE account vault's state right now." };
+      return { state: "unavailable", lastSyncedAt: null, pendingChanges: 0, message: "This machine can't read its Daex account vault's state right now." };
     }
     const waiting = reported.pendingChanges + reported.parked;
     const message = reported.state === "ok"
       ? null
       : reported.state === "unavailable"
-        ? "This machine can't use its ADE account vault right now (it may be signed out)."
-        : `This machine can't sync its ADE account vault.${reported.lastError ? ` ${reported.lastError.trim().replace(/([^.!?])$/, "$1.")}` : ""} `
-          + `ADE MCP's key, its connections and other synced secrets wait until it can${waiting ? `; ${waiting} change${waiting === 1 ? "" : "s"} wait to upload` : ""}.`;
+        ? "This machine can't use its Daex account vault right now (it may be signed out)."
+        : `This machine can't sync its Daex account vault.${reported.lastError ? ` ${reported.lastError.trim().replace(/([^.!?])$/, "$1.")}` : ""} `
+          + `Daex MCP's key, its connections and other synced secrets wait until it can${waiting ? `; ${waiting} change${waiting === 1 ? "" : "s"} wait to upload` : ""}.`;
     return { state: reported.state, lastSyncedAt: reported.lastSyncedAt, pendingChanges: waiting, message };
   };
 
@@ -388,7 +388,7 @@ export function createRemoteMcpService(args: {
       const status = await syncVault();
       if (status !== "ready") {
         throw new Error(
-          "ADE couldn't reach your ADE account's vault from this machine, so ADE MCP stays off. "
+          "Daex couldn't reach your Daex account's vault from this machine, so Daex MCP stays off. "
           + "Check the internet connection and try again"
           + (vaultHealth().message ? `. ${vaultHealth().message}` : "."),
         );
@@ -407,8 +407,8 @@ export function createRemoteMcpService(args: {
       const uploaded = await syncVault();
       if (uploaded !== "ready" || !secretUploaded()) {
         throw new Error(
-          "ADE couldn't save ADE MCP's key to your ADE account, so ADE MCP stays off. "
-          + "This usually means ADE Relay needs an update or the connection dropped. Try again in a minute.",
+          "Daex couldn't save Daex MCP's key to your Daex account, so Daex MCP stays off. "
+          + "This usually means Daex Relay needs an update or the connection dropped. Try again in a minute.",
         );
       }
       // The vault's value now, which is another computer's if it uploaded after this one.
@@ -651,7 +651,7 @@ export function createRemoteMcpService(args: {
     401,
     {
       error: presented ? "invalid_token" : "unauthorized",
-      error_description: "Connect this app to ADE first: sign in with your ADE account, or send an ADE MCP token.",
+      error_description: "Connect this app to Daex first: sign in with your Daex account, or send a Daex MCP token.",
     },
     {
       "www-authenticate": `Bearer resource_metadata="${serverBase}/.well-known/oauth-protected-resource"${presented ? ", error=\"invalid_token\"" : ""}`,
@@ -757,7 +757,7 @@ export function createRemoteMcpService(args: {
   const handleHttp = async (request: RemoteMcpHttpRequest): Promise<RemoteMcpHttpResponse> => {
     const off = () => {
       announceNotServing();
-      return json(404, { error: "ade_mcp_off", error_description: "ADE MCP is off on this machine." });
+      return json(404, { error: "ade_mcp_off", error_description: "Daex MCP is off on this machine." });
     };
     if (!serving()) return off();
     const accountMount = request.mount?.kind === "account";
@@ -825,7 +825,7 @@ export function createRemoteMcpService(args: {
 
   const requireSignedIn = (): void => {
     if (!signedIn()) {
-      throw new Error("Sign in to ADE on this machine first: ADE MCP belongs to your ADE account.");
+      throw new Error("Sign in to Daex on this machine first: Daex MCP belongs to your Daex account.");
     }
   };
 
@@ -903,7 +903,7 @@ export function createRemoteMcpService(args: {
       if (!machineKey) throw new Error("Pass the machine's machineKey (see getStatus).");
       const existing = readRemoteMcpMachineEntry(args.settings, machineKey);
       const listed = (await machines.roster()).find((machine) => machine.machineKey === machineKey) ?? null;
-      if (!existing && !listed) throw new Error("That machine isn't on this ADE account.");
+      if (!existing && !listed) throw new Error("That machine isn't on this Daex account.");
       // A computer that never published gets a stub; it fills in the rest and keeps `included`.
       const ok = writeRemoteMcpMachineEntry(args.settings, {
         machineKey,

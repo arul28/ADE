@@ -224,7 +224,7 @@ export function createRemoteMcpEvents(deps: McpEventsDeps) {
     const onlyKey = connection.onlyMachine?.machineKey ?? null;
     if (onlyKey && key !== onlyKey) throw new McpEventsError(EVENTS_ERROR.forbidden, "This connection reaches one machine only, and that isn't it.");
     if (resolved.kind === "remote" && !resolved.machine.included) {
-      throw invalid(router.unavailableReason(resolved.machine) ?? `${resolved.machine.name} is left out of ADE MCP.`);
+      throw invalid(router.unavailableReason(resolved.machine) ?? `${resolved.machine.name} is left out of Daex MCP.`);
     }
     return key;
   };
@@ -439,7 +439,7 @@ export function createRemoteMcpEvents(deps: McpEventsDeps) {
       } else {
         throw new McpEventsError(
           EVENTS_ERROR.unsupported,
-          "ADE delivers events by events/poll or a webhook (events/subscribe); the relay holds no open stream.",
+          "Daex delivers events by events/poll or a webhook (events/subscribe); the relay holds no open stream.",
           { feature: "deliveryMode", value: "push" },
         );
       }

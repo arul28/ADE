@@ -116,8 +116,8 @@ async function resolveLaunch(): Promise<Launch> {
   const { entry, tried } = resolveCliEntry(env, isEmbeddedAdeRuntime(), adeDir);
   if (!entry) {
     throw new Error(
-      `This machine's ADE could not find its own ade command (looked at ${tried.join(", ") || "nothing"}). `
-      + "Restarting ADE on it usually fixes this.",
+      `This machine's Daex could not find its own daex command (looked at ${tried.join(", ") || "nothing"}). `
+      + "Restarting Daex on it usually fixes this.",
     );
   }
   // What the shim would set: the brain this process is, unless already named.

@@ -54,7 +54,7 @@ function usageAccount(a: UsageLimitsAccount): HTMLElement {
 /** Why a computer does not serve, in a tag's few words (RemoteMcpNotServingReason). */
 const NOT_SERVING_TAGS: Record<string, string> = {
   off_for_account: "off", left_out: "left out", signed_out: "signed out", relay_disconnected: "relay down",
-  account_vault_unreachable: "vault can't sync", waiting_for_account_secret: "setting up", older_ade: "update ADE", offline: "offline",
+  account_vault_unreachable: "vault can't sync", waiting_for_account_secret: "setting up", older_ade: "update Daex", offline: "offline",
 };
 /** `machines_list`: `{ machines: MachineRow[] }`, with no project. */
 export function viewMachines(sc: Json): HTMLElement {
@@ -67,7 +67,7 @@ export function viewMachines(sc: Json): HTMLElement {
         h("span", { cls: "trunc", style: "font-weight:500" }, str(m.name) || str(m.key) || "Computer"),
         h("span", { cls: "small dim trunc" }, status)),
       m.isThisMachine === true ? h("span", { cls: "tag", "data-t": "accent" }, "this computer") : null,
-      m.supported === false ? h("span", { cls: "tag", "data-t": "warn" }, "update ADE")
+      m.supported === false ? h("span", { cls: "tag", "data-t": "warn" }, "update Daex")
         : m.included === false ? h("span", { cls: "tag", "data-t": "warn" }, "left out")
         : m.serving === true ? h("span", { cls: "tag", "data-t": "ok" }, "serving")
         : m.serving === null ? h("span", { cls: "tag" }, "serving unknown")

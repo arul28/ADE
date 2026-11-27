@@ -42,7 +42,7 @@ function buildHtml(): string {
   const data = JSON.stringify(bootData()).replace(/</g, "\\u003c");
   return "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
     + "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-    + "<meta name=\"color-scheme\" content=\"light dark\"><title>ADE</title>"
+    + "<meta name=\"color-scheme\" content=\"light dark\"><title>Daex</title>"
     + `<style>${APP_CSS}</style></head><body><div id="app"></div>`
     + `<script type="application/json" id="ade-app-data">${data}</script>`
     + `<script>${APP_JS}</script></body></html>`;
@@ -86,8 +86,8 @@ export function adeAppResourceListing() {
   return {
     uri: adeAppResourceUri(),
     name: "ade-app",
-    title: "ADE",
-    description: "ADE's view for chats, questions and approvals, pull requests, lanes, diffs, usage and machines.",
+    title: "Daex",
+    description: "Daex's view for chats, questions and approvals, pull requests, lanes, diffs, usage and machines.",
     mimeType: MCP_APP_MIME_TYPE,
     _meta: { ui: RESOURCE_UI_META },
   };

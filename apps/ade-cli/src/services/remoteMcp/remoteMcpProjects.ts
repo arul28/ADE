@@ -131,7 +131,7 @@ export function createRemoteMcpProjects(deps: {
     if (selector) {
       const resolvedAccount = resolveAccountProject(selector, deps.accountProjects?.() ?? {});
       if (resolvedAccount.kind === "removed") {
-        return { error: `${resolvedAccount.name} was removed from the ADE account. Add it again from ADE to use it.` };
+        return { error: `${resolvedAccount.name} was removed from the Daex account. Add it again from Daex to use it.` };
       }
       if (resolvedAccount.kind === "found") {
         const copies = usable.filter((project) => recordMatchesAccountProject(project, resolvedAccount));
@@ -142,7 +142,7 @@ export function createRemoteMcpProjects(deps: {
         };
       }
       if (selector.kind === "id") {
-        return { error: `The ADE account has no project ${wanted}, or ${deps.machineName()} has not read the account's projects yet.` };
+        return { error: `The Daex account has no project ${wanted}, or ${deps.machineName()} has not read the account's projects yet.` };
       }
     }
     const known = usable.map((project) => project.displayName).join(", ") || "none";
