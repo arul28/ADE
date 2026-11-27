@@ -3808,7 +3808,7 @@ describe("adeRpcServer", () => {
     expect(createCall?.startupCommand).not.toContain("fix failing tests");
     expect(createCall?.startupCommand).not.toContain("create-chat");
     expect(createCall?.startupCommand).not.toContain("--resume");
-    expect(createCall?.initialInput).toContain("ADE session guidance");
+    expect(createCall?.initialInput).toContain("Daex session guidance");
     expect(createCall?.initialInput).toContain("fix failing tests");
     expect(createCall?.initialInputDelayMs).toBe(750);
     expect(fixture.runtime.ptyService.writeBySessionId).not.toHaveBeenCalled();

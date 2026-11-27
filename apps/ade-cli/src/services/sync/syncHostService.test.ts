@@ -15830,7 +15830,7 @@ describe("chat event replay buffer (resumable chat streams)", () => {
       result: {
         output: {
           images: [
-            `[ADE] Inline image was left out (${Buffer.byteLength(largeImage, "utf8")} bytes).`,
+            `[Daex] Inline image was left out (${Buffer.byteLength(largeImage, "utf8")} bytes).`,
             smallImage,
           ],
           message: "generated two previews",
