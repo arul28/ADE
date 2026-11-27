@@ -6,11 +6,11 @@ disable-model-invocation: true
 
 # Using Daex over MCP
 
-Daex was called ADE: the MCP tool is still named `ade`, and old `ade-*` prompt names still open.
+Daex was called ADE: the MCP tool `daex` was named `ade` (that name still runs), and old `ade-*` prompt names still open.
 
 Daex runs on the person's own machines. You reach them through one URL. Each
 tool call is one short HTTP request, and every tool is also a `daex` command,
-so `["<command>","--help"]` through the `ade` tool explains any of them.
+so `["<command>","--help"]` through the `daex` tool explains any of them.
 
 A script or bot sends its own `User-Agent` (e.g. `my-bot/1.0`): the relay's
 Cloudflare front refuses default library user agents (Python's urllib) with
@@ -21,7 +21,7 @@ Cloudflare front refuses default library user agents (Python's urllib) with
 1. `machines_list`: pick one with `online: true` and `serving: true`. Pass its
    `key` as `machine`. Its name or `hostname` (`Mac.lan`) works when unique.
 2. `projects_list` with that `machine`: pass its `projectId` as `project`.
-3. A device there: `["devices","--text"]` through the `ade` tool with that
+3. A device there: `["devices","--text"]` through the `daex` tool with that
    `machine` lists them; device commands take `--lane <lane there>`.
    `--machine` and `devices use` are refused: pick the machine with `machine`.
    The one exception is `--machine cloud` (and `--size`) on `chat create`,
@@ -57,7 +57,7 @@ A chat id finds its own project and machine. `chat_status`, `chat_read`,
 ```
 
 - `model` is required: Daex never picks one for you. `["chat","models",
-  "--text"]` through the `ade` tool lists the ids, and `["harness","routes",
+  "--text"]` through the `daex` tool lists the ids, and `["harness","routes",
   "--text"]` lists every model each harness can reach. `provider` is the
   harness (`claude`, `codex`, `opencode`, …).
 - `permission_mode` defaults to `full-auto`, the highest level for each
@@ -149,7 +149,7 @@ chunk at the wrong offset is refused and names the file's real size.
 
 - Secrets an agent printed are removed from what `chat_read` returns, but don't
   ask an agent to print one.
-- Secrets, with full access, through the `ade` tool: `["secrets","list"]`,
+- Secrets, with full access, through the `daex` tool: `["secrets","list"]`,
   `["secrets","get","NAME"]`, `["secrets","set","NAME","--stdin"]` with the
   value as `stdin`, and `["secrets","request","NAME","--reason","…"]` to ask
   the person with a card. Read only can list names, never values.

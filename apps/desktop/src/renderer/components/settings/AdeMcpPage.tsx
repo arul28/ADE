@@ -588,7 +588,7 @@ export function AdeMcpPage() {
                   {new Date(entry.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
                 </span>
                 <span className="ade-amcp-activity-app">{entry.label}</span>
-                <code className="ade-amcp-activity-cmd" title={entry.detail ?? `ade ${entry.command}`}>ade {entry.command}</code>
+                <code className="ade-amcp-activity-cmd" title={entry.detail ?? `${BRAND.CLI} ${entry.command}`}>{BRAND.CLI} {entry.command}</code>
                 <span className="ade-amcp-activity-hop" title={entry.via ? `${entry.via} took the call and sent it here` : entry.forwardedTo ? `Sent on to ${entry.forwardedTo}` : undefined}>
                   {entry.via ? `via ${entry.via}` : entry.forwardedTo ? `→ ${entry.forwardedTo}` : null}
                 </span>

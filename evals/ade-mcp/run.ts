@@ -26,8 +26,8 @@ export type EvalCase = {
   prompt: string;
   /** Scripted `ade … --json` output per typed tool, served in order (the last repeats). `{ "$error": "…" }` fails the command. */
   results?: Record<string, unknown[]>;
-  /** Output for the raw `ade` tool, by a regex on its words. */
-  ade?: Array<{ match: string; text: string; isError?: boolean }>;
+  /** Output for the raw `daex` tool, by a regex on its words. */
+  daex?: Array<{ match: string; text: string; isError?: boolean }>;
   grade: Grading;
 };
 
@@ -56,7 +56,7 @@ const RUN_TIMEOUT_MS = 240_000;
 process.once("SIGINT", () => process.exit(130));
 const SYSTEM_PROMPT = [
   "You are Claude, a helpful assistant in a chat app.",
-  "The person has connected ADE, the app they code with, as the MCP server `ade`. Use its tools to do what they ask, then answer briefly.",
+  "The person has connected Daex, the app they code with, as the MCP server `daex`. Use its tools to do what they ask, then answer briefly.",
   "Today is 2026-10-28.",
 ].join(" ");
 
@@ -107,9 +107,9 @@ function codexArgs(evalCase: EvalCase, model: string, serverArgs: string[]): str
     "-m", model.replace(/^openai\//i, ""),
     "-c", `model_reasoning_effort=${toml(option("--effort", "low"))}`,
     "-c", `developer_instructions=${toml(SYSTEM_PROMPT)}`,
-    "-c", `mcp_servers.ade.command=${toml(process.execPath)}`,
-    "-c", `mcp_servers.ade.args=${toml(serverArgs)}`,
-    "-c", "mcp_servers.ade.default_tools_approval_mode=\"approve\"",
+    "-c", `mcp_servers.daex.command=${toml(process.execPath)}`,
+    "-c", `mcp_servers.daex.args=${toml(serverArgs)}`,
+    "-c", "mcp_servers.daex.default_tools_approval_mode=\"approve\"",
     evalCase.prompt,
   ];
 }
@@ -121,7 +121,7 @@ async function runOne(evalCase: EvalCase, model: string, sample: number, outDir:
   const configPath = path.join(dir, "mcp.json");
   const serverArgs = [TSX, path.join(HERE, "fakeServer.ts"), "--cases", CASES_PATH, "--case", evalCase.id, "--log", logPath];
   fs.writeFileSync(configPath, JSON.stringify({
-    mcpServers: { ade: { type: "stdio", command: process.execPath, args: serverArgs } },
+    mcpServers: { daex: { type: "stdio", command: process.execPath, args: serverArgs } },
   }));
   const codex = isCodexModel(model);
   const args = [
@@ -130,7 +130,7 @@ async function runOne(evalCase: EvalCase, model: string, sample: number, outDir:
     "--mcp-config", configPath,
     "--strict-mcp-config",
     "--tools", "",
-    "--allowedTools", "mcp__ade",
+    "--allowedTools", "mcp__daex",
     "--system-prompt", SYSTEM_PROMPT,
     "--output-format", "stream-json",
     "--verbose",
@@ -209,8 +209,8 @@ async function runOne(evalCase: EvalCase, model: string, sample: number, outDir:
       .map((block) => String(block.name));
   const calls = fs.readFileSync(logPath, "utf8").split("\n").filter((line) => line.trim()).map((line) => JSON.parse(line) as ToolCall);
   const reached = calls.length;
-  const blocked = attempted.filter((name) => !name.startsWith("mcp__ade__")).concat(
-    attempted.filter((name) => name.startsWith("mcp__ade__")).length > reached ? ["(some ade calls did not reach the server)"] : [],
+  const blocked = attempted.filter((name) => !name.startsWith("mcp__daex__")).concat(
+    attempted.filter((name) => name.startsWith("mcp__daex__")).length > reached ? ["(some daex calls did not reach the server)"] : [],
   );
   const reply = codex
     ? String([...events].reverse().find((event) => event.type === "item.completed" && event.item?.type === "agent_message")?.item?.text ?? "")

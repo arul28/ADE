@@ -8,7 +8,8 @@ and a call for another computer is sent on to it (see
 [Account server](#account-server)). Off until the person turns it on for the
 account.
 
-The server's main tool is **`ade`**: the words after `ade`, run as the real
+The server's main tool is **`daex`** (named `ade` before the Daex rename: a call
+to `ade` still runs, though only `daex` is listed): the words after `daex`, run as the real
 CLI on that computer. Everything the CLI can do is available with no
 per-command MCP work, and new CLI commands appear on their own.
 
@@ -26,7 +27,7 @@ status at any time.
 | Path | Role |
 |---|---|
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpService.ts` | The server: HTTP router (stateless Streamable HTTP, JSON responses), token checks, OAuth endpoints, Settings actions. |
-| `apps/ade-cli/src/services/remoteMcp/remoteMcpProtocol.ts` | MCP JSON-RPC for a signed-in connection: tools (`ade` and the typed tools), the `ade://commands` resource, prompts, run limits. |
+| `apps/ade-cli/src/services/remoteMcp/remoteMcpProtocol.ts` | MCP JSON-RPC for a signed-in connection: tools (`daex` and the typed tools), the `daex://commands` resource, prompts, run limits. |
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpOAuth.ts` | Stateless client registration, redirect URI rules, authorize request parsing, PKCE, pending sign-ins and authorization codes, the sign-in and allow pages. |
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpKnownApps.ts` | Which app a sign-in is, from the redirect URI it used (and, for local and app-scheme addresses only, its registered name). |
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpHttp.ts` | The HTTP shapes, plus brain→relay requests: when a request may be tried again, the call id, plain network-error sentences, and the replay guard that answers a repeated call once. |
@@ -188,7 +189,7 @@ first text line `[machine: <name>]` and `structuredContent.machine = {key, name}
     `UND_ERR_CONNECT_TIMEOUT`);
   - after any other failure (a reset or "other side closed": Cloudflare
     closes idle keep-alive connections, and the request may already have
-    been written) only for a read-only typed tool. A write, the `ade` tool
+    been written) only for a read-only typed tool. A write, the `daex` tool
     and a token exchange (the code is single use) fail with the sentence
     instead, and the app can try again;
   - never after a timeout.
@@ -286,7 +287,7 @@ the walkthrough for a bot. What it relies on:
   (`readTranscript`, `readTranscriptPage`, `getMainTranscript`,
   `getSubagentTranscript`), and over MCP the output of `chat
   read|list|status|wait|inbox|events`, `terminal read|tail|scrollback` and
-  `files search`, typed tool or raw `ade` alike (`printsAgentOutput`). What is
+  `files search`, typed tool or raw `daex` alike (`printsAgentOutput`). What is
   stored stays as it was. A read-only connection can't read `.env` files,
   through `files read` (also `--path=.env`) or `actions run file.readFile`;
   the file service already refuses `.ade/secrets` and the chat logs.
@@ -329,7 +330,7 @@ the walkthrough for a bot. What it relies on:
 
 - **One command each.** A typed tool only builds the words of one `ade`
   command. The service runs it through the same policy check and runner as
-  the `ade` tool, so a typed tool can never do more than the connection's
+  the `daex` tool, so a typed tool can never do more than the connection's
   scope. Every typed tool is a CLI command too: `inbox` is `ade chat inbox`,
   `chat_respond` is `ade chat respond`, `chat_send` is `ade chat send`, and
   `chat_start` is `ade chat launch --wait`. Free text goes as one
@@ -707,7 +708,8 @@ and is replaced by a sign-in from the same host.
 
 ## Resources
 
-`ade://commands` is `ade help --json` as the connection's scope sees it: every
+`daex://commands` (`ade://commands` still reads) is `daex help --json` as the
+connection's scope sees it: every
 command it can run, with a summary, usage lines and, at read only, the allowed
 subcommands. The brain reads it once per scope and keeps it five minutes. The
 tool description points here instead of listing the read-only allowlist inline.
@@ -872,7 +874,8 @@ metadata. `chat send --after` carries the label too: the brain strips a
 caller's own provenance from a delayed send, except this one key from an
 unbound CLI (`armWaitArgsWithoutCallerProvenance` in `adeRpcServer.ts`).
 
-`serverInfo.version` is ADE's version, so a client can tell which tools a
+`serverInfo.name` is `daex` (it was `ade`). `serverInfo.version` is ADE's
+version, so a client can tell which tools a
 machine's server has.
 
 ## Gotchas

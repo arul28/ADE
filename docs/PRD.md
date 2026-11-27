@@ -87,7 +87,7 @@ Personal (no-project) chats stay on their machine. Proof (screenshots, recording
 
 - [**ADE Cloud**](./features/ade-cloud/README.md) — The one machine every account always has: a computer per cloud lane, sleep and wake, saved copies at rest, the server queue, fork-continue after idle cleanup, plans and hours, server routes.
 - [**Remote Runtime**](./features/remote-runtime/README.md) — The multi-project brain, the machine endpoint, login-service install, and SSH bootstrap of the `ade-<platform-arch>` runtime binaries.
-- [**ADE MCP**](./features/ade-mcp/README.md) — Each computer as an MCP server for AI apps the person picks, through ADE Relay. One `ade` tool; off by default; read-only or full access per app.
+- [**ADE MCP**](./features/ade-mcp/README.md) — Each computer as an MCP server for AI apps the person picks, through ADE Relay. One `daex` tool; off by default; read-only or full access per app.
 - [**Web Client**](./features/web-client/README.md) — The full ADE in a browser, with or without a computer of your own. Account sign-in, every connected machine plus ADE Cloud, reads from the account and GitHub, DPoP-bound relay transport, no local DB.
 
 ### Work execution

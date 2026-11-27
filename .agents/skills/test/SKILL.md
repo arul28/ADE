@@ -757,7 +757,7 @@ Answer, in order, and act on each "yes":
 1. **Reachable?** Every new command is classified in
    `remoteMcpCommandPolicy.ts` (`/quality` rule 12). Read-only connections get
    the reads.
-2. **Is the `ade` tool enough?** Yes, unless outside agents will do this often
+2. **Is the `daex` tool enough?** Yes, unless outside agents will do this often
    and need named inputs or a trimmed result. Then add a typed tool in
    `remoteMcpTools.ts` (one CLI command, `structuredContent`, a `next` hint),
    and only then.

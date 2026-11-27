@@ -118,7 +118,7 @@ Selected items → **LockedExtras**.
 
 Also settle how outside agents use the feature through ADE MCP
 (`docs/features/ade-mcp/README.md`), as two choices in the same
-**AskUserQuestion** round: how they reach it (the `ade` tool as is, or a typed
+**AskUserQuestion** round: how they reach it (the `daex` tool as is, or a typed
 tool) and how they see it (plain text, or a card in the chat app; a card hangs
 off a typed tool, so a card means a typed tool too). Record both in
 **LockedFunctional**; a new tool or card is new behavior, so run the

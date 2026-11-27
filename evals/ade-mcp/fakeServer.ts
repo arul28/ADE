@@ -105,8 +105,8 @@ function callTool(name: string, rawInput: Input): Record<string, unknown> {
   const project = projectFor(input);
   if ("error" in project) return errorResult(project.error);
   const projectLine = `${machineLine}[project: ${project.displayName} · ${project.projectId} · ${project.rootPath}]`;
-  const typed = name === "ade" ? null : findTypedTool(name);
-  if (name !== "ade" && !typed) return errorResult(`Unknown tool "${name}".`);
+  const typed = name === "daex" ? null : findTypedTool(name);
+  if (name !== "daex" && !typed) return errorResult(`Unknown tool "${name}".`);
   if (typed?.write && scope !== "write") {
     return errorResult(`${projectLine}\nThis connection is read-only, so it can't run ${typed.name}. The person can give this app full access in ADE Settings → ADE MCP.`);
   }
@@ -128,7 +128,7 @@ function callTool(name: string, rawInput: Input): Record<string, unknown> {
   if (!verdict.ok) return errorResult(`${projectLine}\n${verdict.reason}`);
   if (!typed) {
     const line = verdict.args.join(" ");
-    const hit = (evalCase!.ade ?? []).find((entry) => new RegExp(entry.match, "i").test(line));
+    const hit = (evalCase!.daex ?? []).find((entry) => new RegExp(entry.match, "i").test(line));
     return { content: [{ type: "text", text: `${projectLine}\n${hit?.text ?? "(no output)"}` }], isError: Boolean(hit?.isError) };
   }
   const frame = {

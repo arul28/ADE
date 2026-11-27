@@ -22,15 +22,15 @@ from real requests and real mistakes, and CI never calls a model.
 - `cases.ndjson` holds one case per line. Each has an `id`, a `why` (the request
   or mistake it reproduces), a `scope` (`read` or `write`), a `prompt`,
   optional `results` (scripted output per tool, served in order, with the last
-  one repeating; `{"$error": "…"}` fails the command), optional `ade` (output
+  one repeating; `{"$error": "…"}` fails the command), optional `daex` (output
   for the raw tool, matched by regex) and a `grade`.
 - `graders.ts` checks the calls and the reply. A grade can use `expect` (a tool
   with matching args, at least `count` times), `forbid` (tools that must not
-  be called, usually `ade` when a typed tool fits), `maxCalls` (catches
+  be called, usually `daex` when a typed tool fits), `maxCalls` (catches
   polling loops), `order`, and `answer` (a regex on the final reply).
 - `run.ts` drives `claude -p` with the fake server as its only MCP server and
   no built-in tools (`--tools ""`, `--strict-mcp-config`,
-  `--allowedTools mcp__ade`), a short chat-app system prompt, and a clean
+  `--allowedTools mcp__daex`), a short chat-app system prompt, and a clean
   environment (no `ADE_*` or `CLAUDE_CODE_*`). It uses your Claude
   subscription, so you don't need an API key.
 - An OpenAI model (`gpt-…`, `openai/…`) runs in `codex exec` instead, with
@@ -79,7 +79,7 @@ tool the case leans on.
 On the outside-client branch's text (2 samples per case, 2026-11-09): Claude
 Haiku passes 29 of 29 (58 of 58 samples), and GPT-6.1 Terra at low effort 29
 of 29 after `start-and-wait`'s world was made consistent (its default status
-said idle while its wait said running). GPT-6.1 Terra once used the raw `ade`
+said idle while its wait said running). GPT-6.1 Terra once used the raw `daex`
 tool for `prs list` in `ci-fix-handoff` (1 of 5 samples). The cases for the new tools (`start-exact-settings`,
 `start-in-lane`, `start-with-webhook`, `events-since-cursor`, `write-file`,
 `stop-chat`) were run before and after the tool text was trimmed by 3.3 KB,

@@ -32,7 +32,7 @@ answer is no. Don't run them; start a lane instead.
 
 ## 1. Read the status first, every time
 
-`daex cloud status --json`. Over Daex MCP: the `ade` tool with `["cloud","status","--json"]`.
+`daex cloud status --json`. Over Daex MCP: the `daex` tool with `["cloud","status","--json"]`.
 
 - If `canStartLane.ok` is false, tell the person `canStartLane.reason` as it is, and stop.
 - Never work around a limit: no other size, no copy, no delete to make room.
@@ -44,7 +44,7 @@ answer is no. Don't run them; start a lane instead.
 
 `daex chat create --machine cloud --launch-id <a new UUID> --provider <p> --model <id> --prompt "<task>"` starts a lane with a chat (the model is required, as for every launch).
 `daex lanes create --machine cloud --launch-id <a new UUID> --name "<name>"` makes the lane alone, with no chat.
-Over Daex MCP: the `ade` tool takes exactly `--machine cloud` (and `--size`) on `chat create`, `lanes create` and `chat launch-status`; every other `--machine` is refused. An app is an unattended agent there (the next point).
+Over Daex MCP: the `daex` tool takes exactly `--machine cloud` (and `--size`) on `chat create`, `lanes create` and `chat launch-status`; every other `--machine` is refused. An app is an unattended agent there (the next point).
 
 - Size: leave out `--size` to use the person's saved size (`defaultSize`). Small uses no credits, so prefer it; Medium when Small is too slow. Large or X-Large (full computers) only for Android or Docker: pass `--size large` (or `xlarge`) when you start the lane. With no `--size`, a Small whose setup runs out of memory moves to Medium once by itself (the launch says so), and that repository starts at Medium after that; a size you pass stays, so passing `--size small` turns this off.
 - Push the branch first. The lane starts from the pushed copy; uncommitted changes stay here.
