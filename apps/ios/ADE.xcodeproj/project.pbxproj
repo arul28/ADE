@@ -144,6 +144,9 @@
 		AE00000000000000000000B2 /* PushNotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE00000000000000000000A2 /* PushNotificationService.swift */; };
 		AE00000000000000000000B3 /* LiveActivityService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE00000000000000000000A3 /* LiveActivityService.swift */; };
 		AE00000000000000000000B4 /* SettingsPushDeliverySection.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE00000000000000000000A4 /* SettingsPushDeliverySection.swift */; };
+		BD0000000000000000000011 /* Brand.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0000000000000000000001 /* Brand.swift */; };
+		BD0000000000000000000012 /* Brand.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0000000000000000000001 /* Brand.swift */; };
+		BD0000000000000000000013 /* Brand.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0000000000000000000001 /* Brand.swift */; };
 		AE00000000000000000000B5 /* ADEAgentActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE00000000000000000000A5 /* ADEAgentActivityAttributes.swift */; };
 		AE00000000000000000000C5 /* ADEAgentActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE00000000000000000000A5 /* ADEAgentActivityAttributes.swift */; };
 		AE00000000000000000000B6 /* ADEAgentActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE00000000000000000000A6 /* ADEAgentActivityWidget.swift */; };
@@ -750,6 +753,7 @@
 		AE00000000000000000000A2 /* PushNotificationService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PushNotificationService.swift; path = ADE/Services/PushNotificationService.swift; sourceTree = "<group>"; };
 		AE00000000000000000000A3 /* LiveActivityService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LiveActivityService.swift; path = ADE/Services/LiveActivityService.swift; sourceTree = "<group>"; };
 		AE00000000000000000000A4 /* SettingsPushDeliverySection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsPushDeliverySection.swift; path = ADE/Views/Settings/SettingsPushDeliverySection.swift; sourceTree = "<group>"; };
+		BD0000000000000000000001 /* Brand.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = Brand.swift; path = ADE/Shared/Brand.swift; sourceTree = "<group>"; };
 		AE00000000000000000000A5 /* ADEAgentActivityAttributes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEAgentActivityAttributes.swift; path = ADE/Shared/ADEAgentActivityAttributes.swift; sourceTree = "<group>"; };
 		AE00000000000000000000A6 /* ADEAgentActivityWidget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEAgentActivityWidget.swift; path = ADEWidgets/ADEAgentActivityWidget.swift; sourceTree = "<group>"; };
 		AF00000000000000000000A1 /* DpopKeyService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DpopKeyService.swift; path = ADE/Services/DpopKeyService.swift; sourceTree = "<group>"; };
@@ -1894,6 +1898,7 @@
 				AA1000000000000000000005 /* ActivityWidgetPresentation.swift */,
 				AA5100000000000000000004 /* AttentionActionIntents.swift */,
 				AE00000000000000000000A5 /* ADEAgentActivityAttributes.swift */,
+				BD0000000000000000000001 /* Brand.swift */,
 			);
 			name = Shared;
 			sourceTree = "<group>";
@@ -2398,6 +2403,7 @@
 				AA1100000000000000000003 /* ADESharedTheme.swift in Sources */,
 				AA1100000000000000000004 /* ActivityRowPresentation.swift in Sources */,
 				AA1100000000000000000005 /* ActivityWidgetPresentation.swift in Sources */,
+				BD0000000000000000000011 /* Brand.swift in Sources */,
 				C10000000000000000000002 /* ADECodeRenderingCache.swift in Sources */,
 				0A1E077A24A5367ED58900F9 /* ADEDesignSystem.swift in Sources */,
 				E7C4AFA1DEBFC844E11CC907 /* SpeechDictationService.swift in Sources */,
@@ -2906,6 +2912,7 @@
 				AA1100000000000000000013 /* ADESharedTheme.swift in Sources */,
 				AA1100000000000000000014 /* ActivityRowPresentation.swift in Sources */,
 				AA1100000000000000000015 /* ActivityWidgetPresentation.swift in Sources */,
+				BD0000000000000000000012 /* Brand.swift in Sources */,
 				AA5200000000000000000011 /* ADEWidgetBundle.swift in Sources */,
 				AA5200000000000000000014 /* ADELockScreenWidget.swift in Sources */,
 				AA5200000000000000000015 /* ADEActivityHomeWidget.swift in Sources */,
@@ -2925,6 +2932,7 @@
 				AC1100000000000000000003 /* ClipHandoff.swift in Sources */,
 				AC1100000000000000000004 /* ClipPairingView.swift in Sources */,
 				AC1100000000000000000005 /* PairingQrPayload.swift in Sources */,
+				BD0000000000000000000013 /* Brand.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

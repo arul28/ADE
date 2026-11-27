@@ -5,6 +5,8 @@
  * renders through one primitive (components/ui/notice, components/ui/dialog,
  * components/app/toast, components/app/HeaderSheet) and stacks on one scale
  * (components/ui/zLayers.ts). These rules flag code that goes around them.
+ * One more, `no-legacy-brand-name`, flags the former product name "ADE" in
+ * user-facing copy (docs/brand/README.md).
  *
  * They are registered as warnings in eslint.config.mjs; `scripts/lint-ratchet.mjs`
  * (`npm run lint:ci`) fails CI only when a file's count for one of these rules
@@ -373,21 +375,181 @@ const noLegacyBannerImport = {
 };
 
 // ---------------------------------------------------------------------------
+// no-legacy-brand-name
+// ---------------------------------------------------------------------------
+
+// The product is Daex; "ADE" is the former name. Copy reads the name from
+// shared/brand.ts. Whole word, case-sensitive: `ADE_HOME`, `.ade/`, `ade://`,
+// `AdeFoo` and Linear keys like `ADE-264` do not match.
+const LEGACY_BRAND_WORD = /\bADE\b(?!-\d)/;
+
+/** JSX attributes whose value is shown to the user (or read by a screen reader). */
+const COPY_ATTRS = new Set([
+  "title",
+  "label",
+  "placeholder",
+  "alt",
+  "description",
+  "tooltip",
+  "content",
+  "text",
+  "heading",
+  "subtitle",
+  "caption",
+  "hint",
+  "summary",
+  "detail",
+  "message",
+  "eyebrow",
+  "badge",
+  "aria-label",
+  "aria-description",
+  "aria-roledescription",
+  "aria-placeholder",
+  "aria-valuetext",
+]);
+/** camelCase names that end in a copy word: `confirmLabel`, `emptyMessage`, `ariaLabel`. */
+const COPY_NAME_SUFFIX = /[a-z0-9](?:Label|Title|Text|Placeholder|Tooltip|Description|Message|Hint|Caption|Heading|Subtitle|Detail|Eyebrow)$/;
+
+function isCopyName(name) {
+  return typeof name === "string" && (COPY_ATTRS.has(name) || COPY_NAME_SUFFIX.test(name));
+}
+
+/**
+ * The toast / banner / dialog helpers from docs/design/notices.md. Their option
+ * objects carry the words (`title`, `message`, `detail`, `confirmLabel`,
+ * `actions[].label`).
+ */
+const NOTICE_FNS = new Set([
+  "showToast",
+  "updateToast",
+  "confirmDialog",
+  "promptDialog",
+  "checkboxConfirmDialog",
+  "useAppBanner",
+]);
+
+/** Node types copy passes through on its way into JSX (`a ? "x" : "y"`, `"x" + y`, templates). */
+const COPY_PASS_THROUGH = new Set([
+  "ConditionalExpression",
+  "LogicalExpression",
+  "BinaryExpression",
+  "TemplateLiteral",
+  "TSAsExpression",
+  "TSSatisfiesExpression",
+  "TSNonNullExpression",
+]);
+
+/** Inside an option object: nested objects and arrays (`actions: [{ label }]`). */
+const OPTION_PASS_THROUGH = new Set([...COPY_PASS_THROUGH, "ObjectExpression", "ArrayExpression"]);
+
+/**
+ * Whether a string node is user-facing copy:
+ * - JSX children (`<p>ADE</p>`, `<p>{cond ? "ADE" : x}</p>`);
+ * - the value of a copy attribute (`title`, `aria-label`, `confirmLabel`, ...);
+ * - the value of a copy key (`title:`, `label:`) in an object passed to a
+ *   notice helper (`showToast({ title })`) or to any JSX attribute
+ *   (`<Banner model={{ title }} />`, `<Menu items={[{ label }]} />`).
+ * Everything else (constants, ids, keys, class names, paths, types) is code.
+ */
+function isUserFacingString(node) {
+  let child = node.type === "TemplateElement" ? node.parent : node;
+  let current = child.parent;
+  let inCopyProperty = false;
+  while (current) {
+    if (current.type === "JSXElement" || current.type === "JSXFragment") return !inCopyProperty;
+    if (current.type === "JSXExpressionContainer") {
+      if (current.parent?.type === "JSXElement" || current.parent?.type === "JSXFragment") return !inCopyProperty;
+      child = current;
+      current = current.parent;
+      continue;
+    }
+    if (current.type === "JSXAttribute") {
+      if (inCopyProperty) return true;
+      return current.name.type === "JSXIdentifier" && isCopyName(current.name.name);
+    }
+    if (current.type === "CallExpression") {
+      if (!inCopyProperty || !current.arguments.includes(child)) return false;
+      const name = calleeName(current.callee);
+      return Boolean(name && NOTICE_FNS.has(name));
+    }
+    if (current.type === "ConditionalExpression" && current.test === child) return false;
+    if (current.type === "BinaryExpression" && current.operator !== "+") return false;
+    if (current.type === "Property") {
+      if (current.value !== child) return false;
+      if (!inCopyProperty) {
+        if (!isCopyName(propertyKeyName(current))) return false;
+        inCopyProperty = true;
+      }
+    } else if (!(inCopyProperty ? OPTION_PASS_THROUGH : COPY_PASS_THROUGH).has(current.type)) {
+      return false;
+    }
+    child = current;
+    current = current.parent;
+  }
+  return false;
+}
+
+const noLegacyBrandName = {
+  meta: {
+    type: "suggestion",
+    docs: { description: "Disallow the former product name \"ADE\" in user-facing renderer copy; use BRAND from shared/brand." },
+    schema: [],
+    messages: {
+      legacy:
+        "\"ADE\" is the former product name. Use `BRAND.NAME` (or `BRAND.CLOUD_NAME`, `BRAND.BETA_NAME`, `BRAND.CLI`) from shared/brand instead of writing the name in copy. See docs/brand/README.md.",
+    },
+  },
+  create(context) {
+    const check = (node, text) => {
+      if (typeof text === "string" && LEGACY_BRAND_WORD.test(text) && isUserFacingString(node)) {
+        context.report({ node, messageId: "legacy" });
+      }
+    };
+    return {
+      JSXText(node) {
+        if (LEGACY_BRAND_WORD.test(node.value)) context.report({ node, messageId: "legacy" });
+      },
+      Literal(node) {
+        check(node, node.value);
+      },
+      TemplateElement(node) {
+        check(node, node.value.cooked ?? node.value.raw);
+      },
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
+
+const UI_PRIMITIVE_RULES = {
+  "no-native-dialogs": noNativeDialogs,
+  "no-adhoc-notice-component": noAdhocNoticeComponent,
+  "no-fixed-overlay": noFixedOverlay,
+  "no-raw-z-index": noRawZIndex,
+  "no-legacy-banner-import": noLegacyBannerImport,
+};
 
 const plugin = {
   meta: { name: "ade-ui" },
   rules: {
-    "no-native-dialogs": noNativeDialogs,
-    "no-adhoc-notice-component": noAdhocNoticeComponent,
-    "no-fixed-overlay": noFixedOverlay,
-    "no-raw-z-index": noRawZIndex,
-    "no-legacy-banner-import": noLegacyBannerImport,
+    ...UI_PRIMITIVE_RULES,
+    "no-legacy-brand-name": noLegacyBrandName,
   },
 };
 
-/** Every rule at "warn" — the ratchet (scripts/lint-ratchet.mjs) is what fails CI. */
+/**
+ * The UI-primitive rules at "warn" — the ratchet (scripts/lint-ratchet.mjs) is
+ * what fails CI. The primitives themselves are exempt from these.
+ */
 export const adeUiRecommendedRules = Object.fromEntries(
-  Object.keys(plugin.rules).map((name) => [`ade-ui/${name}`, "warn"]),
+  Object.keys(UI_PRIMITIVE_RULES).map((name) => [`ade-ui/${name}`, "warn"]),
 );
+
+/**
+ * The brand rule, also at "warn" and ratcheted. Separate from the UI-primitive
+ * rules because it covers every renderer .tsx file, the primitives included.
+ */
+export const adeUiBrandRules = { "ade-ui/no-legacy-brand-name": "warn" };
 
 export default plugin;

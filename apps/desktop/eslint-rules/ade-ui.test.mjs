@@ -166,3 +166,37 @@ tester.run("no-legacy-banner-import", rule("no-legacy-banner-import"), {
     { code: "export { toast } from 'sonner';", errors: [{ messageId: "toast" }] },
   ],
 });
+
+tester.run("no-legacy-brand-name", rule("no-legacy-brand-name"), {
+  valid: [
+    "<p>{BRAND.NAME} keeps your lanes in sync.</p>;",
+    "<p>Open in Daex</p>;",
+    // Internal identifiers and code strings are not copy.
+    "const home = process.env.ADE_HOME;",
+    "const dir = '.ade/worktrees';",
+    "const link = 'ade://lane/1';",
+    "const label = 'ADE Cloud';", // a constant, not rendered here
+    "<div data-testid='ADE' className='ADE' />;",
+    "<p>{x === 'ADE' ? 'a' : 'b'}</p>;",
+    "<input placeholder='ADE-264' />;", // Linear key
+    "<p>ADE_RUNTIME_PIPE</p>;",
+    "showToast({ id: 'ADE', tone: 'info', title: 'Lane created' });",
+    "const opts = { title: 'ADE' }; doThing(opts);",
+    "type Name = 'ADE';",
+    "<div style={{ fontFamily: 'ADE' }} />;",
+  ],
+  invalid: [
+    { code: "<p>Restart ADE to finish.</p>;", errors: [{ messageId: "legacy" }] },
+    { code: "<p>{ready ? 'ADE is ready' : 'Starting'}</p>;", errors: [{ messageId: "legacy" }] },
+    { code: "<button title='Open ADE Cloud' />;", errors: [{ messageId: "legacy" }] },
+    { code: "<input aria-label={`Search ${n} ADE chats`} />;", errors: [{ messageId: "legacy" }] },
+    { code: "<Row confirmLabel=\"Quit ADE\" />;", errors: [{ messageId: "legacy" }] },
+    { code: "showToast({ tone: 'info', title: 'ADE updated' });", errors: [{ messageId: "legacy" }] },
+    {
+      code: "await confirmDialog({ title: 'Quit?', message: 'ADE stops every chat.', actions: [{ label: 'Keep ADE' }] });",
+      errors: [{ messageId: "legacy" }, { messageId: "legacy" }],
+    },
+    { code: "useAppBanner(down && { id: 'x', tone: 'error', detail: 'ADE cannot reach the relay.' });", errors: [{ messageId: "legacy" }] },
+    { code: "<Banner model={{ id: 'x', tone: 'info', title: 'New in ADE' }} />;", errors: [{ messageId: "legacy" }] },
+  ],
+});

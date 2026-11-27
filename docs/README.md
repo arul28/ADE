@@ -16,6 +16,7 @@ The mental model up front:
 3. [**logging.md**](./logging.md) — ground truth for local logging, PostHog product analytics, privacy, consent, event budgets, dashboards, and instrumentation rules.
 4. [**features/**](./features/) — per-feature subfolders, each with a `README.md` + detail docs. Start with `ade-cloud/`, `web-client/`, `remote-runtime/` and `sync-and-multi-device/` for the machines, account and clients picture.
 5. [**playbooks/**](./playbooks/) — operational workflows agents can follow directly.
+6. [**brand/**](./brand/README.md) — the product is now Daex (formerly ADE): the names to show, `BRAND` / `Brand` constants, and the internal identifiers that keep the old name.
 
 Running ADE from a checkout starts with
 [`development/local-development.md`](./development/local-development.md) for the
@@ -39,6 +40,8 @@ docs/
 ├── analytics/
 │   ├── README.md                          # PostHog setup, dashboards, tracking plan guide
 │   └── tracking-plan.json                 # the event catalog
+├── brand/
+│   └── README.md                          # Daex (formerly ADE): names, BRAND constants, frozen identifiers
 ├── design/
 │   ├── ask-question-redesign.md (+ .html, renders/)  # ask-question surface spec
 │   ├── keyboard.md                        # keyboard and focus rules

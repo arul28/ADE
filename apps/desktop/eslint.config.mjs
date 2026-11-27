@@ -1,7 +1,7 @@
 import tsParser from "@typescript-eslint/parser";
 import tsPlugin from "@typescript-eslint/eslint-plugin";
 import reactHooks from "eslint-plugin-react-hooks";
-import adeUi, { adeUiRecommendedRules } from "./eslint-rules/ade-ui.mjs";
+import adeUi, { adeUiBrandRules, adeUiRecommendedRules } from "./eslint-rules/ade-ui.mjs";
 
 export default [
   {
@@ -170,5 +170,17 @@ export default [
       "ade-ui": adeUi,
     },
     rules: adeUiRecommendedRules,
+  },
+  {
+    // The product is Daex; "ADE" is the former name. User-facing copy reads
+    // the name from shared/brand.ts (`BRAND.NAME`, `BRAND.CLOUD_NAME`). Warning
+    // only, ratcheted by lint-baseline.json like the rules above. Guide:
+    // docs/brand/README.md.
+    files: ["src/renderer/**/*.tsx"],
+    ignores: ["src/renderer/**/*.test.tsx"],
+    plugins: {
+      "ade-ui": adeUi,
+    },
+    rules: adeUiBrandRules,
   },
 ];

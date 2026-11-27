@@ -8,7 +8,8 @@
  *
  * The ade-ui rules (eslint-rules/ade-ui.mjs) are warnings, so existing code
  * keeps building; the baseline records how many each file has today and CI
- * only lets those numbers go down. Guide: docs/design/notices.md.
+ * only lets those numbers go down. Guides: docs/design/notices.md (UI
+ * primitives) and docs/brand/README.md (the product name).
  *
  * Flags: --update (write the baseline), --baseline <path> (read/write a
  * different baseline file), --warnings (also print every warning).
@@ -247,8 +248,8 @@ async function main() {
   if (grown.length > 0) {
     const added = grown.reduce((sum, g) => sum + g.after - g.before, 0);
     console.error("");
-    console.error(`ade-ui ratchet: ${plural(added, "new UI-primitive violation")} (baseline ${baselineLabel}).`);
-    console.error("These rules may only go down. Use the shared primitive instead — see docs/design/notices.md.");
+    console.error(`ade-ui ratchet: ${plural(added, "new ade-ui violation")} (baseline ${baselineLabel}).`);
+    console.error("These rules may only go down. Each message below says what to use instead (UI primitives: docs/design/notices.md; the product name: docs/brand/README.md).");
     const byPath = new Map(results.map((r) => [repoRelative(r.filePath), r]));
     let lastFile = null;
     for (const g of grown) {
@@ -259,7 +260,7 @@ async function main() {
         if (m.ruleId === g.rule) console.error(`      ${m.line}:${m.column}  ${m.message}`);
       }
     }
-    console.error("\nOnly if a violation is genuinely intended (a new shared primitive), re-run `npm run lint:baseline` and explain why in the PR.");
+    console.error("\nOnly if a violation is genuinely intended (a new shared primitive, or copy that must name the former product), re-run `npm run lint:baseline` and explain why in the PR.");
     process.exitCode = 1;
   } else {
     console.log(`ade-ui ratchet: no new violations against ${baselineLabel}.`);
