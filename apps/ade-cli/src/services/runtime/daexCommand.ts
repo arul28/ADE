@@ -15,7 +15,8 @@ import path from "node:path";
  *   both naming `ade.exe` by their own folder. The same two files
  *   install-runtime.ps1 writes.
  *
- * A `daex` that is not one of these (someone else's file) is left alone.
+ * A `daex` that is not one of these (someone else's file, or a symlink to
+ * something other than an `ade`) is left alone.
  * Best effort: returns the paths it wrote or confirmed, and never throws, since
  * `ade` works either way.
  */
@@ -54,8 +55,13 @@ export function ensureDaexCommandBesideBinary(
       existing = null;
     }
     if (existing && !existing.isSymbolicLink()) return written;
-    if (existing && fs.readlinkSync(linkPath) === "ade") return [linkPath];
-    if (existing) fs.rmSync(linkPath, { force: true });
+    if (existing) {
+      const target = fs.readlinkSync(linkPath);
+      if (target === "ade") return [linkPath];
+      // Only a link to some `ade` (or an empty one) is ours to repoint.
+      if (target !== "" && path.posix.basename(target) !== "ade") return written;
+      fs.rmSync(linkPath, { force: true });
+    }
     fs.symlinkSync("ade", linkPath);
     written.push(linkPath);
   } catch {

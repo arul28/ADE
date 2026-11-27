@@ -714,12 +714,22 @@ rm -f "$install_log"
 # `daex` is the command's name and `ade` its permanent alias. The binary
 # stays `ade`: released `ade brain update`s replace it by that name. `daex`
 # is a relative link to it, so every later update of `ade` is also `daex`'s.
-# A `daex` that is not a link (someone else's file) is left alone. Best
-# effort: `ade` already works.
-if [ -L "$dest_dir/daex" ] || [ ! -e "$dest_dir/daex" ]; then
+# A `daex` that is not a link to some `ade` (someone else's file or link) is
+# left alone. Best effort: `ade` already works.
+daex_is_ours=0
+if [ -L "$dest_dir/daex" ]; then
+  case "$(readlink "$dest_dir/daex" 2>/dev/null)" in
+    "" | ade | */ade) daex_is_ours=1 ;;
+  esac
+elif [ ! -e "$dest_dir/daex" ]; then
+  daex_is_ours=1
+fi
+if [ "$daex_is_ours" = 1 ]; then
   rm -f "$dest_dir/daex" 2>/dev/null || true
   ln -s ade "$dest_dir/daex" 2>/dev/null \
     || printf 'ade install: could not create %s; use %s instead.\n' "$dest_dir/daex" "$dest_dir/ade" >&2
+else
+  printf 'ade install: left the existing %s alone (it is not ours); use %s instead.\n' "$dest_dir/daex" "$dest_dir/ade" >&2
 fi
 
 if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
@@ -728,7 +738,11 @@ elif [ "$(uname -s)" = "Darwin" ]; then
   try_install_service
 fi
 
-print_step "+" "Daex runtime" "$dest_dir/daex -> ade"
+if [ -L "$dest_dir/daex" ] && [ "$(readlink "$dest_dir/daex" 2>/dev/null)" = "ade" ]; then
+  print_step "+" "Daex runtime" "$dest_dir/daex -> ade"
+else
+  print_step "+" "Daex runtime" "$dest_dir/ade"
+fi
 print_step "+" "Native dependencies" "$runtime_dir"
 # The recovery commands in the closing summary are printed by `ade setup`, which
 # resolves its own invocation, so this script no longer needs to work out
