@@ -188,7 +188,7 @@ both used, without changing anything an agent or a person sees.
   live phone there is swapped for one of the same model that has it (stopped
   only once the new start may go there). The shared row only moves a paid
   plan's starts; a free plan is refused only on its own report (the phone
-  row's `build_gap`), so a false report can't block another account's
+  row's `build_gap`, its day from `build_gap_at`), so a false report can't block another account's
   builds, only send paid Metal builds to Revyl for a day (logged with who
   sent it). Past the day, one start tries the provider again, so a
   provider that added the tool gets the work back by itself; a new failure

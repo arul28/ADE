@@ -227,7 +227,7 @@ export async function buildGaps(env: Pick<CloudEnv, "DB">, needs: readonly Cloud
   if (!needs.length) return new Set();
   const listed = needs.map(() => "?").join(", ");
   const rows = ownOnly
-    ? await env.DB.prepare(`select distinct coalesce(provider, 'nomac') as provider from cloud_phones where user_id = ? and created_at > ? and build_gap in (${listed})`)
+    ? await env.DB.prepare(`select distinct coalesce(provider, 'nomac') as provider from cloud_phones where user_id = ? and build_gap_at > ? and build_gap in (${listed})`)
       .bind(ownOnly, now - CLOUD_PHONE_BUILD_GAP_MS, ...needs).all<{ provider: string }>()
     : await env.DB.prepare(`select provider from cloud_phone_build_gaps where seen_at > ? and need in (${listed})`)
       .bind(now - CLOUD_PHONE_BUILD_GAP_MS, ...needs).all<{ provider: string }>();
@@ -249,7 +249,7 @@ export async function recordBuildGap(env: Pick<CloudEnv, "DB">, userId: string, 
     env.DB.prepare("insert into cloud_phone_build_gaps (provider, need, seen_at) values (?, ?, ?) on conflict(provider, need) do update set seen_at = excluded.seen_at")
       .bind(provider, need, now),
     // The account's own record, on its phone's row (a free plan's refusals read only these).
-    env.DB.prepare("update cloud_phones set build_gap = ? where phone_id = ? and user_id = ?").bind(need, phoneId, userId),
+    env.DB.prepare("update cloud_phones set build_gap = ?, build_gap_at = ? where phone_id = ? and user_id = ?").bind(need, now, phoneId, userId),
   ]);
   logCloud("cloud.phone_build_gap", { userId, phoneId, provider, need });
   return provider;
