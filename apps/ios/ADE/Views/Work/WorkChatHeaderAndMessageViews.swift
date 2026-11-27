@@ -172,7 +172,7 @@ struct WorkChatToolsMenuItems: View {
           ADEHaptics.light()
           onOpenCloudIphone()
         } label: {
-          Label("ADE Cloud iPhone", systemImage: "iphone.gen3")
+          Label("\(Brand.cloudName) iPhone", systemImage: "iphone.gen3")
           Text("Watch or use the cloud iPhone")
         }
       }
@@ -1172,7 +1172,7 @@ private struct WorkMachineChipFactsSheet: View {
       if let endpoint = machine.preferredEndpoint {
         Text("\(endpoint.host):\(endpoint.port)").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
       } else {
-        Text("via ADE relay").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+        Text("via \(Brand.name) relay").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
       }
       Spacer(minLength: 0)
     }
@@ -1631,7 +1631,7 @@ struct WorkRootFullAccessNoticeView: View {
       }
       Button("Keep Accept edits", role: .cancel) {}
     } message: {
-      Text("ADE runs as root on this computer. Allowing Full access covers every chat on it, and agents there can then change anything on it without asking.")
+      Text("\(Brand.name) runs as root on this computer. Allowing Full access covers every chat on it, and agents there can then change anything on it without asking.")
     }
   }
 
@@ -2596,7 +2596,7 @@ func workAdeMessageReasonLabel(_ reason: String) -> String {
   switch reason {
   case "interrupted_turn_recovery": return "Resuming your last request after a restart"
   case "stall_nudge": return "Asked for a status check"
-  case "continuity_recovery": return "Rebuilt this chat's thread from ADE history"
+  case "continuity_recovery": return "Rebuilt this chat's thread from \(Brand.name) history"
   case "plan_followup": return "Sent your plan decision"
   case "background_work_ended": return "A background job it was waiting on finished"
   case "background_work_lost": return "Background work it was waiting on was lost"
@@ -2634,7 +2634,7 @@ struct WorkAdeMessageRow: View {
           Image(systemName: "info.circle")
             .font(.caption2.weight(.semibold))
             .foregroundStyle(ADEColor.textMuted)
-          Text("ADE")
+          Text(Brand.name)
             .font(.caption.weight(.semibold))
             .foregroundStyle(ADEColor.textSecondary)
           Text(label)
@@ -2651,7 +2651,7 @@ struct WorkAdeMessageRow: View {
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      .accessibilityLabel("Message ADE sent: \(label)")
+      .accessibilityLabel("Message \(Brand.name) sent: \(label)")
       .accessibilityHint(isExpanded ? "Hides what the agent was told." : "Shows what the agent was told.")
       if isExpanded {
         Text(text)

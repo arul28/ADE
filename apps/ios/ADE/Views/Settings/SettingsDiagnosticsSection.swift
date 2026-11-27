@@ -38,7 +38,7 @@ struct SettingsDiagnosticsSection: View {
     if content != .connection {
       ADESettingsSection("This device", symbol: "iphone", tint: .slate) {
         ADESettingsRows {
-          ADESettingsValueRow(title: "ADE", value: Self.appVersionString, mono: true)
+          ADESettingsValueRow(title: "\(Brand.name)", value: Self.appVersionString, mono: true)
           SettingsAppUpdateRow(advisor: appUpdateAdvisor)
           if let identity = snapshot.pairedMachineIdentity {
             ADESettingsValueRow(title: "Paired machine", value: identity, mono: true)
@@ -83,7 +83,7 @@ struct SettingsAppUpdateRow: View {
 
   private var status: String {
     if advisor.isChecking { return "Checking…" }
-    if let version = advisor.availableVersion { return "ADE \(version) available" }
+    if let version = advisor.availableVersion { return "\(Brand.name) \(version) available" }
     return advisor.hasChecked ? "Up to date" : "Not checked yet"
   }
 

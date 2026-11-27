@@ -660,7 +660,7 @@ struct AccountAdoptionIdentityVerificationError: LocalizedError, Equatable {
   let machineName: String
 
   var errorDescription: String? {
-    "Couldn't verify that \(machineName)'s identity. Open ADE on that computer and try again."
+    "Couldn't verify that \(machineName)'s identity. Open \(Brand.name) on that computer and try again."
   }
 }
 
@@ -673,7 +673,7 @@ struct AccountAdoptionRouteCompatibilityError: LocalizedError, Equatable {
   let machineName: String
 
   var errorDescription: String? {
-    "\(machineName) offered a security cipher this version of ADE doesn't support. Update ADE on both devices."
+    "\(machineName) offered a security cipher this version of \(Brand.name) doesn't support. Update \(Brand.name) on both devices."
   }
 }
 
@@ -928,7 +928,7 @@ enum SyncRequestTimeout {
   /// full lane delete — the desktop gives it 5 minutes for the same reason.
   static let chatLaunchCancelTimeoutNanoseconds: UInt64 = 300_000_000_000
   static let message = "The machine took too long to respond. Try again."
-  static let chatSendMessage = "ADE couldn't confirm whether this message started. Your draft was restored; check the transcript before sending again."
+  static let chatSendMessage = "\(Brand.name) couldn't confirm whether this message started. Your draft was restored; check the transcript before sending again."
 
   static func commandTimeoutNanoseconds(for action: String) -> UInt64 {
     switch action {
@@ -1181,7 +1181,7 @@ func syncFirstSuccessfulConnectionEndpoint(
   throw lastFailure ?? NSError(
     domain: "ADE",
     code: 19,
-    userInfo: [NSLocalizedDescriptionKey: "Unable to reach the saved ADE machine."]
+    userInfo: [NSLocalizedDescriptionKey: "Unable to reach the saved \(Brand.name) machine."]
   )
 }
 
@@ -1208,7 +1208,7 @@ enum SyncConnectionRouteKind: Int, Equatable {
     switch self {
     case .lan: return "Local network"
     case .tailnet: return "Tailscale"
-    case .relay: return "ADE relay"
+    case .relay: return "\(Brand.name) relay"
     }
   }
 }
@@ -1303,7 +1303,7 @@ private struct AccountAdoptionRoute: Equatable, Hashable {
 
   var attemptLabel: String {
     switch kind {
-    case .relay: return "ADE relay"
+    case .relay: return "\(Brand.name) relay"
     case .tailnet: return "Tailscale"
     case .lan: return "local network"
     }
@@ -1311,7 +1311,7 @@ private struct AccountAdoptionRoute: Equatable, Hashable {
 
   var stageLabel: String {
     switch kind {
-    case .relay: return "Connecting through ADE relay…"
+    case .relay: return "Connecting through \(Brand.name) relay…"
     case .tailnet: return "Trying Tailscale…"
     case .lan: return "Trying local network…"
     }
@@ -1401,9 +1401,9 @@ enum SyncRelayAuthorizationRequirement: String, Equatable, Error, LocalizedError
   var errorDescription: String? {
     switch self {
     case .signInRequired:
-      return "Sign in to the same ADE account as this computer to connect from another network. LAN and Tailscale still work without an account."
+      return "Sign in to the same \(Brand.name) account as this computer to connect from another network. LAN and Tailscale still work without an account."
     case .sameAccountRequired:
-      return "This computer's internet connection belongs to another ADE account. Sign in with the same account as the computer, or connect over LAN or Tailscale."
+      return "This computer's internet connection belongs to another \(Brand.name) account. Sign in with the same account as the computer, or connect over LAN or Tailscale."
     }
   }
 }
@@ -2174,8 +2174,8 @@ struct SyncProtocolVersionMismatchError: LocalizedError, Equatable {
 
   var errorDescription: String? {
     updateTarget == "host"
-      ? "Update ADE on your computer. It uses sync protocol \(receivedVersion); this iPhone supports \(minSupportedVersion)-\(currentVersion)."
-      : "Update ADE on this iPhone. The computer uses sync protocol \(receivedVersion); this iPhone supports \(minSupportedVersion)-\(currentVersion)."
+      ? "Update \(Brand.name) on your computer. It uses sync protocol \(receivedVersion); this iPhone supports \(minSupportedVersion)-\(currentVersion)."
+      : "Update \(Brand.name) on this iPhone. The computer uses sync protocol \(receivedVersion); this iPhone supports \(minSupportedVersion)-\(currentVersion)."
   }
 }
 
@@ -2191,8 +2191,8 @@ func syncProtocolMismatchMessage(_ payload: [String: Any]) -> String {
     versions = ""
   }
   return target == "host"
-    ? "Update ADE on your computer to connect this iPhone.\(versions)"
-    : "Update ADE on this iPhone to connect to your computer.\(versions)"
+    ? "Update \(Brand.name) on your computer to connect this iPhone.\(versions)"
+    : "Update \(Brand.name) on this iPhone to connect to your computer.\(versions)"
 }
 
 func syncProtocolVersionNumber(_ value: Any?) -> Int? {
@@ -2968,9 +2968,9 @@ func syncHelloErrorFriendlyMessage(code: String?, respondingHostName: String?) -
   guard code == "host_update_required" else { return nil }
   let machine = respondingHostName?.trimmingCharacters(in: .whitespacesAndNewlines)
   if let machine, !machine.isEmpty {
-    return "Update ADE on \(machine), then try again."
+    return "Update \(Brand.name) on \(machine), then try again."
   }
-  return "Update ADE on that machine, then try again."
+  return "Update \(Brand.name) on that machine, then try again."
 }
 
 private func syncLogProfileSummary(_ profile: HostConnectionProfile) -> String {
@@ -3186,7 +3186,7 @@ enum SyncUserFacingError {
     }
     let nsError = error as NSError
     if nsError.userInfo[syncAmbiguousRouteAuthFailureKey] as? Bool == true {
-      return "A machine on this route rejected the saved pairing — possibly a different ADE machine. ADE kept the pairing and will keep trying other routes. If you unpaired this phone on purpose, pair again from Settings."
+      return "A machine on this route rejected the saved pairing — possibly a different \(Brand.name) machine. \(Brand.name) kept the pairing and will keep trying other routes. If you unpaired this phone on purpose, pair again from Settings."
     }
     if syncIsSocketOpenTimeout(error) {
       return "The computer took too long to answer."
@@ -3242,7 +3242,7 @@ enum SyncUserFacingError {
     if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorAppTransportSecurityRequiresSecureConnection ||
         lowered.contains("app transport security") ||
         lowered.contains("requires the use of a secure connection") {
-      return "iOS blocked this route before ADE could connect. Try the LAN route, or use a current ADE build with Tailscale sync enabled."
+      return "iOS blocked this route before \(Brand.name) could connect. Try the LAN route, or use a current \(Brand.name) build with Tailscale sync enabled."
     }
     if lowered == "connection closed." ||
         lowered.contains("socket is not connected") ||
@@ -3254,7 +3254,7 @@ enum SyncUserFacingError {
         lowered.contains("could not connect to the server") ||
         lowered.contains("network is unreachable") ||
         lowered.contains("cannot connect to host") {
-      return "Can't reach the saved machine right now. Make sure ADE is running there, then retry. Away from the LAN, connect both devices through Tailscale or your VPN."
+      return "Can't reach the saved machine right now. Make sure \(Brand.name) is running there, then retry. Away from the LAN, connect both devices through Tailscale or your VPN."
     }
     if lowered.contains("no saved address is available for this host") {
       return "This phone no longer has a saved address for this machine. Open Settings to rediscover it or pair again."
@@ -3289,7 +3289,7 @@ enum SyncUserFacingError {
       return "The machine sent unreadable sync data. Reconnect and try again."
     }
     if lowered.contains("message too long") {
-      return "The machine sent too much sync data in one message. Update ADE on the machine, then reconnect."
+      return "The machine sent too much sync data in one message. Update \(Brand.name) on the machine, then reconnect."
     }
 
     return rawMessage
@@ -3864,7 +3864,7 @@ struct AmbiguousChatCreationError: LocalizedError {
   let underlyingError: Error
 
   var errorDescription: String? {
-    "ADE couldn't confirm whether the chat was created. Your draft was preserved; check the Work list before trying again."
+    "\(Brand.name) couldn't confirm whether the chat was created. Your draft was preserved; check the Work list before trying again."
   }
 }
 
@@ -4064,7 +4064,7 @@ func workStartShellSessionRequest(
 
 struct AccountPairingAuthorizationChangedError: LocalizedError, Equatable {
   var errorDescription: String? {
-    "Your ADE account changed while this computer was connecting. Sign in, then try again."
+    "Your \(Brand.name) account changed while this computer was connecting. Sign in, then try again."
   }
 }
 
@@ -5714,7 +5714,7 @@ final class SyncService: ObservableObject {
         }
         deadline = Date().addingTimeInterval(Self.workSessionNavigationTimeout)
       }
-      self?.landOnHub(notice: self?.unresolvedNavigationNotice(for: request) ?? "ADE could not open that chat.")
+      self?.landOnHub(notice: self?.unresolvedNavigationNotice(for: request) ?? "\(Brand.name) could not open that chat.")
     }
   }
 
@@ -5728,16 +5728,16 @@ final class SyncService: ObservableObject {
     guard let machineKey,
           let machine = AccountService.shared.machines.first(where: { $0.machineKey == machineKey })
     else {
-      return "ADE could not open that chat."
+      return "\(Brand.name) could not open that chat."
     }
     let name = machine.displayName
     if accountMachineIsCurrent(machineKey) {
       if let projectName = syncNonEmpty(request.projectName) {
         return "That chat isn't in \(projectName) any more."
       }
-      return "ADE could not find that chat on \(name)."
+      return "\(Brand.name) could not find that chat on \(name)."
     }
-    return machine.online ? "ADE could not reach \(name)." : "\(name) is offline."
+    return machine.online ? "\(Brand.name) could not reach \(name)." : "\(name) is offline."
   }
 
   func applyIncomingProjectHostSnapshot(_ snapshot: SyncHostReadinessSnapshot?, retriesExhausted: Bool = false) {
@@ -5780,7 +5780,7 @@ final class SyncService: ObservableObject {
       applyIncomingProjectHostSnapshot(
         snapshot ?? SyncHostReadinessSnapshot(
           state: .conflict,
-          headline: "Another ADE is blocking this machine",
+          headline: "Another \(Brand.name) is blocking this machine",
           body: SyncUserFacingError.message(for: error),
           conflict: parseSyncHostConflict((error as NSError).userInfo["ADEHostConflict"]),
           recoveryEligible: ((error as NSError).userInfo["ADERecoveryEligible"] as? Bool) == true
@@ -6097,13 +6097,13 @@ final class SyncService: ObservableObject {
     }
 
     guard project.isCached || database.hasProject(id: project.id) else {
-      lastError = "That project has not been cached on this phone yet. Connect to the ADE machine before opening it."
+      lastError = "That project has not been cached on this phone yet. Connect to the \(Brand.name) machine before opening it."
       setDomainStatus(SyncDomain.allCases, phase: .failed, error: lastError)
       return
     }
 
     guard connectionState != .connected else {
-      lastError = "This machine connection does not support project switching. Reconnect to a current ADE machine before opening another project."
+      lastError = "This machine connection does not support project switching. Reconnect to a current \(Brand.name) machine before opening another project."
       setDomainStatus(SyncDomain.allCases, phase: .failed, error: lastError)
       return
     }
@@ -6235,7 +6235,7 @@ final class SyncService: ObservableObject {
   func setProjectIcon(_ project: MobileProjectSummary, png: Data) async throws {
     guard supportsProjectIcon, canSendLiveRequests() else {
       throw NSError(domain: "ADE", code: 15, userInfo: [
-        NSLocalizedDescriptionKey: "This machine can’t change project icons. Update ADE on it.",
+        NSLocalizedDescriptionKey: "This machine can’t change project icons. Update \(Brand.name) on it.",
       ])
     }
     let requestId = makeRequestId()
@@ -6769,7 +6769,7 @@ final class SyncService: ObservableObject {
   private func requireRemoteProjectActionsAvailable() throws {
     guard supportsProjectActions else {
       throw NSError(domain: "ADE", code: 31, userInfo: [
-        NSLocalizedDescriptionKey: "This machine does not support mobile project management. Update ADE on the machine and reconnect."
+        NSLocalizedDescriptionKey: "This machine does not support mobile project management. Update \(Brand.name) on the machine and reconnect."
       ])
     }
     guard canSendLiveRequests() else {
@@ -8599,7 +8599,7 @@ final class SyncService: ObservableObject {
       attachedStorageKey: activeHostProfile.flatMap(profileStorageKey),
       targetStorageKey: targetKey
     ), focusedSocketMachineKey == targetKey { return true }
-    lastConnectAttemptFailure = SyncConnectAttemptFailure(message: lastError ?? "ADE could not reconnect to \(host.hostName).")
+    lastConnectAttemptFailure = SyncConnectAttemptFailure(message: lastError ?? "\(Brand.name) could not reconnect to \(host.hostName).")
     if let previousProfile,
        targetKey == nil || profileStorageKey(previousProfile) != targetKey {
       if wasAttached, !autoReconnectPausedByUser {
@@ -9561,7 +9561,7 @@ final class SyncService: ObservableObject {
       throw NSError(
         domain: "ADE",
         code: 33,
-        userInfo: [NSLocalizedDescriptionKey: "This computer would not hand back a connection for this iPhone. Open ADE on the computer, remove this iPhone under Settings → Devices, then connect again."]
+        userInfo: [NSLocalizedDescriptionKey: "This computer would not hand back a connection for this iPhone. Open \(Brand.name) on the computer, remove this iPhone under Settings → Devices, then connect again."]
       )
     }
     let advertisedRelay = syncNonEmpty(payload["cloudRelayWssUrl"] as? String)
@@ -9691,7 +9691,7 @@ final class SyncService: ObservableObject {
         lastConnectAttemptFailure = SyncConnectAttemptFailure(
           message: syncConnectFailureMessage(
             wasWakingMachine: connectAttemptIsWakingMachine,
-            transportMessage: lastError ?? "ADE could not reach \(machine.displayName)."
+            transportMessage: lastError ?? "\(Brand.name) could not reach \(machine.displayName)."
           ),
           machineName: machine.displayName,
           machineIdentity: expectedHostIdentity,
@@ -9731,9 +9731,9 @@ final class SyncService: ObservableObject {
     )
     guard !routes.isEmpty else {
       if signingPublicKey == nil {
-        lastError = "That computer is not ready for account connection yet. Open ADE on the computer and try again."
+        lastError = "That computer is not ready for account connection yet. Open \(Brand.name) on the computer and try again."
       } else {
-        lastError = "That computer did not advertise a secure account connection route. Open ADE on the computer and try again."
+        lastError = "That computer did not advertise a secure account connection route. Open \(Brand.name) on the computer and try again."
       }
       connectionState = .error
       ProductAnalytics.shared.captureMachineAdoptionOutcome(.failed)
@@ -10200,7 +10200,7 @@ final class SyncService: ObservableObject {
       // A blocked navigation used to abort with nothing on screen: the tap
       // simply did not work. Record it the same way a failed connect does so
       // the reason is available to whatever surface the user is looking at.
-      let message = "That computer is not available in your ADE account."
+      let message = "That computer is not available in your \(Brand.name) account."
       lastError = message
       lastConnectAttemptFailure = SyncConnectAttemptFailure(message: message)
       return false
@@ -13913,7 +13913,7 @@ final class SyncService: ObservableObject {
   private func sessionLifecycleUnsupportedError(_ action: String) -> NSError {
     NSError(domain: "ADE", code: 27, userInfo: [
       NSLocalizedDescriptionKey:
-        "This machine's ADE is too old for \(action). Update the desktop app and try again.",
+        "This machine's \(Brand.name) is too old for \(action). Update the desktop app and try again.",
     ])
   }
 
@@ -14348,7 +14348,7 @@ final class SyncService: ObservableObject {
         domain: "ADE",
         code: 17,
         userInfo: [
-          NSLocalizedDescriptionKey: "Full GitHub PR details are not available on this machine version. Update ADE on the machine and reconnect.",
+          NSLocalizedDescriptionKey: "Full GitHub PR details are not available on this machine version. Update \(Brand.name) on the machine and reconnect.",
           "ADEErrorCode": "unsupported_action",
         ]
       )
@@ -15921,7 +15921,7 @@ final class SyncService: ObservableObject {
     guard supportsWorkSessionDeletion else {
       throw NSError(domain: "ADE", code: 27, userInfo: [
         NSLocalizedDescriptionKey:
-          "This machine's ADE is too old to delete sessions from a phone. Update the desktop app and try again.",
+          "This machine's \(Brand.name) is too old to delete sessions from a phone. Update the desktop app and try again.",
       ])
     }
     let scope = chatCommandScope(for: trimmed)
@@ -17531,7 +17531,7 @@ final class SyncService: ObservableObject {
       if savedCloudChatAccountKey(forThreadKey: key) != nil {
         throw NSError(domain: "ADE", code: 47, userInfo: [
           NSLocalizedDescriptionKey: cloudWakeFailure(fleetKey: key.machineKey)
-            ?? "This chat's ADE Cloud computer didn't wake. Your message is still here; try again.",
+            ?? "This chat's \(Brand.cloudName) computer didn't wake. Your message is still here; try again.",
         ])
       }
     }
@@ -17777,7 +17777,7 @@ final class SyncService: ObservableObject {
       throw NSError(
         domain: "ADE",
         code: 17,
-        userInfo: [NSLocalizedDescriptionKey: "Recovery actions are not available on this machine version. Update ADE on the machine and reconnect."]
+        userInfo: [NSLocalizedDescriptionKey: "Recovery actions are not available on this machine version. Update \(Brand.name) on the machine and reconnect."]
       )
     }
     let scope = chatCommandScope(for: sessionId)
@@ -17844,7 +17844,7 @@ final class SyncService: ObservableObject {
       throw NSError(
         domain: "ADE",
         code: 17,
-        userInfo: [NSLocalizedDescriptionKey: "Message recovery is not available on this machine version. Update ADE on the machine and reconnect."]
+        userInfo: [NSLocalizedDescriptionKey: "Message recovery is not available on this machine version. Update \(Brand.name) on the machine and reconnect."]
       )
     }
     let scope = chatCommandScope(for: sessionId)
@@ -17883,7 +17883,7 @@ final class SyncService: ObservableObject {
       throw NSError(
         domain: "ADE",
         code: 17,
-        userInfo: [NSLocalizedDescriptionKey: "Reactions need a newer ADE on the machine. Update ADE there and reconnect."]
+        userInfo: [NSLocalizedDescriptionKey: "Reactions need a newer \(Brand.name) on the machine. Update \(Brand.name) there and reconnect."]
       )
     }
     let scope = chatCommandScope(for: sessionId)
@@ -18946,7 +18946,7 @@ final class SyncService: ObservableObject {
         domain: "ADE",
         code: 17,
         userInfo: [
-          NSLocalizedDescriptionKey: "Closing tabs from the phone needs a newer ADE on this lane's machine.",
+          NSLocalizedDescriptionKey: "Closing tabs from the phone needs a newer \(Brand.name) on this lane's machine.",
           "ADEErrorCode": "unsupported_action",
         ]
       )
@@ -19018,7 +19018,7 @@ final class SyncService: ObservableObject {
     let lane = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
     let tab = tabId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard supportsWorkToolsBrowserTabInput(laneId: lane) else {
-      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "Controlling the browser from the phone needs a newer ADE on this lane's machine.", "ADEErrorCode": "unsupported_action"])
+      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "Controlling the browser from the phone needs a newer \(Brand.name) on this lane's machine.", "ADEErrorCode": "unsupported_action"])
     }
     guard !lane.isEmpty, !tab.isEmpty else { return false }
     let result = try await sendCommand(
@@ -20667,7 +20667,7 @@ final class SyncService: ObservableObject {
   private func refuseAccountProjectScopeCommand(action: String, targetProjectId: String?) throws {
     guard isAccountProjectScope, !commandIsRuntimeScoped(action),
           syncNormalizedCommandScopeValue(targetProjectId) == nil else { return }
-    throw NSError(domain: "ADE", code: 26, userInfo: [NSLocalizedDescriptionKey: "Pick a lane on a computer or on ADE Cloud."])
+    throw NSError(domain: "ADE", code: 26, userInfo: [NSLocalizedDescriptionKey: "Pick a lane on a computer or on \(Brand.cloudName)."])
   }
 
   private func commandIsRuntimeScoped(_ action: String) -> Bool {
@@ -20984,7 +20984,7 @@ final class SyncService: ObservableObject {
       domain: "ADE",
       code: 24,
       userInfo: [
-        NSLocalizedDescriptionKey: "No ADE machine address is available. Choose a discovered machine or enter the address manually.",
+        NSLocalizedDescriptionKey: "No \(Brand.name) machine address is available. Choose a discovered machine or enter the address manually.",
       ]
     )
   }
@@ -21767,7 +21767,7 @@ final class SyncService: ObservableObject {
           throw NSError(
             domain: "ADE",
             code: 35,
-            userInfo: [NSLocalizedDescriptionKey: "The ADE relay did not answer in time."]
+            userInfo: [NSLocalizedDescriptionKey: "The \(Brand.name) relay did not answer in time."]
           )
         }
         syncConnectLog.info(
@@ -21996,7 +21996,7 @@ final class SyncService: ObservableObject {
               throw NSError(
                 domain: "ADE",
                 code: 37,
-                userInfo: [NSLocalizedDescriptionKey: "Another ADE answered at this address."]
+                userInfo: [NSLocalizedDescriptionKey: "Another \(Brand.name) answered at this address."]
               )
             }
             return AuthenticatedConnectionCandidate(
@@ -22122,7 +22122,7 @@ final class SyncService: ObservableObject {
     let refusal = NSError(
       domain: "ADE",
       code: 37,
-      userInfo: [NSLocalizedDescriptionKey: "Another ADE answered at this address."]
+      userInfo: [NSLocalizedDescriptionKey: "Another \(Brand.name) answered at this address."]
     )
     guard let expected = syncNonEmpty(expectedHostIdentity) else { throw refusal }
     let probe = socketSession.webSocketTask(with: URLRequest(url: url))
@@ -22359,7 +22359,7 @@ final class SyncService: ObservableObject {
 
   private func unreachableMessage(machineName: String) -> String {
     tailscaleOffHintVisible
-      ? "Can't reach \(machineName). This iPhone isn't connected to Tailscale, which ADE needs when you're away from the machine's Wi-Fi."
+      ? "Can't reach \(machineName). This iPhone isn't connected to Tailscale, which \(Brand.name) needs when you're away from the machine's Wi-Fi."
       : "Can't reach \(machineName)."
   }
 
@@ -24049,7 +24049,7 @@ final class SyncService: ObservableObject {
       throw NSError(
         domain: "ADE",
         code: 20,
-        userInfo: [NSLocalizedDescriptionKey: "The saved pairing belongs to a different ADE machine. Pair again with the current machine."]
+        userInfo: [NSLocalizedDescriptionKey: "The saved pairing belongs to a different \(Brand.name) machine. Pair again with the current machine."]
       )
     }
 
@@ -25948,7 +25948,7 @@ final class SyncService: ObservableObject {
         domain: "ADE",
         code: 17,
         userInfo: [
-          NSLocalizedDescriptionKey: "Usage activity is not available on this machine version. Update ADE on the machine and reconnect.",
+          NSLocalizedDescriptionKey: "Usage activity is not available on this machine version. Update \(Brand.name) on the machine and reconnect.",
           "ADEErrorCode": "unsupported_action",
         ]
       )
@@ -26000,7 +26000,7 @@ final class SyncService: ObservableObject {
   func setUsageModelPrice(model: String, otherModelIds: [String] = [], price: MobileAdeUsageModelPrice?, clearPrice: Bool = false, mapTo: String? = nil) async throws {
     guard canSetUsageModelPrices else {
       throw NSError(domain: "ADE", code: 17, userInfo: [
-        NSLocalizedDescriptionKey: "Model prices can't be changed on this machine version. Update ADE on the machine and reconnect.",
+        NSLocalizedDescriptionKey: "Model prices can't be changed on this machine version. Update \(Brand.name) on the machine and reconnect.",
         "ADEErrorCode": "unsupported_action",
       ])
     }
@@ -26025,7 +26025,7 @@ final class SyncService: ObservableObject {
         domain: "ADE",
         code: 17,
         userInfo: [
-          NSLocalizedDescriptionKey: "Live usage limits are not available on this machine version. Update ADE on the machine and reconnect.",
+          NSLocalizedDescriptionKey: "Live usage limits are not available on this machine version. Update \(Brand.name) on the machine and reconnect.",
           "ADEErrorCode": "unsupported_action",
         ]
       )
@@ -27330,7 +27330,7 @@ extension SyncService {
             ADEDeepLinkURLParsing.isADEWebHost(components.host) &&
             components.path == "/open"
           ) else {
-        return .dropped("This ADE link is not valid.")
+        return .dropped("This \(Brand.name) link is not valid.")
       }
       args["url"] = url
     }
@@ -27369,7 +27369,7 @@ extension SyncService {
 
     switch kind {
     case .openDeeplink:
-      return "This ADE link could not be sent. Try again."
+      return "This \(Brand.name) link could not be sent. Try again."
     default:
       return "This command could not be sent. Try again."
     }
@@ -27392,7 +27392,7 @@ extension SyncService {
         domain: "ADE",
         code: 17,
         userInfo: [
-          NSLocalizedDescriptionKey: "This action is not available on this machine version. Update ADE on the machine and reconnect.",
+          NSLocalizedDescriptionKey: "This action is not available on this machine version. Update \(Brand.name) on the machine and reconnect.",
           "ADEErrorCode": "unsupported_action",
         ]
       )
@@ -30857,7 +30857,7 @@ extension SyncService {
     }
     let routes = accountAdoptionRoutes(for: machine, hasSigningKey: signingPublicKey != nil)
     guard !routes.isEmpty else {
-      return fail("That computer is not ready for account connection yet. Open ADE on the computer and try again.")
+      return fail("That computer is not ready for account connection yet. Open \(Brand.name) on the computer and try again.")
     }
     // The primary's attempt generation, NOT a new one: the adoption must not
     // supersede (or be mistaken for) the primary connection. If the primary

@@ -542,7 +542,7 @@ final class WorkSceneController: NSObject, ObservableObject {
     let now = CACurrentMediaTime()
     guard tappedJustNow, now - lastOpenAt >= WorkSceneLimits.openMinInterval else { return }
     guard let target = workSceneOpenTarget(raw) else {
-      notice = "A scene can open ADE links (ade://) and web pages only."
+      notice = "A scene can open \(Brand.name) links (ade://) and web pages only."
       return
     }
     lastOpenAt = now

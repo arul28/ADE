@@ -412,7 +412,7 @@ final class WorkUsageLimitResumeTests: XCTestCase {
     XCTAssertEqual(workUsageLimitSheetTitle(model), "Claude usage limit")
     let lines = workUsageLimitSheetBodyLines(model, now: now)
     XCTAssertEqual(lines.count, 2)
-    XCTAssertTrue(lines[0].hasPrefix("ADE sends \u{201C}continue\u{201D} at "))
+    XCTAssertTrue(lines[0].hasPrefix("Daex sends \u{201C}continue\u{201D} at "))
     XCTAssertTrue(lines[0].hasSuffix("(in 3 min)."))
     XCTAssertEqual(lines[1], "Nothing is lost. Subagents restart with it.")
 

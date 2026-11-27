@@ -107,7 +107,7 @@ enum CloudPreviews {
             .padding(16)
           }
             .background(ADEColor.pageBackground.ignoresSafeArea())
-            .navigationTitle("ADE Cloud")
+            .navigationTitle(Brand.cloudName)
             .navigationBarTitleDisplayMode(.inline)
         })
       }
@@ -140,7 +140,7 @@ enum CloudPreviews {
           }
         }
         .background(ADEColor.pageBackground.ignoresSafeArea())
-        .navigationTitle("ADE Cloud")
+        .navigationTitle(Brand.cloudName)
         .navigationBarTitleDisplayMode(.inline)
       })
     case "duo-cloud-plans":
@@ -155,7 +155,7 @@ enum CloudPreviews {
           .padding(16)
         }
         .background(ADEColor.pageBackground.ignoresSafeArea())
-        .navigationTitle("ADE Cloud")
+        .navigationTitle(Brand.cloudName)
         .navigationBarTitleDisplayMode(.inline)
       })
     case "duo-cloud-sizes":
@@ -166,7 +166,7 @@ enum CloudPreviews {
           }
         }
         .background(ADEColor.pageBackground.ignoresSafeArea())
-        .navigationTitle("ADE Cloud")
+        .navigationTitle(Brand.cloudName)
         .navigationBarTitleDisplayMode(.inline)
       })
     default:
@@ -595,7 +595,7 @@ private struct ProvidersCloudFixture: View {
       ADESettingsPage(route: .providers) {
         ADEKitSegmented(
           selection: .constant(SettingsProvidersPage.ProvidersPlace.cloud),
-          options: [(SettingsProvidersPage.ProvidersPlace.machine, "Mac Studio"), (SettingsProvidersPage.ProvidersPlace.cloud, "ADE Cloud")]
+          options: [(SettingsProvidersPage.ProvidersPlace.machine, "Mac Studio"), (SettingsProvidersPage.ProvidersPlace.cloud, "\(Brand.cloudName)")]
         )
         ProviderCloudPlace(syncService: syncService, model: model)
       }

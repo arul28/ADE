@@ -343,7 +343,7 @@ final class LaneMoveRuns: ObservableObject {
       // same machine again, and it goes on from what already arrived.
       update(id) {
         $0.phase = .failed
-        $0.error = "ADE stopped checking this move. Open the lane on \(run.targetName) to see what arrived."
+        $0.error = "\(Brand.name) stopped checking this move. Open the lane on \(run.targetName) to see what arrived."
       }
       return
     }
@@ -473,27 +473,27 @@ final class LaneMoveRuns: ObservableObject {
   private func checkSource(_ run: LaneMoveRun, sync: SyncService) async -> SourceCheck {
     let cloud = ADECloudMachine.name
     guard let left = await chatsLeftOnSource(run, sync: sync) else {
-      return .unreadable("ADE couldn't check the lane's chats on \(cloud), so it kept the computer.")
+      return .unreadable("\(Brand.name) couldn't check the lane's chats on \(cloud), so it kept the computer.")
     }
     if left > 0 {
       return .moveAgain(left == 1
-        ? "A chat started on the lane during the move, so ADE kept the computer. Move the lane again to bring it."
-        : "\(left) chats started on the lane during the move, so ADE kept the computer. Move the lane again to bring them.")
+        ? "A chat started on the lane during the move, so \(Brand.name) kept the computer. Move the lane again to bring it."
+        : "\(left) chats started on the lane during the move, so \(Brand.name) kept the computer. Move the lane again to bring them.")
     }
     do {
       guard let change = try await sync.laneMoveBatchSourceChanged(route: run.route, batchId: run.id) else {
         // An older ADE on the computer can't check its files: never a silent delete.
         laneMoveLog.notice("lane_move source_files_check=unsupported")
-        return .pushFirst("The ADE on the lane's \(cloud) computer is too old to check for files that changed after the move, so ADE kept the computer. Push its work to GitHub, then pull the branch on \(run.targetName).")
+        return .pushFirst("The \(Brand.name) on the lane's \(cloud) computer is too old to check for files that changed after the move, so \(Brand.name) kept the computer. Push its work to GitHub, then pull the branch on \(run.targetName).")
       }
       if change.changed {
         laneMoveLog.notice("lane_move source_files_check=changed")
-        return .pushFirst("Files on the lane changed on \(cloud) after the move, so ADE kept the computer. Push them to GitHub, then pull the branch on \(run.targetName).")
+        return .pushFirst("Files on the lane changed on \(cloud) after the move, so \(Brand.name) kept the computer. Push them to GitHub, then pull the branch on \(run.targetName).")
       }
       return .clear
     } catch {
       laneMoveLog.notice("lane_move source_files_check=failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
-      return .unreadable("ADE couldn't check the lane's files on \(cloud), so it kept the computer. \(SyncUserFacingError.message(for: error))")
+      return .unreadable("\(Brand.name) couldn't check the lane's files on \(cloud), so it kept the computer. \(SyncUserFacingError.message(for: error))")
     }
   }
 
@@ -548,7 +548,7 @@ final class LaneMoveRuns: ObservableObject {
         failure = outcome.failure
         chatsLeft = outcome.chatsLeft
       } else {
-        failure = "Sign in to ADE, then try again."
+        failure = "Sign in to \(Brand.name), then try again."
       }
     }
     if let failure {
@@ -602,25 +602,25 @@ final class LaneMoveRuns: ObservableObject {
       toasts.toast = ADEToastMessage(text: "Kept \(run.laneName)'s \(cloud) computer", kind: .failure, detail: "\(why) Nothing was deleted.")
     }
     guard let left = await chatsLeftOnSource(run, sync: sync) else {
-      keep("ADE couldn't check the lane's chats on \(cloud).")
+      keep("\(Brand.name) couldn't check the lane's chats on \(cloud).")
       return
     }
     if left > 0 {
       let reason = left == 1
-        ? "A chat started on the lane since the move, so ADE kept the computer. Move the lane again to bring it."
-        : "\(left) chats started on the lane since the move, so ADE kept the computer. Move the lane again to bring them."
+        ? "A chat started on the lane since the move, so \(Brand.name) kept the computer. Move the lane again to bring it."
+        : "\(left) chats started on the lane since the move, so \(Brand.name) kept the computer. Move the lane again to bring them."
       update(id) { $0.phase = .moveAgain; $0.error = reason }
       toasts.toast = ADEToastMessage(text: "Kept \(run.laneName)'s \(cloud) computer", kind: .info, detail: reason)
       forgetLater(id)
       return
     }
     guard let client = await sync.cloudServerClient() else {
-      keep("Sign in to ADE, then try again.")
+      keep("Sign in to \(Brand.name), then try again.")
       return
     }
     let pushed = await client.runPushWork(instanceId: computer.instanceId, check: false)
     guard let tally = pushed.tally, tally.failed == 0, tally.leftLanes.isEmpty else {
-      keep(pushed.error ?? "ADE couldn't push all of the computer's work to GitHub.")
+      keep(pushed.error ?? "\(Brand.name) couldn't push all of the computer's work to GitHub.")
       return
     }
     // Pushed: read once more, so nothing new since slips through.

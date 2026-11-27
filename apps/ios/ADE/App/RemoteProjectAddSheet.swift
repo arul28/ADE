@@ -153,7 +153,7 @@ struct RemoteProjectAddSheet: View {
                 publish: governsAccount ? $publishOnCreate : nil,
                 publishUnavailable: canPublishOnTarget
                   ? nil
-                  : "Update ADE on \(targetName ?? syncService.focusedMachineDisplayName) to publish from your phone. It stays on that computer only.",
+                  : "Update \(Brand.name) on \(targetName ?? syncService.focusedMachineDisplayName) to publish from your phone. It stays on that computer only.",
                 computerName: targetName ?? syncService.focusedMachineDisplayName,
                 isSubmitting: isSubmitting,
                 onChooseParent: { screen = .parentPicker(.create) },
@@ -286,7 +286,7 @@ struct RemoteProjectAddSheet: View {
       RemoteProjectChoiceCard(
         icon: .system("sparkles"),
         title: "Create",
-        subtitle: hasComputer ? "a new repository" : "Create needs a computer or ADE Cloud.",
+        subtitle: hasComputer ? "a new repository" : "Create needs a computer or \(Brand.cloudName).",
         enabled: hasComputer
       ) {
         begin(.create)
@@ -359,7 +359,7 @@ struct RemoteProjectAddSheet: View {
         }
       }
       if targets.contains(where: { !$0.isLive }) {
-        Text("ADE connects a computer that is not connected when you pick it.")
+        Text("\(Brand.name) connects a computer that is not connected when you pick it.")
           .font(.system(size: 12))
           .foregroundStyle(ADEColor.textMuted)
           .padding(.horizontal, 4)
@@ -474,7 +474,7 @@ struct RemoteProjectAddSheet: View {
         folder.repoName = published.name
         return (folder, nil)
       } catch {
-        return (folder, "\(folder.displayName) is on \(computerName), but publishing it to GitHub did not finish: \(SyncUserFacingError.message(for: error)) Publish it with ADE on that computer.")
+        return (folder, "\(folder.displayName) is on \(computerName), but publishing it to GitHub did not finish: \(SyncUserFacingError.message(for: error)) Publish it with \(Brand.name) on that computer.")
       }
     }
   }
@@ -523,7 +523,7 @@ struct RemoteProjectAddSheet: View {
         // The folder is on the computer; its brain publishes it on its own.
         result.kind = .added
         result.name = identity.name
-        result.accountNotice = "Your ADE account did not list it yet: \(changeMessage(error)) It appears when \(result.computerName ?? "the computer") checks in."
+        result.accountNotice = "Your \(Brand.name) account did not list it yet: \(changeMessage(error)) It appears when \(result.computerName ?? "the computer") checks in."
       }
     }
     finish(result)
@@ -639,7 +639,7 @@ struct RemoteProjectAddSheet: View {
   private func copiesLead(_ result: ProjectAddOutcome) -> String {
     let names = copyHolderNames
     if names.isEmpty {
-      return "\(result.name) is on your ADE account. Put a copy on a computer to start work there. ADE copies it from GitHub into the computer's projects folder."
+      return "\(result.name) is on your \(Brand.name) account. Put a copy on a computer to start work there. \(Brand.name) copies it from GitHub into the computer's projects folder."
     }
     let place: String
     switch names.count {
@@ -647,7 +647,7 @@ struct RemoteProjectAddSheet: View {
     case 2: place = "\(names[0]) and \(names[1])"
     default: place = "\(names[0]) and \(names.count - 1) more computers"
     }
-    return "\(result.name) is on \(place). Put a copy on more computers? ADE copies it from GitHub into each computer's projects folder."
+    return "\(result.name) is on \(place). Put a copy on more computers? \(Brand.name) copies it from GitHub into each computer's projects folder."
   }
 
   private func copyReach(_ target: ProjectAddTarget) -> HubCopyReach {
@@ -705,7 +705,7 @@ struct RemoteProjectAddSheet: View {
       for target in candidates {
         copyJobs[copyKey(target)] = .copying
         guard let accountMachineKey = target.accountMachineKey else {
-          copyJobs[copyKey(target)] = .failed("ADE does not know this computer on your account.")
+          copyJobs[copyKey(target)] = .failed("\(Brand.name) does not know this computer on your account.")
           continue
         }
         switch await syncService.putAccountProjectCopy(project, onAccountMachine: accountMachineKey) {
@@ -723,7 +723,7 @@ struct RemoteProjectAddSheet: View {
   private func successTitle(_ result: ProjectAddOutcome) -> String {
     switch result.kind {
     case .added: return "Added \(result.name)"
-    case .copy where result.folder == nil: return "\(result.name) is already on your ADE account"
+    case .copy where result.folder == nil: return "\(result.name) is already on your \(Brand.name) account"
     case .copy: return "Added a copy of \(result.name) on \(result.computerName ?? "the computer")"
     case .computerOnly: return "Added \(result.name)"
     }
@@ -738,9 +738,9 @@ struct RemoteProjectAddSheet: View {
     case .added, .copy:
       if result.folder == nil, openTarget(result) == nil {
         if !syncService.accountHasOwnComputer(account.machines) {
-          return "It is on your ADE account. Send its first chat from the project and ADE Cloud starts a computer for it."
+          return "It is on your \(Brand.name) account. Send its first chat from the project and \(Brand.cloudName) starts a computer for it."
         }
-        return "It is on your ADE account with no copy yet. Put a copy on a computer to start work."
+        return "It is on your \(Brand.name) account with no copy yet. Put a copy on a computer to start work."
       }
       return result.folder?.rootPath
     }

@@ -446,7 +446,7 @@ func workSessionEmptyStateMessage(status: WorkSessionStatusFilter, searchText: S
   default:
     if isLive { return "Start a new chat, then filter by lane or status as activity comes in." }
     return cloudOnly
-      ? "Start a new chat. It runs on its own ADE Cloud computer, and its lane shows up here."
+      ? "Start a new chat. It runs on its own \(Brand.cloudName) computer, and its lane shows up here."
       : "A computer's chats show here while it is online. Reconnect to see them and start new ones."
   }
 }

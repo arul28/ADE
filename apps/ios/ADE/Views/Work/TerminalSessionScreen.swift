@@ -497,7 +497,7 @@ struct TerminalSessionScreen: View {
       case .delivered:
         return .sent(nil)
       case .typedAtOnce:
-        return .sent("Typed now. ADE can't tell when \(runtimeLabel) is free, so it didn't wait.")
+        return .sent("Typed now. \(Brand.name) can't tell when \(runtimeLabel) is free, so it didn't wait.")
       case .heldUntilFree:
         // Held for the next free prompt: a turn still running, a menu the CLI
         // is showing, or an earlier queued message going first.

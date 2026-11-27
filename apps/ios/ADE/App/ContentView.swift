@@ -527,7 +527,7 @@ private struct PrivacyPolicyNoticeBanner: View {
     TopPromptBanner(
       systemImage: "checkmark.shield.fill",
       title: "We updated our Privacy Policy",
-      detail: "It now lists everything ADE collects and where it goes, and adds sponsored cards on the ADE Cloud Free plan.",
+      detail: "It now lists everything \(Brand.name) collects and where it goes, and adds sponsored cards on the \(Brand.cloudName) Free plan.",
       secondary: .init(title: "OK", accessibilityLabel: "Close the privacy policy notice", identifier: "privacy-notice-ok", action: onClose),
       primary: .init(title: "Read", accessibilityLabel: "Read what changed in the Privacy Policy", identifier: "privacy-notice-read", action: onRead)
     )
@@ -543,7 +543,7 @@ private struct AppUpdateBanner: View {
   var body: some View {
     TopPromptBanner(
       systemImage: "arrow.down.circle.fill",
-      title: "ADE \(version) is available",
+      title: "\(Brand.name) \(version) is available",
       secondary: .init(title: "Later", action: onLater),
       primary: .init(title: "Update", isEnabled: canUpdate, action: onUpdate)
     )

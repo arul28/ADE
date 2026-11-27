@@ -178,7 +178,7 @@ extension WorkSessionDestinationView {
             ADEHaptics.error()
             localEchoMessages.removeAll { $0.id == echoId }
             WorkPendingUploadPreviewStore.shared.release(pendingUploadRefs)
-            errorMessage = "This computer’s ADE cannot send during the turn. Update it, or pick Interrupt & continue."
+            errorMessage = "This computer’s \(Brand.name) cannot send during the turn. Update it, or pick Interrupt & continue."
             return false
           }
         }
@@ -1302,7 +1302,7 @@ extension WorkSessionDestinationView {
     }
     // Older hosts send only the message text for these.
     if workArtifactHostRefusedWholeFileRead(error) {
-      return "This recording is too large for the machine's ADE version. Update ADE there to play it."
+      return "This recording is too large for the machine's \(Brand.name) version. Update \(Brand.name) there to play it."
     }
     let nsError = error as NSError
     if nsError.domain == "ADE", nsError.code == SyncService.fileRequestOfflineErrorCode {
@@ -1338,7 +1338,7 @@ extension WorkSessionDestinationView {
         requestedCwd: chatSummary?.requestedCwd
       )
       guard !relativePath.isEmpty else {
-        errorMessage = "ADE could not resolve that file path into the current workspace."
+        errorMessage = "\(Brand.name) could not resolve that file path into the current workspace."
         return
       }
 

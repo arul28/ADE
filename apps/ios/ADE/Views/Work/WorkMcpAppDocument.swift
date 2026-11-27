@@ -88,7 +88,7 @@ func workParseMcpAppFetch(_ value: Any?) -> WorkMcpAppFetch {
   // The policy has to come from the Mac and has to take the page's origin
   // away. Without both, the page does not run on this phone.
   guard let policy = text("contentSecurityPolicy"), workMcpAppPolicyIsUsable(policy) else {
-    return .unavailable("This machine's ADE is too old to show apps on the phone.")
+    return .unavailable("This machine's \(Brand.name) is too old to show apps on the phone.")
   }
   let csp = app["csp"] as? [String: Any] ?? [:]
   let origins = ((csp["connectDomains"] as? [String]) ?? []) + ((csp["resourceDomains"] as? [String]) ?? [])

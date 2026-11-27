@@ -786,7 +786,7 @@ enum ActivityPreviewData {
       statusSince: at, machine: machine,
       project: AccountAttentionProject(projectId: "preview-ade", name: "ADE"),
       laneName: "Primary", provider: "claude", model: "claude-opus-5-5",
-      title: title, preview: "", privacyPreview: "An ADE agent", destination: .session(sessionId: id, itemId: nil, eventId: nil),
+      title: title, preview: "", privacyPreview: "A \(Brand.name) agent", destination: .session(sessionId: id, itemId: nil, eventId: nil),
       occurredAt: at, updatedAt: at
     )
   }
@@ -815,7 +815,7 @@ enum ActivityPreviewData {
     project: AccountAttentionProject(projectId: "preview-ade", name: "ADE"),
     title: "Migration finished",
     preview: "All 14 tables moved; two need a manual index rebuild.",
-    privacyPreview: "An ADE agent sent you a message.",
+    privacyPreview: "A \(Brand.name) agent sent you a message.",
     detail: "Fix the sync retry",
     destination: .session(sessionId: "c4", itemId: nil, eventId: nil),
     actions: [AccountAttentionAction(id: "open", kind: .open, label: "Open")],

@@ -68,7 +68,7 @@ struct WorkSmartLink: Equatable {
         return typed
       }
       let target = ([components.host].compactMap { $0 } + parts).joined(separator: "/")
-      return target.isEmpty ? "ADE link" : "ADE · \(target)"
+      return target.isEmpty ? "\(Brand.name) link" : "\(Brand.name) · \(target)"
     case .web:
       return url
     }

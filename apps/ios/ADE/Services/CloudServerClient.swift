@@ -17,7 +17,7 @@ import Foundation
 enum ADECloudMachine {
   /// The reserved machine id the pickers use for "ADE Cloud".
   static let id = "__ade_cloud__"
-  static let name = "ADE Cloud"
+  static let name = Brand.cloudName
   static let symbol = "cloud"
   /// Fleet keys of saved chats whose computer left the account.
   static let savedFleetKeyPrefix = "cloud-saved:"
@@ -271,7 +271,7 @@ struct CloudLaneBackupRow: Decodable, Equatable, Identifiable {
     if commits > 0 { parts.append("\(commits) \(commits == 1 ? "commit" : "commits")") }
     if snapshotSha != nil { parts.append(files > 0 ? "\(files) uncommitted \(files == 1 ? "file" : "files")" : "uncommitted changes") }
     let when = Date(timeIntervalSince1970: savedAt / 1000).formatted(date: .abbreviated, time: .shortened)
-    return "ADE Cloud saved this lane's work that isn't on GitHub (\(parts.isEmpty ? "its changes" : parts.joined(separator: " and "))) on \(when)."
+    return "\(Brand.cloudName) saved this lane's work that isn't on GitHub (\(parts.isEmpty ? "its changes" : parts.joined(separator: " and "))) on \(when)."
   }
 }
 
@@ -708,7 +708,7 @@ struct CloudServerClient {
     let deadline = Date().addingTimeInterval(15 * 60)
     while !["done", "failed", "cancelled"].contains(free.state) {
       if Date() > deadline || Task.isCancelled {
-        return CloudComputerOutcome(ok: false, message: "Freeing the computer is taking a while. ADE Cloud goes on with it; check again in a few minutes.")
+        return CloudComputerOutcome(ok: false, message: "Freeing the computer is taking a while. \(Brand.cloudName) goes on with it; check again in a few minutes.")
       }
       try? await Task.sleep(nanoseconds: 2_000_000_000)
       if let read = try? decode(CloudServerFree.self, from: try await send("GET", "cloud/frees/\(segment(free.freeId))")) { free = read }
@@ -803,7 +803,7 @@ func cloudServerFailure(status: Int, body: Data) -> CloudServerClient.Failure {
     return .computerLimit(CloudComputerLimit(refusal: body, message: message))
   }
   if let code, CloudRefusalCode.all.contains(code) || CloudRefusalCode.reads.contains(code) {
-    return .refused(code: code, message: message ?? "ADE Cloud can't do that right now.")
+    return .refused(code: code, message: message ?? "\(Brand.cloudName) can't do that right now.")
   }
   if status == 403 { return message.map { .refused(code: code ?? "forbidden", message: $0) } ?? .unauthorized }
   return .server(status, message: message)
@@ -989,8 +989,8 @@ extension CloudServerClient {
       let ran = try await exec(instanceId: instanceId, command: cloudPushWorkCommand(check: check), timeoutMs: Self.pushWorkTimeoutMs)
       if ran.exitCode == 0, let tally = CloudPushWorkTally(stdout: ran.stdout) { return (tally, nil) }
       let unknown = "\(ran.stderr)\n\(ran.stdout)".range(of: #"unknown (cloud )?command|method not found|can't read this computer's work"#, options: [.regularExpression, .caseInsensitive]) != nil
-      if check, ran.exitCode != 0, unknown { return (nil, "This computer's ADE is too old to say what isn't pushed.") }
-      return (nil, "ADE couldn't read this computer's work.")
+      if check, ran.exitCode != 0, unknown { return (nil, "This computer's \(Brand.name) is too old to say what isn't pushed.") }
+      return (nil, "\(Brand.name) couldn't read this computer's work.")
     } catch {
       return (nil, cloudServerFailureMessage(error))
     }
@@ -999,11 +999,11 @@ extension CloudServerClient {
   /// Whether any lane's work is only on the computer (`workState`): nil when it can't say.
   func workState(instanceId: String) async -> (unpushed: Bool?, unpushedLanes: [CloudPushWorkLane], message: String?) {
     let ran = await runPushWork(instanceId: instanceId, check: true)
-    guard let tally = ran.tally else { return (nil, [], ran.error ?? "ADE couldn't read this computer's work.") }
-    guard tally.lanes != nil else { return (nil, [], "This computer's ADE is too old to say what isn't pushed.") }
+    guard let tally = ran.tally else { return (nil, [], ran.error ?? "\(Brand.name) couldn't read this computer's work.") }
+    guard tally.lanes != nil else { return (nil, [], "This computer's \(Brand.name) is too old to say what isn't pushed.") }
     let left = tally.leftLanes
     if let github = cloudPushWorkGithubMessage(left, kept: false) { return (nil, left, github) }
-    if tally.failed > 0 { return (nil, left, "ADE couldn't read every project on this computer.") }
+    if tally.failed > 0 { return (nil, left, "\(Brand.name) couldn't read every project on this computer.") }
     return (!left.isEmpty, left, nil)
   }
 
@@ -1059,7 +1059,7 @@ extension CloudServerClient {
     do {
       box = try await instance(instanceId)
     } catch Failure.noAccess {
-      return fail("ADE Cloud has no such computer.")
+      return fail("\(Brand.cloudName) has no such computer.")
     } catch {
       return fail(cloudServerFailureMessage(error))
     }
@@ -1077,34 +1077,34 @@ extension CloudServerClient {
     }
     if work == .setup { return fail("This lane is still being set up. Finish signing in, or cancel the setup, then free the computer.") }
     if work == .busy { return fail("The agent is still working. Stop it or wait, then free the computer.") }
-    if work == .unknown { return fail("ADE couldn't tell whether the agent is still working, so the computer stays. Try again in a moment.") }
+    if work == .unknown { return fail("\(Brand.name) couldn't tell whether the agent is still working, so the computer stays. Try again in a moment.") }
     let ran = await runPushWork(instanceId: instanceId, check: false)
     guard let tally = ran.tally else {
-      return fail("ADE couldn't push this lane's work, so the computer stays: \(cloudWithoutStop(ran.error ?? "no answer")).")
+      return fail("\(Brand.name) couldn't push this lane's work, so the computer stays: \(cloudWithoutStop(ran.error ?? "no answer")).")
     }
     let left = tally.leftLanes
     if tally.failed > 0 || !left.isEmpty || (tally.lanes == nil && tally.skipped > 0) {
       if let github = cloudPushWorkGithubMessage(left, kept: true) { return fail(github) }
       let names = left.map(\.shownName).filter { !$0.isEmpty }
-      return fail("ADE couldn't push all work on this computer\(names.isEmpty ? "" : " (\(names.joined(separator: ", ")))"), so it stays. Open the lane to see why, then try again.")
+      return fail("\(Brand.name) couldn't push all work on this computer\(names.isEmpty ? "" : " (\(names.joined(separator: ", ")))"), so it stays. Open the lane to see why, then try again.")
     }
     // Read once more after the push: anything new or unknown keeps the computer.
     let after = await workState(instanceId: instanceId)
     if after.unpushed != false {
       let names = after.unpushedLanes.map(\.shownName).filter { !$0.isEmpty }
       return fail(after.unpushed == true
-        ? "Work changed on this computer while ADE pushed it\(names.isEmpty ? "" : " (\(names.joined(separator: ", ")))"), so it stays. Try again."
-        : "ADE couldn't confirm all work is on GitHub, so the computer stays: \(cloudWithoutStop(after.message ?? "no answer")).")
+        ? "Work changed on this computer while \(Brand.name) pushed it\(names.isEmpty ? "" : " (\(names.joined(separator: ", ")))"), so it stays. Try again."
+        : "\(Brand.name) couldn't confirm all work is on GitHub, so the computer stays: \(cloudWithoutStop(after.message ?? "no answer")).")
     }
     let ownLane = tally.lanes?.first { $0.laneId == laneId } ?? tally.lanes?.first { !$0.primary }
     guard let branchRef = nonEmptyTrimmed(ownLane?.branchRef) ?? box.laneBranch else {
-      return fail(tally.lanes != nil && ownLane == nil ? cloudLaneNotOnComputerMessage : "ADE couldn't tell which branch this lane is on, so the computer stays.")
+      return fail(tally.lanes != nil && ownLane == nil ? cloudLaneNotOnComputerMessage : "\(Brand.name) couldn't tell which branch this lane is on, so the computer stays.")
     }
     // A refusal (the server couldn't read the lane, or knows none) deleted
     // nothing: its sentence is shown as it is, and the lane is not freed.
     do {
       guard try await deleteInstanceConfirmed(instanceId, keepLaneBranch: branchRef) else {
-        return fail("ADE Cloud took the delete but hasn't finished it yet. Check again in a minute; if the computer is still there, delete it again.")
+        return fail("\(Brand.cloudName) took the delete but hasn't finished it yet. Check again in a minute; if the computer is still there, delete it again.")
       }
     } catch {
       return fail(cloudServerFailureMessage(error))
@@ -1128,7 +1128,7 @@ extension CloudServerClient {
     do {
       box = try await instance(instanceId)
     } catch Failure.noAccess {
-      return fail("ADE Cloud has no such computer.")
+      return fail("\(Brand.cloudName) has no such computer.")
     } catch {
       return fail(cloudServerFailureMessage(error))
     }
@@ -1136,7 +1136,7 @@ extension CloudServerClient {
       return fail(cloudPhoneKindChangeReason(to: tier))
     }
     guard let current = box.resources, current.cpu > 0, current.memory > 0 else {
-      return fail("ADE Cloud didn't say how big this computer is, so ADE can't resize it.")
+      return fail("\(Brand.cloudName) didn't say how big this computer is, so \(Brand.name) can't resize it.")
     }
     if current.cpu == tier.cpu && current.memory == tier.memoryGb { return fail("It's already \(tier.label).") }
     let wasAwake = box.status == "running"
@@ -1153,7 +1153,7 @@ extension CloudServerClient {
         status = (try? await start(instanceId: instanceId)) ?? status
       }
       return CloudComputerOutcome(ok: true, message: status == "running"
-        ? "Resized to \(tier.label). ADE on it is starting again."
+        ? "Resized to \(tier.label). \(Brand.name) on it is starting again."
         : "Resizing to \(tier.label). It is back in a few minutes.")
     } catch {
       return fail(cloudServerFailureMessage(error))
@@ -1166,7 +1166,7 @@ extension CloudServerClient {
     do {
       try await wakeThroughTransition(instanceId: instanceId)
       let ran = try await exec(instanceId: instanceId, command: cloudClearCachesCommand, timeoutMs: 5 * 60_000)
-      guard ran.exitCode == 0 else { return CloudComputerOutcome(ok: false, message: "ADE couldn't clear this computer's caches. Try again.") }
+      guard ran.exitCode == 0 else { return CloudComputerOutcome(ok: false, message: "\(Brand.name) couldn't clear this computer's caches. Try again.") }
       let line = ran.stdout.split(separator: "\n").last.map(String.init) ?? ""
       let sizes = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any]
       let before = (sizes?["beforeKb"] as? NSNumber)?.doubleValue
@@ -1189,6 +1189,6 @@ func cloudWithoutStop(_ text: String) -> String {
 /// on a computer makes the new computer and copies the files (`moveCloudMachine`).
 func cloudPhoneKindChangeReason(to tier: CloudPhoneTier) -> String {
   tier.full
-    ? "Moving to a full computer makes a new computer; start it from ADE on a computer."
-    : "Moving to a standard computer makes a new computer; start it from ADE on a computer."
+    ? "Moving to a full computer makes a new computer; start it from \(Brand.name) on a computer."
+    : "Moving to a standard computer makes a new computer; start it from \(Brand.name) on a computer."
 }

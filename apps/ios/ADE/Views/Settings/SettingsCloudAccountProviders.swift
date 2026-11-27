@@ -21,7 +21,7 @@ struct SettingsCloudAccountProviders: View {
   #endif
 
   var body: some View {
-    ADESettingsSection("Providers on ADE Cloud", hint: "What each coding agent needs before it runs a chat on ADE Cloud. Keys save to your account, so every cloud computer can use them.") {
+    ADESettingsSection("Providers on \(Brand.cloudName)", hint: "What each coding agent needs before it runs a chat on \(Brand.cloudName). Keys save to your account, so every cloud computer can use them.") {
       if let error = launches.catalogError, launches.catalog == nil {
         ADESettingsNotice(message: "Couldn't load the providers. \(error)", tone: .crit, actionTitle: "Try again") {
           Task { await launches.loadCatalogIfNeeded(using: syncService) }
@@ -82,7 +82,7 @@ struct SettingsCloudAccountProviders: View {
 
   private func loadSignIns() async {
     guard let client = await syncService.cloudServerClient() else {
-      signInsError = "Sign in to ADE again to see your saved keys."
+      signInsError = "Sign in to \(Brand.name) again to see your saved keys."
       return
     }
     do {
@@ -115,7 +115,7 @@ private struct SettingsCloudProviderRow: View {
 
   private var status: (text: String, tone: ADEKitTone) {
     switch provider.remoteSignIn {
-    case "desktop": return carried == true ? ("Signed in from ADE desktop", .ok) : ("Sign in from ADE desktop", .neutral)
+    case "desktop": return carried == true ? ("Signed in from \(Brand.name) desktop", .ok) : ("Sign in from \(Brand.name) desktop", .neutral)
     case "api_key":
       if saved { return ("Key saved", .ok) }
       return vaultUnknown ? ("Couldn't check", .neutral) : ("Needs a key", .warn)
@@ -128,10 +128,10 @@ private struct SettingsCloudProviderRow: View {
     switch provider.remoteSignIn {
     case "desktop":
       return carried == true
-        ? "Your ADE desktop sign-in reached ADE Cloud, so cloud chats can use it."
-        : "This provider signs in only in ADE desktop. Sign in there, and cloud chats can use it."
+        ? "Your \(Brand.name) desktop sign-in reached \(Brand.cloudName), so cloud chats can use it."
+        : "This provider signs in only in \(Brand.name) desktop. Sign in there, and cloud chats can use it."
     case "api_key": return "\(signIn?.keyName ?? "An API key"), saved to your account."
-    case "url_paste": return "The cloud computer opens a sign-in page. Paste the code it shows, and ADE keeps the pass for later computers."
+    case "url_paste": return "The cloud computer opens a sign-in page. Paste the code it shows, and \(Brand.name) keeps the pass for later computers."
     default: return "The cloud computer shows a code. Enter it on the provider's page."
     }
   }
@@ -229,7 +229,7 @@ private struct SettingsCloudProviderRow: View {
         finishSave(reply, generation)
       }
       guard let client = await syncService.cloudServerClient() else {
-        error = "Sign in to ADE again, then try again."
+        error = "Sign in to \(Brand.name) again, then try again."
         return
       }
       do {

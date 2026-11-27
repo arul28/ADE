@@ -132,7 +132,7 @@ struct SettingsLanesPage: View {
     } else if let defaultsError {
       ADESettingsSection("New lanes", symbol: "plus.square.on.square", tint: .green) {
         ADESettingsNotice(
-          message: "ADE couldn't read this project's new-lane settings on \(machine). \(defaultsError)",
+          message: "\(Brand.name) couldn't read this project's new-lane settings on \(machine). \(defaultsError)",
           actionTitle: "Try again",
           action: { Task { if let id = syncService.activeProjectId { await loadDefaults(id) } } }
         )
@@ -255,7 +255,7 @@ struct SettingsLanesPage: View {
     ADESettingsRow(
       title: "Branch names",
       hint: snapshot.branchPrefix == nil
-        ? "The machine that owns this project needs a newer ADE to change branch names."
+        ? "The machine that owns this project needs a newer \(Brand.name) to change branch names."
         : patternError ?? problem ?? "“Fix login bug” becomes \(laneBranchPatternExample(shown, user: user))"
     ) {
       Menu {

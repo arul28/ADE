@@ -301,7 +301,7 @@ struct LaneMoveSheet: View {
           .frame(width: 22)
         VStack(alignment: .leading, spacing: 2) {
           Text(ADECloudMachine.name).foregroundStyle(ADEColor.textMuted)
-          Text("ADE Cloud can't take a moved lane yet. Pick one of your computers.")
+          Text("\(Brand.cloudName) can't take a moved lane yet. Pick one of your computers.")
             .font(.caption)
             .foregroundStyle(ADEColor.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -417,7 +417,7 @@ struct CloudLaneRestingMoveSheet: View {
             Text("This lane's computer was deleted")
               .font(.headline)
               .foregroundStyle(ADEColor.textPrimary)
-            Text("ADE Cloud no longer keeps this lane, so there is nothing to bring back. Send a message in one of its chats to continue it on ADE Cloud.")
+            Text("\(Brand.cloudName) no longer keeps this lane, so there is nothing to bring back. Send a message in one of its chats to continue it on \(Brand.cloudName).")
               .font(.subheadline)
               .foregroundStyle(ADEColor.textSecondary)
               .fixedSize(horizontal: false, vertical: true)

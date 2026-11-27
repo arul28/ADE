@@ -21,13 +21,13 @@ enum AccountDeletionError: LocalizedError, Equatable {
   var errorDescription: String? {
     switch self {
     case .notSignedIn:
-      return "Sign in to ADE again to delete your account."
+      return "Sign in to \(Brand.name) again to delete your account."
     case .unauthorized:
-      return "ADE couldn’t confirm your sign-in. If your account is already deleted, sign out."
+      return "\(Brand.name) couldn’t confirm your sign-in. If your account is already deleted, sign out."
     case .refused(let message):
       return message
     case .transport:
-      return "ADE couldn’t reach the account server. Check the connection, then try again."
+      return "\(Brand.name) couldn’t reach the account server. Check the connection, then try again."
     }
   }
 }
@@ -52,7 +52,7 @@ struct AccountDeletionClient {
       let message = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])
         .flatMap { $0["error"] as? [String: Any] }
         .flatMap { nonEmptyTrimmed($0["message"] as? String) }
-      throw AccountDeletionError.refused(message ?? "ADE couldn’t delete your account (\(status)). Try again in a minute.")
+      throw AccountDeletionError.refused(message ?? "\(Brand.name) couldn’t delete your account (\(status)). Try again in a minute.")
     }
   }
 
@@ -110,7 +110,7 @@ struct AccountDeleteSheet: View {
   }
 
   private static let goes = [
-    "Your ADE Cloud computers and the work saved on them",
+    "Your \(Brand.cloudName) computers and the work saved on them",
     "Your saved chats",
     "Your passwords vault",
     "Your project list",
@@ -120,7 +120,7 @@ struct AccountDeleteSheet: View {
     NavigationStack {
       ScrollView {
         VStack(alignment: .leading, spacing: 18) {
-          Text("This deletes your ADE account for good. It can’t be undone.")
+          Text("This deletes your \(Brand.name) account for good. It can’t be undone.")
             .font(.body)
             .foregroundStyle(ADEColor.textPrimary)
             .fixedSize(horizontal: false, vertical: true)
@@ -138,7 +138,7 @@ struct AccountDeleteSheet: View {
               .font(.subheadline)
             }
             Label {
-              Text("Projects on your computers stay. ADE doesn’t delete any files there.")
+              Text("Projects on your computers stay. \(Brand.name) doesn’t delete any files there.")
                 .foregroundStyle(ADEColor.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             } icon: {

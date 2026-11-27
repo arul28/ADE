@@ -611,7 +611,7 @@ struct PrDetailView: View {
       let skips = nextStep.mergeAnyway.skips
       let skipText = skips.isEmpty ? "GitHub merges this PR now." : "Merging now skips: \(skips.joined(separator: ", "))."
       Text(nativeStackMembership != nil && stackMergeCount > 1 && nextStep.mergeAnyway.bypass
-        ? "\(skipText) GitHub bypasses rules only for the bottom PR, so ADE merges the \(stackMergeCount) PRs one at a time from the bottom."
+        ? "\(skipText) GitHub bypasses rules only for the bottom PR, so \(Brand.name) merges the \(stackMergeCount) PRs one at a time from the bottom."
         : skipText)
     }
     .sheet(item: $editorSheet) { sheet in
@@ -791,8 +791,8 @@ struct PrDetailView: View {
               ownership: currentPr.laneId.isEmpty
                 ? syncService.deeplinkOwnership()
                 : syncService.laneDeeplinkTarget(laneId: currentPr.laneId).ownership
-            ), "ADE link copied")
-          } label: { Label("ADE link", systemImage: "link.badge.plus") }
+            ), "\(Brand.name) link copied")
+          } label: { Label("\(Brand.name) link", systemImage: "link.badge.plus") }
             .disabled(currentPr.repoOwner.isEmpty || currentPr.repoName.isEmpty)
         } label: {
           Label("Copy…", systemImage: "doc.on.doc")
@@ -1555,7 +1555,7 @@ struct PrDetailView: View {
     if isAwaitingInitialPrDetail { return .loading }
     if isPrDetailUnavailable {
       return .unavailable(isLive
-        ? "ADE could not find \(unavailablePrLabel). Refresh the PR list and try again."
+        ? "\(Brand.name) could not find \(unavailablePrLabel). Refresh the PR list and try again."
         : "Reconnect to your computer to load \(unavailablePrLabel).")
     }
     return .ready

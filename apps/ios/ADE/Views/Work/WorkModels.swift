@@ -397,7 +397,7 @@ func workChatSurfaceProviderName(_ source: String?) -> String {
   case "kimi", "moonshot": return "Kimi"
   case "grok", "xai": return "Grok"
   case "copilot", "github-copilot": return "Copilot"
-  case "ade": return "ADE"
+  case "ade": return Brand.name
   default:
     return raw
       .replacingOccurrences(of: "-", with: " ")

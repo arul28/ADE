@@ -40,7 +40,7 @@ struct MobileAccessGateView: View {
             .frame(maxWidth: 220)
             .frame(height: 108)
             .frame(maxWidth: .infinity)
-            .accessibilityLabel("ADE")
+            .accessibilityLabel(Brand.name)
             .padding(.bottom, 24)
 
           Text("Your agents, anywhere.")
@@ -243,7 +243,7 @@ struct MobileAccessGateView: View {
         ADEHaptics.medium()
         onContinue()
       } else {
-        accountConnectionError = syncService.lastError ?? "ADE could not connect to that computer. Try again."
+        accountConnectionError = syncService.lastError ?? "\(Brand.name) could not connect to that computer. Try again."
       }
     }
   }

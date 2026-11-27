@@ -33,7 +33,7 @@ func appleDeviceControlBlocker(
   // refused it, and the viewer already shows why), so nothing is known yet.
   let hasMetrics = pointMetrics.map { $0.width > 0 && $0.height > 0 } ?? false
   guard hostSupportsControl, hasMetrics || !hasTicket else {
-    return "Update ADE on your Mac to control its simulator from here."
+    return "Update \(Brand.name) on your Mac to control its simulator from here."
   }
   guard ownsDevice else {
     return "This simulator isn't this lane's own, so it's watch-only."

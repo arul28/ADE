@@ -77,7 +77,7 @@ struct WorkProofCitationView: View {
 
   private var missingText: String {
     let cited = caption.isEmpty ? "" : " It was cited as \"\(caption)\"."
-    return "ADE has no proof with the id \(artifactId).\(cited)"
+    return "\(Brand.name) has no proof with the id \(artifactId).\(cited)"
   }
 
   @ViewBuilder

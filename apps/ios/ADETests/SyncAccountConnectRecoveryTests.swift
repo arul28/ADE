@@ -878,19 +878,19 @@ final class SyncAccountConnectRecoveryTests: XCTestCase {
     """)
     XCTAssertEqual(alpha.channel, .alpha)
     XCTAssertEqual(alpha.adeHome, "~/.ade-alpha")
-    XCTAssertEqual(alpha.rowLabel, "MacBook Pro · ADE Alpha")
+    XCTAssertEqual(alpha.rowLabel, "MacBook Pro · Daex Alpha")
     // Rename fields and name matching keep the bare name.
     XCTAssertEqual(alpha.displayName, "MacBook Pro · Alpha")
 
     let stable = try Self.decodeMachine("""
     {"machineKey": "s", "name": "MacBook Pro", "channel": "stable"}
     """)
-    XCTAssertEqual(stable.rowLabel, "MacBook Pro · ADE")
+    XCTAssertEqual(stable.rowLabel, "MacBook Pro · Daex")
 
     let beta = try Self.decodeMachine("""
     {"machineKey": "b", "name": "MacBook Pro · Beta", "channel": "beta"}
     """)
-    XCTAssertEqual(beta.rowLabel, "MacBook Pro · ADE Beta")
+    XCTAssertEqual(beta.rowLabel, "MacBook Pro · Daex Beta")
 
     // A custom home has no channel; the home names it instead.
     let custom = try Self.decodeMachine("""
@@ -902,7 +902,7 @@ final class SyncAccountConnectRecoveryTests: XCTestCase {
     let renamed = try Self.decodeMachine("""
     {"machineKey": "r", "name": "MacBook Pro · Alpha", "customName": "Work laptop", "channel": "alpha"}
     """)
-    XCTAssertEqual(renamed.rowLabel, "Work laptop · ADE Alpha")
+    XCTAssertEqual(renamed.rowLabel, "Work laptop · Daex Alpha")
   }
 
   /// Older directories omit both fields, and a channel this build has never

@@ -636,12 +636,12 @@ final class PasswordsVault: ObservableObject {
       switch error {
       case .unavailable: publish(items: [], unopenable: 0, phase: .notSetUp)
       case .unauthorized: phase = .failed("Your session expired. Sign in again.")
-      case .transport: phase = .failed("Couldn't reach ADE. Check your connection and try again.")
-      case .server, .unreadable: phase = .failed("ADE couldn't load your passwords. Try again in a moment.")
+      case .transport: phase = .failed("Couldn't reach \(Brand.name). Check your connection and try again.")
+      case .server, .unreadable: phase = .failed("\(Brand.name) couldn't load your passwords. Try again in a moment.")
       }
     } catch {
       guard userId == accountId, !Task.isCancelled else { return }
-      phase = .failed("ADE couldn't load your passwords. Try again in a moment.")
+      phase = .failed("\(Brand.name) couldn't load your passwords. Try again in a moment.")
     }
   }
 

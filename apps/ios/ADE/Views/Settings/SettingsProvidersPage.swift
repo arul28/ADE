@@ -54,7 +54,7 @@ struct SettingsProvidersPage: View {
         ADESettingsNotice(message: SettingsPageCopy.updateADE(on: machine))
       } else {
         if cloudOffered {
-          ADEKitSegmented(selection: $place, options: [(ProvidersPlace.machine, machine), (ProvidersPlace.cloud, "ADE Cloud")])
+          ADEKitSegmented(selection: $place, options: [(ProvidersPlace.machine, machine), (ProvidersPlace.cloud, "\(Brand.cloudName)")])
         }
         if place == .cloud && cloudOffered {
           ProviderCloudPlace(syncService: syncService, model: logins)
@@ -440,7 +440,7 @@ struct SettingsProviderRow: Identifiable, Equatable {
       connected = connection?.runtimeAvailable == true
       detected = installation?.installed == true || connection?.runtimeDetected == true
       if installation?.installed == true, installation?.sdkAvailable != true, !connected {
-        problem = trimmed(connection?.blocker) ?? "Pi is installed but ADE can't load it."
+        problem = trimmed(connection?.blocker) ?? "Pi is installed but \(Brand.name) can't load it."
         return SettingsProviderRow(id: id, label: label, state: .attention, fact: problem)
       }
     case .cli:
@@ -470,7 +470,7 @@ struct SettingsProviderRow: Identifiable, Equatable {
     switch state {
     case .connected: fact = account
     case .attention: fact = problem ?? account
-    case .unknown: fact = "ADE can't tell from here"
+    case .unknown: fact = "\(Brand.name) can't tell from here"
     case .signIn, .notInstalled, .disabled: fact = nil
     }
     return SettingsProviderRow(id: id, label: label, state: state, fact: fact, account: account)

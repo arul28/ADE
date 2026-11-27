@@ -109,7 +109,7 @@ struct AccountSignInView: View {
         .aspectRatio(contentMode: .fit)
         .frame(maxWidth: 168)
         .frame(height: 52)
-        .accessibilityLabel("ADE")
+        .accessibilityLabel(Brand.name)
 
       VStack(spacing: 5) {
         Text(headerTitle)
@@ -128,11 +128,11 @@ struct AccountSignInView: View {
 
   private var headerTitle: String {
     switch step {
-    case .identifier: return "Continue to ADE"
+    case .identifier: return "Continue to \(Brand.name)"
     case .emailCode: return "Check your email"
     case .machines:
       switch account.authenticationOutcome {
-      case .newAccount: return "Your ADE account is ready"
+      case .newAccount: return "Your \(Brand.name) account is ready"
       case .returningUser: return "Welcome back"
       case .unknown: return "You're in"
       }
@@ -231,7 +231,7 @@ struct AccountSignInView: View {
   /// Every sign-up on the phone passes this step, so the agreement lives here.
   private var legalAgreement: some View {
     // A literal, so SwiftUI reads the Markdown links (an interpolated URL is not parsed).
-    Text("By continuing, you agree to ADE's [Terms](https://ade-app.dev/terms) and [Privacy Policy](https://ade-app.dev/privacy).")
+    Text("By continuing, you agree to Daex's [Terms](https://ade-app.dev/terms) and [Privacy Policy](https://ade-app.dev/privacy).")
       .font(.caption)
       .foregroundStyle(ADEColor.textMuted)
       .tint(ADEColor.accent)

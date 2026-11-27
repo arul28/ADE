@@ -385,7 +385,7 @@ final class ADETests: XCTestCase {
     subfolder.atLaneRoot = false
     let plan = workPlanImport(importSession("claude", home: subfolder), surface: "chat", targetLaneId: "apple")
     XCTAssertEqual(plan.primary?.mode, "fork")
-    XCTAssertEqual(plan.primary?.label, "Open as ADE chat")
+    XCTAssertEqual(plan.primary?.label, "Open as Daex chat")
   }
 
   func testImportPlanLocksCursorCliLaneAndSaysWhy() {
@@ -402,7 +402,7 @@ final class ADETests: XCTestCase {
   func testImportPlanKeepsChatModeOpenToAnyLaneThroughReplayCopy() {
     let plan = workPlanImport(importSession("grok"), surface: "chat", targetLaneId: "other")
     XCTAssertFalse(plan.laneLocked)
-    XCTAssertEqual(plan.primary, WorkImportPlanAction(target: "chat", mode: "fork", label: "Open as ADE chat", needsModel: true))
+    XCTAssertEqual(plan.primary, WorkImportPlanAction(target: "chat", mode: "fork", label: "Open as Daex chat", needsModel: true))
   }
 
   func testImportPlanLetsCodexContinueAnywhere() {
@@ -547,7 +547,7 @@ final class ADETests: XCTestCase {
       var subfolder = importAppleHome
       subfolder.atLaneRoot = false
       let inSubfolder = workPlanImport(importSession(provider, home: subfolder), surface: "chat", targetLaneId: "apple")
-      XCTAssertEqual(inSubfolder.primary?.label, "Open as ADE chat", provider)
+      XCTAssertEqual(inSubfolder.primary?.label, "Open as Daex chat", provider)
 
       let elsewhere = workPlanImport(importSession(provider), surface: "chat", targetLaneId: "other")
       XCTAssertEqual(elsewhere.primary?.mode, "fork", provider)
@@ -556,7 +556,7 @@ final class ADETests: XCTestCase {
     var noChat = importFullCapabilities
     noChat.importToChat = false
     let narrowed = workPlanImport(importSession("copilot", capabilities: noChat), surface: "chat", targetLaneId: "apple")
-    XCTAssertEqual(narrowed.primary?.label, "Open as ADE chat")
+    XCTAssertEqual(narrowed.primary?.label, "Open as Daex chat")
   }
 
   func testImportRejectionReasonMatchesDesktop() {
@@ -572,7 +572,7 @@ final class ADETests: XCTestCase {
     XCTAssertNil(workImportRejectionReason(cursor, target: "cli", mode: "resume", laneId: "apple"))
     XCTAssertEqual(
       workImportRejectionReason(cursor, target: "chat", mode: "resume", laneId: "apple"),
-      "This Cursor session can't be continued as an ADE chat."
+      "This Cursor session can't be continued as a Daex chat."
     )
     let unnamedHome = ExternalSessionHome(kind: "lane", laneId: "apple", laneName: nil, atLaneRoot: true)
     XCTAssertEqual(
@@ -708,10 +708,10 @@ final class ADETests: XCTestCase {
     ]
     XCTAssertTrue(syncProtocolMismatchMessage(
       versions.merging(["updateTarget": "host"]) { _, right in right }
-    ).contains("Update ADE on your computer"))
+    ).contains("Update Daex on your computer"))
     XCTAssertTrue(syncProtocolMismatchMessage(
       versions.merging(["updateTarget": "client"]) { _, right in right }
-    ).contains("Update ADE on this iPhone"))
+    ).contains("Update Daex on this iPhone"))
   }
 
   func testSyncPreprocessDecodesNodeDeflateFixture() throws {
@@ -2329,7 +2329,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(SyncRequestTimeout.error().localizedDescription, "The machine took too long to respond. Try again.")
     XCTAssertEqual(
       SyncRequestTimeout.error(message: SyncRequestTimeout.chatSendMessage).localizedDescription,
-      "ADE couldn't confirm whether this message started. Your draft was restored; check the transcript before sending again."
+      "Daex couldn't confirm whether this message started. Your draft was restored; check the transcript before sending again."
     )
   }
 
@@ -2622,7 +2622,7 @@ final class ADETests: XCTestCase {
   func testTransportBadgeNamesObservedRoute() {
     XCTAssertEqual(syncTransportBadgeText(routeKind: .lan), "via LAN")
     XCTAssertEqual(syncTransportBadgeText(routeKind: .tailnet), "via Tailscale")
-    XCTAssertEqual(syncTransportBadgeText(routeKind: .relay), "via ADE Relay")
+    XCTAssertEqual(syncTransportBadgeText(routeKind: .relay), "via Daex Relay")
     XCTAssertNil(syncTransportBadgeText(routeKind: nil))
   }
 
@@ -2878,7 +2878,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(displayed.savedHosts[0].tailscaleAddress, "macbook.tailnet.ts.net")
     XCTAssertEqual(
       syncDiscoveredHostDetailText(host: displayed.savedHosts[0], detailPrefix: "Saved"),
-      "ADE brain 0.0.0 · Saved"
+      "Daex brain 0.0.0 · Saved"
     )
   }
 
@@ -4713,15 +4713,15 @@ final class ADETests: XCTestCase {
   func testSyncHostUpdateRequiredCopyNamesTheMachine() {
     XCTAssertEqual(
       syncHelloErrorFriendlyMessage(code: "host_update_required", respondingHostName: "Mac Studio"),
-      "Update ADE on Mac Studio, then try again."
+      "Update Daex on Mac Studio, then try again."
     )
     XCTAssertEqual(
       syncHelloErrorFriendlyMessage(code: "host_update_required", respondingHostName: "  "),
-      "Update ADE on that machine, then try again."
+      "Update Daex on that machine, then try again."
     )
     XCTAssertEqual(
       syncHelloErrorFriendlyMessage(code: "host_update_required", respondingHostName: nil),
-      "Update ADE on that machine, then try again."
+      "Update Daex on that machine, then try again."
     )
 
     // Every other code keeps the host's own message.
@@ -4735,7 +4735,7 @@ final class ADETests: XCTestCase {
         NSLocalizedDescriptionKey: "This machine cannot verify ADE accounts. Update ADE on this computer, then try again.",
         "ADEErrorCode": "host_update_required",
       ])),
-      "Update ADE on that machine, then try again."
+      "Update Daex on that machine, then try again."
     )
 
     // An unknown code degrades to the host's own words — not to a pairing
@@ -5213,7 +5213,7 @@ final class ADETests: XCTestCase {
     )
     XCTAssertEqual(
       SyncUserFacingError.message(for: ambiguousTailnetAuthError),
-      "A machine on this route rejected the saved pairing — possibly a different ADE machine. ADE kept the pairing and will keep trying other routes. If you unpaired this phone on purpose, pair again from Settings."
+      "A machine on this route rejected the saved pairing — possibly a different Daex machine. Daex kept the pairing and will keep trying other routes. If you unpaired this phone on purpose, pair again from Settings."
     )
 
     let invalidHelloError = NSError(
@@ -5282,7 +5282,7 @@ final class ADETests: XCTestCase {
     )
     XCTAssertEqual(
       SyncUserFacingError.message(for: unattributedReword),
-      "A machine on this route rejected the saved pairing — possibly a different ADE machine. ADE kept the pairing and will keep trying other routes. If you unpaired this phone on purpose, pair again from Settings."
+      "A machine on this route rejected the saved pairing — possibly a different Daex machine. Daex kept the pairing and will keep trying other routes. If you unpaired this phone on purpose, pair again from Settings."
     )
   }
 
@@ -7572,7 +7572,7 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(service.shouldShowProjectHub)
     XCTAssertEqual(
       service.lastError,
-      "That project has not been cached on this phone yet. Connect to the ADE machine before opening it."
+      "That project has not been cached on this phone yet. Connect to the Daex machine before opening it."
     )
 
     database.close()
@@ -8631,7 +8631,7 @@ final class ADETests: XCTestCase {
     XCTAssertNil(adeUsageRatesNote(sources: [], pricingUpdatedAt: nil))
     XCTAssertEqual(
       adeUsageRatesNote(sources: ["fallback"], pricingUpdatedAt: nil),
-      "Rates from ADE's built-in list — the public rate list couldn't be reached."
+      "Rates from Daex's built-in list — the public rate list couldn't be reached."
     )
     XCTAssertEqual(
       adeUsageRatesNote(sources: ["list", "list"], pricingUpdatedAt: nil),
@@ -12713,7 +12713,7 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(
       delivery,
-      .dropped("This action is not available on this machine version. Update ADE on the machine and reconnect.")
+      .dropped("This action is not available on this machine version. Update Daex on the machine and reconnect.")
     )
     XCTAssertEqual(service.pendingOperationCount, 0)
   }
@@ -22307,7 +22307,7 @@ final class ADETests: XCTestCase {
       filesPartialPreviewLimit(blob: partial),
       FilesPreviewLimit(
         title: "Only the start of this file loaded",
-        message: "This file is over 1 MB, so your machine sent only the start of it. Open it in ADE on your machine to read the rest."
+        message: "This file is over 1 MB, so your machine sent only the start of it. Open it in Daex on your machine to read the rest."
       )
     )
     // A search hit past the loaded prefix must say so rather than scroll nowhere.
@@ -23404,7 +23404,7 @@ final class ADETests: XCTestCase {
       filesDiffPreviewLimit(diff: truncated),
       FilesPreviewLimit(
         title: "Diff preview paused",
-        message: "This diff is too large to compare fully on iPhone. Open the file from ADE on your machine or inspect a smaller diff before rendering it on iPhone."
+        message: "This diff is too large to compare fully on iPhone. Open the file from Daex on your machine or inspect a smaller diff before rendering it on iPhone."
       )
     )
   }
@@ -25695,7 +25695,7 @@ final class ADETests: XCTestCase {
       ),
       "Codex has a question"
     )
-    XCTAssertEqual(workChatSurfaceProviderName("ade"), "ADE")
+    XCTAssertEqual(workChatSurfaceProviderName("ade"), "Daex")
     XCTAssertEqual(workChatSurfaceProviderName("my_provider-runtime"), "My Provider Runtime")
   }
 
@@ -25740,15 +25740,15 @@ final class ADETests: XCTestCase {
   /// still an argument. Same rows as the desktop table.
   func testComputerUseSummaryKeepsShellRedirectionsOutOfTheAction() {
     let rows: [(command: String, output: String, text: String, outcome: WorkComputerUseOutcome)] = [
-      ("ade browser click --x 537 --y 411 --text 2>&1 | grep ok", "", "Clicked at 537, 411 using ADE browser", .notChecked),
-      ("ade browser click --text \"<Submit>\" 2>&1", "", "Clicked “<Submit>” using ADE browser", .notChecked),
+      ("ade browser click --x 537 --y 411 --text 2>&1 | grep ok", "", "Clicked at 537, 411 using Daex browser", .notChecked),
+      ("ade browser click --text \"<Submit>\" 2>&1", "", "Clicked “<Submit>” using Daex browser", .notChecked),
       ("ade screen type \">\" --app Notes", "", "Typed “>” in Notes", .notChecked),
       ("ade screen type hello *>$null", "", "Typed “hello” on the lane screen", .notChecked),
       ("ade proof capture --caption Login --text>proof.txt", "Attached", "Filed proof “Login”", .unconfirmed),
       // A click never reads as a bare "Clicked": an element with no name is
       // named by the role its output printed, and a click on no element by its
       // point. Same rows as the desktop table.
-      ("ade browser click --handle e1", "hit: button (e1)\neffect: observed", "Clicked a button using ADE browser", .observed),
+      ("ade browser click --handle e1", "hit: button (e1)\neffect: observed", "Clicked a button using Daex browser", .observed),
       ("ade screen click --handle e5", "hit: AXPopUpButton (e5)\neffect: observed", "Clicked a pop-up button on the lane screen", .observed),
       ("ade screen click --handle e9", "hit: div (e9)\neffect: observed", "Clicked an element on the lane screen", .observed),
       ("ade screen click --handle e1", "hit: no element; acted on a point (412, 300)\neffect: observed", "Clicked at a point on the lane screen", .observed),
@@ -28770,7 +28770,7 @@ final class SyncPartialHydrationRenderingTests: XCTestCase {
     let status = SyncDomainStatus(phase: .failed, lastError: "  \n ", lastHydratedAt: nil)
     let notice = status.inlineHydrationFailureNotice(for: .work)
     XCTAssertEqual(notice?.title, "Couldn't load your chats")
-    XCTAssertTrue(notice?.message.contains("ADE couldn't get fresh chats") == true)
+    XCTAssertTrue(notice?.message.contains("Daex couldn't get fresh chats") == true)
     XCTAssertNil(notice?.technicalDetail)
   }
 }

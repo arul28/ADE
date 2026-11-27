@@ -212,7 +212,7 @@ struct HubInlineComposer: View {
   }
 
   private var selectedLaneName: String {
-    if isAutoCreateLane { return pickedAccountCloud ? "New lane on ADE Cloud" : "Auto-create lane" }
+    if isAutoCreateLane { return pickedAccountCloud ? "New lane on \(Brand.cloudName)" : "Auto-create lane" }
     if let lane = lanesForPickedProject.first(where: { $0.id == selectedLaneId }) {
       return lane.displayName
     }
@@ -787,7 +787,7 @@ struct HubInlineComposer: View {
           .font(.system(size: 12, weight: .regular))
           .foregroundStyle(ADEColor.textSecondary)
           .frame(width: 22)
-        Text("New lane on ADE Cloud")
+        Text("New lane on \(Brand.cloudName)")
           .font(.system(size: 14, weight: selected ? .semibold : .regular))
           .foregroundStyle(ADEColor.textPrimary)
           .frame(maxWidth: .infinity, alignment: .leading)
@@ -1416,7 +1416,7 @@ struct HubInlineComposer: View {
       return false
     }
     guard sessionMode == .chat else {
-      errorMessage = "ADE Cloud starts chats from the phone. Switch to Chat."
+      errorMessage = "\(Brand.cloudName) starts chats from the phone. Switch to Chat."
       return false
     }
     guard let project = accountCloudProject else {
@@ -1425,13 +1425,13 @@ struct HubInlineComposer: View {
     }
     guard let entry = cloudLaunches.catalog?.providers.first(where: { $0.provider == provider }),
           entry.models.contains(where: { $0.id == modelId }) else {
-      errorMessage = "Pick a model ADE Cloud runs."
+      errorMessage = "Pick a model \(Brand.cloudName) runs."
       return false
     }
     var files: [(name: String, contentType: String, data: Data)] = []
     for attachment in attachments {
       guard let data = attachment.uploadData ?? attachment.image?.jpegData(compressionQuality: 0.85) else {
-        errorMessage = "\(attachment.filename) is on the machine that saved this draft. Remove it and attach it again to send it to ADE Cloud."
+        errorMessage = "\(attachment.filename) is on the machine that saved this draft. Remove it and attach it again to send it to \(Brand.cloudName)."
         return false
       }
       files.append((name: attachment.filename, contentType: attachment.uploadData == nil ? "image/jpeg" : attachment.mimeType, data: data))

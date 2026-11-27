@@ -344,7 +344,7 @@ func hubConnectionStatus(
     && !syncService.accountHasOwnComputer(account.machines)
   let label = health.transport == .connected && liveCount > 1
     ? "\(liveCount) computers"
-    : cloudOnly ? "ADE Cloud" : machineName ?? transportWord
+    : cloudOnly ? "\(Brand.cloudName)" : machineName ?? transportWord
   let switching = syncService.isProjectSwitching
     ? syncService.projects.first(where: { syncService.isSwitchingProject($0) })?.displayName
     : nil
@@ -1803,7 +1803,7 @@ struct HubNoMachineState: View {
           .aspectRatio(contentMode: .fit)
           .frame(maxWidth: 200)
           .frame(height: 96)
-          .accessibilityLabel("ADE")
+          .accessibilityLabel(Brand.name)
 
         Text(headline)
           .font(.title3.weight(.semibold))
@@ -1883,12 +1883,12 @@ struct HubNoMachineState: View {
 
   private var message: String {
     if syncService.connectionState == .error {
-      return "Check that ADE is running on it and that both are online."
+      return "Check that \(Brand.name) is running on it and that both are online."
     }
     if hasSavedMachine {
       return "Reconnect to pick up your projects, lanes and chats where you left them."
     }
-    return "ADE runs your agents on your computer. Pair this phone to follow and steer them from anywhere."
+    return "\(Brand.name) runs your agents on your computer. Pair this phone to follow and steer them from anywhere."
   }
 
   /// A machine is "saved" when a pairing credential still exists for it —

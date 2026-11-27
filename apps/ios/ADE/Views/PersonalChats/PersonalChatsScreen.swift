@@ -139,7 +139,7 @@ struct PersonalChatsScreen: View {
         .accessibilityLabel("New chat")
         .accessibilityHint(canCreateChat
           ? "Starts a conversation that is not linked to a project."
-          : "Connect to a compatible ADE machine to start a chat.")
+          : "Connect to a compatible \(Brand.name) machine to start a chat.")
       }
       .padding(.horizontal, 16)
       .padding(.bottom, 6)
@@ -292,7 +292,7 @@ struct PersonalChatsScreen: View {
         .disabled(!canCreateChat)
         .accessibilityHint(canCreateChat
           ? "Starts a conversation that is not linked to a project."
-          : "Connect to a compatible ADE machine to start a chat.")
+          : "Connect to a compatible \(Brand.name) machine to start a chat.")
       }
     }
     .padding(28)
@@ -374,7 +374,7 @@ struct PersonalChatsScreen: View {
     on entry: PersonalChatRowEntry
   ) async {
     guard canPerform(action, on: entry.machineKey) else {
-      errorMessage = "This chat action requires a live connection to a compatible ADE machine."
+      errorMessage = "This chat action requires a live connection to a compatible \(Brand.name) machine."
       return
     }
     do {
@@ -754,14 +754,14 @@ struct PersonalChatNewScreen: View {
       text: $draft,
       isFocused: $composerFocused,
       attachments: $attachments,
-      placeholder: "Message ADE…",
+      placeholder: "Message \(Brand.name)…",
       acceptsPastedImages: false,
       sendEnabled: canCreateChat && !busy && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
       sending: busy,
       sendAccessibilityLabel: "Start chat",
       disabledSendAccessibilityLabel: canCreateChat
         ? "Enter a message to start"
-        : "Connect to a compatible ADE machine to start a chat",
+        : "Connect to a compatible \(Brand.name) machine to start a chat",
       dictationTargetId: "personal-new-chat",
       onSend: { Task { await create() } },
       menu: { startDictation in
@@ -815,7 +815,7 @@ struct PersonalChatNewScreen: View {
         .accessibilityLabel("Model, \(workKnownModelDisplayName(modelId) ?? modelId)")
         .accessibilityHint(canChooseModel
           ? "Opens the model picker."
-          : "Connect to a compatible ADE machine to choose a model.")
+          : "Connect to a compatible \(Brand.name) machine to choose a model.")
       }
     )
     .padding(.horizontal, 16)

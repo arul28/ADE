@@ -40,7 +40,7 @@ struct AccountConnectionsSection: View {
       AccountSignInView(onConnect: onConnectMachine)
     }
     .confirmationDialog(
-      "Sign out of ADE?",
+      "Sign out of \(Brand.name)?",
       isPresented: $confirmSignOut,
       titleVisibility: .visible
     ) {
@@ -69,10 +69,10 @@ struct AccountSignInPromptCard: View {
           .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
 
         VStack(alignment: .leading, spacing: 3) {
-          Text("Continue to ADE")
+          Text("Continue to \(Brand.name)")
             .font(.headline)
             .foregroundStyle(ADEColor.textPrimary)
-          Text("Connect to a computer on another network. Use the same ADE account on your iPhone and computer.")
+          Text("Connect to a computer on another network. Use the same \(Brand.name) account on your iPhone and computer.")
             .font(.subheadline)
             .foregroundStyle(ADEColor.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -88,7 +88,7 @@ struct AccountSignInPromptCard: View {
     }
     .adeKitCard()
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("Continue to ADE to see your machines")
+    .accessibilityLabel("Continue to \(Brand.name) to see your machines")
   }
 }
 
@@ -210,7 +210,7 @@ struct AccountMachinesList: View {
       if account.machines.isEmpty {
         AccountMachinesNote(
           icon: "desktopcomputer",
-          text: "No computers are signed in to this account yet. Open ADE on your computer and sign in there too."
+          text: "No computers are signed in to this account yet. Open \(Brand.name) on your computer and sign in there too."
         )
       } else {
         machineRows

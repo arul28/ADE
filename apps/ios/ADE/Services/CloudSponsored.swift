@@ -92,9 +92,9 @@ struct CloudSponsoredState: Decodable, Equatable {
   }
 
   /// What Gravity gets, as the question, the notice and Settings say it.
-  static let sends = "To pick them, ADE sends Gravity, our ad partner, your last message and the reply (or the agent's search), your IP address, your device type and a hashed copy of your account email. Sponsored cards are for people 18 or older."
+  static let sends = "To pick them, \(Brand.name) sends Gravity, our ad partner, your last message and the reply (or the agent's search), your IP address, your device type and a hashed copy of your account email. Sponsored cards are for people 18 or older."
   /// The second confirm before a yes (`confirmYes`).
-  static let turnOnConfirm = "\(sends) You can turn them off any time in Settings › ADE Cloud."
+  static let turnOnConfirm = "\(sends) You can turn them off any time in Settings › \(Brand.cloudName)."
   /// Why cards are off when a browser's Global Privacy Control turned them off (`gpcOff`).
   static let gpcOffLine = "A browser you use sends Global Privacy Control, which turned sponsored cards off for your account. To keep them on there, turn them on from that browser."
 
@@ -356,7 +356,7 @@ func cloudSaveSponsoredConsent(_ consent: String, confirmed: Bool = false, since
     return .failure(CloudSponsoredSaveFailure(message: "You signed in to another account. Try again."))
   }
   guard let client = await SyncMenuSafePublisher.shared.service.cloudServerClient() else {
-    return .failure(CloudSponsoredSaveFailure(message: "Sign in to ADE, then try again."))
+    return .failure(CloudSponsoredSaveFailure(message: "Sign in to \(Brand.name), then try again."))
   }
   do {
     let state = try await client.setSponsoredConsent(consent, confirmed: confirmed)
@@ -382,7 +382,7 @@ func cloudSaveSponsoredConsent(_ consent: String, confirmed: Bool = false, since
     case .refused(_, let message), .server(_, .some(let message)):
       return .failure(CloudSponsoredSaveFailure(message: message))
     default:
-      return .failure(CloudSponsoredSaveFailure(message: "ADE couldn't save that. Try again."))
+      return .failure(CloudSponsoredSaveFailure(message: "\(Brand.name) couldn't save that. Try again."))
     }
   }
 }

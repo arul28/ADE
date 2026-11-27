@@ -165,10 +165,10 @@ final class WorkToolsContractTests: XCTestCase {
     // cannot import it, so only this test holds the two wordings together.
     XCTAssertEqual(
       workToolsBrowserUnavailableMessage("desktop_not_attached"),
-      "The browser runs in ADE Desktop. Open ADE on your Mac to see its tabs.")
+      "The browser runs in Daex Desktop. Open Daex on your Mac to see its tabs.")
     XCTAssertEqual(
       workToolsBrowserUnavailableMessage("desktop_not_attached_for_project"),
-      "ADE Desktop doesn't have this project open. Open it on your Mac to see its tabs.")
+      "Daex Desktop doesn't have this project open. Open it on your Mac to see its tabs.")
     XCTAssertEqual(
       workToolsBrowserUnavailableMessage("browser_pane_not_opened"),
       "Open the Browser tool on the desktop to see tabs here.")
@@ -585,7 +585,7 @@ final class WorkToolsContractTests: XCTestCase {
       "The macOS desktop is off.")
     XCTAssertEqual(
       macDesktopOffCardMessage(starting: false, error: nil, canStart: false),
-      "The macOS desktop is off. Start it in ADE on your Mac.")
+      "The macOS desktop is off. Start it in Daex on your Mac.")
     XCTAssertEqual(
       macDesktopOffCardMessage(starting: true, error: "Old", canStart: true),
       "Starting the macOS desktop…")
@@ -600,7 +600,7 @@ final class WorkToolsContractTests: XCTestCase {
   func testWindowsOffCardSaysWhatThePCIsDoing() {
     let cases: [(starting: Bool, error: String?, canStart: Bool, pcOperation: String?, expected: String)] = [
       (false, nil, true, nil, "The Windows desktop is off."),
-      (false, nil, false, nil, "Start this lane’s Windows desktop in ADE on the PC."),
+      (false, nil, false, nil, "Start this lane’s Windows desktop in Daex on the PC."),
       (true, nil, true, "start_private", "Waiting for Windows sign-in…"),
       // A start begun on the PC reads as under way, not as a second Start.
       (false, nil, true, "start_private", "The private Windows screen is starting on the PC…"),

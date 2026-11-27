@@ -435,7 +435,7 @@ struct WorkChatPrDetailsSheet: View {
 
       HStack(spacing: 10) {
         WorkChatPrActionButton(
-          title: "Open in ADE",
+          title: "Open in \(Brand.name)",
           symbol: "rectangle.grid.1x2",
           tint: ADEColor.accent,
           prominent: true,
@@ -534,7 +534,7 @@ struct WorkChatPrDetailsSheet: View {
         )
 
         WorkChatPrActionButton(
-          title: "Open in ADE",
+          title: "Open in \(Brand.name)",
           symbol: "rectangle.grid.1x2",
           tint: ADEColor.accent,
           action: onOpenPrsTab

@@ -39,7 +39,7 @@ enum CloudNoComputerPreviews {
         fate: cloudComputerFateSentence(.plan, deletedAt: 1_763_424_000_000),
         branch: "fix-flaky-upload-test",
         sizeLabel: cloudQueueSizeLabel(account: nil),
-        blocked: "This account has no ADE Cloud credits left this period. Your lanes and chats stay readable."
+        blocked: "This account has no \(Brand.cloudName) credits left this period. Your lanes and chats stay readable."
       )))
     case "duo-cloud-chat-queued":
       // Right after a send to an asleep chat: the person's own bubble and
@@ -81,11 +81,11 @@ enum CloudNoComputerPreviews {
       return AnyView(CloudChatFixture(state: .asleep, deletingDays: 3))
     case "duo-cloud-refused-out_of_hours":
       // The server's code is still `out_of_hours`; the balance is credits.
-      return AnyView(CloudChatFixture(state: .refused("This account has no ADE Cloud credits left this period. Your lanes and chats stay readable.")))
+      return AnyView(CloudChatFixture(state: .refused("This account has no \(Brand.cloudName) credits left this period. Your lanes and chats stay readable.")))
     case "duo-cloud-refused-too_many_awake":
       return AnyView(CloudChatFixture(state: .refused("Too many of your computers are awake at once. Put one you aren't using to sleep, then try again.")))
     case "duo-cloud-refused-account_blocked":
-      return AnyView(CloudChatFixture(state: .refused("ADE Cloud is turned off for this account. Contact ADE support if you think this is a mistake.")))
+      return AnyView(CloudChatFixture(state: .refused("\(Brand.cloudName) is turned off for this account. Contact \(Brand.name) support if you think this is a mistake.")))
     case "duo-cloud-new-chat":
       return AnyView(CloudNewChatFixture(refusal: nil))
     case "duo-cloud-new-chat-setup", "duo-cloud-launch-page":
@@ -97,7 +97,7 @@ enum CloudNoComputerPreviews {
     case "duo-cloud-lane-launch-card":
       return AnyView(CloudLaneLaunchCardFixture())
     case "duo-cloud-new-chat-refused":
-      return AnyView(CloudNewChatFixture(refusal: "This account has no ADE Cloud credits left this period. Your lanes and chats stay readable."))
+      return AnyView(CloudNewChatFixture(refusal: "This account has no \(Brand.cloudName) credits left this period. Your lanes and chats stay readable."))
     case "duo-cloud-models":
       return AnyView(CloudModelsFixture())
     case "duo-cloud-lanes":
@@ -205,7 +205,7 @@ private struct CloudChatHeldConnectingFixture: View {
     let messages = store.threadMessages(machineKey: "mk-cloud", chatId: "chat-1")
     NavigationStack {
       WorkChatConnectingFrame(
-        machineName: "ADE Cloud",
+        machineName: "\(Brand.cloudName)",
         held: messages.isEmpty ? nil : WorkCloudHeldThread(
           messages: messages,
           onCancel: { _ in nil },
@@ -334,7 +334,7 @@ private struct CloudNewChatFixture: View {
   var body: some View {
     NavigationStack {
       ScrollView {
-        Text("What should ADE Cloud work on?")
+        Text("What should \(Brand.cloudName) work on?")
           .font(.title3.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .frame(maxWidth: .infinity)

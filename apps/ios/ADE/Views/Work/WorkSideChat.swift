@@ -624,7 +624,7 @@ extension WorkSessionDestinationView {
       ?? workChatProviderFamilyFromToolType((session ?? initialSession)?.toolType)
     guard workProviderSupportsSideChat(provider) else { return workSideChatUnsupportedMessage }
     guard syncService.supportsSideChat(mainSessionId: sessionId) else {
-      return "This machine's ADE doesn't support side chats yet. Update ADE there to use /side."
+      return "This machine's \(Brand.name) doesn't support side chats yet. Update \(Brand.name) there to use /side."
     }
     return nil
   }

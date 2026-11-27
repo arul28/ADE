@@ -195,7 +195,7 @@ struct AddLaneSheet: View {
   ) -> some View {
     let busy = busyStartOnIds.contains(candidate.id)
     return VStack(alignment: .leading, spacing: 10) {
-      Text("\(project) is not on \(candidate.name) yet. ADE copies it there from GitHub, then you choose the kind of lane.")
+      Text("\(project) is not on \(candidate.name) yet. \(Brand.name) copies it there from GitHub, then you choose the kind of lane.")
         .font(.system(size: 13.5))
         .foregroundStyle(ADEColor.textSecondary)
         .fixedSize(horizontal: false, vertical: true)

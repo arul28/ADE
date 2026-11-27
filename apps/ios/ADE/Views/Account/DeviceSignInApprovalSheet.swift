@@ -235,27 +235,27 @@ struct DeviceSignInApprovalSheet: View {
     case .loading:
       return "Code \(request.userCode)"
     case .ready, .approving:
-      return "Approve only if this code is on the screen of a computer you are signing in. That computer gets full access to your ADE account."
+      return "Approve only if this code is on the screen of a computer you are signing in. That computer gets full access to your \(Brand.name) account."
     case .approved(let machineName):
-      return "\(machineName ?? "That computer") signs in to your ADE account in a few seconds."
+      return "\(machineName ?? "That computer") signs in to your \(Brand.name) account in a few seconds."
     case .problem(let problem):
       switch problem {
       case .signedOut:
-        return "Sign in to ADE on this phone, then scan the code again. You can also continue in the browser."
+        return "Sign in to \(Brand.name) on this phone, then scan the code again. You can also continue in the browser."
       case .notFound:
-        return "ADE did not find this code. Start the sign-in again on the computer."
+        return "\(Brand.name) did not find this code. Start the sign-in again on the computer."
       case .expired:
         return "This code expired. Start the sign-in again on the computer."
       case .alreadyUsed:
         return "This code was already used. Start the sign-in again on the computer."
       case .unavailable:
-        return "ADE cannot approve this here right now. Continue in the browser."
+        return "\(Brand.name) cannot approve this here right now. Continue in the browser."
       case .unfinished:
         return "The sign-in was not finished. Start it again on the computer."
       case .rateLimited:
         return "Too many tries in a short time. Wait a minute, then try again."
       case .failed:
-        return "ADE could not reach your account. Check the connection, then try again."
+        return "\(Brand.name) could not reach your account. Check the connection, then try again."
       }
     }
   }

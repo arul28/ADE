@@ -1146,7 +1146,7 @@ struct PrTagChip: View {
 
 #Preview("PrTagChip") {
   HStack(spacing: 6) {
-    PrTagChip(label: "ADE", color: ADEColor.tintPRs, filled: true)
+    PrTagChip(label: "\(Brand.name)", color: ADEColor.tintPRs, filled: true)
     PrTagChip(label: "Stacked", color: ADEColor.warning)
     PrTagChip(label: "Draft", color: ADEColor.textSecondary)
   }

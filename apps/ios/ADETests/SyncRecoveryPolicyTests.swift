@@ -394,7 +394,7 @@ final class SyncRecoveryPolicyTests: XCTestCase {
 
   func testApplicationCloseCodeTableKeepsPrimaryCopyRouteNeutral() {
     let interrupted = "Can’t reach this computer right now. Reconnecting now."
-    let hostDidNotAnswer = "This computer is online, but ADE on it didn’t answer. It usually repairs itself in a few seconds; if it doesn’t, open ADE on that computer to see why."
+    let hostDidNotAnswer = "This computer is online, but Daex on it didn’t answer. It usually repairs itself in a few seconds; if it doesn’t, open Daex on that computer to see why."
     let cases: [(code: Int, reason: String, expected: String)] = [
       (4000, "partner closed", interrupted),
       (4001, "heartbeat timed out", interrupted),

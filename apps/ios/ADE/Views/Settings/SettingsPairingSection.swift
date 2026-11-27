@@ -19,7 +19,7 @@ struct SettingsPairingSection: View {
         SettingsPairActionRow(
           icon: "qrcode.viewfinder",
           title: "Scan a pairing code",
-          subtitle: "The code shown in ADE on your computer"
+          subtitle: "The code shown in \(Brand.name) on your computer"
         ) {
           presentedSheet = .scan
         }
@@ -55,9 +55,9 @@ struct SettingsPairingSection: View {
       return savedCount == 1 ? "1 saved computer" : "\(savedCount) saved computers"
     }
     if count == 0 {
-      return "Choose your computer, then enter its ADE PIN"
+      return "Choose your computer, then enter its \(Brand.name) PIN"
     }
-    return count == 1 ? "1 nearby computer found · enter its ADE PIN" : "\(count) nearby computers found"
+    return count == 1 ? "1 nearby computer found · enter its \(Brand.name) PIN" : "\(count) nearby computers found"
   }
 }
 
@@ -152,7 +152,7 @@ func syncDiscoveredHostDetailText(host: DiscoveredSyncHost, detailPrefix statusL
   }
   // Always leave the user with at least one human fact, even for a bare row.
   if parts.isEmpty {
-    parts.append("ADE machine")
+    parts.append("\(Brand.name) machine")
   }
   return parts.joined(separator: " · ")
 }
@@ -319,16 +319,16 @@ private func syncRuntimeText(kind: String?, version: String?, appVersion: String
   if let brain = syncTrimmedNonEmpty(version),
      let app = syncTrimmedNonEmpty(appVersion),
      syncStripVersionPrefix(brain) != syncStripVersionPrefix(app) {
-    return "ADE \(app) · brain \(brain)"
+    return "\(Brand.name) \(app) · brain \(brain)"
   }
   let label: String
   switch kind.lowercased() {
   case "daemon", "headless":
-    label = "ADE brain"
+    label = "\(Brand.name) brain"
   case "desktop", "desktop-embedded":
-    label = "ADE app"
+    label = "\(Brand.name) app"
   default:
-    label = "ADE brain"
+    label = "\(Brand.name) brain"
   }
   guard let version = syncTrimmedNonEmpty(version) else { return label }
   return "\(label) \(version)"
@@ -419,7 +419,7 @@ struct DiscoverHostsList: View {
             HStack(spacing: 12) {
               ProgressView()
                 .frame(width: 28)
-              Text("Looking for computers running ADE…")
+              Text("Looking for computers running \(Brand.name)…")
                 .foregroundStyle(ADEColor.textSecondary)
             }
             .accessibilityElement(children: .combine)
@@ -427,7 +427,7 @@ struct DiscoverHostsList: View {
         } header: {
           Text("On this network")
         } footer: {
-          Text("Pick a computer, then enter the PIN shown in ADE on it.")
+          Text("Pick a computer, then enter the PIN shown in \(Brand.name) on it.")
         }
         .listRowBackground(ADEColor.cardBackground)
       }

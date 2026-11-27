@@ -54,11 +54,11 @@ struct DeleteProjectSheet: View {
     ScrollView {
         VStack(alignment: .leading, spacing: 20) {
           VStack(alignment: .leading, spacing: 8) {
-            Text("Remove \(project.name) from ADE?")
+            Text("Remove \(project.name) from \(Brand.name)?")
               .font(.system(size: 20, weight: .bold))
               .foregroundStyle(ADEColor.textPrimary)
               .fixedSize(horizontal: false, vertical: true)
-            Text("It leaves ADE on every device. No folders are deleted. If you add it again, its lanes and chats come back.")
+            Text("It leaves \(Brand.name) on every device. No folders are deleted. If you add it again, its lanes and chats come back.")
               .font(.system(size: 14))
               .foregroundStyle(ADEColor.textSecondary)
               .fixedSize(horizontal: false, vertical: true)
@@ -92,7 +92,7 @@ struct DeleteProjectSheet: View {
             Image(systemName: "folder")
               .font(.system(size: 12, weight: .semibold))
               .padding(.top, 2)
-            Text("To delete a folder too, use ADE on that computer.")
+            Text("To delete a folder too, use \(Brand.name) on that computer.")
               .font(.system(size: 13))
               .fixedSize(horizontal: false, vertical: true)
           }
@@ -111,7 +111,7 @@ struct DeleteProjectSheet: View {
             } label: {
               HStack(spacing: 8) {
                 if removing { ProgressView().controlSize(.small).tint(.white) }
-                Text(removing ? "Removing…" : "Remove from ADE")
+                Text(removing ? "Removing…" : "Remove from \(Brand.name)")
               }
             }
             .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true, brand: ADEColor.danger))

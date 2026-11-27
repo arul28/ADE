@@ -220,7 +220,7 @@ final class ProjectHostRecoveryTests: XCTestCase {
     XCTAssertFalse(notice?.message.contains("ECONNRESET") == true)
     XCTAssertEqual(
       notice?.message,
-      "ADE couldn't get fresh lanes from your machine. You're seeing the ones it loaded last."
+      "Daex couldn't get fresh lanes from your machine. You're seeing the ones it loaded last."
     )
     XCTAssertEqual(adeWhatToDoSteps(notice?.nextAction).count, 2)
   }
@@ -231,7 +231,7 @@ final class ProjectHostRecoveryTests: XCTestCase {
     XCTAssertNil(notice?.technicalDetail)
     XCTAssertEqual(
       notice?.message,
-      "ADE couldn't get fresh pull requests from your machine. You're seeing the ones it loaded last."
+      "Daex couldn't get fresh pull requests from your machine. You're seeing the ones it loaded last."
     )
   }
 

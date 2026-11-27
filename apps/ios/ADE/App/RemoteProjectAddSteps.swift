@@ -47,7 +47,7 @@ struct ProjectGitHubRepoPicker: View {
       if accountGitHub.state == .notConnected {
         // The account's own sign-in lists repositories with no computer.
         ADESettingsNotice(
-          message: "Connect GitHub to your ADE account to list your repositories from this phone.",
+          message: "Connect GitHub to your \(Brand.name) account to list your repositories from this phone.",
           tone: .neutral,
           actionTitle: accountGitHub.connecting ? "Connecting…" : "Connect GitHub",
           action: {
@@ -608,8 +608,8 @@ struct RemoteProjectCreateForm: View {
     let on = publish.wrappedValue && publishUnavailable == nil
     let hint = publishUnavailable
       ?? (on
-        ? "ADE makes a private repository with \(computerName)'s GitHub sign-in, so your other devices can use it."
-        : "It stays on \(computerName) only. You can publish it later with ADE on that computer.")
+        ? "\(Brand.name) makes a private repository with \(computerName)'s GitHub sign-in, so your other devices can use it."
+        : "It stays on \(computerName) only. You can publish it later with \(Brand.name) on that computer.")
     return ADESettingsRows {
       ADESettingsRow(title: "Publish to GitHub", hint: hint) {
         // A computer that cannot publish shows the switch off, as it acts.

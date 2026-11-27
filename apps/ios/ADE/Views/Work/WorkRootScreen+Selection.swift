@@ -250,7 +250,7 @@ func formatWorkSessionBundleMarkdown(
   archivedSessionIds: Set<String>
 ) -> String {
   var lines: [String] = []
-  lines.append("# ADE session bundle")
+  lines.append("# \(Brand.name) session bundle")
   lines.append("")
   lines.append("Exported: \(ISO8601DateFormatter().string(from: Date()))")
   lines.append("Sessions: \(sessions.count)")

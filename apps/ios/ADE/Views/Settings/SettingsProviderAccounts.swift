@@ -37,7 +37,7 @@ func providerAccountProviderTitle(_ account: ProviderAccount) -> String {
 
 /// What removing an account does, for both places that offer it.
 func providerAccountRemoveMessage(hostName: String?) -> String {
-  "ADE signs this account out on \(hostName ?? "the machine") and stops using it. Adding it back starts with a fresh sign-in."
+  "\(Brand.name) signs this account out on \(hostName ?? "the machine") and stops using it. Adding it back starts with a fresh sign-in."
 }
 
 /// What signing an account out does. The machine's own login is the one the
@@ -677,7 +677,7 @@ struct ProviderAccountDetailPage: View {
 
         if let replaced = account.replacedAccount {
           ADESettingsNotice(
-            message: "\(replaced.email) was replaced. A sign-in outside ADE put another login in this account.",
+            message: "\(replaced.email) was replaced. A sign-in outside \(Brand.name) put another login in this account.",
             tone: .warn,
             actionTitle: canChange ? "Sign it back in" : nil,
             action: canChange ? onRestoreReplaced : nil,
@@ -797,9 +797,9 @@ struct ProviderAccountsUnavailableView: View {
   var body: some View {
     ADEEmptyStateView(
       symbol: connected ? "arrow.down.circle" : "desktopcomputer.trianglebadge.exclamationmark",
-      title: connected ? "Update ADE to manage accounts" : "Connect a machine",
+      title: connected ? "Update \(Brand.name) to manage accounts" : "Connect a machine",
       message: connected
-        ? "\(hostName ?? "Your primary machine") runs an ADE that cannot manage accounts from the phone yet. Update ADE there, then reconnect."
+        ? "\(hostName ?? "Your primary machine") runs a \(Brand.name) that cannot manage accounts from the phone yet. Update \(Brand.name) there, then reconnect."
         : "AI accounts live on your computer. Connect to it from Settings to manage them here."
     ) {
       EmptyView()

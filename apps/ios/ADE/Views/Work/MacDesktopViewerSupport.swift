@@ -97,7 +97,7 @@ func macDesktopOffCardMessage(
     default: break
     }
     if let error = macDesktopVisibleMessage(error) { return error }
-    return canStart ? "The Windows desktop is off." : "Start this lane’s Windows desktop in ADE on the PC."
+    return canStart ? "The Windows desktop is off." : "Start this lane’s Windows desktop in \(Brand.name) on the PC."
   }
   if starting { return "Starting the macOS desktop…" }
   if let error = macDesktopVisibleMessage(error) {
@@ -105,7 +105,7 @@ func macDesktopOffCardMessage(
   }
   return canStart
     ? "The macOS desktop is off."
-    : "The macOS desktop is off. Start it in ADE on your Mac."
+    : "The macOS desktop is off. Start it in \(Brand.name) on your Mac."
 }
 
 /// What the viewer's status card says, or nil while the picture is live.

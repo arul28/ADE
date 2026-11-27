@@ -421,7 +421,7 @@ struct GitHubIssueDetailScreen: View {
   }
 
   private var readOnlyNote: some View {
-    Text("This machine has no GitHub credential that can edit issues. Connect GitHub CLI or add a token in ADE on the desktop.")
+    Text("This machine has no GitHub credential that can edit issues. Connect GitHub CLI or add a token in \(Brand.name) on the desktop.")
       .font(.caption)
       .foregroundStyle(ADEColor.textMuted)
   }

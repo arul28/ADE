@@ -110,9 +110,9 @@ enum AccountMachineInstallChannel: String, Codable, Equatable, Hashable, Sendabl
   /// "ADE", "ADE Beta" or "ADE Alpha", as `appPackageChannelDisplayName`.
   var displayName: String {
     switch self {
-    case .stable: return "ADE"
-    case .beta: return "ADE Beta"
-    case .alpha: return "ADE Alpha"
+    case .stable: return Brand.name
+    case .beta: return Brand.betaName
+    case .alpha: return "\(Brand.name) Alpha"
     }
   }
 
@@ -212,7 +212,7 @@ struct AccountMachine: Codable, Equatable, Identifiable, Hashable {
     if let platform, !platform.isEmpty {
       return platform.capitalized
     }
-    return "ADE machine"
+    return "\(Brand.name) machine"
   }
 
   /// Which ADE install the row is, as "ADE Alpha", or the ADE home when the

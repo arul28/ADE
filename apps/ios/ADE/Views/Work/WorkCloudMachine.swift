@@ -11,7 +11,7 @@ import UIKit
 /// and every `remoteSignIn == "desktop"` provider). The login carries from
 /// the desktop to ADE Cloud, so the model stays selectable.
 func cloudDesktopSignInSentence(label: String) -> String {
-  "Sign in to \(label) in ADE on your computer once. ADE Cloud then uses that sign-in."
+  "Sign in to \(label) in \(Brand.name) on your computer once. \(Brand.cloudName) then uses that sign-in."
 }
 
 /// What the person does for the provider sign-in a launch or a woken chat
@@ -111,13 +111,13 @@ struct CloudSignInStepDetail: View {
     Task {
       defer { busy = false }
       guard let client = await syncService.cloudServerClient() else {
-        error = "Sign in to ADE again, then try again."
+        error = "Sign in to \(Brand.name) again, then try again."
         return
       }
       do {
         if signIn.kind == "api_key" {
           guard let signInId = signIn.signInId else {
-            error = "ADE Cloud didn't say which key to save."
+            error = "\(Brand.cloudName) didn't say which key to save."
             return
           }
           _ = try await client.saveAccountSignIn(signInId, key: text)
@@ -296,18 +296,18 @@ struct CloudLaneHeaderStateButton: View {
           }
         }
       } else {
-        Section("\(shown.word) on ADE Cloud") {
+        Section("\(shown.word) on \(Brand.cloudName)") {
           Label(shown.word == "Waking" ? "Waking this chat's computer…" : "This chat's computer is up", systemImage: shown.symbol)
         }
       }
     } label: {
       if inToolbar {
-        Label("ADE Cloud: \(shown.word)", systemImage: shown.symbol)
+        Label("\(Brand.cloudName): \(shown.word)", systemImage: shown.symbol)
       } else {
         WorkChatGlassCircleLabel(systemName: shown.symbol, glyphSize: 16, tint: shown.asleep ? ADEColor.textSecondary : ADEColor.textPrimary)
       }
     }
-    .accessibilityLabel("ADE Cloud computer, \(shown.word.lowercased())")
+    .accessibilityLabel("\(Brand.cloudName) computer, \(shown.word.lowercased())")
     .accessibilityHint(shown.asleep ? "Shows Wake now" : "Shows the computer's state")
     .accessibilityIdentifier("Work.Chat.Header.CloudState")
   }
@@ -353,7 +353,7 @@ struct CloudLaneStateLinesContent: View {
     VStack(spacing: 6) {
       switch state {
       case .waking? where showsRestingState:
-        CloudComputerWakeBanner(machineName: "your ADE Cloud computer")
+        CloudComputerWakeBanner(machineName: "your \(Brand.cloudName) computer")
       case .wakeFailed(let message)?:
         CloudComputerWakeFailedBanner(message: message, action: .dismiss(onDismissFailure))
       case .refused(let message)?:
@@ -361,7 +361,7 @@ struct CloudLaneStateLinesContent: View {
       case .asleep? where showsRestingState:
         line(
           symbol: "moon.zzz",
-          title: "Asleep on ADE Cloud",
+          title: "Asleep on \(Brand.cloudName)",
           detail: "You're reading the saved copy. Sending a message wakes this lane's computer."
         )
       case .deleted?:
@@ -471,7 +471,7 @@ struct CloudLaneStateLinesContent: View {
         .foregroundStyle(ADEColor.warning)
         .accessibilityHidden(true)
       VStack(alignment: .leading, spacing: 2) {
-        Text("This lane's cloud computer is deleted in \(days) \(days == 1 ? "day" : "days") because it is unused. Its work that isn't on GitHub is saved in ADE Cloud first, and the lane and its chats stay. Files git ignores, such as .env, aren't saved. After that, your next message makes a new computer\(deletingSizeLabel.map { " at \($0)" } ?? "").")
+        Text("This lane's cloud computer is deleted in \(days) \(days == 1 ? "day" : "days") because it is unused. Its work that isn't on GitHub is saved in \(Brand.cloudName) first, and the lane and its chats stay. Files git ignores, such as .env, aren't saved. After that, your next message makes a new computer\(deletingSizeLabel.map { " at \($0)" } ?? "").")
           .font(.subheadline)
           .foregroundStyle(ADEColor.textPrimary)
           .fixedSize(horizontal: false, vertical: true)
@@ -614,10 +614,10 @@ struct CloudQueuedMessagesView: View {
 
   private func statusText(_ message: CloudChatQueuedMessage) -> String {
     switch message.state {
-    case "queued": return "Queued · waking your ADE Cloud computer…"
+    case "queued": return "Queued · waking your \(Brand.cloudName) computer…"
     case "sending": return "Sending to the agent…"
     case "waiting_for_sign_in": return "Waiting for a sign-in"
-    case "failed": return message.error ?? "Not sent. ADE Cloud didn't say why."
+    case "failed": return message.error ?? "Not sent. \(Brand.cloudName) didn't say why."
     default: return "Waiting"
     }
   }
@@ -766,11 +766,11 @@ struct CloudHeldMessageRow: View {
       .buttonStyle(.plain)
       .disabled(cancelling)
       .accessibilityLabel("Cancel this message")
-      .accessibilityHint("ADE Cloud won't send it.")
+      .accessibilityHint("\(Brand.cloudName) won't send it.")
       .adeInspectable("CloudLane.Queued.Cancel")
     case "failed":
       VStack(alignment: .trailing, spacing: 0) {
-        errorText(message.error ?? "ADE Cloud didn't say why.")
+        errorText(message.error ?? "\(Brand.cloudName) didn't say why.")
         HStack(spacing: 4) {
           if let onPutBack = thread.onPutBack, nonEmptyTrimmed(message.text) != nil {
             actionButton("Put back", hint: "Puts the text back in the message field.") { onPutBack(message) }

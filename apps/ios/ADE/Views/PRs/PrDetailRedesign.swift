@@ -62,7 +62,7 @@ struct PrAuthorIdentity: Equatable {
     KnownBot(kind: "augment", displayName: "Augment", role: .agentReviewer, color: "#22D3EE", logins: ["augmentcode", "augment-code"]),
     KnownBot(kind: "whatthediff", displayName: "What The Diff", role: .agentReviewer, color: "#F97316", logins: ["what-the-diff"]),
     KnownBot(kind: "opencode", displayName: "OpenCode", role: .agentReviewer, color: "#E5E5E5", logins: ["opencode-agent", "opencode"]),
-    KnownBot(kind: "ade", displayName: "ADE", role: .agentReviewer, color: "#A78BFA", logins: ["ade-dev", "ade-agent", "ade-bot"]),
+    KnownBot(kind: "ade", displayName: "\(Brand.name)", role: .agentReviewer, color: "#A78BFA", logins: ["ade-dev", "ade-agent", "ade-bot"]),
     KnownBot(kind: "vercel", displayName: "Vercel", role: .deploy, color: "#EDEDED", logins: ["vercel"]),
     KnownBot(kind: "netlify", displayName: "Netlify", role: .deploy, color: "#32E6E2", logins: ["netlify"]),
     KnownBot(kind: "cloudflare", displayName: "Cloudflare", role: .deploy, color: "#F38020", logins: ["cloudflare-workers-and-pages", "cloudflare-pages", "cloudflare"]),

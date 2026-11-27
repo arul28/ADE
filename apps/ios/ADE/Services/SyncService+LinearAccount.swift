@@ -61,17 +61,17 @@ extension SyncService {
   /// One Linear read through the account server, with its refusal as a sentence.
   func accountLinear(_ op: String, vars: [String: Any] = [:]) async throws -> [String: Any] {
     guard let origin = cloudProjectOrigin else {
-      throw AccountLinearError(code: nil, message: "This project has no GitHub repository, so Linear needs ADE on a computer.")
+      throw AccountLinearError(code: nil, message: "This project has no GitHub repository, so Linear needs \(Brand.name) on a computer.")
     }
     guard let client = await cloudServerClient() else {
-      throw AccountLinearError(code: nil, message: "Sign in to ADE to see Linear issues here.")
+      throw AccountLinearError(code: nil, message: "Sign in to \(Brand.name) to see Linear issues here.")
     }
     do {
       return try await client.linearQuery(origin: origin, op: op, vars: vars).data
     } catch CloudServerClient.Failure.refused(let code, let message) {
       throw AccountLinearError(code: code, message: message)
     } catch CloudServerClient.Failure.noAccess {
-      throw AccountLinearError(code: "not_found", message: "Linear shows here when ADE on a computer is online.")
+      throw AccountLinearError(code: "not_found", message: "Linear shows here when \(Brand.name) on a computer is online.")
     } catch {
       throw AccountLinearError(code: nil, message: cloudServerFailureMessage(error))
     }

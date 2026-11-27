@@ -545,8 +545,8 @@ final class GitHubAccountConnection: ObservableObject {
       return
     case .failure(let failure):
       problem = failure == .unsupported
-        ? "Your ADE account can't connect GitHub yet."
-        : "ADE can't reach your account right now. Try again."
+        ? "Your \(Brand.name) account can't connect GitHub yet."
+        : "\(Brand.name) can't reach your account right now. Try again."
       return
     case .success(let answer):
       guard answer.status == 200 || answer.status == 201,
@@ -556,8 +556,8 @@ final class GitHubAccountConnection: ObservableObject {
         problem = answer.status == 429
           ? "Too many GitHub sign-ins in a short time. Try again in a few minutes."
           : (answer.status == 404 || answer.errorCode == "github_app_not_configured")
-            ? "Your ADE account can't connect GitHub yet."
-            : "ADE could not start the GitHub sign-in. Try again."
+            ? "Your \(Brand.name) account can't connect GitHub yet."
+            : "\(Brand.name) could not start the GitHub sign-in. Try again."
         return
       }
       authorizeURL = url
@@ -627,11 +627,11 @@ final class GitHubAccountConnection: ObservableObject {
     problem = nil
     switch await call("DELETE", path: "github/app/grant") {
     case .failure:
-      problem = "ADE can't reach your account right now. Try again."
+      problem = "\(Brand.name) can't reach your account right now. Try again."
       return nil
     case .success(let answer):
       guard (200..<300).contains(answer.status) else {
-        problem = "ADE could not disconnect GitHub. Try again."
+        problem = "\(Brand.name) could not disconnect GitHub. Try again."
         return nil
       }
       dropToken()

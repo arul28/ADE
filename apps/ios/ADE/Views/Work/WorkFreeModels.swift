@@ -567,8 +567,8 @@ struct WorkFreeModelsSetupPane: View {
   private var detail: String? {
     switch phase {
     case .idle, .checking: return nil
-    case .needsDownload: return "ADE downloads OpenCode to run them. No account or key needed."
-    case .unsupported: return "Get them from ADE on your computer, then reopen this list."
+    case .needsDownload: return "\(Brand.name) downloads OpenCode to run them. No account or key needed."
+    case .unsupported: return "Get them from \(Brand.name) on your computer, then reopen this list."
     case .downloading(let received, let total): return workFreeModelsProgressText(received: received, total: total)
     case .ready: return isRefreshingCatalog ? nil : "OpenCode Zen has none to offer at the moment."
     case .failed(let reason): return reason

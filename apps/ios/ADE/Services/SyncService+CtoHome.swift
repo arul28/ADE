@@ -33,7 +33,7 @@ func ctoHomeOfflineCopy(sync: SyncService) -> (line: String, message: String) {
     )
   }
   return (
-    "Asleep on ADE Cloud",
+    "Asleep on \(Brand.cloudName)",
     "Its notes and recent chat come along. Tap Reconnect to wake it, or pick another home."
   )
 }

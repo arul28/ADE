@@ -351,14 +351,14 @@ extension CloudServerClient {
 /// One plain sentence for a failed account-server call.
 func cloudServerFailureMessage(_ error: Error) -> String {
   switch error as? CloudServerClient.Failure {
-  case .noAccess: return "ADE Cloud isn't open for this account."
-  case .unauthorized: return "Sign in to ADE again, then try again."
+  case .noAccess: return "\(Brand.cloudName) isn't open for this account."
+  case .unauthorized: return "Sign in to \(Brand.name) again, then try again."
   case .refused(_, let message): return message
   case .computerLimit(let limit): return limit.headline
   case .server(_, let message?): return message
-  case .server(let status, nil): return "ADE Cloud answered with an error (\(status)). Try again soon."
-  case .transport: return "ADE Cloud didn't answer. Check the connection, then try again."
-  case .unreadable: return "ADE Cloud sent an answer this app can't read. Update ADE, then try again."
+  case .server(let status, nil): return "\(Brand.cloudName) answered with an error (\(status)). Try again soon."
+  case .transport: return "\(Brand.cloudName) didn't answer. Check the connection, then try again."
+  case .unreadable: return "\(Brand.cloudName) sent an answer this app can't read. Update \(Brand.name), then try again."
   case nil: return error.localizedDescription
   }
 }
@@ -781,7 +781,7 @@ final class AccountCloudLaunchStore: ObservableObject {
     let maybeMade = startsMaybeMade.contains(launchId)
     guard let client = await sync.cloudServerClient() else {
       patch(launchId) {
-        $0.startError = "Sign in to ADE to start a chat on ADE Cloud."
+        $0.startError = "Sign in to \(Brand.name) to start a chat on \(Brand.cloudName)."
         $0.startNeverReached = !maybeMade
       }
       return
@@ -797,7 +797,7 @@ final class AccountCloudLaunchStore: ObservableObject {
         guard generation == accountGeneration else { return }
         let reason = cloudServerFailureMessage(error)
         patch(launchId) {
-          $0.startError = "ADE couldn't send \(file.name) to ADE Cloud. \(reason)"
+          $0.startError = "\(Brand.name) couldn't send \(file.name) to \(Brand.cloudName). \(reason)"
           // The start goes after the files: this one was not sent (an
           // earlier attempt may still have made the launch).
           $0.startNeverReached = !maybeMade
@@ -855,7 +855,7 @@ final class AccountCloudLaunchStore: ObservableObject {
   /// Cancels a launch still on its way. Answers the server's reason when it refused.
   func cancel(_ launchId: String, using sync: SyncService) async -> String? {
     let generation = accountGeneration
-    guard let client = await sync.cloudServerClient() else { return "Sign in to ADE to cancel this chat." }
+    guard let client = await sync.cloudServerClient() else { return "Sign in to \(Brand.name) to cancel this chat." }
     do {
       let record = try await client.cancelLaunch(launchId)
       if generation == accountGeneration { patch(launchId) { $0.record = record } }
@@ -917,7 +917,7 @@ final class AccountCloudLaunchStore: ObservableObject {
   /// sentence to show when the server refused it.
   func addMessage(_ launchId: String, text: String, using sync: SyncService) async -> String? {
     let generation = accountGeneration
-    guard let client = await sync.cloudServerClient() else { return "Sign in to ADE to send this message." }
+    guard let client = await sync.cloudServerClient() else { return "Sign in to \(Brand.name) to send this message." }
     let messageId = unconfirmedMessages[launchId].flatMap { $0.text == text ? $0.messageId : nil } ?? Self.newMessageId()
     unconfirmedMessages[launchId] = (text, messageId)
     do {

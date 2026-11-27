@@ -490,14 +490,14 @@ struct AndroidDeviceViewer: View {
   private func offDetail(status: AndroidDeviceStatus?, state: String?, busy: Bool, canStart: Bool) -> String? {
     if status?.unavailable?.isEmpty == false { return nil }
     guard status?.device != nil else {
-      return "Set one up in ADE on the computer to watch it here."
+      return "Set one up in \(Brand.name) on the computer to watch it here."
     }
     if busy { return "The picture comes when it has booted." }
     if canStart, let lowMemory = model.lowMemorySentence {
       return "\(lowMemory) A start now can slow the machine down while it swaps."
     }
     if let message = status?.error?.message, !message.isEmpty { return message }
-    return canStart ? "Watching never starts it." : "Start it in ADE on the computer to watch it here."
+    return canStart ? "Watching never starts it." : "Start it in \(Brand.name) on the computer to watch it here."
   }
 
   private func statusOverlay(_ message: String) -> some View {

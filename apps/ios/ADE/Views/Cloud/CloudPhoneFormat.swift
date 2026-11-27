@@ -50,9 +50,9 @@ func cloudFreeGithubLine(_ account: CloudPhoneAccount) -> String? {
     }
     return "Your GitHub account is new, so \(words.free) start when it is 30 days old."
   case "used":
-    return "This GitHub account already gives another ADE account its \(words.free), so the free plan has no \(words.unit) here."
+    return "This GitHub account already gives another \(Brand.name) account its \(words.free), so the free plan has no \(words.unit) here."
   case "checking":
-    return "ADE couldn't check your GitHub account just now. It tries again in a few minutes."
+    return "\(Brand.name) couldn't check your GitHub account just now. It tries again in a few minutes."
   default:
     return nil
   }
@@ -95,10 +95,10 @@ func cloudPlanCleanupDoneSentence(_ done: CloudPhoneAccount.PlanCleanupDone) -> 
       kept = " \(lanesKept == 1 ? "The lane among them and its chats stay" : "The lanes among them and their chats stay"); the next message to a lane makes a new computer."
     }
     let how = done.freed.allSatisfy { $0.pushed != false } ? "saved each lane's work and removed" : "removed"
-    parts.append("To fit \(cloudPlanSentenceName(done.planId)), ADE \(how) \(these): \(list).\(kept)")
+    parts.append("To fit \(cloudPlanSentenceName(done.planId)), \(Brand.name) \(how) \(these): \(list).\(kept)")
   }
   if !done.kept.isEmpty {
-    parts.append("ADE kept \(done.kept.map(\.name).joined(separator: ", ")), because ADE couldn't save its lanes' work. Use it once so ADE saves the work when it rests, delete it yourself, or pick again in ADE.")
+    parts.append("\(Brand.name) kept \(done.kept.map(\.name).joined(separator: ", ")), because \(Brand.name) couldn't save its lanes' work. Use it once so \(Brand.name) saves the work when it rests, delete it yourself, or pick again in \(Brand.name).")
   }
   return parts.isEmpty ? nil : parts.joined(separator: " ")
 }
@@ -108,12 +108,12 @@ func cloudPlanCleanupDoneSentence(_ done: CloudPhoneAccount.PlanCleanupDone) -> 
 /// when there is nothing to say.
 func cloudPlanCleanupMessage(_ cleanup: CloudPhoneAccount.PlanCleanup) -> String? {
   if let ids = cleanup.freeing?.instanceIds {
-    return "ADE is freeing \(ids.count == 1 ? "1 computer" : "\(ids.count) computers") you picked to fit \(cloudPlanSentenceName(cleanup.planId ?? "plus")). Their lanes and chats stay."
+    return "\(Brand.name) is freeing \(ids.count == 1 ? "1 computer" : "\(ids.count) computers") you picked to fit \(cloudPlanSentenceName(cleanup.planId ?? "plus")). Their lanes and chats stay."
   }
   guard let sentence = cloudPhoneWords(cleanup.sentence) else { return nil }
   let when = cleanup.startsAt.map { "You move to \(cloudPlanSentenceName(cleanup.planId ?? "plus")) on \(cloudDate($0))." }
-    ?? "ADE can't make a new computer until you have fewer."
-  return "\(sentence) \(when) ADE deletes nothing on its own: delete computers, or pick the ones ADE frees in the ADE desktop app."
+    ?? "\(Brand.name) can't make a new computer until you have fewer."
+  return "\(sentence) \(when) \(Brand.name) deletes nothing on its own: delete computers, or pick the ones \(Brand.name) frees in the \(Brand.name) desktop app."
 }
 
 /// "in 1 day", "in 5 hours", "within the hour" (`inHowLong`).
@@ -136,11 +136,11 @@ func cloudIdleCleanupWhen(_ deletesAt: Double, now: Double) -> String {
 func cloudIdleCleanupMessage(_ entry: CloudPhoneAccount.IdleCleanup, now: Double) -> String {
   let subject = entry.laneName.map { $0.isEmpty ? entry.displayName : "\($0)'s computer" } ?? entry.displayName
   if let held = entry.held {
-    return "\(subject) wasn't deleted: ADE couldn't save its work. \(held.reason) Open the lane once so ADE saves its work when the computer rests, or delete the lane if you don't need it. ADE checks again \(cloudInHowLong(held.retryAt ?? entry.deletesAt, now: now)).\(cloudIgnoredFilesShort(entry.ignoredFiles))"
+    return "\(subject) wasn't deleted: \(Brand.name) couldn't save its work. \(held.reason) Open the lane once so \(Brand.name) saves its work when the computer rests, or delete the lane if you don't need it. \(Brand.name) checks again \(cloudInHowLong(held.retryAt ?? entry.deletesAt, now: now)).\(cloudIgnoredFilesShort(entry.ignoredFiles))"
   }
   let save = entry.laneName != nil
-    ? "Its work that isn't on GitHub is saved in ADE Cloud, and the lane and its chats stay."
-    : "Its work that isn't on GitHub is saved in ADE Cloud first."
+    ? "Its work that isn't on GitHub is saved in \(Brand.cloudName), and the lane and its chats stay."
+    : "Its work that isn't on GitHub is saved in \(Brand.cloudName) first."
   let ignored = cloudIgnoredFilesShort(entry.ignoredFiles)
   return "\(subject) will be \(cloudIdleCleanupWhen(entry.deletesAt, now: now)), on \(cloudDate(entry.deletesAt)), because it isn't used. \(save)\(ignored) To keep it, send a message in the lane, or choose Keep it on its computer's page."
 }
@@ -156,8 +156,8 @@ func cloudIgnoredFilesShort(_ ignored: CloudPhoneAccount.IdleCleanup.IgnoredFile
     list = ignored.more > 0 ? "\(shown) and \(ignored.more) more" : shown
   }
   if ignored.incomplete == true {
-    guard let list else { return " ADE couldn't read every lane to see which files git ignores, such as .env; those aren't saved." }
-    return " Files git ignores aren't saved, so these won't be kept: \(list). ADE couldn't read every lane, so there may be more."
+    guard let list else { return " \(Brand.name) couldn't read every lane to see which files git ignores, such as .env; those aren't saved." }
+    return " Files git ignores aren't saved, so these won't be kept: \(list). \(Brand.name) couldn't read every lane, so there may be more."
   }
   guard let list else { return "" }
   return " Files git ignores aren't saved, so these won't be kept: \(list)."
@@ -169,7 +169,7 @@ func cloudIgnoredFilesShort(_ ignored: CloudPhoneAccount.IdleCleanup.IgnoredFile
 /// hours reset, when the account says.
 func cloudTimedWakesCancelledSentence(_ notice: CloudPhoneAccount.TimedWakesCancelled, resetsAt: Double?, words: CloudBalanceWords) -> String {
   let what = notice.count == 1 ? "A timed wake-up" : "\(notice.count) timed wake-ups"
-  let head = "\(what) on your ADE Cloud computers won't run (a chat's scheduled wake-up or an automation's schedule)"
+  let head = "\(what) on your \(Brand.cloudName) computers won't run (a chat's scheduled wake-up or an automation's schedule)"
   let after = "each computer sets its next timed wake-up again the next time it runs."
   if notice.reason == "over_plan_disk" {
     return "\(head), because your computers hold more disk than the free plan has, so they can't wake. Once you delete a computer, \(after)"
@@ -464,7 +464,7 @@ struct CloudBalanceWords: Equatable {
   /// "Credits".
   var title: String { "Credits" }
   /// "ADE Cloud credits".
-  var cloudUnit: String { "ADE Cloud \(unit)" }
+  var cloudUnit: String { "\(Brand.cloudName) \(unit)" }
   /// "free credits".
   var free: String { "free \(unit)" }
   /// "Free credits".
@@ -525,7 +525,7 @@ struct CloudBalanceWords: Equatable {
 
   /// What one of them is (`CLOUD_CREDIT_UNIT_SENTENCE`).
   var unitSentence: String {
-    "A credit is an hour on a Medium computer or a minute on the ADE Cloud iPhone. Small computers use none."
+    "A credit is an hour on a Medium computer or a minute on the \(Brand.cloudName) iPhone. Small computers use none."
   }
 
   /// A plan's month: "100 credits a month".
@@ -588,7 +588,7 @@ struct CloudBalanceWords: Equatable {
 
   /// Under Start phone: where its time comes from.
   func phoneStartNote(device: String) -> String {
-    "Starts an \(device) simulator in the cloud. It uses \(phoneRate) of your ADE Cloud credits."
+    "Starts an \(device) simulator in the cloud. It uses \(phoneRate) of your \(Brand.cloudName) credits."
   }
 }
 

@@ -55,7 +55,7 @@ final class WorkComposerFileAttachmentGateTests: XCTestCase {
     XCTAssertFalse(availability.isAvailable)
     XCTAssertEqual(
       availability.menuHint,
-      "Update ADE on your computer to attach files and videos.",
+      "Update Daex on your computer to attach files and videos.",
       "An out-of-date brain must say what to do about it, in the menu, before a picker opens."
     )
   }

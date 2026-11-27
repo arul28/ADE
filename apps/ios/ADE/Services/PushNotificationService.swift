@@ -969,11 +969,11 @@ final class PushNotificationService: ObservableObject {
     nonisolated private static let machineSetupUnavailableMessage = "Connect to the machine to finish push setup."
     nonisolated private static let machinePrefsUnavailableMessage = "Connect to the machine to sync push settings."
     nonisolated private static let machineRefreshUnavailableMessage = "Connect to the machine to refresh push delivery."
-    nonisolated private static let accountPrefsUnavailableMessage = "ADE couldn’t sync these settings to your account. It will retry shortly."
+    nonisolated private static let accountPrefsUnavailableMessage = "\(Brand.name) couldn’t sync these settings to your account. It will retry shortly."
 
     nonisolated private static func machineUnavailableMessage(for error: Error, fallback: String) -> String? {
         if isSyncRequestTimeoutError(error) || isSyncHostUnavailableError(error) {
-            return "The machine did not respond. ADE will retry when it reconnects."
+            return "The machine did not respond. \(Brand.name) will retry when it reconnects."
         }
         let nsError = error as NSError
         let message = nsError.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)

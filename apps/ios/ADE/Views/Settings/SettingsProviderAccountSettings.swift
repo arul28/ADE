@@ -15,7 +15,7 @@ func providerAccountRoutingBadge(_ account: ProviderAccount, smartBalance: Bool,
 /// Desktop `SMART_BALANCE_HINT`, in the two halves the phone shows.
 enum ProviderAccountRoutingCopy {
   static let smartBalanceOn = "New chats go to the account with the most weekly room to use before it resets. A chat at a limit moves to one with room."
-  static let autoStart = "When a window ends, one tiny request on the cheapest model starts the next. ADE logs each one with its cost."
+  static let autoStart = "When a window ends, one tiny request on the cheapest model starts the next. \(Brand.name) logs each one with its cost."
 }
 
 /// The provider has a 5-hour window on this machine, so auto-start means
@@ -37,7 +37,7 @@ struct ProviderAccountSettingsSection: View {
   var body: some View {
     let isClaude = account.provider == ProviderAccountProvider.claude.rawValue
     if isClaude || showsCompaction {
-      ADESettingsSection("Settings", hint: "For ADE chats on this account, on this machine. New sessions use them.") {
+      ADESettingsSection("Settings", hint: "For \(Brand.name) chats on this account, on this machine. New sessions use them.") {
         ADESettingsRows {
           if showsCompaction {
             ADESettingsLink(
@@ -83,7 +83,7 @@ struct ProviderAccountSettingsSection: View {
               selected: account.onExtraUsage,
               choices: [
                 (nil, "Continue", "Default. The turn keeps going and Claude bills the extra usage."),
-                ("stop", "Stop the turn", "ADE stops the turn, as it does at a plan limit. One request can be billed before the stop."),
+                ("stop", "Stop the turn", "\(Brand.name) stops the turn, as it does at a plan limit. One request can be billed before the stop."),
               ],
               change: ProviderAccountSettingChange.onExtraUsage
             )
@@ -138,7 +138,7 @@ struct ProviderAccountCompactionPage: View {
   @FocusState private var codexFieldFocused: Bool
 
   var body: some View {
-    ADESettingsPage(title: "Auto-compact", subtitle: "When ADE compacts chats on this account.") {
+    ADESettingsPage(title: "Auto-compact", subtitle: "When \(Brand.name) compacts chats on this account.") {
       if let account = store.account(id: accountId) {
         content(account)
           // Each control writes the whole compaction object from the last
@@ -254,7 +254,7 @@ struct ProviderAccountCompactionPage: View {
     return ADESettingsRow(
       title: "After the cache expires",
       hint: isClaude
-        ? "After an hour idle, or 5 minutes on the 5-minute cache. In Always, ADE also compacts a large chat 54 minutes in, while the cache is still warm."
+        ? "After an hour idle, or 5 minutes on the 5-minute cache. In Always, \(Brand.name) also compacts a large chat 54 minutes in, while the cache is still warm."
         : "OpenAI's prompt cache lasts 30 minutes, so the pill offers to compact a large chat once it is idle that long. Nothing runs on its own."
     ) {
       Menu {

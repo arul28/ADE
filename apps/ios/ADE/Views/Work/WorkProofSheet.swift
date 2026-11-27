@@ -71,14 +71,14 @@ func workProofProvenanceLines(
   case "ade-recorder":
     let suffix = workProofIdleCutLabel(object["idleCutMs"] as? Double).map { " · \($0)" } ?? ""
     if let from = date("recordedFrom"), let to = date("recordedTo") {
-      source = "Recorded by ADE · \(workProofClockRange(from, to, formatClock: formatClock))\(suffix)"
+      source = "Recorded by \(Brand.name) · \(workProofClockRange(from, to, formatClock: formatClock))\(suffix)"
     } else if let single = date("recordedFrom") ?? date("recordedTo") {
-      source = "Recorded by ADE · \(formatClock(single))\(suffix)"
+      source = "Recorded by \(Brand.name) · \(formatClock(single))\(suffix)"
     } else {
-      source = "Recorded by ADE\(suffix)"
+      source = "Recorded by \(Brand.name)\(suffix)"
     }
   case "ade-capture":
-    source = "Captured by ADE"
+    source = "Captured by \(Brand.name)"
   case "attached":
     source = "Attached by the agent"
   default:

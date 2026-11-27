@@ -65,7 +65,7 @@ enum WorkChatFileAttachmentAvailability: Equatable {
   var menuHint: String? {
     switch self {
     case .available, .imagesOnly: return nil
-    case .unsupportedHost: return "Update ADE on your computer to attach files and videos."
+    case .unsupportedHost: return "Update \(Brand.name) on your computer to attach files and videos."
     }
   }
 }

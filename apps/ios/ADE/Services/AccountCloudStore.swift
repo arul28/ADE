@@ -255,7 +255,7 @@ final class AccountCloudStore: ObservableObject {
   /// the sentence to show.
   func forgetLaneWithoutComputer(_ lane: CloudLaneWithoutComputer, using sync: SyncService) async -> String? {
     let generation = accountGeneration
-    guard let client = await sync.cloudServerClient() else { return "Sign in to ADE, then try again." }
+    guard let client = await sync.cloudServerClient() else { return "Sign in to \(Brand.name), then try again." }
     var machineKeys = Set(sync.cloudSavedChats.filter { $0.laneId == lane.laneId }.map { $0.machineKey.lowercased() })
     if let former = lane.formerMachineKey.flatMap({ nonEmptyTrimmed($0) }) { machineKeys.insert(former.lowercased()) }
     do {
@@ -295,7 +295,7 @@ final class AccountCloudStore: ObservableObject {
   /// hours), in a sentence. Reading still works. Nil when it can.
   var doingRefusal: String? {
     if let access, access.readOnly || !access.enabled {
-      return access.reason ?? "ADE Cloud is read-only for this account. Your lanes and chats stay readable."
+      return access.reason ?? "\(Brand.cloudName) is read-only for this account. Your lanes and chats stay readable."
     }
     if let account, account.outOfHours {
       return "This account has no \(CloudBalanceWords(account).cloudUnit) left this period. Your lanes and chats stay readable."
@@ -314,7 +314,7 @@ final class AccountCloudStore: ObservableObject {
   /// "Keep it" for a computer the idle cleanup warned about. Nil when it
   /// worked, else the sentence to show.
   func keep(instanceId: String, using sync: SyncService) async -> String? {
-    guard let client = await sync.cloudServerClient() else { return "Sign in to ADE to keep this computer." }
+    guard let client = await sync.cloudServerClient() else { return "Sign in to \(Brand.name) to keep this computer." }
     do {
       try await client.keep(instanceId: instanceId)
       keptInstanceIds.insert(instanceId)
@@ -329,7 +329,7 @@ final class AccountCloudStore: ObservableObject {
   /// keep working on (`ClientUpdateGate.swift`). Nil when the update started,
   /// else the sentence to show.
   func updateComputer(instanceId: String, using sync: SyncService) async -> String? {
-    guard let client = await sync.cloudServerClient() else { return "Sign in to ADE to update this computer." }
+    guard let client = await sync.cloudServerClient() else { return "Sign in to \(Brand.name) to update this computer." }
     do {
       try await client.update(instanceId: instanceId)
       accountCloudLog.notice("cloud_store update=started")
@@ -345,7 +345,7 @@ final class AccountCloudStore: ObservableObject {
   /// `messageId` (the composer's send id).
   func queueSend(machineKey: String, chatId: String, messageId: String, text: String, files: [CloudQueuedFile] = [], compactFirst: Bool? = nil, using sync: SyncService) async -> SendOutcome {
     let generation = accountGeneration
-    guard let client = await sync.cloudServerClient() else { return .failed("Sign in to ADE to send this message.") }
+    guard let client = await sync.cloudServerClient() else { return .failed("Sign in to \(Brand.name) to send this message.") }
     let key = Self.chatKey(machineKey: machineKey, chatId: chatId)
     // Files go up first, to a draft launch the message then names; the
     // computer fetches them when it wakes.
@@ -363,7 +363,7 @@ final class AccountCloudStore: ObservableObject {
           let size = try await client.uploadLaunchFile(launchId: launchId, fileId: fileId, data: file.data, contentType: file.contentType)
           attachments.append(["fileId": fileId, "name": String(file.name.prefix(200)), "contentType": file.contentType, "sizeBytes": size, "launchId": launchId])
         } catch {
-          return .failed("ADE couldn't send \(file.name). \(cloudServerFailureMessage(error))")
+          return .failed("\(Brand.name) couldn't send \(file.name). \(cloudServerFailureMessage(error))")
         }
       }
     }
@@ -399,7 +399,7 @@ final class AccountCloudStore: ObservableObject {
 
   /// Cancels a message that still waits. Nil when it worked.
   func cancelQueued(machineKey: String, chatId: String, messageId: String, using sync: SyncService) async -> String? {
-    guard let client = await sync.cloudServerClient() else { return "Sign in to ADE to cancel this message." }
+    guard let client = await sync.cloudServerClient() else { return "Sign in to \(Brand.name) to cancel this message." }
     do {
       try await client.cancelQueuedMessage(machineKey: machineKey, chatId: chatId, messageId: messageId)
       let key = Self.chatKey(machineKey: machineKey, chatId: chatId)
@@ -661,7 +661,7 @@ final class AccountCloudStore: ObservableObject {
     }
     let generation = accountGeneration
     guard let client = await sync.cloudServerClient(), generation == accountGeneration else {
-      return .failed(sessionId: key.sessionId, message: "Sign in to ADE to read earlier messages.")
+      return .failed(sessionId: key.sessionId, message: "Sign in to \(Brand.name) to read earlier messages.")
     }
     while true {
       let page = try await client.transcriptPage(machineKey: accountMachineKey, chatId: key.sessionId, before: before)
@@ -721,7 +721,7 @@ final class AccountCloudStore: ObservableObject {
   /// sentence (`phone_not_on_account` for anyone not on the beta list).
   func setPhoneProvider(_ provider: String, using sync: SyncService) async -> String? {
     let generation = accountGeneration
-    guard let client = await sync.cloudServerClient() else { return "Sign in to ADE, then try again." }
+    guard let client = await sync.cloudServerClient() else { return "Sign in to \(Brand.name), then try again." }
     do {
       try await client.setPhoneProvider(provider)
     } catch {

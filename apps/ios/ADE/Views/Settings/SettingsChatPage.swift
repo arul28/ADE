@@ -178,14 +178,14 @@ struct SettingsChatPage: View {
   private func smartDecisionsSection(_ config: SettingsProjectChatConfig) -> some View {
     ADESettingsSection(
       SettingsChatTopic.smartDecisions.title,
-      hint: "Quick calls ADE makes about your chats and prompts.",
+      hint: "Quick calls \(Brand.name) makes about your chats and prompts.",
       symbol: SettingsChatTopic.smartDecisions.symbol,
       tint: SettingsChatTopic.smartDecisions.tint
     ) {
       ADESettingsRows {
         toggleRow(
           "Smart decisions (Jev)",
-          hint: "ADE asks the small Jev model quick questions, like whether a finished turn asked you something. It's free through OpenCode. When Jev can't answer, ADE's built-in rules decide.",
+          hint: "\(Brand.name) asks the small Jev model quick questions, like whether a finished turn asked you something. It's free through OpenCode. When Jev can't answer, \(Brand.name)'s built-in rules decide.",
           key: .smartDecisionsEnabled
         )
       }
@@ -224,7 +224,7 @@ struct SettingsChatPage: View {
           if zen == "signed_in" {
             toggleRow(
               "Use my OpenCode Zen credit",
-              hint: "Once the free allowance is out, spend your own OpenCode Zen balance on Jev before ADE's bonus.",
+              hint: "Once the free allowance is out, spend your own OpenCode Zen balance on Jev before \(Brand.name)'s bonus.",
               key: .jevZenCreditEnabled
             )
           } else {

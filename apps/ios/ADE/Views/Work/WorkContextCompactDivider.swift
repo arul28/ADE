@@ -51,7 +51,7 @@ struct WorkContextCompactDivider: View {
   }
   private var trigger: String {
     if header.contains("Manual") { return "you asked" }
-    if header.contains("Ade Fallback") { return "ADE (near limit)" }
+    if header.contains("Ade Fallback") { return "\(Brand.name) (near limit)" }
     return "automatic"
   }
   private var countLabel: String {

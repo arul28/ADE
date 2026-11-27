@@ -10,14 +10,14 @@ struct CloudSignInsCard: View {
     let tiles = store.signIns.map(providerCloudTiles) ?? []
     let ready = tiles.filter { $0.state == .signedIn }
     let rest = tiles.filter { $0.state != .signedIn }
-    ADEKitCard(title: "Sign-ins on ADE Cloud", symbol: "key", count: ready.isEmpty ? nil : "\(ready.count)", flush: true) {
+    ADEKitCard(title: "Sign-ins on \(Brand.cloudName)", symbol: "key", count: ready.isEmpty ? nil : "\(ready.count)", flush: true) {
       VStack(alignment: .leading, spacing: 0) {
         if let status = store.signIns {
           if !status.cloud.enabled {
-            note("Your sign-ins aren't shared with ADE Cloud. Each cloud computer asks you to sign in on it.")
+            note("Your sign-ins aren't shared with \(Brand.cloudName). Each cloud computer asks you to sign in on it.")
           } else {
             note(ready.isEmpty
-              ? "No sign-in reaches ADE Cloud yet. Sign in to a provider on any of your computers and it reaches your cloud computers."
+              ? "No sign-in reaches \(Brand.cloudName) yet. Sign in to a provider on any of your computers and it reaches your cloud computers."
               : "Your cloud computers sign in with these accounts. A sign-in on any of your computers reaches them in about a minute.")
             ForEach(ready) { tile in
               ADESettingsHairline()
@@ -54,7 +54,7 @@ struct CloudSignInsCard: View {
           }
           ADESettingsHairline()
           ADESettingsRow(
-            title: "Share my sign-ins with ADE Cloud",
+            title: "Share my sign-ins with \(Brand.cloudName)",
             hint: status.cloud.enabled ? "Cloud computers use the accounts you're signed in to on your computers." : "Off: you sign in on each cloud computer yourself."
           ) {
             Toggle("", isOn: Binding(
@@ -66,9 +66,9 @@ struct CloudSignInsCard: View {
             .disabled(store.signInsSaving || !store.syncService.canInvokeRemoteAction("providerLogins.setCloudAll"))
           }
         } else if store.signInsUnreadable {
-          note("ADE couldn't read your sign-ins. Pull to read them again.")
+          note("\(Brand.name) couldn't read your sign-ins. Pull to read them again.")
         } else if !store.syncService.supportsRemoteAction("providerLogins.status") {
-          note("Update ADE on \(store.syncService.machineDisplayName) to see them here.")
+          note("Update \(Brand.name) on \(store.syncService.machineDisplayName) to see them here.")
         } else {
           note("Reading your sign-ins…")
         }

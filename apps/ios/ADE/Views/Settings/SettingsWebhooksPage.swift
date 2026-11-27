@@ -156,7 +156,7 @@ struct SettingsWebhooksPage: View {
       if let automations {
         if automations.isEmpty, errorMessage == nil {
           Section {
-            ADESettingsRow("No webhooks yet", hint: "Make one in ADE on your computer: Automations → New → Webhook.")
+            ADESettingsRow("No webhooks yet", hint: "Make one in \(Brand.name) on your computer: Automations → New → Webhook.")
               .adeSettingsListRow(insets: EdgeInsets())
           } header: {
             ADESettingsHeader("Webhooks", hint: "Requests that reach your automations.")
@@ -191,7 +191,7 @@ struct SettingsWebhooksPage: View {
 
   private func load() async {
     guard syncService.supportsWebhookAutomations else {
-      errorMessage = "Update ADE on your computer to see webhooks here."
+      errorMessage = "Update \(Brand.name) on your computer to see webhooks here."
       automations = []
       return
     }
@@ -272,7 +272,7 @@ struct WebhookAutomationDetailPage: View {
           }
           .adeSettingsListRow()
           if automation.route != "relay" && automation.route != "gateway" {
-            Label("Only reachable from its computer until you sign in to ADE there.", systemImage: "exclamationmark.triangle.fill")
+            Label("Only reachable from its computer until you sign in to \(Brand.name) there.", systemImage: "exclamationmark.triangle.fill")
               .font(.system(size: 12.5))
               .foregroundStyle(ADEColor.warning)
               .adeSettingsListRow()

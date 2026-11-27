@@ -159,7 +159,7 @@ struct ProjectLocationScreen: View {
               spareRow(machine, project: project)
             }
           }
-          Text("ADE copies it from GitHub into the computer's projects folder.")
+          Text("\(Brand.name) copies it from GitHub into the computer's projects folder.")
             .font(.system(size: 12.5))
             .foregroundStyle(ADEColor.textMuted)
             .fixedSize(horizontal: false, vertical: true)
@@ -172,8 +172,8 @@ struct ProjectLocationScreen: View {
             .font(.system(size: 12, weight: .semibold))
             .padding(.top, 2)
           Text(computers.count == 1
-            ? "To move the folder, use ADE on \(computerName(computers[0].machine))."
-            : "To move a folder, use ADE on the computer that holds it.")
+            ? "To move the folder, use \(Brand.name) on \(computerName(computers[0].machine))."
+            : "To move a folder, use \(Brand.name) on the computer that holds it.")
             .font(.system(size: 13))
             .fixedSize(horizontal: false, vertical: true)
         }
@@ -238,7 +238,7 @@ struct ProjectLocationScreen: View {
         .truncationMode(.middle)
         .textSelection(.enabled)
       if oldBrain {
-        Text("Update ADE on \(computerName(computer.machine)) to change this from your phone.")
+        Text("Update \(Brand.name) on \(computerName(computer.machine)) to change this from your phone.")
           .font(.system(size: 12))
           .foregroundStyle(ADEColor.textMuted)
           .fixedSize(horizontal: false, vertical: true)

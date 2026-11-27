@@ -831,7 +831,7 @@ private func cuBuildSummary(invocations: [CUInvocation], output: String, status:
   if filesProof, sawOutput, outcome != .failed, outcome != .running, parsed.proofIds.isEmpty {
     if invocation.outputFilter == .other {
       outcome = .unconfirmed
-      missingProof = "Its output was cut off, so ADE could not see the proof filed."
+      missingProof = "Its output was cut off, so \(Brand.name) could not see the proof filed."
     } else {
       outcome = .failed
       missingProof = "No proof was filed."

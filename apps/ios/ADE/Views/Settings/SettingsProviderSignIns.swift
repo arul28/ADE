@@ -100,7 +100,7 @@ func providerCloudTile(_ provider: String, status: ProviderLoginsPhoneStatus) ->
     ProviderCloudTile(provider: provider, label: label, state: state, account: account, source: source, signIn: signIn)
   }
   if !status.cloud.enabled {
-    return tile(.off, nil, "Your sign-ins aren't shared with ADE Cloud")
+    return tile(.off, nil, "Your sign-ins aren't shared with \(Brand.cloudName)")
   }
   if provider == "claude" {
     // Claude's own login is never carried: ADE Cloud uses a Claude pass.
@@ -108,7 +108,7 @@ func providerCloudTile(_ provider: String, status: ProviderLoginsPhoneStatus) ->
     case .ended(let at):
       return tile(.notSignedIn, nil, providerCloudPassEndedLine(at))
     case .off:
-      return tile(.notSignedIn, nil, "Off for ADE Cloud")
+      return tile(.notSignedIn, nil, "Off for \(Brand.cloudName)")
     case .noPass, nil:
       break
     }
@@ -117,7 +117,7 @@ func providerCloudTile(_ provider: String, status: ProviderLoginsPhoneStatus) ->
       let ends = pass.endsInDays.map { $0 <= 14 ? ". Ends in \(max(0, Int($0))) days" : "" } ?? ""
       return tile(.signedIn, pass.email ?? pass.label, "Cloud pass\(ends)")
     }
-    return tile(.notSignedIn, nil, "Approve a Claude pass in the ADE desktop app")
+    return tile(.notSignedIn, nil, "Approve a Claude pass in the \(Brand.name) desktop app")
   }
   if status.cloud.inUse[provider] == "key" {
     return tile(.signedIn, nil, "Saved key")
@@ -130,7 +130,7 @@ func providerCloudTile(_ provider: String, status: ProviderLoginsPhoneStatus) ->
     return tile(.notSignedIn, nil, "Sign in on the cloud computer, or use a key")
   }
   if !cards.isEmpty {
-    return tile(.notSignedIn, nil, "Every sign-in is off for ADE Cloud")
+    return tile(.notSignedIn, nil, "Every sign-in is off for \(Brand.cloudName)")
   }
   return tile(.notSignedIn, nil, "Sign in on any of your computers")
 }
@@ -185,7 +185,7 @@ func providerCloudPassEndedLine(_ endedAt: Date?) -> String {
 /// (`adeCloudEndNotice.ts`). The phone can't make a pass: it says where to.
 func providerCloudPassEndedDetail(_ endedAt: Date?) -> String {
   let stopped = endedAt.map { "stopped working \(providerCloudPassEndDay($0))" } ?? "stopped working"
-  return "Claude chats and automations on your ADE Cloud computers \(stopped). ADE can't renew a pass on its own: renew it in the ADE desktop app, in Settings › Providers › ADE Cloud › Claude, and they work again."
+  return "Claude chats and automations on your \(Brand.cloudName) computers \(stopped). \(Brand.name) can't renew a pass on its own: renew it in the \(Brand.name) desktop app, in Settings › Providers › \(Brand.cloudName) › Claude, and they work again."
 }
 
 /// Settings › Providers › ADE Cloud: the same tiles as each computer, the
@@ -199,10 +199,10 @@ struct ProviderCloudPlace: View {
   var body: some View {
     VStack(alignment: .leading, spacing: ADEKit.sectionGap) {
       if let status = model.status {
-        ADESettingsSection("ADE Cloud", hint: "Your cloud computers sign in with these. A sign-in on any of your computers reaches them in about a minute.") {
+        ADESettingsSection("\(Brand.cloudName)", hint: "Your cloud computers sign in with these. A sign-in on any of your computers reaches them in about a minute.") {
           ADESettingsRows {
             ADESettingsRow(
-              title: "Share my sign-ins with ADE Cloud",
+              title: "Share my sign-ins with \(Brand.cloudName)",
               hint: status.cloud.enabled ? "Cloud computers use the accounts you're signed in to on your computers." : "Off: you sign in on each cloud computer yourself."
             ) {
               Toggle("", isOn: Binding(
@@ -229,7 +229,7 @@ struct ProviderCloudPlace: View {
           ADESettingsNotice(message: error, tone: .crit, dismiss: { model.error = nil })
         }
       } else if model.failed {
-        ADESettingsNotice(message: "ADE couldn't read your sign-ins on \(syncService.machineDisplayName).", actionTitle: "Retry", action: {
+        ADESettingsNotice(message: "\(Brand.name) couldn't read your sign-ins on \(syncService.machineDisplayName).", actionTitle: "Retry", action: {
           Task { await model.load() }
         })
       } else {
@@ -292,7 +292,7 @@ struct ProviderCloudProviderPage: View {
         HStack(spacing: 12) {
           ADEBrandTile(brand: .provider(provider), size: 40)
           VStack(alignment: .leading, spacing: 3) {
-            Text("\(tile.label) on ADE Cloud")
+            Text("\(tile.label) on \(Brand.cloudName)")
               .font(.system(size: 16, weight: .semibold))
               .foregroundStyle(ADEColor.textPrimary)
             ADESettingsStatus(text: tile.word, tone: tile.tone)
@@ -304,29 +304,29 @@ struct ProviderCloudProviderPage: View {
         if provider == "claude" {
           switch status.cloud.enabled ? providerCloudClaudePassNeed(status) : nil {
           case .ended(let at):
-            ADESettingsNotice(message: "Claude ended your pass for ADE Cloud. \(providerCloudPassEndedDetail(at))", tone: .crit)
+            ADESettingsNotice(message: "Claude ended your pass for \(Brand.cloudName). \(providerCloudPassEndedDetail(at))", tone: .crit)
           case .off:
-            ADESettingsNotice(message: "Every Claude pass is off for ADE Cloud. Turn one on in the ADE desktop app, in Settings › Providers › ADE Cloud › Claude.", tone: .warn)
+            ADESettingsNotice(message: "Every Claude pass is off for \(Brand.cloudName). Turn one on in the \(Brand.name) desktop app, in Settings › Providers › \(Brand.cloudName) › Claude.", tone: .warn)
           case .noPass, nil:
             EmptyView()
           }
-          ADESettingsNotice(message: "ADE Cloud never uses Claude's own login. A Claude pass (one approve, good for a year, cloud only) is made in the ADE desktop app.", tone: .neutral)
+          ADESettingsNotice(message: "\(Brand.cloudName) never uses Claude's own login. A Claude pass (one approve, good for a year, cloud only) is made in the \(Brand.name) desktop app.", tone: .neutral)
         } else if cards.isEmpty {
           ADESettingsNotice(message: status.provider(provider)?.carry == "fallback"
-            ? "\(tile.label) can't be carried to ADE Cloud. Sign in on the cloud computer, or use a key."
-            : "No \(tile.label) sign-in in your ADE account yet. Sign in on any of your computers and it reaches ADE Cloud.", tone: .neutral)
+            ? "\(tile.label) can't be carried to \(Brand.cloudName). Sign in on the cloud computer, or use a key."
+            : "No \(tile.label) sign-in in your \(Brand.name) account yet. Sign in on any of your computers and it reaches \(Brand.cloudName).", tone: .neutral)
         } else {
-          ADESettingsSection("Sign-ins in your ADE account") {
+          ADESettingsSection("Sign-ins in your \(Brand.name) account") {
             VStack(spacing: 10) {
               ForEach(cards) { card in
                 ProviderSignInCardView(
                   signIn: card,
-                  badge: card.inUseOnCloud ? .inUse("In use on ADE Cloud") : card.onForCloud ? .action("Use on ADE Cloud") : .off,
+                  badge: card.inUseOnCloud ? .inUse("In use on \(Brand.cloudName)") : card.onForCloud ? .action("Use on \(Brand.cloudName)") : .off,
                   lines: [],
                   busy: model.busy.contains(card.key),
                   canWrite: model.canWrite,
                   onAction: { confirming = card },
-                  toggle: (label: "On for ADE Cloud", isOn: card.onForCloud, set: { next in Task { await model.setCloud(card, on: next) } })
+                  toggle: (label: "On for \(Brand.cloudName)", isOn: card.onForCloud, set: { next in Task { await model.setCloud(card, on: next) } })
                 )
               }
             }
@@ -337,7 +337,7 @@ struct ProviderCloudProviderPage: View {
         }
       } else if model.failed || !model.supported {
         // Opened from a chat, the read can fail where Settings would not show this page.
-        ADESettingsNotice(message: "ADE couldn't read your sign-ins. Connect to one of your computers, then try again.", actionTitle: "Retry", action: {
+        ADESettingsNotice(message: "\(Brand.name) couldn't read your sign-ins. Connect to one of your computers, then try again.", actionTitle: "Retry", action: {
           Task { await model.load() }
         })
       } else {
@@ -345,7 +345,7 @@ struct ProviderCloudProviderPage: View {
       }
     }
     .confirmationDialog(
-      confirming.map { "Use \($0.name) on ADE Cloud?" } ?? "",
+      confirming.map { "Use \($0.name) on \(Brand.cloudName)?" } ?? "",
       isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } }),
       titleVisibility: .visible,
       presenting: confirming
@@ -353,7 +353,7 @@ struct ProviderCloudProviderPage: View {
       Button("Use it") { Task { await model.use(card) } }
       Button("Cancel", role: .cancel) {}
     } message: { _ in
-      Text("A turn that runs now finishes on the sign-in it started with. The next message on ADE Cloud uses this one.")
+      Text("A turn that runs now finishes on the sign-in it started with. The next message on \(Brand.cloudName) uses this one.")
     }
   }
 }
@@ -373,10 +373,10 @@ struct ProviderMachineSignIns: View {
   var body: some View {
     if let status = model.status, let row = status.provider(provider), row.carry == "carried" {
       let cards = status.cards(for: provider)
-      ADESettingsSection("Sign-ins in your ADE account") {
+      ADESettingsSection("Sign-ins in your \(Brand.name) account") {
         if cards.isEmpty {
           ADESettingsRows {
-            ADESettingsRow("No \(workProviderSignInLabel(provider)) sign-in in your ADE account yet.")
+            ADESettingsRow("No \(workProviderSignInLabel(provider)) sign-in in your \(Brand.name) account yet.")
           }
         } else {
           VStack(spacing: 10) {
@@ -388,7 +388,7 @@ struct ProviderMachineSignIns: View {
                 signIn: card,
                 badge: inUseHere ? .inUse("In use here") : .none,
                 lines: (inUseHere ? [] : ["To use it here, sign in on \(machineName)."])
-                  + (cloudOn && card.inUseOnCloud ? ["In use on ADE Cloud"] : []),
+                  + (cloudOn && card.inUseOnCloud ? ["In use on \(Brand.cloudName)"] : []),
                 busy: false,
                 canWrite: false,
                 onAction: {},
@@ -441,7 +441,7 @@ struct ProviderSignInCardView: View {
         case .inUse(let text):
           ADEKitTag(text: text, tone: .accent, keepsCase: true)
         case .off:
-          ADEKitTag(text: "Off for ADE Cloud", keepsCase: true)
+          ADEKitTag(text: "Off for \(Brand.cloudName)", keepsCase: true)
         case .action(let text):
           Button(text, action: onAction)
             .buttonStyle(ADEKitButtonStyle())
@@ -589,7 +589,7 @@ final class ProviderLoginsModel: ObservableObject {
       let written = try await ProviderLoginsPhoneStatus.write(method, args: args, on: host)
       if mine == request { status = written }
     } catch {
-      self.error = "ADE couldn't change that. \(SyncUserFacingError.message(for: error))"
+      self.error = "\(Brand.name) couldn't change that. \(SyncUserFacingError.message(for: error))"
       ADEHaptics.error()
     }
   }

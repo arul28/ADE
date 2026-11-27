@@ -897,12 +897,12 @@ struct WorkNewChatScreen: View {
     if let entry = cloudProviderEntry, entry.remoteSignIn == "desktop" {
       // The desktop's sign-in already reached ADE Cloud: nothing to do.
       if cloudLaunches.carriedSignIns[entry.provider] == true {
-        return "Uses your \(entry.label) sign-in from ADE desktop."
+        return "Uses your \(entry.label) sign-in from \(Brand.name) desktop."
       }
       return cloudDesktopSignInSentence(label: entry.label)
     }
     if cloudLaunches.catalog != nil, cloudProviderEntry?.models.contains(where: { $0.id == modelId }) != true {
-      return "Pick a model ADE Cloud runs."
+      return "Pick a model \(Brand.cloudName) runs."
     }
     return nil
   }
@@ -1366,7 +1366,7 @@ struct WorkNewChatScreen: View {
       .aspectRatio(contentMode: .fit)
       .frame(maxWidth: 240)
     .padding(.top, 0)
-    .accessibilityLabel("ADE")
+    .accessibilityLabel(Brand.name)
   }
 
   @ViewBuilder
@@ -2055,7 +2055,7 @@ struct WorkNewChatScreen: View {
       return false
     }
     guard sessionMode == .chat else {
-      errorMessage = "ADE Cloud starts chats from the phone. Switch to Chat."
+      errorMessage = "\(Brand.cloudName) starts chats from the phone. Switch to Chat."
       return false
     }
     // The files go up with the launch, from the bytes on this phone. A file
@@ -2063,7 +2063,7 @@ struct WorkNewChatScreen: View {
     var files: [(name: String, contentType: String, data: Data)] = []
     for attachment in attachments {
       guard let data = attachment.uploadData ?? attachment.image?.jpegData(compressionQuality: 0.85) else {
-        errorMessage = "\(attachment.filename) is on the machine that saved this draft. Remove it and attach it again to send it to ADE Cloud."
+        errorMessage = "\(attachment.filename) is on the machine that saved this draft. Remove it and attach it again to send it to \(Brand.cloudName)."
         return false
       }
       let isJPEG = attachment.uploadData == nil
@@ -2074,11 +2074,11 @@ struct WorkNewChatScreen: View {
       ))
     }
     guard let project = syncService.activeAccountProjectForCloud else {
-      errorMessage = "Add this project to your account to use ADE Cloud."
+      errorMessage = "Add this project to your account to use \(Brand.cloudName)."
       return false
     }
     guard let entry = cloudProviderEntry, entry.models.contains(where: { $0.id == modelId }) else {
-      errorMessage = "Pick a model ADE Cloud runs."
+      errorMessage = "Pick a model \(Brand.cloudName) runs."
       return false
     }
     let existingLane: (id: String, name: String)? = isAutoCreateLane ? nil : visibleLanes

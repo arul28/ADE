@@ -339,12 +339,12 @@ let syncRelayHostDidNotAnswerCloseCodes: Set<Int> = [4507]
 /// not answer. With a machine name it names the route; without one (the
 /// primary banner) it stays route-neutral.
 func syncRelayHostDidNotAnswerMessage(machineName: String? = nil) -> String {
-  let fix = "It usually repairs itself in a few seconds; if it doesn’t, open ADE on that computer to see why."
+  let fix = "It usually repairs itself in a few seconds; if it doesn’t, open \(Brand.name) on that computer to see why."
   guard let machineName = machineName?.trimmingCharacters(in: .whitespacesAndNewlines),
         !machineName.isEmpty else {
-    return "This computer is online, but ADE on it didn’t answer. \(fix)"
+    return "This computer is online, but \(Brand.name) on it didn’t answer. \(fix)"
   }
-  return "ADE relay reached \(machineName), but ADE on it didn’t answer. \(fix)"
+  return "\(Brand.name) relay reached \(machineName), but \(Brand.name) on it didn’t answer. \(fix)"
 }
 
 /// Whether `error` ended with one of `syncRelayHostDidNotAnswerCloseCodes`.

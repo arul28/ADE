@@ -138,7 +138,7 @@ struct RecentlyDeletedChatSheet: View {
     guard chat.isCli else { return "Picks up where it left off, in \(lane)." }
     return chat.resumable == true
       ? "Relaunches the CLI in \(lane), resuming its conversation."
-      : "Starts a new CLI in \(lane): ADE can’t resume its conversation."
+      : "Starts a new CLI in \(lane): \(Brand.name) can’t resume its conversation."
   }
 
   @ViewBuilder

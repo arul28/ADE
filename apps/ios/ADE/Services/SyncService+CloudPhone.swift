@@ -197,7 +197,7 @@ extension SyncService {
         domain: "ADE",
         code: 17,
         userInfo: [
-          NSLocalizedDescriptionKey: "The machine this chat runs on needs a newer ADE to show the ADE Cloud iPhone.",
+          NSLocalizedDescriptionKey: "The machine this chat runs on needs a newer \(Brand.name) to show the \(Brand.cloudName) iPhone.",
           "ADEErrorCode": "unsupported_action",
         ]
       )

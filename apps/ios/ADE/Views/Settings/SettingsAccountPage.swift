@@ -79,7 +79,7 @@ struct SettingsAccountPage: View {
     .task(id: account.phase == .signedIn) {
       if account.phase == .signedIn { await github.refreshStatus() }
     }
-    .confirmationDialog("Disconnect GitHub from ADE?", isPresented: $confirmGitHubDisconnect, titleVisibility: .visible) {
+    .confirmationDialog("Disconnect GitHub from \(Brand.name)?", isPresented: $confirmGitHubDisconnect, titleVisibility: .visible) {
       Button("Disconnect", role: .destructive) {
         Task {
           githubDisconnecting = true
@@ -98,7 +98,7 @@ struct SettingsAccountPage: View {
     .sheet(isPresented: $showDeleteAccount) {
       AccountDeleteSheet()
     }
-    .confirmationDialog("Sign out of ADE?", isPresented: $confirmSignOut, titleVisibility: .visible) {
+    .confirmationDialog("Sign out of \(Brand.name)?", isPresented: $confirmSignOut, titleVisibility: .visible) {
       Button("Sign out", role: .destructive) {
         Task {
           signingOut = true
@@ -153,7 +153,7 @@ struct SettingsAccountPage: View {
           case .unreachable(let message):
             ADESettingsRow("Couldn't load your computers", hint: message)
           case .loaded:
-            ADESettingsRow("No computers yet", hint: "Sign in to ADE on a computer and it shows here.")
+            ADESettingsRow("No computers yet", hint: "Sign in to \(Brand.name) on a computer and it shows here.")
           }
         }
         ForEach(machines) { machine in
@@ -194,7 +194,7 @@ struct SettingsAccountPage: View {
           symbol: "at",
           sizesControlFirst: false
         ) {
-          Text(identity.email ?? "Your ADE account")
+          Text(identity.email ?? "Your \(Brand.name) account")
             .font(.system(size: 14))
             .foregroundStyle(ADEColor.textSecondary)
             .lineLimit(1)
@@ -264,7 +264,7 @@ struct SettingsAccountPage: View {
       } label: {
         ADESettingsRow(
           title: "Delete account",
-          hint: "Deletes your ADE account, its ADE Cloud computers, saved chats, passwords and project list. Projects on your computers stay.",
+          hint: "Deletes your \(Brand.name) account, its \(Brand.cloudName) computers, saved chats, passwords and project list. Projects on your computers stay.",
           symbol: "trash",
           titleColor: ADEColor.danger,
           tint: .red
@@ -290,7 +290,7 @@ struct SettingsAccountPage: View {
     default:
       ADESettingsSection(
         "GitHub",
-        hint: "Pull requests and repositories on every device, with no computer on. ADE renews the sign-in for you.",
+        hint: "Pull requests and repositories on every device, with no computer on. \(Brand.name) renews the sign-in for you.",
         symbol: "arrow.triangle.pull",
         tint: .slate
       ) {
@@ -298,7 +298,7 @@ struct SettingsAccountPage: View {
           githubAccountRow
           if let githubRevokeURL, github.state == .notConnected {
             ADESettingsNotice(
-              message: "GitHub is disconnected from ADE. To also remove ADE's access on GitHub, revoke it there.",
+              message: "GitHub is disconnected from \(Brand.name). To also remove \(Brand.name)'s access on GitHub, revoke it there.",
               tone: .neutral,
               actionTitle: "Revoke on GitHub",
               action: { openURL(githubRevokeURL) },
@@ -336,8 +336,8 @@ struct SettingsAccountPage: View {
     case .unavailable(let retryAt):
       ADESettingsRow(
         "GitHub isn't answering",
-        hint: retryAt.map { "GitHub isn't answering right now. ADE tries again at \($0.formatted(date: .omitted, time: .shortened))." }
-          ?? "GitHub isn't answering right now. ADE tries again soon.",
+        hint: retryAt.map { "GitHub isn't answering right now. \(Brand.name) tries again at \($0.formatted(date: .omitted, time: .shortened))." }
+          ?? "GitHub isn't answering right now. \(Brand.name) tries again soon.",
         symbol: "clock",
         tint: .slate
       )
@@ -419,7 +419,7 @@ struct SettingsAccountPage: View {
         .overlay(Circle().strokeBorder(ADEKit.rule, lineWidth: 1))
         .accessibilityHidden(true)
       VStack(spacing: 6) {
-        Text("Sign in to ADE")
+        Text("Sign in to \(Brand.name)")
           .font(.system(size: 19, weight: .semibold))
           .foregroundStyle(ADEColor.textPrimary)
         Text(account.isConfigured
@@ -434,7 +434,7 @@ struct SettingsAccountPage: View {
         Button("Sign in", action: onSignIn)
           .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
           .padding(.top, 4)
-        Text("Sign in to use ADE Relay.")
+        Text("Sign in to use \(Brand.name) Relay.")
           .font(.system(size: 12))
           .foregroundStyle(ADEColor.textMuted)
       }

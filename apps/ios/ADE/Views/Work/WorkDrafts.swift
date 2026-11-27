@@ -439,7 +439,7 @@ final class WorkDraftController: ObservableObject {
           throw NSError(
             domain: "ADE",
             code: 27,
-            userInfo: [NSLocalizedDescriptionKey: "The connected ADE runtime could not preserve the attached images. They are still in your composer."]
+            userInfo: [NSLocalizedDescriptionKey: "The connected \(Brand.name) runtime could not preserve the attached images. They are still in your composer."]
           )
         }
       }

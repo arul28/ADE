@@ -651,7 +651,7 @@ final class CloudAtRestStore: ObservableObject {
     summaryReadAt[key] = Date()
     let started = generation
     guard let client = await sync.cloudServerClient() else {
-      summaries[key] = .failed("Sign in to ADE to read this lane's saved Git state.")
+      summaries[key] = .failed("Sign in to \(Brand.name) to read this lane's saved Git state.")
       return
     }
     do {

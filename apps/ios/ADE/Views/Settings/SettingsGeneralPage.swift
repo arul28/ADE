@@ -118,7 +118,7 @@ struct SettingsGeneralPage: View {
         if account.isConfigured {
           Button("Sign in", action: onSignIn)
             .buttonStyle(ADEKitButtonStyle(prominent: true))
-            .accessibilityLabel("Sign in to ADE")
+            .accessibilityLabel("Sign in to \(Brand.name)")
         }
       }
     }
@@ -211,13 +211,13 @@ struct SettingsGeneralPage: View {
   private var attentionItems: [SettingsAttentionItem] {
     var items: [SettingsAttentionItem] = []
     if let version = appUpdateAdvisor.availableVersion {
-      items.append(.init(text: "ADE \(version) is out for this \(UIDevice.current.model)", tone: .warn))
+      items.append(.init(text: "\(Brand.name) \(version) is out for this \(UIDevice.current.model)", tone: .warn))
     }
     if !connected, let primary {
       items.append(.init(text: "Not connected to \(primary.name)", tone: .crit))
     }
     if connected, syncService.hostCompatibilityMode == .limited, let name = primary?.name {
-      items.append(.init(text: "\(name) runs an older ADE", tone: .warn))
+      items.append(.init(text: "\(name) runs an older \(Brand.name)", tone: .warn))
     }
     if let counts = providerCounts, counts.detected > counts.signedIn {
       let count = counts.detected - counts.signedIn
@@ -473,7 +473,7 @@ struct SettingsAdeHeroCard: View {
 
   private var state: String {
     if appUpdateAdvisor.isChecking { return "Checking for updates…" }
-    if let version = appUpdateAdvisor.availableVersion { return "ADE \(version) is ready to install" }
+    if let version = appUpdateAdvisor.availableVersion { return "\(Brand.name) \(version) is ready to install" }
     return appUpdateAdvisor.hasChecked ? "Up to date" : "Not checked yet"
   }
 
@@ -500,7 +500,7 @@ struct SettingsAdeHeroCard: View {
         Rectangle().fill(ADEKit.rule).frame(height: 0.75)
       }
       if compatibility == .limited, let name = machines.first(where: \.isPrimary)?.name {
-        ADESettingsNotice(message: "\(name) runs an older ADE, so some things here stay read-only. Update ADE on it to use everything.")
+        ADESettingsNotice(message: "\(name) runs an older \(Brand.name), so some things here stay read-only. Update \(Brand.name) on it to use everything.")
           .padding(ADEKit.inset)
         Rectangle().fill(ADEKit.rule).frame(height: 0.75)
       }
@@ -532,7 +532,7 @@ struct SettingsAdeHeroCard: View {
         .resizable()
         .scaledToFit()
         .frame(height: 30)
-        .accessibilityLabel("ADE")
+        .accessibilityLabel(Brand.name)
       VStack(alignment: .leading, spacing: 4) {
         Text(Self.appVersion)
           .font(.system(size: 22, weight: .medium, design: .monospaced))

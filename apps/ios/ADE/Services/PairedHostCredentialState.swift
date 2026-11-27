@@ -73,4 +73,4 @@ func syncResolveDeviceId(
 
 /// What the phone says when it cannot pair because its device id is still
 /// provisional (see `syncResolveDeviceId`).
-let syncProvisionalDeviceIdMessage = "This iPhone could not read its ADE identity yet. Unlock it, then try again."
+let syncProvisionalDeviceIdMessage = "This iPhone could not read its \(Brand.name) identity yet. Unlock it, then try again."

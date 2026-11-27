@@ -28,7 +28,7 @@ struct CloudIphoneSheet: View {
     NavigationStack {
       content
         .adeScreenBackground()
-        .navigationTitle("ADE Cloud iPhone")
+        .navigationTitle("\(Brand.cloudName) iPhone")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
           ToolbarItem(placement: .topBarTrailing) {
@@ -53,7 +53,7 @@ struct CloudIphoneSheet: View {
   @ViewBuilder
   private var content: some View {
     if !model.supported {
-      noticeContent("The machine this chat runs on needs a newer ADE to show the ADE Cloud iPhone.")
+      noticeContent("The machine this chat runs on needs a newer \(Brand.name) to show the \(Brand.cloudName) iPhone.")
     } else if let status = model.status {
       if !status.isOn {
         accessContent(status)
@@ -67,7 +67,7 @@ struct CloudIphoneSheet: View {
     } else if let message = model.loadError {
       failedContent(message)
     } else {
-      ProgressView("Loading the ADE Cloud iPhone…")
+      ProgressView("Loading the \(Brand.cloudName) iPhone…")
         .font(.system(size: 13))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -426,7 +426,7 @@ final class CloudIphoneModel: ObservableObject {
           NSError(domain: "ADE.CloudIphone", code: 1, userInfo: [NSLocalizedDescriptionKey: "The view link isn't one the sheet can open."]),
           context: ["area": "cloud_iphone.view_link"]
         )
-        linkError = "The cloud answered with a link ADE can't open."
+        linkError = "The cloud answered with a link \(Brand.name) can't open."
         return
       }
       link = next
@@ -505,7 +505,7 @@ final class CloudIphoneModel: ObservableObject {
 
   private static func message(for error: Error) -> String {
     cloudPhoneWords(SyncUserFacingError.message(for: error))
-      ?? "The ADE Cloud iPhone couldn't do that."
+      ?? "The \(Brand.cloudName) iPhone couldn't do that."
   }
 }
 
@@ -769,7 +769,7 @@ func cloudIphoneTime(_ ms: Double) -> String {
 /// Why the phone cannot be shown. The same words for every access but `on`
 /// (an older host's `soon` too): nothing says it is coming.
 func cloudIphoneAccessFallback(_ access: String) -> String {
-  "The ADE Cloud iPhone isn't available on this account."
+  "The \(Brand.cloudName) iPhone isn't available on this account."
 }
 
 /// A page failure a person can read; a cancelled navigation is not one.

@@ -5,7 +5,7 @@ func syncTransportBadgeText(routeKind: SyncConnectionRouteKind?) -> String? {
   switch routeKind {
   case .lan: return "via LAN"
   case .tailnet: return "via Tailscale"
-  case .relay: return "via ADE Relay"
+  case .relay: return "via \(Brand.name) Relay"
   case nil: return nil
   }
 }
@@ -204,8 +204,8 @@ func parseSyncHostStallNotice(_ hostHealth: Any?, machineName: String?, now: Dat
     return SyncHostStallNotice(
       title: "\(machine) froze",
       detail: blockedPath.map {
-        "ADE there waited \(duration) to read \($0) and restarted itself. macOS may have been asking for permission on its screen."
-      } ?? "ADE there stopped responding for \(duration) and restarted itself.",
+        "\(Brand.name) there waited \(duration) to read \($0) and restarted itself. macOS may have been asking for permission on its screen."
+      } ?? "\(Brand.name) there stopped responding for \(duration) and restarted itself.",
       endedAt: endedAt
     )
   }
@@ -215,7 +215,7 @@ func parseSyncHostStallNotice(_ hostHealth: Any?, machineName: String?, now: Dat
   if let load, let cores, cores > 0, load > Double(cores) {
     detail = "Its CPU is overloaded (load \(Int(load.rounded())) on \(cores) cores)."
   } else {
-    detail = "ADE on \(machine) was too busy to answer."
+    detail = "\(Brand.name) on \(machine) was too busy to answer."
   }
   return SyncHostStallNotice(title: "\(machine) froze for \(duration)", detail: detail, endedAt: endedAt)
 }
@@ -246,19 +246,19 @@ func parseSyncHostStorageWaitNotice(_ hostHealth: Any?, machineName: String?) ->
     return SyncHostStorageWaitNotice(
       title: "\(machine) can\u{2019}t read \(path)",
       detail: onMac
-        ? "ADE isn\u{2019}t allowed to use it. On \(machine), allow ADE in System Settings \u{203A} Privacy & Security \u{203A} Files and Folders."
-        : "ADE there isn\u{2019}t allowed to read it. Check the folder\u{2019}s permissions on \(machine)."
+        ? "\(Brand.name) isn\u{2019}t allowed to use it. On \(machine), allow \(Brand.name) in System Settings \u{203A} Privacy & Security \u{203A} Files and Folders."
+        : "\(Brand.name) there isn\u{2019}t allowed to read it. Check the folder\u{2019}s permissions on \(machine)."
     )
   }
   if onMac {
     return SyncHostStorageWaitNotice(
       title: "\(machine) is waiting for permission",
-      detail: "macOS is asking on \(machine)\u{2019}s screen whether ADE may use \(path). Click Allow there. If no prompt is showing, the drive is not responding."
+      detail: "macOS is asking on \(machine)\u{2019}s screen whether \(Brand.name) may use \(path). Click Allow there. If no prompt is showing, the drive is not responding."
     )
   }
   return SyncHostStorageWaitNotice(
     title: "\(path) on \(machine) is not responding",
-    detail: "The drive it is on may be disconnected or asleep. ADE keeps working and reads it again once it answers."
+    detail: "The drive it is on may be disconnected or asleep. \(Brand.name) keeps working and reads it again once it answers."
   )
 }
 
@@ -420,16 +420,16 @@ struct SettingsConnectionHeader: View {
     // The machine by name: "this machine" on the phone reads as the phone.
     let machine = syncTrimmedMachineName(snapshot.attachedMachineName ?? snapshot.hostDisplayName)
     if snapshot.hostCompatibilityMissingActions.contains("commandRouting") {
-      return "\(machine ?? "Your primary machine") runs an older ADE brain. Update ADE there to enable mobile actions."
+      return "\(machine ?? "Your primary machine") runs an older \(Brand.name) brain. Update \(Brand.name) there to enable mobile actions."
     }
     let onMachine = machine.map { "on \($0)" } ?? "on your primary machine"
     if missingCount > 0 {
       if missingCount == 1 {
-        return "1 mobile action needs a newer ADE brain \(onMachine)."
+        return "1 mobile action needs a newer \(Brand.name) brain \(onMachine)."
       }
-      return "\(missingCount) mobile actions need a newer ADE brain \(onMachine)."
+      return "\(missingCount) mobile actions need a newer \(Brand.name) brain \(onMachine)."
     }
-    return "Update ADE \(onMachine) for full mobile support."
+    return "Update \(Brand.name) \(onMachine) for full mobile support."
   }
 
   /// Shown only once the wake has settled. During the attempt the trailing

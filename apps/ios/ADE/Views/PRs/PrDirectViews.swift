@@ -56,10 +56,10 @@ func githubDirectStateCopy(
   switch error.kind {
   case .notConnected:
     if error.reason == "signed_out" {
-      return GitHubDirectStateCopy(title: "Sign in to ADE", body: "Sign in to your ADE account to see pull requests here.")
+      return GitHubDirectStateCopy(title: "Sign in to \(Brand.name)", body: "Sign in to your \(Brand.name) account to see pull requests here.")
     }
     if error.reason == "unsupported" {
-      return GitHubDirectStateCopy(title: "GitHub", body: "Your ADE account can't connect GitHub yet. Pull requests show when a computer with this project is online.")
+      return GitHubDirectStateCopy(title: "GitHub", body: "Your \(Brand.name) account can't connect GitHub yet. Pull requests show when a computer with this project is online.")
     }
     return GitHubDirectStateCopy(
       title: "Connect GitHub",
@@ -76,13 +76,13 @@ func githubDirectStateCopy(
     if error.reason == "read_only" {
       return GitHubDirectStateCopy(
         title: "Read only",
-        body: "You can read \(repo), but ADE can't change it until the ADE GitHub App is installed on \(ownerLabel).",
+        body: "You can read \(repo), but \(Brand.name) can't change it until the \(Brand.name) GitHub App is installed on \(ownerLabel).",
         primary: .link("Install on GitHub", adeGitHubAppInstallURL)
       )
     }
     return GitHubDirectStateCopy(
-      title: "Install the ADE GitHub App",
-      body: "ADE can't read \(repo) yet. Install the ADE GitHub App on \(ownerLabel).",
+      title: "Install the \(Brand.name) GitHub App",
+      body: "\(Brand.name) can't read \(repo) yet. Install the \(Brand.name) GitHub App on \(ownerLabel).",
       primary: .link("Install on GitHub", adeGitHubAppInstallURL)
     )
   case .rightsNotAccepted:
@@ -90,8 +90,8 @@ func githubDirectStateCopy(
       ? " If you don't own \(ownerLabel), ask an owner of \(ownerLabel) to approve the update."
       : ""
     return GitHubDirectStateCopy(
-      title: "Approve the ADE GitHub App's update",
-      body: "The ADE GitHub App on \(ownerLabel) still has its old permissions. Approve the update so ADE can push and open pull requests. Until then, you can read pull requests here but not change them.\(orgLine)",
+      title: "Approve the \(Brand.name) GitHub App's update",
+      body: "The \(Brand.name) GitHub App on \(ownerLabel) still has its old permissions. Approve the update so \(Brand.name) can push and open pull requests. Until then, you can read pull requests here but not change them.\(orgLine)",
       primary: .link("Review on GitHub", installation(error.manageUrl))
     )
   case .repoNotReachable:
@@ -109,7 +109,7 @@ func githubDirectStateCopy(
     let who = githubLogin.map { ", or check that @\($0) has access to it" } ?? ", or check that your GitHub account has access to it"
     return GitHubDirectStateCopy(
       title: "Repository not reachable",
-      body: "ADE can't reach \(repo). Add it to the ADE GitHub App's repositories\(who).",
+      body: "\(Brand.name) can't reach \(repo). Add it to the \(Brand.name) GitHub App's repositories\(who).",
       primary: .link("Choose repositories", installation(error.manageUrl))
     )
   case .rateLimited:
@@ -121,11 +121,11 @@ func githubDirectStateCopy(
   case .githubUnavailable:
     return GitHubDirectStateCopy(
       title: "GitHub isn't answering",
-      body: error.retryAt.map { "GitHub isn't answering right now. ADE tries again at \(formatTime($0))." }
-        ?? "GitHub isn't answering right now. ADE tries again soon."
+      body: error.retryAt.map { "GitHub isn't answering right now. \(Brand.name) tries again at \(formatTime($0))." }
+        ?? "GitHub isn't answering right now. \(Brand.name) tries again soon."
     )
   case .forbidden:
-    return GitHubDirectStateCopy(title: "GitHub refused", body: "GitHub didn't let ADE read \(repo).")
+    return GitHubDirectStateCopy(title: "GitHub refused", body: "GitHub didn't let \(Brand.name) read \(repo).")
   case .notFound, .invalidRequest:
     return nil
   }
@@ -616,8 +616,8 @@ struct PrDirectDetailScreen: View {
   }
 
   private var footer: some View {
-    Text(computerName.map { "Merge, review and lane work open on GitHub or in ADE. Lane info shows when \($0) is online." }
-      ?? "Merge, review and lane work open on GitHub or in ADE. Lane info shows when a computer with this project is online.")
+    Text(computerName.map { "Merge, review and lane work open on GitHub or in \(Brand.name). Lane info shows when \($0) is online." }
+      ?? "Merge, review and lane work open on GitHub or in \(Brand.name). Lane info shows when a computer with this project is online.")
       .font(.system(size: 12))
       .foregroundStyle(ADEColor.textMuted)
       .fixedSize(horizontal: false, vertical: true)

@@ -330,7 +330,7 @@ struct HubRemoveProjectsSheet: View {
           .fixedSize(horizontal: false, vertical: true)
       }
       if phase == .choose {
-        Text("ADE keeps the folders. Each copy stays on disk where it is.")
+        Text("\(Brand.name) keeps the folders. Each copy stays on disk where it is.")
           .font(.system(size: 14))
           .foregroundStyle(ADEColor.textSecondary)
           .fixedSize(horizontal: false, vertical: true)
@@ -439,7 +439,7 @@ struct HubRemoveProjectsSheet: View {
       lines = ["Still on your account. \(message)"]
     case .unknown:
       tone = .warn
-      lines = ["Not known: ADE could not confirm the change. Open this again to check."]
+      lines = ["Not known: \(Brand.name) could not confirm the change. Open this again to check."]
     }
     return summaryRow(
       symbol: "person.crop.circle",

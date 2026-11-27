@@ -597,7 +597,7 @@ struct WorkSponsoredConsentCard: View {
       }
     }
     .accessibilityElement(children: .contain)
-    .accessibilityLabel("Sponsored cards on ADE Cloud Free")
+    .accessibilityLabel("Sponsored cards on \(Brand.cloudName) Free")
     .alert("Turn on sponsored cards?", isPresented: $confirming) {
       Button("Turn on") { answer(CloudSponsoredState.granted, confirmed: true, since: confirmGeneration) }
       Button("Keep them off", role: .cancel) {}
@@ -611,13 +611,13 @@ struct WorkSponsoredConsentCard: View {
   }
 
   private var lead: String {
-    guard smallNeedsCards else { return "Sponsored cards help keep ADE Cloud free." }
-    return notice ? "They keep your Small cloud computers free." : "Sponsored cards pay for Small computers on ADE Cloud Free."
+    guard smallNeedsCards else { return "Sponsored cards help keep \(Brand.cloudName) free." }
+    return notice ? "They keep your Small cloud computers free." : "Sponsored cards pay for Small computers on \(Brand.cloudName) Free."
   }
 
   /// What a no costs, and where to change it.
   private var costLine: String {
-    let change = "You can change this any time in Settings\u{00A0}›\u{00A0}ADE\u{00A0}Cloud."
+    let change = "You can change this any time in Settings\u{00A0}›\u{00A0}\(Brand.name)\u{00A0}Cloud."
     guard smallNeedsCards else { return change }
     return "\(notice ? "Turn them off" : "Say no") and \(words.smallWithoutCards). \(change)"
   }

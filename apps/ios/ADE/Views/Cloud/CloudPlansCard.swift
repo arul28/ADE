@@ -67,7 +67,7 @@ struct CloudPlansCard: View {
   /// The one place for the explanations: what every plan includes.
   private var howItWorks: some View {
     VStack(alignment: .leading, spacing: 0) {
-      howRow("infinity", freeSmallNeedsCards ? "Unlimited Small computers on paid plans, and on Free in the US with sponsored cards on and an ADE Cloud chat opened there each week." : words.smallUnlimitedSentence, "Each lane has its own Linux computer your agents work on. \(cloudSmallFairUseSentence)")
+      howRow("infinity", freeSmallNeedsCards ? "Unlimited Small computers on paid plans, and on Free in the US with sponsored cards on and a \(Brand.cloudName) chat opened there each week." : words.smallUnlimitedSentence, "Each lane has its own Linux computer your agents work on. \(cloudSmallFairUseSentence)")
       Divider().overlay(ADEKit.edge)
       howRow("clock", "\(words.title) run the bigger sizes", "and renew every month. \(words.unitSentence)\(currentHoursLine.map { " Your plan: \($0)." } ?? "")")
       Divider().overlay(ADEKit.edge)
@@ -78,7 +78,7 @@ struct CloudPlansCard: View {
       // from the credits, with no minutes of its own.
       if account.phoneOn {
         Divider().overlay(ADEKit.edge)
-        howRow("iphone", "The ADE Cloud iPhone", "uses \(words.phoneRate), for agents to test your app on an iPhone simulator in the cloud.")
+        howRow("iphone", "The \(Brand.cloudName) iPhone", "uses \(words.phoneRate), for agents to test your app on an iPhone simulator in the cloud.")
       }
     }
     .background(ADEKit.track.opacity(0.45), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -227,7 +227,7 @@ struct CloudPlansCard: View {
     var parts: [String] = []
     if let computers = computerLimit(column) {
       parts.append(cloudComputersPhrase(computers))
-      parts.append(column.id == "free" && freeSmallNeedsCards ? "unlimited Small computers with sponsored cards, in the US, with an ADE Cloud chat there each week" : "unlimited Small computers")
+      parts.append(column.id == "free" && freeSmallNeedsCards ? "unlimited Small computers with sponsored cards, in the US, with a \(Brand.cloudName) chat there each week" : "unlimited Small computers")
       parts.append(words.planSentence(column.facts.includedMilli))
       parts.append(cloudHoursOnSizes(column.facts.includedMilli, tiers: tiers) ?? "\(cloudHours(column.facts.includedMilli)) credits a month")
     } else {
@@ -353,20 +353,20 @@ struct CloudSponsoredCard: View {
     guard sponsored.smallUsesHoursWithoutCards else { return nil }
     guard sponsored.granted || sponsored.toldOn else { return (false, "Small computers use your \(unit) while sponsored cards are off.") }
     if sponsored.smallNeedsLook {
-      return (false, "Small computers use your \(unit) until you open an ADE Cloud chat in the US: none was opened there in the last 7 days.")
+      return (false, "Small computers use your \(unit) until you open a \(Brand.cloudName) chat in the US: none was opened there in the last 7 days.")
     }
     return sponsored.ads ? (true, "Your Small computers are free while sponsored cards are on.") : nil
   }
 
   private func stateLine(_ sponsored: CloudSponsoredState) -> String {
     // What the cards do, as the chat's question and notice say it (`CloudPlans.tsx` `SPONSORED_SETTINGS_DO`).
-    let does = "ADE Cloud chats can show one card under a finished reply, and an agent may suggest a sponsored tool."
+    let does = "\(Brand.cloudName) chats can show one card under a finished reply, and an agent may suggest a sponsored tool."
     guard sponsored.granted || sponsored.toldOn else {
       return "Off. When on, free \(does)\(sponsored.gpcOff ? " \(CloudSponsoredState.gpcOffLine)" : "")"
     }
     return sponsored.ads
       ? "On.\(sponsored.toldOn || toldHere ? " They start on where you are; you can turn them off here." : "") Free \(does)"
-      : "On, but none show for you now: sponsored cards run only in Free ADE Cloud chats, in the countries Gravity serves."
+      : "On, but none show for you now: sponsored cards run only in Free \(Brand.cloudName) chats, in the countries Gravity serves."
   }
 
   private func save(_ consent: String, confirmed: Bool = false, since: Int? = nil) {

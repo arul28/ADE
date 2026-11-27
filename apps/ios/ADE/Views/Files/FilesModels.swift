@@ -177,7 +177,7 @@ func filesTextPreviewLimit(blob: SyncFileBlob) -> FilesPreviewLimit? {
     lineLimit: filesTextPreviewLineLimit,
     byteLimit: filesTextPreviewByteLimit,
     title: "Preview paused",
-    action: "Use ADE on your machine or narrow the file before previewing it on iPhone."
+    action: "Use \(Brand.name) on your machine or narrow the file before previewing it on iPhone."
   )
 }
 
@@ -190,12 +190,12 @@ func filesPartialPreviewLimit(blob: SyncFileBlob, focusLine: Int? = nil) -> File
   if let focusLine, focusLine > filesEstimatedLineCount(blob.content) {
     return FilesPreviewLimit(
       title: "Line \(focusLine) didn't load",
-      message: "This file is over 1 MB, so your machine sent only the start of it. Open it in ADE on your machine to see that line."
+      message: "This file is over 1 MB, so your machine sent only the start of it. Open it in \(Brand.name) on your machine to see that line."
     )
   }
   return FilesPreviewLimit(
     title: "Only the start of this file loaded",
-    message: "This file is over 1 MB, so your machine sent only the start of it. Open it in ADE on your machine to read the rest."
+    message: "This file is over 1 MB, so your machine sent only the start of it. Open it in \(Brand.name) on your machine to read the rest."
   )
 }
 
@@ -233,9 +233,9 @@ func filesOmittedPreviewLimit(blob: SyncFileBlob) -> FilesPreviewLimit? {
   let title = blob.omittedReason == "too_large" ? "Preview paused" : "Preview unavailable"
   let message: String
   if blob.omittedReason == "too_large" {
-    message = "This content is \(formattedFileSize(blob.size)). Open it from ADE on your machine to inspect the full file."
+    message = "This content is \(formattedFileSize(blob.size)). Open it from \(Brand.name) on your machine to inspect the full file."
   } else {
-    message = "The machine marked this file as unsupported for inline mobile preview. Open it from ADE on your machine."
+    message = "The machine marked this file as unsupported for inline mobile preview. Open it from \(Brand.name) on your machine."
   }
   return FilesPreviewLimit(title: title, message: message)
 }
@@ -329,7 +329,7 @@ func filesDiffPreviewLimit(diff: FileDiff) -> FilesPreviewLimit? {
   if diff.original.isTruncated == true || diff.modified.isTruncated == true {
     return FilesPreviewLimit(
       title: "Diff preview paused",
-      message: "This diff is too large to compare fully on iPhone. Open the file from ADE on your machine or inspect a smaller diff before rendering it on iPhone."
+      message: "This diff is too large to compare fully on iPhone. Open the file from \(Brand.name) on your machine or inspect a smaller diff before rendering it on iPhone."
     )
   }
 
@@ -338,7 +338,7 @@ func filesDiffPreviewLimit(diff: FileDiff) -> FilesPreviewLimit? {
   if filesLinePairCountExceedsLimit(originalLineCount: originalLineCount, modifiedLineCount: modifiedLineCount) {
     return FilesPreviewLimit(
       title: "Diff preview paused",
-      message: "This diff compares \(originalLineCount) original lines against \(modifiedLineCount) modified lines. Open the file from ADE on your machine or inspect a smaller diff before rendering it on iPhone."
+      message: "This diff compares \(originalLineCount) original lines against \(modifiedLineCount) modified lines. Open the file from \(Brand.name) on your machine or inspect a smaller diff before rendering it on iPhone."
     )
   }
 
@@ -349,7 +349,7 @@ func filesDiffPreviewLimit(diff: FileDiff) -> FilesPreviewLimit? {
     lineLimit: filesDiffPreviewLineLimit,
     byteLimit: filesDiffPreviewByteLimit,
     title: "Diff preview paused",
-    action: "Open the file from ADE on your machine or inspect a smaller diff before rendering it on iPhone."
+    action: "Open the file from \(Brand.name) on your machine or inspect a smaller diff before rendering it on iPhone."
   )
 }
 

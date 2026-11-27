@@ -832,7 +832,7 @@ private struct WorkUsageClientMix: View {
       }
       .frame(maxHeight: .infinity, alignment: .center)
       .accessibilityElement(children: .combine)
-      .accessibilityLabel("Where you use ADE")
+      .accessibilityLabel("Where you use \(Brand.name)")
     }
   }
 }

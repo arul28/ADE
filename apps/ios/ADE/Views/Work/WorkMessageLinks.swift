@@ -464,7 +464,7 @@ struct WorkSkillInstructionsSheet: View {
       return
     }
     guard service.supportsSkillInstructions(sessionId: sessionId) else {
-      state = .failed("Update ADE on \(machineName ?? "this chat's machine") to read skill instructions from the phone.")
+      state = .failed("Update \(Brand.name) on \(machineName ?? "this chat's machine") to read skill instructions from the phone.")
       return
     }
     state = .loading
@@ -483,7 +483,7 @@ func workSkillSourceLabel(_ source: String?) -> String {
   switch source {
   case "project": return "Project skill"
   case "user": return "Personal skill"
-  case "bundled": return "ADE skill"
+  case "bundled": return "\(Brand.name) skill"
   default: return "Skill"
   }
 }

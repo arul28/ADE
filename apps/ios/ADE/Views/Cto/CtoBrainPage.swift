@@ -332,7 +332,7 @@ struct CtoBrainPage: View {
               .foregroundStyle(ADEColor.textPrimary)
               .lineLimit(1)
             if sync.ctoHomeIsCloudComputer {
-              Text("ADE Cloud")
+              Text(Brand.cloudName)
                 .font(.footnote)
                 .foregroundStyle(ADEColor.textMuted)
                 .lineLimit(1)

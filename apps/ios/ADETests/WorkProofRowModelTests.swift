@@ -121,7 +121,7 @@ final class WorkProofRowModelTests: XCTestCase {
             #"{"proofSource":"ade-recorder","recordedFrom":"2026-09-23T10:24:00.000Z","recordedTo":"2026-09-23T10:25:40.000Z"}"#,
             formatClock: fixedClock
         )
-        XCTAssertEqual(lines.source, "Recorded by ADE · 10:24–10:25 AM")
+        XCTAssertEqual(lines.source, "Recorded by Daex · 10:24–10:25 AM")
         XCTAssertNil(lines.older)
     }
 
@@ -130,7 +130,7 @@ final class WorkProofRowModelTests: XCTestCase {
             #"{"proofSource":"ade-recorder","recordedFrom":"2026-09-23T11:58:00Z","recordedTo":"2026-09-23T12:02:00Z"}"#,
             formatClock: fixedClock
         )
-        XCTAssertEqual(lines.source, "Recorded by ADE · 11:58 AM–12:02 PM")
+        XCTAssertEqual(lines.source, "Recorded by Daex · 11:58 AM–12:02 PM")
     }
 
     /// Same line as the desktop's `proofSourceLine`: the idle cut says why the
@@ -140,14 +140,14 @@ final class WorkProofRowModelTests: XCTestCase {
             #"{"proofSource":"ade-recorder","recordedFrom":"2026-09-23T10:24:00Z","recordedTo":"2026-09-23T10:27:00Z","idleCutMs":127000}"#,
             formatClock: fixedClock
         )
-        XCTAssertEqual(lines.source, "Recorded by ADE · 10:24–10:27 AM · idle cut 2:07")
+        XCTAssertEqual(lines.source, "Recorded by Daex · 10:24–10:27 AM · idle cut 2:07")
         XCTAssertEqual(
             workProofProvenanceLines(#"{"proofSource":"ade-recorder","idleCutMs":400}"#).source,
-            "Recorded by ADE"
+            "Recorded by Daex"
         )
         XCTAssertEqual(
             workProofProvenanceLines(#"{"proofSource":"ade-recorder","idleCutMs":"lots"}"#).source,
-            "Recorded by ADE"
+            "Recorded by Daex"
         )
         XCTAssertEqual(workProofIdleCutLabel(3_842_000), "idle cut 1:04:02")
     }
@@ -178,9 +178,9 @@ final class WorkProofRowModelTests: XCTestCase {
     }
 
     func testCaptureAndAttachLines() {
-        XCTAssertEqual(workProofProvenanceLines(#"{"proofSource":"ade-capture"}"#).source, "Captured by ADE")
+        XCTAssertEqual(workProofProvenanceLines(#"{"proofSource":"ade-capture"}"#).source, "Captured by Daex")
         XCTAssertEqual(workProofProvenanceLines(#"{"proofSource":"attached"}"#).source, "Attached by the agent")
-        XCTAssertEqual(workProofProvenanceLines(#"{"proofSource":"ade-recorder"}"#).source, "Recorded by ADE")
+        XCTAssertEqual(workProofProvenanceLines(#"{"proofSource":"ade-recorder"}"#).source, "Recorded by Daex")
     }
 
     func testOldRowsAndBadMetadataPrintNothing() {

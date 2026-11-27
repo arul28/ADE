@@ -439,7 +439,7 @@ private struct AccountCreatePreview: View {
             parentDir: $parent,
             publish: $publish,
             publishUnavailable: HubAccountPreviewData.argument("-adePublishState") == "unavailable"
-              ? "Update ADE on Mac Studio to publish from your phone. It stays on that computer only."
+              ? "Update \(Brand.name) on Mac Studio to publish from your phone. It stays on that computer only."
               : nil,
             computerName: "Mac Studio",
             isSubmitting: false,

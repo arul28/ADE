@@ -67,7 +67,7 @@ struct SettingsIntegrationsPage: View {
         switch accountGitHub.state {
         case .notConnected, .needsReauth:
           // The account's GitHub sign-in serves every computer that has none.
-          ADESettingsRow(title: "Connect GitHub", hint: "Connect it to your ADE account. Every device and computer can use it.", symbol: "link", tint: .slate) {
+          ADESettingsRow(title: "Connect GitHub", hint: "Connect it to your \(Brand.name) account. Every device and computer can use it.", symbol: "link", tint: .slate) {
             Button(accountGitHub.connecting ? "Connecting…" : "Connect") {
               Task { await accountGitHub.connect() }
             }
@@ -104,7 +104,7 @@ struct SettingsIntegrationsPage: View {
   private var linearSection: some View {
     SettingsIntegrationCard(
       name: "Linear",
-      tagline: "Start lanes from Linear issues, link them to PRs, and let your team assign work to ADE.",
+      tagline: "Start lanes from Linear issues, link them to PRs, and let your team assign work to \(Brand.name).",
       status: projectStatus(linear, readBy: "cto.getLinearConnectionStatus")
     ) {
       ADEBrandTile(brand: .linear, size: 42)
@@ -131,7 +131,7 @@ struct SettingsIntegrationsPage: View {
   private var jiraSection: some View {
     SettingsIntegrationCard(
       name: "Jira",
-      tagline: "Bring a Jira Cloud site's issues into ADE and tie them to this project.",
+      tagline: "Bring a Jira Cloud site's issues into \(Brand.name) and tie them to this project.",
       status: projectStatus(jira, readBy: "jira.getConnectionStatus")
     ) {
       ADEBrandTile(brand: .jira, size: 42)

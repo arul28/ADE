@@ -278,9 +278,9 @@ extension SyncService {
       .failure(SyncPairAlongsideFailure(message: message))
     }
     guard let machine = AccountService.shared.machines.first(where: { $0.machineKey == accountMachineKey }) else {
-      return fail("That computer is not in your ADE account anymore.")
+      return fail("That computer is not in your \(Brand.name) account anymore.")
     }
-    guard let fleet = machineFleet else { return fail("ADE could not reach \(machine.displayName).") }
+    guard let fleet = machineFleet else { return fail("\(Brand.name) could not reach \(machine.displayName).") }
     if let key = startOnPhoneKey(for: machine) {
       if key == focusedMachineKey {
         // The user picked this computer: bring its link back, as the
@@ -288,11 +288,11 @@ extension SyncService {
         if connectionState != .connected { await reconnectIfPossible(userInitiated: true) }
         return connectionState == .connected
           ? .success(key)
-          : fail("ADE could not reach \(machine.displayName). Check that ADE is running on it.")
+          : fail("\(Brand.name) could not reach \(machine.displayName). Check that \(Brand.name) is running on it.")
       }
       return await fleet.connect(machineKey: key, timeout: .seconds(15))
         ? .success(key)
-        : fail("ADE could not reach \(machine.displayName). Check that ADE is running on it.")
+        : fail("\(Brand.name) could not reach \(machine.displayName). Check that \(Brand.name) is running on it.")
     }
     guard let authorization = AccountService.shared.currentPairingAuthorization else {
       return fail("Your account session ended. Sign in again, then try again.")
@@ -439,7 +439,7 @@ extension SyncService {
     case .success(let key):
       let callKey = machineCallKey(key)
       guard machineAllowsPhoneAction(accountProjectSetMainAction, onMachine: callKey) else {
-        return .failure(SyncPairAlongsideFailure(message: "Update ADE on \(machineName) to change this from your phone."))
+        return .failure(SyncPairAlongsideFailure(message: "Update \(Brand.name) on \(machineName) to change this from your phone."))
       }
       do {
         let raw = try await sendMachineCommand(action: accountProjectSetMainAction, args: ["checkoutId": checkoutId], onMachine: callKey)
@@ -447,7 +447,7 @@ extension SyncService {
         if answer["ok"] as? Bool == true {
           // Saved on the computer, but your account does not have it yet.
           if answer["published"] as? Bool == false {
-            return .failure(SyncPairAlongsideFailure(message: "\(machineName) saved this, but could not send it to your ADE account yet. It tries again on its own."))
+            return .failure(SyncPairAlongsideFailure(message: "\(machineName) saved this, but could not send it to your \(Brand.name) account yet. It tries again on its own."))
           }
           return .success(())
         }

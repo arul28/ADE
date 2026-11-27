@@ -2305,7 +2305,7 @@ struct WorkSessionDestinationView: View {
           machineName: sessionDestinationNavigationSubtitle,
           held: held,
           sessionId: sessionId,
-          unavailableNotice: "This chat loads when its ADE Cloud computer is up."
+          unavailableNotice: "This chat loads when its \(Brand.cloudName) computer is up."
         )
       } else if initialLoadCompleted {
         ADEEmptyStateView(

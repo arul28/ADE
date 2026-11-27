@@ -725,7 +725,7 @@ struct WorkCrossMachineHandoffSheet: View {
               .font(.caption2)
               .foregroundStyle(ADEColor.textMuted)
           } else if machine.hasRepository == false {
-            Text("Repository not there yet — ADE can clone it")
+            Text("Repository not there yet — \(Brand.name) can clone it")
               .font(.caption2)
               .foregroundStyle(ADEColor.textSecondary)
           } else {
@@ -961,7 +961,7 @@ struct WorkCrossMachineHandoffSheet: View {
           Text("Clone the repository on \(machine.name)")
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
-          Text("It isn't there yet. ADE clones it from GitHub before the chat starts.")
+          Text("It isn't there yet. \(Brand.name) clones it from GitHub before the chat starts.")
             .font(.caption)
             .foregroundStyle(ADEColor.textSecondary)
         }

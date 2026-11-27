@@ -940,7 +940,7 @@ struct ADETailscaleOffHintCard: View {
   var body: some View {
     ADENoticeCard(
       title: "iPhone isn't on Tailscale",
-      message: "Away from your machine's Wi-Fi, ADE connects through Tailscale. Open it and connect this iPhone.",
+      message: "Away from your machine's Wi-Fi, \(Brand.name) connects through Tailscale. Open it and connect this iPhone.",
       icon: "network.badge.shield.half.filled",
       tint: ADEColor.warning,
       actionTitle: "Open Tailscale",

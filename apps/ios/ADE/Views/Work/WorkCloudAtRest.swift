@@ -127,7 +127,7 @@ struct CloudSessionCopyScreen: View {
     if computerDeleted {
       return row.isShell
         ? "What \(what) showed before its computer was deleted, saved \(saved). A shell can't continue on a new computer."
-        : "What \(what) showed before its computer was deleted, saved \(saved). A message continues it on a new ADE Cloud computer."
+        : "What \(what) showed before its computer was deleted, saved \(saved). A message continues it on a new \(Brand.cloudName) computer."
     }
     return "What \(what) showed when its computer went to sleep, saved \(saved). You can't type here."
   }
@@ -142,7 +142,7 @@ struct CloudSessionCopyScreen: View {
       ADEEmptyStateView(
         symbol: "terminal",
         title: "No saved copy",
-        message: "ADE Cloud has no copy of this session. Wake the lane's computer to open it."
+        message: "\(Brand.cloudName) has no copy of this session. Wake the lane's computer to open it."
       )
       .frame(maxWidth: .infinity, maxHeight: .infinity)
     case .failed(let message)?:
@@ -265,7 +265,7 @@ struct CloudSessionCopyScreen: View {
       ADEHaptics.success()
     case .routeMissing:
       // An older server takes no messages for a CLI copy.
-      sendError = "ADE Cloud can't continue this CLI yet. Continue it from ADE on a computer."
+      sendError = "\(Brand.cloudName) can't continue this CLI yet. Continue it from \(Brand.name) on a computer."
     case .refused(let message):
       // Nothing was kept: the next send is a new message.
       sendId = nil
@@ -313,7 +313,7 @@ struct CloudSessionCopyScreen: View {
     #endif
     if !force, copy != nil { return }
     guard let client = await syncService.cloudServerClient() else {
-      copy = .failed("Sign in to ADE to read this copy.")
+      copy = .failed("Sign in to \(Brand.name) to read this copy.")
       return
     }
     do {
@@ -426,7 +426,7 @@ struct WorkCloudRestingMoveSheet: View {
               .font(.headline)
               .foregroundStyle(ADEColor.textPrimary)
             Text(target.deleted
-              ? "A deleted computer can't pack the chat for a move. Send a message instead: ADE Cloud continues the chat on a new computer, with its whole history."
+              ? "A deleted computer can't pack the chat for a move. Send a message instead: \(Brand.cloudName) continues the chat on a new computer, with its whole history."
               : "To move the chat, its computer packs it first. \(CloudBalanceWords(cloudStore.account).wakingUses)")
               .font(.subheadline)
               .foregroundStyle(ADEColor.textSecondary)

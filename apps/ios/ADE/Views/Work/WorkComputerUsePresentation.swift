@@ -103,7 +103,7 @@ func workComputerUseSurfaceLabel(_ action: WorkComputerUseAction) -> (label: Str
       : action.screenProduct == "mac" ? "Mac Desktop" : "the lane screen"
     return (label, "display", false)
   case .appControl: return ("App Control", "macwindow", false)
-  case .adeBrowser: return ("ADE browser", "globe", false)
+  case .adeBrowser: return ("\(Brand.name) browser", "globe", false)
   case .userBrowser:
     let browser = "your \(action.browserName ?? "browser")"
     return (action.hostLabel.map { "\(browser) on \($0)" } ?? browser, "person", true)
@@ -111,7 +111,7 @@ func workComputerUseSurfaceLabel(_ action: WorkComputerUseAction) -> (label: Str
     return (action.deviceName.flatMap { $0.isEmpty ? nil : $0 } ?? "the simulator", "iphone", false)
   case .androidDevice:
     return (action.deviceName.flatMap { $0.isEmpty ? nil : $0 } ?? "the emulator", "smartphone", false)
-  case .proof: return ("ADE proof", "checkmark.seal", false)
+  case .proof: return ("\(Brand.name) proof", "checkmark.seal", false)
   }
 }
 

@@ -673,7 +673,7 @@ struct WorkLaneContextMenuContent: View {
       Button {
         actions.onCopyLaneLink(lane)
       } label: {
-        Label("ADE lane link", systemImage: "link")
+        Label("\(Brand.name) lane link", systemImage: "link")
       }
       Button {
         actions.onCopyBranchLink(lane)
@@ -2234,7 +2234,7 @@ struct WorkHeaderOverflowMenu: View {
           ADEHaptics.light()
           actions.onOpenCloud()
         } label: {
-          Label("ADE Cloud", systemImage: "cloud")
+          Label("\(Brand.cloudName)", systemImage: "cloud")
         }
       }
       Divider()
@@ -2251,7 +2251,7 @@ struct WorkHeaderOverflowMenu: View {
     .animation(.snappy(duration: 0.2), value: unread > 0)
     .accessibilityLabel(unread > 0 ? "More, \(unread) activity \(unread == 1 ? "item needs" : "items need") you" : "More")
     // Only the entries this menu shows: ADE Cloud is named only for an account that has it.
-    .accessibilityHint(showsCloud ? "Activity, Linear, GitHub Issues, Cursor Cloud, ADE Cloud and Settings" : "Activity, Linear, GitHub Issues, Cursor Cloud and Settings")
+    .accessibilityHint(showsCloud ? "Activity, Linear, GitHub Issues, Cursor Cloud, \(Brand.cloudName) and Settings" : "Activity, Linear, GitHub Issues, Cursor Cloud and Settings")
   }
 
   private var phoneLabel: some View {

@@ -104,11 +104,11 @@ enum LaneGitConfirmation: Identifiable {
   var message: String {
     switch self {
     case .rebaseLane:
-      return "ADE will replay this lane on top of its base branch. Review the lane status before continuing."
+      return "\(Brand.name) will replay this lane on top of its base branch. Review the lane status before continuing."
     case .forcePush:
       return "This updates the remote branch with force-with-lease. Review the lane status before continuing."
     case .rebaseAndPush:
-      return "ADE will rebase this lane, inspect upstream state, then push. If the branch diverged, it may use force-with-lease."
+      return "\(Brand.name) will rebase this lane, inspect upstream state, then push. If the branch diverged, it may use force-with-lease."
     }
   }
 
@@ -281,7 +281,7 @@ enum LaneDeleteMode: String, CaseIterable, Identifiable {
 
   var detail: String {
     switch self {
-    case .worktree: return "Remove the ADE lane and worktree"
+    case .worktree: return "Remove the \(Brand.name) lane and worktree"
     case .localBranch: return "Also delete the local branch"
     case .remoteBranch: return "Also delete the remote branch"
     }

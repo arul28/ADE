@@ -198,7 +198,7 @@ enum ProviderAccountProvider: String, CaseIterable, Identifiable {
     [
       "Open the sign-in page",
       usesDeviceCode ? "Paste the code on the page" : "Paste the code it gives you",
-      "ADE checks the login",
+      "\(Brand.name) checks the login",
     ]
   }
 }
@@ -262,7 +262,7 @@ extension MachineConnection: ProviderAccountsHost {
       throw NSError(domain: "ADE", code: 15, userInfo: [NSLocalizedDescriptionKey: "\(hostName ?? "This machine") is not connected right now."])
     }
     guard supportsAction(action) else {
-      throw NSError(domain: "ADE", code: 15, userInfo: [NSLocalizedDescriptionKey: "\(hostName ?? "This machine") runs an ADE that cannot do this from the phone yet."])
+      throw NSError(domain: "ADE", code: 15, userInfo: [NSLocalizedDescriptionKey: "\(hostName ?? "This machine") runs a \(Brand.name) that cannot do this from the phone yet."])
     }
     return try await sendCommand(
       action: action,
@@ -480,7 +480,7 @@ final class ProviderAccountsStore: ObservableObject {
       return false
     }
     guard change.isSaved(in: account(id: id)) else {
-      errorMessage = "That setting was not saved. Update ADE on that computer and try again."
+      errorMessage = "That setting was not saved. Update \(Brand.name) on that computer and try again."
       return false
     }
     return true

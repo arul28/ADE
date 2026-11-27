@@ -14,7 +14,7 @@ struct SettingsPasswordsSection: View {
   var body: some View {
     ADESettingsSection(
       "Passwords & Secrets",
-      hint: "Your saved logins and API secrets. View and copy them here; add or change them in ADE on a computer.",
+      hint: "Your saved logins and API secrets. View and copy them here; add or change them in \(Brand.name) on a computer.",
       symbol: "key",
       tint: .amber
     ) {
@@ -55,7 +55,7 @@ struct PasswordsListPage: View {
     case .notSetUp:
       PasswordsEmptyState(
         title: "Nothing here yet",
-        message: "Open ADE on a computer you're signed in to. It sets up your vault, and the logins and secrets you save there show here."
+        message: "Open \(Brand.name) on a computer you're signed in to. It sets up your vault, and the logins and secrets you save there show here."
       )
     case .failed(let message) where vault.items.isEmpty:
       PasswordsEmptyState(title: "Couldn't open Passwords & Secrets", message: message, retry: { Task { await vault.refresh() } })
@@ -131,7 +131,7 @@ struct PasswordsListPage: View {
         .font(.system(size: 12.5))
         .foregroundStyle(ADEColor.textMuted)
     }
-    Text("Read only on this \(UIDevice.current.model). Add or change passwords in ADE on a computer.")
+    Text("Read only on this \(UIDevice.current.model). Add or change passwords in \(Brand.name) on a computer.")
       .font(.system(size: 12.5))
       .foregroundStyle(ADEColor.textMuted)
       .fixedSize(horizontal: false, vertical: true)
@@ -438,7 +438,7 @@ struct PasswordDetailPage: View {
   }
 
   private var readOnlyFooter: some View {
-    Text("Read only on this \(UIDevice.current.model). Change it in ADE on a computer.")
+    Text("Read only on this \(UIDevice.current.model). Change it in \(Brand.name) on a computer.")
       .font(.system(size: 12.5))
       .foregroundStyle(ADEColor.textMuted)
   }

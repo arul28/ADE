@@ -423,7 +423,7 @@ struct WorkToolsSheet: View {
       Image(systemName: "desktopcomputer")
         .font(.title3.weight(.semibold))
         .foregroundStyle(ADEColor.textMuted)
-      Text("Tools run on the desktop. Open ADE on your Mac to see them here.")
+      Text("Tools run on the desktop. Open \(Brand.name) on your Mac to see them here.")
         .font(.footnote)
         .foregroundStyle(ADEColor.textSecondary)
         .multilineTextAlignment(.center)
@@ -977,14 +977,14 @@ func workToolsBrowserUnavailableMessage(_ reason: String?) -> String {
     // Distinct from the default on purpose: ADE Desktop *is* running, it just
     // doesn't have this project open, so "open ADE on your Mac" would send the
     // user to look at an app that is already in front of them.
-    return "ADE Desktop doesn't have this project open. Open it on your Mac to see its tabs."
+    return "\(Brand.name) Desktop doesn't have this project open. Open it on your Mac to see its tabs."
   case "browser_pane_not_opened":
     // Narrower still: the project IS open on the desktop, only the Browser pane
     // is unused, so the instruction is one click — not "open the project",
     // which would be a lie about something already in front of them.
     return "Open the Browser tool on the desktop to see tabs here."
   default:
-    return "The browser runs in ADE Desktop. Open ADE on your Mac to see its tabs."
+    return "The browser runs in \(Brand.name) Desktop. Open \(Brand.name) on your Mac to see its tabs."
   }
 }
 

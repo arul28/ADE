@@ -46,11 +46,11 @@ final class AppleDeviceStreamTests: XCTestCase {
   func testAnOffDeviceReadsAsOffOnTheMacNotAsTheWireCode() {
     XCTAssertEqual(
       appleStreamTicketFailureMessage("APPLE_DEVICE_OFF: iPhone 17 Pro is off. Watching a device never boots it."),
-      "iPhone 17 Pro is off on your Mac. Start it in ADE on the Mac to watch it here."
+      "iPhone 17 Pro is off on your Mac. Start it in Daex on the Mac to watch it here."
     )
     XCTAssertEqual(
       appleStreamTicketFailureMessage("APPLE_DEVICE_OFF"),
-      "The simulator is off on your Mac. Start it in ADE on the Mac to watch it here."
+      "The simulator is off on your Mac. Start it in Daex on the Mac to watch it here."
     )
     XCTAssertEqual(appleStreamTicketFailureMessage("Something else broke."), "Something else broke.")
     // A Mac whose install lost its helper is not an old Mac: no "update" here.

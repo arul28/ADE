@@ -70,7 +70,7 @@ struct RecentlyDeletedSections: View {
       style: style,
       reloadToken: reloadToken,
       failedMessage: { "Couldn’t read \($0.name)." },
-      outdatedMessage: { "\($0.name) runs an older ADE. Update it there to see its deleted chats." },
+      outdatedMessage: { "\($0.name) runs an older \(Brand.name). Update it there to see its deleted chats." },
       noMachinesMessage: "Connect a computer to see what you deleted.",
       loadingMessage: "Looking for deleted lanes and chats…"
     ) {

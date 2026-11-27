@@ -511,7 +511,7 @@ private enum LaneMoveData {
       chats: preview.chats,
       fromComputer: CloudKeptLaneRestorePreview.FromComputer(
         saved: saved,
-        reason: saved ? nil : "ADE couldn't save this lane's work when the computer went to sleep.",
+        reason: saved ? nil : "\(Brand.name) couldn't save this lane's work when the computer went to sleep.",
         ignored: LaneMoveIgnoredFiles(paths: [".env", ".env.local", "tmp/upload-cache.db"], more: 2, rebuildable: 1, incomplete: nil)
       )
     )
@@ -576,7 +576,7 @@ private enum LaneMoveData {
       route: route,
       computer: cloudSource.computer,
       phase: phase,
-      error: phase == .deleteFailed ? "ADE Cloud took the delete but the computer is still there. Check again in a minute; if it stays, delete it again." : nil,
+      error: phase == .deleteFailed ? "\(Brand.cloudName) took the delete but the computer is still there. Check again in a minute; if it stays, delete it again." : nil,
       startedAt: Date().addingTimeInterval(-40),
       arrived: phase == .done || phase == .deleteFailed,
       batch: batch
@@ -724,7 +724,7 @@ private struct CloudCtoCopyFixture: View {
         look: CtoPreviewData.look,
         name: "Atlas",
         state: .asleep,
-        line: "Asleep on ADE Cloud",
+        line: "Asleep on \(Brand.cloudName)",
         message: "Its notes and recent chat come along. Tap Reconnect to wake it, or pick another home.",
         actionTitle: "Reconnect",
         action: {},
@@ -777,7 +777,7 @@ private struct CloudSettingsDirectFixture: View {
         .padding(.vertical, 12)
       }
       .background(ADEColor.pageBackground.ignoresSafeArea())
-      .navigationTitle("ADE Cloud")
+      .navigationTitle(Brand.cloudName)
       .navigationBarTitleDisplayMode(.inline)
     }
   }

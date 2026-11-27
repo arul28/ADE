@@ -102,12 +102,12 @@ struct CloudPaneSheet: View {
           }
         }
         .background(ADEColor.pageBackground.ignoresSafeArea())
-        .navigationTitle(store.selected?.displayName ?? "ADE Cloud")
+        .navigationTitle(store.selected?.displayName ?? "\(Brand.cloudName)")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
           ToolbarItem(placement: .topBarTrailing) {
             Button(role: .close) { dismiss() }
-              .accessibilityLabel("Close ADE Cloud")
+              .accessibilityLabel("Close \(Brand.cloudName)")
           }
         }
       }
@@ -332,7 +332,7 @@ final class CloudPaneStore: ObservableObject {
   private func reloadDirect() async {
     isDirect = true
     guard let client = await syncService.cloudServerClient() else {
-      phase = .failed("Sign in to ADE to see ADE Cloud.")
+      phase = .failed("Sign in to \(Brand.name) to see \(Brand.cloudName).")
       return
     }
     async let accountRead = Self.readDirect("account") { try await client.account() }
@@ -346,7 +346,7 @@ final class CloudPaneStore: ObservableObject {
     let (account, instancesResult) = await (accountRead, instancesRead)
     let instances = try? instancesResult.get()
     if case .failure(let error) = instancesResult {
-      instancesError = cloudPhoneWords(cloudServerFailureMessage(error)) ?? "ADE Cloud couldn't list your computers. Try again in a moment."
+      instancesError = cloudPhoneWords(cloudServerFailureMessage(error)) ?? "\(Brand.cloudName) couldn't list your computers. Try again in a moment."
       cloudPaneLog.notice("cloud_pane read=instances failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
     } else {
       instancesError = nil
@@ -361,7 +361,7 @@ final class CloudPaneStore: ObservableObject {
       if selectedId == nil || machine(selectedId!) == nil { selectedId = machines.first?.instanceId }
     }
     if account == nil, instances == nil {
-      if machines.isEmpty { phase = .failed("ADE Cloud didn't answer. Check the connection, then try again.") }
+      if machines.isEmpty { phase = .failed("\(Brand.cloudName) didn't answer. Check the connection, then try again.") }
     } else {
       phase = .loaded
     }
@@ -371,7 +371,7 @@ final class CloudPaneStore: ObservableObject {
       limitsRevision = state.revision
     } catch CloudServerClient.Failure.noAccess {
       // An older server has no limits route.
-      limitsError = "This ADE Cloud server can't show agent limits yet."
+      limitsError = "This \(Brand.cloudName) server can't show agent limits yet."
     } catch {
       limitsError = cloudServerFailureMessage(error)
       cloudPaneLog.notice("cloud_pane read=limits failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
@@ -386,7 +386,7 @@ final class CloudPaneStore: ObservableObject {
     do {
       limits = try await syncService.cloudRead("limits", as: CloudPhoneLimits.self)
     } catch {
-      limitsError = cloudPhoneWords(error.localizedDescription) ?? "ADE couldn't read the agent limits."
+      limitsError = cloudPhoneWords(error.localizedDescription) ?? "\(Brand.name) couldn't read the agent limits."
       cloudPaneLog.notice("cloud_pane read=limits failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
     }
   }
@@ -460,7 +460,7 @@ final class CloudPaneStore: ObservableObject {
       _ = try await syncService.cloudWrite(action, args: input, as: CloudPhoneAck.self)
       ADEHaptics.success()
     } catch {
-      actionError = cloudPhoneWords(error.localizedDescription) ?? "ADE Cloud couldn't do that."
+      actionError = cloudPhoneWords(error.localizedDescription) ?? "\(Brand.cloudName) couldn't do that."
       ADEHaptics.error()
     }
     await reload()
@@ -514,7 +514,7 @@ final class CloudPaneStore: ObservableObject {
     }
     await act(on: machine, title: "Deleted \(machine.displayName)", gone: true) { client in
       guard try await client.deleteInstanceConfirmed(machine.instanceId) else {
-        return CloudComputerOutcome(ok: false, message: "ADE Cloud took the delete but hasn't finished it yet. Check again in a minute; if the computer is still there, delete it again.")
+        return CloudComputerOutcome(ok: false, message: "\(Brand.cloudName) took the delete but hasn't finished it yet. Check again in a minute; if the computer is still there, delete it again.")
       }
       let account = AccountService.shared
       if let key = machine.machineKey,
@@ -523,10 +523,10 @@ final class CloudPaneStore: ObservableObject {
           try await account.removeMachineFromAccount(row)
         } catch {
           cloudPaneLog.notice("cloud_pane delete account_row=left error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
-          return CloudComputerOutcome(ok: true, message: "Deleted on ADE Cloud. ADE couldn't take it off your computers; remove it in Settings › Machines.")
+          return CloudComputerOutcome(ok: true, message: "Deleted on \(Brand.cloudName). \(Brand.name) couldn't take it off your computers; remove it in Settings › Machines.")
         }
       }
-      return CloudComputerOutcome(ok: true, message: "Deleted on ADE Cloud and removed from ADE.")
+      return CloudComputerOutcome(ok: true, message: "Deleted on \(Brand.cloudName) and removed from \(Brand.name).")
     }
   }
 
@@ -558,7 +558,7 @@ final class CloudPaneStore: ObservableObject {
       if let failure = await AccountCloudStore.shared.keep(instanceId: machine.instanceId, using: syncService) {
         return CloudComputerOutcome(ok: false, message: failure)
       }
-      return CloudComputerOutcome(ok: true, message: "ADE won't delete it for not being used. Its idle clock starts again.")
+      return CloudComputerOutcome(ok: true, message: "\(Brand.name) won't delete it for not being used. Its idle clock starts again.")
     }
   }
 
@@ -602,16 +602,16 @@ final class CloudPaneStore: ObservableObject {
         worked = outcome?.ok ?? true
         if let outcome, !outcome.ok {
           // The phone never points at a purchase (App Store rule).
-          actionError = cloudPhoneWords(outcome.message) ?? "ADE Cloud couldn't do that."
+          actionError = cloudPhoneWords(outcome.message) ?? "\(Brand.cloudName) couldn't do that."
           if let failureTitle { CloudLaneActions.shared.toast = ADEToastMessage(text: failureTitle, kind: .failure, detail: actionError) }
         } else if let title {
           CloudLaneActions.shared.toast = ADEToastMessage(text: title, detail: outcome.flatMap { cloudPhoneWords($0.message) })
         }
       } catch {
-        actionError = cloudPhoneWords(cloudServerFailureMessage(error)) ?? "ADE Cloud couldn't do that."
+        actionError = cloudPhoneWords(cloudServerFailureMessage(error)) ?? "\(Brand.cloudName) couldn't do that."
       }
     } else {
-      actionError = "Sign in to ADE, then try again."
+      actionError = "Sign in to \(Brand.name), then try again."
     }
     if worked { ADEHaptics.success() } else { ADEHaptics.error() }
     busy.remove(instanceId)
@@ -697,7 +697,7 @@ final class CloudPaneStore: ObservableObject {
     actionError = nil
     let kind = tier.full ? "a full computer" : "a standard computer"
     guard let client = await syncService.cloudServerClient() else {
-      actionError = "Sign in to ADE, then try again."
+      actionError = "Sign in to \(Brand.name), then try again."
       ADEHaptics.error()
       return
     }
@@ -712,7 +712,7 @@ final class CloudPaneStore: ObservableObject {
       actionError = cloudPhoneKindChangeReason(to: tier)
       ADEHaptics.error()
     } catch {
-      let why = cloudPhoneWords(cloudServerFailureMessage(error)) ?? "ADE Cloud couldn't start the move."
+      let why = cloudPhoneWords(cloudServerFailureMessage(error)) ?? "\(Brand.cloudName) couldn't start the move."
       actionError = why
       ADEHaptics.error()
       CloudLaneActions.shared.toast = ADEToastMessage(text: "Couldn't move \(machine.displayName)", kind: .failure, detail: why)
@@ -725,7 +725,7 @@ final class CloudPaneStore: ObservableObject {
     cancellingMoves.insert(move.moveId)
     defer { cancellingMoves.remove(move.moveId) }
     guard let client = await syncService.cloudServerClient() else {
-      actionError = "Sign in to ADE, then try again."
+      actionError = "Sign in to \(Brand.name), then try again."
       return
     }
     do {
@@ -794,7 +794,7 @@ final class CloudPaneStore: ObservableObject {
         CloudLaneActions.shared.toast = ADEToastMessage(
           text: "Moved",
           detail: fresh.sourceDeleted == false
-            ? "\(name) is on \(fresh.kindWords) now. ADE couldn't delete the old computer; delete it from its page."
+            ? "\(name) is on \(fresh.kindWords) now. \(Brand.name) couldn't delete the old computer; delete it from its page."
             : "\(name) is on \(fresh.kindWords) now. Its lane and chats came along."
         )
       case "failed":
@@ -822,7 +822,7 @@ final class CloudPaneStore: ObservableObject {
       limits = nil
       _ = try await syncService.cloudWrite("set_limits", args: args, as: CloudPhoneAck.self)
     } catch {
-      actionError = cloudPhoneWords(error.localizedDescription) ?? "ADE Cloud couldn't do that."
+      actionError = cloudPhoneWords(error.localizedDescription) ?? "\(Brand.cloudName) couldn't do that."
     }
     await readLimitsThroughComputer()
   }
@@ -839,7 +839,7 @@ final class CloudPaneStore: ObservableObject {
       changes["extraDiskMonthCents"] = values.extraDiskMonthCents ?? NSNull()
     }
     guard let client = await syncService.cloudServerClient() else {
-      actionError = "Sign in to ADE again, then try again."
+      actionError = "Sign in to \(Brand.name) again, then try again."
       return
     }
     do {

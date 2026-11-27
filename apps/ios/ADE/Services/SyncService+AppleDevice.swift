@@ -191,7 +191,7 @@ extension SyncService {
 
   private func requireAppleControl(laneId: String) throws {
     guard supportsAppleDeviceControl(laneId: laneId) else {
-      throw appleUnsupportedError("Controlling this simulator needs a newer ADE on the Mac.")
+      throw appleUnsupportedError("Controlling this simulator needs a newer \(Brand.name) on the Mac.")
     }
   }
 

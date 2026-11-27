@@ -161,7 +161,7 @@ struct CursorCloudAgentListScreen: View {
         CursorCloudMark(size: 26)
         Text("No cloud agents")
           .font(.headline)
-        Text("Agents launched from ADE or anywhere on cursor.com appear here for this Cursor account.")
+        Text("Agents launched from \(Brand.name) or anywhere on cursor.com appear here for this Cursor account.")
           .font(.caption)
           .foregroundStyle(.secondary)
           .multilineTextAlignment(.center)

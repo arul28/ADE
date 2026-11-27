@@ -600,7 +600,7 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     // parser decides. It stays a generic ADE link rather than claiming a type.
     let notALane = link("ade://lane/25f280a4/session/abc")
     XCTAssertEqual(notALane?.kind, .adeLink)
-    XCTAssertEqual(notALane?.compactLabel, "ADE · lane/25f280a4/session/abc")
+    XCTAssertEqual(notALane?.compactLabel, "Daex · lane/25f280a4/session/abc")
 
     let branch = link("ade://repo/arul28/ade/branch/main")
     XCTAssertEqual(branch?.kind, .branch)
@@ -678,7 +678,7 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     XCTAssertEqual(links[2].provider, .web)
     XCTAssertEqual(links[2].compactLabel, "https://linear.app/ade/project/roadmap")
     XCTAssertEqual(links[3].provider, .ade)
-    XCTAssertEqual(links[3].compactLabel, "ADE · lane/25f280a4/session/abc")
+    XCTAssertEqual(links[3].compactLabel, "Daex · lane/25f280a4/session/abc")
   }
 
   func testSmartLinkDeletionExpandsSingleKeysAndBroaderSelections() throws {
