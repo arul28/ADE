@@ -193,7 +193,7 @@ if (!git(["init", "-q"]) || !git(["-c", "user.email=ci@ade.invalid", "-c", "user
 }
 
 // The old release makes the database.
-const oldVersion = run(oldCommand, ["--version"]).trim().replace(/^ade\s+/, "");
+const oldVersion = run(oldCommand, ["--version"]).trim().replace(/^(?:daex|ade)\s+/, "");
 const oldSocket = socketFor("old");
 const oldBrain = await startBrain(oldCommand, oldSocket, path.join(work, "old-brain.log"));
 run(oldCommand, ["--socket", oldSocket, "init", project]);
@@ -205,7 +205,7 @@ log(`${oldVersion} made ${dbPath} (${fs.statSync(dbPath).size} bytes), lane ${la
 
 // The new build opens it.
 const newCommand = newAppCommand();
-const newVersion = run(newCommand, ["--version"]).trim().replace(/^ade\s+/, "");
+const newVersion = run(newCommand, ["--version"]).trim().replace(/^(?:daex|ade)\s+/, "");
 const newSocket = socketFor("new");
 const newLog = path.join(work, "new-brain.log");
 const newBrain = await startBrain(newCommand, newSocket, newLog);

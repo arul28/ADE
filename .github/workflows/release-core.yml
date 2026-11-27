@@ -1464,6 +1464,7 @@ jobs:
             set -euo pipefail
             runtime="$1/Contents/Resources/runtime/ade-darwin-x64"
             actual="$("$runtime" --version)"
+            actual="${actual#daex }"
             actual="${actual#ade }"
             echo "darwin-x64 runtime reports $actual; the release is $2"
             [ "$actual" = "$2" ]

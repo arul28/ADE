@@ -1036,7 +1036,7 @@ describe("ADE CLI", () => {
     const version = buildCliPlan(["--version"]);
     expect(version.kind).toBe("help");
     if (version.kind !== "help") return;
-    expect(version.text).toMatch(/^ade \S+\n$/);
+    expect(version.text).toMatch(/^daex \S+\n$/);
     expect(buildCliPlan(["-v"])).toEqual(version);
   });
 

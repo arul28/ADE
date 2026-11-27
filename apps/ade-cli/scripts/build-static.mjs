@@ -290,7 +290,7 @@ async function assertStaticRuntimeVersion(binaryPath, expectedVersion, target) {
       ADE_CLI_VERSION: "",
     },
   });
-  const actual = stdout.trim().replace(/^ade\s+/i, "");
+  const actual = stdout.trim().replace(/^(?:daex|ade)\s+/i, "");
   if (actual !== expectedVersion) {
     throw new Error(`Static ADE runtime version mismatch: expected ${expectedVersion}, got ${actual || "<empty>"}.`);
   }

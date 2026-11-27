@@ -200,7 +200,7 @@ async function cleanup() {
 }
 
 /** `ade 1.2.130-beta.1` or `v1.2.130-beta.1` → `1.2.130-beta.1`. */
-const bareVersion = (value) => String(value ?? "").trim().replace(/^ade\s+/, "").replace(/^v/, "");
+const bareVersion = (value) => String(value ?? "").trim().replace(/^(?:daex|ade)\s+/, "").replace(/^v/, "");
 const isPrerelease = (value) => bareVersion(value).includes("-");
 
 async function test(build, minVersion, expectVersion) {

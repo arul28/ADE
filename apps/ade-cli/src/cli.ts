@@ -24904,7 +24904,7 @@ function buildCliPlan(
 ): CliPlan {
   const args = [...command];
   if (args[0] === "--version" || args[0] === "-v") {
-    return { kind: "help", text: `ade ${VERSION}\n` };
+    return { kind: "help", text: `${BRAND.CLI} ${VERSION}\n` };
   }
   const primary = firstPositional(args);
   if (!primary) {
@@ -24972,7 +24972,7 @@ function buildCliPlan(
     return buildHelpPlan(text, key ? helpCatalogTopic(helpKey) : null, options);
   }
   if (primary === "version" || primary === "--version" || primary === "-v") {
-    return { kind: "help", text: `ade ${VERSION}\n` };
+    return { kind: "help", text: `${BRAND.CLI} ${VERSION}\n` };
   }
   if (primary === "__ade-pty-host-worker") {
     return { kind: "pty-host-worker" };
