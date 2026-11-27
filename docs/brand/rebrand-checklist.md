@@ -279,6 +279,12 @@ Agent-facing text is not part of step 2, but three things matter now:
    `"author": { "name": "ADE" }`. Rename description and author; keep
    `"name": "ade"` and every skill folder name (frozen: saved prompts call
    them).
+   **Superseded:** the plugin is now `daex` and the skills are
+   `daex:daex-*` (folders renamed). The old `ade-*` names stay accepted as
+   aliases wherever a skill is resolved by name
+   (`LEGACY_BUNDLED_AGENT_SKILL_ALIASES` in
+   `apps/desktop/src/shared/agentSkillRoots.ts`), so saved prompts keep
+   working.
 
 Suggested split for step 3 (one worker each, no overlap):
 
