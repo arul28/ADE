@@ -1489,7 +1489,7 @@ function attentionAlertCopy(
   if (item.kind === "message") {
     // The agent wrote this because the user asked to be told, so the push
     // carries its words. Hide previews keeps the title only, like `ade notify`.
-    const title = alertLine(item.title) ?? "ADE";
+    const title = alertLine(item.title) ?? "Daex";
     const body = alertLine(item.preview, CUSTOM_NOTIFICATION_BODY_MAX);
     return { title, body: hideDetails || !body || body === title ? null : body };
   }
@@ -1514,7 +1514,7 @@ function attentionAlertCopy(
     };
   }
   return {
-    title: alertLine(item.title) ?? "ADE agent",
+    title: alertLine(item.title) ?? "Daex agent",
     body: alertLine([state, project, machine].filter(Boolean).join(" · ")),
   };
 }
@@ -1562,7 +1562,7 @@ export function assertDirectoryProvenance(
         ok: false,
         error: "directory authentication unavailable",
         code: "directory_auth_unavailable",
-        recovery: "DIRECTORY_AUTH_SECRET must be configured on the relay by the ADE service owner.",
+        recovery: "DIRECTORY_AUTH_SECRET must be configured on the relay by the Daex service owner.",
       }, { status: 503 }),
     };
   }
@@ -1573,7 +1573,7 @@ export function assertDirectoryProvenance(
         ok: false,
         error: "directory provenance required",
         code: "directory_auth_required",
-        recovery: "Pair this machine from ADE's account settings; a machine cannot restore its own pairing.",
+        recovery: "Pair this machine from Daex's account settings; a machine cannot restore its own pairing.",
       }, { status: 403 }),
     };
   }
@@ -1592,7 +1592,7 @@ async function authorizedUser(
           ok: false,
           error: "account authentication unavailable",
           code: "account_auth_unavailable",
-          recovery: "Relay authentication must be configured by the ADE service owner.",
+          recovery: "Relay authentication must be configured by the Daex service owner.",
         },
         { status: 503 },
       ),
@@ -1609,7 +1609,7 @@ async function authorizedUser(
             ok: false,
             error: "account authentication unavailable",
             code: "account_auth_unavailable",
-            recovery: "ADE's account verifier is temporarily unreachable. Retry shortly.",
+            recovery: "Daex's account verifier is temporarily unreachable. Retry shortly.",
           },
           { status: 503 },
         ),
@@ -1625,7 +1625,7 @@ async function authorizedUser(
             ok: false,
             error: "account token rejected",
             code: "account_token_rejected",
-            recovery: "Refresh the ADE account session and try again.",
+            recovery: "Refresh the Daex account session and try again.",
           },
           { status: 401 },
         ),
@@ -2799,7 +2799,7 @@ export async function handleAttentionMachinePublish(
       error: "machine removed from account",
       code: "machine_revoked",
       revokedAt,
-      recovery: "This machine was removed from the ADE account. Pair it again to publish activity.",
+      recovery: "This machine was removed from the Daex account. Pair it again to publish activity.",
     }, { status: 403 });
   }
   if (body.byteLength > MAX_BODY_BYTES) {
@@ -2812,7 +2812,7 @@ export async function handleAttentionMachinePublish(
     return json({ ok: false, error: "invalid json" }, { status: 400 });
   }
   if (!isRecord(payload)) return json({ ok: false, error: "invalid payload" }, { status: 400 });
-  const machineName = boundedText(payload.machineName, 120) ?? "ADE machine";
+  const machineName = boundedText(payload.machineName, 120) ?? "Daex machine";
   const mode = payload.mode === "delta"
     || payload.mode === "reconcile"
     || payload.mode === "presence"
@@ -3166,7 +3166,7 @@ async function handleSnapshot(
     generatedAt: new Date(now).toISOString(),
     machines: links.results.map((row) => ({
       machineKey: row.machine_key,
-      name: row.machine_name?.trim() || "ADE machine",
+      name: row.machine_name?.trim() || "Daex machine",
       online: now - Date.parse(row.last_seen_at) <= ACCOUNT_MACHINE_ONLINE_WINDOW_MS,
       lastSeenAt: row.last_seen_at,
     })),

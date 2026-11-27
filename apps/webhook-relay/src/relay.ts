@@ -663,7 +663,7 @@ async function rememberGitHubRateLimit(
 function rateLimitedRepoAccessResponse(cooldownUntil: number): Response {
   const retryAfterSeconds = Math.max(1, Math.ceil((cooldownUntil - Date.now()) / 1_000));
   return json(
-    { ok: false, error: "GitHub is rate limiting ADE's repository access checks. Try again shortly." },
+    { ok: false, error: "GitHub is rate limiting Daex's repository access checks. Try again shortly." },
     { status: 403, headers: { "retry-after": String(retryAfterSeconds) } },
   );
 }
@@ -883,8 +883,8 @@ function unverifiedRepoAccessResponse(): Response {
 
 function insufficientRepoPermissionResponse(level: GitHubRepoAccessLevel): Response {
   const error = level === "admin"
-    ? "GitHub token must have admin access to manage the ADE webhook for this repository."
-    : "GitHub token must have push/write, maintain, or admin access to read ADE webhook deliveries for this repository.";
+    ? "GitHub token must have admin access to manage the Daex webhook for this repository."
+    : "GitHub token must have push/write, maintain, or admin access to read Daex webhook deliveries for this repository.";
   return json({ ok: false, error }, { status: 403 });
 }
 
@@ -1793,7 +1793,7 @@ async function handleWebhookHeal(request: Request, env: RelayEnv, repo: { owner:
   if (!appStatus.configured || !appStatus.installed) {
     const error = appStatus.configured && !appStatus.installed && appStatus.error
       ? appStatus.error
-      : "The ADE GitHub App is not installed on this repository.";
+      : "The Daex GitHub App is not installed on this repository.";
     return json({ ok: false, error }, { status: 409 });
   }
 

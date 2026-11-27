@@ -711,7 +711,7 @@ export async function deliverAccountLiveActivity(
       // ActivityKit requires an alert to start an activity remotely. Keep it to
       // the same numbers the tiles show.
       aps.alert = {
-        title: "ADE",
+        title: "Daex",
         body: liveActivityStartSummary(contentState),
       };
     }

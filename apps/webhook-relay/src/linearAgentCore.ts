@@ -103,7 +103,7 @@ export const MAX_LINEAR_AGENT_MEMBERS = 500;
 export const LINEAR_AGENT_CLAIM_STALE_MS = 15 * 60_000;
 const LINEAR_AGENT_REFRESH_WINDOW_MS = 10 * 60_000;
 export const LINEAR_AGENT_SESSION_RETENTION_DAYS = 90;
-export const LINEAR_AGENT_ACK_BODY = "On it — ADE is starting a lane for this issue.";
+export const LINEAR_AGENT_ACK_BODY = "On it — Daex is starting a lane for this issue.";
 export const LINEAR_AGENT_ACTIVITY_TYPES = new Set(["thought", "action", "elicitation", "response", "error"]);
 export const LINEAR_AGENT_EPHEMERAL_TYPES = new Set(["thought", "action"]);
 // Linear accepts only these agent-to-human signals (select takes options of { label, value }).
@@ -359,7 +359,7 @@ export async function authenticateLinearAgentAccount(
         }
       }
     }
-    return { ok: false, response: json({ ok: false, error: "ADE account token is required", reason }, { status: 401 }) };
+    return { ok: false, response: json({ ok: false, error: "Daex account token is required", reason }, { status: 401 }) };
   }
   return { ok: true, accountId };
 }

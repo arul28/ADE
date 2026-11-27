@@ -4342,7 +4342,7 @@ describe("account Attention contract", () => {
           // The start alert is only the counts: never agent text, even before
           // hide-details redacts the rows.
           alert: {
-            title: "ADE",
+            title: "Daex",
             body: "1 needs you",
           },
           "content-state": {

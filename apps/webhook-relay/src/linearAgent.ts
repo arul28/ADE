@@ -133,7 +133,7 @@ export async function routeLinearAgentSessionEvent(
           sessionId,
           content: {
             type: "error",
-            body: `${creatorName} is not connected to ADE yet. Open ADE → Settings → Integrations → Linear and connect Linear to use the ADE agent.`,
+            body: `${creatorName} is not connected to Daex yet. Open Daex → Settings → Integrations → Linear and connect Linear to use the Daex agent.`,
           },
         }
         : null,
@@ -364,7 +364,7 @@ async function handleLinearAgentUninstall(request: Request, env: RelayEnv): Prom
   const install = await readLinearAgentInstall(env, caller.viewer.organizationId);
   if (!install) return linearAgentError(404, "agent_not_installed");
   if (install.installed_by_account_id !== caller.accountId) {
-    return linearAgentError(403, "Only the account that installed the ADE agent can remove it");
+    return linearAgentError(403, "Only the account that installed the Daex agent can remove it");
   }
   await env.DB
     .prepare("delete from linear_agent_installs where org_id = ? and installed_by_account_id = ?")
@@ -411,7 +411,7 @@ async function handleLinearAgentSettings(request: Request, env: RelayEnv): Promi
   const install = await readLinearAgentInstall(env, caller.viewer.organizationId);
   if (!install) return linearAgentError(404, "agent_not_installed");
   if (install.installed_by_account_id !== caller.accountId) {
-    return linearAgentError(403, "Only the account that installed the ADE agent can change its settings");
+    return linearAgentError(403, "Only the account that installed the Daex agent can change its settings");
   }
   const fallbackMode = body.fallbackMode === undefined ? install.fallback_mode : body.fallbackMode;
   const runnerAccountId = body.runner === undefined

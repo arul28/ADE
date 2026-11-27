@@ -127,7 +127,7 @@ function vaultUnavailable(): Response {
       ok: false,
       error: "vault encryption is not configured",
       code: "vault_unavailable",
-      recovery: "The ADE service owner must set VAULT_ENCRYPTION_KEY on the push relay.",
+      recovery: "The Daex service owner must set VAULT_ENCRYPTION_KEY on the push relay.",
     },
     { status: 503 },
   );

@@ -1074,7 +1074,7 @@ function machineRevokedResponse(revokedAt: string): Response {
     error: "machine removed from account",
     code: "machine_revoked",
     revokedAt,
-    recovery: "This machine was removed from the ADE account. Pair it again to publish activity.",
+    recovery: "This machine was removed from the Daex account. Pair it again to publish activity.",
   }, { status: 403 });
 }
 

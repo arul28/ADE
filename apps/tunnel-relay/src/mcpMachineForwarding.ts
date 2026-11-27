@@ -125,7 +125,7 @@ export async function forwardMcp(
     onStaleAccount?.(mount.key);
     // Not "off": this computer serves another account (or none), which is what
     // an address left behind by a changed account secret looks like.
-    return mcpErrorResponse(404, "ade_mcp_off", "That computer is not on this ADE MCP address.", undelivered("not_member"));
+    return mcpErrorResponse(404, "ade_mcp_off", "That computer is not on this Daex MCP address.", undelivered("not_member"));
   }
   const now = Date.now();
   if (now - fwd.windowStart >= 60_000) {
