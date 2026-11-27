@@ -47,6 +47,7 @@ describe("isUsageLimitChatError", () => {
     // "limit" alone is not a usage limit — a context-window overflow is a
     // different failure with a different recovery.
     expect(isUsageLimitChatError({ message: "Prompt exceeds the context limit." })).toBe(false);
+    expect(isUsageLimitChatError({ message: "You've reached your context limit. Start a new conversation." })).toBe(false);
     expect(isUsageLimitChatError({})).toBe(false);
   });
 });

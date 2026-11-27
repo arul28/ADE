@@ -11818,6 +11818,16 @@ export function AgentChatPane({
   // turn footer on the first paint instead of flashing a red FAILED line until
   // the session list arrives.
   const usageLimitResume = renderedSession?.usageLimitResume ?? null;
+  // A limit ADE is waiting out ("Paused"); one with no reset or with
+  // auto-resume off reads "Usage limit" and is not live here.
+  const usageLimitLive = usageLimitResume != null
+    && (usageLimitResume.state === "armed" || usageLimitResume.state === "resuming" || usageLimitResume.state === "paused");
+  // The paused turn's footer quotes when the limit resets; parsed once here.
+  const usageLimitPausedResetAtMs = (() => {
+    if (!usageLimitLive || !usageLimitResume?.resetAt) return null;
+    const parsed = Date.parse(usageLimitResume.resetAt);
+    return Number.isFinite(parsed) ? parsed : null;
+  })();
 
   useLayoutEffect(() => {
     if (!isTileVisible) return undefined;
@@ -12884,6 +12894,40 @@ export function AgentChatPane({
     () => permissionLadderFamilyForProvider(resolveChatRuntimeProvider(selectedModelDesc)),
     [selectedModelDesc],
   );
+  const currentNativeControls = useMemo<NativeControlState>(() => ({
+    interactionMode,
+    claudePermissionMode,
+    codexApprovalPolicy,
+    codexSandbox,
+    codexConfigSource,
+    opencodePermissionMode,
+    droidPermissionMode,
+    copilotPermissionMode,
+    copilotContextTier,
+    copilotAutoTier,
+    musePermissionMode,
+    cursorModeId,
+    cursorConfigValues,
+  }), [
+    interactionMode,
+    claudePermissionMode,
+    codexApprovalPolicy,
+    codexSandbox,
+    codexConfigSource,
+    opencodePermissionMode,
+    droidPermissionMode,
+    copilotPermissionMode,
+    copilotContextTier,
+    copilotAutoTier,
+    musePermissionMode,
+    cursorModeId,
+    cursorConfigValues,
+  ]);
+  const nativeControlsRef = useRef<NativeControlState>(currentNativeControls);
+  useEffect(() => {
+    nativeControlsRef.current = currentNativeControls;
+  }, [currentNativeControls]);
+
   const previousLadderFamilyRef = useRef<PermissionLadderFamily | null>(null);
   useEffect(() => {
     const next = activeLadderFamily;
@@ -12935,29 +12979,42 @@ export function AgentChatPane({
     // level while applying a stepped one, landing ACP providers a rung above
     // the user's choice.
     const resolved = resolvePermissionLevel(level, next === "acp" ? "opencode" : next);
+    // An immediate usage-limit switch reads the transferred controls in this
+    // commit, before the setters below render the updated picker.
     switch (next) {
       case "claude":
+        nativeControlsRef.current = { ...nativeControlsRef.current, claudePermissionMode: resolved.claudePermissionMode };
         setClaudePermissionMode(resolved.claudePermissionMode);
         break;
       case "codex":
+        nativeControlsRef.current = {
+          ...nativeControlsRef.current,
+          codexApprovalPolicy: resolved.codexApprovalPolicy,
+          codexSandbox: resolved.codexSandbox,
+        };
         setCodexApprovalPolicy(resolved.codexApprovalPolicy);
         setCodexSandbox(resolved.codexSandbox);
         break;
       case "opencode":
+        nativeControlsRef.current = { ...nativeControlsRef.current, opencodePermissionMode: resolved.opencodePermissionMode };
         setOpenCodePermissionMode(resolved.opencodePermissionMode);
         break;
       case "droid":
+        nativeControlsRef.current = { ...nativeControlsRef.current, droidPermissionMode: resolved.droidPermissionMode };
         setDroidPermissionMode(resolved.droidPermissionMode);
         break;
       case "muse":
+        nativeControlsRef.current = { ...nativeControlsRef.current, musePermissionMode: resolved.musePermissionMode };
         setMusePermissionMode(resolved.musePermissionMode);
         break;
       case "cursor":
+        nativeControlsRef.current = { ...nativeControlsRef.current, cursorModeId: resolved.cursorModeId };
         setCursorModeId(resolved.cursorModeId);
         break;
       case "acp":
         // ACP providers take their level through the shared in-process mode,
         // which OpenCode's control already owns on this surface.
+        nativeControlsRef.current = { ...nativeControlsRef.current, opencodePermissionMode: resolved.opencodePermissionMode };
         setOpenCodePermissionMode(resolved.opencodePermissionMode);
         break;
     }
@@ -12972,40 +13029,6 @@ export function AgentChatPane({
     musePermissionMode,
     opencodePermissionMode,
   ]);
-
-  const currentNativeControls = useMemo<NativeControlState>(() => ({
-    interactionMode,
-    claudePermissionMode,
-    codexApprovalPolicy,
-    codexSandbox,
-    codexConfigSource,
-    opencodePermissionMode,
-    droidPermissionMode,
-    copilotPermissionMode,
-    copilotContextTier,
-    copilotAutoTier,
-    musePermissionMode,
-    cursorModeId,
-    cursorConfigValues,
-  }), [
-    interactionMode,
-    claudePermissionMode,
-    codexApprovalPolicy,
-    codexSandbox,
-    codexConfigSource,
-    opencodePermissionMode,
-    droidPermissionMode,
-    copilotPermissionMode,
-    copilotContextTier,
-    copilotAutoTier,
-    musePermissionMode,
-    cursorModeId,
-    cursorConfigValues,
-  ]);
-  const nativeControlsRef = useRef<NativeControlState>(currentNativeControls);
-  useEffect(() => {
-    nativeControlsRef.current = currentNativeControls;
-  }, [currentNativeControls]);
 
   const flushPendingComposerDraftWrite = useCallback(() => {
     if (composerDraftWriteTimerRef.current != null) {
@@ -16841,6 +16864,124 @@ export function AgentChatPane({
     return true;
   }, [projectRoot]);
 
+  /**
+   * The session update a model pick kept local needs: the model (or preset),
+   * and the fast, thinking and native controls that came with it. Send applies
+   * it right before it sends; a chat stopped at a usage limit applies it as
+   * soon as the pick renders (`usageLimitSwitch`). Send passes the controls
+   * it read before its first await, so a chat opened meanwhile cannot lend
+   * this one its controls. `whole` writes every field instead of the change
+   * from the chat's summary, for a summary an unfinished switch made stale.
+   */
+  const buildDeferredSessionUpdate = useCallback((
+    sessionId: string,
+    nativeControls: NativeControlState = nativeControlsRef.current,
+    whole = false,
+  ) => {
+    // A pick can move the chat onto a preset or off one, which the model id
+    // alone cannot show: the row can already name the model while the
+    // preset decides what launches.
+    const routePick = sessionRoutePickRef.current?.sessionId === sessionId ? sessionRoutePickRef.current : null;
+    // Whole, a preset pick names its preset again; a plain one leaves a
+    // preset only as it would otherwise (an explicit leave also ends a route).
+    const routeChanged = routePick !== null && (
+      routePick.presetId !== (selectedSession?.presetId ?? null) || (whole && Boolean(routePick.presetId))
+    );
+    // With no model known for the chat yet, only a model the person picked
+    // in this chat counts as a change; an empty or stale composer does not.
+    const pickedWithoutSessionModel = !selectedSessionModelId
+      && Boolean(modelId)
+      && deferredComposerSessionIdRef.current === sessionId;
+    const modelChanged = (whole && Boolean(modelId))
+      || (Boolean(selectedSessionModelId) && selectedSessionModelId !== modelId)
+      || pickedWithoutSessionModel
+      || routeChanged;
+    const fastModeChanged = whole
+      || (selectedSession?.fastMode === true) !== fastMode
+      || (selectedSession?.fastTier === "ultrafast") !== (fastMode && fastTier === "ultrafast");
+    const reasoningChanged = whole
+      || (selectedSession?.reasoningEffort ?? null) !== reasoningEffort
+      || (routeChanged && reasoningEffort !== null && reasoningTiers.includes(reasoningEffort));
+    const modelUpdate: { modelId?: string; presetId?: string | null } = !modelChanged
+      ? {}
+      // A preset names its own model.
+      : routePick?.presetId && routeChanged
+        ? { presetId: routePick.presetId }
+        // A plain pick on a preset chat leaves the preset.
+        : routeChanged ? { modelId, presetId: null } : { modelId };
+    return {
+      modelChanged,
+      fastModeChanged,
+      update: {
+        ...modelUpdate,
+        ...(fastModeChanged
+          ? { fastMode, fastTier: fastMode && fastTier === "ultrafast" ? "ultrafast" as const : null }
+          : {}),
+        ...(reasoningChanged ? { reasoningEffort } : {}),
+        ...(modelChanged ? summarizeNativeControls(sessionProvider, nativeControls) : {}),
+        ...(modelChanged && sessionProvider === "cursor"
+          ? { cursorConfigValues: nativeControls.cursorConfigValues }
+          : {}),
+      },
+    };
+  }, [fastMode, fastTier, modelId, reasoningEffort, reasoningTiers, selectedSession, selectedSessionModelId, sessionProvider]);
+
+  // Apply the pick on a limited chat after its model and controls render.
+  const latestComposerPick = useRef(0);
+  const [usageLimitSwitch, setUsageLimitSwitch] = useState<{ sessionId: string; pick: number } | null>(null);
+  // Switches write one at a time, and one a newer pick of the same chat
+  // replaced while it waited is never written. An earlier write still in
+  // flight (a Cursor model check) cannot land after a later one and leave
+  // the released queue on the earlier model.
+  const usageLimitSwitchChainRef = useRef<Promise<void>>(Promise.resolve());
+  const usageLimitSwitchNewestRef = useRef(new Map<string, number>());
+  useEffect(() => {
+    if (!usageLimitSwitch) return;
+    const { sessionId, pick } = usageLimitSwitch;
+    setUsageLimitSwitch(null);
+    if (sessionId !== selectedSessionId || turnActive || latestComposerPick.current !== pick) return;
+    const newest = usageLimitSwitchNewestRef.current;
+    // With a switch of this chat still queued or unconfirmed, the summary the
+    // pick compares against is stale: the pick writes its whole state, and it
+    // replaces that switch even when it goes back to the stored model.
+    const afterUnfinishedSwitch = newest.has(sessionId);
+    const { modelChanged, update } = buildDeferredSessionUpdate(sessionId, nativeControlsRef.current, afterUnfinishedSwitch);
+    if (!modelChanged) return;
+    const routePick = sessionRoutePickRef.current;
+    // The chat's machine as the pick rendered, kept for the queued write.
+    const switchPin = chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current);
+    newest.set(sessionId, pick);
+    const write = usageLimitSwitchChainRef.current.then(async () => {
+      if (newest.get(sessionId) !== pick) return false;
+      await withChatPin(switchPin, (chatPin) => agentChatApiRef.current.updateSession({
+        sessionId,
+        ...update,
+        ...(sessionProvider === "cursor" ? { cursorCloudServiceTier } : {}),
+      }, chatPin));
+      // The switch counts as unfinished until the summary shows it.
+      await refreshSessions().catch(() => {});
+      return true;
+    });
+    usageLimitSwitchChainRef.current = write.then(() => {}, () => {}).finally(() => {
+      if (newest.get(sessionId) === pick) newest.delete(sessionId);
+    });
+    void write
+      .then((written) => {
+        if (!written) return;
+        if (latestComposerPick.current === pick && renderSelectedSessionIdRef.current === sessionId) {
+          if (deferredComposerSessionIdRef.current === sessionId) deferredComposerSessionIdRef.current = null;
+          setSessionRoutePick((current) => current === routePick ? null : current);
+        }
+      })
+      .catch((switchError: unknown) => {
+        if (latestComposerPick.current === pick && renderSelectedSessionIdRef.current === sessionId) {
+          setError(errorMessage(switchError));
+        }
+      });
+    // The pick triggers one switch using the model and controls from its render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [usageLimitSwitch]);
+
   const submit = useCallback(async (activeTurnDispatchMode?: AgentChatDispatchSteerMode) => {
     // Logged only for a plain send to a chat (`chatSendTiming.ts`); other branches drop it.
     const sendTiming = beginChatSendTiming();
@@ -17603,6 +17744,8 @@ export function AgentChatPane({
     let handedOff: { sessionId: string; submittedAt: string; texts: string[]; alreadyThere: number; identityKey: string; clientSendId: string } | null = null;
     // The send's identity (chat + payload) and client id, once a send (not a steer) went out.
     let sendIdentity: { identityKey: string; record: UnconfirmedSend } | null = null;
+    // Read before the first await: the person can open another chat while it waits.
+    const nativeControlsAtSend = nativeControlsRef.current;
     try {
       // Files and comments kept on this device while the chat's computer
       // rested go to it now, before the message and before the exclusion
@@ -17659,34 +17802,9 @@ export function AgentChatPane({
 
       let sessionId = selectedSessionId;
       const shouldPromoteLightSession = shouldPromoteSessionForComputerUse(selectedSession);
-      // A pick can move the chat onto a preset or off one, which the model id
-      // alone cannot show: the row can already name the model while the
-      // preset decides what launches.
-      const routePick = selectedSessionId && sessionRoutePickRef.current?.sessionId === selectedSessionId
-        ? sessionRoutePickRef.current
-        : null;
-      const selectedRouteChanged = routePick !== null && routePick.presetId !== (selectedSession?.presetId ?? null);
-      // With no model known for the chat yet, only a model the person picked
-      // in this chat counts as a change; an empty or stale composer does not.
-      const pickedWithoutSessionModel = !selectedSessionModelId
-        && Boolean(modelId)
-        && deferredComposerSessionIdRef.current === selectedSessionId;
-      const selectedModelChanged =
-        Boolean(selectedSessionId)
-        && (
-          (Boolean(selectedSessionModelId) && selectedSessionModelId !== modelId)
-          || pickedWithoutSessionModel
-          || selectedRouteChanged
-        );
-      const selectedFastModeChanged =
-        Boolean(selectedSessionId)
-        && (
-          (selectedSession?.fastMode === true) !== fastMode
-          || (selectedSession?.fastTier === "ultrafast") !== (fastMode && fastTier === "ultrafast")
-        );
-      const selectedReasoningChanged =
-        Boolean(selectedSessionId)
-        && (selectedSession?.reasoningEffort ?? null) !== reasoningEffort;
+      const deferredUpdate = selectedSessionId ? buildDeferredSessionUpdate(selectedSessionId, nativeControlsAtSend) : null;
+      const selectedModelChanged = deferredUpdate?.modelChanged === true;
+      const selectedFastModeChanged = deferredUpdate?.fastModeChanged === true;
       const selectedAttachments = isLiteralSlashCommand ? [] : attachmentsSnapshot;
       const selectedContextAttachments = isLiteralSlashCommand ? [] : contextAttachmentsSnapshot;
       const optimisticEnvelope = (nextSessionId: string): AgentChatEventEnvelope => ({
@@ -17714,39 +17832,10 @@ export function AgentChatPane({
         || shouldPromoteLightSession
       )) {
         setOptimisticIfAllowed(sessionId);
-        const sessionModelUpdate = (): { modelId?: string; presetId?: string | null } => {
-          if (!selectedModelChanged) return {};
-          // A preset names its own model.
-          if (routePick?.presetId && selectedRouteChanged) return { presetId: routePick.presetId };
-          // A plain pick on a preset chat leaves the preset.
-          return selectedRouteChanged ? { modelId, presetId: null } : { modelId };
-        };
-        const modelUpdate = sessionModelUpdate();
-        const fastModeUpdate = selectedFastModeChanged
-          ? { fastMode, fastTier: fastMode && fastTier === "ultrafast" ? "ultrafast" as const : null }
-          : {};
-        const reasoningUpdate = selectedReasoningChanged
-          || (
-            selectedRouteChanged
-            && reasoningEffort !== null
-            && reasoningTiers.includes(reasoningEffort)
-          )
-          ? { reasoningEffort }
-          : {};
-        const pendingNativeUpdate = selectedModelChanged
-          ? summarizeNativeControls(sessionProvider, nativeControlsRef.current)
-          : {};
-        const pendingCursorConfig = selectedModelChanged && sessionProvider === "cursor"
-          ? { cursorConfigValues: nativeControlsRef.current.cursorConfigValues }
-          : {};
         const updateSessionId = sessionId;
         await withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.updateSession({
           sessionId: updateSessionId,
-          ...modelUpdate,
-          ...fastModeUpdate,
-          ...reasoningUpdate,
-          ...pendingNativeUpdate,
-          ...pendingCursorConfig,
+          ...deferredUpdate?.update,
         }, chatPin));
         deferredComposerSessionIdRef.current = null;
         setSessionRoutePick(null);
@@ -18163,6 +18252,7 @@ export function AgentChatPane({
     }
     return steerResult;
   }, [
+    buildDeferredSessionUpdate,
     countSentMessages,
     noteCloudQueuedSendBubble,
     putUnsentSendInSavedDraft,
@@ -21986,6 +22076,7 @@ export function AgentChatPane({
     if (isPersistentIdentitySurface && sessionMutationKind) {
       return false;
     }
+    const pick = ++latestComposerPick.current;
     // A model change is the person's; ADE sets the flag again after its own.
     draftKeepsMachineDefaultsRef.current = false;
     const previousFastMode = fastModeRef.current;
@@ -22065,6 +22156,15 @@ export function AgentChatPane({
     if (!selectedSessionId || turnActive) {
       applyModelSelectionSnapshot(snapshot);
       return true;
+    }
+
+    // A chat stopped at a usage limit applies the pick at once (see
+    // `usageLimitSwitch`): the switch is what moves it off the
+    // limit and sends its queue to the new model (ADE-289).
+    // Every limit state holds the queue, "no reset" and "auto-resume off" too,
+    // so any of them switches now.
+    if (usageLimitResume && renderedSessionId === selectedSessionId) {
+      setUsageLimitSwitch({ sessionId: selectedSessionId, pick });
     }
 
     // Keep the selection local until submit(). Submit applies the
@@ -23242,12 +23342,8 @@ export function AgentChatPane({
                           ? cloudQueueWait.label
                           : chatConnectionMark ? `Starting ${providerDisplayLabel(selectedSession?.provider, "the agent")}…` : null}
                         usageLimitResumeActive={usageLimitResume != null}
-                        // Only a limit ADE is waiting out reads "Paused"; one with no
-                        // reset or with auto-resume off reads "Usage limit".
-                        usageLimitResumeTurnId={usageLimitResume
-                          && (usageLimitResume.state === "armed" || usageLimitResume.state === "resuming" || usageLimitResume.state === "paused")
-                          ? usageLimitResume.turnId ?? null
-                          : null}
+                        usageLimitResumeTurnId={usageLimitLive ? usageLimitResume?.turnId ?? null : null}
+                        usageLimitResumeResetAtMs={usageLimitPausedResetAtMs}
                         // Subagent transcripts are a secondary, plain surface:
                         // they keep the cheap paint-on-arrival render so only
                         // the user's own prose pays for the paced reveal.

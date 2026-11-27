@@ -755,14 +755,17 @@ describe("createAgentChatService", () => {
         expect(summary?.usageLimitParkedUntil).toBe(summary?.usageLimitResume?.fireAt);
       });
 
-      it("Continue on another account keeps this chat and carries its thread over", async () => {
+      /**
+       * Two signed-in Claude logins, with the base one the chat starts on, and
+       * usage showing room on the other. Written as the registry file so the
+       * test never touches a real provider login.
+       */
+      const twoClaudeLogins = () => {
         const adeHome = process.env.ADE_HOME!;
         const homeConfig = path.join(adeHome, "provider-homes", "claude", "home");
         const otherConfig = path.join(adeHome, "provider-homes", "claude", "other");
         fs.mkdirSync(homeConfig, { recursive: true });
         fs.mkdirSync(otherConfig, { recursive: true });
-        // Two signed-in logins, with the base one the chat starts on. Written as
-        // the registry file so the test never touches a real provider login.
         fs.writeFileSync(path.join(adeHome, "provider-instances.json"), JSON.stringify({
           version: 1,
           instances: [
@@ -779,6 +782,145 @@ describe("createAgentChatService", () => {
           settings: {},
           presetBindings: [],
         }), "utf8");
+        const now = Date.now();
+        const getAccountUsage = () => ({
+          resolveBalancedInstance: () => null,
+          getUsageSnapshot: () => ({
+            windows: [
+              {
+                provider: "claude", windowType: "five_hour", accountId: "claude:other",
+                percentUsed: 1, resetsAt: new Date(now + 3_600_000).toISOString(), resetsInMs: 3_600_000,
+              },
+              {
+                provider: "claude", windowType: "weekly", accountId: "claude:other",
+                percentUsed: 2, resetsAt: new Date(now + 86_400_000).toISOString(), resetsInMs: 86_400_000,
+              },
+            ],
+            accounts: [{
+              id: "claude:other", provider: "claude", email: "other@example.com", instanceId: "other",
+            }],
+            pacing: {},
+            costs: [],
+          }),
+          getAccountBalanceLoad: () => ({}),
+        });
+        return { homeConfig, otherConfig, getAccountUsage };
+      };
+
+      // A thread that cannot move starts a new chat on the other account. The
+      // messages (and comments) the limit held go with the work, after the
+      // continuation, instead of being cancelled with the old chat's queue.
+      it("a move to a new chat on another account takes the held queue with it", async () => {
+        const { getAccountUsage } = twoClaudeLogins();
+        const events: AgentChatEventEnvelope[] = [];
+        const send = vi.fn().mockResolvedValue(undefined);
+        const resetsAt = Math.floor((Date.now() + 3_600_000) / 1000);
+        let streamCall = 0;
+        let finishActiveTurn!: () => void;
+        const activeTurnGate = new Promise<void>((resolve) => { finishActiveTurn = resolve; });
+        const stream = vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 2) {
+            yield {
+              type: "assistant",
+              message: { content: [{ type: "text", text: "Still working" }], usage: { input_tokens: 1, output_tokens: 1 } },
+            };
+            await activeTurnGate;
+            yield {
+              type: "rate_limit_event",
+              session_id: "sdk-limit-handoff",
+              rate_limit_info: { status: "rejected", utilization: 1, resetsAt },
+            };
+          }
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        })());
+        const sdkSession = { send, stream, close: vi.fn(), sessionId: "sdk-limit-handoff", setPermissionMode: vi.fn() };
+        // The new chat gets its own SDK session, so a send there is told apart from one here.
+        const newChatSend = vi.fn().mockResolvedValue(undefined);
+        const newChatSession = {
+          send: newChatSend,
+          stream: vi.fn(() => (async function* () {
+            yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          })()),
+          close: vi.fn(),
+          sessionId: "sdk-limit-handoff-new",
+          setPermissionMode: vi.fn(),
+        };
+        let handingOff = false;
+        vi.mocked(claudeSdkCreateSessionCompat).mockImplementation((() => (handingOff ? newChatSession : sdkSession)) as any);
+        vi.mocked(claudeSdkResumeSessionCompat).mockImplementation((() => (handingOff ? newChatSession : sdkSession)) as any);
+
+        const { service } = createService({
+          getAccountUsage,
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+        const activeTurn = service.runSessionTurn({ sessionId: session.id, text: "Foreground work", timeoutMs: 15_000 });
+        await waitForEvent(
+          events,
+          (event): event is AgentChatEventEnvelope =>
+            event.event.type === "text" && event.event.text.includes("Still working"),
+        );
+        await service.createThreadComment({
+          sessionId: session.id,
+          messageKey: "message:1",
+          messageExcerpt: "an earlier reply",
+          anchor: { kind: "text", quote: "the quoted part", prefix: "", suffix: "" },
+          body: "my review note",
+        });
+        expect((await service.steer({ sessionId: session.id, text: "first queued", includeThreadComments: true })).queued).toBe(true);
+        expect((await service.steer({ sessionId: session.id, text: "second queued" })).queued).toBe(true);
+        finishActiveTurn();
+        await activeTurn;
+        await vi.waitFor(async () => {
+          expect((await service.getSessionSummary(session.id))?.usageLimitResume?.alternateAccount)
+            .toEqual({ instanceId: "other", label: "other@example.com" });
+        });
+        const oldChatSent = () => JSON.stringify(send.mock.calls);
+        const newChatSent = () => JSON.stringify(newChatSend.mock.calls);
+        expect(oldChatSent()).not.toContain("first queued");
+
+        // No thread file on this login, so the move falls back to a new chat.
+        handingOff = true;
+        const result = await service.continueUsageLimitOnAlternate({ sessionId: session.id });
+        expect(result.ok).toBe(true);
+        const newId = result.ok ? result.sessionId : null;
+        expect(newId).toBeTruthy();
+        expect(newId).not.toBe(session.id);
+
+        // Both reach the new chat, in order, behind the continuation, the comment with the first.
+        await vi.waitFor(() => expect(newChatSent()).toContain("second queued"), { timeout: 5_000 });
+        const sent = newChatSent();
+        // The comment rides the first message, in the same send.
+        const sends = newChatSend.mock.calls.map((call) => JSON.stringify(call));
+        expect(sends.filter((text) => text.includes("my review note"))).toEqual([
+          expect.stringContaining("first queued"),
+        ]);
+        expect(sent.indexOf("Continue the interrupted task")).toBeGreaterThanOrEqual(0);
+        expect(sent.indexOf("Continue the interrupted task")).toBeLessThan(sent.indexOf("first queued"));
+        expect(sent.indexOf("first queued")).toBeLessThan(sent.indexOf("second queued"));
+        // Neither went into the limited account.
+        expect(oldChatSent()).not.toContain("first queued");
+        expect(oldChatSent()).not.toContain("second queued");
+        // The new chat shows them queued until they go.
+        const queuedOnNewChat = events.filter((event) =>
+          event.sessionId === newId && event.event.type === "user_message"
+          && event.event.deliveryState === "queued");
+        expect(queuedOnNewChat.map((event) => (event.event as { displayText?: string; text: string }).displayText
+          ?? (event.event as { text: string }).text)).toEqual(expect.arrayContaining([
+          expect.stringContaining("first queued"),
+          expect.stringContaining("second queued"),
+        ]));
+        // The old chat cancelled nothing; its rows say where they went.
+        const oldNotices = events
+          .filter((event) => event.sessionId === session.id && event.event.type === "system_notice")
+          .map((event) => (event.event as { message?: string }).message ?? "");
+        expect(oldNotices.some((message) => message.startsWith("Queued message cancelled"))).toBe(false);
+        service.forceDisposeAll();
+      });
+
+      it("Continue on another account keeps this chat and carries its thread over", async () => {
+        const { homeConfig, otherConfig, getAccountUsage } = twoClaudeLogins();
 
         const resetsAt = Math.floor((Date.now() + 3_600_000) / 1000);
         const threadId = "sdk-session-continue";
@@ -803,30 +945,7 @@ describe("createAgentChatService", () => {
           send, stream, close, sessionId: threadId,
         } as any);
 
-        const now = Date.now();
-        const { service } = createService({
-          getAccountUsage: () => ({
-            resolveBalancedInstance: () => null,
-            getUsageSnapshot: () => ({
-              windows: [
-                {
-                  provider: "claude", windowType: "five_hour", accountId: "claude:other",
-                  percentUsed: 1, resetsAt: new Date(now + 3_600_000).toISOString(), resetsInMs: 3_600_000,
-                },
-                {
-                  provider: "claude", windowType: "weekly", accountId: "claude:other",
-                  percentUsed: 2, resetsAt: new Date(now + 86_400_000).toISOString(), resetsInMs: 86_400_000,
-                },
-              ],
-              accounts: [{
-                id: "claude:other", provider: "claude", email: "other@example.com", instanceId: "other",
-              }],
-              pacing: {},
-              costs: [],
-            }),
-            getAccountBalanceLoad: () => ({}),
-          }),
-        });
+        const { service } = createService({ getAccountUsage });
         const session = await service.createSession({
           laneId: "lane-1",
           provider: "claude",
@@ -911,6 +1030,210 @@ describe("createAgentChatService", () => {
         expect(summary?.usageLimitParkedUntil ?? null).toBeNull();
         // The turn completed, so nothing may have reaped the query underneath it.
         expect(close).not.toHaveBeenCalled();
+      });
+
+      // A limit that arrives with no rejected `rate_limit_event` and no
+      // `errors[]`: Claude Code turns the 429 into a `<synthetic>` assistant
+      // message carrying `error: "rate_limit"`, then ends the turn with an
+      // `is_error` success result whose `result` is the same text. ADE-285.
+      const resetEpochSeconds = Math.floor((Date.now() + 2 * 3_600_000) / 1000);
+      it.each([
+        {
+          label: "current CLI wording with a clock reset",
+          text: "You've hit your 5-hour limit · resets 3pm (America/New_York) · progress saved",
+          synthetic: true,
+          exactResetMs: null as number | null,
+        },
+        {
+          label: "the wording the issue quotes",
+          text: "5-hour limit reached ∙ resets 3:40pm",
+          synthetic: true,
+          exactResetMs: null as number | null,
+        },
+        {
+          label: "the legacy pipe-epoch form, result frame only",
+          text: `Claude AI usage limit reached|${resetEpochSeconds}`,
+          synthetic: false,
+          exactResetMs: resetEpochSeconds * 1000,
+        },
+      ])("a limit reported only as the result text arms auto-resume ($label)", async ({ text, synthetic, exactResetMs }) => {
+        const scheduledWork = createScheduledWorkDb();
+        const events: AgentChatEventEnvelope[] = [];
+        const close = vi.fn();
+        const send = vi.fn().mockResolvedValue(undefined);
+        let streamCall = 0;
+        const stream = vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+            return;
+          }
+          if (synthetic) {
+            yield {
+              type: "assistant",
+              error: "rate_limit",
+              message: {
+                model: "<synthetic>",
+                content: [{ type: "text", text }],
+                usage: { input_tokens: 0, output_tokens: 0 },
+              },
+            };
+          }
+          yield {
+            type: "result",
+            subtype: "success",
+            is_error: true,
+            result: text,
+            terminal_reason: "api_error",
+            api_error_status: 429,
+            usage: { input_tokens: 0, output_tokens: 0 },
+          };
+        })());
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send, stream, close, sessionId: "sdk-session-result-limit",
+        } as any);
+        vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+          send, stream, close, sessionId: "sdk-session-result-limit",
+        } as any);
+
+        const { service } = createService({
+          db: scheduledWork.db,
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "keep going",
+          timeoutMs: 15_000,
+        });
+
+        await vi.waitFor(async () => {
+          expect(await service.listScheduledWork({ sessionId: session.id })).toEqual([
+            expect.objectContaining({ id: `auto-resume:${session.id}`, status: "scheduled" }),
+          ]);
+        });
+        const summary = await service.getSessionSummary(session.id);
+        expect(summary?.usageLimitResume).toMatchObject({ state: "armed", provider: "claude" });
+        const resetAt = Date.parse(summary?.usageLimitResume?.resetAt ?? "");
+        expect(resetAt).toBeGreaterThan(Date.now());
+        if (exactResetMs != null) expect(resetAt).toBe(exactResetMs);
+        // The limit text is the provider's, not the agent's: no reply bubble.
+        expect(events.filter((event) => event.event.type === "text")).toEqual([]);
+        // The query is reaped so the resume starts a fresh one.
+        expect(close).toHaveBeenCalled();
+      });
+
+      // ADE-289: the turn ends at a plan limit with messages (and the thread
+      // comments on them) queued behind it. The limit holds the queue; a
+      // switch to another model releases all of it there, in order.
+      it.each([
+        { provider: "claude", modelId: "anthropic/claude-opus-4-7" },
+        { provider: "droid", modelId: "droid/claude-opus-4-6" },
+      ])("a switch away from the limit sends the held queue and its comments to $provider", async ({ provider, modelId }) => {
+        const scheduledWork = createScheduledWorkDb();
+        const events: AgentChatEventEnvelope[] = [];
+        const send = vi.fn().mockResolvedValue(undefined);
+        const limitText = `Claude AI usage limit reached|${Math.floor((Date.now() + 2 * 3_600_000) / 1000)}`;
+        let streamCall = 0;
+        let finishActiveTurn!: () => void;
+        const activeTurnGate = new Promise<void>((resolve) => { finishActiveTurn = resolve; });
+        const stream = vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield { type: "system", subtype: "init", session_id: "sdk-limit-switch", slash_commands: [] };
+            return;
+          }
+          if (streamCall === 2) {
+            yield {
+              type: "assistant",
+              message: { content: [{ type: "text", text: "Still working" }], usage: { input_tokens: 1, output_tokens: 1 } },
+            };
+            await activeTurnGate;
+            yield {
+              type: "result",
+              subtype: "success",
+              is_error: true,
+              result: limitText,
+              terminal_reason: "api_error",
+              api_error_status: 429,
+              usage: { input_tokens: 0, output_tokens: 0 },
+            };
+            return;
+          }
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        })());
+        const sdkSession = { send, stream, close: vi.fn(), sessionId: "sdk-limit-switch", setPermissionMode: vi.fn() };
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(sdkSession as any);
+        vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(sdkSession as any);
+
+        const { service } = createService({
+          db: scheduledWork.db,
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        // The lane share's check, as the host runs it: it answers once per
+        // message (the record is spent), so a message checked before it
+        // starts is dropped when it does.
+        const checkedGuestSteers = new Set<string>();
+        service.installQueuedGuestSteerGate(({ steerId }: { steerId: string }) => {
+          if (checkedGuestSteers.has(steerId)) return false;
+          checkedGuestSteers.add(steerId);
+          return true;
+        });
+        const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+        const activeTurn = service.runSessionTurn({ sessionId: session.id, text: "Foreground work", timeoutMs: 15_000 });
+        await waitForEvent(
+          events,
+          (event): event is AgentChatEventEnvelope =>
+            event.event.type === "text" && event.event.text.includes("Still working"),
+        );
+        await service.createThreadComment({
+          sessionId: session.id,
+          messageKey: "message:1",
+          messageExcerpt: "an earlier reply",
+          anchor: { kind: "text", quote: "the quoted part", prefix: "", suffix: "" },
+          body: "my review note",
+        });
+        expect((await service.steer({ sessionId: session.id, text: "first queued", includeThreadComments: true })).queued).toBe(true);
+        // A guest of the shared lane queued the second.
+        const guestSteer = await service.steerUserMessage(
+          { sessionId: session.id, text: "second queued" },
+          { author: { kind: "guest", userId: "user_guest", name: "Guest" } },
+        ) as { steerId?: string; queued?: boolean };
+        expect(guestSteer.queued).toBe(true);
+
+        finishActiveTurn();
+        await activeTurn;
+        await vi.waitFor(async () => {
+          expect((await service.getSessionSummary(session.id))?.usageLimitResume).toMatchObject({ state: "armed" });
+        });
+        // Held: nothing went into the limited account.
+        const sentText = () => JSON.stringify(send.mock.calls);
+        expect(sentText()).not.toContain("first queued");
+
+        await service.updateSession({ sessionId: session.id, modelId });
+
+        // Both go to the new model, in order, the comment with the first.
+        await vi.waitFor(() => {
+          if (provider === "droid") {
+            expect(mockState.droidPromptCalls).toHaveLength(2);
+            expect(mockState.droidPromptCalls[1]?.promptText).toContain("second queued");
+          } else {
+            expect(sentText()).toContain("second queued");
+          }
+        }, { timeout: 5_000 });
+        const sent = provider === "droid" ? String(mockState.droidPromptCalls[0]?.promptText) : sentText();
+        expect(sent).toContain("my review note");
+        expect(sent).toContain("first queued");
+        if (provider === "claude") {
+          expect(sent.indexOf("first queued")).toBeLessThan(sent.indexOf("second queued"));
+        }
+        expect((await service.getSessionSummary(session.id))?.usageLimitResume ?? null).toBeNull();
+        expect(await service.listScheduledWork({ sessionId: session.id })).toEqual([]);
+        service.forceDisposeAll();
       });
 
       it("stale park with no structured limit heals on hydration", async () => {
@@ -1310,7 +1633,7 @@ describe("createAgentChatService", () => {
         const armedNotices = () => events.filter((event) =>
           event.event.type === "system_notice"
           && typeof (event.event as any).message === "string"
-          && /^Resumes at /.test((event.event as any).message));
+          && /^Paused: (?:limit resets|resumes) at /.test((event.event as any).message));
 
         installClaudeLimitStream("sdk-session-cap-1", resetsAt, false);
         let refuseSends = false;
@@ -1449,7 +1772,7 @@ describe("createAgentChatService", () => {
         const armedNotices = () => events.filter((event) =>
           event.event.type === "system_notice"
           && typeof (event.event as any).message === "string"
-          && /^Resumes at /.test((event.event as any).message));
+          && /^Paused: (?:limit resets|resumes) at /.test((event.event as any).message));
         const pausedNotices = () => events.filter((event) =>
           event.event.type === "system_notice"
           && (event.event as any).message === "Paused after 2 tries");
@@ -1841,7 +2164,7 @@ describe("createAgentChatService", () => {
         expect(events.filter((event) =>
           event.event.type === "system_notice"
           && typeof (event.event as any).message === "string"
-          && /^Resumes at /.test((event.event as any).message))).toEqual([]);
+          && /^Paused: (?:limit resets|resumes) at /.test((event.event as any).message))).toEqual([]);
       });
 
       it("a paused row reports no_reset for a chat that is not resident", async () => {
