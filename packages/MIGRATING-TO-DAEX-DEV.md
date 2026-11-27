@@ -36,19 +36,24 @@ The steps below are for the npm owner. Run them in this order.
    gh variable delete SDK_TRUSTED_PUBLISHING --repo arul28/ADE   # or set it to false
    ```
 
-Do this before the rename merges. The merge touches `packages/sdk/**`, so
-`.github/workflows/publish-sdk-packages.yml` runs on `main` and publishes
-`@daex-dev/sdk@0.7.1` and `@daex-dev/chat-ui@0.7.1`. With the old token (limited
-to `@ade-dev`) that run fails.
+You can do this before or after the rename merges. The merge touches
+`packages/sdk/**`, so `.github/workflows/publish-sdk-packages.yml` runs on
+`main`, but it does not publish: it skips each package npm has never seen
+(`@daex-dev/sdk`, `@daex-dev/chat-ui`) with a notice, so `main` stays green
+while the scope and token are not ready.
 
 ## 2. Publish the first `@daex-dev` versions
 
-Merging is enough: the workflow publishes both packages. To publish without a
-merge, run the workflow by hand:
+A merge never publishes a package for the first time. Once step 1 is done and
+the rename is on `main`, run the workflow by hand:
 
 ```bash
 gh workflow run publish-sdk-packages.yml --repo arul28/ADE -f confirm=publish
 ```
+
+That run publishes `@daex-dev/sdk@0.7.1` and `@daex-dev/chat-ui@0.7.1` with the
+`NPM_TOKEN` from step 1. With the old token (limited to `@ade-dev`) it fails.
+After the first versions exist, merges publish new versions as before.
 
 Check both are live:
 
