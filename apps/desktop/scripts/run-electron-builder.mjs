@@ -104,8 +104,13 @@ const [, owner, repo] = repositoryMatch;
 // `build.win.icon` is exactly "build/icon.ico", so writing the channel icon
 // into the config would fail the release contract.
 // electron-builder converts a >=256px PNG into a multi-resolution .ico itself.
+// A committed `build/icon.<channel>.ico` wins when present: like build/icon.ico
+// it carries flat tiles for the small sizes, which a downscaled glass image
+// lacks.
 const channelWinIconArgs = (() => {
   if (packageChannel === "stable") return [];
+  const channelIco = path.join(desktopRoot, "build", `icon.${packageChannel}.ico`);
+  if (fs.existsSync(channelIco)) return [`--config.win.icon=build/icon.${packageChannel}.ico`];
   const icns = path.join(desktopRoot, "build", `icon.${packageChannel}.icns`);
   if (!fs.existsSync(icns)) {
     throw new Error(
