@@ -24,8 +24,8 @@ describe("ade skill (bundled agent skills)", () => {
       path: string;
     }>;
     const names = parsed.map((entry) => entry.name);
-    expect(names).toContain("ade-browser");
-    expect(names).toContain("ade-cli-control-plane");
+    expect(names).toContain("daex-browser");
+    expect(names).toContain("daex-cli-control-plane");
     // Sorted + each entry carries a path to a SKILL.md.
     expect([...names]).toEqual([...names].sort((a, b) => a.localeCompare(b)));
     for (const entry of parsed) {
@@ -36,7 +36,7 @@ describe("ade skill (bundled agent skills)", () => {
   it("list --text emits one name [source] — description line per skill", () => {
     const result = runSkillList(["--text"]);
     expect(result.exitCode).toBe(0);
-    expect(result.output).toMatch(/ade-browser \[(?:bundled|project)\] —/);
+    expect(result.output).toMatch(/daex-browser \[(?:bundled|project)\] —/);
   });
 
   it("an ADE MCP call never lists or shows a personal skill, even through a project folder linking to it", () => {
@@ -126,8 +126,9 @@ describe("ade skill (bundled agent skills)", () => {
       content: string;
       path: string;
     };
-    expect(parsed.name).toBe("ade-browser");
-    expect(parsed.content).toContain("name: ade-browser");
+    // The old name still opens the renamed skill.
+    expect(parsed.name).toBe("daex-browser");
+    expect(parsed.content).toContain("name: daex-browser");
     expect(parsed.content).toContain("---");
   });
 
@@ -143,14 +144,14 @@ describe("ade skill (bundled agent skills)", () => {
     try {
       runSkillShow(["does-not-exist"]);
     } catch (error) {
-      expect((error as Error).message).toContain("ade-browser");
+      expect((error as Error).message).toContain("daex-browser");
     }
   });
 
   it("top-level dispatch prints help with no args", () => {
     const result = runSkillCommand([]);
     expect(result.exitCode).toBe(0);
-    expect(result.output).toContain("ade skill list");
+    expect(result.output).toContain("daex skill list");
   });
 
   it("top-level dispatch rejects an unknown subcommand with a usage error", () => {

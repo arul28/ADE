@@ -1991,7 +1991,7 @@ describe("createAgentChatService", () => {
       expect(appended).toContain("ADE-123");
       expect(appended).toContain("daex linear");
       expect(appended).toContain("Prefer `daex linear`");
-      expect(appended).toContain("ade-deeplinks");
+      expect(appended).toContain("daex-deeplinks");
     });
 
     it("keeps ADE tooling guidance out of Claude SDK user turns", async () => {
@@ -3144,8 +3144,8 @@ describe("createAgentChatService", () => {
       expect(append).not.toContain("/zz-native-cmd");
       expect(append).not.toContain("/native-only");
       // Bundled ADE skills are listed alongside the lane's own.
-      expect(append).toContain("/ade-cli-control-plane");
-      expect(append).toContain("/ade-linear");
+      expect(append).toContain("/daex-cli-control-plane");
+      expect(append).toContain("/daex-linear");
     });
 
     it("clips an over-long skill description instead of letting it set the prompt size", async () => {

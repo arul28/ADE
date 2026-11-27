@@ -2963,7 +2963,7 @@ describe("adeRpcServer", () => {
     // Settling, the note's 72-character cut and the un-settle command are
     // manual detail in ade-cli-control-plane; the launch text keeps the index
     // that names it, so the rule is one skill away.
-    expect(launchText).toContain("`ade-cli-control-plane`");
+    expect(launchText).toContain("`daex-cli-control-plane`");
     expect(launchText).toContain("Implement API wiring");
     expect(response.structuredContent.startupCommand).toContain("claude");
     expect(response.structuredContent.startupCommand).toContain("--model");
@@ -3000,7 +3000,7 @@ describe("adeRpcServer", () => {
     expect(launchText).toContain("--sandbox workspace-write -c sandbox_workspace_write.network_access=true --ask-for-approval on-request");
     expect(launchText).toContain("ade chat note");
     expect(launchText).toContain("ade chat ask");
-    expect(launchText).toContain("`ade-cli-control-plane`");
+    expect(launchText).toContain("`daex-cli-control-plane`");
     expect(launchText).not.toContain("--full-auto");
     expect(createCall.startupCommand).toContain(`--sandbox workspace-write -c ${NETWORK_FLAG_PREVIEW} --ask-for-approval on-request`);
     expect(createCall.startupCommand).not.toContain("--full-auto");
