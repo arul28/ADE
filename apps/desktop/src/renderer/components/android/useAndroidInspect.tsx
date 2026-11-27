@@ -14,7 +14,7 @@ function elementName(element: AndroidUiElement): string | null {
 
 /** The query an agent can pass back: the ref, which stays the same between snapshots. */
 export function androidCommandForElement(element: AndroidUiElement): string {
-  return `ade android tap-element --ref ${JSON.stringify(element.ref)}`;
+  return `daex android tap-element --ref ${JSON.stringify(element.ref)}`;
 }
 
 /** One line for the composer: what the element is, where, and how an agent taps it. */

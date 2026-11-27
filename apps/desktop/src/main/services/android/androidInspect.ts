@@ -263,7 +263,7 @@ export function createAndroidInspect(deps: AndroidInspectDeps) {
         role: element.role,
         elementType: element.className,
         packageName: element.packageName,
-        tapCommand: `ade android tap-element --ref ${JSON.stringify(element.ref)}`,
+        tapCommand: `daex android tap-element --ref ${JSON.stringify(element.ref)}`,
         selectionExplanation: "The user selected this UI element on the lane's Android emulator. The crop attachment is visual evidence for this packet; frames are in screenshot pixels.",
       },
       accessibilityIdentifier: element.resourceId,
