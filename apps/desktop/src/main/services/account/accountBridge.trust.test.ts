@@ -648,7 +648,7 @@ describe("desktop account machine lifecycle", () => {
       {
         machineKey: "machine-a",
         stage: "relay",
-        label: "Connecting through ADE relay…",
+        label: "Connecting through Daex relay…",
       },
       {
         machineKey: "machine-a",
@@ -727,7 +727,7 @@ describe("desktop account machine lifecycle", () => {
 
       expect(error).toBeInstanceOf(Error);
       expect((error as Error).message).toBe(
-        "Couldn't reach Studio over Tailscale (timed out after 25s). Make sure ADE is open on that computer, then try again.",
+        "Couldn't reach Studio over Tailscale (timed out after 25s). Make sure Daex is open on that computer, then try again.",
       );
       expect(logMachineEvent).toHaveBeenCalledWith(
         "warn",

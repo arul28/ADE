@@ -27,6 +27,7 @@ import { getErrorMessage } from "../shared/utils";
 import { carryExpected, markExpected } from "../../../shared/expectedError";
 import { machineNeedsUpdateError } from "../../../shared/codedError";
 import { isPeerMissingMethodMessage } from "../../../shared/sentry/expectedFailure";
+import { BRAND } from "../../../shared/brand";
 
 export const MACHINE_INVENTORY_MAX_LIVE_MACHINES = 12;
 export const MACHINE_INVENTORY_RATE_FLOOR_MS = 30_000;
@@ -283,7 +284,7 @@ export function createAccountMachineInventoryFetcher({
       // routes it as a project method and answers "requires params.projectId".
       const tooOld = Boolean(error) && isPeerMissingMethodMessage(getErrorMessage(error));
       const failure = tooOld
-        ? markExpected(machineNeedsUpdateError("Update ADE on that computer to see what it has installed."), "environment")
+        ? markExpected(machineNeedsUpdateError(`Update ${BRAND.NAME} on that computer to see what it has installed.`), "environment")
         : carryExpected(error, new Error(error instanceof Error && error.message ? error.message : "Details unavailable right now."));
       failures.set(machineKey, { attemptedAt, error: failure });
       logger?.debug?.("account.machine_inventory_refresh_failed", {

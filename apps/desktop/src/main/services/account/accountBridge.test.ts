@@ -224,7 +224,7 @@ describe("describeAccountDeviceLoginFailure", () => {
     expect(describeAccountDeviceLoginFailure(new Error("ETIMEDOUT")).message)
       .toMatch(/timed out/i);
     expect(describeAccountDeviceLoginFailure(new Error("boom")).message)
-      .toBe("ADE couldn't start a sign-in on this computer. Try again in a moment.");
+      .toBe("Daex couldn't start a sign-in on this computer. Try again in a moment.");
   });
 });
 
@@ -506,9 +506,9 @@ describe("describeMachinePairingRepairFailure", () => {
     expect(describeMachinePairingRepairFailure(new Error("ETIMEDOUT")).message)
       .toMatch(/timed out/i);
     expect(describeMachinePairingRepairFailure(new Error("HTTP 401 unauthorized")).message)
-      .toMatch(/Sign in to ADE again/);
+      .toMatch(/Sign in to Daex again/);
     expect(describeMachinePairingRepairFailure(new Error("boom")).message)
-      .toBe("ADE couldn't reconnect this computer to your account. Try again in a moment.");
+      .toBe("Daex couldn't reconnect this computer to your account. Try again in a moment.");
   });
 });
 

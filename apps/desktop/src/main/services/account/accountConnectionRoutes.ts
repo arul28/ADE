@@ -4,6 +4,7 @@ import { markExpected } from "../../../shared/expectedError";
 import { isUnsupportedAdeActionError, machineNeedsUpdateError } from "../../../shared/codedError";
 import { isPeerMissingMethodMessage } from "../../../shared/sentry/expectedFailure";
 import { unwrapAccountActionResult } from "../../../../../ade-cli/src/services/account/accountRefreshBroker";
+import { BRAND } from "../../../shared/brand";
 
 const ROUTES_TIMEOUT_MS = 12_000;
 /** A refresh can run `tailscale status` (5 s) and then `serve --https` (15 s). */
@@ -46,7 +47,7 @@ export function createAccountConnectionRoutesBridge(
 
   const read = (raw: unknown, who: string): MachineConnectionRoutes => {
     const routes = parseMachineConnectionRoutes(unwrapAccountActionResult(raw));
-    if (!routes) throw new Error(`${who} sent connection details ADE couldn't read.`);
+    if (!routes) throw new Error(`${who} sent connection details ${BRAND.NAME} couldn't read.`);
     return routes;
   };
 
@@ -58,7 +59,7 @@ export function createAccountConnectionRoutesBridge(
     const key = remoteKey(machineKey);
     if (!key) {
       if (!deps.callBrainAccountAction) {
-        throw new Error("ADE's background service isn't running on this computer. Reopen ADE, then try again.");
+        throw new Error(`${BRAND.NAME}'s background service isn't running on this computer. Reopen ${BRAND.NAME}, then try again.`);
       }
       return read(await deps.callBrainAccountAction(action, args), "This computer");
     }
@@ -82,7 +83,7 @@ export function createAccountConnectionRoutesBridge(
       const message = error instanceof Error ? error.message : String(error);
       // An older peer: one without the action, or one that still wants a projectId.
       if (isPeerMissingMethodMessage(message) || isUnsupportedAdeActionError(error)) {
-        throw markExpected(machineNeedsUpdateError("Update ADE on that computer to manage its routes from here."), "environment");
+        throw markExpected(machineNeedsUpdateError(`Update ${BRAND.NAME} on that computer to manage its routes from here.`), "environment");
       }
       throw error;
     }
