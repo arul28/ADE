@@ -101,7 +101,7 @@ export function lintSceneSource(source: string): ScenePreviewProblem[] {
     add("Remote URLs (images, fonts, stylesheets) are blocked. Inline images as data: URLs.");
   }
   if (/\bfetch\s*\(|\bXMLHttpRequest\b|\bnew\s+WebSocket\b|\bEventSource\b/.test(source)) {
-    add("fetch / XHR / WebSocket are blocked in a scene. Put the data in the markup, or ask for live ADE data with data=\"lanes,sessions,prs\" on the marker line.");
+    add("fetch / XHR / WebSocket are blocked in a scene. Put the data in the markup, or ask for live Daex data with data=\"lanes,sessions,prs\" on the marker line.");
   }
   if (/\b(?:localStorage|sessionStorage|indexedDB)\b|document\.cookie/.test(source)) {
     add("Storage and cookies throw in a sandboxed scene. Keep state in variables.");

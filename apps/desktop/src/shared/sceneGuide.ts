@@ -7,10 +7,10 @@
  * draws. The `ade-scene` skill stays the full reference.
  */
 export const SCENE_GUIDE = `
-ADE scenes: the short guide
+Daex scenes: the short guide
 
 A scene is a fenced code block with language "scene", holding plain HTML, CSS
-and JS. ADE runs it live in the chat, in a sandbox with no network.
+and JS. Daex runs it live in the chat, in a sandbox with no network.
 
 When
   Draw one when there is an obvious thing to show and a picture reads faster
@@ -65,19 +65,19 @@ Asking
   in your reply text too. A small question stays plain text. Never present a
   button as approval of a command or a tool call.
 
-Live ADE data
+Live Daex data
   Start with <!-- @scene title="Lanes" data="lanes,sessions,prs" --> and draw
-  from ade.on("data", fn). Do not type ADE's numbers in by hand.
+  from ade.on("data", fn). Do not type Daex's numbers in by hand.
 
 Rules of the sandbox
   No fetch, no remote scripts, images or fonts, no storage. Images are data:
   URLs. End your script with ade.ready().
 
 Check it
-  Write the scene to a file, run: ade scene preview <file> --text
+  Write the scene to a file, run: daex scene preview <file> --text
   Open the PNG it prints and look at it. Fix and repeat until it is right.
   "ok" only means nothing threw.
 
 Everything else (the full ade.* list, forms, lifetime, size limits) is in the
-ade-scene skill.
+daex-scene skill.
 `.trim();
