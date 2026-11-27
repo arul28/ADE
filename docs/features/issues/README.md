@@ -55,9 +55,26 @@ connected workspace's team keys.
 
 The team keys come from `useLinearWorkspaceTeamKeys` (`linearIssueStore.ts`):
 read from the picker catalog at most once an hour per project, kept in
-localStorage, so opening a chat costs no Linear request. Keys from lanes'
-linked issues are added too, so a team renamed since keeps its old issues
-clickable.
+localStorage, so opening a chat costs no Linear request. The same read keeps
+the connected workspace's URL name. Connecting, switching or disconnecting
+Linear re-reads them at once (`LINEAR_CONNECTION_CHANGED_EVENT`); a disconnect
+clears them. Keys from lanes' linked issues are added too, so a team renamed
+since keeps its old issues clickable. The prose key pattern lives in
+`shared/issueRefs.ts` (`proseIssueKeyPattern`), shared with PR markdown.
+
+## Issue keys in PR text
+
+PR descriptions, comments and reviews in ADE's PR view link a bare `ADE-123`
+the same way, with no GitHub setting and no repository admin rights
+(`prs/shared/prMarkdownAutolinks.ts`). Only the workspace's team keys link. The
+link is ADE's own `linear-issue` deeplink, so it opens the issue viewer here
+and ADE from anywhere it is copied to. A full `linear.app` issue link opens in
+the viewer only when its workspace (`linear.app/<workspace>/issue/…`) is the
+connected one; another workspace's link opens in the browser, since an
+identifier is only unique inside one workspace (`linearIssueLinkTarget` in
+`shared/issueRefs.ts`). PR markdown is drawn once per comment, so it reads the
+keys with `useCachedLinearWorkspace` (never a Linear request) and the PRs page
+keeps them fresh. The iPhone PR view does not link bare keys.
 
 ## GitHub Issues
 
