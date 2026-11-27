@@ -102,6 +102,7 @@ import { PENDING_INPUT_SEND_BLOCKED_MESSAGE } from "../../../shared/pendingInput
 import { isMovedAwayChatError } from "../../../shared/crossMachineMoveLock";
 import { CROSS_MACHINE_CALLER_FIELDS } from "../../../shared/crossMachineHandoff";
 import { BRAND } from "../../../shared/brand";
+import { ADE_CLI_COMMAND_NAMES } from "../../../shared/cliCommandNames";
 
 const execFileAsync = promisify(execFile);
 
@@ -636,8 +637,8 @@ const TOOL_FAMILY_ALLOWED_TOOLS: Record<AutomationToolFamily, string[]> = {
   repo: ["Read", "Glob", "Grep", "LS"],
   git: ["Bash", "bash"],
   tests: ["Bash", "bash"],
-  github: ["Bash", "bash", "gh", "ade"],
-  linear: ["ade", "linear"],
+  github: ["Bash", "bash", "gh", ...ADE_CLI_COMMAND_NAMES],
+  linear: [...ADE_CLI_COMMAND_NAMES, "linear"],
   browser: [
     "agent-browser",
     "get_environment_info",

@@ -35,6 +35,11 @@ describe("computer-use command summary", () => {
       { text: "Clicked “Save As…” on the lane screen", surface: "lane_screen", outcome: "observed" },
     ],
     [
+      "the CLI's `daex` name reads the same as its `ade` alias",
+      ok("/usr/local/bin/daex screen click --label Save", 'hit: AXButton "Save" (e1)\neffect: observed'),
+      { text: "Clicked “Save” on the lane screen", surface: "lane_screen", outcome: "observed" },
+    ],
+    [
       "an unconfirmed effect is its own outcome, with the CLI's reason",
       ok("ade browser click --label Buy --text", 'hit: button "Buy now" (b3)\neffect: unconfirmed — no change seen yet'),
       { text: "Clicked “Buy now” using Daex browser", surface: "ade_browser", outcome: "unconfirmed", reason: "no change seen yet" },

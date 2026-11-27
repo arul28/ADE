@@ -154,6 +154,7 @@ describe("Cursor SDK policy", () => {
     "ade chat scheduled-work create --prompt=/test",
     "FOO=bar ade chat scheduled-work create --prompt /ship",
     "date\nade chat note /ship",
+    'daex chat note "/ship"',
   ])("allows a slash command in an ade prompt: %s", (command) => {
     expect(decide("full-auto", "shell", { command }).decision).toBe("allow");
   });

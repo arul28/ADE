@@ -42,6 +42,7 @@ import { androidSummaryParts, resolveAndroidVerb } from "./computerUseAndroid";
 import { appNameFromBundleId, flagValue, NUMBER, type TargetShape, type VerbSpec } from "./computerUseCommandReaders";
 import { readRecord } from "./readRecord";
 import { BRAND } from "./brand";
+import { ADE_CLI_NAME_SOURCE, isAdeCliCommandWord } from "./cliCommandNames";
 
 export type ComputerUseSurfaceKind =
   | "lane_screen"
@@ -356,7 +357,7 @@ const ADE_CLI_VAR = /^(?:\$\{?(?:env:)?ADE_CLI_PATH\}?|%ADE_CLI_PATH%)$/i;
 function isAdeExecutable(token: string, aliasVars: ReadonlySet<string>): boolean {
   if (ADE_CLI_VAR.test(token)) return true;
   const name = basename(token);
-  if (name === "ade" || name === "ade.exe" || name === "ade.cmd" || name === "ade.ps1") return true;
+  if (isAdeCliCommandWord(name)) return true;
   const variable = /^\$\{?(\w+)\}?$/.exec(token)?.[1];
   return Boolean(variable && aliasVars.has(variable));
 }
@@ -626,11 +627,14 @@ function findInvocations(source: string, depth = 0): ParsedInvocation[] | null {
 }
 
 /**
- * A cheap first look: the command names an `ade` executable (`ade`,
- * `/usr/local/bin/ade`, `ade.exe`, …) or the ADE CLI path variable. Everything
+ * A cheap first look: the command names the CLI (`daex`, `ade`,
+ * `/usr/local/bin/daex`, `ade.exe`, …) or the CLI path variable. Everything
  * else is an ordinary shell command and is not parsed at all.
  */
-const ADE_COMMAND_HINT = /(?:^|[\s"'`/\\;&|(=])ade(?:\.(?:exe|cmd|ps1))?(?=$|[\s"'`;&|)])|ADE_CLI_PATH/i;
+const ADE_COMMAND_HINT = new RegExp(
+  String.raw`(?:^|[\s"'\`/\\;&|(=])${ADE_CLI_NAME_SOURCE}(?:\.(?:exe|cmd|ps1))?(?=$|[\s"'\`;&|)])|ADE_CLI_PATH`,
+  "i",
+);
 
 const SUMMARY_CACHE_LIMIT = 300;
 const SUMMARY_CACHE_OUTPUT_EDGE = 2048;

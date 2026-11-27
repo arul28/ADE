@@ -335,7 +335,8 @@ private func cuBasename(_ token: String) -> String {
 private func cuIsAdeExecutable(_ token: String, aliasVars: Set<String>) -> Bool {
   if cuTests(#"^(?:\$\{?(?:env:)?ADE_CLI_PATH\}?|%ADE_CLI_PATH%)$"#, token, [.caseInsensitive]) { return true }
   let name = cuBasename(token)
-  if ["ade", "ade.exe", "ade.cmd", "ade.ps1"].contains(name) { return true }
+  // `daex` is the CLI's name, `ade` its permanent alias (desktop `isAdeCliCommandWord`).
+  if ["daex", "daex.exe", "daex.cmd", "daex.ps1", "ade", "ade.exe", "ade.cmd", "ade.ps1"].contains(name) { return true }
   if let variable = cuMatch(#"^\$\{?(\w+)\}?$"#, token)?[1] ?? nil { return aliasVars.contains(variable) }
   return false
 }
@@ -623,9 +624,9 @@ func cuCacheTextKey(_ text: String) -> String {
   return "\(length)\u{0}\(text.prefix(cuCacheOutputEdge))\u{0}\(text.suffix(cuCacheOutputEdge))"
 }
 
-/// A cheap first look: the command names an `ade` executable or the ADE CLI
-/// path variable (desktop `ADE_COMMAND_HINT`).
-private let cuAdeCommandHint = #"(?:^|[\s"'`/\\;&|(=])ade(?:\.(?:exe|cmd|ps1))?(?=$|[\s"'`;&|)])|ADE_CLI_PATH"#
+/// A cheap first look: the command names the CLI (`daex` or its alias `ade`)
+/// or the CLI path variable (desktop `ADE_COMMAND_HINT`).
+private let cuAdeCommandHint = #"(?:^|[\s"'`/\\;&|(=])(?:daex|ade)(?:\.(?:exe|cmd|ps1))?(?=$|[\s"'`;&|)])|ADE_CLI_PATH"#
 
 /// Summarize one shell command (desktop `summarizeComputerUseCommand`).
 /// `status` is `running`, `completed`, `failed` or `interrupted`.
