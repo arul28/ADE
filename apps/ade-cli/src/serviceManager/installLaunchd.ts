@@ -47,6 +47,7 @@ import {
   isSameChannelSyncHostOwner,
   type SyncHostSingletonDeps,
 } from "../services/sync/syncHostSingleton";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 type LaunchdServiceManagerDeps = {
   command?: AdeServiceCommand;
@@ -451,7 +452,7 @@ export async function installLaunchdService(
         serviceName: ADE_RUNTIME_SERVICE_NAME,
         action: "install",
         path: servicePath,
-        message: "ADE service launchd service is already installed and running.",
+        message: `${BRAND.NAME} service launchd service is already installed and running.`,
       };
     }
   }
@@ -492,7 +493,7 @@ export async function installLaunchdService(
       serviceName: ADE_RUNTIME_SERVICE_NAME,
       action: "install",
       path: servicePath,
-      message: "ADE service launchd service is already installed; its background service finished starting.",
+      message: `${BRAND.NAME} service launchd service is already installed; its background service finished starting.`,
     };
   }
   if (young.kind === "starting") {
@@ -503,7 +504,7 @@ export async function installLaunchdService(
       serviceName: ADE_RUNTIME_SERVICE_NAME,
       action: "install",
       path: servicePath,
-      message: `ADE service launchd service is installed; the background service (pid ${young.pid}) is still starting.`,
+      message: `${BRAND.NAME} service launchd service is installed; the background service (pid ${young.pid}) is still starting.`,
     };
   }
   if (young.kind === "died") {
@@ -561,7 +562,7 @@ export async function installLaunchdService(
         serviceName: ADE_RUNTIME_SERVICE_NAME,
         action: "install",
         path: servicePath,
-        message: `${formatSyncHostSingletonConflictMessage(conflict)} The ${ADE_RUNTIME_SERVICE_NAME} launch agent was updated for this ADE channel and will start when mobile sync is available.`,
+        message: `${formatSyncHostSingletonConflictMessage(conflict)} The ${ADE_RUNTIME_SERVICE_NAME} launch agent was updated for this ${BRAND.NAME} channel and will start when mobile sync is available.`,
       };
     }
     await terminatePidGracefullyAsync(conflict.owner.pid, launchdTerminateDeps(deps.terminateDeps, socketPath));
@@ -605,7 +606,7 @@ export async function installLaunchdService(
     return handoverFailure(
       servicePath,
       "launchd_register",
-      `launchd did not register the ADE background service. ${load.detail}`,
+      `launchd did not register the ${BRAND.NAME} background service. ${load.detail}`,
     );
   }
   const kickstartError = kickstartLaunchdService(run);
@@ -623,7 +624,7 @@ export async function installLaunchdService(
     return handoverFailure(
       servicePath,
       "predecessor_exit",
-      `ADE service handover failed because predecessor pid ${oldPid} is still alive.`,
+      `${BRAND.NAME} service handover failed because predecessor pid ${oldPid} is still alive.`,
     );
   }
   if (replacementPid == null || replacementPid === oldPid) {
@@ -636,7 +637,7 @@ export async function installLaunchdService(
     return handoverFailure(
       servicePath,
       "replacement_pid",
-      `ADE service handover failed because launchd did not report a distinct replacement pid (old ${oldPid ?? "none"}, new ${replacementPid ?? "none"}).`
+      `${BRAND.NAME} service handover failed because launchd did not report a distinct replacement pid (old ${oldPid ?? "none"}, new ${replacementPid ?? "none"}).`
         + (kickstartError ? ` launchctl kickstart failed: ${kickstartError}` : ""),
     );
   }
@@ -657,13 +658,13 @@ export async function installLaunchdService(
         serviceName: ADE_RUNTIME_SERVICE_NAME,
         action: "install",
         path: servicePath,
-        message: `ADE service launchd service installed; the background service (pid ${replacementPid}) is still starting after ${timeoutMs}ms.`,
+        message: `${BRAND.NAME} service launchd service installed; the background service (pid ${replacementPid}) is still starting after ${timeoutMs}ms.`,
       };
     }
     return handoverFailure(
       servicePath,
       "replacement_responsive",
-      `ADE service handover failed because replacement pid ${replacementPid} did not initialize over ${socketPath} within ${timeoutMs}ms.`,
+      `${BRAND.NAME} service handover failed because replacement pid ${replacementPid} did not initialize over ${socketPath} within ${timeoutMs}ms.`,
     );
   }
   // Best effort, and deliberately after the brain is proven healthy: the
@@ -681,8 +682,8 @@ export async function installLaunchdService(
     action: "install",
     path: servicePath,
     message: watchdog.installed
-      ? "ADE service launchd service installed."
-      : `ADE service launchd service installed. ${watchdog.message}`,
+      ? `${BRAND.NAME} service launchd service installed.`
+      : `${BRAND.NAME} service launchd service installed. ${watchdog.message}`,
   };
 }
 
@@ -740,7 +741,7 @@ export function uninstallLaunchdService(deps: LaunchdServiceUninstallDeps = {}):
     serviceName: ADE_RUNTIME_SERVICE_NAME,
     action: "uninstall",
     path: servicePath,
-    message: "ADE service launchd service removed.",
+    message: `${BRAND.NAME} service launchd service removed.`,
   };
 }
 
@@ -766,7 +767,7 @@ function* launchdServiceStatusSteps(): LaunchdStatusSteps<ServiceManagerStatusRe
       installed: false,
       running: false,
       path: servicePath,
-      message: "ADE service launchd service is not installed.",
+      message: `${BRAND.NAME} service launchd service is not installed.`,
     };
   }
 
@@ -791,8 +792,8 @@ function* launchdServiceStatusSteps(): LaunchdStatusSteps<ServiceManagerStatusRe
       running: false,
       path: servicePath,
       message: disabled
-        ? "ADE service launchd service is installed but on launchd's disabled list, so macOS will not load it. Repair re-enables it."
-        : serviceManagerResultText(print) || "ADE service launchd service is installed but not loaded.",
+        ? `${BRAND.NAME} service launchd service is installed but on launchd's disabled list, so macOS will not load it. Repair re-enables it.`
+        : serviceManagerResultText(print) || `${BRAND.NAME} service launchd service is installed but not loaded.`,
     };
   }
 
@@ -806,7 +807,7 @@ function* launchdServiceStatusSteps(): LaunchdStatusSteps<ServiceManagerStatusRe
       installed: true,
       running,
       path: servicePath,
-      message: "ADE service launchd service is running.",
+      message: `${BRAND.NAME} service launchd service is running.`,
     };
   }
   const backgroundItem = yield* cachedBackgroundItemStatusSteps(servicePath);
@@ -822,8 +823,8 @@ function* launchdServiceStatusSteps(): LaunchdStatusSteps<ServiceManagerStatusRe
     message: backgroundItem === "requires_approval"
       ? BACKGROUND_ITEM_BLOCKED_MESSAGE
       : pendingSpawn
-        ? `ADE service launchd service is loaded but launchd has never started it (pended nondemand spawn = ${pendingSpawn}); launchctl kickstart starts it.`
-        : "ADE service launchd service is loaded but not running.",
+        ? `${BRAND.NAME} service launchd service is loaded but launchd has never started it (pended nondemand spawn = ${pendingSpawn}); launchctl kickstart starts it.`
+        : `${BRAND.NAME} service launchd service is loaded but not running.`,
   };
 }
 
