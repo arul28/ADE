@@ -1078,7 +1078,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Flags:
     --force, -f            Detach a device another chat is driving as well.
     --ignore-ownership     Detach without the owner check. Ask first.
-    --keep                 An ADE-made device stays as a free simulator (the user asked).
+    --keep                 A Daex-made device stays as a free simulator (the user asked).
     --chat-session <id>    Caller chat session; defaults to $ADE_CHAT_SESSION_ID.
     --lane, --lane-id <id> Lane whose device to detach.
 `,

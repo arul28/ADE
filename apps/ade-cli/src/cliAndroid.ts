@@ -417,7 +417,7 @@ export function androidEmulatorErrorHint(message: string): string | null {
       : `Only the user installs the Android SDK and accepts Google's licences, in the ${BRAND.NAME} desktop app: `
         + "the setup card in the Android tool, or Settings › Android devices. Ask the user.";
   }
-  if (message.includes("ANDROID_NO_ACCELERATION:") && message.includes("ADE Cloud box")) return CLOUD_BOX_ANDROID_HINT;
+  if (message.includes("ANDROID_NO_ACCELERATION:") && /A full computer can|(?:ADE|Daex) Cloud box/.test(message)) return CLOUD_BOX_ANDROID_HINT;
   return ANDROID_ERROR_HINT_ENTRIES.find(([code]) => message.includes(`${code}:`))?.[1] ?? null;
 }
 

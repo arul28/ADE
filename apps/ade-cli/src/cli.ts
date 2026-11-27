@@ -1720,7 +1720,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ daex triage [--agent] [--provider <name>]     Build a triage context + playbook and hand the repair to your coding agent
     $ daex reset --all [--dry-run]                  Remove everything ${BRAND.NAME} put on this computer (hard reset)
     $ daex lanes list | show | create | child       Work with lanes and lane stacks
-    $ daex git status | commit | push | stash       Run ADE-aware git operations
+    $ daex git status | commit | push | stash       Run Daex-aware git operations
     $ daex operations status | wait                 Poll operation/test/chat/run status
     $ daex diff changes | file | patch              Inspect lane diffs (including raw git patch text)
     $ daex files tree | read | write | search       Read and edit lane workspaces
@@ -2466,7 +2466,7 @@ export const HELP_BY_COMMAND: Record<string, string> = lazyRecord(() => ({
     --json          Structured JSON output (default).
 `,
   runtime: `${ADE_BANNER}
-  ADE Runtime Compatibility
+  ${BRAND.NAME} Runtime Compatibility
 
   Run an explicit manual runtime, or use compatibility endpoint commands for
   older scripts. Prefer "daex brain" for the automated always-on service.
@@ -2604,7 +2604,7 @@ export const HELP_BY_COMMAND: Record<string, string> = lazyRecord(() => ({
     $ daex projects remove <project-id>             Remove the project from ${BRAND.NAME} on this machine (the folder stays)
     $ daex projects touch <project-id>
     $ daex projects retry <project-id|path>         Open a project again that ${BRAND.NAME} refused because its folder is too slow
-    $ daex projects inspect /path/to/checkout --json Classify a path (repo root vs linked/ADE-managed worktree) and find its owning project + existing lane
+    $ daex projects inspect /path/to/checkout --json Classify a path (repo root vs linked/Daex-managed worktree) and find its owning project + existing lane
 `,
   new: `${ADE_BANNER}
   Start a chat or a CLI session
@@ -2749,7 +2749,7 @@ ${LANES_CLOUD_HELP}  daex lanes defaults [--text|--json]
                                                     its env init started (best-effort — a failed teardown still archives)
     $ daex lanes reclaim-preview <lane>             Show reclaimable space and safety warnings
     $ daex lanes archive-and-reclaim <lane> --confirm RECLAIM
-                                                    Archive the lane, then remove its ADE-managed local files
+                                                    Archive the lane, then remove its Daex-managed local files
     $ daex lanes unarchive <lane>                   Restore an archived lane and recreate its worktree if needed.
                                                     Docker comes back up too: a recreated worktree re-runs the whole
                                                     env init before returning, a plain unarchive returns immediately
@@ -2781,7 +2781,7 @@ ${LANES_CLOUD_HELP}  daex lanes defaults [--text|--json]
   Settings), so they work where a bare "git push" says "could not read
   Username". SSH remotes sign in with your SSH key only.
 
-    $ daex git status --lane <lane> --text          Show ADE-aware sync status
+    $ daex git status --lane <lane> --text          Show Daex-aware sync status
     $ daex git status --full --lane <lane> --text   Show full lane status, diff, and conflict state
     $ daex git fetch --lane <lane>                  Fetch remote refs
     $ daex git pull --lane <lane>                   Pull with ${BRAND.NAME}'s ff-only lane operation
@@ -3715,7 +3715,7 @@ ${CHAT_CLOUD_HELP}    $ daex chat actions --personal --text            List mach
     $ daex apple stop --text                    Power the lane's device OFF (session-only: shutdown)
     $ daex apple device-list --installed --text  Installed simulators for a picker
     $ daex apple device-list --text              The one device this lane owns
-    $ daex apple device-detach --text            Give up the lane's device (an ADE-made one is deleted ~5-20 min later)
+    $ daex apple device-detach --text            Give up the lane's device (a Daex-made one is deleted ~5-20 min later)
     $ daex apple device-promote --device <id>    Make an extra device the lane's own (the old one is kept)
     $ daex apple device-delete --text            Delete the lane's ${BRAND.NAME} device (attached devices refuse)
     $ daex apple device-cleanup --text           Delete leftover ${BRAND.NAME} devices, release ended lanes
@@ -4406,7 +4406,7 @@ ${CHAT_CLOUD_HELP}    $ daex chat actions --personal --text            List mach
   tab switching are passive view operations; use
   "browser claim --tab <tab-id> --lane <lane-id>" to claim an already-open tab
   (a personal chat needs no lane: "browser claim --tab <tab-id>").
-  ADE-launched agents should list tabs first and use only a tab/session owned
+  Daex-launched agents should list tabs first and use only a tab/session owned
   by their current chat. Plain "browser open <url>" navigates that chat's tab
   (the one it used last) and creates one only when none exists, without
   revealing the Browser panel unless --panel is passed. It prints
@@ -37103,7 +37103,7 @@ function formatStorageSnapshot(value: unknown): string {
   const table = renderTable(
     ["CATEGORY", "SIZE", "FILES", "SAFETY", "NOTE"],
     rows,
-    "No ADE-managed storage categories were found.",
+    `No ${BRAND.NAME}-managed storage categories were found.`,
   );
   return `${header}\n\n${table}`;
 }

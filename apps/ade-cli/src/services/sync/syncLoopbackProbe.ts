@@ -245,7 +245,7 @@ export async function probeAdeListenerAt(
             : markerValue == null || markerValue.length === 0
               ? `The listener on ${host}:${port} returned 426 but did not present a loopback identity in ${SYNC_LOOPBACK_ADE_MARKER_HEADER}.`
               : expectedNonce.length === 0
-                ? `The listener on ${host}:${port} cannot be ADE-validated because the expected loopback identity is empty.`
+                ? `The listener on ${host}:${port} cannot be ${BRAND.NAME}-validated because the expected loopback identity is empty.`
                 : `The listener on ${host}:${port} returned 426 but presented a different loopback identity — another process owns ${host}:${port}.`,
       });
     });
