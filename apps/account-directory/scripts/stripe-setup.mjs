@@ -93,17 +93,17 @@ function extraHoursDescription() {
 const PRODUCTS = {
   plus: {
     id: "ade_cloud",
-    name: "ADE Cloud Plus",
+    name: "Daex Cloud Plus",
     description: planDescription(PLAN_NUMBERS.plus),
   },
   pro: {
     id: "ade_cloud_pro",
-    name: "ADE Cloud Pro",
+    name: "Daex Cloud Pro",
     description: planDescription(PLAN_NUMBERS.pro),
   },
   max: {
     id: "ade_cloud_max",
-    name: "ADE Cloud Max",
+    name: "Daex Cloud Max",
     description: planDescription(PLAN_NUMBERS.max),
   },
   extraHours: {
@@ -251,7 +251,7 @@ const ensureExtraPrice = (product, meter, plan) => {
  */
 async function ensurePortalConfiguration() {
   const params = {
-    "business_profile[headline]": "Manage your ADE Cloud plan",
+    "business_profile[headline]": "Manage your Daex Cloud plan",
     "business_profile[privacy_policy_url]": "https://ade-app.dev/privacy",
     "business_profile[terms_of_service_url]": "https://ade-app.dev/terms",
     "features[invoice_history][enabled]": "true",
@@ -270,10 +270,10 @@ const product = await ensureProduct(PRODUCTS.plus);
 const proProduct = await ensureProduct(PRODUCTS.pro);
 const maxProduct = await ensureProduct(PRODUCTS.max);
 const extraProduct = await ensureProduct(PRODUCTS.extraHours);
-const meter = await ensureMeter(METER_EVENT, "ADE Cloud extra hours");
-const planPrice = await ensurePlanPrice(product, PLAN_LOOKUP_KEY, PLAN_NUMBERS.plus.cents, "ADE Cloud Plus");
-const proPrice = await ensurePlanPrice(proProduct, PRO_LOOKUP_KEY, PLAN_NUMBERS.pro.cents, "ADE Cloud Pro");
-const maxPrice = await ensurePlanPrice(maxProduct, MAX_LOOKUP_KEY, PLAN_NUMBERS.max.cents, "ADE Cloud Max");
+const meter = await ensureMeter(METER_EVENT, "Daex Cloud extra hours");
+const planPrice = await ensurePlanPrice(product, PLAN_LOOKUP_KEY, PLAN_NUMBERS.plus.cents, "Daex Cloud Plus");
+const proPrice = await ensurePlanPrice(proProduct, PRO_LOOKUP_KEY, PLAN_NUMBERS.pro.cents, "Daex Cloud Pro");
+const maxPrice = await ensurePlanPrice(maxProduct, MAX_LOOKUP_KEY, PLAN_NUMBERS.max.cents, "Daex Cloud Max");
 const extraPrices = {
   plus: await ensureExtraPrice(extraProduct, meter, "plus"),
   pro: await ensureExtraPrice(extraProduct, meter, "pro"),
