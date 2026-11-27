@@ -11,7 +11,7 @@ import {
 import { useHarnessPresets } from "../../settings/harnesses/useHarnessPresets";
 import { harnessPresetMatchesQuery } from "../../../../shared/harnessPresets";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { MagnifyingGlass } from "@phosphor-icons/react";
+import { ArrowClockwise, MagnifyingGlass } from "@phosphor-icons/react";
 import {
   MODEL_REGISTRY,
   modelSupportsFastMode,
@@ -55,7 +55,7 @@ import {
   type RuntimeCatalogModelDescriptor,
 } from "./modelCatalog";
 import type { AgentChatModelCatalogRefreshProvider, OpenProjectBinding } from "../../../../shared/types";
-import { refreshProviderForFamily } from "./runtimeCatalogCache";
+import { familyForRefreshProvider, refreshProviderForFamily } from "./runtimeCatalogCache";
 import { CustomPickerPane } from "./CustomPickerPane";
 import { FreeModelsEmptyState } from "./FreeModelsEmptyState";
 import { useFreeModelsStatus } from "./useFreeModelsStatus";
@@ -106,9 +106,8 @@ const ALL_PROVIDER_FAMILIES: readonly ProviderFamily[] = MODEL_PICKER_PROVIDER_O
 );
 
 function refreshProviderLabel(provider: AgentChatModelCatalogRefreshProvider): string {
-  if (provider === "lmstudio") return "LM Studio";
-  if (provider === "droid") return "Droid";
-  return providerLabel(provider);
+  // Refresh ids are not family keys (`kimi` is the `moonshot` family).
+  return providerLabel(familyForRefreshProvider(provider) ?? provider);
 }
 
 function providerIsReady(status: AuthStatus | undefined): boolean {
@@ -633,6 +632,10 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   const activeRefreshProvider = activeCatalogFamily ? refreshProviderForFamily(activeCatalogFamily) : null;
   const activeProviderRefreshing = activeRefreshProvider != null && refreshingProvider === activeRefreshProvider;
   const activeProviderRefreshFailed = activeRefreshProvider != null && refreshErrorProvider === activeRefreshProvider;
+  // A provider page whose list the host reads at run time offers Refresh: the
+  // person can ask for it again (after a sign-in, a new plan) instead of
+  // waiting for the cache to age out.
+  const showProviderRefresh = !harnessesActive && !freeActive && activeRefreshProvider != null;
 
   // However the picker learns OpenCode arrived (its own download, a status
   // re-read, the chat pane's), the catalog it read without OpenCode is stale:
@@ -1249,6 +1252,19 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                 {matchingCustomCount === 1 ? "1 custom provider matches" : `${matchingCustomCount} custom providers match`}
               </button>
             ) : null}
+            {showProviderRefresh && activeCatalogFamily && activeRefreshProvider && onProviderRailSelect ? (
+              <button
+                type="button"
+                data-model-picker-refresh="true"
+                disabled={activeProviderRefreshing}
+                onClick={() => onProviderRailSelect(activeCatalogFamily, { force: true })}
+                title={`Ask ${refreshProviderLabel(activeRefreshProvider)} for its models again`}
+                className="ml-auto inline-flex shrink-0 items-center gap-1 rounded px-1 py-0.5 text-muted-fg/60 hover:bg-fg/[0.06] hover:text-fg/85 disabled:cursor-default disabled:hover:bg-transparent"
+              >
+                <ArrowClockwise size={10} weight="bold" className={activeProviderRefreshing ? "animate-spin" : undefined} />
+                <span>{activeProviderRefreshing ? "Refreshing" : "Refresh"}</span>
+              </button>
+            ) : null}
           </div>
 
 	          {providerTabs.length > 1 ? (
@@ -1333,7 +1349,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
               <ProviderRefreshError
                 provider={activeRefreshProvider}
                 onRetry={activeCatalogFamily && onProviderRailSelect
-                  ? () => onProviderRailSelect(activeCatalogFamily)
+                  ? () => onProviderRailSelect(activeCatalogFamily, { force: true })
                   : undefined}
                 getProviderLabel={refreshProviderLabel}
               />
@@ -1359,7 +1375,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                 refreshingProvider={activeProviderRefreshing ? activeRefreshProvider : null}
                 refreshErrorProvider={activeProviderRefreshFailed ? activeRefreshProvider : null}
                 onRetryRefresh={activeProviderFamily && onProviderRailSelect
-                  ? () => onProviderRailSelect(activeProviderFamily)
+                  ? () => onProviderRailSelect(activeProviderFamily, { force: true })
                   : undefined}
                 providerAuthStatus={effectiveAuth}
                 getProviderLabel={refreshProviderLabel}

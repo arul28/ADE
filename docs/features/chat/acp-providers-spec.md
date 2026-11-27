@@ -626,7 +626,16 @@ chat's model token and effort.
   Devin), one provider at a time, and saves the last good list per provider in
   `userData/acp-model-catalog-cache.json` for 6 hours. A stale list is served
   while it refreshes, and a failed warm is not retried for 5 minutes. An open
-  chat session's own report refreshes the same cache. Once a provider has a
+  chat session's own report refreshes the same cache. A person's read waits
+  instead (`refreshAcpModelCatalog`): opening the provider's page in the picker
+  waits for a missing or old list (a sign-in marks it old), and the page's
+  **Refresh** button asks again even when fresh, checks a cached "not ready"
+  sign-in verdict again, and skips the failure backoff. A warm and a refresh
+  share one spawn. After a refresh the picker re-reads the provider status, so
+  rows the refresh made usable stop being dimmed. A runtime failure (a
+  timeout, a slow cold start) keeps the provider's last list listed; only a
+  sign-in failure removes it, and only a sign-in change marks the list old.
+  Once a provider has a
   live list, `modelRegistry.ts` serves exactly that list: curated rows the
   list names keep their researched name, color and context window, and curated
   rows it does not name are hidden. The curated rows are the fallback for a
@@ -743,7 +752,8 @@ From the internal audit (all file:line refs verified 2026-08-30):
   claude branch for qwen/grok/copilot, cursor branch (initialInput) for kimi.
 - `renderer/lib/sessions.ts`: `KnownChatProvider` + four; both maps + tool types.
 - `agentChatService.ts`: `catalogProviders` + `loadAvailableModels` arms
-  (cached-or-fallback fast tier — NEVER probe synchronously on catalog read);
+  (cached-or-fallback fast tier — NEVER probe synchronously on a passive
+  catalog read; only an active read for one provider waits, see above);
   cross-machine preflight `activateRuntime` list + four (agentChatService.ts
   ~:33921); fork capability → generic brief fallback.
 - Catalog sync: connected-only filter + size cap (4.85 MB incident guard).

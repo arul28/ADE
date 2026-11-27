@@ -130,6 +130,7 @@ vi.mock("./useProviderAuthStatus", () => ({
       loaded: true,
     };
   },
+  revalidateProviderAuthStatus: () => undefined,
 }));
 
 type SearchItem = {

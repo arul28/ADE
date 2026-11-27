@@ -13,10 +13,14 @@
  *   asks the provider directly: Devin through `devin models list`, the others
  *   through a bare ACP `initialize` + `session/new`. The probe never sends a
  *   prompt, so it costs no quota, and it closes its session and process.
- * - **Never on the read path.** A catalog read serves what is cached and, when
- *   the cache is older than the TTL, starts one background warm. Warms run one
- *   at a time, so a cold start spawns at most one CLI at once, and not in the
- *   first seconds of a launch (`launchQuiet.ts`).
+ * - **Not on the passive read path.** A passive catalog read serves what is
+ *   cached and, when the cache is older than the TTL, starts one background
+ *   warm. Warms run one at a time, so a cold start spawns at most one CLI at
+ *   once, and not in the first seconds of a launch (`launchQuiet.ts`).
+ * - **A person's read waits.** A click on the provider's rail waits for a
+ *   missing or old list (`refreshAcpModelCatalog`), so models appear right
+ *   after a sign-in; the picker's Refresh asks again even when fresh. Both
+ *   share the warm's spawn when one is already running.
  * - **A live session is the probe.** A chat that opened refreshed the cache, so
  *   a warm within the TTL finds it fresh and spawns nothing.
  * - **Persistence.** The last good list per provider lives in Electron
@@ -318,6 +322,8 @@ async function discoverProviderModels(provider: AcpModelProviderGroup, env: Node
 }
 
 const inFlight = new Set<AcpModelProviderGroup>();
+/** The discovery spawn running now, per provider. A warm and a refresh share it. */
+const runningDiscovery = new Map<AcpModelProviderGroup, Promise<void>>();
 const failureBackoff = new Map<AcpModelProviderGroup, FailureBackoff>();
 function providerFailureBackoff(provider: AcpModelProviderGroup): FailureBackoff {
   let backoff = failureBackoff.get(provider);
@@ -331,41 +337,30 @@ function providerFailureBackoff(provider: AcpModelProviderGroup): FailureBackoff
 const lastEmptyAt = new Map<AcpModelProviderGroup, number>();
 let queue: Promise<void> = Promise.resolve();
 
-/**
- * Refresh one provider's live list in the background when it is missing or
- * older than the TTL. Call for a signed-in provider. Only from ADE's copy
- * already on this machine: while it is not here yet (it downloads on first
- * use) this does nothing and counts no failure. Never throws, never blocks:
- * the read that calls this serves the cache.
- */
-export function warmAcpModelCatalog(
-  provider: AcpModelProviderGroup,
-  options?: { env?: NodeJS.ProcessEnv; logger?: Pick<Logger, "info" | "warn"> },
-): void {
-  applyPersistedAcpModelCatalogs();
-  const saved = readFile().providers[provider];
-  if (saved && Date.now() - saved.savedAt < CATALOG_TTL_MS) return;
-  if (inFlight.has(provider)) return;
-  if (!providerFailureBackoff(provider).canAttempt()) return;
-  if (Date.now() - (lastEmptyAt.get(provider) ?? 0) < CATALOG_TTL_MS) return;
-  // A model list read never downloads an agent; the curated rows stand in until it is here.
-  let onDisk = false;
+type DiscoveryOptions = { env?: NodeJS.ProcessEnv; logger?: Pick<Logger, "info" | "warn"> };
+
+/** True when ADE's own copy of the provider is on this machine. Never downloads. */
+function providerOnDisk(provider: AcpModelProviderGroup, options?: DiscoveryOptions): boolean {
   try {
-    onDisk = resolveAcpExecutable(provider, { env: options?.env ?? process.env }).source !== "fallback-command";
+    return resolveAcpExecutable(provider, { env: options?.env ?? process.env }).source !== "fallback-command";
   } catch (error) {
     options?.logger?.warn?.("ai.acp_model_discovery.resolve_failed", {
       provider,
       error: (error instanceof Error ? error.message : String(error)).slice(0, 300),
     });
+    return false;
   }
-  if (!onDisk) return;
-  inFlight.add(provider);
-  // One warm at a time, and none in the first seconds of a launch: each one
-  // starts the provider's CLI (`launchQuiet.ts`).
-  queue = queue.then(() => runAfterLaunchQuiet(async () => {
-    // A chat may have refreshed the list while this warm waited its turn.
-    const latest = readFile().providers[provider];
-    if (latest && Date.now() - latest.savedAt < CATALOG_TTL_MS) return;
+}
+
+/**
+ * Ask the provider for its list once and record the answer. Joins a run that
+ * is already going, so a warm and a refresh never start the CLI twice.
+ * Never throws.
+ */
+function runDiscovery(provider: AcpModelProviderGroup, options?: DiscoveryOptions): Promise<void> {
+  const running = runningDiscovery.get(provider);
+  if (running) return running;
+  const run = (async () => {
     try {
       const models = await discoverProviderModels(provider, options?.env ?? process.env);
       if (!models.length) {
@@ -387,6 +382,80 @@ export function warmAcpModelCatalog(
         error: (error instanceof Error ? error.message : String(error)).slice(0, 300),
       });
     }
+  })().finally(() => {
+    if (runningDiscovery.get(provider) === run) runningDiscovery.delete(provider);
+  });
+  runningDiscovery.set(provider, run);
+  return run;
+}
+
+/**
+ * A person is looking at this provider's models (a click on its rail, the
+ * picker's Refresh). Unlike a warm, it runs now, outside the launch-quiet
+ * window and the one-at-a-time queue, and waits for the answer up to
+ * `waitMs`; a slower answer still lands in the registry for the next read.
+ *
+ * Without `force` it asks only when a warm would: the list is missing or old
+ * (a sign-in marks it old) and no failure or empty answer is backing it off.
+ * With `force` (Refresh) it asks even then: the backoff keeps unattended
+ * reads from starting the CLI over and over, not a person who asked.
+ * Like a warm, it never downloads the provider. Never throws.
+ */
+export async function refreshAcpModelCatalog(
+  provider: AcpModelProviderGroup,
+  options?: DiscoveryOptions & { waitMs?: number; force?: boolean },
+): Promise<void> {
+  applyPersistedAcpModelCatalogs();
+  if (options?.force) {
+    failureBackoff.delete(provider);
+    lastEmptyAt.delete(provider);
+  } else if (!runningDiscovery.has(provider)) {
+    const saved = readFile().providers[provider];
+    if (saved && Date.now() - saved.savedAt < CATALOG_TTL_MS) return;
+    if (!providerFailureBackoff(provider).canAttempt()) return;
+    if (Date.now() - (lastEmptyAt.get(provider) ?? 0) < CATALOG_TTL_MS) return;
+  }
+  if (!providerOnDisk(provider, options)) return;
+  const run = runDiscovery(provider, options);
+  const waitMs = options?.waitMs ?? PROBE_TIMEOUT_MS;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  await Promise.race([
+    run,
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, waitMs);
+      timer.unref?.();
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+}
+
+/**
+ * Refresh one provider's live list in the background when it is missing or
+ * older than the TTL. Call for a signed-in provider. Only from ADE's copy
+ * already on this machine: while it is not here yet (it downloads on first
+ * use) this does nothing and counts no failure. Never throws, never blocks:
+ * the read that calls this serves the cache.
+ */
+export function warmAcpModelCatalog(
+  provider: AcpModelProviderGroup,
+  options?: DiscoveryOptions,
+): void {
+  applyPersistedAcpModelCatalogs();
+  const saved = readFile().providers[provider];
+  if (saved && Date.now() - saved.savedAt < CATALOG_TTL_MS) return;
+  if (inFlight.has(provider) || runningDiscovery.has(provider)) return;
+  if (!providerFailureBackoff(provider).canAttempt()) return;
+  if (Date.now() - (lastEmptyAt.get(provider) ?? 0) < CATALOG_TTL_MS) return;
+  // A model list read never downloads an agent; the curated rows stand in until it is here.
+  if (!providerOnDisk(provider, options)) return;
+  inFlight.add(provider);
+  // One warm at a time, and none in the first seconds of a launch: each one
+  // starts the provider's CLI (`launchQuiet.ts`).
+  queue = queue.then(() => runAfterLaunchQuiet(async () => {
+    // A chat or a refresh may have renewed the list while this warm waited its turn.
+    const latest = readFile().providers[provider];
+    if (latest && Date.now() - latest.savedAt < CATALOG_TTL_MS) return;
+    await runDiscovery(provider, options);
   })).finally(() => {
     inFlight.delete(provider);
   });

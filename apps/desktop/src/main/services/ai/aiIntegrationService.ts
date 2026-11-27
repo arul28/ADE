@@ -40,6 +40,7 @@ import {
   getLocalProviderDefaultEndpoint,
   isLocalProviderFamily,
   listAcpModelDescriptorsForProvider,
+  hasLiveAcpModelCatalog,
   listModelDescriptorsForProvider,
   mergeDynamicAcpModelDescriptors,
   createDynamicAcpModelDescriptor,
@@ -1293,13 +1294,17 @@ export function createAiIntegrationService(args: {
       available = available.filter((descriptor) =>
         !(descriptor.isCliWrapped && descriptor.family === family)
       );
-      if (!hasAuth) continue;
+      // A runtime failure (a timeout, a slow cold start) is not a sign-out:
+      // the provider's last own list stays listed. A sign-in failure, or no
+      // list yet, still removes the rows.
+      const keepLastList = !hasAuth && health?.state === "runtime-failed" && hasLiveAcpModelCatalog(provider);
+      if (!hasAuth && !keepLastList) continue;
       // The provider's own list (persisted from the last chat or probe) is the
       // picker; curated rows are only the fallback before one exists. Refresh
       // it in the background when it is missing or old, so this read never
       // blocks on a subprocess. A signed-in provider still waiting for its
       // first-use download lists curated rows (the warm skips it).
-      warmAcpModelCatalog(provider, { logger });
+      if (hasAuth) warmAcpModelCatalog(provider, { logger });
       available.push(...listAcpModelDescriptorsForProvider(provider, {
         ...(provider === "qwen" && qwenSettings.models.length
           ? { configuredModelIds: qwenSettings.models.map((model) => model.id) }

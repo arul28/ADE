@@ -164,9 +164,14 @@ function publishResult(
   result: AcpAuthProbeResult,
   detail?: ProviderRuntimeFailureDetail,
 ): void {
-  // A sign-in that changed state may now be a different account, whose models differ.
+  // A sign-in that changed state may now be a different account, whose models
+  // differ. Only a sign-in change counts: a runtime failure (a timeout, a slow
+  // cold start) and its recovery are the same account, and marking the list
+  // old on each flip started the agent again every time.
   const before = getProviderRuntimeHealth(provider)?.state ?? null;
-  if (before !== null && before !== result.state && (before === "ready" || result.state === "ready")) {
+  const signInChanged = (before === "ready" && result.state === "auth-failed")
+    || (before === "auth-failed" && result.state === "ready");
+  if (signInChanged) {
     // Loaded on use: model discovery imports this module.
     void import("../chat/acpHost/acpModelDiscovery")
       .then((discovery) => discovery.markAcpModelCatalogStale(provider))

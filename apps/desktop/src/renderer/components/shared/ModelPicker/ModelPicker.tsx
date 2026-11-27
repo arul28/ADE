@@ -38,9 +38,11 @@ import {
   runtimeCatalogProviderIsFresh,
   refreshProviderForFamily,
   DEFAULT_RUNTIME_CATALOG_SCOPE,
+  isPersonalChatCatalogScopeKey,
 } from "./runtimeCatalogCache";
 import { fetchSharedRuntimeCatalog } from "./sharedCatalogFetch";
 import { useRuntimeCatalogVersion } from "./useRuntimeCatalogVersion";
+import { revalidateProviderAuthStatus } from "./useProviderAuthStatus";
 
 /** The saved preset (or ad-hoc route) a surface is running on, for the trigger. */
 export type ModelPickerActivePreset = {
@@ -400,6 +402,11 @@ export const ModelPicker = memo(function ModelPicker({
           }
           if (providerRefreshTokenRef.current !== refreshToken) return;
           if (catalogScopeKeyRef.current !== scopeAtRefresh) return;
+          // The refresh may have found the provider signed in or installed;
+          // the rows stay dimmed until the status this window holds says so.
+          if (!isPersonalChatCatalogScopeKey(scopeAtRefresh)) {
+            revalidateProviderAuthStatus(runtimePinRef.current);
+          }
           onRuntimeCatalogRefreshed?.(refreshProvider, scopeAtRefresh);
         } finally {
           setRefreshingProvider((current) => {
