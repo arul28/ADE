@@ -5,7 +5,8 @@ import type { OpenProjectBinding, TerminalSessionChangedEvent } from "../../../s
 import { isUnsupportedAdeActionError } from "../../../shared/codedError";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { showToast } from "../app/toast/toastStore";
-import { requireChatPin, withChatPin } from "./chatMachinePin";
+import { chatReadFailure, requireChatPin, withChatPin, type ChatReadFailure } from "./chatMachinePin";
+import { useReadRetryOnReconnect } from "../../state/projectMachines";
 import { plainErrorText } from "../../lib/plainError";
 
 /**
@@ -23,14 +24,16 @@ export function useChatTerminalWatches(
   pinKey: string | null,
 ): {
   watches: TerminalWatchSummary[];
-  /** The read failed: the section says so instead of showing no watches. */
-  loadError: boolean;
+  /** The read failed: the pane says so instead of showing no watches. */
+  loadFailure: ChatReadFailure | null;
   retry: () => void;
   stop: (watch: TerminalWatchSummary) => void;
 } {
   const [watches, setWatches] = useState<TerminalWatchSummary[]>([]);
-  const [loadError, setLoadError] = useState(false);
+  const [loadFailure, setLoadFailure] = useState<ChatReadFailure | null>(null);
   const [reloadNonce, setReloadNonce] = useState(0);
+  // A read that lost its link reads again, on the chat's machine, once that link is back.
+  const { retryKey, begin: beginRead } = useReadRetryOnReconnect(pin);
   const pinRef = useRef(pin);
   pinRef.current = pin;
   // The chat and machine on screen now: a late Stop failure restores its row only here.
@@ -41,7 +44,7 @@ export function useChatTerminalWatches(
   useEffect(() => {
     const chatId = sessionId?.trim();
     setWatches([]);
-    setLoadError(false);
+    setLoadFailure(null);
     const list = window.ade?.terminal?.listWatches;
     // A host without terminal watches (the web client) shows none.
     if (!chatId || !isAdeAvailable(list)) return undefined;
@@ -50,18 +53,20 @@ export function useChatTerminalWatches(
     let latest = 0;
     const load = async () => {
       const request = ++latest;
+      const failed = beginRead();
       try {
         const rows = await list({ chatSessionId: chatId }, requireChatPin(pinRef.current));
         if (cancelled || request !== latest) return;
         setWatches(Array.isArray(rows) ? rows.filter((row) => row.status === "active") : []);
-        setLoadError(false);
+        setLoadFailure(null);
       } catch (error) {
         if (cancelled || request !== latest) return;
         // An older brain does not know the action: it has no watches to show.
         // Any other failure is said, not shown as an empty list.
         const unsupported = isUnsupportedAdeActionError(error);
-        setLoadError(!unsupported);
+        setLoadFailure(unsupported ? null : chatReadFailure(error));
         if (unsupported) setWatches([]);
+        else failed(error);
         console.warn("[ChatTerminalWatches] list failed", { chatId, error });
       }
     };
@@ -77,8 +82,8 @@ export function useChatTerminalWatches(
       cancelled = true;
       unsubscribe();
     };
-    // `reloadNonce` is the Retry action.
-  }, [sessionId, pinKey, reloadNonce]);
+    // `reloadNonce` is the Retry action; `retryKey` reads again once a lost link is back.
+  }, [sessionId, pinKey, reloadNonce, retryKey, beginRead]);
 
   const stop = useCallback((watch: TerminalWatchSummary) => {
     const unwatch = window.ade?.terminal?.unwatch;
@@ -105,7 +110,7 @@ export function useChatTerminalWatches(
 
   const retry = useCallback(() => setReloadNonce((value) => value + 1), []);
 
-  return { watches, loadError, retry, stop };
+  return { watches, loadFailure, retry, stop };
 }
 
 function remainingLabel(expiresAt: string, nowMs: number): string {

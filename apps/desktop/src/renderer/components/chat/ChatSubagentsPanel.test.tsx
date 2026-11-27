@@ -1744,12 +1744,12 @@ describe("ChatSubagentsPanel shells section", () => {
         events={[]}
         variant="pane"
         shells={[]}
-        shellsLoadError
+        shellsLoadFailure={{ unreachable: false, detail: "boom" }}
         onRetryShells={onRetryShells}
       />,
     );
 
-    expect(screen.getByTestId("chat-shells-error").textContent).toContain("Couldn’t load this chat’s shells.");
+    expect(screen.getByTestId("chat-terminals-error").textContent).toContain("Couldn’t load this chat’s shells.");
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(onRetryShells).toHaveBeenCalledTimes(1);
   });

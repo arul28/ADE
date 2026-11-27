@@ -64,9 +64,9 @@ import { navigateToSpawnedChat } from "./spawnNavigation";
 import { requestChatActionsPane } from "./chatActionsPaneRequests";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { useChatSubagentRows } from "./chatSubagentRoster";
-import { ChatShellsSection } from "./ChatShellsSection";
+import { ChatShellsSection, ChatTerminalsReadNotice } from "./ChatShellsSection";
+import type { ChatReadFailure } from "./chatMachinePin";
 import { TerminalWatchRow } from "./ChatTerminalWatches";
-import { Banner } from "../ui/notice";
 import type { TerminalWatchSummary } from "../../../shared/terminalWatch";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { ChatWorkflowActiveCard, workflowRunTaskIds } from "./ChatWorkflowActiveCard";
@@ -1328,11 +1328,11 @@ export function ChatSubagentsPanel({
   workflowPlans,
   shells = [],
   shellsPin = null,
-  shellsLoadError = false,
+  shellsLoadFailure = null,
   onRetryShells,
   terminalWatches = [],
   onStopTerminalWatch,
-  terminalWatchesLoadError = false,
+  terminalWatchesLoadFailure = null,
   onRetryTerminalWatches,
 }: {
   sessionId?: string | null;
@@ -1433,13 +1433,13 @@ export function ChatSubagentsPanel({
   /** The chat's machine, for a shell row's open and menu requests. */
   shellsPin?: OpenProjectBinding | null;
   /** The shells read failed: state it with a retry, never an empty section. */
-  shellsLoadError?: boolean;
+  shellsLoadFailure?: ChatReadFailure | null;
   onRetryShells?: () => void;
   /** The chat's live terminal watches (`ade terminal watch`), each with Stop. */
   terminalWatches?: TerminalWatchSummary[];
   onStopTerminalWatch?: (watch: TerminalWatchSummary) => void;
   /** The watch list could not be read from the chat's machine. */
-  terminalWatchesLoadError?: boolean;
+  terminalWatchesLoadFailure?: ChatReadFailure | null;
   onRetryTerminalWatches?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -1842,9 +1842,14 @@ export function ChatSubagentsPanel({
   const hasWorkflowRuns = workflowTaskIds.size > 0;
   const hasBackground = healedBackgroundItems.length > 0;
   const hasScheduled = scheduleItems.length > 0;
-  const hasWatches = terminalWatches.length > 0 || terminalWatchesLoadError;
+  const hasWatches = terminalWatches.length > 0;
+  const hasTerminalsReadFailure = Boolean(shellsLoadFailure || terminalWatchesLoadFailure);
   const hasAnything = hasGoal || hasClaudeGoal || hasTasks || hasSubagents || hasWorkflowRuns || shells.length > 0
-    || shellsLoadError || hasWatches || hasBackground || hasScheduled;
+    || hasTerminalsReadFailure || hasWatches || hasBackground || hasScheduled;
+  const retryTerminalsRead = () => {
+    if (shellsLoadFailure) onRetryShells?.();
+    if (terminalWatchesLoadFailure) onRetryTerminalWatches?.();
+  };
   const renderSubagentPaneRow = (snap: ChatSubagentSnapshot) => (
     <SubagentRow
       snapshot={snap}
@@ -1953,8 +1958,17 @@ export function ChatSubagentsPanel({
         />
       ) : null}
 
+      {/* ── One notice when this chat's shells or watches could not be read ── */}
+      {hasTerminalsReadFailure ? (
+        <ChatTerminalsReadNotice
+          shellsFailure={shellsLoadFailure}
+          watchesFailure={terminalWatchesLoadFailure}
+          onRetry={onRetryShells || onRetryTerminalWatches ? retryTerminalsRead : undefined}
+        />
+      ) : null}
+
       {/* ── Shells (terminals attached to this chat) ──────────────── */}
-      {shells.length > 0 || shellsLoadError ? (
+      {shells.length > 0 ? (
         <section className="pb-3" data-testid="chat-info-shells">
           <SectionHeader
             label="Shells"
@@ -1966,8 +1980,6 @@ export function ChatSubagentsPanel({
           <ChatShellsSection
             shells={shells}
             pin={shellsPin}
-            loadError={shellsLoadError}
-            onRetry={onRetryShells}
           />
         </section>
       ) : null}
@@ -1983,18 +1995,6 @@ export function ChatSubagentsPanel({
             sticky={stickyHeaders}
           />
           <div className="space-y-px px-2 pb-1">
-            {terminalWatchesLoadError ? (
-              <Banner
-                layout="inline"
-                testId="chat-terminal-watches-error"
-                model={{
-                  id: "chat-terminal-watches-load",
-                  tone: "error",
-                  title: "Couldn’t load this chat’s terminal watches.",
-                  actions: onRetryTerminalWatches ? [{ label: "Retry", onClick: onRetryTerminalWatches }] : undefined,
-                }}
-              />
-            ) : null}
             {terminalWatches.map((watch) => (
               <TerminalWatchRow key={watch.watchId} watch={watch} onStop={onStopTerminalWatch} />
             ))}

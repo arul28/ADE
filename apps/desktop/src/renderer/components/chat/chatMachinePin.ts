@@ -1,5 +1,6 @@
 import type { OpenProjectBinding } from "../../../shared/types";
 import { AdeExpectedError } from "../../../shared/expectedError";
+import { isLinkLostReadError } from "../../state/projectMachines";
 
 /** Said when a chat-scoped call has no computer to go to. */
 export const NO_CHAT_MACHINE_MESSAGE = "The computer this runs on is not connected.";
@@ -53,4 +54,17 @@ export const PERSONAL_CHAT_ADAPTER_PIN: OpenProjectBinding = Object.freeze({
 /** The pin for a call through a pane's chat API: the adapter's own for a bound (personal or shared) pane. */
 export function chatApiPin(pin: OpenProjectBinding | null | undefined, bound: boolean): OpenProjectBinding | null {
   return bound ? PERSONAL_CHAT_ADAPTER_PIN : pin ?? null;
+}
+
+/**
+ * A chat-scoped read that failed, as its section shows it. `unreachable`: only
+ * the way to the chat's computer was missing (not connected yet, the link
+ * dropped, the computer asleep), so the read runs again on its own once the
+ * link is back. Anything else is a real failure, said with its raw error.
+ */
+export type ChatReadFailure = { unreachable: boolean; detail: string };
+
+export function chatReadFailure(error: unknown): ChatReadFailure {
+  const detail = error instanceof Error ? error.message : String(error ?? "");
+  return { unreachable: isLinkLostReadError(error), detail: detail.trim() };
 }
