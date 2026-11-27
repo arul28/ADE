@@ -25551,8 +25551,7 @@ async function runAccountMachineConnect(
       { autoRegisterProject: false, machineRuntimeOnly: true },
     );
   } catch (error) {
-    // Older clients match this text; keep until released desktops read both names.
-    throw new CliExecutionError(`Failed to initialize the ADE brain for account machine connection.`, {
+    throw new CliExecutionError(`Failed to initialize the ${BRAND.NAME} brain for account machine connection.`, {
       cause: error instanceof Error ? error.message : String(error),
       nextAction: `Start the machine ${BRAND.NAME} brain with \`daex brain start\`, then retry.`,
     });
@@ -29694,8 +29693,7 @@ async function runConnectCli(
       { autoRegisterProject: false, machineRuntimeOnly: true },
     );
   } catch (error) {
-    // Older clients match this text; keep until released desktops read both names.
-    throw new CliExecutionError(`Failed to initialize the ADE brain for \`daex connect\`.`, {
+    throw new CliExecutionError(`Failed to initialize the ${BRAND.NAME} brain for \`daex connect\`.`, {
       cause: error instanceof Error ? error.message : String(error),
       nextAction: `Start the machine ${BRAND.NAME} brain with \`daex brain start\`, then retry \`daex connect\`.`,
     });
@@ -34610,7 +34608,7 @@ async function runServe(
   }
 
   process.stderr.write(
-    `ADE brain listening on ${socketPath}${tcpUrl ? ` and ${tcpUrl}` : ""}\n`,
+    `${BRAND.NAME} brain listening on ${socketPath}${tcpUrl ? ` and ${tcpUrl}` : ""}\n`,
   );
   // The same fact in `brain.jsonl`. The human line above stays: it is what a
   // person reads when they run the brain in a terminal, and it is what the
@@ -42543,8 +42541,7 @@ async function runAccountLogin(
     );
   } catch (error) {
     throw new CliExecutionError(
-      // Older clients match this text; keep until released desktops read both names.
-      `Failed to initialize the ADE brain for account login.`,
+      `Failed to initialize the ${BRAND.NAME} brain for account login.`,
       {
         cause: error instanceof Error ? error.message : String(error),
         nextAction: `Start the machine ${BRAND.NAME} brain with \`daex brain start\`, then retry \`daex login\`.`,

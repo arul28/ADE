@@ -18,7 +18,8 @@ import path from "node:path";
 
 const runs = Math.max(1, Number(process.argv[2] ?? 7));
 const cliPath = path.resolve(import.meta.dirname, "../../../apps/ade-cli/dist/cli.cjs");
-const READY = "ADE brain listening on";
+/** The ready line, as a Daex brain prints it or an older ADE one did. */
+const READY = /(?:Daex|ADE) brain listening on/;
 const r1 = (x: number) => Math.round(x * 10) / 10;
 const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]!;
 
@@ -184,10 +185,10 @@ async function timeOne(n: number, variant: Variant): Promise<Timed> {
   child.stderr!.setEncoding("utf8");
   try {
     const readyMs = await new Promise<number>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`no "${READY}" line in 60 s: ${stderr.slice(-400)}`)), 60_000);
+      const timer = setTimeout(() => reject(new Error(`no "${READY.source}" line in 60 s: ${stderr.slice(-400)}`)), 60_000);
       child.stderr!.on("data", (chunk: string) => {
         stderr += chunk;
-        if (stderr.includes(READY)) { clearTimeout(timer); resolve(performance.now() - t0); }
+        if (READY.test(stderr)) { clearTimeout(timer); resolve(performance.now() - t0); }
       });
       child.once("exit", (code, signal) => {
         clearTimeout(timer);

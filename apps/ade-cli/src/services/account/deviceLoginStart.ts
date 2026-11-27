@@ -6,10 +6,11 @@
  *
  * Every failure a retry may fix (no connection, a timeout, an answer without
  * JSON) is retried with a growing wait until the window is used up; then the
- * error names what happened and how long ADE kept trying. Its two prefixes
- * ("ADE account device service timed out" / "could not be reached") are
+ * error names what happened and how long Daex kept trying. Its two prefixes
+ * ("Daex account device service timed out" / "could not be reached") are
  * stable: the desktop maps them (`accountBridge.ts`), and the cloud setup card
- * reads "ADE kept trying" as this retry having run (`cloudBoxSignInStart.ts`).
+ * reads "Daex kept trying" (or an older CLI's "ADE kept trying") as this retry
+ * having run (`cloudBoxSignInStart.ts`).
  */
 
 /** The longest a device sign-in start keeps retrying an unreachable account directory (`retryUnreachableForMs`). */
@@ -64,8 +65,7 @@ export function readDeviceStartRetryMs(value: unknown): number | undefined {
  * Only a network error code goes in, never a URL or a body.
  */
 function deviceBridgeStartError(failure: DeviceBridgeStartFailure, triedForMs: number): Error {
-  // Older clients match this text; keep until released desktops read both names.
-  const tried = triedForMs >= 1_000 ? ` ADE kept trying for ${Math.round(triedForMs / 1_000)} s.` : "";
+  const tried = triedForMs >= 1_000 ? ` ${BRAND.NAME} kept trying for ${Math.round(triedForMs / 1_000)} s.` : "";
   if (failure.kind === "timeout") {
     return new Error(`${BRAND.NAME} account device service timed out.${tried} Check this computer's network connection and the account directory, then retry.`);
   }
