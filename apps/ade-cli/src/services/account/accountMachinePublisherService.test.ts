@@ -517,7 +517,7 @@ describe("account machine publisher health", () => {
     expect(service.getPublisherHealth()).toMatchObject({
       state: "no_active_sync_scope",
       skipReason:
-        "Another Daex app on this computer owns sync for this machine (ADE Alpha, pid 9253).",
+        "Another ADE app on this computer owns sync for this machine (ADE Alpha, pid 9253).",
     });
   });
 
