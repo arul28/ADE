@@ -131,6 +131,10 @@ final class ModelPickerStore: ObservableObject {
       do {
         let next = try await self.accountFavorites.change(add: Array(missing.prefix(200)), remove: [], account: userId)
         UserDefaults.standard.set(true, forKey: key)
+        // A confirmed list like a tap's answer; a tap still on its way shows its own answer.
+        self.confirmedFavorites = next
+        self.confirmations &+= 1
+        if self.starsInFlight == 0 { self.favorites = next }
         return next
       } catch AccountModelFavoritesClient.FavoritesError.refused {
         // The account's list is full: these can't land, so don't send them again.

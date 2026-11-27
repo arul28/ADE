@@ -82,6 +82,8 @@ function idsOf(value: unknown): string[] {
   return Array.isArray(value) ? [...new Set(value.map(favoriteId).filter((id): id is string => id != null))] : [];
 }
 
+/** The account the queue belongs to as this window last saw it; also the fallback when storage can't be read. */
+let knownOwner: string | null = null;
 /** The queue when storage refused to save it: kept here so the change is still sent. */
 let unsavedPending: Pending | null = null;
 /** Ids the account confirmed or refused while the saved queue was stale: that copy must not replay them. */
@@ -93,8 +95,10 @@ const settledWhileUnsaved = new Set<string>();
  * changes win for their ids and every other saved change is kept.
  */
 function readPending(): Pending {
-  const raw = readStored(PENDING_KEY) as Partial<Pending> | null;
-  const saved: Pending = { add: idsOf(raw?.add), remove: idsOf(raw?.remove) };
+  const raw = readStored(PENDING_KEY) as (Partial<Pending> & { owner?: unknown }) | null;
+  // A queue saved under another account (a reset storage could not save) is that account's: never sent for this one.
+  const foreign = typeof raw?.owner === "string" && knownOwner != null && raw.owner !== knownOwner;
+  const saved: Pending = foreign ? { add: [], remove: [] } : { add: idsOf(raw?.add), remove: idsOf(raw?.remove) };
   if (!unsavedPending) return saved;
   const mine = new Set([...unsavedPending.add, ...unsavedPending.remove, ...settledWhileUnsaved]);
   return {
@@ -104,7 +108,7 @@ function readPending(): Pending {
 }
 
 function savePending(pending: Pending): void {
-  if (writeStored(PENDING_KEY, pending)) {
+  if (writeStored(PENDING_KEY, { ...pending, owner: knownOwner })) {
     unsavedPending = null;
     settledWhileUnsaved.clear();
   } else {
@@ -166,8 +170,6 @@ function getImportApi(): ((pin: OpenProjectBinding) => Promise<{ favorites: stri
 
 /** The machine import runs at most once per start; a failure tries again at the next start. */
 let importTried = false;
-/** The owner as this window last saw it, for when storage can't be read. */
-let knownOwner: string | null = null;
 let syncInFlight: Promise<void> | null = null;
 /** A star while a sync ran: sync once more after it. */
 let syncAgain = false;
