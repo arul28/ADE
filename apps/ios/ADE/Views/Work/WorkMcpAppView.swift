@@ -488,7 +488,7 @@ final class WorkMcpAppController: NSObject, ObservableObject {
       case "tools/call", "resources/read":
         forward(id: id, method: method, params: params)
       default:
-        refuse(id, "ADE does not support this request from an app.", code: WorkMcpAppLimits.methodNotFoundCode)
+        refuse(id, "\(Brand.name) does not support this request from an app.", code: WorkMcpAppLimits.methodNotFoundCode)
       }
     }
   }
