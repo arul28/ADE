@@ -679,7 +679,7 @@ describe("linearOAuthService", () => {
     const error = caught as Error & { code?: string };
     expect(error.code).toBe("EADDRINUSE");
     expect(error.message).toContain("callback port 19836 is already in use");
-    expect(error.message).toContain("Stop the other ADE process or local app");
+    expect(error.message).toContain("Stop the other Daex process or local app");
     expect(error.message).not.toContain("listen EADDRINUSE");
     expect(logger.warn).toHaveBeenCalledWith(
       "linear_sync.oauth_callback_port_in_use",

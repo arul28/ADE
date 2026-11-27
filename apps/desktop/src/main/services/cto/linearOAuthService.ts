@@ -8,6 +8,7 @@ import type {
 import type { Logger } from "../logging/logger";
 import type { LinearCredentialService } from "./linearCredentialService";
 import { createPkcePair } from "../shared/utils";
+import { BRAND } from "../../../shared/brand";
 
 const LINEAR_AUTHORIZE_URL = "https://linear.app/oauth/authorize";
 const LINEAR_TOKEN_URL = "https://api.linear.app/oauth/token";
@@ -82,7 +83,7 @@ function isAddressInUseError(error: unknown): boolean {
 function createOAuthPortInUseError(): Error {
   const error = new Error(
     `Linear OAuth cannot start because callback port ${OAUTH_PORT} is already in use on ${OAUTH_HOST}. ` +
-    `Stop the other ADE process or local app using that port, then try Sign in with Linear again.`,
+    `Stop the other ${BRAND.NAME} process or local app using that port, then try Sign in with Linear again.`,
   ) as Error & { code?: string };
   error.code = "EADDRINUSE";
   return error;
@@ -206,7 +207,7 @@ export function createLinearOAuthService(args: {
       response,
       409,
       "text/plain; charset=utf-8",
-      "This Linear sign-in has already finished. Return to ADE to continue.",
+      `This Linear sign-in has already finished. Return to ${BRAND.NAME} to continue.`,
     )
   );
 
@@ -231,7 +232,7 @@ export function createLinearOAuthService(args: {
       response,
       409,
       "text/plain; charset=utf-8",
-      "This Linear sign-in is already being completed. Return to ADE to continue.",
+      `This Linear sign-in is already being completed. Return to ${BRAND.NAME} to continue.`,
     )
   );
 
@@ -359,7 +360,7 @@ export function createLinearOAuthService(args: {
       expiresAt,
     };
     if (session.purpose === "agent-install") {
-      if (!agentTokenHandler) throw new Error("The ADE agent cannot be installed from this runtime.");
+      if (!agentTokenHandler) throw new Error(`The ${BRAND.NAME} agent cannot be installed from this runtime.`);
       await agentTokenHandler(token);
       return;
     }
@@ -372,7 +373,7 @@ export function createLinearOAuthService(args: {
     if (purpose === "agent-install" && args.credentials.getOAuthClientSource() !== "ade-app") {
       // The relay refreshes the app token with ADE's own OAuth app; a token
       // from a custom client could never be refreshed and would stop working.
-      throw new Error("The ADE agent installs only through ADE's own Linear app. Remove the custom OAuth client in Settings → Integrations → Linear, then try again.");
+      throw new Error(`The ${BRAND.NAME} agent installs only through ${BRAND.NAME}'s own Linear app. Remove the custom OAuth client in Settings → Integrations → Linear, then try again.`);
     }
     pruneExpiredSessions();
     // Close any leftover pending sessions so the fixed port is available.
@@ -421,7 +422,7 @@ export function createLinearOAuthService(args: {
             hasReturnedState: returnedState != null,
           });
           res.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
-          res.end("OAuth state mismatch. Return to ADE and continue the active Linear sign-in.");
+          res.end(`OAuth state mismatch. Return to ${BRAND.NAME} and continue the active Linear sign-in.`);
           return;
         }
 
@@ -481,7 +482,7 @@ export function createLinearOAuthService(args: {
           {
             status: 200,
             contentType: "text/html; charset=utf-8",
-            body: "<!doctype html><html><body style=\"font-family:Geist,-apple-system,BlinkMacSystemFont,sans-serif;padding:24px\">Linear connected. You can close this window and return to ADE.</body></html>",
+            body: `<!doctype html><html><body style="font-family:Geist,-apple-system,BlinkMacSystemFont,sans-serif;padding:24px">Linear connected. You can close this window and return to ${BRAND.NAME}.</body></html>`,
           },
         );
       } catch (error) {

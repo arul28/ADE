@@ -153,7 +153,7 @@ describe("home widgets IPC", () => {
     expect(channels.length).toBeGreaterThan(15);
     for (const event of outsiders) {
       for (const channel of channels) {
-        await expect(invoke(channel, event, {}), channel).rejects.toThrow(/only available to the ADE window/);
+        await expect(invoke(channel, event, {}), channel).rejects.toThrow(/only available to the Daex window/);
       }
     }
     // The same call from ADE's renderer goes through.

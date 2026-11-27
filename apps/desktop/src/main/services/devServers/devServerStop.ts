@@ -7,6 +7,7 @@ import { windowsTaskkillInvocation } from "../shared/processExecution";
 import { signalProcessGroup } from "../shared/utils";
 import { listeningPidsOnPort, readProcessChatSessionIds } from "./devServerListenerScan";
 import { runWindowsPortScan } from "./windowsPortScan";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Stop a dev server a chat's agent started, and nothing else.
@@ -286,7 +287,7 @@ export async function stopChatDevServer(input: {
     return refuse("invalid", "Name the chat and the port of the server to stop.");
   }
   if (port === portOfDevRenderer()) {
-    return refuse("protected", `Port ${port} is ADE's own dev renderer.`);
+    return refuse("protected", `Port ${port} is ${BRAND.NAME}'s own dev renderer.`);
   }
 
   // A failed OS read is refused below; say why in the log, not only that it failed.
@@ -299,20 +300,20 @@ export async function stopChatDevServer(input: {
     });
   };
   const listeners = await listeningPidsOnPort(port, platform, logReadFailure("listeners"), input.logger);
-  if (listeners === null) return refuse("failed", `ADE could not check what is using port ${port}.`);
+  if (listeners === null) return refuse("failed", `${BRAND.NAME} could not check what is using port ${port}.`);
   if (listeners.length === 0) return { ok: true, port, stopped: [], forced: false, alreadyStopped: true };
 
   const table = await readProcessTable(platform, logReadFailure("process_table"), input.logger);
-  if (!table) return refuse("failed", "ADE could not read this computer's process list.");
+  if (!table) return refuse("failed", `${BRAND.NAME} could not read this computer's process list.`);
   const protectedPids = protectedPidsFor(table, process.pid, platform, input.protectedPids);
   const children = childrenIndex(table, platform);
 
   for (const pid of listeners) {
     if (protectedPids.has(pid)) {
-      return refuse("protected", `Port ${port} belongs to ADE or to a chat's agent itself, not to a server it started.`);
+      return refuse("protected", `Port ${port} belongs to ${BRAND.NAME} or to a chat's agent itself, not to a server it started.`);
     }
     if (descendantsOf(pid, children).some((child) => protectedPids.has(child))) {
-      return refuse("protected", `Stopping the server on port ${port} would also stop ADE.`);
+      return refuse("protected", `Stopping the server on port ${port} would also stop ${BRAND.NAME}.`);
     }
   }
 
@@ -466,7 +467,7 @@ export async function stopChatDevServer(input: {
   const stillListening = await listeningPidsOnPort(port, platform, logReadFailure("final_check"), input.logger);
   // Could not look: do not claim it stopped, or the row forgets a running server.
   if (stillListening === null) {
-    return refuse("failed", `ADE could not confirm that the server on port ${port} stopped.`);
+    return refuse("failed", `${BRAND.NAME} could not confirm that the server on port ${port} stopped.`);
   }
   if (stillListening.some((pid) => listeners.includes(pid))) {
     return refuse("failed", `The server on port ${port} is still running.`);

@@ -5,6 +5,7 @@ import type { AccountAppTokenClient } from "../../../shared/github/accountAppTok
 import { accountAppDirectCredential, createGithubDirectClient } from "../../../shared/github/directClient";
 import { isTrustedAdeRendererSender } from "../ipc/trustedRendererSender";
 import { acquireGithubRequestSlot } from "./githubRequestGate";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * `window.ade.githubDirect`: GitHub reads with the ADE account's GitHub App
@@ -31,7 +32,7 @@ export function registerGithubDirectIpc(args: {
   });
 
   ipcMain.handle(IPC.githubDirectRequest, async (event, request: unknown, options: unknown): Promise<GithubDirectResult<unknown>> => {
-    if (!isTrustedAdeRendererSender(event)) throw new Error("GitHub reads are only available to the ADE window.");
+    if (!isTrustedAdeRendererSender(event)) throw new Error(`GitHub reads are only available to the ${BRAND.NAME} window.`);
     const requestOptions: GithubDirectRequestOptions = {
       background: Boolean(options && typeof options === "object" && (options as { background?: unknown }).background === true),
     };
@@ -44,7 +45,7 @@ export function registerGithubDirectIpc(args: {
   });
 
   ipcMain.handle(IPC.githubDirectGetState, async (event): Promise<GithubDirectClientState> => {
-    if (!isTrustedAdeRendererSender(event)) throw new Error("GitHub reads are only available to the ADE window.");
+    if (!isTrustedAdeRendererSender(event)) throw new Error(`GitHub reads are only available to the ${BRAND.NAME} window.`);
     return client.state();
   });
 }

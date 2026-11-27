@@ -16,6 +16,7 @@ import {
   grokConfigHome,
   kimiCodeConfigHome,
 } from "../shared/providerConfigHomes";
+import { BRAND } from "../../../shared/brand";
 
 export type ProviderSessionHandle = {
   provider: ExternalSessionProvider;
@@ -612,9 +613,9 @@ export async function captureProviderSessionFromPidTree(args: {
 export function handleInspectionUnavailableMessage(reason: Extract<HandleInspectionAvailability, { available: false }>["reason"]): string {
   switch (reason) {
     case "windows_handle_enumeration_unavailable":
-      return "Windows cannot list another process's open files unless Sysinternals handle.exe is on PATH; ADE falls back to mtime only for live-session detection.";
+      return `Windows cannot list another process's open files unless Sysinternals handle.exe is on PATH; ${BRAND.NAME} falls back to mtime only for live-session detection.`;
     case "lsof_unavailable":
-      return "lsof is unavailable; ADE falls back to mtime only for live-session detection.";
+      return `lsof is unavailable; ${BRAND.NAME} falls back to mtime only for live-session detection.`;
     default: {
       const exhaustive: never = reason;
       return exhaustive;

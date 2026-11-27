@@ -573,7 +573,7 @@ describe("app user token refresh", () => {
       sleep,
     });
 
-    await expect(service.getValidTokenForRelay()).rejects.toThrow(/Re-authorize ADE with GitHub/);
+    await expect(service.getValidTokenForRelay()).rejects.toThrow(/Re-authorize Daex with GitHub/);
     expect(service.getAuthStatus().credentialState).toBe("needs_reauth");
   });
 });
@@ -929,7 +929,7 @@ describe("refresh whose replacement never reached the store", () => {
 
     // A signed-out machine has no credential to serve, and the record this
     // process was holding must not resurrect the one the user just cleared.
-    await expect(service.getValidTokenForRelay()).rejects.toThrow(/Authorize the ADE GitHub App/);
+    await expect(service.getValidTokenForRelay()).rejects.toThrow(/Authorize the Daex GitHub App/);
     expect(storedRecord(values)).toBeNull();
     expect(tokenPostCount(fetchImpl)).toBe(1);
   });

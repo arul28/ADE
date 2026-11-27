@@ -992,10 +992,10 @@ describe("fileService", () => {
       fs.writeFileSync(path.join(rootPath, ".ade", "secrets", "token.txt"), "secret", "utf8");
       const disguised = ["docs/../.ade/secrets/token.txt", ...(process.platform === "linux" ? [] : [".ADE/Secrets/token.txt"])];
       for (const spelled of disguised) {
-        await expect(service.readFile({ workspaceId: "workspace-1", path: spelled })).rejects.toThrow(/ADE runtime paths/);
+        await expect(service.readFile({ workspaceId: "workspace-1", path: spelled })).rejects.toThrow(/Daex runtime paths/);
         expect(() =>
           service.writeWorkspaceText({ workspaceId: "workspace-1", path: spelled, text: "overwritten" }),
-        ).toThrow(/ADE runtime paths/);
+        ).toThrow(/Daex runtime paths/);
       }
       expect(fs.readFileSync(path.join(rootPath, ".ade", "secrets", "token.txt"), "utf8")).toBe("secret");
     } finally {

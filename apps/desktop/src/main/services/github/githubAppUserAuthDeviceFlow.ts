@@ -14,6 +14,7 @@ import {
 import { describeGitHubAppUserAuthFailure } from "./githubAppUserAuthFailure";
 import { markExpected } from "../../../shared/expectedError";
 import { describeFetchTransportFailure, isFetchTransportFailure } from "../../../shared/fetchTransportFailure";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The GitHub device flow: how a person first authorizes ADE.
@@ -34,7 +35,7 @@ const MAX_PENDING_DEVICE_AUTH_SESSIONS = 5;
  * back a status code.
  */
 export const GITHUB_SIGN_IN_RATE_LIMITED_COPY =
-  "GitHub is rate-limiting ADE's sign-in requests right now. Try again in a few minutes.";
+  `GitHub is rate-limiting ${BRAND.NAME}'s sign-in requests right now. Try again in a few minutes.`;
 
 /**
  * What a person is told when the sign-in request never reached GitHub (no
@@ -43,7 +44,7 @@ export const GITHUB_SIGN_IN_RATE_LIMITED_COPY =
  */
 function githubSignInUnreachableCopy(error: unknown): string {
   const reason = describeFetchTransportFailure(error);
-  return `ADE couldn't reach GitHub${reason ? ` (${reason})` : ""}. Check your connection, then try again.`;
+  return `${BRAND.NAME} couldn't reach GitHub${reason ? ` (${reason})` : ""}. Check your connection, then try again.`;
 }
 
 type GitHubAppDeviceAuthSession = GitHubAppDeviceCode & {

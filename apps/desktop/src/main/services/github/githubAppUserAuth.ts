@@ -1,3 +1,5 @@
+import { BRAND } from "../../../shared/brand";
+
 export const ADE_GITHUB_APP_CLIENT_ID = "Iv23liy35Ed4L0oQODtl";
 
 const GITHUB_DEVICE_CODE_URL = "https://github.com/login/device/code";
@@ -209,7 +211,7 @@ export async function pollGitHubAppDeviceFlow(args: {
     return {
       status: "slow_down",
       intervalSec: args.intervalSec + 5,
-      message: readString(payload, "error_description") || "GitHub asked ADE to slow down polling.",
+      message: readString(payload, "error_description") || `GitHub asked ${BRAND.NAME} to slow down polling.`,
     };
   }
   if (error === "expired_token") {

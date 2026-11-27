@@ -32,6 +32,7 @@ import {
 } from "./githubRelayConfig";
 import { GITHUB_REST_API_VERSION } from "./githubApiVersion";
 import { asString } from "../shared/utils";
+import { BRAND } from "../../../shared/brand";
 
 export const GITHUB_APP_USER_TOKEN_KEY = "github.appUserToken.v1";
 const GITHUB_APP_USER_TOKEN_REFRESH_SKEW_MS = 2 * 60_000;
@@ -501,7 +502,7 @@ export function createGitHubAppUserAuthService(args: {
   };
 
   const missingAuthError = (): GitHubAppUserAuthError => new GitHubAppUserAuthError(
-    "Authorize the ADE GitHub App with GitHub before using the hosted relay.",
+    `Authorize the ${BRAND.NAME} GitHub App with GitHub before using the hosted relay.`,
     "missing",
     null,
     null,
@@ -509,7 +510,7 @@ export function createGitHubAppUserAuthService(args: {
 
   const needsReauthError = (failure: StoredRefreshFailure | null): GitHubAppUserAuthError =>
     new GitHubAppUserAuthError(
-      "ADE GitHub App authorization expired. Re-authorize ADE with GitHub.",
+      `${BRAND.NAME} GitHub App authorization expired. Re-authorize ${BRAND.NAME} with GitHub.`,
       "needs_reauth",
       null,
       failure,
@@ -521,7 +522,7 @@ export function createGitHubAppUserAuthService(args: {
   ): GitHubAppUserAuthError => new GitHubAppUserAuthError(
     // The deadline rides on `retryAt` rather than inside the sentence: callers
     // that show it to a person format it, and callers that log it read the field.
-    "GitHub paused ADE's authorization renewal. ADE retries on its own.",
+    `GitHub paused ${BRAND.NAME}'s authorization renewal. ${BRAND.NAME} retries on its own.`,
     "blocked",
     retryAt,
     failure,

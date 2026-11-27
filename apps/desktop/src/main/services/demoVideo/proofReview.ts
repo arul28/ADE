@@ -21,6 +21,7 @@ import type { Logger } from "../logging/logger";
 import { readDemoMp4 } from "./demoMp4Source";
 import { ensureFfmpegTools, runFfmpeg } from "./ffmpegDemoEngine";
 import { pickSheetFrames, type SheetFrame } from "./sheetFrames";
+import { BRAND } from "../../../shared/brand";
 
 /** Sheets kept per project; older ones are removed as new ones are written. */
 const SHEET_KEEP = 20;
@@ -239,7 +240,7 @@ async function cropPicture(
     pruneSheets(dir, args.logger);
     return { cropPath: output };
   } catch (error) {
-    return { cropError: `ADE could not cut the picture: ${error instanceof Error ? error.message : String(error)}` };
+    return { cropError: `${BRAND.NAME} could not cut the picture: ${error instanceof Error ? error.message : String(error)}` };
   }
 }
 
@@ -337,7 +338,7 @@ async function reviewVideo(args: ReviewArgs, findings: string[]): Promise<ProofR
   if (!sheetMakers.length) {
     sheetError = "No engine on this machine can read this video for a frame sheet";
   } else if (duration == null) {
-    sheetError = "ADE could not read the video's length";
+    sheetError = `${BRAND.NAME} could not read the video's length`;
   } else {
     const output = reviewOutputPath(args, ".png");
     const dir = path.dirname(output);

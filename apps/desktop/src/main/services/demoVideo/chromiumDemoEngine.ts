@@ -55,6 +55,7 @@ import {
 import type { Logger } from "../logging/logger";
 import { type DemoMp4Info, demoRawStreamFromMp4, isDemoEngineInputPath, isDemoMp4Path, readDemoMp4 } from "./demoMp4Source";
 import { DEMO_RAW_MAX_PAYLOAD_BYTES, hasDemoRawMagic } from "./demoRawFormat";
+import { BRAND } from "../../../shared/brand";
 
 const PARTITION = "ade-demo-engine";
 const ORIGIN_HOST = "ade-demo-engine.invalid";
@@ -156,7 +157,7 @@ const ENGINE_SOURCE = String.raw`
         if (available < MAGIC.length) return null;
         var magic = take(MAGIC.length);
         for (var i = 0; i < MAGIC.length; i += 1) {
-          if (magic[i] !== MAGIC.charCodeAt(i)) throw new Error("This file is not an ADE raw capture (bad header).");
+          if (magic[i] !== MAGIC.charCodeAt(i)) throw new Error("This file is not a Daex raw capture (bad header).");
         }
         sawMagic = true;
       }
@@ -1031,7 +1032,7 @@ export function createChromiumDemoEngine(deps: { logger: Logger }): ChromiumDemo
     // movie fails with its reason before any window opens.
     const mp4 = isDemoMp4Path(job.input) ? await readDemoMp4(job.input) : null;
     if (!mp4 && !(await hasDemoRawMagic(job.input))) {
-      throw new Error(`The recording ${path.basename(job.input)} is missing or is not an ADE raw capture.`);
+      throw new Error(`The recording ${path.basename(job.input)} is missing or is not a ${BRAND.NAME} raw capture.`);
     }
     // Before any window opens: a movie with no frames has nothing to render.
     if (mp4 && !mp4.frames) throw new Error("The recording has no frames.");

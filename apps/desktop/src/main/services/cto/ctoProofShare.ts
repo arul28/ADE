@@ -13,6 +13,7 @@ import type { CtoMachineTarget, CtoRemoteActionCall } from "../ai/tools/ctoCross
 import { ensurePlayableVideo, isProofVideoPath, PROOF_VIDEO_EXTENSIONS } from "../computerUse/proofPlayableVideo";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage, isRecord } from "../shared/utils";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * How the CTO shows proof another chat filed: a child's screenshot, a
@@ -170,7 +171,7 @@ async function fileAsCto(args: {
     owners: [{ kind: "chat_session", id: args.ctoSessionId, relation: "attached_to" }],
   });
   const record = result.artifacts[0];
-  if (!record) throw new Error("ADE filed nothing.");
+  if (!record) throw new Error(`${BRAND.NAME} filed nothing.`);
   const [view] = args.broker.listArtifacts({ artifactId: record.id, limit: 1 });
   return view ?? { ...record, links: result.links, reviewState: "pending", workflowState: "evidence_only", reviewNote: null };
 }
@@ -424,7 +425,7 @@ async function pullRemotePreview(args: {
   });
   const match = typeof dataUrl === "string" ? /^data:[^;,]*;base64,(.*)$/s.exec(dataUrl) : null;
   if (!match) {
-    throw new Error(`${args.machine.name} sent no bytes (an ADE there older than this one reads files up to 10 MB only; update it to show larger ones)`);
+    throw new Error(`${args.machine.name} sent no bytes (a ${BRAND.NAME} there older than this one reads files up to 10 MB only; update it to show larger ones)`);
   }
   await fs.promises.writeFile(args.target, Buffer.from(match[1]!, "base64"));
 }

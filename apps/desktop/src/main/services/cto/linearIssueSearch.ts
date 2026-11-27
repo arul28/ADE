@@ -22,6 +22,7 @@ import {
   OPEN_ISSUE_STATE_TYPES,
 } from "./linearClientShared";
 import { buildLinearIssueBaseFilter } from "../../../shared/linearIssueNormalize";
+import { BRAND } from "../../../shared/brand";
 
 export type LinearOpenIssueMatch = {
   id: string;
@@ -59,7 +60,7 @@ export function createLinearIssueSearch(args: {
       maxRetries: 1,
     });
     const filter = data.customView?.filterData;
-    if (!isRecord(filter)) throw new Error("This Linear view has no issue filter ADE can apply.");
+    if (!isRecord(filter)) throw new Error(`This Linear view has no issue filter ${BRAND.NAME} can apply.`);
     customViewFilterCache.set(viewId, { filter, fetchedAt: Date.now() });
     return filter;
   };

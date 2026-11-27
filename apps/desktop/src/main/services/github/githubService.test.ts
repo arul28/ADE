@@ -1743,7 +1743,7 @@ describe("githubService.getStatus", () => {
         // GitHub's own wording ("Bad credentials") is kept for the log and the
         // stored refresh ledger; what reaches a status surface is the sentence
         // that says what to do about it.
-        message: "ADE GitHub App authorization expired. Re-authorize ADE with GitHub.",
+        message: "Daex GitHub App authorization expired. Re-authorize Daex with GitHub.",
         retryAt: null,
       },
       credentialStates: expect.arrayContaining([
@@ -3076,7 +3076,7 @@ describe("githubService.getAppInstallationStatus", () => {
       relayConfigured: true,
       installed: false,
       state: "error",
-      error: "Authorize the ADE GitHub App with GitHub before using the hosted relay.",
+      error: "Authorize the Daex GitHub App with GitHub before using the hosted relay.",
     });
     expect(mockFetch).not.toHaveBeenCalled();
   });
@@ -3109,7 +3109,7 @@ describe("githubService.getAppInstallationStatus", () => {
       relayConfigured: true,
       installed: false,
       state: "error",
-      error: "Authorize the ADE GitHub App with GitHub before using the hosted relay.",
+      error: "Authorize the Daex GitHub App with GitHub before using the hosted relay.",
     });
     expect(mockFetch).not.toHaveBeenCalled();
   });
@@ -3533,7 +3533,7 @@ describe("githubService GitHub App user authorization", () => {
     }));
 
     await expect(tokenPromise).rejects.toThrow(
-      "Authorize the ADE GitHub App with GitHub before using the hosted relay.",
+      "Authorize the Daex GitHub App with GitHub before using the hosted relay.",
     );
     expect(credentialStore.getSync("github.appUserToken.v1")).toBeNull();
     expect(service.getAppUserAuthStatus()).toMatchObject({ tokenStored: false, userLogin: null });

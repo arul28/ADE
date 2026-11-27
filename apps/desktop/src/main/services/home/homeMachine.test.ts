@@ -88,8 +88,8 @@ describe("machine monitor: stopping a listening process", () => {
   it.each([
     ["a core Windows process outside session 0", 910, true, /system process/],
     ["a service in session 0", 920, true, /system process/],
-    ["ADE itself", OWN_PID, true, /ADE's own/],
-    ["the dev renderer's server in an unpackaged build", 930, false, /ADE's own/],
+    ["ADE itself", OWN_PID, true, /Daex's own/],
+    ["the dev renderer's server in an unpackaged build", 930, false, /Daex's own/],
     ["a pid nothing is listening on", 1234, true, /no longer listening/],
     ["the System pids", 4, true, /Not a process/],
   ])("refuses to stop %s", async (_label, pid, isPackaged, error) => {

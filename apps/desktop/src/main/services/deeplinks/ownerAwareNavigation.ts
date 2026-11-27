@@ -7,6 +7,7 @@ import {
   resolveAccountProjectLink,
   type AccountProjectListResult,
 } from "../../../shared/accountProject";
+import { BRAND } from "../../../shared/brand";
 
 export type OwnerAwareNavigationDependencies = {
   getLocalMachineKey(): string;
@@ -76,7 +77,7 @@ export async function dispatchOwnerAwareNavigation(
     );
     if (!projectRoot) {
       throw new Error(
-        `Project ${ownership.projectId} is no longer available on this ADE machine.`,
+        `Project ${ownership.projectId} is no longer available on this ${BRAND.NAME} machine.`,
       );
     }
     await deps.deliverLocal(projectRoot, request);
@@ -244,49 +245,49 @@ export function ownerNavigationFailureCopy(
 ): OwnerNavigationFailureCopy {
   const detail = error instanceof Error && error.message.trim()
     ? error.message.trim()
-    : "The owning ADE machine did not accept the destination.";
+    : `The owning ${BRAND.NAME} machine did not accept the destination.`;
   const incompatible = (
     /older ADE|does not support|method not found|code -32601|runtime incompatible|update ADE/i
       .test(detail)
   );
   if (incompatible) {
     return {
-      title: "Update ADE on that computer",
-      message: "This belongs to a computer running an older ADE.",
-      detail: `${detail}\n\nUpdate and restart ADE there, then open it again.`,
+      title: `Update ${BRAND.NAME} on that computer`,
+      message: `This belongs to a computer running an older ${BRAND.NAME}.`,
+      detail: `${detail}\n\nUpdate and restart ${BRAND.NAME} there, then open it again.`,
     };
   }
   if (/project .* no longer available on this ADE machine/i.test(detail)) {
     return {
       title: "Project not on this computer",
-      message: "This belongs to a project that is no longer open in ADE on this computer.",
-      detail: `${detail}\n\nAdd the project back in ADE, then open it again.`,
+      message: `This belongs to a project that is no longer open in ${BRAND.NAME} on this computer.`,
+      detail: `${detail}\n\nAdd the project back in ${BRAND.NAME}, then open it again.`,
     };
   }
   if (/could not open this project|remote project (?:is required|was not found)/i.test(detail)) {
     return {
       title: "Project not on that computer",
-      message: "ADE reached the computer, but that project is no longer in ADE there.",
-      detail: `${detail}\n\nAdd the project back in ADE on that computer, then open it again.`,
+      message: `${BRAND.NAME} reached the computer, but that project is no longer in ${BRAND.NAME} there.`,
+      detail: `${detail}\n\nAdd the project back in ${BRAND.NAME} on that computer, then open it again.`,
     };
   }
   if (/not reachable right now/i.test(detail)) {
     return {
       title: "Computer offline",
       message: "The computer this belongs to is not reachable right now.",
-      detail: `${detail}\n\nOpen it again once that computer is awake and ADE is running.`,
+      detail: `${detail}\n\nOpen it again once that computer is awake and ${BRAND.NAME} is running.`,
     };
   }
   if (/could not pair/i.test(detail)) {
     return {
       title: "Couldn’t reach that computer",
-      message: "ADE couldn’t pair with the computer this belongs to.",
-      detail: `${detail}\n\nIt opens only on computers signed in to the same ADE account.`,
+      message: `${BRAND.NAME} couldn’t pair with the computer this belongs to.`,
+      detail: `${detail}\n\nIt opens only on computers signed in to the same ${BRAND.NAME} account.`,
     };
   }
   return {
     title: "Couldn’t open this",
-    message: "ADE couldn’t open this on the computer and project that own it.",
+    message: `${BRAND.NAME} couldn’t open this on the computer and project that own it.`,
     detail: `${detail}\n\nCheck the computer in Settings → Computers, then open it again.`,
   };
 }

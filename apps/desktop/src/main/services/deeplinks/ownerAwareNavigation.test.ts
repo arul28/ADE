@@ -214,7 +214,7 @@ describe("dispatchOwnerAwareNavigation", () => {
     const deps = ownerNavigationDependencies();
     deps.resolveLocalProjectRoot.mockReturnValue(null);
     await expect(dispatchOwnerAwareNavigation(ownedRequest("machine-a"), deps))
-      .rejects.toThrow("Project project-1 is no longer available on this ADE machine.");
+      .rejects.toThrow("Project project-1 is no longer available on this Daex machine.");
     expect(deps.deliverLocal).not.toHaveBeenCalled();
     expect(deps.deliverRemote).not.toHaveBeenCalled();
   });
@@ -349,7 +349,7 @@ describe("cross-machine project resolution", () => {
     await expect(dispatchOwnerAwareNavigation(
       ownedRequest("machine-a", "/Users/arul/Projects/Deleted", LEGACY_UUID),
       deps,
-    )).rejects.toThrow("is no longer available on this ADE machine");
+    )).rejects.toThrow("is no longer available on this Daex machine");
   });
 
   it("matches an owning machine's Windows and UNC roots regardless of this host", () => {

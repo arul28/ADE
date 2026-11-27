@@ -64,6 +64,7 @@ import { getPinnedToolStatus, resolvePinnedTool } from "../../../../../ade-cli/s
 import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
 import { ffmpegContactSheet } from "./ffmpegContactSheet";
 import { isStuckMediaProcessError, stopMediaChild } from "./demoChildStop";
+import { BRAND } from "../../../shared/brand";
 
 const READABLE_EXTENSIONS = new Set([".mp4", ".mov", ".m4v", ".mkv", ".webm"]);
 const ANALYZE_TIMEOUT_MS = Math.max(120_000, RECORDING_MAX_MS);
@@ -171,10 +172,10 @@ export async function ensureFfmpegTools(): Promise<FfmpegTools> {
   const pending = pinnedToolDownload(FFMPEG_TOOL);
   if (pending) {
     const failure = await pending;
-    if (failure) throw new Error(`ADE could not download ffmpeg to make the demo (${failure.message}).`);
+    if (failure) throw new Error(`${BRAND.NAME} could not download ffmpeg to make the demo (${failure.message}).`);
   }
   const fetched = resolveFfmpegTools();
-  if (!fetched) throw new Error("This machine has no ffmpeg, and ADE's own copy is not available.");
+  if (!fetched) throw new Error(`This machine has no ffmpeg, and ${BRAND.NAME}'s own copy is not available.`);
   return fetched;
 }
 

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import type { Logger } from "../logging/logger";
 import type { ComputerUseArtifactView } from "../../../shared/types";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * When a lane opens a PR for Linear issues, attach the lane's proof (the
@@ -60,7 +61,7 @@ export function createLinearProofPoster(deps: {
       }
       if (uploaded.length === 0) continue;
       const lines = [
-        `**Proof from ADE** · [PR #${args.prNumber}](${args.githubUrl}) · lane ${escapeMarkdownLabel(args.laneName)}`,
+        `**Proof from ${BRAND.NAME}** · [PR #${args.prNumber}](${args.githubUrl}) · lane ${escapeMarkdownLabel(args.laneName)}`,
         "",
         ...uploaded.map((item) => {
           const label = escapeMarkdownLabel(item.title);

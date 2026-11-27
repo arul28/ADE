@@ -9,8 +9,9 @@ import {
   describeAppUserAuthUnavailable,
   resolveAppUserTokenForRelay,
 } from "./githubAppUserAuthFailure";
+import { BRAND } from "../../../shared/brand";
 
-export const ADE_GITHUB_APP_DISPLAY_NAME = "ADE";
+export const ADE_GITHUB_APP_DISPLAY_NAME = `${BRAND.NAME}`;
 export const ADE_GITHUB_APP_SLUG = "ade-for-github";
 export const ADE_GITHUB_APP_INSTALL_URL = `https://github.com/apps/${ADE_GITHUB_APP_SLUG}/installations/new`;
 export const GITHUB_APP_INSTALLATIONS_URL = "https://github.com/settings/installations";
@@ -128,7 +129,7 @@ export function resolveHostedGitHubRelayAuthToken(args: {
   if (!githubAppUserToken) {
     return {
       ok: false,
-      error: "Authorize the ADE GitHub App with GitHub before using the hosted relay.",
+      error: `Authorize the ${BRAND.NAME} GitHub App with GitHub before using the hosted relay.`,
     };
   }
   return {
@@ -218,10 +219,10 @@ function appUserAuthUnavailableCopy(failure: GitHubAppUserAuthUnavailable): stri
     // The deadline itself travels as `retryAt` on the auth status, where a
     // surface can format it as a time a person reads. A raw timestamp in a
     // sentence is a log line, not a message.
-    return "Waiting on GitHub authorization. GitHub paused ADE's renewal; ADE retries on its own.";
+    return `Waiting on GitHub authorization. GitHub paused ${BRAND.NAME}'s renewal; ${BRAND.NAME} retries on its own.`;
   }
   if (failure.credentialState === "needs_reauth") {
-    return "ADE's GitHub authorization expired. Re-authorize ADE with GitHub.";
+    return `${BRAND.NAME}'s GitHub authorization expired. Re-authorize ${BRAND.NAME} with GitHub.`;
   }
   return failure.message;
 }
@@ -255,7 +256,7 @@ export async function fetchGitHubAppInstallationStatus(args: {
     return baseStatus(args.repo, {
       relayConfigured: false,
       state: "unconfigured",
-      error: "GitHub App relay is not configured for this ADE runtime.",
+      error: `GitHub App relay is not configured for this ${BRAND.NAME} runtime.`,
     });
   }
 
@@ -291,7 +292,7 @@ export async function fetchGitHubAppInstallationStatus(args: {
       return baseStatus(args.repo, {
         relayConfigured: true,
         state: "error",
-        error: "GitHub auth is required to check the ADE GitHub App installation.",
+        error: `GitHub auth is required to check the ${BRAND.NAME} GitHub App installation.`,
       });
     }
     if (hostedAuth?.ok) {

@@ -6,6 +6,7 @@ import {
 } from "../../chat/acpHost/acpDialects/antigravitySessionLog";
 import { EnvelopeSink } from "./common";
 import { cutPage, type EventsCursor, type PageCut } from "./paging";
+import { BRAND } from "../../../../shared/brand";
 
 /** Steps read per query while paging back through a conversation. */
 const STEP_BATCH = 200;
@@ -132,7 +133,7 @@ export function loadAntigravityStorePage(args: {
           type: "system_notice",
           noticeKind: "info",
           severity: "info",
-          message: "This message was longer than ADE reads from Antigravity's log; the copy shows its start.",
+          message: `This message was longer than ${BRAND.NAME} reads from Antigravity's log; the copy shows its start.`,
         }, timestamp, `agy:${step.idx}:clipped`);
       }
       if (laterAt === null && sink.out.length) undated.push({ chunk: sink.out, idx: step.idx });
