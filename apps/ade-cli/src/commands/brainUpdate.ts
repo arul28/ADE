@@ -26,6 +26,7 @@ import {
   type UpdateTrack,
 } from "../../../desktop/src/shared/updateTrack";
 import { resolveSelectedUpdateTrack } from "../services/runtime/updateTrackStore";
+import { ensureDaexCommandBesideBinary } from "../services/runtime/daexCommand";
 import { applyWindowsDesktopUpdate } from "./windowsDesktopRescue";
 import { resolveMachineAdeLayout, resolveReachableMachineDesktopBridgeSocketPath } from "../services/projects/machineLayout";
 import { lastFailurePathForMachine } from "../../../desktop/src/main/services/runtime/lastFailureStore";
@@ -902,6 +903,9 @@ async function applyStagedBrainUpdate(
       }
       throw error;
     }
+    // `daex` beside the standalone `ade`, for installs made before the
+    // rename (install.sh and install.ps1 write it now). Best effort, never throws.
+    ensureDaexCommandBesideBinary(manifest.binaryPath);
 
     if (macAppOutcome != null) {
       const successMessage = `${macAppOutcome} The standalone daex at ${manifest.binaryPath} is on ${manifest.version} too.`;
