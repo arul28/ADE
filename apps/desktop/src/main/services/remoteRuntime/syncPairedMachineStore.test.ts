@@ -832,7 +832,7 @@ describe("DesktopPairedMachineStore", () => {
           },
         },
       )).rejects.toThrow(
-        "Could not reach Legacy Studio. Make sure it's awake and ADE is open, then try again.",
+        "Could not reach Legacy Studio. Make sure it's awake and Daex is open, then try again.",
       );
     } finally {
       warn.mockRestore();
@@ -955,13 +955,13 @@ describe("DesktopPairedMachineStore", () => {
       name: "requires an update when an old host omits AEAD negotiation",
       responseAead: undefined,
       expectedError:
-        "The other computer is running an older ADE that can't negotiate a compatible cipher — update it to the latest version.",
+        "The other computer is running an older Daex that can't negotiate a compatible cipher — update it to the latest version.",
     },
     {
       name: "rejects a host AEAD that the client did not offer",
       responseAead: "chacha20-poly1305" as const,
       expectedError:
-        "Host identity verification failed — the machine may be running an older ADE.",
+        "Host identity verification failed — the machine may be running an older Daex.",
     },
   ])("$name", async ({ responseAead, expectedError }) => {
     process.env.ADE_HOME = fs.mkdtempSync(
@@ -1036,7 +1036,7 @@ describe("DesktopPairedMachineStore", () => {
     await expect(pairing).rejects.toThrow(
       responseAead
         ? expectedError
-        : "Could not connect to Cipher Studio. Update ADE on that computer, then try again.",
+        : "Could not connect to Cipher Studio. Update Daex on that computer, then try again.",
     );
     expect(sentTypes).toEqual(["account_challenge"]);
   });
@@ -1314,7 +1314,7 @@ describe("DesktopPairedMachineStore", () => {
       },
     );
     await expect(pairing).rejects.toThrow(
-      "Host identity verification failed — the machine may be running an older ADE.",
+      "Host identity verification failed — the machine may be running an older Daex.",
     );
     await expect(pairing).rejects.toMatchObject({
       code: "account_host_identity_verification_failed",
@@ -1484,7 +1484,7 @@ describe("DesktopPairedMachineStore", () => {
     }
 
     expect(failure?.message).toBe(
-      "Could not reach Unavailable Studio. Make sure it's awake and ADE is open, then try again.",
+      "Could not reach Unavailable Studio. Make sure it's awake and Daex is open, then try again.",
     );
     expect(failure?.message).not.toMatch(/relay|tailnet|100\.75\.20\.63|unavailable-studio/i);
     expect(warning).toMatchObject({
@@ -1549,7 +1549,7 @@ describe("DesktopPairedMachineStore", () => {
     }
 
     expect(failure?.message).toBe(
-      "Could not connect to Arul's Mac Studio. Arul's Mac Studio is not signed in to the same ADE account. Open ADE on that computer, sign in, then try again.",
+      "Could not connect to Arul's Mac Studio. Arul's Mac Studio is not signed in to the same Daex account. Open Daex on that computer, sign in, then try again.",
     );
     expect(failure?.message).not.toMatch(/sign out|this device|relay/i);
   });

@@ -13,6 +13,7 @@ import {
   sha256File,
 } from "../../../../../ade-cli/src/lib/releaseAssets";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Desktop bundles ship only their own build's `ade-<target>` sidecar, so a
@@ -136,13 +137,13 @@ function fetchErrorFor(args: {
   const status = error instanceof ReleaseAssetDownloadError ? error.statusCode : null;
   if (status === 404 || status === 403) {
     return new RemoteSidecarFetchError(
-      `The ADE ${tag} release does not publish ${archLabel} runtime assets (HTTP ${status} from ${url}).`,
+      `The ${BRAND.NAME} ${tag} release does not publish ${archLabel} runtime assets (HTTP ${status} from ${url}).`,
       { kind: "unavailable", url },
     );
   }
   const detail = error instanceof Error ? error.message : String(error);
   return new RemoteSidecarFetchError(
-    `ADE could not download the ${archLabel} runtime it needs to install on this machine.\n`
+    `${BRAND.NAME} could not download the ${archLabel} runtime it needs to install on this machine.\n`
     + `Tried ${url} (${detail}).\n`
     + `Check this computer's network access to github.com, or run "ade brain update" on the remote machine and reconnect.`,
     { kind: "network", url },
@@ -160,7 +161,7 @@ async function verifyAgainstReleaseChecksums(args: {
     sums = parseSha256Sums(await fsp.readFile(args.checksumPath, "utf8"));
   } catch (error) {
     throw new RemoteSidecarFetchError(
-      `ADE could not read the ${RELEASE_CHECKSUMS_ASSET} published for ${args.tag}: ${
+      `${BRAND.NAME} could not read the ${RELEASE_CHECKSUMS_ASSET} published for ${args.tag}: ${
         error instanceof Error ? error.message : String(error)
       }.`,
       { kind: "network" },
@@ -170,14 +171,14 @@ async function verifyAgainstReleaseChecksums(args: {
     const expected = sums.get(asset.name);
     if (!expected) {
       throw new RemoteSidecarFetchError(
-        `Refusing to install the ${args.archLabel} ADE runtime: ${args.tag}'s ${RELEASE_CHECKSUMS_ASSET} has no entry for ${asset.name}.`,
+        `Refusing to install the ${args.archLabel} ${BRAND.NAME} runtime: ${args.tag}'s ${RELEASE_CHECKSUMS_ASSET} has no entry for ${asset.name}.`,
         { kind: "checksum" },
       );
     }
     const actual = await sha256File(asset.filePath);
     if (actual !== expected) {
       throw new RemoteSidecarFetchError(
-        `Refusing to install the ${args.archLabel} ADE runtime: ${asset.name} downloaded from the ${args.tag} release does not match its published checksum (expected ${expected}, got ${actual}).`,
+        `Refusing to install the ${args.archLabel} ${BRAND.NAME} runtime: ${asset.name} downloaded from the ${args.tag} release does not match its published checksum (expected ${expected}, got ${actual}).`,
         { kind: "checksum" },
       );
     }
@@ -211,7 +212,7 @@ async function promoteStagedSidecars(args: {
   const cached = await readCachedSidecars(args.cacheDir, args.archLabel);
   if (!cached) {
     throw new RemoteSidecarFetchError(
-      `ADE staged the ${args.archLabel} runtime but could not find it at ${args.cacheDir}.`,
+      `${BRAND.NAME} staged the ${args.archLabel} runtime but could not find it at ${args.cacheDir}.`,
       { kind: "network" },
     );
   }
@@ -249,7 +250,7 @@ export async function resolveRemoteRuntimeSidecars(
   const tag = releaseTagForAppVersion(args.appVersion);
   if (!tag) {
     throw new RemoteSidecarFetchError(
-      `ADE ${args.appVersion || "(unknown version)"} is not a published release, so there are no ${args.archLabel} runtime assets to download.`,
+      `${BRAND.NAME} ${args.appVersion || "(unknown version)"} is not a published release, so there are no ${args.archLabel} runtime assets to download.`,
       { kind: "unavailable" },
     );
   }

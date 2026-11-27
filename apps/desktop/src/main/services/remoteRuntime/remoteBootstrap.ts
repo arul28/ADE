@@ -51,6 +51,7 @@ import {
   resolveRemoteRuntimeSidecars,
   type RemoteSidecarDeps,
 } from "./remoteSidecarCache";
+import { BRAND } from "../../../shared/brand";
 
 export function normalizeRemoteArch(raw: string): {
   platform: "darwin" | "linux";
@@ -72,7 +73,7 @@ export function normalizeRemoteArch(raw: string): {
     const detectedPlatform = raw.trim() || "unknown";
     throw new RemoteRuntimeConnectError({
       kind: "unsupported_os",
-      message: `Unsupported remote ADE service platform: ${detectedPlatform}. Supported targets are macOS/Linux on arm64 or x64, and Windows 10 22H2/Windows 11 on x64.`,
+      message: `Unsupported remote ${BRAND.NAME} service platform: ${detectedPlatform}. Supported targets are macOS/Linux on arm64 or x64, and Windows 10 22H2/Windows 11 on x64.`,
       detail: detectedPlatform,
     });
   }
@@ -168,14 +169,14 @@ export function validateRemoteRuntimeInitializeResult(args: {
   expectedLayout?: RemoteRuntimeLayout;
 }): RemoteRuntimeInitializeInfo {
   if (!isRecord(args.result)) {
-    throw new Error("Remote ADE service returned an invalid initialize response.");
+    throw new Error(`Remote ${BRAND.NAME} service returned an invalid initialize response.`);
   }
   const runtimeInfo = isRecord(args.result.runtimeInfo) ? args.result.runtimeInfo : {};
   const capabilities = isRecord(args.result.capabilities) ? args.result.capabilities : {};
   // The launch kinds it runs; absent from an older brain (cloudLaneLaunchService's hand-off check).
   const chatLaunchKinds = readChatLaunchKindsCapability(capabilities);
   if (runtimeInfo.multiProject !== true || capabilities.projects !== true) {
-    throw new Error("Remote ADE service does not support multi-project mode. Update the ADE service on that machine.");
+    throw new Error(`Remote ${BRAND.NAME} service does not support multi-project mode. Update the ${BRAND.NAME} service on that machine.`);
   }
   const machineProjects = isRecord(capabilities.machineProjects)
     ? capabilities.machineProjects
@@ -194,7 +195,7 @@ export function validateRemoteRuntimeInitializeResult(args: {
   const missing = MACHINE_PROJECT_CAPABILITIES.filter((capability) => machineProjects[capability] !== true);
   if (missing.length) {
     compatibilityWarnings.push(
-      `Remote ADE service is missing project capabilities: ${missing.join(", ")}. Some remote project actions will ask you to update ADE on that machine.`,
+      `Remote ${BRAND.NAME} service is missing project capabilities: ${missing.join(", ")}. Some remote project actions will ask you to update ${BRAND.NAME} on that machine.`,
     );
   }
   const packageChannel = typeof runtimeInfo.packageChannel === "string" && runtimeInfo.packageChannel.trim()
@@ -203,7 +204,7 @@ export function validateRemoteRuntimeInitializeResult(args: {
   const expectedChannel = args.expectedLayout?.channel ?? null;
   if (expectedChannel && packageChannel && packageChannel !== expectedChannel) {
     compatibilityWarnings.push(
-      `Connected to ADE ${packageChannel} runtime from ADE ${expectedChannel}; compatible RPC features remain available.`,
+      `Connected to ${BRAND.NAME} ${packageChannel} runtime from ${BRAND.NAME} ${expectedChannel}; compatible RPC features remain available.`,
     );
   }
   const desktopAppVersion = typeof runtimeInfo.desktopAppVersion === "string" && runtimeInfo.desktopAppVersion.trim()
@@ -313,21 +314,21 @@ export function parseWindowsRemoteDetection(raw: string): WindowsRemotePlatform 
   if (productName.toLowerCase().includes("server")) {
     throw new RemoteRuntimeConnectError({
       kind: "unsupported_os",
-      message: `Unsupported remote ADE service platform: ${productName}. Windows v1 supports Windows 10 22H2 and Windows 11 x64, not Windows Server.`,
+      message: `Unsupported remote ${BRAND.NAME} service platform: ${productName}. Windows v1 supports Windows 10 22H2 and Windows 11 x64, not Windows Server.`,
       detail: productName,
     });
   }
   if (archRaw !== "x64" && archRaw !== "amd64") {
     throw new RemoteRuntimeConnectError({
       kind: "unsupported_os",
-      message: `Unsupported remote ADE service architecture: ${archRaw || "unknown"}. Windows v1 supports x64 only; ARM64 and WSL are not supported.`,
+      message: `Unsupported remote ${BRAND.NAME} service architecture: ${archRaw || "unknown"}. Windows v1 supports x64 only; ARM64 and WSL are not supported.`,
       detail: archRaw || "unknown",
     });
   }
   if (!productName.toLowerCase().includes("windows") || !Number.isInteger(buildNumber) || buildNumber < 19045) {
     throw new RemoteRuntimeConnectError({
       kind: "unsupported_os",
-      message: `Unsupported remote ADE service platform: ${productName || "Windows"} build ${Number.isFinite(buildNumber) ? buildNumber : "unknown"}. Windows v1 requires Windows 10 22H2 (build 19045) or Windows 11 x64.`,
+      message: `Unsupported remote ${BRAND.NAME} service platform: ${productName || "Windows"} build ${Number.isFinite(buildNumber) ? buildNumber : "unknown"}. Windows v1 requires Windows 10 22H2 (build 19045) or Windows 11 x64.`,
       detail: `${productName || "Windows"} ${displayVersion} build ${Number.isFinite(buildNumber) ? buildNumber : "unknown"}`.trim(),
     });
   }
@@ -749,11 +750,11 @@ async function execSshOrThrow(client: Client, command: string, fallback: string)
 async function resolveRemoteUploadPath(client: Client, remoteFileExpr: string): Promise<string> {
   const result = await execSsh(client, `printf '%s' ${remoteFileExpr}`);
   if (result.code !== 0) {
-    throw new Error(result.stderr.trim() || result.stdout.trim() || "Unable to resolve remote ADE service artifact path.");
+    throw new Error(result.stderr.trim() || result.stdout.trim() || `Unable to resolve remote ${BRAND.NAME} service artifact path.`);
   }
   const remotePath = result.stdout.trim();
   if (!remotePath) {
-    throw new Error("Remote ADE service artifact path resolved to an empty value.");
+    throw new Error(`Remote ${BRAND.NAME} service artifact path resolved to an empty value.`);
   }
   return remotePath;
 }
@@ -830,13 +831,13 @@ async function uploadSftpResolvedFile(
       const resetIdleTimer = (): void => {
         if (idleTimeout) clearTimeout(idleTimeout);
         idleTimeout = setTimeout(() => {
-          settle(new Error(`Timed out uploading ADE service artifact with SFTP: no transfer progress for ${REMOTE_ARTIFACT_UPLOAD_IDLE_TIMEOUT_MS}ms${uploadProgressSuffix()}.`));
+          settle(new Error(`Timed out uploading ${BRAND.NAME} service artifact with SFTP: no transfer progress for ${REMOTE_ARTIFACT_UPLOAD_IDLE_TIMEOUT_MS}ms${uploadProgressSuffix()}.`));
         }, REMOTE_ARTIFACT_UPLOAD_IDLE_TIMEOUT_MS);
         idleTimeout.unref?.();
       };
 
       timeout = setTimeout(() => {
-        settle(new Error(`Timed out uploading ADE service artifact with SFTP after ${REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS}ms${uploadProgressSuffix()}.`));
+        settle(new Error(`Timed out uploading ${BRAND.NAME} service artifact with SFTP after ${REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS}ms${uploadProgressSuffix()}.`));
       }, REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS);
       timeout.unref?.();
       resetIdleTimer();
@@ -852,7 +853,7 @@ async function uploadSftpResolvedFile(
         },
       }, (error) => {
         if (error) {
-          settle(new Error(`Unable to upload ADE service artifact with SFTP${uploadProgressSuffix()}: ${error.message}`));
+          settle(new Error(`Unable to upload ${BRAND.NAME} service artifact with SFTP${uploadProgressSuffix()}: ${error.message}`));
           return;
         }
         settle(null);
@@ -1008,7 +1009,7 @@ function diskFullConnectError(args: {
 }): RemoteRuntimeConnectError {
   const space = args.diskSpace;
   const message = space
-    ? `The remote machine is out of disk space (${formatInstallMegabytes(space.freeBytes)} free; ADE needs about ${formatInstallMegabytes(space.requiredBytes)} to install its runtime). Free up space and try again.`
+    ? `The remote machine is out of disk space (${formatInstallMegabytes(space.freeBytes)} free; ${BRAND.NAME} needs about ${formatInstallMegabytes(space.requiredBytes)} to install its runtime). Free up space and try again.`
     : "The remote machine is out of disk space. Free up space and try again.";
   return new RemoteRuntimeConnectError({
     kind: "disk_full",
@@ -1056,7 +1057,7 @@ function sshCommandRefusedConnectError(error: unknown, step: string): RemoteRunt
   return markExpected(new RemoteRuntimeConnectError({
     kind: "generic",
     message:
-      `ADE signed in over SSH, but the SSH server refused to run a command while ADE was ${step}. `
+      `${BRAND.NAME} signed in over SSH, but the SSH server refused to run a command while ${BRAND.NAME} was ${step}. `
       + "The server may limit how many commands one connection can run (sshd MaxSessions), "
       + "restrict this account to a fixed command or shell, or be unable to start new processes for it. "
       + "Check that you can run a command with `ssh <user>@<host> true`, then press Try again.",
@@ -1161,7 +1162,7 @@ export function formatOpenSshSpawnError(
     return [
       "Windows OpenSSH Client is unavailable.",
       "Install it from Settings > System > Optional Features > OpenSSH Client",
-      "or run `Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0` in an elevated PowerShell window, then restart ADE.",
+      `or run \`Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0\` in an elevated PowerShell window, then restart ${BRAND.NAME}.`,
     ].join(" ");
   }
   return `SSH upload process failed: ${message}`;
@@ -1231,7 +1232,7 @@ async function uploadSshChunk(
     } catch (fallbackError) {
       const primaryMessage = error instanceof Error ? error.message : String(error);
       const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
-      throw new Error(`Unable to upload ADE service artifact over the existing SSH session: ${primaryMessage}; OpenSSH fallback failed: ${fallbackMessage}`);
+      throw new Error(`Unable to upload ${BRAND.NAME} service artifact over the existing SSH session: ${primaryMessage}; OpenSSH fallback failed: ${fallbackMessage}`);
     }
   }
 }
@@ -1295,13 +1296,13 @@ async function uploadSshChunkViaConnectedClient(
     const resetIdleTimer = (): void => {
       if (idleTimeout) clearTimeout(idleTimeout);
       idleTimeout = setTimeout(() => {
-        settle(new Error(`Timed out uploading ADE service artifact: no remote chunk completion for ${REMOTE_ARTIFACT_UPLOAD_IDLE_TIMEOUT_MS}ms${uploadProgressSuffix()}.`));
+        settle(new Error(`Timed out uploading ${BRAND.NAME} service artifact: no remote chunk completion for ${REMOTE_ARTIFACT_UPLOAD_IDLE_TIMEOUT_MS}ms${uploadProgressSuffix()}.`));
       }, REMOTE_ARTIFACT_UPLOAD_IDLE_TIMEOUT_MS);
       idleTimeout.unref?.();
     };
 
     timeout = setTimeout(() => {
-      settle(new Error(`Timed out uploading ADE service artifact after ${REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS}ms${uploadProgressSuffix()}.`));
+      settle(new Error(`Timed out uploading ${BRAND.NAME} service artifact after ${REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS}ms${uploadProgressSuffix()}.`));
     }, REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS);
     timeout.unref?.();
     resetIdleTimer();
@@ -1326,12 +1327,12 @@ async function uploadSshChunkViaConnectedClient(
       channel.on("close", () => {
         if (exitCode && exitCode !== 0) {
           const detail = stderr.trim() || `remote command exited with code ${exitCode}`;
-          settle(new Error(`Unable to upload ADE service artifact: ${detail}`));
+          settle(new Error(`Unable to upload ${BRAND.NAME} service artifact: ${detail}`));
           return;
         }
         if (exitSignal) {
           const detail = stderr.trim() || `remote command exited with signal ${exitSignal}`;
-          settle(new Error(`Unable to upload ADE service artifact: ${detail}`));
+          settle(new Error(`Unable to upload ${BRAND.NAME} service artifact: ${detail}`));
           return;
         }
         settle(null);
@@ -1391,7 +1392,7 @@ async function uploadSshChunkViaOpenSsh(
       const resetIdleTimer = (): void => {
         if (idleTimeout) clearTimeout(idleTimeout);
         idleTimeout = setTimeout(() => {
-          settle(new Error(`Timed out uploading ADE service artifact: no remote chunk completion for ${REMOTE_ARTIFACT_UPLOAD_IDLE_TIMEOUT_MS}ms${uploadProgressSuffix()}.`));
+          settle(new Error(`Timed out uploading ${BRAND.NAME} service artifact: no remote chunk completion for ${REMOTE_ARTIFACT_UPLOAD_IDLE_TIMEOUT_MS}ms${uploadProgressSuffix()}.`));
         }, REMOTE_ARTIFACT_UPLOAD_IDLE_TIMEOUT_MS);
         idleTimeout.unref?.();
       };
@@ -1409,7 +1410,7 @@ async function uploadSshChunkViaOpenSsh(
       };
 
       timeout = setTimeout(() => {
-        settle(new Error(`Timed out uploading ADE service artifact after ${REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS}ms${uploadProgressSuffix()}.`));
+        settle(new Error(`Timed out uploading ${BRAND.NAME} service artifact after ${REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS}ms${uploadProgressSuffix()}.`));
       }, REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS);
       timeout.unref?.();
       resetIdleTimer();
@@ -1423,12 +1424,12 @@ async function uploadSshChunkViaOpenSsh(
       child.on("close", (code, signal) => {
         if (code && code !== 0) {
           const detail = stderr.trim() || `ssh exited with code ${code}`;
-          settle(new Error(`Unable to upload ADE service artifact: ${detail}`));
+          settle(new Error(`Unable to upload ${BRAND.NAME} service artifact: ${detail}`));
           return;
         }
         if (signal) {
           const detail = stderr.trim() || `ssh exited with signal ${signal}`;
-          settle(new Error(`Unable to upload ADE service artifact: ${detail}`));
+          settle(new Error(`Unable to upload ${BRAND.NAME} service artifact: ${detail}`));
           return;
         }
         settle(null);
@@ -1452,11 +1453,11 @@ async function uploadSshFileInChunks(
   const readRemoteBytes = async (): Promise<number> => {
     const result = await execSsh(client, `wc -c < ${remoteFileExpr} | tr -d '[:space:]'`);
     if (result.code !== 0) {
-      throw new Error(result.stderr.trim() || result.stdout.trim() || "Unable to read remote ADE service artifact upload size.");
+      throw new Error(result.stderr.trim() || result.stdout.trim() || `Unable to read remote ${BRAND.NAME} service artifact upload size.`);
     }
     const value = Number.parseInt(result.stdout.trim(), 10);
     if (!Number.isFinite(value) || value < 0 || value > totalBytes) {
-      throw new Error(`Remote ADE service artifact upload reported invalid size ${result.stdout.trim() || "<empty>"}.`);
+      throw new Error(`Remote ${BRAND.NAME} service artifact upload reported invalid size ${result.stdout.trim() || "<empty>"}.`);
     }
     return value;
   };
@@ -1469,7 +1470,7 @@ async function uploadSshFileInChunks(
       const targetBytes = Math.min(REMOTE_ARTIFACT_UPLOAD_CHUNK_BYTES, totalBytes - committedBytes);
       const { bytesRead } = await file.read(buffer, 0, targetBytes, committedBytes);
       if (bytesRead <= 0) {
-        throw new Error(`Unable to read ADE service artifact after ${committedBytes} bytes.`);
+        throw new Error(`Unable to read ${BRAND.NAME} service artifact after ${committedBytes} bytes.`);
       }
       try {
         await uploadSshChunk(client, target, route, connectedConfig, remoteFileExpr, buffer.subarray(0, bytesRead), committedBytes);
@@ -1494,7 +1495,7 @@ async function uploadSshFileInChunks(
           noProgressRetries = 0;
           continue;
         }
-        throw new Error(`Uploaded ADE service artifact stopped at ${actualRemoteBytes} bytes.`);
+        throw new Error(`Uploaded ${BRAND.NAME} service artifact stopped at ${actualRemoteBytes} bytes.`);
       }
       committedBytes = remoteBytes;
       noProgressRetries = 0;
@@ -1517,7 +1518,7 @@ async function uploadSshFile(
     await execSshOrThrow(
       client,
       `rm -f ${remoteFileExpr} && umask 077 && : > ${remoteFileExpr} && chmod 600 ${remoteFileExpr}`,
-      "Unable to prepare remote ADE service artifact upload.",
+      `Unable to prepare remote ${BRAND.NAME} service artifact upload.`,
     );
   };
 
@@ -1532,7 +1533,7 @@ async function uploadSshFile(
     } catch (streamError) {
       const sftpMessage = sftpError instanceof Error ? sftpError.message : String(sftpError);
       const streamMessage = streamError instanceof Error ? streamError.message : String(streamError);
-      throw new Error(`Unable to upload ADE service artifact with SFTP: ${sftpMessage}; SSH stream fallback failed: ${streamMessage}`);
+      throw new Error(`Unable to upload ${BRAND.NAME} service artifact with SFTP: ${sftpMessage}; SSH stream fallback failed: ${streamMessage}`);
     }
   }
 }
@@ -1552,7 +1553,7 @@ async function uploadRuntimeBinary(
   await execSshOrThrow(
     client,
     `mkdir -p ${layout.binDirExpr} && chmod 700 ${layout.binDirExpr}`,
-    "Unable to create the remote ADE service directory.",
+    `Unable to create the remote ${BRAND.NAME} service directory.`,
   );
   try {
     await uploadSshFile(client, target, route, connectedConfig, localPath, tempExpr);
@@ -1564,7 +1565,7 @@ async function uploadRuntimeBinary(
       `printf '%s\\n' ${shellQuote(localBinarySha256)} > ${layout.sha256Expr}`,
       `chmod 600 ${layout.versionExpr}`,
       `chmod 600 ${layout.sha256Expr}`,
-    ].join(" && "), "Uploaded ADE service did not pass size and checksum verification.");
+    ].join(" && "), `Uploaded ${BRAND.NAME} service did not pass size and checksum verification.`);
   } catch (error) {
     await execSsh(client, `rm -f ${tempExpr}`).catch(() => undefined);
     throw error;
@@ -1588,7 +1589,7 @@ async function uploadNativeDepsBundle(
   await execSshOrThrow(
     client,
     `mkdir -p ${layout.runtimeDirExpr}`,
-    "Unable to create the remote ADE native dependency directory.",
+    `Unable to create the remote ${BRAND.NAME} native dependency directory.`,
   );
   try {
     await uploadSshFile(client, target, route, connectedConfig, localPath, tempExpr);
@@ -1610,7 +1611,7 @@ async function uploadNativeDepsBundle(
       { timeoutMs: REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS },
     );
     if (extract.code !== 0) {
-      throw new Error(extract.stderr.trim() || "Unable to unpack ADE service native dependencies on the remote machine.");
+      throw new Error(extract.stderr.trim() || `Unable to unpack ${BRAND.NAME} service native dependencies on the remote machine.`);
     }
   } catch (error) {
     await execSsh(
@@ -1643,7 +1644,7 @@ async function uploadBundledAgentSkills(
     await execSshOrThrow(
       client,
       `rm -rf ${stagingExpr} && mkdir -p ${stagingExpr}`,
-      "Unable to prepare remote ADE agent skills upload.",
+      `Unable to prepare remote ${BRAND.NAME} agent skills upload.`,
     );
     const createdDirs = new Set<string>([""]);
     for (const file of files) {
@@ -1652,7 +1653,7 @@ async function uploadBundledAgentSkills(
         await execSshOrThrow(
           client,
           `mkdir -p ${remoteChildExpr(stagingExpr, relativeDir)}`,
-          "Unable to create remote ADE agent skills directory.",
+          `Unable to create remote ${BRAND.NAME} agent skills directory.`,
         );
         createdDirs.add(relativeDir);
       }
@@ -1666,7 +1667,7 @@ async function uploadBundledAgentSkills(
             remoteFileMatchesCommand(tempExpr, fileSizeBytes(file.localPath), file.sha256),
             `mv -f ${tempExpr} ${remoteFileExpr}`,
           ].join(" && "),
-          "Uploaded ADE agent skill did not pass size and checksum verification.",
+          `Uploaded ${BRAND.NAME} agent skill did not pass size and checksum verification.`,
         );
       } catch (error) {
         await execSsh(client, `rm -f ${tempExpr}`).catch(() => undefined);
@@ -1681,7 +1682,7 @@ async function uploadBundledAgentSkills(
         `printf '%s\\n' ${shellQuote(directorySha256)} > ${layout.agentSkillsSha256Expr}`,
         `chmod 600 ${layout.agentSkillsSha256Expr}`,
       ].join(" && "),
-      "Unable to finalize remote ADE agent skills upload.",
+      `Unable to finalize remote ${BRAND.NAME} agent skills upload.`,
     );
   } catch (error) {
     await execSsh(client, `rm -rf ${stagingExpr}`).catch(() => undefined);
@@ -1703,7 +1704,7 @@ async function uploadPtyHostWorker(
   await execSshOrThrow(
     client,
     `mkdir -p ${layout.runtimeDirExpr}`,
-    "Unable to create the remote ADE runtime artifact directory.",
+    `Unable to create the remote ${BRAND.NAME} runtime artifact directory.`,
   );
   try {
     await uploadSshFile(client, target, route, connectedConfig, localPath, tempExpr);
@@ -1713,7 +1714,7 @@ async function uploadPtyHostWorker(
       `printf '%s\\n' ${shellQuote(localSha256)} > ${layout.ptyHostWorkerSha256Expr}`,
       `chmod 600 ${layout.ptyHostWorkerExpr}`,
       `chmod 600 ${layout.ptyHostWorkerSha256Expr}`,
-    ].join(" && "), "Uploaded ADE PTY host worker did not pass size and checksum verification.");
+    ].join(" && "), `Uploaded ${BRAND.NAME} PTY host worker did not pass size and checksum verification.`);
   } catch (error) {
     await execSsh(client, `rm -f ${tempExpr}`).catch(() => undefined);
     throw error;
@@ -1774,7 +1775,7 @@ async function signUploadedRuntimeBinaryIfNeeded(client: Client, layout: RemoteR
     throw new Error(
       signed.stderr.trim() ||
       signed.stdout.trim() ||
-      "Uploaded ADE service could not be signed on the remote computer.",
+      `Uploaded ${BRAND.NAME} service could not be signed on the remote computer.`,
     );
   }
 }
@@ -1804,7 +1805,7 @@ function remoteRuntimeRpcCommand(layout: RemoteRuntimeLayout, runtimeEnvPrefix: 
 
 function platformDeviceName(): string {
   const hostname = os.hostname().trim();
-  return hostname ? `ADE Desktop on ${hostname}` : "ADE Desktop";
+  return hostname ? `${BRAND.NAME} Desktop on ${hostname}` : `${BRAND.NAME} Desktop`;
 }
 
 function isSshPairingHostIdentity(value: unknown): value is DesktopPairedMachineCredentials["hostIdentity"] {
@@ -2208,8 +2209,8 @@ if (-not $tar) { throw "Windows tar.exe is unavailable. Install the Windows tar 
 if (Test-Path -LiteralPath $p.staging) { Remove-Item -LiteralPath $p.staging -Recurse -Force }
 [IO.Directory]::CreateDirectory([string]$p.staging) | Out-Null
 & $tar.Source '-xzf' $p.temp '-C' $p.staging
-if ($LASTEXITCODE -ne 0) { throw "Unable to unpack ADE native dependencies." }
-if (-not (Test-Path -LiteralPath (Join-Path $p.staging 'node_modules') -PathType Container)) { throw "ADE native dependency archive did not contain node_modules." }
+if ($LASTEXITCODE -ne 0) { throw "Unable to unpack ${BRAND.NAME} native dependencies." }
+if (-not (Test-Path -LiteralPath (Join-Path $p.staging 'node_modules') -PathType Container)) { throw "${BRAND.NAME} native dependency archive did not contain node_modules." }
 if (Test-Path -LiteralPath $p.destination) { Remove-Item -LiteralPath $p.destination -Recurse -Force }
 Move-Item -LiteralPath $p.staging -Destination $p.destination -Force
 [IO.File]::WriteAllText([string]$p.versionMarker, [string]$p.version + [Environment]::NewLine)
@@ -2235,7 +2236,7 @@ async function windowsUploadVerifiedFile(args: {
   const temp = `${args.destination}.tmp-${crypto.randomBytes(8).toString("hex")}`;
   await execWindowsPowerShellJson(args.ssh, WINDOWS_ENSURE_DIRECTORIES_SCRIPT, {
     directories: [path.win32.dirname(temp)],
-  }, "Unable to prepare the Windows ADE upload directory.");
+  }, `Unable to prepare the Windows ${BRAND.NAME} upload directory.`);
   try {
     await uploadSftpResolvedFile(args.ssh, args.localPath, windowsSftpPath(temp), fileSizeBytes(args.localPath));
     await execWindowsPowerShellJson(args.ssh, WINDOWS_FINALIZE_FILE_SCRIPT, {
@@ -2245,13 +2246,13 @@ async function windowsUploadVerifiedFile(args: {
       sha256: hashLocalFile(args.localPath),
       markerPath: args.markerPath ?? null,
       markerValue: args.markerValue ?? null,
-    }, "Uploaded Windows ADE artifact did not pass size and checksum verification.", REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS);
+    }, `Uploaded Windows ${BRAND.NAME} artifact did not pass size and checksum verification.`, REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS);
   } catch (error) {
     await execWindowsPowerShellJson(args.ssh, String.raw`
       $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
       Remove-Item -LiteralPath $p.path -Force -ErrorAction SilentlyContinue
       @{ ok = $true } | ConvertTo-Json -Compress
-    `, { path: temp }, "Unable to clean up a partial Windows ADE upload.").catch(() => undefined);
+    `, { path: temp }, `Unable to clean up a partial Windows ${BRAND.NAME} upload.`).catch(() => undefined);
     throw error;
   }
 }
@@ -2312,7 +2313,7 @@ async function readWindowsRuntimeIdentity(
     binary: layout.binary,
     versionMarker: layout.versionMarker,
     sha256Marker: layout.sha256Marker,
-  }, "Unable to inspect the Windows ADE runtime.");
+  }, `Unable to inspect the Windows ${BRAND.NAME} runtime.`);
 }
 
 async function bootstrapWindowsRemoteRuntime(args: {
@@ -2360,13 +2361,13 @@ async function bootstrapWindowsRemoteRuntime(args: {
       ssh,
       WINDOWS_FREE_SPACE_SCRIPT,
       { path: layout.adeHome },
-      "Unable to inspect free disk space on the Windows ADE runtime.",
+      `Unable to inspect free disk space on the Windows ${BRAND.NAME} runtime.`,
     );
     const requiredBytes = uploadBytes + REMOTE_INSTALL_MARGIN_BYTES;
     if (!Number.isFinite(disk.availableBytes) || disk.availableBytes < requiredBytes) {
       throw new RemoteRuntimeConnectError({
         kind: "disk_full",
-        message: "ADE needs more free disk space on the Windows machine before it can install the remote runtime.",
+        message: `${BRAND.NAME} needs more free disk space on the Windows machine before it can install the remote runtime.`,
         detail: `Required ${formatInstallMegabytes(requiredBytes)}; available ${formatInstallMegabytes(Number(disk.availableBytes) || 0)}.`,
       });
     }
@@ -2383,11 +2384,11 @@ async function bootstrapWindowsRemoteRuntime(args: {
       $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
       [IO.File]::WriteAllText([string]$p.path, [string]$p.value + [Environment]::NewLine)
       @{ ok = $true } | ConvertTo-Json -Compress
-    `, { path: layout.sha256Marker, value: localBinarySha256 }, "Unable to record the Windows ADE runtime checksum.");
+    `, { path: layout.sha256Marker, value: localBinarySha256 }, `Unable to record the Windows ${BRAND.NAME} runtime checksum.`);
     identity = await readWindowsRuntimeIdentity(ssh, layout);
   }
   if (!identity.selectedBinary) {
-    throw new Error(`ADE is not installed on the Windows machine and no bundled ade-win32-x64.exe is available. Rebuild the desktop runtime resources, or install the standalone Windows ADE runtime and reconnect.`);
+    throw new Error(`${BRAND.NAME} is not installed on the Windows machine and no bundled ade-win32-x64.exe is available. Rebuild the desktop runtime resources, or install the standalone Windows ${BRAND.NAME} runtime and reconnect.`);
   }
   layout = { ...layout, binary: identity.selectedBinary };
   const runtimeVersion = selectRemoteRuntimeVersion({
@@ -2395,7 +2396,7 @@ async function bootstrapWindowsRemoteRuntime(args: {
     executableVersion: normalizeRuntimeVersion(identity.executableVersion ?? ""),
   });
   if (localBinary && runtimeVersion !== request.appVersion) {
-    throw new Error(`Uploaded Windows ADE runtime version mismatch: expected ${request.appVersion}, got ${runtimeVersion ?? "unknown"}.`);
+    throw new Error(`Uploaded Windows ${BRAND.NAME} runtime version mismatch: expected ${request.appVersion}, got ${runtimeVersion ?? "unknown"}.`);
   }
 
   let nativeDepsReady = false;
@@ -2404,14 +2405,14 @@ async function bootstrapWindowsRemoteRuntime(args: {
       nodeModules: path.win32.join(layout.nativeDir, "node_modules"),
       versionMarker: layout.nativeVersionMarker,
       version: request.appVersion,
-    }, "Unable to inspect Windows ADE native dependencies.");
+    }, `Unable to inspect Windows ${BRAND.NAME} native dependencies.`);
     if (!nativeStatus.ready) {
       const suffix = crypto.randomBytes(8).toString("hex");
       const temp = path.win32.join(layout.runtimeDir, `ade-win32-x64.native.tar.gz.tmp-${suffix}`);
       const staging = `${layout.nativeDir}.tmp-${suffix}`;
       await execWindowsPowerShellJson(ssh, WINDOWS_ENSURE_DIRECTORIES_SCRIPT, {
         directories: [layout.runtimeDir],
-      }, "Unable to prepare the Windows ADE native dependency directory.");
+      }, `Unable to prepare the Windows ${BRAND.NAME} native dependency directory.`);
       try {
         await uploadSftpResolvedFile(ssh, localNativeDeps, windowsSftpPath(temp), fileSizeBytes(localNativeDeps));
         await execWindowsPowerShellJson(ssh, WINDOWS_INSTALL_NATIVE_DEPS_SCRIPT, {
@@ -2422,14 +2423,14 @@ async function bootstrapWindowsRemoteRuntime(args: {
           version: request.appVersion,
           size: fileSizeBytes(localNativeDeps),
           sha256: hashLocalFile(localNativeDeps),
-        }, "Unable to install Windows ADE native dependencies.", REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS);
+        }, `Unable to install Windows ${BRAND.NAME} native dependencies.`, REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS);
       } catch (error) {
         await execWindowsPowerShellJson(ssh, String.raw`
           $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
           Remove-Item -LiteralPath $p.temp -Force -ErrorAction SilentlyContinue
           Remove-Item -LiteralPath $p.staging -Recurse -Force -ErrorAction SilentlyContinue
           @{ ok = $true } | ConvertTo-Json -Compress
-        `, { temp, staging }, "Unable to clean up Windows ADE native dependency staging.").catch(() => undefined);
+        `, { temp, staging }, `Unable to clean up Windows ${BRAND.NAME} native dependency staging.`).catch(() => undefined);
         throw error;
       }
     }
@@ -2443,7 +2444,7 @@ async function bootstrapWindowsRemoteRuntime(args: {
       $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
       $ready = (Test-Path -LiteralPath $p.path -PathType Leaf) -and ((Get-FileHash -LiteralPath $p.path -Algorithm SHA256).Hash.ToLowerInvariant() -eq ([string]$p.sha256).ToLowerInvariant())
       @{ ready = $ready } | ConvertTo-Json -Compress
-    `, { path: layout.ptyHostWorker, sha256: workerSha256 }, "Unable to inspect the Windows ADE PTY worker.");
+    `, { path: layout.ptyHostWorker, sha256: workerSha256 }, `Unable to inspect the Windows ${BRAND.NAME} PTY worker.`);
     if (!status.ready) {
       await windowsUploadVerifiedFile({
         ssh,
@@ -2463,10 +2464,10 @@ async function bootstrapWindowsRemoteRuntime(args: {
       $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
       $ready = (Test-Path -LiteralPath $p.directory -PathType Container) -and (Test-Path -LiteralPath $p.marker -PathType Leaf) -and ([IO.File]::ReadAllText([string]$p.marker).Trim() -eq [string]$p.sha256)
       @{ ready = $ready } | ConvertTo-Json -Compress
-    `, { directory: layout.agentSkillsDir, marker: layout.agentSkillsSha256, sha256: directorySha256 }, "Unable to inspect Windows ADE agent skills.");
+    `, { directory: layout.agentSkillsDir, marker: layout.agentSkillsSha256, sha256: directorySha256 }, `Unable to inspect Windows ${BRAND.NAME} agent skills.`);
     if (!status.ready) {
       const staging = `${layout.agentSkillsDir}.tmp-${crypto.randomBytes(8).toString("hex")}`;
-      await execWindowsPowerShellJson(ssh, WINDOWS_ENSURE_DIRECTORIES_SCRIPT, { directories: [staging] }, "Unable to prepare Windows ADE agent skills.");
+      await execWindowsPowerShellJson(ssh, WINDOWS_ENSURE_DIRECTORIES_SCRIPT, { directories: [staging] }, `Unable to prepare Windows ${BRAND.NAME} agent skills.`);
       for (const file of files) {
         await windowsUploadVerifiedFile({
           ssh,
@@ -2480,7 +2481,7 @@ async function bootstrapWindowsRemoteRuntime(args: {
         Move-Item -LiteralPath $p.staging -Destination $p.destination -Force
         [IO.File]::WriteAllText([string]$p.marker, [string]$p.sha256 + [Environment]::NewLine)
         @{ ok = $true } | ConvertTo-Json -Compress
-      `, { staging, destination: layout.agentSkillsDir, marker: layout.agentSkillsSha256, sha256: directorySha256 }, "Unable to finalize Windows ADE agent skills.", REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS);
+      `, { staging, destination: layout.agentSkillsDir, marker: layout.agentSkillsSha256, sha256: directorySha256 }, `Unable to finalize Windows ${BRAND.NAME} agent skills.`, REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS);
     }
   }
 
@@ -2524,7 +2525,7 @@ async function bootstrapWindowsRemoteRuntime(args: {
       });
     } catch (error) {
       console.warn("remote_runtime.ssh_pairing_upgrade_failed", { detail: runtimeErrorMessage(error) });
-      compatibilityWarnings.push("Connected, but ADE couldn't save the faster reconnect method. You can keep using this machine now and reconnect later to try again.");
+      compatibilityWarnings.push(`Connected, but ${BRAND.NAME} couldn't save the faster reconnect method. You can keep using this machine now and reconnect later to try again.`);
     }
   }
   const updated = request.registry.update(request.target.id, {
@@ -2588,10 +2589,10 @@ export async function bootstrapRemoteRuntime(args: {
   try {
     const arch = await detectRemotePlatform(ssh);
     if (arch.platform === "win32") {
-      step = "setting up ADE on Windows";
+      step = `setting up ${BRAND.NAME} on Windows`;
       return await bootstrapWindowsRemoteRuntime({ request: args, ssh, connectedRoute, platform: arch });
     }
-    step = "checking which ADE is installed";
+    step = `checking which ${BRAND.NAME} is installed`;
     const preferredLayout = resolveRemoteRuntimeLayout();
     let layout = preferredLayout;
     let runtimeLayoutFallbackReason: string | null = null;
@@ -2634,7 +2635,7 @@ export async function bootstrapRemoteRuntime(args: {
           markerVersion: markedRuntimeVersion,
           executableVersion: executableRuntimeVersion,
         });
-        runtimeLayoutFallbackReason = `Using remote runtime home ${layout.homeDirName} because ${preferredLayout.homeDirName} did not contain an ADE service for ${arch.label}.`;
+        runtimeLayoutFallbackReason = `Using remote runtime home ${layout.homeDirName} because ${preferredLayout.homeDirName} did not contain a ${BRAND.NAME} service for ${arch.label}.`;
         break;
       }
     }
@@ -2722,7 +2723,7 @@ export async function bootstrapRemoteRuntime(args: {
       runtimeVersion = args.appVersion;
     };
 
-    step = "installing ADE (copying its files)";
+    step = `installing ${BRAND.NAME} (copying its files)`;
     if (shouldUploadRuntime) {
       await uploadBundledRuntime();
     }
@@ -2777,7 +2778,7 @@ export async function bootstrapRemoteRuntime(args: {
           localSha256: localMacDesktopDriverSha256,
         });
       } catch (error) {
-        macDesktopDriverWarning = `Mac Desktop is not available on this machine: ADE could not install its driver (${runtimeErrorMessage(error)}).`;
+        macDesktopDriverWarning = `Mac Desktop is not available on this machine: ${BRAND.NAME} could not install its driver (${runtimeErrorMessage(error)}).`;
       }
     }
 
@@ -2794,7 +2795,7 @@ export async function bootstrapRemoteRuntime(args: {
           localSha256: localAdeMediaSha256,
         });
       } catch (error) {
-        adeMediaWarning = `Demo videos recorded on this machine will be filed without edits: ADE could not install its demo engine (${runtimeErrorMessage(error)}).`;
+        adeMediaWarning = `Demo videos recorded on this machine will be filed without edits: ${BRAND.NAME} could not install its demo engine (${runtimeErrorMessage(error)}).`;
       }
     }
 
@@ -2811,7 +2812,7 @@ export async function bootstrapRemoteRuntime(args: {
           localSha256: localSimHelperSha256,
         });
       } catch (error) {
-        simHelperWarning = `iOS simulators on this machine are not available: ADE could not install its simulator helper (${runtimeErrorMessage(error)}).`;
+        simHelperWarning = `iOS simulators on this machine are not available: ${BRAND.NAME} could not install its simulator helper (${runtimeErrorMessage(error)}).`;
       }
     }
 
@@ -2837,16 +2838,16 @@ export async function bootstrapRemoteRuntime(args: {
       if (uploadedVersionCheck.code !== 0 || !uploadedVersion) {
         throw new Error(
           uploadedVersionCheck.stderr.trim()
-          || "Uploaded ADE service did not report a version on the remote machine.",
+          || `Uploaded ${BRAND.NAME} service did not report a version on the remote machine.`,
         );
       }
       if (uploadedVersion !== args.appVersion) {
-        throw new Error(`Uploaded ADE service version mismatch: expected ${args.appVersion}, got ${uploadedVersion}.`);
+        throw new Error(`Uploaded ${BRAND.NAME} service version mismatch: expected ${args.appVersion}, got ${uploadedVersion}.`);
       }
       runtimeVersion = uploadedVersion;
     };
 
-    step = "checking the installed ADE";
+    step = `checking the installed ${BRAND.NAME}`;
     if (runtimeUploaded) {
       await verifyUploadedRuntime();
     }
@@ -2867,14 +2868,14 @@ export async function bootstrapRemoteRuntime(args: {
       const pathVersionCheck = await execSsh(ssh, `${runtimeEnvPrefix}ade --version || true`);
       runtimeVersion = normalizeRuntimeVersion(pathVersionCheck.stdout);
       if (!runtimeVersion) {
-        throw new Error(`ADE service is not installed on the remote machine and no bundled ADE service is available for ${arch.label}.`);
+        throw new Error(`${BRAND.NAME} service is not installed on the remote machine and no bundled ${BRAND.NAME} service is available for ${arch.label}.`);
       }
     }
 
-    step = "installing ADE (copying agent skills)";
+    step = `installing ${BRAND.NAME} (copying agent skills)`;
     await ensureAgentSkillsReady(layout);
 
-    step = "starting ADE";
+    step = `starting ${BRAND.NAME}`;
     const command = localBinary || runtimeUploaded
       ? remoteRuntimeRpcCommand(layout, runtimeEnvPrefix, layout.binaryExpr)
       : remoteRuntimeRpcCommand(layout, runtimeEnvPrefix, "ade");
@@ -2910,7 +2911,7 @@ export async function bootstrapRemoteRuntime(args: {
           // While the start runs, a failure is the start's; after it, the
           // connect is back to starting ADE.
           brainStart = outcome;
-          step = outcome ? "starting ADE" : "starting the ADE brain";
+          step = outcome ? `starting ${BRAND.NAME}` : `starting the ${BRAND.NAME} brain`;
         },
       });
     } catch (error) {
@@ -2946,7 +2947,7 @@ export async function bootstrapRemoteRuntime(args: {
             expectedVersion: null,
             expectedLayout: candidateLayout,
           });
-          runtimeLayoutFallbackReason = "This machine is using another installed ADE version. Some features may behave differently.";
+          runtimeLayoutFallbackReason = `This machine is using another installed ${BRAND.NAME} version. Some features may behave differently.`;
           layout = candidateLayout;
           runtimeEnvPrefix = candidateRuntimeEnvPrefix;
           runtimeVersion = candidateRuntimeVersion;
@@ -2987,13 +2988,13 @@ export async function bootstrapRemoteRuntime(args: {
         }
         throw new RemoteRuntimeConnectError({
           kind: "generic",
-          message: "ADE couldn't connect to this machine. Check that ADE is open there, then press Try again.",
+          message: `${BRAND.NAME} couldn't connect to this machine. Check that ${BRAND.NAME} is open there, then press Try again.`,
           detail,
         }, error);
       }
     }
     if (!openedRuntime) {
-      throw new Error("ADE couldn't connect to this machine. Check that ADE is open there, then press Try again.");
+      throw new Error(`${BRAND.NAME} couldn't connect to this machine. Check that ${BRAND.NAME} is open there, then press Try again.`);
     }
     const { client, initializeInfo } = openedRuntime;
     const projects = coerceProjects(await client.call("projects.list", {}, { timeoutMs: SSH_RUNTIME_HANDSHAKE_TIMEOUT_MS }));
@@ -3026,7 +3027,7 @@ export async function bootstrapRemoteRuntime(args: {
           detail: runtimeErrorMessage(error),
         });
         compatibilityWarnings.push(
-          "Connected, but ADE couldn't save the faster reconnect method. You can keep using this machine now and reconnect later to try again.",
+          `Connected, but ${BRAND.NAME} couldn't save the faster reconnect method. You can keep using this machine now and reconnect later to try again.`,
         );
       }
     }
@@ -3090,6 +3091,6 @@ export async function ensureRemoteProject(
 ): Promise<RemoteRuntimeProjectRecord> {
   const project = await client.call("projects.add", { rootPath, ...registration });
   const records = coerceProjects([project]);
-  if (!records[0]) throw new Error("Remote ADE service did not return a project record.");
+  if (!records[0]) throw new Error(`Remote ${BRAND.NAME} service did not return a project record.`);
   return records[0];
 }

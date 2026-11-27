@@ -17,6 +17,7 @@ import type {
   RemoteRuntimeDiscoveryDiagnostic,
   RemoteRuntimeDiscoveryResult,
 } from "../../../shared/types/remoteRuntime";
+import { BRAND } from "../../../shared/brand";
 
 export const ADE_SYNC_MDNS_SERVICE_TYPE = "ade-sync";
 const TAILSCALE_SSH_PORT = 22;
@@ -134,7 +135,7 @@ export function discoveredRuntimeFromBonjourService(
 ): RemoteRuntimeDiscoveredMachine | null {
   const txt = normalizeTxtRecord(service.txt);
   const serviceName =
-    firstNonEmpty([service.name, service.fqdn, "ADE Sync"]) ?? "ADE Sync";
+    firstNonEmpty([service.name, service.fqdn, `${BRAND.NAME} Sync`]) ?? `${BRAND.NAME} Sync`;
   const servicePort =
     parsePositiveInteger(service.port) ?? parsePositiveInteger(txt.port);
   const serviceKey =
@@ -432,7 +433,7 @@ export async function discoverLanRuntimes(
           source: "bonjour",
           severity: "warning",
           code: "bonjour-discovery-failed",
-          message: "Couldn't look for computers on this Wi-Fi. Computers on your ADE account are still listed.",
+          message: `Couldn't look for computers on this Wi-Fi. Computers on your ${BRAND.NAME} account are still listed.`,
           detail: message || null,
         });
       } finally {

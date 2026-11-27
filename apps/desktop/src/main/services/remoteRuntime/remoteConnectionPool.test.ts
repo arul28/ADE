@@ -2204,7 +2204,7 @@ describe("RemoteConnectionPool", () => {
         host: "brain.local",
         port: 8765,
       }),
-    ).rejects.toThrow(/connection was interrupted before ADE could confirm the action result/i);
+    ).rejects.toThrow(/connection was interrupted before Daex could confirm the action result/i);
 
     expect(firstSsh.end).toHaveBeenCalledTimes(1);
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);

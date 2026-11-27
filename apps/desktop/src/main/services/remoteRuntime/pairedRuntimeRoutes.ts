@@ -13,6 +13,7 @@ import {
   PairedRuntimeRelayAuthRequiredError,
 } from "./pairedRuntimeErrors";
 import { normalizeSyncEndpoint } from "./syncRuntimeTransport";
+import { BRAND } from "../../../shared/brand";
 
 export type PairedRuntimeEndpointCandidate = {
   endpoint: string;
@@ -523,22 +524,22 @@ export function pairedRuntimeFailureMessage(
       return `${machine} says this device's pairing is out of date — pair it again.`;
     case "authentication":
       if (accountHelloCode === "account_not_signed_in") {
-        return `${machine} is not signed in to an ADE account. Sign in there, then try again.`;
+        return `${machine} is not signed in to a ${BRAND.NAME} account. Sign in there, then try again.`;
       }
       if (accountHelloCode === "account_verification_failed") {
-        return `${machine} could not verify its ADE account session. Open ADE there and check that it is signed in to the same ADE account, then try again.`;
+        return `${machine} could not verify its ${BRAND.NAME} account session. Open ${BRAND.NAME} there and check that it is signed in to the same ${BRAND.NAME} account, then try again.`;
       }
-      return "Sign in to ADE to connect through the relay.";
+      return `Sign in to ${BRAND.NAME} to connect through the relay.`;
     case "identity":
       return `A different computer answered at ${machine}'s saved address — try again.`;
     case "capability":
     case "protocol":
-      return `${machine} is running an older ADE — update it there, then try again.`;
+      return `${machine} is running an older ${BRAND.NAME} — update it there, then try again.`;
     case "superseded":
       return `Another connection to ${machine} took over — try again.`;
     case "timeout":
       if (options.handshakeTimedOut) {
-        return `Could not reach ${machine}: it did not answer the connection handshake. ADE there may be busy or stuck — try again, or restart ADE on that computer.`;
+        return `Could not reach ${machine}: it did not answer the connection handshake. ${BRAND.NAME} there may be busy or stuck — try again, or restart ${BRAND.NAME} on that computer.`;
       }
       return pairedRuntimeUnreachableMessage(machine);
     default:
@@ -547,5 +548,5 @@ export function pairedRuntimeFailureMessage(
 }
 
 function pairedRuntimeUnreachableMessage(machine: string): string {
-  return `Can't reach ${machine} — it may be asleep or ADE may be stopped there.`;
+  return `Can't reach ${machine} — it may be asleep or ${BRAND.NAME} may be stopped there.`;
 }

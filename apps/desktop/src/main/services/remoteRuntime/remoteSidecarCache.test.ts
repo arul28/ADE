@@ -200,7 +200,7 @@ describe("resolveRemoteRuntimeSidecars", () => {
     ).catch((thrown: unknown) => thrown);
 
     expect((error as RemoteSidecarFetchError).kind).toBe("unavailable");
-    expect((error as Error).message).toContain("The ADE v9.9.9 release does not publish linux-arm64 runtime assets");
+    expect((error as Error).message).toContain("The Daex v9.9.9 release does not publish linux-arm64 runtime assets");
   });
 
   it("treats a version that is not a release tag as unavailable without any request", async () => {

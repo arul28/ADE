@@ -26,6 +26,7 @@ import {
   buildSshRouteCandidates,
   scanSshHostKeyForTarget,
 } from "./sshTransport";
+import { BRAND } from "../../../shared/brand";
 
 const DEFAULT_DOCTOR_TIMEOUT_MS = 5_000;
 
@@ -236,7 +237,7 @@ const FAILURE_LABEL_ORDER: readonly RemoteRuntimeDoctorFailure[] = [
 const ROUTE_NAMES: Record<RemoteRuntimeDoctorCheck["route"], string> = {
   lan: "your local network",
   tailnet: "Tailscale",
-  relay: "ADE's relay",
+  relay: `${BRAND.NAME}'s relay`,
   ssh: "SSH",
 };
 
@@ -265,7 +266,7 @@ export function diagnoseDoctorChecks(
       return {
         tone: "danger",
         title: "The relay would not vouch for this device.",
-        fix: `Sign in to the same ADE account here and on ${machine}, then test again.`,
+        fix: `Sign in to the same ${BRAND.NAME} account here and on ${machine}, then test again.`,
       };
     case "identity":
       return {
@@ -277,14 +278,14 @@ export function diagnoseDoctorChecks(
     case "protocol":
       return {
         tone: "warning",
-        title: `${machine} is running a different version of ADE that can't take this connection.`,
-        fix: `Update ADE on ${machine} (or here, if this computer is older), then test again.`,
+        title: `${machine} is running a different version of ${BRAND.NAME} that can't take this connection.`,
+        fix: `Update ${BRAND.NAME} on ${machine} (or here, if this computer is older), then test again.`,
       };
     case "host_offline":
       return {
         tone: "danger",
-        title: `${machine} isn't connected to ADE's relay.`,
-        fix: `Make sure ${machine} is awake, online, and ADE is open there. If it is, open Connections on ${machine} and press Check to see what's blocking it.`,
+        title: `${machine} isn't connected to ${BRAND.NAME}'s relay.`,
+        fix: `Make sure ${machine} is awake, online, and ${BRAND.NAME} is open there. If it is, open Connections on ${machine} and press Check to see what's blocking it.`,
       };
     case "no_network":
       return {
@@ -303,8 +304,8 @@ export function diagnoseDoctorChecks(
         tone: "danger",
         title: `Nothing answered at ${machine}'s addresses.`,
         fix: seen.has("unreachable") && !checks.some((check) => check.route === "relay")
-          ? `It may be asleep or off, or ADE may be stopped there. Away from its network? Sign in to ADE on both computers so they can connect through the relay.`
-          : `It may be asleep or off, or ADE may be stopped there.`,
+          ? `It may be asleep or off, or ${BRAND.NAME} may be stopped there. Away from its network? Sign in to ${BRAND.NAME} on both computers so they can connect through the relay.`
+          : `It may be asleep or off, or ${BRAND.NAME} may be stopped there.`,
       };
   }
 }

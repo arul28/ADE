@@ -18,6 +18,7 @@ import {
   RUNNING_REQUEST_RECHECK_MS,
 } from "../../../shared/runningRequests";
 import type { JsonRpcId, JsonRpcRequest, JsonRpcTransport } from "../../../../../ade-cli/src/jsonrpc";
+import { BRAND } from "../../../shared/brand";
 
 export type RuntimeRpcTransportCloseInfo = {
   exitCode?: number | null;
@@ -174,7 +175,7 @@ export class RuntimeRpcClient {
     this.transport.onError?.((error) => {
       // `cause` keeps the transport's typed error, so a caller can tell an
       // over-budget channel close from a lost machine.
-      this.failConnection(carryExpected(error, new Error(`Remote ADE service connection failed: ${error.message}`, { cause: error })));
+      this.failConnection(carryExpected(error, new Error(`Remote ${BRAND.NAME} service connection failed: ${error.message}`, { cause: error })));
     });
     this.transport.onClose?.((info) => {
       const details = [
@@ -184,8 +185,8 @@ export class RuntimeRpcClient {
         info?.detail?.trim() ? info.detail.trim() : null,
       ].filter((value): value is string => value != null);
       const message = details.length > 0
-        ? `Remote ADE service connection closed (${details.join(", ")}).`
-        : "Remote ADE service connection closed.";
+        ? `Remote ${BRAND.NAME} service connection closed (${details.join(", ")}).`
+        : `Remote ${BRAND.NAME} service connection closed.`;
       const error = info?.superseded
         ? new Error(message, { cause: new PairedRuntimeSupersededError() })
         : new Error(message);
@@ -292,7 +293,7 @@ export class RuntimeRpcClient {
   }
 
   close(): void {
-    this.failConnection(new Error("Remote ADE service connection closed."));
+    this.failConnection(new Error(`Remote ${BRAND.NAME} service connection closed.`));
     try {
       this.transport.close();
     } catch {
@@ -380,7 +381,7 @@ export class RuntimeRpcClient {
           // Only an error reply means the other end does not know the check;
           // a timeout, a failed write or a relay that lost its brain is no answer.
           unsupported = error instanceof Error
-            && error.message.startsWith(`Remote ADE service method ${REQUEST_STATUS_METHOD} failed`)
+            && error.message.startsWith(`Remote ${BRAND.NAME} service method ${REQUEST_STATUS_METHOD} failed`)
             && !("remoteDiagnostics" in error);
         }
         if (unsupported && !this.requestStatusUnsupported) {
@@ -508,7 +509,7 @@ export class RuntimeRpcClient {
       return;
     }
     pending.reject(new Error(
-      `Remote ADE service response for method ${pending.method} exceeded 16 MiB (~${approxMiB} MiB) and was discarded.`,
+      `Remote ${BRAND.NAME} service response for method ${pending.method} exceeded 16 MiB (~${approxMiB} MiB) and was discarded.`,
     ));
   }
 
@@ -517,7 +518,7 @@ export class RuntimeRpcClient {
     try {
       parsed = JSON.parse(line);
     } catch (error) {
-      this.failConnection(new Error(`Failed to parse remote ADE service response: ${error instanceof Error ? error.message : String(error)}`));
+      this.failConnection(new Error(`Failed to parse remote ${BRAND.NAME} service response: ${error instanceof Error ? error.message : String(error)}`));
       return;
     }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
@@ -540,7 +541,7 @@ export class RuntimeRpcClient {
     const error = response.error;
     if (error && typeof error === "object" && !Array.isArray(error)) {
       const rpcError = error as { code?: unknown; message?: unknown; data?: unknown; expected?: unknown };
-      const message = String(rpcError.message ?? "Remote ADE service request failed.");
+      const message = String(rpcError.message ?? `Remote ${BRAND.NAME} service request failed.`);
       const code = typeof rpcError.code === "number" ? ` (code ${rpcError.code})` : "";
       const brainLoss = readBrainConnectionLossData(rpcError.data);
       if (brainLoss) {
@@ -549,13 +550,13 @@ export class RuntimeRpcClient {
         // stays a sentence a person can read.
         reportBrainConnectionLoss(pending.label, brainLoss);
         pending.reject(markExpectedFromWire(Object.assign(new Error(
-          `Remote ADE service method ${pending.method} failed${code}: ${message}`,
+          `Remote ${BRAND.NAME} service method ${pending.method} failed${code}: ${message}`,
         ), { remoteDiagnostics: brainLoss }), rpcError.expected));
         return;
       }
       const data = formatRpcErrorData(rpcError.data);
       const rebuilt: RuntimeActionReplyError = new Error(
-        `Remote ADE service method ${pending.method} failed${code}: ${message}${data ? ` Details: ${data}` : ""}`,
+        `Remote ${BRAND.NAME} service method ${pending.method} failed${code}: ${message}${data ? ` Details: ${data}` : ""}`,
       );
       // An internal error's own frames (`data.frames`), so the report says
       // where the brain failed, as it does for a failed action's reply.
@@ -614,7 +615,7 @@ function overdueFailure(pending: PendingRequest, running: boolean | null, now: n
  */
 function runtimeRpcTimeoutError(pending: PendingRequest, waitedMs: number, reason?: string): Error {
   const waited = reason ? `${Math.round(waitedMs)}ms; ${reason}` : `${waitedMs}ms`;
-  return new Error(`Remote ADE service timed out waiting for method ${pending.label} (${waited}).`);
+  return new Error(`Remote ${BRAND.NAME} service timed out waiting for method ${pending.label} (${waited}).`);
 }
 
 /**

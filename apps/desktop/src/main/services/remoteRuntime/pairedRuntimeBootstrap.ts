@@ -49,6 +49,7 @@ import {
   resolveAccountRelayProof,
   type AccountRelayProof,
 } from "./pairedRuntimeErrors";
+import { BRAND } from "../../../shared/brand";
 
 export type PairedRuntimeBootstrapResult = {
   client: RuntimeRpcClient;
@@ -94,8 +95,8 @@ function isPairedTransportFailure(error: unknown): boolean {
 
 function compatibilityError(error: unknown): PairedRuntimeCompatibilityError {
   return new PairedRuntimeCompatibilityError(
-    `The paired ADE runtime could not initialize compatibly: ${errorMessage(error)} `
-      + "Connect to this machine with SSH to update its ADE runtime, then try the paired connection again.",
+    `The paired ${BRAND.NAME} runtime could not initialize compatibly: ${errorMessage(error)} `
+      + `Connect to this machine with SSH to update its ${BRAND.NAME} runtime, then try the paired connection again.`,
     error,
   );
 }
@@ -194,7 +195,7 @@ export async function bootstrapPairedRuntime(args: {
       } catch (error) {
         relayAuthError = error instanceof PairedRuntimeRelayAuthRequiredError
           ? error
-          : new PairedRuntimeRelayAuthRequiredError("Sign in to ADE to connect through ADE Relay.", error);
+          : new PairedRuntimeRelayAuthRequiredError(`Sign in to ${BRAND.NAME} to connect through ${BRAND.NAME} Relay.`, error);
         recordAttempt({
           kind: candidate.kind,
           host: safeHost,

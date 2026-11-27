@@ -252,24 +252,24 @@ describe("paired runtime endpoint routes", () => {
       { kind: "relay", host: "b", startedAt: 2, durationMs: 1, outcome: "failed", failure: "timeout" },
     ])).toBe("timeout");
     expect(pairedRuntimeFailureMessage("timeout", "Mac Studio")).toBe(
-      "Can't reach Mac Studio — it may be asleep or ADE may be stopped there.",
+      "Can't reach Mac Studio — it may be asleep or Daex may be stopped there.",
     );
     expect(pairedRuntimeFailureMessage("authentication", "Mac Studio")).toBe(
-      "Sign in to ADE to connect through the relay.",
+      "Sign in to Daex to connect through the relay.",
     );
     expect(pairedRuntimeFailureMessage(
       "authentication",
       "Mac Studio",
       "account_not_signed_in",
     )).toBe(
-      "Mac Studio is not signed in to an ADE account. Sign in there, then try again.",
+      "Mac Studio is not signed in to a Daex account. Sign in there, then try again.",
     );
     expect(pairedRuntimeFailureMessage(
       "authentication",
       "Mac Studio",
       "account_verification_failed",
     )).toBe(
-      "Mac Studio could not verify its ADE account session. Open ADE there and check that it is signed in to the same ADE account, then try again.",
+      "Mac Studio could not verify its Daex account session. Open Daex there and check that it is signed in to the same Daex account, then try again.",
     );
     // No attempts recorded at all still produces a sentence, not an empty one.
     expect(dominantPairedRuntimeFailure([])).toBe("unknown");

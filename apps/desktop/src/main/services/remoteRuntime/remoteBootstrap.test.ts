@@ -2061,7 +2061,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     expect(connected.result).toMatchObject({
       version: "1.9.0-alpha.4",
       compatibilityWarnings: [
-        "This machine is using another installed ADE version. Some features may behave differently.",
+        "This machine is using another installed Daex version. Some features may behave differently.",
       ],
     });
   });
@@ -2121,7 +2121,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     );
     expect(connected.result.version).toBe("1.2.27");
     expect(connected.result.compatibilityWarnings).toEqual(expect.arrayContaining([
-      "This machine is using another installed ADE version. Some features may behave differently.",
+      "This machine is using another installed Daex version. Some features may behave differently.",
     ]));
   });
 
@@ -2281,7 +2281,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       pairedMachine: { hostIdentity: "mac-studio-device" },
     });
     expect(connected.result.compatibilityWarnings).toEqual(expect.arrayContaining([
-      "This machine is using another installed ADE version. Some features may behave differently.",
+      "This machine is using another installed Daex version. Some features may behave differently.",
     ]));
   });
 
@@ -2371,7 +2371,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     })).rejects.toMatchObject({
       info: {
         kind: "generic",
-        message: "ADE couldn't connect to this machine. Check that ADE is open there, then press Try again.",
+        message: "Daex couldn't connect to this machine. Check that Daex is open there, then press Try again.",
         detail: expect.stringMatching(/\.ade \[capability_negotiation\].*multi-project/is),
       },
     });

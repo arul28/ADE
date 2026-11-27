@@ -17,6 +17,7 @@ import { RemoteRuntimeConnectError } from "../../../shared/types/remoteRuntime";
 import type { RuntimeRpcTransport, RuntimeRpcTransportCloseInfo } from "./runtimeRpcClient";
 import { routeKey } from "./routeUtils";
 import { expandUserPath, isFile, privateKeyForPublicKeyPath, readSshPrivateKey } from "./sshKeyPaths";
+import { BRAND } from "../../../shared/brand";
 
 export type SshExecResult = {
   stdout: string;
@@ -469,7 +470,7 @@ function appendKnownSshHostKeyForTarget(
 ): void {
   const knownHostsPath = scan.knownHostsPath;
   if (!knownHostsPath) {
-    throw new Error("ADE could not resolve an SSH known_hosts file for this machine.");
+    throw new Error(`${BRAND.NAME} could not resolve an SSH known_hosts file for this machine.`);
   }
   const entries = readKnownHostEntries(knownHostsPath);
   const patterns = knownHostWritePatternsForTarget(target, options);
@@ -487,7 +488,7 @@ function appendKnownSshHostKeyForTarget(
   }
 
   if (patterns.length === 0) {
-    throw new Error("ADE could not resolve SSH hostnames to trust for this machine.");
+    throw new Error(`${BRAND.NAME} could not resolve SSH hostnames to trust for this machine.`);
   }
 
   fs.mkdirSync(path.dirname(knownHostsPath), { recursive: true, mode: 0o700 });
@@ -539,7 +540,7 @@ export async function scanSshHostKeyForTarget(
 
   throw lastError instanceof Error
     ? lastError
-    : new Error("ADE could not read the SSH host key for this machine.");
+    : new Error(`${BRAND.NAME} could not read the SSH host key for this machine.`);
 }
 
 export async function getSshHostKeyTrustForTarget(
@@ -569,7 +570,7 @@ export async function trustSshHostKeyForTarget(
   const { scanHostKey, ...buildOptions } = options;
   const scan = await (scanHostKey ?? scanSshHostKeyForTarget)(target, buildOptions);
   if (scan.fingerprintSha256 !== expectedFingerprintSha256) {
-    throw new Error("The SSH host key changed before ADE could trust this machine. Try connecting again.");
+    throw new Error(`The SSH host key changed before ${BRAND.NAME} could trust this machine. Try connecting again.`);
   }
   appendKnownSshHostKeyForTarget(target, scan, buildOptions);
   return {
@@ -819,12 +820,12 @@ function normalizeSshConnectError(
   if (
     code === "ECONNRESET" ||
     /(?:^|\s)ECONNRESET(?:\s|$)|connection reset|connection closed by remote host|socket closed|connection lost before handshake/i.test(message) ||
-    /closed before (?:it became ready|ADE could complete the SSH handshake)/i.test(fallback)
+    /closed before (?:it became ready|(?:ADE|Daex) could complete the SSH handshake)/i.test(fallback)
   ) {
     return copySshErrorMetadata(
       source,
       new Error(
-        `SSH server at ${endpoint} closed the connection before ADE could finish the SSH handshake. ` +
+        `SSH server at ${endpoint} closed the connection before ${BRAND.NAME} could finish the SSH handshake. ` +
           "Check that Remote Login/sshd is enabled on the remote machine and that its firewall or Tailscale SSH policy allows this client.",
       ),
     );
@@ -857,7 +858,7 @@ function normalizeSshConnectError(
     return new RemoteRuntimeConnectError({
       kind: "host_key",
       message:
-        `The SSH host key of ${endpoint} is not the one ADE trusts for this machine. ` +
+        `The SSH host key of ${endpoint} is not the one ${BRAND.NAME} trusts for this machine. ` +
         "Check the machine, then trust its key again.",
       detail: message,
     }, source);
@@ -871,7 +872,7 @@ function normalizeSshConnectError(
   if (unreachableCode) {
     const reason = unreachableCode === "ECONNREFUSED"
       ? `Nothing is accepting SSH connections at ${endpoint}.`
-      : `ADE could not reach ${endpoint} (${unreachableCode}).`;
+      : `${BRAND.NAME} could not reach ${endpoint} (${unreachableCode}).`;
     return new RemoteRuntimeConnectError({
       kind: "unreachable",
       message:

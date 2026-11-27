@@ -58,6 +58,7 @@ import {
   type SyncEnvelopeConnection,
 } from "./syncRuntimeTransport";
 import { MAX_ROUTE_ATTEMPTS } from "./pairedRuntimeRoutes";
+import { BRAND } from "../../../shared/brand";
 
 const STORE_FILE_NAME = "desktop-paired-machines.json";
 const DEFAULT_PAIRING_TIMEOUT_MS = 15_000;
@@ -153,9 +154,9 @@ const SEALED_ADOPTION_UNAVAILABLE_REASON =
   "This machine cannot finish that sign-in here. Pair with a code, or open a project on it and try again.";
 
 const HOST_IDENTITY_VERIFICATION_ERROR =
-  "Host identity verification failed — the machine may be running an older ADE.";
+  `Host identity verification failed — the machine may be running an older ${BRAND.NAME}.`;
 const ADOPT_CHANNEL_UPDATE_REQUIRED_ERROR =
-  "The other computer is running an older ADE that can't negotiate a compatible cipher — update it to the latest version.";
+  `The other computer is running an older ${BRAND.NAME} that can't negotiate a compatible cipher — update it to the latest version.`;
 
 export class AccountHostIdentityVerificationError extends Error {
   readonly code = "account_host_identity_verification_failed";
@@ -280,7 +281,7 @@ function classifyAccountMachineAdoptionFailure(
   ) {
     return "authentication";
   }
-  if (/older ADE|compatible cipher|update (?:it|ADE)/i.test(reason)) return "protocol";
+  if (/older (?:ADE|Daex)|compatible cipher|update (?:it|(?:ADE|Daex))/i.test(reason)) return "protocol";
   if (/identity|signature|device id|cipher/i.test(reason)) return "identity";
   if (/ECONN|EHOST|ENET|unreach|offline|closed|socket|websocket|refused/i.test(reason)) {
     return "unreachable";
@@ -323,8 +324,8 @@ function accountMachineAdoptionFailureMessage(
   const targetIsSignedOut = failures.some(accountMachineTargetIsSignedOut);
 
   if (dominant === "authentication" && targetIsSignedOut) {
-    return `Could not connect to ${machineName}. ${machineName} is not signed in to the same ADE account. `
-      + "Open ADE on that computer, sign in, then try again.";
+    return `Could not connect to ${machineName}. ${machineName} is not signed in to the same ${BRAND.NAME} account. `
+      + `Open ${BRAND.NAME} on that computer, sign in, then try again.`;
   }
   const retryLaterReason = failures
     .map((failure) =>
@@ -336,8 +337,8 @@ function accountMachineAdoptionFailureMessage(
       if (retryLaterReason) {
         return `Could not connect to ${machineName}. ${retryLaterReason}.`;
       }
-      return `Could not connect to ${machineName}. ADE could not verify the account on that computer. `
-        + "Open ADE there and check that it is signed in to the same ADE account, then try again.";
+      return `Could not connect to ${machineName}. ${BRAND.NAME} could not verify the account on that computer. `
+        + `Open ${BRAND.NAME} there and check that it is signed in to the same ${BRAND.NAME} account, then try again.`;
     case "pairing":
       return `Could not connect to ${machineName}. Its saved pairing for this device is no longer valid. `
         + "Pair it again, then try again.";
@@ -346,16 +347,16 @@ function accountMachineAdoptionFailureMessage(
         + "then try again.";
     case "capability":
     case "protocol":
-      return `Could not connect to ${machineName}. Update ADE on that computer, then try again.`;
+      return `Could not connect to ${machineName}. Update ${BRAND.NAME} on that computer, then try again.`;
     case "superseded":
       return `Another connection to ${machineName} took over. Try again.`;
     case "timeout":
-      return `Could not connect to ${machineName} in time. Make sure ADE is open on that computer, `
+      return `Could not connect to ${machineName} in time. Make sure ${BRAND.NAME} is open on that computer, `
         + "then try again.";
     case "unreachable":
-      return `Could not reach ${machineName}. Make sure it's awake and ADE is open, then try again.`;
+      return `Could not reach ${machineName}. Make sure it's awake and ${BRAND.NAME} is open, then try again.`;
     default:
-      return `Could not connect to ${machineName}. Open ADE on that computer and try again.`;
+      return `Could not connect to ${machineName}. Open ${BRAND.NAME} on that computer and try again.`;
   }
 }
 
@@ -1044,8 +1045,8 @@ export class DesktopPairedMachineStore {
     const accountOwnerUserId = options.accountOwnerUserId.trim();
     const deviceName = deviceNameValue.trim();
     const expectedHostDeviceId = machine.deviceId?.trim() ?? "";
-    if (!accountToken) throw new Error("ADE account sign-in is required.");
-    if (!accountOwnerUserId) throw new Error("ADE account identity is required.");
+    if (!accountToken) throw new Error(`${BRAND.NAME} account sign-in is required.`);
+    if (!accountOwnerUserId) throw new Error(`${BRAND.NAME} account identity is required.`);
     if (!deviceName) throw new Error("Desktop device name is required.");
     if (!expectedHostDeviceId) throw new Error("The account machine is missing a stable device id.");
 
@@ -1388,7 +1389,7 @@ export class DesktopPairedMachineStore {
           && !await options.authorizeAccountCommit(accountOwnerUserId)
         ) {
           throw new AccountPairingAuthorizationError(
-            "Your ADE account changed before this machine could be saved.",
+            `Your ${BRAND.NAME} account changed before this machine could be saved.`,
           );
         }
         const saved = this.save({

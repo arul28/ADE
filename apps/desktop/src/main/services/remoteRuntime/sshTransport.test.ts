@@ -694,7 +694,7 @@ describe("buildSshConfig", () => {
         env: {},
         sshConfigPath: null,
       })).rejects.toThrow(
-        `SSH server at 127.0.0.1:${address.port} closed the connection before ADE could finish the SSH handshake.`,
+        `SSH server at 127.0.0.1:${address.port} closed the connection before Daex could finish the SSH handshake.`,
       );
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));

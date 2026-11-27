@@ -63,6 +63,6 @@ describe("parseRemoteRuntimePairingInput", () => {
 
   it("rejects garbage", () => {
     expect(() => parseRemoteRuntimePairingInput("not-a-pairing-code"))
-      .toThrow(/invalid ADE pairing link or code/i);
+      .toThrow(/invalid Daex pairing link or code/i);
   });
 });

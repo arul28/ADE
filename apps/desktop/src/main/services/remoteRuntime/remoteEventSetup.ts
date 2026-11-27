@@ -2,6 +2,7 @@ import { armDeadline } from "../../../shared/deadlineTimer";
 import { captureError } from "../../../shared/sentry/capture";
 import { createPhaseClock, type PhaseClock } from "../../../shared/phaseClock";
 import { markExpected } from "../../../shared/expectedError";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The steps an event read or subscription on another machine waits on, in the
@@ -47,7 +48,7 @@ export const REMOTE_RUNTIME_EVENT_SETUP_IPC_TIMEOUT_MS = REMOTE_RUNTIME_EVENT_SE
 export const REMOTE_RUNTIME_EVENT_SETUP_SLOW_MS = 10_000;
 
 const PHASE_WORDS: Record<RemoteEventSetupPhase, string> = {
-  authorize: "ADE could not confirm the ADE account it belongs to",
+  authorize: `${BRAND.NAME} could not confirm the ${BRAND.NAME} account it belongs to`,
   connect: "it did not answer the connection handshake",
   list_projects: "it did not send its project list",
   read: "it did not send its events",
@@ -66,7 +67,7 @@ export class RemoteEventSetupTimeoutError extends Error {
     readonly timeoutMs: number,
   ) {
     super(
-      `Could not reach ${machineName}: ${PHASE_WORDS[phase]} within ${Math.round(timeoutMs / 1000)}s. ADE will try again.`,
+      `Could not reach ${machineName}: ${PHASE_WORDS[phase]} within ${Math.round(timeoutMs / 1000)}s. ${BRAND.NAME} will try again.`,
     );
     this.name = "RemoteEventSetupTimeoutError";
     // A paired machine that is asleep, busy or offline; the message names the
