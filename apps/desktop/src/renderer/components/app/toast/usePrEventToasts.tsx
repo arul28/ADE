@@ -24,6 +24,7 @@ import {
   getPrToastTone,
 } from "../prToastPresentation";
 import { dismissToast, READABLE_TOAST_DURATION_MS, showToast, updateToast, type ToastCardAction, type ToastChip, type ToastInput } from "./toastStore";
+import { BRAND } from "../../../../shared/brand";
 
 type PrNotificationEvent = Extract<PrEventPayload, { type: "pr-notification" }>;
 type PrAutoLinkedEvent = Extract<PrEventPayload, { type: "pr-auto-linked" }>;
@@ -87,7 +88,7 @@ export function buildPrNotificationToast(
 
   const actions: ToastCardAction[] = [
     {
-      label: "Open in ADE",
+      label: `Open in ${BRAND.NAME}`,
       variant: "secondary",
       icon: <GitPullRequest size={12} />,
       onClick: openInAde,

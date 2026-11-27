@@ -5,6 +5,7 @@ import { PRIVACY_CHANGES_URL } from "../../../shared/legalLinks";
 import { openExternalUrl } from "../../lib/openExternal";
 import { markPrivacyPolicyNoticeSeen, privacyPolicyNoticeSeen } from "../../lib/privacyPolicyNotice";
 import { APP_BANNER_PRIORITY, useAppBanner } from "../ui/notice";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * "We updated our Privacy Policy", once per policy version on this window's
@@ -26,7 +27,7 @@ export function PrivacyPolicyUpdateNotice(): null {
           tone: "info",
           icon: <ShieldCheck size={14} weight="bold" />,
           title: "We updated our Privacy Policy",
-          detail: "It now lists everything ADE collects and where it goes, and adds sponsored cards on the ADE Cloud Free plan.",
+          detail: `It now lists everything ${BRAND.NAME} collects and where it goes, and adds sponsored cards on the ${BRAND.CLOUD_NAME} Free plan.`,
           actions: [
             {
               label: "Read what changed",

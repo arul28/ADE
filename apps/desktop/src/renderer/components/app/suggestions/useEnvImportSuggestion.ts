@@ -5,6 +5,7 @@ import { isAdeCloudComputer } from "../../../state/adeCloudLaneIndex";
 import { settingsRouteFor } from "../../settings/settingsManifest";
 import { requestLaneEnvImport } from "../../settings/passwords/laneEnvImport";
 import { useSituationalSuggestion } from "./useSituationalSuggestion";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * The `.env` tip: the main checkout of the open project has an ignored
@@ -44,7 +45,7 @@ export function useEnvImportSuggestion({
     id: "env-import",
     signalKey: scopeKey && file && canImport ? `${scopeKey}:${status?.envFiles?.join(",")}` : null,
     detail: file && file !== ".env"
-      ? `${file} in this project's main checkout is ignored by git, so new lanes and ADE Cloud start without it. As ADE secrets, its values reach every lane and computer, and agents never see them.`
+      ? `${file} in this project's main checkout is ignored by git, so new lanes and ${BRAND.CLOUD_NAME} start without it. As ${BRAND.NAME} secrets, its values reach every lane and computer, and agents never see them.`
       : undefined,
     scopeKey,
     context,

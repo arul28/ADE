@@ -24,6 +24,7 @@ import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { InlineErrorNotice } from "../ui/notice/InlineErrorNotice";
 import { HeaderSheet } from "./HeaderSheet";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The ADE Cloud iPhone in the top bar, only while one runs or starts: a phone
@@ -63,14 +64,14 @@ export function CloudIphoneTopBarButton({ enabled }: { enabled: boolean }) {
   const starting = live.status?.phone?.state === "starting";
   const left = cloudPhoneMinutesLeft(live, now);
   const title = starting
-    ? "ADE Cloud iPhone starting"
-    : `ADE Cloud iPhone on${left != null ? ` · ${left} min left` : ""}${warn ? " · stopping soon with no input" : ""}`;
+    ? `${BRAND.CLOUD_NAME} iPhone starting`
+    : `${BRAND.CLOUD_NAME} iPhone on${left != null ? ` · ${left} min left` : ""}${warn ? " · stopping soon with no input" : ""}`;
   return (
     <>
       <button
         ref={buttonRef}
         type="button"
-        aria-label="ADE Cloud iPhone"
+        aria-label={`${BRAND.CLOUD_NAME} iPhone`}
         aria-haspopup="dialog"
         aria-expanded={open}
         title={title}
@@ -96,7 +97,7 @@ export function CloudIphoneTopBarButton({ enabled }: { enabled: boolean }) {
         open={open}
         panelRef={panelRef}
         icon={<DeviceMobile size={15} weight="regular" className="shrink-0 text-fg/80" />}
-        title="ADE Cloud iPhone"
+        title={`${BRAND.CLOUD_NAME} iPhone`}
         ariaLabelledBy="cloud-iphone-sheet-title"
         width="w-[300px]"
         panelStyle={pos ? { top: pos.top, right: pos.right, left: "auto" } : undefined}

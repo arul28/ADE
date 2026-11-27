@@ -15,6 +15,7 @@ import type { QuitPromptChoice, QuitPromptRequest } from "../../../shared/types"
 import { agentsAre, agentsPronoun, quitPromptModel } from "../../../shared/quitPromptModel";
 import { Dialog, type DialogAction } from "../ui/dialog";
 import { dismissToast, READABLE_TOAST_DURATION_MS, showToast, updateToast } from "./toast/toastStore";
+import { BRAND } from "../../../shared/brand";
 
 const REPAIR_TOAST_ID = "quit-prompt-repair";
 
@@ -47,15 +48,15 @@ function repairFromQuitPrompt(requestId: string): void {
     id: REPAIR_TOAST_ID,
     tone: "info",
     busy: true,
-    title: "Repairing ADE's background service…",
-    message: "This can take a minute. ADE won't quit until it finishes.",
+    title: `Repairing ${BRAND.NAME}'s background service…`,
+    message: `This can take a minute. ${BRAND.NAME} won't quit until it finishes.`,
     durationMs: 0,
     dismissible: false,
   });
   const repaired = (resumedChats: number) => updateToast(REPAIR_TOAST_ID, {
     tone: "success",
     busy: false,
-    title: "ADE's background service is running",
+    title: `${BRAND.NAME}'s background service is running`,
     message: resumedChats > 0
       ? `${agentsAre(resumedChats)} picking up where ${agentsPronoun(resumedChats, "subject")} left off. You can quit now and they keep going.`
       : "You can quit now and your agents keep going.",
@@ -65,8 +66,8 @@ function repairFromQuitPrompt(requestId: string): void {
   const failed = () => updateToast(REPAIR_TOAST_ID, {
     tone: "warning",
     busy: false,
-    title: "ADE's background service still won't start",
-    message: "Agents ADE was running may have stopped; open them to continue, or try Repair again from the banner.",
+    title: `${BRAND.NAME}'s background service still won't start`,
+    message: `Agents ${BRAND.NAME} was running may have stopped; open them to continue, or try Repair again from the banner.`,
     durationMs: READABLE_TOAST_DURATION_MS,
     dismissible: true,
   });

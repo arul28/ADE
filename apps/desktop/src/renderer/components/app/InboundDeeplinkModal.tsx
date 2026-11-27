@@ -21,6 +21,7 @@ import { openIssueInSheet } from "../../lib/issueNavigation";
 import { Banner } from "../ui/notice";
 import { useAppStore } from "../../state/appStore";
 import { useTabCopyPin } from "../../state/repositoryScope";
+import { BRAND } from "../../../shared/brand";
 
 const NO_COMPUTER_ONLINE = "No computer with this project is online.";
 
@@ -166,7 +167,7 @@ export function InboundDeeplinkModal({
     if (existingLane) return;
     if (!projectOpen) {
       setPreflight(null);
-      setError(`Open the ADE project for ${branchTarget.repoOwner}/${branchTarget.repoName} before creating a lane from this deeplink.`);
+      setError(`Open the ${BRAND.NAME} project for ${branchTarget.repoOwner}/${branchTarget.repoName} before creating a lane from this deeplink.`);
       setLoading(false);
       return;
     }
@@ -178,7 +179,7 @@ export function InboundDeeplinkModal({
     }
     if (isBranchOnly) {
       setPreflight(null);
-      setError(laneImportAvailable ? null : "This ADE surface cannot create lanes from branch deeplinks.");
+      setError(laneImportAvailable ? null : `This ${BRAND.NAME} surface cannot create lanes from branch deeplinks.`);
       setLoading(false);
       return;
     }
@@ -220,7 +221,7 @@ export function InboundDeeplinkModal({
       onOpenChange={(next) => {
         if (!next && !busy) onClose();
       }}
-      title="Open in ADE"
+      title={`Open in ${BRAND.NAME}`}
       description={subtitle}
       width={560}
       hideClose
@@ -292,8 +293,8 @@ export function InboundDeeplinkModal({
 
       return renderFrame(
         remoteCopy
-          ? `This link belongs to an ADE project on ${remoteCopy.machineName}.`
-          : "This link belongs to another ADE project on this machine.",
+          ? `This link belongs to a ${BRAND.NAME} project on ${remoteCopy.machineName}.`
+          : `This link belongs to another ${BRAND.NAME} project on this machine.`,
         <div style={{ display: "grid", gap: 10 }}>
           {rows.map(([label, value]) => (
             <div key={label} style={{ display: "grid", gridTemplateColumns: "120px minmax(0, 1fr)", gap: 12, alignItems: "baseline" }}>
@@ -322,7 +323,7 @@ export function InboundDeeplinkModal({
       : repoLabel
         ? `This ${currentTarget.entity} lives in ${repoLabel} on another machine.`
         // No repo and no connected machine holds it: do not claim where it lives.
-        : `ADE cannot find this ${currentTarget.entity} on this machine or on a connected machine.`;
+        : `${BRAND.NAME} cannot find this ${currentTarget.entity} on this machine or on a connected machine.`;
     const hasRepo = Boolean(envelope?.repoOwner && envelope.repoName);
     const actions: React.ReactNode[] = [];
     if (hasRepo && envelope?.branch) {
@@ -402,7 +403,7 @@ export function InboundDeeplinkModal({
     return renderFrame(
       owned
         ? `${currentTarget.entity === "chat" ? "Chat" : "Lane"} not found`
-        : repoLabel ? "This link points at a machine-local ADE id." : "This link does not resolve on this machine.",
+        : repoLabel ? `This link points at a machine-local ${BRAND.NAME} id.` : "This link does not resolve on this machine.",
       <>
         <div style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textPrimary, lineHeight: 1.5 }}>{headline}</div>
         {!repoLabel && !owned ? <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.5 }}>The link did not carry anything this machine can open.</div> : null}
@@ -441,7 +442,7 @@ export function InboundDeeplinkModal({
     if (isBranchOnly) {
       const lanesApi = window.ade?.lanes;
       if (!lanesApi?.importBranch) {
-        setError("This ADE surface cannot create lanes from branch deeplinks.");
+        setError(`This ${BRAND.NAME} surface cannot create lanes from branch deeplinks.`);
         setBusy(false);
         return;
       }
@@ -480,7 +481,7 @@ export function InboundDeeplinkModal({
   };
 
   return renderFrame(
-    isBranchOnly ? "A branch was shared with you. ADE can fetch it and create the lane locally." : "A branch was shared with you. Create a lane to start working on it locally.",
+    isBranchOnly ? `A branch was shared with you. ${BRAND.NAME} can fetch it and create the lane locally.` : "A branch was shared with you. Create a lane to start working on it locally.",
     <>
       {loading ? (
         <div style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textSecondary }}>

@@ -44,6 +44,7 @@ import {
   type BannerModel,
   type NoticeAction,
 } from "../ui/notice";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Computes ADE's connection/health banners and registers them with the app
@@ -434,7 +435,7 @@ export function IntegrationBanners({
         ? {
           ...described,
           title: "GitHub isn't connected",
-          detail: "Connect GitHub to your ADE account so ADE can push and open pull requests from this project.",
+          detail: `Connect GitHub to your ${BRAND.NAME} account so ${BRAND.NAME} can push and open pull requests from this project.`,
         }
         : described;
       list.push({
@@ -517,7 +518,7 @@ export function IntegrationBanners({
         tone: "warning",
         icon: AI_ICON,
         title: "No AI provider configured",
-        detail: "Set up an AI provider so ADE can run agents in this project.",
+        detail: `Set up an AI provider so ${BRAND.NAME} can run agents in this project.`,
         actions: [{ label: "Set up AI", variant: "primary", onClick: () => navigate(AI_SETTINGS_ROUTE) }],
         dismiss: { key: `ai-provider:${currentProjectRoot}`, fingerprint: "missing" },
       });
@@ -541,10 +542,10 @@ export function IntegrationBanners({
         tone: "warning",
         icon: RELAY_ICON,
         title: suppressed
-          ? "Another ADE process owns this machine's relay connection"
-          : "ADE Relay is not connected",
+          ? `Another ${BRAND.NAME} process owns this machine's relay connection`
+          : `${BRAND.NAME} Relay is not connected`,
         detail: suppressed
-          ? "ADE stopped reconnecting so the two processes don't evict each other. Quit the other ADE app or brain on this machine to get the relay back."
+          ? `${BRAND.NAME} stopped reconnecting so the two processes don't evict each other. Quit the other ${BRAND.NAME} app or brain on this machine to get the relay back.`
           : (reason
             ?? "Phones and remote machines can't reach this computer over the relay. Local network connections still work."),
         actions: [
@@ -575,10 +576,10 @@ export function IntegrationBanners({
         id: "github-app-issues-permission",
         tone: fallback ? "info" : "warning",
         icon: GITHUB_ICON,
-        title: "Update GitHub permissions to edit issues in ADE",
+        title: `Update GitHub permissions to edit issues in ${BRAND.NAME}`,
         detail: fallback
-          ? `ADE's GitHub App on ${issueAccess.owner} can't change issues yet, so edits use ${fallback} for now. An owner approves the new permission on GitHub.`
-          : `ADE's GitHub App on ${issueAccess.owner} can't change issues yet. An owner approves the new permission on GitHub.`,
+          ? `${BRAND.NAME}'s GitHub App on ${issueAccess.owner} can't change issues yet, so edits use ${fallback} for now. An owner approves the new permission on GitHub.`
+          : `${BRAND.NAME}'s GitHub App on ${issueAccess.owner} can't change issues yet. An owner approves the new permission on GitHub.`,
         actions: issueApp.manageUrl
           ? [{ label: "Review on GitHub", variant: "primary", href: issueApp.manageUrl }]
           : [{ label: "GitHub settings", onClick: () => navigate(GITHUB_CONNECTION_SETTINGS_ROUTE) }],

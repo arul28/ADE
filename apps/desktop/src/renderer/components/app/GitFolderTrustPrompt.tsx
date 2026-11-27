@@ -11,6 +11,7 @@ import { useRef } from "react";
 import { ShieldWarning } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
 import { Dialog } from "../ui/dialog";
+import { BRAND } from "../../../shared/brand";
 
 export function GitFolderTrustPromptHost(): JSX.Element | null {
   const prompt = useAppStore((state) => state.gitFolderTrustPrompt);
@@ -41,7 +42,7 @@ function GitFolderTrustPromptDialog({ message }: { message: string }): JSX.Eleme
       title="Trust this folder?"
       description={[
         message,
-        "Trusting adds only this folder to Git's safe.directory list for your account, so Git and ADE can use it. Only trust folders you know.",
+        `Trusting adds only this folder to Git's safe.directory list for your account, so Git and ${BRAND.NAME} can use it. Only trust folders you know.`,
       ].join("\n")}
       hideClose
       closeOnScrimClick={false}

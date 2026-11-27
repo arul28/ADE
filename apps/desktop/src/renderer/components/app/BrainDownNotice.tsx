@@ -14,6 +14,7 @@ import { ReportIssueButton } from "./ReportIssueButton";
 import { ResetAdeDialog } from "./ResetAdeDialog";
 import { canRestartAde, clearRestartStamp, restartAde, restartedAdeRecently } from "./restartAde";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { BRAND } from "../../../shared/brand";
 
 const APP_BANNER = { placement: "docked", priority: APP_BANNER_PRIORITY.app } as const;
 /** How often the banner re-reads the service while macOS blocks it. */
@@ -198,7 +199,7 @@ export function BrainDownNotice({ result }: { result: UpdateTransactionResult | 
     void restart()
       .then(() => {
         markRecovered();
-        showToast({ tone: "success", title: "ADE's background service is running again" });
+        showToast({ tone: "success", title: `${BRAND.NAME}'s background service is running again` });
       })
       .catch((error: unknown) => {
         setFixError(extractError(error));
@@ -248,8 +249,8 @@ export function BrainDownNotice({ result }: { result: UpdateTransactionResult | 
         ? "restart"
         : "reset";
     const title = blocked
-      ? "macOS isn't letting ADE's background service run"
-      : failedResult.failureMessage ?? "ADE's background service isn't running";
+      ? `macOS isn't letting ${BRAND.NAME}'s background service run`
+      : failedResult.failureMessage ?? `${BRAND.NAME}'s background service isn't running`;
 
     const actions: NoticeAction[] = [];
     if (blocked) {
@@ -259,10 +260,10 @@ export function BrainDownNotice({ result }: { result: UpdateTransactionResult | 
         onClick: () => void window.ade?.recovery?.openBackgroundSettings?.().catch(() => undefined),
       });
     } else {
-      if (lead === "reset") actions.push({ label: "Reset ADE…", variant: "primary", onClick: () => setResetOpen(true) });
+      if (lead === "reset") actions.push({ label: `Reset ${BRAND.NAME}…`, variant: "primary", onClick: () => setResetOpen(true) });
       if (lead === "restart") {
         actions.push({
-          label: "Restart ADE",
+          label: `Restart ${BRAND.NAME}`,
           variant: "primary",
           icon: <ArrowsClockwise size={12} weight="bold" />,
           onClick: () => void restartAde(),
@@ -319,7 +320,7 @@ export function BrainDownNotice({ result }: { result: UpdateTransactionResult | 
       tone: "neutral",
       busy: true,
       title: "Finishing the update",
-      detail: "ADE's background service is restarting. Your project opens when it's back.",
+      detail: `${BRAND.NAME}'s background service is restarting. Your project opens when it's back.`,
       actions: pendingOpen.retryRootPath
         ? [{ label: "Try again", variant: "secondary", onClick: reopenPending }]
         : undefined,
@@ -342,15 +343,15 @@ function brainDownDetail(args: {
   failedFixes: number;
   restartAvailable: boolean;
 }): string {
-  if (args.blocked) return "Turn on ADE under \"Allow in the Background\" in System Settings. ADE continues by itself.";
-  if (args.fixing) return "Starting ADE's background service. This can take a minute.";
+  if (args.blocked) return `Turn on ${BRAND.NAME} under \"Allow in the Background\" in System Settings. ${BRAND.NAME} continues by itself.`;
+  if (args.fixing) return `Starting ${BRAND.NAME}'s background service. This can take a minute.`;
   if (args.lead === "fix") return "Fix it reinstalls it and starts it again. Your work is safe.";
   if (args.lead === "restart") {
     return args.failedFixes > 0
-      ? "Fix it didn't work. Restart ADE next; it quits and reopens."
-      : "Restart ADE to start it again. Your work is safe.";
+      ? `Fix it didn't work. Restart ${BRAND.NAME} next; it quits and reopens.`
+      : `Restart ${BRAND.NAME} to start it again. Your work is safe.`;
   }
   return args.restartAvailable
-    ? "Restarting didn't help. Reset ADE sets it up fresh; your code stays."
-    : "Fix it didn't work. Reset ADE sets it up fresh; your code stays.";
+    ? `Restarting didn't help. Reset ${BRAND.NAME} sets it up fresh; your code stays.`
+    : `Fix it didn't work. Reset ${BRAND.NAME} sets it up fresh; your code stays.`;
 }

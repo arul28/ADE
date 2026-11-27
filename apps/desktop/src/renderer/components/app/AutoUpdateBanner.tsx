@@ -11,6 +11,7 @@ import { requestDownloadedUpdateInstall } from "./autoUpdateInstallAction";
 import { updateRestartAction } from "./updateRestartAction";
 import { ReportIssueButton } from "./ReportIssueButton";
 import { BrainDownNotice } from "./BrainDownNotice";
+import { BRAND } from "../../../shared/brand";
 
 const AUTO_APPLY_TOAST_ID = "ade-auto-update-auto-apply";
 const APP_BANNER = { placement: "docked", priority: APP_BANNER_PRIORITY.app } as const;
@@ -134,7 +135,7 @@ export function AutoUpdateBanner() {
       const secondsLeft = Math.max(0, Math.ceil((pending.deadlineAt - Date.now()) / 1000));
       showToast({
         id: AUTO_APPLY_TOAST_ID,
-        title: `ADE will update in ${secondsLeft}s`,
+        title: `${BRAND.NAME} will update in ${secondsLeft}s`,
         tone: "info",
         durationMs: 0,
         actions: [{ label: "Cancel", onClick: handleCancelAutoApply }],
@@ -164,8 +165,8 @@ export function AutoUpdateBanner() {
           tone: "warning",
           icon: <ArrowsClockwise size={13} weight="bold" />,
           title: banner.kind === "parked"
-            ? "ADE update didn't finish — Restart to retry"
-            : "ADE update did not install — Restart to retry",
+            ? `${BRAND.NAME} update didn't finish — Restart to retry`
+            : `${BRAND.NAME} update did not install — Restart to retry`,
           actions: [{
             label: restarting ? "Restarting…" : "Restart now",
             icon: <ArrowsClockwise size={12} weight="bold" />,
@@ -199,7 +200,7 @@ export function AutoUpdateBanner() {
           // The button says the rest, so there is no detail line.
           title: restartAction.switchTo
             ? `${updateTrackLabel(restartAction.switchTo)} ${updateVersion} is ready`
-            : `ADE ${updateVersion} is ready`,
+            : `${BRAND.NAME} ${updateVersion} is ready`,
           actions: [{
             label: snapshot.installMode === "manual" ? "Download update" : installRequested ? "Restarting…" : restartAction.label,
             icon: <ArrowsClockwise size={12} weight="bold" />,

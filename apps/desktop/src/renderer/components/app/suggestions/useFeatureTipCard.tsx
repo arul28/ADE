@@ -11,6 +11,7 @@ import {
   useSuggestionRulesVersion,
 } from "../../../onboarding/situationalSuggestions";
 import { useGoTo } from "../../onboarding/spotlight/useGoTo";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * Now and then, one of ADE Tips' tips as the corner card: a feature the user
@@ -133,7 +134,7 @@ export function useFeatureTipCard(enabled: boolean, agentWorking: boolean): void
             {
               label: "Not now",
               variant: "secondary",
-              title: "Hide it. Every tip stays in ADE Tips.",
+              title: `Hide it. Every tip stays in ${BRAND.NAME} Tips.`,
               onClick: () => {
                 answerTipCard(tip.id);
                 setTip(null);

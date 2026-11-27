@@ -9,6 +9,7 @@ import { navigateToAppTarget } from "../../../lib/openExternal";
 import { useTabCopyPin } from "../../../state/repositoryScope";
 import { restoreDeletedLane } from "./restoreDeletedLane";
 import { READABLE_TOAST_DURATION_MS, showToast } from "./toastStore";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * The project a finished delete ran in: the user can switch tabs while it
@@ -69,7 +70,7 @@ export function useLaneWorkSavedToast(): void {
         id: toastId,
         tone: "info",
         title: saved.uncommitted ? `Kept ${saved.laneName}'s uncommitted work` : `Kept ${saved.laneName}'s unpushed commits`,
-        message: `ADE keeps it for ${DELETED_LANE_KEEP_DAYS} days.`,
+        message: `${BRAND.NAME} keeps it for ${DELETED_LANE_KEEP_DAYS} days.`,
         durationMs: READABLE_TOAST_DURATION_MS,
         replayMask,
         actions: [

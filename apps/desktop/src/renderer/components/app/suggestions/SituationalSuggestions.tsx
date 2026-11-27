@@ -22,6 +22,7 @@ import { useChatSendSignals, type IssueTracker } from "./chatSendSignals";
 import { useSituationalSuggestion } from "./useSituationalSuggestion";
 import { useFeatureTipCard } from "./useFeatureTipCard";
 import { useActiveRepositoryReader } from "../../../state/repositoryScope";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * The situational suggestions' signals (tier 3 of onboarding), each a small
@@ -233,7 +234,7 @@ function useIssueTrackerSuggestion({ enabled, projectRoot, githubStatus, navigat
     signalKey: enabled ? unconnected : null,
     title: label ? `Connect ${label} to turn issue links into issues` : undefined,
     detail: label
-      ? `You sent a ${label} issue link, and ADE is not connected to ${label}. `
+      ? `You sent a ${label} issue link, and ${BRAND.NAME} is not connected to ${label}. `
         + "Connected, agents can read the issue and lanes can link to it."
       : undefined,
     actionLabel: label ? `Connect ${label}` : undefined,

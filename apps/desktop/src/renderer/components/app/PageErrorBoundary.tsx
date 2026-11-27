@@ -12,6 +12,7 @@ import {
 import { ReportIssueFooter } from "./ReportIssueFooter";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { isChunkLoadFailure, reloadForStaleChunk } from "../../lib/staleChunkReload";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Per-route error boundary. One screen failing to draw must never take the
@@ -105,7 +106,7 @@ class PageErrorBoundaryInner extends React.Component<
             <ErrorSurfaceCard
               icon={<WarningCircle size={14} weight="bold" aria-hidden="true" />}
               headline={PAGE_CRASH_HEADLINE}
-              body="The rest of ADE is still running — your project, chats and files are safe."
+              body={`The rest of ${BRAND.NAME} is still running — your project, chats and files are safe.`}
             >
               <div className="mt-5 flex flex-wrap items-center gap-2">
                 {/* Leaving first: this screen just failed to draw, so

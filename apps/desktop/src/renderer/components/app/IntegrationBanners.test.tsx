@@ -196,7 +196,7 @@ describe("IntegrationBanners", () => {
 
     expect(screen.getAllByRole("status")).toHaveLength(4);
     expect(screen.getByText("No AI provider configured")).toBeTruthy();
-    expect(screen.getByText("Another ADE process owns this machine's relay connection")).toBeTruthy();
+    expect(screen.getByText("Another Daex process owns this machine's relay connection")).toBeTruthy();
   });
 
   it("dismisses a banner and persists the dismissal to storage", async () => {
@@ -340,9 +340,9 @@ describe("IntegrationBannerHost relay-offline banner", () => {
       }),
     );
 
-    expect(screen.getByText("Another ADE process owns this machine's relay connection")).toBeTruthy();
+    expect(screen.getByText("Another Daex process owns this machine's relay connection")).toBeTruthy();
     expect(
-      screen.getByText(/Quit the other ADE app or brain on this machine/),
+      screen.getByText(/Quit the other Daex app or brain on this machine/),
     ).toBeTruthy();
   });
 
@@ -360,7 +360,7 @@ describe("IntegrationBannerHost relay-offline banner", () => {
       }),
     );
 
-    expect(screen.getByText("ADE Relay is not connected")).toBeTruthy();
+    expect(screen.getByText("Daex Relay is not connected")).toBeTruthy();
     expect(screen.getByText("relay handshake timed out")).toBeTruthy();
   });
 
@@ -398,7 +398,7 @@ describe("IntegrationBannerHost relay-offline banner", () => {
       await vi.advanceTimersByTimeAsync(95_000);
     });
 
-    expect(screen.getByText("ADE Relay is not connected")).toBeTruthy();
+    expect(screen.getByText("Daex Relay is not connected")).toBeTruthy();
   });
 
   it("keeps a dismissed outage from hiding a later process conflict", async () => {
@@ -410,7 +410,7 @@ describe("IntegrationBannerHost relay-offline banner", () => {
     await act(async () => {});
 
     await act(async () => {
-      screen.getByRole("button", { name: "Dismiss: ADE Relay is not connected" }).click();
+      screen.getByRole("button", { name: "Dismiss: Daex Relay is not connected" }).click();
     });
     expect(screen.queryByRole("status")).toBeNull();
 
@@ -428,7 +428,7 @@ describe("IntegrationBannerHost relay-offline banner", () => {
       );
     });
 
-    expect(screen.getByText("Another ADE process owns this machine's relay connection")).toBeTruthy();
+    expect(screen.getByText("Another Daex process owns this machine's relay connection")).toBeTruthy();
   });
 
   // The bug this feature exists for: GitHub's own 503 rendered as "GitHub

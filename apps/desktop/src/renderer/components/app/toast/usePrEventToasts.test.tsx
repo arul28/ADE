@@ -102,7 +102,7 @@ describe("PR notification toast", () => {
     act(() => {
       showToast(buildPrNotificationToast(notification(), null, navigate));
     });
-    fireEvent.click(screen.getByRole("button", { name: "Open in ADE" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open in Daex" }));
     expect(navigateMock).toHaveBeenCalledTimes(1);
     expect(String(navigateMock.mock.calls[0]?.[0])).toMatch(/^\/prs\?/);
     expect(getToasts()).toHaveLength(0);

@@ -159,6 +159,7 @@ import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import { useTabCopyPin } from "../../state/repositoryScope";
 import { isImeComposing } from "../../lib/imeComposition";
 import { InlineErrorNotice } from "../ui/notice";
+import { BRAND } from "../../../shared/brand";
 
 export type CommandPaletteIntent =
   | "default"
@@ -189,7 +190,7 @@ function lanePrCommand(
     return {
       id: `lane-open-pr-${lane.id}`,
       title: `Open PR #${tag.githubPrNumber}: ${tag.title}`,
-      hint: `Open the pull request for ${lane.name} in ADE's PRs tab`,
+      hint: `Open the pull request for ${lane.name} in ${BRAND.NAME}'s PRs tab`,
       keywords: ["open pr", "open pull request", "this lane", "for this lane", lane.name],
       group: "Lanes",
       run: () => {
@@ -1002,8 +1003,8 @@ export function CommandPalette({
       },
       {
         id: "help-ade-tips",
-        title: "ADE Tips",
-        hint: "What ADE can do, one line each",
+        title: `${BRAND.NAME} Tips`,
+        hint: `What ${BRAND.NAME} can do, one line each`,
         group: "Help",
         keywords: ["help", "tips", "features", "learn"],
         run: () => openAdeTips(),
@@ -2373,10 +2374,10 @@ export function CommandPalette({
                 </Dialog.Title>
                 <Dialog.Description className="sr-only">
                   {mode === "project-browse"
-                    ? "Browse folders in ADE and open a Git repository without leaving the app."
+                    ? `Browse folders in ${BRAND.NAME} and open a Git repository without leaving the app.`
                     : isAddFlow
                       ? "Open, create, clone, or connect to a project."
-                      : "Search ADE commands and jump to actions quickly."}
+                      : `Search ${BRAND.NAME} commands and jump to actions quickly.`}
                 </Dialog.Description>
 
                 {isAddFlow ? (

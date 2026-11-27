@@ -9,6 +9,7 @@ import {
 import { APP_BANNER_PRIORITY, useAppBanner, useVisibleAppSuggestion, type NoticeAction } from "../../ui/notice";
 import { showToast } from "../toast/toastStore";
 import { openExternalUrl } from "../../../lib/openExternal";
+import { BRAND } from "../../../../shared/brand";
 
 const BANNER_ID = "product-survey";
 
@@ -145,7 +146,7 @@ export default function SurveyCard({
       showToast({ tone: "warning", title: "Your answer wasn't sent", message: "Check your answers and try again." });
       return;
     }
-    showToast({ tone: "success", title: "Thanks for telling us", message: "Your answer goes straight to the people building ADE." });
+    showToast({ tone: "success", title: "Thanks for telling us", message: `Your answer goes straight to the people building ${BRAND.NAME}.` });
     finish();
   }, [bridge, choices, finish, survey]);
 

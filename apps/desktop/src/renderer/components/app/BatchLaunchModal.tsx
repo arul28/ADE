@@ -40,6 +40,7 @@ import { showToast } from "./toast/toastStore";
 import { saveProjectLocalConfig } from "../../lib/projectLocalConfig";
 import { useTabCopyPin } from "../../state/repositoryScope";
 import { AccountSettingNotices } from "../settings/AccountSettingNotices";
+import { BRAND } from "../../../shared/brand";
 
 type PerIssueState = BatchLaunchIssueConfig & {
   /** When false the issue is excluded from the launch (skipped via the conflict guard). */
@@ -210,7 +211,7 @@ export type BatchLaunchMachine = {
 };
 
 /** A batch of CLI sessions can't start on ADE Cloud: the composer starts that one. */
-const ADE_CLOUD_NO_CLI_BATCH = "CLI sessions start on ADE Cloud from the composer, one at a time. Pick Chat for this batch.";
+const ADE_CLOUD_NO_CLI_BATCH = `CLI sessions start on ${BRAND.CLOUD_NAME} from the composer, one at a time. Pick Chat for this batch.`;
 
 function launchButtonLabel(laneOnly: boolean, count: number): string {
   if (laneOnly) return count === 1 ? "Create lane" : `Create ${count} lanes`;
@@ -767,7 +768,7 @@ export function BatchLaunchModal({
                                 type="button"
                                 aria-pressed={active}
                                 disabled={disabled}
-                                title={disabled ? (adeCloudPicked ? "Each lane on ADE Cloud is new, on its own computer." : "No existing lanes available yet") : undefined}
+                                title={disabled ? (adeCloudPicked ? `Each lane on ${BRAND.CLOUD_NAME} is new, on its own computer.` : "No existing lanes available yet") : undefined}
                                 onClick={() => patchIssue(issueId, { laneTarget: key })}
                                 className={cn(
                                   "inline-flex h-6 items-center rounded px-2.5 text-[10.5px] font-medium leading-none transition-colors",

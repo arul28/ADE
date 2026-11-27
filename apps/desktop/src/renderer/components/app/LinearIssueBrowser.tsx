@@ -57,6 +57,7 @@ import {
 } from "./linearIssueBrowserModel";
 import { isImeComposing } from "../../lib/imeComposition";
 import { useActiveRepositoryReader } from "../../state/repositoryScope";
+import { BRAND } from "../../../shared/brand";
 
 export { linearBrowserIssueToLaneIssue } from "./linearIssueBrowserModel";
 export type { BrowserIssue } from "./linearIssueBrowserModel";
@@ -721,7 +722,7 @@ export function LinearIssueBrowser({
     const cto = window.ade.cto;
     const pin = linearPinRef.current;
     if (!cto?.getLinearIssuePickerData) {
-      setError("Linear controls are not available in this ADE surface.");
+      setError(`Linear controls are not available in this ${BRAND.NAME} surface.`);
       return;
     }
     if (!pin) return;
@@ -783,7 +784,7 @@ export function LinearIssueBrowser({
     const cto = window.ade.cto;
     const pin = linearPinRef.current;
     if (!cto?.searchLinearIssues) {
-      setError("Linear issue search is not available in this ADE surface.");
+      setError(`Linear issue search is not available in this ${BRAND.NAME} surface.`);
       return;
     }
     if (!pin) return;

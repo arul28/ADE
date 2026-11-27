@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { showToast } from "./toastStore";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * One toast per automatic diagnostic report.
@@ -34,7 +35,7 @@ export function useAutoDiagnosticsToast(): void {
         // Per report rather than per failure: two different failures in a day
         // are two different things the user was told about.
         id: `diagnostics-auto-sent-${reference || payload.failureCode}`,
-        title: "A diagnostic report was sent to ADE",
+        title: `A diagnostic report was sent to ${BRAND.NAME}`,
         message: reference ? `Reference ${reference}` : undefined,
         tone: "info",
         durationMs: 10_000,

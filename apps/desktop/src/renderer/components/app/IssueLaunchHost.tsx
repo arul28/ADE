@@ -32,6 +32,7 @@ import { settingsRouteFor } from "../settings/settingsManifest";
 import { BatchLaunchModal, type BatchLaunchMachine, type BatchLaunchSubmit } from "./BatchLaunchModal";
 import { BatchLaunchStatusToast } from "./BatchLaunchStatusToast";
 import { startAdeCloudLaunch } from "../chat/launch/adeCloudLaunch";
+import { BRAND } from "../../../shared/brand";
 
 type PendingIssueLaunchRequest = IssueLaunchRequest & { nonce: string };
 
@@ -116,7 +117,7 @@ export function IssueLaunchHost() {
     // show in the launches slide-out (progress, retry, cancel), not here.
     if (machine.adeCloud) {
       const cloud = machine.adeCloud;
-      if (!projectBinding) throw new Error("Open a project to start lanes on ADE Cloud.");
+      if (!projectBinding) throw new Error(`Open a project to start lanes on ${BRAND.CLOUD_NAME}.`);
       for (const entry of entries) {
         const args = issueAdeCloudLaunchArgs(entry, { launchId: crypto.randomUUID(), laneId: crypto.randomUUID() });
         void startAdeCloudLaunch({ args, sizeId: cloud.sizeId, originUrl: cloud.originUrl, binding: projectBinding });

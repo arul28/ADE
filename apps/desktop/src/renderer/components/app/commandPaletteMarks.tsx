@@ -20,6 +20,7 @@ import {
 } from "@phosphor-icons/react";
 import { LaneIcon } from "../ui/vcsIcons";
 import { WORK_TOOL_DEFINITIONS } from "../terminals/workTools";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Cut a caption to `maxWords` and report the end index in the original string
@@ -64,7 +65,7 @@ const SETTINGS_PALETTE_CAPTIONS: Record<string, string> = {
   "lanes-git": "Your lanes and how they start",
   "project-agents": "PR chat transcripts",
   storage: "Space, archive, and cleanup",
-  notifications: "What ADE interrupts you for",
+  notifications: `What ${BRAND.NAME} interrupts you for`,
   activity: "What's running everywhere",
   integrations: "GitHub, Linear, Jira and MCP servers",
   overview: "What needs attention",

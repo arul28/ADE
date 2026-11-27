@@ -42,6 +42,7 @@ import {
 } from "./cloudAgentsModel";
 import { extractError } from "../../../lib/format";
 import { useTabCopyPin } from "../../../state/repositoryScope";
+import { BRAND } from "../../../../shared/brand";
 
 /** Zero machines: no computer with this project is online, so nothing is read or sent. */
 const NO_COMPUTER_ONLINE = "No computer with this project is online.";
@@ -554,7 +555,7 @@ export function CloudAgentsPanel({
             <div className="max-w-[420px] text-[12px] leading-relaxed text-muted-fg/55">
               {query || filter !== "all"
                 ? "Try another filter or clear the search."
-                : `Start one above. It gets its own VM and its own lane here, and you can chat with it from ADE while it works.`}
+                : `Start one above. It gets its own VM and its own lane here, and you can chat with it from ${BRAND.NAME} while it works.`}
             </div>
             {scope === "project" && hiddenElsewhere > 0 ? (
               <button type="button" onClick={() => setScope("everywhere")} className="mt-1 text-[12px] text-sky-300/90 hover:underline">

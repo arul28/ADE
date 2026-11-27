@@ -261,6 +261,7 @@ import type {
   ProjectFindForRepoResult,
   ProjectInfo,
 } from "../../../shared/types";
+import { BRAND } from "../../../shared/brand";
 
 // Use path-based routes on http(s) (Vite in Chrome, Cursor Simple Browser, etc.).
 // Use hash routes for non-http(s) surfaces (e.g. packaged Electron `file://`) where
@@ -281,7 +282,7 @@ const StartupSplashScreen = (
       {/* The canvas paints the page colour itself, so no glow sits behind it. */}
       <BootSplashReveal tileSize={300} className="mb-2 h-[460px] w-[520px] max-h-[58vh] max-w-[80vw]" />
       <div className="flex flex-col items-center gap-2">
-        <div className="text-xl font-bold tracking-tight text-fg">Starting ADE</div>
+        <div className="text-xl font-bold tracking-tight text-fg">Starting {BRAND.NAME}</div>
         <div className="text-[12px] font-mono text-muted-fg/70 animate-pulse">Initializing local workspace...</div>
       </div>
     </div>
@@ -1638,8 +1639,8 @@ function AppNavigationBridge() {
         return true;
       }
       showToast(target.reason === "removed"
-        ? { tone: "info", title: `${target.name?.trim() || "This project"} was removed from ADE.` }
-        : { tone: "info", title: "This project isn't in your ADE account." });
+        ? { tone: "info", title: `${target.name?.trim() || "This project"} was removed from ${BRAND.NAME}.` }
+        : { tone: "info", title: `This project isn't in your ${BRAND.NAME} account.` });
       return true;
     }
 

@@ -146,7 +146,7 @@ describe("formatRecoveryMessage", () => {
   // been restarted, which described nothing they had ever done.
   it("describes a service restart without naming the watchdog", () => {
     const message = formatRecoveryMessage(wedge("2026-07-23T10:05:00Z", "external-watchdog"));
-    expect(message).toContain("ADE restarted its background service");
+    expect(message).toContain("Daex restarted its background service");
     expect(message).not.toContain("external-watchdog");
     expect(message).not.toContain("stuck task");
   });

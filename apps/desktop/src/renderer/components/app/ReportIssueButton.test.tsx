@@ -46,7 +46,7 @@ function installBridge(overrides: Record<string, unknown> = {}) {
 }
 
 function openDialog() {
-  fireEvent.click(screen.getByRole("button", { name: /Report this error to ADE/ }));
+  fireEvent.click(screen.getByRole("button", { name: /Report this error to Daex/ }));
 }
 
 afterEach(() => {

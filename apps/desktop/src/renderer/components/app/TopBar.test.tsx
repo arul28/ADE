@@ -1137,7 +1137,7 @@ describe("TopBar", () => {
 
     render(<TopBar />);
 
-    const indicator = await screen.findByLabelText("ADE resource pressure level 4");
+    const indicator = await screen.findByLabelText("Daex resource pressure level 4");
     expect(indicator.getAttribute("data-ade-resource-pressure-active-ptys")).toBe("12");
     expect(indicator.getAttribute("data-ade-resource-pressure-pty-cpu")).toBe("91");
     expect(indicator.getAttribute("title")).toContain("Background live refreshes are slowed");
@@ -1167,7 +1167,7 @@ describe("TopBar", () => {
 
     render(<TopBar />);
 
-    const indicator = await screen.findByLabelText("ADE resource pressure level 4");
+    const indicator = await screen.findByLabelText("Daex resource pressure level 4");
     expect(indicator.getAttribute("data-ade-resource-pressure-sample-status")).toBe("unavailable");
       expect(indicator.getAttribute("title")).toMatch(/process metrics.*unavailable/i);
     expect(indicator.getAttribute("title")).not.toContain("agent process");

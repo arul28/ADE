@@ -55,6 +55,7 @@ import { useActiveRepositoryReader } from "../../state/repositoryScope";
 import { useOptionalWebWorkspace } from "../../webclient/workspace/WebWorkspaceContext";
 import "../remoteTargets/connections.css";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { BRAND } from "../../../shared/brand";
 
 type ConnectionsPanelProps = {
   /**
@@ -422,7 +423,7 @@ function HostedConnectionsPanel({
           className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 transition-colors hover:bg-white/[0.06]"
           style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12, textDecoration: "none" }}
         >
-          ADE website
+          {BRAND.NAME} website
           <ArrowSquareOut size={12} weight="regular" />
         </a>
       </div>

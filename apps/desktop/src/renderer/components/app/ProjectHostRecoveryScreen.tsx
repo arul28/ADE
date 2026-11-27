@@ -31,6 +31,7 @@ import {
   retryProjectHost,
   subscribeProjectHostRecovery,
 } from "../../webclient/sync/projectHostRecoveryStore";
+import { BRAND } from "../../../shared/brand";
 
 function useProjectHostRecovery(): ProjectHostRecoveryState {
   const [state, setState] = useState(getProjectHostRecoveryState);
@@ -75,7 +76,7 @@ function StepMark({ status }: { status: SyncHostRecoveryStepStatus }) {
 /** One sentence for the conflicts this browser is not allowed to end itself. */
 const BLOCKED_COPY = {
   unauthorized: "This browser can't stop the other runtime — retry, switch machines, or stop it on that computer.",
-  unidentified: "ADE can't safely stop the other runtime from here, so stop it on that computer.",
+  unidentified: `${BRAND.NAME} can't safely stop the other runtime from here, so stop it on that computer.`,
 } as const;
 
 /**
@@ -208,7 +209,7 @@ export function ProjectHostRecoveryScreen() {
             {continueOnAdeCloud ? (
               <button type="button" className={ERROR_GHOST_BUTTON} onClick={continueOnAdeCloud}>
                 <CloudMark size={13} brand bold />
-                Continue on ADE Cloud
+                Continue on {BRAND.CLOUD_NAME}
               </button>
             ) : null}
           </div>
