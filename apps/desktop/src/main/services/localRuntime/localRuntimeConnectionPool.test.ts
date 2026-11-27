@@ -873,7 +873,7 @@ describe("local runtime connection pool", () => {
       expect(pool.getStatus().serviceInstall).toMatchObject({
         state: "failed",
         attempted: true,
-        message: "ADE service login item installation timed out.",
+        message: "Daex service login item installation timed out.",
       });
       expect(logger.warn).toHaveBeenCalledWith(
         "local_runtime.service_install_failed",
@@ -2223,7 +2223,7 @@ describe("local runtime connection pool", () => {
       if (method === "projects.add") return Promise.resolve(project);
       if (method === "ade/actions/call") {
         return new Promise((_resolve, reject) => {
-          dropInFlight = () => reject(new Error("Remote ADE service connection closed."));
+          dropInFlight = () => reject(new Error("Remote Daex service connection closed."));
         });
       }
       return Promise.reject(new Error(`Unexpected method ${method}`));
@@ -2746,7 +2746,7 @@ describe("local runtime connection pool", () => {
       socketPath: "/tmp/ade-closed.sock",
       attempt: 1,
       willRetry: true,
-      error: "Remote ADE service connection closed.",
+      error: "Remote Daex service connection closed.",
     });
   });
 

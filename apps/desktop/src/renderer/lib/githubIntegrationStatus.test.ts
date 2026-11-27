@@ -652,7 +652,7 @@ describe("deviceAuthErrorCopy", () => {
     [
       "the old undici wording",
       wrapped("fetch failed (UND_ERR_CONNECT_TIMEOUT)"),
-      "ADE couldn't reach GitHub (UND_ERR_CONNECT_TIMEOUT). Check your connection, then try again.",
+      "Daex couldn't reach GitHub (UND_ERR_CONNECT_TIMEOUT). Check your connection, then try again.",
     ],
     [
       "the brain's own unreachable sentence",

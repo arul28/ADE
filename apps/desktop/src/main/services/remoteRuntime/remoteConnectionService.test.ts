@@ -1217,7 +1217,7 @@ describe("RemoteConnectionService", () => {
     answerOwnerCheck("account-1");
 
     await expect(pendingConnect).rejects.toThrow(
-      /disconnected before ADE finished connecting/i,
+      /disconnected before Daex finished connecting/i,
     );
     expect(pool.connect).not.toHaveBeenCalled();
     expect(service.snapshot().connections[0]?.state).not.toBe("connecting");
@@ -1616,7 +1616,7 @@ describe("RemoteConnectionService", () => {
     resolveConnect(connectResult(previouslyConnected));
 
     await expect(pendingConnect).rejects.toThrow(
-      /disconnected before ADE finished connecting/i,
+      /disconnected before Daex finished connecting/i,
     );
     expect(service.snapshot().connections[0]).toMatchObject({
       state: "idle",

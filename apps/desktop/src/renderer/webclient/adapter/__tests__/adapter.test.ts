@@ -3204,7 +3204,7 @@ describe("createAdeWebAdapter", () => {
       rows: 28,
       command: "bash",
       args: ["-c", "ls"],
-    }, TEST_PIN)).rejects.toThrow(/Update ADE/);
+    }, TEST_PIN)).rejects.toThrow(/Update Daex/);
     expect(fake.commandCalls).toHaveLength(2);
 
     adapter.dispose();

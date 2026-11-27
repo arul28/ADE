@@ -184,7 +184,7 @@ describe("IntegrationBanners", () => {
 
     // Four banners are active; only the first two render, the rest collapse.
     expect(screen.getAllByRole("status")).toHaveLength(2);
-    expect(screen.getByText("o/r isn't connected to the ADE GitHub App")).toBeTruthy();
+    expect(screen.getByText("o/r isn't connected to the Daex GitHub App")).toBeTruthy();
     expect(screen.getByText("GitHub CLI or token not connected")).toBeTruthy();
     expect(screen.queryByText("No AI provider configured")).toBeNull();
 

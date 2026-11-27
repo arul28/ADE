@@ -1134,7 +1134,7 @@ describe("explicit provider-thread continuity recovery", () => {
       reconstructedThreadId: "thread-2",
     });
     expect(events.some((entry) => entry.event.type === "user_message"
-      && entry.event.displayText === "Rebuilt this chat's AI thread from ADE history."
+      && entry.event.displayText === "Rebuilt this chat's AI thread from Daex history."
       && entry.event.metadata?.hideFullPrompt === true)).toBe(true);
     expect(readThreadPointerLedger(path.dirname(metadataPath(session.id))).get(session.id)).toMatchObject({
       pointer: "thread-2",

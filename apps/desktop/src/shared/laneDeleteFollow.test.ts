@@ -91,7 +91,7 @@ describe("deleteLaneAndFollow", () => {
       name: "an unknown outcome once the machine stays out of reach",
       starts: [accepted],
       reads: [new Error("socket closed")],
-      error: /before ADE could confirm the action result/,
+      error: /before Daex could confirm the action result/,
       sentStarts: 1,
     },
     {
@@ -100,7 +100,7 @@ describe("deleteLaneAndFollow", () => {
       name: "an unknown outcome when the start cannot be confirmed",
       starts: [new Error(LOST), new Error("Remote target is not connected")],
       reads: [],
-      error: /before ADE could confirm the action result/,
+      error: /before Daex could confirm the action result/,
       sentStarts: 41,
     },
   ])("rejects with $name", async ({ starts, reads, error, sentStarts }) => {

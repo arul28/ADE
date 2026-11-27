@@ -28,7 +28,7 @@ describe("smart links", () => {
 
     expect(github).toMatchObject({ provider: "github", kind: "github_pr", label: "arul28/ADE#835" });
     expect(linear).toMatchObject({ provider: "linear", kind: "linear_issue", label: "ADE-89" });
-    expect(ade).toMatchObject({ provider: "ade", kind: "ade_deeplink", label: "ADE · lane/25f280a4" });
+    expect(ade).toMatchObject({ provider: "ade", kind: "ade_deeplink", label: "Daex · lane/25f280a4" });
     expect(github?.url).toBe("https://github.com/arul28/ADE/pull/835");
   });
 

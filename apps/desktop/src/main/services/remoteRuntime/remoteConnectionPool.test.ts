@@ -1411,7 +1411,7 @@ describe("RemoteConnectionPool", () => {
     await expect(
       pool.callMachineForTarget(target, "projects.browseDirectories", {}),
     ).rejects.toThrow(
-      /Remote ADE service 0\.9\.0 does not support browsing remote directories/i,
+      /Remote Daex service 0\.9\.0 does not support browsing remote directories/i,
     );
     expect(client.call.mock.calls.some(([method]) => method === "ade/actions/call")).toBe(false);
   });

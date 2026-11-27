@@ -122,7 +122,7 @@ describe("describeAttentionOpenFailure", () => {
     expect(describeAttentionOpenFailure("ECONNREFUSED", "connect", "Studio Mac").message)
       .toContain("is not reachable right now");
     const empty = describeAttentionOpenFailure(undefined, "open", "Studio Mac");
-    expect(empty.message).toBe("ADE connected to Studio Mac but could not open this project.");
+    expect(empty.message).toBe("Daex connected to Studio Mac but could not open this project.");
     // Nothing to preserve, so no misleading cause is attached.
     expect(empty.cause).toBeUndefined();
   });

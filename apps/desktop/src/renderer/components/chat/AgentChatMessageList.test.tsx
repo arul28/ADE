@@ -5294,7 +5294,7 @@ describe("AgentChatMessageList question receipts", () => {
     renderMessageList([buildStructuredApprovalEvent({ questions: planQuestions })], { onApproval });
 
     const row = screen.getByTestId("open-question-receipt");
-    expect(row.textContent ?? "").toContain("ADE asks");
+    expect(row.textContent ?? "").toContain("Daex asks");
     expect(row.textContent ?? "").toContain("Plan");
     expect(row.textContent ?? "").toContain("awaiting you");
     // No radios, no Send: the transcript is a record, not a control surface.

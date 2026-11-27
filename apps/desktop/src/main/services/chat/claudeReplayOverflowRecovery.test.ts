@@ -216,7 +216,7 @@ describe("recoverFromOverflow", () => {
       isRetryTurn: false,
     })).toBe("stop");
     expect(h.deps.resetProviderSession).not.toHaveBeenCalled();
-    expect(h.notices[0]?.message).toContain("ADE kept the newest 0 turns.");
+    expect(h.notices[0]?.message).toContain("Daex kept the newest 0 turns.");
   });
 });
 

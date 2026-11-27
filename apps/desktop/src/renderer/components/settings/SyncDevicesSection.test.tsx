@@ -271,7 +271,7 @@ describe("ThisMacCard", () => {
 
     // The brain's skipReason stays out of the card; the line says what is true.
     expect(screen.getByText(
-      "Signed in — the ADE background service is signed out",
+      "Signed in — the Daex background service is signed out",
     )).toBeTruthy();
     expect(screen.queryByText(/The ADE brain is signed out of the ADE account\./)).toBeNull();
   });
@@ -893,7 +893,7 @@ describe("accountDirectorySummary", () => {
     // its own, so the only remaining way to reach this state is another ADE
     // process on this computer holding the machine-wide sync-host lease.
     expect(summary.label).toBe(
-      "Signed in — another ADE app on this computer owns sync for this machine",
+      "Signed in — another Daex app on this computer owns sync for this machine",
     );
     expect(summary.label).not.toContain("open a project");
   });
@@ -908,21 +908,21 @@ describe("accountDirectorySummary", () => {
     );
     expect(summary).toEqual({
       label:
-        "Signed in — another ADE app on this computer owns sync for this machine (ADE Alpha, pid 9253)",
+        "Signed in — another Daex app on this computer owns sync for this machine (Daex Alpha, pid 9253)",
       healthy: false,
-      detail: "Quit that ADE to let this one host sync.",
+      detail: "Quit that Daex to let this one host sync.",
     });
   });
 
   it("gives each actionable publish state its own instruction", () => {
     expect(summaryForState("account_signed_out", "The ADE brain is signed out.").label).toBe(
-      "Signed in — the ADE background service is signed out",
+      "Signed in — the Daex background service is signed out",
     );
     expect(summaryForState("machine_key_unavailable", null).label).toBe(
       "Signed in — this computer isn't registered yet",
     );
     expect(summaryForState("http_error", null).label).toBe(
-      "Signed in — ADE's account service is having trouble right now, retrying",
+      "Signed in — Daex's account service is having trouble right now, retrying",
     );
   });
 
@@ -975,7 +975,7 @@ describe("accountDirectorySummary", () => {
     // A remote-bound pane shows another machine's snapshot, so its caller
     // passes no refusal.
     expect(accountDirectorySummary(status, "active", null).label).toBe(
-      "Signed in — ADE's account service is having trouble right now, retrying",
+      "Signed in — Daex's account service is having trouble right now, retrying",
     );
   });
 

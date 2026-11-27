@@ -168,7 +168,7 @@ describe("createSessionMetadataRegenerator", () => {
         throw new Error("Local SDK sandboxing was requested, but sandboxing is not supported in this environment.");
       },
       candidates: undefined,
-      error: "This ADE runtime can't provide the sandbox this agent asked for.",
+      error: "This Daex runtime can't provide the sandbox this agent asked for.",
     },
   ])("keeps the current names and reports why when $label", async ({ runPrompt, candidates, error }) => {
     const { regenerate, applyTitle, setStatusNote, renameLane } = createHarness({

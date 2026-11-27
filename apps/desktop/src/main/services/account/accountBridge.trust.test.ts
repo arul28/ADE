@@ -387,7 +387,7 @@ describe("shared account directory trust boundary", () => {
     expect(result).toEqual({
       state: "auth_expired",
       machines: [],
-      message: "Your ADE account session expired. Sign in again.",
+      message: "Your Daex account session expired. Sign in again.",
     });
     expect(cancelled).toBe(true);
     expect(result.message).not.toContain("top-secret-bearer");

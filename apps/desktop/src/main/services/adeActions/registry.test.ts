@@ -1996,7 +1996,7 @@ describe("runtime session actions", () => {
       deleteSession: (sessionId: string) => boolean;
     } & Record<string, unknown>;
 
-    expect(() => sessionService.deleteSession("terminal-1")).toThrow("still owned by another ADE runtime");
+    expect(() => sessionService.deleteSession("terminal-1")).toThrow("still owned by another Daex runtime");
     expect(dispose).not.toHaveBeenCalled();
     expect(deleteSession).not.toHaveBeenCalled();
   });

@@ -107,7 +107,7 @@ describe("normalizeRemoteArch", () => {
         }),
       }),
     );
-    expect(() => normalizeRemoteArch("Linux riscv64")).toThrow(/unsupported remote ade service platform/i);
+    expect(() => normalizeRemoteArch("Linux riscv64")).toThrow(/unsupported remote daex service platform/i);
   });
 });
 
@@ -115,7 +115,7 @@ describe("formatOpenSshSpawnError", () => {
   it("turns a missing Windows OpenSSH client into an actionable prerequisite diagnostic", () => {
     const error = Object.assign(new Error("spawn ssh ENOENT"), { code: "ENOENT" });
     expect(formatOpenSshSpawnError(error, "win32")).toMatch(
-      /Windows OpenSSH Client is unavailable.*Optional Features.*Add-WindowsCapability.*restart ADE/i,
+      /Windows OpenSSH Client is unavailable.*Optional Features.*Add-WindowsCapability.*restart Daex/i,
     );
   });
 
@@ -1383,7 +1383,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       const { connected } = await connectToMac({ driverReady: false, failVerify: true });
 
       expect((connected.result.compatibilityWarnings ?? []).join("\n")).toMatch(
-        /Mac Desktop is not available on this machine: ADE could not install its driver/,
+        /Mac Desktop is not available on this machine: Daex could not install its driver/,
       );
     });
   });
@@ -1766,7 +1766,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       resourcesPath: resources.resourcesPath,
       appVersion: APP_VERSION,
       connect: USER_CONNECT,
-    })).rejects.toThrow(/uploaded ade service version mismatch/i);
+    })).rejects.toThrow(/uploaded daex service version mismatch/i);
 
     expect(fakeSsh.sftp).toHaveBeenCalledTimes(1);
     expect(fakeSsh.sftpWrapper.fastPut).toHaveBeenCalledWith(

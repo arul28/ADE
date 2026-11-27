@@ -1074,7 +1074,7 @@ describe("createAgentChatService", () => {
         && entry.event.type === "user_message"
         && (entry.event as { text?: string }).text === "Continue from the replay.")).toHaveLength(1);
       expect(claudeNoticeMessages(events).some((message) =>
-        /^That was too long for .+\. ADE is sending your message again with the newest \d+ turns? of the handoff\.$/.test(message)))
+        /^That was too long for .+\. Daex is sending your message again with the newest \d+ turns? of the handoff\.$/.test(message)))
         .toBe(true);
       // One coarse product fact when the retry lands, and only then.
       await vi.waitFor(() => {
@@ -1190,7 +1190,7 @@ describe("createAgentChatService", () => {
       expect(retryPrompt).toContain("verbatim replay");
       expect(send.mock.calls.map(([message]) => claudeInputText(message))).not.toContain("/compact");
       expect(claudeNoticeMessages(events).some((message) =>
-        /^That was too long for .+\. ADE is sending your message again with the newest \d+ turns? of the handoff\.$/.test(message)))
+        /^That was too long for .+\. Daex is sending your message again with the newest \d+ turns? of the handoff\.$/.test(message)))
         .toBe(true);
       // One automatic retry, not a loop.
       expect(send.mock.calls
@@ -1576,7 +1576,7 @@ describe("createAgentChatService", () => {
       // conversation back so the next message still carries it.
       await vi.waitFor(() => {
         expect(claudeNoticeMessages(events).some((message) =>
-          /^The handoff transcript is too long for .+\. ADE kept the newest \d+ turns?\. Send your message again\.$/.test(message)))
+          /^The handoff transcript is too long for .+\. Daex kept the newest \d+ turns?\. Send your message again\.$/.test(message)))
           .toBe(true);
       }, { timeout: 5_000 });
       await vi.waitFor(() => {
@@ -3361,7 +3361,7 @@ describe("createAgentChatService", () => {
           behindBy: 3,
         });
         expect(result.warnings).toContain(
-          "Destination lane 'Primary' is 3 commits behind — ADE can fast-forward it.",
+          "Destination lane 'Primary' is 3 commits behind — Daex can fast-forward it.",
         );
       });
 

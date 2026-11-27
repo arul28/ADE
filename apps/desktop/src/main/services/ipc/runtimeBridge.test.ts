@@ -4324,7 +4324,7 @@ describe("registerIpc sync bridge", () => {
         eventForSender(),
         { sessionId: "terminal-1" },
       ),
-    ).rejects.toThrow("still owned by another ADE runtime");
+    ).rejects.toThrow("still owned by another Daex runtime");
 
     expect(dispose).not.toHaveBeenCalled();
     expect(deleteSession).not.toHaveBeenCalled();
@@ -4373,7 +4373,7 @@ describe("registerIpc Activity click-through failure stage", () => {
     remoteProjectsForTargetMock.mockResolvedValue([]);
 
     await expect(openAttentionProject()).rejects.toThrow(
-      "ADE connected to Studio Mac but could not open this project.",
+      "Daex connected to Studio Mac but could not open this project.",
     );
   });
 

@@ -249,7 +249,7 @@ describe("SessionContextMenu lane section", () => {
     openSubmenuByHover(screen.getByTestId("session-menu-lane-actions"));
     openSubmenuByHover(screen.getByRole("menuitem", { name: "Copy" }));
 
-    expect(screen.getByRole("menuitem", { name: "Copy ADE lane link" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Copy Daex lane link" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Copy branch link (any machine)" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Copy path" })).toBeTruthy();
   });

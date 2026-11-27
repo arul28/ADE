@@ -1417,7 +1417,7 @@ describe("unsupervised session invariant", () => {
     await withDeadline("turn", session.prompt({ turnId: "t1", blocks: [textPromptBlock("go")] }));
     expect(notices(harness)).toHaveLength(1);
     expect(notices(harness)[0]).toMatchObject({
-      message: "ADE could not confirm that Grok will ask before it edits files here. It may approve its own changes.",
+      message: "Daex could not confirm that Grok will ask before it edits files here. It may approve its own changes.",
     });
     await withDeadline("turn 2", session.prompt({ turnId: "t2", blocks: [textPromptBlock("go")] }));
     expect(notices(harness)).toHaveLength(1);

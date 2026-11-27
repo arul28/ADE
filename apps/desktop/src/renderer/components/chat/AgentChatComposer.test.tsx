@@ -2392,7 +2392,7 @@ describe("AgentChatComposer", () => {
     // The card IS the composer now. A freeform-only question offers no
     // ledger rows and the answer field is the answer, not a qualifier.
     expect(screen.getByTestId("ask-question-composer")).toBeTruthy();
-    expect(screen.getByText("ADE asks")).toBeTruthy();
+    expect(screen.getByText("Daex asks")).toBeTruthy();
     expect(screen.queryByText("Input needed · ade")).toBeNull();
     expect(screen.queryAllByRole("radio")).toHaveLength(0);
     // The answer field is the composer's own rich editor, so its prompt is the

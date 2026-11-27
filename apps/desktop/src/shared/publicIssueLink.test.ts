@@ -20,7 +20,7 @@ describe("buildPublicIssueUrl", () => {
     const readable = readableLink(buildPublicIssueUrl(CLEAN));
 
     expect(readable).toContain("Report reference: abcdef12");
-    expect(readable).toContain("ADE version: 1.2.60 (stable)");
+    expect(readable).toContain("Daex version: 1.2.60 (stable)");
     expect(readable).toContain("OS: macOS");
   });
 
