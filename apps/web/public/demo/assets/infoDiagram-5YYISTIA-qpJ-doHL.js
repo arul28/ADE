@@ -1,0 +1,2 @@
+import{Dft as e,Tpt as t,lht as n,mmt as r,uht as i}from"./demo-shared-CUD6bKRA.js";var a={parse:n(async t=>{let n=await e(`info`,t);i.debug(n)},`parse`)},o={version:`11.15.0`},s={parser:a,db:{getVersion:n(()=>o.version,`getVersion`)},renderer:{draw:n((e,n,a)=>{i.debug(`rendering info diagram
+`+e);let o=t(n);r(o,100,400,!0),o.append(`g`).append(`text`).attr(`x`,100).attr(`y`,40).attr(`class`,`version`).attr(`font-size`,32).style(`text-anchor`,`middle`).text(`v${a}`)},`draw`)}};export{s as diagram};
