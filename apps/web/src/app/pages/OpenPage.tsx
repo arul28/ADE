@@ -220,14 +220,20 @@ function parseQuery(search: string): OpenTarget {
   return { kind: "unknown" };
 }
 
+/**
+ * The scheme the page opens the app with (`BRAND.LINK_SCHEME_FOR_NEW_LINKS`).
+ * Every released app registers `ade://`; only newer ones `daex://`.
+ */
+const LINK_SCHEME = BRAND.LINK_SCHEME_FOR_NEW_LINKS;
+
 function buildAdeUrl(target: OpenTarget): string | null {
   switch (target.kind) {
     case "lane": {
-      const base = `ade://lane/${encodeURIComponent(target.laneId)}`;
+      const base = `${LINK_SCHEME}://lane/${encodeURIComponent(target.laneId)}`;
       return appendQuery(base, [...envelopeEntries(target.envelope), ...ownershipEntries(target.ownership)]);
     }
     case "session": {
-      const base = `ade://session/${encodeURIComponent(target.sessionId)}`;
+      const base = `${LINK_SCHEME}://session/${encodeURIComponent(target.sessionId)}`;
       return appendQuery(base, [
         ["lane", target.laneId],
         ["event", target.event],
@@ -237,48 +243,48 @@ function buildAdeUrl(target: OpenTarget): string | null {
       ]);
     }
     case "file": {
-      const base = `ade://file/${encodePath(target.path)}`;
+      const base = `${LINK_SCHEME}://file/${encodePath(target.path)}`;
       return appendQuery(base, [
         ["line", target.line],
         ["lane", target.laneId],
       ]);
     }
     case "commit": {
-      const base = `ade://commit/${encodeURIComponent(target.sha)}`;
+      const base = `${LINK_SCHEME}://commit/${encodeURIComponent(target.sha)}`;
       return appendQuery(base, [
         ["lane", target.laneId],
         ...envelopeEntries(target.envelope),
       ]);
     }
     case "artifact": {
-      const base = `ade://artifact/${encodeURIComponent(target.artifactId)}`;
+      const base = `${LINK_SCHEME}://artifact/${encodeURIComponent(target.artifactId)}`;
       return appendQuery(base, envelopeEntries(target.envelope));
     }
     case "automation-run": {
-      const base = `ade://automation-run/${encodeURIComponent(target.ruleId)}/${encodeURIComponent(target.runId)}`;
+      const base = `${LINK_SCHEME}://automation-run/${encodeURIComponent(target.ruleId)}/${encodeURIComponent(target.runId)}`;
       return appendQuery(base, [["session", target.sessionId], ...ownershipEntries(target.ownership)]);
     }
     case "branch": {
       const [owner, name] = target.repo.split("/");
       if (!owner || !name) return null;
-      const base = `ade://repo/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/branch/${encodePath(target.branch)}`;
+      const base = `${LINK_SCHEME}://repo/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/branch/${encodePath(target.branch)}`;
       return appendQuery(base, [["pr", target.pr]]);
     }
     case "pr": {
       const [owner, name] = (target.repo ?? "").split("/");
       const base = owner && name
-        ? `ade://pr/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/${target.number}`
-        : `ade://pr/${target.number}`;
+        ? `${LINK_SCHEME}://pr/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/${target.number}`
+        : `${LINK_SCHEME}://pr/${target.number}`;
       return appendQuery(base, [["tab", target.tab], ...ownershipEntries(target.ownership)]);
     }
     case "linear-issue": {
-      const base = `ade://linear-issue/${encodeURIComponent(target.issueIdentifier)}`;
+      const base = `${LINK_SCHEME}://linear-issue/${encodeURIComponent(target.issueIdentifier)}`;
       return target.branch ? `${base}?branch=${encodeURIComponent(target.branch)}` : base;
     }
     case "settings":
-      return appendQuery(`ade://settings/${encodeURIComponent(target.entryId)}`, [["machine", target.machineId]]);
+      return appendQuery(`${LINK_SCHEME}://settings/${encodeURIComponent(target.entryId)}`, [["machine", target.machineId]]);
     case "lane-share":
-      return `ade://lane-share/${encodeURIComponent(target.grantId)}`;
+      return `${LINK_SCHEME}://lane-share/${encodeURIComponent(target.grantId)}`;
     case "unknown":
       return null;
   }
@@ -564,8 +570,12 @@ export function OpenPage() {
   const [remember, setRemember] = useState(true);
   const [appAttempt, setAppAttempt] = useState<AppAttempt>("idle");
   const [attemptCount, setAttemptCount] = useState(0);
-  // The ADE Beta iPhone app registers `ade-beta://` instead of `ade://`.
-  const betaUrl = useMemo(() => (adeUrl ? adeUrl.replace(/^ade:/, "ade-beta:") : null), [adeUrl]);
+  // The Beta iPhone app registers `ade-beta://` (newer ones also
+  // `daex-beta://`) instead of `ade://`.
+  const betaUrl = useMemo(
+    () => (adeUrl ? `${LINK_SCHEME}-beta:${adeUrl.slice(LINK_SCHEME.length + 1)}` : null),
+    [adeUrl],
+  );
   const offerBeta = useMemo(() => isAppleMobile(), []);
   const autoOpenUrl = autoOpen === "web" ? webUrl : autoOpen === "app" ? adeUrl : autoOpen === "app-beta" ? betaUrl : null;
   const counting = autoOpenUrl != null && appAttempt === "idle";

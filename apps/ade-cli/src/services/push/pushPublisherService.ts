@@ -63,6 +63,7 @@ import type {
   RosterPhaseAnchor,
 } from "./attentionItemBuilder";
 import { deriveProjectId } from "../projects/projectRegistry";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /** The subagent that raised a card, from the card's own request record. */
 function approvalRequestSubagentName(event: { detail?: unknown }): string | null {
@@ -814,7 +815,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     deps.store.recordMachineRevoked?.(error.revokedAt);
     deps.store.recordPublishResult({
       at: new Date().toISOString(),
-      error: "This machine was removed from your ADE account.",
+      error: `This machine was removed from your ${BRAND.NAME} account.`,
     });
     pendingAlerts = [];
     if (flushTimer) clearTimeout(flushTimer);
@@ -2256,7 +2257,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
             title: asker ? `${asker} needs you` : `${runSubject(run)} needs you`,
             body: asker ? `${runSubject(run)} · ${laneTitleLine(run)}` : laneTitleLine(run),
           }),
-          deepLink: `ade://session/${sessionId}`,
+          deepLink: `${BRAND.LINK_SCHEME_FOR_NEW_LINKS}://session/${sessionId}`,
           threadId: sessionId,
           phase: "waiting",
           interruptionLevel: "time-sensitive",
@@ -2276,7 +2277,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
           sessionId,
           dedupeKey: `alert:${sessionId}:question`,
           render: () => ({ title: `${runSubject(run)} needs you`, body: laneTitleLine(run) }),
-          deepLink: `ade://session/${sessionId}`,
+          deepLink: `${BRAND.LINK_SCHEME_FOR_NEW_LINKS}://session/${sessionId}`,
           threadId: sessionId,
           phase: "waiting",
           interruptionLevel: "time-sensitive",
@@ -2357,7 +2358,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
             sessionId: run.sessionId,
             dedupeKey: `alert:${run.sessionId}:goal`,
             render: () => ({ title: `${runSubject(run)} ${reached ? "reached its goal" : "is blocked on its goal"}`, body: laneTitleLine(run) }),
-            deepLink: `ade://session/${run.sessionId}`,
+            deepLink: `${BRAND.LINK_SCHEME_FOR_NEW_LINKS}://session/${run.sessionId}`,
             threadId: run.sessionId,
             phase: "terminal",
             interruptionLevel: "active",
@@ -2385,7 +2386,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       dedupeKey: `alert:${run.sessionId}:failed`,
       // Body deliberately omits error text (redacted like the lock screen).
       render: () => ({ title: `${runSubject(run)} run failed`, body: laneTitleLine(run) }),
-      deepLink: `ade://session/${run.sessionId}`,
+      deepLink: `${BRAND.LINK_SCHEME_FOR_NEW_LINKS}://session/${run.sessionId}`,
       threadId: run.sessionId,
       phase: "terminal",
       interruptionLevel: "active",
@@ -2523,7 +2524,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       sessionId: event.sessionId,
       dedupeKey: `alert:${event.sessionId}:cli_ended`,
       render: () => ({ title: "CLI session ended", body }),
-      deepLink: `ade://session/${event.sessionId}`,
+      deepLink: `${BRAND.LINK_SCHEME_FOR_NEW_LINKS}://session/${event.sessionId}`,
       threadId: event.sessionId,
       phase: "terminal",
       interruptionLevel: "active",
@@ -2588,9 +2589,9 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     const owner = notification.repoOwner?.trim();
     const repo = notification.repoName?.trim();
     if (owner && repo) {
-      return `ade://pr/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${notification.prNumber}`;
+      return `${BRAND.LINK_SCHEME_FOR_NEW_LINKS}://pr/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${notification.prNumber}`;
     }
-    return `ade://pr/${notification.prNumber}`;
+    return `${BRAND.LINK_SCHEME_FOR_NEW_LINKS}://pr/${notification.prNumber}`;
   };
   const removePrActivitiesForScope = (scopeKey: string): boolean => {
     const prefix = `pr:${scopeKey}:`;
@@ -2859,7 +2860,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         onDesktopAlert: sources.onDesktopAlert ?? null,
         resolveLaneName: sources.resolveLaneName,
         resolveCliSession: sources.resolveCliSession,
-        projectName: sources.projectName?.trim() || "ADE project",
+        projectName: sources.projectName?.trim() || `${BRAND.NAME} project`,
         projectRoot: sources.projectRoot?.trim() || null,
         unsubscribes: scopeUnsubscribes,
       });
@@ -2887,7 +2888,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     ): void {
       if (disposed || !request.sessionId) return;
       const run = ensureRun(request.sessionId, scopeKey, request.kind);
-      run.title = request.title.trim() || "ADE session";
+      run.title = request.title.trim() || `${BRAND.NAME} session`;
       run.lane = request.laneId
         ? scopes.get(scopeKey)?.resolveLaneName?.(request.laneId) ?? request.laneId
         : run.lane;
@@ -2908,7 +2909,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
           title: request.alertTitle?.trim() || `${runSubject(run)} needs you`,
           body: request.alertBody?.trim() || request.message,
         }),
-        deepLink: `ade://session/${request.sessionId}`,
+        deepLink: `${BRAND.LINK_SCHEME_FOR_NEW_LINKS}://session/${request.sessionId}`,
         threadId: request.sessionId,
         phase: "waiting",
         interruptionLevel: "time-sensitive",
@@ -2937,7 +2938,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         sessionId,
         dedupeKey: sessionId ? `alert:${sessionId}:${notice.dedupeKey}` : `alert:machine:${notice.dedupeKey}`,
         render: () => ({ title: notice.title, body: notice.body }),
-        deepLink: notice.deepLink ?? `ade://session/${sessionId}`,
+        deepLink: notice.deepLink ?? `${BRAND.LINK_SCHEME_FOR_NEW_LINKS}://session/${sessionId}`,
         threadId: sessionId,
         phase: "terminal",
         interruptionLevel: "active",
@@ -3125,12 +3126,12 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       // another's identity, which is a real correctness boundary, not staleness.
       if (expectedAccountOwnerId !== currentAccountOwnerId) {
         throw new Error(
-          "The ADE account changed after this machine Activity snapshot loaded. Refresh and try again.",
+          `The ${BRAND.NAME} account changed after this machine Activity snapshot loaded. Refresh and try again.`,
         );
       }
       if (lastMachineSnapshotAccountOwnerId !== currentAccountOwnerId) {
         throw new Error(
-          "Refresh machine Activity after changing ADE accounts, then try again.",
+          `Refresh machine Activity after changing ${BRAND.NAME} accounts, then try again.`,
         );
       }
       const updatedAt = new Date(now()).toISOString();
@@ -3252,7 +3253,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       // A failed read is not "this chat is elsewhere": falling back to a plain
       // push would skip the chat's line, its Inbox row and its mute.
       if (!found && lookupError) {
-        throw new Error("ADE could not read this chat to send its notification. Try again in a moment.");
+        throw new Error(`${BRAND.NAME} could not read this chat to send its notification. Try again in a moment.`);
       }
       if (!found) return null;
 
