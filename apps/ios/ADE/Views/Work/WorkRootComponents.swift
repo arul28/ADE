@@ -2022,7 +2022,7 @@ struct WorkHeaderProjectButton: View {
             .resizable()
             .interpolation(.high)
             .aspectRatio(contentMode: .fit)
-            .frame(width: 38, height: 26)
+            .frame(width: 26, height: 26)
         }
       }
       .frame(minHeight: 44)

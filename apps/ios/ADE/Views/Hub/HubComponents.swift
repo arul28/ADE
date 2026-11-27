@@ -400,7 +400,7 @@ struct HubConnectionMenu: View {
       .renderingMode(.original)
       .interpolation(.high)
       .aspectRatio(contentMode: .fit)
-      .frame(width: 38, height: 21)
+      .frame(width: 22, height: 22)
       .accessibilityHidden(true)
   }
 

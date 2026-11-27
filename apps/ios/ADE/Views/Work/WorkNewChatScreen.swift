@@ -1364,7 +1364,7 @@ struct WorkNewChatScreen: View {
       .renderingMode(.original)
       .interpolation(.high)
       .aspectRatio(contentMode: .fit)
-      .frame(maxWidth: 240)
+      .frame(width: 88, height: 88)
     .padding(.top, 0)
     .accessibilityLabel(Brand.name)
   }
