@@ -6963,7 +6963,7 @@ async function runTool(args: {
         JsonRpcErrorCode.invalidParams,
         encodeCodedErrorMessage(
           ACTION_NOT_EXPOSED_CODE,
-          `Action '${domain}.${action}' is not exposed through ADE actions.`,
+          `Action '${domain}.${action}' is not exposed through Daex actions.`,
         ),
       );
     }
@@ -10208,7 +10208,7 @@ async function runTool(args: {
     return runtime.eventBuffer.drain(cursor, limit);
   }
 
-  throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unknown ADE action: ${name}`);
+  throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unknown Daex action: ${name}`);
 }
 
 async function readResource(runtime: AdeRuntime, uri: string): Promise<Record<string, unknown>> {
