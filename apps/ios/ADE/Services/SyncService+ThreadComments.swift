@@ -1,7 +1,7 @@
 import Foundation
 
 // Thread comments: the user's pending notes on parts of an agent reply. The
-// chat's host owns them; the phone lists, toggles, edits and deletes them,
+// chat's host owns them; the phone creates, lists, toggles, edits and deletes them,
 // and mirrors every `session_meta_updated.threadComments` the host publishes.
 
 extension SyncService {
@@ -12,6 +12,63 @@ extension SyncService {
   func supportsThreadComments(sessionId: String) -> Bool {
     ["chat.listThreadComments", "chat.updateThreadComment", "chat.deleteThreadComment"]
       .allSatisfy { supportsChatRemoteAction($0, sessionId: sessionId) }
+  }
+
+  /// Whether the phone can make a new comment on this chat. Separate from
+  /// `supportsThreadComments`: a host may list and edit before it takes
+  /// creates from a phone.
+  func supportsCreatingThreadComments(sessionId: String) -> Bool {
+    supportsThreadComments(sessionId: sessionId)
+      && supportsChatRemoteAction("chat.createThreadComment", sessionId: sessionId)
+  }
+
+  /// Pins a new comment to a quote in an agent reply. The `clientId` makes a
+  /// retry after a lost answer return the same comment instead of a second.
+  func createThreadComment(
+    sessionId: String,
+    messageKey: String,
+    messageExcerpt: String,
+    quote: String,
+    prefix: String,
+    suffix: String,
+    body: String,
+    clientId: String = "ios-\(UUID().uuidString.lowercased())"
+  ) async throws {
+    let action = chatActionName("chat.createThreadComment", sessionId: sessionId)
+    guard supportsCreatingThreadComments(sessionId: sessionId) else {
+      throw NSError(
+        domain: "ADE",
+        code: 15,
+        userInfo: [NSLocalizedDescriptionKey: "This computer’s ADE cannot take comments from the phone. Update it to comment here."]
+      )
+    }
+    let startedAt = threadCommentsWriteVersion[sessionId, default: 0]
+    let scope = chatCommandScope(for: sessionId)
+    let created = try await sendDecodableCommand(
+      action: action,
+      args: [
+        "sessionId": sessionId,
+        "messageKey": messageKey,
+        "messageExcerpt": messageExcerpt,
+        "anchor": ["kind": "text", "quote": quote, "prefix": prefix, "suffix": suffix],
+        "body": body,
+        "clientId": clientId,
+      ],
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath,
+      as: ChatThreadComment.self
+    )
+    // The host also publishes the new list; whichever lands first wins, and a
+    // list that changed while the create was out is re-read instead.
+    if threadCommentsWriteVersion[sessionId, default: 0] == startedAt {
+      var list = threadComments(sessionId: sessionId)
+      if !list.contains(where: { $0.id == created.id }) {
+        list.append(created)
+        setThreadComments(list, sessionId: sessionId)
+      }
+    } else if !threadComments(sessionId: sessionId).contains(where: { $0.id == created.id }) {
+      try? await refreshThreadComments(sessionId: sessionId)
+    }
   }
 
   func threadComments(sessionId: String) -> [ChatThreadComment] {

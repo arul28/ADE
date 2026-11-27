@@ -312,8 +312,17 @@ export type WorkToolsLaneState = {
    * tool — the difference only matters to whoever is debugging the host.
    */
   macDesktop: WorkToolsMacDesktopState | null;
+  /**
+   * The lane's dev servers this runtime already knows of (no fresh scan), so
+   * the phone can offer its Browser for a lane with a server and no tab.
+   * Absent from an older runtime and from one with no dev-server watcher.
+   */
+  devServers?: WorkToolsLaneDevServer[];
   capturedAt: string;
 };
+
+/** One dev server on a lane's lane state: where to open it. */
+export type WorkToolsLaneDevServer = { port: number; url: string };
 
 export type WorkToolsSetActiveToolArgs = {
   laneId: string;

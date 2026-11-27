@@ -9,6 +9,12 @@ import UIKit
 /// view the newest picture; this view only draws it and turns a finger into
 /// `WorkToolsBrowserTabInputEvent`s. Coordinates go out as fractions of the
 /// picture, so its size on the phone never matters to the desktop.
+///
+/// "Phone size" (the default) asks the desktop to lay the page out at this
+/// picture's size while the phone watches, so a site shows its phone layout
+/// rather than a shrunken desktop page; "Desktop size" shows the tab as the
+/// desktop has it. The fractions hold either way: they are of the frame, and
+/// the frame is the page as laid out.
 struct WorkToolsBrowserLiveCard: View {
   let image: UIImage
   let title: String?
@@ -18,6 +24,10 @@ struct WorkToolsBrowserLiveCard: View {
   let canControl: Bool
   @Binding var inControl: Bool
   let send: (WorkToolsBrowserTabInputEvent) -> Void
+  /// Phone size on or off. Nil hides the toggle.
+  var phoneSize: Binding<Bool>? = nil
+  /// Why the desktop keeps its own size although phone size is on.
+  var sizeNote: String? = nil
 
   @State private var typed = ""
   @State private var dragIsScroll = false
@@ -39,6 +49,15 @@ struct WorkToolsBrowserLiveCard: View {
     } content: {
       VStack(alignment: .leading, spacing: 10) {
         picture
+        if let phoneSize {
+          sizeToggle(phoneSize)
+        }
+        if let sizeNote, !sizeNote.isEmpty {
+          Text(sizeNote)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
         if inControl {
           typingRow
         }
@@ -76,6 +95,22 @@ struct WorkToolsBrowserLiveCard: View {
     }
     .buttonStyle(.plain)
     .accessibilityLabel(inControl ? "Stop controlling the browser" : "Take control of the browser")
+  }
+
+  private func sizeToggle(_ phoneSize: Binding<Bool>) -> some View {
+    ADEKitSegmented(
+      selection: Binding(
+        get: { phoneSize.wrappedValue },
+        set: { next in
+          guard next != phoneSize.wrappedValue else { return }
+          ADEHaptics.light()
+          phoneSize.wrappedValue = next
+        }
+      ),
+      options: [(value: true, title: "Phone size"), (value: false, title: "Desktop size")]
+    )
+    .frame(maxWidth: 320)
+    .frame(maxWidth: .infinity, alignment: .center)
   }
 
   private var picture: some View {

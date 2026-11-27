@@ -258,6 +258,7 @@
 		E10000000000000000000F03 /* WorkDrafts.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F03 /* WorkDrafts.swift */; };
 		E10000000000000000000F90 /* WorkDraftScheduleSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F90 /* WorkDraftScheduleSheet.swift */; };
 		7C0FFEE0000000000000A002 /* WorkThreadComments.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C0FFEE0000000000000A001 /* WorkThreadComments.swift */; };
+		7C0FFEE0000000000000A0B2 /* WorkMessageTextSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C0FFEE0000000000000A0B1 /* WorkMessageTextSelection.swift */; };
 		E10000000000000000000F04 /* WorkContextUsageViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F04 /* WorkContextUsageViews.swift */; };
 		E1000000000000000000002F /* WorkArtifactTerminalViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002F /* WorkArtifactTerminalViews.swift */; };
 		E200000000000000000000B2 /* WorkProofSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D200000000000000000000B2 /* WorkProofSheet.swift */; };
@@ -804,6 +805,7 @@
 		D10000000000000000000F03 /* WorkDrafts.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkDrafts.swift; path = ADE/Views/Work/WorkDrafts.swift; sourceTree = "<group>"; };
 		D10000000000000000000F90 /* WorkDraftScheduleSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkDraftScheduleSheet.swift; path = ADE/Views/Work/WorkDraftScheduleSheet.swift; sourceTree = "<group>"; };
 		7C0FFEE0000000000000A001 /* WorkThreadComments.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkThreadComments.swift; path = ADE/Views/Work/WorkThreadComments.swift; sourceTree = "<group>"; };
+		7C0FFEE0000000000000A0B1 /* WorkMessageTextSelection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMessageTextSelection.swift; path = ADE/Views/Work/WorkMessageTextSelection.swift; sourceTree = "<group>"; };
 		D10000000000000000000F04 /* WorkContextUsageViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkContextUsageViews.swift; path = ADE/Views/Work/WorkContextUsageViews.swift; sourceTree = "<group>"; };
 		D1000000000000000000002F /* WorkArtifactTerminalViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkArtifactTerminalViews.swift; path = ADE/Views/Work/WorkArtifactTerminalViews.swift; sourceTree = "<group>"; };
 		D200000000000000000000B2 /* WorkProofSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkProofSheet.swift; path = ADE/Views/Work/WorkProofSheet.swift; sourceTree = "<group>"; };
@@ -1644,6 +1646,7 @@
 				D10000000000000000000F03 /* WorkDrafts.swift */,
 				D10000000000000000000F90 /* WorkDraftScheduleSheet.swift */,
 				7C0FFEE0000000000000A001 /* WorkThreadComments.swift */,
+				7C0FFEE0000000000000A0B1 /* WorkMessageTextSelection.swift */,
 				D10000000000000000000F04 /* WorkContextUsageViews.swift */,
 				D1000000000000000000002F /* WorkArtifactTerminalViews.swift */,
 				D200000000000000000000B2 /* WorkProofSheet.swift */,
@@ -2761,6 +2764,7 @@
 				E10000000000000000000F03 /* WorkDrafts.swift in Sources */,
 				E10000000000000000000F90 /* WorkDraftScheduleSheet.swift in Sources */,
 				7C0FFEE0000000000000A002 /* WorkThreadComments.swift in Sources */,
+				7C0FFEE0000000000000A0B2 /* WorkMessageTextSelection.swift in Sources */,
 				E10000000000000000000F04 /* WorkContextUsageViews.swift in Sources */,
 				E1000000000000000000002F /* WorkArtifactTerminalViews.swift in Sources */,
 				E200000000000000000000B2 /* WorkProofSheet.swift in Sources */,

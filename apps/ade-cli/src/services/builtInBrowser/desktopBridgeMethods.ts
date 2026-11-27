@@ -1,6 +1,7 @@
 import type {
   BuiltInBrowserRemoteInputEvent,
   BuiltInBrowserRemoteTabFrame,
+  BuiltInBrowserRemoteViewport,
 } from "../../../../desktop/src/shared/types/builtInBrowser";
 import type { BuiltInBrowserService } from "../../../../desktop/src/main/services/builtInBrowser/builtInBrowserService";
 import { BUILT_IN_BROWSER_MESSAGES_METHODS, type BuiltInBrowserRemoteCallMethod } from "../../../../desktop/src/shared/types/builtInBrowserRemote";
@@ -257,7 +258,12 @@ export type BuiltInBrowserDesktopBridgeClient = {
   listTabsForAgent: (input: Record<string, unknown>) => Promise<BridgeReturn<"getStatus"> | null>;
   releaseLaneTabs: (input: { laneId: string }) => Promise<{ released: number }>;
   chatBrowserLifecycle: (input: { chatSessionId: string; state: BuiltInBrowserChatLifecycleState }) => Promise<{ tabs: number }>;
-  captureTabFrameForRuntime: (input: { tabId: string; maxWidth: number | null }) => Promise<BuiltInBrowserRemoteTabFrame | null>;
+  /** `viewport`: lay the page out at the viewer's size while it watches (an older desktop ignores it). */
+  captureTabFrameForRuntime: (input: {
+    tabId: string;
+    maxWidth: number | null;
+    viewport?: BuiltInBrowserRemoteViewport | null;
+  }) => Promise<BuiltInBrowserRemoteTabFrame | null>;
   sendTabInputForRuntime: (input: { tabId: string; event: BuiltInBrowserRemoteInputEvent }) => Promise<{ ok: boolean }>;
   acknowledgeRemoteRequest: (
     input: BuiltInBrowserAcknowledgeRemoteRequestArgs,

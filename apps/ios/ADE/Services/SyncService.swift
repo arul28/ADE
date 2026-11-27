@@ -18966,10 +18966,15 @@ final class SyncService: ObservableObject {
   /// desktop's short watch on the tab, so the caller polls while it is looking
   /// and simply stops when it is not. `frame` is nil for the first poll or two
   /// while the desktop starts capturing. Never queued: a stale frame is useless.
+  ///
+  /// `viewport` (the picture's size in points) asks the desktop to lay the page
+  /// out at that size while the phone watches; nil asks for the desktop's own
+  /// size. An older desktop ignores it and sends the normal frame.
   func readWorkToolsBrowserTabFrame(
     tabId: String,
     laneId: String,
-    maxWidth: Int? = nil
+    maxWidth: Int? = nil,
+    viewport: WorkToolsBrowserViewport? = nil
   ) async throws -> WorkToolsBrowserTabFrame? {
     let lane = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
     let tab = tabId.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -18979,6 +18984,7 @@ final class SyncService: ObservableObject {
     guard !lane.isEmpty, !tab.isEmpty else { return nil }
     var args: [String: Any] = ["tabId": tab, "laneId": lane]
     if let maxWidth, maxWidth > 0 { args["maxWidth"] = maxWidth }
+    if let viewport { args["viewport"] = viewport.payload }
     let result = try await sendCommand(
       action: "workTools.readBrowserTabFrame",
       args: args,
@@ -19019,6 +19025,71 @@ final class SyncService: ObservableObject {
       attemptedLiveFailurePolicy: .preserveForManualRetry
     )
     return (result as? [String: Any])?["ok"] as? Bool ?? false
+  }
+
+  // MARK: - Work tools: dev servers
+
+  /// Whether the lane's machine lists its dev servers to the phone. Optional on
+  /// the host, so an older brain simply shows no Dev servers list.
+  func supportsWorkToolsDevServers(laneId: String) -> Bool {
+    laneCommandDescriptor("workTools.listDevServers", laneId: laneId)?.policy.allowsPhone == true
+  }
+
+  /// The dev servers the lane runs on its own machine (port and address).
+  func listWorkToolsDevServers(laneId: String) async throws -> [WorkToolsDevServer] {
+    let lane = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard supportsWorkToolsDevServers(laneId: lane) else {
+      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "Dev servers aren't listed by this machine's version of ADE.", "ADEErrorCode": "unsupported_action"])
+    }
+    guard !lane.isEmpty else { return [] }
+    let result = try await sendCommand(
+      action: "workTools.listDevServers",
+      args: ["laneId": lane],
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: Self.workToolsRequestTimeoutNanoseconds
+    )
+    guard result is [String: Any] else { return [] }
+    return (try? decode(result, as: WorkToolsDevServerList.self))?.servers ?? []
+  }
+
+  /// Whether this phone may open a dev server in the desktop browser.
+  /// Controller only on the host, so a read-only viewer never sees Open.
+  func canOpenWorkToolsBrowserTab(laneId: String) -> Bool {
+    laneCommandDescriptor("workTools.openBrowserTab", laneId: laneId)?.policy.allowsPhone == true
+  }
+
+  /// Opens one of the lane's dev servers in a background tab of the desktop
+  /// browser, on the lane's own machine (`sendCommand` routes a namespaced lane
+  /// id there). The host refuses any address that is not one of the lane's dev
+  /// servers on its localhost. Never queued: an open replayed later would put
+  /// up a page nobody is waiting for. Waits longer than a read: the desktop
+  /// loads the page first, and with no desktop on the lane's machine it asks
+  /// one on another computer.
+  func openWorkToolsBrowserTab(laneId: String, url: String) async throws -> WorkToolsOpenedBrowserTab {
+    let lane = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    let address = url.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard canOpenWorkToolsBrowserTab(laneId: lane) else {
+      throw NSError(
+        domain: "ADE",
+        code: 17,
+        userInfo: [
+          NSLocalizedDescriptionKey: "Opening pages from the phone needs a newer ADE on this lane's machine.",
+          "ADEErrorCode": "unsupported_action",
+        ]
+      )
+    }
+    guard !lane.isEmpty, !address.isEmpty else {
+      throw NSError(domain: "ADE", code: 6, userInfo: [NSLocalizedDescriptionKey: "No dev server was selected."])
+    }
+    let result = try await sendCommand(
+      action: "workTools.openBrowserTab",
+      args: ["laneId": lane, "url": address],
+      disconnectOnTimeout: false,
+      timeoutMessage: "The desktop didn't answer in time. The page may still open there.",
+      timeoutNanoseconds: 20_000_000_000,
+      attemptedLiveFailurePolicy: .preserveForManualRetry
+    )
+    return (try? decode(result, as: WorkToolsOpenedBrowserTab.self)) ?? WorkToolsOpenedBrowserTab()
   }
 
   // MARK: - Mac Desktop live stream and takeover

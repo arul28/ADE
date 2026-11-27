@@ -160,13 +160,16 @@ func workRemoteWorkDevices(_ uses: [AgentChatRemoteWorkUse]?) -> [WorkRemoteWork
 ///   drives it.
 /// - Browser: when the desktop browser has tabs ("1 tab" / "N tabs"), or when
 ///   an agent is driving it with none listed ("Browser") — an agent on the
-///   browser was always reason enough to surface it.
+///   browser was always reason enough to surface it. Also ("Browser") when
+///   the lane runs a dev server and the phone may open it
+///   (`canOpenDevServers`), so the sheet's Dev servers list is reachable.
 /// - App Control: "App" while an app is attached. Live dot while it is
 ///   attached and sending frames.
 func workToolChips(
   state: WorkToolsLaneState?,
   appleDevice: AppleDeviceStatus?,
-  android: AndroidDeviceStatus? = nil
+  android: AndroidDeviceStatus? = nil,
+  canOpenDevServers: Bool = false
 ) -> [WorkToolChip] {
   var chips: [WorkToolChip] = []
   if let chip = appleToolChip(appleDevice) {
@@ -180,7 +183,8 @@ func workToolChips(
   }
   let tabCount = state?.browser?.tabs.count ?? 0
   let agentUsingBrowser = workToolsAgentIsUsingBrowser(state)
-  if tabCount > 0 || agentUsingBrowser {
+  let hasDevServer = canOpenDevServers && !(state?.devServers ?? []).isEmpty
+  if tabCount > 0 || agentUsingBrowser || hasDevServer {
     chips.append(WorkToolChip(kind: .browser(tabCount: tabCount, agentUsing: agentUsingBrowser)))
   }
   if let appName = state?.appControl?.appName.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -507,7 +511,12 @@ final class WorkLaneToolsModel: ObservableObject {
       macDesktopState = tools?.macDesktop
       appControlState = tools?.appControl
       appControlStream = syncService.supportsAppControlStream
-      localChips = workToolChips(state: tools, appleDevice: apple, android: android)
+      localChips = workToolChips(
+        state: tools,
+        appleDevice: apple,
+        android: android,
+        canOpenDevServers: syncService.canOpenWorkToolsBrowserTab(laneId: laneId)
+      )
       publishChips()
     }
     await remoteDone

@@ -142,6 +142,8 @@ import {
   BUILT_IN_BROWSER_VIEW_CORNER_RADIUS,
 } from "../../../shared/types";
 import type { ComputerUseActionEffect } from "../../../shared/types/agentObservation";
+import type { BuiltInBrowserRemoteViewport } from "../../../shared/types/builtInBrowser";
+import { normalizeBuiltInBrowserRemoteViewport } from "../../../shared/builtInBrowserEmulation";
 import {
   BUILT_IN_BROWSER_APPROVAL_CALL_BUDGET_MS,
   BUILT_IN_BROWSER_TAB_LIMIT_DEFAULT,
@@ -2146,11 +2148,17 @@ export function createBuiltInBrowserService(args: {
      * for the brain's `work_tools.readBrowserTabFrame`, never an agent
      * command; the tab is found in whichever collection holds it.
      */
-    captureTabFrameForRuntime(input: { tabId?: string | null; maxWidth?: number | null }): BuiltInBrowserRemoteTabFrame | null {
+    captureTabFrameForRuntime(input: { tabId?: string | null; maxWidth?: number | null; viewport?: unknown }): BuiltInBrowserRemoteTabFrame | null {
       const tabId = typeof input.tabId === "string" ? input.tabId.trim() : "";
       if (!tabId) return null;
       const service = allWindowServices().find((entry) => entry.hasLiveTab(tabId));
-      return service ? service.captureTabFrameForRemote({ tabId, maxWidth: input.maxWidth ?? null }) : null;
+      return service
+        ? service.captureTabFrameForRemote({
+          tabId,
+          maxWidth: input.maxWidth ?? null,
+          viewport: normalizeBuiltInBrowserRemoteViewport(input.viewport),
+        })
+        : null;
     },
     /** A person on another machine's input into one tab (Take control). Bridge-served. */
     async sendTabInputForRuntime(input: { tabId?: string | null; event?: unknown }): Promise<{ ok: boolean }> {
@@ -5858,10 +5866,18 @@ function createBuiltInBrowserWindowService(args: {
    * this one, the phone), with what the tab is showing. See
    * `watchTabForRemote` for the lease the poll renews.
    */
-  function captureTabFrameForRemote(input: { tabId: string; maxWidth?: number | null }): BuiltInBrowserRemoteTabFrame | null {
+  function captureTabFrameForRemote(input: {
+    tabId: string;
+    maxWidth?: number | null;
+    viewport?: BuiltInBrowserRemoteViewport | null;
+  }): BuiltInBrowserRemoteTabFrame | null {
     const tab = tabs.find((entry) => entry.id === input.tabId && !entry.webContents.isDestroyed());
     if (!tab) return null;
-    const { frame } = tabCapabilities.watchTabForRemote({ tabId: tab.id, maxWidth: input.maxWidth ?? null });
+    const { frame, ...viewport } = tabCapabilities.watchTabForRemote({
+      tabId: tab.id,
+      maxWidth: input.maxWidth ?? null,
+      viewport: input.viewport ?? null,
+    });
     const status = tabStatus(tab);
     return {
       tabId: tab.id,
@@ -5869,6 +5885,7 @@ function createBuiltInBrowserWindowService(args: {
       title: status.title,
       isLoading: status.isLoading,
       frame,
+      ...viewport,
     };
   }
 
@@ -5884,14 +5901,22 @@ function createBuiltInBrowserWindowService(args: {
     const event = input.event;
     // Null when the page cannot say its size (mid-navigation, crashed): the
     // input is refused rather than landing in the top-left corner.
+    // The frame is the page as drawn, so a fraction of it is a fraction of the
+    // page's viewport. Under a device preset or the recording viewport
+    // Chromium draws the page smaller (the override's `scale`) and reads input
+    // in drawn pixels, the same mapping `dispatchPageMouseEvent` makes.
     const point = async (at: { x: number; y: number }): Promise<{ x: number; y: number } | null> => {
       const size = await wc.executeJavaScript("[window.innerWidth, window.innerHeight]", true)
         .catch(() => null) as [number, number] | null;
       if (!size || !(size[0] > 0) || !(size[1] > 0)) return null;
       const zoom = wc.getZoomFactor?.() ?? 1;
+      const drawScale = pageDrawScale(tab);
       const fx = Math.min(1, Math.max(0, Number(at.x) || 0));
       const fy = Math.min(1, Math.max(0, Number(at.y) || 0));
-      return { x: Math.round(fx * size[0] * zoom), y: Math.round(fy * size[1] * zoom) };
+      return {
+        x: Math.round(fx * size[0] * zoom * drawScale),
+        y: Math.round(fy * size[1] * zoom * drawScale),
+      };
     };
     if (event.type === "click") {
       const at = await point(event);
@@ -8066,13 +8091,18 @@ function createBuiltInBrowserWindowService(args: {
    * "delivered" without doing anything. Every synthesized mouse event goes
    * through here.
    */
+  /** How much smaller than its CSS size Chromium draws the page: a preset's or the recording viewport's scale. */
+  const pageDrawScale = (tab: BrowserTabState): number => (
+    tab.emulation
+      ? tabCapabilities.emulationInputScale(tab)
+      : recordingViewport.inputScale(tab)
+  );
+
   const dispatchPageMouseEvent = async (
     tab: BrowserTabState,
     params: { type: string; x: number; y: number } & Record<string, unknown>,
   ): Promise<void> => {
-    const scale = tab.emulation
-      ? tabCapabilities.emulationInputScale(tab)
-      : recordingViewport.inputScale(tab);
+    const scale = pageDrawScale(tab);
     await sendDebuggerCommand(
       tab.webContents,
       "Input.dispatchMouseEvent",
@@ -8509,6 +8539,17 @@ function createBuiltInBrowserWindowService(args: {
     },
     // A parked tab is boxed at its device's size (see `parkedPreviewRect`).
     onTabEmulationChanged: () => attachViewsToCurrentWindow(),
+    // In front of the person: the pane's tab, in a window that has focus.
+    isTabOnScreen: (tabId) => Boolean(
+      tabId === activeTabId
+      && visible
+      && win
+      && !win.isDestroyed()
+      && win.isVisible()
+      && !win.isMinimized()
+      && win.isFocused(),
+    ),
+    onRemoteEmulationCleared: (tab) => refreshRecordingViewport(tab),
     isTabSurfaced: (tabId) => surfacedTabIds.has(tabId),
     holdCaptureSurface: async (tabId) => {
       const release = acquireCaptureHold(tabId);

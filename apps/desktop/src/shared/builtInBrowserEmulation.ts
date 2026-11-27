@@ -4,6 +4,7 @@ import type {
   BuiltInBrowserEmulationPreset,
   BuiltInBrowserEmulationPresetId,
   BuiltInBrowserEmulationState,
+  BuiltInBrowserRemoteViewport,
 } from "./types/builtInBrowser";
 
 /**
@@ -282,5 +283,53 @@ export function builtInBrowserEmulationMetrics(
     deviceScaleFactor: state.deviceScaleFactor,
     mobile: state.mobile,
     userAgent: state.userAgent,
+  };
+}
+
+/** Narrower than this is not a phone picture worth laying a page out for. */
+const REMOTE_VIEWPORT_MIN = 240;
+/** Wider than an unfolded iPad is not a phone-size view any more. */
+const REMOTE_VIEWPORT_MAX_WIDTH = 1_366;
+const REMOTE_VIEWPORT_MAX_HEIGHT = 2_000;
+/** From this width the viewer is a tablet, and the page is told it is an iPad. */
+const REMOTE_VIEWPORT_TABLET_WIDTH = 700;
+
+/**
+ * The viewport a remote viewer asked for, or null for none (or one too small
+ * to mean anything). Crosses the bridge from the brain, so every field is
+ * checked and clamped here.
+ */
+export function normalizeBuiltInBrowserRemoteViewport(value: unknown): BuiltInBrowserRemoteViewport | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const width = finiteOrNull(record.width);
+  const height = finiteOrNull(record.height);
+  if (width == null || height == null || width < REMOTE_VIEWPORT_MIN || height < REMOTE_VIEWPORT_MIN) return null;
+  const scale = finiteOrNull(record.deviceScaleFactor);
+  return {
+    width: Math.round(Math.min(width, REMOTE_VIEWPORT_MAX_WIDTH)),
+    height: Math.round(Math.min(height, REMOTE_VIEWPORT_MAX_HEIGHT)),
+    // The phone's own scale, within what a phone has; a frame is a JPEG of a
+    // few hundred pixels anyway.
+    deviceScaleFactor: scale != null && scale > 0 ? clampNumber(scale, 1, 3) : 2,
+  };
+}
+
+/**
+ * The device emulation a remote viewer's viewport stands for: a touch phone
+ * (or tablet, when wide) at exactly that size, labelled so the person at the
+ * desktop knows why the tab looks like a phone.
+ */
+export function builtInBrowserRemoteViewportEmulation(viewport: BuiltInBrowserRemoteViewport): BuiltInBrowserEmulationState {
+  const tablet = viewport.width >= REMOTE_VIEWPORT_TABLET_WIDTH;
+  return {
+    presetId: "responsive",
+    label: `Phone view · ${viewport.width}×${viewport.height}`,
+    width: viewport.width,
+    height: viewport.height,
+    deviceScaleFactor: viewport.deviceScaleFactor,
+    mobile: true,
+    hasTouch: true,
+    userAgent: tablet ? IPAD_UA : IPHONE_17_UA,
   };
 }

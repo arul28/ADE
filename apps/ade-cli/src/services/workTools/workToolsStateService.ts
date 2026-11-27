@@ -17,7 +17,9 @@ import { BUILT_IN_BROWSER_PRESENCE_EXPIRY_MS } from "../../../../desktop/src/sha
 import type {
   BuiltInBrowserRemoteInputEvent,
   BuiltInBrowserRemoteTabFrame,
+  BuiltInBrowserRemoteViewport,
 } from "../../../../desktop/src/shared/types/builtInBrowser";
+import { normalizeBuiltInBrowserRemoteViewport } from "../../../../desktop/src/shared/builtInBrowserEmulation";
 import { DesktopBridgeUnavailableError } from "../builtInBrowser/desktopBridgeClient";
 import {
   MAC_DESKTOP_OBSERVATION_CACHE_SEGMENTS,
@@ -172,7 +174,11 @@ export type WorkToolsStateServiceArgs = {
    * One browser tab's newest frame, from this machine's desktop (Take a look
    * from another machine or the phone). Absent with no bridge.
    */
-  captureBrowserTabFrame?: ((input: { tabId: string; maxWidth: number | null }) => Promise<BuiltInBrowserRemoteTabFrame | null>) | null;
+  captureBrowserTabFrame?: ((input: {
+    tabId: string;
+    maxWidth: number | null;
+    viewport?: BuiltInBrowserRemoteViewport | null;
+  }) => Promise<BuiltInBrowserRemoteTabFrame | null>) | null;
   /** A person's input into one browser tab from another machine (Take control). */
   sendBrowserTabInput?: ((input: { tabId: string; event: BuiltInBrowserRemoteInputEvent }) => Promise<{ ok: boolean }>) | null;
   /** The daemon's own App Control service, when it has one. */
@@ -198,6 +204,8 @@ export type WorkToolsStateServiceArgs = {
    */
   devServers?: {
     list(args: DevServersArgs): Promise<DevServerRecord[]>;
+    /** What is already known, without a fresh scan: cheap enough for every lane-state read. */
+    listKnown?(args: DevServersArgs): DevServerRecord[];
     probePort(port: number): Promise<boolean>;
     /** Stop a server one chat's agent started; ownership is decided again here. */
     stop?(args: DevServerStopArgs): Promise<DevServerStopResult>;
@@ -265,7 +273,7 @@ export type WorkToolsStateService = {
    * or the phone. Each call renews a short watch on the desktop; frames stop a
    * few seconds after the last one. Null when the tab is not on this machine.
    */
-  readBrowserTabFrame(args: { tabId?: unknown; maxWidth?: unknown } | null): Promise<BuiltInBrowserRemoteTabFrame | null>;
+  readBrowserTabFrame(args: { tabId?: unknown; maxWidth?: unknown; viewport?: unknown } | null): Promise<BuiltInBrowserRemoteTabFrame | null>;
   /** A person's click, scroll or typing into a browser tab from another machine. */
   sendBrowserTabInput(args: { tabId?: unknown; event?: unknown } | null): Promise<{ ok: boolean }>;
   /**
@@ -949,6 +957,7 @@ export function createWorkToolsStateService(
         readAppControl(laneId),
         readMacDesktop(laneId),
       ]);
+      const knownDevServers = args.devServers?.listKnown?.({ laneId }) ?? null;
       return {
         laneId,
         activeTool: active?.tool ?? null,
@@ -959,6 +968,7 @@ export function createWorkToolsStateService(
         agentBrowserPresence: presence,
         appControl,
         macDesktop,
+        ...(knownDevServers ? { devServers: knownDevServers.map((server) => ({ port: server.port, url: server.url })) } : {}),
         capturedAt: new Date().toISOString(),
       };
     },
@@ -968,10 +978,14 @@ export function createWorkToolsStateService(
       const reader = args.captureBrowserTabFrame;
       if (!tabId || !reader) return null;
       const maxWidth = Number(input?.maxWidth);
+      // Only a well-formed viewport goes on to the desktop; without one the
+      // desktop drops any phone-size layout this watch put on the tab.
+      const viewport = normalizeBuiltInBrowserRemoteViewport(input?.viewport);
       try {
         return await reader({
           tabId,
           maxWidth: Number.isFinite(maxWidth) && maxWidth > 0 ? Math.min(1_920, Math.round(maxWidth)) : null,
+          ...(viewport ? { viewport } : {}),
         });
       } catch (error) {
         if (error instanceof DesktopBridgeUnavailableError) return null;

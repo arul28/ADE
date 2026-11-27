@@ -511,6 +511,8 @@ struct WorkChatMessageBubble: View, Equatable {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   /// The CTO thread: picks the person's reaction on an answer. Nil elsewhere.
   @Environment(\.workAssistantReactions) private var assistantReactions
+  /// The chat's selection sheet: "Select text" in the long-press menu.
+  @Environment(\.workMessageTextSelection) private var textSelection
 
   var body: some View {
     if message.role == "assistant" {
@@ -606,6 +608,7 @@ struct WorkChatMessageBubble: View, Equatable {
     }
       .frame(maxWidth: .infinity, alignment: .leading)
     .workAssistantMessageContextMenu(
+      messageId: message.id,
       onCopy: { UIPasteboard.general.string = message.markdown },
       onOpenFullOutput: onOpenFullOutput,
       linkTexts: [preview.text],
@@ -735,6 +738,15 @@ struct WorkChatMessageBubble: View, Equatable {
         UIPasteboard.general.string = message.markdown
       } label: {
         Label("Copy message", systemImage: "doc.on.doc")
+      }
+      // Comment cards and quotes draw as cards, not text, so they have no
+      // text to select.
+      if let textSelection, !workUserMessageHasStructuredBlocks(message.markdown) {
+        Button {
+          textSelection.open(messageId: message.id)
+        } label: {
+          Label("Select text", systemImage: "selection.pin.in.out")
+        }
       }
       WorkMessageLinkMenuItems(source: .user(message.markdown, attachments: message.attachments))
     }
@@ -2415,6 +2427,8 @@ extension View {
   /// `linkTexts` is the inline text the row draws; its links get a section of
   /// their own (`WorkMessageLinkMenuItems`), found only when the menu opens.
   func workAssistantMessageContextMenu(
+    messageId: String,
+    block: WorkMarkdownBlock? = nil,
     onCopy: @escaping () -> Void,
     onOpenFullOutput: @escaping () -> Void,
     linkTexts: [String] = [],
@@ -2426,9 +2440,9 @@ extension View {
       if let onReact {
         WorkAssistantReactionPicker(current: reaction?.emoji, onPick: onReact)
       }
-      Button(action: onCopy) {
-        Label("Copy message", systemImage: "doc.on.doc")
-      }
+      // Copy the reply, copy the long-pressed part, or select any range of it
+      // (and comment on it) in the selection sheet.
+      WorkMessageTextMenuItems(messageId: messageId, block: block, onCopyMessage: onCopy)
       Button(action: onOpenFullOutput) {
         Label("Open full response", systemImage: "arrow.up.left.and.arrow.down.right")
       }

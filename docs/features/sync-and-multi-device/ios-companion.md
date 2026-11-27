@@ -2532,6 +2532,26 @@ display that is off.
   close goes to the lane's machine. Closing the sheet sends pending closes. A
   failure restores the row with an alert. Fixtures: `tools-close`,
   `tools-close-pending`.
+- **Dev servers.** With `workTools.listDevServers`, the browser sheet shows a
+  **Dev servers** card under the tabs: each server's `:port` and address, and
+  **Open** (**Watch** when a lane tab is already on that port). The sheet asks
+  for a fresh list when it opens and on pull to refresh, and otherwise takes
+  the `devServers` the lane state carries. Open sends `workTools.openBrowserTab`
+  (controller-only, not queued, 20 s) to the lane's machine; the page opens in
+  a background desktop tab and the live picture switches to the returned
+  `tabId`. When a desktop on another computer took it (no desktop on the lane's
+  machine), the card says where it opened instead. Without the action there is
+  no Open, and a host without `listDevServers` shows no card. The Browser chip
+  also shows ("Browser") for a lane with a known dev server when the phone may
+  open it. Fixtures `tools-live` and `tools-close` show the card.
+- **Phone size.** The live card has a **Phone size / Desktop size** switch
+  (default Phone size, kept in `ade.workTools.browserPhoneSize`). With Phone
+  size each frame read sends `viewport`: the card's width in points, most of
+  the visible height, and the screen scale. The desktop lays the page out at
+  that size while the phone watches (see
+  [Chat › Tabs on other machines](../chat/README.md#built-in-browser-chrome-identity-tab-ownership-cleanup-and-other-machines));
+  when it keeps its own size the card shows its `viewportNote`. Input stays
+  frame fractions, so Take control works at either size.
 
 #### macOS card and viewer
 

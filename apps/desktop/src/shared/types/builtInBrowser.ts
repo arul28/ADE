@@ -2054,6 +2054,28 @@ export type BuiltInBrowserRemoteTabFrame = {
   title: string | null;
   isLoading: boolean;
   frame: { dataUrl: string; width: number; height: number; capturedAt: string } | null;
+  /**
+   * Only when the read asked for a `viewport`: whether the page is laid out at
+   * it now. Absent from a desktop that predates phone-size watching.
+   */
+  viewportApplied?: boolean;
+  /**
+   * Why the desktop keeps the tab at its own size although a viewport was
+   * asked (the tab has its own device setting, is on screen there, records or
+   * has DevTools open). Null when it is applied or still being applied.
+   */
+  viewportNote?: string | null;
+};
+
+/**
+ * The picture a remote viewer (the phone) shows a tab in, in points, and its
+ * screen scale. Sent with `work_tools.readBrowserTabFrame` so the desktop lays
+ * the page out at that size for as long as the watch lasts.
+ */
+export type BuiltInBrowserRemoteViewport = {
+  width: number;
+  height: number;
+  deviceScaleFactor: number;
 };
 
 /**

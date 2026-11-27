@@ -4356,8 +4356,8 @@ extension ChatThreadCommentAnchor: Decodable {
 }
 
 /// A note the user pinned to part of an agent reply, pending until a send
-/// carries it. The phone lists, edits, holds and deletes these; it does not
-/// create them.
+/// carries it. The phone creates (text quotes only), lists, edits, holds and
+/// deletes these.
 struct ChatThreadComment: Decodable, Equatable, Identifiable {
   var id: String
   var sessionId: String
@@ -8898,6 +8898,53 @@ struct WorkToolsBrowserTabFrame: Codable, Equatable {
   var title: String?
   var isLoading: Bool?
   var frame: WorkToolsBrowserTabFramePicture?
+  /// Only when the read sent a viewport: whether the page is laid out at it.
+  /// Nil from a desktop that predates phone-size watching.
+  var viewportApplied: Bool?
+  /// Why the desktop keeps the tab at its own size although the phone asked
+  /// for phone size (the tab has its own device setting, someone is looking at
+  /// it there, it records). A sentence to show as is.
+  var viewportNote: String?
+}
+
+/// The phone's picture of a tab, in points, and the screen scale. Sent with
+/// each `workTools.readBrowserTabFrame` so the desktop lays the page out at
+/// phone width while the phone watches; an older desktop ignores it.
+struct WorkToolsBrowserViewport: Equatable {
+  var width: Int
+  var height: Int
+  var deviceScaleFactor: Double
+
+  var payload: [String: Any] {
+    ["width": width, "height": height, "deviceScaleFactor": deviceScaleFactor]
+  }
+}
+
+/// One dev server a lane runs on its machine, from `workTools.listDevServers`.
+/// The host also sends where it was found (`source`) and when; the list only
+/// shows the address.
+struct WorkToolsDevServer: Codable, Equatable, Identifiable {
+  var port: Int
+  var url: String
+
+  var id: String { "\(port)|\(url)" }
+}
+
+/// The answer to `workTools.listDevServers`.
+struct WorkToolsDevServerList: Codable, Equatable {
+  var servers: [WorkToolsDevServer]
+}
+
+/// The answer to `workTools.openBrowserTab`. `tabId` is the desktop tab to
+/// watch; nil when no desktop runs on the lane's machine and one on another
+/// computer (`openedOn`) took the page instead.
+struct WorkToolsOpenedBrowserTab: Codable, Equatable {
+  var tabId: String?
+  /// The lane already had a tab on that server.
+  var reused: Bool?
+  var openedOn: String?
+  /// That desktop asks its person to allow the tunnel first.
+  var awaitingApproval: Bool?
 }
 
 /// A person's input for `workTools.sendBrowserTabInput`. `x` and `y` are
@@ -8949,6 +8996,9 @@ struct WorkToolsLaneState: Codable, Equatable {
   /// `supported: false` from one that has it on a machine that cannot hold a
   /// display; the sheet hides the card on both.
   var macDesktop: WorkToolsMacDesktopState?
+  /// The lane's dev servers the host already knows of. Nil from a host older
+  /// than the field; the Browser chip shows for a lane that has one.
+  var devServers: [WorkToolsDevServer]?
 }
 
 /// A point on the host's global screen plane. `x` and `y` are display points,

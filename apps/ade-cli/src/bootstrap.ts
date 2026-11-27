@@ -2996,6 +2996,8 @@ export async function createAdeRuntime(args: {
             await devServerWatcher.refresh();
             return devServerRegistry.list(args).filter(devServerWatcher.ownsRecord);
           },
+          // The lane state carries this on every poll, so it never scans.
+          listKnown: (args) => devServerRegistry.list(args).filter(devServerWatcher.ownsRecord),
           probePort: (port) => probeLocalhostPort(port),
           stop: async (stopArgs) => {
             const record = devServerRegistry.list().find((entry) =>

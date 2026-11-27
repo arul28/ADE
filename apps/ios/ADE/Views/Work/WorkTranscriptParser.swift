@@ -1248,6 +1248,11 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           turnId: turnId,
           phase: optionalString(eventDict["phase"])
         )
+        parsed.threadCommentMessageKey = workThreadCommentMessageKey(
+          messageId: eventDict["messageId"] as? String,
+          turnId: turnId,
+          itemId: eventDict["itemId"] as? String
+        )
       }
       if type == "user_message" {
         parsed.userMessageReactionKey = workUserMessageReactionKey(

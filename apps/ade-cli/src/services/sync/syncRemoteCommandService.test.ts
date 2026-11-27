@@ -3911,6 +3911,47 @@ describe("remote command reply bounds", () => {
   });
 });
 
+describe("workTools.openBrowserTab", () => {
+  // A phone may only point the person's desktop browser at one of the lane's
+  // own dev servers on this machine's loopback; anything else is refused
+  // before the browser is asked. A server the lane already shows is reused.
+  it.each([
+    { name: "opens a lane dev server", url: "http://localhost:5173/", opens: "http://localhost:5173/", result: { ok: true, tabId: "tab-new", reused: false } },
+    { name: "opens it on the IPv6 loopback", url: "http://[::1]:5173/app", opens: "http://[::1]:5173/app", result: { ok: true, tabId: "tab-new", reused: false } },
+    { name: "reuses the lane's tab on that port", url: "http://127.0.0.1:4180/", opens: null, result: { ok: true, tabId: "tab-a", reused: true } },
+    { name: "refuses a public site", url: "https://example.com/", opens: null, result: /localhost/ },
+    { name: "refuses a LAN address on a dev server's port", url: "http://192.168.1.20:5173/", opens: null, result: /localhost/ },
+    { name: "refuses a port the lane does not serve", url: "http://localhost:6000/", opens: null, result: /port 6000/ },
+    { name: "refuses a non-web scheme", url: "file:///etc/passwd", opens: null, result: /localhost/ },
+    { name: "refuses an address with a sign-in", url: "http://user:pw@localhost:5173/", opens: null, result: /sign-in/ },
+  ])("$name", async ({ url, opens, result }) => {
+    const createTab = vi.fn().mockResolvedValue({ targetTabId: "tab-new", targetTabCreated: true });
+    const listDevServers = vi.fn(async () => ({
+      servers: [{ port: 5173, url: "http://localhost:5173/" }, { port: 4180, url: "http://localhost:4180/" }],
+    }));
+    const getLaneState = vi.fn(async ({ laneId }: { laneId: string }) => ({
+      laneId,
+      browser: { tabs: [{ id: "tab-a", url: "http://localhost:4180/settings" }] },
+    }));
+    const { service } = createService({
+      workToolsStateService: { getLaneState, listDevServers, readObservationPreview: vi.fn() },
+      builtInBrowserService: { closeTab: vi.fn(), createTab },
+    });
+    const run = service.execute(makePayload("workTools.openBrowserTab", { laneId: "lane-1", url }));
+    if (result instanceof RegExp) {
+      await expect(run).rejects.toThrow(result);
+    } else {
+      await expect(run).resolves.toEqual(result);
+    }
+    expect(listDevServers).toHaveBeenCalledWith({ laneId: "lane-1" });
+    if (opens) {
+      expect(createTab).toHaveBeenCalledWith({ url: opens, groupLaneId: "lane-1", activate: false, openPanel: false });
+    } else {
+      expect(createTab).not.toHaveBeenCalled();
+    }
+  });
+});
+
 describe("workTools.closeBrowserTab", () => {
   // A phone closes a tab only in the lane it names, so it cannot close another
   // lane's tab by guessing its id, and a tab that is already gone is not an error.

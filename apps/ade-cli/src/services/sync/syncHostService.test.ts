@@ -9039,6 +9039,8 @@ describe("CTO-gated Linear sync commands", () => {
         "macDesktop.input",
         // Closing a browser tab changes the desktop: the owner's phone only.
         "workTools.closeBrowserTab",
+        // So does opening a lane's dev server in a desktop tab.
+        "workTools.openBrowserTab",
         // Clicking and typing into a desktop's tab is driving it, not viewing.
         "workTools.sendBrowserTabInput",
         // Lane resolution can import a lane and pull mutates worktrees —

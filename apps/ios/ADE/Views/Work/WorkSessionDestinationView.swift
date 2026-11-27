@@ -2593,6 +2593,24 @@ struct WorkSessionDestinationView: View {
       updateThreadCommentAction = nil
       deleteThreadCommentAction = nil
     }
+    let createThreadCommentAction: (@MainActor (WorkThreadCommentDraft) async throws -> Void)?
+    if syncService.supportsCreatingThreadComments(sessionId: session.id) {
+      let commentSessionId = session.id
+      let service = syncService
+      createThreadCommentAction = { draft in
+        try await service.createThreadComment(
+          sessionId: commentSessionId,
+          messageKey: draft.messageKey,
+          messageExcerpt: draft.messageExcerpt,
+          quote: draft.anchor.quote,
+          prefix: draft.anchor.prefix,
+          suffix: draft.anchor.suffix,
+          body: draft.body
+        )
+      }
+    } else {
+      createThreadCommentAction = nil
+    }
     let restoreCancelledQueueAction: (@MainActor (String) async -> Void)?
     if syncService.supportsChatRemoteAction(
       "chat.restoreCancelledQueue",
@@ -2778,6 +2796,7 @@ struct WorkSessionDestinationView: View {
       threadComments: threadCommentsForView,
       onUpdateThreadComment: updateThreadCommentAction,
       onDeleteThreadComment: deleteThreadCommentAction,
+      onCreateThreadComment: createThreadCommentAction,
       crossMachineHandoffActions: crossMachineHandoffActions,
       crossMachineBatchMoveApprovalActions: crossMachineBatchMoveApprovalActions,
       duoPane: duoPane,

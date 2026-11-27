@@ -5,9 +5,11 @@ import UIKit
 /// or the lane's Mac Desktop. Each lane tool chip opens its own tool; the Apple
 /// device has its own full-screen viewer and no sheet.
 ///
-/// Watching only, with two exceptions: a browser tab can be closed (its ×,
-/// with a few seconds to undo before the close is sent), and Mac Desktop takes
-/// a finger when the host allows takeover.
+/// Watching only, with these exceptions: a browser tab can be closed (its ×,
+/// with a few seconds to undo before the close is sent), a lane's dev server can
+/// be opened in a background desktop tab and watched here, a watched tab takes
+/// a finger after Take control, and Mac Desktop takes a finger when the host
+/// allows takeover.
 ///
 /// The browser is a `WebContentsView` in ADE Desktop and App Control is a CDP
 /// socket to a local process; neither can be driven from a phone. App Control
@@ -95,6 +97,22 @@ struct WorkToolsSheet: View {
   @State private var liveFrameInfo: WorkToolsBrowserTabFrame?
   /// "Take control" is on: taps, drags and typing go to the tab.
   @State private var browserInControl = false
+  /// Lay the watched page out at the phone's size (the default) or show the
+  /// desktop's own layout. Kept across launches.
+  @AppStorage("ade.workTools.browserPhoneSize") private var browserPhoneSize = true
+  /// The width of the sheet's content column and the height of its visible
+  /// area, in points: what the live picture is sized from.
+  @State private var contentWidth: CGFloat = 0
+  @State private var visibleHeight: CGFloat = 0
+  @Environment(\.displayScale) private var displayScale
+  /// The lane's dev servers, from `workTools.listDevServers`, refreshed with the state.
+  @State private var devServers: [WorkToolsDevServer] = []
+  /// The dev server whose Open is on its way to the desktop.
+  @State private var openingDevServerId: String?
+  /// One line under the dev servers after an open the phone cannot watch
+  /// (a desktop on another computer took it).
+  @State private var devServerNotice: String?
+  @State private var devServerError: String?
 
   /// Live frame cadence. One request is in flight at a time, so a slow link
   /// simply gets fewer frames.
@@ -132,6 +150,22 @@ struct WorkToolsSheet: View {
     return syncService.supportsWorkToolsBrowserTabFrame(laneId: laneId)
   }
 
+  /// The host lists the lane's dev servers to the phone.
+  private var supportsDevServers: Bool {
+    #if DEBUG
+    if previewLiveBrowser || previewAllowsTabClose { return true }
+    #endif
+    return syncService.supportsWorkToolsDevServers(laneId: laneId)
+  }
+
+  /// The host lets this phone open a dev server in the desktop browser.
+  private var canOpenDevServers: Bool {
+    #if DEBUG
+    if previewLiveBrowser || previewAllowsTabClose { return true }
+    #endif
+    return syncService.canOpenWorkToolsBrowserTab(laneId: laneId)
+  }
+
   /// The host lets this phone click and type into a browser tab.
   private var canControlBrowser: Bool {
     #if DEBUG
@@ -157,7 +191,7 @@ struct WorkToolsSheet: View {
 
   var body: some View {
     chrome
-    .task(id: laneId) { await refresh() }
+    .task(id: laneId) { await refresh(freshDevServers: true) }
     .task(id: laneId) {
       // The poll lives beside the initial load rather than inside it so a slow
       // first response cannot delay the cadence, and cancellation on dismiss
@@ -201,6 +235,12 @@ struct WorkToolsSheet: View {
       isPresented: Binding(get: { tabCloseError != nil }, set: { if !$0 { tabCloseError = nil } }),
       actions: { Button("OK", role: .cancel) { tabCloseError = nil } },
       message: { Text(tabCloseError ?? "") }
+    )
+    .alert(
+      "Couldn't open the page",
+      isPresented: Binding(get: { devServerError != nil }, set: { if !$0 { devServerError = nil } }),
+      actions: { Button("OK", role: .cancel) { devServerError = nil } },
+      message: { Text(devServerError ?? "") }
     )
   }
 
@@ -260,6 +300,9 @@ struct WorkToolsSheet: View {
         switch tool {
         case .browser:
           browserCard
+          if supportsDevServers {
+            devServersCard
+          }
           if let liveFrame, liveFrameTabId == liveTabId, let tabId = liveTabId {
             WorkToolsBrowserLiveCard(
               image: liveFrame,
@@ -268,7 +311,9 @@ struct WorkToolsSheet: View {
               isLoading: liveFrameInfo?.isLoading == true,
               canControl: canControlBrowser,
               inControl: $browserInControl,
-              send: { event in sendBrowserInput(event, tabId: tabId) }
+              send: { event in sendBrowserInput(event, tabId: tabId) },
+              phoneSize: $browserPhoneSize,
+              sizeNote: browserPhoneSize ? liveFrameInfo?.viewportNote : nil
             )
           } else {
             lastFrameCard
@@ -300,10 +345,109 @@ struct WorkToolsSheet: View {
             .padding(.top, 2)
         }
       }
+      // The column the cards fill, before the page margin: the live picture
+      // is this wide less the card's own inset.
+      .onGeometryChange(for: CGFloat.self) { proxy in
+        proxy.size.width
+      } action: { width in
+        if abs(contentWidth - width) >= 1 { contentWidth = width }
+      }
       .padding(.horizontal, 16)
       .padding(.vertical, 16)
     }
-    .refreshable { await refresh() }
+    .onGeometryChange(for: CGFloat.self) { proxy in
+      proxy.size.height
+    } action: { height in
+      if abs(visibleHeight - height) >= 1 { visibleHeight = height }
+    }
+    .refreshable { await refresh(freshDevServers: true) }
+  }
+
+  // MARK: - Dev servers
+
+  /// The lane's dev servers, each with Open: the page opens in a background tab
+  /// of the desktop browser on the lane's machine, and the live picture below
+  /// switches to it.
+  private var devServersCard: some View {
+    ADEKitCard(title: "Dev servers", count: devServers.isEmpty ? nil : "\(devServers.count)") {
+      VStack(alignment: .leading, spacing: 10) {
+        if devServers.isEmpty {
+          Text("No dev servers are running in this lane.")
+            .font(.footnote)
+            .foregroundStyle(ADEColor.textSecondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+          let canOpen = canOpenDevServers
+          ForEach(devServers) { server in
+            WorkToolsDevServerRow(
+              server: server,
+              hasTab: visibleTabs.contains { workToolsLoopbackPort($0.url) == server.port },
+              isOpening: openingDevServerId == server.id,
+              onOpen: canOpen ? { openDevServer(server) } : nil
+            )
+            .disabled(openingDevServerId != nil && openingDevServerId != server.id)
+          }
+        }
+        if let devServerNotice {
+          Text(devServerNotice)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+      }
+    }
+  }
+
+  /// Opens `server` in the desktop browser and watches the tab it lands in. A
+  /// desktop on another computer may take it instead (no desktop on the lane's
+  /// machine); then the phone can only say where it opened.
+  private func openDevServer(_ server: WorkToolsDevServer) {
+    guard openingDevServerId == nil else { return }
+    ADEHaptics.light()
+    devServerNotice = nil
+    #if DEBUG
+    if previewLiveBrowser || previewAllowsTabClose {
+      if let tab = visibleTabs.first(where: { workToolsLoopbackPort($0.url) == server.port }) {
+        watchedTabId = tab.id
+      }
+      return
+    }
+    #endif
+    openingDevServerId = server.id
+    let laneId = laneId
+    let syncService = syncService
+    Task { @MainActor in
+      defer { openingDevServerId = nil }
+      do {
+        let opened = try await syncService.openWorkToolsBrowserTab(laneId: laneId, url: server.url)
+        guard laneId == self.laneId else { return }
+        if let tabId = opened.tabId {
+          watchedTabId = tabId
+          await refresh()
+        } else if let desktop = opened.openedOn {
+          devServerNotice = opened.awaitingApproval == true
+            ? "Sent to ADE on \(desktop). Allow it there to load the page."
+            : "Opened in ADE on \(desktop). Watch it from there."
+        } else {
+          devServerNotice = "Opened in ADE on another computer."
+        }
+      } catch {
+        guard laneId == self.laneId else { return }
+        devServerError = error.localizedDescription
+      }
+    }
+  }
+
+  /// The picture the live frame is laid out for, in points: the card's width,
+  /// and most of the visible height. Nil when the person picked desktop size
+  /// or the sheet has not been measured yet.
+  private var browserViewport: WorkToolsBrowserViewport? {
+    guard browserPhoneSize, contentWidth > 0 else { return nil }
+    let width = (contentWidth - ADEKit.inset * 2).rounded(.down)
+    guard width >= 240 else { return nil }
+    let tall = visibleHeight > 0 ? visibleHeight * 0.72 : width * 1.8
+    let height = min(max(tall, width * 1.2), width * 2.4).rounded(.down)
+    return WorkToolsBrowserViewport(width: Int(width), height: Int(height), deviceScaleFactor: Double(displayScale))
   }
 
   // MARK: - Cards
@@ -499,10 +643,12 @@ struct WorkToolsSheet: View {
       let started = ContinuousClock.now
       var delay = Self.liveFrameInterval
       do {
+        // Read each time: the toggle and a rotation change it mid-watch.
         let answer = try await syncService.readWorkToolsBrowserTabFrame(
           tabId: tabId,
           laneId: laneId,
-          maxWidth: Self.liveFrameMaxWidth
+          maxWidth: Self.liveFrameMaxWidth,
+          viewport: browserViewport
         )
         guard !Task.isCancelled else { return }
         var image: UIImage?
@@ -682,10 +828,16 @@ struct WorkToolsSheet: View {
     return "couldn't move to the lane screen"
   }
 
-  private func refresh() async {
+  private func refresh(freshDevServers: Bool = false) async {
     #if DEBUG
     if let previewState {
       state = previewState
+      if previewLiveBrowser || previewAllowsTabClose {
+        devServers = [
+          WorkToolsDevServer(port: 5173, url: "http://localhost:5173/"),
+          WorkToolsDevServer(port: 4180, url: "http://localhost:4180/"),
+        ]
+      }
       frame = previewFrame
       loadedFramePath = previewFrame == nil ? nil : latestObservation?.path
       loaded = true
@@ -704,6 +856,18 @@ struct WorkToolsSheet: View {
     guard !Task.isCancelled else { return }
     state = next
     loaded = true
+    if tool == .browser, syncService.supportsWorkToolsDevServers(laneId: laneId) {
+      // The poll takes the list the lane state carries (no scan on the host);
+      // opening the sheet and pulling to refresh ask for a fresh one, which
+      // also finds a server started outside ADE's terminals.
+      if !freshDevServers, let known = next?.devServers {
+        devServers = known
+      } else if let servers = try? await syncService.listWorkToolsDevServers(laneId: laneId) {
+        // A failed read keeps the last list rather than blanking it.
+        guard !Task.isCancelled else { return }
+        devServers = servers
+      }
+    }
     await loadFrameIfNeeded()
     // The card retries a stopped stream and reloads its still on this tick.
     // While a live session is mounted that still is not polled: the picture
@@ -908,6 +1072,70 @@ private struct WorkToolsTabRow: View {
     if let title = tab.title, !title.isEmpty { return title }
     return "Untitled tab"
   }
+}
+
+/// One dev server: its port, its address, and Open (or Watch, when the lane
+/// already has a tab on it). The address truncates in the middle so the port
+/// and path both stay readable on a narrow phone.
+private struct WorkToolsDevServerRow: View {
+  let server: WorkToolsDevServer
+  var hasTab = false
+  var isOpening = false
+  /// Nil when this phone may not open pages (a read-only viewer).
+  var onOpen: (() -> Void)?
+
+  var body: some View {
+    HStack(alignment: .center, spacing: 10) {
+      Text(verbatim: ":\(server.port)")
+        .font(.adeMono(12, weight: .semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 4)
+        .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .fixedSize()
+      Text(server.url)
+        .font(.subheadline)
+        .foregroundStyle(ADEColor.textSecondary)
+        .lineLimit(1)
+        .truncationMode(.middle)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      if let onOpen {
+        if isOpening {
+          ProgressView()
+            .controlSize(.small)
+            .frame(minWidth: 56, minHeight: 30)
+            .accessibilityLabel("Opening \(server.url)")
+        } else {
+          Button(hasTab ? "Watch" : "Open", action: onOpen)
+            .buttonStyle(ADEKitButtonStyle(tone: .accent))
+            .fixedSize()
+            .accessibilityLabel(hasTab ? "Watch \(server.url)" : "Open \(server.url) in the desktop browser")
+        }
+      }
+    }
+    .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+    .contextMenu {
+      Button {
+        UIPasteboard.general.string = server.url
+      } label: {
+        Label("Copy link", systemImage: "link")
+      }
+    }
+  }
+}
+
+/// The loopback port a page address points at (`localhost`, `127.0.0.1`,
+/// `[::1]`), or nil for any other address. Matches a dev server to the lane's
+/// tab on it the way the host does.
+func workToolsLoopbackPort(_ address: String?) -> Int? {
+  guard let address,
+        let components = URLComponents(string: address),
+        let scheme = components.scheme?.lowercased(),
+        scheme == "http" || scheme == "https",
+        let host = components.host?.lowercased(),
+        ["localhost", "127.0.0.1", "::1", "[::1]"].contains(host)
+  else { return nil }
+  return components.port ?? (scheme == "https" ? 443 : 80)
 }
 
 /// What the "open tool" card should draw where the last captured frame goes.

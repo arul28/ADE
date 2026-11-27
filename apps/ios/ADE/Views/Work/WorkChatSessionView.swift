@@ -910,6 +910,8 @@ struct WorkChatSessionView: View {
   /// One presentation host for every box in this transcript. Boxes reach it
   /// through `\.workOutputViewer` rather than each carrying its own cover.
   @StateObject var outputViewer = WorkOutputViewerModel()
+  /// The one text-selection sheet for this chat's transcript rows.
+  @StateObject var textSelection = WorkMessageTextSelectionModel()
   /// The skill chip sheet: one per chat surface, asked for by chips in cells.
   @StateObject var skillInstructions = WorkSkillInstructionsModel()
   @State var composerSettingMutationInFlight = false
@@ -1089,6 +1091,9 @@ struct WorkChatSessionView: View {
   /// hides the comments chip, which is how an older host shows nothing new.
   var onUpdateThreadComment: (@MainActor (String, String?, Bool?) async throws -> Void)? = nil
   var onDeleteThreadComment: (@MainActor (String) async throws -> Void)? = nil
+  /// `chat.createThreadComment` for a text quote. Nil on a host that cannot
+  /// take one from the phone; the selection sheet then offers copy only.
+  var onCreateThreadComment: (@MainActor (WorkThreadCommentDraft) async throws -> Void)? = nil
   /// Cross-machine handoff card actions and the send gate (where new messages
   /// go). Nil hides the card's buttons and sends without asking (an older host
   /// has no record).
@@ -2959,6 +2964,7 @@ struct WorkChatSessionView: View {
             .environment(\.workSyncService, WorkSyncServiceReference(syncServiceReference.service))
             .modifier(WorkOptionalSyncServiceObject(service: syncServiceReference.service))
             .environment(\.workOutputViewer, outputViewer)
+            .environment(\.workMessageTextSelection, textSelection)
             .environment(\.workSkillInstructions, skillInstructions)
             .environment(\.workProofCitations, proofCitationContext)
             .environment(\.workSceneBridge, sceneBridge)
@@ -3571,6 +3577,12 @@ struct WorkChatSessionView: View {
           )
           .presentationDetents([.medium, .large])
           .presentationDragIndicator(.visible)
+        }
+        .onAppear { textSelection.canComment = onCreateThreadComment != nil }
+        .onChange(of: onCreateThreadComment != nil) { _, available in textSelection.canComment = available }
+        .onChange(of: session.id) { _, _ in textSelection.intent = nil }
+        .sheet(item: $textSelection.intent) { intent in
+          messageTextSelectionSheet(intent)
         }
         .sheet(isPresented: $threadCommentsSheetPresented) {
           WorkThreadCommentsSheet(
