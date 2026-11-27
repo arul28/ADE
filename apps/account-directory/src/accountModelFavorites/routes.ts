@@ -18,7 +18,9 @@ import { trustedHttpsOrigin } from "../trustedOrigin";
  * `GET` answers the list. `PUT {add, remove}` changes it: the server applies
  * the change to the list it holds, under the revision it read, so two devices
  * starring at once both land; a write that lost the race reads again and
- * applies its change once more.
+ * applies its change once more. Refusals a resend can't change answer 4xx
+ * (`too_many_favorites` 409, a bad id 400); a list still busy after the
+ * retries answers 503 `favorites_busy`, which a client sends again later.
  *
  * Every route takes the account bearer and reads only the caller's row. CORS
  * is the web client's exact origin, for the read and the change.
@@ -59,21 +61,15 @@ function idList(value: unknown): string[] | null {
   return out;
 }
 
-/** The stored list; a row this server can't read counts as empty, so a save repairs it. */
+/** The stored list, minus anything this server can't read; a row it can't parse counts as empty, so a save repairs it. */
 function storedList(raw: string | null | undefined): string[] {
-  if (!raw) return [];
+  let parsed: unknown = null;
   try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    const out: string[] = [];
-    for (const value of parsed) {
-      const id = modelId(value);
-      if (id && !out.includes(id)) out.push(id);
-    }
-    return out;
+    parsed = raw ? JSON.parse(raw) as unknown : null;
   } catch {
-    return [];
+    parsed = null;
   }
+  return Array.isArray(parsed) ? [...new Set(parsed.map(modelId).filter((id): id is string => id != null))] : [];
 }
 
 async function readRow(db: D1Database, userId: string): Promise<AccountModelFavorites> {
@@ -147,6 +143,6 @@ async function handlePut(request: Request, env: AccountModelFavoritesEnv, userId
     if (written) return json({ favorites: next, revision: written.revision } satisfies AccountModelFavorites);
   }
   logCloud("account_model_favorites.contended", { userId });
-  return fail("favorites_busy", "Your favorite models are changing on another device. Try again.", 409);
+  return fail("favorites_busy", "Your favorite models are changing on another device. Try again.", 503);
 }
 

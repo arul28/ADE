@@ -336,7 +336,7 @@ const REQUESTS_PER_MINUTE = {
    * never a real save.
    */
   uploads: 1_200,
-  /** Agent limits, event-wake topics and the account lane index. */
+  /** Agent limits, event-wake topics, the account lane index and model favorites changes. */
   settings: 120,
   /** Sponsored cards and the Index (`gravity.ts`): a few per finished reply and open chat; this stops a loop. */
   sponsored: 30,

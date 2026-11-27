@@ -419,6 +419,7 @@
 		F10000000000000000000002 /* SettingsConnectionHeader.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000002 /* SettingsConnectionHeader.swift */; };
 		F10000000000000000000003 /* SettingsPairingSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000003 /* SettingsPairingSection.swift */; };
 		AD0000000000000000000B01 /* AccountService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0000000000000000000A01 /* AccountService.swift */; };
+		FA0000000000000000000B01 /* AccountModelFavorites.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA0000000000000000000A01 /* AccountModelFavorites.swift */; };
 		AD0000000000000000000B02 /* AccountDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0000000000000000000A02 /* AccountDirectory.swift */; };
 		E2000000000000000000DE07 /* AccountProjects.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE07 /* AccountProjects.swift */; };
 		E2000000000000000000DE01 /* DeviceSignInApproval.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE01 /* DeviceSignInApproval.swift */; };
@@ -488,6 +489,7 @@
 		C10000000000000000000002 /* ADECodeRenderingCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000012 /* ADECodeRenderingCache.swift */; };
 		E1000000000000000000003E /* WorkContextCompactDivider.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003E /* WorkContextCompactDivider.swift */; };
 		E1000000000000000000003F /* WorkModelCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003F /* WorkModelCatalog.swift */; };
+		FA0000000000000000000B02 /* ModelPickerStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA0000000000000000000A02 /* ModelPickerStore.swift */; };
 		E10000000000000000000040 /* WorkModelPickerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000040 /* WorkModelPickerSheet.swift */; };
 		E10000000000000000000F0D /* WorkLaneToolChips.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F0D /* WorkLaneToolChips.swift */; };
 		E10000000000000000000F0E /* WorkToolsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F0E /* WorkToolsSheet.swift */; };
@@ -859,6 +861,7 @@
 		D1000000000000000000003B /* WorkActivityIndicator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkActivityIndicator.swift; path = ADE/Views/Work/WorkActivityIndicator.swift; sourceTree = "<group>"; };
 		D1000000000000000000003E /* WorkContextCompactDivider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkContextCompactDivider.swift; path = ADE/Views/Work/WorkContextCompactDivider.swift; sourceTree = "<group>"; };
 		D1000000000000000000003F /* WorkModelCatalog.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkModelCatalog.swift; path = ADE/Views/Work/WorkModelCatalog.swift; sourceTree = "<group>"; };
+		FA0000000000000000000A02 /* ModelPickerStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ModelPickerStore.swift; path = ADE/Views/Work/ModelPickerStore.swift; sourceTree = "<group>"; };
 		D10000000000000000000040 /* WorkModelPickerSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkModelPickerSheet.swift; path = ADE/Views/Work/WorkModelPickerSheet.swift; sourceTree = "<group>"; };
 		D10000000000000000000F0D /* WorkLaneToolChips.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkLaneToolChips.swift; path = ADE/Views/Work/WorkLaneToolChips.swift; sourceTree = "<group>"; };
 		D10000000000000000000F0E /* WorkToolsSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkToolsSheet.swift; path = ADE/Views/Work/WorkToolsSheet.swift; sourceTree = "<group>"; };
@@ -1048,6 +1051,7 @@
 		F20000000000000000000002 /* SettingsConnectionHeader.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsConnectionHeader.swift; path = ADE/Views/Settings/SettingsConnectionHeader.swift; sourceTree = "<group>"; };
 		F20000000000000000000003 /* SettingsPairingSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsPairingSection.swift; path = ADE/Views/Settings/SettingsPairingSection.swift; sourceTree = "<group>"; };
 		AD0000000000000000000A01 /* AccountService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountService.swift; path = ADE/Services/AccountService.swift; sourceTree = "<group>"; };
+		FA0000000000000000000A01 /* AccountModelFavorites.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountModelFavorites.swift; path = ADE/Services/AccountModelFavorites.swift; sourceTree = "<group>"; };
 		AD0000000000000000000A02 /* AccountDirectory.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountDirectory.swift; path = ADE/Services/AccountDirectory.swift; sourceTree = "<group>"; };
 		D2000000000000000000DE07 /* AccountProjects.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountProjects.swift; path = ADE/Services/AccountProjects.swift; sourceTree = "<group>"; };
 		D2000000000000000000DE01 /* DeviceSignInApproval.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeviceSignInApproval.swift; path = ADE/Services/DeviceSignInApproval.swift; sourceTree = "<group>"; };
@@ -1565,6 +1569,7 @@
 				D1000000000000000000003E /* WorkContextCompactDivider.swift */,
 				D1000000000000000000003F /* WorkModelCatalog.swift */,
 				D10000000000000000000040 /* WorkModelPickerSheet.swift */,
+				FA0000000000000000000A02 /* ModelPickerStore.swift */,
 				D10000000000000000000F0D /* WorkLaneToolChips.swift */,
 				D10000000000000000000F0E /* WorkToolsSheet.swift */,
 				D10000000000000000000F1B /* WorkToolsBrowserLiveCard.swift */,
@@ -1806,6 +1811,7 @@
 				AD0000000000000000000A01 /* AccountService.swift */,
 				AD0000000000000000000A05 /* AccountEmailAuthFlow.swift */,
 				AD0000000000000000000A02 /* AccountDirectory.swift */,
+				FA0000000000000000000A01 /* AccountModelFavorites.swift */,
 				D2000000000000000000DE07 /* AccountProjects.swift */,
 				D2000000000000000000DE10 /* GitHubAccountCredential.swift */,
 				FA55A0000000000000000A01 /* PasswordsVault.swift */,
@@ -2585,6 +2591,7 @@
 				AD0000000000000000000B01 /* AccountService.swift in Sources */,
 				AD0000000000000000000B05 /* AccountEmailAuthFlow.swift in Sources */,
 				AD0000000000000000000B02 /* AccountDirectory.swift in Sources */,
+				FA0000000000000000000B01 /* AccountModelFavorites.swift in Sources */,
 				E2000000000000000000DE07 /* AccountProjects.swift in Sources */,
 				E2000000000000000000DE10 /* GitHubAccountCredential.swift in Sources */,
 				FA55A0000000000000000B01 /* PasswordsVault.swift in Sources */,
@@ -2682,6 +2689,7 @@
 				E1000000000000000000003E /* WorkContextCompactDivider.swift in Sources */,
 				E1000000000000000000003F /* WorkModelCatalog.swift in Sources */,
 				E10000000000000000000040 /* WorkModelPickerSheet.swift in Sources */,
+				FA0000000000000000000B02 /* ModelPickerStore.swift in Sources */,
 				E10000000000000000000F0D /* WorkLaneToolChips.swift in Sources */,
 				E10000000000000000000F0E /* WorkToolsSheet.swift in Sources */,
 				E10000000000000000000F1B /* WorkToolsBrowserLiveCard.swift in Sources */,

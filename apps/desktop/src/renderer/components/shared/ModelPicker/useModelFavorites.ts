@@ -1,6 +1,5 @@
-import { useEffect } from "react";
+import { useCallback, useEffect } from "react";
 import { create } from "zustand";
-import { useShallow } from "zustand/react/shallow";
 import type { OpenProjectBinding } from "../../../../shared/types";
 import { useAppStore } from "../../../state/appStore";
 import { isAdeCloudBinding } from "../../../../shared/adeCloud/binding";
@@ -19,21 +18,22 @@ import {
 // client (`useModelRecents`).
 //
 // Before the account list, the list lived on the tab's machine and then in
-// this client only. The first sync with the account adds this client's whole
-// list to it, and the machine's old list is read once and merged in first.
+// this client only. Both reach the account as queued changes: the machine's
+// old list is read once and added, then this client's whole list is added
+// to the account's once.
 const STORAGE_KEY = "ade.modelPicker.favorites.v1";
-/** Set once the machine's list was merged in; until then each start tries again. */
+/** Set once the machine's list was read in; until then each start tries again. */
 const IMPORTED_KEY = "ade.modelPicker.favorites.imported.v1";
-/** Changes made here that the account hasn't confirmed: `{add, remove}`. */
+/** Changes made here that the account hasn't confirmed: `{add, remove}`. Shared by every window. */
 const PENDING_KEY = "ade.modelPicker.favorites.pending.v1";
-/** Set once this client's list was added to the account's. */
-const ACCOUNT_MERGED_KEY = "ade.modelPicker.favorites.accountMerged.v1";
+/** Set once this client's list was queued for the account. */
+const ACCOUNT_SEEDED_KEY = "ade.modelPicker.favorites.accountSeeded.v1";
 /** Opening the picker reads the account again after this long. No timer. */
 const RESYNC_AFTER_MS = 15_000;
 
 type Pending = { add: string[]; remove: string[] };
 
-function readFlag(key: string): boolean {
+function hasFlag(key: string): boolean {
   try {
     return window.localStorage.getItem(key) != null;
   } catch {
@@ -45,18 +45,11 @@ function setFlag(key: string): void {
   try {
     window.localStorage.setItem(key, "1");
   } catch {
-    // Not saved: the next start does the same merge again, which changes nothing.
+    // Not saved: the next start does the same step again, which adds nothing new.
   }
 }
 
-function idsOf(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  const out: string[] = [];
-  for (const entry of value) if (typeof entry === "string" && entry.length > 0 && !out.includes(entry)) out.push(entry);
-  return out;
-}
-
-function readJson(key: string): unknown {
+function readStored(key: string): unknown {
   try {
     const raw = window.localStorage.getItem(key);
     return raw ? JSON.parse(raw) as unknown : null;
@@ -65,7 +58,7 @@ function readJson(key: string): unknown {
   }
 }
 
-function writeJson(key: string, value: unknown): void {
+function writeStored(key: string, value: unknown): void {
   try {
     window.localStorage.setItem(key, JSON.stringify(value));
   } catch {
@@ -73,9 +66,37 @@ function writeJson(key: string, value: unknown): void {
   }
 }
 
+/** A model id the account takes (the server's rule), or null. */
+function favoriteId(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const id = value.trim();
+  return id && id.length <= ACCOUNT_MODEL_FAVORITE_ID_MAX && !/[\p{Cc}\p{Cf}]/u.test(id) ? id : null;
+}
+
+/** The ids of `value` the account takes, deduplicated in order. */
+function idsOf(value: unknown): string[] {
+  return Array.isArray(value) ? [...new Set(value.map(favoriteId).filter((id): id is string => id != null))] : [];
+}
+
+/** Read from storage each time, so a change another window queued is never overwritten. */
 function readPending(): Pending {
-  const raw = readJson(PENDING_KEY) as Partial<Pending> | null;
+  const raw = readStored(PENDING_KEY) as Partial<Pending> | null;
   return { add: idsOf(raw?.add), remove: idsOf(raw?.remove) };
+}
+
+/** `pending` with `id` queued to be added or taken off; the opposite change for it is dropped. */
+function markPending(pending: Pending, id: string, change: "add" | "remove"): Pending {
+  const add = pending.add.filter((entry) => entry !== id);
+  const remove = pending.remove.filter((entry) => entry !== id);
+  return change === "add" ? { add: [...add, id], remove } : { add, remove: [...remove, id] };
+}
+
+/** `pending` without the changes `sent` carried. */
+function withoutSent(pending: Pending, sent: Pending): Pending {
+  return {
+    add: pending.add.filter((id) => !sent.add.includes(id)),
+    remove: pending.remove.filter((id) => !sent.remove.includes(id)),
+  };
 }
 
 /** `list` with the changes the account hasn't confirmed yet applied. */
@@ -85,11 +106,13 @@ function withPending(list: readonly string[], pending: Pending): string[] {
   return next;
 }
 
-/** The machine's list with this client's own picks added after it, minus `removed`. */
-function mergeImported(imported: readonly string[], local: readonly string[], removed: ReadonlySet<string>): string[] {
-  const merged = idsOf(imported).filter((value) => !removed.has(value));
-  for (const value of local) if (!merged.includes(value)) merged.push(value);
-  return merged;
+/**
+ * The account refused the change and sending it again can't land: the list
+ * is full (409) or it holds an id the account can't take (400, 413). A busy
+ * list answers 503 and is sent again later.
+ */
+function isRefusedChange(answer: { status: number }): boolean {
+  return answer.status === 400 || answer.status === 409 || answer.status === 413;
 }
 
 function getImportApi(): ((pin: OpenProjectBinding) => Promise<{ favorites: string[] }>) | null {
@@ -98,126 +121,105 @@ function getImportApi(): ((pin: OpenProjectBinding) => Promise<{ favorites: stri
   return typeof getFavorites === "function" ? getFavorites : null;
 }
 
-/** A refusal that sending the same change again can't change (not sign-in, network, rate or a busy list). */
-function isRefusedChange(answer: { code: string; status: number }): boolean {
-  return (answer.status === 400 || answer.status === 409 || answer.status === 413) && answer.code !== "favorites_busy";
-}
-
-let importInFlight: Promise<void> | null = null;
-/** Models removed while the import runs; the merge must not add them back. */
-const removedDuringImport = new Set<string>();
+/** The machine import runs at most once per start; a failure tries again at the next start. */
+let importTried = false;
 let syncInFlight: Promise<void> | null = null;
-/** A toggle while a sync ran: sync once more after it. */
+/** A star while a sync ran: sync once more after it. */
 let syncAgain = false;
 let lastSyncAt = 0;
 
 type FavoritesState = {
   favorites: string[];
-  pending: Pending;
   toggleFavorite: (modelId: string) => void;
-  isFavorite: (modelId: string) => boolean;
   /** Reads the account's list and sends the changes made here. Never throws. */
   sync: (options?: { force?: boolean }) => Promise<void>;
 };
 
 const useFavoritesStore = create<FavoritesState>((set, get) => {
   const setLocal = (favorites: string[], pending: Pending) => {
-    set({ favorites, pending });
-    writeJson(STORAGE_KEY, favorites);
-    writeJson(PENDING_KEY, pending);
+    set({ favorites });
+    writeStored(STORAGE_KEY, favorites);
+    writeStored(PENDING_KEY, pending);
   };
 
-  /** The one-time read of the old list on the tab's machine. */
+  /** Adds the old list on the tab's machine, once. Stars taken off here are not added back. */
   const importFromMachine = async (): Promise<void> => {
-    if (readFlag(IMPORTED_KEY)) return;
-    if (importInFlight) return importInFlight;
+    if (importTried || hasFlag(IMPORTED_KEY)) return;
     const pin = useAppStore.getState().projectBinding;
     const getFavorites = getImportApi();
     // No tab open, a tab on ADE Cloud (no computer holds the old list), or no
     // bridge yet: a later sync imports.
     if (!pin || isAdeCloudBinding(pin) || !getFavorites) return;
-    importInFlight = (async () => {
-      try {
-        const result = await getFavorites(pin);
-        const { favorites, pending } = get();
-        const next = mergeImported(Array.isArray(result?.favorites) ? result.favorites : [], favorites, removedDuringImport);
-        // The account hasn't seen these yet: they go with the next change.
-        const added = next.filter((id) => !favorites.includes(id));
-        setLocal(next, { add: [...pending.add, ...added.filter((id) => !pending.add.includes(id))], remove: pending.remove.filter((id) => !added.includes(id)) });
-        setFlag(IMPORTED_KEY);
-      } catch (error) {
-        // The list here stays as it is; the next start tries the import again.
-        captureError(error, { fingerprint: ["model-picker", "favorites-import"], level: "warning", handled: true });
-      } finally {
-        importInFlight = null;
-        removedDuringImport.clear();
-      }
-    })();
-    return importInFlight;
+    importTried = true;
+    try {
+      const result = await getFavorites(pin);
+      const pending = readPending();
+      const favorites = get().favorites;
+      const added = idsOf(result?.favorites).filter((id) => !favorites.includes(id) && !pending.remove.includes(id));
+      // The machine's list first, as before; this client's picks after it.
+      setLocal([...added, ...favorites], added.reduce((next, id) => markPending(next, id, "add"), pending));
+      setFlag(IMPORTED_KEY);
+    } catch (error) {
+      captureError(error, { fingerprint: ["model-picker", "favorites-import"], level: "warning", handled: true });
+    }
+  };
+
+  /** Queues this client's whole list for the account, once. */
+  const seedAccount = () => {
+    if (hasFlag(ACCOUNT_SEEDED_KEY)) return;
+    const pending = readPending();
+    // In the list's order, so the account keeps the order shown here.
+    const seed = idsOf(get().favorites).slice(0, ACCOUNT_MODEL_FAVORITES_MAX);
+    setLocal(get().favorites, { ...pending, add: [...seed, ...pending.add.filter((id) => !seed.includes(id))] });
+    setFlag(ACCOUNT_SEEDED_KEY);
   };
 
   const syncOnce = async (): Promise<void> => {
     await importFromMachine();
-    const merged = readFlag(ACCOUNT_MERGED_KEY);
-    const pending = get().pending;
-    // The first sync adds this client's whole list to the account's.
-    const sent: Pending = merged
-      ? pending
-      : {
-        add: [...get().favorites, ...pending.add.filter((id) => !get().favorites.includes(id))]
-          .filter((id) => id.length <= ACCOUNT_MODEL_FAVORITE_ID_MAX)
-          .slice(0, ACCOUNT_MODEL_FAVORITES_MAX),
-        remove: pending.remove,
-      };
+    seedAccount();
+    // At most one list's worth each way per call; the rest goes with the next one.
+    const queued = readPending();
+    const sent: Pending = { add: queued.add.slice(0, ACCOUNT_MODEL_FAVORITES_MAX), remove: queued.remove.slice(0, ACCOUNT_MODEL_FAVORITES_MAX) };
     const answer = sent.add.length || sent.remove.length
       ? await runAccountCall({ call: "changeModelFavorites", add: sent.add, remove: sent.remove })
       : await runAccountCall({ call: "modelFavorites" });
-    // Changes made while the call ran stay pending; the ones it carried are done.
-    const leftAfterSent = (): Pending => {
-      const now = get().pending;
-      return {
-        add: now.add.filter((id) => !sent.add.includes(id)),
-        remove: now.remove.filter((id) => !sent.remove.includes(id)),
-      };
-    };
     if (answer && !answer.ok && isRefusedChange(answer)) {
-      // The account refused this change (the list is full, an id it can't
-      // take): sending it again can't land. Drop it and show the account's list.
-      setFlag(ACCOUNT_MERGED_KEY);
-      const left = leftAfterSent();
-      setLocal(withPending(get().favorites.filter((id) => !sent.add.includes(id)), left), left);
+      // The adds can't land (a removal never makes the list too long). Drop
+      // them, send the removals again, and show the account's list. A refused
+      // call of removals only drops those too, so the queue always shrinks.
+      captureError(new Error(answer.message), {
+        fingerprint: ["model-picker", "favorites-refused"],
+        level: "warning",
+        handled: true,
+        tags: { code: answer.code },
+      });
+      const left = withoutSent(readPending(), sent.add.length ? { add: sent.add, remove: [] } : sent);
+      setLocal(get().favorites.filter((id) => !sent.add.includes(id)), left);
       syncAgain = true;
       return;
     }
-    // No account bridge, signed out, offline, or an older server: keep the
-    // list here and the changes for the next sync.
+    // No account bridge, signed out, offline, busy, or an older server: keep
+    // the list here and the changes for the next sync.
     if (!answer || !answer.ok || !answer.result) return;
-    if (!merged) setFlag(ACCOUNT_MERGED_KEY);
-    const left = leftAfterSent();
+    // Changes made while the call ran stay queued; the ones it carried are done.
+    const left = withoutSent(readPending(), sent);
     setLocal(withPending(answer.result.favorites, left), left);
     if (left.add.length || left.remove.length) syncAgain = true;
   };
 
   return {
-    favorites: typeof window !== "undefined" ? idsOf(readJson(STORAGE_KEY)) : [],
-    pending: typeof window !== "undefined" ? readPending() : { add: [], remove: [] },
+    favorites: typeof window !== "undefined" ? idsOf(readStored(STORAGE_KEY)) : [],
     toggleFavorite: (modelId: string) => {
-      const id = modelId.trim();
+      const id = favoriteId(modelId);
       if (!id) return;
-      const { favorites, pending } = get();
+      const favorites = get().favorites;
       const removing = favorites.includes(id);
-      const next = removing ? favorites.filter((entry) => entry !== id) : [...favorites, id];
-      const nextPending: Pending = removing
-        ? { add: pending.add.filter((entry) => entry !== id), remove: [...pending.remove.filter((entry) => entry !== id), id] }
-        : { add: [...pending.add.filter((entry) => entry !== id), id], remove: pending.remove.filter((entry) => entry !== id) };
-      if (importInFlight) {
-        if (removing) removedDuringImport.add(id);
-        else removedDuringImport.delete(id);
-      }
-      setLocal(next, nextPending);
+      setLocal(
+        removing ? favorites.filter((entry) => entry !== id) : [...favorites, id],
+        markPending(readPending(), id, removing ? "remove" : "add"),
+      );
       void get().sync({ force: true });
     },
-    isFavorite: (modelId: string) => get().favorites.includes(modelId),
     sync: async (options) => {
       if (syncInFlight) {
         if (options?.force) syncAgain = true;
@@ -247,14 +249,10 @@ export function useModelFavorites(): {
   toggleFavorite: (modelId: string) => void;
   isFavorite: (modelId: string) => boolean;
 } {
-  const { favorites, toggleFavorite, isFavorite, sync } = useFavoritesStore(
-    useShallow((state) => ({
-      favorites: state.favorites,
-      toggleFavorite: state.toggleFavorite,
-      isFavorite: state.isFavorite,
-      sync: state.sync,
-    })),
-  );
+  const favorites = useFavoritesStore((state) => state.favorites);
+  const toggleFavorite = useFavoritesStore((state) => state.toggleFavorite);
+  const sync = useFavoritesStore((state) => state.sync);
+  const isFavorite = useCallback((modelId: string) => favorites.includes(modelId), [favorites]);
 
   // Opening the picker reads the account's list (at most every 15 s), so a
   // star given on another device shows here.
