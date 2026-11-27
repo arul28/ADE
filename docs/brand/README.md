@@ -83,7 +83,7 @@ outside service.
 | Project and home folders | `.ade/` in each project, `~/.ade` | `apps/ade-cli/src/services/projects/machineLayout.ts` | Existing projects, lanes, worktrees, settings and state live there. |
 | Env var names | `ADE_HOME`, `ADE_*` | throughout `apps/ade-cli/src`, `apps/desktop/src/main` | Scripts, services and agent environments already set them. A later step adds `DAEX_*` aliases. |
 | Code identifiers | `window.ade`, `AdeFoo`, `adeFoo`, `ADESharedTheme` | `apps/desktop/src/preload/preload.ts` (`exposeInMainWorld("ade", ...)`), everywhere | Never seen by users. Renaming is churn with merge conflicts and no benefit. |
-| MCP server and tool names | the tools ADE MCP exposes | `apps/ade-cli/src/services/remoteMcp/` | Handled in a later step: agents and saved prompts call them by name. |
+| MCP typed tool names, the MCP App resource `ui://ade/app-….html`, `_meta` keys (`ade/source`, `dev.ade/unreadMachines`), the forwarding headers `x-ade-mcp-*` | the typed tools ADE MCP exposes (`lanes_list`, `chat_start`, …) | `apps/ade-cli/src/services/remoteMcp/` | Agents and saved prompts call the typed tools by name; the rest is wire. Renamed instead (owner, 2026-11-27, accepting one re-approval in apps that had "always allow"): the server `serverInfo.name` and its run tool `ade` → `daex` (a call to `ade` still runs for one release, not listed), the commands resource `ade://commands` → `daex://commands` (old still reads), and the CTO's in-process server `ade-cto` → `daex-cto` (Codex namespace `ade_cto` → `daex_cto`; permission policies keep `ade-cto` as an alias, both names stay reserved). |
 
 ## Sunset identifiers
 
