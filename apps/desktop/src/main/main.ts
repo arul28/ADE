@@ -1863,10 +1863,10 @@ const dispatchOrQueueAppNavigationRequest = (request: AppNavigationRequest): voi
 // user would see nothing happen. Say so and exit instead.
 function exitDevAppSharingUserData(): void {
   const userData = app.getPath("userData");
-  let holder = "another ADE dev app";
+  let holder = `another ${BRAND.NAME} dev app`;
   try {
     const target = fs.readlinkSync(path.join(userData, "SingletonLock"));
-    holder = `another ADE dev app (pid ${target.slice(target.lastIndexOf("-") + 1)})`;
+    holder = `another ${BRAND.NAME} dev app (pid ${target.slice(target.lastIndexOf("-") + 1)})`;
   } catch {
     // Windows, or no readable lock link: the generic name will do.
   }
@@ -2113,7 +2113,7 @@ app.whenReady().then(async () => {
       const url = typeof arg?.url === "string" ? arg.url : "";
       const base = await artifactMediaServer.baseUrl();
       if (!url || !url.startsWith(base.replace(/\/+$/, "") + "/")) {
-        throw new Error("Only proof media from ADE's media server can be saved this way.");
+        throw new Error(`Only proof media from ${BRAND.NAME}'s media server can be saved this way.`);
       }
       const fileName = typeof arg?.fileName === "string" && arg.fileName.trim()
         ? path.basename(arg.fileName.trim())

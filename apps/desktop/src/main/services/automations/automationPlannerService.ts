@@ -383,7 +383,7 @@ function buildPlannerPrompt(args: {
   const branchList = args.laneBranches.slice(0, 40).map((b) => `- ${b}`).join("\n");
 
   return [
-    "You are generating an automation rule draft for ADE Desktop.",
+    "You are generating an automation rule draft for Daex Desktop.",
     "Return ONLY a JSON object that conforms to the provided JSON Schema.",
     "",
     "Policy:",

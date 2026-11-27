@@ -341,7 +341,7 @@ export function createPiExtensionUiContext(options: PiExtensionUiContextOptions)
     getAllThemes(): unknown[] { return []; },
     getTheme(): undefined { return undefined; },
     setTheme(): { success: false; error: string } {
-      return { success: false, error: "ADE renders Pi extensions with its own chat styling." };
+      return { success: false, error: `${BRAND.NAME} renders Pi extensions with its own chat styling.` };
     },
   };
   return context;

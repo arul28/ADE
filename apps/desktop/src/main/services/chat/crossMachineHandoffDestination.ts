@@ -713,14 +713,14 @@ export function createCrossMachineHandoffDestination<TManaged extends { session:
       ? "The original parent chat remains on the source machine. This chat arrived without a local parent link."
       : null;
     return [
-      `ADE moved this chat from ${capsule.source.machineName} to ${machineName}.`,
+      `${BRAND.NAME} moved this chat from ${capsule.source.machineName} to ${machineName}.`,
       `Its new worktree is ${lanePath}.`,
       "Processes from the source machine did not travel: dev apps, typechecks, terminals, background shells, and monitors must be started again here.",
       setup,
       "Ignored files such as .env, node_modules, and build output did not travel.",
       "Continue the task from where it stopped and rerun any check it was waiting on.",
       parentNotice,
-      capsule.batchMove?.modeFallbackReason ? `ADE used a brief because: ${capsule.batchMove.modeFallbackReason}` : null,
+      capsule.batchMove?.modeFallbackReason ? `${BRAND.NAME} used a brief because: ${capsule.batchMove.modeFallbackReason}` : null,
       capsule.batchMove?.note ? `Batch note: ${capsule.batchMove.note}` : null,
       !isCrossMachineHandoffDefaultPrompt(capsule.continuationPrompt)
         ? `Continuation instruction: ${capsule.continuationPrompt}`

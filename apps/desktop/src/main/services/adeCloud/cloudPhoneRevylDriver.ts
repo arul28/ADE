@@ -111,11 +111,11 @@ function perfText(body: Record<string, unknown>, seconds: number): string {
   const rssMb = nums((item) => (item.memory_app as Record<string, unknown> | undefined)?.rss_kb).map((kb) => kb / 1024);
   const fps = nums((item) => item.fps);
   if (!items.length || (!cpu.length && !rssMb.length && !fps.length)) {
-    return `No samples in ${seconds} s. They come from the app ADE launched last while it runs: launch your app (ade apple relaunch --bundle-id <id>), then run this again.`;
+    return `No samples in ${seconds} s. They come from the app ${BRAND.NAME} launched last while it runs: launch your app (${BRAND.CLI} apple relaunch --bundle-id <id>), then run this again.`;
   }
   const avg = (values: number[]): number => values.reduce((sum, value) => sum + value, 0) / values.length;
   const lines = [
-    `${items.length} samples over ${seconds} s, for the app ADE launched last:`,
+    `${items.length} samples over ${seconds} s, for the app ${BRAND.NAME} launched last:`,
     cpu.length ? `CPU: ${avg(cpu).toFixed(1)}% average, ${Math.max(...cpu).toFixed(1)}% peak` : null,
     rssMb.length ? `Memory: ${avg(rssMb).toFixed(0)} MB average, ${Math.max(...rssMb).toFixed(0)} MB peak` : null,
     fps.length ? `Frame rate: ${avg(fps).toFixed(1)} fps average, ${Math.min(...fps).toFixed(1)} fps lowest` : "Frame rate: none drawn (the screen didn't change)",

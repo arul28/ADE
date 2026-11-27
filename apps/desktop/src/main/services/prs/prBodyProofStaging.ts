@@ -104,7 +104,7 @@ export function stageProofFile(artifact: PublishableArtifact, projectRoot: strin
     // A brain on another machine keeps its proof there, so run the command
     // on that machine (where its agents run) to post it.
     return {
-      skip: `its stored file is not on this machine under ${path.join(projectRoot, ".ade", "artifacts")}; if the ADE brain runs on another machine, run this command there`,
+      skip: `its stored file is not on this machine under ${path.join(projectRoot, ".ade", "artifacts")}; if the Daex brain runs on another machine, run this command there`,
     };
   }
   const video = isVideo(artifact);

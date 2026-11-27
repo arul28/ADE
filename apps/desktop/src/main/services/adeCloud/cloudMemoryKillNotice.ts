@@ -71,8 +71,8 @@ export function formatCloudMemoryKillNotice(kill: CloudMemoryKillReport): string
 /** The agent's one-time note ahead of its next turn. */
 export function buildCloudMemoryKillNote(kill: CloudMemoryKillReport): string {
   return [
-    `This ADE Cloud computer (${totalText(kill.totalMb)} memory, no swap) ran out of memory, so ADE's memory guard killed its biggest process, "${cloudMemoryKillCommandLabel(kill.command)}" (pid ${kill.pid}, ${memoryText(kill.rssMb)}).`,
+    `This ${BRAND.CLOUD_NAME} computer (${totalText(kill.totalMb)} memory, no swap) ran out of memory, so ${BRAND.NAME}'s memory guard killed its biggest process, "${cloudMemoryKillCommandLabel(kill.command)}" (pid ${kill.pid}, ${memoryText(kill.rssMb)}).`,
     kill.sessionId ? "It was started from this chat; a command that ended with \"Killed\" was stopped this way." : "A command of yours that ended with \"Killed\" was stopped this way.",
-    "Use less memory (fewer parallel jobs, a smaller build), or ask the user for a bigger size: `ade cloud resize --request --size <size> --reason \"…\"`.",
+    `Use less memory (fewer parallel jobs, a smaller build), or ask the user for a bigger size: \`${BRAND.CLI} cloud resize --request --size <size> --reason "…"\`.`,
   ].join(" ");
 }

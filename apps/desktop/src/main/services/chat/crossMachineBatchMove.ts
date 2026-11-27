@@ -661,7 +661,7 @@ export function createCrossMachineBatchMoves({ batch: deps, moves }: {
     const needsBatchApproval = requestedBy === "agent"
       && chatItems.some((item) => item.requestedFor === "other");
     if (needsBatchApproval && !requestingSessionId) {
-      throw new Error("An agent batch that includes another chat must be started from an ADE chat so the person can review it.");
+      throw new Error(`An agent batch that includes another chat must be started from a ${BRAND.NAME} chat so the person can review it.`);
     }
     for (const chat of allChats) {
       if (orderedChatIds.has(chat.sessionId) || !chat.parentSessionId || !orderedChatIds.has(chat.parentSessionId)) continue;

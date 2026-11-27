@@ -574,7 +574,7 @@ function requestHookDecision(request: CursorSdkHookRequest, socket: net.Socket):
       if (hookWaiters.get(request.id) !== waiter) return;
       hookWaiters.delete(request.id);
       post({ type: "hook_abandoned", requestId: request.id });
-      resolve(denyCursorHook("The Cursor tool hook stopped waiting for ADE's approval."));
+      resolve(denyCursorHook(`The Cursor tool hook stopped waiting for ${BRAND.NAME}'s approval.`));
     };
     hookWaiters.set(request.id, waiter);
     socket.once("close", onClose);

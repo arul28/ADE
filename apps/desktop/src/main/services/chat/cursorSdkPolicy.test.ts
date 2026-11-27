@@ -185,7 +185,7 @@ describe("Cursor SDK policy", () => {
       ["type .\\..\\..\\secret.txt", "outside the active lane"],
       ["type %USERPROFILE%\\.ssh\\id_rsa", "outside the active lane"],
       ["Get-Content $env:USERPROFILE\\.aws\\credentials", "outside the active lane"],
-      ["type .ade\\secrets\\token", "protected by ADE"],
+      ["type .ade\\secrets\\token", "protected by Daex"],
     ];
     for (const [command, reason] of cases) {
       const result = decide("full-auto", "shell", { command }, { laneRoot, userHomeDir });

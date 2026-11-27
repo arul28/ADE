@@ -923,7 +923,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
             : {
               permission: "deny" as const,
               user_message: `${BRAND.NAME} is not ready to approve Cursor tool calls.`,
-              agent_message: "ADE is not ready to approve Cursor tool calls.",
+              agent_message: `${BRAND.NAME} is not ready to approve Cursor tool calls.`,
             };
         } catch (err) {
           args.logger?.error?.("agent_chat.cursor_sdk_hook_error", {

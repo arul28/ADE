@@ -2915,7 +2915,7 @@ export function createAppControlLaneController(context: AppControlLaneController
         selector: element.selector,
         testId: element.testId,
         session: snapshot.session,
-        selectionExplanation: "The user selected this UI element from ADE App Control. The screenshot or crop attachment is visual evidence for this packet; frames are in screenshot pixels.",
+        selectionExplanation: `The user selected this UI element from ${BRAND.NAME} App Control. The screenshot or crop attachment is visual evidence for this packet; frames are in screenshot pixels.`,
       },
       screenshotDataUrl: screenshotDataUrl ?? undefined,
       selectedAt: nowIso(),

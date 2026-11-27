@@ -253,7 +253,7 @@ export function simHelperMissingMessage(binaryPath: string): string {
   return [
     `The simulator helper is not installed on this Mac (expected at ${binaryPath}).`,
     simHelperSearchSummary(),
-    "Install or update ADE.app on this Mac, or run `ade brain update`, then restart the ADE brain.",
+    `Install or update ADE.app on this Mac, or run \`${BRAND.CLI} brain update\`, then restart the ${BRAND.NAME} brain.`,
     "In a source checkout, run `npm run build:sim-helper` in apps/desktop.",
   ].filter(Boolean).join(" ");
 }
@@ -263,8 +263,8 @@ export function simHelperProtocolMessage(binaryPath: string, protocol: number): 
   const newer = protocol > SIM_HELPER_PROTOCOL_VERSION;
   return `The simulator helper at ${binaryPath} speaks protocol ${protocol}, and this ${BRAND.NAME} brain speaks protocol ${SIM_HELPER_PROTOCOL_VERSION}. `
     + (newer
-      ? "The helper is newer than the brain: run `ade brain update` (or update ADE.app if it runs the brain), then restart the brain."
-      : "The helper is older than the brain: update ADE.app on this Mac (or run `ade brain update`), then restart the brain.");
+      ? `The helper is newer than the brain: run \`${BRAND.CLI} brain update\` (or update ADE.app if it runs the brain), then restart the brain.`
+      : `The helper is older than the brain: update ADE.app on this Mac (or run \`${BRAND.CLI} brain update\`), then restart the brain.`);
 }
 
 /** Size and mtime: enough to tell that a refused helper binary was replaced. */

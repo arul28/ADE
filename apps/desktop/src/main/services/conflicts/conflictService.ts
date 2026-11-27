@@ -2320,7 +2320,7 @@ export function createConflictService({
       required: ["explanation", "confidence", "diffPatch"]
     };
     const prompt = [
-      "You are ADE's conflict resolution assistant.",
+      `You are ${BRAND.NAME}'s conflict resolution assistant.`,
       "Produce a safe proposal using only provided context. Do not invent files or hunks.",
       "",
       "Return JSON with keys: explanation, confidence (0..1), diffPatch (unified diff).",

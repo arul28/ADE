@@ -250,7 +250,7 @@ const DEFAULT_SWIPE_DURATION_MS = 180;
  */
 const DRAG_STEP_MS = 16;
 const INSTALL_HINT_XCODE = "Install Xcode from the App Store, then run xcode-select --install.";
-const INSTALL_HINT_SIM_HELPER = "Install or update ADE.app on this Mac (or run `ade brain update`), then restart the ADE brain. In a source checkout: run `npm run build:sim-helper` in apps/desktop.";
+const INSTALL_HINT_SIM_HELPER = `Install or update ADE.app on this Mac (or run \`${BRAND.CLI} brain update\`), then restart the ${BRAND.NAME} brain. In a source checkout: run \`npm run build:sim-helper\` in apps/desktop.`;
 const INSTALL_HINT_XCODE_CLI = "Run xcode-select --install to install the Xcode command line tools.";
 const XCODE_MCP_SESSION_ID = "906026e2-d248-4770-8654-032d0e1fbb54";
 const XCODE_MCP_APPROVAL_TIMEOUT_MS = 90_000;
@@ -2417,8 +2417,8 @@ function deviceStartNote(device: AppleLaneDevice, action: AppleDeviceStartDevice
     return `Made a new simulator for this lane: ${device.name} (${device.udid}), booted. It is deleted with the lane.`;
   }
   if (action === "attached") {
-    return `Attached one of this Mac's installed simulators to this lane: ${device.name} (${device.udid}), booted. ADE did not make it and never deletes it, `
-      + "and someone at this Mac may use it outside ADE too. For a new one of this lane's own instead: ade apple device-detach, then ade apple device-create.";
+    return `Attached one of this Mac's installed simulators to this lane: ${device.name} (${device.udid}), booted. ${BRAND.NAME} did not make it and never deletes it, `
+      + `and someone at this Mac may use it outside ${BRAND.NAME} too. For a new one of this lane's own instead: ${BRAND.CLI} apple device-detach, then ${BRAND.CLI} apple device-create.`;
   }
   return `This lane's simulator ${device.name} (${device.udid}) is booted.`;
 }
@@ -6045,7 +6045,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         role: element.role,
         elementType: element.elementType,
         sourceSnippet,
-        selectionExplanation: "The user selected this UI element from the ADE iOS Simulator inspector. The screenshot or crop attachment is visual evidence for this packet; frames are in screenshot pixels.",
+        selectionExplanation: "The user selected this UI element from the Daex iOS Simulator inspector. The screenshot or crop attachment is visual evidence for this packet; frames are in screenshot pixels.",
       },
       accessibilityIdentifier: element.identifier,
       screenshotDataUrl: screenshotDataUrl ?? undefined,

@@ -142,7 +142,7 @@ async function fitImage(bytes: Buffer, declaredMediaType: string): Promise<FitOu
   if (!dims || (!isPng && !isJpeg)) {
     return inProcess({
       kind: "omit",
-      reason: `${describe()}, over the ${formatAttachmentSize(MAX_PROVIDER_INLINE_IMAGE_BYTES)} / ${MAX_PROVIDER_INLINE_IMAGE_EDGE_PX} px inline limit and not a PNG or JPEG ADE can resize`,
+      reason: `${describe()}, over the ${formatAttachmentSize(MAX_PROVIDER_INLINE_IMAGE_BYTES)} / ${MAX_PROVIDER_INLINE_IMAGE_EDGE_PX} px inline limit and not a PNG or JPEG Daex can resize`,
     });
   }
   if (dims.width * dims.height > MAX_DECODE_PIXELS) {
@@ -151,7 +151,7 @@ async function fitImage(bytes: Buffer, declaredMediaType: string): Promise<FitOu
   // pngjs inflates an interlaced image whole, with no size cap, so it is not
   // decoded. IHDR's interlace method is the byte at offset 28.
   if (isPng && bytes[28] === 1) {
-    return inProcess({ kind: "omit", reason: `${describe()}, an interlaced PNG ADE does not resize` });
+    return inProcess({ kind: "omit", reason: `${describe()}, an interlaced PNG Daex does not resize` });
   }
 
   try {

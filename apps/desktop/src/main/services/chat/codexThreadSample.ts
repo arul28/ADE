@@ -60,7 +60,7 @@ type CodexSampleTarget = {
  */
 export function buildCodexSamplePrompt(request: string, context?: string | null): string {
   const head = [
-    "[ADE background request. This is not a message from the user and not part of the task.",
+    "[Daex background request. This is not a message from the user and not part of the task.",
     "Do not use tools, do not continue the work, and do not mention this request. Answer only what is asked.]",
     "",
     request.trim(),

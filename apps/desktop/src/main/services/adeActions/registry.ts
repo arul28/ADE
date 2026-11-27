@@ -1356,7 +1356,7 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
         ok: true,
         accepted: true,
         sessionId,
-        note: "Message accepted by the ADE chat service; provider dispatch continues asynchronously.",
+        note: `Message accepted by the ${BRAND.NAME} chat service; provider dispatch continues asynchronously.`,
       };
     },
     // The Work prompt box's new chat: `createSession`, then `sendMessage`, in
@@ -4798,7 +4798,7 @@ function cloudPhoneAgentGuard(runtime: AccountDomainRuntime): (args: unknown) =>
     });
     if (!allowed) {
       throw new CloudPhoneError(
-        "Agents nobody watches (full-auto chats, automations, ADE MCP apps) may not use the ADE Cloud iPhone: your settings say they ask before anything that uses credits. The person can change it in Settings › Integrations › ADE Cloud › What agents may do.",
+        `Agents nobody watches (full-auto chats, automations, ${BRAND.NAME} MCP apps) may not use the ${BRAND.CLOUD_NAME} iPhone: your settings say they ask before anything that uses credits. The person can change it in Settings › Integrations › ${BRAND.CLOUD_NAME} › What agents may do.`,
         "declined",
       );
     }

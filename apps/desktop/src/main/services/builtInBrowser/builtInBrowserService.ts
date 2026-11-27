@@ -7290,7 +7290,7 @@ function createBuiltInBrowserWindowService(args: {
       const fields = await tab.webContents.executeJavaScriptInIsolatedWorld(BUILT_IN_BROWSER_LOGIN_WORLD_ID, [{ code: SIGNUP_FIELD_FINDER }]) as { passwords: number; maxLength: number; username: string | null } | null;
       if (!fields?.passwords) throw new AdeExpectedError(`No new-password field was found on ${site}. Open the sign-up form first.`, "user");
       if (fields.maxLength > 0 && fields.maxLength < 12) {
-        throw new AdeExpectedError(`${site}'s password box takes at most ${fields.maxLength} characters, and ADE makes passwords of at least 12. Nothing was filled; hand the tab to the person to choose one.`, "user");
+        throw new AdeExpectedError(`${site}'s password box takes at most ${fields.maxLength} characters, and ${BRAND.NAME} makes passwords of at least 12. Nothing was filled; hand the tab to the person to choose one.`, "user");
       }
       const username = stringOrNull(input.username) ?? fields.username;
       if (username && (await passwords.loginsForPage(pageUrl, { exactOrigin: true })).some((login) => login.username === username)) {

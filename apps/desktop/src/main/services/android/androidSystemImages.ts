@@ -507,7 +507,7 @@ export function createAndroidSystemImages(deps: AndroidSystemImagesDeps) {
         throw new AndroidEmulatorFailure(
           "ANDROID_SYSTEM_IMAGE_IN_USE",
           `${users.length} device${users.length === 1 ? " uses" : "s use"} ${name} (${users.map((avd) => avd.name).join(", ")}). `
-            + "They cannot start without it. The person confirms the removal in the device picker; ADE leaves their files.",
+            + `They cannot start without it. The person confirms the removal in the device picker; ${BRAND.NAME} leaves their files.`,
         );
       }
       // Recheck after the awaits: an install may have started into this SDK.

@@ -734,7 +734,7 @@ function pathGuardReason(args: {
       || normalizedRel.startsWith(".ade/secrets/")
       || isSecretReal
     ) {
-      return `Path is protected by ADE: ${candidate}`;
+      return `Path is protected by Daex: ${candidate}`;
     }
   }
   return null;

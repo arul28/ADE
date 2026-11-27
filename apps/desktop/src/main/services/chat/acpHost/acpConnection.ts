@@ -408,7 +408,7 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
       writeFrame({
         jsonrpc: "2.0",
         id,
-        error: { code: ACP_RPC_METHOD_NOT_FOUND, message: `ADE does not implement ${method}.` },
+        error: { code: ACP_RPC_METHOD_NOT_FOUND, message: `${BRAND.NAME} does not implement ${method}.` },
       });
       return;
     }

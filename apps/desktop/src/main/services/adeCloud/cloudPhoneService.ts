@@ -863,7 +863,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
           if (args?.launch === false || installed.answer.failed) return { ...installed.answer, bundleId };
           // Launched only by name: unnamed, NoMac launches the app launched LAST, which may be an earlier build's.
           if (!bundleId) {
-            return { ...joinAnswers([installed.answer, textAnswer("Installed, but not launched: ADE could not tell the app's bundle id. Launch it with ade apple relaunch --bundle-id <id>.")]), bundleId };
+            return { ...joinAnswers([installed.answer, textAnswer(`Installed, but not launched: ${BRAND.NAME} could not tell the app's bundle id. Launch it with ${BRAND.CLI} apple relaunch --bundle-id <id>.`)]), bundleId };
           }
           // The install is done: a phone gone at the launch is told, never answered by installing all over again.
           const launched = await driver.control(phone, { action: "launch", app: bundleId }).catch((error: unknown) => {

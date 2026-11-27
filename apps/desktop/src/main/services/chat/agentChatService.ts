@@ -85673,7 +85673,7 @@ ${schedule.prompt}`
     if (!id) throw new AdeExpectedError("sessionId is required.", "user");
     if (agentCliActions.target(id, "keep a device choice for")) {
       throw new Error(
-        "A device choice is kept for ADE chats; this session is an agent CLI in a terminal. "
+        `A device choice is kept for ${BRAND.NAME} chats; this session is an agent CLI in a terminal. `
           + "Pass --machine <name> on each device command instead.",
       );
     }

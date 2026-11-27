@@ -449,8 +449,8 @@ export async function startMuseHost(options: MuseHostStartOptions): Promise<Muse
     }
     options.logger?.warn("agent_chat.muse_unexpected_server_request", { method });
     throw new Error(mirrored
-      ? "No ADE chat is attached to this Muse session yet."
-      : "ADE does not serve MSP server-to-client requests.");
+      ? `No ${BRAND.NAME} chat is attached to this Muse session yet.`
+      : `${BRAND.NAME} does not serve MSP server-to-client requests.`);
   });
   connection.onProtocolError((error) => {
     options.logger?.warn("agent_chat.muse_protocol_error", { message: error.message });

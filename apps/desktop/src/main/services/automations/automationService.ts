@@ -3136,8 +3136,8 @@ export function createAutomationService({
       lines.push(
         "",
         agent.commentBody
-          ? `${agent.creatorName ?? "Someone"} mentioned you (the ADE agent) in Linear:`
-          : `${agent.creatorName ?? "Someone"} delegated this Linear issue to you (the ADE agent).`,
+          ? `${agent.creatorName ?? "Someone"} mentioned you (the ${BRAND.NAME} agent) in Linear:`
+          : `${agent.creatorName ?? "Someone"} delegated this Linear issue to you (the ${BRAND.NAME} agent).`,
       );
       if (agent.commentBody) lines.push("", agent.commentBody.trim());
       if (agent.promptContext?.trim()) lines.push("", "Linear context:", agent.promptContext.trim());

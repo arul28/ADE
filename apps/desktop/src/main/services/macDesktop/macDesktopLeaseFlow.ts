@@ -77,7 +77,7 @@ export const MAC_DESKTOP_INPUT_LEASE_WAIT_MS = 170_000;
 
 /** What the caller is told when the user did not answer the lease card in time. */
 export const MAC_DESKTOP_INPUT_LEASE_UNANSWERED_MESSAGE =
-  "The user did not answer the real-input card within about 3 minutes, so ADE withdrew it. "
+  `The user did not answer the real-input card within about 3 minutes, so ${BRAND.NAME} withdrew it. `
   + "Carry on with accessibility actions, or ask again when the user is back.";
 
 /**
@@ -319,7 +319,7 @@ export function createMacDesktopLeaseFlow(deps: MacDesktopLeaseFlowDeps) {
         // chat is not an approval, and it is not a crash either: it is the same
         // "nobody said yes" the decline path returns.
         deps.logger.warn("mac_desktop.lease_prompt_failed", { laneId, error: answer.error });
-        return refuse("unasked", `ADE could not show the real-input card in this chat (${answer.error}), so nobody was asked.`);
+        return refuse("unasked", `${BRAND.NAME} could not show the real-input card in this chat (${answer.error}), so nobody was asked.`);
       }
       if (answer.outcome !== "allow") {
         return refuse(
