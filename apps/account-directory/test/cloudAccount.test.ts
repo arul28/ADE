@@ -3414,6 +3414,10 @@ describe("ADE Cloud without a computer", () => {
     // The new computer's uploader goes on from the restored seq; the old key can't write over the moved parts.
     expect((await savePart(SECOND, "key-new", 3, "third\n")).status).toBe(200);
     expect(await partsOf("key-new")).toEqual(["third\n", "second\n", "first\n"]);
+    // A row sent with no new text (a lane recolored) is an empty part: a one-part page (the phone's) still reads the newest text.
+    expect((await savePart(SECOND, "key-new", 4, "", { laneColor: "#22C55E" })).status).toBe(200);
+    const newest = (await (await harness.send(OWNER, "GET", "/cloud/chats/key-new/c1?limit=1")).json()) as { chat: { laneColor: unknown }; parts: Array<{ seq: number; text: string }>; nextBefore: number | null };
+    expect([newest.chat.laneColor, newest.parts, newest.nextBefore]).toEqual(["#22c55e", [{ seq: 3, text: "third\n" }], 3]);
     seedComputer(harness, { instance_id: "thirdbox12", machine_key: "key-old" });
     expect((await savePart("thirdbox12", "key-old", 1, "other\n")).status).toBe(409);
   });

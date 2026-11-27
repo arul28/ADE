@@ -3483,10 +3483,12 @@ export function useCrossMachineLaneUnion(
  * Every lane this window lists for the tab's project, on every machine (ADE
  * Cloud's resting lanes too), read now. A new ADE Cloud lane picks a color
  * none of them uses (`withCloudLaneColor`): its computer holds only that lane.
+ * `tabLanes` are the tab's own (the project store's `lanes`: the root store
+ * does not hold them); the other machines' come from the root union.
  */
-export function listedProjectLanesNow(): Array<{ id: string; color?: string | null }> {
+export function listedProjectLanesNow(tabLanes: readonly { id: string; color?: string | null }[]): Array<{ id: string; color?: string | null }> {
   return [
-    ...useAppStore.getState().lanes,
+    ...tabLanes,
     ...Object.values(rootAppStoreApi.getState().crossMachineLanesByMachineId).flatMap((machine) => machine.lanes),
   ];
 }

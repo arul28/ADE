@@ -411,22 +411,40 @@ async function handlePutProof(request: Request, env: CloudEnv, userId: string, m
   }
   const sealed = await sealBytes(keys.aes, proofAad(userId, sealKeyOf(row), chatId, artifactId), plain);
   const delta = sealed.byteLength - (stored?.size ?? 0);
-  if (delta > 0 && await accountBytes(env, userId) + delta > CLOUD_CHAT_MAX_ACCOUNT_BYTES) {
+  const conflict = () => {
+    logCloud("cloud.chat_proof_conflict", { userId, machineKey, chatId });
+    return fail("sequence_conflict", "This chat's saved copy changed while that proof was saved.", 409);
+  };
+  // Reserved before the picture goes up, in one statement: the account's total and the add are one
+  // atomic write, so pictures saved at once can't pass the cap together. Counted on the row it was
+  // read against: a copy deleted or made again since takes nothing of it.
+  const reserved = await env.DB.prepare(`
+    update cloud_chat_copies set bytes = max(0, bytes + ?)
+    where user_id = ? and machine_key = ? and chat_id = ? and r2_key = ?
+      and (? <= 0 or (select coalesce(sum(bytes), 0) from cloud_chat_copies where user_id = ?) + ? <= ?)
+  `).bind(delta, userId, machineKey, chatId, prefix, delta, userId, delta, CLOUD_CHAT_MAX_ACCOUNT_BYTES).run();
+  if ((reserved.meta?.changes ?? 0) !== 1) {
+    // Refused by the cap only while the row read is still there; else the copy changed.
+    if (delta <= 0 || (await copyRow(env, userId, machineKey, chatId))?.r2_key !== prefix) return conflict();
     logCloud("cloud.chat_account_full", { userId, machineKey, chatId, limitBytes: CLOUD_CHAT_MAX_ACCOUNT_BYTES });
     return fail("account_full", "This account's saved chats are full. Delete some chats to save new ones.", 413);
   }
-  await bucket.put(key, sealed, { customMetadata: { digest, kind, source } });
-  // Counted on the row it was read against: a copy deleted or made again since takes nothing of it.
-  const counted = await env.DB.prepare(`
-    update cloud_chat_copies set bytes = max(0, bytes + ?)
+  const refund = () => env.DB.prepare(`
+    update cloud_chat_copies set bytes = max(0, bytes - ?)
     where user_id = ? and machine_key = ? and chat_id = ? and r2_key = ?
   `).bind(delta, userId, machineKey, chatId, prefix).run();
-  if ((counted.meta?.changes ?? 0) !== 1) {
-    // The picture goes unless a row still reads its prefix (a move took the copy, proof and all).
-    const kept = await env.DB.prepare("select 1 as kept from cloud_chat_copies where user_id = ? and r2_key = ?").bind(userId, prefix).first();
-    if (!kept) await bucket.delete(key);
-    logCloud("cloud.chat_proof_conflict", { userId, machineKey, chatId });
-    return fail("sequence_conflict", "This chat's saved copy changed while that proof was saved.", 409);
+  try {
+    await bucket.put(key, sealed, { customMetadata: { digest, kind, source } });
+  } catch (error) {
+    await refund().catch(() => undefined);
+    throw error;
+  }
+  // The picture goes unless a row still reads its prefix (a move took the copy, proof and all):
+  // a delete since the reservation took the bytes with its row and swept the prefix before this put.
+  const kept = await env.DB.prepare("select 1 as kept from cloud_chat_copies where user_id = ? and r2_key = ?").bind(userId, prefix).first();
+  if (!kept) {
+    await bucket.delete(key);
+    return conflict();
   }
   logCloud("cloud.chat_proof_saved", { userId, machineKey, chatId, kind, source, bytes: plain.byteLength });
   return json({ ok: true, bytes: sealed.byteLength });
@@ -706,6 +724,7 @@ async function handleList(url: URL, env: CloudEnv, userId: string, now: number):
 /**
  * `GET /cloud/chats/:machine/:chat?before&limit`. Newest parts first, each one
  * JSON lines of chat events. `before` is exclusive; `limit` is a page of parts.
+ * Empty parts (a row sent with no new text) are left out and don't count.
  */
 async function handleGetChat(url: URL, env: CloudEnv, userId: string, machineKey: string, chatId: string, now: number): Promise<Response> {
   const bucket = bucketFor(env);
@@ -737,6 +756,9 @@ async function handleGetChat(url: URL, env: CloudEnv, userId: string, machineKey
       logCloud("cloud.chat_part_unreadable", { userId, machineKey, chatId, seq });
       return fail("chat_unreadable", "This saved chat can't be read right now.", 503);
     }
+    // An empty part only carried a row (a title, settings or lane color changed with no new text):
+    // left out, so it never takes a page's place and hides the history before it (the phone reads one part).
+    if (opened.byteLength === 0) continue;
     bytes += opened.byteLength;
     parts.push({ seq, text: decoder.decode(opened) });
   }

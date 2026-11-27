@@ -649,6 +649,8 @@ final class AccountCloudStore: ObservableObject {
       // A read that can't happen or fails says so in the thread, with Retry
       // (`markSnapshotStalled`), never an empty chat that looks like no history.
       guard let client = await sync.cloudServerClient() else {
+        // A read started for an account that has since signed out says nothing to the next one.
+        guard generation == self.accountGeneration, !Task.isCancelled else { return }
         sync.chatThreadRegistry.markSnapshotStalled(key, message: "Sign in to ADE to read this chat.")
         return
       }

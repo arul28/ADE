@@ -2264,6 +2264,8 @@ export function createBrainProjectActionsSyncHandler(
         : Promise.resolve();
       const work = Promise.all([priorInput, ownershipBarrier]).then(async () => {
         if (!isPeerCurrent(lifecycleGeneration) || !peer.authenticated) return;
+        // Typed into a terminal: work that keeps a cloud computer awake, like a desktop's pty write.
+        args.onRemoteUse?.("terminal_input");
         await terminalStreams.handleInput(peer, envelope, terminalTargetFor(envelope));
       });
       peer.terminalInputQueue = work.catch((error) => {

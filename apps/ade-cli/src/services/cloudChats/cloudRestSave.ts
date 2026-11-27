@@ -622,21 +622,26 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
     };
 
     // Each project's open lanes, read once per save: the Git step walks them, and a copy's row carries its lane's color.
+    // Null: the list could not be read.
     type RuntimeLanes = Awaited<ReturnType<AdeRuntime["laneService"]["list"]>>;
-    const lanesOf = new Map<AdeRuntime, Promise<RuntimeLanes>>();
-    const runtimeLanes = (runtime: AdeRuntime): Promise<RuntimeLanes> => {
+    const lanesOf = new Map<AdeRuntime, Promise<RuntimeLanes | null>>();
+    const runtimeLanes = (runtime: AdeRuntime): Promise<RuntimeLanes | null> => {
       let lanes = lanesOf.get(runtime);
       if (!lanes) {
         lanes = Promise.resolve().then(() => runtime.laneService.list({ includeArchived: false, includeStatus: false })).catch((error: unknown) => {
           logger.warn("cloud.rest_save_lanes_read_failed", { error: errorText(error) });
-          return [];
+          return null;
         });
         lanesOf.set(runtime, lanes);
       }
       return lanes;
     };
-    const laneColorOf = async (runtime: AdeRuntime, laneId: string | null | undefined): Promise<string | null> =>
-      laneId ? cloudLaneColorOf((await runtimeLanes(runtime)).find((lane) => lane.id === laneId)?.color) : null;
+    // Undefined: unknown (the lane list could not be read), never "no color".
+    const laneColorOf = async (runtime: AdeRuntime, laneId: string | null | undefined): Promise<string | null | undefined> => {
+      if (!laneId) return null;
+      const lanes = await runtimeLanes(runtime);
+      return lanes ? cloudLaneColorOf(lanes.find((lane) => lane.id === laneId)?.color) : undefined;
+    };
 
     // 2. Shell and CLI copies: the newest across every open project.
     const terminals: Array<{ runtime: AdeRuntime; row: TerminalSessionSummary }> = [];
@@ -671,7 +676,10 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
             snapshot = null;
           }
         }
-        const laneColor = await laneColorOf(runtime, row.laneId);
+        // An unknown color keeps the one the copy was last saved with (the end of its mark): a lane list
+        // that could not be read never clears a saved color.
+        const knownColor = await laneColorOf(runtime, row.laneId);
+        const laneColor = knownColor !== undefined ? knownColor : /\|(#[0-9a-f]{6})$/.exec(state.sessions[row.id] ?? "")?.[1] ?? null;
         // The lane's color is in the mark: a lane recolored (or a copy saved before rows carried it) is sent again.
         const mark = `${window?.endOffset ?? "none"}|${snapshotMark}|${row.status}${laneColor ? `|${laneColor}` : ""}`;
         if (state.sessions[row.id] === mark) return;
@@ -715,7 +723,7 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
     // 3. A Git summary per lane, when it changed.
     const gitTasks: Array<() => Promise<void>> = [];
     for (const runtime of runtimes) {
-      const lanes = await runtimeLanes(runtime);
+      const lanes = await runtimeLanes(runtime) ?? [];
       for (const lane of lanes) {
         if (!lane.worktreePath || !fs.existsSync(lane.worktreePath)) continue;
         gitTasks.push(async () => {
@@ -922,8 +930,10 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
       logger,
     });
 
-    // Git first (small), then capsules (what a continue needs), then the copies, the chats' proof, then subagents.
-    const notStarted = await runLimited([...gitTasks, ...capsuleTasks, ...sessionTasks, ...proof.tasks, ...subagentTasks], UPLOAD_PARALLEL, deadline);
+    // Git first (small), then capsules (what a continue needs), then the copies and subagents. The chats'
+    // proof is optional: it gets only the time left after all of them, so a conversion never starves a save.
+    const notStarted = await runLimited([...gitTasks, ...capsuleTasks, ...sessionTasks, ...subagentTasks], UPLOAD_PARALLEL, deadline)
+      + await runLimited(proof.tasks, UPLOAD_PARALLEL, deadline);
     if (proof.counts.sent > 0) report.proofs = proof.counts.sent;
     // 5. The events that wake this computer at rest: a Linear workspace or webhook a rule here acts on.
     if (idle()) {

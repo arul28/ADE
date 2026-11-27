@@ -431,7 +431,9 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         const lane = savedChatLane(row);
         if (!known.has(lane.id)) {
           known.add(lane.id);
-          lanes.push(lane);
+          // The lane's color from any of its rows, not only this first one.
+          const color = savedColor.get(lane.id);
+          lanes.push(color && color !== lane.color ? { ...lane, color } : lane);
         }
       }
       savedSliceIds.add(machineId);
@@ -588,17 +590,18 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         displayName: savedProjectName(null, context.projectKey!),
         gitOriginUrl: context.projectKey,
       };
-      // A lane listed with no color takes the one its copy saved.
+      // A listed lane takes the color its newest copy saved (a recolor too);
+      // with none saved it keeps its own.
       const savedColor = savedLaneColors(rows);
       const lanes = (previous?.lanes ?? []).map((lane) => {
-        const color = lane.color ? null : savedColor.get(lane.id);
-        return color ? { ...lane, color } : lane;
+        const color = savedColor.get(lane.id);
+        return color && color !== lane.color ? { ...lane, color } : lane;
       });
       const known = new Set(lanes.map((lane) => lane.id));
       for (const row of rows) {
         if (!row.laneId || known.has(row.laneId)) continue;
         known.add(row.laneId);
-        lanes.push(laneComputerLane({ laneId: row.laneId, laneName: row.laneName ?? row.laneId, laneColor: row.laneColor }, undefined));
+        lanes.push(laneComputerLane({ laneId: row.laneId, laneName: row.laneName ?? row.laneId, laneColor: savedColor.get(row.laneId) ?? null }, undefined));
       }
       store.mergeCrossMachineLanes({
         machineId,

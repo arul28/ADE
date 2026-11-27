@@ -91,11 +91,14 @@ export async function handleProjectOverview(url: URL, env: CloudEnv, userId: str
     listGitSummaries(env, keys, userId, origin),
   ]);
 
-  // A lane's color is what its saved chats and copies in this answer carry (newest first): no extra read.
-  const laneColors = new Map<string, string>();
+  // A lane's color is what the newest of its saved chats and copies in this answer carries: no extra read.
+  const colorAt = new Map<string, { color: string; at: number }>();
   for (const row of [...chats.chats, ...sessions.sessions]) {
-    if (row.laneId && row.laneColor && !laneColors.has(row.laneId)) laneColors.set(row.laneId, row.laneColor);
+    if (!row.laneId || !row.laneColor) continue;
+    const held = colorAt.get(row.laneId);
+    if (!held || row.updatedAt > held.at) colorAt.set(row.laneId, { color: row.laneColor, at: row.updatedAt });
   }
+  const laneColors = new Map([...colorAt].map(([laneId, { color }]) => [laneId, color]));
   const lanes: CloudLaneOverview[] = [];
   const seen = new Set<string>();
   for (const computer of computers.results ?? []) {

@@ -63,6 +63,7 @@ export function cloudLaneRestartProblem(lane: CloudLaneWithoutComputer, binding:
 export function useStartLaneOnNewComputer(lane: CloudLaneWithoutComputer | null, account: CloudAccountState | null) {
   const [busy, setBusy] = useState(false);
   const binding = useAppStore((state) => state.projectBinding);
+  const tabLanes = useAppStore((state) => state.lanes);
   const defaultTier = useRootAppStore((state) => state.cloudDefaultTier);
   const originUrl = originUrlForBinding(binding);
   const problem = lane ? cloudLaneRestartProblem(lane, binding, originUrl) : null;
@@ -79,7 +80,7 @@ export function useStartLaneOnNewComputer(lane: CloudLaneWithoutComputer | null,
         title: lane.laneName,
         prompt: "",
         // The color the lane shows now (its saved chats'), else one no listed lane uses.
-        laneConfig: withCloudLaneColor({ mode: "existing", branchRef: cloudLaneRestartBranchRef(lane.branchRef) }, listedProjectLanesNow(), lane.laneId),
+        laneConfig: withCloudLaneColor({ mode: "existing", branchRef: cloudLaneRestartBranchRef(lane.branchRef) }, listedProjectLanesNow(tabLanes), lane.laneId),
       },
       sizeId,
       originUrl,

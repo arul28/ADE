@@ -7806,6 +7806,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           args.projectId,
           hostProjectIdAliases,
         );
+        // Typed into a terminal: work that keeps a cloud computer awake, like a desktop's pty write.
+        args.onRemoteUse?.("terminal_input");
         await terminalStreams.handleInput(peer, envelope, terminalTargetFor(peer, envelope, projectScope));
       });
       peer.terminalInputQueue = work.catch((error) => {
@@ -8854,6 +8856,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       const terminalTarget = terminalTargetFor(peer, envelope, projectScope);
       if (terminalTarget) {
         if (envelope.type === "terminal_input") {
+          args.onRemoteUse?.("terminal_input");
           await terminalStreams.handleInput(peer, envelope, terminalTarget);
         } else {
           await terminalStreams.handleEnvelope(peer, envelope, terminalTarget, lifecycleGeneration, signal);

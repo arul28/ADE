@@ -730,8 +730,11 @@ final class AccountCloudLaunchStore: ObservableObject {
       ]),
       "madeBy": .object(["kind": .string("person")]),
     ]
-    // The lane keeps the color its saved chats carry.
-    if let color = sync.cloudSavedChats.first(where: { $0.laneId == lane.laneId && $0.laneColor != nil })?.laneColor,
+    // The lane keeps the color its saved chats carry, else the one the
+    // project overview gives it (its CLI and shell copies count there too).
+    let savedColor = sync.cloudSavedChats.first(where: { $0.laneId == lane.laneId && $0.laneColor != nil })?.laneColor
+      ?? CloudAtRestStore.shared.lane(machineKey: lane.formerMachineKey, laneId: lane.laneId)?.laneColor
+    if let color = savedColor,
        case .object(var laneFields)? = fields["lane"] {
       laneFields["color"] = .string(color)
       fields["lane"] = .object(laneFields)

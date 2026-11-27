@@ -217,10 +217,11 @@ async function convertFrame(binary: string, input: string, output: string, codec
  * The picture to save for one proof file: WebP, else JPEG, else (a picture
  * only) the original when the server keeps it as it is. Each is checked by
  * its first bytes and the server's cap. Null when there is nothing to save:
- * a video with no ffmpeg here, a picture nothing can make small enough, or a
- * file that can't be read.
+ * a video with no ffmpeg here, or a picture nothing can make small enough.
+ * `"pending"` when it may work next time: the time ran out, or the file
+ * could not be read just now.
  */
-export async function proofPictureFor(input: { filePath: string; source: CloudChatProofSource; ffmpeg: ProofFfmpeg | null; timeoutMs: number }): Promise<ProofPicture | null> {
+export async function proofPictureFor(input: { filePath: string; source: CloudChatProofSource; ffmpeg: ProofFfmpeg | null; timeoutMs: number }): Promise<ProofPicture | "pending" | null> {
   const { filePath, source, ffmpeg } = input;
   const startedAt = Date.now();
   const left = () => input.timeoutMs - (Date.now() - startedAt);
@@ -229,6 +230,8 @@ export async function proofPictureFor(input: { filePath: string; source: CloudCh
     const kind = cloudChatProofKindOf(bytes);
     return kind ? { bytes, contentType: CLOUD_CHAT_PROOF_MIME[kind], via } : null;
   };
+  // A conversion that used the time up (ffmpeg's own time-out) or never got to start.
+  let ranOut = false;
   if (ffmpeg && await looksLikeProofMedia(filePath, source)) {
     for (const codec of ffmpeg.webp ? (["webp", "jpeg"] as const) : (["jpeg"] as const)) {
       if (left() <= 1_000) break;
@@ -242,13 +245,14 @@ export async function proofPictureFor(input: { filePath: string; source: CloudCh
         await fs.promises.rm(output, { force: true }).catch(() => undefined);
       }
     }
+    ranOut = left() <= 1_000;
   }
-  if (source !== "image" || !ORIGINAL_EXTENSIONS.has(path.extname(filePath).toLowerCase())) return null;
+  if (source !== "image" || !ORIGINAL_EXTENSIONS.has(path.extname(filePath).toLowerCase())) return ranOut ? "pending" : null;
   try {
-    if ((await fs.promises.stat(filePath)).size > CLOUD_CHAT_PROOF_MAX_BYTES) return null;
-    return kept(await fs.promises.readFile(filePath), "original");
+    if ((await fs.promises.stat(filePath)).size > CLOUD_CHAT_PROOF_MAX_BYTES) return ranOut ? "pending" : null;
+    return kept(await fs.promises.readFile(filePath), "original") ?? (ranOut ? "pending" : null);
   } catch {
-    return null;
+    return "pending";
   }
 }
 
@@ -333,6 +337,11 @@ export function buildChatProofTasks(input: {
       }
       tries += 1;
       const picture = await proofPictureFor({ filePath, source, ffmpeg: await tools(), timeoutMs: Math.min(PROOF_CONVERT_MS, deadline - Date.now()) });
+      // Out of time or a read that failed just now: tried again at the next save.
+      if (picture === "pending") {
+        complete = false;
+        continue;
+      }
       if (!picture) {
         sent[artifactId] = mark;
         continue;

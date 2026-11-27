@@ -33,13 +33,17 @@ export function createCloudRemoteWorkHold(deps: {
   const scope = new AsyncLocalStorage<{ running: boolean }>();
   let running = 0;
   return {
-    async run<T>(work: () => Promise<T>): Promise<T> {
+    /**
+     * `holdAwake: false` (typing in a draft): counted for a grow's restart,
+     * but never held awake, since a hold's end counts as work (`holdCloudWork`).
+     */
+    async run<T>(work: () => Promise<T>, options: { holdAwake?: boolean } = {}): Promise<T> {
       const own = { running: true };
       running += 1;
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         const answer = scope.run(own, work);
-        const hold = deps.hold();
+        const hold = options.holdAwake === false ? null : deps.hold();
         if (!hold) return await answer;
         const slow = new Promise<boolean>((resolve) => {
           timer = setTimeout(() => resolve(true), holdAfterMs);

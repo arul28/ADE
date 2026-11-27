@@ -45,6 +45,15 @@ type Entry = { offset: number; seq: number; dirty: boolean; laneId: string | nul
 function settingsKey(row: CloudSavedChatRowInput): string {
   return row.settings ? JSON.stringify(row.settings) : "";
 }
+
+/**
+ * A row whose lane color is unknown (`undefined`: the lane list could not be
+ * read) carries the color its saved copy has, so a failed read never clears it.
+ */
+function withSavedLaneColor(row: CloudSavedChatRowInput, entry: Entry | undefined): CloudSavedChatRowInput {
+  if (row.laneColor !== undefined || !entry || entry.laneId !== row.laneId) return row;
+  return { ...row, laneColor: entry.laneColor ?? null };
+}
 type StateFile = {
   v: 1;
   machineKey: string | null;
@@ -537,11 +546,12 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
         if (delta.more) continue;
         return await sendStaleRow(sessionId, entry, base, machineKey, headers) || sent;
       }
-      const row = await deps.readChatRow(sessionId).catch((error: unknown) => {
+      const read = await deps.readChatRow(sessionId).catch((error: unknown) => {
         log?.warn("cloud.chat_upload_row_failed", { sessionId, error: error instanceof Error ? error.name : "unknown" });
         return null;
       });
-      if (!row) return sent;
+      if (!read) return sent;
+      const row = withSavedLaneColor(read, entry);
       const seq = entry.seq + 1;
       let response: Response;
       try {
@@ -597,12 +607,13 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
       persist();
       return false;
     }
-    const row = await deps.readChatRow(sessionId).catch(() => null);
-    if (!row) {
+    const read = await deps.readChatRow(sessionId).catch(() => null);
+    if (!read) {
       entry.dirty = false;
       persist();
       return false;
     }
+    const row = withSavedLaneColor(read, entry);
     const seq = entry.seq + 1;
     try {
       const response = await fetcher(cloudSavedChatPartUrl(base, machineKey, sessionId, seq), {
@@ -841,7 +852,7 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
       const parentRow = await deps.readChatRow(parentSessionId).catch(() => null);
       if (!parentRow) return false;
       const row: CloudSavedChatRowInput = {
-        ...parentRow,
+        ...withSavedLaneColor(parentRow, state.chats[parentSessionId]),
         title: copy.title ?? parentRow.title,
         status: "idle",
         lastActivityAt: copy.lastActivityAt ?? parentRow.lastActivityAt,

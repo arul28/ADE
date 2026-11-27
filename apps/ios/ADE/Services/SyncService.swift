@@ -5331,8 +5331,9 @@ final class SyncService: ObservableObject {
   private(set) var supportsStackLayeredBypass = false
   private let chatSnapshotRequestCoalescingInterval: TimeInterval = 5
   private let chatEventUnsubscribeRetentionLimit = 4
-  /// When this phone last told a cloud chat's computer someone is typing (`noteChatTyping`).
-  var cloudTypingPingAtBySession: [String: Date] = [:]
+  /// When this phone last told a cloud chat's computer someone is typing
+  /// (`noteChatTyping`), in system uptime: a clock change can't stop the pings.
+  var cloudTypingPingAtBySession: [String: TimeInterval] = [:]
   private var recentFullChatSnapshotRequestBySession: [
     String: (uptime: TimeInterval, connectionGeneration: UInt64)
   ] = [:]
@@ -17624,8 +17625,8 @@ final class SyncService: ObservableObject {
           isCloudFleetKey(key.machineKey),
           savedCloudChatAccountKey(forThreadKey: key) == nil
     else { return }
-    let now = Date()
-    if let last = cloudTypingPingAtBySession[trimmed], now.timeIntervalSince(last) < Self.cloudTypingPingInterval { return }
+    let now = ProcessInfo.processInfo.systemUptime
+    if let last = cloudTypingPingAtBySession[trimmed], now - last < Self.cloudTypingPingInterval { return }
     cloudTypingPingAtBySession[trimmed] = now
     let scope = chatCommandScope(for: trimmed)
     Task { @MainActor [weak self] in

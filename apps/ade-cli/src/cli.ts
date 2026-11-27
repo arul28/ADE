@@ -33395,7 +33395,8 @@ async function runServe(
         if (refusal) throw new JsonRpcError(JsonRpcErrorCode.policyDenied, refusal);
       }
       // Counted for a grow's restart now; held awake once it outlasts a short wait (a push with a slow hook).
-      return remoteWork ? await remoteWorkHold.run(() => handler(request)) : await handler(request);
+      // Typing is never held: the hold's end counts as work, and typing must not renew work.
+      return remoteWork ? await remoteWorkHold.run(() => handler(request), { holdAwake: useKind === "work" }) : await handler(request);
     }, handler);
   };
   const createHandler = (context?: { peerDeviceId: string | null; peerDeviceName?: string | null }) =>

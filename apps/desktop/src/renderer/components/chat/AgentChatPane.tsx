@@ -4727,6 +4727,9 @@ export function AgentChatPane({
     [chatFontSizePx, chatTranscriptDensity],
   );
   const lanes = useAppStore((s) => s.lanes);
+  // Read by launches that pick a new ADE Cloud lane's color, without joining their dependencies.
+  const lanesRef = useRef(lanes);
+  lanesRef.current = lanes;
   // Per-chat runtime routing. A lane owns its machine and a chat inherits its
   // machine from its lane, so a chat opened from the union Work sidebar can
   // live on a machine this tab is NOT bound to. Its calls are pinned to that
@@ -14929,7 +14932,7 @@ export function AgentChatPane({
         origin: `https://${origin}`,
         accountProjectId: (list.state === "ready" ? accountProjectForOrigin(list.projects, cloud.originUrl) : null)?.id ?? null,
         laneName,
-        laneConfig: withCloudLaneColor(configuredLane ? chatLaunchLaneConfigFromDraft(configuredLane) : null, listedProjectLanesNow()),
+        laneConfig: withCloudLaneColor(configuredLane ? chatLaunchLaneConfigFromDraft(configuredLane) : null, listedProjectLanesNow(lanesRef.current)),
         sizeId: cloud.sizeId,
         sizeChoice: cloud.sizeChoice,
       }),
@@ -15040,7 +15043,7 @@ export function AgentChatPane({
       const { cloud: _cloud, originClientId: _originClientId, ...cloudArgs } = args;
       void startAdeCloudLaunch({
         // The computer holds only this lane, so this window picks its color among the project's lanes.
-        args: { ...cloudArgs, laneId: newLaneId, laneName, laneConfig: withCloudLaneColor(laneConfig, listedProjectLanesNow(), existingLane?.laneId) },
+        args: { ...cloudArgs, laneId: newLaneId, laneName, laneConfig: withCloudLaneColor(laneConfig, listedProjectLanesNow(lanesRef.current), existingLane?.laneId) },
         sizeId: cloud.sizeId,
         ...(cloud.sizeChoice ? { sizeChoice: cloud.sizeChoice } : {}),
         originUrl: cloud.originUrl,
