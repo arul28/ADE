@@ -7,6 +7,7 @@ import { createRenderer } from "./liquidGlass/glassRenderer";
 import { loadLogo, logoUrl, type LogoData, BOX } from "./liquidGlass/logoTexture";
 import { LOOKS, type GlassTuning, type Look, type Settings } from "./liquidGlass/settings";
 import { OUTRO, clamp01, endOf, frameAt, hexToRgb, luminance } from "./liquidGlass/timeline";
+import { BRAND } from "../../../shared/brand";
 
 /*
  * Liquid glass logo reveal: a mark lingers big against the rim of a clear glass tile, the glass
@@ -473,7 +474,7 @@ export function AdeLogoReveal({ backgroundVar = "--color-bg", tuning, ...props }
       {background ? (
         <GlassIconReveal
           logo={adeWordmarkSrc(look)}
-          label="ADE"
+          label={BRAND.NAME}
           look={look}
           background={background}
           plateColor={background}

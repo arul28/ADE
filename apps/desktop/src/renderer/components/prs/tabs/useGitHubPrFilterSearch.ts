@@ -10,6 +10,7 @@ import type {
 import { githubPrListFiltersKey } from "../../../../shared/githubPrSearch";
 import { setBounded } from "../../../../shared/boundedMap";
 import { plainErrorText } from "../../../lib/plainError";
+import { BRAND } from "../../../../shared/brand";
 
 /** Typing pause before the list asks GitHub. */
 export const GITHUB_PR_SEARCH_DEBOUNCE_MS = 300;
@@ -165,7 +166,7 @@ export function useGitHubPrFilterSearch({
             items: [],
             totalCount: 0,
             nextCursor: null,
-            error: { kind: "failed", message: plainErrorText(error, "ADE couldn't search GitHub.") },
+            error: { kind: "failed", message: plainErrorText(error, `${BRAND.NAME} couldn't search GitHub.`) },
           });
         })
         .finally(() => {

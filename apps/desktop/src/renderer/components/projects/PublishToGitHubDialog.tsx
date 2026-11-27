@@ -18,9 +18,10 @@ import { Dialog, type DialogAction } from "../ui/dialog";
 import { Banner, noticeKindModel, type NoticeKind } from "../ui/notice";
 import "./PublishToGitHubDialog.css";
 import { useOnlineCopyPins } from "../../state/repositoryScope";
+import { BRAND } from "../../../shared/brand";
 
 const GITHUB_CLASSIC_TOKEN_NEW_URL =
-  "https://github.com/settings/tokens/new?description=ADE%20desktop%20PR%20workflows&scopes=repo,workflow";
+  `https://github.com/settings/tokens/new?description=${BRAND.NAME}%20desktop%20PR%20workflows&scopes=repo,workflow`;
 
 export type PublishToGitHubDialogProps = {
   open: boolean;

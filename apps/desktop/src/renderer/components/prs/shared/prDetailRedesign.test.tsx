@@ -405,7 +405,7 @@ describe("PrShippedSummary", () => {
     expect(summary.textContent).toContain("2d 4h open");
     // The lane is gone, but what happened in it is not — and it is marked as ADE's.
     const lane = screen.getByTestId("pr-shipped-lane");
-    expect(lane.textContent).toContain("ADE lane");
+    expect(lane.textContent).toContain("Daex lane");
     expect(lane.textContent).toContain("auto-naming");
     expect(lane.textContent).toContain("3 chats · 2 proof");
   });

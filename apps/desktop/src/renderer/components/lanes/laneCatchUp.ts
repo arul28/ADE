@@ -12,6 +12,7 @@ import type { LaneTabPrTag } from "./lanePageModel";
 import { requestLaneRebaseNeedsRescan, type LaneRebaseLine } from "./laneRebaseNeeds";
 import { laneBranchLabel } from "./sidebar/laneSidebarModel";
 import { cacheScopeKey, cacheScopePin } from "../../lib/tabBindingKey";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The conflict check a catch-up waits for: `git merge-tree` against the base,
@@ -336,7 +337,7 @@ export async function runLaneCatchUpDirect(args: {
     const unsupported = action === "merge" && isUnsupportedAdeActionError(error);
     if (unsupported) mergeUnsupportedHosts.add(catchUpHostKey(pin));
     const message = unsupported
-      ? "The ADE on this lane's machine is too old to merge here. Update it, or ask an agent."
+      ? `The ${BRAND.NAME} on this lane's machine is too old to merge here. Update it, or ask an agent.`
       : stripElectronErrorWrapper(extractError(error));
     const failure: LaneCatchUpFailure = {
       action,

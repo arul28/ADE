@@ -44,6 +44,7 @@ import {
 import type { GitHubTabSort } from "./prBlockedSort";
 import { prRouteCoordinatesMatch } from "../prsRouteState";
 import { PRS_LIST_ROOT_CLASS, PrsListPortal, usePrsListHost } from "../shared/PrsListHost";
+import { BRAND } from "../../../../shared/brand";
 
 const FILTER_ACCENTS: Record<GitHubFilter, string> = {
   open: "#60A5FA",
@@ -511,7 +512,7 @@ function GitHubTabFilterSearchNote({
     ? " Showing loaded pull requests; the assignee filter needs GitHub."
     : " Showing matches from loaded pull requests.";
   if (search.unavailable) {
-    text = `This machine's ADE cannot search GitHub yet.${fallbackTail}`;
+    text = `This machine's ${BRAND.NAME} cannot search GitHub yet.${fallbackTail}`;
     tone = "warn";
   } else if (search.error?.kind === "rate_limited") {
     const retry = search.error.retryAt ? Date.parse(search.error.retryAt) : NaN;

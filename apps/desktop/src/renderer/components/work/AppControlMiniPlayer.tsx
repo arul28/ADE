@@ -41,6 +41,7 @@ import {
 } from "./appControlCardGrants";
 import { withChatPin } from "../chat/chatMachinePin";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The lane's App Control app, floating over the chat.
@@ -399,7 +400,7 @@ function AppControlMiniPlayerBox({
       showToast({
         tone: "error",
         title: "Recording did not stop",
-        message: plainErrorText(error, "ADE couldn't stop the recording."),
+        message: plainErrorText(error, `${BRAND.NAME} couldn't stop the recording.`),
       });
       return null;
     });

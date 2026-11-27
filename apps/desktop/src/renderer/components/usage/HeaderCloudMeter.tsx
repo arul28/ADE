@@ -16,6 +16,7 @@ import { navigateToAppTarget } from "../../lib/openExternal";
 import { CloudMark } from "../remoteTargets/cloudBrand";
 import { cn } from "../ui/cn";
 import { USAGE_NUMERIC_CLASS, USAGE_TEXT, usageLeftLevel, usageLeftLevelColor } from "./usageDesign";
+import { BRAND as PRODUCT } from "../../../shared/brand";
 
 /**
  * ADE Cloud's meter, the first one in the header's usage control: the credits
@@ -54,7 +55,7 @@ function hoursLeftPct(state: CloudAccountState): number {
 /** "ADE Cloud 43.8 of 100 credits left" for the control's title. */
 export function headerCloudTitle(state: CloudAccountState): string {
   const { leftMilli, totalMilli } = hoursOf(state);
-  return `ADE Cloud ${formatCloudHours(leftMilli)} of ${formatCloudHours(totalMilli)} credits left`;
+  return `${PRODUCT.CLOUD_NAME} ${formatCloudHours(leftMilli)} of ${formatCloudHours(totalMilli)} credits left`;
 }
 
 /** The ring: credits left in ADE Cloud's violet, amber at 20% left, red at 5%; the pale arc is what's used. */
@@ -113,10 +114,10 @@ export function HeaderCloudPanel({ state, onNavigate }: { state: CloudAccountSta
     navigateToAppTarget({ kind: "settings", tab: "ade-cloud", ...(anchor ? { anchor } : {}) });
   };
   return (
-    <section className="kit-panel flex flex-col gap-2 px-3 py-2.5" aria-label="ADE Cloud">
+    <section className="kit-panel flex flex-col gap-2 px-3 py-2.5" aria-label={PRODUCT.CLOUD_NAME}>
       <div className="flex items-center gap-2">
         <CloudMark size={14} brand bold />
-        <span className={cn("font-semibold text-fg", USAGE_TEXT.body)}>ADE Cloud</span>
+        <span className={cn("font-semibold text-fg", USAGE_TEXT.body)}>{PRODUCT.CLOUD_NAME}</span>
         <span className="adec-plan-word">{cloudPlanLabelOf(state, cloudCatalogOf(state))}</span>
         <span className={cn("ml-auto text-muted-fg", USAGE_TEXT.micro)}>{state.billing.cancelAtPeriodEnd ? "Plan ends" : "Resets"} {formatCloudDate(state.billing.periodEnd)}</span>
       </div>
@@ -133,7 +134,7 @@ export function HeaderCloudPanel({ state, onNavigate }: { state: CloudAccountSta
       </div>
       <div className="flex items-center gap-1.5 pt-0.5">
         <button type="button" className="kit-btn" data-size="sm" onClick={() => open()}>
-          Open ADE Cloud <ArrowSquareOut size={11} />
+          Open {PRODUCT.CLOUD_NAME} <ArrowSquareOut size={11} />
         </button>
         {canInvite ? (
           <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" onClick={() => open("cloud-invite")}>

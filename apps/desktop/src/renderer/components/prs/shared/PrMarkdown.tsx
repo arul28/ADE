@@ -51,6 +51,7 @@ import { PrAddToChatButton, PrCompare, PrProofMedia, PrRemoteMedia } from "./PrP
 import { PrMediaRepoContext, useGithubMediaSrc } from "./useGithubMediaSrc";
 import { copyTextToClipboard } from "../../../lib/launchPromptClipboard";
 import { AdeWordmark } from "../../ui/AdeWordmark";
+import { BRAND } from "../../../../shared/brand";
 
 type PrMarkdownTone = "neutral" | "sky" | "amber";
 type MarkdownRoot = Parameters<typeof findAndReplace>[0];
@@ -353,7 +354,7 @@ function PrImage({
   ) {
     return (
       <AdeWordmark
-        alt={alt ?? "ADE"}
+        alt={alt ?? BRAND.NAME}
         style={{ height: 18, width: "auto", display: "inline-block", verticalAlign: "middle", borderRadius: 3 }}
       />
     );

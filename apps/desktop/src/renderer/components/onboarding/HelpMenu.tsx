@@ -11,6 +11,7 @@ import { Z_LAYERS } from "../ui/zLayers";
 import { showMeAroundAgain } from "../../onboarding/onboardingProgress";
 import { openAdeTips } from "./tips/AdeTipsDialog";
 import { openWhatsNew } from "../announcements/whatsNewEvents";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The question-mark menu: docs, ADE Tips, the welcome tour again, and help
@@ -67,7 +68,7 @@ export function HelpMenu({
         aria-label="Help menu"
         aria-haspopup="menu"
         aria-expanded={open}
-        title="Help · ADE Tips, docs, and preferences"
+        title={`Help · ${BRAND.NAME} Tips, docs, and preferences`}
         className={cn(
           "inline-flex items-center justify-center",
           "transition-[background-color,color,border-color,box-shadow] duration-150",
@@ -97,10 +98,10 @@ export function HelpMenu({
         style={{ minWidth: 220, maxWidth: 280, fontSize: 12.5 }}
       >
         <MenuItem icon={Sparkle} onClick={handleOpenWhatsNew}>What's new</MenuItem>
-        <MenuItem icon={Lightbulb} onClick={handleOpenTips}>ADE Tips</MenuItem>
+        <MenuItem icon={Lightbulb} onClick={handleOpenTips}>{BRAND.NAME} Tips</MenuItem>
         <MenuItem icon={Compass} onClick={handleShowAround}>Show me around again</MenuItem>
         <MenuItem icon={BookOpen} onClick={handleOpenDocs}>
-          <span style={{ flex: 1, textAlign: "left" }}>ADE Docs</span>
+          <span style={{ flex: 1, textAlign: "left" }}>{BRAND.NAME} Docs</span>
           <ArrowSquareOut size={11} weight="regular" style={{ opacity: 0.55 }} />
         </MenuItem>
 

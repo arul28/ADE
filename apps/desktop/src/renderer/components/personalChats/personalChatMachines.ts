@@ -28,6 +28,7 @@ import { connectionOnline } from "../../state/laneMachineRouting";
 import { useRemoteConnectionSnapshot, withMachineTimeout } from "../../state/projectMachines";
 import { useWebChatsMachines } from "../../webclient/workspace/useWebChatsMachines";
 import { createPersonalAgentChatApi, personalCallResult, type PersonalChatsBridge } from "./personalAgentChatApi";
+import { BRAND } from "../../../shared/brand";
 
 export type PersonalChatMachine = { id: string; name: string; isThisMachine: boolean };
 
@@ -44,7 +45,7 @@ export function personalChatsBridgeFor(machineId: string): PersonalChatsBridge {
   const target = { machineId };
   const bridge = () => {
     const candidate = (window.ade as typeof window.ade & { personalChats?: Window["ade"]["personalChats"] }).personalChats;
-    if (!candidate) throw new Error("Personal chats are not available in this ADE runtime.");
+    if (!candidate) throw new Error(`Personal chats are not available in this ${BRAND.NAME} runtime.`);
     return candidate;
   };
   return {

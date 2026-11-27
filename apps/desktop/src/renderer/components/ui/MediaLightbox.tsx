@@ -5,6 +5,7 @@ import { showToast } from "../app/toast/toastStore";
 import { cn } from "./cn";
 import { Dialog } from "./dialog";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * ADE's one full-size viewer for a picture or a video.
@@ -90,14 +91,14 @@ export function MediaLightbox({
     setBusy("copy");
     try {
       const bytes = await resolveBytes();
-      if (!bytes) throw new Error("ADE could not read this picture.");
+      if (!bytes) throw new Error(`${BRAND.NAME} could not read this picture.`);
       await copyPictureToClipboard(bytes);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1400);
     } catch (error) {
       showToast({
         title: "Could not copy the picture",
-        message: plainErrorText(error, "ADE couldn't copy the picture."),
+        message: plainErrorText(error, `${BRAND.NAME} couldn't copy the picture.`),
         tone: "error",
       });
     } finally {
@@ -116,13 +117,13 @@ export function MediaLightbox({
       if (!bytes) {
         throw new Error(kind === "video"
           ? "This video is too large to download from here."
-          : "ADE could not read this picture.");
+          : `${BRAND.NAME} could not read this picture.`);
       }
       saveMediaAs(bytes, fileName ?? defaultFileName(title, bytes, kind));
     } catch (error) {
       showToast({
         title: "Could not download",
-        message: plainErrorText(error, "ADE couldn't save the file."),
+        message: plainErrorText(error, `${BRAND.NAME} couldn't save the file.`),
         tone: "error",
       });
     } finally {
@@ -371,10 +372,10 @@ async function toPngBlob(dataUrl: string): Promise<Blob> {
   canvas.width = image.naturalWidth;
   canvas.height = image.naturalHeight;
   const context = canvas.getContext("2d");
-  if (!context) throw new Error("ADE could not prepare the picture.");
+  if (!context) throw new Error(`${BRAND.NAME} could not prepare the picture.`);
   context.drawImage(image, 0, 0);
   return await new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("ADE could not prepare the picture."))), "image/png");
+    canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error(`${BRAND.NAME} could not prepare the picture.`))), "image/png");
   });
 }
 

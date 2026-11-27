@@ -7,6 +7,7 @@ import { copyJobKey, startCopyJob, useCopyJobs, watchCopyJobs } from "./projectC
 import { readMachineDefaultParentDir, type CopyOpenTarget } from "./projectCopies";
 import { pathFlavorOf } from "../../../shared/pathCase";
 import { normalizePathForComparison } from "../../lib/pathUtils";
+import { BRAND } from "../../../shared/brand";
 
 /** The folder that holds `path`, in that machine's own spelling; null at a root. */
 function parentFolderOf(path: string): string | null {
@@ -170,7 +171,7 @@ export function CloneToMachineDialog({
         if (!next && !cloning) onCancel();
       }}
       title={`Clone ${repoName} on ${machine.name}`}
-      description={sendsMessage ? "It has no copy yet. ADE clones it there, then sends your message." : "It has no copy yet. ADE clones it there, then opens it."}
+      description={sendsMessage ? `It has no copy yet. ${BRAND.NAME} clones it there, then sends your message.` : `It has no copy yet. ${BRAND.NAME} clones it there, then opens it.`}
       size="sm"
       actions={[
         { label: cloning ? "Cloning…" : failed ? "Retry" : confirmLabel, onClick: start, busy: cloning, disabled: cloning || !folder },

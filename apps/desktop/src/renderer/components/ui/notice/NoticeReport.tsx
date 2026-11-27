@@ -10,6 +10,7 @@ import {
   type IssueReportState,
 } from "../../app/ReportIssueButton";
 import type { NoticeAction } from "./NoticeParts";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * What every error notice carries so a person can hand it to ADE: the raw
@@ -136,11 +137,11 @@ export function useNoticeFailure(notice: {
   const action: NoticeAction | null = state.available
     ? {
         label: sentOk ? "Sent" : "Report…",
-        ariaLabel: sentOk ? "Sent to ADE" : REPORT_ERROR_LABEL,
+        ariaLabel: sentOk ? `Sent to ${BRAND.NAME}` : REPORT_ERROR_LABEL,
         variant: "secondary",
         icon: sentOk ? <Check size={11} weight="bold" /> : <PaperPlaneTilt size={11} />,
         disabled: sentOk || state.dialogOpen,
-        title: sentOk ? "Sent to ADE" : `${REPORT_ERROR_LABEL} ${reportControlTitle()}`,
+        title: sentOk ? `Sent to ${BRAND.NAME}` : `${REPORT_ERROR_LABEL} ${reportControlTitle()}`,
         onClick: state.openDialog,
       }
     : null;

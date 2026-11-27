@@ -49,6 +49,7 @@ import { formatBytes } from "../../../shared/formatting";
 import { CloudLaneComputerPanel } from "../cloudLane/CloudLaneComputerPanel";
 import { KeepChatsCheckbox } from "../cloudLane/deleteCloudLane";
 import type { CloudLaneDeleteOptions } from "../../../shared/cloudLaneLife";
+import { BRAND } from "../../../shared/brand";
 
 /** Independent delete targets shown as a checklist. */
 export type LaneDeleteSelection = {
@@ -861,7 +862,7 @@ export function ManageLaneDialog({
                       </span>
                     </div>
                     <p className="mt-1.5 text-xs leading-relaxed text-muted-fg/70">
-                      Removes the local worktree and ADE-generated lane data. Restoring the lane recreates its worktree.
+                      Removes the local worktree and {BRAND.NAME}-generated lane data. Restoring the lane recreates its worktree.
                     </p>
                     {reclaimRisk?.blockedReasons.map((reason) => (
                       <Banner
@@ -880,7 +881,7 @@ export function ManageLaneDialog({
                           disabled={reclaimBusy || laneActionBusy}
                           className="mt-0.5"
                         />
-                        <span>Discard uncommitted changes in this lane. ADE keeps a copy for {DELETED_LANE_KEEP_DAYS} days in Settings › Deleted & Archived.</span>
+                        <span>Discard uncommitted changes in this lane. {BRAND.NAME} keeps a copy for {DELETED_LANE_KEEP_DAYS} days in Settings › Deleted & Archived.</span>
                       </label>
                     ) : null}
                     <label className="mt-3 block text-[11px] text-muted-fg/80">
@@ -949,7 +950,7 @@ export function ManageLaneDialog({
               {cloudLanes.length ? (
                 <>
                   <p className="mt-2 text-xs text-muted-fg/80">
-                    {cloudLanes.map((lane) => lane.name).join(", ")} {cloudLanes.length === 1 ? "is an ADE Cloud lane. It goes" : "are ADE Cloud lanes. They go"} with {cloudLanes.length === 1 ? "its" : "their"} computer and chats; the choices below do not apply. If work there isn&apos;t on GitHub, ADE shows it first.
+                    {cloudLanes.map((lane) => lane.name).join(", ")} {cloudLanes.length === 1 ? `is a ${BRAND.CLOUD_NAME} lane. It goes` : `are ${BRAND.CLOUD_NAME} lanes. They go`} with {cloudLanes.length === 1 ? "its" : "their"} computer and chats; the choices below do not apply. If work there isn&apos;t on GitHub, {BRAND.NAME} shows it first.
                   </p>
                   <KeepChatsCheckbox checked={keepCloudChats} disabled={laneActionBusy} onChange={setKeepCloudChats} />
                 </>
@@ -983,7 +984,7 @@ export function ManageLaneDialog({
                     {isBatch
                       ? `Also delete ${dirtyLanes.length === 1 ? "the lane" : `the ${dirtyLanes.length} lanes`} with uncommitted work: ${dirtyLanes.map((lane) => lane.name).join(", ")}`
                       : "Force delete: remove the uncommitted work too"}
-                    <span className="block text-muted-fg/50">ADE keeps a copy for {DELETED_LANE_KEEP_DAYS} days. Restore it from Settings › Deleted & Archived.</span>
+                    <span className="block text-muted-fg/50">{BRAND.NAME} keeps a copy for {DELETED_LANE_KEEP_DAYS} days. Restore it from Settings › Deleted & Archived.</span>
                   </span>
                 </label>
               )}
@@ -1056,10 +1057,10 @@ function CloudLaneDeleteNote({ count }: { count: number }) {
   return (
     <div className="space-y-1.5 text-xs leading-relaxed">
       <p className="text-red-200/80">
-        {one ? "Deletes the lane, its ADE Cloud computer and its chats." : `Deletes the ${count} lanes, their ADE Cloud computers and their chats.`} Everything on {one ? "that computer" : "those computers"} goes for good.
+        {one ? `Deletes the lane, its ${BRAND.CLOUD_NAME} computer and its chats.` : `Deletes the ${count} lanes, their ${BRAND.CLOUD_NAME} computers and their chats.`} Everything on {one ? "that computer" : "those computers"} goes for good.
       </p>
       <p className="text-muted-fg/80">
-        If work there isn&apos;t on GitHub, ADE shows it first and offers to push it.
+        If work there isn&apos;t on GitHub, {BRAND.NAME} shows it first and offers to push it.
       </p>
     </div>
   );
@@ -1112,7 +1113,7 @@ function DeleteTargetChecklist({
       key: "worktree",
       icon: <Cube size={15} weight="duotone" />,
       title: "Worktree",
-      hint: "Removes the working folder and ADE registration.",
+      hint: `Removes the working folder and ${BRAND.NAME} registration.`,
     },
     {
       key: "localBranch",

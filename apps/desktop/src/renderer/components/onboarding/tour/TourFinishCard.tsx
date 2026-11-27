@@ -5,6 +5,7 @@ import { FLOATS_OVER_BROWSER_PROPS, modalOpen } from "../../ui/overlayState";
 import { isAnchorVisible, prefersReducedMotion, readFrame } from "./anchorGeometry";
 import type { TourCursorMotion } from "./tourCursor";
 import { watchTourDom } from "./tourWatch";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * The tour's last moment: a calm card in the middle of the window that says
@@ -88,7 +89,7 @@ export function TourFinishCard({
           <li>
             <Lightbulb size={15} aria-hidden />
             <span className="ade-tour-finish-text">
-              <b>ADE Tips</b>
+              <b>{BRAND.NAME} Tips</b>
               <span>Every feature in one line, with a Try it button.</span>
             </span>
             <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" onClick={openTips}>

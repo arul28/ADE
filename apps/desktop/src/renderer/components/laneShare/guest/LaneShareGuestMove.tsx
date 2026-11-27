@@ -17,6 +17,7 @@ import { LaneShareRightsPanel } from "../LaneShareRightsPanel";
 import { confirmHighRiskShare } from "../laneShareDefaults";
 import type { LaneShareGuestConnection } from "./laneShareGuestConnection";
 import { receiveMoveHere, sendMoveToOwner, type LaneShareMoveProgress } from "./laneShareMoveRunner";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * The guest's side of moving a chat between the two people of a share.
@@ -255,7 +256,7 @@ export function LaneShareGuestMoveCard({
         />
       ) : offered ? (
         webMode ? (
-          <span className="text-[12px] text-fg/60">Open this shared lane in the ADE desktop app on one of your computers to accept. The work goes into a new lane there.</span>
+          <span className="text-[12px] text-fg/60">Open this shared lane in the {BRAND.NAME} desktop app on one of your computers to accept. The work goes into a new lane there.</span>
         ) : (
           <>
             <span className="text-[12px] leading-[1.45] text-fg/65">
@@ -383,7 +384,7 @@ export function LaneShareGuestMoveOut({
     <div className="kit-panel flex max-w-[640px] flex-col gap-2 p-3" data-testid="lane-share-guest-move-out">
       <span className="text-[12.5px] font-medium text-fg/85">Move a chat to {ownerLabel}'s computer</span>
       {webMode ? (
-        <span className="text-[12px] text-fg/60">Move a chat from the ADE desktop app on the computer that has it.</span>
+        <span className="text-[12px] text-fg/60">Move a chat from the {BRAND.NAME} desktop app on the computer that has it.</span>
       ) : (
         <>
           <span className="text-[12px] leading-[1.45] text-fg/65">

@@ -45,6 +45,7 @@ import type { PrReviewEvent } from "./PrReviewSubmitModal";
 import "./PrFloatingDock.css";
 import { modifierChordLabel } from "../../../lib/platform";
 import { isImeComposing } from "../../../lib/imeComposition";
+import { BRAND } from "../../../../shared/brand";
 
 /* ══════════════════ The dock ══════════════════ */
 
@@ -437,7 +438,7 @@ function stackCardText(pr: PrWithConflicts, stackNumber: number, count: number, 
   if (pr.state === "draft") return "This PR is a draft. Mark it ready for review before you merge the stack.";
   if (pr.state !== "open") return "GitHub manages this stack's rebases, reviews, and merge order.";
   if (count > 1 && bypassing) {
-    return `ADE merges the ${count} open PRs up to #${pr.githubPrNumber} one at a time from the bottom, each bypassing the branch rules. If one fails, the ones below it stay merged.`;
+    return `${BRAND.NAME} merges the ${count} open PRs up to #${pr.githubPrNumber} one at a time from the bottom, each bypassing the branch rules. If one fails, the ones below it stay merged.`;
   }
   if (count > 1) {
     return `GitHub merges the ${count} open PRs up to #${pr.githubPrNumber} together, or none of them. It checks the branch rules during the merge.`;

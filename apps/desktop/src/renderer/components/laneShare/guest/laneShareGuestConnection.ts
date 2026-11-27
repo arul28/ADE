@@ -24,6 +24,7 @@ import {
   encodeEnvelopeText,
   parseEnvelopeChunkPayload,
 } from "../../../webclient/sync/wireProtocol";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * The guest's connection to the machine of another person that shares ONE
@@ -199,7 +200,7 @@ const RELAY_HOST_OFFLINE_CODE = 4501;
 const SOCKET_OPEN = 1;
 
 /** Hello errors that end the attempt with a clear state (no retry loop). */
-const OLD_HOST_MESSAGE = "The owner's computer needs an ADE update to share lanes.";
+const OLD_HOST_MESSAGE = `The owner's computer needs a ${BRAND.NAME} update to share lanes.`;
 const STOP_CODES: Readonly<Record<string, LaneShareGuestStopReason>> = {
   lane_share_refused: "refused",
   lane_share_paused: "paused",
@@ -435,7 +436,7 @@ export class LaneShareGuestConnection {
       this.setState({
         kind: "host_offline",
         retryAt: this.now() + HOST_OFFLINE_RETRY_MS,
-        message: "The owner's computer is offline. ADE tries again in a minute.",
+        message: `The owner's computer is offline. ${BRAND.NAME} tries again in a minute.`,
       });
       this.scheduleRetry(HOST_OFFLINE_RETRY_MS);
       return;
@@ -450,13 +451,13 @@ export class LaneShareGuestConnection {
     const message = (match?.[2] ?? text).trim();
     if (code === "share_closed") return this.stopWith("ended", "This share has ended.");
     if (code === "not_found") return this.stopWith("not_for_account", "This share is not for this account.");
-    if (code === "signed_out") return this.stopWith("signed_out", "Sign in to your ADE account to open shared lanes.");
+    if (code === "signed_out") return this.stopWith("signed_out", `Sign in to your ${BRAND.NAME} account to open shared lanes.`);
     if (code === "no_directory") {
-      return this.stopWith("signed_out", "Shared lanes need your ADE account on this device. Sign in, then try again.");
+      return this.stopWith("signed_out", `Shared lanes need your ${BRAND.NAME} account on this device. Sign in, then try again.`);
     }
     if (code === "untrusted_relay") return this.stopWith("untrusted_relay", message);
     if (code === "invalid_args") return this.stopWith("refused", message || "That lane share link is not valid.");
-    this.scheduleBackoff(code === "rate_limited" ? "Too many tries. ADE waits, then tries again." : "The account directory can't be reached. ADE tries again.");
+    this.scheduleBackoff(code === "rate_limited" ? `Too many tries. ${BRAND.NAME} waits, then tries again.` : `The account directory can't be reached. ${BRAND.NAME} tries again.`);
   }
 
   private dial(generation: number, relayUrl: string, ticket: string, keyPair: CryptoKeyPair): void {
@@ -465,7 +466,7 @@ export class LaneShareGuestConnection {
       const create = this.options.createSocket ?? ((url: string) => new WebSocket(url) as unknown as LaneShareGuestSocket);
       socket = create(withRelayReadyNegotiation(relayUrl));
     } catch {
-      this.scheduleBackoff("The connection to the owner's computer failed. ADE tries again.");
+      this.scheduleBackoff(`The connection to the owner's computer failed. ${BRAND.NAME} tries again.`);
       return;
     }
     this.socket = socket;
@@ -475,7 +476,7 @@ export class LaneShareGuestConnection {
     const deadline = setTimeout(() => {
       if (generation !== this.generation || helloDone) return;
       this.closeSocket(4000, "Guest hello timeout");
-      this.scheduleBackoff("The owner's computer did not answer. ADE tries again.");
+      this.scheduleBackoff(`The owner's computer did not answer. ${BRAND.NAME} tries again.`);
     }, OPEN_TIMEOUT_MS + HELLO_TIMEOUT_MS);
     let readyTimer: ReturnType<typeof setTimeout> | null = null;
     const sendHello = async () => {
@@ -496,7 +497,7 @@ export class LaneShareGuestConnection {
           requestId: `hello-${randomHex(8)}`,
           payload: buildLaneShareGuestHello({
             deviceId: this.deviceId,
-            deviceName: (this.options.deviceName ?? "ADE guest").slice(0, 64),
+            deviceName: (this.options.deviceName ?? `${BRAND.NAME} guest`).slice(0, 64),
             siteId: this.siteId,
             ticket,
             dpop,
@@ -505,7 +506,7 @@ export class LaneShareGuestConnection {
       } catch {
         if (generation !== this.generation) return;
         this.closeSocket(4000, "Guest hello failed");
-        this.scheduleBackoff("The connection to the owner's computer failed. ADE tries again.");
+        this.scheduleBackoff(`The connection to the owner's computer failed. ${BRAND.NAME} tries again.`);
       }
     };
     socket.onopen = () => {
@@ -570,7 +571,7 @@ export class LaneShareGuestConnection {
         this.setState({
           kind: "host_offline",
           retryAt: this.now() + HOST_OFFLINE_RETRY_MS,
-          message: "The owner's computer is offline. ADE tries again in a minute.",
+          message: `The owner's computer is offline. ${BRAND.NAME} tries again in a minute.`,
         });
         this.scheduleRetry(HOST_OFFLINE_RETRY_MS);
         return;
@@ -579,7 +580,7 @@ export class LaneShareGuestConnection {
         this.offlineOrBackoff();
         return;
       }
-      this.scheduleBackoff("The connection to the owner's computer dropped. ADE reconnects.");
+      this.scheduleBackoff(`The connection to the owner's computer dropped. ${BRAND.NAME} reconnects.`);
     };
   }
 
@@ -588,12 +589,12 @@ export class LaneShareGuestConnection {
       this.setState({
         kind: "host_offline",
         retryAt: this.now() + HOST_OFFLINE_RETRY_MS,
-        message: "The owner's computer is not reachable. ADE tries again in a minute.",
+        message: `The owner's computer is not reachable. ${BRAND.NAME} tries again in a minute.`,
       });
       this.scheduleRetry(HOST_OFFLINE_RETRY_MS);
       return;
     }
-    this.scheduleBackoff("The owner's computer is not reachable yet. ADE tries again.");
+    this.scheduleBackoff(`The owner's computer is not reachable yet. ${BRAND.NAME} tries again.`);
   }
 
   private handleHelloOk(payload: SyncHelloOkPayload, generation: number): void {
@@ -960,7 +961,7 @@ export class LaneShareGuestConnection {
       if (generation !== this.generation) return;
       if (this.now() - this.lastInboundAt <= INBOUND_STALE_MS) return;
       this.closeSocket(4000, "Guest inbound stale");
-      this.scheduleBackoff("The connection to the owner's computer went quiet. ADE reconnects.");
+      this.scheduleBackoff(`The connection to the owner's computer went quiet. ${BRAND.NAME} reconnects.`);
     }, 15_000);
   }
 

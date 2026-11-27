@@ -31,6 +31,7 @@ import { providerBrand, type ProviderBrandLogo } from "../settings/providers/pro
 import type { FirstRunAgent, FirstRunAgentStatus } from "./firstRunAgentModel";
 import "./firstRunAgentRail.css";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 export type RailTile = { agent: FirstRunAgent; status: FirstRunAgentStatus };
 
@@ -529,7 +530,7 @@ function CursorRailItem(props: RailItemProps) {
         (result): CursorSignInOutcome => (result.ok
           ? { ok: true, email: result.email ?? null }
           : { ok: false, error: plainErrorText(result.error, "Cursor sign-in failed.") }),
-        (err: unknown): CursorSignInOutcome => ({ ok: false, error: plainErrorText(err, "ADE couldn't finish the Cursor sign-in.") }),
+        (err: unknown): CursorSignInOutcome => ({ ok: false, error: plainErrorText(err, `${BRAND.NAME} couldn't finish the Cursor sign-in.`) }),
       )
       .then((result) => {
         setBusy(false);
@@ -652,7 +653,7 @@ function AntigravityRailItem(props: RailItemProps) {
       .then(apply)
       .catch((err: unknown) => {
         setState(null);
-        setError(plainErrorText(err, "ADE couldn't start the sign-in."));
+        setError(plainErrorText(err, `${BRAND.NAME} couldn't start the sign-in.`));
         onChanged();
       });
   }, [apply, onChanged]);
@@ -666,7 +667,7 @@ function AntigravityRailItem(props: RailItemProps) {
     setError(null);
     void send({ flowId, callbackUrl: address }, pinRef.current)
       .then(apply)
-      .catch((err: unknown) => setError(plainErrorText(err, "ADE couldn't finish the sign-in.")))
+      .catch((err: unknown) => setError(plainErrorText(err, `${BRAND.NAME} couldn't finish the sign-in.`)))
       .finally(() => setSubmitting(false));
   }, [apply, state?.flowId]);
 

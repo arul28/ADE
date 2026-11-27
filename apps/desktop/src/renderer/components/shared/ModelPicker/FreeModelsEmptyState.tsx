@@ -4,6 +4,7 @@ import type { OpenProjectBinding } from "../../../../shared/types";
 import { usePinnedToolStatus } from "../../../hooks/usePinnedToolStatus";
 import { Banner } from "../../ui/notice";
 import { PickerEmptyMessage, type PickerEmptyAction } from "./PickerEmptyMessage";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * The Free page with no rows yet. Free models run in ADE's pinned OpenCode on
@@ -71,7 +72,7 @@ export const FreeModelsEmptyState = memo(function FreeModelsEmptyState({
       return (
         <FreeModelsMessage
           title="Free models"
-          error="ADE could not read this machine’s status."
+          error={`${BRAND.NAME} could not read this machine’s status.`}
           action={{ label: "Try again", onClick: reread }}
         />
       );

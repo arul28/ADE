@@ -37,6 +37,7 @@ import {
   formatActionError,
   upsertLaneSummary,
 } from "./GitHubTabCreateLaneDialog";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * What the dialog shows for a lane on ADE Cloud. Nothing on this computer is
@@ -74,7 +75,7 @@ function adeCloudPrPreflight(item: GitHubPrListItem): CreateLaneFromPrBranchPref
 function adeCloudPrProblem(item: GitHubPrListItem, preflight: CreateLaneFromPrBranchPreflight): string | null {
   if (preflight.canCreate) return null;
   if (!preflight.headBranch) return "This pull request has no branch to check out.";
-  return `This pull request's branch is in ${preflight.headRepoOwner}/${preflight.headRepoName}, a fork. ADE Cloud checks out branches of ${item.repoOwner}/${item.repoName} only.`;
+  return `This pull request's branch is in ${preflight.headRepoOwner}/${preflight.headRepoName}, a fork. ${BRAND.CLOUD_NAME} checks out branches of ${item.repoOwner}/${item.repoName} only.`;
 }
 
 const CREATE_LANE_MACHINE_COPY = {

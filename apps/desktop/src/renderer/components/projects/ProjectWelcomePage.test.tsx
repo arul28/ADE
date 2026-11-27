@@ -337,7 +337,7 @@ describe("ProjectWelcomePage web zero-machines state", () => {
     const { signIn } = renderWebWelcome(
       accountSnapshot({
         state: "auth_expired",
-        message: "Your ADE account session expired. Sign in again.",
+        message: "Your Daex account session expired. Sign in again.",
       }),
     );
 

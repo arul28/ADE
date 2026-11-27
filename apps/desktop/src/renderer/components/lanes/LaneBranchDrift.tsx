@@ -15,6 +15,7 @@ import { useChatRuntimeScope } from "../chat/ChatRuntimeScope";
 import { showToast } from "../app/toast/toastStore";
 import { cn } from "../ui/cn";
 import { StatusChip, type StatusChipAction } from "../ui/notice";
+import { BRAND } from "../../../shared/brand";
 
 function toastSwitchFailure(laneId: string, message: string, action: "switch" | "keep" = "switch"): void {
   showToast({
@@ -202,7 +203,7 @@ function LaneBranchAdoptedChip({ laneId, adoption, pin }: { laneId: string; adop
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (isActiveWorkRefusal(message)) setForceable(true);
-      else toastSwitchFailure(laneId, plainErrorText(err, "ADE couldn't switch the branch."));
+      else toastSwitchFailure(laneId, plainErrorText(err, `${BRAND.NAME} couldn't switch the branch.`));
     } finally {
       setPending(false);
     }
@@ -215,7 +216,7 @@ function LaneBranchAdoptedChip({ laneId, adoption, pin }: { laneId: string; adop
       label="Now on"
       detail={adoption.branchRef}
       detailMono
-      tooltip={`The agent switched this lane to ${adoption.branchRef}, so ADE moved the lane with it. The lane keeps its name, and the chat keeps the PR from ${adoption.previousBranchRef}.`}
+      tooltip={`The agent switched this lane to ${adoption.branchRef}, so ${BRAND.NAME} moved the lane with it. The lane keeps its name, and the chat keeps the PR from ${adoption.previousBranchRef}.`}
       actions={[{
         label: pending ? "Switching…" : forceable ? "Switch anyway" : "Switch back",
         title: forceable
@@ -357,7 +358,7 @@ export function LaneBranchComposerChip({
       // explicit confirm that retries with the acknowledgement, the same shape the
       // lane list uses for its own branch switch.
       if (isActiveWorkRefusal(message)) setForceable(resolution);
-      else toastSwitchFailure(laneId, plainErrorText(err, "ADE couldn't switch the branch."), resolution === "keep-head" ? "keep" : "switch");
+      else toastSwitchFailure(laneId, plainErrorText(err, `${BRAND.NAME} couldn't switch the branch.`), resolution === "keep-head" ? "keep" : "switch");
     } finally {
       setPending(null);
     }

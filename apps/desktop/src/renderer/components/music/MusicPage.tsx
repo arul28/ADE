@@ -28,6 +28,7 @@ import { SearchView } from "./MusicSearchView";
 import { SpotifyOnboarding, SpotifySetup, SpotifyDevices } from "./MusicProviderControls";
 import { MusicProviderBadge, useMusicProvider, useMusicProviderName } from "./musicProvider";
 import "./music.css";
+import { BRAND } from "../../../shared/brand";
 
 type View =
   | { kind: "search" }
@@ -148,7 +149,7 @@ function MusicPageContent() {
           <section className="ade-music-gate ade-chat-scene-plane" data-testid="music-no-bridge">
             <span className="ade-music-gate-glyph"><MusicNotes size={30} weight="fill" /></span>
             <h1>Music isn't available here</h1>
-            <p>Open the ADE desktop app on this computer to use Music.</p>
+            <p>Open the {BRAND.NAME} desktop app on this computer to use Music.</p>
           </section>
         </div>
       </MusicFrame>
@@ -207,7 +208,7 @@ function MusicPageContent() {
           <section className={`ade-music-gate ade-chat-scene-plane${provider === "spotify" ? " is-setup" : ""}`} data-testid="music-unavailable" data-onboarding-anchor="music-setup">
             <span className="ade-music-gate-glyph is-muted"><WarningCircle size={30} weight="fill" /></span>
             <h1>{`${providerName} isn't available right now`}</h1>
-            <p>{message ?? "ADE couldn't reach its music service."}</p>
+            <p>{message ?? `${BRAND.NAME} couldn't reach its music service.`}</p>
             {lastError ? (
               <Banner
                 layout="inline"

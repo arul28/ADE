@@ -8,6 +8,7 @@ import {
 } from "../../lib/projectIconCache";
 import { Banner } from "../ui/notice/Banner";
 import { Dialog as AppDialog } from "../ui/dialog/Dialog";
+import { BRAND } from "../../../shared/brand";
 
 function projectIconErrorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
@@ -96,7 +97,7 @@ export function ProjectIconDialog({
         onClose();
       } else {
         setIconError(
-          "ADE saved the path, but the image could not be rendered as a project icon.",
+          `${BRAND.NAME} saved the path, but the image could not be rendered as a project icon.`,
         );
       }
     } catch (error) {

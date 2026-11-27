@@ -11,6 +11,7 @@ import { deleteCloudLane, pushCloudLaneWork } from "../cloudLane/cloudLaneAction
 import { deleteCloudLaneWithCheck } from "../cloudLane/deleteCloudLane";
 import { forgetCloudLaneComputer } from "../../state/adeCloudLaneIndex";
 import { laneMoveErrorText as errorText, laneMoveItems } from "./laneMoveModel";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The lane moves this window started, and what each one is doing now.
@@ -143,7 +144,7 @@ function update(id: string, change: (run: LaneMoveRun) => LaneMoveRun): LaneMove
 export function keptLaneRestoreApi() {
   const api = window.ade.cloud;
   if (!api?.previewKeptLaneRestore || !api.restoreKeptLane || !api.getKeptLaneRestore) {
-    throw new Error("This ADE can't bring a lane back from ADE Cloud's saved copies. Update ADE, then try again.");
+    throw new Error(`This ${BRAND.NAME} can't bring a lane back from ${BRAND.CLOUD_NAME}'s saved copies. Update ${BRAND.NAME}, then try again.`);
   }
   return {
     preview: api.previewKeptLaneRestore,
@@ -187,7 +188,7 @@ function schedule(id: string, run: LaneMoveRun): void {
     update(id, (entry) => ({
       ...entry,
       phase: "failed",
-      error: `ADE stopped checking this move. Open the lane on ${entry.targetName} to see what arrived.`,
+      error: `${BRAND.NAME} stopped checking this move. Open the lane on ${entry.targetName} to see what arrived.`,
     }));
     return;
   }
@@ -225,7 +226,7 @@ async function chatsLeftOnSource(run: Extract<LaneMoveRun, { kind: "live" }>): P
     return laneMoveItems(rows, chats).filter((item) => !moved.has(item.sessionId)).length;
   } catch (error) {
     console.warn("[laneMove] reading the source before its delete failed", error);
-    throw new Error(`ADE couldn't check the lane's chats on ${ADE_CLOUD_NAME}, so it kept the computer. ${errorText(error)}`.trim());
+    throw new Error(`${BRAND.NAME} couldn't check the lane's chats on ${ADE_CLOUD_NAME}, so it kept the computer. ${errorText(error)}`.trim());
   }
 }
 
@@ -262,14 +263,14 @@ async function filesOnSource(run: Extract<LaneMoveRun, { kind: "live" }>): Promi
       return "unknown";
     }
     console.warn("[laneMove] checking the source lane files before its delete failed", error);
-    throw new Error(`ADE couldn't check the lane's files on ${ADE_CLOUD_NAME}, so it kept the computer. ${errorText(error)}`.trim());
+    throw new Error(`${BRAND.NAME} couldn't check the lane's files on ${ADE_CLOUD_NAME}, so it kept the computer. ${errorText(error)}`.trim());
   }
 }
 
 function filesLeftMessage(files: "changed" | "unknown", targetName: string): string {
   return files === "changed"
-    ? `Files on the lane changed on ${ADE_CLOUD_NAME} after the move, so ADE kept the computer. Push them to GitHub, then pull the branch on ${targetName}.`
-    : `The ADE on the lane's ${ADE_CLOUD_NAME} computer is too old to check for files that changed after the move, so ADE kept the computer. Push its work to GitHub, then pull the branch on ${targetName}.`;
+    ? `Files on the lane changed on ${ADE_CLOUD_NAME} after the move, so ${BRAND.NAME} kept the computer. Push them to GitHub, then pull the branch on ${targetName}.`
+    : `The ${BRAND.NAME} on the lane's ${ADE_CLOUD_NAME} computer is too old to check for files that changed after the move, so ${BRAND.NAME} kept the computer. Push its work to GitHub, then pull the branch on ${targetName}.`;
 }
 
 async function deleteComputer(id: string): Promise<void> {
@@ -281,8 +282,8 @@ async function deleteComputer(id: string): Promise<void> {
       const left = await chatsLeftOnSource(run);
       if (left > 0) {
         throw new LeftOnSourceError(left === 1
-          ? "A chat started on the lane during the move, so ADE kept the computer. Move the lane again to bring it."
-          : `${left} chats started on the lane during the move, so ADE kept the computer. Move the lane again to bring them.`);
+          ? `A chat started on the lane during the move, so ${BRAND.NAME} kept the computer. Move the lane again to bring it.`
+          : `${left} chats started on the lane during the move, so ${BRAND.NAME} kept the computer. Move the lane again to bring them.`);
       }
       const files = await filesOnSource(run);
       if (files !== "same") throw new FilesLeftError(filesLeftMessage(files, run.targetName));
@@ -296,7 +297,7 @@ async function deleteComputer(id: string): Promise<void> {
       run.cloudInstanceId,
       movedChatIds ? { skipCheck: true, onlyChats: movedChatIds } : { skipCheck: true, keepChats: true },
     );
-    if (!done.ok) throw new Error(done.message || "ADE Cloud did not delete the computer.");
+    if (!done.ok) throw new Error(done.message || `${BRAND.CLOUD_NAME} did not delete the computer.`);
     update(id, (entry) => ({ ...entry, phase: "done" }));
     // Asked to keep every chat, `chatsKept` is always true; only a failed chat delete warns.
     const chatsLeft = done.chatsKept && Boolean(movedChatIds);
@@ -304,8 +305,8 @@ async function deleteComputer(id: string): Promise<void> {
       tone: chatsLeft ? "warning" : "success",
       title: `Moved ${run.laneName} to ${run.targetName}`,
       message: chatsLeft
-        ? "Its ADE Cloud computer is deleted. ADE couldn't delete all the saved copies of the chats that moved; remove the rest in Work."
-        : "Its ADE Cloud computer is deleted.",
+        ? `Its ${BRAND.CLOUD_NAME} computer is deleted. ${BRAND.NAME} couldn't delete all the saved copies of the chats that moved; remove the rest in Work.`
+        : `Its ${BRAND.CLOUD_NAME} computer is deleted.`,
       ...(chatsLeft ? { durationMs: READABLE_TOAST_DURATION_MS } : {}),
     });
     forgetLater(id);
@@ -316,7 +317,7 @@ async function deleteComputer(id: string): Promise<void> {
       update(id, (entry) => ({ ...entry, phase: "moveAgain", error: message }));
       showToast({
         tone: "warning",
-        title: `Moved ${run.laneName}, but kept its ADE Cloud computer`,
+        title: `Moved ${run.laneName}, but kept its ${BRAND.CLOUD_NAME} computer`,
         message,
         durationMs: READABLE_TOAST_DURATION_MS,
       });
@@ -328,7 +329,7 @@ async function deleteComputer(id: string): Promise<void> {
       update(id, (entry) => ({ ...entry, phase: "pushFirst", error: message }));
       showToast({
         tone: "warning",
-        title: `Moved ${run.laneName}, but kept its ADE Cloud computer`,
+        title: `Moved ${run.laneName}, but kept its ${BRAND.CLOUD_NAME} computer`,
         message: `${message} Open the move in the lane's machine menu to do it.`,
         durationMs: READABLE_TOAST_DURATION_MS,
       });
@@ -337,7 +338,7 @@ async function deleteComputer(id: string): Promise<void> {
     update(id, (entry) => ({ ...entry, phase: "deleteFailed", error: message }));
     showToast({
       tone: "warning",
-      title: `Moved ${run.laneName}, but its ADE Cloud computer is still there`,
+      title: `Moved ${run.laneName}, but its ${BRAND.CLOUD_NAME} computer is still there`,
       message: `${message} Open the lane's machine menu to delete it.`,
       durationMs: READABLE_TOAST_DURATION_MS,
     });
@@ -356,9 +357,9 @@ function finish(id: string, arrived: boolean, failure: string | null): void {
         ? `Couldn't move ${run.laneName} from its saved copy`
         : `Couldn't move all of ${run.laneName} to ${run.targetName}`,
       message: wakesInstead
-        ? `${failure ?? ""} Nothing was deleted. Wake the ADE Cloud computer to move the lane from there.`.trim()
+        ? `${failure ?? ""} Nothing was deleted. Wake the ${BRAND.CLOUD_NAME} computer to move the lane from there.`.trim()
         : run.cloudInstanceId
-        ? `${failure ?? ""} Its ADE Cloud computer is kept, so nothing is lost.`.trim()
+        ? `${failure ?? ""} Its ${BRAND.CLOUD_NAME} computer is kept, so nothing is lost.`.trim()
         : failure ?? "Open the lane's machine menu to try again.",
       durationMs: READABLE_TOAST_DURATION_MS,
     });
@@ -375,7 +376,7 @@ function finish(id: string, arrived: boolean, failure: string | null): void {
   showToast({
     tone: "success",
     title: `Moved ${run.laneName} to ${run.targetName}`,
-    ...(run.kind === "restore" && run.fromComputer ? { message: "Its ADE Cloud computer is deleted." } : {}),
+    ...(run.kind === "restore" && run.fromComputer ? { message: `Its ${BRAND.CLOUD_NAME} computer is deleted.` } : {}),
   });
   forgetLater(id);
 }
@@ -536,8 +537,8 @@ export async function pushAndDeleteLaneMoveComputer(id: string): Promise<void> {
     const left = await chatsLeftOnSource(run);
     if (left > 0) {
       const message = left === 1
-        ? "A chat started on the lane since the move, so ADE kept the computer. Move the lane again to bring it."
-        : `${left} chats started on the lane since the move, so ADE kept the computer. Move the lane again to bring them.`;
+        ? `A chat started on the lane since the move, so ${BRAND.NAME} kept the computer. Move the lane again to bring it.`
+        : `${left} chats started on the lane since the move, so ${BRAND.NAME} kept the computer. Move the lane again to bring them.`;
       update(id, (entry) => ({ ...entry, phase: "moveAgain", error: message }));
       showToast({ tone: "warning", title: `Kept ${run.laneName}'s ${ADE_CLOUD_NAME} computer`, message, durationMs: READABLE_TOAST_DURATION_MS });
       return;

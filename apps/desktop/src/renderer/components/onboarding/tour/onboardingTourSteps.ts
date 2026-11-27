@@ -1,4 +1,5 @@
 import { anchorShown, findVisibleAnchor, isAnchorVisible } from "./anchorGeometry";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * The guided tour, in order. It runs inside a project, the first time one is
@@ -119,7 +120,7 @@ export const TOUR_STEPS: readonly TourStepDef[] = [
     number: 3,
     anchors: ["run-on", "lane-picker"],
     title: "Where it runs",
-    line: "Run here, on another computer of yours, or on ADE Cloud, which keeps going while your laptop sleeps. Beside it: your main checkout, or a new lane on its own branch.",
+    line: `Run here, on another computer of yours, or on ${BRAND.CLOUD_NAME}, which keeps going while your laptop sleeps. Beside it: your main checkout, or a new lane on its own branch.`,
     byAnchor: {
       "lane-picker": {
         line: "Your main checkout, or a new lane on its own branch, so agents never step on each other.",
@@ -135,7 +136,7 @@ export const TOUR_STEPS: readonly TourStepDef[] = [
     number: 4,
     anchors: ["session-list"],
     title: "Every chat, in one list",
-    line: "Chats, CLIs and terminals from every lane and machine, ADE Cloud included. A dot means one needs you.",
+    line: `Chats, CLIs and terminals from every lane and machine, ${BRAND.CLOUD_NAME} included. A dot means one needs you.`,
     advance: "next",
     place: ["right", "below"],
     goTo: "work",

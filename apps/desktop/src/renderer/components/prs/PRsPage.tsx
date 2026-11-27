@@ -25,6 +25,7 @@ import {
 import type { PrSummary } from "../../../shared/types";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { DirectPrsList } from "./DirectPrsList";
+import { BRAND } from "../../../shared/brand";
 
 type PrRefreshArgs = { prId?: string; prIds?: string[] };
 
@@ -325,7 +326,7 @@ function PRsPageInner({ active }: { active: boolean }) {
   ) : noMachine ? (
     <EmptyState
       title="No computer is online"
-      description="Pull requests are read through a computer that has this project. Open ADE on one, or connect it."
+      description={`Pull requests are read through a computer that has this project. Open ${BRAND.NAME} on one, or connect it.`}
       icon={Desktop}
       iconSize={32}
       className="m-auto"

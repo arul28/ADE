@@ -4,6 +4,7 @@
 // ---------------------------------------------------------------------------
 
 import type { AgentChatPermissionMode, ChatSurfaceProfile } from "../../../shared/types";
+import { BRAND } from "../../../shared/brand";
 
 export type SafetyLevel = "safe" | "semi-auto" | "full-auto" | "danger" | "custom";
 
@@ -253,7 +254,7 @@ export function getPermissionOptions(opts: {
         value: "plan",
         label: "Read-only",
         shortDesc: "Muse refuses unmatched tool calls",
-        detail: "Muse's denyUnmatched mode, plus ADE's plan guidance in chat. Muse refuses any tool call its rules do not already allow.",
+        detail: `Muse's denyUnmatched mode, plus ${BRAND.NAME}'s plan guidance in chat. Muse refuses any tool call its rules do not already allow.`,
         allows: ["File reads", "Code search", "Plan generation"],
         gates: ["File writes", "Shell commands"],
         safety: "safe",
@@ -429,7 +430,7 @@ export function getPermissionOptions(opts: {
         value: "full-auto",
         label: "Full access",
         shortDesc: "Every request approved without asking",
-        detail: "Nothing prompts. Where the provider cannot be told to stop asking, ADE approves each request for you and records it in the transcript.",
+        detail: `Nothing prompts. Where the provider cannot be told to stop asking, ${BRAND.NAME} approves each request for you and records it in the transcript.`,
         allows: ["Everything"],
         warning: "⚠ Only use in isolated or disposable working copies.",
         safety: "danger",

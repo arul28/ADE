@@ -21,6 +21,7 @@ import {
 import { LaneShareGuestView } from "./LaneShareGuestView";
 import { LaneShareMeta, LaneShareState } from "../laneShareUi";
 import { LANE_SHARE_GUEST_ROUTE, laneShareGuestPath } from "./laneShareGuestRoute";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * Lanes shared with me (`/shared`), a page of this machine, not of a project:
@@ -241,7 +242,7 @@ export function LaneShareGuestPage() {
         model={{
           id: "lane-share-sign-in",
           tone: "info",
-          title: "Sign in to your ADE account first",
+          title: `Sign in to your ${BRAND.NAME} account first`,
           detail: "Lanes shared with you are tied to your account. After you sign in, open the link again.",
           report: false,
           actions: [{ label: "Sign in", onClick: () => navigate("/account") }],
@@ -297,7 +298,7 @@ export function LaneShareGuestPage() {
         <UsersThree size={22} className="text-fg/30" />
         <div className="text-[13px] text-fg/75">{receivedStatus === "loading" ? "Loading…" : "No shared lanes yet"}</div>
         {receivedStatus !== "loading" ? (
-          <div className="max-w-[340px] text-[12px] text-fg/50">When someone shares a lane with you, ADE emails you a link. It opens the lane here.</div>
+          <div className="max-w-[340px] text-[12px] text-fg/50">When someone shares a lane with you, {BRAND.NAME} emails you a link. It opens the lane here.</div>
         ) : null}
       </div>
     );

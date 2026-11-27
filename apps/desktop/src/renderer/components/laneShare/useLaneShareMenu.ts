@@ -4,8 +4,9 @@ import { useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
 import { stopSharingLaneWithAll } from "./laneShareActions";
 import { isLiveLaneShare } from "./laneShareModel";
 import { openLaneShareSheet, useLaneShareList } from "./laneShareStore";
+import { BRAND } from "../../../shared/brand";
 
-const CLOUD_REASON = { short: "Not for cloud lanes yet", detail: "Lanes on ADE Cloud can't be shared yet." } as const;
+const CLOUD_REASON = { short: "Not for cloud lanes yet", detail: `Lanes on ${BRAND.CLOUD_NAME} can't be shared yet.` } as const;
 const PRIMARY_REASON = { short: "Main checkout", detail: "The main checkout can't be shared. Share a lane instead." } as const;
 
 /** The share entries a lane menu offers (`buildLaneMenuGroups`' `share`). */

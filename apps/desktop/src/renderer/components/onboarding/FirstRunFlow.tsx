@@ -37,6 +37,7 @@ import "./firstRunWelcome.css";
 import "./firstRunProjects.css";
 import "./firstRunDevices.css";
 import { AdeWordmark } from "../ui/AdeWordmark";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * ADE's first run on a computer, after (or around) sign-in:
@@ -71,7 +72,7 @@ export function FirstRunWelcome({
   return (
     <div className="ade-glass-card ade-fr-welcome" data-testid="first-run-welcome">
       <span className="ade-glass-mark">
-        <AdeWordmark alt="ADE" draggable={false} />
+        <AdeWordmark alt={BRAND.NAME} draggable={false} />
       </span>
       <h1 className="ade-fr-headline">
         <em>Every</em> AI coding tool.
@@ -82,7 +83,7 @@ export function FirstRunWelcome({
         Run Claude, Codex, Cursor and more side by side, each chat in its own lane, on every computer
         and phone you sign in to.
       </p>
-      <ul className="ade-fr-providers" aria-label="Coding agents ADE runs">
+      <ul className="ade-fr-providers" aria-label={`Coding agents ${BRAND.NAME} runs`}>
         {agents.map((agent, index) => (
           <li
             key={agent.id}
@@ -503,7 +504,7 @@ export function FirstRunProjects({
           disabled={busy || discovery.phase === "loading"}
         >
           {busy ? <CircleNotch size={15} weight="bold" className="animate-spin" /> : null}
-          {chosen.length ? `Add ${pluralize(chosen.length, "project", "projects")}` : "Open ADE"}
+          {chosen.length ? `Add ${pluralize(chosen.length, "project", "projects")}` : `Open ${BRAND.NAME}`}
           {busy ? null : <ArrowRight size={16} weight="bold" className="ade-glass-primary-arrow" />}
         </button>
       </footer>
@@ -517,9 +518,9 @@ export function FirstRunProjects({
 function listHeadline(loading: boolean, found: number, addable: number, inAde: number): string {
   if (loading) return "Looking for your projects…";
   if (!found) return "No projects found yet";
-  if (!addable) return inAde === 1 ? "Your project is already in ADE" : `All ${inAde} of your projects are already in ADE`;
+  if (!addable) return inAde === 1 ? `Your project is already in ${BRAND.NAME}` : `All ${inAde} of your projects are already in ${BRAND.NAME}`;
   const parts = [`${pluralize(addable, "new project", "new projects")} found`];
-  if (inAde) parts.push(`${inAde} already in ADE`);
+  if (inAde) parts.push(`${inAde} already in ${BRAND.NAME}`);
   return parts.join(" · ");
 }
 
@@ -602,7 +603,7 @@ function ProjectRow({
         aria-pressed={project.inAde ? undefined : checked}
         aria-disabled={project.inAde || undefined}
         onClick={project.inAde ? undefined : () => onToggle(project.rootPath)}
-        title={project.inAde ? `${project.rootPath} is already in ADE` : project.rootPath}
+        title={project.inAde ? `${project.rootPath} is already in ${BRAND.NAME}` : project.rootPath}
       >
         <span className="ade-fr-check" aria-hidden="true">
           {checked ? <Check size={11} weight="bold" /> : null}
@@ -615,7 +616,7 @@ function ProjectRow({
           <span className="ade-fr-name-sub">{project.repoLabel ?? project.rootPath}</span>
         </span>
         {project.inAde ? (
-          <span className="ade-fr-in-ade">In ADE</span>
+          <span className="ade-fr-in-ade">In {BRAND.NAME}</span>
         ) : meta.length ? (
           <span className="ade-fr-meta">{meta.join(" · ")}</span>
         ) : null}
@@ -722,7 +723,7 @@ function useProjectIcon(rootPath: string): string | null {
   return icon;
 }
 
-const PHONE_QR_TITLE = "Install ADE on your iPhone";
+const PHONE_QR_TITLE = `Install ${BRAND.NAME} on your iPhone`;
 
 /**
  * The cross-machine half of tier one, shown to everyone: ADE is the same on
@@ -736,7 +737,7 @@ function DevicesStrip({ onExpandQr }: { onExpandQr: () => void }) {
         <button
           type="button"
           className="ade-fr-qr"
-          aria-label="Show a larger QR code for ADE on iPhone"
+          aria-label={`Show a larger QR code for ${BRAND.NAME} on iPhone`}
           title="Show larger"
           onClick={onExpandQr}
         >
@@ -747,7 +748,7 @@ function DevicesStrip({ onExpandQr }: { onExpandQr: () => void }) {
         </button>
         <span className="ade-fr-device-text">
           <span className="ade-fr-device-title">Your phone</span>
-          <span className="ade-fr-device-sub">Scan to get ADE for iPhone.</span>
+          <span className="ade-fr-device-sub">Scan to get {BRAND.NAME} for iPhone.</span>
         </span>
       </div>
       <div className="ade-fr-device">
@@ -756,7 +757,7 @@ function DevicesStrip({ onExpandQr }: { onExpandQr: () => void }) {
         </span>
         <span className="ade-fr-device-text">
           <span className="ade-fr-device-title">Another computer</span>
-          <span className="ade-fr-device-sub">Sign in to ADE there. Its chats and lanes show up here.</span>
+          <span className="ade-fr-device-sub">Sign in to {BRAND.NAME} there. Its chats and lanes show up here.</span>
         </span>
       </div>
     </section>
@@ -786,7 +787,7 @@ function PhoneQrLightbox({
       onOpenChange={(next) => {
         if (!next) onClose();
       }}
-      title="ADE for iPhone"
+      title={`${BRAND.NAME} for iPhone`}
       hideHeader
       hideClose
       container={container}
@@ -808,7 +809,7 @@ function PhoneQrLightbox({
           <AdeQrCode value={ADE_MOBILE_TESTFLIGHT_URL} title={PHONE_QR_TITLE} size={196} />
         </span>
         <span className="ade-fr-qr-caption">
-          <span className="ade-fr-device-title">ADE for iPhone</span>
+          <span className="ade-fr-device-title">{BRAND.NAME} for iPhone</span>
           <span className="ade-fr-device-sub">Point your iPhone camera at the code to install it.</span>
         </span>
       </div>

@@ -12,6 +12,7 @@ import {
 } from "../../lib/cloudMachineWake";
 import { useAdeCloudLaneWake } from "../../state/adeCloudLaneWake";
 import { COLORS } from "./laneDesignTokens";
+import { BRAND } from "../../../shared/brand";
 
 /** The most changed files the view lists; the rest is a count. */
 const MAX_LISTED_FILES = 200;
@@ -36,7 +37,7 @@ const KIND_LETTER: Record<FileChange["kind"], string> = {
 };
 
 function messageOf(error: unknown): string {
-  return error instanceof Error && error.message ? error.message : "ADE couldn't read this lane from your ADE account.";
+  return error instanceof Error && error.message ? error.message : `${BRAND.NAME} couldn't read this lane from your ${BRAND.NAME} account.`;
 }
 
 /**
@@ -111,7 +112,7 @@ export function RestingCloudLaneDetail({ laneName, machine, onManage }: {
   const waking = laneWake.state === "waking" || listWaking;
   const read = useRestingLaneRead(machine);
   const wake = () => {
-    if (!laneWake.wake()) wakeRestingCloudMachine({ ...machine, machineName: "your ADE Cloud computer" });
+    if (!laneWake.wake()) wakeRestingCloudMachine({ ...machine, machineName: `your ${BRAND.CLOUD_NAME} computer` });
   };
 
   const summary = read.status === "ready" ? read.summary : null;
@@ -129,8 +130,8 @@ export function RestingCloudLaneDetail({ laneName, machine, onManage }: {
           <div className="truncate text-[13px] font-medium" style={{ color: COLORS.textPrimary }}>{laneName}</div>
           <div className="mt-0.5 text-[12px]" style={{ color: COLORS.textMuted }}>
             {waking
-              ? "Waking your ADE Cloud computer. The lane opens when it is connected."
-              : "Your ADE Cloud computer is asleep. This is the lane as it was last saved."}
+              ? `Waking your ${BRAND.CLOUD_NAME} computer. The lane opens when it is connected.`
+              : `Your ${BRAND.CLOUD_NAME} computer is asleep. This is the lane as it was last saved.`}
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
@@ -168,7 +169,7 @@ export function RestingCloudLaneDetail({ laneName, machine, onManage }: {
         {read.status === "loading" ? (
           <div className="inline-flex items-center gap-1.5 text-[12px]" style={{ color: COLORS.textMuted }}>
             <CircleNotch size={12} className="animate-spin" />
-            Reading the lane from your ADE account…
+            Reading the lane from your {BRAND.NAME} account…
           </div>
         ) : read.status === "failed" ? (
           <div className="text-[12px]" style={{ color: COLORS.textMuted }}>{read.message}</div>
@@ -192,7 +193,7 @@ export function RestingCloudLaneDetail({ laneName, machine, onManage }: {
               </div>
             ) : (
               <div className="mb-3 text-[12px]" style={{ color: COLORS.textMuted }}>
-                ADE Cloud has no saved Git state for this lane yet.
+                {BRAND.CLOUD_NAME} has no saved Git state for this lane yet.
               </div>
             )}
             {files ? (

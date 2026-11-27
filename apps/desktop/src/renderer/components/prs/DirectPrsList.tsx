@@ -11,6 +11,7 @@ import type { PrsRepoRef } from "./state/prsReader";
 import { useLaneMentionsByPr, type LaneMention } from "./state/accountLaneMentions";
 import { LaneMentionChip } from "./LaneMentionChip";
 import { AccountReadFailed } from "../adeCloud/AccountReadFailed";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Pull requests and issues read with the ADE account's own GitHub sign-in,
@@ -18,8 +19,8 @@ import { AccountReadFailed } from "../adeCloud/AccountReadFailed";
  * lanes, stacks, launch) needs a computer that has the project.
  */
 
-const READ_ONLY_NOTE = "Read-only. Open ADE on a computer that has this project to work on these pull requests.";
-const READ_ONLY_ISSUES_NOTE = "Read-only. Open ADE on a computer that has this project to work on these issues.";
+const READ_ONLY_NOTE = `Read-only. Open ${BRAND.NAME} on a computer that has this project to work on these pull requests.`;
+const READ_ONLY_ISSUES_NOTE = `Read-only. Open ${BRAND.NAME} on a computer that has this project to work on these issues.`;
 
 function openOnGithub(url: string | null): void {
   // A browser link, not a machine action: no pin.

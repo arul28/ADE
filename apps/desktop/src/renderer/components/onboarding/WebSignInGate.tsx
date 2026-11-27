@@ -5,6 +5,7 @@ import { GateBackdrop } from "./GateBackdrop";
 import "./launchGateGlass.css";
 import { AdeWordmark } from "../ui/AdeWordmark";
 import type { ClerkSignInSetup } from "../../webclient/account/useClerkSignIn";
+import { BRAND } from "../../../shared/brand";
 
 /** The hosted client's sign-in card over the mesh backdrop. `LaunchGate` renders it inside the app shell. */
 export function WebSignInGate({
@@ -28,7 +29,7 @@ export function WebSignInGate({
             <span className="ade-glass-mark">
               <AdeWordmark draggable={false} />
             </span>
-            Checking your ADE account…
+            Checking your {BRAND.NAME} account…
           </div>
         ) : (
           <GlassSignInCard

@@ -25,6 +25,7 @@ import {
   type PrCheckBuckets,
   type UnifiedCheckItem,
 } from "../shared/prUnifiedChecks";
+import { BRAND } from "../../../../shared/brand";
 
 // ---------------------------------------------------------------------------
 // View selection (persisted per project)
@@ -77,13 +78,13 @@ export function graphUnavailableCopy(
 ): string {
   switch (reason) {
     case "no-workflow-file":
-      return "ADE couldn't find the workflow file for these checks, so it can't chart their order — showing them grouped by workflow instead.";
+      return `${BRAND.NAME} couldn't find the workflow file for these checks, so it can't chart their order — showing them grouped by workflow instead.`;
     case "unparseable":
-      return "ADE couldn't parse this workflow file, so it can't chart job dependencies — showing the jobs grouped by workflow instead.";
+      return `${BRAND.NAME} couldn't parse this workflow file, so it can't chart job dependencies — showing the jobs grouped by workflow instead.`;
     case "reusable-workflow":
-      return "This workflow calls another workflow, so ADE can't chart its dependencies — showing the jobs grouped by workflow instead.";
+      return `This workflow calls another workflow, so ${BRAND.NAME} can't chart its dependencies — showing the jobs grouped by workflow instead.`;
     case "dynamic-job-name":
-      return "This workflow builds job names at runtime, so ADE can't match them to the file — showing the jobs grouped by workflow instead.";
+      return `This workflow builds job names at runtime, so ${BRAND.NAME} can't match them to the file — showing the jobs grouped by workflow instead.`;
     case "not-actions":
       return "These checks don't come from GitHub Actions, so there's no workflow file to chart — showing them grouped by reporter instead.";
     default:
@@ -655,7 +656,7 @@ export function buildLogExcerptMarkdown(
     ? [fence, ...excerpt.lines, ...(excerpt.truncated ? ["… (truncated)"] : []), fence]
     : [
         excerpt.logStatus === "unavailable"
-          ? `_ADE couldn't read this job's log: ${excerpt.logUnavailableReason ?? "GitHub didn't answer."}_`
+          ? `_${BRAND.NAME} couldn't read this job's log: ${excerpt.logUnavailableReason ?? "GitHub didn't answer."}_`
           : "_No log excerpt was fetched — see the full log on GitHub._",
       ];
   const lines = [
@@ -668,7 +669,7 @@ export function buildLogExcerptMarkdown(
     "",
     ...body,
     "",
-    `[Open in ADE](${deeplink})`,
+    `[Open in ${BRAND.NAME}](${deeplink})`,
   ];
   if (excerpt.htmlUrl) lines.push(`[Full log on GitHub](${excerpt.htmlUrl})`);
   return lines.join("\n");

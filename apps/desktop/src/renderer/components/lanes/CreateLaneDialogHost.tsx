@@ -47,6 +47,7 @@ import type {
   OpenProjectBinding,
 } from "../../../shared/types";
 import { useLaneEmojiSuggestion } from "./useLaneEmojiSuggestion";
+import { BRAND } from "../../../shared/brand";
 
 type CreateLaneBehavior = "create" | "configure-for-chat";
 
@@ -139,7 +140,7 @@ function pendingMachineId(scope: LaneFlowScope): string | null {
   return scope.pin ? scope.machineId : null;
 }
 
-function errorMessage(error: unknown, fallback = "ADE couldn't create the lane."): string {
+function errorMessage(error: unknown, fallback = `${BRAND.NAME} couldn't create the lane.`): string {
   return plainErrorText(error, fallback);
 }
 
@@ -192,7 +193,7 @@ async function runLaneSetup(params: DetachedSetupParams): Promise<void> {
       dismissToast(setupFailureToastId(params.laneId));
     }
   } catch (err) {
-    showSetupFailureToast(params, errorMessage(err, "ADE couldn't set up the lane."));
+    showSetupFailureToast(params, errorMessage(err, `${BRAND.NAME} couldn't set up the lane.`));
   }
 }
 
@@ -665,7 +666,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       defaults: { start: createStart },
     })
       .then(setNewLaneDefaults)
-      .catch((error: unknown) => setCreateError(errorMessage(error, "ADE couldn't save the default.")));
+      .catch((error: unknown) => setCreateError(errorMessage(error, `${BRAND.NAME} couldn't save the default.`)));
   }, [createStart, targetPinRef]);
 
   const prepareCreateDialog = useCallback((prefillInput?: CreateLanePrefill | null) => {
@@ -902,7 +903,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       }
       if (createMode === "existing" && !createImportBranch) return;
       if (!projectBinding) {
-        setCreateError("Open a project to start a lane on ADE Cloud.");
+        setCreateError(`Open a project to start a lane on ${BRAND.CLOUD_NAME}.`);
         return;
       }
       const typedBranch = createMode === "new" ? editedBranchName?.trim() ?? "" : "";

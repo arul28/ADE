@@ -142,6 +142,7 @@ import {
 } from "./laneGitActionRuntime";
 import { toLayoutPx } from "../../lib/webZoom";
 import { extractError } from "../../lib/format";
+import { BRAND } from "../../../shared/brand";
 
 export function __resetLaneGitActionRuntimeForTests(): void {
   __resetLaneGitListCacheForTests();
@@ -1045,7 +1046,7 @@ function LaneGitActionsPaneOnMachine({
         console.warn("lane_git_actions.branch_lookup_failed", { laneId, pinned: Boolean(pin), error: err });
         patchLaneGitActionRuntimeState(laneGitActionScopeKey, {
           notice: null,
-          error: `ADE couldn't read which branch this lane is on: ${formatLaneGitError(err, pin)}`,
+          error: `${BRAND.NAME} couldn't read which branch this lane is on: ${formatLaneGitError(err, pin)}`,
         });
         return;
       }

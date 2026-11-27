@@ -52,6 +52,7 @@ import {
   whenCopyJobReady,
   type CopyJob,
 } from "./projectCopyJobs";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Opens a copy in this window. Its repository tab shows that copy; nothing
@@ -476,7 +477,7 @@ export function AddProjectForm({
         // No machine at all (a person with no computer): the project goes on
         // the account, and ADE Cloud makes its copy at the first chat.
         <p style={{ margin: 0, fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-          ADE Cloud makes a copy when you send the first chat.
+          {BRAND.CLOUD_NAME} makes a copy when you send the first chat.
         </p>
       ) : (
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -531,7 +532,7 @@ export function AddProjectForm({
         {repoKey && !submitted && cloneableTicked.length === 0 && !openOnlyCopy ? (
           <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
             {accountOnly
-              ? "No computer picked: ADE adds it to your account with no copy. Add a copy any time."
+              ? `No computer picked: ${BRAND.NAME} adds it to your account with no copy. Add a copy any time.`
               : "Pick at least one computer."}
           </span>
         ) : repoKey && !submitted && cloneableTicked.length > 1 ? (

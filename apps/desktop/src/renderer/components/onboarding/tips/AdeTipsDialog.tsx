@@ -23,6 +23,7 @@ import { AdeTourCursorArt } from "../tour/AdeTourCursorArt";
 import { useGoTo } from "../spotlight/useGoTo";
 import { markTipTried, setTipCardsOff, tipCardsOff, useSuggestionRulesVersion } from "../../../onboarding/situationalSuggestions";
 import "./adeTips.css";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * ADE Tips: everything worth knowing, one group at a time, laid out as a wall
@@ -68,7 +69,7 @@ export function AdeTipsDialog({
       ? [{
         id: SUGGESTED_ID,
         label: "For you",
-        blurb: "Ideas ADE had while you worked. You said Not now, so they wait here.",
+        blurb: `Ideas ${BRAND.NAME} had while you worked. You said Not now, so they wait here.`,
         icon: Sparkle,
         hue: SUGGESTED_HUE,
         count: postponed.length,
@@ -133,7 +134,7 @@ export function AdeTipsDialog({
     <Dialog
       open={open}
       onOpenChange={onOpenChange}
-      title="ADE Tips"
+      title={`${BRAND.NAME} Tips`}
       hideHeader
       width={1180}
       height="min(840px, 86vh)"
@@ -146,7 +147,7 @@ export function AdeTipsDialog({
         <span className="ade-tips-wash" aria-hidden />
         <header className="ade-tips-head">
           <div className="ade-tips-head-text">
-            <span className="ade-tips-eyebrow">ADE Tips</span>
+            <span className="ade-tips-eyebrow">{BRAND.NAME} Tips</span>
             <h2 className="ade-tips-headline">
               Things worth <em>knowing</em>
             </h2>
@@ -155,7 +156,7 @@ export function AdeTipsDialog({
             </p>
             <TipCardsSwitch />
           </div>
-          <button type="button" className="kit-icon-btn ade-tips-close" aria-label="Close ADE Tips" title="Close" onClick={close}>
+          <button type="button" className="kit-icon-btn ade-tips-close" aria-label={`Close ${BRAND.NAME} Tips`} title="Close" onClick={close}>
             <X size={14} />
           </button>
         </header>

@@ -7,6 +7,7 @@ import { buildLaneTemplateSetupPrompt } from "../../lib/laneTemplateSetupPrompt"
 import { captureLaneSetupAnalytics } from "../../lib/laneSetupAnalytics";
 import { showToast } from "../app/toast/toastStore";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * "Set up a lane template with an agent": a new chat draft in the PRIMARY lane
@@ -68,7 +69,7 @@ export function useLaneTemplateSetupChat({
       showToast({
         tone: "error",
         title: "Could not start the template chat",
-        message: plainErrorText(error, "ADE couldn't start the chat.", machineName),
+        message: plainErrorText(error, `${BRAND.NAME} couldn't start the chat.`, machineName),
       });
     } finally {
       setBusy(false);

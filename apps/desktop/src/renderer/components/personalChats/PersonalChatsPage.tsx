@@ -53,6 +53,7 @@ import { useAgentBrowserPresenceSince } from "../terminals/agentBrowserPresence"
 import { ChatSceneBackdrop } from "./ChatSceneBackdrop";
 import { machineScopedId, parseMachineScopedId } from "../../state/foreignMachineReads";
 import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
+import { BRAND } from "../../../shared/brand";
 
 type ToolPanel = "browser" | "terminal" | null;
 
@@ -224,7 +225,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
       if (!event.detail?.url || isWebClientMode()) return;
       event.preventDefault();
       if (toolPanelRef.current !== "browser" && browserTabOpenRef.current) {
-        openUrlInBrowserTab(event.detail.url, navigate, () => setError("ADE Browser couldn't open that link. Try again."));
+        openUrlInBrowserTab(event.detail.url, navigate, () => setError(`${BRAND.NAME} Browser couldn't open that link. Try again.`));
         return;
       }
       setToolPanel("browser");
@@ -233,7 +234,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
         tabCollection: "personal",
       }, {
         fallbackToExternal: false,
-        onFailure: () => setError("ADE Browser couldn't open that link. Try again."),
+        onFailure: () => setError(`${BRAND.NAME} Browser couldn't open that link. Try again.`),
       }, event.detail.runtimePin ?? null);
     };
     window.addEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openPersonalBrowser);
@@ -840,7 +841,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
                 presentation={{
                   mode: "standard",
                   title,
-                  assistantLabel: selectedSession ? sessionTitle(selectedSession) : "ADE",
+                  assistantLabel: selectedSession ? sessionTitle(selectedSession) : BRAND.NAME,
                   messagePlaceholder: "Ask anything, or have the agent do it…",
                 }}
               />

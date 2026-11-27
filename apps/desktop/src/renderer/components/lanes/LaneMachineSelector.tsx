@@ -14,6 +14,7 @@ import {
 import { autoPickSummary, machineLoadSummary, placementTag } from "./machineLoadText";
 import { ADE_CLOUD_NAME, CloudMark } from "../remoteTargets/cloudBrand";
 import type { AdeCloudLaneChoice } from "./useAdeCloudLaneTarget";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * "Create on" — the machine a new lane (and therefore every chat inside it)
@@ -157,7 +158,7 @@ function LaneMachineCard({
       title={available
         ? undefined
         : unconfirmed
-          ? `ADE can't confirm ${machine.name}'s ${machine.project?.displayName ?? "folder"} is this repo: its git remote doesn't match or isn't known.`
+          ? `${BRAND.NAME} can't confirm ${machine.name}'s ${machine.project?.displayName ?? "folder"} is this repo: its git remote doesn't match or isn't known.`
           : `${machine.name} doesn't have this repo yet.`}
       onClick={onSelect}
       className={cn(CARD_CLASS_NAME, "!p-2.5", selected && CARD_ACTIVE_CLASS_NAME)}
@@ -199,7 +200,7 @@ function AdeCloudCard({ choice, disabled }: { choice: AdeCloudLaneChoice; disabl
       role="radio"
       aria-checked={choice.selected}
       disabled={disabled || !available}
-      title={available ? "Each lane gets a new ADE Cloud computer of its own. It sleeps when idle." : undefined}
+      title={available ? `Each lane gets a new ${BRAND.CLOUD_NAME} computer of its own. It sleeps when idle.` : undefined}
       onClick={choice.onSelect}
       className={cn(CARD_CLASS_NAME, "!p-2.5", choice.selected && CARD_ACTIVE_CLASS_NAME)}
     >

@@ -12,6 +12,7 @@ import {
   type MusicState,
 } from "../../../shared/types/music";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The renderer's one view of Apple Music. Every surface reads it: the Music tab,
@@ -191,7 +192,7 @@ export function friendlyMusicError(raw: string | null | undefined): string | nul
   }
   const text = raw.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "").trim();
   const rules: Array<[RegExp, string]> = [
-    [/safeStorage|decrypt|ciphertext|credential/i, "ADE couldn't read your saved Apple Music sign-in. Connect again to fix it."],
+    [/safeStorage|decrypt|ciphertext|credential/i, `${BRAND.NAME} couldn't read your saved Apple Music sign-in. Connect again to fix it.`],
     [/cancel/i, "Sign-in was cancelled."],
     [/already open/i, "The Apple sign-in window is already open."],
     [/closed before it finished/i, "The Apple sign-in window was closed before it finished."],

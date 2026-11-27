@@ -1,5 +1,6 @@
 import type { ImgHTMLAttributes } from "react";
 import { useAppearanceStore, type ThemeId } from "../../state/appearanceStore";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The ADE wordmark for a theme. The dark-theme logo has white letter faces,
@@ -21,6 +22,6 @@ export function useAdeWordmarkSrc(): string {
 }
 
 /** An `<img>` of the ADE wordmark that follows the theme. */
-export function AdeWordmark({ alt = "ADE", ...props }: Omit<ImgHTMLAttributes<HTMLImageElement>, "src">) {
+export function AdeWordmark({ alt = BRAND.NAME, ...props }: Omit<ImgHTMLAttributes<HTMLImageElement>, "src">) {
   return <img {...props} alt={alt} src={useAdeWordmarkSrc()} />;
 }

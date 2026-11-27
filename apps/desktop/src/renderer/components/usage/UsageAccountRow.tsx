@@ -50,6 +50,7 @@ import {
   shortWindowLabel,
 } from "./usageWindowFormat";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { BRAND } from "../../../shared/brand";
 
 /** The panel's own width, in px. Fixed, so its placement can be computed. */
 const POPOVER_WIDTH = 280;
@@ -294,7 +295,7 @@ export function UsageAccountRow({
             title={[
               "Clears this account's windows now.",
               account?.resetCreditsOn
-                ? `The credit is banked on ${machineName(account.resetCreditsOn.machineKey, account.resetCreditsOn.label)}, so ADE spends it there.`
+                ? `The credit is banked on ${machineName(account.resetCreditsOn.machineKey, account.resetCreditsOn.label)}, so ${BRAND.NAME} spends it there.`
                 : null,
               account?.resetCredits?.nextExpiresAt
                 ? `Next credit expires ${formatResetClock(account.resetCredits.nextExpiresAt) ?? "later"}.`

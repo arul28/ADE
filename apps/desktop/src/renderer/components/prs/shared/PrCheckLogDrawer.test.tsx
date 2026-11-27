@@ -194,7 +194,7 @@ describe("PrCheckLogDrawer — a job that passed", () => {
     expect(screen.getByTestId("pr-checks-log-body").textContent)
       .toContain("ADE couldn't download this job's log");
     expect(screen.getByTestId("pr-checks-drawer-note").textContent)
-      .toContain("ADE couldn't read the log");
+      .toContain("Daex couldn't read the log");
     // The steps are why the drawer was opened; the read failure is additive.
     expect(screen.queryByTestId("pr-checks-step-breakdown")).not.toBeNull();
 

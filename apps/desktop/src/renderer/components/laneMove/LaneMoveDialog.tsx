@@ -42,6 +42,7 @@ import {
   useLaneMoveRun,
   type LaneMoveRun,
 } from "./laneMoveRuns";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The step between a pick in the lane's machine menu and the move itself. It
@@ -289,7 +290,7 @@ export function LaneMoveDialog({
           model={{
             id: "lane-move-review-error",
             tone: "error",
-            title: "ADE couldn't read what this lane holds.",
+            title: `${BRAND.NAME} couldn't read what this lane holds.`,
             detail: wakes ? `${review.message} Wake the ${ADE_CLOUD_NAME} computer to move the lane from there.` : review.message,
           }}
         />
@@ -330,7 +331,7 @@ export function LaneMoveDialog({
               />
             ) : review.hasRepository === false ? (
               <Fact icon={<DownloadSimple size={15} className="text-muted-fg/70" />}>
-                {target.name} doesn't have this project yet. ADE clones it from GitHub first
+                {target.name} doesn't have this project yet. {BRAND.NAME} clones it from GitHub first
                 {cloneFolder ? <>, into <span className="font-mono text-[11px] text-fg/85">{cloneFolder}</span></> : <>, into the folder beside its newest project</>}
                 . To use another folder, open the project there first.
               </Fact>
@@ -343,18 +344,18 @@ export function LaneMoveDialog({
                   tone: "warning",
                   report: false,
                   title: review.saved?.reason ?? "The computer's saved copy isn't complete.",
-                  detail: `So ADE wakes the computer and moves the lane from there. Waking it uses ${ADE_CLOUD_NAME} credits.`,
+                  detail: `So ${BRAND.NAME} wakes the computer and moves the lane from there. Waking it uses ${ADE_CLOUD_NAME} credits.`,
                 }}
               />
             ) : asleepInstanceId ? (
               <Fact icon={<Trash size={15} className="text-muted-fg/70" />}>
-                The {ADE_CLOUD_NAME} computer stays asleep. It saved all of this lane's work when it went to sleep, so ADE
+                The {ADE_CLOUD_NAME} computer stays asleep. It saved all of this lane's work when it went to sleep, so {BRAND.NAME}
                 deletes it first and brings the lane back from that saved copy. If anything fails after that, the lane
                 stays in your account and you can move it again.
               </Fact>
             ) : deletesComputer ? (
               <Fact icon={<Trash size={15} className="text-muted-fg/70" />}>
-                When everything has arrived and ADE has checked it, ADE deletes this lane's {ADE_CLOUD_NAME} computer
+                When everything has arrived and {BRAND.NAME} has checked it, {BRAND.NAME} deletes this lane's {ADE_CLOUD_NAME} computer
                 and the saved copies of the chats that moved. If anything fails, the computer stays.
               </Fact>
             ) : null}
@@ -500,7 +501,7 @@ function progressRows(run: LaneMoveRun, reviewRows: Row[]): Array<{ row: Row; st
 /** The one line above the progress rows: where the move is, or how it ended. */
 function progressStatus(run: LaneMoveRun, arrived: number, total: number): string {
   if (laneMoveWakesInstead(run)) {
-    return `ADE didn't use the saved copy, and nothing was deleted. Wake the ${ADE_CLOUD_NAME} computer to move the lane from there.`;
+    return `${BRAND.NAME} didn't use the saved copy, and nothing was deleted. Wake the ${ADE_CLOUD_NAME} computer to move the lane from there.`;
   }
   const deletesComputer = Boolean(run.cloudInstanceId || (run.kind === "restore" && run.fromComputer));
   switch (run.phase) {

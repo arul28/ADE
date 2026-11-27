@@ -4,6 +4,7 @@ import type { PrWithConflicts } from "../../../../shared/types/prs";
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
 import { formatTimestampShort } from "./prFormatters";
 import { PrUserAvatar } from "./PrUserAvatar";
+import { BRAND } from "../../../../shared/brand";
 
 /** One shipped figure: a glyph, the number, then the noun it counts. */
 function ShippedStat({ icon: Glyph, value, label }: { icon: Icon; value: string; label: string }) {
@@ -100,7 +101,7 @@ export function PrShippedSummary({ pr }: { pr: PrWithConflicts }) {
         >
           <div className="flex items-center gap-1.5" style={{ color: COLORS.accent }}>
             <Path size={10} weight="bold" style={{ flexShrink: 0 }} />
-            <span style={{ fontWeight: 600 }}>ADE lane</span>
+            <span style={{ fontWeight: 600 }}>{BRAND.NAME} lane</span>
           </div>
           <div className="mt-0.5 flex min-w-0 items-baseline gap-1.5">
             <span className="min-w-0 truncate" style={{ color: COLORS.textSecondary }} title={laneName}>

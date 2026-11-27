@@ -4,6 +4,7 @@ import { CloudSlash, UserCircle } from "@phosphor-icons/react";
 
 import type { BrowserAccountSnapshot } from "../../webclient/account/client";
 import { Banner, type NoticeTone } from "../ui/notice";
+import { BRAND } from "../../../shared/brand";
 
 // ---------------------------------------------------------------------------
 // What the hosted welcome surface says when it has no machines to list, and
@@ -68,7 +69,7 @@ export function webZeroMachinesNotice(args: {
       return {
         kind: "unavailable",
         headline: "Couldn't load your machines.",
-        detail: account.message ?? "Your ADE account session expired.",
+        detail: account.message ?? `Your ${BRAND.NAME} account session expired.`,
         reassurance: "Your machines and their projects are untouched — signing in again brings the list back.",
         action: { label: "Sign in again", onSelect: args.onSignIn, busy: false },
       };

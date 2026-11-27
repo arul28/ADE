@@ -119,6 +119,7 @@ import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings"
 import { historyCommitsPath } from "../history/historyUrlHydration";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import type { CloudLaneDeleteOptions } from "../../../shared/cloudLaneLife";
+import { BRAND } from "../../../shared/brand";
 
 export function shouldRetryLaneGithubSnapshotForceRefresh({
   currentProjectRoot,
@@ -2429,7 +2430,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
               id: "lanes-no-computer-online",
               tone: "info",
               title: `No computer is online for ${projectBinding?.displayName ?? "this project"}`,
-              detail: "Start a lane on ADE Cloud, or open ADE on a computer that has it.",
+              detail: `Start a lane on ${BRAND.CLOUD_NAME}, or open ${BRAND.NAME} on a computer that has it.`,
               actions: [{ label: "New lane", onClick: () => openCreateDialog() }],
             }}
           />

@@ -427,7 +427,7 @@ describe("prChecksModel — copy excerpt", () => {
       pr: { repoOwner: "ade-dev", repoName: "ade", githubPrNumber: 910 },
     });
     expect(markdown).toContain("**CI failure — build**");
-    expect(markdown).toContain("_ADE couldn't read this job's log: ADE couldn't download");
+    expect(markdown).toContain("_Daex couldn't read this job's log: ADE couldn't download");
   });
 });
 

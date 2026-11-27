@@ -22,6 +22,7 @@ import {
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
 import { deriveLaneName, openWorktreeAsLane } from "./worktreeLaneFlow";
 import { Banner } from "../ui/notice";
+import { BRAND } from "../../../shared/brand";
 
 const DOCS_URL = "https://ade-app.dev/docs/lanes/repos-and-worktrees";
 
@@ -217,7 +218,7 @@ export function WorktreeOpenDialog() {
                     >
                       {existingLane
                         ? "This folder is the lane below — no need to add it again."
-                        : "In ADE, a repo is one project and each worktree is a lane inside it."}
+                        : `In ${BRAND.NAME}, a repo is one project and each worktree is a lane inside it.`}
                     </p>
                   </div>
 
@@ -258,7 +259,7 @@ export function WorktreeOpenDialog() {
                       subtitle={
                         parent.isKnownAdeProject
                           ? `Jumps to this worktree's lane, "${derivedLaneName}"`
-                          : `Opens ${parent.displayName} in ADE, where this worktree is a lane`
+                          : `Opens ${parent.displayName} in ${BRAND.NAME}, where this worktree is a lane`
                       }
                       busy={laneBusy}
                       disabled={Boolean(busy)}
@@ -331,7 +332,7 @@ export function WorktreeOpenDialog() {
                         cursor: "pointer",
                       }}
                     >
-                      How ADE thinks about repos &amp; worktrees
+                      How {BRAND.NAME} thinks about repos &amp; worktrees
                       <ArrowSquareOut size={12} weight="regular" />
                     </button>
                     <button

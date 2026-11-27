@@ -37,6 +37,7 @@ import {
   type MachineRow,
   type UsageGroup,
 } from "./ProjectWelcomeSidePanels";
+import { BRAND } from "../../../shared/brand";
 
 // ---------------------------------------------------------------------------
 // The home screen's cards. The page is a dashboard that fits the window: each
@@ -255,7 +256,7 @@ export function ActivityUsageCard({ stats }: { stats: RecentStats }) {
   return (
     <section className="kit-card ade-home-card ade-home-activity" aria-label="Activity and usage">
       <WelcomeCardHead icon={ChartBar} title="Activity & usage" action={{ label: "Details", onClick: openUsageDetails }}>
-        <span className="ade-home-card-scope" title="Tokens and cost from every computer on your ADE account. A computer counts from its last report until it is online again.">all machines</span>
+        <span className="ade-home-card-scope" title={`Tokens and cost from every computer on your ${BRAND.NAME} account. A computer counts from its last report until it is online again.`}>all machines</span>
         <div className="kit-seg ade-home-metric" role="group" aria-label="Measure">
           {(["tokens", "cost"] as Metric[]).map((option) => (
             <button key={option} type="button" aria-pressed={metric === option} onClick={() => setMetric(option)}>
@@ -376,7 +377,7 @@ export function LimitsMachinesCard({ machineRows, webMode, usage }: { machineRow
   const theme = useAppStore((s) => s.theme);
   const machines = machineRows.length > 0
     ? machineRows
-    : [{ key: "this-machine", name: "This machine", dot: "online" as const, detail: "Running ADE" }];
+    : [{ key: "this-machine", name: "This machine", dot: "online" as const, detail: `Running ${BRAND.NAME}` }];
   const rings = usage.groups.map((group) => {
     const tightest = group.lines.reduce((best, line) => (line.percentLeft < best.percentLeft ? line : best), group.lines[0]!);
     return { provider: group.provider, line: tightest, accounts: group.lines.length };
@@ -582,7 +583,7 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
         // lastSyncedAt moves on every sync and the home page never shows it.
         tracked.map((pr) => ({ ...pr, lastSyncedAt: null })),
       ]);
-      const nextError = failed ? "ADE couldn't read this project's pull requests." : null;
+      const nextError = failed ? `${BRAND.NAME} couldn't read this project's pull requests.` : null;
       // The error is not part of the data signature: a failure and a recovery
       // can carry identical data, and the error must still update.
       if (signature === lastSignatureRef.current) {
