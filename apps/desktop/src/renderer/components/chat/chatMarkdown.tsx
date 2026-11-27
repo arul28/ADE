@@ -9,7 +9,7 @@ import { openLinkFromUi } from "../../lib/openExternal";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { useChatLinkContextMenu } from "./useChatLinkContextMenu";
 import { parseProofCitationUrl } from "../../../shared/proofCitation";
-import { parseDeeplink } from "../../../shared/deeplinks";
+import { hasAdeDeeplinkScheme, parseDeeplink } from "../../../shared/deeplinks";
 import { cn } from "../ui/cn";
 import {
   isWindowsAbsolutePath,
@@ -93,9 +93,9 @@ export function chatMarkdownUrlTransform(value: string): string {
   // A proof citation names an artifact id, not a location. Only the answer
   // renderer's image override reads it; nothing opens it as a URL.
   if (parseProofCitationUrl(value)) return value;
-  // An `ade://` link is a typed pointer the renderers draw as a chip; the
+  // An `ade://` (or `daex://`) link is a typed pointer the renderers draw as a chip; the
   // default transform blanks the unknown scheme. Only a link that parses passes.
-  if (/^ade:\/\//i.test(value) && parseDeeplink(value).ok) return value;
+  if (hasAdeDeeplinkScheme(value) && parseDeeplink(value).ok) return value;
   // A local editor link becomes a Files button in the anchor; never a live href.
   if (editorFileLinkPath(value) || editorFileLinkPath(decoded)) return value;
   return defaultUrlTransform(value);

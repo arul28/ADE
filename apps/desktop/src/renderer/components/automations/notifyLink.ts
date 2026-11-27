@@ -1,4 +1,4 @@
-import { describeTarget, parseDeeplink } from "../../../shared/deeplinks";
+import { ADE_DEEPLINK_URL_PREFIX_SOURCE, describeTarget, parseDeeplink } from "../../../shared/deeplinks";
 import { normalizeCustomNotificationLink } from "../../../shared/customNotificationLink";
 import { isWorkBoardColumn, WORK_BOARD_COLUMN_LABEL, type WorkBoardColumn } from "../../../shared/types/chat";
 import { isPullRequestTriggerType } from "../../../shared/types";
@@ -177,7 +177,7 @@ export function readNotifyLink(raw: string | null | undefined): NotifyLink {
   const link = raw?.trim() ?? "";
   if (!link) return { kind: "none", fields: {} };
   const read = (): NotifyLink | null => {
-    const match = /^ade:\/\/([a-z-]+)(\/[^?]*)?(?:\?(.*))?$/i.exec(link);
+    const match = new RegExp(`^${ADE_DEEPLINK_URL_PREFIX_SOURCE}([a-z-]+)(\\/[^?]*)?(?:\\?(.*))?$`, "i").exec(link);
     if (!match) return null;
     const host = match[1]!.toLowerCase();
     const segments = (match[2] ?? "").split("/").filter(Boolean).map(decodePart);
@@ -273,9 +273,9 @@ export function checkNotifyLink(link: string): NotifyLinkCheck {
   const result = normalizeCustomNotificationLink(sample);
   if (!result.ok) return { state: "problem", problem: result.problem };
   const parsed = parseDeeplink(result.link);
-  const activity = /^ade:\/\/activity/i.test(result.link);
+  const activity = new RegExp(`^${ADE_DEEPLINK_URL_PREFIX_SOURCE}activity`, "i").test(result.link);
   const column = /[?&]state=([a-z_]+)/i.exec(result.link)?.[1];
-  const shortPr = /^ade:\/\/pr\/(\d+)/i.exec(result.link)?.[1];
+  const shortPr = new RegExp(`^${ADE_DEEPLINK_URL_PREFIX_SOURCE}pr\\/(\\d+)`, "i").exec(result.link)?.[1];
   const opens = parsed.ok
     ? describeTarget(parsed.target)
     : shortPr
