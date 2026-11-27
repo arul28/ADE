@@ -21,6 +21,7 @@
 
 import {
   CLOUD_MACHINE_DEFAULT_NAME,
+  storedCloudMachineName,
   CLOUD_WAKE_PORT,
   CLOUD_WAKE_PORT_LABEL,
   cloudInstanceType,
@@ -343,7 +344,7 @@ export async function createCloudMachine(
   let instance: CloudInstance;
   try {
     instance = await client.createInstance({
-      name,
+      name: storedCloudMachineName(name),
       type: cloudInstanceType(rawArgs.kind),
       resources: { cpu: shape.cpu, memory: shape.memoryGb },
       ...(options.moveFromInstanceId ? { moveFromInstanceId: options.moveFromInstanceId } : {}),
@@ -628,7 +629,7 @@ export async function waitForCloudAccountRow(
       const row = listed?.machines.find((machine) => machine.machineKey === machineKey) ?? null;
       if (row && !renamed) {
         try {
-          await deps.renameMachine(machineKey, name);
+          await deps.renameMachine(machineKey, storedCloudMachineName(name));
           renamed = true;
         } catch (error) {
           logger.warn?.("cloud.machine_rename_failed", { instanceId, error: errorText(error) });
