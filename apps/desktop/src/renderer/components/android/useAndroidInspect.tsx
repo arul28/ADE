@@ -4,6 +4,7 @@ import type { AndroidUiElement } from "../../../shared/types/androidEmulator";
 import { DeviceInspectOverlay, type DeviceInspectAdapter } from "../device/DeviceInspectOverlay";
 import { useDeviceInspect } from "../device/useDeviceInspect";
 import { logRendererDebugEvent } from "../../lib/debugLog";
+import { SHARED_TEXT_CLI } from "../../lib/sharedAgentText";
 
 type DeviceToView = ((point: { x: number; y: number }) => { x: number; y: number }) | null;
 
@@ -14,7 +15,7 @@ function elementName(element: AndroidUiElement): string | null {
 
 /** The query an agent can pass back: the ref, which stays the same between snapshots. */
 export function androidCommandForElement(element: AndroidUiElement): string {
-  return `daex android tap-element --ref ${JSON.stringify(element.ref)}`;
+  return `${SHARED_TEXT_CLI} android tap-element --ref ${JSON.stringify(element.ref)}`;
 }
 
 /** One line for the composer: what the element is, where, and how an agent taps it. */

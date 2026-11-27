@@ -30,6 +30,7 @@ import { computerUseActionText } from "../../../shared/computerUseActionPresenta
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { withChatPin } from "./chatMachinePin";
 import { BRAND } from "../../../shared/brand";
+import { SHARED_TEXT_CLI } from "../../lib/sharedAgentText";
 
 const NAVIGATION_SURFACES = new Set(["work", "lanes", "cto"]);
 const WORK_LOG_DETAIL_TRUNCATE_LIMIT = 500;
@@ -258,7 +259,7 @@ function terminalizePrompt(args: {
   if (args.sessionId) lines.push("", `Chat session: \`${args.sessionId}\``);
   lines.push(
     "",
-    `Use ${BRAND.NAME} CLI terminal/app-control commands where helpful, for example \`daex terminal list --chat-session <id> --text\`, \`daex terminal read --chat-session <id> --text\`, or \`daex app-control launch --command "<command>" --text\`.`,
+    `Use ${BRAND.NAME} CLI terminal/app-control commands where helpful, for example \`${SHARED_TEXT_CLI} terminal list --chat-session <id> --text\`, \`${SHARED_TEXT_CLI} terminal read --chat-session <id> --text\`, or \`${SHARED_TEXT_CLI} app-control launch --command "<command>" --text\`.`,
     "After it is running, verify the localhost URL and keep the process logs readable from the chat terminal.",
   );
   return lines.join("\n");

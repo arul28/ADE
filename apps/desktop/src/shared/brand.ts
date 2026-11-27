@@ -27,6 +27,15 @@ export const BRAND = Object.freeze({
   CLI: "daex",
   /** The old command; stays installed as a permanent alias. */
   LEGACY_CLI: "ade",
+  /**
+   * The command name used in agent instructions that may run on another or
+   * older machine: drafts the app sends as the person's message, automation
+   * templates saved into rules, kickoff prompts. Every version understands
+   * `ade`; only new ones have the `daex` alias. Flip to "daex" together with
+   * LINK_SCHEME_FOR_NEW_LINKS once enough releases ship the daex alias.
+   * Bundled skill names in that text follow it (`ade-linear` / `daex-linear`).
+   */
+  AGENT_CLI_FOR_SHARED_TEXT: "ade" as "ade" | "daex",
 
   DOMAIN: "daex.dev",
   /** Old domain. Sign-in and API hosts stay here while released clients call them. */

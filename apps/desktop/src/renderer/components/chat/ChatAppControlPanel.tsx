@@ -86,6 +86,7 @@ import { isImeComposing } from "../../lib/imeComposition";
 import { usePinTargetsTab } from "../../state/crossMachineLanes";
 import { NO_CHAT_MACHINE_MESSAGE, requireChatPin } from "./chatMachinePin";
 import { BRAND } from "../../../shared/brand";
+import { SHARED_TEXT_CLI } from "../../lib/sharedAgentText";
 
 type ChatAppControlPanelProps = {
   sessionId: string | null;
@@ -1305,8 +1306,8 @@ export function ChatAppControlPanel({
   const requestDebugHelp = useCallback(() => {
     onInsertDraft?.(
       [
-        "Set up this Electron app for ADE App Control.",
-        "Wire ADE_APP_CONTROL_DEBUG_FLAGS or ADE_APP_CONTROL_CDP_PORT into the launch command, then verify with `ade app-control launch --command \"<command>\" --text` and `ade app-control snapshot --text`.",
+        `Set up this Electron app for ${BRAND.NAME} App Control.`,
+        `Wire ADE_APP_CONTROL_DEBUG_FLAGS or ADE_APP_CONTROL_CDP_PORT into the launch command, then verify with \`${SHARED_TEXT_CLI} app-control launch --command "<command>" --text\` and \`${SHARED_TEXT_CLI} app-control snapshot --text\`.`,
       ].join("\n"),
     );
   }, [onInsertDraft]);

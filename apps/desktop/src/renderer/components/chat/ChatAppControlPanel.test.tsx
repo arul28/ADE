@@ -347,7 +347,7 @@ describe("ChatAppControlPanel", () => {
 
     fireEvent.click(screen.getByText("Help wire CDP"));
 
-    expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("Set up this Electron app for ADE App Control."));
+    expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("Set up this Electron app for Daex App Control."));
   });
 
   it("launches from the Off card and remembers the command as a recent", async () => {
