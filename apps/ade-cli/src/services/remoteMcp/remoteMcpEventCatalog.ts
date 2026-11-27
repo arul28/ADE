@@ -90,7 +90,7 @@ const DESCRIPTORS: Record<McpEventName, { description: string; inputs: Record<st
     payload: { ...CHAT_PAYLOAD, itemId: { type: "string" }, resolution: { type: "string", enum: ["accepted", "declined", "cancelled"] } },
   },
   "chat.deleted": {
-    description: "A chat was deleted. [\"chat\",\"deleted\",\"reopen\",<id>] through the ade tool brings it back.",
+    description: "A chat was deleted. [\"chat\",\"deleted\",\"reopen\",<id>] through the daex tool brings it back.",
     inputs: CHAT_INPUTS,
     payload: CHAT_PAYLOAD,
   },

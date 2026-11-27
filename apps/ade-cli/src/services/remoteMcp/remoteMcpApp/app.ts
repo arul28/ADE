@@ -129,7 +129,7 @@ setNotificationHandler((method, params) => {
 });
 setRenderer(render);
 applyCtx();
-request("ui/initialize", { appInfo: { name: "ade", version: "1" }, appCapabilities: { availableDisplayModes: ["inline"] }, protocolVersion: PROTOCOL }, 30000)
+request("ui/initialize", { appInfo: { name: "daex", version: "1" }, appCapabilities: { availableDisplayModes: ["inline"] }, protocolVersion: PROTOCOL }, 30000)
   .then((value) => {
     const init = isObj(value) ? value : {};
     if (isObj(init.hostContext)) Object.assign(ctx, init.hostContext);

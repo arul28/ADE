@@ -12,7 +12,7 @@ import { MAX_OUTPUT_BYTES, MAX_STDIN_BYTES, type RemoteRunResult } from "./remot
 /**
  * ADE MCP's typed tools: named inputs a client can check before calling. Each
  * one only builds the words of one `ade` command; the service runs it through
- * the same policy check and runner as the `ade` tool, so a typed tool can never
+ * the same policy check and runner as the `daex` tool, so a typed tool can never
  * do more than the connection's scope allows. Write tools are listed only to
  * full-access connections.
  *
@@ -372,7 +372,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     name: "lanes_create",
     title: "Create a lane",
     description: "Creates a lane (a git worktree on a new branch) on this machine, as `daex lanes create` does. "
-      + "A lane on Daex Cloud: the `ade` tool with `lanes create --machine cloud`.",
+      + "A lane on Daex Cloud: the `daex` tool with `lanes create --machine cloud`.",
     write: true,
     explicitTarget: true,
     properties: {

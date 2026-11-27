@@ -65,7 +65,9 @@ let appResourceUri: string | null = null;
  * The resource URI carries a hash of the HTML: hosts may cache a UI resource,
  * so a new ADE version names a new resource rather than serving a stale view.
  * `resources/read` answers any `ui://ade/app…html`, so a host holding an older
- * tool list still gets today's view.
+ * tool list still gets today's view. The `ade` in it stays through the Daex
+ * rename: every tool with a view repeats it in `tools/list`
+ * (remoteMcpContextBudget.json), and no person reads it.
  */
 function adeAppResourceUri(): string {
   appResourceUri ??= `ui://ade/app-${createHash("sha256").update(adeAppHtml()).digest("hex").slice(0, 8)}.html`;
@@ -85,7 +87,7 @@ const RESOURCE_UI_META = { prefersBorder: false };
 export function adeAppResourceListing() {
   return {
     uri: adeAppResourceUri(),
-    name: "ade-app",
+    name: "daex-app",
     title: "Daex",
     description: "Daex's view for chats, questions and approvals, pull requests, lanes, diffs, usage and machines.",
     mimeType: MCP_APP_MIME_TYPE,

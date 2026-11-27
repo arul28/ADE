@@ -153,7 +153,7 @@ export function createChatRouter(deps: {
           text: `Chat ${sessionId} was deleted at ${deletedAt}, on ${machineName}. `
             + (reopenable === false
               ? "Its conversation is gone."
-              : `Reopen it with the ade tool: args ["chat","deleted","reopen","${sessionId}"], project "${projectId ?? ""}"`
+              : `Reopen it with the daex tool: args ["chat","deleted","reopen","${sessionId}"], project "${projectId ?? ""}"`
                 + `${machineName === "this machine" ? "" : `, machine "${machineName}"`}.`),
         }],
         structuredContent: {

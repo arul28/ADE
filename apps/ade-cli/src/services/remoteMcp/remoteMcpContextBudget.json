@@ -1,4 +1,4 @@
 {
-  "read": { "instructions": 420, "tools": 14617 },
-  "write": { "instructions": 390, "tools": 21609 }
+  "read": { "instructions": 416, "tools": 14613 },
+  "write": { "instructions": 386, "tools": 21606 }
 }
