@@ -27,9 +27,6 @@
       "ade-ui/no-fixed-overlay": 1,
       "ade-ui/no-raw-z-index": 1
     },
-    "apps/desktop/src/renderer/components/github/GitHubAppInstallPanel.tsx": {
-      "ade-ui/no-legacy-brand-name": 3
-    },
     "apps/desktop/src/renderer/components/lanes/sidebar/PointMenu.tsx": {
       "ade-ui/no-fixed-overlay": 1
     },
