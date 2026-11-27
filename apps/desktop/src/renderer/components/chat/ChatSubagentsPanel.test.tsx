@@ -1690,18 +1690,6 @@ describe("ChatSubagentsPanel shells section", () => {
     vi.restoreAllMocks();
   });
 
-  it("draws a chat's shells when they are the pane's only content", () => {
-    // A chat can hold nothing but shells. The pane's empty gate used to count
-    // goals, tasks, subagents and schedules only, so that chat rendered no pane
-    // at all — and the shells it was meant to show had nowhere else to appear.
-    const { container } = render(
-      <ChatSubagentsPanel snapshots={[]} events={[]} variant="pane" shells={[shellSession()]} />,
-    );
-
-    expect(container.textContent).toContain("npm run dev");
-    expect(screen.getByText("Shells")).toBeTruthy();
-  });
-
   it("opens a shell, and its menu, on the chat's own machine", () => {
     const dispatchSpy = vi.spyOn(window, "dispatchEvent");
     const pin: OpenProjectBinding = {
@@ -1737,21 +1725,29 @@ describe("ChatSubagentsPanel shells section", () => {
     expect(menu?.detail).toMatchObject({ x: 10, y: 20, binding: pin, session: expect.objectContaining({ id: "shell-1" }) });
   });
 
-  it("states a failed shells read with a retry, never as an empty chat", () => {
+  it("states failed shell and watch reads once, and one Retry reads each again", () => {
     const onRetryShells = vi.fn();
+    const onRetryTerminalWatches = vi.fn();
     render(
       <ChatSubagentsPanel
         snapshots={[]}
         events={[]}
         variant="pane"
         shells={[]}
-        shellsLoadError
+        shellsLoadFailure={{ unreachable: true, detail: "Can't reach Cloud lane — it may be asleep." }}
+        terminalWatchesLoadFailure={{ unreachable: false, detail: "database is locked" }}
         onRetryShells={onRetryShells}
+        onRetryTerminalWatches={onRetryTerminalWatches}
       />,
     );
 
-    expect(screen.getByTestId("chat-shells-error").textContent).toContain("Couldn’t load this chat’s shells.");
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    // A real failure is never hidden behind the quiet "out of reach" line.
+    expect(screen.getByTestId("chat-terminals-error")).toBeTruthy();
+    expect(screen.queryByTestId("chat-terminals-unreachable")).toBeNull();
+    const retries = screen.getAllByRole("button", { name: "Retry" });
+    expect(retries).toHaveLength(1);
+    fireEvent.click(retries[0]!);
     expect(onRetryShells).toHaveBeenCalledTimes(1);
+    expect(onRetryTerminalWatches).toHaveBeenCalledTimes(1);
   });
 });

@@ -7,6 +7,19 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * The tail of a connect failure ADE stopped retrying until the person fixes it
+ * (sign in, pair again, trust a changed SSH key): `RemoteConnectBackoffError`
+ * with no retry time, or a connection held for the person's action.
+ */
+export const REMOTE_CONNECT_STOPPED_NOTICE =
+  "ADE won't retry on its own. Fix this, then press Try again.";
+
+/** The link is down and stays down until the person acts; waiting will not bring it back. */
+export function isRemoteConnectStoppedError(error: unknown): boolean {
+  return errorMessage(error).includes(REMOTE_CONNECT_STOPPED_NOTICE);
+}
+
 export function isLocalReleaseBuildOutputError(error: unknown): boolean {
   return errorMessage(error).includes(LOCAL_RELEASE_BUILD_OUTPUT_RUNTIME_MESSAGE);
 }

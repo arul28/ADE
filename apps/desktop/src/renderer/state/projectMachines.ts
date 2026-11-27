@@ -131,7 +131,7 @@ function linkEpoch(targetId: string | null): number {
 }
 
 /** The read lost its way to the machine (the link dropped, or was not up yet), not an answer from it. */
-function isLinkLostReadError(error: unknown): boolean {
+export function isLinkLostReadError(error: unknown): boolean {
   return isRemoteMachineAwayError(error) || isProjectHostTransportDrop(error);
 }
 

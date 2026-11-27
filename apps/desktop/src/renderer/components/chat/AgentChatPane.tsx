@@ -261,7 +261,7 @@ import { UsageLimitChip } from "./UsageLimitChip";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
 import { ChatActionsToggleBadge } from "./ChatActionsToggleBadge";
-import { chatApiPin, requireChatPin, withChatPin } from "./chatMachinePin";
+import { chatApiPin, chatReadFailure, requireChatPin, withChatPin, type ChatReadFailure } from "./chatMachinePin";
 import { beginChatSendTiming, noteChatSendBubbleShown, noteChatSendTimingEvent, type ChatSendTimingHandle } from "./chatSendTiming";
 import {
   deliveredSendsFor,
@@ -20622,7 +20622,7 @@ export function AgentChatPane({
    * listens on the right machine.
    */
   const [attachedShells, setAttachedShells] = useState<TerminalSessionSummary[]>([]);
-  const [shellsLoadError, setShellsLoadError] = useState(false);
+  const [shellsLoadFailure, setShellsLoadFailure] = useState<ChatReadFailure | null>(null);
   const [shellsReloadNonce, setShellsReloadNonce] = useState(0);
   // A read that lost its link (sent as it dropped, or before it was ready)
   // reads again, on the chat's machine, once that link is back.
@@ -20633,7 +20633,7 @@ export function AgentChatPane({
     // Never show the previous chat's shells while the new read is in flight.
     shellIdsRef.current = new Set();
     setAttachedShells(keepEmptyArray);
-    setShellsLoadError(false);
+    setShellsLoadFailure(null);
     // A personal chat's shell is the Chats page's own panel; the project's
     // session list does not hold it (and with no project open, there is none).
     if (!sessionId || isBoundScopePane) return undefined;
@@ -20644,13 +20644,16 @@ export function AgentChatPane({
     const listSessions = window.ade?.sessions?.list;
     if (typeof listSessions !== "function") return undefined;
     let cancelled = false;
+    // Session changes can start overlapping reads: only the newest one lands.
+    let latest = 0;
     const load = async () => {
+      const request = ++latest;
       const failed = beginShellsRead();
+      const pin = chatRuntimePinRef.current;
       try {
-        const pin = chatRuntimePinRef.current;
         const args = { chatSessionId: sessionId, limit: null };
         const listed = await listSessions(args, requireChatPin(pin));
-        if (cancelled) return;
+        if (cancelled || request !== latest) return;
         // A runtime that cannot answer this read answers with nothing; that is
         // "no shells", not a failure (only a rejected promise is one).
         const rows = Array.isArray(listed) ? listed : [];
@@ -20665,16 +20668,17 @@ export function AgentChatPane({
         ));
         shellIdsRef.current = new Set(shells.map((row) => row.id));
         setAttachedShells((previous) => reuseStructurallyEqualArray(shells, previous));
-        setShellsLoadError(false);
+        setShellsLoadFailure(null);
       } catch (error) {
         // A pane that cannot read the list says so with a retry rather than
         // looking like a chat with no shells (notices.md: no false empty state).
-        console.error("[AgentChatPane] attached shells read failed", { sessionId, error });
+        if (cancelled || request !== latest) return;
+        const failure = chatReadFailure(error, pin);
+        // An unreachable computer is expected and reads again on its own; only a real failure is an error.
+        (failure.unreachable ? console.warn : console.error)("[AgentChatPane] attached shells read failed", { sessionId, error });
         failed(error);
-        if (!cancelled) {
-          setAttachedShells(keepEmptyArray);
-          setShellsLoadError(true);
-        }
+        setAttachedShells(keepEmptyArray);
+        setShellsLoadFailure(failure);
       }
     };
     void load();
@@ -20800,11 +20804,11 @@ export function AgentChatPane({
       workflowPlans={selectedWorkflowPlans}
       shells={attachedShells}
       shellsPin={chatRuntimePin}
-      shellsLoadError={shellsLoadError}
+      shellsLoadFailure={shellsLoadFailure}
       onRetryShells={() => setShellsReloadNonce((current) => current + 1)}
       terminalWatches={chatTerminalWatches.watches}
       onStopTerminalWatch={chatTerminalWatches.stop}
-      terminalWatchesLoadError={chatTerminalWatches.loadError}
+      terminalWatchesLoadFailure={chatTerminalWatches.loadFailure}
       onRetryTerminalWatches={chatTerminalWatches.retry}
       runtimeAlive={selectedSession?.runtimeAlive}
       childChatStatuses={knownChatStatusesById}
