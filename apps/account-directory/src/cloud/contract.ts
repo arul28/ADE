@@ -3230,6 +3230,29 @@ export function withoutPhoneProviderNames(text: string): string {
 export const cloudPhoneAbilitiesOf = (value: unknown): CloudPhoneAbility[] =>
   Array.isArray(value) ? [...new Set(value.filter(isCloudPhoneAbility))] : [];
 
+/**
+ * Build tools a project needs that a provider's build hosts may lack for a
+ * while (unlike abilities, which never change): `metal` is Apple's Metal
+ * Toolchain, a separate download since Xcode 26, for any `.metal` file in
+ * the app or a Swift package. A start names the ones its project needs
+ * (`builds` on `POST /cloud/phone`); a brain whose build failed for want of
+ * one reports it (`missing`). The server then keeps that provider out of
+ * such starts for `CLOUD_PHONE_BUILD_GAP_MS`, after which one start tries it
+ * again, so a provider that added the tool gets the work back by itself.
+ */
+export const CLOUD_PHONE_BUILD_NEEDS = ["metal"] as const;
+export type CloudPhoneBuildNeed = (typeof CLOUD_PHONE_BUILD_NEEDS)[number];
+export const isCloudPhoneBuildNeed = (value: unknown): value is CloudPhoneBuildNeed => (CLOUD_PHONE_BUILD_NEEDS as readonly unknown[]).includes(value);
+/** The build needs a list names (unknown names dropped, each once). */
+export const cloudPhoneBuildNeedsOf = (value: unknown): CloudPhoneBuildNeed[] =>
+  Array.isArray(value) ? [...new Set(value.filter(isCloudPhoneBuildNeed))] : [];
+/** Each build need after "can" / "can't": "The ADE Cloud iPhone can't build apps with Metal shaders right now." */
+export const CLOUD_PHONE_BUILD_NEED_WORDS: Readonly<Record<CloudPhoneBuildNeed, string>> = {
+  metal: "build apps with Metal shaders",
+};
+/** How long a reported missing build tool keeps that provider out of the starts that need it. */
+export const CLOUD_PHONE_BUILD_GAP_MS = 24 * 60 * 60_000;
+
 /** The phone models a cloud iPhone can be (ADE's names; each provider maps them to its own). */
 export const CLOUD_PHONE_DEVICES = ["iphone", "iphone-pro-max", "ipad"] as const;
 export type CloudPhoneDevice = (typeof CLOUD_PHONE_DEVICES)[number];

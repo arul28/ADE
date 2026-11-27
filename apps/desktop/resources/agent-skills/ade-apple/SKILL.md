@@ -183,8 +183,10 @@ For one command, `ade apple … --machine cloud`. What differs:
   Mac looks (the top, each top folder, `apps/*`); with two or more, pass
   `--path <folder>`. Launch arguments (`-- …`) don't go with a build: build,
   then `ade apple relaunch --bundle-id <id> -- <args>`. A project with Metal
-  shaders (a `.metal` file, also in a Swift package such as SwiftTerm) may not
-  build there: the answer says so; build on a Mac and `install --app` it.
+  shaders (a `.metal` file, also in a Swift package such as SwiftTerm) is
+  built on a cloud iPhone whose Xcode has them: the first build may move to
+  another phone ("Moved to another cloud iPhone…"). When none can (a free
+  plan, `--env`), the answer says why; build on a Mac and `install --app` it.
   For an app built elsewhere, install its Simulator
   `.app` instead: `ade apple install --app <path>` (`--no-launch` installs
   without starting it). From any machine, Expo builds one in its cloud:

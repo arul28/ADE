@@ -174,6 +174,36 @@ both used, without changing anything an agent or a person sees.
   can stop it. Revyl's phone has no time limit or spend cap of its own:
   `stop_at` is set at start, capped at `CLOUD_PHONE_MAX_MINUTES`, and the
   minute tick stops it. Its billed seconds run from `started_at`.
+- **Build tools a provider lacks.** A build tool can be missing from one
+  provider's hosts for a while (`CLOUD_PHONE_BUILD_NEEDS`: `metal`, Apple's
+  Metal Toolchain). A brain whose build failed for want of it (the build's
+  own "missing Metal Toolchain") reports it on the next start (`missing`
+  `{ phoneId, need }` on `POST /cloud/phone`); the server records it for the
+  phone row's provider, never the brain's word, and only for a phone of the
+  reporter's own from the last 3 hours (`recordBuildGap`,
+  `cloud_phone_build_gaps`, migration 0070: one row per provider and need,
+  for every account, with no account in it). For a day after the last
+  report (`CLOUD_PHONE_BUILD_GAP_MS`), a start that names the tool
+  (`builds: ["metal"]`) leaves that provider out (`routeForBuilds`), and a
+  live phone there is swapped for one that has it (stopped only once the new
+  start may go there). Past the day, one start tries the provider again, so a
+  provider that added the tool gets the work back by itself; a new failure
+  starts the day again. Only a paid plan's route has Revyl, so a free plan
+  is told, before any phone minute when the gap is known, "This app needs a
+  cloud iPhone that can build apps with Metal shaders, and right now only the
+  paid plans' iPhones can…" (402 `phone_needs_paid`), and its live phone
+  stays. With no provider left (Revyl off, or a paid plan past its Revyl
+  limit, which is never named), 409 `phone_build_unavailable` says to build
+  on a Mac; a gap-free provider that lacks an asked ability (Revyl and
+  `--env`) is named as both at once (409 `phone_lacks`). A tester's pick is
+  never filtered. The brain names `metal` for a project with a `.metal` file
+  in its build folder, or whose build here needed it before (`metalProjects`,
+  in memory, 200 projects: a Swift package's shaders show only in a build).
+  `launch` then builds once more on the swapped phone, its answer led by
+  "Moved to another cloud iPhone…"; a refusal leads the first build's
+  failure with the server's sentence. `test` is never moved (Revyl has no
+  tests); it gets the plain sentence. Logs: `cloud.phone_build_gap`,
+  `cloud.phone_build_swap`, and `builds` on `cloud.phone_started`.
 - **The pane.** For a Revyl phone, the view link is ADE's own viewer page,
   `<server>/cloud/phone/viewer#whep=…&ws=…`. It shows Revyl's WebRTC video
   as it is, with a clear canvas over it that takes touches (copying each frame
@@ -479,14 +509,14 @@ to read with `snapshot`, batch steps in one `act`, and mind the idle stop.
   Flutter needs `flutter build ios --simulator`.
 - **Metal shaders.** Xcode 26 and later ship the Metal compiler as a separate
   download (`xcodebuild -downloadComponent MetalToolchain`, about 870 MB for
-  27.2). NoMac's build hosts don't have it (seen 2026-11-27), and its
-  `app_run` takes no build command, so any project that compiles a `.metal`
-  file fails there, the ADE iOS app included (SwiftTerm's
-  `Shaders.metal`). The brain leads that failure with one sentence
-  (`explainBuildFailure`). Revyl's build step, which ADE writes
-  (`buildCommand` in `phoneRevyl.ts`), fetches the toolchain only after a
-  build failed for want of it (at most 420 s, inside the build's 900 s)
-  and builds once more. NoMac has to add it to their hosts.
+  27.2). NoMac's build hosts don't have it (seen 2026-11-27; asked to add
+  it), and its `app_run` takes no build command, so a project that compiles a
+  `.metal` file (the ADE iOS app does, through SwiftTerm's `Shaders.metal`)
+  fails there. Revyl's runner has it (a Metal test app built there
+  2026-11-27), and its build step, which ADE writes (`buildCommand` in
+  `phoneRevyl.ts`), fetches it anyway when a build fails for want of it (at
+  most 420 s, inside the build's 900 s) and builds once more. What ADE does
+  about it is in **Build tools a provider lacks**.
 - No Android. The cloud phone is iOS only.
 - **ADE Web.** The hosted web client's phone is a flat iframe of NoMac's view,
   without the 3D body or the rail: Home, Screenshot and Record stay in the

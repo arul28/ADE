@@ -11,12 +11,21 @@
  * (on the iPhone's beta list) may pick one provider for every phone of theirs
  * (`cloud_phone_beta.provider`, set from a beta app's toggle,
  * `POST /cloud/phone/provider`): only that one, never another quietly.
+ *
+ * A start that names build tools its project needs (`builds`) leaves out a
+ * provider found without one in the last day (`buildGaps`), so a Metal app
+ * goes where Metal builds. When that leaves the plan nothing, it is told why
+ * (`buildRefusal`): on Free, that a paid plan's iPhone can build it.
  */
 import {
   CLOUD_PHONE_ABILITY_WORDS,
+  CLOUD_PHONE_BUILD_GAP_MS,
+  CLOUD_PHONE_BUILD_NEED_WORDS,
   CLOUD_PHONE_PROVIDER_ABILITIES,
+  cloudPhoneLacks,
   isCloudPhoneProvider,
   type CloudPhoneAbility,
+  type CloudPhoneBuildNeed,
   type CloudPhoneProvider,
 } from "./contract";
 import { fail } from "./http";
@@ -203,4 +212,66 @@ async function startAlongRoute(env: CloudEnv, route: PhoneRoute, userId: string,
     logCloud("cloud.phone_start_failover", { userId, from: provider, to: next, status: started.status });
   }
   return refused ?? fail("phone_unavailable", "The ADE Cloud iPhone can't start right now. Try again soon.", 503);
+}
+
+/* ---- Build tools a provider's hosts lack (`cloud_phone_build_gaps`) ---- */
+
+/** The providers found without any of `needs` in the last day: a start that needs them goes elsewhere. */
+export async function buildGaps(env: Pick<CloudEnv, "DB">, needs: readonly CloudPhoneBuildNeed[], now: number): Promise<Set<CloudPhoneProvider>> {
+  if (!needs.length) return new Set();
+  const rows = await env.DB.prepare(`select provider from cloud_phone_build_gaps where seen_at > ? and need in (${needs.map(() => "?").join(", ")})`)
+    .bind(now - CLOUD_PHONE_BUILD_GAP_MS, ...needs).all<{ provider: string }>();
+  return new Set((rows.results ?? []).map((row) => row.provider).filter(isCloudPhoneProvider));
+}
+
+/**
+ * A brain's report that a build on `phoneId` failed for want of `need`. Only
+ * for a phone of this account's from the last few hours, and the provider is
+ * the phone row's, never the brain's word. One row per provider and need,
+ * for every account: its day starts again with each report.
+ */
+export async function recordBuildGap(env: Pick<CloudEnv, "DB">, userId: string, phoneId: string, need: CloudPhoneBuildNeed, now: number): Promise<CloudPhoneProvider | null> {
+  const row = await env.DB.prepare("select provider from cloud_phones where phone_id = ? and user_id = ? and created_at > ?")
+    .bind(phoneId, userId, now - BUILD_REPORT_MS).first<{ provider: string | null }>();
+  const provider = row ? (isCloudPhoneProvider(row.provider) ? row.provider : "nomac") : null;
+  if (!provider) return null;
+  await env.DB.prepare("insert into cloud_phone_build_gaps (provider, need, seen_at) values (?, ?, ?) on conflict(provider, need) do update set seen_at = excluded.seen_at")
+    .bind(provider, need, now).run();
+  logCloud("cloud.phone_build_gap", { userId, phoneId, provider, need });
+  return provider;
+}
+
+/** A report names a phone this old at most: a build runs on a phone that is up (one runs two hours at most). */
+const BUILD_REPORT_MS = 3 * 60 * 60_000;
+
+/** "build apps with Metal shaders". */
+const buildWords = (needs: readonly CloudPhoneBuildNeed[]): string => needs.map((need) => CLOUD_PHONE_BUILD_NEED_WORDS[need]).join(" and ");
+
+/**
+ * The route without the providers that lack a build tool the start needs (or
+ * an ability it needs), or why there is none: on Free, when a paid plan's
+ * iPhone could build it, that (402 `phone_needs_paid`); when one could build
+ * it but can't do an ability asked for too, that; otherwise that no cloud
+ * iPhone builds it right now (409 `phone_build_unavailable`). A tester's
+ * pick is theirs and never filtered. Never names a provider.
+ */
+export function routeForBuilds(
+  env: CloudEnv,
+  route: PhoneRoute,
+  { builds, gapped, needs, free, drives }: { builds: readonly CloudPhoneBuildNeed[]; gapped: ReadonlySet<CloudPhoneProvider>; needs: readonly CloudPhoneAbility[]; free: boolean; drives: (provider: CloudPhoneProvider) => boolean },
+): PhoneRoute | Response {
+  if (!builds.length || !gapped.size || route.reason === "choice") return route;
+  // Abilities too: with a gap in play the order is picked by what can do the whole start, so the answer names what's missing.
+  const order = route.order.filter((provider) => !gapped.has(provider) && cloudPhoneLacks(provider, needs).length === 0);
+  if (order.length) return { ...route, order };
+  const what = buildWords(builds);
+  const elsewhere = PROVIDER_ORDER.filter((provider) => !gapped.has(provider) && PHONE_PROVIDERS[provider].canStart(env) && drives(provider));
+  if (elsewhere.length && free && elsewhere.some((provider) => cloudPhoneLacks(provider, needs).length === 0)) {
+    return fail("phone_needs_paid", `This app needs a cloud iPhone that can ${what}, and right now only the paid plans' iPhones can. Pick a plan in Settings › ADE Cloud, or build the app on a Mac and send it with ade apple install --app <path to the Simulator .app>.`, 402);
+  }
+  const lacking = elsewhere.length && elsewhere.every((provider) => cloudPhoneLacks(provider, needs).length > 0) ? cloudPhoneLacks(elsewhere[0]!, needs) : [];
+  if (lacking.length) {
+    return fail("phone_lacks", `The ADE Cloud iPhone can't ${what} and ${abilityWords(lacking)} at once right now. Leave out what needs the second, or build the app on a Mac and send it with ade apple install --app <path to the Simulator .app>.`, 409);
+  }
+  return fail("phone_build_unavailable", `The ADE Cloud iPhone can't ${what} right now. Build the app on a Mac and send it with ade apple install --app <path to the Simulator .app>.`, 409);
 }
