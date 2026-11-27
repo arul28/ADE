@@ -705,7 +705,7 @@ struct GitHubConnectCallback: Equatable {
   let status: String?
 
   init?(url: URL) {
-    guard url.scheme?.lowercased() == "ade", url.host?.lowercased() == "github" else { return nil }
+    guard ADEDeepLinkURLParsing.isADELinkScheme(url.scheme), url.host?.lowercased() == "github" else { return nil }
     let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
     func value(_ name: String) -> String? { items.first { $0.name == name }?.value }
     let id = value("signIn")

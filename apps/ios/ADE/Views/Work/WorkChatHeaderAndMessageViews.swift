@@ -919,7 +919,7 @@ func workOpenChipURL(_ url: URL) -> OpenURLAction.Result {
   // A skill chip on a surface without the instructions sheet: nothing to
   // open, and the system must never be handed the app-internal scheme.
   if workSkillName(from: url) != nil { return .handled }
-  guard url.scheme?.lowercased() == "ade" else { return .systemAction }
+  guard ADEDeepLinkURLParsing.isADELinkScheme(url.scheme) else { return .systemAction }
   if url.host?.lowercased() == "lane",
      let laneId = url.pathComponents.first(where: { $0 != "/" })?.removingPercentEncoding,
      UUID(uuidString: laneId) != nil,
@@ -1126,7 +1126,7 @@ struct WorkChipMessageText: View {
         skillInstructions?.present(name: name)
         return .handled
       }
-      if url.scheme?.lowercased() == "ade", url.host?.lowercased() == "machine",
+      if ADEDeepLinkURLParsing.isADELinkScheme(url.scheme), url.host?.lowercased() == "machine",
          let key = url.pathComponents.dropFirst().first?.removingPercentEncoding,
          let machine = AccountService.shared.machines.first(where: { workMachineMentionId($0) == key })
            ?? AccountService.shared.machines.first(where: { $0.machineKey == key })
@@ -1203,7 +1203,7 @@ private func workChatMentionIdIsValid(_ id: String) -> Bool {
 @MainActor
 private var workChipOpenURLAction: OpenURLAction {
   OpenURLAction { url in
-    guard url.scheme?.lowercased() == "ade" else { return .systemAction }
+    guard ADEDeepLinkURLParsing.isADELinkScheme(url.scheme) else { return .systemAction }
     DeepLinkRouter.shared.handle(url)
     return .handled
   }

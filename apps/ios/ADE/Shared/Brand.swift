@@ -22,4 +22,14 @@ public enum Brand {
     public static let siteURL = URL(string: "https://daex.dev")!
     public static let cloudName = "\(name) Cloud"
     public static let betaName = "\(name) Beta"
+
+    /// Every deep link scheme the app registers (`CFBundleURLSchemes`) and its
+    /// parsers accept: `ade`, `daex`, and the Beta app's `ade-beta` and
+    /// `daex-beta`. Mirrors `BRAND.LINK_SCHEMES` on desktop.
+    public static let linkSchemes: Set<String> = ["ade", "daex", "ade-beta", "daex-beta"]
+    /// The scheme newly made links use. Still `ade`, because a version that
+    /// registers only `ade://` cannot open a `daex://` link. Flip with
+    /// `BRAND.LINK_SCHEME_FOR_NEW_LINKS` once enough releases that register
+    /// `daex://` have shipped (the owner decides when).
+    public static let linkSchemeForNewLinks = "ade"
 }

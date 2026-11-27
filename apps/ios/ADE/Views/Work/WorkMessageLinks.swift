@@ -98,7 +98,8 @@ struct WorkMessageLink: Identifiable, Equatable {
 let workMessageLinkMenuLimit = 8
 
 func workMessageLinkKind(_ url: URL) -> WorkMessageLink.Kind? {
-  let scheme = url.scheme?.lowercased() ?? ""
+  // `daex://` (and the Beta schemes) read as `ade://`.
+  let scheme = ADEDeepLinkURLParsing.isADELinkScheme(url.scheme) ? "ade" : url.scheme?.lowercased() ?? ""
   if let name = workSkillName(from: url) { return .skill(name: name) }
   switch scheme {
   case "http", "https":
@@ -207,7 +208,7 @@ func workOpenMessageLink(_ link: WorkMessageLink, skills: WorkSkillInstructionsM
   }
   // `workOpenChipURL` handles every `ade://` link in-app and hands the rest
   // back to the system; a menu has no `openURL` to hand them to, so open here.
-  if link.url.scheme?.lowercased() == "ade" {
+  if ADEDeepLinkURLParsing.isADELinkScheme(link.url.scheme) {
     _ = workOpenChipURL(link.url)
   } else {
     UIApplication.shared.open(link.url)

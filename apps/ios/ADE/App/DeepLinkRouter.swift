@@ -27,14 +27,11 @@ final class DeepLinkRouter {
     SyncService.shared?.landOnHub(notice: notice)
   }
 
-  /// The ADE Beta app registers `ade-beta` instead of `ade`, so an outside
-  /// `ade://` link opens the normal app. An `ade-beta://` link routes the same
-  /// way as `ade://`.
+  /// The Beta app registers `ade-beta` (and `daex-beta`) instead of `ade`, so
+  /// an outside `ade://` link opens the normal app. `daex://`, `ade-beta://`
+  /// and `daex-beta://` links route the same way as `ade://`.
   private static func withADEScheme(_ url: URL) -> URL {
-    guard url.scheme?.lowercased() == "ade-beta",
-          var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
-    components.scheme = "ade"
-    return components.url ?? url
+    ADEDeepLinkURLParsing.withADEScheme(url)
   }
 
   /// Is this a link meant for ADE? Other URLs (an auth callback, a stray

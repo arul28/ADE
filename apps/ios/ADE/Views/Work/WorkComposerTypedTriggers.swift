@@ -341,7 +341,7 @@ struct WorkSmartLink: Equatable {
 
 enum WorkSmartLinkDetector {
   private static let regex = try! NSRegularExpression(
-    pattern: "(?:https?://|ade://)[^\\s<>\\\"'`]+",
+    pattern: "(?:https?://|(?:ade|daex)://)[^\\s<>\\\"'`]+",
     options: [.caseInsensitive]
   )
   private static let trailingPunctuation = CharacterSet(charactersIn: ".,;:!?")
@@ -375,11 +375,11 @@ enum WorkSmartLinkDetector {
       let url = text.substring(with: range)
       guard let components = URLComponents(string: url),
             let scheme = components.scheme?.lowercased(),
-            scheme == "ade" || ((scheme == "http" || scheme == "https") && components.host?.isEmpty == false)
+            ADEDeepLinkURLParsing.isADELinkScheme(scheme) || ((scheme == "http" || scheme == "https") && components.host?.isEmpty == false)
       else { return nil }
       let host = components.host?.lowercased()
       let provider: WorkSmartLink.Provider
-      if scheme == "ade" {
+      if ADEDeepLinkURLParsing.isADELinkScheme(scheme) {
         provider = .ade
       } else if host == "github.com" {
         provider = .github

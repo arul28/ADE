@@ -29,8 +29,10 @@
       <string>com.ade.ios.deeplink</string>
       <key>CFBundleURLSchemes</key>
       <array>
-        <!-- ade, or ade-beta in the ADE Beta app (Beta configuration). -->
+        <!-- ade, or ade-beta in the Beta app (Beta configuration). Accepted forever. -->
         <string>$(ADE_URL_SCHEME)</string>
+        <!-- daex, or daex-beta in the Beta app. Same links under the new name. -->
+        <string>$(DAEX_URL_SCHEME)</string>
       </array>
     </dict>
   </array>

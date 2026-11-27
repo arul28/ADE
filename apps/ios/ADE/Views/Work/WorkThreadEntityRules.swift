@@ -342,7 +342,7 @@ enum WorkThreadEntityRules {
   /// `ade://` link targets this build understands, drawn as the same pill the
   /// composer draws. A shape this build cannot parse stays a plain link.
   static func adeLinkChip(_ url: URL) -> WorkChip? {
-    guard url.scheme?.lowercased() == "ade",
+    guard ADEDeepLinkURLParsing.isADELinkScheme(url.scheme),
           let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
           WorkSmartLink.adeDeeplinkKind(
             host: components.host,

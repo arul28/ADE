@@ -519,7 +519,7 @@ func workSceneOpenTarget(_ raw: String) -> WorkSceneOpenTarget? {
   guard let url = URL(string: raw),
         let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
         let scheme = components.scheme?.lowercased() else { return nil }
-  if scheme == "ade" {
+  if ADEDeepLinkURLParsing.isADELinkScheme(scheme) {
     return url.host?.lowercased() == "pair" ? nil : .deeplink(url)
   }
   guard scheme == "https" || scheme == "http", components.host?.isEmpty == false else { return nil }

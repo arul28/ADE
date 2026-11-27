@@ -10,7 +10,7 @@ enum LaneDeeplinkHelpers {
     let owner = ADEDeepLinkURLParsing.ownershipQueryItems(ownership)
     switch form {
     case .ade:
-      let base = "ade://lane/\(ADEDeepLinkURLParsing.encodedPathSegment(laneId))"
+      let base = "\(Brand.linkSchemeForNewLinks)://lane/\(ADEDeepLinkURLParsing.encodedPathSegment(laneId))"
       return appendQuery(to: base, items: envelopeItems(envelope) + owner)
     case .https:
       return httpsOpenURL(items: [("type", "lane"), ("id", laneId)] + envelopeItems(envelope) + owner)
@@ -29,7 +29,7 @@ enum LaneDeeplinkHelpers {
     let owner = ADEDeepLinkURLParsing.ownershipQueryItems(ownership)
     switch form {
     case .ade:
-      let base = "ade://session/\(ADEDeepLinkURLParsing.encodedPathSegment(sessionId))"
+      let base = "\(Brand.linkSchemeForNewLinks)://session/\(ADEDeepLinkURLParsing.encodedPathSegment(sessionId))"
       return appendQuery(
         to: base,
         items: sessionItems(laneId: laneId, event: event, offset: offset) + envelopeItems(envelope) + owner
@@ -54,7 +54,7 @@ enum LaneDeeplinkHelpers {
     switch form {
     case .ade:
       let base = [
-        "ade://repo",
+        "\(Brand.linkSchemeForNewLinks)://repo",
         ADEDeepLinkURLParsing.encodedPathSegment(repoOwner),
         ADEDeepLinkURLParsing.encodedPathSegment(repoName),
         "branch",
@@ -85,7 +85,7 @@ enum LaneDeeplinkHelpers {
     switch form {
     case .ade:
       let base = [
-        "ade://pr",
+        "\(Brand.linkSchemeForNewLinks)://pr",
         ADEDeepLinkURLParsing.encodedPathSegment(repoOwner),
         ADEDeepLinkURLParsing.encodedPathSegment(repoName),
         String(number),

@@ -8515,7 +8515,7 @@ final class SyncService: ObservableObject {
     let stableKey = profileStorageKey(profile) ?? (identity?.isEmpty == false ? identity! : routeId)
     return DiscoveredSyncHost(
       id: "saved-\(stableKey)",
-      serviceName: "Saved ADE machine",
+      serviceName: "Saved \(Brand.name) machine",
       hostName: displayName?.isEmpty == false ? displayName! : routeId,
       hostIdentity: identity?.isEmpty == false ? identity : nil,
       siteId: syncNonEmpty(profile.siteId),
@@ -8826,7 +8826,7 @@ final class SyncService: ObservableObject {
     let tailscaleAddress = directEndpoints.first(where: { $0.0 == .tailnet })?.1.address
     return DiscoveredSyncHost(
       id: "account-pin-\(machine.id)",
-      serviceName: "ADE account machine",
+      serviceName: "\(Brand.name) account machine",
       hostName: machine.displayName,
       hostIdentity: syncNonEmpty(machine.deviceId),
       port: preferred.1.port,
@@ -27324,7 +27324,7 @@ extension SyncService {
         !url.isEmpty,
         let components = URLComponents(string: url),
         let scheme = components.scheme?.lowercased(),
-        scheme == "ade" ||
+        ADEDeepLinkURLParsing.isADELinkScheme(scheme) ||
           (
             scheme == "https" &&
             ADEDeepLinkURLParsing.isADEWebHost(components.host) &&
@@ -27332,7 +27332,13 @@ extension SyncService {
           ) else {
         return .dropped("This \(Brand.name) link is not valid.")
       }
-      args["url"] = url
+      // A `daex://` link goes to the computer as `ade://`: an older version
+      // there parses only that.
+      if ADEDeepLinkURLParsing.isADELinkScheme(scheme), let parsed = URL(string: url) {
+        args["url"] = ADEDeepLinkURLParsing.withADEScheme(parsed).absoluteString
+      } else {
+        args["url"] = url
+      }
     }
 
     // For now we send via the opaque command envelope — the desktop's
@@ -28137,7 +28143,7 @@ private final class SyncTailnetProbe {
         let isTailnetRoute = syncIsTailnetDiscoveryHost(routeHost)
         nextHosts[key] = DiscoveredSyncHost(
           id: "tailnet-\(key)",
-          serviceName: "ADE Tailnet \(host)",
+          serviceName: "\(Brand.name) Tailnet \(host)",
           hostName: routeHost,
           hostIdentity: nil,
           port: port,

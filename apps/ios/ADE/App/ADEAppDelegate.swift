@@ -315,7 +315,7 @@ extension ADEAppDelegate: UNUserNotificationCenterDelegate {
         }
         if let deepLink = userInfo["deepLink"] as? String,
            let url = URL(string: deepLink),
-           url.scheme?.lowercased() == "ade",
+           ADEDeepLinkURLParsing.isADELinkScheme(url.scheme),
            url.host?.lowercased() == "session" {
             let components = url.pathComponents.filter { $0 != "/" }
             return components.first.flatMap { $0.removingPercentEncoding ?? $0 }

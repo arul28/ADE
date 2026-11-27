@@ -550,7 +550,7 @@ final class WorkSceneController: NSObject, ObservableObject {
     lastTapAt = 0
     switch target {
     case .deeplink(let url):
-      if url.scheme?.lowercased() == "ade" {
+      if ADEDeepLinkURLParsing.isADELinkScheme(url.scheme) {
         _ = workOpenChipURL(url)
       } else {
         DeepLinkRouter.shared.handle(url)
