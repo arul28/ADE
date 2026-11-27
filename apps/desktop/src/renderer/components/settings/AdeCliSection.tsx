@@ -70,6 +70,9 @@ export function AdeCliSection({ embedded = false }: Props) {
   };
 
   const terminalReady = status?.terminalInstalled === true;
+  // `ade` on PATH from before `daex` existed: Install adds the `daex` name.
+  const aliasMissing = Boolean(status?.aliasCommand) && status?.terminalAliasCommandPath == null;
+  const terminalComplete = terminalReady && !aliasMissing;
   const agentReady = status?.agentPathReady === true;
   const bundledReady = status?.bundledAvailable === true;
   const installTargetDir = status?.installTargetPath
@@ -87,7 +90,7 @@ export function AdeCliSection({ embedded = false }: Props) {
     statusTone = "crit";
     statusLabel = "Unavailable";
   }
-  const installDisabled = loading || installing || terminalReady || !status?.installAvailable || !window.ade?.adeCli;
+  const installDisabled = loading || installing || terminalComplete || !status?.installAvailable || !window.ade?.adeCli;
 
   return (
     <ModernSection
@@ -116,7 +119,7 @@ export function AdeCliSection({ embedded = false }: Props) {
             disabled={installDisabled}
             onClick={() => void installForUser()}
           >
-            {installing ? "Installing..." : terminalReady ? "Installed" : "Install for Terminal"}
+            {installing ? "Installing..." : terminalComplete ? "Installed" : "Install for Terminal"}
           </button>
         </>
       )}
@@ -136,6 +139,7 @@ export function AdeCliSection({ embedded = false }: Props) {
           hint={(
             <span className="ade-modern-path">
               {terminalReady ? status?.terminalCommandPath ?? "ade is on PATH" : `Not installed at ${status?.installTargetPath ?? "~/.local/bin/ade"}`}
+              {terminalReady && aliasMissing ? ` (${status?.aliasCommand} not installed yet)` : null}
             </span>
           )}
           control={<span className="kit-tag" data-tone={loading ? undefined : statusTone}>{loading ? "Checking" : statusLabel}</span>}

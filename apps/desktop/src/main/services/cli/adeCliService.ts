@@ -589,16 +589,27 @@ function ensureUserBinOnShellPath(
 function statusMessage(args: {
   /** The name to show: the `daex` name when there is one. */
   commandName: string;
+  /** The `ade` name, which may be on PATH while the `daex` name is not. */
+  legacyCommandName: string;
+  /** `ade` resolves on the Terminal PATH. */
   terminalInstalled: boolean;
+  /** There is a `daex` name and it does not resolve on the Terminal PATH. */
+  aliasMissing: boolean;
   bundledAvailable: boolean;
   agentPathReady: boolean;
   installAvailable: boolean;
   isPackaged: boolean;
 }): { message: string; nextAction: string | null } {
-  if (args.terminalInstalled && args.agentPathReady) {
+  if (args.terminalInstalled && args.agentPathReady && !args.aliasMissing) {
     return {
       message: `The ${args.commandName} command is available to Terminal and ${BRAND.NAME}-launched agents.`,
       nextAction: null,
+    };
+  }
+  if (args.terminalInstalled && args.agentPathReady) {
+    return {
+      message: `${args.legacyCommandName} is installed for Terminal, but ${args.commandName} is not yet.`,
+      nextAction: args.installAvailable ? `Install for Terminal to add the ${args.commandName} command.` : null,
     };
   }
   if (args.agentPathReady && args.bundledAvailable) {
@@ -781,7 +792,9 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
     const installAvailable = packagedInstallAvailable || (resolved.source === "dev" && bundledAvailable);
     const message = statusMessage({
       commandName: aliasCommandName ?? commandName,
-      terminalInstalled: terminalInstalled && (aliasCommandName == null || terminalAliasCommandPath != null),
+      legacyCommandName: commandName,
+      terminalInstalled,
+      aliasMissing: aliasCommandName != null && terminalAliasCommandPath == null,
       bundledAvailable,
       agentPathReady,
       installAvailable,

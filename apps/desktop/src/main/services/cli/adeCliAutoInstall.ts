@@ -180,17 +180,14 @@ async function addDaexAliasOnce(args: AdeCliAutoInstallArgs, marker: AdeCliAutoI
     if (!current.adeCliAutoInstall) return;
     args.writeState({ ...current, adeCliAutoInstall: { ...current.adeCliAutoInstall, daexAliasCheckedAt: checkedAt } });
   };
-  // Another install owns `ade` (Homebrew, install.sh); it adds `daex` itself.
-  if (marker.outcome !== "installed") {
-    markChecked();
-    return;
-  }
   const status = await args.adeCli.getStatus();
   if (!status.aliasCommand || status.terminalAliasCommandPath) {
     markChecked();
     return;
   }
-  // `ade` gone from PATH or now someone else's: deleting it was deliberate.
+  // `ade` gone from PATH, or another install owns it (Homebrew, install.sh adds
+  // `daex` itself). This holds for "already-available" too: that `ade` may be
+  // one this app installed on an earlier launch.
   if (!status.terminalCommandPath || !isSameFile(status.terminalCommandPath, status.installTargetPath)) {
     markChecked();
     return;
