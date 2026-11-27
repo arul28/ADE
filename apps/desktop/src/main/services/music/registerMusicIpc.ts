@@ -20,6 +20,7 @@ import { createMusicService } from "./musicService";
 import { createMusicNowPlayingBridge } from "./musicNowPlayingBridge";
 import { createMusicRouter, createMusicSettings, type MusicRouter } from "./musicProviderRouter";
 import { createSpotifyService } from "./spotifyService";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Wires the Music services to IPC (`window.ade.music`): Apple Music and
@@ -108,7 +109,7 @@ export function registerMusicIpc(args: {
 
   const handle = <A extends unknown[], R>(channel: string, fn: (...a: A) => Promise<R>) => {
     ipcMain.handle(channel, async (event, ...rest) => {
-      if (!isTrustedAdeRendererSender(event)) throw new Error("Music is only available to the ADE window.");
+      if (!isTrustedAdeRendererSender(event)) throw new Error(`Music is only available to the ${BRAND.NAME} window.`);
       return fn(...(rest as A));
     });
   };

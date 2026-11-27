@@ -20,6 +20,7 @@ import {
   type MacDesktopLeaseHolderKind,
   type MacDesktopLeaseState,
 } from "../../../shared/types/macDesktop";
+import { BRAND } from "../../../shared/brand";
 
 export type MacDesktopLeaseGrant = {
   laneId: string;
@@ -134,7 +135,7 @@ export function createMacDesktopLeaseRegistry(options: { now?: () => number } = 
             ok: false,
             code: MAC_DESKTOP_USER_HAS_CONTROL_CODE,
             lease: toState(current),
-            message: `${current.holderLabel ?? "Someone"} is driving this display right now. ADE will wait for control to come back.`,
+            message: `${current.holderLabel ?? "Someone"} is driving this display right now. ${BRAND.NAME} will wait for control to come back.`,
           };
         }
         return {
@@ -247,7 +248,7 @@ export function createMacDesktopLeaseRegistry(options: { now?: () => number } = 
             ok: false,
             code: MAC_DESKTOP_USER_HAS_CONTROL_CODE,
             lease: toState(current),
-            message: `${current.holderLabel ?? "Someone"} is driving this display right now. ADE will wait for control to come back.`,
+            message: `${current.holderLabel ?? "Someone"} is driving this display right now. ${BRAND.NAME} will wait for control to come back.`,
           }
           : {
             ok: false,

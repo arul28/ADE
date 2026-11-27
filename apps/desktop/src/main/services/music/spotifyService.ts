@@ -35,6 +35,7 @@ import {
 } from "./spotifyAuth";
 import { clampVolume, createVolumeMemory, type MusicVolumeMemory } from "./musicVolume";
 import { createSpotifyLocalPlayer, sdkTrack, type SpotifyLocalState } from "./spotifyLocalPlayer";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Spotify in the main process.
@@ -281,7 +282,7 @@ export function createSpotifyService(args: {
       // The store's own error (a file system message); the token is never in it.
       args.logger?.warn("music.spotify.session_delete_failed", { error: errorMessage(error) });
       if (options?.strict) {
-        throw new Error("ADE disconnected Spotify for now but couldn't delete the saved sign-in, so Spotify may reconnect when ADE restarts. Try Disconnect again.");
+        throw new Error(`${BRAND.NAME} disconnected Spotify for now but couldn't delete the saved sign-in, so Spotify may reconnect when ${BRAND.NAME} restarts. Try Disconnect again.`);
       }
     }
   };
@@ -336,7 +337,7 @@ export function createSpotifyService(args: {
   const streamingToken = async (): Promise<string | null> => {
     const token = await accessToken();
     if (token && tokens && !tokens.scope.split(/\s+/).includes("streaming")) {
-      await dropSession("Connect Spotify again so it can play inside ADE.");
+      await dropSession(`Connect Spotify again so it can play inside ${BRAND.NAME}.`);
       return null;
     }
     return token;
@@ -378,7 +379,7 @@ export function createSpotifyService(args: {
   const playDevice = async (): Promise<string | undefined> => {
     if (remoteDeviceId) return undefined;
     if (!local.available()) return undefined;
-    if (!(await streamingToken())) throw new Error("Connect Spotify again so it can play inside ADE.");
+    if (!(await streamingToken())) throw new Error(`Connect Spotify again so it can play inside ${BRAND.NAME}.`);
     const id = await local.start();
     // Some engines want one call from the page before audio may start.
     await local.activate().catch(() => {});
@@ -678,7 +679,7 @@ export function createSpotifyService(args: {
           reanchor(Math.max(0, cmd.position), true);
           break;
         case "volume": {
-          if (device && !device.supportsVolume) throw new Error("This Spotify device doesn't allow volume control from ADE.");
+          if (device && !device.supportsVolume) throw new Error(`This Spotify device doesn't allow volume control from ${BRAND.NAME}.`);
           const value = clampVolume(cmd.value) ?? p.volume;
           if (!(localIsActive() && await local.setVolume(value))) await api.volume(value);
           p.volume = value;

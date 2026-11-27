@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { captureProblem } from "../../../shared/sentry/capture";
 import { BrowserWindow, dialog, systemPreferences } from "electron";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * "Is it really the person?" before ADE shows or copies a saved value, saves
@@ -62,7 +63,7 @@ async function confirmDialog(reason: string, actionLabel: string): Promise<boole
     defaultId: 1,
     cancelId: 1,
     message: reason,
-    detail: "ADE Passwords",
+    detail: `${BRAND.NAME} Passwords`,
   };
   const { response } = parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options);
   return response === 0;
@@ -81,7 +82,7 @@ export async function chooseAccount(site: string, accounts: string[]): Promise<n
     defaultId: 0,
     cancelId: shown.length,
     message: `Sign in to ${site} as…`,
-    detail: "ADE Passwords has more than one passkey for this site.",
+    detail: `${BRAND.NAME} Passwords has more than one passkey for this site.`,
   };
   const { response } = parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options);
   return response < shown.length ? response : null;
@@ -99,9 +100,9 @@ export async function checkPerson(reason: string, actionLabel = "Continue"): Pro
     }
   }
   if (process.platform === "win32") {
-    const hello = await windowsHello(`ADE wants to ${reason}`);
+    const hello = await windowsHello(`${BRAND.NAME} wants to ${reason}`);
     if (hello === "verified") return "biometric";
     if (hello === "denied") return null;
   }
-  return (await confirmDialog(`ADE wants to ${reason}.`, actionLabel)) ? "presence" : null;
+  return (await confirmDialog(`${BRAND.NAME} wants to ${reason}.`, actionLabel)) ? "presence" : null;
 }

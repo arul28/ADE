@@ -27,6 +27,7 @@ import {
   type ProjectActivity,
 } from "../../../../../ade-cli/src/services/projects/projectMove/projectMovePreflight";
 import { listMoveVolumes } from "../../../../../ade-cli/src/services/projects/projectMove/moveVolumes";
+import { BRAND } from "../../../shared/brand";
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -112,7 +113,7 @@ export function createProjectMoveController(deps: ProjectMoveControllerDeps) {
 
   async function applyCleanup(args: ProjectMoveCleanupArgs): Promise<ProjectMoveRecord> {
     const record = readMoveRecord(args.moveId);
-    if (!record || record.state !== "done") throw new Error("ADE has no finished move with that id.");
+    if (!record || record.state !== "done") throw new Error(`${BRAND.NAME} has no finished move with that id.`);
     if (args.choice === "delete") {
       if (record.cleanup.choice === "deleted") return record;
       await deleteParkedOriginal(record);
@@ -137,7 +138,7 @@ export function createProjectMoveController(deps: ProjectMoveControllerDeps) {
     async preflight(args: { projectRoot: string; destinationRoot: string }): Promise<ProjectMovePreflight> {
       const activity = await deps.getActivity(args.projectRoot).catch((error): ProjectActivity => {
         deps.logger.warn("project_move.activity_failed", { error: errorText(error) });
-        return { runningChats: [], openTerminals: [], unknownReason: "ADE's background service didn't answer." };
+        return { runningChats: [], openTerminals: [], unknownReason: `${BRAND.NAME}'s background service didn't answer.` };
       });
       return preflightProjectMove({
         sourceRoot: args.projectRoot,
@@ -192,7 +193,7 @@ export function createProjectMoveController(deps: ProjectMoveControllerDeps) {
           await deps.afterMove(record, windowId);
         } catch (error) {
           deps.logger.warn("project_move.reopen_failed", { error: errorText(error) });
-          record.problems.push(`ADE couldn't open the project at its new folder: ${errorText(error)}. Open it from the project list.`);
+          record.problems.push(`${BRAND.NAME} couldn't open the project at its new folder: ${errorText(error)}. Open it from the project list.`);
           writeMoveRecord(record);
         }
         return { ok: true, record };
@@ -231,7 +232,7 @@ export function createProjectMoveController(deps: ProjectMoveControllerDeps) {
     async cleanup(args: ProjectMoveCleanupArgs): Promise<ProjectMoveRecord> {
       const inFlight = deleting.get(args.moveId);
       if (inFlight) {
-        if (args.choice !== "delete") throw new Error("ADE is deleting the original right now.");
+        if (args.choice !== "delete") throw new Error(`${BRAND.NAME} is deleting the original right now.`);
         return inFlight;
       }
       if (args.choice !== "delete") return applyCleanup(args);

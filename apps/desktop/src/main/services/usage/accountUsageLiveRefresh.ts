@@ -38,6 +38,7 @@ import { getErrorMessage } from "../shared/utils";
 import { MAX_LIVE_QUOTA_ACCOUNTS, MAX_LIVE_QUOTA_WINDOWS, normalizeRollupActivity } from "./accountUsageRollup";
 import { ROLLUP_RETAINED_DAYS } from "./accountUsageRollupStore";
 import { localDayKey } from "./localDay";
+import { BRAND } from "../../../shared/brand";
 
 export type AccountRollupFetchResult = {
   rollups: AdeUsageRollup[];
@@ -56,7 +57,7 @@ function machineLabel(machine: AdeAccountMachine): string {
 }
 
 /** Shown for a peer whose ADE cannot answer `usage.getUsageRollup` at all. */
-const TOO_OLD_MESSAGE = "This computer's ADE is too old to share usage";
+const TOO_OLD_MESSAGE = `This computer's ${BRAND.NAME} is too old to share usage`;
 
 /**
  * Did the peer reject the call because it does not know the method?
@@ -607,7 +608,7 @@ export function createAccountResetCreditSpender(transport: AccountPeerTransport)
       };
     } catch (error) {
       if (isMethodNotFound(error) || AGENT_METHOD_REFUSED.test(getErrorMessage(error))) {
-        return failure(`Update ADE on ${label} to spend its reset from here, or spend it there.`);
+        return failure(`Update ${BRAND.NAME} on ${label} to spend its reset from here, or spend it there.`);
       }
       transport.logger?.warn?.("usage.account.peer_reset_credit_failed", {
         machineKey,

@@ -42,6 +42,7 @@ import {
   type CrsqlChangeRow,
   type SyncScalar,
 } from "../../../shared/types/sync";
+import { BRAND } from "../../../shared/brand";
 
 type DatabaseSyncConstructor = new (dbPath: string, options?: { allowExtension?: boolean; readOnly?: boolean }) => DatabaseSyncType;
 
@@ -362,13 +363,13 @@ function guardDatabasePath(db: DatabaseSyncType, dbPath: string): void {
       const code = (error as NodeJS.ErrnoException)?.code;
       if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
       throw markExpected(codedError(
-        "The project database is no longer available at its original location. Restore the project's .ade folder to resume; ADE has paused database operations to protect your data.",
+        `The project database is no longer available at its original location. Restore the project's .ade folder to resume; ${BRAND.NAME} has paused database operations to protect your data.`,
         "db_path_changed",
       ), "user");
     }
     if (current.dev !== identity.dev || current.ino !== identity.ino) {
       throw markExpected(codedError(
-        "The project database was moved or replaced. Restore the original .ade folder to resume; ADE will not write to the moved database or use its replacement.",
+        `The project database was moved or replaced. Restore the original .ade folder to resume; ${BRAND.NAME} will not write to the moved database or use its replacement.`,
         "db_path_changed",
       ), "user");
     }

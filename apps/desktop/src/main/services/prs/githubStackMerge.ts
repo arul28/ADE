@@ -5,6 +5,7 @@ import type { GitHubPrStack, GitHubPrStackEntry, LandHeadChange, LandPrArgs, Lan
 import { openStackEntriesThrough } from "./githubStackStore";
 import { formatMergeError, isHeadModifiedMergeError } from "./resolverUtils";
 import { formatHeadChangeMessage, type PrHeadChangeDetector } from "./prHeadChange";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Merging a PR that is in a GitHub Stack. GitHub supports this only through the
@@ -338,7 +339,7 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
       if (Date.now() >= deadline) {
         return {
           stop: lastError
-            ? `ADE could not read Stack #${stackNumber} from GitHub: ${lastError}`
+            ? `${BRAND.NAME} could not read Stack #${stackNumber} from GitHub: ${lastError}`
             : `GitHub did not move #${prNumber} to the bottom of Stack #${stackNumber} in time.`,
         };
       }
@@ -411,10 +412,10 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
     const guards: LayerGuard[] = [];
     let previousHeadSha: string | null = null;
     for (const entry of entries) {
-      if (!entry.headSha) return { stop: `ADE could not read #${entry.githubPrNumber}'s head from GitHub.` };
+      if (!entry.headSha) return { stop: `${BRAND.NAME} could not read #${entry.githubPrNumber}'s head from GitHub.` };
       if (confirmedTopHead && entry !== top) {
         const contained = await isAncestorOf(repo, entry.headSha, confirmedTopHead);
-        if (contained === null) return { stop: `ADE could not compare #${entry.githubPrNumber} with the head you confirmed.` };
+        if (contained === null) return { stop: `${BRAND.NAME} could not compare #${entry.githubPrNumber} with the head you confirmed.` };
         if (!contained) {
           return {
             stop: `#${entry.githubPrNumber} has commits that #${top?.githubPrNumber}, the PR you confirmed, does not include. Restack the stack or review #${entry.githubPrNumber}, then merge again.`,
@@ -426,10 +427,10 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
         const read = await layerContentBetween(repo, previousHeadSha, entry.headSha);
         if (read === "tooLarge") {
           return {
-            stop: `#${entry.githubPrNumber} is too large for GitHub to list its changes, so ADE cannot guard a bypass merge of it. Merge the stack one PR at a time from the bottom.`,
+            stop: `#${entry.githubPrNumber} is too large for GitHub to list its changes, so ${BRAND.NAME} cannot guard a bypass merge of it. Merge the stack one PR at a time from the bottom.`,
           };
         }
-        if (!read) return { stop: `ADE could not read #${entry.githubPrNumber}'s changes from GitHub to guard the merge.` };
+        if (!read) return { stop: `${BRAND.NAME} could not read #${entry.githubPrNumber}'s changes from GitHub to guard the merge.` };
         content = read;
       }
       guards.push({ prNumber: entry.githubPrNumber, headSha: entry.headSha, content });
@@ -451,11 +452,11 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
     // The base branch's current tip, not `base.sha`, which can lag behind the
     // squash merge of the layer below and add that commit to the comparison.
     const base = asString(pull?.base?.ref).trim() || asString(pull?.base?.sha).trim();
-    if (!headSha || !base) return { stop: "ADE could not read its head from GitHub." };
+    if (!headSha || !base) return { stop: `${BRAND.NAME} could not read its head from GitHub.` };
     if (headSha === guard.headSha) return { sha: headSha };
     const current = await layerContentBetween(repo, base, headSha);
     if (current === "tooLarge") return { stop: "it is now too large for GitHub to list its changes. Review it and merge again." };
-    if (!current) return { stop: "ADE could not read its changes from GitHub." };
+    if (!current) return { stop: `${BRAND.NAME} could not read its changes from GitHub.` };
     return current === expected
       ? { sha: headSha }
       : { stop: "its changes moved after you confirmed the merge. Review them and merge again." };
@@ -578,7 +579,7 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
           // The outcome is unknown, so the operation stays open, as the single
           // stack merge leaves it; the PR poller shows how GitHub settles.
           logger.warn("prs.stack_layer_merge_still_pending", { stackNumber, prNumber: number });
-          const error = afterMerged(`GitHub is still merging #${number}. ADE stopped waiting; merge the rest of the stack after it lands.`);
+          const error = afterMerged(`GitHub is still merging #${number}. ${BRAND.NAME} stopped waiting; merge the rest of the stack after it lands.`);
           return { ...base, mergeStatus: "pending", stackPrNumbers, error };
         }
         return await stopAt(

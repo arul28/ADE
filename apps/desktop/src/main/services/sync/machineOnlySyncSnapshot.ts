@@ -8,6 +8,7 @@ import {
   type SyncPeerPlatform,
   type SyncRoleSnapshot,
 } from "../../../shared/types";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The This-Machine card in Connections describes the computer ADE runs on:
@@ -52,7 +53,7 @@ function mapPlatform(platform: NodeJS.Platform): SyncPeerPlatform {
 
 function errorText(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
-  return message.trim() || "The ADE background service is not reachable.";
+  return message.trim() || `The ${BRAND.NAME} background service is not reachable.`;
 }
 
 /**

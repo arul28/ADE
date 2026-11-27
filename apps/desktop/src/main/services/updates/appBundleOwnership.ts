@@ -25,6 +25,7 @@ import type {
   AppBundleOwnershipFixResult,
   AppBundleOwnershipStatus,
 } from "../../../shared/types/appBundleOwnership";
+import { BRAND } from "../../../shared/brand";
 
 /** Waits on a person at the macOS password dialog. */
 const FIX_TIMEOUT_MS = 120_000;
@@ -107,25 +108,25 @@ export function createAppBundleOwnershipService(deps: AppBundleOwnershipDeps) {
     if (platform !== "darwin") {
       return base({
         reason: platform === "win32"
-          ? "Windows installs ADE for your account only, so updates never need an administrator password."
+          ? `Windows installs ${BRAND.NAME} for your account only, so updates never need an administrator password.`
           : "This check is for the macOS app.",
       });
     }
     if (!deps.isPackaged) return base({ reason: "Development builds are not updated by the macOS updater." });
     const bundlePath = resolveAppBundlePath(execPath);
-    if (!bundlePath) return base({ reason: "ADE is not running from an app bundle." });
+    if (!bundlePath) return base({ reason: `${BRAND.NAME} is not running from an app bundle.` });
     if (bundlePath.includes("/AppTranslocation/")) {
-      return base({ bundlePath, reason: "macOS is running a quarantined copy of ADE. Move ADE to Applications first." });
+      return base({ bundlePath, reason: `macOS is running a quarantined copy of ${BRAND.NAME}. Move ${BRAND.NAME} to Applications first.` });
     }
 
     let bundleStat;
     try {
       bundleStat = await fs.lstat(bundlePath);
     } catch {
-      return base({ state: "unknown", bundlePath, reason: "ADE couldn't read its own app folder." });
+      return base({ state: "unknown", bundlePath, reason: `${BRAND.NAME} couldn't read its own app folder.` });
     }
     if (!bundleStat.isDirectory() || bundleStat.isSymbolicLink()) {
-      return base({ state: "unknown", bundlePath, reason: "ADE's app folder is not a regular folder." });
+      return base({ state: "unknown", bundlePath, reason: `${BRAND.NAME}'s app folder is not a regular folder.` });
     }
 
     // The bundle root is what Squirrel tests; the rest are the files an
@@ -139,7 +140,7 @@ export function createAppBundleOwnershipService(deps: AppBundleOwnershipDeps) {
       if (result.ok) continue;
       if (result.code === "ENOENT") continue;
       if (result.code === "EROFS") {
-        return base({ bundlePath, reason: "ADE is running from a read-only disk. Move ADE to Applications first." });
+        return base({ bundlePath, reason: `${BRAND.NAME} is running from a read-only disk. Move ${BRAND.NAME} to Applications first.` });
       }
       problemPaths.push(relative);
     }
@@ -178,7 +179,7 @@ export function createAppBundleOwnershipService(deps: AppBundleOwnershipDeps) {
     if (before.state !== "needs_fix" || !before.bundlePath) {
       return {
         outcome: "not_applicable",
-        message: before.state === "ok" ? "ADE's files already belong to your account." : before.reason ?? "There is nothing to fix here.",
+        message: before.state === "ok" ? `${BRAND.NAME}'s files already belong to your account.` : before.reason ?? "There is nothing to fix here.",
         status: before,
       };
     }
@@ -186,7 +187,7 @@ export function createAppBundleOwnershipService(deps: AppBundleOwnershipDeps) {
     // bundle is the one ADE runs from, never a path passed in from outside.
     const bundlePath = before.bundlePath;
     if (!Number.isInteger(uid) || uid < 0 || !Number.isInteger(gid) || gid < 0) {
-      return { outcome: "failed", message: "ADE couldn't tell which account to give its files to.", status: before };
+      return { outcome: "failed", message: `${BRAND.NAME} couldn't tell which account to give its files to.`, status: before };
     }
     // The owner and path reach the shell only through AppleScript's
     // `quoted form of`, as run-handler arguments: nothing is spliced into the
@@ -195,7 +196,7 @@ export function createAppBundleOwnershipService(deps: AppBundleOwnershipDeps) {
       "/usr/bin/osascript",
       [
         "-e", "on run argv",
-        "-e", 'do shell script "/usr/sbin/chown -R " & quoted form of (item 1 of argv) & " " & quoted form of (item 2 of argv) with prompt "ADE wants to give its app files back to your account, so updates stop asking for your password." with administrator privileges',
+        "-e", `do shell script "/usr/sbin/chown -R " & quoted form of (item 1 of argv) & " " & quoted form of (item 2 of argv) with prompt "${BRAND.NAME} wants to give its app files back to your account, so updates stop asking for your password." with administrator privileges`,
         "-e", "end run",
         `${uid}:${gid}`,
         bundlePath,
@@ -207,19 +208,19 @@ export function createAppBundleOwnershipService(deps: AppBundleOwnershipDeps) {
       if (/User canceled|\(-128\)/i.test(result.stderr)) {
         return { outcome: "cancelled", message: "You cancelled the password prompt. Nothing was changed.", status: after };
       }
-      if (after.state === "ok") return { outcome: "fixed", message: "ADE's files belong to your account again.", status: after };
-      return { outcome: "failed", message: "macOS wouldn't change the owner of ADE's files.", status: after, detail: result.stderr.trim() || undefined };
+      if (after.state === "ok") return { outcome: "fixed", message: `${BRAND.NAME}'s files belong to your account again.`, status: after };
+      return { outcome: "failed", message: `macOS wouldn't change the owner of ${BRAND.NAME}'s files.`, status: after, detail: result.stderr.trim() || undefined };
     }
     if (after.state === "ok") {
       return {
         outcome: "fixed",
         message: after.parentWritable === false
-          ? "ADE's files belong to your account again, but your account can't write to the folder ADE is in, so updates may still ask for a password."
-          : "ADE's files belong to your account again. Updates won't ask for your password.",
+          ? `${BRAND.NAME}'s files belong to your account again, but your account can't write to the folder ${BRAND.NAME} is in, so updates may still ask for a password.`
+          : `${BRAND.NAME}'s files belong to your account again. Updates won't ask for your password.`,
         status: after,
       };
     }
-    return { outcome: "still_root_owned", message: "The command ran, but your account still can't change some of ADE's files.", status: after };
+    return { outcome: "still_root_owned", message: `The command ran, but your account still can't change some of ${BRAND.NAME}'s files.`, status: after };
   }
 
   return { getStatus, fix };

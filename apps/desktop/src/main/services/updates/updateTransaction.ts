@@ -3,6 +3,7 @@ import type {
   UpdateTransactionStep,
   UpdateTransactionStepId,
 } from "../../../shared/types";
+import { BRAND } from "../../../shared/brand";
 
 export type {
   UpdateTransactionResult,
@@ -20,10 +21,10 @@ export type {
  * Reset ADE) and can name a sharper cause from the live service status.
  */
 export const UPDATE_TRANSACTION_FAILURE_COPY: Record<UpdateTransactionStepId, string> = {
-  swap: "The update didn't finish installing. ADE is still on the old version.",
-  service: "ADE's background service didn't start after the update",
-  restart: "ADE's background service didn't restart after the update",
-  health: "ADE's background service isn't responding after the update",
+  swap: `The update didn't finish installing. ${BRAND.NAME} is still on the old version.`,
+  service: `${BRAND.NAME}'s background service didn't start after the update`,
+  restart: `${BRAND.NAME}'s background service didn't restart after the update`,
+  health: `${BRAND.NAME}'s background service isn't responding after the update`,
 };
 
 export type UpdateTransactionStepOutcome = {

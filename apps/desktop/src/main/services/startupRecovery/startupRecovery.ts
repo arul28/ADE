@@ -15,6 +15,7 @@ import { parseReleaseManifest } from "../../../shared/updateTrack";
 import type { Logger } from "../logging/logger";
 import type { LocalDatabase } from "./databaseCopies";
 import { chooseGoBackPlan, type GoBackPlan } from "./goBackPlan";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The "ADE could not start" window: what makes it appear, and "Go back to the
@@ -163,25 +164,25 @@ function restoreFailureOf(error: unknown): RestoreFailure | null {
 export function startupRecoveryLine(trigger: StartupRecoveryTrigger, runningVersion: string): string {
   switch (trigger.kind) {
     case "database":
-      return `After updating to ${runningVersion}, ADE couldn't open the data for “${trigger.label}”.`;
+      return `After updating to ${runningVersion}, ${BRAND.NAME} couldn't open the data for “${trigger.label}”.`;
     case "brain":
-      return `After updating to ${runningVersion}, ADE's background service keeps stopping.`;
+      return `After updating to ${runningVersion}, ${BRAND.NAME}'s background service keeps stopping.`;
     case "window_crashed":
-      return "ADE's window keeps crashing, so it can't show your work.";
+      return `${BRAND.NAME}'s window keeps crashing, so it can't show your work.`;
     case "window_load_failed":
-      return "ADE's window didn't load, so it can't show your work.";
+      return `${BRAND.NAME}'s window didn't load, so it can't show your work.`;
   }
 }
 
 /** What a restored database is, in the person's words. */
 function putsBackText(entry: GoBackPlan["restores"][number]): string {
-  if (entry.kind === "machine") return "ADE's own data on this computer";
+  if (entry.kind === "machine") return `${BRAND.NAME}'s own data on this computer`;
   if (entry.kind === "personal") return "your chats that aren't in a project";
   return `the project “${entry.label}”`;
 }
 
 const AGAIN = "Press Go back to try again.";
-const SUPPORT = "Copy the details and send them to ADE support.";
+const SUPPORT = `Copy the details and send them to ${BRAND.NAME} support.`;
 
 export function createStartupRecovery(deps: StartupRecoveryDeps) {
   const { logger, runningVersion } = deps;
@@ -311,7 +312,7 @@ export function createStartupRecovery(deps: StartupRecoveryDeps) {
       logger.warn("startupRecovery.go_back_manifest_failed", { version: target.targetVersion, error: errorText(error) });
       return {
         ok: false,
-        message: `ADE couldn't reach GitHub to get ${target.targetVersion}.`,
+        message: `${BRAND.NAME} couldn't reach GitHub to get ${target.targetVersion}.`,
         next: `Check your internet connection. ${AGAIN}`,
       };
     }
@@ -322,7 +323,7 @@ export function createStartupRecovery(deps: StartupRecoveryDeps) {
     if (raw !== null) {
       const manifest = parseReleaseManifest(raw);
       if (!manifest || manifest.version !== target.targetVersion || manifest.dbCompat == null) {
-        return { ok: false, message: `ADE couldn't read the details of ${target.targetVersion}, so it didn't go back.`, next: SUPPORT };
+        return { ok: false, message: `${BRAND.NAME} couldn't read the details of ${target.targetVersion}, so it didn't go back.`, next: SUPPORT };
       }
       targetLevel = manifest.dbCompat;
     }
@@ -332,8 +333,8 @@ export function createStartupRecovery(deps: StartupRecoveryDeps) {
         logger.warn("startupRecovery.go_back_blocked", { dbPath: database.dbPath, level, targetLevel });
         return {
           ok: false,
-          message: `${target.targetVersion} can't open “${database.label}” after ${runningVersion} changed it, so ADE didn't go back.`,
-          next: `Press Try again. If ADE still can't start, ${SUPPORT.charAt(0).toLowerCase()}${SUPPORT.slice(1)}`,
+          message: `${target.targetVersion} can't open “${database.label}” after ${runningVersion} changed it, so ${BRAND.NAME} didn't go back.`,
+          next: `Press Try again. If ${BRAND.NAME} still can't start, ${SUPPORT.charAt(0).toLowerCase()}${SUPPORT.slice(1)}`,
         };
       }
     }
@@ -349,11 +350,11 @@ export function createStartupRecovery(deps: StartupRecoveryDeps) {
       (started) => {
         // A restore that stopped the install has already said what happened.
         if (started || currentPhase().state === "failed") return;
-        failGoBack(`ADE couldn't install ${version}.`, `${AGAIN} If it fails twice, ${SUPPORT.charAt(0).toLowerCase()}${SUPPORT.slice(1)}`);
+        failGoBack(`${BRAND.NAME} couldn't install ${version}.`, `${AGAIN} If it fails twice, ${SUPPORT.charAt(0).toLowerCase()}${SUPPORT.slice(1)}`);
       },
       (error) => {
         if (currentPhase().state === "failed") return;
-        failGoBack(`ADE couldn't install ${version}.`, AGAIN, { error: errorText(error) });
+        failGoBack(`${BRAND.NAME} couldn't install ${version}.`, AGAIN, { error: errorText(error) });
       },
     );
   };
@@ -371,7 +372,7 @@ export function createStartupRecovery(deps: StartupRecoveryDeps) {
         return;
       }
       if (snapshot.status === "error" && (state === "checking" || state === "downloading")) {
-        failGoBack(`ADE couldn't download ${version}.`, `Check your internet connection. ${AGAIN}`, {
+        failGoBack(`${BRAND.NAME} couldn't download ${version}.`, `Check your internet connection. ${AGAIN}`, {
           error: snapshot.error ?? null,
         });
         return;
@@ -388,8 +389,8 @@ export function createStartupRecovery(deps: StartupRecoveryDeps) {
     plan = readPlan();
     if (!plan) {
       failGoBack(
-        "ADE no longer has a copy of your data from before the update, so it can't go back.",
-        `Press Try again. If ADE still can't start, ${SUPPORT.charAt(0).toLowerCase()}${SUPPORT.slice(1)}`,
+        `${BRAND.NAME} no longer has a copy of your data from before the update, so it can't go back.`,
+        `Press Try again. If ${BRAND.NAME} still can't start, ${SUPPORT.charAt(0).toLowerCase()}${SUPPORT.slice(1)}`,
       );
       return;
     }
@@ -406,7 +407,7 @@ export function createStartupRecovery(deps: StartupRecoveryDeps) {
       left != null && right != null && left.targetVersion === right.targetVersion
       && left.restores.map((entry) => entry.copy.path).join("\n") === right.restores.map((entry) => entry.copy.path).join("\n");
     if (!current || !sameRestores(agreed, current)) {
-      failGoBack("What ADE can put back changed a moment ago.", "Press Go back to see it again.");
+      failGoBack(`What ${BRAND.NAME} can put back changed a moment ago.`, "Press Go back to see it again.");
       return;
     }
     logger.info("startupRecovery.go_back_started", {
@@ -416,7 +417,7 @@ export function createStartupRecovery(deps: StartupRecoveryDeps) {
       untouched: current.untouched.length,
     });
     if (deps.install === "dev_build") {
-      failGoBack("Going back only works in an installed copy of ADE.", "This is a development build.");
+      failGoBack(`Going back only works in an installed copy of ${BRAND.NAME}.`, "This is a development build.");
       return;
     }
     setPhase({ state: "checking" });
@@ -443,7 +444,7 @@ export function createStartupRecovery(deps: StartupRecoveryDeps) {
 
   const details = (): string => {
     const lines = [
-      "ADE could not start",
+      `${BRAND.NAME} could not start`,
       trigger ? startupRecoveryLine(trigger, runningVersion) : "",
       "",
       `Version: ${runningVersion}`,
@@ -597,17 +598,17 @@ export function createStartupRecovery(deps: StartupRecoveryDeps) {
       } catch (error) {
         const failure = restoreFailureOf(error);
         if (failure?.copyMissing) {
-          failGoBack("What ADE can put back changed while it was downloading.", "Press Go back to see it again.", { reason: "copy_missing" });
+          failGoBack(`What ${BRAND.NAME} can put back changed while it was downloading.`, "Press Go back to see it again.", { reason: "copy_missing" });
         } else if (failure && !failure.rolledBack) {
           failGoBack(
-            "ADE couldn't finish putting your data back. Nothing was deleted: your data is in copies on this computer.",
-            `Don't use ADE yet. ${SUPPORT}`,
+            `${BRAND.NAME} couldn't finish putting your data back. Nothing was deleted: your data is in copies on this computer.`,
+            `Don't use ${BRAND.NAME} yet. ${SUPPORT}`,
             { reason: "restore_partial", error: errorText(error) },
           );
         } else {
           failGoBack(
-            `ADE couldn't put your data back, so it stayed on ${runningVersion}. Nothing was changed.`,
-            `Close any other copy of ADE, and any terminal running the ade command. ${AGAIN}`,
+            `${BRAND.NAME} couldn't put your data back, so it stayed on ${runningVersion}. Nothing was changed.`,
+            `Close any other copy of ${BRAND.NAME}, and any terminal running the ade command. ${AGAIN}`,
             { reason: "restore", error: errorText(error) },
           );
         }

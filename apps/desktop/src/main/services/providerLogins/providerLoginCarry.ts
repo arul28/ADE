@@ -44,6 +44,7 @@ import { ANTIGRAVITY_TOKEN_FILE, peekAntigravityKeyringPresent } from "../ai/ant
 import { isRecord } from "../shared/utils";
 import { resolveAdeOpenCodeStoreDir } from "../../../shared/opencodeDataHome";
 import { readOpenCodeCarryCredential, readOpenCodeCarryMark } from "../opencode/openCodeCredentials";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Copilot's carried sign-in is this computer's GitHub CLI login for
@@ -427,12 +428,12 @@ const ROWS: CarryRow[] = [
   {
     provider: "claude",
     carry: "never",
-    message: "ADE never copies Claude's own login. ADE Cloud uses the Claude pass instead.",
+    message: `${BRAND.NAME} never copies Claude's own login. ${BRAND.CLOUD_NAME} uses the Claude pass instead.`,
   },
   {
     provider: "codex",
     carry: "carried",
-    message: "ADE copies this computer's Codex login (the file login, not one kept in the OS keyring).",
+    message: `${BRAND.NAME} copies this computer's Codex login (the file login, not one kept in the OS keyring).`,
     locate: (ctx) => {
       const home = codexConfigHome({ env: ctx.env, homeDir: ctx.homeDir });
       return [{ id: "codex/base", files: [file("codexHome", home, "auth.json")] }];
@@ -480,7 +481,7 @@ const ROWS: CarryRow[] = [
   {
     provider: "cursor",
     carry: "carried",
-    message: "ADE copies the Cursor key the Cursor sign-in made. It ends after 90 days.",
+    message: `${BRAND.NAME} copies the Cursor key the Cursor sign-in made. It ends after 90 days.`,
     locate: (ctx) => [{ id: "cursor/base", files: [file("cursorSdk", path.join(ctx.homeDir, ".cursor", "sdk"), "auth.json")] }],
     parse: (bundle, contents) => {
       const data = json(contents, "auth.json");
@@ -497,8 +498,8 @@ const ROWS: CarryRow[] = [
   {
     provider: "opencode",
     carry: "carried",
-    message: "ADE copies OpenCode's opencode.ai sign-in (OpenCode Go and Zen), without its refresh token. This computer keeps renewing it. "
-      + "Other sign-ins made in OpenCode stay on this computer, and ADE never copies an Anthropic login.",
+    message: `${BRAND.NAME} copies OpenCode's opencode.ai sign-in (OpenCode Go and Zen), without its refresh token. This computer keeps renewing it. `
+      + `Other sign-ins made in OpenCode stay on this computer, and ${BRAND.NAME} never copies an Anthropic login.`,
     locate: (ctx) => [{
       id: "opencode/base",
       files: [file("openCodeData", carryRootDir("openCodeData", ctx)!, OPENCODE_DB_REL, { carry: false, store: OPENCODE_STORE })],
@@ -508,14 +509,14 @@ const ROWS: CarryRow[] = [
   {
     provider: "pi",
     carry: "carried",
-    message: "ADE copies Pi's xAI sign-in and Pi's saved keys. It never copies Pi's Anthropic login. Other Pi sign-ins: sign in on the cloud computer.",
+    message: `${BRAND.NAME} copies Pi's xAI sign-in and Pi's saved keys. It never copies Pi's Anthropic login. Other Pi sign-ins: sign in on the cloud computer.`,
     locate: (ctx) => [{ id: "pi/auth", files: [file("piAgent", piAgentDir({ env: ctx.env, homeDir: ctx.homeDir }), "auth.json", { carry: false })] }],
     parse: (_bundle, contents) => parsePi(contents),
   },
   {
     provider: "copilot",
     carry: "carried",
-    message: "ADE copies this computer's GitHub CLI login for Copilot only when you turn it on here. The login also gives access to your GitHub repos. "
+    message: `${BRAND.NAME} copies this computer's GitHub CLI login for Copilot only when you turn it on here. The login also gives access to your GitHub repos. `
       + "A Copilot sign-in made with `copilot login` is not copied.",
     locate: (ctx) => [copilotGhBundle(ctx)],
     parse: (_bundle, contents) => {
@@ -550,7 +551,7 @@ const ROWS: CarryRow[] = [
   {
     provider: "grok",
     carry: "carried",
-    message: "ADE copies this computer's Grok login.",
+    message: `${BRAND.NAME} copies this computer's Grok login.`,
     locate: (ctx) => [{ id: "grok/base", files: [file("grokHome", grokConfigHome({ env: ctx.env, homeDir: ctx.homeDir }), "auth.json")] }],
     parse: (bundle, contents) => {
       const data = json(contents, "auth.json");
@@ -580,7 +581,7 @@ const ROWS: CarryRow[] = [
   {
     provider: "droid",
     carry: "carried",
-    message: "ADE copies Droid's file sign-in (auth.v2.file and its key). A sign-in kept in the OS keyring stays on this computer.",
+    message: `${BRAND.NAME} copies Droid's file sign-in (auth.v2.file and its key). A sign-in kept in the OS keyring stays on this computer.`,
     locate: (ctx) => {
       const home = factoryConfigHome({ env: ctx.env, homeDir: ctx.homeDir });
       return [{ id: "droid/base", files: [file("factoryHome", home, "auth.v2.file"), file("factoryHome", home, "auth.v2.key")] }];
@@ -604,7 +605,7 @@ const ROWS: CarryRow[] = [
   {
     provider: "kimi",
     carry: "carried",
-    message: "ADE copies this computer's Kimi Code login (the file login, not one kept in the OS keyring).",
+    message: `${BRAND.NAME} copies this computer's Kimi Code login (the file login, not one kept in the OS keyring).`,
     locate: (ctx) => {
       const rel = kimiCredentialRel(ctx);
       if (!rel) return [];
@@ -642,7 +643,7 @@ const ROWS: CarryRow[] = [
   {
     provider: "qwen",
     carry: "carried",
-    message: "ADE copies Qwen's key settings (settings.json and .env). For a Qwen OAuth sign-in, sign in on the cloud computer.",
+    message: `${BRAND.NAME} copies Qwen's key settings (settings.json and .env). For a Qwen OAuth sign-in, sign in on the cloud computer.`,
     locate: (ctx) => {
       const home = qwenConfigHome({ env: ctx.env, homeDir: ctx.homeDir });
       return [{
@@ -677,7 +678,7 @@ const ROWS: CarryRow[] = [
   {
     provider: "devin",
     carry: "carried",
-    message: "ADE copies this computer's Devin login.",
+    message: `${BRAND.NAME} copies this computer's Devin login.`,
     locate: (ctx) => {
       const credentials = devinCredentialFiles({ env: ctx.env, homeDir: ctx.homeDir, platform: ctx.platform });
       const found = credentials.find(exists) ?? credentials[0]!;
@@ -695,8 +696,8 @@ const ROWS: CarryRow[] = [
   {
     provider: "antigravity",
     carry: "carried",
-    message: "ADE copies Antigravity's Google sign-in. When the agy CLI keeps it in this computer's OS keyring "
-      + "(the Keychain, Credential Manager or the keyring), ADE reads it only when you allow it.",
+    message: `${BRAND.NAME} copies Antigravity's Google sign-in. When the agy CLI keeps it in this computer's OS keyring `
+      + `(the Keychain, Credential Manager or the keyring), ${BRAND.NAME} reads it only when you allow it.`,
     locate: (ctx) => {
       // The file store (no working keyring, WSL, a container, every cloud
       // computer) is read in the background like any login file.
@@ -740,7 +741,7 @@ const ROWS: CarryRow[] = [
   {
     provider: "muse",
     carry: "fallback",
-    message: "Sign in to Muse on the cloud computer, or add a key. ADE does not copy Muse sign-ins.",
+    message: `Sign in to Muse on the cloud computer, or add a key. ${BRAND.NAME} does not copy Muse sign-ins.`,
   },
   {
     // The logins a person signed in to ADE's subscription proxy itself (the
@@ -751,7 +752,7 @@ const ROWS: CarryRow[] = [
     // computer from its own CLI logins, so they never travel.
     provider: "proxy",
     carry: "carried",
-    message: "ADE copies the logins you signed in to ADE's subscription proxy, without their refresh tokens. This computer's proxy keeps renewing them.",
+    message: `${BRAND.NAME} copies the logins you signed in to ${BRAND.NAME}'s subscription proxy, without their refresh tokens. This computer's proxy keeps renewing them.`,
     locate: (ctx) => {
       const dir = carryRootDir("proxyAuth", ctx)!;
       let names: string[] = [];

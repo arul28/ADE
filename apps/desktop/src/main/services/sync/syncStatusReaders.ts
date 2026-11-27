@@ -4,6 +4,7 @@ import { LOCAL_RUNTIME_SYNC_STATUS_OVERALL_TIMEOUT_MS } from "../localRuntime/lo
 import type { Logger } from "../logging/logger";
 import { withDeadline } from "../shared/withTimeout";
 import { buildMachineOnlySyncSnapshot } from "./machineOnlySyncSnapshot";
+import { BRAND } from "../../../shared/brand";
 
 export type SyncStatusParams = {
   includeTransferReadiness: boolean;
@@ -140,7 +141,7 @@ export function createSyncStatusReaders(options: SyncStatusReadersOptions) {
     const existing = projectReads.get(key);
     if (existing) return await existing;
     const deadlineError = new Error(
-      "This project's background service did not answer in time. ADE will check again shortly.",
+      `This project's background service did not answer in time. ${BRAND.NAME} will check again shortly.`,
     );
     const pending: Promise<SyncRoleSnapshot> = withDeadline(
       read(params),

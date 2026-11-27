@@ -8,6 +8,7 @@ import type { ProjectRemovalClearance } from "../../../../../ade-cli/src/service
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
 import { pathsEqual } from "../shared/pathCompare";
 import { copyFolderRefusal, inspectCopy, realpathOr, recheckCopy } from "./projectCopyCheck";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Removing a project from this computer (the remove dialog). The background
@@ -112,14 +113,14 @@ export function createDesktopProjectRemoval(deps: DesktopProjectRemovalDeps) {
       return { status: "removed", folder: "kept", outsideLaneFolders: [] };
     }
     if (!request.stateToken) {
-      return { status: "refused", code: "changed", reason: "ADE hasn't checked this copy yet. Check it again." };
+      return { status: "refused", code: "changed", reason: `${BRAND.NAME} hasn't checked this copy yet. Check it again.` };
     }
     const pool = deps.pool();
     if (!pool) {
       return {
         status: "refused",
         code: "work_running",
-        reason: "ADE's background service isn't running, so it can't check what runs in this project. ADE kept the folder.",
+        reason: `${BRAND.NAME}'s background service isn't running, so it can't check what runs in this project. ${BRAND.NAME} kept the folder.`,
       };
     }
     const record = await findBrainProject(pool, rootPath);
@@ -172,7 +173,7 @@ export function createDesktopProjectRemoval(deps: DesktopProjectRemovalDeps) {
         return {
           status: "refused",
           code: "delete_failed",
-          reason: `ADE couldn't move the folder to the Trash (${error instanceof Error ? error.message : String(error)}). It kept the folder and the project.`,
+          reason: `${BRAND.NAME} couldn't move the folder to the Trash (${error instanceof Error ? error.message : String(error)}). It kept the folder and the project.`,
         };
       }
     }

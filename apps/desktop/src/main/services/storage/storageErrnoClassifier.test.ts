@@ -109,6 +109,6 @@ describe("classifyStorageFault", () => {
   it("still says something useful when nothing named a file", () => {
     const fault = classifyStorageFault(fsError("disk I/O error", { code: "EIO", syscall: "read" }));
     expect(fault?.path).toBeNull();
-    expect(fault?.message).toContain("ADE couldn't read this computer's data.");
+    expect(fault?.message).toContain("Daex couldn't read this computer's data.");
   });
 });

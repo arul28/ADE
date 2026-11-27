@@ -9,6 +9,7 @@ import type * as ptyNs from "node-pty";
 import type { Logger } from "../logging/logger";
 import { isEmbeddedAdeRuntime, killWindowsProcessTreeAsync } from "../shared/processExecution";
 import { brainNodeExecutableOverride } from "../../../../../ade-cli/src/serviceManager/brainExecutable";
+import { BRAND } from "../../../shared/brand";
 
 type SpawnRequest = {
   type: "spawn";
@@ -722,7 +723,7 @@ class SupervisedPtyHost {
       }
       // The terminal's own program did not end: the host serving it (up to
       // MAX_PTYS_PER_HOST terminals) did. Say so where the person looks.
-      remote?.emitData(`\r\n[ADE] This terminal ended because its terminal host process stopped (${signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`}).\r\n`);
+      remote?.emitData(`\r\n[${BRAND.NAME}] This terminal ended because its terminal host process stopped (${signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`}).\r\n`);
       remote?.markHostExited(exitCode);
     }
     childState.ptyIds.clear();

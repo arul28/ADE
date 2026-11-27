@@ -32,6 +32,7 @@ import type {
 } from "../../../shared/types/macDesktop";
 import type { Logger } from "../logging/logger";
 import type { MacDesktopLeaseRegistry } from "./macDesktopLease";
+import { BRAND } from "../../../shared/brand";
 
 export type MacDesktopRequestChatInput = (args: {
   chatSessionId: string;
@@ -293,11 +294,11 @@ export function createMacDesktopLeaseFlow(deps: MacDesktopLeaseFlowDeps) {
           chatSessionId,
           title: "Real input on the lane's display",
           body: windowsHost
-            ? `ADE would like to ${reason}. Accessibility actions do not need this; real pointer and keyboard events do, and they are global to this PC.`
+            ? `${BRAND.NAME} would like to ${reason}. Accessibility actions do not need this; real pointer and keyboard events do, and they are global to this PC.`
             // A Mac has one pointer. The card is the user's only warning that
             // saying yes lets the agent move it, which is what took one user's
             // mouse three times in a row while they were working.
-            : `ADE would like to ${reason}. While it acts, your mouse pointer jumps onto the lane's screen for each click. Clicks, scrolls and drags inside the lane's own apps do not need this; only a hover or a drop onto another app does.`,
+            : `${BRAND.NAME} would like to ${reason}. While it acts, your mouse pointer jumps onto the lane's screen for each click. Clicks, scrolls and drags inside the lane's own apps do not need this; only a hover or a drop onto another app does.`,
           questionId: "mac_desktop_input_lease",
           header: "Real input",
           question: `Allow this chat to use real pointer and keyboard input on its ${product} display?`,

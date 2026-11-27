@@ -159,7 +159,7 @@ describe("quit prompt", () => {
     expect(await confirming).toBe(true);
     expect(contents.send).toHaveBeenCalledWith(IPC.appQuitPromptDismiss, request.requestId);
     const options = electron.showMessageBox.mock.calls[0]?.at(-1) as Electron.MessageBoxOptions;
-    expect(options.buttons).toEqual(["Keep ADE open", "Quit ADE"]);
+    expect(options.buttons).toEqual(["Keep Daex open", "Quit Daex"]);
     expect(options).toMatchObject({ defaultId: 1, cancelId: 0, checkboxChecked: false });
     expect(JSON.parse(fs.readFileSync(statePath, "utf8"))).toMatchObject({ askBeforeQuit: false });
 

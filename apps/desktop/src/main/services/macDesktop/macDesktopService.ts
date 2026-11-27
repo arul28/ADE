@@ -154,6 +154,7 @@ import {
   reportLinuxSetupOutcome,
 } from "../linuxDesktop/linuxScreenTelemetry";
 import { readLinuxLaneLaunchEnv, type LinuxLaneLaunchEnv } from "../linuxDesktop/linuxDesktopSeatProvider";
+import { BRAND } from "../../../shared/brand";
 
 /** KV key for the lane display size. Read on every `start`. */
 export const MAC_DESKTOP_RESOLUTION_SETTING_KEY = "macDesktop.resolution";
@@ -423,7 +424,7 @@ export function createMacDesktopService(serviceDeps: MacDesktopServiceDeps): Mac
   // "needs macOS"; with the adapter, the adapter's own words apply.
   const linuxHost = platform === "linux" && !isLinuxSeat;
   const unsupportedMessage = linuxHost ? LANE_SCREEN_LINUX_UNSUPPORTED_MESSAGE : seatAdapter.unsupportedMessage;
-  const unsupportedTitle = linuxHost ? "Update ADE for Linux lane screens" : seatAdapter.unsupportedTitle;
+  const unsupportedTitle = linuxHost ? `Update ${BRAND.NAME} for Linux lane screens` : seatAdapter.unsupportedTitle;
   const captureOutcome = (outcome: MacDesktopAnalyticsProperties["outcome"]): void => {
     deps.captureAnalytics?.({ action: "mac_desktop", outcome });
   };
@@ -1029,8 +1030,8 @@ export function createMacDesktopService(serviceDeps: MacDesktopServiceDeps): Mac
     permissionError: (which) => new MacDesktopError(
       "MAC_DESKTOP_PERMISSION_REQUIRED",
       which === "screenRecording"
-        ? "ADE needs Screen Recording permission to capture this display. Grant it in System Settings › Privacy & Security › Screen Recording, then try again."
-        : "ADE needs Accessibility permission to drive windows on this display. Grant it in System Settings › Privacy & Security › Accessibility, then try again.",
+        ? `${BRAND.NAME} needs Screen Recording permission to capture this display. Grant it in System Settings › Privacy & Security › Screen Recording, then try again.`
+        : `${BRAND.NAME} needs Accessibility permission to drive windows on this display. Grant it in System Settings › Privacy & Security › Accessibility, then try again.`,
     ),
     emit,
     handleDriverEvent,
@@ -1067,7 +1068,7 @@ export function createMacDesktopService(serviceDeps: MacDesktopServiceDeps): Mac
     const driverHealth = driverLifecycle.driverHealth() ?? {
       state: seatSupported ? "starting" as const : "unsupported" as const,
       title: seatSupported ? `${seatAdapter.driverLabel} is starting` : unsupportedTitle,
-      message: seatSupported ? "ADE is preparing the native desktop driver." : unsupportedMessage,
+      message: seatSupported ? `${BRAND.NAME} is preparing the native desktop driver.` : unsupportedMessage,
       recovery: seatSupported ? "retry" as const : null,
       version: null,
     };
@@ -1217,7 +1218,7 @@ export function createMacDesktopService(serviceDeps: MacDesktopServiceDeps): Mac
           case "not_console_session":
             throw new MacDesktopError(
               WINDOWS_DESKTOP_NOT_CONSOLE_SESSION_CODE,
-              "ADE is not running on this PC's desktop, so it cannot start a private screen.",
+              `${BRAND.NAME} is not running on this PC's desktop, so it cannot start a private screen.`,
             );
           case "setup_required":
             throw new MacDesktopError(
@@ -1599,7 +1600,7 @@ export function createMacDesktopService(serviceDeps: MacDesktopServiceDeps): Mac
           command: null,
           needsUser: false,
           message: driverLifecycle.linuxHostFactsUnreported()
-            ? "The Linux screen helper answered but reports no Linux facts, so ADE cannot tell what this machine is missing. Restart the helper, or update ADE on that machine, then run: ade screen status --text"
+            ? `The Linux screen helper answered but reports no Linux facts, so ${BRAND.NAME} cannot tell what this machine is missing. Restart the helper, or update ${BRAND.NAME} on that machine, then run: ade screen status --text`
             : "Could not read what this machine is missing: the Linux screen helper did not answer. Try again, or run: ade screen status --text",
         };
       }
@@ -2120,7 +2121,7 @@ export function createMacDesktopService(serviceDeps: MacDesktopServiceDeps): Mac
       if (!launchEnv) {
         // A helper built before `linux.env`: the machine's install, not a fault.
         throw markExpected(
-          new Error("This machine's Linux Desktop helper is older than ADE and cannot say how to open an app on the lane screen. Update ADE on this machine."),
+          new Error(`This machine's Linux Desktop helper is older than ${BRAND.NAME} and cannot say how to open an app on the lane screen. Update ${BRAND.NAME} on this machine.`),
           "environment",
         );
       }

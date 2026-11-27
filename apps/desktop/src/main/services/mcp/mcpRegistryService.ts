@@ -57,6 +57,7 @@ import { safeVault } from "../account/accountVaultRead";
 import { describeVaultFailure } from "../account/vaultWrite";
 import { scanProviderMcpConfigs, toFoundServers, type ProviderMcpScan } from "./mcpProviderConfigScan";
 import { createMcpOAuthSignIns, probeMcpAuth, refreshMcpOAuthToken, type McpFetch } from "./mcpOAuth";
+import { BRAND } from "../../../shared/brand";
 
 /** The vault calls this service makes. `createAccountVaultBridge` satisfies it. */
 export type McpRegistryVault = RotatingCredentialVault & {
@@ -254,7 +255,7 @@ export function createMcpRegistryAuthTokenResolver(args: {
 const INVALID_SECRET: McpRegistryResult<null> = {
   ok: false,
   rejected: true,
-  message: "That is not a name ADE can store a value under.",
+  message: `That is not a name ${BRAND.NAME} can store a value under.`,
 };
 
 /**

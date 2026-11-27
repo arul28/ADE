@@ -29,6 +29,7 @@ import { randomUUID } from "node:crypto";
 
 import type { McpOAuthToken } from "../../../shared/mcpRegistry";
 import { createPkcePair } from "../shared/utils";
+import { BRAND } from "../../../shared/brand";
 
 const CALLBACK_PATH = "/callback";
 const LOOPBACK_HOST = "127.0.0.1";
@@ -176,7 +177,7 @@ async function discoverAuthServer(
   fetchImpl: McpFetch,
   signal: AbortSignal,
 ): Promise<{ metadata: AuthServerMetadata; resource: string } | string> {
-  const refused = "The server pointed its sign-in at an address ADE won't send it to.";
+  const refused = `The server pointed its sign-in at an address ${BRAND.NAME} won't send it to.`;
   if (probe.resourceMetadataUrl && !isAllowedMcpAuthEndpoint(probe.resourceMetadataUrl, mcpUrl)) return refused;
   let resourceMetadata: Record<string, unknown> | null = null;
   for (const candidate of probe.resourceMetadataUrl ? [probe.resourceMetadataUrl] : wellKnown(mcpUrl, "oauth-protected-resource")) {
@@ -222,7 +223,7 @@ async function discoverAuthServer(
     return refused;
   }
   const methods = Array.isArray(raw.code_challenge_methods_supported) ? raw.code_challenge_methods_supported : null;
-  if (methods && !methods.includes("S256")) return "The server's sign-in does not support the secure browser flow ADE uses.";
+  if (methods && !methods.includes("S256")) return `The server's sign-in does not support the secure browser flow ${BRAND.NAME} uses.`;
   return {
     resource,
     metadata: { authorizationEndpoint, tokenEndpoint, registrationEndpoint, scopes },
@@ -249,10 +250,10 @@ async function registerClient(
     }, signal));
     const body: unknown = await response.json().catch(() => null);
     const clientId = isRecord(body) ? str(body.client_id) : null;
-    if (!response.ok || !clientId) return `The server would not register ADE (${response.status}).`;
+    if (!response.ok || !clientId) return `The server would not register ${BRAND.NAME} (${response.status}).`;
     return { clientId, clientSecret: isRecord(body) ? str(body.client_secret) : null };
   } catch (error) {
-    return `The server would not register ADE: ${error instanceof Error ? error.message : String(error)}`;
+    return `The server would not register ${BRAND.NAME}: ${error instanceof Error ? error.message : String(error)}`;
   }
 }
 
@@ -275,7 +276,7 @@ async function requestToken(
     const accessToken = isRecord(body) ? str(body.access_token) : null;
     if (!response.ok || !accessToken || !isRecord(body)) {
       const reason = isRecord(body) ? str(body.error_description) ?? str(body.error) : null;
-      return `The server did not give ADE a token${reason ? `: ${reason}` : ` (${response.status})`}.`;
+      return `The server did not give ${BRAND.NAME} a token${reason ? `: ${reason}` : ` (${response.status})`}.`;
     }
     const expiresIn = typeof body.expires_in === "number" && body.expires_in > 0 ? body.expires_in : null;
     return {
@@ -286,7 +287,7 @@ async function requestToken(
       scope: str(body.scope),
     };
   } catch (error) {
-    return `The server did not give ADE a token: ${error instanceof Error ? error.message : String(error)}`;
+    return `The server did not give ${BRAND.NAME} a token: ${error instanceof Error ? error.message : String(error)}`;
   }
 }
 
@@ -337,14 +338,14 @@ export function createMcpOAuthSignIns(options: {
     const probe = await probeMcpAuth(server.url, fetchImpl, signal);
     if (signal.aborted) return CANCELLED;
     if (probe.kind === "open") return { ok: false, message: `${server.name} did not ask for a sign-in. Agents can use it as it is.` };
-    if (probe.kind === "unknown") return { ok: false, message: `ADE could not reach ${server.name}: ${probe.message}` };
+    if (probe.kind === "unknown") return { ok: false, message: `${BRAND.NAME} could not reach ${server.name}: ${probe.message}` };
     const discovered = await discoverAuthServer(mcpUrl, probe, fetchImpl, signal);
     if (signal.aborted) return CANCELLED;
     if (typeof discovered === "string") return { ok: false, message: discovered };
     const { metadata, resource } = discovered;
     const registrationEndpoint = metadata.registrationEndpoint;
     if (!registrationEndpoint) {
-      return { ok: false, message: `${server.name} does not let apps register themselves for a sign-in, so ADE can't sign in to it. Add its API key as a header instead.` };
+      return { ok: false, message: `${server.name} does not let apps register themselves for a sign-in, so ${BRAND.NAME} can't sign in to it. Add its API key as a header instead.` };
     }
 
     return await new Promise<McpOAuthOutcome>((resolve) => {
@@ -377,7 +378,7 @@ export function createMcpOAuthSignIns(options: {
         }
         if (requestUrl.searchParams.get("state") !== state || callbackClaimed || done || !client) {
           res.writeHead(400, { "content-type": "text/html; charset=utf-8" })
-            .end(page("This sign-in is no longer active", "Go back to ADE and press Sign in again."));
+            .end(page("This sign-in is no longer active", `Go back to ${BRAND.NAME} and press Sign in again.`));
           return;
         }
         callbackClaimed = true;
@@ -385,7 +386,7 @@ export function createMcpOAuthSignIns(options: {
         const code = requestUrl.searchParams.get("code");
         if (error || !code) {
           res.writeHead(400, { "content-type": "text/html; charset=utf-8" })
-            .end(page("Sign-in was not completed", "You can close this tab and go back to ADE."));
+            .end(page("Sign-in was not completed", `You can close this tab and go back to ${BRAND.NAME}.`));
           finish({ ok: false, message: requestUrl.searchParams.get("error_description") ?? (error ? `The server said: ${error}` : "The server sent no code.") });
           return;
         }
@@ -409,14 +410,14 @@ export function createMcpOAuthSignIns(options: {
           // Cancelled while the exchange ran: the token is dropped, not saved.
           const ok = typeof token !== "string" && !signal.aborted;
           res.writeHead(ok ? 200 : 502, { "content-type": "text/html; charset=utf-8" }).end(ok
-            ? page(`Signed in to ${server.name}`, "Every ADE agent can use it now. You can close this tab.")
-            : page("Sign-in did not finish", "Go back to ADE to see why."));
+            ? page(`Signed in to ${server.name}`, `Every ${BRAND.NAME} agent can use it now. You can close this tab.`)
+            : page("Sign-in did not finish", `Go back to ${BRAND.NAME} to see why.`));
           finish(typeof token === "string" ? { ok: false, message: token } : { ok: true, token });
         });
       });
 
       signal.addEventListener("abort", onAbort);
-      httpServer.once("error", (error) => finish({ ok: false, message: `ADE could not wait for the browser: ${error.message}` }));
+      httpServer.once("error", (error) => finish({ ok: false, message: `${BRAND.NAME} could not wait for the browser: ${error.message}` }));
       httpServer.listen(0, LOOPBACK_HOST, () => {
         // Cancelled before the port was bound: close() then had nothing to close.
         if (done) {
@@ -426,7 +427,7 @@ export function createMcpOAuthSignIns(options: {
         void (async () => {
           const address = httpServer.address();
           if (!address || typeof address === "string") {
-            finish({ ok: false, message: "ADE could not wait for the browser." });
+            finish({ ok: false, message: `${BRAND.NAME} could not wait for the browser.` });
             return;
           }
           redirectUri = `http://${LOOPBACK_HOST}:${address.port}${CALLBACK_PATH}`;
@@ -453,7 +454,7 @@ export function createMcpOAuthSignIns(options: {
           try {
             await options.openUrl(authorize.toString());
           } catch (error) {
-            finish({ ok: false, message: `ADE could not open your browser: ${error instanceof Error ? error.message : String(error)}` });
+            finish({ ok: false, message: `${BRAND.NAME} could not open your browser: ${error instanceof Error ? error.message : String(error)}` });
           }
         })();
       });

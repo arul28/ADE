@@ -24,6 +24,7 @@ import {
   isGithubStackFullyLanded,
   selectStackSiblings,
 } from "../../../shared/prChatScope";
+import { BRAND } from "../../../shared/brand";
 
 export type PrCardChange = {
   pr: PrSummary;
@@ -518,7 +519,7 @@ export function buildPrStackLandCard(args: {
       tone: "success" as const,
     })),
     navTarget: prNavTarget(pr, "overview"),
-    actions: [{ id: "open", label: "Open in ADE", kind: "primary" }],
+    actions: [{ id: "open", label: `Open in ${BRAND.NAME}`, kind: "primary" }],
     fallbackText: `GitHub Stack #${stackNumber} landed. ${layers.map((layer) => `#${layer.githubPrNumber}`).join(", ")} merged.`,
   };
 }

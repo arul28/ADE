@@ -38,6 +38,7 @@ import {
   probeOpenCodeProviderInventory,
 } from "./openCodeInventory";
 import { acquireOpenCodeServer, peekOpenCodeServerUrl, type OpenCodeServerLease } from "./openCodeServer";
+import { BRAND } from "../../../shared/brand";
 
 /** OAuth completion poll cadence. */
 const POLL_INTERVAL_MS = 2_000;
@@ -282,7 +283,7 @@ export async function startOAuth(
       // Completing this mode needs a pasted authorization code, and the
       // sign-in dialog has no field for one.
       await cancelAttempt();
-      throw new Error("This sign-in method needs a pasted authorization code, which ADE does not support. Use another method or an API key.");
+      throw new Error(`This sign-in method needs a pasted authorization code, which ${BRAND.NAME} does not support. Use another method or an API key.`);
     }
 
     emit({ providerId, state: "pending" });
@@ -331,7 +332,7 @@ export async function setProviderKey(
   } catch (err) {
     const error = errorMessage(err);
     deps.logger.warn("opencode.provider_key_store_failed", { providerId, error });
-    return { ok: false, error: `ADE could not store the key: ${error}` };
+    return { ok: false, error: `${BRAND.NAME} could not store the key: ${error}` };
   }
   clearOpenCodeInventoryCache();
   try {
@@ -376,7 +377,7 @@ export async function clearProviderKey(
   // list back. Only that non-secret list is ever restored, never a key.
   const forgotten = forgetSyncedCloudLoginsFor(deps, providerId);
   if (!forgotten.ok) {
-    return { ok: false, error: `ADE could not remove the ${providerId} cloud logins from your ADE account. Nothing was disconnected; try again.` };
+    return { ok: false, error: `${BRAND.NAME} could not remove the ${providerId} cloud logins from your ${BRAND.NAME} account. Nothing was disconnected; try again.` };
   }
   try {
     deleteStoredApiKey(providerId);
@@ -387,8 +388,8 @@ export async function clearProviderKey(
     return {
       ok: false,
       error: restored
-        ? `ADE could not delete its stored key: ${error}`
-        : `ADE could not delete its stored key (${error}), and the ${providerId} cloud logins could not be put back in your ADE account. Disconnect again to finish.`,
+        ? `${BRAND.NAME} could not delete its stored key: ${error}`
+        : `${BRAND.NAME} could not delete its stored key (${error}), and the ${providerId} cloud logins could not be put back in your ${BRAND.NAME} account. Disconnect again to finish.`,
     };
   }
   clearOpenCodeInventoryCache();

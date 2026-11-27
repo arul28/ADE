@@ -13,6 +13,7 @@ import {
 } from "../../../shared/projectSecretRequest";
 import type { ProjectSecretSetArgs, ProjectSecretSummary, ProjectSecretsListResult } from "../../../shared/types/projectSecrets";
 import { cardTimeoutMs, cardWasDeclined, joinInFlight, readCardArgs, type CardRequestChatInput } from "../chat/chatCardRequest";
+import { BRAND } from "../../../shared/brand";
 
 export type ProjectSecretRequestDeps = {
   requestChatInput: CardRequestChatInput;
@@ -121,7 +122,7 @@ async function askProjectSecret(
       ? [{
           id: PROJECT_SECRET_DELIVERY_QUESTION_ID,
           header: name,
-          question: `Where should ADE keep ${name}?`,
+          question: `Where should ${BRAND.NAME} keep ${name}?`,
           allowsFreeform: false,
           options: PROJECT_SECRET_DELIVERY_OPTIONS.map((option) => ({
             label: option.label,

@@ -232,6 +232,7 @@ import {
   type GithubCommentSource,
 } from "./prCommentMutations";
 import { redactGitOutput } from "../../utils/redaction";
+import { BRAND } from "../../../shared/brand";
 
 type CreatePrFromLaneInternalArgs = CreatePrFromLaneArgs & {
   skipBranchPush?: boolean;
@@ -4556,12 +4557,12 @@ export function createPrService({
     const comparison = await getRemoteBranchComparison(lane, headBranch);
     if (comparison.remoteAhead > 0 && comparison.localAhead > 0) {
       throw new Error(
-        `Cannot create this PR yet. The remote branch "${headBranch}" has ${comparison.remoteAhead} newer ${pluralizeCommit(comparison.remoteAhead)}, and this lane has ${comparison.localAhead} local ${pluralizeCommit(comparison.localAhead)} that are not on remote. Pull or rebase the lane, then push once the history looks right. ADE did not force-push.`
+        `Cannot create this PR yet. The remote branch "${headBranch}" has ${comparison.remoteAhead} newer ${pluralizeCommit(comparison.remoteAhead)}, and this lane has ${comparison.localAhead} local ${pluralizeCommit(comparison.localAhead)} that are not on remote. Pull or rebase the lane, then push once the history looks right. ${BRAND.NAME} did not force-push.`
       );
     }
     if (comparison.remoteAhead > 0) {
       throw new Error(
-        `Cannot create this PR yet. The remote branch "${headBranch}" has ${comparison.remoteAhead} newer ${pluralizeCommit(comparison.remoteAhead)}. Pull or rebase this lane before creating the PR. ADE did not force-push.`
+        `Cannot create this PR yet. The remote branch "${headBranch}" has ${comparison.remoteAhead} newer ${pluralizeCommit(comparison.remoteAhead)}. Pull or rebase this lane before creating the PR. ${BRAND.NAME} did not force-push.`
       );
     }
     return {
@@ -4588,7 +4589,7 @@ export function createPrService({
     const failure = classifyGitPushFailure(raw, { branch: headBranch });
     const detail = redactGitOutput(raw);
     if (failure?.kind === "non_fast_forward") {
-      throw new Error(`${failure.message} ADE did not force-push.\n\n${detail}`);
+      throw new Error(`${failure.message} ${BRAND.NAME} did not force-push.\n\n${detail}`);
     }
     if (failure) throw new Error(`${redactGitOutput(failure.message)}\n\n${detail}`);
     throw new Error(`Push failed for "${headBranch}".${detail ? ` ${detail}` : ""}`);
@@ -4933,7 +4934,7 @@ export function createPrService({
       return createLaneFromPrBranchBlock(
         "remote_branch_missing",
         remoteFailure
-          ? `ADE could not read '${remoteRef}' from the remote. ${formatGitExecutionError(remoteFailure)}`
+          ? `${BRAND.NAME} could not read '${remoteRef}' from the remote. ${formatGitExecutionError(remoteFailure)}`
           : `Remote branch '${remoteRef}' was not found. It may have been deleted.`,
       );
     }
@@ -4992,7 +4993,7 @@ export function createPrService({
     if (!fetchedSha) {
       return createLaneFromPrBranchBlock(
         "fork_unavailable",
-        `Fork PR branch '${headRepoLabel}:${args.headBranch}' was fetched, but ADE could not resolve the local PR head ref.`,
+        `Fork PR branch '${headRepoLabel}:${args.headBranch}' was fetched, but ${BRAND.NAME} could not resolve the local PR head ref.`,
       );
     }
     if (args.headSha && fetchedSha !== args.headSha) {
@@ -5165,7 +5166,7 @@ export function createPrService({
     if (baseBranch && normalizeBranchName(baseBranch) === headBranch) {
       return finish(createLaneFromPrBranchBlock(
         "default_branch",
-        `PR #${githubPrNumber} uses '${headBranch}' as both head and base; ADE will not import the default branch as a lane.`,
+        `PR #${githubPrNumber} uses '${headBranch}' as both head and base; ${BRAND.NAME} will not import the default branch as a lane.`,
       ));
     }
 
@@ -7523,7 +7524,7 @@ export function createPrService({
       base({ logStatus: "unavailable", logUnavailableReason: reason, ...extra });
 
     if (!Number.isSafeInteger(args.jobId) || args.jobId <= 0) {
-      return unreadable("ADE didn't get a usable GitHub job id for this check.");
+      return unreadable(`${BRAND.NAME} didn't get a usable GitHub job id for this check.`);
     }
 
     let matchedRun: PrActionRun | null = null;
@@ -7542,14 +7543,14 @@ export function createPrService({
         jobId: args.jobId,
         error: getErrorMessage(error),
       });
-      return unreadable("ADE couldn't reach GitHub to look this job up. Try again in a moment.");
+      return unreadable(`${BRAND.NAME} couldn't reach GitHub to look this job up. Try again in a moment.`);
     }
     if (!matchedRun || !matchedJob) {
       logger.warn("prs.check_log_job_outside_pr", {
         prId: args.prId,
         jobId: args.jobId,
       });
-      return unreadable("ADE couldn't find this job in the runs for this pull request.");
+      return unreadable(`${BRAND.NAME} couldn't find this job in the runs for this pull request.`);
     }
 
     const jobName = matchedJob.name;
@@ -7616,7 +7617,7 @@ export function createPrService({
       return {
         ...job,
         logUnavailableReason:
-          "ADE couldn't download this job's log from GitHub. The full log is still on GitHub.",
+          `${BRAND.NAME} couldn't download this job's log from GitHub. The full log is still on GitHub.`,
       };
     }
 
@@ -7631,7 +7632,7 @@ export function createPrService({
       return {
         ...job,
         truncated: true,
-        logUnavailableReason: "ADE downloaded this job's log but couldn't read it.",
+        logUnavailableReason: `${BRAND.NAME} downloaded this job's log but couldn't read it.`,
       };
     }
 
@@ -9327,7 +9328,7 @@ export function createPrService({
     // credential is in question, so this must not fall through to the
     // "auth is invalid — update it in Settings" default.
     if (githubStatus.authFailure?.kind === "renewing") {
-      return new Error("ADE is renewing its GitHub authorization — pull requests will sync again in a moment.");
+      return new Error(`${BRAND.NAME} is renewing its GitHub authorization — pull requests will sync again in a moment.`);
     }
     // GitHub itself failed, so nothing about the credential is in question.
     // Without this arm a 503 falls through to the "auth is invalid — update it
@@ -9343,8 +9344,8 @@ export function createPrService({
       || githubStatus.serviceHealth != null
     ) {
       return markExpected(new Error(githubStatus.serviceHealth
-        ? "GitHub is having problems, so pull requests can't sync right now. Nothing to change here — ADE will catch up when GitHub recovers."
-        : "GitHub returned an error, so pull requests can't sync right now. This isn't a problem with your GitHub connection — ADE will keep retrying."), "network");
+        ? `GitHub is having problems, so pull requests can't sync right now. Nothing to change here — ${BRAND.NAME} will catch up when GitHub recovers.`
+        : `GitHub returned an error, so pull requests can't sync right now. This isn't a problem with your GitHub connection — ${BRAND.NAME} will keep retrying.`), "network");
     }
     if (githubStatus.repo && githubStatus.repoAccessError) {
       return new Error(`GitHub auth cannot access ${githubStatus.repo.owner}/${githubStatus.repo.name}: ${githubStatus.repoAccessError}. Update it in Settings to sync pull requests.`);

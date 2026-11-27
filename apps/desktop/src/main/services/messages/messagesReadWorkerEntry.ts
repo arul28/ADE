@@ -21,6 +21,7 @@ import {
   type MessagesAccessFailure,
 } from "./messagesDatabase";
 import type { MessagesReadRequest, MessagesReadResponse } from "./messagesReadWorkerClient";
+import { BRAND } from "../../../shared/brand";
 
 function readStdin(): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -35,7 +36,7 @@ function readStdin(): Promise<string> {
 
 function failureFor(error: unknown): MessagesAccessFailure {
   if (isFullDiskAccessDenial(error)) {
-    return { ok: false, code: "needs_full_disk_access", message: "ADE needs Full Disk Access to read Messages." };
+    return { ok: false, code: "needs_full_disk_access", message: `${BRAND.NAME} needs Full Disk Access to read Messages.` };
   }
   if ((error as { code?: unknown } | null)?.code === "ENOENT") {
     return { ok: false, code: "no_database", message: "Messages has no database on this Mac yet." };

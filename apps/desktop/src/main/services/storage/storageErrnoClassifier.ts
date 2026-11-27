@@ -5,6 +5,7 @@ import {
   storageUnreadableRemedy,
   type CloudStorageProvider,
 } from "./cloudPlaceholder";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Telling "the bytes are not readable here" apart from every other failure.
@@ -135,6 +136,6 @@ export function classifyStorageFault(
     provider,
     message: path
       ? storageUnreadableMessage(path, provider)
-      : `ADE couldn't read this computer's data. ${storageUnreadableRemedy(provider)}`,
+      : `${BRAND.NAME} couldn't read this computer's data. ${storageUnreadableRemedy(provider)}`,
   };
 }

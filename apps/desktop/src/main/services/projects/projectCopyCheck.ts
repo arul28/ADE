@@ -8,6 +8,7 @@ import type {
 } from "../../../shared/projectRemoval";
 import { decideProjectFolderDeletion, decideRemovalRecheck, projectCopyStateToken } from "./projectRemovalGuard";
 import { outsideLaneFolders, readProjectCopyState } from "./projectRemovalState";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The checks of a project copy that the brain (`projectCopyRemoval.ts`) and
@@ -72,7 +73,7 @@ export async function copyFolderRefusal(args: {
 }): Promise<{ reason: string } | { folderPath: string }> {
   try {
     if ((await fs.lstat(args.rootPath)).isSymbolicLink()) {
-      return { reason: `The project folder is a link to ${await realpathOr(args.rootPath)}. ADE doesn't delete through links.` };
+      return { reason: `The project folder is a link to ${await realpathOr(args.rootPath)}. ${BRAND.NAME} doesn't delete through links.` };
     }
   } catch {
     // A folder that is gone has nothing to delete; the caller handles it.

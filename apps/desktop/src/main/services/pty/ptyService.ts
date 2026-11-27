@@ -258,6 +258,7 @@ import {
   runtimeStateFromOsc133Chunk,
   sanitizeResumeTargetId,
 } from "../../utils/terminalSessionSignals";
+import { BRAND } from "../../../shared/brand";
 
 type HeadlessXtermModule = typeof HeadlessXterm;
 type XtermSerializeModule = typeof XtermSerialize;
@@ -6632,7 +6633,7 @@ export function createPtyService({
       const displayName = resumeProviderDisplayName(provider);
       // An answer: the CLI ended before it named a session, so there is nothing to resume.
       throw markExpected(ptySendPreDeliveryError(
-        `${displayName} exited before ADE could capture a concrete resume target. Start a new ${displayName} session.`,
+        `${displayName} exited before ${BRAND.NAME} could capture a concrete resume target. Start a new ${displayName} session.`,
       ), "user");
     };
     let resolvedSession = session;
@@ -6672,7 +6673,7 @@ export function createPtyService({
       const transcript = await sessionService.readTranscriptTail(resolvedSession.transcriptPath, 220_000);
       if (isCodexCliUpdateTranscript(transcript)) {
         throw ptySendPreDeliveryError(
-          "Codex updated and exited before ADE could create a resumable thread. Start a new Codex session.",
+          `Codex updated and exited before ${BRAND.NAME} could create a resumable thread. Start a new Codex session.`,
         );
       }
       return throwMissingResumeTarget();
@@ -7972,7 +7973,7 @@ export function createPtyService({
               });
               if (!piSessionFile) {
                 throw new Error(repositoryOverridesPiSessionDir(cwd)
-                  ? `This repository's .pi/settings.json redirects Pi's session directory. ADE does not follow a checkout's setting, so it cannot track this session. Remove it, or set PI_CODING_AGENT_SESSION_DIR for your profile instead.`
+                  ? `This repository's .pi/settings.json redirects Pi's session directory. ${BRAND.NAME} does not follow a checkout's setting, so it cannot track this session. Remove it, or set PI_CODING_AGENT_SESSION_DIR for your profile instead.`
                   : `Pi's most recent session for this directory (${latest.id}) could not be verified in ${piSessionDir}.`);
               }
               piSessionLease = acquirePiSessionLease({
@@ -8091,7 +8092,7 @@ export function createPtyService({
           const parts = { directCommand, directArgs, startupCommand };
           const probeCli: PinnedProviderCli = { provider: pinnedCliProvider, command: PROBE_ENTRY, leadingArgs: [], env: {} };
           if (!pinnedLaunchShellLine(parts, probeCli)) {
-            throw new Error(`ADE is downloading ${pinnedCliState.label} for this machine. Open this terminal again when it finishes.`);
+            throw new Error(`${BRAND.NAME} is downloading ${pinnedCliState.label} for this machine. Open this terminal again when it finishes.`);
           }
           // Nothing runs until ADE's copy lands: a clean shell opens with the
           // download's line, and the launch is typed into it afterwards.
@@ -8719,7 +8720,7 @@ export function createPtyService({
             if (entry.disposed) return false;
             if (!line) {
               logger.warn("pty.pinned_cli_unavailable", { ptyId, sessionId, provider: pending.provider, reason });
-              show(reason || `ADE could not start ${pending.label} here.`);
+              show(reason || `${BRAND.NAME} could not start ${pending.label} here.`);
               terminatePtyProcessTree(entry, "SIGTERM", logger);
               closeEntry(ptyId, 1);
               return false;
@@ -9114,7 +9115,7 @@ export function createPtyService({
       assertAgentCliSessionAction(sessionId, session, "continued");
       if (session && isOwnedByLivePeerRuntime(session)) {
         throw ptySendPreDeliveryError(
-          `Terminal session '${sessionId}' is owned by another live ADE runtime.`,
+          `Terminal session '${sessionId}' is owned by another live ${BRAND.NAME} runtime.`,
         );
       }
       const writeSubmittedText = async (
@@ -9379,7 +9380,7 @@ export function createPtyService({
       const session = normalizedSessionId ? sessionService.get(normalizedSessionId) : null;
       assertAgentCliSessionAction(normalizedSessionId, session, "interrupted");
       if (session && isOwnedByLivePeerRuntime(session)) {
-        throw new Error(`Terminal session '${normalizedSessionId}' runs under another live ADE runtime; stop it from there.`);
+        throw new Error(`Terminal session '${normalizedSessionId}' runs under another live ${BRAND.NAME} runtime; stop it from there.`);
       }
       const live = liveEntryBySessionId(normalizedSessionId);
       const provider = session?.resumeMetadata?.provider ?? providerFromTool(session?.toolType ?? live?.[1].toolTypeHint);
@@ -9426,7 +9427,7 @@ export function createPtyService({
       const session = sessionService.get(sessionId);
       assertAgentCliSessionAction(sessionId, session, "restarted");
       if (session && isOwnedByLivePeerRuntime(session)) {
-        throw new Error(`Terminal session '${sessionId}' runs under another live ADE runtime; restart it from there.`);
+        throw new Error(`Terminal session '${sessionId}' runs under another live ${BRAND.NAME} runtime; restart it from there.`);
       }
       if (session?.archivedAt) {
         throw markExpected(new Error(`Terminal session '${sessionId}' is archived. Unarchive it before restarting it.`), "user");
@@ -9456,7 +9457,7 @@ export function createPtyService({
         }
       } else if (instanceId || Object.values(overrides).some((value) => value !== undefined)) {
         throw markExpected(new Error(
-          `Terminal session '${sessionId}' predates ADE's saved launch settings, so they cannot be changed. Start a new session with the setting you want.`,
+          `Terminal session '${sessionId}' predates ${BRAND.NAME}'s saved launch settings, so they cannot be changed. Start a new session with the setting you want.`,
         ), "user");
       }
       if (args.requireIdle && liveEntryBySessionId(sessionId) && service.canAcceptScheduledTurn(sessionId) !== true) {
@@ -9788,7 +9789,7 @@ export function createPtyService({
           session = (backfilled ? sessionService.get(chatSessionId) : null) ?? session;
           if (!resumeTargetIdForProvider(session, "antigravity")) {
             throw markExpected(new Error(
-              "Antigravity exited before ADE could capture its conversation. Start a new Antigravity chat.",
+              `Antigravity exited before ${BRAND.NAME} could capture its conversation. Start a new Antigravity chat.`,
             ), "user");
           }
         }

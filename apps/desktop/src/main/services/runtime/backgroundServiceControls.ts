@@ -12,6 +12,7 @@ import type { ProductAnalyticsService } from "../analytics/productAnalyticsServi
 import type { Logger } from "../logging/logger";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
 import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
+import { BRAND } from "../../../shared/brand";
 
 const STOP_REASON = "stop_background_service";
 
@@ -73,7 +74,7 @@ export function registerBackgroundServiceControls(deps: BackgroundServiceControl
   };
 
   const stopRefusal = async (): Promise<string | null> => {
-    if (deps.isShuttingDown()) return "ADE is already quitting.";
+    if (deps.isShuttingDown()) return `${BRAND.NAME} is already quitting.`;
     if (deps.isRepairing()) return "Wait for the background service repair to finish.";
     const deletes = await deps.getRunningLaneDeleteLabels();
     // A lane delete runs in the service, so stopping it would cut the delete short.
@@ -112,11 +113,11 @@ export function registerBackgroundServiceControls(deps: BackgroundServiceControl
 
   const stop = async (raw: unknown): Promise<StopBackgroundServiceResult & { failed?: true }> => {
     const confirmed = parseStopRequest(raw);
-    if (!confirmed) return { ok: false, message: "ADE did not get the list you confirmed. Press Stop again." };
+    if (!confirmed) return { ok: false, message: `${BRAND.NAME} did not get the list you confirmed. Press Stop again.` };
     // An agent may have started while the confirmation was open; the person
     // must see it before it is stopped. Unknown is refused, never read as none.
     const now = await readActivity();
-    if (!now) return { ok: false, message: "ADE couldn't check which agents are working, so it stopped nothing. Try again." };
+    if (!now) return { ok: false, message: `${BRAND.NAME} couldn't check which agents are working, so it stopped nothing. Try again.` };
     const confirmedIds = new Set(confirmed.confirmedSessionIds);
     if (
       now.runningChats.some((chat) => !confirmedIds.has(chat.sessionId))
@@ -148,10 +149,10 @@ export function registerBackgroundServiceControls(deps: BackgroundServiceControl
 
   ipcMain.handle(IPC.appStopBackgroundServiceAndQuit, async (event, raw: unknown): Promise<StopBackgroundServiceResult> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, deps.logger, IPC.appStopBackgroundServiceAndQuit)) {
-      return { ok: false, message: "Only an ADE window can stop the background service." };
+      return { ok: false, message: `Only a ${BRAND.NAME} window can stop the background service.` };
     }
     if (!deps.manageService) {
-      return { ok: false, message: "This build of ADE does not manage the background service." };
+      return { ok: false, message: `This build of ${BRAND.NAME} does not manage the background service.` };
     }
     const { failed, ...result } = await stop(raw);
     if (!result.ok && !failed) recordStop("rejected");

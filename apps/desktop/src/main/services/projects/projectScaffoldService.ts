@@ -33,6 +33,7 @@ import { resolveGitMetadataDirectory } from "./worktreeParent";
 import { initializeOrRepairAdeProject } from "./adeProjectService";
 import { ensureProjectLocalDatabase } from "./projectLocalDatabase";
 import { redactGitOutput } from "../../utils/redaction";
+import { BRAND } from "../../../shared/brand";
 
 type GithubService = ReturnType<typeof createGithubService>;
 
@@ -76,7 +77,7 @@ function isDirectoryNonEmpty(dirPath: string): boolean {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     if (isFsAccessRefusal(error)) {
-      throw new AdeExpectedError(`ADE can't read the folder ${dirPath}. Choose a folder you can open.`, "user", { cause: error });
+      throw new AdeExpectedError(`${BRAND.NAME} can't read the folder ${dirPath}. Choose a folder you can open.`, "user", { cause: error });
     }
     throw error;
   }
@@ -117,10 +118,10 @@ function folderRefusalMessage(dirPath: string, error: unknown): string {
   let existing = path.resolve((error as NodeJS.ErrnoException | null)?.path || dirPath);
   while (!isExistingDirectory(existing)) {
     const parent = path.dirname(existing);
-    if (parent === existing) return `ADE can't find ${existing} on this computer. Pick another location.`;
+    if (parent === existing) return `${BRAND.NAME} can't find ${existing} on this computer. Pick another location.`;
     existing = parent;
   }
-  return `ADE can't create a folder in ${existing}. Pick another location.`;
+  return `${BRAND.NAME} can't create a folder in ${existing}. Pick another location.`;
 }
 
 type CloneTarget = {

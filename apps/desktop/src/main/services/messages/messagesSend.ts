@@ -14,6 +14,7 @@
  * @module messages/messagesSend
  */
 import { execFile } from "node:child_process";
+import { BRAND } from "../../../shared/brand";
 
 export type SendMessageInput = {
   /** Phone number or email. */
@@ -85,7 +86,7 @@ function sendWithAccount(
         if (isAutomationDenial(stderr)) {
           resolve(failure(
             "needs_automation_permission",
-            "ADE needs permission to control Messages.",
+            `${BRAND.NAME} needs permission to control Messages.`,
           ));
           return;
         }

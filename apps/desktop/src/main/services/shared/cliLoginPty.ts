@@ -18,6 +18,7 @@ import {
   killWindowsProcessTreeAsync,
   resolveCliSpawnInvocation,
 } from "./processExecution";
+import { BRAND } from "../../../shared/brand";
 
 /** A sign-in nobody finishes in this long is abandoned; the CLI is stopped. */
 export const LOGIN_TIMEOUT_MS = 10 * 60_000;
@@ -88,7 +89,7 @@ export function spawnLoginPty(command: string, args: string[], env: NodeJS.Proce
     });
     // The spawn would only fail with "posix_spawnp failed"; say what is wrong.
     throw new Error(
-      `ADE's terminal helper (${spawnHelperRepair.path ?? "node-pty spawn-helper"}) is not executable and could not be fixed: ${spawnHelperRepair.error}`,
+      `${BRAND.NAME}'s terminal helper (${spawnHelperRepair.path ?? "node-pty spawn-helper"}) is not executable and could not be fixed: ${spawnHelperRepair.error}`,
     );
   }
   const invocation = resolveCliSpawnInvocation(command, args, env);

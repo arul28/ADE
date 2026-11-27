@@ -19,6 +19,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { resolveAssociatedAppBundleId } from "../../../../../ade-cli/src/serviceManager/common";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import { BRAND } from "../../../shared/brand";
 
 /** The name of the Mac Desktop helper in `resources/native`. */
 const MAC_DESKTOP_DRIVER_BINARY = "ade-desktop-driver";
@@ -162,7 +163,7 @@ export function formatNativeHelperSearch(name: string, candidates: readonly stri
   const dirs = dedupePaths(candidates.filter((candidate) => !isDevBuild(candidate)).map((candidate) => path.dirname(candidate)));
   const devBuilds = candidates.filter(isDevBuild).length;
   const tail = devBuilds > 0 ? ` (and ${devBuilds} Swift build paths of a source checkout)` : "";
-  return `ADE looked for ${name} in: ${dirs.join(", ")}${tail}.`;
+  return `${BRAND.NAME} looked for ${name} in: ${dirs.join(", ")}${tail}.`;
 }
 
 /** The record a packaged ADE app leaves so a standalone brain can find it. */

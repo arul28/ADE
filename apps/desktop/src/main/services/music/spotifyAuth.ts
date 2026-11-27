@@ -3,6 +3,7 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 
 import { MUSIC_SPOTIFY_CALLBACK_PORT } from "../../../shared/types/music";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Spotify sign-in for a desktop app: Authorization Code with PKCE, no client
@@ -113,7 +114,7 @@ async function tokenRequest(
     throw new SpotifyAuthError(`Spotify sign-in failed (HTTP ${response.status}).`, "exchange_failed");
   }
   const refreshToken = body.refresh_token ?? previousRefreshToken;
-  if (!refreshToken) throw new SpotifyAuthError("Spotify didn't return a sign-in that ADE can keep.", "exchange_failed");
+  if (!refreshToken) throw new SpotifyAuthError(`Spotify didn't return a sign-in that ${BRAND.NAME} can keep.`, "exchange_failed");
   return {
     accessToken: body.access_token,
     // A minute early, so a call never leaves with a token that dies in flight.
@@ -190,7 +191,7 @@ export async function startSpotifySignIn(args: {
     if (!sameSecret(returnedState, state)) {
       // Not our sign-in (a stale tab, another page): ignore it and keep waiting.
       res.writeHead(400, { "content-type": "text/html; charset=utf-8" })
-        .end(page("This sign-in link is out of date", "Go back to ADE and press Connect Spotify again."));
+        .end(page("This sign-in link is out of date", `Go back to ${BRAND.NAME} and press Connect Spotify again.`));
       return;
     }
     // From here this sign-in is decided by this request: a reload or a second
@@ -200,7 +201,7 @@ export async function startSpotifySignIn(args: {
     const code = url.searchParams.get("code");
     const headers = { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer" };
     if (error || !code) {
-      res.writeHead(200, headers).end(page("Spotify wasn't connected", "You can close this tab and go back to ADE."));
+      res.writeHead(200, headers).end(page("Spotify wasn't connected", `You can close this tab and go back to ${BRAND.NAME}.`));
       finish({
         error: error === "access_denied"
           ? new SpotifyAuthError("Sign-in was cancelled.", "denied")
@@ -220,11 +221,11 @@ export async function startSpotifySignIn(args: {
       args.fetchImpl ?? fetch,
     ).then(
       (tokens) => {
-        res.writeHead(200, headers).end(page("Spotify sign-in received", "You can close this tab and go back to ADE."));
+        res.writeHead(200, headers).end(page("Spotify sign-in received", `You can close this tab and go back to ${BRAND.NAME}.`));
         finish({ tokens });
       },
       (exchangeError: Error) => {
-        res.writeHead(200, headers).end(page("Spotify wasn't connected", "Go back to ADE to see why and try again."));
+        res.writeHead(200, headers).end(page("Spotify wasn't connected", `Go back to ${BRAND.NAME} to see why and try again.`));
         finish({ error: exchangeError });
       },
     );

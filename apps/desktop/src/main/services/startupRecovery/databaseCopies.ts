@@ -15,6 +15,7 @@ import type {
 import type { Logger } from "../logging/logger";
 import { writeDbCompatRecord } from "../state/dbCompatRecord";
 import { parseDatabaseCopyName, versionLabel, type GoBackPlan } from "./goBackPlan";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The database copies on this computer, and the two things done with them:
@@ -39,7 +40,7 @@ export type LocalDatabase = {
 export function listLocalDatabases(env: NodeJS.ProcessEnv = process.env): LocalDatabase[] {
   const layout = resolveMachineAdeLayout(env);
   const databases: LocalDatabase[] = [
-    { kind: "machine", label: "this computer's ADE data", dbPath: path.join(layout.adeDir, "ade.db") },
+    { kind: "machine", label: `this computer's ${BRAND.NAME} data`, dbPath: path.join(layout.adeDir, "ade.db") },
     // Personal chats run a runtime of their own on this state root.
     {
       kind: "personal",
@@ -135,7 +136,7 @@ export function deleteDatabaseCopy(args: {
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     args.logger.warn("startupRecovery.database_copy_delete_failed", { copy: listed.path, error: reason });
-    return { deleted: false, reason: "ADE couldn't delete that copy. Close anything that has it open and try again." };
+    return { deleted: false, reason: `${BRAND.NAME} couldn't delete that copy. Close anything that has it open and try again.` };
   }
   args.logger.info("startupRecovery.database_copy_deleted", {
     copy: listed.path,
@@ -264,7 +265,7 @@ export function restoreDatabaseCopies(args: {
         rolledBack,
         error: message,
       });
-      throw new DatabaseRestoreError(`ADE couldn't move ${entry.label}: ${message}`, rolledBack);
+      throw new DatabaseRestoreError(`${BRAND.NAME} couldn't move ${entry.label}: ${message}`, rolledBack);
     }
   }
   const results: DatabaseRestoreResult[] = [];

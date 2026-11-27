@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The Apple Music developer token: an ES256 JWT signed with ADE's MusicKit key.
@@ -117,9 +118,9 @@ export function createDeveloperTokenProvider(args: {
 
   const fetchWorker = async (): Promise<DeveloperToken> => {
     const base = args.directoryBaseUrl()?.replace(/\/+$/, "");
-    if (!base) throw new MusicTokenUnavailableError("ADE has no account service configured for Music.", "service");
+    if (!base) throw new MusicTokenUnavailableError(`${BRAND.NAME} has no account service configured for Music.`, "service");
     const bearer = await args.getAccountToken();
-    if (!bearer) throw new MusicTokenUnavailableError("Sign in to ADE to use Music.", "signed_out");
+    if (!bearer) throw new MusicTokenUnavailableError(`Sign in to ${BRAND.NAME} to use Music.`, "signed_out");
     let response: Response;
     try {
       response = await (args.fetchImpl ?? fetch)(`${base}/music/developer-token`, {
@@ -127,13 +128,13 @@ export function createDeveloperTokenProvider(args: {
         signal: AbortSignal.timeout(15_000),
       });
     } catch {
-      throw new MusicTokenUnavailableError("Couldn't reach ADE's music service. Check your connection.", "service");
+      throw new MusicTokenUnavailableError(`Couldn't reach ${BRAND.NAME}'s music service. Check your connection.`, "service");
     }
-    if (response.status === 401) throw new MusicTokenUnavailableError("Sign in to ADE again to use Music.", "signed_out");
-    if (!response.ok) throw new MusicTokenUnavailableError(`ADE's music service answered HTTP ${response.status}.`, "service");
+    if (response.status === 401) throw new MusicTokenUnavailableError(`Sign in to ${BRAND.NAME} again to use Music.`, "signed_out");
+    if (!response.ok) throw new MusicTokenUnavailableError(`${BRAND.NAME}'s music service answered HTTP ${response.status}.`, "service");
     const body = (await response.json()) as { token?: unknown; expiresAt?: unknown };
     if (typeof body.token !== "string" || typeof body.expiresAt !== "number") {
-      throw new MusicTokenUnavailableError("ADE's music service sent an unreadable token.", "service");
+      throw new MusicTokenUnavailableError(`${BRAND.NAME}'s music service sent an unreadable token.`, "service");
     }
     args.logger?.info("music.developer_token_fetched", { source: "worker", token: maskToken(body.token) });
     return { token: body.token, expiresAt: body.expiresAt, source: "worker" };

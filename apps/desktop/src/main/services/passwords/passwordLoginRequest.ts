@@ -9,6 +9,7 @@ import {
   type PasswordLoginRequestResult,
 } from "../../../shared/passwordLoginRequest";
 import { cardTimeoutMs, cardWasDeclined, joinInFlight, readCardArgs, type CardRequestChatInput } from "../chat/chatCardRequest";
+import { BRAND } from "../../../shared/brand";
 
 export type PasswordLoginRequestDeps = {
   requestChatInput: CardRequestChatInput;
@@ -95,7 +96,7 @@ async function askLogin(
         allowsFreeform: false,
         options: [
           { label: "Save & sign in", value: "save", description: PASSWORD_LOGIN_WHERE_IT_GOES(site), recommended: true },
-          { label: "Enter it myself in the browser", value: "self", description: "Type it into the page yourself; ADE offers to save it after." },
+          { label: "Enter it myself in the browser", value: "self", description: `Type it into the page yourself; ${BRAND.NAME} offers to save it after.` },
         ],
       },
       { id: PASSWORD_LOGIN_USERNAME_QUESTION_ID, header: site, question: "Username or email", allowsFreeform: true, isSecret: true },

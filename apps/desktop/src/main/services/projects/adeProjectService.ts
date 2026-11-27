@@ -23,6 +23,7 @@ import { AdeExpectedError } from "../../../shared/expectedError";
 import type { Logger } from "../logging/logger";
 import { resolvePathWithinRoot } from "../shared/utils";
 import { createLogIntegrityService, type LogIntegrityService } from "./logIntegrityService";
+import { BRAND } from "../../../shared/brand";
 
 type RepairOptions = {
   logger?: Logger | null;
@@ -204,7 +205,7 @@ function ensureAdeLocalExcludeRule(projectRoot: string): AdeSyncAction | null {
   return {
     kind: "reconcile",
     relativePath: ".git/info/exclude",
-    detail: "Ignored local-only ADE runtime state.",
+    detail: `Ignored local-only ${BRAND.NAME} runtime state.`,
   };
 }
 
@@ -348,7 +349,7 @@ export function initializeOrRepairAdeProject(projectRoot: string, options: Repai
     if (typeof code !== "string" || !FOLDER_NOT_WRITABLE_CODES.has(code)) throw error;
     if (!folderRefusesWrites(code, projectRoot)) throw error;
     throw new AdeExpectedError(
-      `ADE can't write to this folder: ${projectRoot}. It belongs to another user or is read-only (${code}). `
+      `${BRAND.NAME} can't write to this folder: ${projectRoot}. It belongs to another user or is read-only (${code}). `
         + "Change the owner or the permissions of the folder, then open it again.",
       "environment",
       { cause: error },

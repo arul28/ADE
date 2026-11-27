@@ -7,6 +7,7 @@ import {
   type AdeRecoveryErrorCode,
 } from "../../../shared/types/recovery";
 import { readValidJson, writeFileAtomic } from "../state/durableFile";
+import { BRAND } from "../../../shared/brand";
 
 const MESSAGE_MAX_BYTES = 2 * 1024;
 const DETAIL_MAX_BYTES = 8 * 1024;
@@ -134,7 +135,7 @@ export function recordLastFailure(
     const report: AdeLastFailureReport = {
       version: 1,
       code: input.code,
-      message: plainMessage(input.message) || "ADE recovery failed.",
+      message: plainMessage(input.message) || `${BRAND.NAME} recovery failed.`,
       ...(input.detail ? { detail: boundUtf8(input.detail, DETAIL_MAX_BYTES) } : {}),
       at,
       ...(input.projectRoot ? { projectRoot: path.resolve(input.projectRoot) } : {}),

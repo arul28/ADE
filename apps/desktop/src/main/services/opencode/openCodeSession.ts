@@ -20,6 +20,7 @@ import {
   sharedOpenCodeProfileFor,
 } from "./openCodeConfig";
 import { acquireOpenCodeServer, type OpenCodeServerLease, type OpenCodeServerOwnerKind } from "./openCodeServer";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * OpenCode 2.0 sessions as ADE uses them: create or resume a chat session on
@@ -122,7 +123,7 @@ export const OPENCODE_ADE_INSTRUCTION_KEY = "ade";
 export class OpenCodeSessionInPersonalStoreError extends Error {
   constructor(readonly sessionId: string) {
     super(
-      "This chat's OpenCode history is in your personal OpenCode store, which ADE no longer opens. "
+      `This chat's OpenCode history is in your personal OpenCode store, which ${BRAND.NAME} no longer opens. `
       + "Its transcript stays readable here; start a new chat to continue the work.",
     );
     this.name = "OpenCodeSessionInPersonalStoreError";

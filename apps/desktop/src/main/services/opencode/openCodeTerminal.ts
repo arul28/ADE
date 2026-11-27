@@ -29,6 +29,7 @@ import {
   isAdeChatOpenCodeSession,
 } from "./openCodeSession";
 import { acquireOpenCodeServer, type OpenCodeServerLease } from "./openCodeServer";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * A tracked OpenCode TUI in an ADE terminal, attached to ADE's shared server.
@@ -186,7 +187,7 @@ function parseOpenCodeCommandLine(startupCommand: string): { command: string; ar
   if (args.some((token) => SHELL_OPERATORS.has(token))) {
     // Only a plain invocation can be pointed at ADE's server. Anything else
     // would run the TUI against OpenCode's own background service.
-    throw new Error("ADE cannot attach this OpenCode command to its server: run `opencode` on its own in this terminal.");
+    throw new Error(`${BRAND.NAME} cannot attach this OpenCode command to its server: run \`opencode\` on its own in this terminal.`);
   }
   return { command, args };
 }
@@ -259,7 +260,7 @@ export async function attachOpenCodeTerminal(args: {
   // or leave an empty ADE-owned session behind after the throw.
   const shellCommandIndex = direct ? -1 : posixShellCommandArgIndex(args.directCommand, args.directArgs);
   if (line && !direct && args.directCommand && shellCommandIndex < 0) {
-    throw new Error("ADE could not rewrite this OpenCode resume shell; the terminal was not started.");
+    throw new Error(`${BRAND.NAME} could not rewrite this OpenCode resume shell; the terminal was not started.`);
   }
   const intent = readOpenCodeLaunchIntent(args.startupCommand, args.env as Record<string, string | undefined>);
   const permissionMode = args.permissionMode ?? intent?.permissionMode ?? null;

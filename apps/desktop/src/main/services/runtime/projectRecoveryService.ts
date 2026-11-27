@@ -47,6 +47,7 @@ import { findTrashedProjectData, forgetTrashLookup, restoreTrashedProjectData } 
 import { isLocalReleaseBuildOutputError } from "../../../shared/runtimeErrors";
 import { DESKTOP_CLIENT_NAMES } from "../../../shared/runtimeClientNames";
 import { clearLastFailure, readLastFailure } from "./lastFailureStore";
+import { BRAND } from "../../../shared/brand";
 
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
@@ -65,10 +66,10 @@ const BRAIN_STARTING_WINDOW_MS = RUNTIME_SERVICE_YOUNG_BRAIN_MS;
 const STEP_LABELS = REPAIR_STEP_LABELS;
 
 const BACKGROUND_BLOCKED_NEXT_ACTION =
-  "Your Mac is blocking ADE. Open System Settings, go to General, then Login Items, and turn on ADE under \"Allow in the Background\".";
+  `Your Mac is blocking ${BRAND.NAME}. Open System Settings, go to General, then Login Items, and turn on ${BRAND.NAME} under "Allow in the Background".`;
 
 // The recovery screen offers Restart ADE as the next rung; this only says to take it.
-const RESTART_AND_RETRY = "Restart ADE next. It starts the background service fresh.";
+const RESTART_AND_RETRY = `Restart ${BRAND.NAME} next. It starts the background service fresh.`;
 
 const STEP_ORDER = REPAIR_STEP_ORDER;
 
@@ -214,7 +215,7 @@ function humanGb(bytes: number): string {
  */
 function skippedRestartCopy(installerMessage: string): string {
   if (isLocalReleaseBuildOutputError(installerMessage)) return installerMessage;
-  return "A newer version of ADE is already running. Restart ADE to switch to it.";
+  return `A newer version of ${BRAND.NAME} is already running. Restart ${BRAND.NAME} to switch to it.`;
 }
 
 function socketConnectOptions(socketPath: string): net.NetConnectOpts {
@@ -503,11 +504,11 @@ export class ProjectRecoveryService {
       case "install_skipped":
         throw new Error(skippedRestartCopy(outcome.detail));
       case "unreachable":
-        throw new Error("ADE's background service didn't start again after the restart.");
+        throw new Error(`${BRAND.NAME}'s background service didn't start again after the restart.`);
       case "background_blocked":
         throw new Error(BACKGROUND_BLOCKED_NEXT_ACTION);
       default:
-        throw new Error(outcome.detail.trim() || "ADE's background service couldn't restart.");
+        throw new Error(outcome.detail.trim() || `${BRAND.NAME}'s background service couldn't restart.`);
     }
   }
 
@@ -580,18 +581,18 @@ export class ProjectRecoveryService {
     }
     const target = path.join(normalizedRoot, ".ade");
     if (fs.existsSync(path.join(target, "ade.db"))) {
-      return { restored: false, reason: "This project already has ADE data, so nothing was moved." };
+      return { restored: false, reason: `This project already has ${BRAND.NAME} data, so nothing was moved.` };
     }
     forgetTrashLookup(normalizedRoot);
     const source = findTrashedProjectData(normalizedRoot, readLocalProjectDatabaseIdentity(normalizedRoot));
     if (!source) {
-      return { restored: false, reason: "ADE couldn't find this project's data in the Trash anymore." };
+      return { restored: false, reason: `${BRAND.NAME} couldn't find this project's data in the Trash anymore.` };
     }
     try {
       await restoreTrashedProjectData(source, target, this.deps.logger);
     } catch (error) {
       this.deps.logger.warn("project.data_restore_failed", { projectRoot: normalizedRoot, error: errorMessage(error) });
-      return { restored: false, reason: "ADE couldn't move the folder back. Put it back from the Trash yourself, then choose Try again." };
+      return { restored: false, reason: `${BRAND.NAME} couldn't move the folder back. Put it back from the Trash yourself, then choose Try again.` };
     } finally {
       forgetTrashLookup(normalizedRoot);
     }
@@ -892,7 +893,7 @@ export class ProjectRecoveryService {
         filesRemoved: 0,
         failureCode: "project_data_missing",
         nextAction: projectFolderPresent
-          ? "This project's ADE data is missing. Restore it from the Trash or start fresh instead."
+          ? `This project's ${BRAND.NAME} data is missing. Restore it from the Trash or start fresh instead.`
           : PROJECT_FOLDER_MISSING_COPY.refusal,
       };
     }
@@ -938,7 +939,7 @@ export class ProjectRecoveryService {
     try {
       storage = await this.storage(normalizedRoot);
     } catch (error) {
-      return fail("check_space", "unknown", "ADE couldn't check the free space on this computer. Make sure the project folder is still there, then try again.", errorMessage(error));
+      return fail("check_space", "unknown", `${BRAND.NAME} couldn't check the free space on this computer. Make sure the project folder is still there, then try again.`, errorMessage(error));
     }
     const requiredSpace = REPAIR_MIN_FREE_BYTES(storage.dbSize);
     if (storage.free < requiredSpace) {
@@ -957,7 +958,7 @@ export class ProjectRecoveryService {
       try {
         isAdeEndpoint = await this.pingEndpoint(this.socketPath, 1_500);
       } catch (error) {
-        return fail("stop_service", "unknown", "Quit any other copy of ADE, then try again.", errorMessage(error));
+        return fail("stop_service", "unknown", `Quit any other copy of ${BRAND.NAME}, then try again.`, errorMessage(error));
       }
       // A failed identity check used to end repair here. But `ping` is also
       // what a brain that is wedged or crash-looping cannot answer, and the
@@ -976,8 +977,8 @@ export class ProjectRecoveryService {
         return fail(
           "stop_service",
           "socket_owned_by_other",
-          "Quit any other copy of ADE, then try again.",
-          "The machine endpoint is owned by a process that did not identify itself as ADE.",
+          `Quit any other copy of ${BRAND.NAME}, then try again.`,
+          `The machine endpoint is owned by a process that did not identify itself as ${BRAND.NAME}.`,
         );
       }
       let stopped = false;
@@ -992,10 +993,10 @@ export class ProjectRecoveryService {
         return fail(
           "stop_service",
           "socket_owned_by_other",
-          "Quit any other copy of ADE, then try again.",
+          `Quit any other copy of ${BRAND.NAME}, then try again.`,
           isAdeEndpoint
-            ? "ADE could not verify exclusive access to the project data."
-            : "The machine endpoint did not identify itself as ADE, and stopping ADE's background service did not release it.",
+            ? `${BRAND.NAME} could not verify exclusive access to the project data.`
+            : `The machine endpoint did not identify itself as ${BRAND.NAME}, and stopping ${BRAND.NAME}'s background service did not release it.`,
         );
       }
       addStep(
@@ -1003,7 +1004,7 @@ export class ProjectRecoveryService {
         "ok",
         isAdeEndpoint
           ? "The previous background service stopped."
-          : "ADE's background service stopped and released the endpoint.",
+          : `${BRAND.NAME}'s background service stopped and released the endpoint.`,
       );
     } else {
       addStep("stop_service", "ok", "No running background service was found.");
@@ -1016,7 +1017,7 @@ export class ProjectRecoveryService {
       return fail(
         "validate_database",
         "db_integrity",
-        "This project's ADE data is damaged. Your code is fine. Send a report so we can help.",
+        `This project's ${BRAND.NAME} data is damaged. Your code is fine. Send a report so we can help.`,
         errorMessage(error),
       );
     }
@@ -1025,7 +1026,7 @@ export class ProjectRecoveryService {
       return fail(
         "validate_database",
         "db_integrity",
-        "This project's ADE data is damaged. Your code is fine. Send a report so we can help.",
+        `This project's ${BRAND.NAME} data is damaged. Your code is fine. Send a report so we can help.`,
         dbCheck.detail,
       );
     }
@@ -1040,7 +1041,7 @@ export class ProjectRecoveryService {
       const classified = this.classifyOpenError(error, { path: dbPath });
       const failureCode = classified === "unknown" ? "unknown" : classified;
       const nextAction = classified === "migration_unknown_state"
-        ? "ADE found data it doesn't recognize from an interrupted save. Nothing was deleted. Send a report so we can help."
+        ? `${BRAND.NAME} found data it doesn't recognize from an interrupted save. Nothing was deleted. Send a report so we can help.`
         : classified === "disk_full" || classified === "insufficient_headroom"
           ? "Free up more space on this computer, then try again."
           : "Nothing was deleted. Send a report so we can help.";
@@ -1076,7 +1077,7 @@ export class ProjectRecoveryService {
         action: "list",
         args: { includeArchived: false, includeStatus: false },
       });
-      addStep("verify_project_rpc", "ok", "ADE opened this project's data.");
+      addStep("verify_project_rpc", "ok", `${BRAND.NAME} opened this project's data.`);
     } catch (error) {
       return fail("verify_project_rpc", "unknown", "Choose Try again to open the project again.", errorMessage(error));
     }
@@ -1087,7 +1088,7 @@ export class ProjectRecoveryService {
       chatsNeedingAttention = counts.needingAttention;
       addStep("reconcile_chats", "ok", `${counts.total} chats checked; ${counts.needingAttention} need attention.`);
     } catch (error) {
-      return fail("reconcile_chats", "unknown", "Open ADE again. Your chats were not deleted.", errorMessage(error));
+      return fail("reconcile_chats", "unknown", `Open ${BRAND.NAME} again. Your chats were not deleted.`, errorMessage(error));
     }
 
     await this.clearFailureReports(normalizedRoot);

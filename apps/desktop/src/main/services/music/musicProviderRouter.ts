@@ -17,6 +17,7 @@ import type { MusicService } from "./musicService";
 import { clampVolume, type MusicVolumeMemory } from "./musicVolume";
 import { normalizeSpotifyClientId } from "./spotifyAuth";
 import type { SpotifyService } from "./spotifyService";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * One `window.ade.music` for two providers. Every call goes to the selected
@@ -201,7 +202,7 @@ export function createMusicRouter(args: {
           const message = error instanceof Error ? error.message : String(error);
           args.logger?.warn("music.provider_pause_failed", { provider: previous, error: message });
           const name = previous === "apple" ? "Apple Music" : "Spotify";
-          throw new Error(`ADE couldn't pause ${name}, so it stayed on ${name}: ${message}`);
+          throw new Error(`${BRAND.NAME} couldn't pause ${name}, so it stayed on ${name}: ${message}`);
         }
         args.settings.set({ provider });
         args.logger?.info("music.provider_selected", { provider });
@@ -228,7 +229,7 @@ export function createMusicRouter(args: {
     try {
       args.settings.set({ spotifyClientId: clientId });
     } catch (error) {
-      return { ok: false, error: `ADE couldn't save the Client ID: ${error instanceof Error ? error.message : String(error)}` };
+      return { ok: false, error: `${BRAND.NAME} couldn't save the Client ID: ${error instanceof Error ? error.message : String(error)}` };
     }
     await args.spotify.clientIdChanged();
     latest.spotify = await args.spotify.getState();

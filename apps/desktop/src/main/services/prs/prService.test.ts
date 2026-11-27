@@ -7580,7 +7580,7 @@ describe("prService.createFromLane", () => {
     expect(patchedBodies).toEqual(expect.arrayContaining([
       expect.stringContaining("https://gist.github.com/octocat/gist-1"),
     ]));
-    expect(patchedBodies.at(-1)).toContain("ADE chat transcripts");
+    expect(patchedBodies.at(-1)).toContain("Daex chat transcripts");
   });
 
   it("does not recreate transcript gists when the PR body already has transcript links", async () => {
@@ -7671,7 +7671,7 @@ describe("prService.createFromLane", () => {
         "description",
         "",
         "<!-- ade:transcript-gists v=1 count=1 -->",
-        "## ADE chat transcripts",
+        "## Daex chat transcripts",
         "",
         "- [Existing](https://gist.github.com/octocat/existing)",
         "<!-- /ade:transcript-gists -->",
@@ -7829,7 +7829,7 @@ describe("prService.createFromLane", () => {
         draft: false,
         allowDirtyWorktree: true,
       }),
-    ).rejects.toThrow("ADE did not force-push");
+    ).rejects.toThrow("Daex did not force-push");
 
     expect(ghService.apiRequest).not.toHaveBeenCalled();
     expect(mockGit.runGitOrThrow).not.toHaveBeenCalledWith(["push", "--force-with-lease"], expect.anything());

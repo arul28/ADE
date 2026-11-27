@@ -18,6 +18,7 @@ import path from "node:path";
 
 import { getPathEnvValue, mergePathEntries, resolveExecutableFromKnownLocations, setPathEnvValue } from "../ai/cliExecutableResolver";
 import { runReapedCommand } from "../shared/runReapedCommand";
+import { BRAND } from "../../../shared/brand";
 
 /** Env names gh reads before its stored login; never passed to the read. */
 const GH_ENV_TOKEN_NAMES = ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"] as const;
@@ -100,7 +101,7 @@ export const runGhAuthToken: GhTokenRunner = async ({ env, timeoutMs }) => {
 /** Plain words for the tile when the read did not give a token. */
 export const GH_READ_MESSAGES: Record<Exclude<GhTokenRead, { ok: true }>["reason"], string> = {
   no_token: "The GitHub CLI on this computer is not signed in to github.com.",
-  not_installed: "ADE couldn't find the GitHub CLI (gh) on this computer.",
+  not_installed: `${BRAND.NAME} couldn't find the GitHub CLI (gh) on this computer.`,
   timeout: "The GitHub CLI did not answer in time. If your computer asked to unlock its keychain, allow it, then turn this on again.",
-  failed: "ADE couldn't read the GitHub CLI login. Run `gh auth status` to check it, then turn this on again.",
+  failed: `${BRAND.NAME} couldn't read the GitHub CLI login. Run \`gh auth status\` to check it, then turn this on again.`,
 };

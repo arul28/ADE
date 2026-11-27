@@ -17,6 +17,7 @@ import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
 import { writeFileAtomic } from "../state/durableFile";
 import { isModelRegistrySnapshot, type ModelRegistrySnapshot } from "../../../shared/routerRegistry";
+import { BRAND } from "../../../shared/brand";
 
 const REFRESH_INTERVAL_MS = 12 * 3_600_000;
 const RETRY_AFTER_FAILURE_MS = 30 * 60_000;
@@ -126,7 +127,7 @@ export function createModelRegistryStore(args: {
         save({ etag: result.etag, fetchedAt: new Date(now()).toISOString(), snapshot: result.snapshot });
         lastError = null;
       } else {
-        lastError = "the registry answer is not a snapshot this ADE version reads";
+        lastError = `the registry answer is not a snapshot this ${BRAND.NAME} version reads`;
       }
     } else if (result.status === "not_modified") {
       if (current) save({ ...current, fetchedAt: new Date(now()).toISOString() });
@@ -173,12 +174,12 @@ export function createWorkerRegistryFetcher(args: {
 }): ModelRegistryFetcher {
   return async (etag) => {
     const base = args.baseUrl()?.replace(/\/+$/, "");
-    if (!base) return { status: "error", message: "No ADE account directory is configured." };
+    if (!base) return { status: "error", message: `No ${BRAND.NAME} account directory is configured.` };
     let token: string;
     try {
       token = await args.getToken();
     } catch (error) {
-      return { status: "error", message: `Sign in to ADE to use the model router (${getErrorMessage(error)}).` };
+      return { status: "error", message: `Sign in to ${BRAND.NAME} to use the model router (${getErrorMessage(error)}).` };
     }
     const doFetch = args.fetchImpl ?? fetch;
     const response = await doFetch(`${base}/router/registry`, {

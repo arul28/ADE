@@ -50,6 +50,7 @@ import { poolLiveQuota } from "../../../shared/usageLiveQuota";
 import { localDayKey, localDayOrdinal } from "./localDay";
 import { isSameTranscriptSource } from "./accountUsageSource";
 import { addCostSplit, emptyCostSplit, finalizeCostSplit, parseCostSplit } from "../../../shared/usageCostSplit";
+import { BRAND } from "../../../shared/brand";
 
 // The pooling rule is shared with the renderer's environment filter, so the
 // account-scope merge and the filtered view can never disagree about one number.
@@ -874,7 +875,7 @@ export function mergeAccountUsageStats({
     notes.add("GitHub repository and pull request activity is from this computer only.");
   }
   if (activity.missing.length > 0) {
-    notes.add(`Chats, commits and PRs leave out ${activity.missing.length === 1 ? "1 computer that runs" : `${activity.missing.length} computers that run`} an older ADE: ${activity.missing.join(", ")}.`);
+    notes.add(`Chats, commits and PRs leave out ${activity.missing.length === 1 ? "1 computer that runs" : `${activity.missing.length} computers that run`} an older ${BRAND.NAME}: ${activity.missing.join(", ")}.`);
   }
   stats.sourceNotes = [...notes];
   return stats;

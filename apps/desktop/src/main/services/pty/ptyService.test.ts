@@ -5129,7 +5129,7 @@ describe("ptyService", () => {
       await expect(service.sendToSession({
         sessionId: "peer-owned-cli",
         text: "check CI",
-      })).rejects.toThrow("owned by another live ADE runtime");
+      })).rejects.toThrow("owned by another live Daex runtime");
       expect(loadPty).not.toHaveBeenCalled();
       expect(processRegistry.isProcessIdentityLive).toHaveBeenCalledWith(
         99_999,
@@ -5237,7 +5237,7 @@ describe("ptyService", () => {
       }).catch((cause: unknown) => cause);
       expect(isPtySendPreDeliveryError(error)).toBe(true);
       expect(error).toBeInstanceOf(Error);
-      expect((error as Error).message).toMatch(new RegExp(`${expectedName} exited before ADE could capture a concrete resume target`));
+      expect((error as Error).message).toMatch(new RegExp(`${expectedName} exited before Daex could capture a concrete resume target`));
       expect(loadPty).not.toHaveBeenCalled();
     });
 
@@ -5275,7 +5275,7 @@ describe("ptyService", () => {
       await expect(service.sendToSession({
         sessionId: "session-codex-update-only",
         text: "continue",
-      })).rejects.toThrow(/before ADE could create a resumable thread/i);
+      })).rejects.toThrow(/before Daex could create a resumable thread/i);
       expect(loadPty).not.toHaveBeenCalled();
     });
 
@@ -5982,7 +5982,7 @@ describe("ptyService", () => {
         rows: 40,
       }).catch((cause: unknown) => cause);
       expect(error).toBeInstanceOf(Error);
-      expect((error as Error).message).toMatch(/Cursor exited before ADE could capture a concrete resume target/);
+      expect((error as Error).message).toMatch(/Cursor exited before Daex could capture a concrete resume target/);
       expect(loadPty).not.toHaveBeenCalled();
     });
 

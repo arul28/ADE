@@ -5,6 +5,7 @@ import { IPC } from "../../../shared/ipc";
 import type { StartupRecoveryAction, StartupRecoveryWindowState } from "../../../shared/types/startupRecovery";
 import type { Logger } from "../logging/logger";
 import type { StartupRecoveryWindow } from "./startupRecovery";
+import { BRAND } from "../../../shared/brand";
 
 const ACTIONS: ReadonlySet<StartupRecoveryAction> = new Set([
   "try_again",
@@ -29,7 +30,7 @@ const MAX_HEIGHT = 680;
 const PAGE = `<!doctype html>
 <html><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
-<title>ADE could not start</title>
+<title>${BRAND.NAME} could not start</title>
 <style>
 :root { color-scheme: dark light; --bg:#151319; --fg:#f2f0f5; --t2:rgba(242,240,245,.68); --t3:rgba(242,240,245,.46);
   --edge:rgba(242,240,245,.10); --card:rgba(242,240,245,.035); --btn:rgba(242,240,245,.07); --btn-h:rgba(242,240,245,.12);
@@ -80,14 +81,14 @@ footer span { color:var(--t3); font-size:12px; margin-left:4px; }
 <body><main id="main">
   <div class="head">
     <div class="tile" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 256 256" fill="currentColor"><path d="M236.8 188.09 149.35 36.22a24.76 24.76 0 0 0-42.7 0L19.2 188.09a23.51 23.51 0 0 0 0 23.72A24.35 24.35 0 0 0 40.55 224h174.9a24.35 24.35 0 0 0 21.33-12.19 23.51 23.51 0 0 0 .02-23.72ZM120 104a8 8 0 0 1 16 0v40a8 8 0 0 1-16 0Zm8 88a12 12 0 1 1 12-12 12 12 0 0 1-12 12Z"/></svg></div>
-    <div><h1>ADE could not start</h1><p id="line"></p></div>
+    <div><h1>${BRAND.NAME} could not start</h1><p id="line"></p></div>
   </div>
 
   <div class="problem" id="problem" role="alert" hidden><p id="f-msg"></p><p id="f-next"></p></div>
 
   <div class="cards" id="choices">
     <div class="card" id="choice-back" hidden><button class="primary" id="go-back"></button><p id="back-text"></p></div>
-    <div class="card"><button id="try-again">Try again</button><p id="try-text">Closes ADE and opens it again. Try this first if the problem might have been a one-off.</p></div>
+    <div class="card"><button id="try-again">Try again</button><p id="try-text">Closes ${BRAND.NAME} and opens it again. Try this first if the problem might have been a one-off.</p></div>
   </div>
 
   <div class="panel" id="confirm" hidden>
@@ -95,7 +96,7 @@ footer span { color:var(--t3); font-size:12px; margin-left:4px; }
     <ul>
       <li id="c-data"></li>
       <li id="c-others"></li>
-      <li>ADE saves your current data as a copy first. Nothing is deleted.</li>
+      <li>${BRAND.NAME} saves your current data as a copy first. Nothing is deleted.</li>
       <li id="c-next"></li>
       <li id="c-updates"></li>
     </ul>
@@ -108,7 +109,7 @@ footer span { color:var(--t3); font-size:12px; margin-left:4px; }
     <p id="p-hint"></p>
   </div>
 
-  <footer><button class="ghost" id="open-logs">Open logs folder</button><button class="ghost" id="copy-details">Copy details</button><span id="footer-note">For ADE support</span></footer>
+  <footer><button class="ghost" id="open-logs">Open logs folder</button><button class="ghost" id="copy-details">Copy details</button><span id="footer-note">For ${BRAND.NAME} support</span></footer>
 </main>
 <script>
 (function () {
@@ -149,46 +150,46 @@ footer span { color:var(--t3); font-size:12px; margin-left:4px; }
     el("choice-back").hidden = !back;
     el("try-again").className = back ? "" : "primary";
     el("try-text").textContent = back
-      ? "Closes ADE and opens it again. Try this first if the problem might have been a one-off."
-      : "Closes ADE and opens it again. If it keeps happening, copy the details and send them to ADE support.";
+      ? "Closes ${BRAND.NAME} and opens it again. Try this first if the problem might have been a one-off."
+      : "Closes ${BRAND.NAME} and opens it again. If it keeps happening, copy the details and send them to ${BRAND.NAME} support.";
     if (back) {
       el("go-back").textContent = "Go back to " + back.version;
-      el("back-text").textContent = "Reinstalls the version you had before the update. ADE shows what it will do and asks before it changes anything.";
+      el("back-text").textContent = "Reinstalls the version you had before the update. ${BRAND.NAME} shows what it will do and asks before it changes anything.";
     }
 
     el("confirm").hidden = phase.state !== "confirm";
     if (back && phase.state === "confirm") {
-      el("c-title").textContent = "Go back to ADE " + back.version + "?";
+      el("c-title").textContent = "Go back to ${BRAND.NAME} " + back.version + "?";
       el("c-data").textContent = keepWhole("Puts back " + list(back.putsBack)) + (back.dataFrom ? ", as they were on " + day(back.dataFrom) : "") + ".";
       el("c-others").hidden = back.projectsLeftAlone === 0;
       el("c-others").textContent = back.projectsLeftAlone === 1
         ? "Your other project stays as it is."
         : "Your other projects stay as they are.";
-      el("c-next").textContent = "Downloads " + back.version + ", then closes ADE, installs it and opens it again. This takes about a minute.";
+      el("c-next").textContent = "Downloads " + back.version + ", then closes ${BRAND.NAME}, installs it and opens it again. This takes about a minute.";
       el("c-updates").textContent = "Turns off automatic updates until a version newer than " + state.runningVersion
-        + " is out. Until then, don't install " + state.runningVersion + " if ADE offers it.";
+        + " is out. Until then, don't install " + state.runningVersion + " if ${BRAND.NAME} offers it.";
     }
 
     el("progress").hidden = !busy;
     var version = back ? back.version : "";
     var bar = el("bar");
     if (phase.state === "checking") {
-      el("p-title").textContent = "Checking that ADE " + version + " can open your data\\u2026";
+      el("p-title").textContent = "Checking that ${BRAND.NAME} " + version + " can open your data\\u2026";
       el("p-hint").textContent = "Nothing has changed yet.";
       bar.setAttribute("data-busy", "true");
     } else if (phase.state === "downloading") {
       var pct = typeof phase.percent === "number" ? phase.percent : null;
-      el("p-title").textContent = "Downloading ADE " + version + "\\u2026" + (pct === null ? "" : " " + pct + "%");
-      el("p-hint").textContent = "Nothing has changed yet. When the download is done, ADE closes, installs it and opens again.";
+      el("p-title").textContent = "Downloading ${BRAND.NAME} " + version + "\\u2026" + (pct === null ? "" : " " + pct + "%");
+      el("p-hint").textContent = "Nothing has changed yet. When the download is done, ${BRAND.NAME} closes, installs it and opens again.";
       if (pct === null) bar.setAttribute("data-busy", "true");
       else { bar.removeAttribute("data-busy"); el("bar-fill").style.width = pct + "%"; }
     } else if (phase.state === "installing") {
-      el("p-title").textContent = "Installing ADE " + version + "\\u2026";
-      el("p-hint").textContent = "ADE puts your data back, closes, and opens again in about a minute. You don't need to do anything.";
+      el("p-title").textContent = "Installing ${BRAND.NAME} " + version + "\\u2026";
+      el("p-hint").textContent = "${BRAND.NAME} puts your data back, closes, and opens again in about a minute. You don't need to do anything.";
       bar.setAttribute("data-busy", "true");
     }
 
-    el("footer-note").textContent = copied ? "Details copied" : "For ADE support";
+    el("footer-note").textContent = copied ? "Details copied" : "For ${BRAND.NAME} support";
     var fit = function () { api.fit(Math.ceil(el("main").getBoundingClientRect().height)); };
     if (window.requestAnimationFrame) window.requestAnimationFrame(fit); else fit();
   }
@@ -271,7 +272,7 @@ export function createStartupRecoveryWindow(args: {
       maximizable: false,
       fullscreenable: false,
       show: false,
-      title: "ADE could not start",
+      title: `${BRAND.NAME} could not start`,
       backgroundColor: "#151319",
       autoHideMenuBar: true,
       webPreferences: {

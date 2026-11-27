@@ -7,6 +7,7 @@ import {
   type SyncHostSingletonOwner,
 } from "../../../../../ade-cli/src/services/sync/syncHostSingleton";
 import { execFileOffThread, offThreadSpawnEnabled } from "../shared/offThreadSpawn";
+import { BRAND } from "../../../shared/brand";
 
 export type PackagedSyncHostConflictDialogContent = {
   title: string;
@@ -95,7 +96,7 @@ export function buildPackagedSyncHostConflictDialogContent(args: {
     title: `Cannot launch ${args.launchingAppName}`,
     message: `${ownerName} is already running with phone sync.`,
     detail: [
-      "Only one official ADE build can host phone sync at a time.",
+      `Only one official ${BRAND.NAME} build can host phone sync at a time.`,
       "",
       `Running now: ${ownerName} (${pidText})${portText}.`,
       `Quit that brain before launching ${args.launchingAppName}.`,

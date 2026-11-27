@@ -22,6 +22,7 @@ import path from "node:path";
 
 import { terminateProcessTree } from "../shared/processExecution";
 import type { ChatRecord, MessageRecord, ReadRecentMessagesOptions } from "./messagesDatabase";
+import { BRAND } from "../../../shared/brand";
 
 export const MESSAGES_READ_WORKER_TIMEOUT_MS = 20_000;
 
@@ -149,7 +150,7 @@ export function readMessagesInWorker(
 
   const workerPath = options.workerPath ?? resolveMessagesReadWorkerPath();
   if (!options.spawnWorker && !fs.existsSync(workerPath)) {
-    return Promise.resolve(failed("error", "ADE's Messages helper is missing from this build."));
+    return Promise.resolve(failed("error", `${BRAND.NAME}'s Messages helper is missing from this build.`));
   }
 
   return new Promise((resolve) => {

@@ -2226,7 +2226,7 @@ describe("account rollup live refresh", () => {
     const { signal, cancel } = deadline(TIMEOUT_MS);
     try {
       const result = await fetch({ timeoutMs: TIMEOUT_MS, signal });
-      expect(result.failures[0]?.message).toBe("This computer's ADE is too old to share usage");
+      expect(result.failures[0]?.message).toBe("This computer's Daex is too old to share usage");
     } finally {
       cancel();
     }
@@ -2267,7 +2267,7 @@ describe("account rollup live refresh", () => {
       ),
     ];
     for (const rejection of rejections) {
-      expect(await failureMessageFor(rejection)).toBe("This computer's ADE is too old to share usage");
+      expect(await failureMessageFor(rejection)).toBe("This computer's Daex is too old to share usage");
     }
   });
 

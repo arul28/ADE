@@ -13,6 +13,7 @@ import { DB_COMPAT_LEVEL, LEGACY_DB_COMPAT_LEVEL } from "../../../shared/release
 import type { Logger } from "../logging/logger";
 import { dbCompatLevelOf } from "../state/dbCompatRecord";
 import { listLocalDatabases } from "../startupRecovery/databaseCopies";
+import { BRAND } from "../../../shared/brand";
 
 export type TrackSwitchGuardDeps = {
   /** Resolves the parsed JSON, `null` for a 404, and throws on other failures. */
@@ -54,7 +55,7 @@ export async function checkTrackSwitch(args: {
     return {
       allowed: false,
       target,
-      reason: `ADE couldn't reach GitHub to check the newest ${targetLabel} build. Check your connection and try again.`,
+      reason: `${BRAND.NAME} couldn't reach GitHub to check the newest ${targetLabel} build. Check your connection and try again.`,
     };
   }
   let manifest: ReleaseManifest | null;
@@ -69,7 +70,7 @@ export async function checkTrackSwitch(args: {
       return {
         allowed: false,
         target,
-        reason: `ADE couldn't read the newest ${targetLabel} build's details, so it can't tell whether that build can open your projects. Try again later.`,
+        reason: `${BRAND.NAME} couldn't read the newest ${targetLabel} build's details, so it can't tell whether that build can open your projects. Try again later.`,
       };
     }
   }
@@ -79,7 +80,7 @@ export async function checkTrackSwitch(args: {
     return {
       allowed: false,
       target,
-      reason: `The newest ${targetLabel} build doesn't say which data it can open, so ADE won't switch to it.`,
+      reason: `The newest ${targetLabel} build doesn't say which data it can open, so ${BRAND.NAME} won't switch to it.`,
     };
   }
 
@@ -104,7 +105,7 @@ export async function checkTrackSwitch(args: {
     return {
       allowed: false,
       target,
-      reason: "ADE couldn't read the list of projects on this computer, so it can't check them. Try again.",
+      reason: `${BRAND.NAME} couldn't read the list of projects on this computer, so it can't check them. Try again.`,
     };
   }
   for (const database of databases) {
@@ -113,7 +114,7 @@ export async function checkTrackSwitch(args: {
       return {
         allowed: false,
         target,
-        reason: `ADE couldn't read the data version of ${database.label}, so it won't switch. Open it once on this build, then try again.`,
+        reason: `${BRAND.NAME} couldn't read the data version of ${database.label}, so it won't switch. Open it once on this build, then try again.`,
       };
     }
     if (level > targetDbCompat) return tooNew(`A newer build already updated ${database.label}`);

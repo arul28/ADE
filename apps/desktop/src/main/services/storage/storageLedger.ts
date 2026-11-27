@@ -17,6 +17,7 @@ import {
   EVENT_LOG_RETENTION_DAYS,
   PR_SNAPSHOT_RETENTION_DAYS,
 } from "../state/dbMaintenanceApi";
+import { BRAND } from "../../../shared/brand";
 
 // The DB retention/count policies below derive from the shared enforcement
 // constants so the ledger, the ingress writer, and the kvDb maintenance hooks
@@ -87,7 +88,7 @@ export const STORAGE_LEDGER: readonly StorageLedgerEntry[] = [
   {
     id: "fs.transcript_duplicates",
     kind: "file_family",
-    description: "Second copies of chat transcripts that older ADE builds wrote beside the full one. Removed once every event in a copy is proven to be in the full transcript.",
+    description: `Second copies of chat transcripts that older ${BRAND.NAME} builds wrote beside the full one. Removed once every event in a copy is proven to be in the full transcript.`,
     policyClass: "derived",
     policy: {},
     enforcement: "doctor",
@@ -95,7 +96,7 @@ export const STORAGE_LEDGER: readonly StorageLedgerEntry[] = [
   {
     id: "fs.provider_sessions",
     kind: "file_family",
-    description: "Claude and Codex session files that ADE started for chats from deleted lanes, in the providers' own folders. Removed only when a person confirms; imported sessions and sessions a live chat names are never touched.",
+    description: `Claude and Codex session files that ${BRAND.NAME} started for chats from deleted lanes, in the providers' own folders. Removed only when a person confirms; imported sessions and sessions a live chat names are never touched.`,
     policyClass: "user_data",
     policy: {},
     enforcement: "manual",
@@ -127,7 +128,7 @@ export const STORAGE_LEDGER: readonly StorageLedgerEntry[] = [
   {
     id: "fs.recovery_backups",
     kind: "file_family",
-    description: "Database recovery backups. ADE keeps the newest good copy and lists older verified copies for review.",
+    description: `Database recovery backups. ${BRAND.NAME} keeps the newest good copy and lists older verified copies for review.`,
     policyClass: "operational",
     policy: { keepLatest: 1, maxAgeDays: 7 },
     enforcement: "manual",

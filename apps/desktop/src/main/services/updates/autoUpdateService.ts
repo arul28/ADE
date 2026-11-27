@@ -59,6 +59,7 @@ import type { UpdateTrackSwitchResult } from "../../../shared/types";
 import { InstallOnQuitDeferredError } from "./installOnQuit";
 import { updateBlockCause } from "../../../shared/updateBlock";
 import { RUNTIME_SERVICE_INSTALL_LOCK_WAIT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
+import { BRAND } from "../../../shared/brand";
 
 const DEFAULT_INSTALL_WATCHDOG_MS = 30_000;
 /**
@@ -74,7 +75,7 @@ export const WINDOWS_PREPARE_WATCHDOG_MS = 2 * RUNTIME_SERVICE_INSTALL_LOCK_WAIT
 const DEFAULT_DOWNLOAD_STALL_MS = 2 * 60_000;
 const DEFAULT_DOWNLOAD_STALL_POLL_MS = 15_000;
 const DOWNLOAD_STALLED_MESSAGE =
-  "The update download stopped receiving data, so ADE cancelled it. ADE tries again on the next check.";
+  `The update download stopped receiving data, so ${BRAND.NAME} cancelled it. ${BRAND.NAME} tries again on the next check.`;
 // Warn only, never fatal. Squirrel.Mac needs roughly this long just to expand
 // and code-sign verify the archive, so killing here loses a coin flip against a
 // healthy install — which is exactly the bug this replaced.
@@ -1277,7 +1278,7 @@ export function createAutoUpdateService({
         compressedUpdateBytes,
       });
       if (disk.availableBytes >= requiredBytes) return true;
-      const error = new Error("Not enough space to update ADE.");
+      const error = new Error(`Not enough space to update ${BRAND.NAME}.`);
       setErrorSnapshot({
         error,
         fallbackPhase: phase,
@@ -1286,7 +1287,7 @@ export function createAutoUpdateService({
           requiredBytes,
           volumePath: disk.volumePath,
         },
-        message: "Not enough space to update ADE.",
+        message: `Not enough space to update ${BRAND.NAME}.`,
         preservesDownload: phase === "install",
       });
       return false;
@@ -1904,7 +1905,7 @@ export function createAutoUpdateService({
       checkPromise = (async () => {
         const release = await checkManualRelease?.();
         if (!release || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(release.version)) {
-          throw new Error("Could not check the latest ADE release. Try again or open the download page.");
+          throw new Error(`Could not check the latest ${BRAND.NAME} release. Try again or open the download page.`);
         }
         const newer = compareUpdateVersions(release.version, currentVersion) > 0;
         patchSnapshot({
@@ -2608,7 +2609,7 @@ export function createAutoUpdateService({
         const prepareResult = await waitForInstallStep(
           Promise.resolve(beforeQuitAndInstall?.(resumeChats, { closeAfterInstall: options.closeAfterInstall === true })),
           "install",
-          "ADE could not prepare to quit for the update. Try again.",
+          `${BRAND.NAME} could not prepare to quit for the update. Try again.`,
           prepareWatchdogMs,
         );
         if (!prepareResult.completed) {
@@ -2829,13 +2830,13 @@ export function createAutoUpdateService({
       return { ok: false, target, reason: "This build can't change its update track." };
     }
     if (snapshot.status === "installing" || quitAndInstallPromise != null || installQuitArmed) {
-      return { ok: false, target, reason: "An update is installing. Try again when ADE has restarted." };
+      return { ok: false, target, reason: `An update is installing. Try again when ${BRAND.NAME} has restarted.` };
     }
     if (snapshot.status === "downloading" || snapshot.status === "checking" || cancellingTrackSwitch) {
-      return { ok: false, target, reason: "ADE is still handling an update check. Try again in a moment." };
+      return { ok: false, target, reason: `${BRAND.NAME} is still handling an update check. Try again in a moment.` };
     }
     if (trackFeed.goingBackTo()) {
-      return { ok: false, target, reason: "ADE is going back to the version it came from. Switch tracks after it restarts." };
+      return { ok: false, target, reason: `${BRAND.NAME} is going back to the version it came from. Switch tracks after it restarts.` };
     }
     // Back to the running track is saved now: it clears a switch that did not
     // finish. A move to the other track is saved by the build it installs,
@@ -2845,7 +2846,7 @@ export function createAutoUpdateService({
       try {
         writeSelectedTrack(target);
       } catch (error) {
-        return { ok: false, target, reason: `ADE couldn't save the choice: ${formatErrorMessage(error)}` };
+        return { ok: false, target, reason: `${BRAND.NAME} couldn't save the choice: ${formatErrorMessage(error)}` };
       }
     }
     const previousSelected = trackFeed.state().selected;
@@ -2883,7 +2884,7 @@ export function createAutoUpdateService({
   async function startGoBack(version: string): Promise<{ ok: true } | { ok: false; reason: string }> {
     if (manualInstallOnly) return { ok: false, reason: "This Linux installation must be updated manually." };
     if (snapshot.status === "installing" || quitAndInstallPromise != null || installQuitArmed) {
-      return { ok: false, reason: "An update is installing. Wait for ADE to restart." };
+      return { ok: false, reason: `An update is installing. Wait for ${BRAND.NAME} to restart.` };
     }
     // A check, its download, or a staged-archive restore already running
     // finishes first, on the feed it started on; whatever it staged is dropped

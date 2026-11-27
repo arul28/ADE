@@ -8,6 +8,7 @@ import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
 import type { Logger } from "../logging/logger";
 import { isRecord } from "../shared/utils";
 import { createMachineConnector, type MachineConnector, type MachineConnectorDeps } from "./machineConnector";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Answers `window.ade.machines` (contract C2, `shared/machineAddress.ts`), and
@@ -43,7 +44,7 @@ export function registerMachineConnectIpc(args: Omit<MachineConnectorDeps, "logg
   });
 
   ipcMain.handle(IPC.machinesConnect, async (event, raw: unknown): Promise<MachineConnectResult> => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.machinesConnect)) throw new Error("ADE can't do that from here.");
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.machinesConnect)) throw new Error(`${BRAND.NAME} can't do that from here.`);
     const request = isRecord(raw) ? raw : {};
     const machineKey = typeof request.machineKey === "string" ? request.machineKey : "";
     return await connector.connect(machineKey, {
@@ -53,7 +54,7 @@ export function registerMachineConnectIpc(args: Omit<MachineConnectorDeps, "logg
   });
 
   ipcMain.handle(IPC.machinesAddressFor, (event, raw: unknown): MachineAddress | null => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.machinesAddressFor)) throw new Error("ADE can't do that from here.");
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.machinesAddressFor)) throw new Error(`${BRAND.NAME} can't do that from here.`);
     const request = isRecord(raw) ? raw : {};
     return connector.addressFor(typeof request.machineKey === "string" ? request.machineKey : "");
   });

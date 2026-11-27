@@ -42,7 +42,7 @@ describe("packagedSyncHostLaunchGate", () => {
 
     expect(content.title).toBe("Cannot launch ADE Alpha");
     expect(content.message).toContain("ADE is already running with phone sync");
-    expect(content.detail).toContain("Only one official ADE build can host phone sync");
+    expect(content.detail).toContain("Only one official Daex build can host phone sync");
     expect(content.detail).toContain("Running now: ADE (pid 3735) on sync port 8828");
     expect(content.quitCommand).toContain("brain stop --text");
     expect(content.detail).toContain(content.quitCommand);

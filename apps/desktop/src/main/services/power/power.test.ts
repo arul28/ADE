@@ -895,7 +895,7 @@ describe("keep-awake setting", () => {
       });
       await service.setLevel("while-away");
       expect((await service.getSnapshot()).levelError)
-        .toBe("This machine wouldn't let ADE stay awake.");
+        .toBe("This machine wouldn't let Daex stay awake.");
 
       // Drop the lock and take it again — this time it works.
       activeTurns = 0;

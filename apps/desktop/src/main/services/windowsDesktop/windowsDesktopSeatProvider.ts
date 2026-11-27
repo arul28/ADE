@@ -40,6 +40,7 @@ import {
   type WindowsDesktopHostState,
   type WindowsDesktopPhase,
 } from "../../../shared/types/macDesktop";
+import { BRAND } from "../../../shared/brand";
 
 /** The product part of a Windows lane screen's display name. */
 const WINDOWS_DISPLAY_NAME_PREFIX = "Windows Desktop";
@@ -195,7 +196,7 @@ function asSetupResult(
     message: requiresAdmin
       ? "Windows Desktop setup needs the user's administrator prompt on the PC."
       : args.forgetPassword === true
-        ? "ADE's saved Windows password is gone."
+        ? `${BRAND.NAME}'s saved Windows password is gone.`
         : args.savePassword === true
           ? "Windows Desktop setup ran and the Windows password is saved on the PC."
           : alreadySetUp

@@ -6,6 +6,7 @@ import type { AdeDb } from "../state/kvDb";
 import type { PrEventPayload, PrNotificationKind, PrSummary } from "../../../shared/types";
 import { nowIso } from "../shared/utils";
 import { githubBackgroundRequestPauseUntilMs } from "../github/githubCredentialHealth";
+import { BRAND } from "../../../shared/brand";
 
 function clampMs(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
@@ -141,7 +142,7 @@ function summarizeNotification(kind: PrNotificationKind): { title: string; messa
     case "opened":
       return {
         title: "Pull request opened",
-        message: "A pull request opened and is now tracked by ADE.",
+        message: `A pull request opened and is now tracked by ${BRAND.NAME}.`,
       };
     case "reopened":
       return {
