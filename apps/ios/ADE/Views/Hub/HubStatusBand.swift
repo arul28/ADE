@@ -34,7 +34,7 @@ func hubStatusBandReading(_ proxy: GeometryProxy) -> HubStatusBandReading {
   }
   guard !proxy.isLandscapeIgnoringKeyboard else { return reading(nil, "Full: landscape.") }
   guard topInset >= 64 else { return reading(nil, "Full: top space under 64.") }
-  #if compiler(>=6.4)
+  #if compiler(>=6.4) && !ADE_IOS_SDK_27_0
   guard #available(iOS 27.1, *) else { return reading(nil, "Full: iOS older than 27.1.") }
   // The inactive ones are for the readout only.
   var regions = proxy.reservedRegions(kind: .occlusion, options: .includeInactive)

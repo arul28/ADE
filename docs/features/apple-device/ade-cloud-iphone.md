@@ -168,8 +168,17 @@ both used, without changing anything an agent or a person sees.
   (`kind "label" #id state @x,y` in points; `focused` marks the field with the
   keyboard) and runs the same `act` steps with plain taps, swipes and typing;
   it never uses Revyl's AI-priced targeting. `launch` uploads the packed
-  checkout and builds it on Revyl's runners (about 60 s for a small app);
-  `installApp` sends a prebuilt `.app` through the same runner. A recording's
+  checkout and builds it on Revyl's runners (about 60 s for a small app; the
+  ADE iOS app, about 3 minutes). The runner image is
+  `ios-macos-26-xcode-27.0`: Xcode 27.0, the iOS 27.0 SDK (seen 2026-11-27;
+  whether a build can pick a newer image is a question for Revyl). Xcode 27.0
+  and 27.1 ship the same Swift (6.4), so `#if compiler(>=6.4)` can't keep
+  iOS 27.1 API calls away from it: the ADE iOS app gates those blocks on
+  `!ADE_IOS_SDK_27_0` too, a flag its project sets only for the 27.0 SDKs.
+  A failed build reads Revyl's log (`build.logs`, the tail a page at a time)
+  in 1,000-line pages back to the start, and shows its first
+  `file:line: error:` lines. `installApp` sends a prebuilt `.app` through
+  the same runner. A recording's
   id is kept on the phone row (`recording_ref`), so any brain of the account
   can stop it. Revyl's phone has no time limit or spend cap of its own:
   `stop_at` is set at start, capped at `CLOUD_PHONE_MAX_MINUTES`, and the
