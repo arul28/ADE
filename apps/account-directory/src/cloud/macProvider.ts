@@ -215,8 +215,8 @@ async function call(env: CloudEnv, method: string, path: string, body?: unknown,
 /** What a call that asks NoMac to hold (`?wait=N`) may take: the wait and room for the answer. */
 const waitTimeoutMs = (waitSeconds: number): number => (waitSeconds + 10) * 1000;
 
-async function readSession(env: CloudEnv, sessionId: string): Promise<MacSession | null | "unreadable"> {
-  const answer = await call(env, "GET", `/mac/sessions/${encodeURIComponent(sessionId)}`);
+async function readSession(env: CloudEnv, sessionId: string, timeoutMs?: number): Promise<MacSession | null | "unreadable"> {
+  const answer = await call(env, "GET", `/mac/sessions/${encodeURIComponent(sessionId)}`, undefined, undefined, timeoutMs);
   if (answer.status === 404) return null;
   const session = macSessionOf(answer.body?.session);
   return answer.status === 200 && session ? session : "unreadable";
@@ -722,6 +722,12 @@ function testWorkerAccountEnv(env: CloudEnv): Record<string, string> {
 
 /** How long a boot started from a client's read waits on its job: inside `waitUntil`'s time; the tick finishes a longer one. */
 const MAC_BOOT_READ_WAIT_S = 20;
+/**
+ * How long a client's read waits on NoMac's session read. It answers in under
+ * 0.1 s, except at the moment a Mac turns ready (6.5 s measured on dev): a read
+ * past this answers with the row, and the tick or the next read catches up.
+ */
+const MAC_SESSION_READ_CLIENT_MS = 1_500;
 
 export async function bootMac(env: CloudEnv, row: ComputerRow, sessionId: string, now: number, waitSeconds = 50): Promise<"booted" | "taken" | "failed"> {
   const claimed = await env.DB.prepare("update cloud_computers set mac_booted_session = ? where instance_id = ? and mac_session_id = ? and coalesce(mac_booted_session, '') <> ?")
@@ -910,11 +916,12 @@ async function macRowOf(env: CloudEnv, id: string): Promise<ComputerRow | null> 
  * `background` is a client read's: undefined (the tick, the webhook) boots
  * inline; a `waitUntil` starts the boot after the answer, with a short wait
  * (a job still running then is finished by the tick, `checkBootJob`); null
- * leaves the boot to the tick. A read never waits on a boot.
+ * leaves the boot to the tick. A read never waits on a boot, nor long on
+ * NoMac (`MAC_SESSION_READ_CLIENT_MS`).
  */
 export async function syncMac(env: CloudEnv, row: ComputerRow, now: number, reason: string, background?: CloudWaitUntil | null): Promise<void> {
   if (!row.mac_session_id) return;
-  const session = await readSession(env, row.mac_session_id);
+  const session = await readSession(env, row.mac_session_id, background === undefined ? undefined : MAC_SESSION_READ_CLIENT_MS);
   if (session === "unreadable") return;
   const statements = macObservedStatements(env, row, session, now, reason);
   if (statements.length) await env.DB.batch(statements);
