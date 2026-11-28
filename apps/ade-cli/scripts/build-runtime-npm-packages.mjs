@@ -370,7 +370,7 @@ https://ade-app.dev/docs/sdk/bundling
 
 ## License
 
-AGPL-3.0-only with the ADE Runtime Embedding Exception.
+AGPL-3.0-only with the DAEX Runtime Embedding Exception.
 
 Shipping this binary unmodified inside a larger work, consumed through the
 documented \`@daex-dev/sdk\` interface, does not by itself make that work subject
@@ -404,7 +404,7 @@ Bundling and code-signing guide: https://ade-app.dev/docs/sdk/bundling
 
 ## License
 
-AGPL-3.0-only with the ADE Runtime Embedding Exception.
+AGPL-3.0-only with the DAEX Runtime Embedding Exception.
 
 Shipping the runtime binary unmodified inside a larger work, consumed through
 the documented \`@daex-dev/sdk\` interface, does not by itself make that work

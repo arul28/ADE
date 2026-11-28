@@ -797,7 +797,7 @@ test("writes both license documents into a platform package", () => {
       "EXCEPTION TEXT",
     );
     const readme = fs.readFileSync(path.join(packageDir, "README.md"), "utf8");
-    assert.ok(readme.includes("AGPL-3.0-only with the ADE Runtime Embedding Exception"));
+    assert.ok(readme.includes("AGPL-3.0-only with the DAEX Runtime Embedding Exception"));
     assert.ok(readme.includes(EXCEPTION_FILE_NAME));
   });
 });
@@ -815,7 +815,7 @@ test("writes both license documents into the meta package", () => {
     assert.equal(fs.readFileSync(path.join(dir, "LICENSE"), "utf8"), "LICENSE TEXT");
     assert.equal(fs.readFileSync(path.join(dir, EXCEPTION_FILE_NAME), "utf8"), "EXCEPTION TEXT");
     const readme = fs.readFileSync(path.join(dir, "README.md"), "utf8");
-    assert.ok(readme.includes("AGPL-3.0-only with the ADE Runtime Embedding Exception"));
+    assert.ok(readme.includes("AGPL-3.0-only with the DAEX Runtime Embedding Exception"));
   });
 });
 
@@ -854,7 +854,7 @@ test("readLicenseFiles returns the repository's own two license documents", () =
   // fail here rather than publish a package missing one of them.
   const { license, exception } = readLicenseFiles();
   assert.ok(license.includes("GNU AFFERO GENERAL PUBLIC LICENSE"));
-  assert.ok(exception.includes("ADE Runtime Embedding Exception"));
+  assert.ok(exception.includes("DAEX Runtime Embedding Exception"));
 });
 
 test("verifyPackedRuntimeFiles reports an unparseable npm pack output rather than passing", () => {

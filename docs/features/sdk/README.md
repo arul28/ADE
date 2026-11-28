@@ -1029,7 +1029,7 @@ Native `windows-latest` CI still has to repeat the Windows-sensitive files; para
 
 ## License
 
-`@ade-dev/sdk` and `@ade-dev/chat-ui` are MIT. The runtime binary and ADE itself are AGPL-3.0-only, with the ADE Runtime Embedding Exception on the runtime binary (#1211).
+`@ade-dev/sdk` and `@ade-dev/chat-ui` are MIT. The runtime binary and ADE itself are AGPL-3.0-only, with the DAEX Runtime Embedding Exception on the runtime binary (#1211).
 
 - Public page: [`sdk/license.mdx`](../../../sdk/license.mdx) states the per-artifact table and answers whether a proprietary app may ship the runtime. It is the one place a decision gets recorded, so update it first.
 - Exception: [`RUNTIME-EMBEDDING-EXCEPTION.md`](../../../RUNTIME-EMBEDDING-EXCEPTION.md) at the repository root. It permits an unmodified runtime binary inside a larger work that consumes it through the documented `@ade-dev/sdk` interface. Modifying the runtime, or linking ADE source, keeps the AGPL in force.

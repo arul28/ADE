@@ -414,4 +414,4 @@ fact instead of proving the round trip.
 
 ## License
 
-MIT. See [LICENSE](./LICENSE). DAEX (formerly ADE) itself remains AGPL-3.0-only; see the [ADE Runtime Embedding Exception](https://github.com/arul28/ADE/blob/main/RUNTIME-EMBEDDING-EXCEPTION.md) for shipping the runtime binary in your app.
+MIT. See [LICENSE](./LICENSE). DAEX (formerly ADE) itself remains AGPL-3.0-only; see the [DAEX Runtime Embedding Exception](https://github.com/arul28/ADE/blob/main/RUNTIME-EMBEDDING-EXCEPTION.md) for shipping the runtime binary in your app.
