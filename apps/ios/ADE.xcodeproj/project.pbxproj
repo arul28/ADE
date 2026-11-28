@@ -141,6 +141,8 @@
 		AA5200000000000000000015 /* ADEActivityHomeWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5200000000000000000005 /* ADEActivityHomeWidget.swift */; };
 		AA5200000000000000000016 /* LockScreenPriorityStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5200000000000000000006 /* LockScreenPriorityStatus.swift */; };
 		AE00000000000000000000B1 /* ADEAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE00000000000000000000A1 /* ADEAppDelegate.swift */; };
+		BE00000000000000000000B1 /* BrandRenameNotice.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE00000000000000000000A1 /* BrandRenameNotice.swift */; };
+		BE00000000000000000000B2 /* InstallHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE00000000000000000000A2 /* InstallHistory.swift */; };
 		AE00000000000000000000B2 /* PushNotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE00000000000000000000A2 /* PushNotificationService.swift */; };
 		AE00000000000000000000B3 /* LiveActivityService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE00000000000000000000A3 /* LiveActivityService.swift */; };
 		AE00000000000000000000B4 /* SettingsPushDeliverySection.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE00000000000000000000A4 /* SettingsPushDeliverySection.swift */; };
@@ -757,6 +759,8 @@
 		AA5200000000000000000005 /* ADEActivityHomeWidget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEActivityHomeWidget.swift; path = ADEWidgets/ADEActivityHomeWidget.swift; sourceTree = "<group>"; };
 		AA5200000000000000000006 /* LockScreenPriorityStatus.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LockScreenPriorityStatus.swift; path = ADEWidgets/LockScreenPriorityStatus.swift; sourceTree = "<group>"; };
 		AE00000000000000000000A1 /* ADEAppDelegate.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEAppDelegate.swift; path = ADE/App/ADEAppDelegate.swift; sourceTree = "<group>"; };
+		BE00000000000000000000A1 /* BrandRenameNotice.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = BrandRenameNotice.swift; path = ADE/App/BrandRenameNotice.swift; sourceTree = "<group>"; };
+		BE00000000000000000000A2 /* InstallHistory.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = InstallHistory.swift; path = ADE/App/InstallHistory.swift; sourceTree = "<group>"; };
 		AE00000000000000000000A2 /* PushNotificationService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PushNotificationService.swift; path = ADE/Services/PushNotificationService.swift; sourceTree = "<group>"; };
 		AE00000000000000000000A3 /* LiveActivityService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LiveActivityService.swift; path = ADE/Services/LiveActivityService.swift; sourceTree = "<group>"; };
 		AE00000000000000000000A4 /* SettingsPushDeliverySection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsPushDeliverySection.swift; path = ADE/Views/Settings/SettingsPushDeliverySection.swift; sourceTree = "<group>"; };
@@ -1888,6 +1892,8 @@
 			children = (
 				C9411193AF56B236BA32EFF5 /* ADEApp.swift */,
 				AE00000000000000000000A1 /* ADEAppDelegate.swift */,
+				BE00000000000000000000A1 /* BrandRenameNotice.swift */,
+				BE00000000000000000000A2 /* InstallHistory.swift */,
 				73B17472FAC08845853BC6B4 /* ContentView.swift */,
 				B2B52EED21B04E9700000001 /* RemoteProjectAddSheet.swift */,
 				D2000000000000000000DE0D /* RemoteProjectAddSteps.swift */,
@@ -2446,6 +2452,8 @@
 				C1000000000000000000B001 /* MachineRowView.swift in Sources */,
 				F2A1C9D8456E7B3C1D2E4F90 /* FilesCodeSupport.swift in Sources */,
 				1558E44876BBE931C02D5640 /* ADEApp.swift in Sources */,
+				BE00000000000000000000B1 /* BrandRenameNotice.swift in Sources */,
+				BE00000000000000000000B2 /* InstallHistory.swift in Sources */,
 				4DC17C7C8E82D387043B01FD /* ContentView.swift in Sources */,
 				B2B52EED21B04E9700000002 /* RemoteProjectAddSheet.swift in Sources */,
 				E2000000000000000000DE0D /* RemoteProjectAddSteps.swift in Sources */,

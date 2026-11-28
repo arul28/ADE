@@ -3,8 +3,13 @@ import SwiftUI
 @main
 struct ADEApp: App {
   /// First of all stored properties: they start in order, and `syncService`
-  /// below writes the device id the rename notice reads as "ran before".
-  private let brandRenameNoticeSeeded: Void = BrandRenameNotice.seedIfNeeded()
+  /// below writes the device id `InstallHistory` reads as "ran before". The
+  /// rename notice seeds first, because it also reads the color scheme the
+  /// second call saves on a first launch.
+  private let firstLaunchDefaultsSeeded: Void = {
+    BrandRenameNotice.seedIfNeeded()
+    ADEColorSchemeChoice.seedDefaultIfNeeded()
+  }()
   @UIApplicationDelegateAdaptor(ADEAppDelegate.self) private var appDelegate
   @Environment(\.scenePhase) private var scenePhase
   // Owned here, not observed: the app's body only hands these to the
@@ -45,8 +50,6 @@ struct ADEApp: App {
     // The launch update gate's cover: from the first scene on, a phone below
     // its minimum shows only "Update ADE to keep working".
     PhoneUpdateGateWindows.shared.start()
-    // Before `SyncService` creates a device id, which marks an install as one that ran before.
-    ADEColorSchemeChoice.seedDefaultIfNeeded()
     ADEIntentCommandRegistry.register(ADESyncIntentBridge.shared)
     // Nothing from a previous launch can still be on screen, so this is the one
     // moment the whole preview cache is provably unreferenced. Previews are

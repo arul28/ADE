@@ -627,7 +627,7 @@ struct HubScreen: View {
     if !renameNoticeSeen && !selecting {
       // The product's new name, once: only the name changed.
       ADESettingsNotice(
-        message: "\(Brand.introName): only the name changed. Your projects, chats and settings stay as they are, the ade command still works, and ade-app.dev links still open.",
+        message: BrandRenameNotice.message,
         tone: .neutral,
         dismiss: { renameNoticeSeen = true }
       )
@@ -1468,29 +1468,5 @@ struct HubScreen: View {
   private func persistHubLayout() {
     guard let connectionKey = layoutConnectionKey else { return }
     HubLayoutStore.save(HubLayoutState(order: projectOrder), for: connectionKey)
-  }
-}
-
-/// Who sees the Hub's "ADE is now DAEX" notice: only an install that ran
-/// before the rename. A new install starts with it already seen.
-enum BrandRenameNotice {
-  static let seenKey = "ade.brand.renameNoticeSeen.v1"
-
-  /// Decides once per install. Call at launch before `SyncService` exists,
-  /// because it writes the device id on the first launch.
-  ///
-  /// The install ran before when this launch finds what an earlier launch
-  /// left: a device id (`ade.sync.deviceId` in defaults, or the Keychain copy,
-  /// which outlives an uninstall) or a saved color scheme. A keychain that
-  /// refuses the read (a launch before the first unlock, when defaults read
-  /// empty as well) decides nothing; a later launch does.
-  static func seedIfNeeded(_ defaults: UserDefaults = .standard, keychain: KeychainService = KeychainService()) {
-    guard defaults.object(forKey: seenKey) == nil else { return }
-    let keychainDeviceId = keychain.readDeviceId()
-    if case .failed = keychainDeviceId { return }
-    var ranBefore = defaults.string(forKey: "ade.sync.deviceId") != nil
-      || defaults.string(forKey: ADEColorSchemeChoice.storageKey) != nil
-    if case .value = keychainDeviceId { ranBefore = true }
-    defaults.set(!ranBefore, forKey: seenKey)
   }
 }
