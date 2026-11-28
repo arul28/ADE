@@ -13,7 +13,7 @@ import { runCloudMoves } from "./cloud/moves";
 import { sweepStaleBackupUploads } from "./cloud/laneBackups";
 import { runPlanCleanupPicks } from "./cloud/planCleanup";
 import { runIdleCleanup } from "./cloud/idleCleanup";
-import { createComputerProvider } from "./cloud/macProvider";
+import { createComputerProvider } from "./cloud/computerProvider";
 import { handleCloudBillingPublicRequest, isCloudBillingPublicRequest, reportExtraHours } from "./cloud/billing";
 import type { CloudEnv } from "./cloud/store";
 import * as Sentry from "@sentry/cloudflare";

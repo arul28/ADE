@@ -134,7 +134,7 @@ recreates the container (home folder stays).
 A Mac (NoMac's, secret `NOMAC_API_KEY`) is a second kind of cloud computer:
 a `cloud_computers` row with `provider = 'nomac'`, `os = 'mac'`, `type =
 'mac'`, id `mac` + 32 hex (Agent 37's are 10 characters). Every caller holds
-one router, `createComputerProvider` (`macProvider.ts`): a Mac's id goes to
+one router, `createComputerProvider` (`computerProvider.ts`; the Mac in `macProvider.ts`, its drives in `macDrives.ts`): a Mac's id goes to
 NoMac, everything else to Agent 37. Contract shapes: `CloudMacOffer`,
 `CloudMacState`, `CLOUD_MAC_UNSUPPORTED` in `contract.ts`.
 

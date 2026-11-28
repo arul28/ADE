@@ -16,7 +16,9 @@ import { refreshCostEstimate, runDailyCostReport } from "./costReport";
 import { REVYL_COST_DAYS_BACK, recordRevylDayCosts } from "./phoneRevyl";
 import { AWAKE_COMPUTER_CAP, DISK_COST_MICROS_PER_GB_DAY, cloudSizeFor, usesHours, computeCostMicrosFor, hoursMilliFor, isMeteredStatus, isRestingStatus, tierOf, utcDay } from "./plans";
 import { CloudProviderError, TRY_AGAIN_CODE, type CloudProvider } from "./provider";
-import { createComputerProvider, isMacRow, runMacDriveUpkeep, runMacTick } from "./macProvider";
+import { createComputerProvider } from "./computerProvider";
+import { runMacDriveUpkeep } from "./macDrives";
+import { isMacRow, runMacTick } from "./macProvider";
 import { runPlanLimitChecks } from "./planCleanup";
 import { enforceBlocksInTick } from "./safety";
 import { computersJoiningLaunches } from "./launches";
@@ -617,7 +619,7 @@ async function runDaily(env: CloudEnv, provider: CloudProvider, computers: TickC
     }
   };
   await step("disk_baseline", () => writeDiskBaseline(env, computers, now));
-  // A kept Mac drive NoMac would delete after 30 unused days gets a short session (ADE pays; `macProvider.ts`).
+  // A kept Mac drive NoMac would delete after 30 unused days gets a short session (ADE pays; `macDrives.ts`).
   await step("mac_drive_upkeep", async () => { await runMacDriveUpkeep(env, now); });
   // Revyl's builds for the last few days (a day that failed or filled in late is read again), before the report reads them.
   const revylDays = Array.from({ length: REVYL_COST_DAYS_BACK }, (_, index) => utcDay(Date.parse(`${today}T00:00:00Z`) - (REVYL_COST_DAYS_BACK - index) * 86_400_000));

@@ -103,7 +103,9 @@ import {
   type CloudSize,
 } from "./plans";
 import { CloudProviderError, cloudErrorMessage, type CloudProvider } from "./provider";
-import { createComputerProvider, hiddenMacInstance, isMacRow, templateDriveFor, touchMac } from "./macProvider";
+import { createComputerProvider } from "./computerProvider";
+import { templateDriveFor } from "./macDrives";
+import { hiddenMacInstance, isMacRow, touchMac } from "./macProvider";
 import { macIdleStopMinutes, macReaches } from "./macSwitch";
 import {
   accountComputerCount,

@@ -1,5 +1,6 @@
 import { OWNER_MAC_TESTERS_PATH, handleOwnerMacTesters } from "./macSwitch";
-import { OWNER_MAC_TEMPLATE_PATH, handleOwnerMacTemplate, stopAccountMacs } from "./macProvider";
+import { OWNER_MAC_TEMPLATE_PATH, handleOwnerMacTemplate } from "./macDrives";
+import { stopAccountMacs } from "./macProvider";
 import { captureCloudSafety, type CloudWaitUntil } from "./analytics";
 import { cancelAccountSubscription, savedCardFingerprints } from "./billing";
 import { blockedUsersAmong, forgetNotBlocked, isCloudBlocked } from "./blocks";

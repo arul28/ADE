@@ -4,7 +4,8 @@ import { cancelAccountSubscription } from "./billing";
 import { deleteAllAccountChats } from "./chats";
 import { deleteAccountLaunches } from "./launches";
 import { deleteAccountAutomations } from "./automations";
-import { createComputerProvider, forgetAccountMacs } from "./macProvider";
+import { createComputerProvider } from "./computerProvider";
+import { forgetAccountMacs } from "./macProvider";
 import { CLOUD_DELETED_ACCOUNT_PREFIX, CLOUD_REFERRAL_FRIEND_REASON, CLOUD_REFERRAL_REFERRER_REASON } from "./contract";
 import { sha256Hex } from "../sinkUtils";
 import {
