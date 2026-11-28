@@ -101,6 +101,10 @@ async function proveSent(
   }
   if (network === "cloud") await noteCloudNetworkProof(env, account, asn, now, waitUntil);
   const saved = instanceId ? place === "here" : (await chatPlace(env, userId, input.chatId, null)) === "here";
+  // One message counts once, whether its chat was saved when it came or after (its two ids).
+  const either = await env.DB.prepare("select 1 as hit from cloud_ad_proofs where user_id = ? and chat_id = ? and turn_id in (?, ?)")
+    .bind(userId, input.chatId, `msg:${input.messageId}`, `new:${input.messageId}`).first<{ hit: number }>();
+  if (either) return refused("repeat");
   if (saved) return countAdProof(env, account, { chatId: input.chatId, turnId: `msg:${input.messageId}`, kind: "sent", freeModel, ...targets }, now);
   const cap = instanceId ? UNSAVED_CHAT_PROOFS_A_DAY.computer : UNSAVED_CHAT_PROOFS_A_DAY.phone;
   if ((await unsavedProofsToday(env, userId, targets, now)) >= cap) return refused("not_cloud");

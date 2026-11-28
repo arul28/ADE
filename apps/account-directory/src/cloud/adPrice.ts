@@ -361,7 +361,7 @@ export async function syncAccountPrices(env: GravityEnv, account: AccountRow, no
  * end. At `off`, only a computer still on an ad rate (or a v3 full rate) goes
  * back, so the read is the tick's own and nothing else runs.
  */
-export async function syncAdPricesInTick(env: GravityEnv, tickRows: readonly ComputerRow[], now: number): Promise<void> {
+export async function syncAdPricesInTick(env: GravityEnv, tickRows: ComputerRow[], now: number): Promise<void> {
   try {
     const switches = await pricingSwitches(env);
     // The rows as the tick's own status changes left them: a computer it just woke is awake now.
@@ -375,11 +375,24 @@ export async function syncAdPricesInTick(env: GravityEnv, tickRows: readonly Com
     const userIds = [...new Set(candidates.map((computer) => computer.user_id))];
     const ctxs = await contextsFor(env, switches, userIds);
     const targets = await targetsOf(env, candidates.map((computer) => computer.instance_id));
+    const moved: string[] = [];
     const statements = candidates.flatMap((computer) => {
       const ctx = ctxs.get(computer.user_id);
-      return ctx ? computerPriceStatements(env, computer, targets.get(computer.instance_id) ?? null, ctx, now) : [];
+      const move = ctx ? computerPriceStatements(env, computer, targets.get(computer.instance_id) ?? null, ctx, now) : [];
+      if (move.length) moved.push(computer.instance_id);
+      return move;
     });
-    if (statements.length) await env.DB.batch(statements);
+    if (statements.length === 0) return;
+    await env.DB.batch(statements);
+    // The rest of the tick (the settle, the zero stop, the daily settle) reads the rows it passed in:
+    // each moved one gets its rate and stretch as written (a guarded move a race refused keeps the old).
+    const fresh = await env.DB.prepare("select instance_id, multiplier_milli, ad_full_milli, awake_since from cloud_computers where instance_id in (select value from json_each(?))")
+      .bind(JSON.stringify(moved)).all<Pick<ComputerRow, "instance_id" | "multiplier_milli" | "ad_full_milli" | "awake_since">>();
+    const byId = new Map((fresh.results ?? []).map((row) => [row.instance_id, row]));
+    for (const row of tickRows) {
+      const written = byId.get(row.instance_id);
+      if (written) Object.assign(row, { multiplier_milli: written.multiplier_milli, ad_full_milli: written.ad_full_milli, awake_since: written.awake_since });
+    }
   } catch (error) {
     reportCloudFailure("cloud.ad_price.tick_failed", { message: error instanceof Error ? error.message : "unknown" });
   }

@@ -457,12 +457,15 @@ const LEGACY_PHONE_EXTRA: CloudAccountPhone["extra"] = { available: false, enabl
 export async function phoneAccountState(env: CloudEnv, account: AccountRow, now: number, credits: PhoneCredits): Promise<CloudAccountPhone> {
   const { access, choice } = await phoneAccess(env, account.user_id);
   const rows = access === "on" ? await periodPhones(env, account.user_id, account.period_start) : [];
+  // A running phone's minutes left follow the rate it bills at (`rate_milli`, null: 1,000), not a new phone's.
+  const liveRow = rows.find((row) => row.state === "live" && row.credits === 1);
+  const rated = liveRow ? { ...credits, phoneRateMilli: liveRow.rate_milli ?? PHONE_CREDIT_MILLI_PER_MINUTE } : credits;
   return {
     access,
     ...(choice ? { providerChoice: choice.provider } : {}),
     creditsUsedMilli: access === "on" ? phoneCreditsUsedOf(rows, now) : 0,
     // Kept for CLI and desktop builds before 1.2.135 (`ade cloud status` reads it here); remove after.
-    ...(access === "on" ? { minutes: minutesOf(phoneUsageOf(account, rows, now, credits)) } : {}),
+    ...(access === "on" ? { minutes: minutesOf(phoneUsageOf(account, rows, now, rated)) } : {}),
     extra: LEGACY_PHONE_EXTRA,
   };
 }

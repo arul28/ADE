@@ -435,7 +435,9 @@ settings (`scripts/cloud-owner.mjs set ...`). The shared contract is the
 - **Full-price work** (`fullPriceWork` on the brain's activity report, sent on
   change with no new poll; `noteActivityReport`; only the newest report by
   `reportedAt` counts, and work is kept only while Pricing v3 reaches the
-  account):
+  account; a report naming work goes again every 10 minutes with nothing
+  changed, so work already running when Pricing v3 turns on is priced within
+  that time):
   - `cli_session`: an agent CLI session is alive on the computer: any of the 13
     providers launched by DAEX, or one started by hand in a shell and found by
     its process name (`AGENT_CLI_PROCESS_NAMES`: claude, codex, cursor-agent,

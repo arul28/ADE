@@ -11,7 +11,10 @@
  * first. The busy read (`readCloudBusy` in `cli.ts`) hands over the agents.
  * A report goes out only when what it says changes (working or idle, since
  * when, how many agents), and once again after a wake, since the server drops
- * a report older than the stretch awake. One report is in flight at a time;
+ * a report older than the stretch awake. While it names full-price work it
+ * goes again every `WORK_REPORT_REFRESH_MS`: the server keeps nothing while
+ * Pricing v3 is off, so work already running when it turns on is priced
+ * within that time. One report is in flight at a time;
  * a failed one is sent again with a later check: the next one at first, then
  * spaced out (up to every 8th check) while it keeps failing, as against an
  * older server with no activity route. A failing streak logs once, and again
@@ -54,6 +57,9 @@ export function cloudFullPriceWork(facts: Pick<CloudBusyFacts, "chats" | "termin
   return work;
 }
 
+/** How often a report naming full-price work goes again with nothing changed (`noteIdle`). */
+export const WORK_REPORT_REFRESH_MS = 10 * 60_000;
+
 export type CloudActivityReporter = {
   /** One busy read's facts: the agents working now. Sends nothing; the next check's idle facts carry it. Never throws. */
   noteAgents(facts: Pick<CloudBusyFacts, "chats" | "terminals">): void;
@@ -80,7 +86,12 @@ export function createCloudActivityReporter(deps: {
   let loggedError: string | null = null;
 
   // The stretch awake is in the key: after a wake the server needs a report from this stretch, even if nothing else changed.
-  const keyOf = (report: CloudComputerActivityReport, awakeSince: number) => `${awakeSince}|${report.busy}|${report.runningAgents}|${report.idleSince ?? ""}|${(report.fullPriceWork ?? []).join(",")}`;
+  // Full-price work adds the refresh period, so it goes again each `WORK_REPORT_REFRESH_MS`.
+  const keyOf = (report: CloudComputerActivityReport, awakeSince: number) => {
+    const work = report.fullPriceWork ?? [];
+    const refresh = work.length ? `|${Math.floor(report.reportedAt / WORK_REPORT_REFRESH_MS)}` : "";
+    return `${awakeSince}|${report.busy}|${report.runningAgents}|${report.idleSince ?? ""}|${work.join(",")}${refresh}`;
+  };
 
   const flush = (report: CloudComputerActivityReport, key: string): void => {
     if (inFlight) {

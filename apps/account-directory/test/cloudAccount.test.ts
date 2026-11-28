@@ -6998,6 +6998,10 @@ describe("Pricing v3's ad price", () => {
     clock += 2 * 60_000;
     await harness.tick();
     expect(priced().rate).toBe(500);
+    // The same message again once its chat is saved is a repeat, never a second (whole) window.
+    saveChat("chat-new");
+    expect(await sent({ chatId: "chat-new", messageId: "n-1" })).toEqual({ counted: false, reason: "repeat" });
+    expect(priced().rate).toBe(500);
     // Six a UTC day per computer, then none: another computer has its own six.
     for (let n = 2; n <= 6; n += 1) expect(await sent({ chatId: `chat-new-${n}`, messageId: `n-${n}` })).toEqual({ counted: true });
     expect(await sent({ chatId: "chat-new-7", messageId: "n-7" })).toEqual({ counted: false, reason: "not_cloud" });
@@ -7070,6 +7074,33 @@ describe("Pricing v3's ad price", () => {
     // The idle report after the turn ends it: the price with ads.
     expect((await report(false, clock)).status).toBe(200);
     expect(onAd()).toBe(true);
+  });
+
+  it("a window's end moved in the tick is charged once: the rest of the tick reads the rate and stretch it wrote", async () => {
+    // A Medium at the price with ads for 6 hours; its window ended a minute ago.
+    seedComputer(harness, { cpu: 4, memory_gb: 8, awake_since: clock - 6 * HOUR, status_changed_at: clock - 6 * HOUR, last_awake_at: clock - 6 * HOUR });
+    provide(harness).resources = { cpu: 4, memory: 8, disk: 4 };
+    harness.insert("machines", { user_id: OWNER, machine_key: "mk-tick", last_seen_at: clock });
+    harness.exec("update cloud_computers set machine_key = 'mk-tick' where instance_id = ?", INSTANCE);
+    saveChat("chat-1");
+    clock -= 61 * 60_000;
+    expect(await sent({ messageId: "m-1" })).toEqual({ counted: true });
+    harness.exec("update cloud_computers set awake_since = ? where instance_id = ?", NOW - 6 * HOUR, INSTANCE);
+    const ad = priced();
+    expect(ad.adFull).not.toBeNull();
+    // Just under 80% once the stretch is charged once (counted twice, it would pass 80%).
+    const expected = Math.round((6 * HOUR - 60_000) * Number(ad.rate) / HOUR);
+    const before = 80_000 - expected - 200;
+    harness.exec("update cloud_accounts set used_milli = ? where user_id = ?", before, OWNER);
+    clock = NOW;
+    harness.exec("update machines set last_seen_at = ? where machine_key = 'mk-tick'", clock);
+    await harness.tick();
+    // Back on the full price from the window's end, the stretch before it charged once at the price with ads.
+    expect(priced()).toEqual({ rate: ad.adFull, adFull: null });
+    // (and the minute since its end at the full price).
+    expect(usedMilli(harness) - before).toBe(expected + Math.round(60_000 * Number(ad.adFull) / HOUR));
+    // So the tick's own settle counted it once: still under 80%, no warning yet.
+    expect(harness.row("select warned_80_at from cloud_accounts where user_id = ?", OWNER).warned_80_at).toBeNull();
   });
 
   it("a proof from the network of the account's own computers doesn't count; from the provider's network otherwise it counts and the owner hears of it", async () => {
