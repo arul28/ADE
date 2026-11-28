@@ -109,7 +109,9 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
   const due = idleCleanupEntries(account, computers, live, now);
   // Sponsored cards (`gravity.ts`): left out while the switch doesn't reach the account. A read that fails never costs the account read.
   const who = sponsoredRequester(request ?? null);
-  const sponsoredRead = await sponsoredAccountState(env, account, who, now).catch((error: unknown) => {
+  // Read before Pricing v3's state below: an older app (no `X-ADE-Pricing: 3`) gets today's Free rule.
+  const knowsV3 = request?.headers.get(CLOUD_PRICING_HEADER)?.trim() === CLOUD_PRICING_VERSION;
+  const sponsoredRead = await sponsoredAccountState(env, account, who, now, { legacy: !knowsV3 }).catch((error: unknown) => {
     reportCloudFailure("cloud.sponsored.state_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
     return undefined;
   });
@@ -119,10 +121,10 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
     return undefined;
   });
   const v3Catalog = pricing ? await v3CatalogTerms(env, account) : null;
-  // An app that doesn't know Pricing v3 (no `X-ADE-Pricing: 3`) gets neither `pricing` nor `sponsored` while
-  // Pricing v3 reaches the account: it shows today's product with no ads, and the real numbers in the catalog.
-  const knowsV3 = request?.headers.get(CLOUD_PRICING_HEADER)?.trim() === CLOUD_PRICING_VERSION;
-  const sponsored = pricing && !knowsV3 ? undefined : sponsoredRead;
+  // An app that doesn't know Pricing v3 (no `X-ADE-Pricing: 3`) gets no `pricing` while Pricing v3 reaches the
+  // account, and `sponsored` only on Free, by today's Free rule: it keeps its ads there (its card requests are
+  // proofs, and keep Small as free as today), and never shows an ad on a paid plan. The catalog's numbers are real.
+  const sponsored = pricing && !knowsV3 && shownPlan !== "free" ? undefined : sponsoredRead;
   // ADE Free Models (`freeModels.ts`), any plan: left out while their switch doesn't reach the account or a key is missing.
   const freeModels = await freeModelsAccountState(env, account, who, now).catch((error: unknown) => {
     reportCloudFailure("cloud.free_models.state_failed", { userId, message: error instanceof Error ? error.message : "unknown" });

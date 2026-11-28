@@ -2,6 +2,8 @@ import { gravityAds, type ModelUsage } from "@gravity-ai/api";
 import { sha256Hex } from "../sinkUtils";
 import {
   CLOUD_PATHS,
+  CLOUD_PRICING_HEADER,
+  CLOUD_PRICING_VERSION,
   CLOUD_SPONSORED_CHOICES,
   CLOUD_SPONSORED_DEVICE_TYPES,
   CLOUD_SPONSORED_FORMATS,
@@ -265,10 +267,11 @@ async function honorGpc(env: GravityEnv, account: AccountRow, read: ConsentRow |
  * this account, so a client shows nothing at all. A paid account the switch
  * reaches still gets it (`ads` false), so its Settings can say there are none.
  */
-export async function sponsoredAccountState(env: GravityEnv, account: AccountRow, who: SponsoredRequester, now: number): Promise<CloudSponsoredState | undefined> {
+export async function sponsoredAccountState(env: GravityEnv, account: AccountRow, who: SponsoredRequester, now: number, { legacy = false }: { legacy?: boolean } = {}): Promise<CloudSponsoredState | undefined> {
   const settings = await readCloudSettings(env);
   const switches = await gravitySwitches(env, settings);
-  const v3 = await v3For(env, account.user_id, settings);
+  // `legacy`: an older app, which knows only the Free plan's rule (`accountState.ts`).
+  const v3 = !legacy && (await v3For(env, account.user_id, settings));
   const reason = await blockedReason(env, account, who.country, switches, v3);
   if (reason === "off") return undefined;
   // An account joins the A/B test's arm only once ads reach it.
@@ -786,6 +789,8 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
   const settings = await readCloudSettings(env);
   // Pricing v3 (`adPrice.ts`): every plan, the notice first, a chat that holds the cloud iPhone, and the request is a proof.
   const v3 = await v3For(env, userId, settings);
+  // An app that doesn't send `X-ADE-Pricing: 3` (an older build): on Free its old ads question counts as the notice.
+  const legacy = request.headers.get(CLOUD_PRICING_HEADER)?.trim() !== CLOUD_PRICING_VERSION;
   const phoneId = v3 ? await ownLivePhone(env, userId, body.phoneId) : null;
   // A chat ADE Free Models served lately, on any machine and plan, has its own rules.
   const free = await freeModelAdGate(env, userId, chatId, who, now);
@@ -813,7 +818,7 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
     const consent = await honorGpc(env, account, await readConsent(env, userId), who, now);
     if (!yesHolds(env, consent, who)) return none("consent");
     // Pricing v3: never an ad before the account saw the notice.
-    if (v3 && consent.notice_seen_at == null) return none("notice");
+    if (v3 && consent.notice_seen_at == null && !(legacy && shownPlanIdOf(account) === "free")) return none("notice");
     // Only a chat on one of the account's own ADE Cloud computers (or, under Pricing v3, one
     // that holds its cloud iPhone): never one on the person's own machine otherwise.
     const computer = await ownCloudComputer(env, userId, body.instanceId);
@@ -826,8 +831,9 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
     cloudInstanceId = onComputer;
     live = switches.live;
     emailHash = consent.email_hash;
-    // Pricing v3 replaces Free Small's look with the ad price.
-    lookUnder = v3 ? null : consent;
+    // Pricing v3 replaces Free Small's look with the ad price, except for an older app on Free: its
+    // card request still moves the look, so its Small stays as free as today (`adPrice.ts` `smallLookUntil`).
+    lookUnder = v3 && !legacy ? null : consent;
   }
   if (v3) {
     // A request from the network of the account's own cloud computers: no proof, nothing sent to Gravity.

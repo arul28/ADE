@@ -51,6 +51,14 @@ export const smallFreeFrom = (country: string | null): boolean => country == nul
 /** The oldest `looked_at` that still keeps Small free at `now`: a week, plus the refresh's lag, never less. */
 const freeLookSince = (now: number): number => now - SMALL_FREE_LOOK_MS - LOOK_REFRESH_MS;
 
+/**
+ * Until when the account's last US look keeps Free's Small free (null with no
+ * yes or no look). Under Pricing v3 only an older app's card request moves
+ * the look (`gravity.ts`), so an older build's Small stays as free as today.
+ */
+export const smallLookUntil = (consent: Pick<ConsentRow, "consent" | "looked_at"> | null): number | null =>
+  consent?.consent === "granted" && consent.looked_at != null ? consent.looked_at + SMALL_FREE_LOOK_MS + LOOK_REFRESH_MS : null;
+
 /** Whether the account's yes still keeps Small free: a look from the US within `SMALL_FREE_LOOK_MS`. */
 export const lookKeepsSmallFree = (consent: ConsentRow | null, now: number): boolean =>
   consent?.consent === "granted" && consent.looked_at != null && consent.looked_at >= freeLookSince(now);

@@ -16,9 +16,9 @@ import { PLATFORM_URL, adsCountryHas, type GravityEnv } from "./gravity";
 import { CREDIT_SCALE, EXTRA_HOUR_MICROS, PHONE_MILLI_PER_MINUTE_V3, SMALL_NO_CARDS_RATE_MILLI, adRateMilli, cloudSizeFor, isMeteredStatus, utcDay, v3FullRateMilli, type V3Rate } from "./plans";
 import { readCloudSettings, settingChangedAt, type CloudSettings } from "./settings";
 import { readConsent, sponsoredRequester, startsOnFor, yesHolds, type ConsentRow, type SponsoredRequester } from "./sponsoredConsent";
-import { freeRuleCharges } from "./sponsoredSmall";
+import { freeRuleCharges, smallLookUntil } from "./sponsoredSmall";
 import { adTerms, gravitySwitches, pricingV3Mode, type PricingV3Mode, type SponsoredMode } from "./sponsoredSwitch";
-import { logCloud, reportCloudFailure, restartStretchAtStatements, statusGuard, type AccountRow, type ComputerRow } from "./store";
+import { logCloud, reportCloudFailure, restartStretchAtStatements, shownPlanIdOf, statusGuard, type AccountRow, type ComputerRow } from "./store";
 
 /**
  * Pricing v3: the ad price (`docs/features/ade-cloud/README.md`, "Plans,
@@ -73,6 +73,13 @@ export type AdContext = {
   windowMs: number;
   /** When `ad_window_minutes` last changed: a window that ends before it ends there, never earlier (no charge back in time). */
   windowChangedAt: number;
+  /**
+   * Free's Small only: until when the account's last US look from an older
+   * app keeps it free, as before Pricing v3 (`smallLookUntil`); null when none.
+   * An older app sends no "sent" proof, so without this its Small would cost
+   * more than today in the minutes before each first reply.
+   */
+  smallLookUntil: number | null;
 };
 
 const phoneTarget = (phoneId: string): string => `phone:${phoneId}`;
@@ -127,15 +134,22 @@ export type PriceDecision = { now: "ad" | "full"; reason: CloudFullPriceReason |
  * of its stretch awake; work reported before it is from an earlier stretch
  * and no longer counts (null: a phone, or a resting computer).
  */
-export function decidePrice(target: Pick<AdTargetRow, "proof_at" | "fm_proof_at" | "unverified_at" | "full_work" | "full_work_at"> | null, ctx: AdContext, awakeSince: number | null, now: number): PriceDecision {
+export function decidePrice(
+  target: Pick<AdTargetRow, "proof_at" | "fm_proof_at" | "unverified_at" | "full_work" | "full_work_at"> | null,
+  ctx: AdContext,
+  awakeSince: number | null,
+  now: number,
+  { smallLook = false }: { smallLook?: boolean } = {},
+): PriceDecision {
   const adsProof = ctx.adsOn && ctx.adsReach ? target?.proof_at ?? null : null;
   const proof = Math.max(adsProof ?? -Infinity, target?.fm_proof_at ?? -Infinity);
-  const live = Number.isFinite(proof) && proof + ctx.windowMs > now;
+  const until = Math.max(Number.isFinite(proof) ? proof + ctx.windowMs : -Infinity, smallLook && ctx.adsOn && ctx.adsReach ? ctx.smallLookUntil ?? -Infinity : -Infinity);
+  const live = until > now;
   // Ads off and no Free Models chat holding it: nothing else matters.
   if (!live && !(ctx.adsOn && ctx.adsReach)) return { now: "full", reason: "ads_off", adUntil: null };
   const work = target?.full_work_at != null && awakeSince != null && target.full_work_at >= awakeSince ? readFullPriceWork(target.full_work) : [];
   if (work.length) return { now: "full", reason: work[0]!, adUntil: null };
-  if (live) return { now: "ad", reason: null, adUntil: proof + ctx.windowMs };
+  if (live) return { now: "ad", reason: null, adUntil: until };
   const unverified = target?.unverified_at != null && target.unverified_at >= (Number.isFinite(proof) ? proof : 0) && target.unverified_at + ctx.windowMs > now;
   return { now: "full", reason: unverified ? "unverified" : "not_in_use", adUntil: null };
 }
@@ -171,21 +185,32 @@ async function testersAmong(env: GravityEnv, userIds: readonly string[]): Promis
 
 const reaches = (mode: string, tester: boolean): boolean => mode === "all" || (mode === "testers" && tester);
 
-/** Whether ads are on for the price: a yes and the notice seen. Where the proof came from was checked when it came. */
-export const adsOnOf = (consent: Pick<ConsentRow, "consent" | "notice_seen_at"> | null): boolean =>
-  consent?.consent === "granted" && consent.notice_seen_at != null;
+/**
+ * Whether ads are on for the price: a yes, and the notice seen. On Free a yes
+ * given before Pricing v3 (to the Free plan's own ads question or notice)
+ * counts as seen, so an older app on Free keeps its ads. Where the proof came
+ * from was checked when it came.
+ */
+export const adsOnOf = (consent: Pick<ConsentRow, "consent" | "notice_seen_at"> | null, account: Pick<AccountRow, "plan" | "paid_plan">): boolean =>
+  consent?.consent === "granted" && (consent.notice_seen_at != null || shownPlanIdOf(account) === "free");
 
-function contextOf(switches: PricingSwitches, account: AccountRow, tester: boolean, consent: Pick<ConsentRow, "consent" | "notice_seen_at"> | null): AdContext {
+type ContextConsent = Pick<ConsentRow, "consent" | "notice_seen_at" | "looked_at">;
+
+function contextOf(switches: PricingSwitches, account: AccountRow, tester: boolean, consent: ContextConsent | null): AdContext {
   return {
     v3: reaches(switches.mode, tester),
     adsReach: reaches(switches.adsMode, tester),
     freeRule: freeRuleCharges(account),
-    adsOn: adsOnOf(consent),
+    adsOn: adsOnOf(consent, account),
     discountPct: switches.discountPct,
     windowMs: switches.windowMs,
     windowChangedAt: switches.windowChangedAt,
+    smallLookUntil: freeRuleCharges(account) ? smallLookUntil(consent) : null,
   };
 }
+
+/** Whether a computer is Free's Small that charges (500 full, free with ads): the older apps' look keeps it free. */
+const isChargedSmall = (rates: V3Rate): boolean => rates.adMilli === 0 && rates.fullMilli > 0;
 
 /** One account's `AdContext`. */
 export async function adContextFor(env: GravityEnv, account: AccountRow, switches?: PricingSwitches): Promise<{ ctx: AdContext; consent: ConsentRow | null }> {
@@ -244,19 +269,21 @@ export function computerPriceStatements(env: GravityEnv, computer: ComputerRow, 
     return rateMoveStatements(env, computer, v2RateMilli(computer), null, now);
   }
   const rates = computerRatesMilli(computer, ctx);
-  const decision = decidePrice(target, ctx, computer.awake_since, now);
+  const decision = decidePrice(target, ctx, computer.awake_since, now, { smallLook: isChargedSmall(rates) });
   if (decision.now === "ad") return rateMoveStatements(env, computer, rates.adMilli, rates.fullMilli, now);
   // Back to the full price: at the end of the window when that is why.
   const lapsed = computer.ad_full_milli != null && (decision.reason === "not_in_use" || decision.reason === "unverified");
-  const previousUntil = lapsed ? lastAdUntil(target, ctx) : null;
+  const previousUntil = lapsed ? lastAdUntil(target, ctx, isChargedSmall(rates)) : null;
   const edge = computer.awake_since != null ? fullPriceEdge(previousUntil, ctx, computer.awake_since, now) : now;
   return rateMoveStatements(env, computer, rates.fullMilli, null, edge);
 }
 
 /** When the last proof's window ended (or ends), or null with no proof that counts. */
-function lastAdUntil(target: AdTargetRow | null, ctx: AdContext): number | null {
-  const proof = Math.max(ctx.adsOn && ctx.adsReach ? target?.proof_at ?? -Infinity : -Infinity, target?.fm_proof_at ?? -Infinity);
-  return Number.isFinite(proof) ? proof + ctx.windowMs : null;
+function lastAdUntil(target: AdTargetRow | null, ctx: AdContext, smallLook = false): number | null {
+  const ads = ctx.adsOn && ctx.adsReach;
+  const proof = Math.max(ads ? target?.proof_at ?? -Infinity : -Infinity, target?.fm_proof_at ?? -Infinity);
+  const until = Math.max(Number.isFinite(proof) ? proof + ctx.windowMs : -Infinity, smallLook && ads ? ctx.smallLookUntil ?? -Infinity : -Infinity);
+  return Number.isFinite(until) ? until : null;
 }
 
 /**
@@ -317,7 +344,7 @@ async function contextsFor(env: GravityEnv, switches: PricingSwitches, userIds: 
   const json = JSON.stringify(userIds);
   const [accounts, consents, testers] = await Promise.all([
     env.DB.prepare("select * from cloud_accounts where user_id in (select value from json_each(?))").bind(json).all<AccountRow>(),
-    env.DB.prepare("select user_id, consent, notice_seen_at from cloud_sponsored_consent where user_id in (select value from json_each(?))").bind(json).all<{ user_id: string; consent: ConsentRow["consent"]; notice_seen_at: number | null }>(),
+    env.DB.prepare("select user_id, consent, notice_seen_at, looked_at from cloud_sponsored_consent where user_id in (select value from json_each(?))").bind(json).all<{ user_id: string; consent: ConsentRow["consent"]; notice_seen_at: number | null; looked_at: number | null }>(),
     testersAmong(env, userIds),
   ]);
   const consentBy = new Map((consents.results ?? []).map((row) => [row.user_id, row]));
@@ -553,8 +580,9 @@ export async function pricingAccountState(
   };
   const computerPrices: CloudComputerPrice[] = computers.map((computer) => {
     const awake = computer.awake_since != null && isMeteredStatus(computer.status) ? computer.awake_since : null;
-    const decision = decidePrice(targets.get(computer.instance_id) ?? null, ctx, awake, now);
-    return { instanceId: computer.instance_id, ...priceOf(decision, computerRatesMilli(computer, ctx), here) };
+    const rates = computerRatesMilli(computer, ctx);
+    const decision = decidePrice(targets.get(computer.instance_id) ?? null, ctx, awake, now, { smallLook: isChargedSmall(rates) });
+    return { instanceId: computer.instance_id, ...priceOf(decision, rates, here) };
   });
   const phone = live
     ? { phoneId: live.phone_id, ...priceOf(decidePrice(targets.get(phoneTarget(live.phone_id)) ?? null, ctx, null, now), phoneRatesMilli(live.rate_milli, ctx.discountPct), here) }
