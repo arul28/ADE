@@ -62,6 +62,7 @@ import {
   CLOUD_OUTSIDE_AGENT_FREE_CODE,
   CLOUD_OUTSIDE_AGENT_FREE_MESSAGE,
   CLOUD_PLAN_PAST_DUE_SENTENCE,
+  CLOUD_COMPUTER_UNAVAILABLE_SENTENCE,
   CLOUD_MAC_START_FAILED_SENTENCES,
   CLOUD_MAC_UNSUPPORTED_SENTENCES,
   type CloudComputerAction,
@@ -102,7 +103,7 @@ import {
   type CloudSize,
 } from "./plans";
 import { CloudProviderError, cloudErrorMessage, type CloudProvider } from "./provider";
-import { createComputerProvider, isMacRow } from "./macProvider";
+import { createComputerProvider, hiddenMacInstance, isMacRow } from "./macProvider";
 import { macIdleStopMinutes, macReaches } from "./macSwitch";
 import {
   accountComputerCount,
@@ -1536,9 +1537,9 @@ async function handleTemplate(env: CloudEnv, provider: CloudProvider): Promise<R
 }
 
 async function handleList(env: CloudEnv, userId: string, provider: CloudProvider): Promise<Response> {
-  const [allRows, targets] = await Promise.all([listComputers(env, userId), readUpdateTargets(env)]);
-  // A Mac is in the list only while the switch reaches the account.
-  const rows = allRows.some(isMacRow) && !await macReaches(env, userId) ? allRows.filter((row) => !isMacRow(row)) : allRows;
+  const [rows, targets] = await Promise.all([listComputers(env, userId), readUpdateTargets(env)]);
+  // A Mac the switch doesn't reach reads as a plain stopped computer whose wake answers one sentence (`hiddenMacInstance`).
+  const macHidden = rows.some(isMacRow) && !await macReaches(env, userId);
   // The provider list is kept a few seconds (`instanceListCache.ts`), except right after this account's rows changed.
   const changedSince = Date.now() - INSTANCE_LIST_TTL_S * 1000;
   const fresh = rows.some((row) => isPendingId(row.instance_id) || row.created_at > changedSince || row.status_changed_at > changedSince);
@@ -1577,7 +1578,11 @@ async function handleList(env: CloudEnv, userId: string, provider: CloudProvider
   return json({
     data: all
       .filter((instance) => owned.has(instance.id))
-      .map((instance) => withUseFacts(withUpdateFacts(instance, rowById.get(instance.id), targets), rowById.get(instance.id))),
+      .map((instance) => {
+        const row = rowById.get(instance.id);
+        if (macHidden && row && isMacRow(row)) return hiddenMacInstance(row);
+        return withUseFacts(withUpdateFacts(instance, row, targets), row);
+      }),
   });
 }
 
@@ -1766,8 +1771,13 @@ async function routeInstance(request: Request, env: CloudEnv, provider: CloudPro
   const computer = await ownedComputer(env, userId, instanceId);
   if (!computer) return notFound();
   if (isMacRow(computer)) {
-    // With the switch off for this account a Mac isn't in any answer. Its drive stays under the cleanup clock.
-    if (!await macReaches(env, userId)) return notFound();
+    // The switch doesn't reach this account: a plain stopped computer that can't wake (`hiddenMacInstance`); it can
+    // still be deleted. Its drive stays under the cleanup clock.
+    if (!await macReaches(env, userId)) {
+      if (action === undefined && request.method === "GET") return json(hiddenMacInstance(computer));
+      if (action === undefined && request.method === "DELETE") return handleDelete(request, env, computer, provider, ctx);
+      return fail("computer_unavailable", CLOUD_COMPUTER_UNAVAILABLE_SENTENCE, 409);
+    }
     const refusedAction = action === undefined ? null : MAC_REFUSED_ROUTES[`${request.method} ${action}`];
     if (refusedAction) return fail("mac_unsupported", CLOUD_MAC_UNSUPPORTED_SENTENCES[refusedAction], 409, { action: refusedAction });
     // A drive the provider deleted: nothing can start on it.
@@ -2024,6 +2034,8 @@ function chatWakeFor(env: CloudEnv, userId: string, provider: CloudProvider | nu
   const planRefusal = async (computer: ComputerRow, outsideAgent: boolean, multiplierMilli = computer.multiplier_milli): Promise<Response | null> => {
     const accountBlock = await blockedNow(env, computer.user_id);
     if (accountBlock) return accountBlock;
+    // A Mac the switch doesn't reach: refused before anything is stored, and no other computer is made for the lane.
+    if (isMacRow(computer) && !await macReaches(env, computer.user_id)) return fail("computer_unavailable", CLOUD_COMPUTER_UNAVAILABLE_SENTENCE, 409);
     const { account, blocked } = await wakeBlocker(env, computer, now, multiplierMilli);
     const outside = outsideAgentRefusal(account, outsideAgent);
     if (outside) {

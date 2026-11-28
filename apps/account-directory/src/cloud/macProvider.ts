@@ -34,6 +34,7 @@
  */
 
 import {
+  CLOUD_COMPUTER_UNAVAILABLE_SENTENCE,
   CLOUD_MAC_SHAPE,
   CLOUD_MAC_START_FAILED_SENTENCES,
   CLOUD_MAC_STATE_SENTENCES,
@@ -73,8 +74,10 @@ const MAC_OWN_QUEUE_MS = 60 * 60_000;
 const MAC_EXTEND_WITHIN_MS = 20 * 60_000;
 /** NoMac deletes a drive after 30 days with no session; ADE wakes a kept drive after this many. */
 export const MAC_DRIVE_UPKEEP_DAYS = 25;
-/** The most kept drives one run wakes for upkeep. */
-const MAC_UPKEEP_PER_RUN = 5;
+/** The most kept drives one daily run wakes for upkeep: five days of slack before NoMac's 30 covers 250 drives a run. */
+const MAC_UPKEEP_PER_RUN = 50;
+/** A start waits this long after an upkeep session began (its limit is two minutes). */
+const MAC_UPKEEP_HOLD_MS = 3 * 60_000;
 /** The most held starts one tick tries again. */
 const MAC_RETRY_PER_TICK = 10;
 /** The boot job's own limit; it returns once the brain answers, usually in seconds. */
@@ -245,6 +248,27 @@ export function macInstanceOf(row: ComputerRow): CloudInstance {
 }
 
 /**
+ * A Mac the switch doesn't reach, as a client sees it (\`routes.ts\`): a plain
+ * stopped computer with its lane facts and nothing of the Mac (no type, size,
+ * \`os\` or \`mac\`), whose wake, start and send answer
+ * \`CLOUD_COMPUTER_UNAVAILABLE_SENTENCE\`. Its drive stays under the cleanup clock.
+ */
+export function hiddenMacInstance(row: ComputerRow): CloudInstance {
+  return {
+    ...macInstanceOf(row),
+    status: "stopped",
+    type: null,
+    resources: null,
+    statusReason: { code: "computer_unavailable", message: CLOUD_COMPUTER_UNAVAILABLE_SENTENCE },
+  };
+}
+
+/** The refusal of every wake of a hidden Mac. */
+export function macUnavailableError(): CloudProviderError {
+  return new CloudProviderError(CLOUD_COMPUTER_UNAVAILABLE_SENTENCE, "computer_unavailable", 409);
+}
+
+/**
  * Writes what a session says: the Mac columns, the session's own row (for the
  * cost report), and the computer's status with its meter (`statusChangeStatements`).
  * Safe to run twice and out of order: a session that isn't the row's current
@@ -340,6 +364,11 @@ async function startMac(env: CloudEnv, row: ComputerRow, now: number, macId = ro
   }
   const minutes = Math.min(MAC_RUN_MINUTES, await macCreditMinutesLeft(env, row.user_id, now));
   if (minutes < 1) throw new CloudProviderError("You're out of DAEX Cloud credits for this period.", "out_of_hours", 402);
+  // A drive upkeep session may hold the label (two minutes at most): \`reuse\` would hand the person that short
+  // session, so the start is held and the tick starts it next minute (\`runMacTick\`).
+  const upkeep = await env.DB.prepare("select 1 as busy from cloud_mac_sessions where instance_id = ? and upkeep = 1 and coalesce(end_reason, '') <> 'drive_save' and created_at > ? limit 1")
+    .bind(row.instance_id, now - MAC_UPKEEP_HOLD_MS).first<{ busy: number }>();
+  if (upkeep) return holdStart(env, row, now, "upkeep_running");
   const template = await templateDriveFor(env, row);
   const label = row.mac_label ?? macLabelOf(macId);
   // One start per stop: a retry of this start reaches the same Mac, the next start (after a stop) is a new one.
@@ -368,14 +397,7 @@ async function startMac(env: CloudEnv, row: ComputerRow, now: number, macId = ro
   }
   // NoMac's line is full, or the account runs its most Macs: ADE holds the start and the person sees the queue.
   if (code === "queue_full" || code === "session_limit_reached" || code === "capacity_unavailable" || answer.status === 429) {
-    await env.DB.batch([
-      env.DB.prepare(`update cloud_computers set mac_state = 'queued', mac_state_at = case when mac_state = 'queued' then mac_state_at else ? end,
-        mac_session_id = null, mac_start_failed = null where instance_id = ?`).bind(now, row.instance_id),
-      ...statusChangeStatements(env, row, "starting", now, "start_held"),
-    ]);
-    row.mac_state = "queued";
-    logCloud("cloud.mac_start_held", { instanceId: row.instance_id, code });
-    return "starting";
+    return holdStart(env, row, now, code ?? `http_${answer.status}`);
   }
   if (code === "insufficient_credit" || answer.status === 402) {
     await sendOwnerAlert(env, {
@@ -387,6 +409,18 @@ async function startMac(env: CloudEnv, row: ComputerRow, now: number, macId = ro
     }, now);
   }
   throw providerFailure("start_failed", answer, { instanceId: macId });
+}
+
+/** A start DAEX holds (\`mac_state = 'queued'\`, status \`starting\`, unbilled) and the tick tries again. */
+async function holdStart(env: CloudEnv, row: ComputerRow, now: number, why: string): Promise<string> {
+  await env.DB.batch([
+    env.DB.prepare(`update cloud_computers set mac_state = 'queued', mac_state_at = case when mac_state = 'queued' then mac_state_at else ? end,
+      mac_session_id = null, mac_start_failed = null where instance_id = ?`).bind(now, row.instance_id),
+    ...statusChangeStatements(env, row, "starting", now, "start_held"),
+  ]);
+  row.mac_state = "queued";
+  logCloud("cloud.mac_start_held", { instanceId: row.instance_id, code: why });
+  return "starting";
 }
 
 /** Stops the Mac it has now (its drive is saved as it goes). A Mac already gone is stopped. */
@@ -605,6 +639,7 @@ export async function runMacTick(env: CloudEnv, now: number): Promise<void> {
   const mode = await macMode(env, settings);
   // Off with nothing live: no NoMac call at all.
   if (mode === "off" && rows.length === 0) return;
+  let retries = 0;
   const reached = new Map<string, Promise<boolean>>();
   const reaches = (userId: string): Promise<boolean> => {
     let answer = reached.get(userId);
@@ -627,7 +662,7 @@ export async function runMacTick(env: CloudEnv, now: number): Promise<void> {
             env.DB.prepare("update cloud_computers set mac_state = 'stopped', mac_state_at = ?, mac_start_failed = 'queue_expired' where instance_id = ? and mac_session_id is null").bind(now, row.instance_id),
             ...statusChangeStatements(env, row, "stopped", now, "mac_queue_expired"),
           ]);
-        } else if (rows.indexOf(row) < MAC_RETRY_PER_TICK) {
+        } else if (retries++ < MAC_RETRY_PER_TICK) {
           await startMac(env, row, now);
         }
         continue;
@@ -828,6 +863,8 @@ export function createComputerProvider(env: CloudEnv, fetcher: typeof fetch = fe
     async startInstance(id) {
       const row = await fresh(id);
       if (!row) return L().startInstance(id);
+      // Every wake path ends here (a person's start, the queue, timed and event wakes): a hidden Mac never starts.
+      if (!await macReaches(env, row.user_id)) throw macUnavailableError();
       const status = await startMac(env, row, Date.now());
       rows.delete(id);
       return status;

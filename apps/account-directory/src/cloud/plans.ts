@@ -60,7 +60,11 @@ export const usesHours = (multiplierMilli: number): boolean => multiplierMilli >
 /** The most disk any size grows to: what an older build's plan disk is built from (`catalogPlan`). */
 const LARGEST_DISK_MAX_GB = Math.max(...CLOUD_SIZES.map((size) => size.diskMaxGb));
 
-/** What a running Mac uses: 500 thousandths a minute (5 credits a minute at the catalog's scale of 10). */
+/**
+ * What a running Mac uses: 500 thousandths a minute (5 credits a minute at the catalog's scale of 10).
+ * Kept equal to the ad price lane's `MAC_MILLI_PER_MINUTE` (the one name; the website imports it): at
+ * that restack this constant goes and the Mac code reads theirs.
+ */
 export const MAC_CREDIT_MILLI_PER_MINUTE = 500;
 /** What a Mac minute costs ADE: $0.60 an hour, by the whole minute. */
 export const MAC_COST_MICROS_PER_MINUTE = 10_000;
