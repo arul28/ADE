@@ -1,10 +1,165 @@
 # Storage and recovery
 
 An open project database checks its file's device and inode before each SQLite
-operation. If `.ade/ade.db` disappears or is replaced, ADE pauses database
+operation. If `.ade/ade.db` disappears or is replaced, DAEX pauses database
 work with `db_path_changed`. Put the original `.ade` folder back to resume.
 The open connection never adopts a replacement database. Desktop and headless
 runtimes share this guard, sync and database maintenance included.
+
+## Source file map
+
+| Path | Role |
+|---|---|
+| `apps/desktop/src/main/services/state/kvDb.ts` | Opens the project database (enabling `journal_mode = WAL` + `synchronous = NORMAL` at open), runs the interrupted-rebuild recovery pass, classifies database-open errors (`classifySqliteOpenError(error, { path })`, whose `storage_read_failed` bucket is checked *before* the integrity bucket so an unreadable file is never reported as a corrupt one; the errno rules live in `storage/storageErrnoClassifier.ts`, and the `path` argument is required rather than optional because a SQLite error rarely carries one and the classifier will not call a bare errno a storage fault without it), creates the headroom-gated migration backup, and exports `rebuildTableInTransaction` / `recoverInterruptedTableRebuilds`. Attaches the optional `maintenance` (`DbMaintenanceApi`) handle — the prune / compact / vacuum hooks the storage doctor invokes. The machine-local `local_lane_storage_state` and `local_storage_lifecycle_runs` tables retain reclaim retry/estimate and scan timing state; both are excluded from CRR sync because paths and cleanup results belong only to this checkout. |
+| `apps/desktop/src/main/services/state/dbMaintenanceApi.ts` | The `DbMaintenanceApi` interface consumed by the storage doctor, plus the single source of truth for the DB retention/count bounds (`INGRESS_EVENT_RETENTION_MS` = 7 days, `INGRESS_EVENT_MAX_ROWS_PER_PROJECT` = 2,000, `PR_SNAPSHOT_RETENTION_DAYS` = 60, `EVENT_LOG_RETENTION_DAYS` = 30) imported by the ingress writer, the kvDb hooks, and the storage ledger so the policy can never drift across enforcement sites. Also exports `pruneRowsInBatches` — the paced `delete … where rowid in (select rowid … limit N)` loop (`MAINTENANCE_DELETE_BATCH_ROWS` = 2,000, `MAINTENANCE_DELETE_MAX_BATCHES` = 200) that every new prune uses. |
+| `apps/desktop/src/main/services/state/durableFile.ts` | Atomic temp-write-and-rename persistence, one-generation `.lkg` JSON backup, validation, and primary/previous recovery reads. `AtomicWriteOptions.mode` creates the temp file with the caller's permission bits so a secret is never briefly world-readable, and a rename refused with `EXDEV` / `EPERM` / `EACCES` / `EBUSY` falls back to a copy — a deliberately closed list that leaves `ENOSPC` and `EIO` terminal. |
+| `apps/desktop/src/main/services/chat/agentChatService.ts` | Persists chat metadata and transcripts, records provider-pointer transitions to the bounded thread-pointer ledger, reconciles missing pointers from ledger/resume command/transcript, gates new turns on disk pressure (`canPerform("chat_turn")`), and implements explicit `recoverContinuity` modes. |
+| `apps/desktop/src/main/services/chat/threadPointerLedger.ts` | Standalone append-only continuity ledger (`thread-pointers.jsonl`): typed `ThreadPointerLedgerEntry` records, tolerant parse that drops only a torn tail line, newest-per-session read, and 64 KiB self-compaction (newest records first) via an atomic rewrite. |
+| `apps/desktop/src/main/services/chat/providerResumeClassifier.ts` | Classifies a provider resume failure as missing thread, provider environment, transient transport, or unknown without treating every provider error as lost continuity. |
+| `apps/desktop/src/main/services/startupRecovery/startupRecovery.ts` | The "ADE could not start" controller: which failure signals open the window (once per launch), the Go back flow (target check, download through the updater, restore in the install hook) and the Copy details text. Every step is a `startupRecovery.*` info line in `desktop-main.jsonl`; `startupRecovery.went_back` is a release-health event. |
+| `apps/desktop/src/main/services/startupRecovery/goBackPlan.ts` | Pure: reads a copy's name (`pre-<to>-from-<from>`, `_2` for a repeat; `unknown` and `before-…` carry no version) and picks the version to go back to and one copy per database. |
+| `apps/desktop/src/main/services/startupRecovery/databaseCopies.ts` | Lists this computer's databases and their copies, deletes a copy (checked against a fresh listing), and restores a plan by moving files only: the current database and its journal files go aside as a copy, then the copy takes its place. |
+| `apps/desktop/src/main/services/startupRecovery/startupRecoveryWindow.ts`, `desktopStartupRecovery.ts`, `registerDatabaseCopiesIpc.ts`, `preload/startupRecoveryPreload.ts` | The window (a static page with its own sandboxed preload, so it opens when the app's renderer broke), the Electron wiring, and the Settings IPC (local only, no pin). |
+| `apps/desktop/src/renderer/components/settings/DatabaseCopiesSection.tsx` | Settings › Advanced › Database copies: which database, from which version to which, when, size, Reveal and Delete (confirmed). Renders only for This computer. |
+| `apps/desktop/src/main/services/runtime/lastFailureStore.ts` | Stores typed project/machine failures, keeps one previous report, counts repeated signatures, and computes crash-loop startup backoff. A brain failure records its `socketPath`, and the backoff counts only failures on the starting brain's own socket (a record without one is read as the primary socket's), so a desktop's isolated brain does not sleep for the service brain's crash loop. |
+| `apps/ade-cli/src/services/runtime/failureLogDeduper.ts` | Emits the first repeated brain failure immediately and only periodic occurrence summaries afterward. `note(signature, message, meta)` and the `log` callback carry a `FailureLogMeta` bag alongside the human sentence, so the structured event and the stderr line a reader correlates share one cadence instead of drifting apart. |
+| `apps/ade-cli/src/services/runtime/startupTeardown.ts` | `createTeardownStack()` — the LIFO release stack a half-built runtime unwinds. Each acquisition in `createAdeRuntime` registers its own release at the point it acquires, `drain()` pops in reverse order, and a release that throws is caught so it neither stops the drain nor replaces the original startup failure. `runtime.dispose` is the same `drain()`, so the failure and shutdown paths cannot drift apart. |
+| `apps/ade-cli/src/services/runtime/brainMemoryRestart.ts` | `createBrainMemoryRestartGuard` — the planned restart of an idle brain that is holding too much resident memory. See [Brain resilience](#brain-resilience-watchdog-freshness-memory-and-recovery-notice). |
+| `apps/ade-cli/src/services/runtime/runtimeLogMaintenance.ts` | Bounds launchd stdout/stderr with tail-copy plus in-place truncation. |
+| `apps/ade-cli/src/services/runtime/syncFsCallTracker.ts`, `apps/ade-cli/src/services/projects/projectRootAccessMonitor.ts`, `apps/desktop/src/main/services/state/unansweringRoots.ts` | A folder waiting on a permission prompt or a hung drive: the tracker names the synchronous file call the main thread is stuck in (shared memory the watchdog worker reads) and fails calls under a folder that is not answering; the monitor finds such folders off the main thread, one probe per drive, and tells devices. See [A folder waiting on a permission prompt](#a-folder-waiting-on-a-permission-prompt). |
+| `apps/ade-cli/src/services/runtime/brainLoopWatchdog.ts`, `brainLoopWatchdogWorker.ts` | Worker-thread **event-loop watchdog** for the machine brain (the worker's source and its stall evaluation live in `brainLoopWatchdogWorker.ts`). On macOS the worker also takes a 2 s native `sample` of a wedged brain before the kill (12 s cap), so the report names the blocking call. Heartbeats every second with the current command name plus event-loop, memory, and resource diagnostics; a recovered delay over 2 s logs a near-miss, or a suspend gap when the worker thread was paused too. A stall past `ADE_LOOP_WATCHDOG_MS` (30 s default) that is not a sleep/suspend writes an `event-loop-wedge.json` breadcrumb, requests a best-effort Node report, and `SIGKILL`s the brain, unless the machine caused it (memory pressure, a stuck drive), which it waits out up to 5 min (see [Brain resilience](#brain-resilience-watchdog-freshness-memory-and-recovery-notice)). On next boot it promotes the evidence to `last-wedge.json` / `last-wedge-report.json`, logs `brain.recovered_from_wedge`, and emits a deduped recovery event. Disable with `ADE_DISABLE_LOOP_WATCHDOG=1`. It is also the brain's memory sampler: `brain.memory_sample` every 5 min, `trackBrainMemoryPressure` to decide when RSS has stayed high long enough to act, and `resolveBrainRssRestartBytes` to read the `ADE_BRAIN_RSS_RESTART_BYTES` override. `classifyBrainLoopLag` separates a stall from a suspension, and `currentBrainLoopWatchdogCommand()` is the idleness signal the memory guard shares with it so a restart decision and a wedge breadcrumb can never disagree about what the brain was doing. |
+| `apps/ade-cli/src/services/runtime/brainStallProfiler.ts` | After a freeze, a one-minute in-process CPU profile (`node:inspector`, at most once an hour) that names the code behind it: warn `brain.stall_profile`, and one Sentry warning issue per cause (`Brain froze in …`). |
+| `apps/ade-cli/src/services/runtime/brainFreshnessMonitor.ts` | The running brain stats its own CLI entrypoint every 5 min (`ADE_BRAIN_FRESHNESS_INTERVAL_MS`), hashes only after the stat changes, and — when the on-disk hash no longer matches the baked runtime hash — waits for the brain to go idle (bounded) before triggering the brain-update service restart so an in-place upgrade takes effect without interrupting active work. Disable with `ADE_DISABLE_BRAIN_FRESHNESS=1`. |
+| `apps/ade-cli/src/services/runtime/runtimeBuildIdentity.ts` | `computeRuntimeBuildHash` / `computeRuntimeBuildHashAsync` — the SHA-256 of the CLI entrypoint used as the brain build identity by the freshness monitor and the desktop compatibility handshake. |
+| `apps/ade-cli/src/services/runtime/brainLogger.ts` | The machine-brain logger: reuses the desktop `createFileLogger` to write `~/.ade/runtime/brain.jsonl` (10 MiB `.1` rotation) and additionally mirrors timestamped `warn`/`error` lines to stderr so launchd captures them. |
+| `apps/desktop/src/main/services/logging/machineLogger.ts` | The desktop main process's **machine-scoped** logger: same `createFileLogger` and rotation, writing `~/.ade/runtime/desktop-main.jsonl`. Opened in `main.ts`'s first executable statement, so the events that happen before (or without) a project — the launch marker, the `ade://` claim, the single-instance outcome, the CLI auto-install result — are durable rather than `console.log` into a stdout a Finder-launched app does not have. `logMachineEvent` writes the structured line and mirrors it to `console`; `flushMachineMainLog` drains it on the branch that quits immediately. See [logging.md](../../logging.md). |
+| `apps/ade-cli/src/commands/doctor.ts` | `daex doctor [--online]` — connects to the brain over the local socket and prints one `ok`/`warn`/`fail` row per subsystem (App version, Brain, Wedge history, Sync port, Publish health, Relay, Account, Diagnostics sharing); exits non-zero on any `fail`. The **Diagnostics sharing** row reads the shared auto-send ledger through `readAutoDiagnosticsState` — never a second parser — and is always `ok`: consent is a preference, not a fault, so it reports `on · N of 3 automatic reports sent today` or `off · no automatic reports are sent` and never colours a healthy machine. `evaluateDoctorRows` is pure and dependency-injected — every row's inputs are read at the edge (`runDoctorCommand`) and handed in — so the verdict is testable without a machine and a second surface can reuse it. Today the CLI is its only caller: the desktop's **Connection doctor** card (`remoteTargets/ConnectionDoctorPanel.tsx` → `remoteRuntime.runDoctor`) is a different check about reaching a *remote* machine, not this one. |
+| `apps/desktop/src/shared/adeRuntimeProtocol.ts` | Shared runtime-protocol contract: `RUNTIME_COMPAT_LEVEL` + `isRuntimeProtocolCompatible` (the integer compatibility-window check), and the tolerant parsers `parseRuntimePublishHealth` / `parseRuntimeLastWedge` that decode `runtimeInfo.publishHealth` and `runtimeInfo.lastWedge` for the connection pool, the doctor, and the desktop status surfaces. |
+| `apps/desktop/src/main/services/runtime/projectDataTrash.ts` | Finds a project's `.ade` in the Trash (by the recorded database identity, else the database's own `projects` row; cached 5 s) and puts it back, whole or merged, database last. |
+| `apps/desktop/src/main/services/runtime/recycleBinRecord.ts` | Reads a Windows Recycle Bin `$I…` record (versions 1 and 2) for the original path of the `$R…` item it describes. |
+| `apps/desktop/src/main/services/runtime/openProjectDataWatch.ts` | Checks each open project's `ade.db` every 5 seconds and reports `missing` or `replaced` once per change, so the window shows the recovery screen. |
+| `apps/desktop/src/main/services/runtime/projectRecoveryService.ts` | Brain-independent diagnosis and ordered repair: space, ownership, database validation, migration recovery, service restart, endpoint/project verification, and chat reconciliation. On macOS it also reads the launch agent's Background Items verdict (`isBackgroundItemBlocked`, `shared/types/core.ts`) and reports `background_blocked` ahead of every repairable state when "Allow in the Background" is off; an installed brain that is not running with no crash on record is `brain_not_running`, not a crash loop. Also owns `restartBrain()` — the machine-scoped restart behind the Connections **Repair** button and the brain-down notice's **Fix it** — which shares one `restartServiceAndWait()` sequence (install → wait ≤90 s for the endpoint → `ping`) with `repair()`'s restart_service/verify_endpoint steps. The two are mutually exclusive: `restartBrain()` rejects while a `repair()` is in flight, because repair stops the service and then does exclusive database work that a reinstall would put a second writer on top of. A forced restart also treats a *skipped* install as a failure ("A newer version of DAEX is already running. Restart DAEX to switch to it."), where `repair()` tolerates one, since a protocol-compatible brain that is already running satisfies its step. `main.ts` constructs exactly one of these and shares it with `registerIpc`, so the mutual exclusion actually holds — the post-update transaction's `restart` step (see [desktop auto-update](../onboarding-and-settings/desktop-auto-update.md#applying-an-update-is-one-transaction)) binds to the same instance rather than a second one that could run alongside a repair. |
+| `apps/desktop/src/main/services/storage/diskPressure.ts` | Samples all DAEX storage roots, classifies pressure with recovery hysteresis, and gates write-producing operation classes via `canPerform(kind)`. Exports the `DiskPressureMonitor` type and refusal-message copy. |
+| `apps/desktop/src/main/services/ipc/registerIpc.ts` | Uses the project's disk-pressure monitor when available; otherwise samples the machine DAEX directory, so disk pressure remains visible with no project open or while a remote project is bound. |
+| `apps/desktop/src/main/services/storage/volume.ts` | `readVolumeSpace(dir)` (statfs free/total bytes) and `isNoSpaceError(err)` (ENOSPC/EDQUOT and disk-full message detection), shared by the pressure monitor and the database-open error classifier. `readStorageVolumes(roots)` is the storage page's async read: one entry per drive (device number; drive root on Windows) for the project, DAEX home and temp folder, and on macOS the free space Finder shows (`NSURLVolumeAvailableCapacityForImportantUsageKey`, one short `osascript` run, statfs on any failure) with its purgeable part. The page prints these and every storage size in the measured machine's own units (`formatStorageBytes`: 1000 on macOS and Linux, Explorer's 1024 on Windows). |
+| `apps/desktop/src/main/services/storage/cloudPlaceholder.ts` | The cloud-eviction preflight. `detectCloudStorageProvider` matches a path against the provider roots (`Library/Mobile Documents`, `Library/CloudStorage`, and home-relative `OneDrive` / `Dropbox` / `Google Drive` folders) on text alone, so it costs nothing on any platform; `isDatalessFileStats` spots a file with a size but zero allocated blocks, which is what a dehydrated placeholder looks like through `fs.stat`. `detectCloudPlaceholderFile` reports a finding only when both agree, and `storageUnreadableMessage` writes the one sentence a person needs — with the "move it out of the cloud folder" remedy stated conditionally when no provider was matched, because a failing disk or a dropped network mount produces the same unreadable file. `storageUnreadableRemedy` is that remedy on its own, so a caller holding an errno but no path can still word the fix. |
+| `apps/desktop/src/main/services/storage/storageErrnoClassifier.ts` | The one place that decides whether a platform error means "this computer cannot read its own bytes". `classifyStorageFault(error, { path })` returns a `StorageFault` (`{ code: "storage_read_failed", errno, path, provider, message }`) or `null`, and `STORAGE_FAULT_ERRNO_CODES` names the seven codes it acts on (`EDEADLK`, `EIO`, `ENXIO`, `ENODEV`, `ESTALE`, `EHOSTDOWN`, `EREMOTEIO`). An errno alone is not enough: the error must also carry filesystem evidence — a caller-supplied path, a path on the error, or a `syscall` — so a socket-layer `EHOSTDOWN` or `ESTALE` is never read as a disk fault. An errno libuv could not name (`UNKNOWN_SYSTEM_ERRNO_PATTERN`, on the code or the text) qualifies on its own, as does a Windows `UNKNOWN` inside a detected cloud-provider folder, which is where `ERROR_CLOUD_FILE_*` and `ERROR_FILE_OFFLINE` land. The database open and the sync host are its only production callers. |
+| `apps/ade-cli/src/services/diagnostics/storageEnvironmentProbe.ts` | `collectStorageEnvironment(roots)` — the "where do DAEX's directories actually live, and are their bytes on this disk" probe behind the report's **Storage environment** section. It uses `node:fs` alone and needs no brain, because the machine it explains is often the one where the brain will not start. `classifyStorageLocation` labels each root `icloud` / `dropbox` / `google-drive` / `onedrive` / `cloud-storage` / `external-volume` / `network-volume` / `local`; a bounded breadth-first walk (`STORAGE_SAMPLE_MAX_FILES` 200, `STORAGE_SAMPLE_MAX_DIRECTORIES` 40, `STORAGE_SAMPLE_TIME_BUDGET_MS` 750, symlinks never followed) counts dataless placeholders through `isDatalessFileStats`. `detectLaunchdManaged` and `readMaterializeDatalessFilesKey` report whether launchd started this process and whether the installed launch agent carries the materialization key. The privacy contract is structural: it emits enums and counts, never a path, directory, or file name. |
+| `apps/desktop/src/main/services/processes/processStartTime.ts` | `readProcessStartTimeMs(pid, platform)` — one `/bin/ps -o lstart= -p <pid>` under `LC_ALL=C` (an unpinned locale prints dates `Date.parse` rejects), bounded at 2 s, `null` on Windows or any failure. It is the shared answer to "is this still the process that wrote the thing I am about to act on", used by the external watchdog's identity check, by the connection pool's stale-runtime record, and by the machine-wide sync host lease so a recycled pid cannot be killed or reported as the old brain. Because it answers `null` on Windows, `syncHostSingleton.ts` pairs it with a PowerShell `StartTime` read there rather than falling back to a Node-bootstrap timestamp the reader would then reject — see [sync and multi-device](../sync-and-multi-device/README.md#source-file-map). |
+| `apps/desktop/src/main/services/storage/storageInsightsService.ts` | Builds categorized storage snapshots and preview-confirmed cleanup plans without following symlinks or deleting protected state. `proof_attachments` is a manual `review_first` cleanup target for `.ade/artifacts` and `.ade/attachments`; after bytes are removed it invokes the broker's `purgeArtifactRecordsUnder` hook so proof rows cannot outlive their files. It also runs the lane-lifecycle scan at the configured interval: safely archives excess or inactive lanes, marks old archived worktrees for review, and never removes a lane's own files in the background. The **storage doctor** compresses history, maintains the database and removes build output from idle lanes (`laneBuildOutput.ts`); other filesystem candidates such as staging, backups and DerivedData remain review-first. Folder sizes use `diskUsage.ts`. Every run is journaled and emits one deduped `ade_feature_used` analytics event. Populates the snapshot's optional `extras` plus lifecycle policy/status and per-item ownership, age, blocked reasons, and reclaim estimates. |
+| `apps/desktop/src/main/services/lanes/laneService.ts` | Owns the lane-aware `getReclaimRisk`, `archiveAndReclaim`, and restore-aware `unarchive` operations. It proves exact path-and-branch ownership against this project's Git worktree registry, rejects symlinks, rechecks directory identity before removal, shares the database-backed lane worktree lease with PR workflows, and stores retryable reclaim failures locally. |
+| `apps/desktop/src/main/services/storage/storageLedger.ts` | The **storage ledger** (`STORAGE_LEDGER`): the declared policy for every persistent table and directory DAEX writes — its privacy class (`user_data` / `derived` / `operational`) and how it is bounded (`write_time` / `doctor` / `both` / `manual`). `LEDGER_LAYOUT_COVERAGE` maps every `ADE_LAYOUT_DEFINITIONS` directory to a ledger id (or `null` for intentionally-unmanaged config/credentials) so a coverage test fails CI if a new tracked directory ships without a declared policy. `deriveCategoryPolicyChips()` renders the Settings policy chips from the ledger. |
+| `apps/desktop/src/main/services/storage/storageDbBreakdown.ts` | Pure helpers turning raw `dbstat` rows into the coarse project-database breakdown (`classifyDbTable` / `mapDbBreakdown`: webhooks, sync bookkeeping, PR cache, core) and `deriveSyncBookkeepingAction` — which reads the journal so the sync-bookkeeping row offers "Compact now" only after a run proves compaction ran without a `has_peers` skip, and stays "waiting to compact" otherwise. |
+| `apps/desktop/src/main/services/storage/laneBuildOutput.ts` | Build output in idle lanes: the explicit folder list (`BUILD_OUTPUT_FOLDER_RULES`), the depth bound, the lane and folder checks, the removal (bounded whole-pass retries, read-only entries made writable), the `local_lane_build_output_cleanups` record and the summary Settings shows. See "Build output in idle lanes". |
+| `apps/desktop/src/main/services/storage/laneLifecycleScan.ts` | The archive rules' scan (`createLaneLifecycleScan`): archive idle lanes whose work is merged (an open PR keeps a lane; a squash-merged PR whose head is the branch counts as merged), then free up or delete archived lanes under the "Archived lanes" rules, each lane checked by one `laneSafeToTouch` gate; the retry of folders kept because files were in use; and the "Last run" report. Runs about hourly while a rule is on. |
+| `apps/desktop/src/main/services/shared/deletingTrash.ts`, `shared/sameFolder.ts`, `git/gitLongPaths.ts` | The `.ade-deleting-` trash name, in-use error check, background removal and sweep shared by lane delete, reclaim and build-output cleanup; one path comparison (case-insensitive on Windows, real paths when the spellings differ); `-c core.longpaths=true` for git on Windows. |
+| `apps/desktop/src/main/services/storage/laneSizes.ts` | Each lane folder's full size (`measureTree`, no entry cap), measured in the background one lane at a time and stored in the local-only `local_lane_size_measurements` table: for lanes never measured a minute after boot, for lanes older than 12 h (or whose build output was removed) from the storage doctor, and from the page's Check again. The snapshot shows a measured lane's size with when it was measured and walks only the others; `laneSizing` carries the pass's progress. Stops on `dispose()`; a lane cut short is not stored. |
+| `apps/desktop/src/main/services/storage/diskUsage.ts` | One definition of "how much disk a folder takes", shared by the storage snapshot walk, the lane reclaim estimate (`laneService.managedTreeBytes`) and the build-output cleanup: allocated blocks (`st_blocks * 512`, the file length on Windows), a hard-linked file counted once and only when all its links are inside the measured folder, pnpm's `node_modules/.pnpm` left out when `.modules.yaml`'s `storeDir` is on the same volume (clones and hard links share the store's blocks), links never followed, unpatched `fs` so a lane's `.asar` files are files. |
+| `apps/desktop/src/main/services/storage/storageMaintenanceJournal.ts` | Read/write helpers for the storage-doctor journal — a plain rebuildable JSON file (`storage-doctor-journal.json` under `.ade/cache`, no DB/CRR) capping the last 30 runs, written via temp-file-then-rename so a crash never leaves a torn journal. It creates only `.ade/cache`, never its parents, so a project deleted while open is not brought back. |
+| `apps/desktop/src/main/services/storage/historyCompression.ts` | Finds inactive old history, gzip-compresses it, verifies byte identity, and only then removes the original; also reinflates before append. Exposes `readHistoryFileSync` / `reinflateHistoryFile` so transcript, session, and search readers can read a `.gz` generation transparently. The `.gz` keeps the source's modification time. An optional `minAgeMsFor` hook gives finished chats a shorter idle age and lists them first. |
+| `apps/desktop/src/main/services/storage/legacyChatTranscripts.ts` | `resolveChatTranscriptReadPath` maps a chat row's legacy `<id>.chat.jsonl` path to the dedicated `transcripts/chat/<id>.jsonl` (plain or `.gz`). `removeDuplicateLegacyChatTranscripts` is the doctor step that deletes legacy copies once every event line in them is proven to be in the dedicated file. |
+| `apps/desktop/src/main/services/storage/deletedLaneChats.ts` | Lists chats whose session row and lane are both gone (lane delete removes rows, not files), idle for 7 days, with every file they left. Backs the review-first "Chats from deleted lanes" row and its `deleted_lane_chats` cleanup target. `providerSessionsOfDeletedLaneChats` reads each chat's record for the Claude/Codex session DAEX started. Imported chats are skipped, and so are sessions a live chat also names. |
+| `apps/desktop/src/main/services/chat/deletedChats.ts`, `apps/desktop/src/renderer/components/settings/RecentlyDeletedSection.tsx`, `deletedChatLocator.ts`, `renderer/state/everyCopyRead.ts` | Settings › Deleted & Archived › Recently deleted: the `deleted_chats` rows a chat delete, an agent CLI delete (`kind = 'cli'`), or a lane delete writes, the agent-copy lookup that keeps a row only while the conversation still exists on this machine, and Reopen through the external-session import. Machine-local (excluded from CRR); rows are hidden rather than removed. See [Recently deleted chats](../chat/README.md#recently-deleted-chats). |
+| `apps/desktop/src/main/services/storage/providerHistory.ts` | `measureProviderHistory` sizes each provider's own session folders on this machine: Claude and Codex across every config home, plus OpenCode, Droid, Cursor, Copilot, Pi and Grok. `listProviderCopiesOfChats` finds the Claude `projects/<cwd>/<id>.jsonl` (plus its `<id>/` side folder) and the Codex rollout for given session ids. |
+| `apps/desktop/src/renderer/components/app/useDeletedChatsReminderBanner.tsx` | The docked reminder shown when chats from deleted lanes pile up: 25 or more chats, or at least 100 MB. It checks 45 s after open and every 6 h through `storage.deletedLaneChatsSummary`. Every answer snoozes it for two weeks per project, in localStorage. |
+| `apps/desktop/src/renderer/components/app/StoragePressureIndicator.tsx` | Quiet top-right warning/critical/exhausted status and entry point to Storage settings. Mounted in `TopBar.tsx` (enabled only when a workspace project is open). |
+| `apps/desktop/src/renderer/components/app/ProjectRecoveryScreen.tsx` | Full-project recovery surface for typed open failures: one `.kit-card` over the window's scene with the cause, live repair steps, the Fix it → Restart DAEX → Reset DAEX → Report ladder, and technical details. `ProjectTabHost` in `App.tsx` renders it full-viewport whenever `projectTransitionError` carries a `code` and `rootPath`. This is the **local disk/brain** repair surface; the similarly named `ProjectHostRecoveryScreen.tsx` is the remote one a browser or phone sees when a reachable machine's project sync host is blocked (see [web client](../web-client/README.md#source-file-map)). |
+| `apps/desktop/src/renderer/components/app/ProjectTransitionErrorAlert.tsx` | Fallback dismissible banner for project open/switch failures that lack a code/rootPath (un-coded string errors); it renders nothing once a coded error hands the surface to `ProjectRecoveryScreen`, for an open refused mid-update, or while `BrainDownNotice` owns a down background service. |
+| `apps/desktop/src/renderer/components/app/BrainDownNotice.tsx` | The one app banner for a background service that is down around an update (mounted by `AutoUpdateBanner`): "Finishing the update" while an update owns the service, then the cause and the Fix it → Restart DAEX → Reset DAEX ladder when it half-landed. Publishes `useBrainDownNoticeShowing` so the project banner stands down. |
+| `apps/desktop/src/renderer/components/app/restartAde.ts` | The Restart DAEX rung: relaunches through `updateRelaunchApp` and stamps `ade.recovery.restartRequestedAt` so the next failure after the relaunch knows that rung was tried. |
+| `apps/desktop/src/main/services/ipc/knownProjectRoots.ts` | Validation for renderer-supplied project roots on the recovery and diagnostics channels. A renderer may only name the open project, a local recent-projects entry, or a root main itself recently attempted to open; `AttemptedProjectRoots` is that last, bounded and expiring, single-writer registry, recorded only after the repo path resolves. Comparison goes through `pathsEqual` (case folding) and falls back to `path.resolve` when a root has no realpath, so a project on an unmounted volume is not refused. |
+| `apps/desktop/src/main/services/diagnostics/diagnosticReportService.ts` | Desktop half of the report dialog ("Report this error to DAEX…"): shared machine sources plus what only Electron can reach — its `userData` jsonl logs, local runtime status, the recovery diagnosis for the open project, the typed last-failure store, and an Electron-aware volume reader. Builds the redacted text the dialog shows; the send saves it `0600` and uploads it. The typed last-failure store is keyed off the root the shared collector actually used, not the request's, so a report with no project open cannot attribute one project's failure to another's logs. |
+| `apps/ade-cli/src/services/diagnostics/diagnosticReport.ts` | The pure report builder and the redactor (`redactDiagnosticText`). No I/O, so both the desktop and the CLI produce byte-identical documents from the same sources. |
+| `apps/ade-cli/src/services/diagnostics/diagnosticSources.ts` | `collectMachineDiagnosticSources` — everything a headless box can read: both of the background service's output streams, the service definition (the plist via `readFileHead`, the loaded job via `launchctl print`, the job's line in launchd's disabled list via `launchctl print-disabled`, the macOS Background Items verdict, and launchd's own spawn log for the job via `log show --last 10m`), a Notes line when launchd has the job loaded but stopped and never started it (`runs = 0`, `pended nondemand spawn`) or its domain is in on-demand-only mode, naming the `launchctl kickstart` that starts it, the project logs of the open **or most recently opened** project (`resolveMostRecentProjectRoot`), layout, disk figures, the storage-environment probe (`storageEnvironment`), and the redaction context. Both surfaces read it, so a source added for one appears in both. Command-backed sources (journald, `schtasks /XML`) go through the injectable `DiagnosticCommandRunner`, bounded and non-interactive. |
+| `apps/ade-cli/src/commands/reportIssue.ts` | `daex report-issue [--send] [--open]`, the headless equivalent. It prints the report and never tells anyone to post it on a public page; `--open` after a successful `--send` opens the public GitHub issue that holds only the reference (`shared/publicIssueLink.ts`). `--send` needs no project and no arguments: it posts the same redacted report to DAEX (Clerk token when the machine is signed in, anonymous otherwise), saves a copy under `~/.ade/diagnostic-reports/` *before* attempting the upload, and prints the reference id or the plain-words failure alongside that path. Local files only: it never starts or contacts the brain, so it still works where DAEX will not come up and on hosts with no error screen to press. |
+| `apps/ade-cli/src/commands/triage.ts` | `daex triage [--agent] [--provider <name>]` — the step after diagnosis. `daex doctor` says which check failed and `daex report-issue` produces something to file; neither fixes anything, and the person staring at either is usually the person least able to act on it. This builds the two files an agent needs — a redacted machine context and a maintained playbook — and gets out of the way. This module only **sequences**: it runs the doctor probe, the diagnostic collection, and the playbook resolution concurrently (none needs the others, and the brain is exactly what may be hanging), then assembles, writes, detects, and launches. `--agent` launches nothing and prints the handoff for a session that is already running; a machine where DAEX has downloaded no agent yet gets the same files and **exit 0**, because the files are the deliverable and the launch is a convenience. CLI-only by design — the desktop and iOS clients all need the brain this command exists to repair. Every collector is allowed to fail: a rejected doctor probe, diagnostic collection, or ADE-layout resolution becomes a section in `context.md` saying so, and even a rejected playbook resolver falls to the embedded copy rather than taking the bundle down. If the report could not be collected, the redaction context is derived locally instead, so a failed collection cannot turn `context.md` into the one unredacted copy of this machine's paths and names. |
+| `apps/ade-cli/src/commands/triageContext.ts` | Assembles the two files and the prompt from already-collected material; nothing here probes the machine. `context.md` is Install → Health checks → Brain → Recent errors → Full diagnostic report, with `orderTriageDoctorRows` putting failures before warnings before passes and a header line naming how many rows failed. `extractRecentErrorLines` pulls up to 40 error-shaped lines (`ERROR_LINE_PATTERN` covers `EACCES`/`ENOSPC`/`EDEADLK` and friends) **out of the already-redacted report**, so it cannot become a second unredacted path for the same bytes. The whole document then goes through `redactDiagnosticText` on the way out — the pass is idempotent, so the embedded report is unchanged, and collection error messages ride it too, which is why they are written into the document rather than printed raw. The bundle dir is `mkdtemp`, not a bare `mkdir` of the timestamp: the temp directory is world-writable on POSIX and a predictable name there is something another user can pre-create as a symlink. A full or read-only temp directory raises `TriageCommandError` naming the path, because that is a plausible state on exactly the machine this command is for. |
+| `apps/ade-cli/src/commands/triageLaunch.ts` | Provider detection and the launch plan. `TRIAGE_PROVIDERS` is the detection order — claude, codex, cursor-agent, opencode, droid, muse — each resolved to DAEX's pinned copy (`resolvePinnedProviderCli`), never a CLI on the PATH; a provider with no copy is skipped with its pinned state (`pinnedProviderCliStateSentence`), and a resolver that throws drops that provider rather than the command. `--provider` accepts aliases (`cursor`, `factory`) and raises `TriageUsageError` on anything else. Prompt delivery is per provider: claude, codex, cursor-agent and droid document a trailing `[prompt]`, but OpenCode's positional argument is a *project directory*, so it launches bare and the prompt is printed to paste. The same paste path is taken whenever `resolveCliSpawnInvocation` has to **wrap** the executable — a `.cmd` through `cmd.exe`, a `.ps1` through PowerShell — because both rewrite the command line before argv and the multi-line, path-bearing triage prompt would arrive corrupted. The spawn inherits stdio (the user talks to their agent directly), hides the extra Windows console a `.cmd` shim would pop, and the command exits with the agent's code. |
+| `apps/ade-cli/src/commands/triagePlaybook.ts` | Playbook resolution. The maintained copy on `main` is fetched **first** when the network answers inside 3 s; everything else is the fallback. The fetch is pinned to `raw.githubusercontent.com`, refuses redirects outright (a redirect means a captive portal, proxy, or hijacked DNS rewrote the request, and following it would fetch *instructions for a coding agent* from an origin nobody pinned), caps at 512 KiB checked against `content-length` before the body is read, and treats every failure — offline, DNS, TLS interception, timeout — as "use what is on this machine". The local candidates, in order: `ADE_TRIAGE_PLAYBOOK`, the packaged copy under `process.resourcesPath`, the DAEX install this CLI was launched from, then the working directory. The install-anchored rung is an **anchored** walk (stop at the first `ade-cli` ancestor, take that install's playbook, containment-check the result via `realpath` on both ends) rather than "try every ancestor", which would climb out of an npm-global install into `$HOME` and let any `~/docs/triage/PLAYBOOK.md` out-rank the shipped copy. Both entry points are walked because neither covers both builds — `__dirname` is absent under an ESM loader, `argv[1]` is what a `tsx src/cli.ts` run has — and both outrank cwd so a checkout the shell happens to sit in cannot win. `embeddedTriagePlaybook()` is the floor: safety rules plus where to read the real thing, deliberately not a second full copy, since a stale duplicate is worse than a short one. `ADE_TRIAGE_NO_FETCH=1` disables the fetch. |
+| `apps/ade-cli/src/commands/triageErrors.ts` | `TriageUsageError` and `TriageCommandError`, in their own module so every triage module can throw them without importing each other. `cli.ts` maps them onto `CliUsageError` / `CliToolError`, which print the message alone; a bare `Error` would reach the catch-all and print a stack trace over the wording, on the one machine whose owner is least able to read one. |
+| `docs/triage/PLAYBOOK.md` | The playbook `daex triage` hands to the agent: safety rules first (read-only diagnosis before mutation, never delete under `.ade/` or `$ADE_HOME`, never kill by name or pattern, exact PIDs only, ask before destructive steps), then one section per failure class keyed to the doctor rows. Fetched from `main` at run time so it can be improved without a DAEX release, falling back to the copy on this machine and then to the reduced built-in one; `playbookSource`/`playbookOrigin` record which won and appear in the file's own header and in `--json`. Packaged builds ship it beside the CLI through a single `extraResources` entry — one guessed layout only, because a second would mask a packaging change that should fail loudly — and both `validate-mac-artifacts.mjs` and `validate-win-artifacts.mjs` assert `<Resources>/docs/triage/PLAYBOOK.md` exists, since electron-builder only *warns* on a missing source and a dropped entry would silently degrade triage to its built-in minimum on every installed machine. |
+| `apps/desktop/src/main/services/diagnostics/autoDiagnosticsStore.ts` | The consent flag **and** the spend ledger for automatic uploads, in one file (`<adeHome>/secrets/diagnostics-autosend.json`) that both senders open — the desktop main process and the brain — because "three a day from this computer" is a property of the install, not of a process, and two private ledgers would quietly mean six. Deliberately dependency-free (`node:fs`, no Electron, no logger) for exactly that reason. Owns `AUTO_DIAGNOSTICS_WINDOW_MS` (24 h), `MAX_AUTO_DIAGNOSTICS_PER_CODE` (1), `MAX_AUTO_DIAGNOSTICS_PER_WINDOW` (3), `normalizeAutoDiagnosticsFailureCode` (coerced to the Worker's `FAILURE_CODE_PATTERN`, re-exported rather than rewritten), the mkdir lock — whose `isLockContention` names the Windows delete-pending `EPERM`/`EACCES`/`EBUSY` window as well as `EEXIST` — and the pending-notice queue the toast acknowledgement retires. On by default; `DO_NOT_TRACK=1` or a persisted explicit off turns it off. An unreadable or locked ledger fails closed. |
+| `apps/desktop/src/main/services/diagnostics/autoDiagnosticsSend.ts` | `runAutoDiagnosticsSend` — the policy every automatic send obeys, written once. The two senders differ in exactly three things (what they build, how they upload, which analytics surface they report as) and bring those as structural seams; consent, the pre-request reservation, the local copy, silence on failure, the pending flag, the log lines and the analytics dedupe key live here. Also owns the `AutoDiagnosticsOutcome` vocabulary (`completed`, `skipped_disabled`, `skipped_budget`, `skipped_ineligible`, `failed`) and `AUTO_DIAGNOSTICS_ANALYTICS_DEDUPE_MS` (1 h). |
+| `apps/desktop/src/main/services/diagnostics/autoDiagnosticsService.ts` | The desktop sender: what is specific to this process — how a report gets built (no `diagnoseProject`, since a diagnosis is itself a trigger), that it uploads anonymously, the `onSent` fast path for an open window, and the getter/setter the Settings toggle reads and writes. |
+| `apps/ade-cli/src/services/diagnostics/autoDiagnosticsSender.ts` | The brain's sender, for the failures the desktop never sees — a headless machine whose pairing recovery gave up, a publisher failing for minutes with nobody at the console. It reads the machine credential store, so its reports land attributed rather than anonymous. It has no window, so successful sends stay pending in the shared ledger until a renderer subscribes and acknowledges the toast. |
+| `apps/ade-cli/src/lib/externalLinks.ts` | `normalizeExternalUrl` / `openExternalUrl` for general URLs: allows only `http(s)` and `mailto:`. `normalizeEditorExternalUrl` / `openEditorExternalUrl` is a separate allowlist for SSH editor URLs (`vscode:` / `vscode-insiders:` / `vscodium:` with host `vscode-remote` and path `/ssh-remote+…`, plus `zed://ssh/…`). Opens through the platform helper (`open` / `rundll32` via the trusted-tool resolver / `xdg-open`), and falls back to Electron's `shell.openExternal` only when actually running inside Electron — a static `electron` import crashes headless startup. |
+| `apps/desktop/src/shared/diagnosticsUpload.ts` | The one diagnostics upload client, shared by the desktop main process (`autoDiagnosticsService`) and the CLI: `uploadDiagnosticReport`, the `DiagnosticUploadFailure` vocabulary and its one-sentence copy, `resolveDiagnosticsUploadBaseUrl`, and `diagnosticReference` (the first 8 characters of the returned id — a full uuid is unreadable over a phone call). It lives in `shared/` because that is the only tree the renderer, the main process and the CLI can all import (Vite refuses to serve files outside `apps/desktop`), and it is deliberately free of Node built-ins and `import.meta` so the identical module loads in all three. It posts the report's exact bytes and transforms nothing: the thing that is sent has to be the thing that was shown. |
+| `apps/desktop/src/shared/types/diagnostics.ts` | The `DiagnosticSurface` / request / payload contract shared by main, preload and renderer. |
+| `apps/desktop/src/renderer/components/app/ReportIssueButton.tsx` | The **Report this error to DAEX…** control and its result line, on every error surface. A press opens the report dialog and sends nothing; after a send the line shows the reference, a copy control and the optional public GitHub issue. |
+| `apps/desktop/src/renderer/components/app/ReportIssueDialog.tsx`, `reportDraft.ts` | The report dialog (note, exact preview, Send) in its own React root, and the prepare → send → discard draft that it and Settings share. See *Diagnostic reports* below. |
+| `apps/desktop/src/shared/publicIssueLink.ts` | The one public GitHub issue link after a send: only the reference, version and channel, and OS family. Used by main, the web client and the CLI. |
+| `apps/desktop/src/renderer/components/app/ReportIssueFooter.tsx` | The last row of the recovery screen and the two crash boundaries: a rule, **Report this error to DAEX…** with one hint line, and on a crash card "ADE got an error report automatically" once Sentry confirms it has the crash (`confirmSentryDelivery`). |
+| `apps/desktop/src/renderer/webclient/adapter/diagnostics.ts` | The report dialog's prepare and send in the hosted web client: the report goes to the web client's Sentry as User Feedback. Without Sentry the dialog offers only **Copy report**. See *Diagnostic reports* below. |
+| `apps/desktop/src/renderer/components/settings/DiagnosticsSharingSection.tsx` | The one report control in Settings → System → Advanced (`general.diagnostics-sharing`, anchored `#diagnostics-sharing`, `web: "hidden"` because the report is built on this machine). It is **Send a report to DAEX**, with no toggle. It hides the button on a preload that predates it. |
+| `apps/desktop/src/renderer/components/app/toast/useAutoDiagnosticsToast.ts` | The renderer half of the delivery contract: subscribes, asks for the outstanding notices (`IPC.diagnosticsFlushAutoSent`), raises the *"A diagnostic report was sent to DAEX"* toast with **View**, and only then acknowledges it (`IPC.diagnosticsAckAutoSent`). Mounted from `AppShell.tsx`. |
+| `apps/desktop/src/renderer/components/app/errorSurfaceKit.tsx` | Shared parts for the full-screen error surfaces, built on the surface kit (`.kit-card`, `.kit-tag`, `.kit-btn`) — `ErrorSurfaceCard`, `TechnicalDetailsFold`, `ERROR_PRIMARY_BUTTON` — so the recovery screen, the renderer/page boundaries and the CTO wake failure keep the raw text behind a fold and the plain-language account on top, and read on light themes and over a picture. |
+| `apps/desktop/src/renderer/components/chat/ChatContinuityRecoveryCard.tsx` | The continuity notice as the chat draws it: a quiet "Reconnecting…" line while DAEX recovers by itself, a quiet "Reconnected" line after, and only when that failed an inline `Banner` with one recommended action ("Try again") and "Start a new chat". `AgentChatMessageList` renders it in place of a plain notice chip when a `system_notice` event's `detail.kind` is `"continuity_recovery"`; `foldSelfHealedFailures` in `selfHealedFailureLines.ts` keeps only the newest notice per lost thread, hides the hand-off message, and drops the failed turns once the thread is back (a "not found" error is dropped only when the next continuity notice after it is a thread that came back). |
+| `apps/desktop/src/renderer/components/settings/health/HealthSpace.tsx` | The storage part of Settings: category totals, the project-database breakdown, the cleanup preview, Archive & Reclaim with its typed confirmation, and manual history compression. One storage result shows at a time; a new one replaces the last. Storage accounting includes DAEX temporary files. |
+| `apps/desktop/src/renderer/components/settings/health/HealthService.tsx` | Computer → DAEX service: how the background service on this computer is doing (its calls over the last day, slow and failed apart, with the p95 of the slow ones; its memory against the computer's; the computer's load; Repair). It reads only this computer over IPC, so another machine's page says so. |
+| `apps/desktop/src/renderer/components/settings/health/HealthCleanups.tsx` | The recent cleanups from the maintenance journal, the lane check (one sentence per lane the lane rules looked at), and what the build output rule removed. |
+| `apps/desktop/src/renderer/components/settings/storage/storageUiConstants.ts` | Shared presentational constants (`STORAGE_BRAND`, `PANEL_STYLE`) for the section shell and the split-out diagnostics/journal components, so they share styling without a circular import. |
+| `apps/desktop/src/renderer/components/settings/storage/StorageCleanupDialog.tsx` | Preview-confirmed cleanup dialog: lists selected removable items with sizes, surfaces blocked paths and reasons, and only enables Remove once a fresh preview is in hand. Its failure state is phase-aware — failing to *look* and failing to *remove* leave the disk in different states and call for different next steps — and it carries a Try again that re-runs the preview. Overlapping previews are retired by request id, so a stale answer cannot paint over a fresh one or drag a settled dialog back to "error". Also hosts the itemized "Clean up safely" plan and its `runMaintenance` path. The cleanup is done once the files are removed: the dialog shows that result at once, and the maintenance sweep goes on in the background with a "You can close this" note. Its outcome reaches Health through `onMaintenanceDone` / `onMaintenanceFailed` as a toast whether or not the dialog is still open, and a slow or failed sweep is a note, never "the cleanup didn't finish". |
+| `apps/desktop/src/renderer/components/settings/storage/storageView.ts` | Pure, DOM-free presentation + policy helpers. Category metadata/order/hues, safety labels, and `buildCleanupTarget` / `cleanableEntries` / `groupLaneItems` map a snapshot item to a typed `StorageCleanupTarget`. It also holds the diagnostics/maintenance view-model: `dbBreakdownRows`, `buildSafeCleanupPlan`, journal/db-size-sparkline/trend helpers, `serviceMemory`, `loadChip`, `responseHealth`, and `categoryPolicyChip` — each degrading to a sensible "not available" value so the UI renders against an older daemon that never sends `extras`. |
+| `apps/desktop/src/shared/types/storage.ts` | Shared storage contracts: disk-pressure types, `StorageCategoryId`, `StorageSafety`, `StorageItem`/`StorageCategorySnapshot`/`StorageSnapshot`, and the `StorageCleanupTarget`/`StorageCleanupPreview`/`StorageCleanupResult` DTOs. `StorageItem` carries ownership, age, blocked reasons, reclaim estimate/state, and lane ownership for the review screen; `StorageLifecycleSnapshot` carries the effective four-rule policy plus last/next scan and review counts. The ledger/maintenance surface includes `StorageLedgerEntry`/`StoragePolicyClass`, `MaintenanceAction`/`MaintenanceRunReport`/`MaintenanceTrigger`, `DbBreakdownEntry`, `StorageSnapshotExtras`, and `RuntimeHealthSnapshot`. |
+| `apps/desktop/src/shared/types/recovery.ts` | Typed recovery contracts: the `AdeRecoveryErrorCode` union + `toAdeRecoveryErrorCode`, `AdeLastFailureReport`, `ProjectRecoveryDiagnosis`, the ordered `RepairStepId` list + `ProjectRepairReport`, `mapKvDbOpenErrorCode`, and the `RECOVERY_COPY` table the main process and the recovery screen both read, so a state can never be worded or offered differently by each half. `stateForCode` maps a stored code to its state from one place. |
+| `apps/desktop/src/main/services/runtime/machineResetLauncher.ts` | Desktop launcher for the hard reset: builds the plan, then spawns the CLI engine (`daex reset --all`) and hands it the person's rescue choice, quitting the app so the engine can own the machine. Machine-scoped because a reset removes the very brain the desktop talks to. |
+| `apps/ade-cli/src/services/reset/machineResetInventory.ts` | Read-only inventory behind the hard reset: every DAEX process, background service, folder, Keychain item and config entry, plus each registered project and its lanes. Every external effect goes through `MachineResetDeps` (the process boundary), so the plan the person confirms is the list the engine removes. Also owns `isAdeProcessCommand` (the reset marker excludes the reset itself), `stripAdeShellLines`, `cursorHooksWithoutAde`, and `findAdeAncestor` (the DAEX parent a terminal-launched reset must not kill). |
+| `apps/ade-cli/src/services/reset/machineReset.ts` | The hard reset engine (`daex reset --all`): rescues lane work (commit on the lane's branch, or move the worktree out), then removes DAEX's data inside each project and the machine-wide paths, and writes a receipt the relaunched app reads. Never removes a project's own files; a rescue that fails parks the lane rather than deleting it. `assertRemovable` is the last check before any removal. |
+| `apps/desktop/src/shared/types/machineReset.ts` | Shared hard-reset contracts: `MachineResetLane`/`MachineResetProject`/`MachineResetItem`/`MachineResetPlan`, the `MachineResetRescueMode` (`none` / `commit` / `move`), and the `MachineResetReceipt` the CLI writes and the desktop reads on next launch. |
+| `apps/desktop/src/renderer/components/app/ResetAdeDialog.tsx` | The reset confirm dialog: shows the plan, takes the rescue choice, requires typing `RESET`, and calls the launch IPC. `ResetAdeButton` is the entry point on the recovery screen and Settings → System → Advanced (the Reset DAEX section, last on the page, local machine only). |
+| `apps/desktop/src/renderer/browserMockRecovery.ts` | Vite-preview mock for the recovery screen (`?adeRecovery=<state>`) and the brain-down banner (`?adeBrainDown=service\|restart\|health\|background_blocked\|updating`), with `&adeRecoveryRepair=fail` to make Fix it fail and `&adePlatform=win32` for the Windows copy, so each state renders without Electron. |
+| `apps/desktop/src/shared/codedError.ts` | `codedError(message, code)`, `encodeCodedErrorMessage`, and the `parseCodedErrorMessage`/`stripElectronErrorWrapper`/`extractCodeFromMessage` decoders that let the renderer recover a `code` through the Electron IPC error-wrapping — and through the runtime RPC client's own `Remote ADE service method <m> failed (code <n>):` wrapper, which the strip list has to name or no brain-side code survives the trip. It also draws the line between the two error vocabularies: `isErrnoLikeCode` recognises platform codes (`E…`, `ERR_…`, `MODULE_NOT_FOUND`) and `UNKNOWN_SYSTEM_ERRNO_PATTERN` recognises an errno libuv could not even name, neither of which can collide with DAEX's lowercase snake_case codes. Re-exported to the renderer via `apps/desktop/src/renderer/lib/codedError.ts`. |
+| `apps/ade-cli/src/jsonrpc.ts` | The brain's JSON-RPC server, and the boundary that decides which failures may be worded to a caller at all. A service verdict — a plain `Error` carrying a non-errno string `code` — is re-encoded as `code: message` (with the rootPath tail intact) in the shape `parseCodedErrorMessage` decodes, and the code is repeated in `error.data.code`. A platform or runtime fault (a `syscall`/`errno`, an errno-like code, an unnameable errno, a `TypeError`-class fault) is replaced on the wire by `Internal error in <method> (ref <id>)` and handed in full to `onInternalError`, which `cli.ts` writes to stderr — `launchd.err.log`, one of the logs `daex report-issue` tails — so the reference the user was shown is searchable. |
+
+## Gotchas
+
+- **Storage is per machine.** Settings › Storage and its cleanup act on the
+  machine the Settings page is scoped to (`useSettingsMachineScope().pin`), not
+  on the project tab's machine. A cleanup started for one machine must read
+  its status from the same machine.
+- The interrupted-rebuild recovery pass **must run before `migrate()`**. An
+  idempotent create in a migration can turn a finished rename into an
+  ambiguous original-plus-staging state.
+- Excluded tables get no CRR index rewrite; their rebuild plan must keep every
+  unique and secondary index.
+- Change `PRAGMA foreign_keys` outside a transaction; inside one it does
+  nothing.
+- **A rename failure is not always retryable.** Only `EXDEV` / `EPERM` /
+  `EACCES` / `EBUSY` fall back to a copy in `writeFileAtomic`. Adding `ENOSPC`
+  or `EIO` can leave a half-written target where the old file was intact.
+- **A new DAEX error code must be lowercase snake_case.** `isErrnoLikeCode`
+  tells DAEX codes from platform codes by shape, and the JSON-RPC boundary
+  redacts platform-shaped ones to `Internal error in <method> (ref …)`.
+- **`storage_read_failed` stays ahead of the integrity bucket** in
+  `classifySqliteOpenError`; an unreadable file read as corrupt would offer a
+  repair that rewrites data DAEX cannot read.
+- **Give `classifyStorageFault` a path when you have one.** Without a path, a
+  `syscall` or a path on the error, a bare `EDEADLK` or `ESTALE` is not a
+  storage fault, and the user sees the raw libuv sentence.
+- **Do not copy the storage errno list.** Import `storageErrnoClassifier.ts`.
+- **An auto-diagnostics trigger must sit upstream of what it reports.** Check
+  that the subsystem that carries it still runs when the failure happens.
+- launchd holds its stdout/stderr files open. Use copytruncate, not rename.
+- A worktree can hold its own nested `.ade`. Count it only in the worktree
+  category.
+- Writers append to plain history. If a `.gz` exists, reinflate it atomically
+  first; never append a second plain stream beside it.
+- `compactCrsqlTombstones` is safe only with **zero sync peers**. Keep
+  `hasSyncPeers` conservative; a paired project's sync-bookkeeping row stays
+  "waiting to compact".
+- DB retention numbers live once in `state/dbMaintenanceApi.ts`. Never
+  hard-code a cutoff at one enforcement site.
+- **The SQLite driver is synchronous.** New prunes use `pruneRowsInBatches`.
+- **Not every append-only table is prunable.** `linear_ingress_events` and
+  `cursor_cloud_ingress_events` (replay guards), `cto_session_logs` (dormant
+  CRR) and `worker_agent_runs` (live references) stay out of
+  `RETAINED_EVENT_LOG_TABLES`.
+- **A new doctor step needs a `STORAGE_LEDGER` entry and a `LEDGER_LABELS`
+  entry** (`storageView.ts`), or Settings shows no policy or the raw id.
+- `dbstat` is compile-time optional. The breakdown and vacuum paths work
+  without it.
+
+## Missing or replaced project data
 
 The desktop also checks each open project's `ade.db` every 5 seconds
 (`services/runtime/openProjectDataWatch.ts`):
@@ -46,111 +201,6 @@ A disposed, moved database defers its native close and extension
 finalization, so no checkpoint writes the WAL into the moved file. The handles
 stay until the original returns and another open reaps them, or the process
 exits. Normal disposal releases them at once, on Windows too.
-
-## Source file map
-
-| Path | Role |
-|---|---|
-| `apps/desktop/src/main/services/state/kvDb.ts` | Opens the project database (enabling `journal_mode = WAL` + `synchronous = NORMAL` at open), runs the interrupted-rebuild recovery pass, classifies database-open errors (`classifySqliteOpenError(error, { path })`, whose `storage_read_failed` bucket is checked *before* the integrity bucket so an unreadable file is never reported as a corrupt one; the errno rules live in `storage/storageErrnoClassifier.ts`, and the `path` argument is required rather than optional because a SQLite error rarely carries one and the classifier will not call a bare errno a storage fault without it), creates the headroom-gated migration backup, and exports `rebuildTableInTransaction` / `recoverInterruptedTableRebuilds`. Attaches the optional `maintenance` (`DbMaintenanceApi`) handle — the prune / compact / vacuum hooks the storage doctor invokes. The machine-local `local_lane_storage_state` and `local_storage_lifecycle_runs` tables retain reclaim retry/estimate and scan timing state; both are excluded from CRR sync because paths and cleanup results belong only to this checkout. |
-| `apps/desktop/src/main/services/state/dbMaintenanceApi.ts` | The `DbMaintenanceApi` interface consumed by the storage doctor, plus the single source of truth for the DB retention/count bounds (`INGRESS_EVENT_RETENTION_MS` = 7 days, `INGRESS_EVENT_MAX_ROWS_PER_PROJECT` = 2,000, `PR_SNAPSHOT_RETENTION_DAYS` = 60, `EVENT_LOG_RETENTION_DAYS` = 30) imported by the ingress writer, the kvDb hooks, and the storage ledger so the policy can never drift across enforcement sites. Also exports `pruneRowsInBatches` — the paced `delete … where rowid in (select rowid … limit N)` loop (`MAINTENANCE_DELETE_BATCH_ROWS` = 2,000, `MAINTENANCE_DELETE_MAX_BATCHES` = 200) that every new prune uses. |
-| `apps/desktop/src/main/services/state/durableFile.ts` | Atomic temp-write-and-rename persistence, one-generation `.lkg` JSON backup, validation, and primary/previous recovery reads. `AtomicWriteOptions.mode` creates the temp file with the caller's permission bits so a secret is never briefly world-readable, and a rename refused with `EXDEV` / `EPERM` / `EACCES` / `EBUSY` falls back to a copy — a deliberately closed list that leaves `ENOSPC` and `EIO` terminal. |
-| `apps/desktop/src/main/services/chat/agentChatService.ts` | Persists chat metadata and transcripts, records provider-pointer transitions to the bounded thread-pointer ledger, reconciles missing pointers from ledger/resume command/transcript, gates new turns on disk pressure (`canPerform("chat_turn")`), and implements explicit `recoverContinuity` modes. |
-| `apps/desktop/src/main/services/chat/threadPointerLedger.ts` | Standalone append-only continuity ledger (`thread-pointers.jsonl`): typed `ThreadPointerLedgerEntry` records, tolerant parse that drops only a torn tail line, newest-per-session read, and 64 KiB self-compaction (newest records first) via an atomic rewrite. |
-| `apps/desktop/src/main/services/chat/providerResumeClassifier.ts` | Classifies a provider resume failure as missing thread, provider environment, transient transport, or unknown without treating every provider error as lost continuity. |
-| `apps/desktop/src/main/services/startupRecovery/startupRecovery.ts` | The "ADE could not start" controller: which failure signals open the window (once per launch), the Go back flow (target check, download through the updater, restore in the install hook) and the Copy details text. Every step is a `startupRecovery.*` info line in `desktop-main.jsonl`; `startupRecovery.went_back` is a release-health event. |
-| `apps/desktop/src/main/services/startupRecovery/goBackPlan.ts` | Pure: reads a copy's name (`pre-<to>-from-<from>`, `_2` for a repeat; `unknown` and `before-…` carry no version) and picks the version to go back to and one copy per database. |
-| `apps/desktop/src/main/services/startupRecovery/databaseCopies.ts` | Lists this computer's databases and their copies, deletes a copy (checked against a fresh listing), and restores a plan by moving files only: the current database and its journal files go aside as a copy, then the copy takes its place. |
-| `apps/desktop/src/main/services/startupRecovery/startupRecoveryWindow.ts`, `desktopStartupRecovery.ts`, `registerDatabaseCopiesIpc.ts`, `preload/startupRecoveryPreload.ts` | The window (a static page with its own sandboxed preload, so it opens when the app's renderer broke), the Electron wiring, and the Settings IPC (local only, no pin). |
-| `apps/desktop/src/renderer/components/settings/DatabaseCopiesSection.tsx` | Settings › Advanced › Database copies: which database, from which version to which, when, size, Reveal and Delete (confirmed). Renders only for This computer. |
-| `apps/desktop/src/main/services/runtime/lastFailureStore.ts` | Stores typed project/machine failures, keeps one previous report, counts repeated signatures, and computes crash-loop startup backoff. A brain failure records its `socketPath`, and the backoff counts only failures on the starting brain's own socket (a record without one is read as the primary socket's), so a desktop's isolated brain does not sleep for the service brain's crash loop. |
-| `apps/ade-cli/src/services/runtime/failureLogDeduper.ts` | Emits the first repeated brain failure immediately and only periodic occurrence summaries afterward. `note(signature, message, meta)` and the `log` callback carry a `FailureLogMeta` bag alongside the human sentence, so the structured event and the stderr line a reader correlates share one cadence instead of drifting apart. |
-| `apps/ade-cli/src/services/runtime/startupTeardown.ts` | `createTeardownStack()` — the LIFO release stack a half-built runtime unwinds. Each acquisition in `createAdeRuntime` registers its own release at the point it acquires, `drain()` pops in reverse order, and a release that throws is caught so it neither stops the drain nor replaces the original startup failure. `runtime.dispose` is the same `drain()`, so the failure and shutdown paths cannot drift apart. |
-| `apps/ade-cli/src/services/runtime/brainMemoryRestart.ts` | `createBrainMemoryRestartGuard` — the planned restart of an idle brain that is holding too much resident memory. See [Brain resilience](#brain-resilience-watchdog-freshness-memory-and-recovery-notice). |
-| `apps/ade-cli/src/services/runtime/runtimeLogMaintenance.ts` | Bounds launchd stdout/stderr with tail-copy plus in-place truncation. |
-| `apps/ade-cli/src/services/runtime/syncFsCallTracker.ts`, `apps/ade-cli/src/services/projects/projectRootAccessMonitor.ts`, `apps/desktop/src/main/services/state/unansweringRoots.ts` | A folder waiting on a permission prompt or a hung drive: the tracker names the synchronous file call the main thread is stuck in (shared memory the watchdog worker reads) and fails calls under a folder that is not answering; the monitor finds such folders off the main thread, one probe per drive, and tells devices. See [A folder waiting on a permission prompt](#a-folder-waiting-on-a-permission-prompt). |
-| `apps/ade-cli/src/services/runtime/brainLoopWatchdog.ts`, `brainLoopWatchdogWorker.ts` | Worker-thread **event-loop watchdog** for the machine brain (the worker's source and its stall evaluation live in `brainLoopWatchdogWorker.ts`). On macOS the worker also takes a 2 s native `sample` of a wedged brain before the kill (12 s cap), so the report names the blocking call. Heartbeats every second with the current command name plus event-loop, memory, and resource diagnostics; a recovered delay over 2 s logs a near-miss, or a suspend gap when the worker thread was paused too. A stall past `ADE_LOOP_WATCHDOG_MS` (30 s default) that is not a sleep/suspend writes an `event-loop-wedge.json` breadcrumb, requests a best-effort Node report, and `SIGKILL`s the brain, unless the machine caused it (memory pressure, a stuck drive), which it waits out up to 5 min (see [Brain resilience](#brain-resilience-watchdog-freshness-memory-and-recovery-notice)). On next boot it promotes the evidence to `last-wedge.json` / `last-wedge-report.json`, logs `brain.recovered_from_wedge`, and emits a deduped recovery event. Disable with `ADE_DISABLE_LOOP_WATCHDOG=1`. It is also the brain's memory sampler: `brain.memory_sample` every 5 min, `trackBrainMemoryPressure` to decide when RSS has stayed high long enough to act, and `resolveBrainRssRestartBytes` to read the `ADE_BRAIN_RSS_RESTART_BYTES` override. `classifyBrainLoopLag` separates a stall from a suspension, and `currentBrainLoopWatchdogCommand()` is the idleness signal the memory guard shares with it so a restart decision and a wedge breadcrumb can never disagree about what the brain was doing. |
-| `apps/ade-cli/src/services/runtime/brainStallProfiler.ts` | After a freeze, a one-minute in-process CPU profile (`node:inspector`, at most once an hour) that names the code behind it: warn `brain.stall_profile`, and one Sentry warning issue per cause (`Brain froze in …`). |
-| `apps/ade-cli/src/services/runtime/brainFreshnessMonitor.ts` | The running brain stats its own CLI entrypoint every 5 min (`ADE_BRAIN_FRESHNESS_INTERVAL_MS`), hashes only after the stat changes, and — when the on-disk hash no longer matches the baked runtime hash — waits for the brain to go idle (bounded) before triggering the brain-update service restart so an in-place upgrade takes effect without interrupting active work. Disable with `ADE_DISABLE_BRAIN_FRESHNESS=1`. |
-| `apps/ade-cli/src/services/runtime/runtimeBuildIdentity.ts` | `computeRuntimeBuildHash` / `computeRuntimeBuildHashAsync` — the SHA-256 of the CLI entrypoint used as the brain build identity by the freshness monitor and the desktop compatibility handshake. |
-| `apps/ade-cli/src/services/runtime/brainLogger.ts` | The machine-brain logger: reuses the desktop `createFileLogger` to write `~/.ade/runtime/brain.jsonl` (10 MiB `.1` rotation) and additionally mirrors timestamped `warn`/`error` lines to stderr so launchd captures them. |
-| `apps/desktop/src/main/services/logging/machineLogger.ts` | The desktop main process's **machine-scoped** logger: same `createFileLogger` and rotation, writing `~/.ade/runtime/desktop-main.jsonl`. Opened in `main.ts`'s first executable statement, so the events that happen before (or without) a project — the launch marker, the `ade://` claim, the single-instance outcome, the CLI auto-install result — are durable rather than `console.log` into a stdout a Finder-launched app does not have. `logMachineEvent` writes the structured line and mirrors it to `console`; `flushMachineMainLog` drains it on the branch that quits immediately. See [logging.md](../../logging.md). |
-| `apps/ade-cli/src/commands/doctor.ts` | `ade doctor [--online]` — connects to the brain over the local socket and prints one `ok`/`warn`/`fail` row per subsystem (App version, Brain, Wedge history, Sync port, Publish health, Relay, Account, Diagnostics sharing); exits non-zero on any `fail`. The **Diagnostics sharing** row reads the shared auto-send ledger through `readAutoDiagnosticsState` — never a second parser — and is always `ok`: consent is a preference, not a fault, so it reports `on · N of 3 automatic reports sent today` or `off · no automatic reports are sent` and never colours a healthy machine. `evaluateDoctorRows` is pure and dependency-injected — every row's inputs are read at the edge (`runDoctorCommand`) and handed in — so the verdict is testable without a machine and a second surface can reuse it. Today the CLI is its only caller: the desktop's **Connection doctor** card (`remoteTargets/ConnectionDoctorPanel.tsx` → `remoteRuntime.runDoctor`) is a different check about reaching a *remote* machine, not this one. |
-| `apps/desktop/src/shared/adeRuntimeProtocol.ts` | Shared runtime-protocol contract: `RUNTIME_COMPAT_LEVEL` + `isRuntimeProtocolCompatible` (the integer compatibility-window check), and the tolerant parsers `parseRuntimePublishHealth` / `parseRuntimeLastWedge` that decode `runtimeInfo.publishHealth` and `runtimeInfo.lastWedge` for the connection pool, the doctor, and the desktop status surfaces. |
-| `apps/desktop/src/main/services/runtime/projectDataTrash.ts` | Finds a project's `.ade` in the Trash (by the recorded database identity, else the database's own `projects` row; cached 5 s) and puts it back, whole or merged, database last. |
-| `apps/desktop/src/main/services/runtime/recycleBinRecord.ts` | Reads a Windows Recycle Bin `$I…` record (versions 1 and 2) for the original path of the `$R…` item it describes. |
-| `apps/desktop/src/main/services/runtime/openProjectDataWatch.ts` | Checks each open project's `ade.db` every 5 seconds and reports `missing` or `replaced` once per change, so the window shows the recovery screen. |
-| `apps/desktop/src/main/services/runtime/projectRecoveryService.ts` | Brain-independent diagnosis and ordered repair: space, ownership, database validation, migration recovery, service restart, endpoint/project verification, and chat reconciliation. On macOS it also reads the launch agent's Background Items verdict (`isBackgroundItemBlocked`, `shared/types/core.ts`) and reports `background_blocked` ahead of every repairable state when "Allow in the Background" is off; an installed brain that is not running with no crash on record is `brain_not_running`, not a crash loop. Also owns `restartBrain()` — the machine-scoped restart behind the Connections **Repair** button and the brain-down notice's **Fix it** — which shares one `restartServiceAndWait()` sequence (install → wait ≤90 s for the endpoint → `ping`) with `repair()`'s restart_service/verify_endpoint steps. The two are mutually exclusive: `restartBrain()` rejects while a `repair()` is in flight, because repair stops the service and then does exclusive database work that a reinstall would put a second writer on top of. A forced restart also treats a *skipped* install as a failure ("A newer version of ADE is already running. Restart ADE to switch to it."), where `repair()` tolerates one, since a protocol-compatible brain that is already running satisfies its step. `main.ts` constructs exactly one of these and shares it with `registerIpc`, so the mutual exclusion actually holds — the post-update transaction's `restart` step (see [desktop auto-update](../onboarding-and-settings/desktop-auto-update.md#applying-an-update-is-one-transaction)) binds to the same instance rather than a second one that could run alongside a repair. |
-| `apps/desktop/src/main/services/storage/diskPressure.ts` | Samples all ADE storage roots, classifies pressure with recovery hysteresis, and gates write-producing operation classes via `canPerform(kind)`. Exports the `DiskPressureMonitor` type and refusal-message copy. |
-| `apps/desktop/src/main/services/ipc/registerIpc.ts` | Uses the project's disk-pressure monitor when available; otherwise samples the machine ADE directory, so disk pressure remains visible with no project open or while a remote project is bound. |
-| `apps/desktop/src/main/services/storage/volume.ts` | `readVolumeSpace(dir)` (statfs free/total bytes) and `isNoSpaceError(err)` (ENOSPC/EDQUOT and disk-full message detection), shared by the pressure monitor and the database-open error classifier. `readStorageVolumes(roots)` is the storage page's async read: one entry per drive (device number; drive root on Windows) for the project, ADE home and temp folder, and on macOS the free space Finder shows (`NSURLVolumeAvailableCapacityForImportantUsageKey`, one short `osascript` run, statfs on any failure) with its purgeable part. The page prints these and every storage size in the measured machine's own units (`formatStorageBytes`: 1000 on macOS and Linux, Explorer's 1024 on Windows). |
-| `apps/desktop/src/main/services/storage/cloudPlaceholder.ts` | The cloud-eviction preflight. `detectCloudStorageProvider` matches a path against the provider roots (`Library/Mobile Documents`, `Library/CloudStorage`, and home-relative `OneDrive` / `Dropbox` / `Google Drive` folders) on text alone, so it costs nothing on any platform; `isDatalessFileStats` spots a file with a size but zero allocated blocks, which is what a dehydrated placeholder looks like through `fs.stat`. `detectCloudPlaceholderFile` reports a finding only when both agree, and `storageUnreadableMessage` writes the one sentence a person needs — with the "move it out of the cloud folder" remedy stated conditionally when no provider was matched, because a failing disk or a dropped network mount produces the same unreadable file. `storageUnreadableRemedy` is that remedy on its own, so a caller holding an errno but no path can still word the fix. |
-| `apps/desktop/src/main/services/storage/storageErrnoClassifier.ts` | The one place that decides whether a platform error means "this computer cannot read its own bytes". `classifyStorageFault(error, { path })` returns a `StorageFault` (`{ code: "storage_read_failed", errno, path, provider, message }`) or `null`, and `STORAGE_FAULT_ERRNO_CODES` names the seven codes it acts on (`EDEADLK`, `EIO`, `ENXIO`, `ENODEV`, `ESTALE`, `EHOSTDOWN`, `EREMOTEIO`). An errno alone is not enough: the error must also carry filesystem evidence — a caller-supplied path, a path on the error, or a `syscall` — so a socket-layer `EHOSTDOWN` or `ESTALE` is never read as a disk fault. An errno libuv could not name (`UNKNOWN_SYSTEM_ERRNO_PATTERN`, on the code or the text) qualifies on its own, as does a Windows `UNKNOWN` inside a detected cloud-provider folder, which is where `ERROR_CLOUD_FILE_*` and `ERROR_FILE_OFFLINE` land. The database open and the sync host are its only production callers. |
-| `apps/ade-cli/src/services/diagnostics/storageEnvironmentProbe.ts` | `collectStorageEnvironment(roots)` — the "where do ADE's directories actually live, and are their bytes on this disk" probe behind the report's **Storage environment** section. It uses `node:fs` alone and needs no brain, because the machine it explains is often the one where the brain will not start. `classifyStorageLocation` labels each root `icloud` / `dropbox` / `google-drive` / `onedrive` / `cloud-storage` / `external-volume` / `network-volume` / `local`; a bounded breadth-first walk (`STORAGE_SAMPLE_MAX_FILES` 200, `STORAGE_SAMPLE_MAX_DIRECTORIES` 40, `STORAGE_SAMPLE_TIME_BUDGET_MS` 750, symlinks never followed) counts dataless placeholders through `isDatalessFileStats`. `detectLaunchdManaged` and `readMaterializeDatalessFilesKey` report whether launchd started this process and whether the installed launch agent carries the materialization key. The privacy contract is structural: it emits enums and counts, never a path, directory, or file name. |
-| `apps/desktop/src/main/services/processes/processStartTime.ts` | `readProcessStartTimeMs(pid, platform)` — one `/bin/ps -o lstart= -p <pid>` under `LC_ALL=C` (an unpinned locale prints dates `Date.parse` rejects), bounded at 2 s, `null` on Windows or any failure. It is the shared answer to "is this still the process that wrote the thing I am about to act on", used by the external watchdog's identity check, by the connection pool's stale-runtime record, and by the machine-wide sync host lease so a recycled pid cannot be killed or reported as the old brain. Because it answers `null` on Windows, `syncHostSingleton.ts` pairs it with a PowerShell `StartTime` read there rather than falling back to a Node-bootstrap timestamp the reader would then reject — see [sync and multi-device](../sync-and-multi-device/README.md#source-file-map). |
-| `apps/desktop/src/main/services/storage/storageInsightsService.ts` | Builds categorized storage snapshots and preview-confirmed cleanup plans without following symlinks or deleting protected state. `proof_attachments` is a manual `review_first` cleanup target for `.ade/artifacts` and `.ade/attachments`; after bytes are removed it invokes the broker's `purgeArtifactRecordsUnder` hook so proof rows cannot outlive their files. It also runs the lane-lifecycle scan at the configured interval: safely archives excess or inactive lanes, marks old archived worktrees for review, and never removes a lane's own files in the background. The **storage doctor** compresses history, maintains the database and removes build output from idle lanes (`laneBuildOutput.ts`); other filesystem candidates such as staging, backups and DerivedData remain review-first. Folder sizes use `diskUsage.ts`. Every run is journaled and emits one deduped `ade_feature_used` analytics event. Populates the snapshot's optional `extras` plus lifecycle policy/status and per-item ownership, age, blocked reasons, and reclaim estimates. |
-| `apps/desktop/src/main/services/lanes/laneService.ts` | Owns the lane-aware `getReclaimRisk`, `archiveAndReclaim`, and restore-aware `unarchive` operations. It proves exact path-and-branch ownership against this project's Git worktree registry, rejects symlinks, rechecks directory identity before removal, shares the database-backed lane worktree lease with PR workflows, and stores retryable reclaim failures locally. |
-| `apps/desktop/src/main/services/storage/storageLedger.ts` | The **storage ledger** (`STORAGE_LEDGER`): the declared policy for every persistent table and directory ADE writes — its privacy class (`user_data` / `derived` / `operational`) and how it is bounded (`write_time` / `doctor` / `both` / `manual`). `LEDGER_LAYOUT_COVERAGE` maps every `ADE_LAYOUT_DEFINITIONS` directory to a ledger id (or `null` for intentionally-unmanaged config/credentials) so a coverage test fails CI if a new tracked directory ships without a declared policy. `deriveCategoryPolicyChips()` renders the Settings policy chips from the ledger. |
-| `apps/desktop/src/main/services/storage/storageDbBreakdown.ts` | Pure helpers turning raw `dbstat` rows into the coarse project-database breakdown (`classifyDbTable` / `mapDbBreakdown`: webhooks, sync bookkeeping, PR cache, core) and `deriveSyncBookkeepingAction` — which reads the journal so the sync-bookkeeping row offers "Compact now" only after a run proves compaction ran without a `has_peers` skip, and stays "waiting to compact" otherwise. |
-| `apps/desktop/src/main/services/storage/laneBuildOutput.ts` | Build output in idle lanes: the explicit folder list (`BUILD_OUTPUT_FOLDER_RULES`), the depth bound, the lane and folder checks, the removal (bounded whole-pass retries, read-only entries made writable), the `local_lane_build_output_cleanups` record and the summary Settings shows. See "Build output in idle lanes". |
-| `apps/desktop/src/main/services/storage/laneLifecycleScan.ts` | The archive rules' scan (`createLaneLifecycleScan`): archive idle lanes whose work is merged (an open PR keeps a lane; a squash-merged PR whose head is the branch counts as merged), then free up or delete archived lanes under the "Archived lanes" rules, each lane checked by one `laneSafeToTouch` gate; the retry of folders kept because files were in use; and the "Last run" report. Runs about hourly while a rule is on. |
-| `apps/desktop/src/main/services/shared/deletingTrash.ts`, `shared/sameFolder.ts`, `git/gitLongPaths.ts` | The `.ade-deleting-` trash name, in-use error check, background removal and sweep shared by lane delete, reclaim and build-output cleanup; one path comparison (case-insensitive on Windows, real paths when the spellings differ); `-c core.longpaths=true` for git on Windows. |
-| `apps/desktop/src/main/services/storage/laneSizes.ts` | Each lane folder's full size (`measureTree`, no entry cap), measured in the background one lane at a time and stored in the local-only `local_lane_size_measurements` table: for lanes never measured a minute after boot, for lanes older than 12 h (or whose build output was removed) from the storage doctor, and from the page's Check again. The snapshot shows a measured lane's size with when it was measured and walks only the others; `laneSizing` carries the pass's progress. Stops on `dispose()`; a lane cut short is not stored. |
-| `apps/desktop/src/main/services/storage/diskUsage.ts` | One definition of "how much disk a folder takes", shared by the storage snapshot walk, the lane reclaim estimate (`laneService.managedTreeBytes`) and the build-output cleanup: allocated blocks (`st_blocks * 512`, the file length on Windows), a hard-linked file counted once and only when all its links are inside the measured folder, pnpm's `node_modules/.pnpm` left out when `.modules.yaml`'s `storeDir` is on the same volume (clones and hard links share the store's blocks), links never followed, unpatched `fs` so a lane's `.asar` files are files. |
-| `apps/desktop/src/main/services/storage/storageMaintenanceJournal.ts` | Read/write helpers for the storage-doctor journal — a plain rebuildable JSON file (`storage-doctor-journal.json` under `.ade/cache`, no DB/CRR) capping the last 30 runs, written via temp-file-then-rename so a crash never leaves a torn journal. It creates only `.ade/cache`, never its parents, so a project deleted while open is not brought back. |
-| `apps/desktop/src/main/services/storage/historyCompression.ts` | Finds inactive old history, gzip-compresses it, verifies byte identity, and only then removes the original; also reinflates before append. Exposes `readHistoryFileSync` / `reinflateHistoryFileSync` so transcript, session, and search readers can read a `.gz` generation transparently. The `.gz` keeps the source's modification time. An optional `minAgeMsFor` hook gives finished chats a shorter idle age and lists them first. |
-| `apps/desktop/src/main/services/storage/legacyChatTranscripts.ts` | `resolveChatTranscriptReadPath` maps a chat row's legacy `<id>.chat.jsonl` path to the dedicated `transcripts/chat/<id>.jsonl` (plain or `.gz`). `removeDuplicateLegacyChatTranscripts` is the doctor step that deletes legacy copies once every event line in them is proven to be in the dedicated file. |
-| `apps/desktop/src/main/services/storage/deletedLaneChats.ts` | Lists chats whose session row and lane are both gone (lane delete removes rows, not files), idle for 7 days, with every file they left. Backs the review-first "Chats from deleted lanes" row and its `deleted_lane_chats` cleanup target. `providerSessionsOfDeletedLaneChats` reads each chat's record for the Claude/Codex session ADE started. Imported chats are skipped, and so are sessions a live chat also names. |
-| `apps/desktop/src/main/services/chat/deletedChats.ts`, `apps/desktop/src/renderer/components/settings/RecentlyDeletedSection.tsx`, `deletedChatLocator.ts`, `renderer/state/everyCopyRead.ts` | Settings › Deleted & Archived › Recently deleted: the `deleted_chats` rows a chat delete, an agent CLI delete (`kind = 'cli'`), or a lane delete writes, the agent-copy lookup that keeps a row only while the conversation still exists on this machine, and Reopen through the external-session import. Machine-local (excluded from CRR); rows are hidden rather than removed. See [Recently deleted chats](../chat/README.md#recently-deleted-chats). |
-| `apps/desktop/src/main/services/storage/providerHistory.ts` | `measureProviderHistory` sizes each provider's own session folders on this machine: Claude and Codex across every config home, plus OpenCode, Droid, Cursor, Copilot, Pi and Grok. `listProviderCopiesOfChats` finds the Claude `projects/<cwd>/<id>.jsonl` (plus its `<id>/` side folder) and the Codex rollout for given session ids. |
-| `apps/desktop/src/renderer/components/app/useDeletedChatsReminderBanner.tsx` | The docked reminder shown when chats from deleted lanes pile up: 25 or more chats, or at least 100 MB. It checks 45 s after open and every 6 h through `storage.deletedLaneChatsSummary`. Every answer snoozes it for two weeks per project, in localStorage. |
-| `apps/desktop/src/renderer/components/app/StoragePressureIndicator.tsx` | Quiet top-right warning/critical/exhausted status and entry point to Storage settings. Mounted in `TopBar.tsx` (enabled only when a workspace project is open). |
-| `apps/desktop/src/renderer/components/app/ProjectRecoveryScreen.tsx` | Full-project recovery surface for typed open failures: one `.kit-card` over the window's scene with the cause, live repair steps, the Fix it → Restart ADE → Reset ADE → Report ladder, and technical details. `ProjectTabHost` in `App.tsx` renders it full-viewport whenever `projectTransitionError` carries a `code` and `rootPath`. This is the **local disk/brain** repair surface; the similarly named `ProjectHostRecoveryScreen.tsx` is the remote one a browser or phone sees when a reachable machine's project sync host is blocked (see [web client](../web-client/README.md#source-file-map)). |
-| `apps/desktop/src/renderer/components/app/ProjectTransitionErrorAlert.tsx` | Fallback dismissible banner for project open/switch failures that lack a code/rootPath (un-coded string errors); it renders nothing once a coded error hands the surface to `ProjectRecoveryScreen`, for an open refused mid-update, or while `BrainDownNotice` owns a down background service. |
-| `apps/desktop/src/renderer/components/app/BrainDownNotice.tsx` | The one app banner for a background service that is down around an update (mounted by `AutoUpdateBanner`): "Finishing the update" while an update owns the service, then the cause and the Fix it → Restart ADE → Reset ADE ladder when it half-landed. Publishes `useBrainDownNoticeShowing` so the project banner stands down. |
-| `apps/desktop/src/renderer/components/app/restartAde.ts` | The Restart ADE rung: relaunches through `updateRelaunchApp` and stamps `ade.recovery.restartRequestedAt` so the next failure after the relaunch knows that rung was tried. |
-| `apps/desktop/src/main/services/ipc/knownProjectRoots.ts` | Validation for renderer-supplied project roots on the recovery and diagnostics channels. A renderer may only name the open project, a local recent-projects entry, or a root main itself recently attempted to open; `AttemptedProjectRoots` is that last, bounded and expiring, single-writer registry, recorded only after the repo path resolves. Comparison goes through `pathsEqual` (case folding) and falls back to `path.resolve` when a root has no realpath, so a project on an unmounted volume is not refused. |
-| `apps/desktop/src/main/services/diagnostics/diagnosticReportService.ts` | Desktop half of the report dialog ("Report this error to ADE…"): shared machine sources plus what only Electron can reach — its `userData` jsonl logs, local runtime status, the recovery diagnosis for the open project, the typed last-failure store, and an Electron-aware volume reader. Builds the redacted text the dialog shows; the send saves it `0600` and uploads it. The typed last-failure store is keyed off the root the shared collector actually used, not the request's, so a report with no project open cannot attribute one project's failure to another's logs. |
-| `apps/ade-cli/src/services/diagnostics/diagnosticReport.ts` | The pure report builder and the redactor (`redactDiagnosticText`). No I/O, so both the desktop and the CLI produce byte-identical documents from the same sources. |
-| `apps/ade-cli/src/services/diagnostics/diagnosticSources.ts` | `collectMachineDiagnosticSources` — everything a headless box can read: both of the background service's output streams, the service definition (the plist via `readFileHead`, the loaded job via `launchctl print`, the job's line in launchd's disabled list via `launchctl print-disabled`, the macOS Background Items verdict, and launchd's own spawn log for the job via `log show --last 10m`), a Notes line when launchd has the job loaded but stopped and never started it (`runs = 0`, `pended nondemand spawn`) or its domain is in on-demand-only mode, naming the `launchctl kickstart` that starts it, the project logs of the open **or most recently opened** project (`resolveMostRecentProjectRoot`), layout, disk figures, the storage-environment probe (`storageEnvironment`), and the redaction context. Both surfaces read it, so a source added for one appears in both. Command-backed sources (journald, `schtasks /XML`) go through the injectable `DiagnosticCommandRunner`, bounded and non-interactive. |
-| `apps/ade-cli/src/commands/reportIssue.ts` | `ade report-issue [--send] [--open]`, the headless equivalent. It prints the report and never tells anyone to post it on a public page; `--open` after a successful `--send` opens the public GitHub issue that holds only the reference (`shared/publicIssueLink.ts`). `--send` needs no project and no arguments: it posts the same redacted report to ADE (Clerk token when the machine is signed in, anonymous otherwise), saves a copy under `~/.ade/diagnostic-reports/` *before* attempting the upload, and prints the reference id or the plain-words failure alongside that path. Local files only: it never starts or contacts the brain, so it still works where ADE will not come up and on hosts with no error screen to press. |
-| `apps/ade-cli/src/commands/triage.ts` | `ade triage [--agent] [--provider <name>]` — the step after diagnosis. `ade doctor` says which check failed and `ade report-issue` produces something to file; neither fixes anything, and the person staring at either is usually the person least able to act on it. This builds the two files an agent needs — a redacted machine context and a maintained playbook — and gets out of the way. This module only **sequences**: it runs the doctor probe, the diagnostic collection, and the playbook resolution concurrently (none needs the others, and the brain is exactly what may be hanging), then assembles, writes, detects, and launches. `--agent` launches nothing and prints the handoff for a session that is already running; a machine where ADE has downloaded no agent yet gets the same files and **exit 0**, because the files are the deliverable and the launch is a convenience. CLI-only by design — the desktop and iOS clients all need the brain this command exists to repair. Every collector is allowed to fail: a rejected doctor probe, diagnostic collection, or ADE-layout resolution becomes a section in `context.md` saying so, and even a rejected playbook resolver falls to the embedded copy rather than taking the bundle down. If the report could not be collected, the redaction context is derived locally instead, so a failed collection cannot turn `context.md` into the one unredacted copy of this machine's paths and names. |
-| `apps/ade-cli/src/commands/triageContext.ts` | Assembles the two files and the prompt from already-collected material; nothing here probes the machine. `context.md` is Install → Health checks → Brain → Recent errors → Full diagnostic report, with `orderTriageDoctorRows` putting failures before warnings before passes and a header line naming how many rows failed. `extractRecentErrorLines` pulls up to 40 error-shaped lines (`ERROR_LINE_PATTERN` covers `EACCES`/`ENOSPC`/`EDEADLK` and friends) **out of the already-redacted report**, so it cannot become a second unredacted path for the same bytes. The whole document then goes through `redactDiagnosticText` on the way out — the pass is idempotent, so the embedded report is unchanged, and collection error messages ride it too, which is why they are written into the document rather than printed raw. The bundle dir is `mkdtemp`, not a bare `mkdir` of the timestamp: the temp directory is world-writable on POSIX and a predictable name there is something another user can pre-create as a symlink. A full or read-only temp directory raises `TriageCommandError` naming the path, because that is a plausible state on exactly the machine this command is for. |
-| `apps/ade-cli/src/commands/triageLaunch.ts` | Provider detection and the launch plan. `TRIAGE_PROVIDERS` is the detection order — claude, codex, cursor-agent, opencode, droid, muse — each resolved to ADE's pinned copy (`resolvePinnedProviderCli`), never a CLI on the PATH; a provider with no copy is skipped with its pinned state (`pinnedProviderCliStateSentence`), and a resolver that throws drops that provider rather than the command. `--provider` accepts aliases (`cursor`, `factory`) and raises `TriageUsageError` on anything else. Prompt delivery is per provider: claude, codex, cursor-agent and droid document a trailing `[prompt]`, but OpenCode's positional argument is a *project directory*, so it launches bare and the prompt is printed to paste. The same paste path is taken whenever `resolveCliSpawnInvocation` has to **wrap** the executable — a `.cmd` through `cmd.exe`, a `.ps1` through PowerShell — because both rewrite the command line before argv and the multi-line, path-bearing triage prompt would arrive corrupted. The spawn inherits stdio (the user talks to their agent directly), hides the extra Windows console a `.cmd` shim would pop, and the command exits with the agent's code. |
-| `apps/ade-cli/src/commands/triagePlaybook.ts` | Playbook resolution. The maintained copy on `main` is fetched **first** when the network answers inside 3 s; everything else is the fallback. The fetch is pinned to `raw.githubusercontent.com`, refuses redirects outright (a redirect means a captive portal, proxy, or hijacked DNS rewrote the request, and following it would fetch *instructions for a coding agent* from an origin nobody pinned), caps at 512 KiB checked against `content-length` before the body is read, and treats every failure — offline, DNS, TLS interception, timeout — as "use what is on this machine". The local candidates, in order: `ADE_TRIAGE_PLAYBOOK`, the packaged copy under `process.resourcesPath`, the ADE install this CLI was launched from, then the working directory. The install-anchored rung is an **anchored** walk (stop at the first `ade-cli` ancestor, take that install's playbook, containment-check the result via `realpath` on both ends) rather than "try every ancestor", which would climb out of an npm-global install into `$HOME` and let any `~/docs/triage/PLAYBOOK.md` out-rank the shipped copy. Both entry points are walked because neither covers both builds — `__dirname` is absent under an ESM loader, `argv[1]` is what a `tsx src/cli.ts` run has — and both outrank cwd so a checkout the shell happens to sit in cannot win. `embeddedTriagePlaybook()` is the floor: safety rules plus where to read the real thing, deliberately not a second full copy, since a stale duplicate is worse than a short one. `ADE_TRIAGE_NO_FETCH=1` disables the fetch. |
-| `apps/ade-cli/src/commands/triageErrors.ts` | `TriageUsageError` and `TriageCommandError`, in their own module so every triage module can throw them without importing each other. `cli.ts` maps them onto `CliUsageError` / `CliToolError`, which print the message alone; a bare `Error` would reach the catch-all and print a stack trace over the wording, on the one machine whose owner is least able to read one. |
-| `docs/triage/PLAYBOOK.md` | The playbook `ade triage` hands to the agent: safety rules first (read-only diagnosis before mutation, never delete under `.ade/` or `$ADE_HOME`, never kill by name or pattern, exact PIDs only, ask before destructive steps), then one section per failure class keyed to the doctor rows. Fetched from `main` at run time so it can be improved without an ADE release, falling back to the copy on this machine and then to the reduced built-in one; `playbookSource`/`playbookOrigin` record which won and appear in the file's own header and in `--json`. Packaged builds ship it beside the CLI through a single `extraResources` entry — one guessed layout only, because a second would mask a packaging change that should fail loudly — and both `validate-mac-artifacts.mjs` and `validate-win-artifacts.mjs` assert `<Resources>/docs/triage/PLAYBOOK.md` exists, since electron-builder only *warns* on a missing source and a dropped entry would silently degrade triage to its built-in minimum on every installed machine. |
-| `apps/desktop/src/main/services/diagnostics/autoDiagnosticsStore.ts` | The consent flag **and** the spend ledger for automatic uploads, in one file (`<adeHome>/secrets/diagnostics-autosend.json`) that both senders open — the desktop main process and the brain — because "three a day from this computer" is a property of the install, not of a process, and two private ledgers would quietly mean six. Deliberately dependency-free (`node:fs`, no Electron, no logger) for exactly that reason. Owns `AUTO_DIAGNOSTICS_WINDOW_MS` (24 h), `MAX_AUTO_DIAGNOSTICS_PER_CODE` (1), `MAX_AUTO_DIAGNOSTICS_PER_WINDOW` (3), `normalizeAutoDiagnosticsFailureCode` (coerced to the Worker's `FAILURE_CODE_PATTERN`, re-exported rather than rewritten), the mkdir lock — whose `isLockContention` names the Windows delete-pending `EPERM`/`EACCES`/`EBUSY` window as well as `EEXIST` — and the pending-notice queue the toast acknowledgement retires. On by default; `DO_NOT_TRACK=1` or a persisted explicit off turns it off. An unreadable or locked ledger fails closed. |
-| `apps/desktop/src/main/services/diagnostics/autoDiagnosticsSend.ts` | `runAutoDiagnosticsSend` — the policy every automatic send obeys, written once. The two senders differ in exactly three things (what they build, how they upload, which analytics surface they report as) and bring those as structural seams; consent, the pre-request reservation, the local copy, silence on failure, the pending flag, the log lines and the analytics dedupe key live here. Also owns the `AutoDiagnosticsOutcome` vocabulary (`completed`, `skipped_disabled`, `skipped_budget`, `skipped_ineligible`, `failed`) and `AUTO_DIAGNOSTICS_ANALYTICS_DEDUPE_MS` (1 h). |
-| `apps/desktop/src/main/services/diagnostics/autoDiagnosticsService.ts` | The desktop sender: what is specific to this process — how a report gets built (no `diagnoseProject`, since a diagnosis is itself a trigger), that it uploads anonymously, the `onSent` fast path for an open window, and the getter/setter the Settings toggle reads and writes. |
-| `apps/ade-cli/src/services/diagnostics/autoDiagnosticsSender.ts` | The brain's sender, for the failures the desktop never sees — a headless machine whose pairing recovery gave up, a publisher failing for minutes with nobody at the console. It reads the machine credential store, so its reports land attributed rather than anonymous. It has no window, so successful sends stay pending in the shared ledger until a renderer subscribes and acknowledges the toast. |
-| `apps/ade-cli/src/lib/externalLinks.ts` | `normalizeExternalUrl` / `openExternalUrl` for general URLs: allows only `http(s)` and `mailto:`. `normalizeEditorExternalUrl` / `openEditorExternalUrl` is a separate allowlist for SSH editor URLs (`vscode:` / `vscode-insiders:` / `vscodium:` with host `vscode-remote` and path `/ssh-remote+…`, plus `zed://ssh/…`). Opens through the platform helper (`open` / `rundll32` via the trusted-tool resolver / `xdg-open`), and falls back to Electron's `shell.openExternal` only when actually running inside Electron — a static `electron` import crashes headless startup. |
-| `apps/desktop/src/shared/diagnosticsUpload.ts` | The one diagnostics upload client, shared by the desktop main process (`autoDiagnosticsService`) and the CLI: `uploadDiagnosticReport`, the `DiagnosticUploadFailure` vocabulary and its one-sentence copy, `resolveDiagnosticsUploadBaseUrl`, and `diagnosticReference` (the first 8 characters of the returned id — a full uuid is unreadable over a phone call). It lives in `shared/` because that is the only tree the renderer, the main process and the CLI can all import (Vite refuses to serve files outside `apps/desktop`), and it is deliberately free of Node built-ins and `import.meta` so the identical module loads in all three. It posts the report's exact bytes and transforms nothing: the thing that is sent has to be the thing that was shown. |
-| `apps/desktop/src/shared/types/diagnostics.ts` | The `DiagnosticSurface` / request / payload contract shared by main, preload and renderer. |
-| `apps/desktop/src/renderer/components/app/ReportIssueButton.tsx` | The **Report this error to ADE…** control and its result line, on every error surface. A press opens the report dialog and sends nothing; after a send the line shows the reference, a copy control and the optional public GitHub issue. |
-| `apps/desktop/src/renderer/components/app/ReportIssueDialog.tsx`, `reportDraft.ts` | The report dialog (note, exact preview, Send) in its own React root, and the prepare → send → discard draft that it and Settings share. See *Diagnostic reports* below. |
-| `apps/desktop/src/shared/publicIssueLink.ts` | The one public GitHub issue link after a send: only the reference, version and channel, and OS family. Used by main, the web client and the CLI. |
-| `apps/desktop/src/renderer/components/app/ReportIssueFooter.tsx` | The last row of the recovery screen and the two crash boundaries: a rule, **Report this error to ADE…** with one hint line, and on a crash card "ADE got an error report automatically" once Sentry confirms it has the crash (`confirmSentryDelivery`). |
-| `apps/desktop/src/renderer/webclient/adapter/diagnostics.ts` | The report dialog's prepare and send in the hosted web client: the report goes to the web client's Sentry as User Feedback. Without Sentry the dialog offers only **Copy report**. See *Diagnostic reports* below. |
-| `apps/desktop/src/renderer/components/settings/DiagnosticsSharingSection.tsx` | The one report control in Settings → System → Advanced (`general.diagnostics-sharing`, anchored `#diagnostics-sharing`, `web: "hidden"` because the report is built on this machine). It is **Send a report to ADE**, with no toggle. It hides the button on a preload that predates it. |
-| `apps/desktop/src/renderer/components/app/toast/useAutoDiagnosticsToast.ts` | The renderer half of the delivery contract: subscribes, asks for the outstanding notices (`IPC.diagnosticsFlushAutoSent`), raises the *"A diagnostic report was sent to ADE"* toast with **View**, and only then acknowledges it (`IPC.diagnosticsAckAutoSent`). Mounted from `AppShell.tsx`. |
-| `apps/desktop/src/renderer/components/app/errorSurfaceKit.tsx` | Shared parts for the full-screen error surfaces, built on the surface kit (`.kit-card`, `.kit-tag`, `.kit-btn`) — `ErrorSurfaceCard`, `TechnicalDetailsFold`, `ERROR_PRIMARY_BUTTON` — so the recovery screen, the renderer/page boundaries and the CTO wake failure keep the raw text behind a fold and the plain-language account on top, and read on light themes and over a picture. |
-| `apps/desktop/src/renderer/components/chat/ChatContinuityRecoveryCard.tsx` | The continuity notice as the chat draws it: a quiet "Reconnecting…" line while ADE recovers by itself, a quiet "Reconnected" line after, and only when that failed an inline `Banner` with one recommended action ("Try again") and "Start a new chat". `AgentChatMessageList` renders it in place of a plain notice chip when a `system_notice` event's `detail.kind` is `"continuity_recovery"`; `foldSelfHealedFailures` in `selfHealedFailureLines.ts` keeps only the newest notice per lost thread, hides the hand-off message, and drops the failed turns once the thread is back (a "not found" error is dropped only when the next continuity notice after it is a thread that came back). |
-| `apps/desktop/src/renderer/components/settings/health/HealthSpace.tsx` | The storage part of Settings: category totals, the project-database breakdown, the cleanup preview, Archive & Reclaim with its typed confirmation, and manual history compression. One storage result shows at a time; a new one replaces the last. Storage accounting includes ADE temporary files. |
-| `apps/desktop/src/renderer/components/settings/health/HealthService.tsx` | Computer → ADE service: how the background service on this computer is doing (its calls over the last day, slow and failed apart, with the p95 of the slow ones; its memory against the computer's; the computer's load; Repair). It reads only this computer over IPC, so another machine's page says so. |
-| `apps/desktop/src/renderer/components/settings/health/HealthCleanups.tsx` | The recent cleanups from the maintenance journal, the lane check (one sentence per lane the lane rules looked at), and what the build output rule removed. |
-| `apps/desktop/src/renderer/components/settings/storage/storageUiConstants.ts` | Shared presentational constants (`STORAGE_BRAND`, `PANEL_STYLE`) for the section shell and the split-out diagnostics/journal components, so they share styling without a circular import. |
-| `apps/desktop/src/renderer/components/settings/storage/StorageCleanupDialog.tsx` | Preview-confirmed cleanup dialog: lists selected removable items with sizes, surfaces blocked paths and reasons, and only enables Remove once a fresh preview is in hand. Its failure state is phase-aware — failing to *look* and failing to *remove* leave the disk in different states and call for different next steps — and it carries a Try again that re-runs the preview. Overlapping previews are retired by request id, so a stale answer cannot paint over a fresh one or drag a settled dialog back to "error". Also hosts the itemized "Clean up safely" plan and its `runMaintenance` path. The cleanup is done once the files are removed: the dialog shows that result at once, and the maintenance sweep goes on in the background with a "You can close this" note. Its outcome reaches Health through `onMaintenanceDone` / `onMaintenanceFailed` as a toast whether or not the dialog is still open, and a slow or failed sweep is a note, never "the cleanup didn't finish". |
-| `apps/desktop/src/renderer/components/settings/storage/storageView.ts` | Pure, DOM-free presentation + policy helpers. Category metadata/order/hues, safety labels, and `buildCleanupTarget` / `cleanableEntries` / `groupLaneItems` map a snapshot item to a typed `StorageCleanupTarget`. The overhaul adds the diagnostics/maintenance view-model: `dbBreakdownRows`, `buildSafeCleanupPlan`, journal/db-size-sparkline/trend helpers, `daemonMemoryBytes`, `healthChip`, `formatSlowActions`, and `categoryPolicyChip` — each degrading to a sensible "not available" value so the UI renders against an older daemon that never sends `extras`. |
-| `apps/desktop/src/shared/types/storage.ts` | Shared storage contracts: disk-pressure types, `StorageCategoryId`, `StorageSafety`, `StorageItem`/`StorageCategorySnapshot`/`StorageSnapshot`, and the `StorageCleanupTarget`/`StorageCleanupPreview`/`StorageCleanupResult` DTOs. `StorageItem` carries ownership, age, blocked reasons, reclaim estimate/state, and lane ownership for the review screen; `StorageLifecycleSnapshot` carries the effective four-rule policy plus last/next scan and review counts. The ledger/maintenance surface includes `StorageLedgerEntry`/`StoragePolicyClass`, `MaintenanceAction`/`MaintenanceRunReport`/`MaintenanceTrigger`, `DbBreakdownEntry`, `StorageSnapshotExtras`, and `RuntimeHealthSnapshot`. |
-| `apps/desktop/src/shared/types/recovery.ts` | Typed recovery contracts: the `AdeRecoveryErrorCode` union + `toAdeRecoveryErrorCode`, `AdeLastFailureReport`, `ProjectRecoveryDiagnosis`, the ordered `RepairStepId` list + `ProjectRepairReport`, `mapKvDbOpenErrorCode`, and the `RECOVERY_COPY` table the main process and the recovery screen both read, so a state can never be worded or offered differently by each half. `stateForCode` maps a stored code to its state from one place. |
-| `apps/desktop/src/main/services/runtime/machineResetLauncher.ts` | Desktop launcher for the hard reset: builds the plan, then spawns the CLI engine (`ade reset --all`) and hands it the person's rescue choice, quitting the app so the engine can own the machine. Machine-scoped because a reset removes the very brain the desktop talks to. |
-| `apps/ade-cli/src/services/reset/machineResetInventory.ts` | Read-only inventory behind the hard reset: every ADE process, background service, folder, Keychain item and config entry, plus each registered project and its lanes. Every external effect goes through `MachineResetDeps` (the process boundary), so the plan the person confirms is the list the engine removes. Also owns `isAdeProcessCommand` (the reset marker excludes the reset itself), `stripAdeShellLines`, `cursorHooksWithoutAde`, and `findAdeAncestor` (the ADE parent a terminal-launched reset must not kill). |
-| `apps/ade-cli/src/services/reset/machineReset.ts` | The hard reset engine (`ade reset --all`): rescues lane work (commit on the lane's branch, or move the worktree out), then removes ADE's data inside each project and the machine-wide paths, and writes a receipt the relaunched app reads. Never removes a project's own files; a rescue that fails parks the lane rather than deleting it. `assertRemovable` is the last check before any removal. |
-| `apps/desktop/src/shared/types/machineReset.ts` | Shared hard-reset contracts: `MachineResetLane`/`MachineResetProject`/`MachineResetItem`/`MachineResetPlan`, the `MachineResetRescueMode` (`none` / `commit` / `move`), and the `MachineResetReceipt` the CLI writes and the desktop reads on next launch. |
-| `apps/desktop/src/renderer/components/app/ResetAdeDialog.tsx` | The reset confirm dialog: shows the plan, takes the rescue choice, requires typing `RESET`, and calls the launch IPC. `ResetAdeButton` is the entry point on the recovery screen and Settings → System → Advanced (the Reset ADE section, last on the page, local machine only). |
-| `apps/desktop/src/renderer/browserMockRecovery.ts` | Vite-preview mock for the recovery screen (`?adeRecovery=<state>`) and the brain-down banner (`?adeBrainDown=service\|restart\|health\|background_blocked\|updating`), with `&adeRecoveryRepair=fail` to make Fix it fail and `&adePlatform=win32` for the Windows copy, so each state renders without Electron. |
-| `apps/desktop/src/shared/codedError.ts` | `codedError(message, code)`, `encodeCodedErrorMessage`, and the `parseCodedErrorMessage`/`stripElectronErrorWrapper`/`extractCodeFromMessage` decoders that let the renderer recover a `code` through the Electron IPC error-wrapping — and through the runtime RPC client's own `Remote ADE service method <m> failed (code <n>):` wrapper, which the strip list has to name or no brain-side code survives the trip. It also draws the line between the two error vocabularies: `isErrnoLikeCode` recognises platform codes (`E…`, `ERR_…`, `MODULE_NOT_FOUND`) and `UNKNOWN_SYSTEM_ERRNO_PATTERN` recognises an errno libuv could not even name, neither of which can collide with ADE's lowercase snake_case codes. Re-exported to the renderer via `apps/desktop/src/renderer/lib/codedError.ts`. |
-| `apps/ade-cli/src/jsonrpc.ts` | The brain's JSON-RPC server, and the boundary that decides which failures may be worded to a caller at all. A service verdict — a plain `Error` carrying a non-errno string `code` — is re-encoded as `code: message` (with the rootPath tail intact) in the shape `parseCodedErrorMessage` decodes, and the code is repeated in `error.data.code`. A platform or runtime fault (a `syscall`/`errno`, an errno-like code, an unnameable errno, a `TypeError`-class fault) is replaced on the wire by `Internal error in <method> (ref <id>)` and handed in full to `onInternalError`, which `cli.ts` writes to stderr — `launchd.err.log`, one of the logs `ade report-issue` tails — so the reference the user was shown is searchable. |
 
 ## Behavior
 
@@ -209,7 +259,7 @@ starts fresh: the service keeps the pointer, sets
 `detail.kind: "continuity_recovery"`.
 
 When the provider says the thread is gone (`reason: "thread_missing"`:
-Claude's "No conversation found", Codex's missing rollout), ADE recovers by
+Claude's "No conversation found", Codex's missing rollout), DAEX recovers by
 itself, at most once per chat in 10 minutes. The notice has
 `autoRecovery: "pending"` and `startAutomaticContinuityRecovery` runs
 `recover_from_history`: a new thread gets the conversation word for word with
@@ -277,9 +327,9 @@ count.
 | Stop | Intent | Kept |
 | --- | --- | --- |
 | Restart, repair, memory restart, logout, reboot, Windows service shutdown | none | Chats and CLIs at work are continued |
-| `ade serve` stopped with Ctrl+C | none | Kept: it cannot be told from a restart |
-| Desktop update, `ade brain update` | `accepted_update` | Kept, and the continue cap starts again |
-| Settings "Stop and quit ADE", `ade brain stop`, `ade runtime stop`, `ade runtime uninstall-service` | `stop_for_good` | No chat continues. Open CLIs reopen at their prompt. Projects an earlier stop left unopened lose their continues too. |
+| `daex serve` stopped with Ctrl+C | none | Kept: it cannot be told from a restart |
+| Desktop update, `daex brain update` | `accepted_update` | Kept, and the continue cap starts again |
+| Settings "Stop and quit DAEX", `daex brain stop`, `daex runtime stop`, `daex runtime uninstall-service` | `stop_for_good` | No chat continues. Open CLIs reopen at their prompt. Projects an earlier stop left unopened lose their continues too. |
 | Idle exit, socket lost, parent app gone, a failed start | none, not requested | Nothing kept |
 | Crash, kill, power loss | — | The crash path: the live record stays |
 
@@ -296,7 +346,7 @@ count.
   own name and this runtime takes nothing.
 - A brain an app started keeps no record; its terminals still write their CLI
   list at teardown.
-- A Devin CLI never reopens: ADE never learns its resume id.
+- A Devin CLI never reopens: DAEX never learns its resume id.
   `trackedCliReopensAfterRestart` leaves it out (`pty.cli_reopen_not_supported`)
   and its terminal gets `CLI_NOT_REOPENED_NOTICE` as the brain stops.
 
@@ -304,10 +354,10 @@ Size: the record holds at most 50 roots, the pid and the time; a list at most
 200 entries of session id and flags; the intent about 100 bytes. No prompt or
 transcript text is stored.
 
-### What an ADE Cloud computer keeps off the computer
+### What a DAEX Cloud computer keeps off the computer
 
-An ADE Cloud computer can be deleted, so its brain keeps the account server's
-copy current (see [On an ADE Cloud computer](../remote-runtime/README.md#on-an-ade-cloud-computer)).
+A DAEX Cloud computer can be deleted, so its brain keeps the account server's
+copy current (see [On a DAEX Cloud computer](../remote-runtime/README.md#on-an-ade-cloud-computer)).
 These small files record what the server already has, so a restart does not
 send everything again and a crash does not send a message twice:
 
@@ -342,7 +392,7 @@ same verdict as the service.
 - The brain throws `codedError(message, code)`. `apps/ade-cli/src/jsonrpc.ts`
   re-encodes it as `code: message` (a rootPath rides after a NUL) and repeats
   it in `error.data.code`.
-- The runtime RPC client prefixes `Remote ADE service method <m> failed (code
+- The runtime RPC client prefixes `Remote DAEX service method <m> failed (code
   <n>):`. Electron IPC drops custom `Error` fields, so `registerIpc`'s
   `surfaceCodedError` encodes once more. `stripElectronErrorWrapper` must name
   every prefix.
@@ -357,7 +407,7 @@ goes on the wire as `Internal error in <method> (ref <id>)` and in full to
 `onInternalError` (the brain's stderr), with the failing `path` when the error
 has one. Service verdicts (`JsonRpcError`s, plain sentences such as "Project
 root does not exist: …") pass. `isErrnoLikeCode` (`shared/codedError.ts`)
-draws the line, which is why ADE codes are lowercase snake_case.
+draws the line, which is why DAEX codes are lowercase snake_case.
 `isInternalRuntimeError` checks `UNKNOWN_SYSTEM_ERRNO_PATTERN` against `code`
 **before** the coded-error branch, because "Unknown system error -11" in
 `code` looks like a coded verdict.
@@ -404,9 +454,9 @@ Diagnoses with no repair:
   answering, full or removed) → `drive_unreadable`: check that the drive is
   connected, awake and has space, then Try again. Corruption-type I/O
   sub-codes and out-of-memory do not count.
-- `db_busy` (another ADE holds the lock past the retries; `openKvDb` reruns
+- `db_busy` (another DAEX holds the lock past the retries; `openKvDb` reruns
   the open up to three times, a second apart) → `project_busy`: wait or close
-  the other ADE, then Try again.
+  the other DAEX, then Try again.
 - `brain_starting` (the service is registered and alive but has not bound the
   socket; see [remote runtime](../remote-runtime/README.md)): the screen
   diagnoses again every 2 s and reopens the project when the endpoint answers.
@@ -435,15 +485,15 @@ only for real chores. One ladder follows, one line per rung:
 
 1. The state's own fix: **Fix it** (the repair, steps shown live), **Open
    System Settings** (macOS blocked; the screen watches and continues), **Try
-   again** (a chore for the person), or "Waiting for ADE…" while the service
+   again** (a chore for the person), or "Waiting for DAEX…" while the service
    starts.
-2. **Restart ADE**: quits and reopens through `updateRelaunchApp`, after the
+2. **Restart DAEX**: quits and reopens through `updateRelaunchApp`, after the
    usual quit warnings.
-3. **Reset ADE…**: the hard reset below.
-4. **Report this error to ADE…**: the report dialog.
+3. **Reset DAEX…**: the hard reset below.
+4. **Report this error to DAEX…**: the report dialog.
 
-The filled button is the first rung until a fix fails, then Restart ADE, then
-Reset ADE after a fix fails again after a recent restart (a `localStorage`
+The filled button is the first rung until a fix fails, then Restart DAEX, then
+Reset DAEX after a fix fails again after a recent restart (a `localStorage`
 stamp, cleared on success). Without a relaunch bridge, two failed fixes lead
 to Reset. A failed fix's title names its step. Raw text (the installer's
 `failureStep` and `serviceInstallMessage`, a thrown repair error) stays in the
@@ -457,7 +507,7 @@ service that is down around an update.
   update" that reopens the project when the service answers or the update
   settles.
 - When the update half-landed, it is an error banner in the `app` band: the
-  cause, then **Fix it** → **Restart ADE** → **Reset ADE…**, and the report
+  cause, then **Fix it** → **Restart DAEX** → **Reset DAEX…**, and the report
   control. Fix it is `app.restartBackgroundService` → `restartBrain()`; it
   resolves only when the new service answers, and a rejection moves the
   ladder on. `account.repairSession` stays on the account and sync surfaces.
@@ -472,9 +522,9 @@ recovery screen shows and while the desktop's fallback brain serves
 (`AppFallbackBanner` offers the same Fix it). Windows never shows the blocked
 cause, so its copy is the neutral "didn't start".
 
-### "ADE could not start" after an update
+### "DAEX could not start" after an update
 
-When an update leaves ADE unable to start, a small window says what failed and
+When an update leaves DAEX unable to start, a small window says what failed and
 offers Try again, Go back to the previous version, Open logs folder and Copy
 details. It opens once per launch, for a project database that does not open
 or a brain that keeps crashing before any project opened (after an update
@@ -488,8 +538,8 @@ project recovery screen handles every other failure.
 
 ### Login Items ("Allow in the Background")
 
-macOS keeps ADE's launch agent loaded but does not start it when **System
-Settings → General → Login Items → Allow in the Background** is off for ADE.
+macOS keeps DAEX's launch agent loaded but does not start it when **System
+Settings → General → Login Items → Allow in the Background** is off for DAEX.
 No repair changes that. `readLaunchdBackgroundItemStatus` reads the switch
 (`backgroundItemStatusCommand` calls `SMAppService.statusForLegacyURL` through
 `osascript`: `0` notRegistered, `1` enabled, `2` requiresApproval, `3`
@@ -503,9 +553,9 @@ live `requires_approval` blocks, a live `enabled` clears a stale
 blocked, the recovery screen offers **Open System Settings**, watches, and
 reopens the project once the switch is on.
 
-### Hard reset (`ade reset --all`)
+### Hard reset (`daex reset --all`)
 
-`ade reset --all` removes everything ADE put on this computer, so the next
+`daex reset --all` removes everything DAEX put on this computer, so the next
 launch is a first install. `machineResetInventory.ts` builds the read-only
 plan and `machineReset.ts` runs it; the plan the person confirms is the list
 that is removed.
@@ -514,7 +564,7 @@ that is removed.
   lane's branch, `move` relocates the worktree (`git worktree move`), and a
   rescue that cannot run parks the lane under `~/ADE Rescued Lanes`.
 - A project's own files are never removed: only its `.ade/`, the lane
-  worktrees git lists under it, redundant lane branches, and ADE's line in
+  worktrees git lists under it, redundant lane branches, and DAEX's line in
   `.git/info/exclude`. Files the project committed under `.ade/` are restored
   from git.
 - `assertRemovable` rejects a path that is not absolute, contains the home
@@ -574,7 +624,7 @@ command (`trackBrainLoopWatchdogCommand`; remote sync commands and local
   `brain.recovered_from_wedge` and a deduped `ade_brain_recovered` event.
   `runtimeInfo.lastWedge` (`parseRuntimeLastWedge`,
   `LocalRuntimeStatus.lastWedge`) feeds `BrainRecoveryNotice`, once per `ts`;
-  `ade doctor` shows it as Wedge history.
+  `daex doctor` shows it as Wedge history.
 
 #### A project whose folder is too slow to open
 
@@ -603,7 +653,7 @@ breaks the loop:
   lane read is refused; Try again clears the refusal (message only for another
   machine's project).
 - **Way back.** A successful open resets everything, as do
-  `ade projects retry <id|path>` (`projects.retryOpen`, `--machine`) and the
+  `daex projects retry <id|path>` (`projects.retryOpen`, `--machine`) and the
   banner's Try again.
 - Phones, the web app and a desktop showing another machine's project have no
   retry: they show the brain's message, and the refusal lifts on time. Their
@@ -745,7 +795,7 @@ or one an agent asks for.
 |---|---|---|
 | Chats and history | Chat/terminal JSONL, logs, terminal snapshots | `compressible` |
 | Lanes and worktrees | Active, archived, reclaimed, and orphaned managed worktrees | Active `protected`, including a plain folder that holds a worktree further down; archived lanes use Archive & Reclaim; orphans `review_first` |
-| Build and release | ADE temp staging, build output, and iOS DerivedData | `review_first` |
+| Build and release | DAEX temp staging, build output, and iOS DerivedData | `review_first` |
 | Caches | Rebuildable cache and update staging | `safe_to_remove`; chat session records `protected` |
 | Proof and attachments | Artifacts, recordings, attachments | `review_first` |
 | Recovery backups | Database migration/recovery backups | `review_first`, or `safe_to_remove` only when old, healthy, and unrelated to a fresh database-open failure |
@@ -806,7 +856,7 @@ keys are absent and returns day keys only, so the next save writes only these:
 `cleanupIntervalHours` was 0, left out with no interval);
 `reclaimArchivedAfterHours` (or `autoDeleteArchivedAfterHours`) above 0 →
 `freeUpSpaceAfterDays` with "Ask me"; `maxActiveLanes` and
-`deleteRemoteBranchOnCleanup` drop. New names keep an older ADE from reading
+`deleteRemoteBranchOnCleanup` drop. New names keep an older DAEX from reading
 days as hours (it drops unknown keys and its rules read as off).
 
 The backend enforces the rules. The daemon ticks each minute (first a minute
@@ -822,7 +872,7 @@ edit-protected. Until the chat and terminal services are added, nothing is
 archived.
 
 - "Finished" (`getAutoArchiveFacts`, local git only): no commit missing from a
-  remote, and either ADE's PR record says merged (a squash merge never makes
+  remote, and either DAEX's PR record says merged (a squash merge never makes
   the branch an ancestor) or the branch has its own commits (its reflog moved)
   and is an ancestor of its base. A new lane with no commits and no PR is not
   finished.
@@ -857,7 +907,7 @@ show there, never as repeated toasts. "Due to free up" is never stored:
 - Lane folders are compared with `shared/sameFolder` (resolved, case-blind on
   Windows, real paths when spellings differ), so a OneDrive junction, a
   drive-letter case or `/private/tmp` matches.
-- On Windows ADE never runs `git worktree remove`. It makes git's refusals
+- On Windows DAEX never runs `git worktree remove`. It makes git's refusals
   itself (a locked worktree, submodules without the dirty confirmation),
   renames the folder to a `.ade-deleting-` name (this works only once the
   lane's chats, terminals and CLIs exited and nothing holds a file; it retries
@@ -939,7 +989,7 @@ matching proof rows and links. It is an explicit `review_first` action.
 
 ### Chat transcripts: one copy
 
-ADE writes each chat event once, to `transcripts/chat/<id>.jsonl`. Older builds
+DAEX writes each chat event once, to `transcripts/chat/<id>.jsonl`. Older builds
 also wrote `transcripts/<id>.chat.jsonl` (8 MB cap). The session row still
 names the legacy path, because `terminal_sessions.transcript_path` syncs to
 peers and older builds. Readers that start from the row
@@ -966,7 +1016,7 @@ original. An append first reinflates the gzip atomically.
 
 ### Storage doctor maintenance sweep
 
-`storageInsightsService` runs one **storage doctor** sweep that bounds ADE's
+`storageInsightsService` runs one **storage doctor** sweep that bounds DAEX's
 footprint without touching user data. It is single-flighted (a second call
 joins the run) and has three triggers: `post_boot` (10 minutes after the real
 daemon starts), `daily` (every 24 h after), and `manual`
@@ -1001,9 +1051,9 @@ missing step. The run goes to the maintenance journal and
 
 **Provider history.** Settings › Storage › Details › *Provider history on this
 machine* shows each agent CLI's own session folders and who manages them
-(Claude prunes after 30 days by default; Codex never does). ADE touches only
+(Claude prunes after 30 days by default; Codex never does). DAEX touches only
 *Copies of chats from deleted lanes* (`deleted_lane_provider_sessions`): the
-Claude and Codex files ADE started for chats from deleted lanes, never one
+Claude and Codex files DAEX started for chats from deleted lanes, never one
 imported from the person's CLI or named by a live chat. The "Chats from
 deleted lanes" removal includes them, because the chats' records hold the only
 copy of their session ids. The measurement runs with the project scan (cached
@@ -1028,12 +1078,12 @@ lists nothing.
 
 - Settings › Deleted & Archived › Recently deleted lists rows whose copy is
   still on the machine, with a preview, Reopen and Remove from list;
-  `ade chat deleted list` and `ade chat deleted reopen <id>` use the same
+  `daex chat deleted list` and `daex chat deleted reopen <id>` use the same
   service.
 - The page reads every online copy of the project at once
   (`useEveryCopyRead`), one list for all machines, newest first, grouped by
-  day, with search. Each call carries the row's machine pin. An asleep ADE
-  Cloud computer is not read, so the list never wakes it. ADE Cloud itself is
+  day, with search. Each call carries the row's machine pin. An asleep DAEX
+  Cloud computer is not read, so the list never wakes it. DAEX Cloud itself is
   the account, not a computer, so it is not read either. One slow or failed
   machine shows its own notice, keeps the rows it last had, and never holds
   the others.
@@ -1205,10 +1255,10 @@ links to `#/settings?tab=storage#diagnostics`.
 Every error surface (error toasts and banners, the project recovery screen,
 the renderer and page error boundaries, the update-transaction notice, the
 brain Repair control, the Connections publish-failure line) has a **Report
-this error to ADE…** control (`renderer/components/app/ReportIssueButton.tsx`,
+this error to DAEX…** control (`renderer/components/app/ReportIssueButton.tsx`,
 `ui/notice/NoticeReport.tsx`). A press opens one dialog
 (`renderer/components/app/ReportIssueDialog.tsx`) and sends nothing. The
-dialog says the report goes to the ADE team privately, takes an optional
+dialog says the report goes to the DAEX team privately, takes an optional
 "What were you doing?" note, and shows exactly what is sent (the note, then
 the redacted report, with its size). Send uploads; Cancel and Esc send and
 spend nothing. It draws above the toasts (`Z_LAYERS.dialogOverToasts`).
@@ -1230,16 +1280,16 @@ Cancel, Esc and leaving Settings drop the id (`diagnostics.discardReport`).
 After a send the dialog shows "Sent. Reference …" with a copy control and one
 optional action, **Open a public GitHub issue**: a prefilled `arul28/ADE`
 issue whose body holds only the reference, version and channel, OS family and
-a line that the private report is with the ADE team
+a line that the private report is with the DAEX team
 (`shared/publicIssueLink.ts`, also used by the web client and
-`ade report-issue`). Report text, logs, raw errors, headlines and ids never go
+`daex report-issue`). Report text, logs, raw errors, headlines and ids never go
 to GitHub. Where sending is impossible (the web client with its Sentry off)
 the dialog offers **Copy report** instead.
 
 The report describes this computer and window, whatever machine a chat on
 screen lives on, so none of these calls takes a pin.
 
-**Settings → General → Privacy → Send a report to ADE**
+**Settings → General → Privacy → Send a report to DAEX**
 (`renderer/components/settings/DiagnosticsSharingSection.tsx`) is for an app
 that only feels wrong. It runs the same two steps under `settings_manual` and
 `auto: false`, keeps its own note field, shows the same preview, and offers
@@ -1249,7 +1299,7 @@ ways:
 - **Its own budget**: `MAX_MANUAL_DIAGNOSTICS_PER_WINDOW` (5 per 24 h per
   install), apart from the automatic 3 and equal to the server's per-identity
   quota. Neither budget can use up the other.
-- **No opt-out**: `DO_NOT_TRACK=1` governs what ADE sends by itself; a click
+- **No opt-out**: `DO_NOT_TRACK=1` governs what DAEX sends by itself; a click
   is allowed.
 
 Refusals are three sentences: the local cap ("you've already sent 5 from this
@@ -1265,9 +1315,9 @@ maps the fleet one to `unavailable`. No status code reaches the screen.
 | Desktop-only extras (its own jsonl logs, runtime status, recovery diagnosis, typed last-failure store) | `apps/desktop/src/main/services/diagnostics/diagnosticReportService.ts` |
 | IPC | `IPC.diagnosticsPrepareReport`, `IPC.diagnosticsSendReport`, `IPC.diagnosticsDiscardReport` (the dialog and Settings) |
 | Saved report | `<userData>/diagnostic-reports/<timestamp>-<surface>.md`, mode `0600` |
-| Headless equivalent | `ade report-issue [--send] [--open]` |
-| Headless state check | `ade doctor` → the **Diagnostics sharing** row (consent + today's spend) |
-| Settings entry | `general.diagnostics-sharing` (General → Privacy, `#diagnostics-sharing`, **Send a report to ADE**, hidden on hosted web). No toggle. |
+| Headless equivalent | `daex report-issue [--send] [--open]` |
+| Headless state check | `daex doctor` → the **Diagnostics sharing** row (consent + today's spend) |
+| Settings entry | `general.diagnostics-sharing` (General → Privacy, `#diagnostics-sharing`, **Send a report to DAEX**, hidden on hosted web). No toggle. |
 | Automatic opt-out | `DO_NOT_TRACK=1`, or an explicit `enabled: false` persisted by an earlier build. Honored silently; no UI. |
 | Automatic sending (desktop) | `apps/desktop/src/main/services/diagnostics/autoDiagnosticsService.ts` |
 | Automatic sending (brain) | `apps/ade-cli/src/services/diagnostics/autoDiagnosticsSender.ts` |
@@ -1278,24 +1328,24 @@ The desktop adds only what lives under Electron's `userData` (its
 `local-runtime.jsonl` and `ade-update.jsonl`, the typed last-failure store, an
 Electron-aware volume reader) to the shared machine sources.
 
-`ade report-issue --send` takes no arguments and needs no project. It saves the
+`daex report-issue --send` takes no arguments and needs no project. It saves the
 exact bytes to `~/.ade/diagnostic-reports/` and prints the path with the
 reference id, or with the failure reason (`--json`: `reportPath`, `sent`).
 
 **Contents.** App version, channel and packaging; platform, arch, OS release
 (`sw_vers -productVersion` on macOS); model, CPU, RAM; `machine_id` and the
 machine key fingerprint; Electron/Node/Chrome versions; timezone offset; a
-**Machine health** section (memory, swap, pressure, load, ADE processes by
+**Machine health** section (memory, swap, pressure, load, DAEX processes by
 group, emulators, the brain's last WAL read, the last five pressure episodes;
 see `docs/logging.md`, "Diagnostic reports: machine facts"); the surface,
 code and detail the user saw; the runtime status; machine and project
 `last-failure.json`; `last-wedge.json` (with its age, dropped after seven
 days); the recovery diagnosis; free disk; the service definition; the storage
-environment; and bounded log tails. `ade doctor` checks do not run, so a
+environment; and bounded log tails. `daex doctor` checks do not run, so a
 machine whose brain will not start still gets a report.
 
-**Storage environment** (`storageEnvironmentProbe.ts`) answers whether ADE's
-files are on this disk and readable, for the ADE home and the project root:
+**Storage environment** (`storageEnvironmentProbe.ts`) answers whether DAEX's
+files are on this disk and readable, for the DAEX home and the project root:
 
 - the location class: `icloud`, `dropbox`, `google-drive`, `onedrive`,
   `cloud-storage`, `external-volume`, `network-volume` or `local`;
@@ -1315,7 +1365,7 @@ follows links, and skips `node_modules`, `.git`, `DerivedData`, `Pods`,
 `dist`, `build`, `.venv`. An unreadable root reads `(could not be read)`.
 
 **Collected sources.** `collectMachineDiagnosticSources` collects everything a
-headless machine can read, so the desktop button and `ade report-issue --send`
+headless machine can read, so the desktop button and `daex report-issue --send`
 make the same document.
 
 | Source | Cap | Why |
@@ -1359,7 +1409,7 @@ failed, `report_dialog` opened/completed/cancelled, `github_issue`,
 `report_copied`); see `docs/logging.md`.
 
 **Private upload.** The repository is public and redaction is pattern-based,
-so the report never goes to GitHub. Send and `ade report-issue --send` post to
+so the report never goes to GitHub. Send and `daex report-issue --send` post to
 `POST /diagnostics/upload` on the account directory Worker and show a short
 reference. `apps/desktop/src/shared/diagnosticsUpload.ts` is the only client:
 it sends the redacted string unchanged, checks the 512 KB ceiling first, and
@@ -1372,7 +1422,7 @@ returns a closed set (`too_large`, `rate_limited`, `unavailable`, `rejected`,
   a desktop upload is anonymous, identified by the install id in the report.
   A failure shows its sentence with Try again where it helps, and the note
   stays.
-- `ade report-issue --send` reads the machine credential store and directory
+- `daex report-issue --send` reads the machine credential store and directory
   origin from local files, so it sends a Clerk token when signed in, works
   with no brain, and a self-hosted machine reports to its own directory.
 - The Worker never parses, indexes or echoes a report, and allows five uploads
@@ -1395,7 +1445,7 @@ capture is the web client's automatic report.
 
 #### Auto-send
 
-When ADE hits a failure it has already classified, it sends the same report by
+When DAEX hits a failure it has already classified, it sends the same report by
 itself, with `auto: true` and the failure code, so the two kinds stay apart on
 the server.
 
@@ -1405,9 +1455,9 @@ the server.
 | Renderer or page crash | `renderer/components/app/RendererErrorBoundary.tsx` and `PageErrorBoundary.tsx` (`componentDidCatch`, via `IPC.diagnosticsAutoReport`, once per boundary) | `renderer_crash`, `page_crash` |
 | Post-update transaction failed | `main/main.ts`, beside `autoUpdate.transaction_failed` | `update_<step>` |
 | Desktop started its own brain because the service manager refused it | `main/main.ts` `onRuntimeStatusChange`, once per `appFallback.since` | `app_fallback_<reason>` |
-| Pairing auto-recovery gave up | `ade-cli/.../machinePairingAutoRecovery.ts` (`onGaveUp`, wired in `cli.ts`; the same hook records `recoveryGaveUpAt` in publisher health, so the desktop also shows a lasting banner and does not depend on this report) | the refusal code, or `snapshot_failed` |
-| Account publisher failing > 5 min | `ade-cli/.../accountMachinePublisherService.ts` (`onSustainedFailure`) | the health state, e.g. `snapshot_failed` |
-| Sync host refused by unreadable storage, 3 attempts running | `ade-cli/.../sync/syncHostStartupLoop.ts` (`onSustainedStorageFault`) | `storage_read_failed` |
+| Pairing auto-recovery gave up | `apps/ade-cli/src/services/account/machinePairingAutoRecovery.ts` (`onGaveUp`, wired in `cli.ts`; the same hook records `recoveryGaveUpAt` in publisher health, so the desktop also shows a lasting banner and does not depend on this report) | the refusal code, or `snapshot_failed` |
+| Account publisher failing > 5 min | `apps/ade-cli/src/services/account/accountMachinePublisherService.ts` (`onSustainedFailure`) | the health state, e.g. `snapshot_failed` |
+| Sync host refused by unreadable storage, 3 attempts running | `apps/ade-cli/src/services/sync/syncHostStartupLoop.ts` (`onSustainedStorageFault`) | `storage_read_failed` |
 
 - The sync-host trigger does not hang off the account publisher, because the
   publisher exists only after the sync host starts. A trigger must sit
@@ -1427,7 +1477,7 @@ the server.
 - **Failure is silence.** A 429, 503 or network error is logged locally only:
   no toast, error or retry.
 - **Toast.** Each successful send raises *"A diagnostic report was sent to
-  ADE"* with **View**, which reveals the saved `.md` through a handler limited
+  DAEX"* with **View**, which reveals the saved `.md` through a handler limited
   to the desktop's `userData/diagnostic-reports` and the brain's
   `<adeHome>/diagnostic-reports`. There is no Settings switch for automatic
   sending.
@@ -1442,10 +1492,10 @@ the server.
 - Nothing leaves the computer on the manual path until the user presses Send;
   the automatic path announces each send.
 
-### Handing the repair to an agent (`ade triage`)
+### Handing the repair to an agent (`daex triage`)
 
-`ade doctor` names the failing check and `ade report-issue` makes something
-to file; neither fixes anything. `ade triage` runs the same doctor checks and
+`daex doctor` names the failing check and `daex report-issue` makes something
+to file; neither fixes anything. `daex triage` runs the same doctor checks and
 redacted collection, writes them with a repair playbook into a fresh temp
 folder, and hands the machine to the first agent whose ADE-pinned copy is on
 disk (`claude`, `codex`, `cursor-agent`, `opencode`, `droid`, `muse`). It
@@ -1453,9 +1503,9 @@ never uses a CLI on the PATH and never starts a download; a provider with no
 copy prints its pinned state.
 
 ```bash
-ade triage                       # launch the first agent ADE has downloaded
-ade triage --provider codex      # pick one
-ade triage --agent --text        # print the handoff for an agent already running
+daex triage                       # launch the first agent ADE has downloaded
+daex triage --provider codex      # pick one
+daex triage --agent --text        # print the handoff for an agent already running
 ```
 
 - `context.md` is Install → Health checks → Brain → Recent errors → Full
@@ -1472,47 +1522,3 @@ ade triage --agent --text        # print the handoff for an agent already runnin
   exit is 0. A launched agent owns the terminal (paths to stderr first,
   inherited stdio) and triage exits with its code.
 - **CLI only, no brain.** The desktop and iOS need the brain this repairs.
-
-## Gotchas
-
-- The interrupted-rebuild recovery pass **must run before `migrate()`**. An
-  idempotent create in a migration can turn a finished rename into an
-  ambiguous original-plus-staging state.
-- Excluded tables get no CRR index rewrite; their rebuild plan must keep every
-  unique and secondary index.
-- Change `PRAGMA foreign_keys` outside a transaction; inside one it does
-  nothing.
-- **A rename failure is not always retryable.** Only `EXDEV` / `EPERM` /
-  `EACCES` / `EBUSY` fall back to a copy in `writeFileAtomic`. Adding `ENOSPC`
-  or `EIO` can leave a half-written target where the old file was intact.
-- **A new ADE error code must be lowercase snake_case.** `isErrnoLikeCode`
-  tells ADE codes from platform codes by shape, and the JSON-RPC boundary
-  redacts platform-shaped ones to `Internal error in <method> (ref …)`.
-- **`storage_read_failed` stays ahead of the integrity bucket** in
-  `classifySqliteOpenError`; an unreadable file read as corrupt would offer a
-  repair that rewrites data ADE cannot read.
-- **Give `classifyStorageFault` a path when you have one.** Without a path, a
-  `syscall` or a path on the error, a bare `EDEADLK` or `ESTALE` is not a
-  storage fault, and the user sees the raw libuv sentence.
-- **Do not copy the storage errno list.** Import `storageErrnoClassifier.ts`.
-- **An auto-diagnostics trigger must sit upstream of what it reports.** Check
-  that the subsystem that carries it still runs when the failure happens.
-- launchd holds its stdout/stderr files open. Use copytruncate, not rename.
-- A worktree can hold its own nested `.ade`. Count it only in the worktree
-  category.
-- Writers append to plain history. If a `.gz` exists, reinflate it atomically
-  first; never append a second plain stream beside it.
-- `compactCrsqlTombstones` is safe only with **zero sync peers**. Keep
-  `hasSyncPeers` conservative; a paired project's sync-bookkeeping row stays
-  "waiting to compact".
-- DB retention numbers live once in `state/dbMaintenanceApi.ts`. Never
-  hard-code a cutoff at one enforcement site.
-- **The SQLite driver is synchronous.** New prunes use `pruneRowsInBatches`.
-- **Not every append-only table is prunable.** `linear_ingress_events` and
-  `cursor_cloud_ingress_events` (replay guards), `cto_session_logs` (dormant
-  CRR) and `worker_agent_runs` (live references) stay out of
-  `RETAINED_EVENT_LOG_TABLES`.
-- **A new doctor step needs a `STORAGE_LEDGER` entry and a `LEDGER_LABELS`
-  entry** (`storageView.ts`), or Settings shows no policy or the raw id.
-- `dbstat` is compile-time optional. The breakdown and vacuum paths work
-  without it.
