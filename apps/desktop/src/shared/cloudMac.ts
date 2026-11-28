@@ -28,12 +28,8 @@ export const CLOUD_MAC_STOP_SEEN_SETTING_KEY = "cloudMacStopSeen";
 /** The synced account setting: Settings' "How a DAEX Cloud Mac works" box was read. */
 export const CLOUD_MAC_EXPLAINER_READ_SETTING_KEY = "cloudMacExplainerRead";
 
-/**
- * How long a Mac takes to start, in words, for every sentence that says it.
- * Stand-in until the contract exports the server's own constant (asked of the
- * server lane): then this re-exports it.
- */
-export const CLOUD_MAC_START_WORDS = "in under a minute";
+/** How long a Mac takes to start, in the server's words ("in under a minute"); never the catalog's seconds. */
+export { CLOUD_MAC_START_WORDS } from "../../../account-directory/src/cloud/contract";
 
 export const CLOUD_MAC_NAME = `${BRAND.CLOUD_NAME} Mac`;
 

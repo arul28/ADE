@@ -56,6 +56,7 @@ import { CloudSizes } from "./CloudSizes";
 import { CloudSignIns } from "./CloudSignIns";
 import { CloudInviteCard } from "./CloudInvite";
 import { useHasOwnComputer, useOwnWebComputers } from "../../../state/ownComputers";
+import { rootAppStoreApi, useRootAppStore } from "../../../state/appStore";
 import { useWebMachines } from "../../../webclient/workspace/WebWorkspaceContext";
 import {
   STATE_LABEL,

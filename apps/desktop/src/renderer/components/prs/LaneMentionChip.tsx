@@ -1,4 +1,5 @@
 import { useNavigate } from "react-router-dom";
+import { adeCloudLaneComputerForMachine } from "../../state/adeCloudLaneIndex";
 import { Cloud, Desktop, GitBranch } from "@phosphor-icons/react";
 import { SAVED_CHATS_MACHINE_PREFIX } from "../../../shared/cloudSavedChats";
 import { useCloudMachineWakeInFlight, wakeRestingCloudMachine } from "../../lib/cloudMachineWake";
@@ -57,7 +58,9 @@ export function LaneMentionChip({ mention }: { mention: LaneMention }): JSX.Elem
       <GitBranch size={11} className="shrink-0" />
       <span className="truncate">{mention.laneName}</span>
       <MachineIcon size={11} className={mention.online ? "shrink-0" : "shrink-0 opacity-50"} />
-      <span className={mention.online ? "truncate" : "truncate opacity-60"}>{waking ? "Waking…" : mention.machineName}</span>
+      <span className={mention.online ? "truncate" : "truncate opacity-60"}>
+        {waking ? (adeCloudLaneComputerForMachine({ machineKey: mention.machineKey })?.os === "mac" ? "Starting…" : "Waking…") : mention.machineName}
+      </span>
     </button>
   );
 }
