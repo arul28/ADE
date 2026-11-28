@@ -1,3 +1,4 @@
+import { BRAND } from "../../../../shared/brand";
 import React from "react";
 import { ArrowDown, ArrowUp, Rows, SortAscending } from "@phosphor-icons/react";
 import type {
@@ -46,7 +47,7 @@ const FIELD_OPTIONS: ReadonlyArray<{ key: keyof LinearIssueDisplayFields; label:
   { key: "pullRequests", label: "Pull requests" },
   { key: "createdAt", label: "Created" },
   { key: "updatedAt", label: "Updated" },
-  { key: "adeStatus", label: "ADE status" },
+  { key: "adeStatus", label: `${BRAND.NAME} status` },
 ];
 
 
@@ -189,8 +190,8 @@ export function LinearDisplayMenu({
         <>
           <div className="mx-3 my-1.5 h-px bg-fg/[0.07]" />
           <div className="px-3 pb-1 pt-0.5 text-[11.5px] leading-snug" role="status" title={reason ?? undefined}>
-            <div className="text-fg/75">Saved in ADE only</div>
-            <div className="line-clamp-2 text-muted-fg/70">{reason || "Linear didn't take the change, so ADE saved it for this project."}</div>
+            <div className="text-fg/75">Saved in {BRAND.NAME} only</div>
+            <div className="line-clamp-2 text-muted-fg/70">{reason || `Linear didn't take the change, so ${BRAND.NAME} saved it for this project.`}</div>
           </div>
         </>
       ) : null}

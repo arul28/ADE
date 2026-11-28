@@ -159,7 +159,7 @@ type Notice = { subject: string; text: string; html: string };
  */
 function renderNotice(email: ClerkEmail, vars: Record<string, unknown>, at: number): Notice {
   const app = vars.app && typeof vars.app === "object" ? vars.app as Record<string, unknown> : {};
-  const appName = text(app.name, 60) ?? text(vars["app.name"], 60) ?? "ADE";
+  const appName = text(app.name, 60) ?? text(vars["app.name"], 60) ?? "DAEX";
   const browser = text(vars.browser_name, 80);
   const system = text(vars.operating_system, 80);
   const rows: Array<[string, string]> = [];

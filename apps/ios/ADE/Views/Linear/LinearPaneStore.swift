@@ -464,7 +464,7 @@ final class LinearPaneStore: ObservableObject {
           self.displayPreferences = result.preferences
         }
       } else {
-        self.displaySaveNotice = "Saved in ADE only"
+        self.displaySaveNotice = "Saved in \(Brand.name) only"
       }
     }
   }

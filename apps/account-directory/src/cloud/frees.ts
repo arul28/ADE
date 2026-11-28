@@ -107,7 +107,7 @@ function secretFailure(lanes: readonly PushWorkLane[]): StepResult | null {
   const files = found.flatMap((lane) => lane.secretFiles ?? []);
   return {
     kind: "fail",
-    error: `ADE found what looks like a key or a password${files.length ? ` in ${files.join(", ")}` : ""}${laneNamesOf(found)}, so it didn't push that work and the computer stays. Open the lane, take it out (from its commits too, if one has it), then try again.`,
+    error: `DAEX found what looks like a key or a password${files.length ? ` in ${files.join(", ")}` : ""}${laneNamesOf(found)}, so it didn't push that work and the computer stays. Open the lane, take it out (from its commits too, if one has it), then try again.`,
     refused: true,
   };
 }

@@ -1,3 +1,4 @@
+import { BRAND } from "../../../../shared/brand";
 import React, { useEffect, useRef, useState } from "react";
 import { ArrowSquareOut, FileText, X } from "@phosphor-icons/react";
 import type { CtoLinearDocument, OpenProjectBinding } from "../../../../shared/types";
@@ -174,13 +175,13 @@ export function LinearDocumentReader({
         ) : null}
         {state.status === "unsupported" ? (
           <div className="px-6 py-10 text-center">
-            <p className="text-[13px] text-fg/85">Documents need a newer ADE</p>
-            <p className="mt-1 text-[12px] text-muted-fg/60">Update ADE on the computer that reads Linear for this project.</p>
+            <p className="text-[13px] text-fg/85">Documents need a newer {BRAND.NAME}</p>
+            <p className="mt-1 text-[12px] text-muted-fg/60">Update {BRAND.NAME} on the computer that reads Linear for this project.</p>
           </div>
         ) : null}
         {state.status === "cloud" ? (
           <div className="px-6 py-10 text-center">
-            <p className="text-[13px] text-fg/85">Documents do not open in ADE Cloud projects yet</p>
+            <p className="text-[13px] text-fg/85">Documents do not open in {BRAND.CLOUD_NAME} projects yet</p>
             <p className="mt-1 text-[12px] text-muted-fg/60">Open this document in Linear, or open the project on one of your computers.</p>
           </div>
         ) : null}

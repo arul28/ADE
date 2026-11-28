@@ -2806,7 +2806,7 @@ function mockLinearUpdatePrefs(
   };
   mockLinearPrefsStore.set(mockLinearPrefsKey(args), next);
   return refused
-    ? { preferences: next, savedToLinear: false, reason: "Linear did not accept the change. It is kept in ADE until you reload." }
+    ? { preferences: next, savedToLinear: false, reason: `Linear did not accept the change. It is kept in ${BRAND.NAME} until you reload.` }
     : { preferences: next, savedToLinear: true, reason: null };
 }
 

@@ -19,6 +19,7 @@
  * secret ADE doesn't hold. A file git ignores is never pushed, so it is never read.
  */
 
+import { BRAND } from "../../../../desktop/src/shared/brand";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -108,7 +109,7 @@ type Read = string | { error: string };
  * own, read again after its hooks ran).
  */
 export async function checkPushForSecrets(cwd: string, secretValues: readonly string[], what: "uncommitted" | "unpushed" | "lastCommit"): Promise<PushSecretCheck> {
-  if (!cwd) return { ok: false, found: false, error: "ADE couldn't find the lane's folder." };
+  if (!cwd) return { ok: false, found: false, error: `${BRAND.NAME} couldn't find the lane's folder.` };
   const read = async (args: string[], env?: NodeJS.ProcessEnv): Promise<Read> => {
     const result = await runGit(["-c", "core.quotePath=false", ...args], { cwd, timeoutMs: READ_TIMEOUT_MS, maxOutputBytes: READ_MAX_BYTES, ...(env ? { env } : {}) });
     if (result.stdoutTruncated) return { error: "too much to read" };
@@ -120,7 +121,7 @@ export async function checkPushForSecrets(cwd: string, secretValues: readonly st
   const addedArgs = ["--name-only", "-z", "--no-renames", "--diff-filter=A"];
   const patches: string[] = [];
   const names: string[] = [];
-  const failed = (part: string, refused: { error: string }): PushSecretCheck => ({ ok: false, found: false, error: `ADE couldn't read the ${part} to push (${refused.error}).` });
+  const failed = (part: string, refused: { error: string }): PushSecretCheck => ({ ok: false, found: false, error: `${BRAND.NAME} couldn't read the ${part} to push (${refused.error}).` });
 
   if (what === "uncommitted") {
     // Staged into a copy of the index: the lane's own index (what the person

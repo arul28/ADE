@@ -1,3 +1,4 @@
+import { BRAND } from "../../../../shared/brand";
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import type {
   CtoGetLinearIssuePickerDataResult,
@@ -150,7 +151,7 @@ export function useLinearBrowserData({
     const cto = window.ade.cto;
     const readPin = pinRef.current;
     if (!cto?.getLinearIssuePickerData) {
-      setError("Linear controls are not available in this ADE surface.");
+      setError(`Linear controls are not available in this ${BRAND.NAME} surface.`);
       return;
     }
     if (!readPin) return;
@@ -215,7 +216,7 @@ export function useLinearBrowserData({
     const cto = window.ade.cto;
     const readPin = pinRef.current;
     if (!cto?.searchLinearIssues) {
-      setError("Linear issue search is not available in this ADE surface.");
+      setError(`Linear issue search is not available in this ${BRAND.NAME} surface.`);
       return;
     }
     if (!readPin) return;

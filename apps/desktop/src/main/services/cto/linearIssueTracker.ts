@@ -1,3 +1,4 @@
+import { BRAND } from "../../../shared/brand";
 import type { IssueTracker } from "./issueTracker";
 import { parseLinearIssueCreateInput } from "../../../shared/linearIssueCreateInput";
 import {
@@ -242,10 +243,10 @@ export function createLinearIssueTracker(args: {
       if (refused) return keepInAde(refused);
       if (!args.client.isConnected()) return keepInAde(LINEAR_NOT_CONNECTED_DISPLAY_REASON);
       if (budgetIsLow(args.client.getRateBudget())) {
-        return keepInAde("Linear's rate limit is running low, so ADE kept the change here only for now.");
+        return keepInAde(`Linear's rate limit is running low, so ${BRAND.NAME} kept the change here only for now.`);
       }
       // Writing over a record ADE couldn't read would replace Linear's saved values with defaults.
-      if (unread) return keepInAde("ADE couldn't read Linear's saved display settings, so it kept the change here only for now.");
+      if (unread) return keepInAde(`${BRAND.NAME} couldn't read Linear's saved display settings, so it kept the change here only for now.`);
       const values = mergeLinearViewValues(read.stored, pending);
       try {
         const { recordId } = await args.client.writeViewPreferences({ ...view, recordId: read.recordId, values });

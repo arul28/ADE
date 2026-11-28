@@ -461,7 +461,7 @@ export function createAdeCloudIntegrationReads(accountCall: () => AdeCloudAccoun
       case "linear_issue_tracker.updateViewPreferences":
         return {
           handled: true,
-          result: linearDisplayFallbackUpdate(args.patch, "This project has no computer on, so ADE kept the change here only."),
+          result: linearDisplayFallbackUpdate(args.patch, `This project has no computer on, so ${BRAND.NAME} kept the change here only.`),
         };
       case "linear_issue_tracker.getRailData":
         return { handled: true, result: emptyLinearRailData() };

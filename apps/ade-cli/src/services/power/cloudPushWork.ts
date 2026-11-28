@@ -107,7 +107,7 @@ async function pushLane(
   const stopped = (check: Exclude<PushSecretCheck, { ok: true }>) => {
     if (!check.found) return { error: new Error(check.error) };
     const secretFiles = check.more > 0 ? [...check.files, `+${check.more} more`] : check.files;
-    return { error: new Error(`ADE found what looks like a secret in ${secretFiles.join(", ")}, so it didn't push this lane.`), reason: "secret_found" as const, secretFiles };
+    return { error: new Error(`${BRAND.NAME} found what looks like a secret in ${secretFiles.join(", ")}, so it didn't push this lane.`), reason: "secret_found" as const, secretFiles };
   };
   try {
     const secretValues = Object.values(runtime.projectSecretService?.valuesForProcess() ?? {});

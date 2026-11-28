@@ -42,7 +42,7 @@ const MAX_PROJECTS_PER_COMPUTER = 8;
 /** How far past the server's clock a saved time may be: a save from later than that is refused. */
 const MAX_CLOCK_AHEAD_MS = 10 * 60_000;
 
-const notFound = () => fail("not_found", "ADE Cloud has no saved menu for that computer.", 404);
+const notFound = () => fail("not_found", "DAEX Cloud has no saved menu for that computer.", 404);
 const unavailable = () => fail("unavailable", "Saved menus aren't available right now. Try again soon.", 503);
 
 const snapshotAad = (userId: string, machineKey: string, projectKey: string): string =>
@@ -83,14 +83,14 @@ const projectKeyOf = (value: unknown): string | null =>
 
 async function handlePut(request: Request, env: CloudEnv, userId: string, namedMachineKey: string, now: number): Promise<Response> {
   // Only the computer writes its menu: a browser page (it sends `Origin`) can read it, never write it.
-  if (request.headers.get("origin") != null) return fail("not_found", "ADE Cloud has no such computer.", 404);
+  if (request.headers.get("origin") != null) return fail("not_found", "DAEX Cloud has no such computer.", 404);
   const body = await readCappedJson(request, CLOUD_MENTION_SNAPSHOT_MAX_BYTES + BODY_OVERHEAD_BYTES);
   if (!body.ok) {
     return body.tooLarge ? fail("snapshot_too_large", "That menu is too large to save.", 413) : fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
   }
   const computer = await callingComputer(env, request, userId, body.value.instanceId);
   // Only the computer itself saves its menu, under its own key.
-  if (!computer?.machine_key || computer.machine_key.toLowerCase() !== namedMachineKey.toLowerCase()) return fail("not_found", "ADE Cloud has no such computer.", 404);
+  if (!computer?.machine_key || computer.machine_key.toLowerCase() !== namedMachineKey.toLowerCase()) return fail("not_found", "DAEX Cloud has no such computer.", 404);
   // Stored, sealed and deleted under the computer's own key, whatever case the path used;
   // the row takes it on every save, so its key is always the one the copy is sealed under.
   const machineKey = computer.machine_key;
