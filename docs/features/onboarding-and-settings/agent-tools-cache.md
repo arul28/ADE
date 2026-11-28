@@ -283,7 +283,10 @@ network error or a 5xx; `isDeletedPinFailure`), the registered
 `static.devin.ai/cli/current/manifest.json` (the pin's own source), takes this
 target's URL and sha256, installs it through the tools cache (Devin's host
 only; sha256 and size checked before unpacking), checks `devin --version`, and
-records an `archive` override with `reason: "vendor_pin_deleted"`. Such a
+records an `archive` override with `reason: "vendor_pin_deleted"`. Before the
+install it records the same override as `vendor_pin_deleted_unchecked`: a
+recorded override is never taken as a previous pin, so no other chat or
+terminal runs the build before its check passes. Such a
 record stands in for the pin: `lookupCachedTool`, `resolveCurrentPinnedTool`,
 the status (`ready`, `runningVersion` the new build) and
 `pinnedToolFetchPending` all take it once the pin itself is not on disk
@@ -372,9 +375,9 @@ tool, never per pass (`agentTools.resolve_failed`).
 
 | Command | Behavior |
 |---|---|
-| `daex tools status` | Per-tool install state and the tools root. No network. A tool with no build for this platform (ffmpeg on macOS) is one row, `unsupported: true`, not in `missing`. |
+| `daex tools status` | Per-tool install state and the tools root. No network. A tool with no build for this platform (ffmpeg on macOS) is one row, `unsupported: true`, not in `missing`. A deleted pin's stand-in (Devin fall-forward) counts as installed. |
 | `daex tools ensure` | Fetch the demanded tools (same rule as the brain). |
-| `daex tools ensure <names…>` / `--all` | Fetch exactly those, or every pin this platform has a build of. A named tool with none fails `unsupported-target`. |
+| `daex tools ensure <names…>` / `--all` | Fetch exactly those, or every pin this platform has a build of. A named tool with none fails `unsupported-target`. A deleted pin with an installed stand-in is not fetched again. |
 | `daex tools gc [--dry-run] [--no-keep-previous]` | Collect, plus stale staging and locks. |
 
 JSON by default; `--text` streams progress to stderr. A typed failure returns

@@ -48,6 +48,13 @@ const HEAD_TIMEOUT_MS = 15_000;
 const MAX_ARCHIVE_BYTES = 1_000_000_000;
 const VERSION_TIMEOUT_MS = 20_000;
 const DEVIN_VERSION_OUTPUT = /^devin (\S+)/m;
+/**
+ * The reason of the record written before the build installs. A recorded
+ * override's version is never taken as a previous pin (`tryResolvePreviousTool`),
+ * and only {@link VENDOR_PIN_DELETED} stands in for the pin, so no caller can
+ * run the build until its version check passes.
+ */
+const UNCHECKED_REASON = `${VENDOR_PIN_DELETED}_unchecked`;
 
 /** ADE tools target -> Devin's platform key (as in `pin-tool.mjs`). */
 const TARGET_TRIPLES: Readonly<Partial<Record<ToolTarget, string>>> = {
@@ -131,6 +138,22 @@ async function fallForward(pin: { package: string; version: string }, target: To
     archive: build.archive,
     stripComponents: 0,
   };
+  const record = (reason: string) => writeToolVersionOverride({
+    ...draft,
+    pinnedVersion: pin.version,
+    reason,
+    scope: null,
+    requiredVersion: null,
+    rejectedToolVersion: pin.version,
+    overrideToolVersion: build.version,
+    at: new Date().toISOString(),
+    lastUsedAt: Date.now(),
+  }, context);
+  try {
+    await record(UNCHECKED_REASON);
+  } catch (error) {
+    return failed("write-failed", error instanceof Error ? error.message : String(error));
+  }
   let entryPath: string;
   let installedDir: string;
   try {
@@ -144,22 +167,12 @@ async function fallForward(pin: { package: string; version: string }, target: To
   const probe = await runProbeProcess(entryPath, ["--version"], { env: process.env, timeoutMs: VERSION_TIMEOUT_MS });
   const reported = probe.exitCode === 0 ? DEVIN_VERSION_OUTPUT.exec(probe.stdout)?.[1] ?? null : null;
   if (reported !== build.version) {
-    // A build that failed its check must never run: remove it now.
+    // A build that failed its check must never run; its unchecked record kept every other caller off it.
     fs.rmSync(installedDir, { recursive: true, force: true });
     return failed("probe-failed", reported ? `it reported ${reported}` : "it did not report its version");
   }
   try {
-    await writeToolVersionOverride({
-      ...draft,
-      pinnedVersion: pin.version,
-      reason: VENDOR_PIN_DELETED,
-      scope: null,
-      requiredVersion: null,
-      rejectedToolVersion: pin.version,
-      overrideToolVersion: build.version,
-      at: new Date().toISOString(),
-      lastUsedAt: Date.now(),
-    }, context);
+    await record(VENDOR_PIN_DELETED);
   } catch (error) {
     return failed("write-failed", error instanceof Error ? error.message : String(error));
   }
