@@ -1,10 +1,10 @@
-# Daex triage playbook
+# DAEX triage playbook
 
-You are fixing a broken Daex install on someone's own machine. `daex triage` handed you a
+You are fixing a broken DAEX install on someone's own machine. `daex triage` handed you a
 redacted `context.md` and this file. Read both before you run anything. Commands below use
 `daex`; the old `ade` command still works as an alias.
 
-Daex is a local-first dev environment. The parts that break are: the **brain** (a background
+DAEX is a local-first dev environment. The parts that break are: the **brain** (a background
 process holding the local RPC endpoint, the project catalog, and sync), the **login service**
 that keeps the brain running (launchd / systemd / a Windows scheduled task), the **credential
 store**, the **project database** under `<project>/.ade/`, and the **pinned agent CLIs** under
@@ -25,14 +25,14 @@ the machine tools cache.
    `transcripts/`. Moving a file aside with a dated suffix, after the user agrees, is the most
    destructive thing you may propose.
 4. **Never kill by name or pattern.** No `pkill -f ade`, no `pgrep … | xargs kill`, no
-   `Stop-Process -Name`. Those patterns match this agent's own process, other Daex channels
+   `Stop-Process -Name`. Those patterns match this agent's own process, other DAEX channels
    (stable and alpha each run their own brain), and unrelated dev runtimes. If a process
    truly must stop, get its exact PID from `daex brain status --text` or `daex runtime
    service-status --text`, verify the PID's own command line and working directory, then stop
    that one PID — or better, use `daex brain stop`, which stops the right thing by construction.
-5. **Prefer the Daex command over the OS command.** `daex brain restart` over `launchctl`,
+5. **Prefer the DAEX command over the OS command.** `daex brain restart` over `launchctl`,
    `daex runtime install-service` over hand-editing a plist, `daex brain repair-credentials` over
-   touching the keychain. The Daex commands know about channels, roles, and the handover
+   touching the keychain. The DAEX commands know about channels, roles, and the handover
    protocol; the raw ones do not.
 6. **Do not reinstall as a first move.** Reinstalling loses the evidence and usually not the
    bug. Find the failing row first.
@@ -79,7 +79,7 @@ If `daex doctor` itself will not run, go to 3.11.
 The brain listens on a per-channel endpoint: `~/.ade/sock/ade.sock` on macOS and Linux
 (`$ADE_HOME/sock/ade.sock` when `ADE_HOME` is set), and a named pipe
 `\\.\pipe\ade-runtime-<channel>-<hash>` on Windows. Clients that cannot reach it report
-"couldn't open project" or "Daex couldn't be set up" (older versions: "ADE couldn't be set up").
+"couldn't open project" or "DAEX couldn't be set up" (older versions: "ADE couldn't be set up").
 
 Read-only:
 
@@ -146,7 +146,7 @@ history, not a live failure — report it and move on.
 ### 3.4 Port conflicts (sync host bound off its default port)
 
 The Sync port row is `warn` when the brain bound something other than the default sync port, and
-names what it found holding the base port. Usually it is a second Daex channel (stable and alpha
+names what it found holding the base port. Usually it is a second DAEX channel (stable and alpha
 both running), a leftover brain, or an unrelated dev server.
 
 Read-only:
@@ -166,9 +166,9 @@ query; without `--scan-listeners` the answer comes from the machine-wide lock al
 the common "the host has not taken its lease yet" case. The running brain's own pid is excluded
 before any conflict is reported, so a healthy machine never accuses the brain that is serving it.
 
-When Daex cannot name the owner, use the OS tool in read-only form — `lsof -nP -iTCP:<port>
+When DAEX cannot name the owner, use the OS tool in read-only form — `lsof -nP -iTCP:<port>
 -sTCP:LISTEN` on macOS/Linux, `netstat -ano | findstr :<port>` on Windows — and report the owner.
-Do not kill it. If it is another Daex channel, that is expected and the warn is cosmetic; if it is a stray
+Do not kill it. If it is another DAEX channel, that is expected and the warn is cosmetic; if it is a stray
 process the user recognises, let them stop it themselves.
 
 ### 3.5 Sync, pairing, relay, and account
@@ -186,8 +186,8 @@ Common shapes:
 
 - **Signed out** → `daex login` (browser loopback), or `daex login --headless` over SSH / on a
   display-less host. Ask first: sign-in is the user's action, not yours.
-- **Relay slot claimed by another Daex process on this machine** → the row names it. The fix is
-  to quit the rival Daex process; propose it, do not kill it.
+- **Relay slot claimed by another DAEX process on this machine** → the row names it. The fix is
+  to quit the rival DAEX process; propose it, do not kill it.
 - **Publish failing** → the brain must stay running to publish. Confirm 3.1 is green first, then
   `daex sync refresh`.
 - **Phone will not pair** → `daex brain pin generate` (or `daex brain pin set 123456`), and
@@ -203,7 +203,7 @@ straight off disk — it works on a machine where the brain will not start, whic
 point of it.
 
 - **Sealed with a key this process cannot obtain** (a GUI-written, OS-bound store that the
-  background brain cannot open): the remedy is to open the Daex desktop app on this computer
+  background brain cannot open): the remedy is to open the DAEX desktop app on this computer
   once. Say that; do not go digging in the keychain.
 - **Anything else unreadable**: a fresh sign-in.
 - **A quarantined store waiting to be restored** (`warn`): that is what
@@ -220,9 +220,9 @@ Never delete `credentials.json.enc`. Never read its contents. Never re-run a "re
 The Storage row covers two different failures:
 
 - **No room left.** The full report (`daex report-issue --text`, and the context file) prints free
-  space for the Daex home and the project volume. Under a few GB, everything downstream —
+  space for the DAEX home and the project volume. Under a few GB, everything downstream —
   database writes, tool fetches, brain updates — fails in confusing ways. Report the number and
-  let the user free space. Do not delete anything to make room; Daex caches under `~/.ade/tools`
+  let the user free space. Do not delete anything to make room; DAEX caches under `~/.ade/tools`
   belong to the user, and `daex tools gc --dry-run --text` is the only sanctioned way to look at
   reclaiming them (`--dry-run` first, always).
 - **Bytes not present.** A project on iCloud Drive / OneDrive whose files have been evicted, read
@@ -248,7 +248,7 @@ flight.
 
 Each project keeps its state in `<project>/.ade/ade.db`, with `ade.db-wal` and `ade.db-shm`
 siblings while it is open. Symptoms: "database is locked", "database disk image is malformed",
-or a project that will not open while the rest of Daex is healthy.
+or a project that will not open while the rest of DAEX is healthy.
 
 Read-only:
 
@@ -269,10 +269,10 @@ Rules for this one, because it is the easiest place to destroy someone's work:
 
 ### 3.10 Agent CLI binary missing
 
-Daex runs only its own pinned copies of the agent CLIs, from a machine-level cache
+DAEX runs only its own pinned copies of the agent CLIs, from a machine-level cache
 (`ADE_TOOLS_ROOT`, else `%LOCALAPPDATA%\ADE\tools` on Windows, else `~/.ade/tools`). It never
 runs a CLI from the PATH, so a `claude` or `codex` the user installed does not fix a missing
-pin; do not tell the user to install one. Logins are shared: Daex's copy reads the user's
+pin; do not tell the user to install one. Logins are shared: DAEX's copy reads the user's
 `~/.claude`, `~/.codex`, … sign-in.
 
 ```bash
@@ -308,7 +308,7 @@ daex --version                 # is the CLI on PATH at all?
   `$ADE_HOME/runtime/<platform>-<arch>/`. A CLI that starts and then dies on a missing native
   module usually means a half-finished update; `daex brain update --text` re-stages it. Capture
   the exact error first.
-- **Wrong Daex**: `ADE_HOME` and `ADE_PACKAGE_CHANNEL` select a channel. If the user has stable
+- **Wrong DAEX**: `ADE_HOME` and `ADE_PACKAGE_CHANNEL` select a channel. If the user has stable
   and alpha installed, confirm which one you are talking to before diagnosing anything.
 
 ### 3.12 Login service not registered or not loaded
@@ -340,7 +340,7 @@ sign-in fail on every clean install.
    did not touch.
 3. If a row still fails and nothing here explains it, that is a bug worth filing:
    `daex report-issue --open` copies a redacted report and opens a prefilled GitHub issue.
-   `daex report-issue --send` hands the same redacted report to Daex and prints a reference id.
+   `daex report-issue --send` hands the same redacted report to DAEX and prints a reference id.
    Both read local files only, so they work on a machine where the brain will not come up.
 4. Delete nothing on your way out. The triage directory (`context.md` and this playbook) is in a
    temp dir; leave it for the user.

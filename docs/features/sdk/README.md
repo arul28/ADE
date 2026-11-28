@@ -343,7 +343,7 @@ way.
 The server shape is checked against the selected provider before launch. Codex
 does not support `sse`, so a Codex request containing an SSE entry is rejected.
 Server names `computer_use` and `daex-cto` are reserved (so is `ade-cto`, its
-name before the Daex rename), and a request may contain at most 32 servers.
+name before the DAEX rename), and a request may contain at most 32 servers.
 
 Source of truth: `CALLER_MCP_SUPPORT` in `apps/desktop/src/shared/callerMcpServers.ts`. The session summary carries `mcpCapability`:
 
@@ -518,7 +518,7 @@ provider's own tool name, case-insensitively. Built-in names are
 provider-specific: `Bash` is a Claude name and matches nothing on Codex.
 
 The CTO's own tool server is `daex-cto` (Codex namespace `daex_cto`). Its name
-before the Daex rename, `ade-cto`, is a deprecated alias: a policy entry or
+before the DAEX rename, `ade-cto`, is a deprecated alias: a policy entry or
 `autoApproveMcpServers` name written with either matches the server under both
 (`mcpServerNameAliases` in `apps/desktop/src/shared/permissionPolicy.ts`), so a
 deny rule never silently stops matching. `@daex-dev/chat-ui` label keys accept

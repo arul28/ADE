@@ -1,10 +1,10 @@
 ---
 title: "Tools"
-description: "Every chat gets a small set of universal tools, plus the Daex surfaces it can reach through the daex CLI."
+description: "Every chat gets a small set of universal tools, plus the DAEX surfaces it can reach through the daex CLI."
 icon: "toolbox"
 ---
 
-A chat agent is not a chatbot with a text box. It is a process with tools. Daex gives every chat the same core set, then adds what the session's runtime and role allow.
+A chat agent is not a chatbot with a text box. It is a process with tools. DAEX gives every chat the same core set, then adds what the session's runtime and role allow.
 
 There are four layers. Most questions about "what can an agent do?" are really questions about which layer is in play.
 
@@ -25,9 +25,9 @@ Available to every agent — regular chat, personal chat, and the CTO — in eve
 
 These are real tool calls, not prompt instructions. Each one produces an event in the transcript, which is why you can inspect every edit and command after the fact.
 
-## 2. Daex surfaces through the CLI
+## 2. DAEX surfaces through the CLI
 
-The agent's shell has the `daex` command. That is how a chat reaches Daex itself:
+The agent's shell has the `daex` command. That is how a chat reaches DAEX itself:
 
 ```bash
 daex lanes create "try-the-new-cache"     # start another lane
@@ -46,7 +46,7 @@ This is why "create a lane", "open a PR", and "capture proof" are not separate t
 
 ## 3. Provider-native tools
 
-Each runtime also brings its own tools, and Daex preserves them rather than flattening them into the universal set:
+Each runtime also brings its own tools, and DAEX preserves them rather than flattening them into the universal set:
 
 - **Claude Code** brings its native `AskUserQuestion` tool, its own subagent tool, and its own web tools.
 - **Codex** brings its web, MCP/connector, and image capabilities.

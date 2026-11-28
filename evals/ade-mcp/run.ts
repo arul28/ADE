@@ -56,7 +56,7 @@ const RUN_TIMEOUT_MS = 240_000;
 process.once("SIGINT", () => process.exit(130));
 const SYSTEM_PROMPT = [
   "You are Claude, a helpful assistant in a chat app.",
-  "The person has connected Daex, the app they code with, as the MCP server `daex`. Use its tools to do what they ask, then answer briefly.",
+  "The person has connected DAEX, the app they code with, as the MCP server `daex`. Use its tools to do what they ask, then answer briefly.",
   "Today is 2026-10-28.",
 ].join(" ");
 

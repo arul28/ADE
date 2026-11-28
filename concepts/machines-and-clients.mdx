@@ -1,18 +1,18 @@
 ---
 title: "Machines and clients"
-description: "Daex Cloud and your own computers run the work. The desktop app, terminal, web, and phone are clients that show all of them."
+description: "DAEX Cloud and your own computers run the work. The desktop app, terminal, web, and phone are clients that show all of them."
 icon: "server"
 ---
 
-A **machine** is a computer running the Daex **brain**: the always-on process that owns projects, lanes, chats, terminals, Git state, and proof. A **client** is any surface that attaches to a brain.
+A **machine** is a computer running the DAEX **brain**: the always-on process that owns projects, lanes, chats, terminals, Git state, and proof. A **client** is any surface that attaches to a brain.
 
 That split is why the computer in front of you does not have to be the computer doing the work. Your laptop can drive a desktop at home running three lanes, or a headless Linux box running tests. And you do not need a computer of your own at all.
 
-## Daex Cloud
+## DAEX Cloud
 
-Every Daex account always has one machine, **Daex Cloud**. It shows in every machine list and every **Run on** menu, on the web, the iPhone and the desktop, next to your own computers. Pick it to start a lane there. Each cloud lane gets its own Linux computer underneath; you never see or manage those computers.
+Every DAEX account always has one machine, **DAEX Cloud**. It shows in every machine list and every **Run on** menu, on the web, the iPhone and the desktop, next to your own computers. Pick it to start a lane there. Each cloud lane gets its own Linux computer underneath; you never see or manage those computers.
 
-A cloud computer sleeps when nothing runs on it. **Asleep is not offline:** its lanes, chats, CLI sessions and shells stay listed, and you can read them. Reading never wakes it. Sending a message, running a command, opening a changed file or a Git action wakes it, and the screen never waits for that. See [Daex Cloud](/cloud/overview).
+A cloud computer sleeps when nothing runs on it. **Asleep is not offline:** its lanes, chats, CLI sessions and shells stay listed, and you can read them. Reading never wakes it. Sending a message, running a command, opening a changed file or a Git action wakes it, and the screen never waits for that. See [DAEX Cloud](/cloud/overview).
 
 ```mermaid
 flowchart LR
@@ -34,7 +34,7 @@ flowchart LR
 |---|---|---|
 | Desktop app | macOS, Windows, Linux | The full control plane: Work, Lanes, Files, PRs, CTO, Settings. |
 | `daex` CLI | macOS, Linux, Windows | Typed commands for agents and scripts over the same lanes and chats. |
-| Web client | Any browser | The full Daex in a browser, for Daex Cloud and your connected machines. |
+| Web client | Any browser | The full DAEX in a browser, for DAEX Cloud and your connected machines. |
 | iOS app | iPhone | Follow chats, review, and answer questions from anywhere. |
 | SSH-attached desktop | Any host | A desktop window attached to a brain on another machine. |
 
@@ -42,11 +42,11 @@ A client never owns a chat. Sessions live on the machine's runtime, so the same 
 
 ## Account and pairing
 
-Signing in with the same account links your machines into one list, with Daex Cloud always in it. `daex connect` adds a machine; a machine with no browser shows a QR code you scan from the phone. An own computer that is offline is hidden until it is back. You can also skip the account and use one machine locally — you just cannot reach it from anywhere else, and you have no Daex Cloud.
+Signing in with the same account links your machines into one list, with DAEX Cloud always in it. `daex connect` adds a machine; a machine with no browser shows a QR code you scan from the phone. An own computer that is offline is hidden until it is back. You can also skip the account and use one machine locally — you just cannot reach it from anywhere else, and you have no DAEX Cloud.
 
 ## Where state lives
 
-Each project keeps its Daex state in `.ade/` inside the repository: the local database, worktrees, artifacts, and caches. Your source tree stays under Git's control. Machine-wide state lives in the Daex home directory, not in the repository. Your Daex account keeps your projects, settings, API keys, Passwords and sign-ins, launch defaults and quick slots, and gives them to every machine. It also keeps saved copies of Daex Cloud work, so you can read them with no computer on. Chats without a project stay on their machine.
+Each project keeps its DAEX state in `.ade/` inside the repository: the local database, worktrees, artifacts, and caches. Your source tree stays under Git's control. Machine-wide state lives in the DAEX home directory, not in the repository. Your DAEX account keeps your projects, settings, API keys, Passwords and sign-ins, launch defaults and quick slots, and gives them to every machine. It also keeps saved copies of DAEX Cloud work, so you can read them with no computer on. Chats without a project stay on their machine.
 
 ## What follows from this
 

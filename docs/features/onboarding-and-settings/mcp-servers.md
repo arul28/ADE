@@ -297,7 +297,7 @@ The same name in two providers is one row; the first definition found wins
 (the order above) and the others add their provider to the row. A name the
 registry cannot hold (it allows letters, numbers, `-` and `_`) is listed under
 the section as not offered. ADE's own reserved names (`computer_use`,
-`daex-cto`, and `ade-cto` from before the Daex rename) are skipped.
+`daex-cto`, and `ade-cto` from before the DAEX rename) are skipped.
 
 Codex can name the env variable a token is read from (`bearer_token_env_var`,
 `env_http_headers`) instead of storing the token. Import reads that variable

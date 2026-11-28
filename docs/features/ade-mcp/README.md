@@ -8,7 +8,7 @@ and a call for another computer is sent on to it (see
 [Account server](#account-server)). Off until the person turns it on for the
 account.
 
-The server's main tool is **`daex`** (named `ade` before the Daex rename: a call
+The server's main tool is **`daex`** (named `ade` before the DAEX rename: a call
 to `ade` still runs, though only `daex` is listed): the words after `daex`, run as the real
 CLI on that computer. Everything the CLI can do is available with no
 per-command MCP work, and new CLI commands appear on their own.

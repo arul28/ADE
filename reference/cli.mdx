@@ -1,10 +1,10 @@
 ---
 title: "daex CLI"
-description: "The daex command is the typed control plane for Daex from any shell — the same lanes, chats, PRs, and tests, scriptable for humans and agents alike."
+description: "The daex command is the typed control plane for DAEX from any shell — the same lanes, chats, PRs, and tests, scriptable for humans and agents alike."
 icon: "terminal"
 ---
 
-`daex` is the typed control plane for Daex. Everything you do in the desktop app — create lanes, run agents, ship PRs, kick off tests, attach Linear issues — has a CLI command, so you can drive Daex from any shell. Agents running inside Daex use the same commands, which is how they inspect and operate the workspace they live in.
+`daex` is the typed control plane for DAEX. Everything you do in the desktop app — create lanes, run agents, ship PRs, kick off tests, attach Linear issues — has a CLI command, so you can drive DAEX from any shell. Agents running inside DAEX use the same commands, which is how they inspect and operate the workspace they live in.
 
 <Note>
 The command used to be `ade`, and `ade` still works as an alias for `daex`, so existing scripts and habits keep running.
@@ -77,7 +77,7 @@ daex lanes list --json   # stable JSON for scripts and agents
   </Accordion>
 
   <Accordion title="Linear" icon="list-check">
-    Attach and update Linear issues through Daex's own Linear connection — no API key needed.
+    Attach and update Linear issues through DAEX's own Linear connection — no API key needed.
 
     ```bash
     daex lanes create --name ENG-431 --issue-id ENG-431 --start-chat --provider codex --type subagent
@@ -88,7 +88,7 @@ daex lanes list --json   # stable JSON for scripts and agents
   </Accordion>
 
   <Accordion title="Account & machines" icon="user">
-    Link this machine to your Daex account so you can reach it from Daex desktop,
+    Link this machine to your DAEX account so you can reach it from DAEX desktop,
     the web client, and iOS. `daex connect` is idempotent — re-running it on a
     connected machine just prints status.
 
@@ -118,12 +118,12 @@ daex lanes list --json   # stable JSON for scripts and agents
     directory asks and finishes the re-pair as soon as that lands. Only once the
     directory accepts does it lift the push gate, so Activity, alerts, and
     badges resume without restarting the brain. A normal `daex login` runs the
-    same repair automatically, and Daex desktop offers it as **Reconnect this
+    same repair automatically, and DAEX desktop offers it as **Reconnect this
     computer** in Settings.
   </Accordion>
 
   <Accordion title="Brain & pairing" icon="microchip">
-    Control the machine-owned Daex runtime (the brain) and pair a phone.
+    Control the machine-owned DAEX runtime (the brain) and pair a phone.
 
     ```bash
     daex brain status --text                 # endpoint, service, and sync state
@@ -136,7 +136,7 @@ daex lanes list --json   # stable JSON for scripts and agents
   </Accordion>
 
   <Accordion title="Proof" icon="camera">
-    List the computer-use proof artifacts Daex captured for a chat or session.
+    List the computer-use proof artifacts DAEX captured for a chat or session.
 
     ```bash
     daex proof list --arg ownerKind=chat --arg ownerId=<session-id>
@@ -151,7 +151,7 @@ daex lanes list --json   # stable JSON for scripts and agents
     daex actions list --text                 # full service-backed action catalog
     daex actions run git.stageFile --arg laneId=<lane-id> --arg path=src/index.ts
     daex doctor                              # local runtime, git, provider readiness
-    daex triage                              # hand a broken install to a coding agent Daex has downloaded
+    daex triage                              # hand a broken install to a coding agent DAEX has downloaded
     daex triage --agent --text               # print the context + playbook paths instead of launching one
     daex skill list --text                   # bundled agent skills
     ```

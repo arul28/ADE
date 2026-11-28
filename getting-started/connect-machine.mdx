@@ -1,15 +1,15 @@
 ---
 title: "Connect a machine"
-description: "Run daex connect to put a machine on your Daex account — then reach it from desktop, the web, and iOS. Includes running the Daex brain headless on a Linux server."
+description: "Run daex connect to put a machine on your DAEX account — then reach it from desktop, the web, and iOS. Includes running the DAEX brain headless on a Linux server."
 icon: "server"
 ---
 
-Daex's engine is the **brain** — an always-on, machine-owned process that holds your projects, lanes, agent chats, and Git state. The desktop app, the web client, and the iOS app are all *clients* of a brain.
+DAEX's engine is the **brain** — an always-on, machine-owned process that holds your projects, lanes, agent chats, and Git state. The desktop app, the web client, and the iOS app are all *clients* of a brain.
 
 That split is what makes this possible: install the brain on a machine, connect it to your account, and drive it from anywhere. A Linux build server with 64 cores can be the machine that runs your agents while you review diffs from your phone.
 
 <Note>
-You don't need to connect a machine to use Daex. Every account has [Daex Cloud](/cloud/overview), which runs each cloud lane on its own computer. Your own machines show next to it.
+You don't need to connect a machine to use DAEX. Every account has [DAEX Cloud](/cloud/overview), which runs each cloud lane on its own computer. Your own machines show next to it.
 </Note>
 
 ## `daex connect`
@@ -24,7 +24,7 @@ You don't need to connect a machine to use Daex. Every account has [Daex Cloud](
     Installs and starts this platform's login service if it is not already running — launchd on macOS, a systemd user service on Linux, a per-user startup entry on Windows. None of them need an elevated shell.
   </Step>
   <Step title="Machine">
-    Waits for this machine's row to reach your account directory. Once it lands, the machine is reachable from Daex desktop, the [web client](https://app.ade-app.dev), and iOS.
+    Waits for this machine's row to reach your account directory. Once it lands, the machine is reachable from DAEX desktop, the [web client](https://app.ade-app.dev), and iOS.
   </Step>
 </Steps>
 
@@ -44,12 +44,12 @@ Output is JSON by default so scripts and agents can consume it. Add `--text` for
 </Note>
 
 <Warning>
-The brain is what publishes the machine and keeps it reachable — it re-registers every 60 seconds while running. If you skip the service step with `--no-service`, or stop the brain, the machine goes offline in the directory. The account directory marks a machine `online` only within a 150-second window of its last heartbeat. A Daex Cloud computer that sleeps reads as asleep, not offline.
+The brain is what publishes the machine and keeps it reachable — it re-registers every 60 seconds while running. If you skip the service step with `--no-service`, or stop the brain, the machine goes offline in the directory. The account directory marks a machine `online` only within a 150-second window of its last heartbeat. A DAEX Cloud computer that sleeps reads as asleep, not offline.
 </Warning>
 
 ## The brain on a Linux server
 
-Linux can run the Daex desktop app or a standalone brain that you control from another device.
+Linux can run the DAEX desktop app or a standalone brain that you control from another device.
 
 <Steps>
   <Step title="Install the brain">
@@ -70,7 +70,7 @@ Linux can run the Daex desktop app or a standalone brain that you control from a
     daex connect --headless
     ```
 
-    The CLI prints a QR code, a verification URL, and a short code. Scan the QR code with your phone, or open the URL in a browser on any device and enter the code. The server signs in when you finish, and your password is never typed on the server. If Daex Mobile is on the phone and signed in, the scan opens the app: tap **Approve**, then **Allow**.
+    The CLI prints a QR code, a verification URL, and a short code. Scan the QR code with your phone, or open the URL in a browser on any device and enter the code. The server signs in when you finish, and your password is never typed on the server. If DAEX Mobile is on the phone and signed in, the scan opens the app: tap **Approve**, then **Allow**.
   </Step>
   <Step title="Open a project on it">
     Register a repository that lives on that box:
@@ -81,7 +81,7 @@ Linux can run the Daex desktop app or a standalone brain that you control from a
     ```
   </Step>
   <Step title="Drive it from anywhere">
-    The machine now appears in Daex desktop, at [app.ade-app.dev](https://app.ade-app.dev), and in the iOS app. Create lanes, run agents, review diffs, and merge PRs from any of them — the work executes on the Linux box, against its filesystem and its own GitHub, Linear, and provider credentials.
+    The machine now appears in DAEX desktop, at [app.ade-app.dev](https://app.ade-app.dev), and in the iOS app. Create lanes, run agents, review diffs, and merge PRs from any of them — the work executes on the Linux box, against its filesystem and its own GitHub, Linear, and provider credentials.
   </Step>
 </Steps>
 
@@ -93,7 +93,7 @@ For CI and unattended agents, do the interactive sign-in once on a machine that 
 daex account token create
 ```
 
-Store the result in your secret manager and expose it as `ADE_ACCOUNT_TOKEN` to the Daex brain or runtime on the target machine. Daex never logs this value.
+Store the result in your secret manager and expose it as `ADE_ACCOUNT_TOKEN` to the DAEX brain or runtime on the target machine. DAEX never logs this value.
 
 The install scripts detect that no terminal is attached and skip their prompts, printing the follow-up commands instead. Set `ADE_INSTALL_NO_PROMPT=1` (or pass `-NoPrompt` to `install.ps1`) to opt out explicitly.
 
@@ -108,7 +108,7 @@ The desktop app, the web client, and the iOS app need an account. The brain does
 
 ## Remote machines over SSH, instead
 
-`daex connect` publishes a machine to your account so any client can reach it. If you would rather not involve an account at all, a desktop window can bind directly to a brain on another machine over SSH — Daex bootstraps the runtime on the far side on first connect.
+`daex connect` publishes a machine to your account so any client can reach it. If you would rather not involve an account at all, a desktop window can bind directly to a brain on another machine over SSH — DAEX bootstraps the runtime on the far side on first connect.
 
 <CardGroup cols={2}>
   <Card title="Remote machines" icon="server" href="/tools/remote-machines">

@@ -18,7 +18,7 @@ Requires **Node 22**. The packages ship ESM + CJS.
 
 ## Isolated home
 
-Pass a directory your app owns. The sidecar stores thread keys and runtime state there. Never point it at the developer's `~/.ade` or at Daex's default machine socket.
+Pass a directory your app owns. The sidecar stores thread keys and runtime state there. Never point it at the developer's `~/.ade` or at DAEX's default machine socket.
 
 ```ts
 import { createDaexChat } from "@daex-dev/sdk";
@@ -50,7 +50,7 @@ Resolution order:
 2. An installed `@ade-dev/runtime-<target>` platform package (its `bin/daex`, or `bin/ade` in packages built before the rename).
 3. A previously downloaded binary in the home cache.
 4. `daex` on `PATH`, or `ade` when there is no `daex` (optional; tests can disable this).
-5. Download from the Daex GitHub release, fail-closed against that release's `SHA256SUMS`.
+5. Download from the DAEX GitHub release, fail-closed against that release's `SHA256SUMS`.
 
 ```ts
 const ade = await createDaexChat({

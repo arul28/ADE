@@ -25,7 +25,7 @@ Supported shapes:
 The server shape is checked against the selected provider before launch. Codex
 does not support `sse`, so a Codex request containing an SSE entry is rejected.
 Server names `computer_use` and `daex-cto` are reserved (so is `ade-cto`, its
-name before the Daex rename), and a request may contain at most 32 servers.
+name before the DAEX rename), and a request may contain at most 32 servers.
 
 Supplying `mcpServers` turns on **strict mode** unless you set `loadUserMcpServers: true`. Strict means: withhold the user's and project's own MCP config, and try to load only the servers you supplied.
 
@@ -43,7 +43,7 @@ Strict mode is **enforced only on Claude**. Codex, Cursor, Droid, and OpenCode a
 |---|---|---|
 | claude | enforced | nothing MCP-wise (user rules/commands/output styles still load — they are not MCP) |
 | codex | best-effort | servers contributed by a Codex *plugin* |
-| cursor | best-effort | user-layer servers (`~/.cursor`; Daex's own preToolUse hook lives there) |
+| cursor | best-effort | user-layer servers (`~/.cursor`; DAEX's own preToolUse hook lives there) |
 | droid | best-effort | tools that appear only after the first disable pass |
 | opencode | best-effort | the global OpenCode config directory (for auth) |
 | pi | unsupported | n/a — create refuses injected servers |

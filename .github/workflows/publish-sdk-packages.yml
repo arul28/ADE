@@ -42,7 +42,7 @@
 # >= 11.5.1 — hence the explicit npm upgrade step below, so the bar holds
 # whatever npm the runner's Node bundles.
 
-name: Publish Daex SDK packages
+name: Publish DAEX SDK packages
 
 on:
   push:

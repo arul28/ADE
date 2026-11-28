@@ -15,11 +15,11 @@ daex doctor                # local runtime, git, GitHub, Linear, and provider re
 `daex doctor` reports local readiness only — it never calls provider, GitHub, or Linear networks and never prints secret values. It's safe to run anytime.
 </Tip>
 
-If a check fails and you'd rather not work it by hand, `daex triage` hands the whole thing to a coding agent: it writes a redacted machine context plus a repair playbook to a temp directory and starts the first agent Daex has already downloaded (`claude`, `codex`, `cursor-agent`, `opencode`, `droid`, `muse`). Inside an agent session already, run `daex triage --agent` — it prints the two file paths and a prompt instead of launching anything.
+If a check fails and you'd rather not work it by hand, `daex triage` hands the whole thing to a coding agent: it writes a redacted machine context plus a repair playbook to a temp directory and starts the first agent DAEX has already downloaded (`claude`, `codex`, `cursor-agent`, `opencode`, `droid`, `muse`). Inside an agent session already, run `daex triage --agent` — it prints the two file paths and a prompt instead of launching anything.
 
 <AccordionGroup>
   <Accordion title="The app won't connect / nothing loads" icon="plug">
-    The desktop app, the web client, and the iOS app are all clients of the **brain** — the always-on Daex process for your channel. If it isn't running, clients have nothing to attach to.
+    The desktop app, the web client, and the iOS app are all clients of the **brain** — the always-on DAEX process for your channel. If it isn't running, clients have nothing to attach to.
 
     ```bash
     daex brain status --text   # is the endpoint listening? is the service loaded?
@@ -35,10 +35,10 @@ If a check fails and you'd rather not work it by hand, `daex triage` hands the w
     A provider only lists models once it's authenticated.
 
     - **Add the key.** Open **Settings → AI**, connect the provider (Claude subscription or Anthropic key, Cursor API key, OpenCode backend, etc.), and confirm a green status.
-    - **Give discovery a moment.** Cursor and Droid model lists are discovered live and served stale-while-revalidate — a freshly connected provider may need a refresh in **Settings → AI**, or a Daex restart.
-    - **Wait for the download.** Daex downloads its own copy of each agent the first time a machine uses it; you never install the CLI yourself. While it downloads, the provider reads "Downloading … for this machine". If the download failed, press **Retry** on the provider's page or on the chat card.
-    - **For agents that aren't downloaded or signed in yet**, Daex surfaces an inline card in chat with a Download / Retry button or a sign-in button that opens a tracked terminal on the chat's machine.
-    - **Check `daex doctor`** — it reports provider/model readiness from local config, API-key references, and whether Daex's copy of each provider CLI is downloaded.
+    - **Give discovery a moment.** Cursor and Droid model lists are discovered live and served stale-while-revalidate — a freshly connected provider may need a refresh in **Settings → AI**, or a DAEX restart.
+    - **Wait for the download.** DAEX downloads its own copy of each agent the first time a machine uses it; you never install the CLI yourself. While it downloads, the provider reads "Downloading … for this machine". If the download failed, press **Retry** on the provider's page or on the chat card.
+    - **For agents that aren't downloaded or signed in yet**, DAEX surfaces an inline card in chat with a Download / Retry button or a sign-in button that opens a tracked terminal on the chat's machine.
+    - **Check `daex doctor`** — it reports provider/model readiness from local config, API-key references, and whether DAEX's copy of each provider CLI is downloaded.
   </Accordion>
 
   <Accordion title="My phone isn't syncing" icon="mobile">
@@ -63,17 +63,17 @@ If a check fails and you'd rather not work it by hand, `daex triage` hands the w
     daex lanes delete <lane-id> --force --delete-branch
     ```
 
-    If the lane is an **attached external worktree** (one you created with `git worktree` outside Daex), Daex tracks it but never moves or cleans it — detach it in Daex and remove the worktree yourself with `git worktree remove`.
+    If the lane is an **attached external worktree** (one you created with `git worktree` outside DAEX), DAEX tracks it but never moves or cleans it — detach it in DAEX and remove the worktree yourself with `git worktree remove`.
   </Accordion>
 
   <Accordion title="A remote machine won't connect over SSH" icon="server">
-    Remote machines connect over SSH and run `ade rpc --stdio` on the far side. Daex surfaces the specific failure inline on the remote target; common ones:
+    Remote machines connect over SSH and run `ade rpc --stdio` on the far side. DAEX surfaces the specific failure inline on the remote target; common ones:
 
-    - **`SSH server at <host:port> closed the connection before Daex could finish the SSH handshake`** — the TCP route opened but the server reset the handshake. Check Remote Login / sshd, firewall rules, and any Tailscale SSH policy.
-    - **`Remote machine was manually disconnected. Connect again to use this remote project.`** — you explicitly disconnected; Daex won't reconnect until you press **Connect**.
-    - **`Daex stopped automatic reconnecting after 10 failed attempts. Press Connect to try again.`** — implicit reconnects were paused after repeated failures. Press **Connect** once the box is reachable.
-    - **`Daex service is not installed … no bundled Daex service is available`** — the desktop has no bundled runtime for that remote's architecture. Use a release build that includes runtime resources for it, or install `daex` on the remote.
-    - **`Remote Daex service version mismatch` / `does not support multi-project mode`** — the remote is running an older or mismatched runtime. Re-bootstrap from a current desktop build.
+    - **`SSH server at <host:port> closed the connection before DAEX could finish the SSH handshake`** — the TCP route opened but the server reset the handshake. Check Remote Login / sshd, firewall rules, and any Tailscale SSH policy.
+    - **`Remote machine was manually disconnected. Connect again to use this remote project.`** — you explicitly disconnected; DAEX won't reconnect until you press **Connect**.
+    - **`DAEX stopped automatic reconnecting after 10 failed attempts. Press Connect to try again.`** — implicit reconnects were paused after repeated failures. Press **Connect** once the box is reachable.
+    - **`DAEX service is not installed … no bundled DAEX service is available`** — the desktop has no bundled runtime for that remote's architecture. Use a release build that includes runtime resources for it, or install `daex` on the remote.
+    - **`Remote DAEX service version mismatch` / `does not support multi-project mode`** — the remote is running an older or mismatched runtime. Re-bootstrap from a current desktop build.
 
     An agent that is not downloaded or not signed in on the remote (Claude / Codex / Cursor / Droid and the rest) appears as an inline card whose Download / sign-in buttons act on the **remote** machine. Each machine downloads its own copy of each agent.
   </Accordion>

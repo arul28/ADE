@@ -18,8 +18,8 @@ import path from "node:path";
 
 const runs = Math.max(1, Number(process.argv[2] ?? 7));
 const cliPath = path.resolve(import.meta.dirname, "../../../apps/ade-cli/dist/cli.cjs");
-/** The ready line, as a Daex brain prints it or an older ADE one did. */
-const READY = /(?:Daex|ADE) brain listening on/;
+/** The ready line, as a DAEX brain prints it or an older ADE one did. */
+const READY = /(?:DAEX|ADE) brain listening on/;
 const r1 = (x: number) => Math.round(x * 10) / 10;
 const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]!;
 
