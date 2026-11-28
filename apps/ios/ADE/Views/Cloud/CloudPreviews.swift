@@ -235,6 +235,7 @@ enum CloudPreviews {
     json = json
       .replacingOccurrences(of: #""plan":"paid","planId":"pro","rules":"paid""#, with: free ? #""plan":"free","planId":"free","rules":"free""# : #""plan":"paid","planId":"\#(plan)","rules":"paid""#)
       .replacingOccurrences(of: #""hours":{"includedMilli":600000,"usedMilli":117500,"leftMilli":482500"#, with: #""hours":{"includedMilli":\#(included),"usedMilli":\#(included / 6),"leftMilli":\#(included - included / 6)"#)
+    json = realAccountJSON(json, free: free, withMac: withMac)
     guard let list = try? JSONDecoder().decode(CloudPhoneList.self, from: Data(json.utf8)), var account = list.account else { return nil }
     let available = state != "noads"
     let noticeSeen = !(state == "new" || state == "asked")
@@ -420,6 +421,33 @@ enum CloudPreviews {
           {"type":"vm","cpu":4,"memoryGb":16,"multiplierMilli":4000,"tier":"xlarge","label":"X-Large","diskMaxGb":100}],
         "diskStepGb":10,"paidPriceUsd":5,"extraHourCents":2}}}
     """
+  }
+
+  /// The Pricing v3 fixture as a real account of its plan reads: a pace that
+  /// lasts past the reset (so no date before today), no invite credits, and on
+  /// Free only as many computers as the plan has (2: the awake Medium and the
+  /// asleep Large, or the On Mac in place of the Large).
+  private static func realAccountJSON(_ json: String, free: Bool, withMac: Bool) -> String {
+    guard let data = json.data(using: .utf8), var root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          var account = root["account"] as? [String: Any] else { return json }
+    account["recentUse"] = ["days": 7, "usedMilli": 7000]
+    account["earnedHours"] = ["leftMilli": 0, "usedThisPeriodMilli": 0, "grantedMilli": 0]
+    if var referral = account["referral"] as? [String: Any] {
+      referral["rewardsPaid"] = 0
+      referral["hoursEarnedMilli"] = 0
+      account["referral"] = referral
+    }
+    if free {
+      let keep: Set<String> = withMac ? ["zodqsue74s", "mac0running"] : ["zodqsue74s", "k2p8a1b2c3"]
+      let machines = (root["machines"] as? [[String: Any]] ?? []).filter { keep.contains($0["instanceId"] as? String ?? "") }
+      let awake = machines.filter { ($0["state"] as? String) == "running" }.count
+      root["machines"] = machines
+      root["runningCount"] = awake
+      account["computers"] = ["total": machines.count, "awake": awake, "limit": 2]
+    }
+    root["account"] = account
+    guard let out = try? JSONSerialization.data(withJSONObject: root), let text = String(data: out, encoding: .utf8) else { return json }
+    return text
   }
 
   /// The fixture with the DAEX Cloud Mac offered (`catalog.mac`, sample words

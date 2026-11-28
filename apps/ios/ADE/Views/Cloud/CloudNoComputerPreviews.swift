@@ -167,7 +167,8 @@ private enum CloudSignInFixture {
   @MainActor
   static func view(_ variant: String) -> AnyView? {
     let soon = Date().timeIntervalSince1970 * 1000 + 30 * 60_000 + 30_000
-    let ways = #""freeModel":{"modelId":"ade/free-coder","label":"DAEX Free Coder"},"ownComputer":true"#
+    // The server's label for its first free model (`ADE_FREE_MODELS[0]`).
+    let ways = #""freeModel":{"modelId":"opencode/ade-free/deepseek-v4.1-flash","label":"DeepSeek V4.1 Flash"},"ownComputer":true"#
     let free = #""charge":{"free":true,"sentence":"Nothing is charged if you cancel here."}"#
     let claude = #"{"provider":"claude","label":"Claude","kind":"url_paste","jobId":"j1","url":"https://example.com/sign-in/fake","needsPastedCode":true,"expiresAt":\#(soon),\#(ways),\#(free)}"#
     switch variant {
@@ -194,8 +195,7 @@ private enum CloudSignInFixture {
       // account read says no yes yet: the step's own consent sheet.
       let account: CloudPhoneAccount? = try? JSONDecoder().decode(CloudPhoneAccount.self, from: Data(#"{"plan":"free","hours":{"includedMilli":600000,"usedMilli":0,"leftMilli":600000,"percentUsed":0,"state":"none"},"freeModels":{"modelIds":["opencode/ade-free/deepseek-v4.1-flash"],"available":true,"format":"below_reply"}}"#.utf8))
       AccountCloudStore.shared.seedPreview(access: nil, account: account)
-      let deepseek = claude.replacingOccurrences(of: #""modelId":"ade/free-coder","label":"DAEX Free Coder""#, with: #""modelId":"opencode/ade-free/deepseek-v4.1-flash","label":"DeepSeek V4.1 Flash""#)
-      return step(deepseek, .idle, consentOpen: true)
+      return step(claude, .idle, consentOpen: true)
     default:
       return nil
     }
