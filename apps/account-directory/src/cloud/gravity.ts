@@ -699,7 +699,7 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
     if (!yesHolds(env, consent, who)) return none("consent");
     // Pricing v3: never an ad before the account saw the notice.
     if (v3 && consent.notice_seen_at == null && !(legacy && shownPlanIdOf(account) === "free")) return none("notice");
-    // Only a chat on one of the account's own ADE Cloud computers (or, under Pricing v3, one
+    // Only a chat on one of the account's own DAEX Cloud computers (or, under Pricing v3, one
     // that holds its cloud iPhone): never one on the person's own machine otherwise.
     const computer = await ownCloudComputer(env, userId, body.instanceId);
     // And the chat itself runs there: that computer saved a copy of it after a

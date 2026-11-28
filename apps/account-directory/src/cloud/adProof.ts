@@ -63,7 +63,7 @@ async function unsavedProofsToday(env: GravityEnv, userId: string, target: { ins
 /**
  * One person's message as a proof for the computer its chat runs on and the
  * live phone it holds. Ads must hold here (a yes, the notice seen, a country
- * with ads), except in an ADE Free Models chat, whose ad shows with ads off:
+ * with ads), except in an DAEX Free Models chat, whose ad shows with ads off:
  * its proof counts only for a computer that saved the chat. A chat no
  * computer saved yet opens a short window, a few times a day.
  */

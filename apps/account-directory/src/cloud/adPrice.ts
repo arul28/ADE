@@ -31,7 +31,7 @@ import { logCloud, reportCloudFailure, restartStretchAtStatements, shownPlanIdOf
  *
  * A computer has the ad price for a minute when all hold:
  * 1. ads are on for the account (a yes that held where the proof came from,
- *    and the notice seen), or the proof came from an ADE Free Models chat,
+ *    and the notice seen), or the proof came from an DAEX Free Models chat,
  *    whose ad shows with ads off;
  * 2. a proof for that computer is younger than `ad_window_minutes`: a person
  *    sent a message in one of its chats (`POST /cloud/sponsored/sent`), or a
@@ -517,7 +517,7 @@ export function phoneAdMove(phone: Pick<PhonePriceRow, "ad_mark_at">, decision: 
 
 /* ---- Proofs ---- */
 
-/** How long a network an ADE Cloud computer joined from stays ADE Cloud's own (as the Small tripwire reads it). */
+/** How long a network an DAEX Cloud computer joined from stays DAEX Cloud's own (as the Small tripwire reads it). */
 const JOINED_NETWORK_MS = 30 * 24 * 60 * 60_000;
 /** The owner hears of one account's requests that don't count at most once a week. */
 const UNVERIFIED_ALERT_MS = 7 * 24 * 60 * 60_000;
@@ -602,7 +602,7 @@ const targetKeys = (targets: ProofTargets): string[] => [
 /**
  * Counts one proof, once per (account, chat, turn): its targets' window
  * starts again, and the computer or phone moves to the ad price now if its
- * rules allow. `freeModel`: it came from an ADE Free Models chat, whose ad
+ * rules allow. `freeModel`: it came from an DAEX Free Models chat, whose ad
  * shows with ads off, so it holds with ads off. The caller checked the
  * targets are the account's own, the country, and the network.
  */
@@ -691,7 +691,7 @@ export async function noteActivityReport(env: GravityEnv, computer: ComputerRow,
 }
 
 /**
- * An outside agent (ADE MCP) sent a message to a chat on this computer
+ * An outside agent (DAEX MCP) sent a message to a chat on this computer
  * through the account server (`origin: "mcp"`), or made the computer: the
  * full price until the brain's idle report after the turn it starts
  * (`noteActivityReport`), or `OUTSIDE_AGENT_NO_TURN_MS` with no turn at all.

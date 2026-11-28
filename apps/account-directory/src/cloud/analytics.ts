@@ -310,7 +310,7 @@ export function captureCloudIdleCleanup(env: CloudEnv, waitUntil: CloudWaitUntil
  * - `creates_paused`: a new computer or launch refused by the owner's kill switch.
  * - `signup_burst`: sign-ups from one address reached the hourly alarm.
  * - `ad_cloud_request`: under Pricing v3, a proof or ad request came from the network of the account's own cloud computers and didn't count (`adPrice.ts`; once a week per account).
- * - `ad_cloud_network`: under Pricing v3, a proof came from ADE Cloud's network but none of the account's computers (a VPN there) and counted (`adPrice.ts`; once a week per account).
+ * - `ad_cloud_network`: under Pricing v3, a proof came from DAEX Cloud's network but none of the account's computers (a VPN there) and counted (`adPrice.ts`; once a week per account).
  * - `small_cloud_look`: a US look or yes that keeps Free's Small free came from ADE Cloud's network (the account's own computers', or one an ADE Cloud computer joined from) (`sponsoredSmall.ts`; once a week per account).
  */
 export type CloudSafetyStep =

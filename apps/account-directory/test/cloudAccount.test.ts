@@ -6956,7 +6956,7 @@ describe("Pricing v3's ad price", () => {
     asleep();
     harness.exec("update cloud_sponsored_consent set consent = 'declined' where user_id = ?", OWNER);
     expect(await codeOf(await start({ adProof: { chatId: "chat-1", messageId: "m-2" } }))).toEqual([402, "out_of_hours"]);
-    // An ADE Free Models chat's ad shows with ads off: its message wakes the Small too.
+    // An DAEX Free Models chat's ad shows with ads off: its message wakes the Small too.
     Object.assign(harness.env, { GRAVITY_INFERENCE_KEY: "gr_inf_test", GRAVITY_INFERENCE: "all" });
     setting("gravity_inference", "testers");
     harness.insert("cloud_sponsored_testers", { user_id: OWNER, added_at: NOW });
@@ -7009,7 +7009,7 @@ describe("Pricing v3's ad price", () => {
     // A chat another computer saved is not this computer's.
     expect(await sent({ instanceId: "cloud-two", chatId: "chat-1", messageId: "m-2" })).toEqual({ counted: false, reason: "not_cloud" });
 
-    // An ADE Free Models chat's ad shows with ads off: its proof counts for the computer that saved it, and only that one.
+    // An DAEX Free Models chat's ad shows with ads off: its proof counts for the computer that saved it, and only that one.
     harness.exec("update cloud_sponsored_consent set consent = 'declined' where user_id = ?", OWNER);
     Object.assign(harness.env, { GRAVITY_INFERENCE_KEY: "gr_inf_test", GRAVITY_INFERENCE: "all" });
     setting("gravity_inference", "testers");
@@ -7029,7 +7029,7 @@ describe("Pricing v3's ad price", () => {
     harness.env.CLOUD_CHATS = memoryBucket();
     harness.exec("update cloud_accounts set plan = 'paid', paid_plan = 'plus', stripe_customer_id = 'cus_1', stripe_subscription_id = 'sub_1', stripe_status = 'active' where user_id = ?", OWNER);
     harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
-    // A computer an outside agent made (ADE MCP), awake, its brain checking in.
+    // A computer an outside agent made (DAEX MCP), awake, its brain checking in.
     expect((await fromHome("POST", "/cloud/instances", { type: "default", resources: { cpu: 4, memory: 8 }, metadata: { ade_made_by_agent: "mcp" } })).status).toBe(201);
     const id = String(harness.rows("select instance_id from cloud_computers")[0]!.instance_id);
     harness.exec("update cloud_computers set status = 'running', awake_since = ?, status_changed_at = ?, machine_key = 'key-x', ade_features = 'chat_queue' where instance_id = ?", clock, clock, id);
