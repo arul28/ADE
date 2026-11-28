@@ -565,9 +565,12 @@ struct CloudServerClient {
   /// (`DELETE /cloud/instances/:id`, a person's delete: no `who`). Needs no
   /// wake. With `keepLaneBranch` the server keeps the lane as a lane without
   /// a computer on that branch (a free, `reason: "freed"`).
-  func deleteInstance(_ instanceId: String, keepLaneBranch: String? = nil) async throws {
-    var payload: [String: Any] = ["reason": keepLaneBranch == nil ? "user" : "freed"]
-    if let keepLaneBranch { payload["keepLane"] = ["branchRef": keepLaneBranch] }
+  /// `keepLane`: the lane and its chats stay as a lane without a computer.
+  /// With no branch the server takes the lane's branch from its own row.
+  func deleteInstance(_ instanceId: String, keepLaneBranch: String? = nil, keepLane: Bool = false) async throws {
+    let keeps = keepLane || keepLaneBranch != nil
+    var payload: [String: Any] = ["reason": keeps ? "freed" : "user"]
+    if keeps { payload["keepLane"] = ["branchRef": keepLaneBranch.map { $0 as Any } ?? NSNull()] }
     let body = try JSONSerialization.data(withJSONObject: payload)
     _ = try await send("DELETE", "cloud/instances/\(segment(instanceId))", body: body, timeout: 60)
   }
@@ -798,6 +801,9 @@ struct CloudServerClient {
       request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
       request.setValue("application/json", forHTTPHeaderField: "Accept")
       request.setValue(correlationID, forHTTPHeaderField: "X-ADE-Correlation-ID")
+      // Every call says this build knows Pricing v3: without it the server
+      // answers as it does an older build (no `pricing`, Free's old ad rules).
+      request.setValue(cloudPricingVersion, forHTTPHeaderField: cloudPricingHeader)
       if let body {
         request.httpBody = body
         request.setValue(contentType, forHTTPHeaderField: "Content-Type")
@@ -1104,9 +1110,9 @@ extension CloudServerClient {
   /// or `deleted`), as `cloudMachines.run("delete")` does. A repeat delete's
   /// 404 is what a delete wants. False when the delete was taken but isn't
   /// finished yet.
-  func deleteInstanceConfirmed(_ instanceId: String, keepLaneBranch: String? = nil) async throws -> Bool {
+  func deleteInstanceConfirmed(_ instanceId: String, keepLaneBranch: String? = nil, keepLane: Bool = false) async throws -> Bool {
     do {
-      try await deleteInstance(instanceId, keepLaneBranch: keepLaneBranch)
+      try await deleteInstance(instanceId, keepLaneBranch: keepLaneBranch, keepLane: keepLane)
     } catch Failure.noAccess {
       // Already gone.
     }

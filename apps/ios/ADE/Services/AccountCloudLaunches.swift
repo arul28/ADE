@@ -302,7 +302,8 @@ extension CloudServerClient {
   /// 201 for a new launch; the same `launchId` again answers the same launch.
   func startLaunch(_ body: RemoteJSONValue) async throws -> CloudLaunchRecord {
     let data = try JSONEncoder().encode(body)
-    return try decode(CloudLaunchRecord.self, from: try await send("POST", "cloud/launches", body: data, timeout: 48, resendOnLostConnection: true))
+    // A Small start takes 30 to 60 s, a slow provider longer (the web waits 120 s too).
+    return try decode(CloudLaunchRecord.self, from: try await send("POST", "cloud/launches", body: data, timeout: 120, resendOnLostConnection: true))
   }
 
   /// Stops a launch before its agent starts; the server refuses once it has (`launch_started`).
@@ -444,8 +445,13 @@ final class AccountCloudLaunchStore: ObservableObject {
     var provider: String?
     var modelId: String?
     var record: CloudLaunchRecord?
-    /// The start itself failed (the server refused, or no answer).
+    /// The start itself failed: the server refused, or it never got the start.
     var startError: String?
+    /// The start got no clear answer (a timeout, a gateway error, a dropped
+    /// connection), so the launch is followed by its id: the server may have
+    /// kept it and made the computer anyway. The message is the one to show if
+    /// the server turns out not to have it (a 404) or sent it back to `draft`.
+    var answerLost: String?
     /// The start surely did not reach ADE Cloud as a launch (signed out, a
     /// file upload failed, or the server refused it), so nothing runs under
     /// this id. With no answer at all it may have: the launch stays, with Retry.
@@ -475,7 +481,8 @@ final class AccountCloudLaunchStore: ObservableObject {
     /// launch running before the server has named its chat (the card's Open
     /// chat needs that id).
     var awaitsChat: Bool {
-      guard startError == nil, let record else { return false }
+      guard startError == nil else { return false }
+      guard let record else { return answerLost != nil }
       return record.inProgress || (record.state == "running" && (isLane || record.sessionId == nil))
     }
   }
@@ -615,7 +622,7 @@ final class AccountCloudLaunchStore: ObservableObject {
         // full record (with its request) stays while the state is the same.
         if entries[index].record?.state != summary.state,
            statesBefore[summary.launchId].map({ $0 == entries[index].record?.state }) ?? true {
-          entries[index].record = summary
+          Self.take(summary, into: &entries[index])
         }
         continue
       }
@@ -800,6 +807,7 @@ final class AccountCloudLaunchStore: ObservableObject {
           case .object(var fields)? = entries[index].body ?? entries[index].record?.request else { return }
     if entries[index].record != nil { fields["retry"] = .bool(true) }
     entries[index].startError = nil
+    entries[index].answerLost = nil
     await runStart(launchId, body: .object(fields), using: sync)
   }
 
@@ -844,6 +852,7 @@ final class AccountCloudLaunchStore: ObservableObject {
       patch(launchId) {
         $0.record = record
         $0.startError = nil
+        $0.answerLost = nil
         $0.startNeverReached = false
       }
       startsMaybeMade.remove(launchId)
@@ -862,9 +871,22 @@ final class AccountCloudLaunchStore: ObservableObject {
       }()
       let refused = Self.isClearRefusal(error) && !conflict
       if !refused { startsMaybeMade.insert(launchId) }
+      // No clear answer: the server may have kept the start and makes the
+      // computer without this phone, so the launch is read by its id. Only a
+      // 404 there (or a launch back in `draft`) shows the error with Retry.
+      if !Self.isClearRefusal(error) {
+        patch(launchId) {
+          $0.answerLost = message
+          $0.startError = nil
+          $0.startNeverReached = false
+        }
+        poll(using: sync)
+        return
+      }
       let neverReached = refused && !startsMaybeMade.contains(launchId)
       patch(launchId) {
         $0.startError = message
+        $0.answerLost = nil
         $0.startNeverReached = neverReached
       }
       // Every cloud computer of the plan is taken: the card with the ways out.
@@ -890,7 +912,7 @@ final class AccountCloudLaunchStore: ObservableObject {
     guard let client = await sync.cloudServerClient() else { return "Sign in to \(Brand.name) to cancel this chat." }
     do {
       let record = try await client.cancelLaunch(launchId)
-      if generation == accountGeneration { patch(launchId) { $0.record = record } }
+      if generation == accountGeneration { patch(launchId) { Self.take(record, into: &$0) } }
       return nil
     } catch {
       return cloudServerFailureMessage(error)
@@ -909,7 +931,7 @@ final class AccountCloudLaunchStore: ObservableObject {
       return
     }
     guard generation == accountGeneration else { return }
-    patch(launchId) { $0.record = record }
+    patch(launchId) { Self.take(record, into: &$0) }
     connectWhenReady(using: sync)
     poll(using: sync)
   }
@@ -1053,15 +1075,26 @@ final class AccountCloudLaunchStore: ObservableObject {
           do {
             record = try await client.launch(entry.launchId)
           } catch {
+            if Task.isCancelled || self.pollGeneration != generation { break }
+            // A start whose answer was lost, and the server has no launch under
+            // its id: it never got the start. The error and Retry (same id) now.
+            if case .noAccess? = error as? CloudServerClient.Failure, let lost = entry.answerLost, entry.record == nil {
+              changed = true
+              self.patch(entry.launchId) {
+                $0.startError = lost
+                $0.answerLost = nil
+              }
+              continue
+            }
             // The last record stays; the next tick reads it again.
             Self.noteReadFailed("status", error)
             continue
           }
           // A reset while this read was out: the loop is cancelled, and its answer is the last account's.
           if Task.isCancelled || self.pollGeneration != generation { break }
-          if record != entry.record {
+          if record != entry.record || entry.answerLost != nil {
             changed = true
-            self.patch(entry.launchId) { $0.record = record }
+            self.patch(entry.launchId) { Self.take(record, into: &$0) }
           }
         }
         if changed { self.connectWhenReady(using: sync) }
@@ -1070,6 +1103,16 @@ final class AccountCloudLaunchStore: ObservableObject {
       // After a reset a newer loop may own the handle: clear only this one's.
       if let self, self.pollGeneration == generation { self.pollTask = nil }
     }
+  }
+
+  /// A launch read from the server. Following a lost answer, a launch back in
+  /// `draft` (a start with files the server refused with a 5xx) ends with the
+  /// kept error and Retry; any other state goes on as a normal start.
+  private static func take(_ record: CloudLaunchRecord, into entry: inout Entry) {
+    entry.record = record
+    guard let lost = entry.answerLost else { return }
+    entry.answerLost = nil
+    if record.state == "draft" { entry.startError = lost }
   }
 
   /// A read failed; the last record stays and the next read tries again.

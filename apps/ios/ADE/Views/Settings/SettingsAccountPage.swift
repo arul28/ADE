@@ -46,7 +46,7 @@ struct SettingsAccountPage: View {
       let words = CloudBalanceWords(cloudStore.account)
       ADESettingsSection(
         "Invite",
-        hint: "Were you invited? You both get \(cloudHours(referral.rewardMilli)) \(words.freeCloud).\(referral.enterCodeUntil.map { " Add it by \(cloudDate($0))." } ?? "")"
+        hint: "Were you invited? You both get \(words.number(referral.rewardMilli)) \(words.freeCloud).\(referral.enterCodeUntil.map { " Add it by \(cloudDate($0))." } ?? "")"
       ) {
         // The box keeps its "Invite added" line; the section is gone on the next visit.
         CloudInviteCodeBox(syncService: syncService, rewardMilli: referral.rewardMilli, words: words, onDone: { _ in })

@@ -224,7 +224,7 @@ struct CloudLaneStateLines: View {
           picked: store.newComputerSizes[key],
           pick: { store.pickNewComputerSize(machineKey: key, sizeId: $0) },
           words: CloudBalanceWords(store.account),
-          leftMilli: store.account.map { $0.hours.leftMilli + max(0, $0.earnedHours?.leftMilli ?? 0) }
+          leftMilli: store.account?.hoursLeftMilli
         )
       },
       keeping: keeping,
@@ -299,6 +299,13 @@ struct CloudLaneHeaderStateButton: View {
         Section("\(shown.word) on \(Brand.cloudName)") {
           Label(shown.word == "Waking" ? "Waking this chat's computer…" : "This chat's computer is up", systemImage: shown.symbol)
         }
+        // Pricing v3: what this chat's computer costs now, and why it has the full price while ads are on.
+        if let price = priceNow(fleetKey) {
+          Section {
+            Label(price.line, systemImage: "gauge.with.dots.needle.33percent")
+            if let reason = price.reason { Text(reason) }
+          }
+        }
       }
     } label: {
       if inToolbar {
@@ -310,6 +317,13 @@ struct CloudLaneHeaderStateButton: View {
     .accessibilityLabel("\(Brand.cloudName) computer, \(shown.word.lowercased())")
     .accessibilityHint(shown.asleep ? "Shows Wake now" : "Shows the computer's state")
     .accessibilityIdentifier("Work.Chat.Header.CloudState")
+  }
+
+  /// What this chat's own computer costs now (its machine's instance, never the tab's).
+  private func priceNow(_ fleetKey: String) -> (line: String, reason: String?)? {
+    guard let adWords = CloudAdPriceWords(store.account),
+          let price = adWords.pricing.computer(syncService.cloudServerInstance(fleetKey: fleetKey)?.id) else { return nil }
+    return (adWords.priceNow(price), adWords.reasonLine(price))
   }
 
   /// A doing action: wakes the chat's computer. A failure shows as the

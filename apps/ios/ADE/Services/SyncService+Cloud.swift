@@ -331,6 +331,9 @@ struct CloudPhoneAccount: Decodable, Equatable {
       let reason: String
       /// When ADE tries again; an older server leaves it out (`deletesAt` then).
       let retryAt: Double?
+      /// What ends the hold (`CloudIdleHeldKind`): the server decides it. An
+      /// older server leaves it out; missing or unknown reads as `open_once`.
+      let kind: String?
     }
     let instanceId: String
     let name: String?
@@ -393,9 +396,24 @@ struct CloudPhoneAccount: Decodable, Equatable {
       let tier: String?
       let label: String?
       let diskMaxGb: Double?
+      /// Pricing v3: this size's ad price, in the unit of `multiplierMilli`
+      /// (the full price). Nil while Pricing v3 doesn't reach the account.
+      let adMultiplierMilli: Int?
+    }
+    /// Pricing v3: the iPhone's full and ad rate, in thousandths a minute.
+    struct PhoneRates: Decodable, Equatable {
+      let milliPerMinute: Int
+      let adMilliPerMinute: Int
     }
     let plans: Plans
     let sizes: [Size]
+    /// Pricing v3: shown credits = milli / 1000 x `creditScale`. Nil: the old unit.
+    let creditScale: Int?
+    let phone: PhoneRates?
+    /// Pricing v3: Free's Small full rate an hour for this account, whatever
+    /// the viewer's plan (the Free plan card's Small line); 0 while Small on
+    /// Free is free. Nil from older servers.
+    let freeSmallMilli: Int?
   }
 
   let plan: String
@@ -429,10 +447,16 @@ struct CloudPhoneAccount: Decodable, Equatable {
   /// while the server's switch or key is off: no ADE Free Model shows. A
   /// consent answer replaces it (`AccountCloudStore.noteFreeModels`).
   var freeModels: CloudFreeModelsState?
+  /// Pricing v3 (`CloudPricingState`): the ad price, what each computer and
+  /// the iPhone cost now, and the ads switch. Absent while Pricing v3 doesn't
+  /// reach the account (or the read came without the phone's header): every
+  /// screen is today's. Only the phone's own read has it for this phone's
+  /// country; a consent answer is followed by a new read.
+  var pricing: CloudPricingState?
 
   private enum CodingKeys: String, CodingKey {
     case plan, planId, hours, extraHours, disk, computers, recentUse, billing, catalog
-    case earnedHours, freePlan, planCleanup, planCleanupDone, timedWakesCancelled, dueForDeletion, referral, phone, credits, sponsored, freeModels
+    case earnedHours, freePlan, planCleanup, planCleanupDone, timedWakesCancelled, dueForDeletion, referral, phone, credits, sponsored, freeModels, pricing
   }
 
   init(from decoder: Decoder) throws {
@@ -458,6 +482,7 @@ struct CloudPhoneAccount: Decodable, Equatable {
     credits = c.lenient(Credits.self, forKey: .credits).flatMap { $0.phoneMilliPerMinute > 0 ? $0 : nil }
     sponsored = c.lenient(CloudSponsoredState.self, forKey: .sponsored)
     freeModels = c.lenient(CloudFreeModelsState.self, forKey: .freeModels)
+    pricing = c.lenient(CloudPricingState.self, forKey: .pricing)
   }
 
   /// The plan's computer limit (`docs/features/ade-cloud/README.md`, "Plans, credits and sizes").

@@ -26,7 +26,7 @@ func cloudHoursNotes(_ account: CloudPhoneAccount, now: Date) -> [CloudHoursNote
     notes.append(.init(text: line, tone: .warn))
   }
   if let earned = account.earnedHours, earned.leftMilli > 0 {
-    notes.append(.init(text: "+\(words.amount(earned.leftMilli)) earned", tone: .lamp))
+    notes.append(.init(text: "+\(words.amount(earned.leftMilli)) from invites", tone: .lamp))
   }
   // Extra credits have their own tile on the hero ("When credits run out").
   if let forecast = cloudHoursForecast(account, now: now) {
@@ -147,9 +147,8 @@ func cloudIdleCleanupWhen(_ deletesAt: Double, now: Double) -> String {
 /// keep it: a message in the lane, or "Keep it" on the computer's page.
 func cloudIdleCleanupMessage(_ entry: CloudPhoneAccount.IdleCleanup, now: Double) -> String {
   let subject = entry.laneName.map { $0.isEmpty ? entry.displayName : "\($0)'s computer" } ?? entry.displayName
-  if let held = entry.held {
-    return "\(subject) wasn't deleted: \(Brand.name) couldn't save its work. \(held.reason) Open the lane once so \(Brand.name) saves its work when the computer rests, or delete the lane if you don't need it. \(Brand.name) checks again \(cloudInHowLong(held.retryAt ?? entry.deletesAt, now: now)).\(cloudIgnoredFilesShort(entry.ignoredFiles))"
-  }
+  // A kept computer has its own card (`CloudIdleHeldWords`); as one line, its two sentences.
+  if let held = CloudIdleHeldWords(entry, now: now) { return "\(held.title) \(held.action)" }
   let save = entry.laneName != nil
     ? "Its work that isn't on GitHub is saved in \(Brand.cloudName), and the lane and its chats stay."
     : "Its work that isn't on GitHub is saved in \(Brand.cloudName) first."
@@ -160,19 +159,113 @@ func cloudIdleCleanupMessage(_ entry: CloudPhoneAccount.IdleCleanup, now: Double
 /// The ignored files a delete loses, in one short sentence (with a leading space), or "" when none were found.
 func cloudIgnoredFilesShort(_ ignored: CloudPhoneAccount.IdleCleanup.IgnoredFiles?) -> String {
   guard let ignored else { return " Files git ignores, such as .env, aren't saved." }
-  let list: String?
-  if ignored.paths.isEmpty {
-    list = ignored.more > 0 ? "\(ignored.more) \(ignored.more == 1 ? "file" : "files")" : nil
-  } else {
-    let shown = ignored.paths.joined(separator: ", ")
-    list = ignored.more > 0 ? "\(shown) and \(ignored.more) more" : shown
-  }
+  let list = cloudIgnoredFilesList(ignored)
   if ignored.incomplete == true {
     guard let list else { return " \(Brand.name) couldn't read every lane to see which files git ignores, such as .env; those aren't saved." }
     return " Files git ignores aren't saved, so these won't be kept: \(list). \(Brand.name) couldn't read every lane, so there may be more."
   }
   guard let list else { return "" }
   return " Files git ignores aren't saved, so these won't be kept: \(list)."
+}
+
+/// The files git ignores as a list (`ignoredFilesList`): ".env, data.db and 3
+/// more", "4 files"; nil when none were found.
+func cloudIgnoredFilesList(_ ignored: CloudPhoneAccount.IdleCleanup.IgnoredFiles) -> String? {
+  if ignored.paths.isEmpty { return ignored.more > 0 ? "\(ignored.more) \(ignored.more == 1 ? "file" : "files")" : nil }
+  let shown = ignored.paths.joined(separator: ", ")
+  return ignored.more > 0 ? "\(shown) and \(ignored.more) more" : shown
+}
+
+/// A computer the idle cleanup kept because it couldn't save its work
+/// (ADE-223), in the words every surface uses (`idleHeldWords` in the account
+/// server's contract). The server decides the kind; a missing or unknown one
+/// reads as `open_once`. Nil for an entry that isn't held.
+struct CloudIdleHeldWords: Equatable {
+  static let kinds: Set<String> = ["too_large", "account_full", "staged_only", "submodule", "no_commit", "fix_named", "stop_agent", "none", "open_once"]
+  static let confirmLabel = "Delete computer"
+
+  let kind: String
+  /// "web's computer", or the computer's name with no lane.
+  let subject: String
+  let hasLane: Bool
+  /// Sentence 1: what happened.
+  let title: String
+  /// Sentence 2: what ends the hold, then the way out.
+  let action: String
+  /// "Why?": the rule, the reason, the files git ignores, the next check.
+  let why: [String]
+  let confirmTitle: String
+  let confirmBody: String
+
+  init?(_ entry: CloudPhoneAccount.IdleCleanup, now: Double) {
+    guard let held = entry.held else { return nil }
+    let laneName = entry.laneName.flatMap { nonEmptyTrimmed($0) }
+    let kind = held.kind.flatMap { Self.kinds.contains($0) ? $0 : nil } ?? "open_once"
+    let subject = laneName.map { "\($0)'s computer" } ?? entry.displayName
+    self.kind = kind
+    self.subject = subject
+    hasLane = laneName != nil
+    title = "\(Brand.name) didn't delete \(subject) because it couldn't save its work."
+    action = Self.action(kind, hasLane: laneName != nil)
+
+    let notSaved = "\(Brand.name) couldn't save this lane's work."
+    var reason = held.reason.trimmingCharacters(in: .whitespacesAndNewlines)
+    // Reasons stored before the rename open with the former name.
+    for name in [Brand.name, Brand.formerName] {
+      let prefix = "\(name) couldn't save this lane's work."
+      if reason.hasPrefix(prefix) {
+        reason = String(reason.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+        break
+      }
+    }
+    if let laneName, reason.hasPrefix("\(laneName): ") { reason = String(reason.dropFirst(laneName.count + 2)) }
+    let ignored = entry.ignoredFiles
+    let list = ignored.flatMap(cloudIgnoredFilesList)
+    let ignoredLine: String? = {
+      guard let ignored else { return "Files git ignores, such as .env, are never saved." }
+      guard let list else { return nil }
+      return "Files git ignores are never saved: \(list).\(ignored.incomplete == true ? " \(Brand.name) couldn't read every lane, so there may be more." : "")"
+    }()
+    let whose = laneName != nil ? "lane's " : ""
+    let when = cloudInHowLong(held.retryAt ?? entry.deletesAt, now: now)
+    why = [
+      entry.idleDays.map { "\(Brand.cloudName) deletes a computer after \($0) days without use, and saves its \(whose)work first." }
+        ?? "\(Brand.cloudName) deletes a computer that isn't used, and saves its \(whose)work first.",
+      reason.isEmpty ? notSaved : reason,
+    ] + (ignoredLine.map { [$0] } ?? []) + [
+      kind == "none" ? "\(Brand.name) tries again by itself \(when)." : "\(Brand.name) checks again \(when).",
+    ]
+
+    let lost = ignored == nil ? "such as .env" : list
+    confirmTitle = "Delete \(subject) without saving its work?"
+    if laneName != nil {
+      let branch = entry.branch.flatMap { nonEmptyTrimmed($0) } ?? "the lane's branch"
+      confirmBody = "Its work that isn't on GitHub is lost for good: changes not pushed to \(branch)\(lost.map { ", and files git ignores (\($0))" } ?? ""). The lane and its chats stay; your next message makes a new computer from \(branch) on GitHub."
+    } else {
+      confirmBody = "Its work that isn't on GitHub is lost for good\(lost.map { ", with files git ignores (\($0))" } ?? "")."
+    }
+  }
+
+  /// The toast after "Delete anyway" worked.
+  var deletedTitle: String { "Deleted \(subject)." }
+  var deletedDetail: String? { hasLane ? "The lane and its chats stay. Your next message makes a new computer." : nil }
+
+  private static func action(_ kind: String, hasLane: Bool) -> String {
+    switch kind {
+    case "too_large": return "Push its work to GitHub, or delete it anyway."
+    case "account_full": return "Push or delete other lanes you don't need, or delete it anyway."
+    case "staged_only": return "Open the lane and commit or unstage its staged changes, or delete it anyway."
+    case "submodule": return "Open the lane and push the changes in its submodule, or delete it anyway."
+    case "no_commit": return "Open the lane and make its first commit, or delete it anyway."
+    case "fix_named": return "Open the lane and fix what Why? names, or delete it anyway."
+    case "stop_agent": return "Open the lane and stop its agent, or delete it anyway."
+    case "none": return "Delete it anyway, or keep it."
+    default:
+      return hasLane
+        ? "Open the lane once so \(Brand.name) can save its work, or delete it anyway."
+        : "Use it once so \(Brand.name) can save its work, or delete it anyway."
+    }
+  }
 }
 
 /// Why timed wake-ups were cancelled and how they come back
@@ -213,7 +306,7 @@ func cloudHoursForecast(_ account: CloudPhoneAccount, now: Date) -> String? {
   // Nothing used yet this period (a plan just bought, a month just reset): no pace to speak of.
   guard let recent = account.recentUse, recent.days > 0, recent.usedMilli > 0, (account.hours.usedMilli ?? 1) > 0,
         let periodEnd = account.billing?.periodEnd else { return nil }
-  let left = Double(account.hours.leftMilli)
+  let left = Double(account.hoursLeftMilli)
   guard left > 0 else { return nil }
   let perDay = recent.usedMilli / recent.days
   let endsAt = now.timeIntervalSince1970 * 1000 + (left / perDay) * 86_400_000
@@ -282,6 +375,18 @@ struct CloudPhoneTier: Identifiable, Equatable {
   let memoryGb: Double
   let multiplierMilli: Int
   let diskMaxGb: Double?
+  /// Pricing v3: the ad price (`adMultiplierMilli`); nil while Pricing v3 doesn't reach the account.
+  var adMultiplierMilli: Int? = nil
+
+  /// The full and ad price, for `CloudAdPriceWords.rate`. Without an ad price both are the full one.
+  var ratePair: CloudRatePair { CloudRatePair(fullMilli: multiplierMilli, adMilli: adMultiplierMilli ?? multiplierMilli) }
+
+  /// This size at the rate the account pays now (Pricing v3): the ad price
+  /// while ads are on, so "left on it" counts what the credits really buy.
+  func atPriceNow(_ pricing: CloudPricingState?) -> CloudPhoneTier {
+    guard let pricing, pricing.ads.available, pricing.ads.on, let ad = adMultiplierMilli, ad != multiplierMilli else { return self }
+    return CloudPhoneTier(id: id, label: label, type: type, cpu: cpu, memoryGb: memoryGb, multiplierMilli: ad, diskMaxGb: diskMaxGb, adMultiplierMilli: ad)
+  }
 
   /// Small on a Pricing v2 server: it never uses hours (`multiplierMilli` 0),
   /// unless the account's catalog rates it (Free, sponsored cards off).
@@ -366,7 +471,8 @@ func cloudPhoneTiers(_ catalog: CloudPhoneAccount.Catalog?) -> [CloudPhoneTier] 
       cpu: size.cpu,
       memoryGb: size.memoryGb,
       multiplierMilli: size.multiplierMilli,
-      diskMaxGb: size.diskMaxGb
+      diskMaxGb: size.diskMaxGb,
+      adMultiplierMilli: size.adMultiplierMilli
     )
   }
 }
@@ -444,8 +550,10 @@ func cloudHoursOnSizes(_ milli: Int, tiers: [CloudPhoneTier]) -> String? {
 /// unlimited (`cloudSmallRateMilli`). Small uses hours only on Free with
 /// sponsored cards off while the server's `smallNeedsCards` rule is on: the
 /// account's catalog then rates it above 0. Read the catalog, never assume 0.
-func cloudSmallTierUsingHours(_ account: CloudPhoneAccount) -> CloudPhoneTier? {
+@MainActor func cloudSmallTierUsingHours(_ account: CloudPhoneAccount) -> CloudPhoneTier? {
   guard let small = cloudPhoneTiers(account.catalog).first(where: { $0.id == "small" }), small.usesHours else { return nil }
+  // Pricing v3: Free's Small is free at the ad price, while ads are on here.
+  if let pricing = cloudPricing(), pricing.ads.available, pricing.ads.on, small.adMultiplierMilli == 0 { return nil }
   return small
 }
 
@@ -461,14 +569,51 @@ let cloudSmallFairUseSentence = "Small computers are for your own work and fall 
 struct CloudBalanceWords: Equatable {
   /// What a minute on the ADE Cloud iPhone uses, in thousandths of a credit.
   let phoneMilliPerMinute: Int
+  /// Pricing v3's shown scale (`creditScale`): shown credits = milli / 1000 x
+  /// scale. 1 (the old unit) until the server sends one. Read from the
+  /// account, never a constant of the app.
+  let scale: Int
 
   /// The words before the account is read: one credit a minute on the iPhone.
   static let credits = CloudBalanceWords(phoneMilliPerMinute: 1000)
 
-  init(phoneMilliPerMinute: Int) { self.phoneMilliPerMinute = phoneMilliPerMinute }
+  init(phoneMilliPerMinute: Int, scale: Int = 1) {
+    self.phoneMilliPerMinute = phoneMilliPerMinute
+    self.scale = max(1, scale)
+  }
   init(_ account: CloudPhoneAccount?) {
     let perMinute = account?.credits?.phoneMilliPerMinute ?? 0
     phoneMilliPerMinute = perMinute > 0 ? perMinute : CloudBalanceWords.credits.phoneMilliPerMinute
+    scale = max(1, account?.pricing?.creditScale ?? account?.catalog?.creditScale ?? 1)
+  }
+
+  /// A balance or used amount at the account's scale: "4,180". Under Pricing
+  /// v3 (scale above 1) always whole credits, rounded down; at the
+  /// old unit today's tenths ("2.5"). Rates use `CloudAdPriceWords`.
+  func number(_ milli: Int) -> String {
+    guard scale > 1 else { return cloudCredits(milli, scale: scale) }
+    return wholeCredits(milli).formatted(.number.locale(Locale(identifier: "en_US")))
+  }
+
+  /// Whole shown credits, rounded down.
+  func wholeCredits(_ milli: Int) -> Int { max(0, milli) * scale / 1000 }
+
+  /// The parts of one total in whole credits that add up to the total's
+  /// whole credits (largest remainder). `fixed` keeps its own
+  /// rounded-down value (the balance the big number shows); the others share
+  /// what is left of the total. At the old unit each part is shown as is.
+  func wholeParts(_ millis: [Int], total: Int, fixed: Int?) -> [String] {
+    guard scale > 1 else { return millis.map(number) }
+    var shown = millis.map(wholeCredits)
+    let others = millis.indices.filter { $0 != fixed }
+    let target = wholeCredits(total) - (fixed.map { shown[$0] } ?? 0)
+    var missing = target - others.reduce(0) { $0 + shown[$1] }
+    let byRemainder = others.sorted { (max(0, millis[$0]) * scale) % 1000 > (max(0, millis[$1]) * scale) % 1000 }
+    for index in byRemainder where missing > 0 && (max(0, millis[index]) * scale) % 1000 > 0 {
+      shown[index] += 1
+      missing -= 1
+    }
+    return shown.map { $0.formatted(.number.locale(Locale(identifier: "en_US"))) }
   }
 
   /// "credits".
@@ -488,7 +633,7 @@ struct CloudBalanceWords: Equatable {
 
   /// A number of them with the unit: "42.5 credits", "1 credit".
   func amount(_ milli: Int) -> String {
-    let number = cloudHours(milli)
+    let number = number(milli)
     return "\(number) \(number == "1" ? "credit" : "credits")"
   }
 
@@ -536,12 +681,15 @@ struct CloudBalanceWords: Equatable {
   var smallUnlimitedSentence: String { "Unlimited Small computers. \(theyNeverUse)." }
 
   /// What one of them is (`CLOUD_CREDIT_UNIT_SENTENCE`).
-  var unitSentence: String {
-    "A credit is an hour on a Medium computer or a minute on the \(Brand.cloudName) iPhone. Small computers use none."
+  /// What one credit is at the old unit; nil under Pricing v3 (scale above 1),
+  /// whose plans card names the rates instead of a unit.
+  var unitSentence: String? {
+    guard scale == 1 else { return nil }
+    return "A credit is an hour on a Medium computer or a minute on the \(Brand.cloudName) iPhone. Small computers use none."
   }
 
   /// A plan's month: "100 credits a month".
-  func monthly(_ milli: Int) -> String { "\(cloudHours(milli)) \(unit) a month" }
+  func monthly(_ milli: Int) -> String { "\(number(milli)) \(unit) a month" }
 
   /// The hero's label over the number left.
   var leftTitle: String { "Credits left this month" }
@@ -599,8 +747,9 @@ struct CloudBalanceWords: Equatable {
   }
 
   /// Under Start phone: where its time comes from.
-  func phoneStartNote(device: String) -> String {
-    "Starts an \(device) simulator in the cloud. It uses \(phoneRate) of your \(Brand.cloudName) credits."
+  /// `rate`: Pricing v3's pair ("4 credits a minute with ads · 5 with no ads"); today's rate without it.
+  func phoneStartNote(device: String, rate: String? = nil) -> String {
+    "Starts an \(device) simulator in the cloud. It uses \(rate ?? phoneRate) of your \(Brand.cloudName) credits."
   }
 }
 
@@ -676,11 +825,11 @@ struct CloudPlanMoment: Equatable {
   var title: String { "You're on \(cloudPlanLabel(planId))" }
 
   var detail: String {
-    let amount = cloudHours(includedMilli)
+    let amount = words.number(includedMilli)
     var line = computerLimit.map { "\(cloudComputersPhrase($0)) and \(words.monthly(includedMilli)). Renews \(cloudDate(renewsAt))." }
       ?? "\(words.monthly(includedMilli)). Renews \(cloudDate(renewsAt))."
     if let replaced = replacedFreeMilli {
-      line += " Your \(cloudHours(replaced)) unused \(words.free) were replaced by \(cloudPlanLabel(planId))'s \(amount)."
+      line += " Your \(words.number(replaced)) unused \(words.free) were replaced by \(cloudPlanLabel(planId))'s \(amount)."
     }
     return line
   }
@@ -830,6 +979,6 @@ func cloudCapitalized(_ phrase: String) -> String {
 }
 
 extension CloudPhoneAccount {
-  /// The credits left, the plan's and the earned ones, as the ADE Cloud page counts them (`cloudHoursLeftMilli`).
+  /// The credits the person can spend, the plan's and invites', as every "hours left" and "minutes left" counts them (desktop `cloudHoursLeftMilli`).
   var hoursLeftMilli: Int { hours.leftMilli + max(0, earnedHours?.leftMilli ?? 0) }
 }

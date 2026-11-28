@@ -184,6 +184,8 @@ final class AccountCloudStore: ObservableObject {
   private func keepSavedAnswers(_ next: inout CloudPhoneAccount, sponsoredSavesAtStart: Int, providerSavesAtStart: Int) {
     if sponsoredSavesAtStart != sponsoredSaves {
       next.sponsored = savedSponsoredPending ? savedSponsored : account?.sponsored
+      // Pricing v3: the answer moved the prices too; a read begun before it keeps the newer ones.
+      next.pricing = account?.pricing
     } else {
       savedSponsoredPending = false
     }
@@ -205,6 +207,21 @@ final class AccountCloudStore: ObservableObject {
       accountCloudLog.notice("cloud_store read=access failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
       return nil
     }
+  }
+
+  /// The DAEX Cloud page's own account read (`CloudPaneStore.reloadDirect`),
+  /// kept here too: the page's hero and the cards that read this store (the
+  /// Ads card, every price line) show the same answer. A consent or provider
+  /// saved while it was out keeps its answer, as `refresh` does.
+  func readAccountForPage(_ client: CloudServerClient) async -> CloudPhoneAccount? {
+    let generation = accountGeneration
+    let saves = sponsoredSaves
+    let pickSaves = providerSaves
+    guard var next = await readAccount(client) else { return nil }
+    guard generation == accountGeneration else { return next }
+    keepSavedAnswers(&next, sponsoredSavesAtStart: saves, providerSavesAtStart: pickSaves)
+    if next != account { account = next }
+    return next
   }
 
   private func readAccount(_ client: CloudServerClient) async -> CloudPhoneAccount? {

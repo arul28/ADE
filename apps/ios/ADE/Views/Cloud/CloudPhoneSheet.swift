@@ -50,6 +50,18 @@ struct CloudIphoneSheet: View {
 
   private var words: CloudBalanceWords { CloudBalanceWords(accountStore.account) }
 
+  /// Pricing v3: the iPhone's two prices from the catalog, or nil (today's one rate).
+  private var phoneRatePair: String? {
+    guard let adWords = CloudAdPriceWords(accountStore.account), let phone = accountStore.account?.catalog?.phone else { return nil }
+    return adWords.rate(CloudRatePair(fullMilli: phone.milliPerMinute, adMilli: phone.adMilliPerMinute), unit: .minute)
+  }
+
+  /// Pricing v3: what the live iPhone costs now, short ("4/min with ads"), and why it has the full price.
+  private var phonePriceNow: (short: String, reason: String?)? {
+    guard let adWords = CloudAdPriceWords(accountStore.account), let price = adWords.pricing.phone else { return nil }
+    return (adWords.compactPriceNow(price, unit: .minute), adWords.reasonLine(price))
+  }
+
   @ViewBuilder
   private var content: some View {
     if !model.supported {
@@ -151,7 +163,7 @@ struct CloudIphoneSheet: View {
           }
           .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
           .disabled(model.starting)
-          Text(words.phoneStartNote(device: cloudIphoneDeviceName("iphone")))
+          Text(words.phoneStartNote(device: cloudIphoneDeviceName("iphone"), rate: phoneRatePair))
             .font(.system(size: 12))
             .foregroundStyle(ADEColor.textMuted)
             .fixedSize(horizontal: false, vertical: true)
@@ -274,6 +286,14 @@ struct CloudIphoneSheet: View {
         .font(.system(size: 13, weight: .semibold))
         .foregroundStyle(ADEColor.textPrimary)
         .lineLimit(1)
+      if status.phone != nil, let price = phonePriceNow {
+        Text(price.short)
+          .font(.system(size: 12))
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(1)
+          .fixedSize()
+          .accessibilityLabel(price.reason.map { "\(price.short). \($0)" } ?? price.short)
+      }
       Spacer(minLength: 8)
       if let minutes = status.minutes {
         let left = words.phoneLeft(minutes)

@@ -14,7 +14,9 @@ import SwiftUI
 /// - `duo-cloud-machine`: one computer (what uses its disk);
 /// - `duo-providers-cloud`: Settings › Providers with ADE Cloud as the place;
 /// - `duo-provider-signin`: the sign-in sheet at its approve step;
-/// - `duo-cloud-tier-request`: an agent's size request in its chat, with its buttons.
+/// - `duo-cloud-tier-request`: an agent's size request in its chat, with its buttons;
+/// - `duo-cloud-held-<kind>[-why|-nolane|-machine|-old]`: a computer the idle
+///   cleanup kept (ADE-223), see `idleHeldView`.
 enum CloudPreviews {
   static let names: Set<String> = [
     "duo-cloud", "duo-cloud-plans", "duo-cloud-sizes", "duo-cloud-upgraded", "duo-cloud-invite", "duo-cloud-limits", "duo-cloud-computer-limit", "duo-cloud-machine", "duo-providers-cloud", "duo-provider-signin", "duo-cloud-tier-request",
@@ -31,6 +33,8 @@ enum CloudPreviews {
   ]
 
   @MainActor static func view(_ name: String) -> AnyView? {
+    if name.hasPrefix("duo-cloud-v3-") { return pricingV3View(name) }
+    if name.hasPrefix("duo-cloud-held-") { return idleHeldView(name) }
     guard names.contains(name) else { return nil }
     let sync = SyncService.shared ?? SyncService()
     switch name {
@@ -172,6 +176,158 @@ enum CloudPreviews {
     default:
       return AnyView(CloudPaneSheet(store: store))
     }
+  }
+
+  // MARK: Pricing v3 (the ad price)
+
+  /// `-adePreviewScreen duo-cloud-v3-<plan>-<state>[-<surface>]`: the DAEX Cloud
+  /// page, the plans and sizes, one computer, or a chat's ads notice, with an
+  /// account state that has `pricing` (the server's catalog at scale 10).
+  /// - plan: `free`, `plus`, `pro`, `max`
+  /// - state: `on` (US, ads on), `off` (asked region, answered no), `noads`
+  ///   (a country with no ads), `zero` (discount 0), `new` (US, notice not seen),
+  ///   `asked` (asked region, notice not seen), and a reason for the awake
+  ///   Medium while ads are on: `cli`, `automation`, `outside`, `idle`, `unverified`
+  /// - surface: none (the page), `plans`, `machine`, `notice`
+  /// `duo-cloud-v3-loading`: the page before anything is known.
+  @MainActor private static func pricingV3View(_ name: String) -> AnyView? {
+    // The page before anything is known (`CloudPageSkeleton`).
+    if name == "duo-cloud-v3-loading" {
+      return AnyView(NavigationStack {
+        ScrollView { CloudPageSkeleton().padding(.horizontal, 16).padding(.top, 8) }
+          .background(ADEColor.pageBackground.ignoresSafeArea())
+          .navigationTitle(Brand.cloudName)
+          .navigationBarTitleDisplayMode(.inline)
+      })
+    }
+    let parts = name.dropFirst("duo-cloud-v3-".count).split(separator: "-").map(String.init)
+    guard parts.count >= 2 else { return nil }
+    let plan = parts[0], state = parts[1], surface = parts.count > 2 ? parts[2] : "page"
+    let free = plan == "free"
+    var json = listJSON()
+      .replacingOccurrences(of: #""phoneMilliPerMinute":1000"#, with: #""phoneMilliPerMinute":500"#)
+      .replacingOccurrences(of: #""max":{"includedMilli":1500000"#, with: #""max":{"includedMilli":2000000"#)
+      .replacingOccurrences(of: #""multiplierMilli":0,"tier":"small""#, with: free ? #""multiplierMilli":500,"adMultiplierMilli":0,"tier":"small""# : #""multiplierMilli":0,"adMultiplierMilli":0,"tier":"small""#)
+      .replacingOccurrences(of: #""multiplierMilli":1000,"tier":"medium""#, with: #""multiplierMilli":1000,"adMultiplierMilli":\#(state == "zero" ? 1000 : 800),"tier":"medium""#)
+      .replacingOccurrences(of: #""multiplierMilli":2500,"tier":"large""#, with: #""multiplierMilli":2500,"adMultiplierMilli":\#(state == "zero" ? 2500 : 2000),"tier":"large""#)
+      .replacingOccurrences(of: #""multiplierMilli":4000,"tier":"xlarge""#, with: #""multiplierMilli":4000,"adMultiplierMilli":\#(state == "zero" ? 4000 : 3200),"tier":"xlarge""#)
+      .replacingOccurrences(of: #""diskStepGb":10,"#, with: #""creditScale":10,"phone":{"milliPerMinute":500,"adMilliPerMinute":\#(state == "zero" ? 500 : 400)},"diskStepGb":10,"#)
+      // The awake computer is a Medium, so its price shows.
+      .replacingOccurrences(of: #""resources":{"cpu":2,"memoryGb":4,"diskGb":6.2},"shapeId":"2x4""#, with: #""resources":{"cpu":4,"memoryGb":8,"diskGb":6.2},"shapeId":"4x8""#)
+    let included = ["free": 50_000, "plus": 100_000, "pro": 600_000, "max": 2_000_000][plan] ?? 600_000
+    json = json
+      .replacingOccurrences(of: #""plan":"paid","planId":"pro","rules":"paid""#, with: free ? #""plan":"free","planId":"free","rules":"free""# : #""plan":"paid","planId":"\#(plan)","rules":"paid""#)
+      .replacingOccurrences(of: #""hours":{"includedMilli":600000,"usedMilli":117500,"leftMilli":482500"#, with: #""hours":{"includedMilli":\#(included),"usedMilli":\#(included / 6),"leftMilli":\#(included - included / 6)"#)
+    guard let list = try? JSONDecoder().decode(CloudPhoneList.self, from: Data(json.utf8)), var account = list.account else { return nil }
+    let available = state != "noads"
+    let noticeSeen = !(state == "new" || state == "asked")
+    let on = available && noticeSeen && state != "off"
+    let pct = state == "zero" ? 0 : 20
+    let reasons = ["cli": "cli_session", "automation": "automation", "outside": "outside_agent", "idle": "not_in_use", "unverified": "unverified"]
+    let reason: String? = !available ? "no_ads_here" : !on ? "ads_off" : reasons[state]
+    let ad = reason == nil
+    let medium = CloudPricingState.Price(now: ad ? "ad" : "full", reason: reason, rateMilli: ad ? (pct == 0 ? 1000 : 800) : 1000, otherRateMilli: !available ? 1000 : (pct == 0 ? 1000 : (ad ? 1000 : 800)), instanceId: "zodqsue74s")
+    account.pricing = CloudPricingState(
+      creditScale: 10,
+      ads: .init(available: available, on: on, startsOn: state != "asked" && state != "off", noticeSeen: noticeSeen, discountPct: pct, windowMinutes: 60),
+      computers: [medium],
+      phone: nil
+    )
+    if !available { account.sponsored = nil }
+    AccountCloudStore.shared.seedPreview(access: nil, account: account)
+    let sync = SyncService.shared ?? SyncService()
+    let limits = CloudPhoneLimits(unattendedSpend: true, machinesPerDay: 3, maxShape: "4x16", preset: "balanced", extraDiskMonthCents: nil)
+    let store = CloudPaneStore(syncService: sync, fixtureList: list, limits: limits, signIns: signInsFixture(), now: fixtureNow)
+    switch surface {
+    case "plans":
+      return AnyView(NavigationStack {
+        ScrollView {
+          VStack(spacing: 16) {
+            CloudPlansCard(account: account, tiers: store.tiers)
+            CloudSizesCard(account: account, tiers: store.tiers)
+          }
+          .padding(16)
+        }
+        .background(ADEColor.pageBackground.ignoresSafeArea())
+        .navigationTitle(Brand.cloudName)
+        .navigationBarTitleDisplayMode(.inline)
+      })
+    case "machine":
+      return AnyView(NavigationStack { CloudMachineScreen(store: store, instanceId: "zodqsue74s") })
+    case "notice":
+      return AnyView(CloudSponsoredChatFixture(kind: "duo-cloud-sponsored-consent"))
+    default:
+      return AnyView(NavigationStack { CloudDashboardScreen(store: store, onClose: nil, pushes: true) })
+    }
+  }
+
+  // MARK: A computer the idle cleanup kept (ADE-223)
+
+  /// `duo-cloud-held-<kind>[-<variant>]`: the DAEX Cloud page's notices with a
+  /// computer the idle cleanup kept, for each server kind (`too_large`,
+  /// `account_full`, `staged_only`, `submodule`, `no_commit`, `fix_named`,
+  /// `stop_agent`, `none`, `open_once`, or `missing`: no `kind`, as an older
+  /// server sends). Variants: `why` ("Why?" open), `nolane` (a computer with
+  /// no lane), `machine` (the computer's page), `old` (a reason stored before
+  /// the rename, ignored files not read yet).
+  @MainActor private static func idleHeldView(_ name: String) -> AnyView? {
+    let rest = String(name.dropFirst("duo-cloud-held-".count))
+    let variants = ["-why", "-nolane", "-machine", "-old"]
+    let variant = variants.first { rest.hasSuffix($0) }.map { String($0.dropFirst()) }
+    let kindName = variant.map { String(rest.dropLast($0.count + 1)) } ?? rest
+    let reasons: [String: String] = [
+      "too_large": "The lane's unpushed work is larger than one saved copy can hold.",
+      "account_full": "Your saved work is full, so this lane's work couldn't be saved.",
+      "staged_only": "This lane has staged changes that aren't committed.",
+      "submodule": "A submodule in this lane has changes that aren't pushed.",
+      "no_commit": "This lane has no commit yet, so there's nothing to save from.",
+      "fix_named": "A file path in this lane can't be stored in git. \(Brand.name) can't save this lane's work until then.",
+      "stop_agent": "\(Brand.name) on the computer couldn't stop its agents and save its chats.",
+      "none": "\(Brand.cloudName) couldn't reach the computer to check its saved work.",
+      "open_once": "The computer slept before \(Brand.name) saved its work.",
+      "missing": "The computer slept before \(Brand.name) saved its work.",
+    ]
+    guard let base = reasons[kindName] else { return nil }
+    let noLane = variant == "nolane"
+    let laneName = "perf-pass-lanes-tab"
+    let notSaved = "\(variant == "old" ? Brand.formerName : Brand.name) couldn't save this lane's work."
+    let reason = "\(notSaved) \(noLane ? "" : "\(laneName): ")\(base)"
+    var held: [String: Any] = ["at": nowMs - 3_600_000, "reason": reason, "retryAt": nowMs + 20 * 3_600_000]
+    if kindName != "missing" { held["kind"] = kindName }
+    var entry: [String: Any] = [
+      "instanceId": noLane ? "q1w2e3r4t5" : "a9x7c6v5b4",
+      "name": noLane ? "supabase-stack" : "\(Brand.cloudName) computer",
+      "deletesAt": nowMs - 3_600_000, "idleDays": 10, "held": held,
+    ]
+    if !noLane {
+      entry["laneName"] = laneName
+      entry["branch"] = "ade/perf-pass-lanes-tab"
+    }
+    if variant != "old" {
+      entry["ignoredFiles"] = ["paths": [".env", "local.db"], "more": 2, "rebuildable": 1, "incomplete": false] as [String: Any]
+    }
+    guard let entryData = try? JSONSerialization.data(withJSONObject: entry, options: [.sortedKeys]),
+          let entryJSON = String(data: entryData, encoding: .utf8) else { return nil }
+    let json = listJSON().replacingOccurrences(of: #""dueForDeletion":[]"#, with: #""dueForDeletion":[\#(entryJSON)]"#)
+    guard let list = try? JSONDecoder().decode(CloudPhoneList.self, from: Data(json.utf8)) else { return nil }
+    let sync = SyncService.shared ?? SyncService()
+    let limits = CloudPhoneLimits(unattendedSpend: true, machinesPerDay: 3, maxShape: "4x16", preset: "balanced", extraDiskMonthCents: nil)
+    let store = CloudPaneStore(syncService: sync, fixtureList: list, limits: limits, signIns: signInsFixture(), now: fixtureNow)
+    if variant == "machine" {
+      return AnyView(NavigationStack { CloudMachineScreen(store: store, instanceId: "a9x7c6v5b4") })
+    }
+    let instanceId = noLane ? "q1w2e3r4t5" : "a9x7c6v5b4"
+    guard let due = list.account?.dueForDeletion.first,
+          let words = CloudIdleHeldWords(due, now: fixtureNow.timeIntervalSince1970 * 1000) else { return nil }
+    return AnyView(NavigationStack {
+      ScrollView {
+        CloudIdleHeldCard(store: store, instanceId: instanceId, words: words, whyOpen: variant == "why")
+          .padding(16)
+      }
+      .background(ADEColor.pageBackground.ignoresSafeArea())
+      .navigationTitle(Brand.cloudName)
+      .navigationBarTitleDisplayMode(.inline)
+    })
   }
 
   /// Nov 11 2026, 15:00 UTC.

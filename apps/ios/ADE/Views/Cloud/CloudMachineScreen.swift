@@ -156,6 +156,8 @@ struct CloudMachineFacts: View {
   /// each time the page opens or its state changes; never wakes it. Nil
   /// (no rows) on a server older than the route or any failed read.
   @State private var live: CloudComputerLiveStatus?
+  /// The phone's own read carries what this computer costs now (Pricing v3).
+  @ObservedObject private var accountStore = AccountCloudStore.shared
 
   var body: some View {
     let tier = cloudPhoneTier(of: machine, in: store.tiers)
@@ -177,6 +179,16 @@ struct CloudMachineFacts: View {
           fact(store.words.title, tier.hoursLine(leftMilli: store.hoursLeftMilli, words: store.words))
         } else if let size = machine.size {
           fact("Size", size)
+        }
+        // Pricing v3: what it costs now while awake, and why it has the full price while ads are on.
+        if machine.isAwake, let adWords = CloudAdPriceWords(accountStore.account), let price = adWords.pricing.computer(machine.instanceId) {
+          fact("Price", adWords.priceNow(price))
+          if let reason = adWords.reasonLine(price) {
+            GridRow {
+              Color.clear.frame(width: 1, height: 1)
+              Text(reason).foregroundStyle(ADEColor.textSecondary).fixedSize(horizontal: false, vertical: true)
+            }
+          }
         }
         let lastRun = cloudLastRun(machine, now: store.now)
         if !lastRun.isEmpty { fact("Last run", lastRun) }
@@ -375,8 +387,13 @@ struct CloudMachineSizeCard: View {
 
   /// "4 credits an hour now → 1 credit an hour on Medium. 418 credits last about 418 h on Medium."
   private func rates(current: CloudPhoneTier, tier: CloudPhoneTier) -> String {
-    let hours = store.hoursLeftMilli.flatMap { store.words.hoursOn(tier, leftMilli: $0) }
-    return "\(store.words.changeRates(from: current, to: tier)).\(hours.map { " \($0)" } ?? "")"
+    // Pricing v3: this computer's own price now, and both prices of the new size.
+    let pricing = cloudPricing()
+    let hours = store.hoursLeftMilli.flatMap { store.words.hoursOn(tier.atPriceNow(pricing), leftMilli: $0) }
+    let line = CloudAdPriceWords(AccountCloudStore.shared.account)?
+      .changeRates(nowMilli: pricing?.computer(machine.id)?.rateMilli, to: tier, words: store.words)
+      ?? store.words.changeRates(from: current.atPriceNow(pricing), to: tier.atPriceNow(pricing))
+    return "\(line).\(hours.map { " \($0)" } ?? "")"
   }
 
   private func confirmTitle(current: CloudPhoneTier) -> String {
@@ -452,11 +469,15 @@ struct CloudMachineControls: View {
   var showsOpenWork = true
   @State private var confirmDelete = false
   @State private var confirmFree = false
+  @State private var confirmDeleteHeld = false
 
   private var working: Bool { store.busy.contains(machine.instanceId) }
   private var busy: Bool { working || machine.isMoving || store.isMoving(machine.instanceId) }
   private var idle: CloudPhoneAccount.IdleCleanup? {
     store.account?.dueForDeletion.first { $0.instanceId == machine.instanceId }
+  }
+  private var heldWords: CloudIdleHeldWords? {
+    idle.flatMap { CloudIdleHeldWords($0, now: store.now.timeIntervalSince1970 * 1000) }
   }
 
   var body: some View {
@@ -499,6 +520,12 @@ struct CloudMachineControls: View {
           if idle != nil {
             Button { ADEHaptics.light(); Task { await store.keep(machine) } } label: { Label("Keep it", systemImage: "clock.arrow.circlepath") }
               .buttonStyle(ADEKitButtonStyle(tone: .warn))
+              .disabled(busy)
+          }
+          // Kept because its work isn't saved (ADE-223): delete it anyway, behind one confirm.
+          if heldWords != nil {
+            Button(role: .destructive) { confirmDeleteHeld = true } label: { Label("Delete anyway", systemImage: "trash") }
+              .buttonStyle(ADEKitButtonStyle(tone: .crit))
               .disabled(busy)
           }
           if machine.isAwake {
@@ -562,6 +589,15 @@ struct CloudMachineControls: View {
       Button("Delete it", role: .destructive) { Task { await store.deleteComputer(machine) } }
     } message: {
       Text("Everything on its disk is gone for good: repos, lanes, and any work not pushed.")
+    }
+    .alert(heldWords?.confirmTitle ?? "", isPresented: $confirmDeleteHeld) {
+      Button(CloudIdleHeldWords.confirmLabel, role: .destructive) {
+        guard let words = heldWords else { return }
+        Task { await store.deleteHeld(machine, words: words) }
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text(heldWords?.confirmBody ?? "")
     }
     .confirmationDialog("Free the computer of \(machine.displayName)?", isPresented: $confirmFree, titleVisibility: .visible) {
       Button("Free the computer") { Task { await store.freeComputer(machine) } }
