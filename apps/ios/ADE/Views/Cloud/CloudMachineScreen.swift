@@ -289,10 +289,11 @@ struct CloudDiskParts: View {
   }
 
   var body: some View {
-    if machine.resources != nil {
+    // A Mac's drive shows in its facts; this card only once the Mac has measured it.
+    if machine.resources != nil, !machine.isMac || machine.diskUsage != nil {
       let busy = store.busy.contains(machine.instanceId) || machine.isMoving || store.isMoving(machine.instanceId)
       ADEKitCard(
-        title: "What uses the disk",
+        title: machine.isMac ? "What uses the drive" : "What uses the disk",
         symbol: "internaldrive",
         hint: machine.diskUsage.map { "Measured \(cloudAgo($0.measuredAt, now: store.now))" }
       ) {
