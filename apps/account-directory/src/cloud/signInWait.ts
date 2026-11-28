@@ -34,6 +34,10 @@ export const SIGN_IN_FREE_MAX_MS = 45 * 60_000;
 
 export const SIGN_IN_FREE_SENTENCE = "Nothing is charged if you cancel here.";
 export const SIGN_IN_ENDED_FREE_NOTE = "Nothing was charged for the wait.";
+/** The wait was free until someone used the computer (`endSignInFreeAt`): the meter ran from then. */
+export const SIGN_IN_ENDED_CUT_NOTE = "The wait was free until the computer was used, then it used credits.";
+/** A wait with no free window (the day's free waits were used, an older computer) on a size that uses credits. */
+export const SIGN_IN_ENDED_CHARGED_NOTE = "This wait used credits.";
 /** A cloud Mac's size is called "Mac" (`plans.ts` on the Mac branch): "This Mac uses…", not "This Mac computer uses…". */
 export const signInChargedSentence = (sizeLabel: string): string =>
   sizeLabel === "Mac" ? "This Mac uses credits while it waits." : `This ${sizeLabel} computer uses credits while it waits.`;
@@ -81,10 +85,34 @@ export function signInChargeOf(launch: SignInWaitLaunch, computer: Pick<Computer
   return { free: false, sentence: signInChargedSentence(sizeLabelOf(launch, computer)) };
 }
 
-/** A launch that ended in its sign-in step with its wait still free: what its card says at the end. */
+/**
+ * A launch that ended in its sign-in step: what its card says at the end about
+ * the wait's cost, from the launch alone. A wait still free, or one cut by use.
+ * A wait that never had a free window needs its computer's rate
+ * (`signInChargedEndNoteOf`). A sign-in that finished charged its wait and
+ * says nothing here.
+ */
 export function signInEndNoteOf(launch: SignInWaitLaunch & { state: string }): string | null {
   if (launch.state !== "failed" && launch.state !== "cancelled") return null;
-  return stillFree(launch) ? SIGN_IN_ENDED_FREE_NOTE : null;
+  if (stillFree(launch)) return SIGN_IN_ENDED_FREE_NOTE;
+  if (launch.sign_in_free_at != null && launch.sign_in_used_at != null && launch.sign_in_charged_at == null) return SIGN_IN_ENDED_CUT_NOTE;
+  return null;
+}
+
+/**
+ * An ended launch whose wait had no free window: "This wait used credits." when
+ * it reached its sign-in step (`reachedSignIn`, its computer reported the step),
+ * nothing charged or opened it, and its computer's rate uses credits, the same
+ * rule as the step's own line (`signInChargeOf`).
+ */
+export function signInChargedEndNoteOf(
+  launch: SignInWaitLaunch & { state: string },
+  reachedSignIn: boolean,
+  computer: Pick<ComputerRow, "multiplier_milli"> | null,
+): string | null {
+  if (launch.state !== "failed" && launch.state !== "cancelled") return null;
+  if (!reachedSignIn || launch.sign_in_free_at != null || launch.sign_in_charged_at != null) return null;
+  return computer && usesHours(computer.multiplier_milli) ? SIGN_IN_ENDED_CHARGED_NOTE : null;
 }
 
 /**

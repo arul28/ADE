@@ -6,7 +6,7 @@ import { sha256Hex } from "../sinkUtils";
 import { ADE_FREE_MODELS, isAdeFreeModelId } from "../../../desktop/src/shared/adeFreeModels";
 import { noteFreeModelLaunch } from "./freeModels";
 import { captureCloudSignInStep, type CloudSignInStep, type CloudWaitUntil } from "./analytics";
-import { chargeSignInWait, openSignInFreeWait, signInChargeOf, signInClientOf, signInEndNoteOf } from "./signInWait";
+import { chargeSignInWait, openSignInFreeWait, signInChargeOf, signInChargedEndNoteOf, signInClientOf, signInEndNoteOf } from "./signInWait";
 import { trustedHttpsOrigin } from "../trustedOrigin";
 import {
   CLOUD_AUTO_SIZE,
@@ -457,6 +457,8 @@ export function recordOf(row: LaunchRow, now: number): CloudLaunchRecord {
   // A hold whose Worker stopped mid-delete reads as failed, so the caller's
   // Retry (a POST with `retry`) takes it over (`restartFailedLaunch`).
   const retryStopped = retrying && retryHoldStopped(row, now);
+  const ended = neverJoined || retryStopped || row.state === "failed" || row.state === "cancelled";
+  const stages = parseJsonColumn<CloudLaunchStage[]>(row.stages_json, [], { launchId: row.launch_id, column: "stages_json" });
   return {
     launchId: row.launch_id,
     state: neverJoined || retryStopped ? "failed" : retrying ? "making" : row.state as CloudLaunchState,
@@ -472,7 +474,8 @@ export function recordOf(row: LaunchRow, now: number): CloudLaunchRecord {
     approval: !neverJoined && row.state === "needs_approval" && row.approval_url && row.join_user_code
       ? { url: row.approval_url, userCode: row.join_user_code }
       : null,
-    stages: parseJsonColumn<CloudLaunchStage[]>(row.stages_json, [], { launchId: row.launch_id, column: "stages_json" }),
+    // An ended launch runs nothing: a stage it left running (the sign-in a cancel or the server ended) reads failed.
+    stages: ended ? stages.map((stage) => (stage.status === "running" ? { ...stage, status: "failed" as const } : stage)) : stages,
     sessionId: row.session_id,
     error: neverJoined ? JOIN_NEVER_FINISHED : retryStopped ? RETRY_STOPPED : row.error,
     signIn: row.state === "waiting_for_sign_in" ? signInOfRow(row) : null,
@@ -558,11 +561,21 @@ function canSwitchToFreeModel(row: LaunchRow, request: CloudServerLaunchRequest 
  * its computer), the free-model way out and the own-computer line (from the
  * account, read once for all launches of a request). Never fails the read.
  */
-async function withSignInFacts<T extends { signIn?: CloudLaunchSignIn | null }>(
+async function withSignInFacts<T extends { signIn?: CloudLaunchSignIn | null; state?: string; endNote?: string | null }>(
   env: CloudEnv,
   rows: Array<{ row: LaunchRow; answer: T }>,
   deps: Pick<LaunchRouteDeps, "signInExtras">,
 ): Promise<void> {
+  // An ended wait that had no free window: its note reads the computer's rate (a deleted computer's row stays).
+  for (const { row, answer } of rows) {
+    if (answer.endNote || !row.instance_id || row.sign_in_free_at != null || row.sign_in_charged_at != null) continue;
+    const reachedSignIn = parseJsonColumn<CloudLaunchStage[]>(row.stages_json, [], { launchId: row.launch_id, column: "stages_json" })
+      .some((stage) => stage.id === SIGN_IN_STAGE_ID);
+    if (!reachedSignIn || (answer.state !== "failed" && answer.state !== "cancelled")) continue;
+    const computer = await env.DB.prepare("select multiplier_milli from cloud_computers where instance_id = ? and user_id = ?")
+      .bind(row.instance_id, row.user_id).first<Pick<ComputerRow, "multiplier_milli">>().catch(() => null);
+    answer.endNote = signInChargedEndNoteOf({ ...row, state: answer.state }, reachedSignIn, computer);
+  }
   const waiting = rows.filter((entry) => entry.answer.signIn);
   if (!waiting.length) return;
   let extras: SignInExtras = { freeModel: null, ownComputer: false };
@@ -582,6 +595,9 @@ async function withSignInFacts<T extends { signIn?: CloudLaunchSignIn | null }>(
     };
   }
 }
+
+/** The computer's stage for its provider sign-in step (`SIGN_IN_STAGE` in ade-cli). */
+const SIGN_IN_STAGE_ID = "sign_in";
 
 /** The step's event, with the launch's provider. Never fails the caller. */
 function noteSignInStep(env: CloudEnv, deps: Pick<LaunchRouteDeps, "waitUntil">, row: LaunchRow, step: CloudSignInStep, client: "desktop" | "web" | "ios" | "computer", now: number): void {

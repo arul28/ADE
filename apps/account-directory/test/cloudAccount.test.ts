@@ -3083,7 +3083,8 @@ describe("ADE Cloud server launcher", () => {
       harness.exec("update cloud_accounts set plan = 'paid', paid_plan = 'plus', stripe_status = 'active', included_milli = 300000 where user_id = ?", OWNER);
       expect((await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, sizeId: "medium" })).status).toBe(201);
       at(3);
-      expect((await stages({ state: "waiting_for_sign_in", signIn: signIn(clock) })).status).toBe(200);
+      // The computer reports its sign-in step as a stage (`SIGN_IN_STAGE` in ade-cli).
+      expect((await stages({ state: "waiting_for_sign_in", signIn: signIn(clock), stages: [{ id: "computer", status: "done" }, { id: "clone", status: "done" }, { id: "sign_in", status: "running" }] })).status).toBe(200);
     };
     const freeModelsOn = () => {
       Object.assign(harness.env, { GRAVITY_API_KEY: "gravity-key", GRAVITY_INFERENCE_KEY: "gr_inf_test", GRAVITY_INFERENCE: "all" });
@@ -3299,22 +3300,54 @@ describe("ADE Cloud server launcher", () => {
       expect((await send())[0]).toBe(200);
     });
 
-    it("the step says what the wait costs, and a launch that ended in it says nothing was charged", async () => {
+    it("the step says what the wait costs; once someone used the computer, it says it uses credits", async () => {
       await startWaiting();
       expect((await read()).signIn?.charge).toEqual({ free: true, sentence: "Nothing is charged if you cancel here." });
-      at(10);
-      await cancel();
-      expect((await read()).endNote).toBe("Nothing was charged for the wait.");
-    });
-
-    it("once someone used the computer, the step says it uses credits, and the end claims no free wait", async () => {
-      await startWaiting();
       at(12);
       expect((await harness.send(OWNER, "POST", `/cloud/instances/${MADE}/use`, {})).status).toBe(200);
       expect((await read()).signIn?.charge).toEqual({ free: false, sentence: "This Medium computer uses credits while it waits." });
+    });
+
+    // A money sentence: each end of a wait in its sign-in step says what the wait cost, and only what is true.
+    const used = async () => {
+      at(12);
+      expect((await harness.send(OWNER, "POST", `/cloud/instances/${MADE}/use`, {})).status).toBe(200);
+    };
+    const timedOut = async () => {
       at(20);
-      await cancel();
-      expect((await read()).endNote).toBeNull();
+      expect((await stages({ state: "failed", error: CLOUD_LAUNCH_SIGN_IN_TIMED_OUT })).status).toBe(200);
+    };
+    const stopped = async () => {
+      at(20);
+      expect((await harness.send(OWNER, "POST", `/cloud/instances/${MADE}/stop`, {})).status).toBe(200);
+      await failUnjoinedLaunches(harness.env, { provider: createCloudProvider("provider-key"), now: clock });
+    };
+    const cancelAt20 = async () => { at(20); await cancel(); };
+    it.each<[string, () => void, (() => Promise<void>) | null, () => Promise<void>, string | null]>([
+      ["free, then a cancel", () => {}, null, cancelAt20, "Nothing was charged for the wait."],
+      ["free, then the timeout", () => {}, null, timedOut, "Nothing was charged for the wait."],
+      ["used, then a cancel", () => {}, used, cancelAt20, "The wait was free until the computer was used, then it used credits."],
+      ["used, then the timeout", () => {}, used, timedOut, "The wait was free until the computer was used, then it used credits."],
+      ["used, then a stopped computer", () => {}, used, stopped, "The wait was free until the computer was used, then it used credits."],
+      ["no free window (the fourth wait), then a cancel", () => opensToday(3), null, cancelAt20, "This wait used credits."],
+      ["no free window, then the timeout", () => opensToday(3), null, timedOut, "This wait used credits."],
+      ["no free window, then a stopped computer", () => opensToday(3), null, stopped, "This wait used credits."],
+      ["a finished sign-in, then a failed setup: charged as the chat started, no note", () => {}, async () => {
+        at(10);
+        expect((await stages({ state: "joined" })).status).toBe(200);
+      }, async () => {
+        at(12);
+        expect((await stages({ state: "failed", error: "The clone failed." })).status).toBe(200);
+      }, null],
+    ])("a wait that ended says what it cost: %s", async (_label, before, during, end, note) => {
+      before();
+      await startWaiting();
+      if (during) await during();
+      await end();
+      const record = await read() as Awaited<ReturnType<typeof read>> & { state: string; stages: Array<{ id: string; status: string }> };
+      expect([record.state === "failed" || record.state === "cancelled", record.endNote]).toEqual([true, note]);
+      // An ended launch shows no stage running: the sign-in it left reads failed.
+      expect(record.stages.filter((stage) => stage.status === "running")).toEqual([]);
     });
 
     it("the fourth wait of a day says it uses credits before anything is charged", async () => {
