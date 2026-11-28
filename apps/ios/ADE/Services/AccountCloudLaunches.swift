@@ -68,10 +68,38 @@ struct CloudLaunchSignIn: Decodable, Equatable {
   let userCode: String?
   let needsPastedCode: Bool
   let signInId: String?
+  /// One sentence from the computer: also why the link or the code changed.
   let reason: String?
+  /// When the wait ends (ms since 1970); the launch fails after it. Nil from an older computer.
+  let expiresAt: Double?
+  /// The server says DAEX Free Models reach this account and the chat can
+  /// switch to one: the "Start with … instead" button. Nil hides it.
+  let freeModel: FreeModel?
+  /// The account has DAEX on a computer of its own: the "Share my sign-ins" line.
+  let ownComputer: Bool
+  /// The server's line about what the wait costs. Nil, or a nil sentence, shows nothing.
+  let charge: Charge?
+
+  struct FreeModel: Decodable, Equatable {
+    let modelId: String
+    let label: String
+  }
+
+  struct Charge: Decodable, Equatable {
+    let free: Bool
+    let sentence: String?
+
+    private enum CodingKeys: String, CodingKey { case free, sentence }
+
+    init(from decoder: Decoder) throws {
+      let c = try decoder.container(keyedBy: CodingKeys.self)
+      free = c.lenient(Bool.self, forKey: .free) ?? false
+      sentence = c.lenient(String.self, forKey: .sentence).flatMap { nonEmptyTrimmed($0) }
+    }
+  }
 
   private enum CodingKeys: String, CodingKey {
-    case provider, label, kind, jobId, url, userCode, needsPastedCode, signInId, reason
+    case provider, label, kind, jobId, url, userCode, needsPastedCode, signInId, reason, expiresAt, freeModel, ownComputer, charge
   }
 
   init(from decoder: Decoder) throws {
@@ -84,7 +112,13 @@ struct CloudLaunchSignIn: Decodable, Equatable {
     userCode = c.lenient(String.self, forKey: .userCode)
     needsPastedCode = c.lenient(Bool.self, forKey: .needsPastedCode) ?? false
     signInId = c.lenient(String.self, forKey: .signInId)
-    reason = c.lenient(String.self, forKey: .reason)
+    reason = c.lenient(String.self, forKey: .reason).flatMap { nonEmptyTrimmed($0) }
+    expiresAt = c.lenient(Double.self, forKey: .expiresAt)
+    freeModel = c.lenient(FreeModel.self, forKey: .freeModel).flatMap {
+      nonEmptyTrimmed($0.modelId) != nil && nonEmptyTrimmed($0.label) != nil ? $0 : nil
+    }
+    ownComputer = c.lenient(Bool.self, forKey: .ownComputer) ?? false
+    charge = c.lenient(Charge.self, forKey: .charge)
   }
 }
 
@@ -112,9 +146,12 @@ struct CloudLaunchRecord: Decodable, Equatable {
   let approvalUrl: String?
   /// When the server took the start (ms since 1970); nil from an older server.
   let createdAt: Double?
+  /// The server's sentence after a launch that failed or was cancelled in its
+  /// sign-in step ("Nothing was charged for the wait."). Nil from an older server.
+  let endNote: String?
 
   private enum CodingKeys: String, CodingKey {
-    case launchId, state, kind, projectOrigin, laneId, laneName, instanceId, stages, sessionId, error, signIn, provider, modelId, request, approval, createdAt
+    case launchId, state, kind, projectOrigin, laneId, laneName, instanceId, stages, sessionId, error, signIn, provider, modelId, request, approval, createdAt, endNote
   }
   private struct Approval: Decodable { let url: String? }
   private struct Request: Decodable {
@@ -147,6 +184,7 @@ struct CloudLaunchRecord: Decodable, Equatable {
     request = c.lenient(RemoteJSONValue.self, forKey: .request)
     approvalUrl = c.lenient(Approval.self, forKey: .approval)?.url
     createdAt = c.lenient(Double.self, forKey: .createdAt)
+    endNote = c.lenient(String.self, forKey: .endNote).flatMap { nonEmptyTrimmed($0) }
   }
 
   /// Still on its way to a running chat.
@@ -274,6 +312,18 @@ struct CloudAccountSignIns: Decodable, Equatable {
 private struct CloudSignInCodeStatus: Decodable {
   let state: String?
   let reason: String?
+  /// `refused` or `accepted`; nil from an older server.
+  let verdict: String?
+}
+
+/// What came of a code sent for a sign-in on the computer.
+enum CloudSignInCodeOutcome: Equatable {
+  /// The provider refused it: the sentence to show.
+  case refused(String)
+  /// The provider took it and DAEX finishes the sign-in, or it is done.
+  case accepted
+  /// Sent, with no verdict yet (an older server): the chat starts when the sign-in is done.
+  case sent
 }
 
 // MARK: - Client
@@ -350,15 +400,27 @@ extension CloudServerClient {
     try decode(CloudAccountSignIns.self, from: try await send("DELETE", "cloud/sign-ins/\(segment(signInId))"))
   }
 
-  /// A code pasted from the provider's page, for a sign-in on the computer.
-  /// Answers the reason when the code did not work.
-  func sendSignInCode(instanceId: String, jobId: String, code: String) async throws -> String? {
+  /// A code pasted from the provider's page, for a sign-in on the computer:
+  /// an account call by the launch's computer and the sign-in's job, with no
+  /// pin. The server waits a few seconds for the provider's verdict.
+  func sendSignInCode(instanceId: String, jobId: String, code: String) async throws -> CloudSignInCodeOutcome {
     let data = try JSONSerialization.data(withJSONObject: ["code": code])
     let status = try decode(
       CloudSignInCodeStatus.self,
       from: try await send("POST", "cloud/instances/\(segment(instanceId))/sign-ins/\(segment(jobId))/code", body: data, timeout: 100)
     )
-    return status.state == "failed" ? (status.reason ?? "The code didn't work. Open the page again for a new one.") : nil
+    if status.state == "failed" || status.verdict == "refused" {
+      return .refused(status.reason.flatMap { nonEmptyTrimmed($0) } ?? "The code didn't work. Open the page again for a new one.")
+    }
+    return status.state == "done" || status.verdict == "accepted" ? .accepted : .sent
+  }
+
+  /// "Start with … instead": the launch waiting on a sign-in starts its chat
+  /// on the DAEX Free Model the server offered, on the same computer
+  /// (`POST /cloud/launches/:id/free-model`). An account call, with no pin.
+  /// Refusals: `launch_not_waiting`, `free_models_unavailable`, `free_models_consent`.
+  func startLaunchOnFreeModel(_ launchId: String) async throws -> CloudLaunchRecord {
+    try decode(CloudLaunchRecord.self, from: try await send("POST", "cloud/launches/\(segment(launchId))/free-model", body: Data("{}".utf8)))
   }
 
 }
@@ -919,6 +981,67 @@ final class AccountCloudLaunchStore: ObservableObject {
       return nil
     } catch {
       return cloudServerFailureMessage(error)
+    }
+  }
+
+  /// What came of "Start with … instead".
+  enum FreeModelAnswer: Equatable {
+    case started
+    /// The account hasn't agreed to DAEX Free Models yet: the sheet once,
+    /// then one more call. The server's sentence, for when that call is refused too.
+    case needsConsent(String)
+    case failed(String)
+  }
+
+  /// "Start with … instead" on a launch waiting on a sign-in: the server
+  /// starts its chat on the offered DAEX Free Model, on the same computer.
+  func startOnFreeModel(_ launchId: String, freeModel: CloudLaunchSignIn.FreeModel, using sync: SyncService) async -> FreeModelAnswer {
+    let generation = accountGeneration
+    guard let client = await sync.cloudServerClient() else { return .failed("Sign in to \(Brand.name) again, then try again.") }
+    do {
+      let record = try await client.startLaunchOnFreeModel(launchId)
+      guard generation == accountGeneration else { return .started }
+      patch(launchId) {
+        Self.take(record, into: &$0)
+        Self.moveToFreeModel(freeModel, into: &$0)
+      }
+      // The answer can already be a running chat: connect it as a start does.
+      connectWhenReady(using: sync)
+      poll(using: sync)
+      return .started
+    } catch CloudServerClient.Failure.refused(let code, let message) {
+      switch code {
+      case "free_models_consent": return .needsConsent(message)
+      case "launch_not_waiting":
+        // The step is over: the launch as it is now.
+        await refresh(launchId, using: sync)
+        return .started
+      default: return .failed(message)
+      }
+    } catch {
+      return .failed(cloudServerFailureMessage(error))
+    }
+  }
+
+  /// After "Start with … instead": the page and a later Retry name the free
+  /// model, never the provider the person chose to skip. A server record that
+  /// already names it is the truth (the saved start goes, Retry sends the
+  /// server's); one that still names the first provider gets its chat
+  /// rewritten for the Retry.
+  private static func moveToFreeModel(_ model: CloudLaunchSignIn.FreeModel, into entry: inout Entry) {
+    let freeProvider = "opencode"
+    entry.modelId = model.modelId
+    if entry.record?.modelId == model.modelId {
+      entry.body = nil
+      entry.provider = entry.record?.provider ?? freeProvider
+      return
+    }
+    entry.provider = freeProvider
+    if case .object(var fields)? = entry.record?.request ?? entry.body, case .object(var chat)? = fields["chat"] {
+      chat["provider"] = .string(freeProvider)
+      chat["modelId"] = .string(model.modelId)
+      fields["chat"] = .object(chat)
+      entry.body = .object(fields)
     }
   }
 

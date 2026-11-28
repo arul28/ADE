@@ -14,54 +14,109 @@ func cloudDesktopSignInSentence(label: String) -> String {
   "Sign in to \(label) in \(Brand.name) on your computer once. \(Brand.cloudName) then uses that sign-in."
 }
 
+/// The sentence under the sign-in step's title, by kind (the same on every
+/// client): what to do with the link or the code. `api_key` and `desktop`
+/// keep their own lines (the computer's `reason`, the desktop sentence).
+func cloudSignInLead(_ signIn: CloudLaunchSignIn) -> String? {
+  switch signIn.kind {
+  case "url_paste":
+    return signIn.provider.lowercased() == "claude"
+      ? "Open sign-in, then paste the code it shows here. It needs a Claude subscription."
+      : "Open sign-in, then paste the code it shows here."
+  case "device":
+    return signIn.userCode == nil ? nil : "Open the page and type this code:"
+  default:
+    return nil
+  }
+}
+
+/// "You have 30 minutes.": the minutes left of the wait, rounded down. Worked
+/// out when the step renders for another reason; there is no countdown.
+func cloudSignInTimeLine(expiresAt: Double?, now: Date = Date()) -> String? {
+  guard let expiresAt else { return nil }
+  let minutes = Int(((expiresAt - now.timeIntervalSince1970 * 1000) / 60_000).rounded(.down))
+  guard minutes >= 1 else { return nil }
+  return "You have \(minutes) \(minutes == 1 ? "minute" : "minutes")."
+}
+
 /// What the person does for the provider sign-in a launch or a woken chat
-/// waits on (`CloudLaunchSignIn`). The same step on every client.
+/// waits on (`CloudLaunchSignIn`). The same step on every client. A code or
+/// a link is never logged or kept: the field clears once the code is sent.
 struct CloudSignInStepDetail: View {
   let signIn: CloudLaunchSignIn
   let instanceId: String?
+  /// The launch this step belongs to: it enables "Start with … instead".
+  /// Nil for a woken chat's step.
+  var launchId: String? = nil
   /// The code or key went through: read the launch or the chat again.
   var onDone: @MainActor () async -> Void = {}
+
+  /// What came of the last code sent.
+  enum CodeState: Equatable {
+    case idle
+    case checking
+    case refused(String)
+    case accepted
+    case sent
+  }
+
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  @ObservedObject private var launches = AccountCloudLaunchStore.shared
   private var syncService: SyncService { syncPublishes.service }
   @Environment(\.openURL) private var openURL
   @State private var value = ""
-  @State private var busy = false
   @State private var error: String?
-  @State private var sent = false
+  @State private var codeState: CodeState
+  @State private var freeModelBusy = false
+  @State private var freeModelError: String?
+  @State private var consentOpen = false
   /// Dropped on send: the keyboard would hide the answer under the field.
   @FocusState private var fieldFocused: Bool
 
-  private var needsInput: Bool { signIn.kind == "api_key" || signIn.kind == "url_paste" || signIn.needsPastedCode }
+  init(signIn: CloudLaunchSignIn, instanceId: String?, launchId: String? = nil, codeState: CodeState = .idle, consentOpen: Bool = false, onDone: @escaping @MainActor () async -> Void = {}) {
+    self.signIn = signIn
+    self.instanceId = instanceId
+    self.launchId = launchId
+    self.onDone = onDone
+    _codeState = State(initialValue: codeState)
+    _consentOpen = State(initialValue: consentOpen)
+  }
+
+  private var isKey: Bool { signIn.kind == "api_key" }
+  private var needsInput: Bool { isKey || signIn.kind == "url_paste" || signIn.needsPastedCode }
+  private var busy: Bool { codeState == .checking }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
       if signIn.kind == "desktop" {
-        Text(cloudDesktopSignInSentence(label: signIn.label))
-          .font(.system(size: 12.5))
-          .foregroundStyle(ADEColor.textSecondary)
-          .fixedSize(horizontal: false, vertical: true)
+        line(cloudDesktopSignInSentence(label: signIn.label))
       } else {
-        if signIn.kind == "device", let code = signIn.userCode {
-          HStack(spacing: 8) {
-            Text(code)
-              .font(.system(size: 17, weight: .semibold, design: .monospaced))
-              .foregroundStyle(ADEColor.textPrimary)
-              .textSelection(.enabled)
-              .accessibilityLabel("Sign-in code \(code)")
-            Button {
-              UIPasteboard.general.string = code
-            } label: {
-              Image(systemName: "doc.on.doc")
+        if let lead = cloudSignInLead(signIn) {
+          line(lead)
+          if signIn.kind == "device", let code = signIn.userCode {
+            HStack(spacing: 8) {
+              Text(code)
+                .font(.system(size: 17, weight: .semibold, design: .monospaced))
+                .foregroundStyle(ADEColor.textPrimary)
+                .textSelection(.enabled)
+                .accessibilityLabel("Sign-in code \(code)")
+              Button {
+                UIPasteboard.general.string = code
+              } label: {
+                Image(systemName: "doc.on.doc")
+              }
+              .buttonStyle(ADEKitButtonStyle())
+              .accessibilityLabel("Copy the code")
             }
-            .buttonStyle(ADEKitButtonStyle())
-            .accessibilityLabel("Copy the code")
           }
         }
+        // url_paste and device: set only for a change of the link or the
+        // code, or a start error. api_key: the instruction, as before.
         if let reason = signIn.reason {
-          Text(reason)
-            .font(.system(size: 12.5))
-            .foregroundStyle(ADEColor.textSecondary)
-            .fixedSize(horizontal: false, vertical: true)
+          line(reason)
+        }
+        if let time = cloudSignInTimeLine(expiresAt: signIn.expiresAt) {
+          line(time, muted: true)
         }
         if let link = signIn.url.flatMap(URL.init(string:)) {
           Button {
@@ -71,9 +126,9 @@ struct CloudSignInStepDetail: View {
           }
           .buttonStyle(ADEKitButtonStyle())
         }
-        if needsInput && !sent {
+        if needsInput {
           HStack(spacing: 8) {
-            SecureField(signIn.kind == "api_key" ? "API key" : "Code from the page", text: $value)
+            SecureField(isKey ? "API key" : "Code from the page", text: $value)
               .textInputAutocapitalization(.never)
               .autocorrectionDisabled()
               .font(.system(size: 14))
@@ -82,22 +137,125 @@ struct CloudSignInStepDetail: View {
               .background(ADEColor.recessedBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
               .focused($fieldFocused)
               .onSubmit(submit)
-            Button(signIn.kind == "api_key" ? "Save" : "Send code", action: submit)
+            Button(isKey ? "Save" : "Send code", action: submit)
               .buttonStyle(ADEKitButtonStyle(prominent: true))
               .disabled(busy || value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
           }
-        }
-        if sent {
-          Text(signIn.kind == "api_key" ? "Key saved. The chat starts when the computer reads it." : "Code sent. The chat starts when the sign-in is done.")
-            .font(.system(size: 12.5))
-            .foregroundStyle(ADEColor.textSecondary)
+          // A code or a key is short: the open pose keeps the field near it.
+          .frame(maxWidth: 480, alignment: .leading)
+          codeLine
         }
         if let error {
-          Text(error)
-            .font(.system(size: 12.5))
-            .foregroundStyle(ADEColor.danger)
-            .fixedSize(horizontal: false, vertical: true)
+          line(error, tone: ADEColor.danger)
         }
+        waysOut
+      }
+    }
+    // A new link, job or code from the computer: the last code's result is over.
+    .onChange(of: "\(signIn.jobId ?? "")|\(signIn.url ?? "")|\(signIn.userCode ?? "")") { _, _ in
+      if codeState != .checking { codeState = .idle }
+    }
+    .sheet(isPresented: $consentOpen) {
+      if let freeModel = signIn.freeModel {
+        WorkFreeModelsGateSheet(modelId: freeModel.modelId, modelName: freeModel.label) {
+          switch await cloudSaveFreeModelsConsent(CloudSponsoredState.granted) {
+          case .success(let state):
+            guard state.granted else { return "\(Brand.name) couldn't save that. Try again." }
+            consentOpen = false
+            startOnFreeModel(afterConsent: true)
+            return nil
+          case .failure(let failure):
+            return failure.message
+          }
+        } onReady: {
+          guard consentOpen else { return }
+          consentOpen = false
+          startOnFreeModel(afterConsent: true)
+        } onClose: {
+          consentOpen = false
+        }
+      }
+    }
+  }
+
+  /// What came of the code (or key) sent; the field stays for another try.
+  @ViewBuilder private var codeLine: some View {
+    switch codeState {
+    case .idle:
+      EmptyView()
+    case .checking:
+      HStack(spacing: 6) {
+        ProgressView().controlSize(.mini)
+        line(isKey ? "Saving the key…" : "Checking the code…")
+      }
+    case .refused(let reason):
+      line(reason, tone: ADEColor.danger)
+    case .accepted:
+      line("Code accepted. Starting the chat…")
+    case .sent:
+      line(isKey ? "Key saved. The chat starts when the computer reads it." : "Code sent. The chat starts when the sign-in is done.")
+    }
+  }
+
+  /// The ways past the step, each only when the server says so, and what the wait costs.
+  @ViewBuilder private var waysOut: some View {
+    if let freeModel = signIn.freeModel, launchId != nil {
+      VStack(alignment: .leading, spacing: 3) {
+        Button { startOnFreeModel() } label: {
+          HStack(spacing: 6) {
+            if freeModelBusy { ProgressView().controlSize(.mini) }
+            Text("Start with \(freeModel.label) instead")
+          }
+        }
+        .buttonStyle(ADEKitButtonStyle())
+        .disabled(freeModelBusy)
+        line("Free with ads, on this computer.", muted: true)
+        if let freeModelError {
+          line(freeModelError, tone: ADEColor.danger)
+        }
+      }
+      .padding(.top, 2)
+    }
+    if signIn.ownComputer {
+      line("Signed in on your own computer? Turn on Share my sign-ins in Settings › \(Brand.cloudName), and this step goes away.", muted: true)
+    }
+    if let sentence = signIn.charge?.sentence {
+      line(sentence, muted: true)
+    }
+  }
+
+  private func line(_ text: String, muted: Bool = false, tone: Color? = nil) -> some View {
+    Text(text)
+      .font(.system(size: muted ? 11.5 : 12.5))
+      .foregroundStyle(tone ?? (muted ? ADEColor.textMuted : ADEColor.textSecondary))
+      .fixedSize(horizontal: false, vertical: true)
+  }
+
+  /// One request per tap. A consent refusal opens the sheet only when a fresh
+  /// read of the account says there is no yes yet; a refusal right after a
+  /// yes, or with the account still agreeing, shows a sentence and stops.
+  private func startOnFreeModel(afterConsent: Bool = false) {
+    guard let launchId, let freeModel = signIn.freeModel, !freeModelBusy else { return }
+    freeModelBusy = true
+    freeModelError = nil
+    Task {
+      defer { freeModelBusy = false }
+      switch await launches.startOnFreeModel(launchId, freeModel: freeModel, using: syncService) {
+      case .started: break
+      case .failed(let message): freeModelError = message
+      case .needsConsent(let message):
+        // Refused again right after a yes: the server's sentence, and stop.
+        guard !afterConsent else { freeModelError = message; return }
+        let stuck = "\(Brand.name) couldn't start \(freeModel.label). Try again in a moment."
+        if let client = await syncService.cloudServerClient(), let owner = AccountService.shared.currentPairingAuthorization {
+          await AccountCloudStore.shared.refresh(client: client, owner: owner)
+        }
+        guard let state = AccountCloudStore.shared.account?.freeModels, state.lists(freeModel.modelId) else {
+          freeModelError = "\(Brand.name) Free Models aren't open for this account right now."
+          return
+        }
+        guard !state.granted else { freeModelError = stuck; return }
+        consentOpen = true
       }
     }
   }
@@ -105,36 +263,42 @@ struct CloudSignInStepDetail: View {
   private func submit() {
     let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !text.isEmpty, !busy else { return }
-    busy = true
+    codeState = .checking
     error = nil
     fieldFocused = false
     Task {
-      defer { busy = false }
       guard let client = await syncService.cloudServerClient() else {
+        codeState = .idle
         error = "Sign in to \(Brand.name) again, then try again."
         return
       }
       do {
-        if signIn.kind == "api_key" {
+        if isKey {
           guard let signInId = signIn.signInId else {
+            codeState = .idle
             error = "\(Brand.cloudName) didn't say which key to save."
             return
           }
           _ = try await client.saveAccountSignIn(signInId, key: text)
+          codeState = .sent
         } else {
           guard let instanceId, let jobId = signIn.jobId else {
+            codeState = .idle
             error = "The computer isn't ready for the code yet. Try again in a moment."
             return
           }
-          if let refusal = try await client.sendSignInCode(instanceId: instanceId, jobId: jobId, code: text) {
-            error = refusal
+          switch try await client.sendSignInCode(instanceId: instanceId, jobId: jobId, code: text) {
+          case .refused(let reason):
+            codeState = .refused(reason)
             return
+          case .accepted: codeState = .accepted
+          case .sent: codeState = .sent
           }
         }
         value = ""
-        sent = true
         await onDone()
       } catch {
+        codeState = .idle
         self.error = cloudServerFailureMessage(error)
       }
     }

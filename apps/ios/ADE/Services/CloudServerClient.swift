@@ -46,6 +46,8 @@ enum CloudRefusalCode {
   static let reads: Set<String> = [
     "linear_not_connected", "linear_renewing", "jira_not_connected", "jira_site_unsupported",
     "integration_failed", "limits_changed",
+    // "Start with … instead" on a launch waiting on a sign-in.
+    "launch_not_waiting", "free_models_unavailable", "free_models_consent",
   ]
 }
 

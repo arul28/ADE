@@ -7,6 +7,10 @@ import XCTest
 ///   the account server's `contract.ts`). Both apps ignore the answer, so a
 ///   body the server can't read fails with nothing on screen and the computer
 ///   or the cloud iPhone stays at the full price.
+/// - The first provider sign-in of a cloud start: the code and "Start with …
+///   instead" are account calls by the launch's ids, with no pin, so they
+///   reach the launch whichever machine the phone is bound to. A refused code
+///   must read as refused, never "Code sent".
 /// - "Delete anyway" on a computer the idle cleanup kept (ADE-223): it must
 ///   keep the lane (the server takes its branch from its own row), or the
 ///   lane and its chats are lost with the computer.
@@ -29,7 +33,7 @@ final class CloudAccountRequestTests: XCTestCase {
   )
   private static let device = CloudSponsoredDevice(type: "mobile", os: "ios", osVersion: "27.0", ua: "DAEX-iOS/1", tracking: nil)
 
-  func testProofBodiesMatchTheServerContract() async throws {
+  func testAccountCallBodiesMatchTheServerContract() async throws {
     let cases: [Case] = [
       Case(
         name: "sent: a chat on a cloud computer",
@@ -58,6 +62,25 @@ final class CloudAccountRequestTests: XCTestCase {
         ],
         absent: []
       ),
+      Case(
+        name: "sign-in: a code for the launch's computer and job, refused",
+        path: "/cloud/instances/inst-4/sign-ins/job-7/code",
+        answer: #"{"state":"pending","verdict":"refused","reason":"That code didn't work. Open sign-in again and paste the new code."}"#,
+        call: {
+          let outcome = try await $0.sendSignInCode(instanceId: "inst-4", jobId: "job-7", code: "FAKE-CODE")
+          XCTAssertEqual(outcome, .refused("That code didn't work. Open sign-in again and paste the new code."))
+        },
+        expected: ["code": "FAKE-CODE"],
+        absent: []
+      ),
+      Case(
+        name: "sign-in: start with the free model instead",
+        path: "/cloud/launches/launch-3/free-model",
+        answer: #"{"launchId":"launch-3","state":"waiting_for_sign_in"}"#,
+        call: { _ = try await $0.startLaunchOnFreeModel("launch-3") },
+        expected: [:],
+        absent: ["pin", "machineKey"]
+      ),
     ]
 
     let configuration = URLSessionConfiguration.ephemeral
@@ -73,6 +96,7 @@ final class CloudAccountRequestTests: XCTestCase {
 
       let request = try XCTUnwrap(CloudAccountStubProtocol.request, item.name)
       XCTAssertEqual(request.httpMethod, "POST", item.name)
+      XCTAssertEqual(request.url?.host, "account.test", item.name)
       XCTAssertEqual(request.url?.path, item.path, item.name)
       XCTAssertEqual(request.value(forHTTPHeaderField: "X-ADE-Pricing"), "3", item.name)
       let body = try XCTUnwrap(CloudAccountStubProtocol.body, item.name)

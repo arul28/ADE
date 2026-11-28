@@ -489,7 +489,7 @@ struct WorkCloudLaunchSetupCard: View {
           stepLine("person.badge.key", "Sign in to \(providerLabel)", steps.signIn,
                    detail: steps.signIn == .waiting ? "Waiting for you" : nil)
           if steps.signIn == .waiting, let signIn = record?.signIn {
-            CloudSignInStepDetail(signIn: signIn, instanceId: record?.instanceId) {
+            CloudSignInStepDetail(signIn: signIn, instanceId: record?.instanceId, launchId: entry.launchId) {
               await launches.refresh(entry.launchId, using: syncService)
             }
             .padding(.leading, 32)
@@ -551,10 +551,12 @@ struct WorkCloudLaunchSetupCard: View {
   /// The line under the steps: why it failed or stopped, else what happens
   /// next on a lane launch (a chat launch says it above its composer).
   private var note: String? {
+    // The server's note after a wait in the sign-in step ("Nothing was charged for the wait.").
+    let endNote = record?.endNote.map { " \($0)" } ?? ""
     if entry.cancelled {
-      return entry.isLane ? "Making this computer was stopped." : "This chat was cancelled. Its messages were not sent."
+      return (entry.isLane ? "Making this computer was stopped." : "This chat was cancelled. Its messages were not sent.") + endNote
     }
-    if entry.failed { return entry.startError ?? record?.error ?? "\(Brand.cloudName) didn't say why." }
+    if entry.failed { return (entry.startError ?? record?.error ?? "\(Brand.cloudName) didn't say why.") + (entry.startError == nil ? endNote : "") }
     guard entry.isLane else { return nil }
     return running
       ? "It lists with your lanes again, on the same branch."
@@ -581,7 +583,7 @@ struct WorkCloudLaunchSetupCard: View {
     if entry.failed { return "Couldn't start the chat" }
     if record?.sessionId != nil { return "Opening the chat" }
     if record?.state == "needs_approval" { return "Confirm the computer" }
-    if record?.state == "waiting_for_sign_in" { return "Sign in to \(providerLabel) to go on" }
+    if record?.state == "waiting_for_sign_in" { return "Sign in to \(providerLabel) to start the chat" }
     return "Setting up \(Brand.cloudName)"
   }
 
