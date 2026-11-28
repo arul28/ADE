@@ -76,10 +76,10 @@ describe("adeCard", () => {
     expect(adeCardRowKey("run-42")).toBe("ade-card:run-42");
   });
 
-  it("builds an ade:// deeplink for addressable nav targets and null for the rest", () => {
+  it("builds a daex:// deeplink for addressable nav targets and null for the rest", () => {
     expect(adeCardDeeplink({ kind: "pr", repoOwner: "arul28", repoName: "ADE", prNumber: 916 }))
-      .toContain("ade://");
-    expect(adeCardDeeplink({ kind: "file", path: "src/main.ts", line: 12 })).toContain("ade://");
+      .toContain("daex://");
+    expect(adeCardDeeplink({ kind: "file", path: "src/main.ts", line: 12 })).toContain("daex://");
     expect(adeCardDeeplink({ kind: "route", route: "/lanes" })).toBeNull();
     expect(adeCardDeeplink(null)).toBeNull();
     // A PR target missing its repo identity has no URL form.
@@ -94,7 +94,7 @@ describe("adeCard", () => {
     }));
     expect(described).toContain("Cloud artifacts pulled — run-42");
     expect(described).toContain("3 files");
-    expect(described).toContain("ade://");
+    expect(described).toContain("daex://");
     expect(described.includes("\n")).toBe(false);
   });
 

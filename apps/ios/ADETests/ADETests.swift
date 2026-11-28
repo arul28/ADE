@@ -2049,7 +2049,7 @@ final class ADETests: XCTestCase {
     )
     XCTAssertEqual(
       workSessionDeepLink(sessionId: "session 1/2", laneId: "lane&active", form: .ade),
-      "ade://session/session%201%2F2?lane=lane%26active"
+      "daex://session/session%201%2F2?lane=lane%26active"
     )
   }
 
@@ -4940,7 +4940,7 @@ final class ADETests: XCTestCase {
     let compatibility = AccountAdoptionRouteCompatibilityError(machineName: "Arul's Mac")
     XCTAssertFalse(syncAccountAdoptionFailureIsFatal(compatibility))
     XCTAssertTrue(
-      compatibility.localizedDescription.contains("Update ADE"),
+      compatibility.localizedDescription.contains("Update DAEX"),
       "the message must say what to do, not imply a security failure"
     )
 

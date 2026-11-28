@@ -286,7 +286,7 @@ describe("searchService", () => {
       (item) => item.kind === "lane"
     );
     expect(laneHit).toBeTruthy();
-    expect(laneHit!.deepLink).toContain("ade://lane/lane-1");
+    expect(laneHit!.deepLink).toContain("daex://lane/lane-1");
     expect(laneHit!.deepLink).toContain("repo=owner%2Frepo");
     expect(laneHit!.deepLink).toContain("branch=ade%2Funiversal-search");
   });
@@ -622,7 +622,7 @@ describe("searchService classification and lane-git dedup", () => {
     service.notifyLaneActivity("lane-work");
     await service.processPendingNow();
     const commit = (await service.query({ query: "canonical commits kind:commit" })).results[0];
-    expect(commit?.deepLink).toMatch(/^ade:\/\/commit\//);
+    expect(commit?.deepLink).toMatch(/^daex:\/\/commit\//);
     expect(commit?.deepLink).toContain("repo=owner%2Frepo");
     service.dispose();
   });
@@ -645,7 +645,7 @@ describe("searchService classification and lane-git dedup", () => {
     });
 
     const artifact = (await service.query({ query: "screenshot kind:artifact" })).results[0];
-    expect(artifact?.deepLink).toMatch(/^ade:\/\/artifact\//);
+    expect(artifact?.deepLink).toMatch(/^daex:\/\/artifact\//);
     service.dispose();
   });
 });

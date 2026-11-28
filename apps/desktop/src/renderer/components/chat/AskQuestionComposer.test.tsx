@@ -319,7 +319,7 @@ describe("AskQuestionComposer previews", () => {
 describe("AskQuestionComposer keyboard", () => {
   it("number keys mark an option without submitting, and Enter sends", () => {
     const { onSubmit } = renderComposer(buildRequest([planQuestion()]));
-    const card = screen.getByRole("group", { name: /ade asks/i });
+    const card = screen.getByRole("group", { name: /daex asks/i });
 
     fireEvent.keyDown(card, { key: "1" });
     expect(onSubmit).not.toHaveBeenCalled();
@@ -358,7 +358,7 @@ describe("AskQuestionComposer keyboard", () => {
 
   it("escape declines", () => {
     const { onDecline } = renderComposer(buildRequest([planQuestion()]));
-    fireEvent.keyDown(screen.getByRole("group", { name: /ade asks/i }), { key: "Escape" });
+    fireEvent.keyDown(screen.getByRole("group", { name: /daex asks/i }), { key: "Escape" });
     expect(onDecline).toHaveBeenCalled();
   });
 
