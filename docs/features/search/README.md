@@ -1,10 +1,10 @@
 # Universal Search
 
-One deterministic full-text index over everything ADE knows about a project —
+One deterministic full-text index over everything DAEX knows about a project —
 chat transcripts, terminal/CLI-session scrollback, PRs, commits, and branches —
 unioned at query time with cheap or fast-changing sources (lanes, workspace
 files, proof artifacts, Linear issues) that are delegated to their owning
-service instead of being indexed. Every hit carries a canonical `ade://` deep
+service instead of being indexed. Every hit carries a canonical `daex://` deep
 link back to the exact surface (a chat message sequence, a scrollback byte
 offset, a PR, a commit, a lane, a file line, or a proof artifact). Session,
 lane, and commit links include the portable deeplink envelope when the owning
@@ -15,7 +15,7 @@ The index is a **machine-local, disposable cache** at
 never syncs, and a rebuild is as cheap as deleting the file. Heavy text is
 ingested on a **debounced background queue** off the PTY/chat hot paths; the
 same `searchService` backs the desktop ⌘K command palette
-and the `ade search` CLI through one `search` ADE action domain.
+and the `daex search` CLI through one `search` DAEX action domain.
 
 ## Source file map
 
@@ -56,7 +56,7 @@ Main-process service (`apps/desktop/src/main/services/search/`):
   unterminated tail unconsumed unless `force` (session ended) is set.
   `sanitizeIndexedText` strips control chars while keeping `\n` / `\t`.
 - `searchServiceWiring.ts` — `createProjectSearchService`, the host-level
-  assembly shared by the desktop main process and the `ade` runtime so their
+  assembly shared by the desktop main process and the brain so their
   wiring cannot drift. Binds the delegated sources, subscribes the
   session/chat hooks, resolves the primary lane for file delegation, and owns
   the deferred backfill kickoff.
@@ -69,7 +69,7 @@ Shared contract:
   `SearchQueryResult`, `SearchIndexStatus`, `SearchRebuildResult`. Re-exported
   from `shared/types/index.ts`.
 
-ADE action domain + RPC scoping:
+DAEX action domain + RPC scoping:
 
 - `apps/desktop/src/main/services/adeActions/registry.ts` — registers the
   `search` domain (`ADE_ACTION_DOMAIN_NAMES`), its allowlist
@@ -146,8 +146,7 @@ Desktop ⌘K command palette:
   the existing event-driven lane PR source; the palette adds no poller.
 - Queries with at least three words (or two words with no direct command match)
   ask Jev (`usePaletteSuggestions.ts`, candidates and descriptions in
-  `commandPaletteSuggestions.ts`) to rank up to 20 likely commands after a 500 ms pause (20 picked
-  the same command as 40 on 30 test queries, for 26% fewer tokens). The
+  `commandPaletteSuggestions.ts`) to rank up to 20 likely commands after a 500 ms pause. The
   `Suggested` group appears above normal results when
   the top command probability is at least 0.35 and each shown command is above
   0.15. Suggestions use the same command rows and still require an explicit
@@ -167,16 +166,62 @@ Desktop ⌘K command palette:
   descriptions). The palette search input has the `ade-palette-search` class,
   which removes the global focus ring from that autofocused field.
 
-`ade search` CLI + agent skill:
+`daex search` CLI + agent skill:
 
 - `apps/ade-cli/src/cli.ts` — `buildSearchPlan` (flags `--kind`/`--kinds`,
   `--lane`/`--lane-id`, `--limit`, `--cursor`, `--status`, `--rebuild`,
   `--text`/`--json`), the `search-results` / `search-status` text formatters,
   the `search` help block, and `exitCodeFromResult` (exit `1` on no results,
   `2` on a usage error such as an unknown `--kind`).
-- `apps/desktop/resources/agent-skills/ade-search/SKILL.md` — the bundled
-  `ade-search` agent skill (registered in
+- `apps/desktop/resources/agent-skills/daex-search/SKILL.md` — the bundled
+  `daex-search` agent skill (the old `ade-search` name still resolves) (registered in
   `apps/desktop/src/shared/adeCliGuidance.ts` and referenced in `AGENTS.md`).
+
+## Gotchas / fragile areas
+
+- **Search runs on each machine, by pin.** The palette asks every online copy
+  of the repository through its own pin (`useOnlineCopyPins`,
+  `callEachMachine`); there is no account-side index. A computer that is off,
+  or a DAEX Cloud computer at rest, is not searched and is never woken for it.
+
+- **Hot-path enqueue must stay cheap.** `notifyTerminalData` /
+  `notifyChatEvent` run inside `broadcastData` and the chat event emitter.
+  They only touch the in-memory queue and re-arm the timer (and only when the
+  new work is due before the armed wakeup). Never do DB work in a `notify*`
+  hook — all IO belongs in the debounced drain.
+- **Schema changes mean drop-and-rebuild.** Any DDL change must bump
+  `SEARCH_INDEX_SCHEMA_VERSION`. There is no migration path — a mismatch drops
+  and recreates the DB, and backfill rebuilds it. Do not hand-migrate the
+  cache.
+- **Torn-tail rule for incremental reads.** Transcript writers append whole
+  lines. The chat/terminal processors never consume an unterminated final line
+  (chat: no trailing newline; terminal chunker: unforced partial tail) —
+  consuming it would advance the cursor past a half-written record and
+  permanently drop it. A genuinely shrunk file (rewrite) is detected via
+  `fileSize < cursor` and triggers a from-scratch reindex of that session.
+  Lossless `.gz` history compaction is *not* a shrink: the transcript-path
+  resolver treats the `.gz` sibling as canonical (it strips the suffix before
+  the moved-path check), and `readHistoryFileSync` returns the same byte length,
+  so the cursor and indexed docs survive compaction untouched.
+- **Branches are indexed from the primary lane only.** `listBranches` returns
+  every branch visible from the repo, so indexing per lane would duplicate the
+  whole branch list N times. `processLaneGit` only indexes branches when the
+  lane is `primary`; commits are per lane (capped at 100 recent).
+- **PR documents are local rows only.** `processPr` indexes the PR title,
+  number, and URL already on `listAll()`. It must not call `getDetail` or
+  `getComments` — those are live GitHub REST reads (the pull itself plus issue
+  comments plus review comments), and a backfill or `prs-updated` fan-out over
+  hundreds of historical rows exhausts the hourly quota. Comment/body search
+  stays on the PR surface that already paid for those reads.
+- **Delegated sources are best-effort.** Every delegation (lanes, files,
+  artifacts, Linear) is wrapped so an unavailable source (missing worktree,
+  no file index, Linear not connected) yields no candidates rather than
+  failing the whole query. File and Linear delegation also require positive
+  query text — they are skipped for match-all/filter-only queries.
+- **Snippet markers rely on sanitized text.** The `\u0001` / `\u0002` (`SNIPPET_MARK_START` / `SNIPPET_MARK_END`) SQLite `snippet()` markers survive
+  into typed `matchRanges` only because `sanitizeIndexedText` strips control
+  chars from every indexed body, so those bytes can never appear in real
+  indexed text. Don't index raw bytes past the sanitizer.
 
 ## Key concepts
 
@@ -285,7 +330,7 @@ projects, which keeps the brain responsive on a machine with many projects.
 
 - A project with no index file yet counts as searched with no hits.
 - A project whose index is another schema version, or cannot be opened or read,
-  is listed in `projectsUnavailable` with a note to open that project in ADE
+  is listed in `projectsUnavailable` with a note to open that project in DAEX
   once; opening it rebuilds the index. The read path never creates, migrates or
   deletes an index file.
 - A project whose root folder no longer exists is listed in
@@ -305,7 +350,7 @@ project.
 
 Search runs on computers: the palette asks every online copy of the
 repository (`useOnlineCopyPins`, `callEachMachine`). With none online it makes
-no search call and shows no entity results. ADE Cloud computers at rest are
+no search call and shows no entity results. DAEX Cloud computers at rest are
 not woken to search. The palette still matches the rows the Work list already
 holds, which include saved chats, saved terminal copies and cloud lanes.
 
@@ -323,47 +368,6 @@ ids are deterministic, upserts idempotent, cursors shared via the `sources`
 table, and WAL + `busy_timeout` serialize writers — at the cost of some
 duplicate IO and occasional `SQLITE_BUSY` retry noise in logs.
 
-## Gotchas / fragile areas
-
-- **Hot-path enqueue must stay cheap.** `notifyTerminalData` /
-  `notifyChatEvent` run inside `broadcastData` and the chat event emitter.
-  They only touch the in-memory queue and re-arm the timer (and only when the
-  new work is due before the armed wakeup). Never do DB work in a `notify*`
-  hook — all IO belongs in the debounced drain.
-- **Schema changes mean drop-and-rebuild.** Any DDL change must bump
-  `SEARCH_INDEX_SCHEMA_VERSION`. There is no migration path — a mismatch drops
-  and recreates the DB, and backfill rebuilds it. Do not hand-migrate the
-  cache.
-- **Torn-tail rule for incremental reads.** Transcript writers append whole
-  lines. The chat/terminal processors never consume an unterminated final line
-  (chat: no trailing newline; terminal chunker: unforced partial tail) —
-  consuming it would advance the cursor past a half-written record and
-  permanently drop it. A genuinely shrunk file (rewrite) is detected via
-  `fileSize < cursor` and triggers a from-scratch reindex of that session.
-  Lossless `.gz` history compaction is *not* a shrink: the transcript-path
-  resolver treats the `.gz` sibling as canonical (it strips the suffix before
-  the moved-path check), and `readHistoryFileSync` returns the same byte length,
-  so the cursor and indexed docs survive compaction untouched.
-- **Branches are indexed from the primary lane only.** `listBranches` returns
-  every branch visible from the repo, so indexing per lane would duplicate the
-  whole branch list N times. `processLaneGit` only indexes branches when the
-  lane is `primary`; commits are per lane (capped at 100 recent).
-- **PR documents are local rows only.** `processPr` indexes the PR title,
-  number, and URL already on `listAll()`. It must not call `getDetail` or
-  `getComments` — those are live GitHub REST reads (the pull itself plus issue
-  comments plus review comments), and a backfill or `prs-updated` fan-out over
-  hundreds of historical rows exhausts the hourly quota. Comment/body search
-  stays on the PR surface that already paid for those reads.
-- **Delegated sources are best-effort.** Every delegation (lanes, files,
-  artifacts, Linear) is wrapped so an unavailable source (missing worktree,
-  no file index, Linear not connected) yields no candidates rather than
-  failing the whole query. File and Linear delegation also require positive
-  query text — they are skipped for match-all/filter-only queries.
-- **Snippet markers rely on sanitized text.** The `\u0001` / `\u0002` (`SNIPPET_MARK_START` / `SNIPPET_MARK_END`) SQLite `snippet()` markers survive
-  into typed `matchRanges` only because `sanitizeIndexedText` strips control
-  chars from every indexed body, so those bytes can never appear in real
-  indexed text. Don't index raw bytes past the sanitizer.
-
 ## Cross-links
 
 - [Chat](../chat/README.md) — chat transcripts are the FTS `chat` source.
@@ -371,7 +375,7 @@ duplicate IO and occasional `SQLITE_BUSY` retry noise in logs.
   CLI-session scrollback is the FTS `terminal` source.
 - [Pull requests](../pull-requests/README.md) — local PR titles and numbers are
   the `pr` source. Live GitHub body/comment fetches are not part of indexing.
-- [Deeplinks](../deeplinks/README.md) — every result carries an `ade://` deep
+- [Deeplinks](../deeplinks/README.md) — every result carries a `daex://` deep
   link built through the shared deeplink contract; session results carry
   `event` / `offset` anchors, and file / commit / artifact results use the
   canonical shared URL builders.
@@ -380,5 +384,5 @@ duplicate IO and occasional `SQLITE_BUSY` retry noise in logs.
 - [Storage and recovery](../storage-and-recovery/README.md) — the lossless
   history compression whose `.gz` transcripts the ingestion processors read
   transparently through `readHistoryFileSync`.
-- [System overview](../../ARCHITECTURE.md) — the `search` ADE action domain and
+- [System overview](../../ARCHITECTURE.md) — the `search` DAEX action domain and
   services catalog entry.
