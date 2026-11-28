@@ -548,6 +548,8 @@ export type CloudMacOffer = {
   driveGb: number;
   /** What a running Mac uses each minute, at the full price (no ads). Billed by the whole minute. */
   creditMilliPerMinute: number;
+  /** Pricing v3 only: what it uses each minute at the price with ads (400 at a 20% discount). Missing: one price. */
+  adCreditMilliPerMinute?: number;
   /** A Mac stops this many minutes after its work stops (Linux sleeps after 3). */
   stopAfterIdleMinutes: number;
   /** How long a start usually takes once a Mac is free, in seconds. */

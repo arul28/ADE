@@ -7374,7 +7374,7 @@ describe("Pricing v3's ad price", () => {
         clock += MINUTE; // past the read's settings cache
         return (await handlePublicPricing(new Request("https://directory.test/public/pricing"), harness.env)).json();
       };
-      expect((await account()).catalog.mac).toMatchObject({ creditMilliPerMinute: 500 });
+      expect((await account()).catalog.mac).toMatchObject({ creditMilliPerMinute: 500, adCreditMilliPerMinute: 400 });
       expect(await site()).toMatchObject({ pricingV3: true, mac: true });
       // Testers only: the website shows no Mac.
       setting("mac_computers", "testers");
@@ -7388,6 +7388,7 @@ describe("Pricing v3's ad price", () => {
       setting("pricing_v3", "off");
       const v2 = await account();
       expect(v2.catalog.mac?.creditMilliPerMinute).toBe(500);
+      expect(v2.catalog.mac).not.toHaveProperty("adCreditMilliPerMinute");
       // Both off: today's answers.
       setting("mac_computers", "off");
       const today = await account();

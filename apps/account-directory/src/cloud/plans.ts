@@ -144,14 +144,17 @@ export function cloudSizeFor(type: unknown, cpu: unknown, memoryGb: unknown): Cl
 /**
  * `CloudCatalog.mac`: sent only while the `mac_computers` switch reaches the
  * account (`macReaches`). `stopAfterIdleMinutes` is the server's setting.
+ * `adDiscountPct`: the account's ad discount while Pricing v3 reaches it
+ * (`V3CatalogTerms`), which adds the ad price beside the full one; null before.
  */
-export function cloudMacOffer(stopAfterIdleMinutes: number): CloudMacOffer {
+export function cloudMacOffer(stopAfterIdleMinutes: number, adDiscountPct: number | null = null): CloudMacOffer {
   return {
     label: "Mac",
     cpu: CLOUD_MAC_SHAPE.cpu,
     memoryGb: CLOUD_MAC_SHAPE.memoryGb,
     driveGb: CLOUD_MAC_SHAPE.driveGb,
     creditMilliPerMinute: MAC_MILLI_PER_MINUTE,
+    ...(adDiscountPct != null ? { adCreditMilliPerMinute: adRateMilli(MAC_MILLI_PER_MINUTE, adDiscountPct) } : {}),
     stopAfterIdleMinutes,
     startSeconds: { min: 20, max: 45 },
     summary: `macOS with Xcode, ${CLOUD_MAC_SHAPE.cpu} CPU and ${CLOUD_MAC_SHAPE.memoryGb} GB, for Apple builds and the Simulator. Billed by the minute while it runs.`,

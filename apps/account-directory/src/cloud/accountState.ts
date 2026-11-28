@@ -182,7 +182,8 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
         ? cloudCatalog(offers, shownPlan, { v3: priced.catalog })
         : cloudCatalog(offers, shownPlan, { smallUsesHours: !(await smallUsesNoHours(env, account)) })),
       // The DAEX Cloud Mac: only while the switch reaches this account (`macSwitch.ts`); absent, no app shows anything of it.
-      ...(macShown ? { mac: cloudMacOffer(await macIdleStopMinutes(env)) } : {}),
+      // Under Pricing v3 it carries its ad price too (`adCreditMilliPerMinute`).
+      ...(macShown ? { mac: cloudMacOffer(await macIdleStopMinutes(env), priced ? priced.catalog.discountPct : null) } : {}),
     },
     billing: {
       periodStart: account.period_start,
