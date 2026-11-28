@@ -463,14 +463,34 @@ func cloudGravityURL(_ value: String?) -> URL? {
 
 extension CloudServerClient {
   /// `confirmed`: a yes confirmed a second time (`CloudSponsoredState.confirmYes`); left out otherwise.
-  private struct ConsentBody: Encodable { let consent: String; let confirmed: Bool? }
+  /// `noticeSeen` (Pricing v3): the answer was given on the ads notice or the switch, so it counts as the notice seen.
+  private struct ConsentBody: Encodable { let consent: String; let confirmed: Bool?; let noticeSeen: Bool? }
   private struct SeenBody: Encodable { let instanceId: String; let device: CloudSponsoredDevice }
   private struct HideBody: Encodable { let chatId: String; let turnId: String }
   private struct FreeConsentBody: Encodable { let consent: String }
   private struct FreeSeenBody: Encodable { let chatId: String; let device: CloudSponsoredDevice }
+  /// `POST /cloud/sponsored/sent` (`CloudAdSentRequest`); `instanceId` an explicit null for a chat on the person's own computer.
+  private struct SentBody: Encodable {
+    let instanceId: String?
+    let phoneId: String?
+    let chatId: String
+    let messageId: String
+
+    private enum CodingKeys: String, CodingKey { case instanceId, phoneId, chatId, messageId }
+
+    func encode(to encoder: Encoder) throws {
+      var c = encoder.container(keyedBy: CodingKeys.self)
+      try c.encode(instanceId, forKey: .instanceId)
+      try c.encodeIfPresent(phoneId, forKey: .phoneId)
+      try c.encode(chatId, forKey: .chatId)
+      try c.encode(messageId, forKey: .messageId)
+    }
+  }
   private struct AdBody: Encodable {
     /// The chat's ADE Cloud computer; null for an ADE Free Models chat on any other machine.
     let instanceId: String?
+    /// Pricing v3: the cloud iPhone this chat holds (`cloudHeldPhoneId`); left out when none.
+    let phoneId: String?
     let chatId: String
     let turnId: String
     let messages: [CloudSponsoredMessage]
@@ -481,12 +501,13 @@ extension CloudServerClient {
     /// Gravity's renderer the card is drawn with: the answer carries Gravity's own ad.
     let renderer: String
 
-    private enum CodingKeys: String, CodingKey { case instanceId, chatId, turnId, messages, device, format, surface, renderer }
+    private enum CodingKeys: String, CodingKey { case instanceId, phoneId, chatId, turnId, messages, device, format, surface, renderer }
 
     /// `instanceId` is sent as an explicit null, not left out.
     func encode(to encoder: Encoder) throws {
       var c = encoder.container(keyedBy: CodingKeys.self)
       try c.encode(instanceId, forKey: .instanceId)
+      try c.encodeIfPresent(phoneId, forKey: .phoneId)
       try c.encode(chatId, forKey: .chatId)
       try c.encode(turnId, forKey: .turnId)
       try c.encode(messages, forKey: .messages)
@@ -499,8 +520,8 @@ extension CloudServerClient {
 
   /// `PUT /cloud/sponsored/consent`: the account's answer, on every device at
   /// once. Answers the account's sponsored state as it is now.
-  func setSponsoredConsent(_ consent: String, confirmed: Bool = false) async throws -> CloudSponsoredState {
-    let body = try JSONEncoder().encode(ConsentBody(consent: consent, confirmed: confirmed ? true : nil))
+  func setSponsoredConsent(_ consent: String, confirmed: Bool = false, noticeSeen: Bool = false) async throws -> CloudSponsoredState {
+    let body = try JSONEncoder().encode(ConsentBody(consent: consent, confirmed: confirmed ? true : nil, noticeSeen: noticeSeen ? true : nil))
     return try decode(CloudSponsoredState.self, from: try await send("PUT", "cloud/sponsored/consent", body: body))
   }
 
@@ -519,12 +540,19 @@ extension CloudServerClient {
 
   /// `POST /cloud/sponsored/ad`: one card for a finished reply, in the
   /// format it will be drawn in. Asking again for the same turn answers the same card.
-  func sponsoredAd(instanceId: String?, chatId: String, turn: CloudSponsoredTurn, device: CloudSponsoredDevice, format: CloudSponsoredFormat) async throws -> CloudSponsoredAdAnswer {
+  func sponsoredAd(instanceId: String?, phoneId: String? = nil, chatId: String, turn: CloudSponsoredTurn, device: CloudSponsoredDevice, format: CloudSponsoredFormat) async throws -> CloudSponsoredAdAnswer {
     let body = try JSONEncoder().encode(AdBody(
-      instanceId: instanceId, chatId: chatId, turnId: turn.turnId, messages: turn.messages, device: device,
+      instanceId: instanceId, phoneId: phoneId, chatId: chatId, turnId: turn.turnId, messages: turn.messages, device: device,
       format: format.rawValue, surface: cloudSponsoredSurface, renderer: cloudSponsoredRenderer
     ))
     return try decode(CloudSponsoredAdAnswer.self, from: try await send("POST", "cloud/sponsored/ad", body: body))
+  }
+
+  /// `POST /cloud/sponsored/sent`: a person sent a message in a chat that uses
+  /// DAEX Cloud (Pricing v3's proof). 404 while Pricing v3 doesn't reach the account.
+  func sponsoredSent(instanceId: String?, phoneId: String?, chatId: String, messageId: String) async throws {
+    let body = try JSONEncoder().encode(SentBody(instanceId: instanceId, phoneId: phoneId, chatId: chatId, messageId: messageId))
+    _ = try await send("POST", "cloud/sponsored/sent", body: body)
   }
 
   /// `PUT /cloud/free-models/consent`: the account's answer to the ADE Free
@@ -577,7 +605,7 @@ func cloudSaveFreeModelsConsent(_ consent: String) async -> Result<CloudFreeMode
 /// Saves the account's answer and shows it everywhere at once: the state
 /// the server answered, or the sentence to show when it didn't save.
 @MainActor
-func cloudSaveSponsoredConsent(_ consent: String, confirmed: Bool = false, since: Int? = nil) async -> Result<CloudSponsoredState, CloudSponsoredSaveFailure> {
+func cloudSaveSponsoredConsent(_ consent: String, confirmed: Bool = false, since: Int? = nil, noticeSeen: Bool = false) async -> Result<CloudSponsoredState, CloudSponsoredSaveFailure> {
   // The answer belongs to the account that gave it (`since`: the one signed in when a confirm
   // opened): one signed in since doesn't take it.
   let generation = since ?? AccountCloudStore.shared.generation
@@ -588,7 +616,7 @@ func cloudSaveSponsoredConsent(_ consent: String, confirmed: Bool = false, since
     return .failure(CloudSponsoredSaveFailure(message: "Sign in to \(Brand.name), then try again."))
   }
   do {
-    let state = try await client.setSponsoredConsent(consent, confirmed: confirmed)
+    let state = try await client.setSponsoredConsent(consent, confirmed: confirmed, noticeSeen: noticeSeen)
     // A no deletes the account's viewer rows on the server.
     if !state.granted { CloudSponsoredStore.shared.forgetSeen() }
     AccountCloudStore.shared.noteSponsored(state, generation: generation)
@@ -596,7 +624,9 @@ func cloudSaveSponsoredConsent(_ consent: String, confirmed: Bool = false, since
     // Small's rate in the account's catalog (here, or abroad within a week of a
     // US look): read the account again so Small's hours show it. A read already
     // out may predate the answer, so it ends first and then the account is read.
-    if state.smallNeedsCards == true || state.smallOutsideUS, generation == AccountCloudStore.shared.generation {
+    // Pricing v3: the server already moved the prices and the notice; read `pricing` again so they show at once.
+    if state.smallNeedsCards == true || state.smallOutsideUS || noticeSeen || AccountCloudStore.shared.account?.pricing != nil,
+       generation == AccountCloudStore.shared.generation {
       Task { await SyncMenuSafePublisher.shared.service.refreshCloudServerInstances() }
     }
     return .success(state)
@@ -769,6 +799,10 @@ final class CloudSponsoredStore: ObservableObject {
   /// false while it shows, true once dismissed. That reply asks for no card:
   /// the notice holds its place.
   @Published private(set) var noticeTurns: [String: Bool] = [:]
+  /// Pricing v3: this phone answered the ads notice; it hides at once, before the account is read again.
+  @Published private(set) var adsNoticeAnswered = false
+
+  func noteAdsNoticeAnswered() { adsNoticeAnswered = true }
 
   private static let answerLimit = 50
   private static let seenEvery: TimeInterval = 4 * 60
@@ -1108,6 +1142,7 @@ final class CloudSponsoredStore: ObservableObject {
     hiddenTurns = []
     foldedPicks = []
     noticeTurns = [:]
+    adsNoticeAnswered = false
     holder = nil
     lastSeenAt = [:]
     lastSeenTracking = [:]

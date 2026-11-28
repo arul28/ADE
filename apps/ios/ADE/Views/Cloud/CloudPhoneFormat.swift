@@ -26,7 +26,7 @@ func cloudHoursNotes(_ account: CloudPhoneAccount, now: Date) -> [CloudHoursNote
     notes.append(.init(text: line, tone: .warn))
   }
   if let earned = account.earnedHours, earned.leftMilli > 0 {
-    notes.append(.init(text: "+\(words.amount(earned.leftMilli)) earned", tone: .lamp))
+    notes.append(.init(text: "+\(words.amount(earned.leftMilli)) from invites", tone: .lamp))
   }
   // Extra credits have their own tile on the hero ("When credits run out").
   if let forecast = cloudHoursForecast(account, now: now) {
@@ -282,6 +282,18 @@ struct CloudPhoneTier: Identifiable, Equatable {
   let memoryGb: Double
   let multiplierMilli: Int
   let diskMaxGb: Double?
+  /// Pricing v3: the ad price (`adMultiplierMilli`); nil while Pricing v3 doesn't reach the account.
+  var adMultiplierMilli: Int? = nil
+
+  /// The full and ad price, for `CloudAdPriceWords.rate`. Without an ad price both are the full one.
+  var ratePair: CloudRatePair { CloudRatePair(fullMilli: multiplierMilli, adMilli: adMultiplierMilli ?? multiplierMilli) }
+
+  /// This size at the rate the account pays now (Pricing v3): the ad price
+  /// while ads are on, so "left on it" counts what the credits really buy.
+  func atPriceNow(_ pricing: CloudPricingState?) -> CloudPhoneTier {
+    guard let pricing, pricing.ads.available, pricing.ads.on, let ad = adMultiplierMilli, ad != multiplierMilli else { return self }
+    return CloudPhoneTier(id: id, label: label, type: type, cpu: cpu, memoryGb: memoryGb, multiplierMilli: ad, diskMaxGb: diskMaxGb, adMultiplierMilli: ad)
+  }
 
   /// Small on a Pricing v2 server: it never uses hours (`multiplierMilli` 0),
   /// unless the account's catalog rates it (Free, sponsored cards off).
@@ -366,7 +378,8 @@ func cloudPhoneTiers(_ catalog: CloudPhoneAccount.Catalog?) -> [CloudPhoneTier] 
       cpu: size.cpu,
       memoryGb: size.memoryGb,
       multiplierMilli: size.multiplierMilli,
-      diskMaxGb: size.diskMaxGb
+      diskMaxGb: size.diskMaxGb,
+      adMultiplierMilli: size.adMultiplierMilli
     )
   }
 }
@@ -444,8 +457,10 @@ func cloudHoursOnSizes(_ milli: Int, tiers: [CloudPhoneTier]) -> String? {
 /// unlimited (`cloudSmallRateMilli`). Small uses hours only on Free with
 /// sponsored cards off while the server's `smallNeedsCards` rule is on: the
 /// account's catalog then rates it above 0. Read the catalog, never assume 0.
-func cloudSmallTierUsingHours(_ account: CloudPhoneAccount) -> CloudPhoneTier? {
+@MainActor func cloudSmallTierUsingHours(_ account: CloudPhoneAccount) -> CloudPhoneTier? {
   guard let small = cloudPhoneTiers(account.catalog).first(where: { $0.id == "small" }), small.usesHours else { return nil }
+  // Pricing v3: Free's Small is free at the ad price, while ads are on here.
+  if let pricing = cloudPricing(), pricing.ads.available, pricing.ads.on, small.adMultiplierMilli == 0 { return nil }
   return small
 }
 
@@ -461,15 +476,26 @@ let cloudSmallFairUseSentence = "Small computers are for your own work and fall 
 struct CloudBalanceWords: Equatable {
   /// What a minute on the ADE Cloud iPhone uses, in thousandths of a credit.
   let phoneMilliPerMinute: Int
+  /// Pricing v3's shown scale (`creditScale`): shown credits = milli / 1000 x
+  /// scale. 1 (the old unit) until the server sends one. Read from the
+  /// account, never a constant of the app.
+  let scale: Int
 
   /// The words before the account is read: one credit a minute on the iPhone.
   static let credits = CloudBalanceWords(phoneMilliPerMinute: 1000)
 
-  init(phoneMilliPerMinute: Int) { self.phoneMilliPerMinute = phoneMilliPerMinute }
+  init(phoneMilliPerMinute: Int, scale: Int = 1) {
+    self.phoneMilliPerMinute = phoneMilliPerMinute
+    self.scale = max(1, scale)
+  }
   init(_ account: CloudPhoneAccount?) {
     let perMinute = account?.credits?.phoneMilliPerMinute ?? 0
     phoneMilliPerMinute = perMinute > 0 ? perMinute : CloudBalanceWords.credits.phoneMilliPerMinute
+    scale = max(1, account?.pricing?.creditScale ?? account?.catalog?.creditScale ?? 1)
   }
+
+  /// A number of them, at the account's scale: "4,180", "2.5".
+  func number(_ milli: Int) -> String { cloudCredits(milli, scale: scale) }
 
   /// "credits".
   var unit: String { "credits" }
@@ -488,7 +514,7 @@ struct CloudBalanceWords: Equatable {
 
   /// A number of them with the unit: "42.5 credits", "1 credit".
   func amount(_ milli: Int) -> String {
-    let number = cloudHours(milli)
+    let number = number(milli)
     return "\(number) \(number == "1" ? "credit" : "credits")"
   }
 
@@ -537,11 +563,15 @@ struct CloudBalanceWords: Equatable {
 
   /// What one of them is (`CLOUD_CREDIT_UNIT_SENTENCE`).
   var unitSentence: String {
-    "A credit is an hour on a Medium computer or a minute on the \(Brand.cloudName) iPhone. Small computers use none."
+    guard scale > 1 else {
+      return "A credit is an hour on a Medium computer or a minute on the \(Brand.cloudName) iPhone. Small computers use none."
+    }
+    // Pricing v3: a credit is a tenth of a Medium-hour, so say the rates, not the unit.
+    return "A Medium computer uses \(spelled(1000)) an hour and the \(Brand.cloudName) iPhone \(phoneRate)."
   }
 
   /// A plan's month: "100 credits a month".
-  func monthly(_ milli: Int) -> String { "\(cloudHours(milli)) \(unit) a month" }
+  func monthly(_ milli: Int) -> String { "\(number(milli)) \(unit) a month" }
 
   /// The hero's label over the number left.
   var leftTitle: String { "Credits left this month" }
@@ -599,8 +629,9 @@ struct CloudBalanceWords: Equatable {
   }
 
   /// Under Start phone: where its time comes from.
-  func phoneStartNote(device: String) -> String {
-    "Starts an \(device) simulator in the cloud. It uses \(phoneRate) of your \(Brand.cloudName) credits."
+  /// `rate`: Pricing v3's pair ("4 credits a minute with ads · 5 with no ads"); today's rate without it.
+  func phoneStartNote(device: String, rate: String? = nil) -> String {
+    "Starts an \(device) simulator in the cloud. It uses \(rate ?? phoneRate) of your \(Brand.cloudName) credits."
   }
 }
 
@@ -676,11 +707,11 @@ struct CloudPlanMoment: Equatable {
   var title: String { "You're on \(cloudPlanLabel(planId))" }
 
   var detail: String {
-    let amount = cloudHours(includedMilli)
+    let amount = words.number(includedMilli)
     var line = computerLimit.map { "\(cloudComputersPhrase($0)) and \(words.monthly(includedMilli)). Renews \(cloudDate(renewsAt))." }
       ?? "\(words.monthly(includedMilli)). Renews \(cloudDate(renewsAt))."
     if let replaced = replacedFreeMilli {
-      line += " Your \(cloudHours(replaced)) unused \(words.free) were replaced by \(cloudPlanLabel(planId))'s \(amount)."
+      line += " Your \(words.number(replaced)) unused \(words.free) were replaced by \(cloudPlanLabel(planId))'s \(amount)."
     }
     return line
   }

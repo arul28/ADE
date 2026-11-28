@@ -156,6 +156,8 @@ struct CloudMachineFacts: View {
   /// each time the page opens or its state changes; never wakes it. Nil
   /// (no rows) on a server older than the route or any failed read.
   @State private var live: CloudComputerLiveStatus?
+  /// The phone's own read carries what this computer costs now (Pricing v3).
+  @ObservedObject private var accountStore = AccountCloudStore.shared
 
   var body: some View {
     let tier = cloudPhoneTier(of: machine, in: store.tiers)
@@ -177,6 +179,16 @@ struct CloudMachineFacts: View {
           fact(store.words.title, tier.hoursLine(leftMilli: store.hoursLeftMilli, words: store.words))
         } else if let size = machine.size {
           fact("Size", size)
+        }
+        // Pricing v3: what it costs now while awake, and why it has the full price while ads are on.
+        if machine.isAwake, let adWords = CloudAdPriceWords(accountStore.account), let price = adWords.pricing.computer(machine.instanceId) {
+          fact("Price", adWords.priceNow(price))
+          if let reason = adWords.reasonLine(price) {
+            GridRow {
+              Color.clear.frame(width: 1, height: 1)
+              Text(reason).foregroundStyle(ADEColor.textSecondary).fixedSize(horizontal: false, vertical: true)
+            }
+          }
         }
         let lastRun = cloudLastRun(machine, now: store.now)
         if !lastRun.isEmpty { fact("Last run", lastRun) }
@@ -375,8 +387,10 @@ struct CloudMachineSizeCard: View {
 
   /// "4 credits an hour now → 1 credit an hour on Medium. 418 credits last about 418 h on Medium."
   private func rates(current: CloudPhoneTier, tier: CloudPhoneTier) -> String {
-    let hours = store.hoursLeftMilli.flatMap { store.words.hoursOn(tier, leftMilli: $0) }
-    return "\(store.words.changeRates(from: current, to: tier)).\(hours.map { " \($0)" } ?? "")"
+    // Pricing v3: the rates the account pays now (the ad price while ads are on).
+    let pricing = cloudPricing()
+    let hours = store.hoursLeftMilli.flatMap { store.words.hoursOn(tier.atPriceNow(pricing), leftMilli: $0) }
+    return "\(store.words.changeRates(from: current.atPriceNow(pricing), to: tier.atPriceNow(pricing))).\(hours.map { " \($0)" } ?? "")"
   }
 
   private func confirmTitle(current: CloudPhoneTier) -> String {

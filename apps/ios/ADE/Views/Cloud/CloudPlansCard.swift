@@ -63,11 +63,21 @@ struct CloudPlansCard: View {
   }
 
   private var words: CloudBalanceWords { CloudBalanceWords(account) }
+  /// Pricing v3's words, from the phone's own read; nil while it doesn't reach the account.
+  private var adWords: CloudAdPriceWords? { CloudAdPriceWords(accountStore.account ?? account) }
+
+  /// A plan's Small: free on paid plans; on Free, "Free with ads" where ads
+  /// exist under Pricing v3 (today: unlimited with sponsored cards in the US).
+  private func smallFact(_ column: Column) -> String {
+    guard column.id == "free" else { return "Unlimited Small" }
+    if let adWords { return adWords.pricing.ads.available ? "Small: Free with ads" : "Small uses \(words.unit)" }
+    return freeSmallNeedsCards ? "Unlimited Small with cards (US)" : "Unlimited Small"
+  }
 
   /// The one place for the explanations: what every plan includes.
   private var howItWorks: some View {
     VStack(alignment: .leading, spacing: 0) {
-      howRow("infinity", freeSmallNeedsCards ? "Unlimited Small computers on paid plans, and on Free in the US with sponsored cards on and a \(Brand.cloudName) chat opened there each week." : words.smallUnlimitedSentence, "Each lane has its own Linux computer your agents work on. \(cloudSmallFairUseSentence)")
+      howRow("infinity", adWords.map { $0.pricing.ads.available ? "Unlimited Small computers on paid plans, and on Free with ads." : "Unlimited Small computers on paid plans." } ?? (freeSmallNeedsCards ? "Unlimited Small computers on paid plans, and on Free in the US with sponsored cards on and a \(Brand.cloudName) chat opened there each week." : words.smallUnlimitedSentence), "Each lane has its own Linux computer your agents work on. \(cloudSmallFairUseSentence)")
       Divider().overlay(ADEKit.edge)
       howRow("clock", "\(words.title) run the bigger sizes", "and renew every month. \(words.unitSentence)\(currentHoursLine.map { " Your plan: \($0)." } ?? "")")
       Divider().overlay(ADEKit.edge)
@@ -78,7 +88,7 @@ struct CloudPlansCard: View {
       // from the credits, with no minutes of its own.
       if account.phoneOn {
         Divider().overlay(ADEKit.edge)
-        howRow("iphone", "The \(Brand.cloudName) iPhone", "uses \(words.phoneRate), for agents to test your app on an iPhone simulator in the cloud.")
+        howRow("iphone", "The \(Brand.cloudName) iPhone", "uses \(phoneRateText), for agents to test your app on an iPhone simulator in the cloud.")
       }
     }
     .background(ADEKit.track.opacity(0.45), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -128,17 +138,21 @@ struct CloudPlansCard: View {
         if let computers = computerLimit(column) {
           bigFact("\(computers)", computers == 1 ? "cloud computer" : "cloud computers", current: current)
         } else if current, let old = oldTermsHours(column), let end {
-          bigFact(cloudHours(old), staysOn ? "\(words.until(cloudDate(end))), then \(cloudHours(column.facts.includedMilli))" : words.until(cloudDate(end)), current: current)
+          bigFact(words.number(old), staysOn ? "\(words.until(cloudDate(end))), then \(words.number(column.facts.includedMilli))" : words.until(cloudDate(end)), current: current)
         } else {
-          bigFact(cloudHours(column.facts.includedMilli), words.perMonth, current: current)
+          bigFact(words.number(column.facts.includedMilli), words.perMonth, current: current)
         }
       }
       VStack(alignment: .leading, spacing: 6) {
-        fact("infinity", column.id == "free" && freeSmallNeedsCards ? "Unlimited Small with cards (US)" : "Unlimited Small", current: current)
+        fact("infinity", smallFact(column), current: current)
         if current, let old = oldTermsHours(column), let end {
-          fact("clock", "\(words.amount(old)) until \(cloudDate(end))\(staysOn ? ", then \(cloudHours(column.facts.includedMilli))" : "")", current: current)
+          fact("clock", "\(words.amount(old)) until \(cloudDate(end))\(staysOn ? ", then \(words.number(column.facts.includedMilli))" : "")", current: current)
         } else {
           fact("clock", words.planLine(column.facts.includedMilli), current: current)
+        }
+        // Pricing v3: what the month lasts on a Medium, at both prices ("Time on a plan").
+        if let adWords, let medium = tiers.first(where: { $0.id == "medium" }), let line = adWords.timeOn(column.facts.includedMilli, tier: medium) {
+          fact("hourglass", cloudCapitalized(line), current: current, lines: nil)
         }
         fact("bolt", extraHoursSold(column) ? "\(words.extra) if on" : "No \(words.extra.lowercased())", current: current, quiet: !extraHoursSold(column))
       }
@@ -186,7 +200,7 @@ struct CloudPlansCard: View {
     }
   }
 
-  private func fact(_ symbol: String, _ text: String, current: Bool, quiet: Bool = false) -> some View {
+  private func fact(_ symbol: String, _ text: String, current: Bool, quiet: Bool = false, lines: Int? = 2) -> some View {
     HStack(spacing: 7) {
       Image(systemName: symbol)
         .font(.system(size: 11, weight: .medium))
@@ -195,7 +209,7 @@ struct CloudPlansCard: View {
       Text(text)
         .font(.system(size: 12))
         .foregroundStyle(current ? CloudBrandColor.skyText2 : (quiet ? ADEColor.textMuted : ADEColor.textSecondary))
-        .lineLimit(2)
+        .lineLimit(lines)
         .fixedSize(horizontal: false, vertical: true)
     }
   }
@@ -218,9 +232,23 @@ struct CloudPlansCard: View {
   }
 
   /// "100 hours on a Medium · 40 on a Large · 25 on an X-Large": the account's plan's hours.
+  /// Pricing v3: each size at both prices ("up to 125 hours on a Medium with ads · 100 with no ads · …").
   private var currentHoursLine: String? {
     guard let facts = columns.first(where: { $0.id == account.currentPlanId })?.facts else { return nil }
+    if let adWords {
+      let parts = adWords.timeOnSizes(facts.includedMilli, tiers: tiers)
+      return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
     return cloudHoursOnSizes(facts.includedMilli, tiers: tiers)
+  }
+
+  /// The iPhone's rate: both prices under Pricing v3 (the catalog's `phone`), else today's one.
+  private var phoneRateText: String {
+    if let adWords, let phone = account.catalog?.phone {
+      let pair = CloudRatePair(fullMilli: phone.milliPerMinute, adMilli: phone.adMilliPerMinute)
+      return adWords.rate(pair, unit: .minute)
+    }
+    return words.phoneRate
   }
 
   private func accessibilityLabel(_ column: Column, current: Bool, isNew: Bool) -> String {
@@ -229,9 +257,9 @@ struct CloudPlansCard: View {
       parts.append(cloudComputersPhrase(computers))
       parts.append(column.id == "free" && freeSmallNeedsCards ? "unlimited Small computers with sponsored cards, in the US, with a \(Brand.cloudName) chat there each week" : "unlimited Small computers")
       parts.append(words.planSentence(column.facts.includedMilli))
-      parts.append(cloudHoursOnSizes(column.facts.includedMilli, tiers: tiers) ?? "\(cloudHours(column.facts.includedMilli)) credits a month")
+      parts.append(cloudHoursOnSizes(column.facts.includedMilli, tiers: tiers) ?? "\(words.number(column.facts.includedMilli)) credits a month")
     } else {
-      parts.append("\(cloudHours(column.facts.includedMilli)) \(words.perMonth)")
+      parts.append("\(words.number(column.facts.includedMilli)) \(words.perMonth)")
     }
     parts.append(extraHoursSold(column) ? "\(words.extra.lowercased()) if on" : "no \(words.extra.lowercased())")
     return "\(column.label)\(current ? ", your plan" : "")\(isNew ? ", new" : ""): \(parts.joined(separator: ", "))"
@@ -441,6 +469,96 @@ struct CloudFreeModelsCard: View {
         failure = error.message
       }
       saving = false
+    }
+  }
+}
+
+/// Pricing v3's one switch for the account (`copy.md`, "The switch"): "Ads",
+/// the plan's sentence, then the full-price rule and the data line. It sits
+/// under the credits on the DAEX Cloud page because it changes every price
+/// below it. Off is one tap with no dialog; on asks a second time only when
+/// the server says so (`confirmYes`). Either answer counts as the notice
+/// seen. Shown only where ads exist for this phone (`pricing.ads.available`).
+/// An account call: no machine, no pin.
+struct CloudAdsCard: View {
+  @ObservedObject private var accountStore = AccountCloudStore.shared
+  @State private var saving = false
+  @State private var error: String?
+  /// Where the switch is going while its save runs, so it doesn't snap back before the answer.
+  @State private var pendingOn: Bool?
+  @State private var confirming = false
+  /// The account the second confirm was opened for (`AccountCloudStore.generation`).
+  @State private var confirmGeneration = 0
+
+  var body: some View {
+    if let words = CloudAdPriceWords(accountStore.account), words.pricing.ads.available {
+      let on = pendingOn ?? words.pricing.ads.on
+      VStack(alignment: .leading, spacing: 0) {
+        ADESettingsRow(title: CloudAdPriceWords.switchLabel, symbol: "megaphone") {
+          Toggle(CloudAdPriceWords.switchLabel, isOn: Binding(
+            get: { on || confirming },
+            set: { turnOn in
+              if turnOn, accountStore.account?.sponsored?.confirmYes == true {
+                confirmGeneration = AccountCloudStore.shared.generation
+                confirming = true
+              } else {
+                save(turnOn ? CloudSponsoredState.granted : CloudSponsoredState.declined)
+              }
+            }
+          ))
+          .labelsHidden()
+          .tint(ADEColor.accent)
+          .disabled(saving)
+          .accessibilityIdentifier("Cloud.Ads.Switch")
+        }
+        VStack(alignment: .leading, spacing: 8) {
+          Text(words.offer(on: on))
+            .font(.system(size: 13.5, weight: .medium))
+            .foregroundStyle(ADEColor.textPrimary)
+            .fixedSize(horizontal: false, vertical: true)
+          Text(CloudAdPriceWords.switchNote)
+            .font(.system(size: 12.5))
+            .foregroundStyle(ADEColor.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+          Text(LocalizedStringKey("\(CloudAdPriceWords.dataLine) [How it works](https://ade-app.dev/privacy#sponsored)"))
+            .font(.system(size: 11.5))
+            .foregroundStyle(ADEColor.textMuted)
+            .tint(ADEColor.accent)
+            .fixedSize(horizontal: false, vertical: true)
+          if let error {
+            Text(error)
+              .font(.system(size: 12))
+              .foregroundStyle(ADEColor.danger)
+          }
+        }
+        .padding(.horizontal, ADEKit.inset)
+        .padding(.top, -2)
+        .padding(.bottom, 12)
+      }
+      .adeKitCard(padding: nil)
+      .alert(CloudAdPriceWords.confirmTitle, isPresented: $confirming) {
+        Button(CloudAdPriceWords.turnOnAds) { save(CloudSponsoredState.granted, confirmed: true, since: confirmGeneration) }
+        Button(CloudAdPriceWords.keepAdsOff, role: .cancel) {}
+      } message: {
+        Text(CloudAdPriceWords.dataLine)
+      }
+    }
+  }
+
+  private func save(_ consent: String, confirmed: Bool = false, since: Int? = nil) {
+    guard !saving else { return }
+    saving = true
+    pendingOn = consent == CloudSponsoredState.granted
+    error = nil
+    Task {
+      if case .failure(let failure) = await cloudSaveSponsoredConsent(consent, confirmed: confirmed, since: since, noticeSeen: true) {
+        error = failure.message
+      } else {
+        // The server moved the prices when it answered: read them now, so every price on the page changes at once.
+        await SyncMenuSafePublisher.shared.service.refreshCloudServerInstances()
+      }
+      saving = false
+      pendingOn = nil
     }
   }
 }

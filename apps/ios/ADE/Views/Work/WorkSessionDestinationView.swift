@@ -474,6 +474,9 @@ struct WorkSessionDestinationView: View {
   /// The last title another computer's roster gave this chat (see
   /// `followRemoteRosterTitle`).
   @State private var remoteRosterTitleSeen: String?
+  /// Pricing v3: the live cloud iPhone this chat holds (`cloudHeldPhoneId`), read
+  /// again when the account's live phone changes; nil with none.
+  @State var sponsoredHeldPhoneId: String?
   // Last non-nil summary this mounted instance ever observed. The composer's
   // model-picker + permission-mode row is gated on `summary.isAvailable`, so a
   // momentary nil summary would blank those controls mid-session. This latch
@@ -727,9 +730,8 @@ struct WorkSessionDestinationView: View {
   /// Its own machine's key, never the tab's unless the chat lives there; nil
   /// on the person's own machines and for a deleted computer's saved copy.
   var sponsoredInstanceId: String? {
-    guard let sponsored = accountCloud.account?.sponsored, sponsored.ads,
-          sponsored.consent != CloudSponsoredState.declined,
-          !personalChat, providerSignInIsAdeCloud else { return nil }
+    // Pricing v3: every plan, while ads exist here and are on or the notice is due (`cloudChatAdsMayShow`).
+    guard cloudChatAdsMayShow(), !personalChat, providerSignInIsAdeCloud else { return nil }
     return syncService.cloudServerInstance(fleetKey: sessionCloudMachineKey)?.id
   }
 
@@ -2088,6 +2090,10 @@ struct WorkSessionDestinationView: View {
       .task(id: session?.laneId ?? initialSession?.laneId ?? "") {
         await syncLanePresence()
       }
+      // Pricing v3: whether this chat holds the account's live cloud iPhone (one read per phone).
+      .task(id: "\(sessionId)|\(accountCloud.account?.pricing?.phone?.phoneId ?? "")") {
+        sponsoredHeldPhoneId = await cloudHeldPhoneId(sessionId: sessionId)
+      }
       .task(id: headerMenuPrLookupKey) {
         // PR + lane presence lookups read the active project's caches; skip
         // them for a cross-project quick look (the header hides lane/PR actions).
@@ -2845,6 +2851,7 @@ struct WorkSessionDestinationView: View {
     chatView.cloudHeld = cloudHeldThread(frame: thread.frame)
     chatView.sponsoredInstanceId = sponsoredInstanceId
     chatView.sponsoredFreeModels = sponsoredFreeModels
+    chatView.sponsoredHoldsPhone = sponsoredHeldPhoneId != nil
     chatView.modelPickerCloudCatalog = restingCloudModelCatalog
     chatView.sendBlockedReason = cloudNewComputerBlockedReason
     return chatView

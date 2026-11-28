@@ -206,6 +206,7 @@
 		C10D000000000000000B0002 /* CloudMachineScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D000000000000000A0002 /* CloudMachineScreen.swift */; };
 		C10D000000000000000B0003 /* CloudLimitsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D000000000000000A0003 /* CloudLimitsScreen.swift */; };
 		C10D000000000000000B0004 /* CloudPhoneFormat.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D000000000000000A0004 /* CloudPhoneFormat.swift */; };
+		C1AD00000000000000AD0002 /* CloudAdPrice.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AD00000000000000AD0001 /* CloudAdPrice.swift */; };
 		C10D000000000000000B0005 /* CloudSignInsCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D000000000000000A0005 /* CloudSignInsCard.swift */; };
 		C10D000000000000000B0101 /* CloudComputerLimitSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D000000000000000A0101 /* CloudComputerLimitSheet.swift */; };
 		C10D000000000000000B0102 /* CloudPlansCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D000000000000000A0102 /* CloudPlansCard.swift */; };
@@ -1039,6 +1040,7 @@
 		C10D000000000000000A0002 /* CloudMachineScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudMachineScreen.swift; path = ADE/Views/Cloud/CloudMachineScreen.swift; sourceTree = "<group>"; };
 		C10D000000000000000A0003 /* CloudLimitsScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudLimitsScreen.swift; path = ADE/Views/Cloud/CloudLimitsScreen.swift; sourceTree = "<group>"; };
 		C10D000000000000000A0004 /* CloudPhoneFormat.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudPhoneFormat.swift; path = ADE/Views/Cloud/CloudPhoneFormat.swift; sourceTree = "<group>"; };
+		C1AD00000000000000AD0001 /* CloudAdPrice.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudAdPrice.swift; path = ADE/Views/Cloud/CloudAdPrice.swift; sourceTree = "<group>"; };
 		C10D000000000000000A0005 /* CloudSignInsCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudSignInsCard.swift; path = ADE/Views/Cloud/CloudSignInsCard.swift; sourceTree = "<group>"; };
 		C10D000000000000000A0101 /* CloudComputerLimitSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudComputerLimitSheet.swift; path = ADE/Views/Cloud/CloudComputerLimitSheet.swift; sourceTree = "<group>"; };
 		C10D000000000000000A0102 /* CloudPlansCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudPlansCard.swift; path = ADE/Views/Cloud/CloudPlansCard.swift; sourceTree = "<group>"; };
@@ -1299,6 +1301,7 @@
 				C10D000000000000000A0002 /* CloudMachineScreen.swift */,
 				C10D000000000000000A0003 /* CloudLimitsScreen.swift */,
 				C10D000000000000000A0004 /* CloudPhoneFormat.swift */,
+				C1AD00000000000000AD0001 /* CloudAdPrice.swift */,
 				C10D000000000000000A0005 /* CloudSignInsCard.swift */,
 				C10D000000000000000A0101 /* CloudComputerLimitSheet.swift */,
 				C10D000000000000000A0102 /* CloudPlansCard.swift */,
@@ -2537,6 +2540,7 @@
 				C10D000000000000000B0002 /* CloudMachineScreen.swift in Sources */,
 				C10D000000000000000B0003 /* CloudLimitsScreen.swift in Sources */,
 				C10D000000000000000B0004 /* CloudPhoneFormat.swift in Sources */,
+				C1AD00000000000000AD0002 /* CloudAdPrice.swift in Sources */,
 				C10D000000000000000B0005 /* CloudSignInsCard.swift in Sources */,
 				C10D000000000000000B0101 /* CloudComputerLimitSheet.swift in Sources */,
 				C10D000000000000000B0102 /* CloudPlansCard.swift in Sources */,

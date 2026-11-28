@@ -37,6 +37,8 @@ struct CloudDashboardScreen: View {
           if let moment {
             CloudPlanMomentCard(moment: moment) { self.moment = nil }
           }
+          // Pricing v3: the one ads switch, under the credits, because it changes every price below it.
+          CloudAdsCard()
           if let account = accountStore.account ?? store.account, CloudPhoneProviderPicker.shows(account) {
             CloudPhoneProviderPicker(account: account, syncService: store.syncService, onSaved: { await store.reload() })
               .adeKitCard()
@@ -52,7 +54,10 @@ struct CloudDashboardScreen: View {
             CloudPlansCard(account: account, tiers: store.tiers, newPlanId: moment?.planId)
             CloudSizesCard(account: account, tiers: store.tiers)
           }
-          CloudSponsoredCard(pageAccount: store.account)
+          // Today's sponsored switch, only while Pricing v3 doesn't reach the account (`CloudAdsCard` replaces it).
+          if cloudPricing() == nil {
+            CloudSponsoredCard(pageAccount: store.account)
+          }
           CloudFreeModelsCard(pageAccount: store.account)
           if let referral = store.account?.referral {
             CloudInviteCard(referral: referral, syncService: store.syncService, words: CloudBalanceWords(store.account), onChanged: { Task { await store.reload() } })
@@ -156,6 +161,8 @@ struct CloudHero: View {
   /// A plan that just landed ("You're on Plus"): its name glows.
   var celebrating = false
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+  /// The phone's own account read carries `pricing` (the ad price) for this phone's country.
+  @ObservedObject private var accountStore = AccountCloudStore.shared
 
   var body: some View {
     if let account = store.account {
@@ -249,7 +256,7 @@ struct CloudHero: View {
         .foregroundStyle(CloudBrandColor.skyText2)
         .fixedSize(horizontal: false, vertical: true)
       HStack(alignment: .firstTextBaseline, spacing: 8) {
-        Text(cloudHours(hours.leftMilli))
+        Text(words.number(hours.leftMilli))
           .font(.system(size: 44, weight: .medium))
           .tracking(-1.2)
           .foregroundStyle(CloudBrandColor.skyText)
@@ -267,7 +274,14 @@ struct CloudHero: View {
       .accessibilityElement(children: .combine)
       CloudCreditsBar(account: account)
       // The same number as the big one above, so the two never disagree.
-      if let line = words.leftBuys(
+      // Pricing v3: the time it lasts on a Medium, at both prices ("Time on a plan").
+      if let adWords = CloudAdPriceWords(account), let medium = store.tiers.first(where: { $0.id == "medium" }),
+         let line = adWords.timeOn(hours.leftMilli, tier: medium) {
+        Text(cloudCapitalized(line))
+          .font(.system(size: 12.5))
+          .foregroundStyle(CloudBrandColor.skyText)
+          .fixedSize(horizontal: false, vertical: true)
+      } else if let line = words.leftBuys(
         hours.leftMilli,
         medium: store.tiers.first { $0.id == "medium" },
         phoneOn: account.phoneOn
@@ -326,7 +340,9 @@ struct CloudHero: View {
           value: small.hoursLeftLabel(account.hours.leftMilli + max(0, account.earnedHours?.leftMilli ?? 0)),
           of: nil,
           fraction: nil,
-          note: account.sponsored?.smallNeedsLook == true
+          note: cloudPricing() != nil
+            ? (cloudPricing()?.ads.available == true ? "Left at this size. Free with ads." : "Left at this size")
+            : account.sponsored?.smallNeedsLook == true
             ? "Left at this size. Opening a \(Brand.cloudName) chat in the US makes it unlimited again."
             : account.sponsored?.smallUsesHoursWithoutCards == true ? "Left at this size. Sponsored cards make it unlimited." : "Left at this size"
         )
@@ -351,7 +367,7 @@ struct CloudHero: View {
       // Held free credits (GitHub check, or refused here) don't come back at the reset: say what clears the hold.
       if freeHoursHeld(account) {
         let wait = "cloud computers wait until the free plan's check clears, or you pick a plan"
-        return ("Pause", (account.earnedHours?.leftMilli ?? 0) > 0 ? "Earned \(words.unit) run them first; then \(wait)" : "C" + wait.dropFirst())
+        return ("Pause", (account.earnedHours?.leftMilli ?? 0) > 0 ? "\(words.title) from invites run them first; then \(wait)" : "C" + wait.dropFirst())
       }
       // Free with sponsored cards off rates Small too: then every computer pauses.
       return ("Pause", cloudSmallTierUsingHours(account) != nil ? "Cloud computers pause until next month" : "Bigger computers pause until next month")
@@ -415,7 +431,7 @@ struct CloudCreditsBar: View {
                 .foregroundStyle(CloudBrandColor.skyText2)
                 .fixedSize(horizontal: false, vertical: true)
             }
-            Text(cloudHours(part.milli))
+            Text(CloudBalanceWords(account).number(part.milli))
               .font(.system(size: 15, weight: .medium))
               .monospacedDigit()
               .foregroundStyle(CloudBrandColor.skyText)
@@ -643,6 +659,19 @@ struct CloudMachineRow: View {
   var idle: CloudPhoneAccount.IdleCleanup? = nil
   let now: Date
   var busy = false
+  /// The phone's own read carries what each computer costs now (Pricing v3).
+  @ObservedObject private var accountStore = AccountCloudStore.shared
+
+  /// "Medium · 8/h with ads", "Large · 25/h · CLI session" while it is awake
+  /// under Pricing v3; today's line otherwise (asleep: the state word says it).
+  private var line: String {
+    let base = cloudMachineLine(machine, tier: tier, now: now, words: words)
+    guard machine.isAwake, let adWords = CloudAdPriceWords(accountStore.account),
+          let price = adWords.pricing.computer(machine.instanceId) else { return base }
+    let label = tier?.label ?? machine.size ?? ""
+    let parts = [label, adWords.compactPriceNow(price), adWords.shortReason(price)].compactMap { $0 }.filter { !$0.isEmpty }
+    return parts.joined(separator: " · ")
+  }
 
   var body: some View {
     HStack(spacing: 12) {
@@ -661,7 +690,7 @@ struct CloudMachineRow: View {
             ADEKitTag(text: mark.text, tone: mark.tone)
           }
         }
-        Text(cloudMachineLine(machine, tier: tier, now: now, words: words))
+        Text(line)
           .font(.system(size: 12.5))
           .foregroundStyle(ADEColor.textSecondary)
           .lineLimit(1)
@@ -706,6 +735,8 @@ struct CloudMachineRow: View {
 struct CloudSizesCard: View {
   let account: CloudPhoneAccount
   let tiers: [CloudPhoneTier]
+  /// The phone's own read carries `pricing` (both prices) for this phone's country.
+  @ObservedObject private var accountStore = AccountCloudStore.shared
 
   private var leftMilli: Int { account.hours.leftMilli + max(0, account.earnedHours?.leftMilli ?? 0) }
   private var words: CloudBalanceWords { CloudBalanceWords(account) }
@@ -751,19 +782,23 @@ struct CloudSizesCard: View {
         Text(facts(tier))
           .font(.system(size: 12.5))
           .foregroundStyle(ADEColor.textSecondary)
-        Text(words.uses(tier))
+        // Pricing v3: both prices ("8 credits an hour with ads · 10 with no ads").
+        Text(CloudAdPriceWords(account).map { $0.rate(tier.ratePair) } ?? words.uses(tier))
           .font(.system(size: 12))
           .foregroundStyle(ADEColor.textMuted)
+          .fixedSize(horizontal: false, vertical: true)
       }
       Spacer(minLength: 8)
+      // What the credits left buy at the price paid now (the ad price while ads are on).
+      let now = tier.atPriceNow(cloudPricing())
       VStack(alignment: .trailing, spacing: 0) {
-        Text(tier.hoursLeftLabel(leftMilli))
-          .font(.system(size: tier.usesHours ? 24 : 18, weight: .semibold))
+        Text(now.hoursLeftLabel(leftMilli))
+          .font(.system(size: now.usesHours ? 24 : 18, weight: .semibold))
           .monospacedDigit()
           .foregroundStyle(CloudBrandColor.mark)
           .lineLimit(1)
           .minimumScaleFactor(0.7)
-        Text(tier.usesHours ? "left on it" : "this month")
+        Text(now.usesHours ? "left on it" : "this month")
           .font(.system(size: 11))
           .foregroundStyle(ADEColor.textMuted)
       }
@@ -790,7 +825,7 @@ struct CloudInviteCard: View {
   let onChanged: () -> Void
   @State private var copied = false
 
-  private var reward: String { cloudHours(referral.rewardMilli) }
+  private var reward: String { words.number(referral.rewardMilli) }
 
   var body: some View {
     ADEKitCard(title: "Invite friends, get \(words.freeCloud)", symbol: "gift") {
@@ -829,7 +864,7 @@ struct CloudInviteCard: View {
         }
         HStack(spacing: 8) {
           stat("Friends joined", "\(referral.friendsJoined)")
-          stat("\(words.title) earned", cloudHours(referral.hoursEarnedMilli))
+          stat("\(words.title) from invites", words.number(referral.hoursEarnedMilli))
           stat("Rewards left", "\(referral.rewardsLeft) of \(referral.rewardLimit)")
         }
         if referral.offersCodeBox {
@@ -938,7 +973,7 @@ struct CloudInviteCodeBox: View {
     let outcome = await syncService.redeemCloudInvite(value)
     if outcome.ok {
       ADEHaptics.success()
-      let reward = cloudHours(outcome.referral?.rewardMilli ?? rewardMilli)
+      let reward = words.number(outcome.referral?.rewardMilli ?? rewardMilli)
       accepted = outcome.rewarded == true
         ? "You both got \(reward) \(words.freeCloud). They never expire."
         : "Invite added. You both get \(reward) \(words.freeCloud) when your first chat runs on \(Brand.cloudName)."
