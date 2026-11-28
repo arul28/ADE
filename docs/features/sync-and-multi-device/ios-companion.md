@@ -311,7 +311,7 @@ apps/ios/
 │   │   │                            #   the session read chokepoint (localSessions())
 │   │   ├── SyncService+Cloud.swift, AccountCloudStore.swift,
 │   │   │   AccountCloudLaunches.swift, CloudServerClient.swift,
-│   │   │   CloudAtRestReads.swift   # ADE Cloud: rows, wakes, queue, launches,
+│   │   │   CloudAtRestReads.swift   # DAEX Cloud: rows, wakes, queue, launches,
 │   │   │                            #   catalog, sign-ins, overview, Git summaries
 │   │   ├── SyncService+LinearAccount.swift # Linear through the account
 │   │   ├── GitHubAccountCredential.swift, GitHubDirectClient.swift,
@@ -366,7 +366,7 @@ apps/ios/
 │   │   │                            #   MachineRowView, ADEMobilePrimitives,
 │   │   │                            #   ADEInstructionErrorCard, ADETechnicalDetailsFold,
 │   │   │                            #   ADEStaleContentMarker, StartOnPicker, dictation
-│   │   ├── Cloud/                   # CloudPaneSheet (Settings › ADE Cloud, over a
+│   │   ├── Cloud/                   # CloudPaneSheet (Settings › DAEX Cloud, over a
 │   │   │                            #   computer or the account server), limits,
 │   │   │                            #   sign-ins, sizes; CloudLaneAtRest (resting lane);
 │   │   │                            #   CloudPhoneFormat ("ADE Cloud" names);

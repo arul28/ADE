@@ -1503,7 +1503,7 @@ never uses a CLI on the PATH and never starts a download; a provider with no
 copy prints its pinned state.
 
 ```bash
-daex triage                       # launch the first agent ADE has downloaded
+daex triage                       # launch the first agent DAEX has downloaded
 daex triage --provider codex      # pick one
 daex triage --agent --text        # print the handoff for an agent already running
 ```

@@ -131,7 +131,7 @@ type ProjectConfigFile = {
 
 type ProjectBrowserConfig = {
   /**
-   * Where a link clicked inside ADE opens. `in-app` (default) uses the
+   * Where a link clicked inside DAEX opens. `in-app` (default) uses the
    * built-in browser, which carries the authenticated profile;
    * `external` hands it to the system browser. Mod+Click always
    * overrides to external, Shift+Click to in-app.
@@ -147,9 +147,9 @@ type ProjectBrowserConfig = {
 
 type ProjectIdentityConfig = {
   /**
-   * Project-root-relative path to the icon shown in ADE project
+   * Project-root-relative path to the icon shown in DAEX project
    * tabs/catalogs. `null` explicitly disables automatic icon detection
-   * for the project; when omitted, ADE auto-detects.
+   * for the project; when omitted, DAEX auto-detects.
    */
   iconPath?: string | null;
 };

@@ -933,7 +933,7 @@ Federated window.ade adapter
   - persisted welcome/project/Chats surface
   - repo tabs with machine selection inside the tab
   |                                   |
-  | own computer                      | ADE Cloud binding or cloud-saved: pin
+  | own computer                      | DAEX Cloud binding or cloud-saved: pin
   |                                   v
   |                                 Account adapter (adeCloudSyncClient)
   |                                   - account reader: account server + GitHub
@@ -956,7 +956,7 @@ Browser-safe WebSocket transport
   - ws://127.0.0.1:<port> only from local/http dev
   |
   v
-ADE machine runtime (`ade serve`)
+DAEX machine runtime (`daex serve`)
 apps/ade-cli/src/services/sync/
   - syncHostService
   - syncRemoteCommandService
