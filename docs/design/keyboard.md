@@ -1,13 +1,14 @@
 # Keyboard
 
-ADE is driven with modifier chords: one **⌘**-chord per action, with a mnemonic
+DAEX is driven with modifier chords: one **⌘**-chord per action, with a mnemonic
 second key, so the keys are easy to remember and never collide with typing. The
 registry that declares them is `shared/keybindings.ts`, rebindable in
 Settings › Keyboard (`settings/keyboard/ShortcutsCard.tsx`, which writes the
 `keybindings` store), and each surface adds only the ids it handles.
 
-Work is the first surface wired this way (`components/work/workShortcuts.ts`).
-Other pages keep their existing scoped bindings until they get their own set.
+Work wires its set in `components/work/workShortcuts.ts`. Lanes (`lanes.*`),
+the prompt box (`chat.*`), the terminal tool (`terminal.*`) and the home page
+(`home.*`) have their own scoped ids in the same registry.
 
 ## The Work page's chords
 
@@ -70,7 +71,7 @@ the same questions:
   when a key press can reach both (global reaches all; prompt box and terminal
   share Work's keys; each page's own scope is alone). On a clash the editor
   offers to move the chord, unassigning it from the other action.
-- **Refused outright:** a chord the OS takes first, one ADE's native menu or
+- **Refused outright:** a chord the OS takes first, one DAEX's native menu or
   the browser (hosted client) takes first, copy/paste/undo, AltGr chords on
   Windows (`Ctrl+Alt`+character), the Windows or Super key, a bare key on a
   shortcut that works while you type, and a Quick slot chord (leader + digit),
@@ -85,7 +86,7 @@ the same questions:
   Shortcuts belong to the keyboard and OS in front of you, so every project and
   every window on the computer reads one set, a project opened from another
   machine still uses this computer's keys, and a save reaches the shell, every
-  open project and other ADE windows (the `storage` event) at once. The hosted
+  open project and other DAEX windows (the `storage` event) at once. The hosted
   client keeps them in the browser. The brain's older per-project store
   (`keybindingsService`) is read once, the first time a computer has nothing
-  saved, so overrides set there through `ade actions` carry over.
+  saved, so overrides set there through `daex actions` carry over.
