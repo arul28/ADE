@@ -339,10 +339,31 @@ Shared types and IPC:
 - `apps/ade-cli/src/sessionSnoozeDuration.ts` — the `ade session snooze`
   duration grammar (`30m`, `1.5h`, `1d`, `1w`; a bare number is minutes), at
   most 30 days (`MAX_SNOOZE_MS`). It returns a result union, never throws.
-- `apps/desktop/src/renderer/webclient/adapter/sessionLifecycleOverlay.ts`,
-  `sessionLifecycleSupport.ts`, `shell/sessionLifecycleChrome.ts` — the hosted
-  web halves: an optimistic overlay retired by reconcile, rejection or TTL;
-  controls only when the host advertises `session.*`; a touch-size target. See
+- `apps/desktop/src/renderer/lib/sessionLifecycleOverlay.ts` — the optimistic
+  overlay for settle, un-settle, snooze, wake, keep-active and the woke clear,
+  shared by the desktop and the hosted web client. Each write paints a patch
+  that mirrors the host's columns (the patch builders live here too); a second
+  action on a row layers over the first instead of replacing it, and a failed
+  write drops only its own layer. A patch retires when the host's row agrees
+  (reconcile), when the write fails or the host answers that nothing changed
+  (reject), or at a 20 s TTL.
+- `apps/desktop/src/renderer/state/sessionLifecycleOptimism.ts` — the desktop
+  Work tab's use of that overlay, so a row changes on the click instead of
+  after the owning machine's write, change event and list re-read
+  (ADE-304/ADE-279). Every write in `sessionLifecycleActions.ts` and the
+  header's bulk settle and Undo go through `withOptimisticLifecycle`; the write
+  itself still goes to the session's machine by its pin. Only Work readers
+  subscribe: `useWorkSessions` (this machine's rows and the filing),
+  `useCrossMachineLaneUnion` (another machine's cards and menus),
+  `TerminalsPage` (bulk selections) and `useSessionLifecycleSnapshot` (the
+  composer pill). `useRetainedCrossMachineSlices` stays raw, so the chat and
+  PR panes do not re-render for a row click. A write that a later action on
+  the same row replaced fails quietly (`SupersededLifecycleWriteError`), so a
+  settle aborted by an Un-settle shows no false "Settle failed".
+- `apps/desktop/src/renderer/webclient/adapter/sessionLifecycleSupport.ts`,
+  `shell/sessionLifecycleChrome.ts` — the hosted web halves: controls only
+  when the host advertises `session.*`; a touch-size target. The web adapter
+  decorates its own reads with the same overlay. See
   [Web client](../web-client/README.md).
 - `apps/desktop/src/renderer/hooks/useAppWideSessionAttention.ts` — app-wide
   attention counts from session events, focus and a visible-window recovery

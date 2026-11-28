@@ -115,7 +115,7 @@ describe("SessionLifecycleOverlay", () => {
     expect(overlay.reconcile([row({ id: "s1" })]).rolledBack).toEqual(["s1"]);
   });
 
-  it("rolls back on reject and ignores a stale token from a superseded write", () => {
+  it("layers a second action over the first, and a failed write drops only its own columns", () => {
     const overlay = new SessionLifecycleOverlay();
     const first = overlay.begin("s1", { snoozedUntil: "2026-07-26T10:00:00.000Z" });
     const second = overlay.begin("s1", { snoozedUntil: "2026-07-26T18:00:00.000Z" });
@@ -126,6 +126,17 @@ describe("SessionLifecycleOverlay", () => {
 
     overlay.reject("s1", second);
     expect(overlay.size).toBe(0);
+
+    // Settle, then Undo before either lands: the Undo writes only `settledAt`,
+    // so the host's stale "active" pin must not show through the settle's clear.
+    const host = row({ id: "s2", settleOverride: "active" });
+    const settle = overlay.begin("s2", { settledAt: "2026-07-26T10:00:00.000Z", settleOverride: null });
+    overlay.begin("s2", { settledAt: null });
+    expect(overlay.decorate(host)).toMatchObject({ settledAt: null, settleOverride: null });
+
+    // The settle aborts (the Undo moved the row): only its columns go back.
+    overlay.reject("s2", settle);
+    expect(overlay.decorate(host)).toMatchObject({ settledAt: null, settleOverride: "active" });
   });
 
   it("returns the original list untouched when nothing is pending", () => {
