@@ -47,15 +47,11 @@ import { useLinearListKeyboard } from "./linear/useLinearListKeyboard";
 import { useLinearBrowserData } from "./linear/useLinearBrowserData";
 import { useLinearCheckedIssues } from "./linear/useLinearCheckedIssues";
 import { useLinearIssueDetails } from "./linear/useLinearIssueDetails";
+import { useLinearRailScope } from "./linear/useLinearRailScope";
 import {
-  LINEAR_SCOPE_ALL,
-  LINEAR_SCOPE_PREFIX,
   READY_STATE_TYPES,
-  linearScopeKey,
   linearScopePrefill,
-  linearScopeTitle,
   linearScopeViewType,
-  parseLinearScope,
 } from "./linear/linearScope";
 import {
   DEFAULT_FILTERS,
@@ -405,8 +401,12 @@ export function LinearIssueBrowser({
     setOpenDocumentId(null);
   }, [projectRoot, resetDetails, resetToCache, setCheckedIds]);
 
+  // Reload once per refresh press; a later project or machine switch with the
+  // same refreshKey is not a refresh.
+  const lastHandledRefreshRef = useRef(0);
   useEffect(() => {
-    if (refreshKey === 0) return;
+    if (refreshKey === 0 || refreshKey === lastHandledRefreshRef.current) return;
+    lastHandledRefreshRef.current = refreshKey;
     getBrowserCacheEntry(cacheKey).counts.clear();
     refreshDetails();
     bumpCounts();
@@ -640,46 +640,19 @@ export function LinearIssueBrowser({
     },
   });
 
-  // Every rail entry (views, sections, favorites, projects, documents) is a scope string.
-  const handleRailScope = useCallback((scopeKey: string) => {
-    const scope = parseLinearScope(scopeKey);
-    setNarrowRailOpen(false);
-    if (scope.kind === "document") {
-      setOpenDocumentId(scope.id);
-      setNarrowDetailOpen(true);
-      return;
-    }
-    setOpenDocumentId(null);
-    if (scope.kind === "project") {
-      updateFilters({ projectId: scope.id, scope: LINEAR_SCOPE_ALL });
-      return;
-    }
-    updateFilters({ scope: linearScopeKey(scope), projectId: "" });
-  }, [updateFilters]);
-  const activeRailScope = openDocumentId
-    ? `${LINEAR_SCOPE_PREFIX.document}${openDocumentId}`
-    : linearScopeKey(activeScope);
-
-  // A cycle, initiative or label scope saved earlier (or on a machine whose
-  // ADE reads them) that this workspace no longer lists falls back to All
-  // issues once the rail has loaded, instead of an empty list. An empty list
-  // for that kind means the rail was not really read (disconnected, rate
-  // limited, a failed read), so the saved scope stays.
-  useEffect(() => {
-    if (!railData) return;
-    if (activeScope.kind !== "cycle" && activeScope.kind !== "initiative" && activeScope.kind !== "label") return;
-    if (activeScope.kind === "label" && !catalogLoaded) return;
-    const entities: ReadonlyArray<{ id: string }> = activeScope.kind === "cycle"
-      ? railData.cycles
-      : activeScope.kind === "initiative"
-        ? railData.initiatives
-        : catalog.labels ?? [];
-    if (entities.length === 0) return;
-    const id = activeScope.id;
-    const known = entities.some((entity) => entity.id === id)
-      || railData.favorites.some((favorite) => favorite.targetId === id);
-    if (!known) updateFilters({ scope: LINEAR_SCOPE_ALL });
-  }, [activeScope, catalog.labels, catalogLoaded, railData, updateFilters]);
+  const { handleRailScope, activeRailScope, currentCrumb } = useLinearRailScope({
+    activeScope,
+    openDocumentId,
+    setOpenDocumentId,
+    setNarrowRailOpen,
+    setNarrowDetailOpen,
+    updateFilters,
+    railData,
+    catalog,
+    catalogLoaded,
+    customViews,
+    issues,
+  });
 
   const showSettingsAction = Boolean(error && onOpenLinearSettings && isConnectionError(error));
   const busyIssueId = actionBusyIssueId ?? localActionIssueId;
@@ -688,15 +661,6 @@ export function LinearIssueBrowser({
   const crumbRoot = singleTeam
     ? { label: singleTeam.displayName || singleTeam.name, color: singleTeam.color, initial: singleTeam.key.charAt(0) }
     : { label: quickView?.organization?.name ?? "Linear", color: null, initial: (quickView?.organization?.name ?? "L").charAt(0) };
-  const currentCrumb = linearScopeTitle(activeScope, (kind, id) => {
-    if (kind === "project") return catalog.projects.find((entry) => entry.id === id)?.name;
-    if (kind === "view") return customViews.find((view) => view.id === id)?.name;
-    if (kind === "label") return catalog.labels?.find((label) => label.id === id)?.name;
-    if (kind === "initiative") return railData?.initiatives.find((entry) => entry.id === id)?.name;
-    if (kind !== "cycle") return null;
-    const cycle = railData?.cycles.find((entry) => entry.id === id);
-    return cycle ? cycle.name?.trim() || `Cycle ${cycle.number}` : issues.find((issue) => issue.cycleId === id)?.cycleName;
-  });
 
   const columns = paneColumns(rootWidth);
   const showRail = !columns.narrow;

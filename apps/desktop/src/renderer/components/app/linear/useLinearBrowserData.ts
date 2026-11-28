@@ -270,8 +270,12 @@ export function useLinearBrowserData({
       });
   }, [cacheKey, filters, serverOrder, showCompletedIssues]);
 
+  // Only a new refresh press forces a reload; a project or machine switch
+  // after one reads through the cache like any other load.
+  const lastForcedRefreshRef = useRef(0);
   useEffect(() => {
-    const force = refreshKey > 0;
+    const force = refreshKey > 0 && refreshKey !== lastForcedRefreshRef.current;
+    if (force) lastForcedRefreshRef.current = refreshKey;
     loadQuickView(force);
     loadCatalog(force);
     loadCustomViews(force);

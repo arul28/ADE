@@ -14,6 +14,12 @@ import {
   trimMap,
 } from "./linearIssueBrowserData";
 
+type EditSnapshot = {
+  list: NormalizedLinearIssue | null;
+  detail: NormalizedLinearIssue | null;
+  external: NormalizedLinearIssue | null;
+};
+
 /**
  * Full issue reads (with relations) for the Linear window, issues opened from
  * outside the list (a relation, a favorite, a just-created issue), and
@@ -136,6 +142,10 @@ export function useLinearIssueDetails({
   // The list model regroups at once, so a status edit moves the row.
   const canEditIssues = typeof window !== "undefined" && typeof window.ade?.cto?.updateLinearIssue === "function";
   const editSequenceRef = useRef(new Map<string, number>());
+  // One chain of quick edits per issue: the copy from before its first edit,
+  // and whether an earlier edit in it failed, so the last failure restores
+  // the starting copy instead of a failed edit's optimistic one.
+  const editChainRef = useRef(new Map<string, { snapshot: EditSnapshot; earlierFailed: boolean }>());
   const editIssue = useCallback(async (issue: BrowserIssue, edit: LinearIssueEdit) => {
     const update = window.ade?.cto?.updateLinearIssue;
     const writePin = pinRef.current;
@@ -145,11 +155,16 @@ export function useLinearIssueDetails({
     const sequence = (editSequenceRef.current.get(issueId) ?? 0) + 1;
     editSequenceRef.current.set(issueId, sequence);
     const isLatest = () => editSequenceRef.current.get(issueId) === sequence;
-    const snapshot = {
-      list: null as NormalizedLinearIssue | null,
+    const snapshot: EditSnapshot = {
+      list: null,
       detail: detailIssues.get(issueId) ?? null,
       external: externalIssue?.id === issueId ? externalIssue : null,
     };
+    let chain = editChainRef.current.get(issueId);
+    if (!chain) {
+      chain = { snapshot, earlierFailed: false };
+      editChainRef.current.set(issueId, chain);
+    }
     // Returns the list copy it replaced.
     const patchLocal = (apply: (current: NormalizedLinearIssue) => NormalizedLinearIssue) => {
       const replaced = patchIssue(issueId, apply);
@@ -184,19 +199,25 @@ export function useLinearIssueDetails({
         title: `Couldn't update ${issue.identifier}`,
         message: err instanceof Error ? err.message : "Linear rejected the change.",
       });
-      if (!isLatest()) return;
-      const listBefore = snapshot.list;
+      if (!isLatest()) {
+        chain.earlierFailed = true;
+        return;
+      }
+      const restore = chain.earlierFailed ? chain.snapshot : snapshot;
+      const listBefore = restore.list;
       if (listBefore) patchIssue(issueId, () => listBefore);
       setDetailIssues((current) => {
         const next = new Map(current);
-        if (snapshot.detail) next.set(issueId, snapshot.detail);
+        if (restore.detail) next.set(issueId, restore.detail);
         else next.delete(issueId);
         return next;
       });
-      setExternalIssue((current) => (current && current.id === issueId && snapshot.external ? snapshot.external : current));
+      setExternalIssue((current) => (current && current.id === issueId && restore.external ? restore.external : current));
     } finally {
       if (isLatest()) {
-        editSequenceRef.current.delete(issueId);
+        // Keep the sequence counting up so an older edit still in flight never
+        // matches a new chain's number; only the chain itself ends here.
+        if (editChainRef.current.get(issueId) === chain) editChainRef.current.delete(issueId);
         setPendingEditIds((current) => {
           const next = new Set(current);
           next.delete(issueId);

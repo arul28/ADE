@@ -267,21 +267,43 @@ struct LinearIssueListScreen: View {
   @ViewBuilder
   private var loadMoreFooter: some View {
     if store.hasNextPage {
-      HStack {
-        Spacer()
-        ProgressView()
-          .controlSize(.small)
-          .tint(LinearBrand.primaryBright)
-        Spacer()
+      // Pages on its own only while paging works and the list is under the
+      // cap; after a failed page, a page with nothing new, or 2,000 issues it
+      // waits for a tap.
+      if store.loadMoreStalled || store.issues.count >= 2000 {
+        HStack {
+          Spacer()
+          if store.loadingMore {
+            ProgressView()
+              .controlSize(.small)
+              .tint(LinearBrand.primaryBright)
+          } else {
+            Button("Load more") { Task { await store.loadMore() } }
+              .font(.caption.weight(.semibold))
+              .buttonStyle(.borderless)
+              .tint(LinearBrand.primaryBright)
+          }
+          Spacer()
+        }
+        .padding(.vertical, 12)
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+      } else {
+        HStack {
+          Spacer()
+          ProgressView()
+            .controlSize(.small)
+            .tint(LinearBrand.primaryBright)
+          Spacer()
+        }
+        .padding(.vertical, 12)
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        // A new row per loaded page, so the footer pages again when it is
+        // still on screen (every loaded row hidden).
+        .id("load-more-\(store.issues.count)")
+        .onAppear { Task { await store.loadMore() } }
       }
-      .padding(.vertical, 12)
-      .listRowBackground(Color.clear)
-      .listRowSeparator(.hidden)
-      // A new row per loaded page, so the footer pages again when it is still
-      // on screen (every loaded row hidden); a failed page keeps its id and
-      // does not retry in a loop.
-      .id("load-more-\(store.issues.count)")
-      .onAppear { Task { await store.loadMore() } }
     }
   }
 

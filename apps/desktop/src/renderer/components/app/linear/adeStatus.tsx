@@ -55,11 +55,11 @@ function lanePath(laneId: string, machineId: string | null | undefined, sessionI
   return machineId ? openLaneOnMachinePath(laneId, machineId, sessionId) : openLaneInLanesTabPath(laneId, sessionId);
 }
 
-export function openAdeStatusLane(lane: LinearIssueAdeStatusLane, sessionId?: string | null): void {
+function openAdeStatusLane(lane: LinearIssueAdeStatusLane, sessionId?: string | null): void {
   navigateFromLinearPane(lanePath(lane.laneId, lane.machineId, sessionId));
 }
 
-export function openAdeStatusChat(chat: LinearIssueAdeStatusChat): void {
+function openAdeStatusChat(chat: LinearIssueAdeStatusChat): void {
   navigateFromLinearPane(lanePath(chat.laneId, chat.machineId, chat.sessionId));
 }
 

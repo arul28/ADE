@@ -165,6 +165,9 @@ final class LinearPaneStore: ObservableObject {
   @Published private(set) var phase: Phase = .idle
   @Published private(set) var loadingMore = false
   @Published private(set) var hasNextPage = false
+  /// The last "load more" failed or brought no new issue, so the list footer
+  /// waits for a tap instead of paging again on its own.
+  @Published private(set) var loadMoreStalled = false
   @Published private(set) var errorMessage: String?
 
   // Display (Linear's own view preferences)
@@ -284,6 +287,7 @@ final class LinearPaneStore: ObservableObject {
     searchGeneration += 1
     let generation = searchGeneration
     endCursor = nil
+    loadMoreStalled = false
     phase = .loading
     errorMessage = nil
     // The display settings come first: their order decides which issues the
@@ -314,14 +318,17 @@ final class LinearPaneStore: ObservableObject {
     do {
       let result = try await loadAllPages(after: cursor)
       if generation == searchGeneration {
+        let countBefore = issues.count
         issues = linearMergeIssuePages(issues, result.issues)
         endCursor = result.pageInfo.endCursor
         hasNextPage = result.pageInfo.hasNextPage
+        loadMoreStalled = issues.count <= countBefore
       }
     } catch is CancellationError {
       // A newer reload superseded this paging request.
     } catch {
-      // Keep what we have; the row-level "Load more" affordance can retry.
+      // Keep what we have; the footer shows a "Load more" button to retry.
+      if generation == searchGeneration { loadMoreStalled = true }
       linearPaneLog.notice("linear load_more failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
     }
     loadingMore = false
