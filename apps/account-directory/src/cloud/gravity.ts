@@ -394,7 +394,7 @@ const IOS_APP_USER_AGENT = new RegExp(String.raw`^${PRODUCT_NAME_PATTERN}-iOS\/`
  * any other answer, or none from an older app, leaves it out. Desktop and the
  * web, a browser on an iPhone included, have no such prompt and send it.
  */
-export function hashedEmailFor(device: { os: string; ua?: string | null; tracking?: string | null } | null, emailHash: string | null): string | null {
+export function hashedEmailFor(device: { os: string | null; ua?: string | null; tracking?: string | null } | null, emailHash: string | null): string | null {
   if (!emailHash) return null;
   const iosApp = device?.os === "ios" && IOS_APP_USER_AGENT.test(device.ua ?? "");
   if (iosApp && device?.tracking !== "authorized") return null;
@@ -812,12 +812,14 @@ async function noteCardRequest(
   now: number,
   waitUntil?: CloudWaitUntil,
 ): Promise<void> {
-  void reply;
   try {
     if (freeModelChat) await resetFreeModelMeter(env, account.user_id, now);
     else if (lookUnder) await noteSmallLook(env, account, lookUnder, who.country, requestNetwork(request), now, waitUntil);
   } catch (error) {
-    reportCloudFailure("cloud.sponsored.card_event_failed", { message: error instanceof Error ? error.message : "unknown" });
+    reportCloudFailure("cloud.sponsored.card_event_failed", {
+      message: error instanceof Error ? error.message : "unknown",
+      onCloudComputer: reply.instanceId != null,
+    });
   }
 }
 

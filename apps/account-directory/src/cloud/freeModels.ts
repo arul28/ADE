@@ -279,7 +279,7 @@ async function handleModels(env: GravityEnv, userId: string): Promise<Response> 
 
 const refusal = (code: CloudFreeModelsErrorCode, status = STATUS[code], message = MESSAGES[code]): Response => openAiError(code, message, status);
 
-type ViewerRow = { ip: string | null; ua: string | null; os: string; tracking: string | null; country: string | null; seen_at: number };
+type ViewerRow = { ip: string | null; ua: string | null; os: string | null; tracking: string | null; country: string | null; seen_at: number };
 /** No request's Global Privacy Control is read here: the call comes from the chat's machine, and a record exists only after a yes that held on the person's device. */
 const MACHINE: SponsoredRequester = { country: null, region: null, gpc: false };
 
@@ -314,8 +314,13 @@ async function handleChat(request: Request, env: GravityEnv, userId: string, now
     env.DB.prepare("select last_at from cloud_free_model_chats where user_id = ? and chat_id = ?").bind(userId, chatId).first<{ last_at: number }>(),
     readFreeModelMeter(env, userId),
   ]);
-  // A chat nobody reported yet may be the one a person just launched on ADE Cloud (`noteFreeModelLaunch`).
-  const viewer = found ?? (chat ? null : (await claimLaunchViewer(env, userId, chatId, now)) ? await readViewer() : null);
+  // A chat nobody reported yet may be the one a person just launched on DAEX Cloud (`noteFreeModelLaunch`).
+  // Read again after the claim, won or lost: a `/seen` for this chat may have landed meanwhile.
+  let viewer = found;
+  if (!viewer && !chat) {
+    await claimLaunchViewer(env, userId, chatId, now);
+    viewer = await readViewer();
+  }
   if (!viewer?.ip || !watched(viewer, chat, now)) return refuse("free_models_not_watched");
   // The person's country, from their device: the chat's machine may be anywhere.
   if (outsideInferenceCountries(env, viewer.country)) return refuse("free_models_country");
@@ -330,7 +335,15 @@ async function handleChat(request: Request, env: GravityEnv, userId: string, now
   const throttle = throttleOf(meter, now);
   if (throttle) {
     void keep(markThrottle(env, userId, throttle, now).then((first) => (first ? countStatement(env, utcDay(now), ALL, `fm_${throttle}`).run() : null)));
-    if (throttle === "paused") return refuse("free_models_no_cards");
+    if (throttle === "paused") {
+      // The refused reply still asks for its ad, and that request is what lifts the pause: the chat must
+      // read as one these models serve (`freeModelAdGate`), a new chat's first reply included.
+      await env.DB.prepare(`
+        insert into cloud_free_model_chats (user_id, chat_id, first_at, last_at, requests) values (?, ?, ?, ?, 0)
+        on conflict (user_id, chat_id) do nothing
+      `).bind(userId, chatId, now, now).run();
+      return refuse("free_models_no_cards");
+    }
     if (!(await takeRequest(env, userId, "free_models_slowed", now))) return slowed(refuse("free_models_no_cards", SLOWED_MESSAGE, 429), now);
   }
   const day = utcDay(now);
@@ -423,6 +436,13 @@ const isChatId = (chatId: string): boolean => ROW_ID.test(chatId) && !chatId.sta
 
 /** The stand-in record a person's ADE Cloud launch leaves until its chat reports itself. */
 const LAUNCH_VIEWER_PREFIX = "launch:";
+/** The user agent the iPhone app reports itself with (`hashedEmailFor` in `gravity.ts`). */
+const IOS_APP_UA_PREFIX = "DAEX-iOS/";
+/**
+ * How long a launch's stand-in waits for its chat's first call: a new DAEX
+ * Cloud computer can take this long to start, clone and run the chat.
+ */
+const LAUNCH_CLAIM_MS = 30 * 60_000;
 
 /**
  * A person launched a chat on an ADE Free Model on ADE Cloud (`launches.ts`):
@@ -436,30 +456,36 @@ export async function noteFreeModelLaunch(env: GravityEnv, userId: string, reque
   const ip = clientIp(request);
   if (!ip || !(await inferenceReaches(env, userId, await inferenceSwitch(env)))) return;
   const who = sponsoredRequester(request);
+  const ua = request.headers.get("user-agent")?.trim().slice(0, 512) || null;
+  // The iPhone app (a native Apple client) says nothing of its tracking answer here: the
+  // stand-in reads as that app with none, so no hashed email goes until the phone reports
+  // the chat itself (`hashedEmailFor`).
+  const iPhoneApp = /CFNetwork|Darwin/.test(ua ?? "");
   await env.DB.prepare(`
-    insert into cloud_free_model_viewers (user_id, chat_id, ip, ua, country, region, seen_at)
-    select ?, ?, ?, ?, ?, ?, ?
+    insert into cloud_free_model_viewers (user_id, chat_id, ip, ua, os, tracking, country, region, seen_at)
+    select ?, ?, ?, ?, ?, null, ?, ?, ?
     where exists (select 1 from cloud_free_model_consent where user_id = ? and consent = 'granted' and terms_version >= ?)
-    on conflict (user_id, chat_id) do update set ip = excluded.ip, ua = excluded.ua, country = excluded.country, region = excluded.region, seen_at = excluded.seen_at
+    on conflict (user_id, chat_id) do update set ip = excluded.ip, ua = excluded.ua, os = excluded.os, tracking = null,
+      country = excluded.country, region = excluded.region, seen_at = excluded.seen_at
   `).bind(
-    userId, `${LAUNCH_VIEWER_PREFIX}${launchId}`, ip, request.headers.get("user-agent")?.trim().slice(0, 512) || null, who.country, who.region, now,
+    userId, `${LAUNCH_VIEWER_PREFIX}${launchId}`, ip, iPhoneApp ? `${IOS_APP_UA_PREFIX}launch` : ua, iPhoneApp ? "ios" : null, who.country, who.region, now,
     userId, CLOUD_FREE_MODELS_TERMS_VERSION,
   ).run();
 }
 
 /**
  * Gives a chat nobody reported the newest launch stand-in of the account from
- * the last 10 minutes, once: the record becomes the chat's (its launch time
- * kept, so the usual windows run from the launch), and no other chat can use
- * it. True when this chat took one.
+ * the last `LAUNCH_CLAIM_MS`, once: the record becomes the chat's, seen at the
+ * claim, and no other chat can use it. True when this chat took one.
  */
 async function claimLaunchViewer(env: GravityEnv, userId: string, chatId: string, now: number): Promise<boolean> {
   const launch = await env.DB.prepare(`
     select chat_id from cloud_free_model_viewers where user_id = ? and chat_id like 'launch:%' and seen_at >= ? order by seen_at desc limit 1
-  `).bind(userId, now - VIEWER_FRESH_MS).first<{ chat_id: string }>();
+  `).bind(userId, now - LAUNCH_CLAIM_MS).first<{ chat_id: string }>();
   if (!launch) return false;
-  const moved = await env.DB.prepare("update or ignore cloud_free_model_viewers set chat_id = ? where user_id = ? and chat_id = ?")
-    .bind(chatId, userId, launch.chat_id).run();
+  // From the claim on, the usual windows run: the chat's own reports keep it watched.
+  const moved = await env.DB.prepare("update or ignore cloud_free_model_viewers set chat_id = ?, seen_at = ? where user_id = ? and chat_id = ?")
+    .bind(chatId, now, userId, launch.chat_id).run();
   return (moved.meta?.changes ?? 0) > 0;
 }
 
