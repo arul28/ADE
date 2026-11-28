@@ -55,8 +55,8 @@ and **request** (dispatch to the provider).
 ### `prepareProposal(args)`
 
 1. Compose the context envelope:
-   - `LaneExportLite` for the lane
-   - `LaneExportLite` for the peer (when pairwise)
+   - the lite lane export for the lane (`laneExportLite`)
+   - the lite lane export for the peer, when pairwise (`peerLaneExportLite`)
    - `ConflictExportStandard` for the specific conflict pack
    - `conflictJobContext` with freshness metadata and stale policy
 2. Validate that required file contexts are present
@@ -90,22 +90,13 @@ entries.
 
 Logged to `ai_usage_log` for usage tracking.
 
-### Prompt contract
+### Response contract
 
-Conflict prompts enforce an exact output structure:
-
-1. `ResolutionStrategy`
-2. `RelevantEvidence`
-3. `Scope`
-4. `Patch`
-5. `Confidence`
-6. `Assumptions`
-7. `Unknowns`
-8. `InsufficientContext`
-
-If `InsufficientContext=true`, the `Patch` section must be empty.
-`parseStructuredObject(text)` + `extractDiffPatchFromText(text)`
-walk the response and guard against malformed payloads.
+The request asks for JSON with `explanation`, `confidence` (0..1) and
+`diffPatch` (a unified diff). When context is insufficient for a safe patch,
+`diffPatch` must be empty with the reason in `explanation`.
+`parseStructuredObject(text)` and `extractDiffPatchFromText(text)` guard against
+malformed answers.
 
 ### Apply modes
 

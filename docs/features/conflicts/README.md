@@ -1,60 +1,60 @@
 # Conflicts
 
-ADE's conflict feature surfaces integration risk before it becomes a
-merge-time emergency. A single shared service powers conflict
-detection, pairwise risk computation, merge simulation, rebase-need
-scanning, and AI resolution proposals. There is no dedicated "Conflicts" tab in the app — conflict signal
-is projected into the surfaces where it matters:
+The conflict service shows integration risk before merge time. One service in
+`apps/desktop/src/main/services/conflicts/conflictService.ts` does conflict
+prediction, pairwise risk, merge simulation, rebase-need scanning and AI
+resolution proposals. There is no Conflicts tab. The signal shows up in:
 
-- **Lanes**: status badges and overlap chips on lane rows, inline
-  merge simulation, rebase banner.
-- **Graph**: project-wide `RiskMatrix`, pairwise overlap tooltips,
-  edge-click merge simulation.
-- **PRs**: conflict analysis on PR rows and issue resolution.
+- **Lanes:** the catch-up notice and menu (rebase needs through
+  `window.ade.rebase.*`, `renderer/components/lanes/laneRebaseNeeds.ts`) and
+  the lane list snapshot's conflict status.
+- **PRs:** per-PR conflict analysis; an update that hits conflicts hands a
+  resolve prompt to the lane's chat.
+- **Agents and the CTO:** `conflicts.*` runtime actions (risk matrix, batch
+  assessment, merge simulation, proposals).
 
-## Where this runs
-
-Conflict prediction (`git merge-tree` runs), pairwise risk
-computation, the prediction job engine, and AI proposal preparation /
-dispatch / apply all execute inside
-the **active ADE runtime** for the window's project binding — the
-local machine runtime for local-bound windows or the SSH-attached remote
-runtime for remote-bound windows. The renderer routes
-`window.ade.conflicts.*` calls through
-`callProjectRuntimeActionOr("conflicts", …)` in
-`apps/desktop/src/preload/preload.ts` and only falls back to the
-desktop's in-process IPC handlers when no runtime is bound. Remote-
-bound windows therefore predict conflicts and run merge simulations
-on the remote machine — the
-worktrees and pack artifacts they read are on the remote host. The
-`RiskMatrix` renderer components only hold view
-state; they call out to the runtime for every prediction.
+No renderer view draws the risk matrix.
 
 ## Source file map
 
-Service files (canonical implementations live in the ADE runtime;
-the paths below are the desktop fallback targets that share the
-behavior):
-
 | File | Responsibility |
 |------|---------------|
-| `apps/desktop/src/main/services/conflicts/conflictService.ts` | Prediction, simulation, risk matrix, proposals, rebase needs, AI rebase (3k lines) |
-| `apps/desktop/src/main/services/git/git.ts` | `runGit`, `runGitOrThrow`, `runGitMergeTree`, conflict type normalization |
-| `apps/desktop/src/main/services/git/gitConflictState.ts` | `detectConflictKind` for live merge/rebase state |
-| `apps/desktop/src/main/services/shared/remoteTrackingBranch.ts` | `fetchRemoteTrackingBranch` |
-| `src/shared/laneBaseResolution.ts` | `shouldLaneTrackParent`, `branchNameFromLaneRef` for comparison ref resolution |
+| `apps/desktop/src/main/services/conflicts/conflictService.ts` | Prediction, simulation, risk matrix, proposals, rebase needs (`resolveLaneRebaseTarget`), AI rebase. |
+| `apps/desktop/src/main/services/git/git.ts` | `runGit`, `runGitOrThrow`, `runGitMergeTree`, conflict type normalization. |
+| `apps/desktop/src/main/services/git/gitConflictState.ts` | `detectConflictKind` for live merge/rebase state. |
+| `apps/desktop/src/main/services/shared/remoteTrackingBranch.ts` | `fetchRemoteTrackingBranch`. |
+| `apps/desktop/src/shared/laneBaseResolution.ts` | `branchNameFromLaneRef`; the compare base comes from `lanes/laneCompareBase.ts`. |
+| `apps/desktop/src/shared/types/conflicts.ts` | Status, overlap, matrix, proposal and simulation types. |
+| `apps/desktop/src/renderer/components/lanes/laneRebaseNeeds.ts` | Per-machine rebase-need scans for the Lanes tab. |
+| `apps/desktop/src/renderer/components/prs/ConflictFilePreview.tsx` | Conflict marker preview. |
 
-Renderer:
+Detail docs:
 
-| File | Responsibility |
-|------|---------------|
-| `renderer/components/lanes/mergeSimulation/*` | Conflict file diff, merge simulation panel, language detection |
-| `renderer/components/prs/ConflictFilePreview.tsx` | Conflict marker preview (re-used from PR flows) |
+- [`detection.md`](./detection.md): the prediction engine (periodic and realtime).
+- [`simulation.md`](./simulation.md): one-shot merge simulation and AI resolution.
 
-Detail docs in this folder:
+## Gotchas
 
-- [`detection.md`](./detection.md) — the prediction engine (periodic + realtime).
-- [`simulation.md`](./simulation.md) — pre-flight merge simulation, merge plans, AI resolution.
+- **Serialized pair tasks.** `runSerializedPairTask(pairId, task)` keeps one
+  prediction per pair at a time; a queued task runs after the current one.
+- **Above `FULL_MATRIX_MAX_LANES = 15` lanes** the service switches to
+  prefilter mode (cheap overlap heuristic first, merge-tree only for likely
+  pairs). Expect `truncated: true` and `strategy: "prefilter-overlap"`.
+- **Stale predictions are still returned** with `lastPredictedAt`. For a fresh
+  result, call `runPrediction` for that lane.
+- **`git merge-tree` exit 128 is blocked, not clean.**
+- **Insufficient context returns no patch.** Proposals set
+  `insufficientContext: true` with `insufficientReasons[]` instead of guessing.
+- **Don't hardcode the pack directory.** `conflictPacksDir` may be injected for
+  tests; otherwise it derives from `resolveAdeLayout(projectRoot).packsDir`.
+
+## Where this runs
+
+Prediction, risk, the job engine and proposal prepare/dispatch/apply run on the
+machine that holds the project (the brain for a local binding, the remote
+runtime for a remote one). `window.ade.conflicts.*` calls go through preload to
+the bound runtime; the in-process IPC handlers run only when no runtime is
+bound. The worktrees and pack artifacts read are on that machine.
 
 ## Status model
 
@@ -140,24 +140,19 @@ The lane list snapshot also reads the batch assessment for lane badges.
 
 ## Conflict pack / export
 
-Conflict context sent to AI providers is bundled as a versioned
-export, not a raw pack dump:
-
-- `LaneExportLite`, `LaneExportStandard`, `LaneExportDeep` — lane
-  context at varying levels of detail.
-- `ConflictExportStandard` — per-conflict bundle with file contexts,
-  side snapshots, hunks, and lineage.
-- Context envelopes include `schema: "ade.conflictJobContext.v1"` so
-  downstream consumers can version-gate.
+Context sent to an AI provider is a bounded export, not a raw pack dump: the
+lane's and peer's lite lane exports (`laneExportLite`, `peerLaneExportLite`)
+and a `ConflictExportStandard` with file contexts, side snapshots, hunks and
+lineage. Envelopes carry `schema: "ade.conflictJobContext.v1"` (a wire name
+kept as is).
 
 Storage:
 
-- `<projectRoot>/.ade/artifacts/packs/conflicts/v2/<laneId>__<peerKey>.md` — conflict pack v2 markdown
-- `<projectRoot>/.ade/artifacts/packs/conflicts/predictions/<laneId>.json` — per-lane prediction summary
+- `<projectRoot>/.ade/artifacts/packs/conflicts/v2/<laneId>__<peerKey>.md`: conflict pack markdown
+- `<projectRoot>/.ade/artifacts/packs/conflicts/predictions/<laneId>.json`: per-lane prediction summary
 
-Pack freshness metadata: `predictionAt`, `lastRecomputedAt`,
-`stalePolicy.ttlMs`, plus coverage metadata `strategy`, `truncated`,
-`pairwisePairsComputed`, `pairwisePairsTotal`.
+Freshness metadata: `predictionAt`, `lastRecomputedAt`, `stalePolicy.ttlMs`,
+plus `strategy`, `truncated`, `pairwisePairsComputed`, `pairwisePairsTotal`.
 
 ## Proposal model
 
@@ -234,27 +229,14 @@ Proposals (AI + apply/undo):
 | `ade.conflicts.applyProposal` | Apply via `git apply --3way`, record operation |
 | `ade.conflicts.undoProposal` | Reverse-apply via `git apply -R` |
 
-Rebase needs:
+Rebase needs (the Lanes tab reads them through `window.ade.rebase.scanNeeds` /
+`getNeed` / `onEvent`, channels `ade.rebase.*`):
 
 | Channel | Description |
 |---------|-------------|
 | `ade.conflicts.scanRebaseNeeds` | Compute rebase needs for all lanes |
 | `ade.conflicts.getRebaseNeed` | Single-lane rebase need |
-| `ade.conflicts.rebaseLane` | Rebase a lane onto its base (`ade git rebase --lane`) |
-
-## Surface split
-
-Conflict intelligence lives where it's useful:
-
-- **Lanes**: status badges, overlap counts, "Open in Graph" jump.
-- **Graph**: `RiskMatrix` with animated transitions, cell tooltips
-  with overlap file lists, merge simulation from edge clicks.
-- **PRs**: per-PR conflict analysis; an update that hits conflicts
-  hands a resolve prompt to the lane's chat.
-
-All surfaces consume the same service. Keeping prediction,
-simulation, and proposals behind a single service means the
-surfaces are rendering views rather than re-implementing logic.
+| `ade.conflicts.rebaseLane` | Rebase a lane onto its base (`daex git rebase --lane`) |
 
 ## Event stream
 
@@ -279,29 +261,3 @@ In `conflictService.ts`:
   heuristic.
 - `STALE_MS = 5 * 60_000` — 5-minute staleness cutoff.
 - `PREPARED_TTL_MS = 20 * 60_000` — prepared proposal preview TTL.
-
-## Gotchas
-
-- **Serialized pair tasks.** `runSerializedPairTask(pairId, task)`
-  uses a `pairLocks` map to prevent concurrent predictions for the
-  same pair. Queuing a second task while one is running is safe —
-  the queued task will run after the current finishes.
-- **Prediction cap matters.** Above `FULL_MATRIX_MAX_LANES = 15`
-  lanes the service falls back to prefilter mode, which computes a
-  cheap overlap heuristic first and only runs merge-tree for
-  likely-conflicting pairs. Expect `truncated: true` and
-  `strategy: "prefilter-overlap"` in assessment metadata.
-- **Stale predictions are still returned.** Callers see the
-  `lastPredictedAt` field; the UI decides to annotate rather than
-  re-fetch. For a guaranteed-fresh result, call `runPrediction`
-  with the specific lane id.
-- **`git merge-tree` exit 128** is treated as blocked, not clean.
-  Don't interpret a fatal git error as "no conflicts."
-- **Insufficient-context guard.** AI proposals refuse to emit
-  speculative patches when required file context is incomplete.
-  They return `insufficientContext: true` with
-  `insufficientReasons[]` rather than a best-guess patch.
-- **Pack root dir resolution.** `conflictPacksDir` may be injected
-  for tests; the derived `packsRootDir` is the parent of that path
-  if injected, otherwise `resolveAdeLayout(projectRoot).packsDir`.
-  Don't hardcode the artifact directory.

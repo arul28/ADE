@@ -1,6 +1,6 @@
 # Conflict detection
 
-The conflict prediction engine runs inside the **active ADE runtime**
+The conflict prediction engine runs inside the **active DAEX runtime**
 (local machine runtime or SSH-attached remote runtime) using the implementation
 in `apps/desktop/src/main/services/conflicts/conflictService.ts` (the
 desktop fallback target also points at the same source). It runs
@@ -23,7 +23,7 @@ the working directory. Exit codes:
   tree OID and per-file conflict entries
 - `128` — fatal git error (corrupt ref, missing object)
 
-ADE wraps this via `runGitMergeTree({ cwd, mergeBase, branchA,
+DAEX wraps this via `runGitMergeTree({ cwd, mergeBase, branchA,
 branchB, timeoutMs })`. One `git merge-tree -h` probe per process (kept only
 when it printed git's usage) says whether `--write-tree` (git 2.38+) and
 `--merge-base` (2.40+) exist; a real call that answers with the legacy usage
@@ -49,8 +49,7 @@ It parses stdout and returns:
 Two kinds of predictions are stored:
 
 1. **Lane-to-base** — `lane_b_id IS NULL`. Compares the lane's head
-   against its base ref (resolved through
-   `shouldLaneTrackParent` / `base_ref` fallback).
+   against its compare base (see [Lane comparison ref](#lane-comparison-ref)).
 2. **Pairwise** — `lane_a_id`, `lane_b_id` both set. Compares two
    lane heads at their merge base.
 
@@ -182,21 +181,13 @@ merge-tree conflict output.
 
 ## Lane comparison ref
 
-`resolveLaneRebaseTarget({ lane, lanesById })` picks
-the comparison ref for rebase predictions:
-
-1. If parent is non-primary and
-   `shouldLaneTrackParent({ lane, parent })`: use the parent's
-   branch ref, with `origin/<parent-branch>` as a fallback.
-2. Else if `lane.baseRef` present: use `origin/<baseRef>` with
-   local `<baseRef>` as fallback.
-3. Else: use `lane.baseRef` directly and display it.
-
-This resolver is used by both `scanRebaseNeeds` (batch) and
-`getRebaseNeed` (single). `rebaseLane` (AI-assisted) applies the
-same logic so the prediction and the actual rebase target stay in
-sync. For a lane built on a known recently merged PR, prediction replays only
-the commits after that PR’s head, matching the `rebase --onto` operation.
+`resolveLaneRebaseTarget(lane)` picks the ref for rebase predictions: the lane's
+compare base (`compareBaseForLane`: the open PR's base, else the default
+branch), read as `origin/<base>` with the local `<base>` as fallback. Both
+`scanRebaseNeeds` and `getRebaseNeed` use it, and `rebaseLane` applies the same
+target, so prediction and rebase agree. For a lane built on a recently merged
+PR, prediction replays only the commits after that PR's head, matching the
+`rebase --onto` the rebase runs.
 
 ## Tables
 
@@ -230,8 +221,8 @@ Rebase needs are computed on each scan and never stored.
 - `prediction-updated` — single-row update (targeted re-prediction
   or realtime pass).
 
-The renderer subscribes via `ade.conflicts.event` and uses progress
-events to drive the `RiskMatrix` animated progress bar.
+Consumers subscribe through `ade.conflicts.event`; no renderer view draws the
+matrix or its progress today.
 
 ## Gotchas
 
