@@ -771,7 +771,8 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
         if (!idle() || timeLeft() <= 0) return;
         try {
           const read = await withinMs(chat.listMentionSnapshotRows(), timeLeft());
-          // A kind that failed to read: only a first save goes out without it.
+          // A kind that failed to read: only a first save goes out without it, marked
+          // partial, and the server keeps a copy it already holds (this computer's record can be lost).
           if (!read || (!read.complete && state.mentions?.[key] != null)) return;
           const lanes = await runtimeLanes(runtime);
           if (!lanes) return;
@@ -791,8 +792,9 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
           const { savedAt: _savedAt, ...shape } = snapshot;
           const hash = createHash("sha256").update(JSON.stringify(shape)).digest("hex");
           if (state.mentions?.[key] === hash || !idle() || timeLeft() <= 0) return;
-          const answer = await api.putMentionSnapshot(machineKey, { instanceId, projectKey: key, snapshot }, { timeoutMs: timeLeft() });
-          // `kept`: the server holds a newer copy (this computer's clock went back), so this one is tried again.
+          const upload = { instanceId, projectKey: key, snapshot, ...(read.complete ? {} : { partial: true }) };
+          const answer = await api.putMentionSnapshot(machineKey, upload, { timeoutMs: timeLeft() });
+          // `kept`: the server holds a newer copy (this computer's clock went back) or a whole one, so this one is tried again.
           if (!answer.kept) (state.mentions ??= {})[key] = hash;
         } catch (error) {
           logger.warn("cloud.rest_save_mentions_failed", { error: errorText(error) });

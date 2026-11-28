@@ -267,7 +267,7 @@ describe("createCloudRestSave @ menu", () => {
       putGitSummary: async () => ({ kept: false }),
       putEventWakes: async () => null,
     } as unknown as CloudApiClient;
-    const saver = createCloudRestSave({
+    const options = {
       adeHome: fs.mkdtempSync(path.join(os.tmpdir(), "ade-rest-save-")),
       instanceId: "instance-1",
       logger: { info: () => {}, warn: () => {} },
@@ -276,7 +276,8 @@ describe("createCloudRestSave @ menu", () => {
       openRuntimes: async () => [{ projectId: "project-1", runtime }],
       flushChats: async () => ({}) as CloudChatUploadPendingResult,
       accountUserId: () => null,
-    });
+    };
+    const saver = createCloudRestSave(options);
     const save = () => saver.save({ budgetMs: 60_000, reason: "idle", stillIdle: () => true });
 
     await save();
@@ -309,5 +310,11 @@ describe("createCloudRestSave @ menu", () => {
     await save();
     expect(api.putMentionSnapshot).toHaveBeenCalledTimes(4);
     expect(saved.map((body) => (body.snapshot.rows as Array<{ title: string }>)[0]!.title)).toEqual(["upload-fix", "upload-fix-2", "upload-fix-2"]);
+
+    // A computer that lost its record still sends a failed roster only marked partial: the server keeps what it holds.
+    complete = false;
+    await createCloudRestSave({ ...options, adeHome: fs.mkdtempSync(path.join(os.tmpdir(), "ade-rest-save-")) })
+      .save({ budgetMs: 60_000, reason: "idle", stillIdle: () => true });
+    expect(saved.map((body) => (body as { partial?: boolean }).partial ?? false)).toEqual([false, false, false, true]);
   });
 });

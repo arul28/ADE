@@ -14,13 +14,15 @@ import { logCloud, reportCloudFailure, type CloudEnv } from "./store";
  * (`cloudMentionSnapshot.ts`), so a chat's menu reads the same while the
  * computer sleeps (README, "The @ menu while a computer rests").
  *
- *   PUT /cloud/mentions/:machine   {instanceId, projectKey, snapshot}   the computer itself
+ *   PUT /cloud/mentions/:machine   {instanceId, projectKey, snapshot, partial?}   the computer itself
  *   GET /cloud/mentions/:machine?project=&lane=&since=                  any of the person's clients
  *
  * One copy per (computer, project). Names and file paths are the person's:
  * the copy is gzipped, then sealed with the account's key. A save replaces
  * the copy only when its `savedAt` (the computer's clock) is strictly newer,
- * so a client holding one saved time never misses a change; one more than
+ * so a client holding one saved time never misses a change. A `partial`
+ * copy (a roster the computer failed to read) is saved only where no copy
+ * is yet. A saved time more than
  * `MAX_CLOCK_AHEAD_MS` past the server's clock is refused, so no save can
  * hold off the computer's later ones for long. Only the computer writes: a
  * browser (`Origin`) is refused. The computer's key matches in any case
@@ -102,8 +104,8 @@ async function handlePut(request: Request, env: CloudEnv, userId: string, namedM
     values (?, ?, ?, ?, ?, ?, ?)
     on conflict (user_id, machine_key, project_key) do update set
       instance_id = excluded.instance_id, sealed = excluded.sealed, saved_at = excluded.saved_at, updated_at = excluded.updated_at
-    where excluded.saved_at > cloud_mention_snapshots.saved_at
-  `).bind(userId, machineKey, projectKey, computer.instance_id, sealed, snapshot.savedAt, now),
+    where excluded.saved_at > cloud_mention_snapshots.saved_at and ? = 0
+  `).bind(userId, machineKey, projectKey, computer.instance_id, sealed, snapshot.savedAt, now, body.value.partial === true ? 1 : 0),
   // Its newest few: a computer can't grow the account's rows without end by naming new projects.
   env.DB.prepare(`
     delete from cloud_mention_snapshots where user_id = ? and machine_key = ? and project_key not in (

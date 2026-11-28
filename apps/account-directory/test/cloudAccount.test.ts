@@ -3408,6 +3408,11 @@ describe("ADE Cloud without a computer", () => {
     // A read in another case finds that copy.
     const upper = await harness.send(OWNER, "GET", `/cloud/mentions/KEY-A?project=${encodeURIComponent(project)}`);
     expect(((await upper.json()) as { snapshot?: { savedAt: number } }).snapshot?.savedAt).toBe(NOW + 30);
+    // A partial copy (a roster the computer failed to read) never replaces one, but fills a gap.
+    const partial = (projectKey: string) =>
+      harness.send(OWNER, "PUT", "/cloud/mentions/key-a", { instanceId: INSTANCE, projectKey, snapshot: menu(NOW + 31, "partial"), partial: true });
+    expect(await (await partial(project)).json()).toEqual({ ok: true, kept: true });
+    expect(await (await partial("github.com/acme/other")).json()).toEqual({ ok: true, kept: false });
     // A save from far past the server's clock is refused, so it can't hold off the computer's next ones.
     expect((await save(INSTANCE, "key-a", NOW + HOUR, "future")).status).toBe(400);
     expect((await read(`&since=${NOW + 30}`)).body).toEqual({ unchanged: true, savedAt: NOW + 30 });

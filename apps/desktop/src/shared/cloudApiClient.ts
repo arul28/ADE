@@ -578,7 +578,7 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     putGitSummary: (machineKey: string, laneId: string, upload: CloudGitSummaryUpload) =>
       request<{ ok: true; kept: boolean }>("PUT", cloudGitPath(machineKey, laneId), { body: upload }),
     /** From the computer at rest: its `@` menu for one project. `kept`: the server holds a newer save and kept it. */
-    putMentionSnapshot: (machineKey: string, upload: { instanceId: string; projectKey: string; snapshot: CloudMentionSnapshot }, options: { timeoutMs?: number } = {}) =>
+    putMentionSnapshot: (machineKey: string, upload: { instanceId: string; projectKey: string; snapshot: CloudMentionSnapshot; partial?: boolean }, options: { timeoutMs?: number } = {}) =>
       request<{ ok: true; kept: boolean }>("PUT", cloudMentionsPath(machineKey), { body: upload, timeoutMs: Math.min(timeoutMs * 2, options.timeoutMs ?? Infinity) }),
     /**
      * Part `part` (1-based, at most 6 MiB) of a capsule; a put of part 1 starts a new upload and answers its
