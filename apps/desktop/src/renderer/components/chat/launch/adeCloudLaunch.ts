@@ -66,7 +66,8 @@ export function adeCloudLaunchProblem(input: {
   originUrl: string | null;
   account: CloudAccountState | null;
 }): string | null {
-  return cloudLaneStartBlock(input.account, { newLane: true, sizeId: input.args.cloud?.sizeId ?? null })?.message
+  // A chat launch carries the person's first message (Pricing v3's proof); a CLI or an empty lane does not.
+  return cloudLaneStartBlock(input.account, { newLane: true, sizeId: input.args.cloud?.sizeId ?? null, personMessage: input.args.kind === "chat" })?.message
     ?? cloudLaneLaunchStartRefusal({ args: input.args, originUrl: input.originUrl })?.message
     ?? null;
 }

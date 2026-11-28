@@ -111,7 +111,8 @@ export function CloudSizes({ account }: { account: CloudAccountState }) {
     // The long form, and a short one ("8/h") a narrow page shows instead (CSS picks one). Exact: 2.5 stays 2.5.
     const long = `${words.count(milli / 1000)} ${row.unit === "hour" ? "an hour" : "a minute"}`;
     const short = `${cloudRateNumber(milli, words)}/${row.unit === "hour" ? "h" : "min"}`;
-    return <><span className="adecd-sizetable-long">{long}</span><span className="adecd-sizetable-short" aria-hidden="true">{short}</span></>;
+    // CSS hides one of the two (display: none drops it for screen readers too), so they hear the long form here.
+    return <><span className="sr-only">{long}</span><span className="adecd-sizetable-long" aria-hidden="true">{long}</span><span className="adecd-sizetable-short" aria-hidden="true">{short}</span></>;
   };
   const head = (column: Column) => (column === "ad" ? "With ads" : column === "full" ? "No ads" : "Price");
 

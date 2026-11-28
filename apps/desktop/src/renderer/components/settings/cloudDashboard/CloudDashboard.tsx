@@ -357,13 +357,13 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
           </div>
           <div className="adecd-stack">
             <CloudAgentLimitsCard />
-            <CloudFreeModelsCard account={account} />
+            <CloudFreeModelsCard account={account} onChanged={refresh} />
           </div>
         </div>
       ) : (
         <div className="adecd-stack">
           {connectedMachine || isWebClientMode() ? <CloudAgentLimitsCard /> : null}
-          <CloudFreeModelsCard account={account} />
+          <CloudFreeModelsCard account={account} onChanged={refresh} />
           <CloudInviteCard account={account} onChanged={refresh} />
         </div>
       )}

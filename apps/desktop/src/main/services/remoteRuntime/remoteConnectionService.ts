@@ -3141,18 +3141,23 @@ export class RemoteConnectionService {
 }
 
 /**
- * A person's chat message sent from this app's own window (`chat.sendMessage`
- * stamped with the window's `inputOrigin` and its `clientSendId`): the ids a
- * wake for it sends as its ad proof (Pricing v3), the same the window then
- * sends to `/sent`. Null for anything else, an agent's or a CLI's call
- * included, so only a person's message counts.
+ * A person's chat message sent from this app's own window, stamped with the
+ * window's `inputOrigin` and its `clientSendId`: `chat.sendMessage`, or a new
+ * chat's first message (`chat.createSessionAndSend`, under the chat id the
+ * window picked). The ids a wake for it sends as its ad proof (Pricing v3),
+ * the same the window sends to `/sent`. Null for anything else, an agent's or
+ * a CLI's call included, so only a person's message counts.
  */
 function personMessageOf(request: RemoteRuntimeActionRequest): { chatId: string; messageId: string } | null {
-  if (request.domain !== "chat" || request.action !== "sendMessage") return null;
-  const args = request.args && typeof request.args === "object" ? request.args as Record<string, unknown> : null;
-  const origin = args?.inputOrigin && typeof args.inputOrigin === "object" ? args.inputOrigin as Record<string, unknown> : null;
-  const chatId = typeof args?.sessionId === "string" ? args.sessionId.trim() : "";
-  const messageId = typeof args?.clientSendId === "string" ? args.clientSendId.trim() : "";
+  if (request.domain !== "chat" || (request.action !== "sendMessage" && request.action !== "createSessionAndSend")) return null;
+  const record = (value: unknown) => (value && typeof value === "object" ? value as Record<string, unknown> : null);
+  const text = (value: unknown) => (typeof value === "string" ? value.trim() : "");
+  const args = record(request.args);
+  const origin = record(args?.inputOrigin);
+  const created = request.action === "createSessionAndSend";
+  const message = created ? record(args?.message) : args;
+  const chatId = text(created ? record(args?.create)?.sessionId : args?.sessionId);
+  const messageId = text(message?.clientSendId);
   if (!origin || typeof origin.clientId !== "string" || !origin.clientId || !chatId || !messageId) return null;
   return { chatId, messageId };
 }
