@@ -155,10 +155,13 @@ server with `ADE_ACCOUNT_DIRECTORY_URL`.
 - **The composer**: one DAEX Cloud row in "Run on"; a size button (default
   `cloudDefaultTier`, Small); Send turns off when the account is out of credits,
   at its computer limit, or the disk is full.
-- **A cloud lane's chat**: one cloud button in the header
-  (`CloudLaneHeaderButton.tsx`) showing asleep/waking/awake, with the status
-  menu, Wake, Keep, Change size, Sleep and Delete lane. It is account level, so
-  it works from any machine.
+- **A cloud lane's chat, CLI session or shell**: one cloud button in the
+  header (`CloudLaneHeaderButton.tsx`) showing asleep/waking/awake, with the
+  status menu, Wake, Keep, Change size, Sleep and Delete lane. It is account
+  level, so it works from any machine. A CLI or shell header mounts it through
+  `SessionCloudLaneButton`, scoped to the Work row's pin so Wake connects the
+  session's machine. The phone's chat header and terminal screen show
+  `CloudLaneHeaderStateButton` (`WorkCloudMachine.swift`).
 - **CLI**: `daex cloud` (`daex help cloud`), `daex chat create --machine cloud`.
 - **Phone**: the `cloud.read` / `cloud.write` sync commands.
 - `BringYourOwnCloudCard.tsx` is layout only behind

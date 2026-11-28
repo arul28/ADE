@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowClockwise, PaperPlaneRight, Play, Terminal as TerminalIcon } from "@phosphor-icons/react";
 import type { CloudChatQueuedMessage } from "../../../../../account-directory/src/cloud/contract";
-import type { TerminalSessionSummary } from "../../../shared/types";
+import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { adeCloudFailedMessageDismissed, dismissAdeCloudFailedMessage } from "../../state/adeCloudChatQueue";
 import { draftWithPutBack } from "../chat/CloudQueuedMessages";
 import { captureError } from "../../../shared/sentry/capture";
@@ -16,6 +16,7 @@ import { focusWorkSession } from "../../lib/workSessionRequests";
 import type { MachineAddress } from "../../../shared/machineAddress";
 import { AccountReadFailed } from "../adeCloud/AccountReadFailed";
 import { Button } from "../ui/Button";
+import { SessionCloudLaneButton } from "../cloudLane/CloudLaneHeaderButton";
 import { normalizeTranscriptToGrid } from "./terminalTranscriptNormalize";
 import { BRAND } from "../../../shared/brand";
 
@@ -288,8 +289,11 @@ function SavedCliSendBox({ machineKey, sessionId }: { machineKey: string; sessio
  */
 export function SavedTerminalCopyView({
   session,
+  runtimePin,
 }: {
-  session: Pick<TerminalSessionSummary, "id" | "title" | "toolType" | "lastActivityAt" | "laneId">;
+  session: Pick<TerminalSessionSummary, "id" | "title" | "toolType" | "lastActivityAt" | "laneId" | "status">;
+  /** The Work row's pin: the lane's cloud button reads (never wakes) the computer here. */
+  runtimePin: OpenProjectBinding | null;
 }): JSX.Element | null {
   const address = savedTerminalAddress(session.id);
   const { state, retry } = useAdeCloudAccountRead(address ? { call: "savedSession" as const, ...address } : null);
@@ -319,6 +323,7 @@ export function SavedTerminalCopyView({
             {saved ?? "Saved"} on {BRAND.CLOUD_NAME}. {isShell ? "The last lines it showed." : "Its screen when it went to rest."} Reading this doesn't wake it.
           </div>
         </div>
+        <SessionCloudLaneButton session={session} runtimePin={runtimePin} />
         <Button
           size="sm"
           variant="primary"
