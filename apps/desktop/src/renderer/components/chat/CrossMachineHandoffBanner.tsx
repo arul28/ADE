@@ -28,6 +28,7 @@ import { Banner, type BannerModel } from "../ui/notice";
 import { cn } from "../ui/cn";
 import { withChatPin } from "./chatMachinePin";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The state of a chat's move to another machine, above its composer. The
@@ -195,7 +196,7 @@ export function CrossMachineHandoffBanner({
           : action === "brief"
             ? `Couldn't send a brief to ${machine}`
             : `Couldn't update the move to ${machine}`,
-        message: plainErrorText(error, "ADE couldn't reach that computer.", machine),
+        message: plainErrorText(error, `${BRAND.NAME} couldn't reach that computer.`, machine),
       });
     } finally {
       setBusy(null);
@@ -416,7 +417,7 @@ export function CrossMachineBatchApprovalBanner({
       showToast({
         tone: "warning",
         title: `Couldn't ${approve ? "approve" : "deny"} the batch move to ${machine}`,
-        message: `${plainErrorText(error, "ADE couldn't reach that computer.", approval.machineName.trim() || null)} `
+        message: `${plainErrorText(error, `${BRAND.NAME} couldn't reach that computer.`, approval.machineName.trim() || null)} `
           + `Check the batch with \`ade chat move --status ${approval.batchId}\`, or try again.`,
       });
     } finally {

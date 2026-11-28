@@ -16,7 +16,7 @@ struct DeviceSignInRequest: Equatable, Identifiable {
       && components.path == "/device"
     // The custom-scheme form is accepted too. Opening the request changes
     // nothing: the person still has to approve it, and then allow it.
-    let isCustomLink = scheme == "ade" && url.host?.lowercased() == "device"
+    let isCustomLink = ADEDeepLinkURLParsing.isADELinkScheme(scheme) && url.host?.lowercased() == "device"
     guard isWebLink || isCustomLink,
           let userCode = Self.normalizedUserCode(
             ADEDeepLinkURLParsing.adeQueryValues(from: components)["user_code"]

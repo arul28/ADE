@@ -729,21 +729,21 @@ describe("desktop seat summary (the status `seat` every text surface leads with)
     // [case, platform, supported, display, windowsDesktop, kind, seat, lease, next step]
     ["Mac with a display", "darwin", true, display({}), null, "mac", "virtual-display", true, null],
     ["Mac in the off-screen fallback", "darwin", true, display({ mode: "offscreen-region" }), null, "mac", "offscreen-region", true, null],
-    ["Mac with no display yet", "darwin", true, null, null, "mac", null, true, /ade screen start/],
+    ["Mac with no display yet", "darwin", true, null, null, "mac", null, true, /daex screen start/],
     ["an unsupported host", "freebsd", false, null, null, "mac", null, true, null],
     // A Linux lane screen is its own X display: no human pointer, no lease.
     ["Linux with a display", "linux", true, display({}), null, "linux", "virtual-display", false, null],
-    ["Linux with no display yet", "linux", true, null, null, "linux", null, false, /ade screen start/],
+    ["Linux with no display yet", "linux", true, null, null, "linux", null, false, /daex screen start/],
     ["Windows private screen", "win32", true, display({ seatMode: "private" }), host({}), "windows-private", "private", false, null],
     ["Windows main desktop", "win32", true, display({ seatMode: "shared" }), host({}), "windows-shared", "shared", true, null],
     ["an older runtime's off-screen display", "win32", true, display({ mode: "offscreen-region" }), host({}), "windows-shared", "shared", true, null],
     ["an older runtime's shared host", "win32", true, display({}), host({ seatMode: "shared" }), "windows-shared", "shared", true, null],
     ["Windows, private screen held", "win32", true, null, host({ state: "held", privateAvailable: false, privateUnavailableReason: "held", heldByLaneId: "lane-9", heldByLaneName: "Login" }), "windows-private", null, false, /Login \(lane-9\)[\s\S]*ade screen start --shared/],
     ["Windows, locked", "win32", true, null, host({ state: "locked", locked: true, privateAvailable: false, privateUnavailableReason: "locked" }), "windows-private", null, false, /unlock/],
-    ["Windows, not set up", "win32", true, null, host({ state: "setup_required", childSessionsEnabled: false, privateAvailable: false, privateUnavailableReason: "setup_required" }), "windows-private", null, false, /ade screen setup/],
+    ["Windows, not set up", "win32", true, null, host({ state: "setup_required", childSessionsEnabled: false, privateAvailable: false, privateUnavailableReason: "setup_required" }), "windows-private", null, false, /daex screen setup/],
     ["Windows, ADE not on the console", "win32", true, null, host({ state: "not_console_session", privateAvailable: false, privateUnavailableReason: "not_console_session" }), "windows-private", null, false, /ade screen start --shared/],
-    ["Windows, ready without a saved password", "win32", true, null, host({ passwordSaved: false }), "windows-private", null, false, /ade screen start --text[\s\S]*password/],
-    ["Windows, ready", "win32", true, null, host({}), "windows-private", null, false, /^ade screen start --text$/],
+    ["Windows, ready without a saved password", "win32", true, null, host({ passwordSaved: false }), "windows-private", null, false, /daex screen start --text[\s\S]*password/],
+    ["Windows, ready", "win32", true, null, host({}), "windows-private", null, false, /^daex screen start --text$/],
   ])("%s", (_case, platform, supported, shownDisplay, windowsDesktop, kind, seat, lease, nextStep) => {
     expect(desktopSeatKind({ platform, display: shownDisplay, windowsDesktop })).toBe(kind);
     const summary = describeDesktopSeat({ platform, supported, display: shownDisplay, windowsDesktop });
@@ -1052,7 +1052,7 @@ describe("macDesktopService start", () => {
     const { service } = makeService({ driver });
     await service.start({ laneId: "lane-1", laneName: "Login fix" });
     const create = driver.calls.find((call) => call.op === MAC_DESKTOP_DRIVER_OPS.createDisplay);
-    expect(create?.payload.name).toBe("ADE · Login fix");
+    expect(create?.payload.name).toBe("DAEX · Login fix");
     service.dispose();
   });
 });

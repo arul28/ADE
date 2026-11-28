@@ -17,6 +17,7 @@ import { piAgentDirectoryForEnvironment } from "../../../../../desktop/src/main/
 import { resolveAdeOpenCodeStoreDir, resolveUserOpenCodeDataRoot } from "../../../../../desktop/src/shared/opencodeDataHome";
 import { resolveMachineAdeDir } from "../machineLayout";
 import { remapUnderRoot } from "./moveGitLinks";
+import { BRAND } from "../../../../../desktop/src/shared/brand";
 
 /**
  * Other agents' history for this project, which most tools file under a
@@ -160,7 +161,7 @@ export function planAgentHistoryRenames(args: {
       if (!newName) continue;
       add({
         provider: "claude",
-        label: adeOwned ? "ADE chats (Claude)" : "Claude Code",
+        label: adeOwned ? `${BRAND.NAME} chats (Claude)` : "Claude Code",
         adeOwned,
         from: folder,
         to: path.join(projectsDir, newName),
@@ -212,7 +213,7 @@ export function planAgentHistoryRenames(args: {
         if (!fs.existsSync(from)) continue;
         add({
           provider: "opencode",
-          label: adeOwned ? "ADE chats (OpenCode snapshots)" : "OpenCode snapshots",
+          label: adeOwned ? `${BRAND.NAME} chats (OpenCode snapshots)` : "OpenCode snapshots",
           adeOwned,
           from,
           to: path.join(snapshots, repoId, openCodeSnapshotName(newPath)),
@@ -263,8 +264,8 @@ export function summarizeAgentHistory(plans: HistoryRename[], oldSpellings: stri
       handling: "move",
       adeOwned: plan.adeOwned,
       detail: plan.adeOwned
-        ? "ADE's own chats for this project. Always moved, so they keep resuming."
-        : "History for this project is filed under the old path. ADE renames those folders.",
+        ? `${BRAND.NAME}'s own chats for this project. Always moved, so they keep resuming.`
+        : `History for this project is filed under the old path. ${BRAND.NAME} renames those folders.`,
     });
   }
   const summary = [...byLabel.values()];
@@ -273,7 +274,7 @@ export function summarizeAgentHistory(plans: HistoryRename[], oldSpellings: stri
     label: "Codex, OpenCode, GitHub Copilot and Muse",
     count: 0,
     handling: "nothing",
-    detail: "Their chats keep resuming. ADE carries folder trust over to the new location for Claude, Codex and Copilot.",
+    detail: `Their chats keep resuming. ${BRAND.NAME} carries folder trust over to the new location for Claude, Codex and Copilot.`,
   });
   if (kimiHasProject(oldSpellings, os.homedir())) {
     summary.push({
@@ -281,7 +282,7 @@ export function summarizeAgentHistory(plans: HistoryRename[], oldSpellings: stri
       label: "Kimi Code",
       count: 0,
       handling: "report",
-      detail: "Kimi files sessions under a hash of the path that ADE can't safely recreate. Old Kimi chats stay at the old location.",
+      detail: `Kimi files sessions under a hash of the path that ${BRAND.NAME} can't safely recreate. Old Kimi chats stay at the old location.`,
     });
   }
   return summary;

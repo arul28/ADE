@@ -877,7 +877,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     ], { showStreamingIndicator: true, wrapList: inChatScope });
 
     fireEvent.click(screen.getByRole("button", { name: "Show activity from the active turn" }));
-    const openButton = await screen.findByRole("button", { name: "Open http://localhost:5173/ in ADE browser" });
+    const openButton = await screen.findByRole("button", { name: "Open http://localhost:5173/ in DAEX browser" });
     fireEvent.click(openButton);
 
     await waitFor(() => {
@@ -959,7 +959,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     fireEvent.click(logsButton);
 
     await waitFor(() => {
-      expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("ade terminal read"));
+      expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("daex terminal read"));
     });
     expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("http://localhost:5173/"));
     expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("npm run dev"));
@@ -5294,7 +5294,7 @@ describe("AgentChatMessageList question receipts", () => {
     renderMessageList([buildStructuredApprovalEvent({ questions: planQuestions })], { onApproval });
 
     const row = screen.getByTestId("open-question-receipt");
-    expect(row.textContent ?? "").toContain("ADE asks");
+    expect(row.textContent ?? "").toContain("DAEX asks");
     expect(row.textContent ?? "").toContain("Plan");
     expect(row.textContent ?? "").toContain("awaiting you");
     // No radios, no Send: the transcript is a record, not a control surface.

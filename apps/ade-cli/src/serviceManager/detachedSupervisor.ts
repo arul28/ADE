@@ -26,6 +26,7 @@ import {
   type ResponsivenessProbe,
   serviceHandoverSleep,
 } from "./serviceHandover";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 /**
  * The brain's supervisor on a Linux machine with no usable service manager.
@@ -66,8 +67,8 @@ export type DetachedSupervisorDeps = {
 
 /** The note every fallback message carries, so a person knows what they are running. */
 export const NO_SERVICE_MANAGER_NOTE =
-  "This machine has no systemd user service manager, so ADE runs the brain as a supervised background process: "
-  + "it restarts after a crash, but not after a reboot (run `ade brain start` again then).";
+  `This machine has no systemd user service manager, so ${BRAND.NAME} runs the brain as a supervised background process: `
+  + "it restarts after a crash, but not after a reboot (run `daex brain start` again then).";
 
 /** How long a brain gets to exit on SIGTERM before it is killed. */
 const BRAIN_STOP_GRACE_MS = 10_000;
@@ -146,9 +147,9 @@ export function renderDetachedSupervisorScript(command: AdeServiceCommand, paths
   const pidFile = shellQuote(paths.brainPidPath);
   const exec = [command.command, ...command.args].map(shellQuote).join(" ");
   return `#!/bin/sh
-# ADE brain supervisor, written by \`ade brain start\` because this machine has
+# ${BRAND.NAME} brain supervisor, written by \`daex brain start\` because this machine has
 # no usable systemd user manager. It does what the systemd unit would: run the
-# brain, and start it again when it exits. Stop it with \`ade brain stop\`.
+# brain, and start it again when it exits. Stop it with \`daex brain stop\`.
 ${exports}
 child=''
 on_stop() {
@@ -175,7 +176,7 @@ while :; do
   # as systemd's start limit would, instead of spinning.
   if [ "$ran" -ge 60 ]; then delay=2; else delay=$(( delay * 2 )); fi
   if [ "$delay" -gt 60 ]; then delay=60; fi
-  echo "ADE supervisor: brain exited with status $status after \${ran}s; starting it again in \${delay}s." >>${err}
+  echo "${BRAND.NAME} supervisor: brain exited with status $status after \${ran}s; starting it again in \${delay}s." >>${err}
   sleep "$delay" &
   child=$!
   wait "$child"
@@ -351,7 +352,7 @@ export async function installDetachedRuntimeService(
       serviceName: ADE_RUNTIME_SERVICE_NAME,
       action: "install",
       path: paths.scriptPath,
-      message: `ADE brain is already running (pid ${existingBrain ?? "unknown"}). ${NO_SERVICE_MANAGER_NOTE}`,
+      message: `${BRAND.NAME} brain is already running (pid ${existingBrain ?? "unknown"}). ${NO_SERVICE_MANAGER_NOTE}`,
     };
   }
 
@@ -387,7 +388,7 @@ export async function installDetachedRuntimeService(
         serviceName: ADE_RUNTIME_SERVICE_NAME,
         action: "install",
         path: paths.scriptPath,
-        message: `ADE brain finished starting (pid ${readBrainPid(paths.brainPidPath) ?? existingBrain ?? "unknown"}). ${NO_SERVICE_MANAGER_NOTE}`,
+        message: `${BRAND.NAME} brain finished starting (pid ${readBrainPid(paths.brainPidPath) ?? existingBrain ?? "unknown"}). ${NO_SERVICE_MANAGER_NOTE}`,
       };
     }
     if (young.kind === "starting") {
@@ -397,7 +398,7 @@ export async function installDetachedRuntimeService(
         serviceName: ADE_RUNTIME_SERVICE_NAME,
         action: "install",
         path: paths.scriptPath,
-        message: `ADE brain is still starting (pid ${young.pid}); it had not answered on ${paths.socketPath} after ${timeoutMs}ms. ${NO_SERVICE_MANAGER_NOTE}`,
+        message: `${BRAND.NAME} brain is still starting (pid ${young.pid}); it had not answered on ${paths.socketPath} after ${timeoutMs}ms. ${NO_SERVICE_MANAGER_NOTE}`,
       };
     }
     // "died" or "skipped": fall through and restart it.
@@ -429,7 +430,7 @@ export async function installDetachedRuntimeService(
       serviceName: ADE_RUNTIME_SERVICE_NAME,
       action: "install",
       path: paths.scriptPath,
-      message: `ADE could not start the brain supervisor (/bin/sh ${paths.scriptPath}). ${NO_SERVICE_MANAGER_NOTE}`,
+      message: `${BRAND.NAME} could not start the brain supervisor (/bin/sh ${paths.scriptPath}). ${NO_SERVICE_MANAGER_NOTE}`,
     };
   }
   const record: DetachedSupervisorRecord = {
@@ -456,7 +457,7 @@ export async function installDetachedRuntimeService(
       serviceName: ADE_RUNTIME_SERVICE_NAME,
       action: "install",
       path: paths.scriptPath,
-      message: `ADE brain started (pid ${handover.replacementPid}). ${NO_SERVICE_MANAGER_NOTE}`,
+      message: `${BRAND.NAME} brain started (pid ${handover.replacementPid}). ${NO_SERVICE_MANAGER_NOTE}`,
     };
   }
   if (isPidAlive(supervisorPid)) {
@@ -469,7 +470,7 @@ export async function installDetachedRuntimeService(
       serviceName: ADE_RUNTIME_SERVICE_NAME,
       action: "install",
       path: paths.scriptPath,
-      message: `ADE brain is starting (supervisor pid ${supervisorPid}); it had not answered on ${paths.socketPath} after ${timeoutMs}ms. ${NO_SERVICE_MANAGER_NOTE}`,
+      message: `${BRAND.NAME} brain is starting (supervisor pid ${supervisorPid}); it had not answered on ${paths.socketPath} after ${timeoutMs}ms. ${NO_SERVICE_MANAGER_NOTE}`,
     };
   }
   return {
@@ -478,7 +479,7 @@ export async function installDetachedRuntimeService(
     serviceName: ADE_RUNTIME_SERVICE_NAME,
     action: "install",
     path: paths.scriptPath,
-    message: `ADE brain supervisor exited before the brain answered on ${paths.socketPath}. See ${path.join(paths.runtimeDir, "systemd.err.log")}.`,
+    message: `${BRAND.NAME} brain supervisor exited before the brain answered on ${paths.socketPath}. See ${path.join(paths.runtimeDir, "systemd.err.log")}.`,
   };
 }
 
@@ -535,8 +536,8 @@ export async function uninstallDetachedRuntimeService(
     action: "uninstall",
     path: paths.scriptPath,
     message: stoppedAny
-      ? "ADE brain stopped. This machine has no systemd user service manager, so ADE ran it as a supervised background process."
-      : "ADE brain was not running. This machine has no systemd user service manager, so there was no service to remove.",
+      ? `${BRAND.NAME} brain stopped. This machine has no systemd user service manager, so ${BRAND.NAME} ran it as a supervised background process.`
+      : `${BRAND.NAME} brain was not running. This machine has no systemd user service manager, so there was no service to remove.`,
   };
 }
 
@@ -557,8 +558,8 @@ export function getDetachedRuntimeServiceStatus(
       ...base,
       installed: false,
       running: false,
-      message: "ADE brain is not supervised: this machine has no systemd user service manager. "
-        + "Run `ade brain start` to start it as a supervised background process.",
+      message: `${BRAND.NAME} brain is not supervised: this machine has no systemd user service manager. `
+        + "Run `daex brain start` to start it as a supervised background process.",
     };
   }
   if (brainPid == null) {
@@ -566,13 +567,13 @@ export function getDetachedRuntimeServiceStatus(
       ...base,
       installed: true,
       running: false,
-      message: `ADE brain supervisor (pid ${supervisorPid}) is between restarts of the brain. ${NO_SERVICE_MANAGER_NOTE}`,
+      message: `${BRAND.NAME} brain supervisor (pid ${supervisorPid}) is between restarts of the brain. ${NO_SERVICE_MANAGER_NOTE}`,
     };
   }
   return {
     ...base,
     installed: true,
     running: true,
-    message: `ADE brain is running as a supervised background process (pid ${brainPid}). ${NO_SERVICE_MANAGER_NOTE}`,
+    message: `${BRAND.NAME} brain is running as a supervised background process (pid ${brainPid}). ${NO_SERVICE_MANAGER_NOTE}`,
   };
 }

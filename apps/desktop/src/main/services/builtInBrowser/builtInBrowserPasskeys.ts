@@ -3,6 +3,7 @@ import { captureError } from "../../../shared/sentry/capture";
 import type { PasswordPasskeySecret } from "../../../shared/types/passwords";
 import { createPasskey, getAssertion, rpIdAllowedForOrigin, WEBAUTHN_ALGORITHM_ES256 } from "./passkeys";
 import type { PersonCheck } from "../passwords/personCheck";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Desktop main's half of passkeys in ADE's browser (the tab preload's hook
@@ -80,7 +81,7 @@ export async function answerWebAuthnRequest(input: {
       if (picked === null || !matching[picked]) return { error: "NotAllowedError", message: "The person cancelled the passkey sign-in." };
       allowed = [matching[picked]];
     }
-    const check = await input.checkPerson(`sign in to ${rpId} with a passkey saved in ADE`, "Sign in");
+    const check = await input.checkPerson(`sign in to ${rpId} with a passkey saved in ${BRAND.NAME}`, "Sign in");
     if (!check) return { error: "NotAllowedError", message: "The person cancelled the passkey sign-in." };
     if (input.cancelled?.()) return gaveUp;
     if (request.userVerification === "required" && check !== "biometric") return { fallback: true };
@@ -107,14 +108,14 @@ export async function answerWebAuthnRequest(input: {
 
   // create
   if (request.algorithms.length && !request.algorithms.includes(WEBAUTHN_ALGORITHM_ES256)) {
-    return { error: "NotSupportedError", message: "ADE's passkeys use ES256, which this site does not accept." };
+    return { error: "NotSupportedError", message: `${BRAND.NAME}'s passkeys use ES256, which this site does not accept.` };
   }
   const existing = (await input.passwords.passkeysForRp(rpId).catch(failed("lookup"))) ?? [];
   if (request.excludeCredentialIds.some((id) => existing.some((passkey) => passkey.credentialId === id))) {
-    return { error: "InvalidStateError", message: "A passkey for this account is already saved in ADE." };
+    return { error: "InvalidStateError", message: `A passkey for this account is already saved in ${BRAND.NAME}.` };
   }
   const who = request.userName || request.userDisplayName || "this account";
-  const check = await input.checkPerson(`save a passkey for ${who} on ${rpId} in ADE Passwords`, "Save passkey");
+  const check = await input.checkPerson(`save a passkey for ${who} on ${rpId} in ${BRAND.NAME} Passwords`, "Save passkey");
   if (!check) return { error: "NotAllowedError", message: "The person cancelled saving the passkey." };
   if (input.cancelled?.()) return gaveUp;
   if (request.userVerification === "required" && check !== "biometric") return { fallback: true };
@@ -129,7 +130,7 @@ export async function answerWebAuthnRequest(input: {
     existingCredentialIds: existing.map((passkey) => fromB64u(passkey.credentialId)),
     userVerified: check === "biometric",
   });
-  if ("error" in made) return { error: made.error, message: "ADE could not make the passkey." };
+  if ("error" in made) return { error: made.error, message: `${BRAND.NAME} could not make the passkey.` };
   await input.passwords.savePasskey({
     rpId: made.credential.rpId,
     credentialId: made.credential.credentialId,

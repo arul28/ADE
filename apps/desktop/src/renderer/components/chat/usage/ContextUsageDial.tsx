@@ -13,6 +13,7 @@ import { cn } from "../../ui/cn";
 import { formatContextTokens, type ContextUsageViewModel } from "./contextUsageModel";
 import { fixedFrameOf, fixedRect, fixedViewport } from "../../../lib/webZoom";
 import { alignLoopsToBeat } from "../../../lib/workBeat";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * Circular context-window dial for the composer footer. The ring fills as the
@@ -49,7 +50,7 @@ function contextStateDescription(state: ContextUsageViewModel["state"]): string 
     case "compacting":
       return "Claude is compacting this chat. The last exact reading is temporarily hidden.";
     case "recalculating":
-      return "Compaction finished. ADE is waiting for the next authoritative usage snapshot.";
+      return `Compaction finished. ${BRAND.NAME} is waiting for the next authoritative usage snapshot.`;
     case "unknown":
       return "The runtime did not return an authoritative context reading.";
     case "measured":

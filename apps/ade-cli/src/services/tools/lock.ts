@@ -3,6 +3,7 @@ import { promises as fsp } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ToolError, asToolError } from "./errors";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * A holder refreshes the lock's mtime every `STALE_LOCK_MS / 4`, so a lock that
@@ -188,7 +189,7 @@ export async function acquireToolLock(options: ToolLockOptions): Promise<ToolLoc
     if (waited >= timeoutMs) {
       const record = readLockRecord(lockPath);
       throw new ToolError(
-        `Timed out after ${Math.round(waited / 1000)}s waiting for another ADE process`
+        `Timed out after ${Math.round(waited / 1000)}s waiting for another ${BRAND.NAME} process`
         + `${record ? ` (pid ${record.pid} on ${record.host})` : ""} to finish installing agent tools.`,
         {
           kind: "lock-timeout",

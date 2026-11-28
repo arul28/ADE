@@ -1,3 +1,4 @@
+import { BRAND } from "../../../../desktop/src/shared/brand";
 export type FailureLogMeta = Record<string, unknown>;
 
 export type FailureLogDeduper = {
@@ -37,7 +38,7 @@ export function createFailureLogDeduper(options: {
       existing.message = message;
       if (at - existing.lastSummaryAt >= summaryIntervalMs) {
         options.log(
-          `ADE brain sync host still failing (${existing.occurrences} occurrences): ${message}`,
+          `${BRAND.NAME} brain sync host still failing (${existing.occurrences} occurrences): ${message}`,
           meta,
         );
         existing.lastSummaryAt = at;

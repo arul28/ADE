@@ -36,6 +36,7 @@ import {
   LinkedInAdeLanes,
   type IssueViewerProps,
 } from "./issueViewerParts";
+import { BRAND } from "../../../shared/brand";
 
 type GitHubRef = Extract<IssueRef, { provider: "github" }>;
 
@@ -57,7 +58,7 @@ export function GitHubIssueViewer({
   // A copy from a list row holds only some labels and assignees; replacing a
   // set from it would drop the rest, so edits wait for the whole issue.
   const readOnlyReason = issue && !isCompleteGitHubIssue(entry)
-    ? entry.error ? "ADE couldn't read the whole issue. Retry to edit it." : "Reading the whole issue from GitHub…"
+    ? entry.error ? `${BRAND.NAME} couldn't read the whole issue. Retry to edit it.` : "Reading the whole issue from GitHub…"
     : issueReadOnlyReason(access);
   const editing = useMemo<GitHubIssueEditing | undefined>(() => {
     if (!issue) return undefined;
@@ -181,10 +182,10 @@ export function GitHubIssueViewer({
 
 /** Why edits are off, or null when an issue edit has a credential to use. */
 function issueReadOnlyReason(access: GitHubIssueWriteAccess | null): string | null {
-  if (!access) return "Checking whether ADE can edit issues here…";
+  if (!access) return `Checking whether ${BRAND.NAME} can edit issues here…`;
   if (access.writeSource) return null;
   if (access.app?.needsApproval) {
-    return "ADE's GitHub App can't edit issues until its Issues permission is approved.";
+    return `${BRAND.NAME}'s GitHub App can't edit issues until its Issues permission is approved.`;
   }
   return "Connect GitHub CLI or add a token in Settings to edit issues.";
 }
@@ -203,7 +204,7 @@ function WriteAccessNotice({ access, onLeave }: { access: GitHubIssueWriteAccess
         model={{
           id: "github-issue-read-only",
           tone: "info",
-          title: needsApproval ? "Approve ADE's Issues permission to edit here" : "Read-only: no GitHub credential can edit issues",
+          title: needsApproval ? `Approve ${BRAND.NAME}'s Issues permission to edit here` : "Read-only: no GitHub credential can edit issues",
           detail: needsApproval
             ? "An owner of the account approves it on GitHub. GitHub CLI or a token also works."
             : "Connect GitHub CLI or add a token with repository access.",
@@ -248,7 +249,7 @@ function GitHubLoadState({
             id: "issue-missing",
             tone: "warning",
             title: `GitHub didn't return ${name}`,
-            detail: "The GitHub connection ADE uses may not have access to this repository, or the issue was deleted.",
+            detail: `The GitHub connection ${BRAND.NAME} uses may not have access to this repository, or the issue was deleted.`,
             actions: [{ label: "Open on GitHub", href: url }, { label: "Retry", onClick: onRetry }],
           }
           : {

@@ -23,6 +23,7 @@
 
 import { remoteProjectBindingKey } from "./projectIdentity";
 import type { OpenProjectBinding } from "./types/core";
+import { BRAND } from "./brand";
 
 /** The project id that names a computer's machine scope on the wire. */
 export const MACHINE_SCOPE_PROJECT_ID = "ade-machine-scope";
@@ -197,12 +198,12 @@ export function machineScopeActionAllowed(domain: string, action: string): boole
 
 /** The sentence for a computer whose ADE predates the machine route. */
 export function machineScopeUpdateMessage(machineName: string): string {
-  return `${machineName} runs an older ADE. Update ADE on ${machineName} to manage it from here.`;
+  return `${machineName} runs an older ${BRAND.NAME}. Update ${BRAND.NAME} on ${machineName} to manage it from here.`;
 }
 
 /** The same for This computer: its ADE service is older than this app. */
 export const THIS_COMPUTER_MACHINE_SCOPE_UPDATE_MESSAGE =
-  "This computer's ADE service is older than this app. Restart ADE to update it, then manage it from here.";
+  `This computer's ${BRAND.NAME} service is older than this app. Restart ${BRAND.NAME} to update it, then manage it from here.`;
 
 /**
  * How a brain that predates the machine route answers a machine-scope call:

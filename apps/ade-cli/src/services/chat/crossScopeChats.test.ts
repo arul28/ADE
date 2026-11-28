@@ -243,7 +243,7 @@ describe("cross-scope chat wakes", () => {
     await expect(service.acceptRemoteWake(payload("token-1"))).resolves.toBe("delivered");
     expect(personal.chats.deliverExternalChildCompletion).toHaveBeenCalledWith(expect.objectContaining({
       parentSessionId: "parent-a",
-      wakeText: expect.stringContaining('ade chat read child-1 --machine "Mac mini"'),
+      wakeText: expect.stringContaining('daex chat read child-1 --machine "Mac mini"'),
       spawnCompletion: expect.objectContaining({ childMachineName: "Mac mini" }),
     }));
   });

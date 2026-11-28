@@ -111,6 +111,7 @@ describe("checkRemoteAdeCommand", () => {
   it.each([
     ["read", ["lanes", "list", "--text"], ["lanes", "list", "--text"]],
     ["read", ["ade", "git", "status", "--lane", "x"], ["git", "status", "--lane", "x"]],
+    ["read", ["daex", "git", "status", "--lane", "x"], ["git", "status", "--lane", "x"]],
     ["read", ["actions", "run", "lane", "list"], ["actions", "run", "lane", "list"]],
     ["read", ["search", "login bug", "--text"], ["search", "login bug", "--text"]],
     ["read", ["github", "app-auth", "status"], ["github", "app-auth", "status"]],
@@ -157,7 +158,7 @@ describe("checkRemoteAdeCommand", () => {
     "`ade %s` is classified for ADE MCP",
     (command) => {
       const verdict = checkRemoteAdeCommand([command, "--help"], "write");
-      expect(verdict.ok ? "" : verdict.reason).not.toMatch(/isn't enabled for ADE MCP/);
+      expect(verdict.ok ? "" : verdict.reason).not.toMatch(/isn't enabled for DAEX MCP/);
     },
   );
 });

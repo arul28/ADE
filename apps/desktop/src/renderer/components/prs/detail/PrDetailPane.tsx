@@ -70,6 +70,7 @@ import { isWebClientMode } from "../../../lib/webClientMode";
 import { PrRuntimePinProvider, usePrRuntimePin } from "../state/prMachines";
 import { type MachineChipModel } from "../../../state/laneMachineRouting";
 import { forgetGitHubPrSearchResults } from "../tabs/useGitHubPrFilterSearch";
+import { BRAND } from "../../../../shared/brand";
 
 // ---- Sub-tab type ----
 type DetailTab = PrDetailRouteTab;
@@ -1438,7 +1439,7 @@ function PrDetailPaneOnMachine({
   );
   const handleSetAssignees = React.useCallback(async (change: PrAssigneeChange): Promise<SetPrAssigneesResult> => {
     const setAssignees = window.ade.prs.setAssignees;
-    if (!setAssignees) throw new Error("This machine's ADE cannot assign people yet.");
+    if (!setAssignees) throw new Error(`This machine's ${BRAND.NAME} cannot assign people yet.`);
     const result = await setAssignees({ prId: pr.id, add: change.add, remove: change.remove }, ...onPin);
     forgetGitHubPrSearchResults();
     void loadDetail({ forceLive: true }).catch(() => undefined);

@@ -798,7 +798,7 @@ struct LaneDuoDetailLayout<Dashboard: View, Git: View>: View {
       Button("Move to…", systemImage: "arrow.right.circle", action: onMove)
     }
     Divider()
-    Button("Copy ADE lane link", systemImage: "link", action: onCopyLaneLink)
+    Button("Copy \(Brand.name) lane link", systemImage: "link", action: onCopyLaneLink)
     Button("Copy branch link", systemImage: "arrow.triangle.branch", action: onCopyBranchLink)
   }
 }

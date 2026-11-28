@@ -11,6 +11,7 @@ import type { ProvidersViewContext } from "../types";
 import { useSettingsReadPin } from "../../ProjectCopyScope";
 import { extractError } from "../../../../lib/format";
 import { requirePin } from "../../../../state/repositoryScope";
+import { BRAND } from "../../../../../shared/brand";
 
 function originLabel(origin: AgentChatCodexPlugin["origin"]): string {
   switch (origin) {
@@ -70,7 +71,7 @@ export function CodexBody(_props: { ctx: ProvidersViewContext }) {
         </button>
       </div>
       <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-        Installed Codex plugins from a live Codex chat. ADE lists them; it does not install or toggle them.
+        Installed Codex plugins from a live Codex chat. {BRAND.NAME} lists them; it does not install or toggle them.
       </div>
       {error ? (
         <Banner

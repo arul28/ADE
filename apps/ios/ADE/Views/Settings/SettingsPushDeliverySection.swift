@@ -124,7 +124,7 @@ struct SettingsPushDeliverySection: View {
 
     private var notificationDeliveryHint: String {
         if pushService.accountDeliveryPaused {
-            return "Delivery is paused in your ADE account settings"
+            return "Delivery is paused in your \(Brand.name) account settings"
         }
         return snapshot.accountDeliveryAvailable
             ? "Account notification settings also apply"
@@ -142,7 +142,7 @@ struct SettingsPushDeliverySection: View {
             return ("No notifications yet", "Sign in or pair a computer to get them.", nil, nil)
         }
         if permissionStatus == .denied {
-            return ("Notifications are off", "Turn them on for ADE in iOS Settings.", "Open Settings", {
+            return ("Notifications are off", "Turn them on for \(Brand.name) in iOS Settings.", "Open Settings", {
                 if let url = URL(string: UIApplication.openSettingsURLString) {
                     UIApplication.shared.open(url)
                 }
@@ -297,7 +297,7 @@ struct SettingsPushDeliverySection: View {
     }
 
     private var liveActivityDiagnosticValue: String {
-        guard pushService.prefs.liveActivitiesEnabled else { return "Disabled in ADE" }
+        guard pushService.prefs.liveActivitiesEnabled else { return "Disabled in \(Brand.name)" }
         guard snapshot.liveActivitiesAuthorized else { return "Off in iOS Settings" }
         if snapshot.liveActivityTokenRegistered { return "Push-to-start registered" }
         if snapshot.liveActivityTokenPresent { return "Token ready · registration pending" }

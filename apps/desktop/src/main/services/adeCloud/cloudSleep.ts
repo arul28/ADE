@@ -33,6 +33,7 @@ import type { CloudVault } from "./cloudAccess";
 import { CLOUD_MACHINE_KEY_METADATA } from "./cloudMachines";
 import { wakeThroughTransition } from "./cloudInstanceOps";
 import { cloudSleepPolicyOf } from "../../../shared/cloudMachineOfInstance";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Hands the box its wake URL and reads whether its brain keeps it awake:
@@ -296,7 +297,7 @@ export function createCloudAgentLimitsStore(deps: {
           return false;
         })
         : false;
-      if (!saved && !savedHere) throw new Error("ADE couldn't save that to your account or this computer. Try again.");
+      if (!saved && !savedHere) throw new Error(`${BRAND.NAME} couldn't save that to your account or this computer. Try again.`);
       return next;
     },
     async save(changes) {
@@ -318,7 +319,7 @@ export function createCloudAgentLimitsStore(deps: {
           throw Object.assign(new AdeExpectedError(error.message, "user"), { code: error.code || null });
         }
         deps.logger?.warn?.("cloud.agent_limits_server_write_failed", { error: getErrorMessage(error) });
-        throw new AdeExpectedError("ADE couldn't reach your ADE account to save your agent limits. Try again.", "network");
+        throw new AdeExpectedError(`${BRAND.NAME} couldn't reach your ${BRAND.NAME} account to save your agent limits. Try again.`, "network");
       }
     },
   };

@@ -5,6 +5,7 @@
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { AutomationWebhookSignatureConfig } from "../../../shared/types";
+import { BRAND } from "../../../shared/brand";
 
 const STRIPE_TOLERANCE_SECONDS = 5 * 60;
 
@@ -78,7 +79,7 @@ export function verifyWebhookSignature(args: {
 }): { outcome: "missing_signature" | "bad_signature"; detail: string } | null {
   const presented = args.headers[args.signature.header.toLowerCase()]?.trim() ?? "";
   if (!presented) {
-    return { outcome: "missing_signature", detail: `The request had no ${args.signature.header} header, so ADE could not prove who sent it.` };
+    return { outcome: "missing_signature", detail: `The request had no ${args.signature.header} header, so ${BRAND.NAME} could not prove who sent it.` };
   }
   if (args.signature.scheme === "stripe") {
     const parts = presented.split(",").map((part) => part.trim());
@@ -99,7 +100,7 @@ export function verifyWebhookSignature(args: {
   const expected = `${args.signature.prefix ?? ""}${digest}`;
   return safeEqual(presented, expected)
     ? null
-    : { outcome: "bad_signature", detail: `The ${args.signature.header} signature did not match. The secret saved in ADE is different from the one the sender uses.` };
+    : { outcome: "bad_signature", detail: `The ${args.signature.header} signature did not match. The secret saved in ${BRAND.NAME} is different from the one the sender uses.` };
 }
 
 /** Sign a body the way the configured sender would, for Send test. */

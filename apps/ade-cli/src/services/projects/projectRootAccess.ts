@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { codedError } from "../../../../desktop/src/shared/codedError";
 import { markExpected } from "../../../../desktop/src/shared/expectedError";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * How long a project folder gets to answer a listing before the project is
@@ -52,7 +53,7 @@ export async function assertProjectRootReadable(projectRoot: string): Promise<vo
   });
   if (!failure) return;
   const error = codedError(
-    `ADE can't read ${projectRoot} on this Mac (${failure}). If macOS is asking on this Mac's screen whether ADE may use this drive or folder, allow it; if the drive is not responding, reconnect it. The project opens once it can be read.`,
+    `${BRAND.NAME} can't read ${projectRoot} on this Mac (${failure}). If macOS is asking on this Mac's screen whether ${BRAND.NAME} may use this drive or folder, allow it; if the drive is not responding, reconnect it. The project opens once it can be read.`,
     "storage_read_failed",
   );
   // A listing left waiting (a prompt, a hung drive), not refused.

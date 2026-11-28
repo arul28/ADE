@@ -1,6 +1,7 @@
 import { cloudShape, type CloudCreateProgress, type CloudShapeId } from "../../../shared/adeCloud";
 import { CloudApiError, type CloudApiClient } from "../../../shared/cloudApiClient";
 import type { CloudCopyRecord } from "../../../../../account-directory/src/cloud/contract";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * ADE Web's Copy… of a computer: ADE's server runs it (`POST
@@ -55,7 +56,7 @@ export function createWebCloudCopies(api: () => CloudApiClient | null) {
       await new Promise((resolve) => setTimeout(resolve, POLL_MS));
       try {
         const client = api();
-        if (!client) throw new Error("Sign in to ADE here to follow the copy.");
+        if (!client) throw new Error(`Sign in to ${BRAND.NAME} here to follow the copy.`);
         record = await client.copy(record.copyId);
         failures = 0;
       } catch (error) {
@@ -63,8 +64,8 @@ export function createWebCloudCopies(api: () => CloudApiClient | null) {
         const gone = error instanceof CloudApiError && error.status === 404;
         if (gone || failures >= READ_FAILURES) {
           const message = gone
-            ? "ADE Cloud lost track of the copy. Check your computers list."
-            : "ADE can't reach ADE Cloud to follow the copy. It goes on there; check your computers list.";
+            ? `${BRAND.CLOUD_NAME} lost track of the copy. Check your computers list.`
+            : `${BRAND.NAME} can't reach ${BRAND.CLOUD_NAME} to follow the copy. It goes on there; check your computers list.`;
           emit({ requestId, stage: "failed", message, error: message });
           return;
         }
@@ -76,7 +77,7 @@ export function createWebCloudCopies(api: () => CloudApiClient | null) {
     copyMachine: async (args: { requestId: string; instanceId: string; name?: string | null; shape?: string | null }): Promise<{ started: boolean }> => {
       if (followed.has(args.requestId)) return { started: true };
       const client = api();
-      if (!client) throw new Error("Sign in to ADE here to copy a computer.");
+      if (!client) throw new Error(`Sign in to ${BRAND.NAME} here to copy a computer.`);
       const shape = args.shape ? cloudShape(args.shape as CloudShapeId) : null;
       if (args.shape && !shape) throw new Error("Pick a size.");
       const start = async (copyId: string): Promise<CloudCopyRecord> => {
@@ -89,7 +90,7 @@ export function createWebCloudCopies(api: () => CloudApiClient | null) {
           });
         } catch (error) {
           // An older server has no copies; only the desktop app can copy there.
-          if (error instanceof CloudApiError && error.status === 404) throw new Error("Copy this computer from the ADE desktop app. ADE Cloud can't copy it from here yet.");
+          if (error instanceof CloudApiError && error.status === 404) throw new Error(`Copy this computer from the ${BRAND.NAME} desktop app. ${BRAND.CLOUD_NAME} can't copy it from here yet.`);
           throw error;
         }
       };

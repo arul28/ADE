@@ -24,6 +24,7 @@ import { isMac } from "../../lib/platform";
 import { useAccountStatus } from "../../lib/account";
 import { useActivityStore } from "../../state/activityStore";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Every Activity setting, once.
@@ -166,7 +167,7 @@ export function useActivitySettings({ includeDevices = false }: { includeDevices
         // `null`: the account service is unreachable right now.
         if (!next) {
           setLoadFailed(true);
-          setLoadError("ADE can’t reach its account service right now, so your Activity settings didn’t load.");
+          setLoadError(`${BRAND.NAME} can’t reach its account service right now, so your Activity settings didn’t load.`);
           return;
         }
         setPreferences(normalizeActivityPreferences(next));
@@ -178,7 +179,7 @@ export function useActivitySettings({ includeDevices = false }: { includeDevices
         if (cancelled || !mounted.current) return;
         setLoadFailed(true);
         setLoadError(ipcErrorMessage(loadError)
-          || "ADE couldn’t load your Activity settings.");
+          || `${BRAND.NAME} couldn’t load your Activity settings.`);
       })
       .finally(() => {
         if (!cancelled && mounted.current) setLoading(false);
@@ -239,7 +240,7 @@ export function useActivitySettings({ includeDevices = false }: { includeDevices
     if (!accountOwnerId || loadFailed || loadedOwnerId !== accountOwnerId || scope.ownerId !== accountOwnerId || scope.pending.has("account")) return;
     const api = window.ade?.attention;
     if (!api) {
-      setSaveError("account", "ADE couldn’t save your Activity settings.");
+      setSaveError("account", `${BRAND.NAME} couldn’t save your Activity settings.`);
       return;
     }
     // The account endpoint replaces the whole account scope. Keep one save
@@ -258,7 +259,7 @@ export function useActivitySettings({ includeDevices = false }: { includeDevices
       if (!mounted.current || accountScope.current !== scope) return;
       setPreferences((current) => ({ ...current, account: previous }));
       setSaveError("account", ipcErrorMessage(saveError)
-        || "ADE couldn’t save your Activity settings.");
+        || `${BRAND.NAME} couldn’t save your Activity settings.`);
     } finally {
       scope.pending.delete("account");
       if (mounted.current && accountScope.current === scope) setSavingTargets(new Set(scope.pending));
@@ -282,7 +283,7 @@ export function useActivitySettings({ includeDevices = false }: { includeDevices
     const noun = collection === "machines" ? "machine" : collection === "devices" ? "phone" : "project";
     const key = `${collection}:${id}`;
     if (!put) {
-      setSaveError(key, `This ADE build can’t change per-${noun} notifications yet.`);
+      setSaveError(key, `This ${BRAND.NAME} build can’t change per-${noun} notifications yet.`);
       return;
     }
     if (account.pending.has(key)) return;
@@ -303,7 +304,7 @@ export function useActivitySettings({ includeDevices = false }: { includeDevices
     } catch (saveError) {
       if (!mounted.current || accountScope.current !== account) return;
       setSaveError(key, ipcErrorMessage(saveError)
-        || `ADE couldn’t change notifications for that ${noun}.`);
+        || `${BRAND.NAME} couldn’t change notifications for that ${noun}.`);
     } finally {
       account.pending.delete(key);
       if (mounted.current && accountScope.current === account) setSavingTargets(new Set(account.pending));
@@ -823,7 +824,7 @@ export function ActivityMachinesSection({
                     ? "Delivery muted for this device"
                     : deviceEnabled
                       ? `Delivery allowed${lastSeen}`
-                      : "Notifications are off in ADE on this device"}
+                      : `Notifications are off in ${BRAND.NAME} on this device`}
               toggleLabel={`Send notifications to ${name}`}
               checked={enabled && !phonesOff}
               disabled={busy || phonesOff || model.savingTargets.has(`devices:${phone.deviceId}`)}

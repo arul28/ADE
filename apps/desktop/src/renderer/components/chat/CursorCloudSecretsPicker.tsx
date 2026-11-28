@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { BRAND } from "../../../shared/brand";
 
 export function isInjectableCloudSecretName(name: string): boolean {
   const trimmed = name.trim();
@@ -52,7 +53,7 @@ export function CursorCloudSecretsList({
   return (
     <div>
       <p className="px-2 pb-1 font-sans text-[10px] font-medium uppercase tracking-[0.08em] text-muted-fg/55">
-        Attach ADE secrets
+        Attach {BRAND.NAME} secrets
       </p>
       {injectableNames.length > 0 ? (
         <label className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 font-sans text-[11px] font-medium text-fg/90 hover:bg-fg/[0.06]">

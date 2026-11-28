@@ -9,6 +9,7 @@ import { useSettingsProjectPin } from "../ProjectCopyScope";
 import { captureDevToolsCleanup } from "./devToolsAnalytics";
 import { DevToolRow, DevToolsListSection, ListSkeleton, PartError, RowAction, SizeCell } from "./devToolsList";
 import { useDevToolsStorage } from "./useDevToolsStorage";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * Settings › Android devices › Emulators: every emulator (AVD) on the picked
@@ -21,8 +22,8 @@ import { useDevToolsStorage } from "./useDevToolsStorage";
 function androidDeleteBlocked(avd: AndroidAvdListing): string | null {
   if (avd.running) return "It is running. Stop it first.";
   if (avd.heldByLaneId) return "A lane uses it. Release it from that lane's Android pane first.";
-  if (!avd.adeCreated) return "ADE didn't make it, so ADE leaves it alone. Delete it in Android Studio.";
-  if (avd.madeForOtherLane) return "ADE made it for another project. Delete it from that project.";
+  if (!avd.adeCreated) return `${BRAND.NAME} didn't make it, so ${BRAND.NAME} leaves it alone. Delete it in Android Studio.`;
+  if (avd.madeForOtherLane) return `${BRAND.NAME} made it for another project. Delete it from that project.`;
   return null;
 }
 
@@ -102,7 +103,7 @@ function AndroidEmulatorList({ pin }: { pin: NonNullable<ReturnType<typeof useSe
                 glyph={<AndroidLogo size={16} />}
                 title={label}
                 chips={avd.running ? <span className="ade-dev-chip" data-tone="ok">Running</span> : null}
-                sub={<>{avd.apiLevel ? `Android API ${avd.apiLevel}` : null}<span className="ade-dev-owner" data-owner={avd.adeCreated ? "ade-kept" : "yours"}>{avd.adeCreated ? "Made by ADE" : "Yours"}</span></>}
+                sub={<>{avd.apiLevel ? `Android API ${avd.apiLevel}` : null}<span className="ade-dev-owner" data-owner={avd.adeCreated ? "ade-kept" : "yours"}>{avd.adeCreated ? `Made by ${BRAND.NAME}` : "Yours"}</span></>}
                 size={<SizeCell value={avd.sizeBytes} format={formatAvd} />}
                 action={<RowAction label="Delete" ariaLabel={`Delete ${label}`} busy={busy === avd.name} disabled={busy != null} blockedWhy={androidDeleteBlocked(avd)} onClick={() => void remove(avd)} />}
               />

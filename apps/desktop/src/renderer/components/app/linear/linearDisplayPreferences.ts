@@ -1,3 +1,4 @@
+import { BRAND } from "../../../../shared/brand";
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import type {
   LinearDisplayPreferences,
@@ -254,7 +255,7 @@ export function useLinearDisplayPreferences({
     const entry = entryFor(pending.key);
     if (typeof cto?.updateLinearViewPreferences !== "function") {
       entry.savedToLinear = false;
-      entry.reason = "This machine's ADE can't save display settings to Linear.";
+      entry.reason = `This machine's ${BRAND.NAME} can't save display settings to Linear.`;
       notify();
       return;
     }

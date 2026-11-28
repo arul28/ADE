@@ -104,8 +104,13 @@ const [, owner, repo] = repositoryMatch;
 // `build.win.icon` is exactly "build/icon.ico", so writing the channel icon
 // into the config would fail the release contract.
 // electron-builder converts a >=256px PNG into a multi-resolution .ico itself.
+// A committed `build/icon.<channel>.ico` wins when present: like build/icon.ico
+// it carries flat tiles for the small sizes, which a downscaled glass image
+// lacks.
 const channelWinIconArgs = (() => {
   if (packageChannel === "stable") return [];
+  const channelIco = path.join(desktopRoot, "build", `icon.${packageChannel}.ico`);
+  if (fs.existsSync(channelIco)) return [`--config.win.icon=build/icon.${packageChannel}.ico`];
   const icns = path.join(desktopRoot, "build", `icon.${packageChannel}.icns`);
   if (!fs.existsSync(icns)) {
     throw new Error(
@@ -171,8 +176,16 @@ const args = [
   // three different names. Pin the artifact name to the space-free channel base
   // so the updater feed can only ever reference the file published beside it.
   `--config.win.artifactName=${windowsInstallerArtifactName(channelIdentity)}`,
+  // Show DAEX in the Start menu and the installed apps list without moving
+  // anything: shortcutName names only the .lnk (SHORTCUT_NAME, stored as
+  // ShortcutName in the install key, so an update renames the old ADE.lnk and
+  // keeps its AUMID), and uninstallDisplayName is only the Uninstall key's
+  // DisplayName. The exe, install folder and uninstall key GUID come from
+  // productName and appId, which stay. See docs/brand/desktop-packaging.md.
+  `--config.nsis.shortcutName=${channelIdentity.displayName}`,
+  `--config.nsis.uninstallDisplayName=${channelIdentity.displayName}`,
   `--config.fileAssociations.name=${channelIdentity.fileClass}`,
-  `--config.fileAssociations.description=${configuredFileAssociation.description ?? "ADE files"}`,
+  `--config.fileAssociations.description=${configuredFileAssociation.description ?? "DAEX files"}`,
   ...configuredFileAssociation.ext.map((extension) => `--config.fileAssociations.ext=${extension}`),
   // electron-builder 26 selects the Azure signing manager purely on the
   // presence of win.azureSignOptions, and that selection sits above the single

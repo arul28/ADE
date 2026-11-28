@@ -29,6 +29,7 @@ import "../machineSettings.css";
 import "../health/health.css";
 import "./lanes.css";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
+import { BRAND } from "../../../../shared/brand";
 
 type ViewId = "lanes" | "new-lanes" | "space" | "archive" | "recently-deleted" | "cleanup-rules";
 
@@ -169,7 +170,7 @@ function ProjectViewsPage({ allViews, label }: { allViews: readonly View[]; labe
                   laneCategory ? `Lane folders take ${formatMeasuredBytes(laneCategory.bytes, Boolean(laneCategory.partial), snapshot?.platform)}.` : null,
                   `Checked ${relativeWhen(report.checkedAt)}.`,
                 ].filter(Boolean).join(" ")
-              : available ? "Every lane in this project, stale ones first." : "The lane list needs a newer ADE on this machine."}
+              : available ? "Every lane in this project, stale ones first." : `The lane list needs a newer ${BRAND.NAME} on this machine.`}
             actions={available ? (
               <button
                 type="button"
@@ -189,7 +190,7 @@ function ProjectViewsPage({ allViews, label }: { allViews: readonly View[]; labe
                 model={{
                   id: "lanes-report-error",
                   tone: "error",
-                  title: "ADE couldn't read this project's lanes",
+                  title: `${BRAND.NAME} couldn't read this project's lanes`,
                   detail: reportError,
                   actions: [{ label: "Try again", onClick: () => void data.loadReport({ force: true }) }],
                 }}
@@ -214,7 +215,7 @@ function ProjectViewsPage({ allViews, label }: { allViews: readonly View[]; labe
                 onChanged={reloadAll}
               />
             ) : report ? (
-              <div className="ade-modern-muted">The lane list needs a newer ADE on the machine that owns this project.</div>
+              <div className="ade-modern-muted">The lane list needs a newer {BRAND.NAME} on the machine that owns this project.</div>
             ) : null}
           </ModernSection>
         );

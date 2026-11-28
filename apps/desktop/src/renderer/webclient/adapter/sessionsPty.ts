@@ -26,6 +26,7 @@ import {
 import { SessionLifecycleUnavailableError } from "./sessionLifecycleSupport";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
 import { previewRowsFromTranscript } from "../../components/terminals/terminalPreviewRows";
+import { BRAND } from "../../../shared/brand";
 
 // Full snapshots replace xterm state, so they must be at least as complete as
 // TerminalView's initial hydration. The host caps this at the same 2 MB.
@@ -572,7 +573,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
         && Array.isArray(record.args)
       ) {
         if (!commands.hasAction("work.runShellBlock")) {
-          throw new Error("Update ADE on this machine to run code blocks from chat.");
+          throw new Error(`Update ${BRAND.NAME} on this machine to run code blocks from chat.`);
         }
         const created = await commands.call<PtyCreateResult>(
           "work.runShellBlock",

@@ -1,6 +1,7 @@
 import { CaretDown, Info } from "@phosphor-icons/react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 
 import type { CursorCloudExistingPr } from "../../lib/cursorCloudUtils";
 import { cn } from "../ui/cn";
@@ -12,6 +13,7 @@ import {
 } from "../terminals/LaneCombobox";
 import { CursorCloudSecretsList, isInjectableCloudSecretName } from "./CursorCloudSecretsPicker";
 import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
+import { BRAND } from "../../../shared/brand";
 
 const MENU_WIDTH = 260;
 
@@ -106,8 +108,8 @@ export function CursorCloudAdvancedMenu({
         content={{
           label: "Advanced",
           description: attachPr
-            ? "This branch already has a PR, so Cursor will work on it. Optionally attach ADE secrets as env vars."
-            : "Open a PR when the run finishes, or attach ADE secrets as cloud env vars.",
+            ? `This branch already has a PR, so Cursor will work on it. Optionally attach ${BRAND.NAME} secrets as env vars.`
+            : `Open a PR when the run finishes, or attach ${BRAND.NAME} secrets as cloud env vars.`,
         }}
       >
         <button
@@ -136,79 +138,81 @@ export function CursorCloudAdvancedMenu({
       </SmartTooltip>
       {open && triggerRef.current
         ? createPortal(
-          <div
-            ref={menuRef}
-            role="menu"
-            aria-label="Cursor Cloud advanced"
-            data-cursor-cloud-advanced-menu
-            className={cn("fixed z-[100] overflow-hidden", POPOVER_SURFACE_CLASS, "p-1.5")}
-            style={{
-              width: placement?.width ?? MENU_WIDTH,
-              left: placement?.left ?? 0,
-              maxHeight: placement?.maxHeight,
-              top: placement?.top ?? 0,
-              transform: placement?.transform,
-            }}
-          >
-            {attachPr ? (
-              <div
-                role="menuitem"
-                aria-disabled="true"
-                className="rounded-lg px-2 py-1.5"
-              >
-                <p className="font-sans text-[11px] font-medium text-violet-100/90">
-                  {existingPrLabel(attachPr)}
-                </p>
-                <p className="mt-0.5 font-sans text-[10.5px] leading-snug text-muted-fg/70">
-                  This branch already has a PR. Cursor will work on it instead of opening another.
-                </p>
-              </div>
-            ) : (
-              <label
-                className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 font-sans text-[11px] text-fg/90 hover:bg-fg/[0.06]"
-              >
-                <input
-                  type="checkbox"
-                  role="menuitemcheckbox"
-                  aria-checked={autoCreatePR}
-                  aria-label="Open a PR"
-                  data-cursor-cloud-auto-pr
-                  checked={autoCreatePR}
-                  onChange={(event) => onAutoCreatePRChange(event.target.checked)}
-                  className="h-3 w-3 accent-violet-400"
-                />
-                <span className="min-w-0 flex-1">Open a PR</span>
-                <SmartTooltip
-                  forceEnabled
-                  content={{
-                    label: "Open a PR",
-                    description: "When the cloud run finishes, Cursor opens a pull request from this lane's branch. Creation-time only — it cannot be added later. If this branch already has a PR, ADE attaches to that one instead.",
-                  }}
+          <ViewportOverlayHost layer="popover">
+            <div
+              ref={menuRef}
+              role="menu"
+              aria-label="Cursor Cloud advanced"
+              data-cursor-cloud-advanced-menu
+              className={cn("pointer-events-auto absolute overflow-hidden", POPOVER_SURFACE_CLASS, "p-1.5")}
+              style={{
+                width: placement?.width ?? MENU_WIDTH,
+                left: placement?.left ?? 0,
+                maxHeight: placement?.maxHeight,
+                top: placement?.top ?? 0,
+                transform: placement?.transform,
+              }}
+            >
+              {attachPr ? (
+                <div
+                  role="menuitem"
+                  aria-disabled="true"
+                  className="rounded-lg px-2 py-1.5"
                 >
-                  <span
-                    role="img"
-                    aria-label="About Open a PR"
-                    className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-muted-fg/55 hover:text-fg/80"
-                    onClick={(event) => event.preventDefault()}
+                  <p className="font-sans text-[11px] font-medium text-violet-100/90">
+                    {existingPrLabel(attachPr)}
+                  </p>
+                  <p className="mt-0.5 font-sans text-[10.5px] leading-snug text-muted-fg/70">
+                    This branch already has a PR. Cursor will work on it instead of opening another.
+                  </p>
+                </div>
+              ) : (
+                <label
+                  className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 font-sans text-[11px] text-fg/90 hover:bg-fg/[0.06]"
+                >
+                  <input
+                    type="checkbox"
+                    role="menuitemcheckbox"
+                    aria-checked={autoCreatePR}
+                    aria-label="Open a PR"
+                    data-cursor-cloud-auto-pr
+                    checked={autoCreatePR}
+                    onChange={(event) => onAutoCreatePRChange(event.target.checked)}
+                    className="h-3 w-3 accent-violet-400"
+                  />
+                  <span className="min-w-0 flex-1">Open a PR</span>
+                  <SmartTooltip
+                    forceEnabled
+                    content={{
+                      label: "Open a PR",
+                      description: `When the cloud run finishes, Cursor opens a pull request from this lane's branch. Creation-time only — it cannot be added later. If this branch already has a PR, ${BRAND.NAME} attaches to that one instead.`,
+                    }}
                   >
-                    <Info size={11} weight="bold" aria-hidden />
-                  </span>
-                </SmartTooltip>
-              </label>
-            )}
-            {attachableSecretCount > 0 ? (
-              <>
-                <div className="my-1.5 border-t border-fg/[0.06]" />
-                <CursorCloudSecretsList
-                  availableNames={availableNames}
-                  selectedNames={selectedNames}
-                  remember={remember}
-                  onSelectedNamesChange={onSelectedNamesChange}
-                  onRememberChange={onRememberChange}
-                />
-              </>
-            ) : null}
-          </div>,
+                    <span
+                      role="img"
+                      aria-label="About Open a PR"
+                      className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-muted-fg/55 hover:text-fg/80"
+                      onClick={(event) => event.preventDefault()}
+                    >
+                      <Info size={11} weight="bold" aria-hidden />
+                    </span>
+                  </SmartTooltip>
+                </label>
+              )}
+              {attachableSecretCount > 0 ? (
+                <>
+                  <div className="my-1.5 border-t border-fg/[0.06]" />
+                  <CursorCloudSecretsList
+                    availableNames={availableNames}
+                    selectedNames={selectedNames}
+                    remember={remember}
+                    onSelectedNamesChange={onSelectedNamesChange}
+                    onRememberChange={onRememberChange}
+                  />
+                </>
+              ) : null}
+            </div>
+          </ViewportOverlayHost>,
           document.body,
         )
         : null}

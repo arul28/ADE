@@ -15,6 +15,7 @@ import {
 import { CompareBars, MemoryBar } from "./healthCharts";
 import { useHealthData, type HealthData } from "./useHealthData";
 import "./health.css";
+import { BRAND } from "../../../../shared/brand";
 
 const MB = 1024 * 1024;
 
@@ -151,7 +152,7 @@ export function HealthService({ data }: { data: HealthData }) {
       </ModernSection>
 
       {repair.available ? (
-        <ModernSection group="Background service" title="Repair" hint="When chats won't start or ADE can't reach its service.">
+        <ModernSection group="Background service" title="Repair" hint={`When chats won't start or ${BRAND.NAME} can't reach its service.`}>
           <ModernRows>
             <ModernRow
               title="Repair the background service"

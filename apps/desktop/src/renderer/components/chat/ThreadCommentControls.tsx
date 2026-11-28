@@ -34,11 +34,12 @@ import {
   threadCommentChangeHeldOnDevice,
   updateHeldThreadComment,
 } from "./threadCommentsHeldOnDevice";
+import { BRAND } from "../../../shared/brand";
 
 /** An error from a comment write, as a person reads it, and whether it was the link to the chat's machine. */
 export type ThreadCommentError = { text: string; connection: boolean };
 
-const CONNECTION_TROUBLE_COPY = "ADE didn't hear back from the chat's machine. Try again in a moment.";
+const CONNECTION_TROUBLE_COPY = `${BRAND.NAME} didn't hear back from the chat's machine. Try again in a moment.`;
 
 /** An error from a comment write, as a person reads it (never the IPC wrapper or the bridge timeout). */
 export function threadCommentError(error: unknown): ThreadCommentError {

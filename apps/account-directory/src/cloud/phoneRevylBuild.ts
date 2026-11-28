@@ -144,7 +144,7 @@ function buildCommand(input: Pick<RevylBuildInput, "sub" | "scheme" | "configura
     `SCHEME=${shellQuote(input.scheme ?? "")}`,
     "if [ -z \"$SCHEME\" ]; then SCHEME=$(xcodebuild \"$@\" -list 2>/dev/null | awk '/Schemes:/{f=1;next} f&&NF{sub(/^ +/,\"\");print;exit}'); fi",
     "if [ -z \"$SCHEME\" ]; then echo 'No scheme found to build.' >&2; exit 65; fi",
-    "echo \"ADE: building $SCHEME (" + input.configuration + ")\"",
+    "echo \"DAEX: building $SCHEME (" + input.configuration + ")\"",
     "mkdir -p \"$ROOT/build\"",
     "LOG=\"$ROOT/build/ade-xcodebuild.log\"",
     "CODE_FILE=\"$ROOT/build/ade-xcodebuild.code\"",
@@ -157,12 +157,12 @@ function buildCommand(input: Pick<RevylBuildInput, "sub" | "scheme" | "configura
     "CODE=$(cat \"$CODE_FILE\")",
     "if [ \"$CODE\" = 0 ]; then exit 0; fi",
     "if ! grep -q 'missing Metal Toolchain' \"$LOG\"; then exit \"$CODE\"; fi",
-    `echo "ADE: this project compiles Metal shaders and the runner's Xcode has no Metal Toolchain; fetching it (up to ${METAL_DOWNLOAD_SECONDS} s), then building again."`,
+    `echo "DAEX: this project compiles Metal shaders and the runner's Xcode has no Metal Toolchain; fetching it (up to ${METAL_DOWNLOAD_SECONDS} s), then building again."`,
     // Bounded by the shell alone: the fetch is stopped at the limit, and its failure is the one error below.
     "xcodebuild -downloadComponent MetalToolchain & FETCH=$!",
     `WAITED=0; while kill -0 "$FETCH" 2>/dev/null; do if [ "$WAITED" -ge ${METAL_DOWNLOAD_SECONDS} ]; then kill "$FETCH" 2>/dev/null || true; break; fi; sleep 2; WAITED=$((WAITED + 2)); done`,
     "if ! wait \"$FETCH\"; then echo \"error: The build runner couldn't fetch Apple's Metal Toolchain, which this project needs for its .metal shaders (missing Metal Toolchain).\" >&2; exit \"$CODE\"; fi",
-    "echo 'ADE: fetched the Metal Toolchain; building again.'",
+    "echo 'DAEX: fetched the Metal Toolchain; building again.'",
     "ACTION=build",
     "{ ade_xcodebuild \"$@\"; } 2>&1 | tee \"$LOG\" | awk '{ print; fflush() }'",
     "exit \"$(cat \"$CODE_FILE\")\"",
@@ -353,7 +353,7 @@ export async function routeRevylBuild(
     lockfiles,
   });
   const claim = await claimBuild(env, workspace, phoneId, now, onEnded);
-  if (!claim) return fail("build_running", "A build is already running for your ADE Cloud iPhone. Wait for it to finish, then try again.", 409);
+  if (!claim) return fail("build_running", "A build is already running for your DAEX Cloud iPhone. Wait for it to finish, then try again.", 409);
   const answer = await workspaceJson(env, workspace, "POST", "/apps/remote", {
     body: { build_definition_hash: await sha256Hex(JSON.stringify(recipe)), git_branch_name: "ade", recipe, source: { key, type: "archive" }, timeout_seconds: REVYL_BUILD_MAX_SECONDS },
     timeoutMs: SLOW_REQUEST_TIMEOUT_MS,

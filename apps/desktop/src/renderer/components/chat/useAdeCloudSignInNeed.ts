@@ -29,6 +29,7 @@ import {
   type AdeCloudSignInParts,
 } from "../settings/providers/cloud/adeCloudProviderSignIn";
 import { providerSignInSpec } from "./ProviderSignInCard";
+import { BRAND } from "../../../shared/brand";
 
 export type AdeCloudSignInNeed = {
   provider: ProviderLoginProvider;
@@ -116,8 +117,8 @@ export function useAdeCloudSignInNeed({
   const recheck = useCallback(() => setTick((value) => value + 1), []);
   const blockReason = need
     ? need.kind === "claude-pass"
-      ? "Claude needs a pass on ADE Cloud first"
-      : `Sign in to ${providerSignInSpec(need.provider)?.label ?? need.provider} on ADE Cloud first`
+      ? `Claude needs a pass on ${BRAND.CLOUD_NAME} first`
+      : `Sign in to ${providerSignInSpec(need.provider)?.label ?? need.provider} on ${BRAND.CLOUD_NAME} first`
     : null;
   const needProvider = need?.provider ?? null;
   const openSignIn = useCallback(() => {

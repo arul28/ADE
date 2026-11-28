@@ -1169,7 +1169,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect(status.pairingPin).toBeNull();
     expect(status.pairingConnectInfo).toBeNull();
     await expect(service.setPin("123456")).rejects.toThrow(
-      "Phone pairing is unavailable because the sync host is disabled for this ADE process.",
+      "Phone pairing is unavailable because the sync host is disabled for this DAEX process.",
     );
     expect(service.getPin()).toBeNull();
   }, windowsScaledTimeout(30_000));
@@ -1206,7 +1206,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect(createSyncHostServiceMock).not.toHaveBeenCalled();
     expect((await service.getStatus()).bootstrapToken).toBeNull();
     await expect(service.setPin("123456")).rejects.toThrow(
-      "Phone pairing is unavailable because the sync host is disabled for this ADE process.",
+      "Phone pairing is unavailable because the sync host is disabled for this DAEX process.",
     );
 
     // The real syncHostService writes a bootstrap token at startup; the mock doesn't,

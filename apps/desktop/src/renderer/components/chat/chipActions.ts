@@ -30,6 +30,7 @@ import { chatMachineId, chatSettingsMachineId, openChatDeeplinkTarget } from "./
 import { openPrInChatToolsPane } from "./chatPrPaneRequests";
 import type { ChatWorkspacePathOpener } from "./chatWorkspacePaths";
 import type { MachineFacts } from "./useMachineFacts";
+import { BRAND } from "../../../shared/brand";
 
 export type ChipActionContext = {
   scope: ChatRuntimeScope;
@@ -146,8 +147,8 @@ export function openChipTarget(chip: Chip, context: ChipActionContext): void {
   }
   if (chip.kind === "ade_link") {
     showToast({
-      title: "Made by a newer ADE",
-      message: "Update ADE to open this link here.",
+      title: `Made by a newer ${BRAND.NAME}`,
+      message: `Update ${BRAND.NAME} to open this link here.`,
       actions: [{ label: "Copy link", variant: "secondary", onClick: () => void copyTextToClipboard(chip.token) }],
     });
     return;

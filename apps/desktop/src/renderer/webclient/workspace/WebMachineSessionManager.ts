@@ -17,6 +17,7 @@ import {
   type WebClientMachineCatalogRecord,
   type WebRelayAccess,
 } from "../sync";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Live machine connections one browser tab holds at once (decision 10 of the
@@ -648,7 +649,7 @@ export class WebMachineSessionManager {
         accessToken,
         accountSessionLease,
         isAccountSessionLeaseCurrent: (lease) => this.accountClient.isSessionLeaseCurrent(lease),
-        deviceName: `ADE Web on ${window.location.hostname || "browser"}`,
+        deviceName: `${BRAND.NAME} Web on ${window.location.hostname || "browser"}`,
         relayBaseUrls: this.accountClient.getRelayBaseUrls(),
         getRelayAccountToken: () => this.accountClient.getAccessToken(),
       });

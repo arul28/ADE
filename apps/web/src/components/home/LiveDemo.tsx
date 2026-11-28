@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { MousePointer2 } from "lucide-react";
 import { cn } from "../../lib/cn";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * The real ADE app, running in the page. `/demo/` is the desktop renderer
@@ -79,7 +80,7 @@ export function LiveDemo({
     >
       {scale > 0 ? (
         <iframe
-          title="ADE, running live in your browser"
+          title={`${BRAND.NAME}, running live in your browser`}
           src={DEMO_URL}
           ref={iframeRef}
           onLoad={onFrameLoad}

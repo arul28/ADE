@@ -10,6 +10,7 @@
 import type { CloudInstance } from "../../../account-directory/src/cloud/contract";
 import { cloudShape, readCloudComputerLimitDetail, type CloudMachineActionArgs, type CloudMachineActionResult } from "./adeCloud";
 import { cloudResourcesOfInstance } from "./cloudMachineOfInstance";
+import { BRAND } from "./brand";
 
 /** The calls each side makes for an action. `wake` and `resize` return the computer's status after the call. */
 export type CloudMachineLifecycleOps = {
@@ -40,7 +41,7 @@ export function cloudMachineRefusal(
     return {
       ok: false,
       blocker: "rate_limited",
-      message: "ADE Cloud takes one backup of a computer every 15 minutes. Try again in a few minutes. It also keeps the last seven nights on its own.",
+      message: `${BRAND.CLOUD_NAME} takes one backup of a computer every 15 minutes. Try again in a few minutes. It also keeps the last seven nights on its own.`,
     };
   }
   if (code === "out_of_hours" || code === "over_plan_limits") {
@@ -78,12 +79,12 @@ export async function runCloudMachineLifecycleAction(
       return {
         ok: true,
         blocker: null,
-        message: status === "running" ? "Awake. ADE on it is starting." : "Waking. ADE Cloud is moving it to a host with room.",
+        message: status === "running" ? `Awake. ${BRAND.NAME} on it is starting.` : `Waking. ${BRAND.CLOUD_NAME} is moving it to a host with room.`,
       };
     }
     case "backup":
       await ops.backup(instanceId);
-      return { ok: true, blocker: null, message: "Backed up. ADE Cloud keeps this one until your next backup, plus the last seven nights." };
+      return { ok: true, blocker: null, message: `Backed up. ${BRAND.CLOUD_NAME} keeps this one until your next backup, plus the last seven nights.` };
     case "update":
       await ops.update(instanceId);
       return { ok: true, blocker: null, message: "Updating. It restarts and is back in a few minutes." };
@@ -93,7 +94,7 @@ export async function runCloudMachineLifecycleAction(
       const disk = typeof args.disk === "number" && Number.isInteger(args.disk) && args.disk > 0 ? args.disk : null;
       if ((args.shape !== undefined && !shape) || (!shape && disk == null)) return { ok: false, blocker: null, message: "Pick a size." };
       const current = cloudResourcesOfInstance(await ops.computer(instanceId));
-      if (!current) return { ok: false, blocker: null, message: "ADE Cloud didn't say how big this computer is, so ADE can't resize it." };
+      if (!current) return { ok: false, blocker: null, message: `${BRAND.CLOUD_NAME} didn't say how big this computer is, so ${BRAND.NAME} can't resize it.` };
       const growDisk = disk != null && disk > current.diskGb;
       // The server refuses to grow the disk of a running computer unless the person confirmed the restart.
       const computerIdle = growDisk && args.computerIdle === true;
@@ -106,7 +107,7 @@ export async function runCloudMachineLifecycleAction(
           ok: true,
           blocker: null,
           message: status === "running"
-            ? `The disk is ${disk} GB now. ADE on it is starting again.`
+            ? `The disk is ${disk} GB now. ${BRAND.NAME} on it is starting again.`
             : `Growing the disk to ${disk} GB. The computer restarts and is back in a few minutes.`,
         };
       }
@@ -123,7 +124,7 @@ export async function runCloudMachineLifecycleAction(
         ok: true,
         blocker: null,
         message: status === "running"
-          ? `Resized to ${shape.label}. ADE on it is starting again.`
+          ? `Resized to ${shape.label}. ${BRAND.NAME} on it is starting again.`
           : `Resizing to ${shape.label}. It is back in a few minutes.`,
       };
     }

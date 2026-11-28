@@ -3,6 +3,7 @@ import { ArrowClockwise, CheckCircle, DownloadSimple, Terminal } from "@phosphor
 import { cn } from "../ui/cn";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { pinnedToolLine, usePinnedToolStatus } from "../../hooks/usePinnedToolStatus";
+import { BRAND } from "../../../shared/brand";
 
 export type AgentCliAuthCardInfo = {
   agent: string;
@@ -125,7 +126,7 @@ export function AgentCliAuthCard({
             {agentCli.displayName} is not on {installLocation} yet
           </div>
           <div className="mt-1 text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-fg/66">
-            ADE runs its own copy of {agentCli.displayName} and downloads it for {installLocation}. Once it is there, retry the chat.
+            {BRAND.NAME} runs its own copy of {agentCli.displayName} and downloads it for {installLocation}. Once it is there, retry the chat.
           </div>
           <div className="mt-3 grid gap-2">
             {pinnedLine && pinnedTool.status ? (

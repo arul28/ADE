@@ -190,7 +190,7 @@ describe("lane share host service, a share made by an agent", () => {
     expect(store.list()).toEqual([]);
   });
 
-  const personOnly = { code: "person_only", message: "Only a person in the ADE app can do this." };
+  const personOnly = { code: "person_only", message: "Only a person in the DAEX app can do this." };
   it.each<[string, "agent" | "person", { code: string; message: string }, (service: ReturnType<typeof makeService>["service"]) => Promise<unknown>]>([
     ["change rights", "agent", personOnly, (service) => service.updateRights({ grantId, rights: laneSharePresetRights("watch") }, "agent")],
     ["send an invite again", "agent", personOnly, (service) => service.resendInvite({ grantId }, "agent")],
@@ -200,7 +200,7 @@ describe("lane share host service, a share made by an agent", () => {
     [
       "share again with a person who has a pending share of the lane",
       "person",
-      { code: "invalid_args", message: "This person already has a share of this lane. Change it in the ADE app." },
+      { code: "invalid_args", message: "This person already has a share of this lane. Change it in the DAEX app." },
       (service) => service.create({ laneId, receiverEmail: "GUEST@example.com" }, "agent"),
     ],
   ])("refuses an agent that asks to %s", async (_label, createdBy, refusal, act) => {

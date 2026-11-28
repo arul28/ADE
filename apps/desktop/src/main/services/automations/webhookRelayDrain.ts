@@ -8,6 +8,7 @@ import type { Logger } from "../logging/logger";
 import { createRelayWakeSocket, type RelayWakeSocket, type RelayWakeTarget } from "./relayWakeSocket";
 import { lowerCaseHeaders, queryRecord } from "./webhookRequest";
 import type { WebhookIncomingRequest } from "./customWebhookService";
+import { BRAND } from "../../../shared/brand";
 
 const RELAY_SAFETY_POLL_MS = 5 * 60_000;
 const RELAY_PAGE_LIMIT = 100;
@@ -63,7 +64,7 @@ export function createWebhookRelayDrain(deps: {
         error?: string;
       } | null;
       if (!response.ok || !payload || !Array.isArray(payload.events)) {
-        throw new Error(payload?.error ?? `ADE relay answered HTTP ${response.status}.`);
+        throw new Error(payload?.error ?? `${BRAND.NAME} relay answered HTTP ${response.status}.`);
       }
       if (!payload.events.length) return;
       const processed: string[] = [];
@@ -118,7 +119,7 @@ export function createWebhookRelayDrain(deps: {
         body: JSON.stringify({ eventIds: processed }),
         signal: AbortSignal.timeout(20_000),
       });
-      if (!ack.ok) throw new Error(`ADE relay did not accept the acknowledgement (HTTP ${ack.status}).`);
+      if (!ack.ok) throw new Error(`${BRAND.NAME} relay did not accept the acknowledgement (HTTP ${ack.status}).`);
       if (!payload.hasMore || !hookIds.length) return;
     }
   };

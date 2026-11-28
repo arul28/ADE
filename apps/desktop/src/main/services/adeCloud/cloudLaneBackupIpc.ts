@@ -11,6 +11,7 @@ import { IPC } from "../../../shared/ipc";
 import { runGit } from "../git/git";
 import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
 import { readGitOriginUrl } from "../projects/recentProjectSummary";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * "Get this lane's work" on the desktop (`laneBackups.ts`): the account's
@@ -31,13 +32,13 @@ const SHA = /^[0-9a-f]{40,64}$/;
 const ID = /^[A-Za-z0-9._:-]{1,160}$/;
 
 function idArg(value: unknown, what: string): string {
-  if (typeof value !== "string" || !ID.test(value.trim())) throw new AdeExpectedError(`ADE doesn't know that ${what}.`, "user");
+  if (typeof value !== "string" || !ID.test(value.trim())) throw new AdeExpectedError(`${BRAND.NAME} doesn't know that ${what}.`, "user");
   return value.trim();
 }
 
 async function readBackup(api: CloudApiClient, machineKey: string, laneId: string): Promise<CloudLaneBackup> {
   const backup = await api.laneBackup(machineKey, laneId);
-  if (!backup) throw new AdeExpectedError("ADE Cloud has no saved work for that lane any more.", "user");
+  if (!backup) throw new AdeExpectedError(`${BRAND.CLOUD_NAME} has no saved work for that lane any more.`, "user");
   return backup;
 }
 
@@ -59,7 +60,7 @@ async function freeBranchName(cwd: string, backup: CloudLaneBackup): Promise<str
     const taken = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${name}`], { cwd, timeoutMs: 10_000 });
     if (taken.exitCode !== 0) return name;
   }
-  throw new Error("ADE couldn't find a free branch name for the saved work.");
+  throw new Error(`${BRAND.NAME} couldn't find a free branch name for the saved work.`);
 }
 
 export async function laneBackupToBranch(api: CloudApiClient, args: { machineKey: string; laneId: string; projectRoot: string }): Promise<{ branch: string }> {
@@ -93,7 +94,7 @@ export async function laneBackupToBranch(api: CloudApiClient, args: { machineKey
     const branch = await freeBranchName(root, backup);
     // Into a new branch only: nothing that exists moves, no working tree changes.
     const fetched = await runGit([...hardening, "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", bundlePath, `${heads[0]![1]}:refs/heads/${branch}`], { cwd: root, timeoutMs: 120_000 });
-    if (fetched.exitCode !== 0) throw new Error(fetched.stderr.trim() || "ADE couldn't put the saved work on a branch.");
+    if (fetched.exitCode !== 0) throw new Error(fetched.stderr.trim() || `${BRAND.NAME} couldn't put the saved work on a branch.`);
     return { branch };
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
@@ -124,14 +125,14 @@ export function registerCloudLaneBackupIpc(args: { accountApi: () => CloudApiCli
     return { savedTo: picked.filePath };
   });
   ipcMain.handle(IPC.cloudLaneBackupToBranch, async (event, arg?: { machineKey?: unknown; laneId?: unknown; projectRoot?: unknown }): Promise<{ branch: string }> => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudLaneBackupToBranch)) throw new Error("ADE can't do that from here.");
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudLaneBackupToBranch)) throw new Error(`${BRAND.NAME} can't do that from here.`);
     const projectRoot = typeof arg?.projectRoot === "string" ? arg.projectRoot : "";
     const made = await laneBackupToBranch(args.accountApi(), { machineKey: idArg(arg?.machineKey, "computer"), laneId: idArg(arg?.laneId, "lane"), projectRoot });
     logger.info("cloud.lane_backup_to_branch", {});
     return made;
   });
   ipcMain.handle(IPC.cloudLaneBackupForget, async (event, arg?: { machineKey?: unknown; laneId?: unknown }): Promise<{ deleted: number }> => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudLaneBackupForget)) throw new Error("ADE can't do that from here.");
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudLaneBackupForget)) throw new Error(`${BRAND.NAME} can't do that from here.`);
     const deleted = await args.accountApi().forgetLaneBackup(idArg(arg?.machineKey, "computer"), idArg(arg?.laneId, "lane"));
     logger.info("cloud.lane_backup_forgot", {});
     return deleted;
@@ -140,7 +141,7 @@ export function registerCloudLaneBackupIpc(args: { accountApi: () => CloudApiCli
   // reached through the destination's pin). A call lands here only with no project runtime,
   // and the move needs the lane's project open there.
   const needsProject = (channel: string) => async (event: Electron.IpcMainInvokeEvent): Promise<never> => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, channel)) throw new Error("ADE can't do that from here.");
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, channel)) throw new Error(`${BRAND.NAME} can't do that from here.`);
     throw new AdeExpectedError("Open the lane's project on this computer, then move the lane there.", "user");
   };
   ipcMain.handle(IPC.cloudPreviewKeptLaneRestore, needsProject(IPC.cloudPreviewKeptLaneRestore));

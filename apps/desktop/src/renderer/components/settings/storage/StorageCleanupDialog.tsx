@@ -14,6 +14,7 @@ import { useStorageBytes } from "./useStorageBytes";
 import { useSettingsMachineScope } from "../SettingsMachineScope";
 import { mayStillBeRunning } from "../../../../shared/runtimeErrors";
 import { plainErrorText } from "../../../lib/plainError";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * Optional "safe cleanup" plan. When present the dialog shows what the
@@ -51,14 +52,14 @@ type Housekeeping =
 function housekeepingMessage(housekeeping: Housekeeping | null): { tone: "info" | "warning"; text: string } | null {
   switch (housekeeping?.state) {
     case "running":
-      return { tone: "info", text: "Tidying ADE's own data in the background. You can close this; ADE shows what it freed when it's done." };
+      return { tone: "info", text: `Tidying ${BRAND.NAME}'s own data in the background. You can close this; ${BRAND.NAME} shows what it freed when it's done.` };
     case "failed":
       return housekeeping.stillRunning
-        ? { tone: "info", text: "ADE's own tidy-up is taking a while. It may still finish in the background, and it also runs on its own every day." }
-        : { tone: "warning", text: "ADE's own tidy-up didn't finish this time. It runs again on its own every day. The files above were removed either way." };
+        ? { tone: "info", text: `${BRAND.NAME}'s own tidy-up is taking a while. It may still finish in the background, and it also runs on its own every day.` }
+        : { tone: "warning", text: `${BRAND.NAME}'s own tidy-up didn't finish this time. It runs again on its own every day. The files above were removed either way.` };
     case "done":
       return housekeeping.report.actions.some((action) => Boolean(action.error))
-        ? { tone: "warning", text: "Some of ADE's own tidy-up steps didn't finish. They run again on their own every day." }
+        ? { tone: "warning", text: `Some of ${BRAND.NAME}'s own tidy-up steps didn't finish. They run again on their own every day.` }
         : null;
     default:
       return null;
@@ -248,7 +249,7 @@ export function StorageCleanupDialog({
       })
       .catch((err: unknown) => {
         if (requestRef.current !== requestId) return;
-        setError(plainErrorText(err, "ADE couldn't work out what to clean up."));
+        setError(plainErrorText(err, `${BRAND.NAME} couldn't work out what to clean up.`));
         setErrorPhase("checking");
         setStage("error");
       });
@@ -284,7 +285,7 @@ export function StorageCleanupDialog({
         : { removed: [], failed: [], freedBytes: 0 };
     } catch (err) {
       if (requestRef.current !== requestId) return;
-      setError(plainErrorText(err, "ADE couldn't finish the cleanup."));
+      setError(plainErrorText(err, `${BRAND.NAME} couldn't finish the cleanup.`));
       setErrorPhase("removing");
       setStage("error");
       return;
@@ -402,10 +403,10 @@ export function StorageCleanupDialog({
             id: "storage-cleanup-error",
             tone: "error",
             title: errorPhase === "checking"
-              ? "ADE couldn't check what's safe to remove."
+              ? `${BRAND.NAME} couldn't check what's safe to remove.`
               : "The cleanup didn't finish.",
             detail: errorPhase === "checking"
-              ? "Nothing was removed. Try again — if it keeps failing, close and reopen ADE, then come back here."
+              ? `Nothing was removed. Try again — if it keeps failing, close and reopen ${BRAND.NAME}, then come back here.`
               : "Some items may still be on disk. Nothing outside this list was touched, and you can run it again.",
             extra: error ? (
               <details>

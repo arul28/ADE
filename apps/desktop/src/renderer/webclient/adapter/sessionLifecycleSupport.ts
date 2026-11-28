@@ -1,4 +1,5 @@
 import type { SyncRemoteCommandDescriptor } from "../../../shared/types/sync";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Whether the paired machine can do session lifecycle at all, and the copy the
@@ -42,7 +43,7 @@ export const SESSION_LIFECYCLE_DISCONNECTED_MESSAGE =
   "Can't reach this computer right now, so nothing was changed.";
 
 export const SESSION_LIFECYCLE_UNSUPPORTED_MESSAGE =
-  "This computer is running an older ADE that can't settle or snooze sessions.";
+  `This computer is running an older ${BRAND.NAME} that can't settle or snooze sessions.`;
 
 export type SessionLifecycleUnavailableCode = "disconnected" | "unsupported";
 

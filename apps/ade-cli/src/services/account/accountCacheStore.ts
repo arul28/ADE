@@ -7,6 +7,7 @@ import {
   type AccountChangeMarkKind,
 } from "./accountChangeMarks";
 import { describeSyncFailure, relayUnhealthy } from "./accountCacheDiagnostics";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /** Marks older than this mean the heartbeat stopped carrying them: poll. */
 const CHANGE_MARK_FRESH_MS = 90_000;
@@ -1210,7 +1211,7 @@ export function createAccountCacheStore<
       if (!config.hasRelay()) {
         return { ...base, state: "unavailable", lastError: "This computer has no account service to sync with." };
       }
-      if (!accountUserId) return { ...base, state: "unavailable", lastError: "This computer is signed out of its ADE account." };
+      if (!accountUserId) return { ...base, state: "unavailable", lastError: `This computer is signed out of its ${BRAND.NAME} account.` };
       if (status === "failed") {
         return { ...base, state: "failing", lastError: lastError ?? "Syncing with your account failed. It retries on its own." };
       }
@@ -1220,14 +1221,14 @@ export function createAccountCacheStore<
           ...base,
           state: "failing",
           lastError: `Your account service refused ${parked === 1 ? "1 change" : `${parked} changes`} from this computer (${reasons.join(", ")}). `
-            + "ADE keeps them on this computer and tries again every hour.",
+            + `${BRAND.NAME} keeps them on this computer and tries again every hour.`,
         };
       }
       if (status === "ready") return { ...base, state: "ok", lastError: null };
       if (status === "unavailable") {
-        return { ...base, state: "unavailable", lastError: "ADE couldn't ask your account service yet (no sign-in token, or the service can't store secrets right now)." };
+        return { ...base, state: "unavailable", lastError: `${BRAND.NAME} couldn't ask your account service yet (no sign-in token, or the service can't store secrets right now).` };
       }
-      return { ...base, state: "unavailable", lastError: "ADE hasn't synced with your account yet." };
+      return { ...base, state: "unavailable", lastError: `${BRAND.NAME} hasn't synced with your account yet.` };
     },
 
     attachLogger(extra: AccountCacheLogger): void {

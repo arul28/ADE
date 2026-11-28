@@ -27,6 +27,7 @@ import {
   type TerminalResumeProvider,
   type TerminalSessionSummary,
 } from "../../../shared/types";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The `ade chat` commands a tracked agent CLI answers.
@@ -107,7 +108,7 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
   const { logger, sessionService } = deps;
 
   const requirePty = () => {
-    if (!deps.ptyService) throw new Error("Terminals are not available in this ADE runtime.");
+    if (!deps.ptyService) throw new Error(`Terminals are not available in this ${BRAND.NAME} runtime.`);
     return deps.ptyService;
   };
 
@@ -132,17 +133,17 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
     if (deps.isTrackedAgentCliSession(id)) return row;
     if (isChatToolType(row.toolType)) return null;
     const what = isTrackedAgentCliToolType(row.toolType)
-      ? "an agent CLI that ADE does not track"
+      ? `an agent CLI that ${BRAND.NAME} does not track`
       : "a plain terminal";
     throw new Error(
-      `Session '${id}' is ${what}, not an agent chat or a tracked agent CLI session, so \`ade chat\` cannot ${verb} it. `
-        + `Type into it with \`ade terminal write ${id} --data "…"\`.`,
+      `Session '${id}' is ${what}, not an agent chat or a tracked agent CLI session, so \`daex chat\` cannot ${verb} it. `
+        + `Type into it with \`daex terminal write ${id} --data "…"\`.`,
     );
   };
 
   const assertRunsHere = (sessionId: string, verb: string): void => {
     if (deps.agentCliOwnedByAnotherRuntime(sessionId)) {
-      throw new Error(`Terminal session '${sessionId}' runs under another live ADE runtime; ${verb} it from there.`);
+      throw new Error(`Terminal session '${sessionId}' runs under another live ${BRAND.NAME} runtime; ${verb} it from there.`);
     }
   };
 
@@ -181,7 +182,7 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
   const pendingPromptError = (sessionId: string): Error =>
     new Error(
       `The CLI is waiting on a prompt in its terminal, so a message now would be typed into that prompt. `
-        + `See it with \`ade chat pending ${sessionId} --text\` and answer it with \`ade chat respond ${sessionId} --approve | --deny\`, `
+        + `See it with \`daex chat pending ${sessionId} --text\` and answer it with \`daex chat respond ${sessionId} --approve | --deny\`, `
         + "or send with --queue to deliver it once the CLI is free.",
     );
 
@@ -235,7 +236,7 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
     };
     if (kind === "interrupt-replace" && isBusy(row)) {
       const stopped = await requirePty().interruptAgentCli?.(sessionId);
-      if (!stopped) throw new Error("This ADE runtime cannot interrupt a CLI session.");
+      if (!stopped) throw new Error(`This ${BRAND.NAME} runtime cannot interrupt a CLI session.`);
       if (!(await waitUntilReady(sessionId, CLI_INTERRUPT_SEND_READY_WAIT_MS))) return await queue();
       const delivered = await deps.deliverWakeToSession({ sessionId, text: args.text, kind: "auto" });
       if (delivered === "deferred") return await queue();
@@ -273,7 +274,7 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
     assertRunsHere(sessionId, "stop");
     const mode = parseAgentChatStopMode(args.mode ?? DEFAULT_AGENT_CHAT_STOP_MODE);
     const pty = requirePty();
-    if (!pty.interruptAgentCli) throw new Error("This ADE runtime cannot interrupt a CLI session.");
+    if (!pty.interruptAgentCli) throw new Error(`This ${BRAND.NAME} runtime cannot interrupt a CLI session.`);
     // Stop means stop: messages ADE queued for the CLI go too, unless the mode keeps them.
     const cancelledQueuedCount = stopModeClearsQueue(mode) ? await deps.cancelQueuedSends(sessionId) : 0;
     const result = await pty.interruptAgentCli(sessionId);
@@ -287,7 +288,7 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
     options: Parameters<NonNullable<PtyService["restartAgentCli"]>>[1] = {},
   ) => {
     const pty = requirePty();
-    if (!pty.restartAgentCli) throw new Error("This ADE runtime cannot restart a CLI session.");
+    if (!pty.restartAgentCli) throw new Error(`This ${BRAND.NAME} runtime cannot restart a CLI session.`);
     const restarted = await pty.restartAgentCli({ sessionId: row.id, ...launch }, options);
     notifyResumed(restarted.sessionId, true);
     return restarted;
@@ -328,7 +329,7 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
     }
     if (busy && !stopFirst) {
       throw new Error(
-        `A turn is running in this CLI. Stop it first (\`ade chat interrupt ${sessionId}\`), or restart with --stop to end it now.`,
+        `A turn is running in this CLI. Stop it first (\`daex chat interrupt ${sessionId}\`), or restart with --stop to end it now.`,
       );
     }
     await restartNow(row);
@@ -373,7 +374,7 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
     };
     const changesPermissions = Boolean(launch.permissionMode || launch.codexApprovalPolicy || launch.codexSandbox || launch.codexConfigSource);
     if (changesPermissions && args.runtimeActor) {
-      throw new Error("An agent cannot change a CLI session's permissions. The user can, from ADE or their own `ade` shell.");
+      throw new Error("An agent cannot change a CLI session's permissions. The user can, from DAEX or their own `daex` shell.");
     }
     if (Object.keys(launch).length > 0) assertRunsHere(sessionId, "change");
     // The relaunch goes first: a refused setting leaves the title and pin as they were.
@@ -400,7 +401,7 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
     assertRunsHere(sessionId, "switch the account of");
     const provider = providerOf(row);
     if (provider !== "claude" && provider !== "codex") {
-      return { ok: false, reason: "failed", message: `${providerName(row)} CLI sessions do not run on a provider account ADE can switch.` };
+      return { ok: false, reason: "failed", message: `${providerName(row)} CLI sessions do not run on a provider account ${BRAND.NAME} can switch.` };
     }
     const launch = row.resumeMetadata?.launch;
     if (
@@ -450,7 +451,7 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
       throw new Error("A CLI session can only have its title generated. Pass --title, or leave the fields out.");
     }
     const pty = requirePty();
-    if (!pty.regenerateAgentCliTitle) throw new Error("This ADE runtime cannot name a CLI session.");
+    if (!pty.regenerateAgentCliTitle) throw new Error(`This ${BRAND.NAME} runtime cannot name a CLI session.`);
     const named = await pty.regenerateAgentCliTitle(row.id);
     return {
       sessionId: row.id,
@@ -490,10 +491,10 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
         kind: question ? "question" : "approval",
         title: row.attentionMessage?.trim() || "The CLI is waiting at a prompt in its terminal.",
         description: keys
-          ? `Answer with --approve${keys.acceptForSession ? ", --approve-session" : ""} or --deny; ADE presses ${providerName(row)}'s own key.`
+          ? `Answer with --approve${keys.acceptForSession ? ", --approve-session" : ""} or --deny; DAEX presses ${providerName(row)}'s own key.`
           : question
-            ? `${providerName(row)} is asking a question; answer it in the terminal (\`ade terminal write ${row.id} --data …\`).`
-            : `ADE does not know ${providerName(row)}'s approval keys; answer it in the terminal (\`ade terminal write ${row.id} --data …\`).`,
+            ? `${providerName(row)} is asking a question; answer it in the terminal (\`daex terminal write ${row.id} --data …\`).`
+            : `DAEX does not know ${providerName(row)}'s approval keys; answer it in the terminal (\`daex terminal write ${row.id} --data …\`).`,
         questions: [],
         allowsFreeform: false,
         blocking: true,
@@ -511,14 +512,14 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
     const sessionId = row.id;
     assertRunsHere(sessionId, "answer");
     if (!awaitingPrompt(row)) {
-      throw new Error(`The CLI in '${sessionId}' is not waiting on a prompt ADE can see. Look at its terminal, or read it with \`ade terminal read ${sessionId}\`.`);
+      throw new Error(`The CLI in '${sessionId}' is not waiting on a prompt DAEX can see. Look at its terminal, or read it with \`daex terminal read ${sessionId}\`.`);
     }
     const provider = providerOf(row);
     const keys = promptKeys(row);
     if (!keys) {
       throw new Error(deps.ptyService?.getCliPromptKind?.(sessionId) === "question"
-        ? `${providerName(row)} is asking a question, not for a permission. Answer it in the terminal (\`ade terminal write ${sessionId} --data …\`).`
-        : `ADE does not know ${providerName(row)}'s approval keys. Answer the prompt in the terminal (\`ade terminal write ${sessionId} --data …\`).`);
+        ? `${providerName(row)} is asking a question, not for a permission. Answer it in the terminal (\`daex terminal write ${sessionId} --data …\`).`
+        : `DAEX does not know ${providerName(row)}'s approval keys. Answer the prompt in the terminal (\`daex terminal write ${sessionId} --data …\`).`);
     }
     const decision = args.decision ?? (args.responseText?.trim() ? "decline" : "accept");
     const key = decision === "accept"
@@ -527,7 +528,7 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
         ? keys.acceptForSession
         : keys.decline;
     if (key == null) {
-      throw new Error(`${providerName(row)} has no "allow for this session" answer ADE can press. Use --approve or --deny.`);
+      throw new Error(`${providerName(row)} has no "allow for this session" answer DAEX can press. Use --approve or --deny.`);
     }
     const pty = requirePty();
     if (!pty.writeBySessionId?.(sessionId, key)) {

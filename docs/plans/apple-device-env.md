@@ -5,72 +5,70 @@ in [docs/features/apple-device/README.md](../features/apple-device/README.md).
 This file keeps the agent-facing contracts that code comments point to (§5)
 and the owner's decisions (§6).
 
-## 5. Agent-facing changes
+## 5. Agent-facing contracts
 
-The CLI is `ade apple`. The agent skill is `ade-apple`.
+The CLI is `daex apple` (`ade apple` still works). The agent skill is
+`daex-apple`.
 
-### New verbs
+### Verbs
 
 ```bash
-ade --socket apple device-create [--from <simulator>] [--name <name>] --text
-ade --socket apple device-attach --simulator <udid|name> --text
-ade --socket apple device-list [--installed] [--lane] --text
-ade --socket apple device-delete [--force] --text
+daex apple device-create [--from <simulator>] [--name <name>] [--extra] --text
+daex apple device-attach --simulator <udid|name> --text
+daex apple device-list [--installed] [--runtimes] [--disk] --text
+daex apple device-delete [--device <udid|name>] [--force] --text
 
-ade --socket apple record-start [--overlays on|off] [--label <text>] --text
-ade --socket apple record-stop [--keep|--discard] --text
-ade --socket apple record-list --text
-ade --socket apple record-delete --id <id> --text
+daex apple record-start [--overlays on|off] [--label <text>] [--plain|--zoom] [--max-seconds <n>] --text
+daex apple record-stop [--keep|--discard] --text
+daex apple record-list --text
+daex apple record-delete --id <id> --text
+daex apple auto-record on|off --text
 
-ade --socket apple frame [--out <path>] --text
+daex apple frame [--out <path>] --text
 ```
 
 - `device-create` with no `--from` clones the project's last-used installed
-  simulator, else the newest installed iPhone. It never downloads a runtime; with
-  none installed it fails with `APPLE_NO_INSTALLED_SIMULATORS` and a hint naming
-  Xcode ▸ Settings ▸ Components.
+  simulator, else the newest installed iPhone. It never downloads a runtime;
+  with none installed it fails with `APPLE_NO_INSTALLED_SIMULATORS` and a hint
+  naming Xcode > Settings > Components.
 - `device-attach` binds an existing simulator to the lane without cloning.
-  `device-delete` refuses an attached device unless `--force`, and `--force` only
-  detaches it — ADE never deletes a simulator it did not create.
-- `device-list --installed` is what a human-facing picker shows;
-  `device-list --lane` is the one device this lane owns.
-- `frame` grabs a single decoded frame from the running stream — cheaper than
-  `screenshot`, which round-trips `simctl`. `frame` fails when the stream is not
-  running; `screenshot` does not need one.
-- `record-stop --discard` is only permitted for a recording this chat owns and
-  that is not marked `proof`.
+  `device-delete` refuses an attached device unless `--force`, and `--force`
+  only detaches it: DAEX never deletes a simulator it did not create.
+- `frame` grabs one decoded frame from the running stream, cheaper than
+  `screenshot` (which round-trips `simctl`). `frame` fails when the stream is
+  not running; `screenshot` does not need one.
+- `daex ios-sim` is a deprecated alias of `daex apple` and prints a warning.
 
 ### Auto-record contract
 
-1. An agent's first injected input (`tap`, `tap-element`, `type`, `fill-element`,
-   `drag`, `select`, `open-url`) against a device with no running recording
-   **starts one automatically**, tagged `auto`, owned by the calling chat, with
-   overlays per Settings.
-2. It stops at the end of the chat's turn, or after 10 minutes, whichever comes
-   first. `record-start` while an auto recording is running converts it to a
-   manual one (no restart, no gap) and clears the 10-minute cap.
-3. An agent may `record-delete` a recording it owns and did not mark `proof`.
-   Anything else is refused with `APPLE_RECORDING_PINNED`.
-4. `proof-bundle` pins the active recording — or the most recent one from this
-   chat if none is active — copies it to the proof drawer, and makes it
-   undeletable by any agent.
-5. There is **no auto-delete**. Recordings accumulate until the user clears
-   unpinned ones from the drawer's Recording section.
-6. The verbs report ownership the same way sessions do, so a second chat sees
-   `APPLE_OWNED_BY_OTHER_SESSION` with the owning chat, lane, and age — the
-   existing cooperative-guard language, unchanged.
+The source of truth is the header of
+`apps/desktop/src/main/services/ios/recording/simRecordingService.ts`. In
+short:
 
----
+1. An agent's first input on a device with no running recording starts one,
+   tagged `auto` and owned by the calling chat, unless the caller opted out
+   (`--no-record` on the call, `auto-record off` on the lane, or the
+   machine's `apple.autoRecordAgentInput` setting off). A person driving the
+   pane never starts one.
+2. It stops at the end of that chat's turn (`agentChatService.ts` notifies at
+   every turn's end) or after five minutes. `record-start` while an auto
+   recording runs converts it to a manual one with no gap.
+3. No recording runs longer than five minutes, and one with no input for two
+   minutes or that fills the disk stops too (`demoRecordingGuard.ts`).
+4. Every recording that stops is turned into a short demo video and filed into
+   the proof drawer at once, attributed to the owning chat.
+5. An agent may delete a recording it owns but not one filed as proof
+   (`APPLE_RECORDING_PINNED`); another chat's recordings are refused with
+   `APPLE_OWNED_BY_OTHER_SESSION`.
+6. There is no auto-delete. The storage warning (`apple.recordingsWarnBytes`)
+   only warns.
 
-## 6. Decisions on the open questions (2026-09-21)
+The lane's Android emulator follows the same contract (`androidAutoRecord.ts`).
 
-1. **Body models.** Bundle the GLB files in the app. Licensing is accepted as an
-   open-source risk to fix later if asked.
-2. **Recording retention.** No auto-delete. The Diagnostics/Storage section warns
-   at a size ceiling. It warns only; it never deletes.
-3. **`ade ios-sim` alias window.** One minor release. The published `@ade-dev`
-   SDK carries both names for that window.
-4. **Preview Lab.** Stays a mode toggle in the Apple column header.
-5. **Two devices in one lane.** One at a time, with the "Replace?" prompt. No
-   device switcher in the first version.
-6. **Watch simulators.** Listed disabled with "Watch support is coming".
+## 6. Owner decisions (2026-09-21)
+
+1. **Body models.** GLB files ship in the app. Licensing is an accepted risk
+   (`apps/desktop/src/renderer/assets/apple-device-models/sources.json`).
+2. **Recording retention.** No auto-delete; a size warning only.
+3. **Preview Lab.** Lives in the pane's tools drawer
+   (`apple/drawer/AppleToolsDrawer`), not a separate mode.

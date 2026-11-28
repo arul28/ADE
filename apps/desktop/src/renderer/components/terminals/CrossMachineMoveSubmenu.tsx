@@ -33,6 +33,7 @@ import { adeCloudMoveSource, wakeAdeCloudLane } from "../../state/adeCloudLaneWa
 import { CloudMark } from "../remoteTargets/cloudBrand";
 import { ADE_CLOUD_NAME } from "../../../shared/adeCloudMachine";
 import { ADE_CLOUD_MOVE_UNAVAILABLE_SENTENCE, useOwnMoveMachines } from "../chat/crossMachineMoveTargets";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Session menu "Hand off ▸ Another machine ▸". The panel paints at once and
@@ -78,7 +79,7 @@ function targetFromSummary(summary: AgentChatSessionSummary): AgentChatCrossMach
 }
 
 function errorText(error: unknown): string {
-  return plainErrorText(error, "ADE couldn't reach that computer.");
+  return plainErrorText(error, `${BRAND.NAME} couldn't reach that computer.`);
 }
 
 export function CrossMachineMoveSubmenu({
@@ -212,7 +213,7 @@ export function CrossMachineMoveSubmenu({
         showToast({
           tone: "warning",
           title: `Couldn't move to ${machineName}`,
-          message: "ADE couldn't tell which model this chat runs. Use Choose in full setup.",
+          message: `${BRAND.NAME} couldn't tell which model this chat runs. Use Choose in full setup.`,
         });
         return;
       }
@@ -359,10 +360,10 @@ export function CrossMachineMoveSubmenu({
             </>
           ) : null}
           {cloudSource === "gone" ? (
-            <MenuSubmenuStatus>This chat's ADE Cloud computer was removed. Send it a message: it continues on a new ADE Cloud computer.</MenuSubmenuStatus>
+            <MenuSubmenuStatus>This chat's {BRAND.CLOUD_NAME} computer was removed. Send it a message: it continues on a new {BRAND.CLOUD_NAME} computer.</MenuSubmenuStatus>
           ) : cloudSource === "resting" ? (
             <>
-              <MenuSubmenuStatus>Your ADE Cloud computer is asleep. Wake it to move this chat.</MenuSubmenuStatus>
+              <MenuSubmenuStatus>Your {BRAND.CLOUD_NAME} computer is asleep. Wake it to move this chat.</MenuSubmenuStatus>
               <button
                 type="button"
                 role="menuitem"

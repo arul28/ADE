@@ -53,6 +53,7 @@ import type { Logger } from "../logging/logger";
 import { captureFeatureUsedAnalytics, type FeatureAnalytics } from "../analytics/featureProductAnalytics";
 import { startCodexVoiceHost, type CodexVoiceHost } from "./codexVoiceHost";
 import { createVoiceNarration, type VoiceNarrator } from "./codexVoiceNarration";
+import { BRAND } from "../../../shared/brand";
 
 const ANSWER_TIMEOUT_MS = 20_000;
 const CAPTION_LIMIT = 4;
@@ -65,7 +66,7 @@ const ORPHAN_CHECK_MS = 5_000;
 const HISTORY_ENTRIES = 12;
 const HISTORY_ENTRY_CHARS = 1_500;
 /** The agent gets this frame so "you" and "this" read right; the thread shows only the spoken words. */
-const VOICE_REQUEST_FRAME = "[The user said this aloud in an ADE voice conversation with this chat. Answer as you would a typed message; a voice assistant reads your reply to them, so lead with the answer.]";
+const VOICE_REQUEST_FRAME = "[The user said this aloud in a DAEX voice conversation with this chat. Answer as you would a typed message; a voice assistant reads your reply to them, so lead with the answer.]";
 
 /** The Codex runtime surface voice needs from a native Codex chat. */
 export type CodexVoiceRuntime = {
@@ -537,7 +538,7 @@ export function createCodexVoiceSessions<
     const summary = deps.chatSummary(chat.session.id);
     const provider = chat.session.provider;
     const context = [
-      `You are the voice of the ${providerDisplayLabel(provider, String(provider))} agent in an ADE chat. ADE is the user's desktop app for running coding agents in lanes (git worktrees).`,
+      `You are the voice of the ${providerDisplayLabel(provider, String(provider))} agent in a DAEX chat. DAEX is the user's desktop app for running coding agents in lanes (git worktrees).`,
       `Chat: ${summary?.title?.trim() || "Untitled"}`,
       `Lane: ${summary?.laneName ?? "unknown"}`,
       `Worktree: ${chat.laneWorktreePath}`,
@@ -548,8 +549,8 @@ export function createCodexVoiceSessions<
       "Work in progress has not concluded. While the agent is still going, say what it looks like it is doing or leaning toward, never what it has decided. State a result flatly only when the agent's own finished message says it.",
       "The user can cut in at any time. When they speak, stop and answer them; whatever you were about to say about the work can wait.",
       "Everything you hand to the agent appears in the chat as the user's message, followed by the agent's work. Only say work is done when the agent's result says so.",
-      "A subagent the agent starts keeps running after the agent's turn ends. Say it is running; say it finished only when a message from ADE reports that. Never make up a subagent's result.",
-      "Questions about you (the voice) are yours to answer, not the agent's. Your settings (personality, voice, progress updates, what you call the user, language) are in ADE under Settings, Chat, Voice conversations. The waveform button in the prompt box starts and ends a conversation.",
+      "A subagent the agent starts keeps running after the agent's turn ends. Say it is running; say it finished only when a message from DAEX reports that. Never make up a subagent's result.",
+      "Questions about you (the voice) are yours to answer, not the agent's. Your settings (personality, voice, progress updates, what you call the user, language) are in DAEX under Settings, Chat, Voice conversations. The waveform button in the prompt box starts and ends a conversation.",
       "So is the call itself: the user's controls are yours, not the agent's. When they ask to end the call, say a short goodbye — never hand it to the agent, which has no control over it. The call then closes on its own.",
       buildCodexVoiceStyleInstructions(preferences),
     ].join("\n");
@@ -595,7 +596,7 @@ export function createCodexVoiceSessions<
 
   const hostTransport = async (chat: TChat, session: VoiceSession<TRuntime>): Promise<Transport<TRuntime>> => {
     const { executable, env } = deps.resolveCodexExecutable(chat);
-    if (!executable) throw new Error("Voice needs ADE's Codex on this machine and a ChatGPT sign-in.");
+    if (!executable) throw new Error(`Voice needs ${BRAND.NAME}'s Codex on this machine and a ChatGPT sign-in.`);
     const host: CodexVoiceHost = await startCodexVoiceHost({
       executable,
       env,
@@ -847,7 +848,7 @@ export function createCodexVoiceSessions<
   const endAll = (lookupChat: (sessionId: string) => TChat | undefined): void => {
     for (const [sessionId, session] of [...sessions]) {
       const chat = lookupChat(sessionId);
-      if (chat) finish(chat, session, "ADE is shutting down.", true, true);
+      if (chat) finish(chat, session, `${BRAND.NAME} is shutting down.`, true, true);
       else session.transport?.release(true, true);
     }
   };

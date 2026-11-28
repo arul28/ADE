@@ -34,6 +34,7 @@ import { claudeConfigHome, codexConfigHome, COPILOT_TOKEN_ENV_KEYS } from "../sh
 import { withCopilotCarriedEnv } from "../providerLogins/providerLoginCopilotEnv";
 import { isLiveLockTimeout, pinnedToolForProvider, pinnedToolState } from "./pinnedProviderTools";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Why a provider's runtime is not on this machine: the reason the CLI status
@@ -44,7 +45,7 @@ function runtimeMissingBlocker(provider: string, cli: CliAuthStatus | null): str
   if (cli?.pinnedBlocker) return cli.pinnedBlocker;
   const tool = pinnedToolForProvider(provider);
   return (tool ? pinnedToolState(tool.tool, tool.label).blocker : null)
-    ?? `ADE could not find its ${provider} runtime on this machine.`;
+    ?? `${BRAND.NAME} could not find its ${provider} runtime on this machine.`;
 }
 
 /**
@@ -150,8 +151,8 @@ function copilotRuntimeMissingBlocker(cli: CliAuthStatus | null, authAvailable: 
   const state = cli?.pinnedState ?? pinnedToolState("copilot", "the Copilot runtime").state;
   if (state !== "missing") return runtimeMissingBlocker("copilot", cli);
   return authAvailable
-    ? "ADE has not downloaded the Copilot runtime on this machine yet. It downloads the first time this machine uses it."
-    : "ADE has not downloaded the Copilot runtime on this machine yet. Sign in with `copilot login` or `gh auth login`; ADE downloads it the first time this machine uses it.";
+    ? `${BRAND.NAME} has not downloaded the Copilot runtime on this machine yet. It downloads the first time this machine uses it.`
+    : `${BRAND.NAME} has not downloaded the Copilot runtime on this machine yet. Sign in with \`copilot login\` or \`gh auth login\`; ${BRAND.NAME} downloads it the first time this machine uses it.`;
 }
 
 function createUnavailableStatus(
@@ -377,8 +378,8 @@ export async function buildProviderConnections(
       }
       status.blocker = health.message
         ?? (health.state === "auth-failed"
-          ? `${status.provider} runtime was detected, but ADE chat reported that login is still required.`
-          : `${status.provider} runtime was detected, but ADE could not launch it from this app session.`);
+          ? `${status.provider} runtime was detected, but ${BRAND.NAME} chat reported that login is still required.`
+          : `${status.provider} runtime was detected, but ${BRAND.NAME} could not launch it from this app session.`);
     } else if (health.state === "ready") {
       status.runtimeAvailable = true;
       status.authAvailable = true;
@@ -533,7 +534,7 @@ export async function buildProviderConnections(
   } else if (cursorAdminEnvAuth) {
     cursorBlocker = "CURSOR_ADMIN_API_KEY is set but does not look like a Cursor Admin API key.";
   } else if (cursorStoreUnavailable) {
-    cursorBlocker = "ADE could not read the Cursor API key store yet. Retry after the key store is ready.";
+    cursorBlocker = `${BRAND.NAME} could not read the Cursor API key store yet. Retry after the key store is ready.`;
   } else {
     cursorBlocker = "Sign in with Cursor or enter a Cursor API key from https://cursor.com/dashboard/api.";
   }

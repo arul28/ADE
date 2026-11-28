@@ -1,11 +1,11 @@
 /**
- * `@ade-dev/chat-ui` — embeddable React chat components over `@ade-dev/sdk`.
+ * `@daex-dev/chat-ui` — embeddable React chat components over `@daex-dev/sdk`.
  *
- * Every component is importable on its own; `<AdeChat>` is one opinionated
+ * Every component is importable on its own; `<DaexChat>` is one opinionated
  * assembly of them, not a required entry point.
  */
 
-export { AdeChat, type AdeChatProps, type AdeChatSendResult } from "./AdeChat";
+export { DaexChat, type DaexChatProps, type DaexChatSendResult } from "./AdeChat";
 
 export { Composer, mergeAttachments, type ComposerProps } from "./composer/Composer";
 export { QueueStrip, type QueueStripProps } from "./composer/QueueStrip";
@@ -65,11 +65,11 @@ export {
   safeHref,
 } from "./transcript/markdown";
 export {
-  AdeLink,
-  AdeLinkHandlerProvider,
-  type AdeLinkClickHandler,
-  type AdeLinkClickInfo,
-  type AdeLinkSource,
+  DaexLink,
+  DaexLinkHandlerProvider,
+  type DaexLinkClickHandler,
+  type DaexLinkClickInfo,
+  type DaexLinkSource,
 } from "./transcript/links";
 
 export { ModelPicker, type ModelPickerProps } from "./models/ModelPicker";
@@ -125,14 +125,14 @@ export {
 } from "./adapters/sdkClient";
 
 export {
-  AdeChatProvider,
-  useAdeChatClient,
-  useAdeChatContext,
-  useAdeProviders,
-  useAdeThread,
+  DaexChatProvider,
+  useDaexChatClient,
+  useDaexChatContext,
+  useDaexProviders,
+  useDaexThread,
   DEFAULT_HISTORY_PAGE_SIZE,
-  type AdeChatContextValue,
-  type AdeChatProviderProps,
+  type DaexChatContextValue,
+  type DaexChatProviderProps,
   type ProvidersState,
   type ThreadState,
 } from "./context/AdeChatContext";
@@ -141,13 +141,13 @@ export {
   createTheme,
   defaultTheme,
   themeToCss,
-  ADE_CHAT_TOKENS,
-  type AdeChatTheme,
-  type AdeChatToken,
+  DAEX_CHAT_TOKENS,
+  type DaexChatTheme,
+  type DaexChatToken,
   type CreateThemeInput,
 } from "./theme/createTheme";
-export { AdeChatStyles, type AdeChatStylesProps } from "./theme/AdeChatStyles";
-export { adeChatCss, injectAdeChatStyles, type InjectAdeChatStylesOptions } from "./theme/styles";
+export { DaexChatStyles, type DaexChatStylesProps } from "./theme/AdeChatStyles";
+export { daexChatCss, injectDaexChatStyles, type InjectDaexChatStylesOptions } from "./theme/styles";
 export { UsageLimitNotice, type UsageLimitNoticeProps } from "./UsageLimitNotice";
 export { AccountList, type AccountListProps } from "./accounts/AccountList";
 export { AccountSwitcher, type AccountSwitcherProps } from "./accounts/AccountSwitcher";
@@ -156,9 +156,9 @@ export { SignInCard, type SignInCardProps } from "./accounts/SignInCard";
 export { UsageMeter, type UsageMeterProps } from "./accounts/UsageMeter";
 
 export type {
-  AdeChatClient,
-  AdeChatClientEventMap,
-  AdeThread,
+  DaexChatClient,
+  DaexChatClientEventMap,
+  DaexThread,
   AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatResourceLink,
@@ -200,3 +200,19 @@ export type {
   UsageLimitStatus,
   Unsubscribe,
 } from "./sdkTypes";
+
+// Pre-DAEX names: deprecated aliases of the DAEX* exports above, kept so code
+// written against the `@ade-dev` packages keeps compiling.
+export { ADE_CHAT_TOKENS } from "./theme/createTheme";
+export type { AdeChatTheme, AdeChatToken } from "./theme/createTheme";
+export { AdeChat } from "./AdeChat";
+export type { AdeChatProps, AdeChatSendResult } from "./AdeChat";
+export type { AdeChatClient, AdeChatClientEventMap, AdeThread } from "./sdkTypes";
+export { AdeChatProvider, useAdeChatClient, useAdeChatContext, useAdeProviders, useAdeThread } from "./context/AdeChatContext";
+export type { AdeChatContextValue, AdeChatProviderProps } from "./context/AdeChatContext";
+export { AdeChatStyles } from "./theme/AdeChatStyles";
+export type { AdeChatStylesProps } from "./theme/AdeChatStyles";
+export { AdeLink, AdeLinkHandlerProvider } from "./transcript/links";
+export type { AdeLinkClickHandler, AdeLinkClickInfo, AdeLinkSource } from "./transcript/links";
+export { adeChatCss, injectAdeChatStyles } from "./theme/styles";
+export type { InjectAdeChatStylesOptions } from "./theme/styles";

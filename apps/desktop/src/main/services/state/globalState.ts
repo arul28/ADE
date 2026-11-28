@@ -109,6 +109,11 @@ export type AdeCliAutoInstall = {
   /** `installed` = ADE placed it; `already-available` = another install owns it. */
   outcome: "installed" | "already-available";
   command: string;
+  /**
+   * When the one-time check that an `ade` ADE installed also has its `daex`
+   * twin ran (adeCliAutoInstall.ts). Unset on machines settled before `daex`.
+   */
+  daexAliasCheckedAt?: string;
 };
 
 export type GlobalState = {

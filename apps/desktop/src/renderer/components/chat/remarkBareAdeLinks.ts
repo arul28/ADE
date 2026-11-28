@@ -1,3 +1,5 @@
+import { ADE_DEEPLINK_URL_PREFIX_SOURCE } from "../../../shared/deeplinks";
+
 type MdNode = {
   type: string;
   value?: string;
@@ -5,8 +7,9 @@ type MdNode = {
   children?: MdNode[];
 };
 
-/** A bare `ade://` address in prose, not part of a longer scheme (`cascade://`). */
-const BARE_ADE_LINK = /(?<![A-Za-z0-9+.-])ade:\/\/[^\s<>"'`]+/gi;
+/** A bare `ade://` or `daex://` address in prose, not part of a longer scheme (`cascade://`). */
+const BARE_ADE_LINK = new RegExp(`(?<![A-Za-z0-9+.-])${ADE_DEEPLINK_URL_PREFIX_SOURCE}[^\\s<>"'\`]+`, "gi");
+const HAS_ADE_LINK = new RegExp(ADE_DEEPLINK_URL_PREFIX_SOURCE, "i");
 
 /**
  * The address without what the sentence put after it: trailing punctuation,
@@ -53,13 +56,13 @@ function linkBareAdeText(node: MdNode): void {
       continue;
     }
     const value = child.value ?? "";
-    if (!/ade:\/\//i.test(value)) continue;
+    if (!HAS_ADE_LINK.test(value)) continue;
     const parts: MdNode[] = [];
     let last = 0;
     for (const match of value.matchAll(BARE_ADE_LINK)) {
       const start = match.index ?? 0;
       const url = trimLinkEnd(match[0]);
-      if (url.length <= "ade://".length) continue;
+      if (url.length <= url.indexOf("://") + 3) continue;
       if (start > last) parts.push({ type: "text", value: value.slice(last, start) });
       parts.push({ type: "link", url, children: [{ type: "text", value: url }] });
       last = start + url.length;

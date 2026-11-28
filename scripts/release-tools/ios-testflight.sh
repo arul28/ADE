@@ -63,7 +63,8 @@ find_build() {
 existing="$(retry 5 find_build || true)"
 
 if [ -z "$existing" ]; then
-  # ADE and ADE Beta share one build-number sequence (docs/plans/ios-beta-app.md),
+  # ADE and ADE Beta share one build-number sequence
+  # (docs/features/sync-and-multi-device/ios-companion.md),
   # so MIN_SUPPORTED_MOBILE_APP_BUILD means the same for both. A new build here
   # must not fall below an ADE Beta build.
   beta_json="$(retry 5 asc builds next-build-number --app "$BETA_APP" --version "$MV" --platform IOS --output json)" \

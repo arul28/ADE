@@ -37,6 +37,10 @@ describe("classifyPrAuthor", () => {
     expect(classifyPrAuthor("acme-reviewer", true)).toMatchObject({ isBot: true, kind: null });
   });
 
+  it.each(["daex-for-github[bot]", "ade-for-github[bot]", "daex-for-github", "ade-for-github"])("names the DAEX GitHub App's bot %s as DAEX, before and after the rename", (login) => {
+    expect(classifyPrAuthor(login)).toMatchObject({ isBot: true, kind: "ade", role: "agent-reviewer" });
+  });
+
   it("names Sentry's Seer reviewer as an agent reviewer", () => {
     expect(classifyPrAuthor("seer-by-sentry[bot]", true)).toMatchObject({ kind: "seer", displayName: "Seer", role: "agent-reviewer" });
   });

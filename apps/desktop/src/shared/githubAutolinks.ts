@@ -1,3 +1,6 @@
+import { BRAND } from "./brand";
+import { PRODUCT_NAME_PATTERN } from "./brandNames";
+
 /**
  * GitHub shows a repository's autolinks only to an account with admin rights
  * on it, through a token or app that has Administration read access, and
@@ -14,7 +17,7 @@
  */
 export const GITHUB_AUTOLINKS_REFUSED = /^GitHub would not show the autolinks of \S+ \(HTTP 40[34]\)\./;
 export const GITHUB_AUTOLINKS_NOT_ADMIN = /^Only admins of \S+ can see or add its GitHub links\./;
-export const GITHUB_AUTOLINKS_SIGN_IN_LACKS_ADMIN = /^You're an admin of \S+, but ADE's GitHub sign-in can't read its links\./;
+export const GITHUB_AUTOLINKS_SIGN_IN_LACKS_ADMIN = new RegExp(String.raw`^You're an admin of \S+, but ${PRODUCT_NAME_PATTERN}'s GitHub sign-in can't read its links\.`);
 
 /** Any of the refusals above: the page hides the links and Add, and says who can add them. */
 export function isGithubAutolinksRefusal(text: string): boolean {
@@ -59,8 +62,11 @@ export function githubAutolinksAccessError(
     );
   }
   if (access?.admin === true) {
+    // A desktop reads this from this machine's brain (Settings is pinned to the
+    // machine) and only then hides Add and shows the admin commands
+    // (`GITHUB_AUTOLINKS_SIGN_IN_LACKS_ADMIN` accepts either product name).
     return new Error(
-      `You're an admin of ${repo}, but ADE's GitHub sign-in can't read its links. `
+      `You're an admin of ${repo}, but ${BRAND.NAME}'s GitHub sign-in can't read its links. `
         + "It needs Administration read access: sign in with the GitHub CLI, or give the token that permission.",
     );
   }

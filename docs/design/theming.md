@@ -1,6 +1,6 @@
 # Theming
 
-ADE ships a real theme system: a versioned theme format, a shipped library of
+DAEX ships a real theme system: a versioned theme format, a shipped library of
 26 families, a searchable gallery, and a runtime engine that repaints every
 surface. This doc
 is the contract. Read it before touching a colour token, the Appearance
@@ -9,7 +9,7 @@ settings, or anything that reads `--color-*`.
 ## The seam
 
 Colours live as CSS custom properties in
-`apps/desktop/src/renderer/index.css`, defined twice — once under
+`apps/desktop/src/renderer/index.css` (with `styles/foundation.css`), defined twice — once under
 `[data-theme="dark"]` and once under `[data-theme="light"]`. Tailwind maps them
 in `apps/desktop/tailwind.config.cjs` through `@theme`, so a utility like
 `bg-card` compiles to `background: var(--color-card)`.
@@ -100,8 +100,7 @@ A theme may also state **`syntax`** and **`flair`**, both optional:
   the theme's terminal palette and nudged until they read against the
   background. The file editor (Monaco) and chat code blocks (Shiki) are painted
   from them — `renderer/theme/codeTheme.ts` — so a theme paints its code like
-  everything else. `dark` and `light` keep the editor and code colours ADE has
-  always shipped.
+  everything else. `dark` and `light` keep their hand-tuned editor and code colours.
 - `flair` is the part that is not colour: `radius` (sharp, default, soft,
   round), `shadow` (soft, flat, hard, glow, plus a `shadowColor` for hard),
   `sansFont` (default, mono, serif, rounded) and `backdrop` (none, grid, dots,
@@ -115,7 +114,7 @@ missing.
 
 ### Repair, never throw
 
-A theme can arrive from localStorage written by an older ADE, from an account
+A theme can arrive from localStorage written by an older build, from an account
 row written by a newer one, or from a `.json` file a stranger shared. Parsing
 drops unknown palette keys, drops colours that will not parse (the resolver
 derives a replacement), slugs a bad id from the name, and dedupes by id. The one
@@ -130,7 +129,7 @@ previous theme owned, write the new ones on `<html>`, set `data-theme` and
 `data-theme-id` on `<html>` and remove any stale copy from `<body>`, and set
 `color-scheme`. It does no
 layout reads, so it never forces reflow, and it is called from exactly one
-effect, in `ThemeDocumentSync` (`components/app/App.tsx`), keyed on `themeId`,
+effect, in `ThemeDocumentSync` (`components/app/ThemeDocumentSync.tsx`), keyed on `themeId`,
 `customThemes` and the scene's palette when App colours follow the picture.
 
 Flair reaches the page two ways. Corners, shadows and the interface face are
@@ -185,8 +184,8 @@ The backdrop behind the top bar, the home page and the new chat page is a
 **scene**: the theme's flat background (the web default), its animated mesh, one
 picture, or a shuffled picture. Scene
 preferences live in `interfacePreferences.scene` in `ade.userPreferences.v1`
-(per computer, like the theme). `ThemeDocumentSync` in
-`components/app/App.tsx` applies theme and scene together, and
+(per computer, like the theme). `ThemeDocumentSync`
+(`components/app/ThemeDocumentSync.tsx`) applies theme and scene together, and
 `useSceneDocumentSync` sets `html[data-scene="image"]` while a picture shows.
 
 A picture feeds the theme rather than replacing it. `scene/scenePalette.ts`
@@ -201,7 +200,7 @@ How scenes look and behave is in `visual-language.md`.
 
 ## Adding a theme
 
-Add a `family(...)` to `library.ts` (an ADE family), `libraryOriginals.ts` (a
+Add a `family(...)` to `library.ts` (the house family, shelf `ade`), `libraryOriginals.ts` (a
 theme with its own flair) or `libraryClassics.ts` (an editor scheme with its
 code colours). A family states a dark and a light variant; each needs a
 description and at least the core five palette colours. State `terminal` for
@@ -213,7 +212,7 @@ and `tags` so the gallery search finds it.
 
 ## The gallery
 
-`ThemeGallery.tsx` shows the families in shelves (`THEME_COLLECTIONS`: ADE,
+`ThemeGallery.tsx` shows the families in shelves (`THEME_COLLECTIONS`: DAEX,
 Originals, Editor classics) and then the user's own themes. The search field
 matches a family's name, both variant names and descriptions, its tags and its
 shelf, and every word has to match. Each swatch shows the theme's corner and
@@ -239,9 +238,9 @@ the default; Reset to base restores every token to the base's resolved value.
 ## Import and export
 
 `ThemeImportExport.tsx` (Appearance → Theme) exports the active theme as the
-versioned ADE envelope — copied to the clipboard and downloaded as
-`ade-theme-<id>.json` — and imports a `.json` file back. The export carries the
-palette, terminal colours, code colours and flair. Import accepts either an ADE
+versioned DAEX envelope, copied to the clipboard and downloaded as
+`ade-theme-<id>.json` (`themeExportFileName` in `validate.ts`), and imports a `.json` file back. The export carries the
+palette, terminal colours, code colours and flair. Import accepts either a DAEX
 theme (`prepareImportedTheme` gives it a collision-free id and stamps its
 source) or a VS Code theme. Files are read with `parseJsonc`, so the comments
 and trailing commas VS Code themes carry no longer fail as "not valid JSON".
@@ -249,7 +248,7 @@ and trailing commas VS Code themes carry no longer fail as "not valid JSON".
 and links to Open VSX, the VS Code Marketplace and vscodethemes.com.
 
 VS Code import (`shared/theme/vscode.ts`) is **best-effort and says so**. It
-maps the `colors` keys that translate cleanly to ADE tokens, the
+maps the `colors` keys that translate cleanly to DAEX tokens, the
 `terminal.ansi*` keys to the ANSI palette, and `tokenColors` to the ten syntax
 colours (through the scope table in `syntax.ts`; `keyword.operator` and
 property scopes need an exact entry, so a broad `keyword` rule does not paint
@@ -266,23 +265,9 @@ Add the semantic key to `ADE_THEME_PALETTE_KEYS` and a derivation in
 stylesheet already derives with `color-mix`/`var()`, emitting it is unnecessary
 and should be skipped — the seam recomputes it.
 
-## Per-project themes are deliberately not shipped
+## Per-project themes are not shipped
 
-A theme is a user preference, like the chat font size: it lives in
-`ade.userPreferences.v1` on this computer. A per-project theme would layer a
-second, project-scoped choice on top, and the seam for that already exists
-(`accountSettingsSync` supports an `account-repo` scope keyed on the project's
-git remote). It is not shipped because the product questions have more than one
-reasonable answer and the answers disagree with each other:
-
-- Does a project pin **replace** the user's theme for that project, or only
-  override the accent on top of it?
-- When a project pins a theme, what does the gallery's **Active** state show,
-  and what does **Customize…** edit — the pin, or the account theme?
-- Does the pin **travel** to other machines (it can, via `account-repo` scope)
-  or stay local to the checkout?
-
-Each answer changes the gallery, the customizer, and the sync key. Picking one
-without a decision would bake a guess into persisted state that is awkward to
-migrate. The format, engine, and settings scopes already carry what the feature
-needs, so it is a self-contained follow-up once those questions are answered.
+A theme is a per-computer preference. A per-project theme would need product
+decisions first (does a pin replace the theme or only its accent, what the
+gallery and customizer show, whether it travels through the `account-repo`
+settings scope). The format and engine already carry what it would need.

@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { RemoteRuntimeConnectError } from "../../../shared/types/remoteRuntime";
 import { markExpected } from "../../../shared/expectedError";
+import { BRAND } from "../../../shared/brand";
 
 function lookupEnvVar(env: NodeJS.ProcessEnv, name: string): string | undefined {
   const direct = env[name];
@@ -123,7 +124,7 @@ export function readSshPrivateKey(identityFile: string): Buffer {
   throw markExpected(new RemoteRuntimeConnectError({
     kind: "ssh_auth",
     message:
-      `ADE could not read the SSH key file ${identityFile}.${detail || " No file exists at that path."} ` +
+      `${BRAND.NAME} could not read the SSH key file ${identityFile}.${detail || " No file exists at that path."} ` +
       "Check the SSH key path for this machine, or leave it empty to use ssh-agent or your SSH config.",
   }), "user");
 }

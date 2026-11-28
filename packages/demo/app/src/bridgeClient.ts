@@ -1,7 +1,7 @@
 /** The renderer's SDK remote client, plus DataDesk-only config and reconnect state. */
 
-import { createAdeRemoteClient, type AdeRemoteClient } from "@ade-dev/sdk/server";
-import type { SdkLikeChatClient, SdkProviderStatus, Unsubscribe } from "@ade-dev/chat-ui";
+import { createDaexRemoteClient, type DaexRemoteClient } from "@daex-dev/sdk/server";
+import type { SdkLikeChatClient, SdkProviderStatus, Unsubscribe } from "@daex-dev/chat-ui";
 
 export type AppConfig = {
   mcpUrl: string;
@@ -18,7 +18,7 @@ export type BridgeClient = SdkLikeChatClient & {
 };
 
 export function createBridgeClient(url: string): BridgeClient {
-  let remote: AdeRemoteClient | null = null;
+  let remote: DaexRemoteClient | null = null;
   let connected = false;
   const connectionListeners = new Set<(connected: boolean) => void>();
   const providerListeners = new Set<(statuses: Record<string, SdkProviderStatus>) => void>();
@@ -35,14 +35,14 @@ export function createBridgeClient(url: string): BridgeClient {
     if (!remote) throw new Error("The DataDesk host is reconnecting.");
     return remote;
   };
-  const bindListeners = (client: AdeRemoteClient) => {
+  const bindListeners = (client: DaexRemoteClient) => {
     for (const listener of providerListeners) providerStops.set(listener, client.providers.onChange(listener));
     for (const listener of clientListeners) clientStops.set(listener, client.on("restart", listener));
   };
 
   function connect() {
     const next = new WebSocket(url);
-    const client = createAdeRemoteClient(next);
+    const client = createDaexRemoteClient(next);
     remote = client;
     bindListeners(client);
     next.addEventListener("open", () => setConnected(true));

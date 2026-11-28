@@ -22,6 +22,7 @@ import { SYNC_HOST_MAX_PAYLOAD_BYTES, SYNC_RELAY_BRIDGE_PROOF_HEADER } from "./s
 import type { RemoteMcpHttpRequest, RemoteMcpHttpResponse } from "../remoteMcp/remoteMcpHttp";
 import { REMOTE_MCP_KEY_PATTERN } from "../remoteMcp/remoteMcpAccount";
 import type { MachinePowerSource } from "../power/machinePowerMonitor";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 type Logger = {
   info?: (event: string, data?: Record<string, unknown>) => void;
@@ -247,7 +248,7 @@ export const RELAY_CLOSE_CONTROL_REPLACED = 4505;
 export const RELAY_CLOSE_BRIDGE_REJECTED = 4507;
 export const RELAY_CLOSE_FORWARD_FAILED = 4509;
 export const RELAY_CONTROL_REPLACED_MESSAGE =
-  "Another ADE process owns the relay connection for this machine.";
+  `Another ${BRAND.NAME} process owns the relay connection for this machine.`;
 /** Fixed floor for post-eviction redials; jittered up, never down. */
 export const CONTROL_REPLACED_RETRY_BASE_MS = 60_000;
 /**
@@ -266,9 +267,9 @@ export const MAX_CONTROL_REPLACED_REATTEMPTS = 3;
  * at a cost of three dials per interval, nowhere near the ~4s war.
  */
 export const CONTROL_REPLACED_REARM_MS = 10 * 60_000;
-export const RELAY_SIGN_IN_REQUIRED_MESSAGE = "Sign in to ADE to use ADE Relay.";
+export const RELAY_SIGN_IN_REQUIRED_MESSAGE = `Sign in to ${BRAND.NAME} to use ${BRAND.NAME} Relay.`;
 /** What a computer whose owner turned ADE Relay off says instead of a failure. */
-export const RELAY_TURNED_OFF_MESSAGE = "ADE Relay is turned off on this computer.";
+export const RELAY_TURNED_OFF_MESSAGE = `${BRAND.NAME} Relay is turned off on this computer.`;
 /**
  * What a machine says once it has spent its rotation budget on relay claim
  * conflicts. It names the only safe next step: minting another identity would
@@ -276,7 +277,7 @@ export const RELAY_TURNED_OFF_MESSAGE = "ADE Relay is turned off on this compute
  * already owns is the one that has to be repaired.
  */
 export const RELAY_IDENTITY_ROTATION_CAPPED_MESSAGE =
-  "This computer needs to be reconnected to your ADE account.";
+  `This computer needs to be reconnected to your ${BRAND.NAME} account.`;
 export const BRIDGE_VALIDATION_LEASE_MS = 2_000;
 export const CONTROL_READY_STABLE_MS = 5_000;
 export const RELAY_READY_VERSION = 2;
@@ -1483,7 +1484,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       if (!listener || listener.canAcceptRelayPipes?.() === false) {
         if (bridgeIdentityIsCurrent(identityAtStart)) {
           clearBridgeValidation();
-          recordFailure("Relay bridge refused because the ADE sync listener is closed.");
+          recordFailure(`Relay bridge refused because the ${BRAND.NAME} sync listener is closed.`);
         }
         return false;
       }
@@ -1502,7 +1503,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     if (port == null) {
       if (bridgeIdentityIsCurrent(identityAtStart)) {
         clearBridgeValidation();
-        recordFailure("Relay bridge refused because the ADE sync listener is not bound.");
+        recordFailure(`Relay bridge refused because the ${BRAND.NAME} sync listener is not bound.`);
         log.warn?.("sync_tunnel.no_sync_port");
       }
       return false;
@@ -1510,7 +1511,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     if (!expectedLoopbackNonce) {
       if (bridgeIdentityIsCurrent(identityAtStart)) {
         clearBridgeValidation();
-        recordFailure("Relay bridge refused because the ADE sync listener identity is unavailable.");
+        recordFailure(`Relay bridge refused because the ${BRAND.NAME} sync listener identity is unavailable.`);
         log.warn?.("sync_tunnel.no_loopback_identity", { port });
       }
       return false;
@@ -1543,7 +1544,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     } catch (error) {
       if (stopped || !bridgeIdentityIsCurrent(identityAtStart)) return false;
       clearBridgeValidation();
-      const reason = `Relay bridge refused because 127.0.0.1:${port} is not the ADE sync listener: ${error instanceof Error ? error.message : String(error)}`;
+      const reason = `Relay bridge refused because 127.0.0.1:${port} is not the ${BRAND.NAME} sync listener: ${error instanceof Error ? error.message : String(error)}`;
       recordFailure(reason);
       log.warn?.("sync_tunnel.loopback_validation_failed", {
         port,
@@ -1873,7 +1874,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       response = {
         status: 404,
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ error: "ade_mcp_off", error_description: "ADE MCP is off on this computer." }),
+        body: JSON.stringify({ error: "ade_mcp_off", error_description: `${BRAND.NAME} MCP is off on this computer.` }),
       };
     } else {
       try {
@@ -1995,7 +1996,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     const inProcessHost = inProcessListener();
     if (validatedKey == null || bridgeValidationIdentity().key !== validatedKey) {
       clearBridgeValidation();
-      recordFailure("Relay bridge refused because the ADE sync listener changed during validation.");
+      recordFailure(`Relay bridge refused because the ${BRAND.NAME} sync listener changed during validation.`);
       rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "bridge identity changed");
       return;
     }
@@ -2034,7 +2035,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       const port = validatedPort;
       if (port == null) {
         clearBridgeValidation();
-        recordFailure("Relay bridge refused because the ADE sync listener changed during validation.");
+        recordFailure(`Relay bridge refused because the ${BRAND.NAME} sync listener changed during validation.`);
         rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "bridge identity changed");
         return null;
       }
@@ -2140,7 +2141,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         || bridgeValidationIdentity().key !== validatedKey
       ) {
         clearBridgeValidation();
-        recordFailure("Relay bridge refused because the ADE sync listener changed before readiness.");
+        recordFailure(`Relay bridge refused because the ${BRAND.NAME} sync listener changed before readiness.`);
         rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "bridge identity changed");
         closePipe(RELAY_CLOSE_BRIDGE_REJECTED, "bridge identity changed");
         return;

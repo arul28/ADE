@@ -1,5 +1,6 @@
 import type { AdeCardPayload } from "./adeCard";
 import { isGravityUrl, type CloudSponsoredPick } from "./adeCloud";
+import { BRAND } from "./brand";
 
 /**
  * The card an agent's `cloud.recommend` posts in its chat: one Sponsored
@@ -40,7 +41,7 @@ export function buildSponsoredPickCard(pick: CloudSponsoredPick, need: string): 
       ...steps.map((step) => ({ key: ROW.step, icon: "info" as const, text: step })),
     ],
     actions: [],
-    fallbackText: `Sponsored: ${pick.name}. ${pick.description}${pick.websiteUrl ? ` ${pick.websiteUrl}` : ""} (a recommendation from Gravity, ADE's ad partner; nothing was installed).`,
+    fallbackText: `Sponsored: ${pick.name}. ${pick.description}${pick.websiteUrl ? ` ${pick.websiteUrl}` : ""} (a recommendation from Gravity, ${BRAND.NAME}'s ad partner; nothing was installed).`,
   };
 }
 

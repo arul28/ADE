@@ -160,6 +160,7 @@ import { useAgentChatApi, useChatPaneScope } from "./agentChatApi";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { useTicker } from "../../lib/ticker";
 import { chatApiPin, requireChatPin, withChatPin } from "./chatMachinePin";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The preload's declared browser namespace, with presence relaxed.
@@ -924,7 +925,7 @@ export function ChatBuiltInBrowserPanel({
     setCertificateTrustState({ fingerprint, busy: true, error: null });
     void (async () => {
       const api = requireBrowserApi();
-      if (!api.trustCertificate) throw new Error("This ADE build cannot trust certificates yet.");
+      if (!api.trustCertificate) throw new Error(`This ${BRAND.NAME} build cannot trust certificates yet.`);
       applyStatus(await api.trustCertificate({ ...browserScopeRef.current, tabId, fingerprint }));
       setCertificateTrustState(null);
     })().catch((error: unknown) => {
@@ -1452,7 +1453,7 @@ export function ChatBuiltInBrowserPanel({
     void runBusy("new-tab", async () => {
       if (captureModeRef.current) restoreLiveBrowserView();
       const api = requireBrowserApi();
-      if (!api.createTab) throw new Error("This ADE build does not support browser tabs.");
+      if (!api.createTab) throw new Error(`This ${BRAND.NAME} build does not support browser tabs.`);
       const nextStatus = await api.createTab(withBrowserScope({
         activate: true,
         ...(activeGroupLaneId ? { groupLaneId: activeGroupLaneId } : {}),
@@ -1469,7 +1470,7 @@ export function ChatBuiltInBrowserPanel({
       if (api.switchTab) {
         await api.switchTab(withBrowserScope({ tabId }), runtimePinRef.current);
       } else {
-        throw new Error("This ADE build does not support browser tab switching.");
+        throw new Error(`This ${BRAND.NAME} build does not support browser tab switching.`);
       }
       await refreshStatus();
     });
@@ -1482,7 +1483,7 @@ export function ChatBuiltInBrowserPanel({
       if (api.closeTab) {
         await api.closeTab(withBrowserScope({ tabId }), runtimePinRef.current);
       } else {
-        throw new Error("This ADE build does not support closing browser tabs.");
+        throw new Error(`This ${BRAND.NAME} build does not support closing browser tabs.`);
       }
       await refreshStatus();
     });
@@ -1551,7 +1552,7 @@ export function ChatBuiltInBrowserPanel({
     void runBusy("hand-back", async () => {
       const api = requireBrowserApi();
       if (!api.endHandoff) {
-        throw new Error("This ADE build does not support handing the browser back.");
+        throw new Error(`This ${BRAND.NAME} build does not support handing the browser back.`);
       }
       // Deliberately un-pinned. The handed-off tab is THIS Electron process's
       // own WebContentsView, which the daemon round trip cannot reach, and
@@ -1752,8 +1753,8 @@ export function ChatBuiltInBrowserPanel({
           screenshotFrame: crop.frame,
         },
         selectionExplanation: domItem
-          ? "The user dragged a browser screenshot region. ADE attached the crop as visual evidence and resolved DOM context from the element at the crop center."
-          : "The user dragged a browser screenshot region. ADE could not resolve a DOM element at the crop center, so this packet is visual context only.",
+          ? `The user dragged a browser screenshot region. ${BRAND.NAME} attached the crop as visual evidence and resolved DOM context from the element at the crop center.`
+          : `The user dragged a browser screenshot region. ${BRAND.NAME} could not resolve a DOM element at the crop center, so this packet is visual context only.`,
       },
       screenshotDataUrl: crop.dataUrl,
       selectedAt: new Date().toISOString(),
@@ -1820,7 +1821,7 @@ export function ChatBuiltInBrowserPanel({
   const refreshProfileSecurity = useCallback(async () => {
     const api = requireBrowserApi();
     if (!api.getProfileDiagnostics || !api.listPermissions) {
-      throw new Error("This ADE build does not expose browser profile diagnostics.");
+      throw new Error(`This ${BRAND.NAME} build does not expose browser profile diagnostics.`);
     }
     setProfileBusy(true);
     try {
@@ -1852,14 +1853,14 @@ export function ChatBuiltInBrowserPanel({
     if (
       !decision
       && !(await confirmDialog({
-        title: "Clear all remembered ADE browser permission decisions?",
+        title: `Clear all remembered ${BRAND.NAME} browser permission decisions?`,
         confirmLabel: "Clear",
         destructive: true,
       }))
     ) return;
     void (async () => {
       const api = requireBrowserApi();
-      if (!api.clearPermissions) throw new Error("This ADE build does not support clearing browser permissions.");
+      if (!api.clearPermissions) throw new Error(`This ${BRAND.NAME} build does not support clearing browser permissions.`);
       setProfileBusy(true);
       try {
         const result = await api.clearPermissions(decision
@@ -1922,7 +1923,7 @@ export function ChatBuiltInBrowserPanel({
   ) => {
     void runBusy("emulation", async () => {
       const api = requireBrowserApi();
-      if (!api.setEmulation) throw new Error("This ADE build does not support browser device emulation.");
+      if (!api.setEmulation) throw new Error(`This ${BRAND.NAME} build does not support browser device emulation.`);
       const result = await api.setEmulation(withBrowserScope(request), runtimePinRef.current);
       applyStatus(result.status);
     });
@@ -1935,7 +1936,7 @@ export function ChatBuiltInBrowserPanel({
   const handleEmulationOff = useCallback(() => {
     void runBusy("emulation", async () => {
       const api = requireBrowserApi();
-      if (!api.setEmulation) throw new Error("This ADE build does not support browser device emulation.");
+      if (!api.setEmulation) throw new Error(`This ${BRAND.NAME} build does not support browser device emulation.`);
       const result = await api.setEmulation(withBrowserScope({ preset: "off" }), runtimePinRef.current);
       applyStatus(result.status);
     });
@@ -1992,7 +1993,7 @@ export function ChatBuiltInBrowserPanel({
   const applyZoom = useCallback((factor: number) => {
     void runBusy("zoom", async () => {
       const api = requireBrowserApi();
-      if (!api.setZoom) throw new Error("This ADE build does not support browser zoom.");
+      if (!api.setZoom) throw new Error(`This ${BRAND.NAME} build does not support browser zoom.`);
       const result = await api.setZoom(withBrowserScope({ factor }), runtimePinRef.current);
       applyStatus(result.status);
     });
@@ -2170,7 +2171,7 @@ export function ChatBuiltInBrowserPanel({
   const handleToggleDevTools = useCallback(() => {
     void runBusy("devtools", async () => {
       const api = requireBrowserApi();
-      if (!api.setDevTools) throw new Error("This ADE build does not support opening browser DevTools.");
+      if (!api.setDevTools) throw new Error(`This ${BRAND.NAME} build does not support opening browser DevTools.`);
       const result = await api.setDevTools(withBrowserScope({ open: !devToolsOpen }), runtimePinRef.current);
       applyStatus(result.status);
     });
@@ -2179,7 +2180,7 @@ export function ChatBuiltInBrowserPanel({
   const handleToggleNetworkLogging = useCallback(() => {
     void runBusy("network-log", async () => {
       const api = requireBrowserApi();
-      if (!api.setNetworkLogging) throw new Error("This ADE build does not support browser network logging.");
+      if (!api.setNetworkLogging) throw new Error(`This ${BRAND.NAME} build does not support browser network logging.`);
       const next = !networkLogging;
       const result = await api.setNetworkLogging(
         withBrowserScope({ enabled: next, ...(next ? { clear: true } : {}) }),
@@ -2198,7 +2199,7 @@ export function ChatBuiltInBrowserPanel({
   const handleExportHar = useCallback(() => {
     void runBusy("export-har", async () => {
       const api = requireBrowserApi();
-      if (!api.exportHar) throw new Error("This ADE build does not support HAR export.");
+      if (!api.exportHar) throw new Error(`This ${BRAND.NAME} build does not support HAR export.`);
       const result = await api.exportHar(withBrowserScope({}), runtimePinRef.current);
       showToast({
         title: "HAR exported",
@@ -2219,7 +2220,7 @@ export function ChatBuiltInBrowserPanel({
   const handleStopRecording = useCallback(() => {
     void runBusy("recording", async () => {
       const api = requireBrowserApi();
-      if (!api.stopRecording) throw new Error("This ADE build does not support screen recording.");
+      if (!api.stopRecording) throw new Error(`This ${BRAND.NAME} build does not support screen recording.`);
       const result = await api.stopRecording(withBrowserScope({}), runtimePinRef.current);
       applyStatus(result.status);
       showToast({
@@ -2243,7 +2244,7 @@ export function ChatBuiltInBrowserPanel({
   const handleStartRecording = useCallback(() => {
     void runBusy("recording", async () => {
       const api = requireBrowserApi();
-      if (!api.startRecording) throw new Error("This ADE build does not support screen recording.");
+      if (!api.startRecording) throw new Error(`This ${BRAND.NAME} build does not support screen recording.`);
       const result = await api.startRecording(withBrowserScope({ fps: recordingFps }), runtimePinRef.current);
       applyStatus(result.status);
     });
@@ -2276,7 +2277,7 @@ export function ChatBuiltInBrowserPanel({
     setLinkOpenMode(next);
     void (async () => {
       const config = window.ade?.projectConfig;
-      if (!config) throw new Error("This ADE build cannot save the link preference.");
+      if (!config) throw new Error(`This ${BRAND.NAME} build cannot save the link preference.`);
       // The preference is the browser machine's local config.
       const configPin = requireChatPin(runtimePinRef.current);
       const snapshot = await config.get(configPin);

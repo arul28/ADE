@@ -32,6 +32,7 @@ import { cloudLaneLifeAvailable } from "../../cloudLane/cloudLaneActions";
 import { useCloudLanesWithoutComputer } from "../../cloudLane/cloudLaneStores";
 import { ADE_CLOUD_NAME, CloudMark } from "../../remoteTargets/cloudBrand";
 import "./machinesPage.css";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * System → Machines: every machine on one page, this one first. A machine
@@ -379,7 +380,7 @@ function MachineDetail({ scope }: { scope: SettingsMachinePage }) {
             </div>
             <div className="ade-mx-hero-sub">
               <span className="kit-dot" data-state={offline ? undefined : "ok"} aria-hidden />
-              {[scope.isThisMachine ? "This machine" : offline ? "Offline" : "Online", ...slowLink, os, fact?.versionLabel ? `ADE ${fact.versionLabel}` : null].filter(Boolean).join(" · ")}
+              {[scope.isThisMachine ? "This machine" : offline ? "Offline" : "Online", ...slowLink, os, fact?.versionLabel ? `${BRAND.NAME} ${fact.versionLabel}` : null].filter(Boolean).join(" · ")}
             </div>
           </div>
         </div>

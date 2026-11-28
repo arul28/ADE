@@ -137,7 +137,7 @@ extension CloudLaneActions {
       defer { markFreeing(lane.instanceId, false) }
       let sync = SyncMenuSafePublisher.shared.service
       guard let client = await sync.cloudServerClient() else {
-        toast = ADEToastMessage(text: "Couldn't free \(lane.laneName)'s computer", kind: .failure, detail: "Sign in to ADE, then try again.")
+        toast = ADEToastMessage(text: "Couldn't free \(lane.laneName)'s computer", kind: .failure, detail: "Sign in to \(Brand.name), then try again.")
         return
       }
       let outcome = await client.freeLane(instanceId: lane.instanceId)
@@ -163,14 +163,14 @@ extension CloudLaneActions {
       defer { markFreeing(lane.instanceId, false) }
       let sync = SyncMenuSafePublisher.shared.service
       guard let client = await sync.cloudServerClient() else {
-        toast = ADEToastMessage(text: "Couldn't delete the computer", kind: .failure, detail: "Sign in to ADE, then try again.")
+        toast = ADEToastMessage(text: "Couldn't delete the computer", kind: .failure, detail: "Sign in to \(Brand.name), then try again.")
         return
       }
       let machineKey = sync.cloudServerInstances.first { $0.id == lane.instanceId }?.machineKey
       do {
         guard try await client.deleteInstanceConfirmed(lane.instanceId) else {
           ADEHaptics.error()
-          toast = ADEToastMessage(text: "Still deleting the computer", kind: .failure, detail: "ADE Cloud took the delete but hasn't finished it yet. Check again in a minute.")
+          toast = ADEToastMessage(text: "Still deleting the computer", kind: .failure, detail: "\(Brand.cloudName) took the delete but hasn't finished it yet. Check again in a minute.")
           return
         }
       } catch {
@@ -269,7 +269,7 @@ struct CloudComputerLimitSheet: View {
           ways
           if way != nil {
             if lanes.isEmpty && way != .move {
-              note("ADE couldn't list your computers here. Open Settings › ADE Cloud to see every lane.")
+              note("\(Brand.name) couldn't list your computers here. Open Settings › \(Brand.cloudName) to see every lane.")
             } else {
               step.id("step")
             }
@@ -313,7 +313,7 @@ struct CloudComputerLimitSheet: View {
     return VStack(alignment: .leading, spacing: 12) {
       HStack(spacing: 7) {
         CloudLogo(size: 15, glow: true)
-        Text("ADE Cloud")
+        Text(Brand.cloudName)
           .font(.system(size: 13, weight: .semibold))
           .foregroundStyle(CloudBrandColor.skyText)
         if let planId {
@@ -482,7 +482,7 @@ struct CloudComputerLimitSheet: View {
     picker(chosen: deleteLane?.instanceId, freeOnly: false) { deleteId = $0 }
     if let lane = deleteLane {
       what(lane.hasLane
-        ? "The lane, its computer and its chats are deleted. ADE asks first if any work isn't on GitHub."
+        ? "The lane, its computer and its chats are deleted. \(Brand.name) asks first if any work isn't on GitHub."
         : "This computer has no lane, so only the computer goes.")
       confirm(
         title: lane.hasLane ? "Delete lane and computer" : "Delete this computer",
@@ -519,7 +519,7 @@ struct CloudComputerLimitSheet: View {
       // The account's list hasn't named the lane's id yet. Its work can't be
       // read without it, so nothing is deleted until the list catches up.
       syncService.refreshCloudServerIfStale(force: true)
-      actions.toast = ADEToastMessage(text: "Still reading \(lane.laneName)", kind: .failure, detail: "ADE needs a moment to find this lane's work. Try again shortly.")
+      actions.toast = ADEToastMessage(text: "Still reading \(lane.laneName)", kind: .failure, detail: "\(Brand.name) needs a moment to find this lane's work. Try again shortly.")
     }
   }
 

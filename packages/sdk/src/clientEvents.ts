@@ -3,7 +3,7 @@
  *
  * Kept apart from `client.ts` so the Electron protocol (which the sandboxed
  * preload bundles) can key its payload type by this map without importing the
- * client, and so the event list exists exactly once: `AdeChatClient.on`
+ * client, and so the event list exists exactly once: `DaexChatClient.on`
  * validates against it, the Electron bridge subscribes to every name in it,
  * and the IPC payload type is derived from it.
  */
@@ -15,7 +15,7 @@
  * its runtime died from the synthetic `status` envelope on its own `status`
  * channel; a host learns it here, once.
  */
-export type AdeClientEventMap = {
+export type DaexClientEventMap = {
   /**
    * The runtime process this client spawned exited without `dispose()`.
    * `error` is the tail of its stderr, when it wrote any. Not emitted in attach
@@ -41,22 +41,31 @@ export type AdeClientEventMap = {
    * or `threads.unarchive` (`"unarchived"`). Emitted after the action
    * succeeds, whoever called it: host code in the main process, or a renderer
    * over the Electron bridge. A change made by another client of the same
-   * runtime (ADE desktop) is not reported. SDK >= 0.4.
+   * runtime (DAEX desktop) is not reported. SDK >= 0.4.
    */
   threadLifecycle: { key: string; change: "deleted" | "archived" | "unarchived" };
   /** A provider turn stopped because its current account reached a usage limit. */
   usageLimit: import("./types.js").UsageLimitEvent;
 };
 
-/** Every client-level event name, once. See {@link AdeClientEventMap}. */
-export const ADE_CLIENT_EVENTS = ["exit", "transport", "restart", "threadLifecycle", "usageLimit"] as const satisfies ReadonlyArray<
-  keyof AdeClientEventMap
+/** Every client-level event name, once. See {@link DaexClientEventMap}. */
+export const DAEX_CLIENT_EVENTS = ["exit", "transport", "restart", "threadLifecycle", "usageLimit"] as const satisfies ReadonlyArray<
+  keyof DaexClientEventMap
 >;
 
-/** The client-level event names. See {@link AdeClientEventMap}. */
-export type AdeClientEvent = (typeof ADE_CLIENT_EVENTS)[number];
+/** The client-level event names. See {@link DaexClientEventMap}. */
+export type DaexClientEvent = (typeof DAEX_CLIENT_EVENTS)[number];
 
-/** Whether a value is one of {@link ADE_CLIENT_EVENTS}. */
-export function isAdeClientEvent(value: unknown): value is AdeClientEvent {
-  return typeof value === "string" && (ADE_CLIENT_EVENTS as readonly string[]).includes(value);
+/** Whether a value is one of {@link DAEX_CLIENT_EVENTS}. */
+export function isAdeClientEvent(value: unknown): value is DaexClientEvent {
+  return typeof value === "string" && (DAEX_CLIENT_EVENTS as readonly string[]).includes(value);
 }
+
+// Pre-DAEX names, kept as deprecated aliases so code written against the
+// `@ade-dev` packages keeps compiling. Remove them in a future major version.
+/** @deprecated Use {@link DAEX_CLIENT_EVENTS}. */
+export const ADE_CLIENT_EVENTS = DAEX_CLIENT_EVENTS;
+/** @deprecated Use {@link DaexClientEvent}. */
+export type AdeClientEvent = DaexClientEvent;
+/** @deprecated Use {@link DaexClientEventMap}. */
+export type AdeClientEventMap = DaexClientEventMap;

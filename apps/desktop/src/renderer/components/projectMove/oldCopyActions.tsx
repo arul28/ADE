@@ -9,6 +9,7 @@ import { confirmDialog } from "../ui/dialog";
 import { showToast } from "../app/toast/toastStore";
 import { announceProjectMoveChanged, displayPath, formatBytes, formatReminder, REMINDER_CHOICES } from "./projectMoveModel";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 export type OldCopyChoice = "delete" | "keep" | { remindInMs: number };
 
@@ -45,11 +46,11 @@ export async function chooseOldCopy(record: ProjectMoveRecord, choice: OldCopyCh
       tone: "success",
       title: choice === "delete" ? `Deleted · ${formatBytes(record.originalBytes)} freed`
         : choice === "keep" ? "Old copy kept"
-          : `ADE will ask ${formatReminder(next.cleanup.remindAt)}`,
+          : `${BRAND.NAME} will ask ${formatReminder(next.cleanup.remindAt)}`,
     });
     return next;
   } catch (cause) {
-    showToast({ tone: "error", title: "That didn't work", message: plainErrorText(cause, "ADE couldn't update the old copy.") });
+    showToast({ tone: "error", title: "That didn't work", message: plainErrorText(cause, `${BRAND.NAME} couldn't update the old copy.`) });
     return null;
   }
 }

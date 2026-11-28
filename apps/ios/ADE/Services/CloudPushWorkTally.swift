@@ -78,12 +78,12 @@ func cloudPushWorkGithubMessage(_ lanes: [CloudPushWorkLane], kept: Bool) -> Str
   if atRisk.contains(where: { $0.reason == "github_refused" }) {
     return kept
       ? "GitHub refused this computer access to the lane's repository, so nothing was deleted. The repository may have moved, or your GitHub connection (Settings › GitHub) can't reach it. Fix that, then try again."
-      : "GitHub refused this computer access to the lane's repository, so ADE can't tell what isn't on GitHub."
+      : "GitHub refused this computer access to the lane's repository, so \(Brand.name) can't tell what isn't on GitHub."
   }
   if atRisk.contains(where: { $0.reason == "github_unreachable" }) {
     return kept
       ? "This computer couldn't reach GitHub to check the lane's work, so nothing was deleted. Try again in a minute."
-      : "This computer couldn't reach GitHub, so ADE can't tell what isn't on GitHub."
+      : "This computer couldn't reach GitHub, so \(Brand.name) can't tell what isn't on GitHub."
   }
   return nil
 }

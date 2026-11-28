@@ -7,6 +7,7 @@ import {
 import { laneShareDisplayName } from "../../../../desktop/src/shared/laneShareRights";
 import type { LaneShareGuestGrant } from "./laneShareGuestPolicy";
 import { carryExpected, markExpected } from "../../../../desktop/src/shared/expectedError";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * The lane-share grants of THIS machine, read from the account directory
@@ -267,7 +268,7 @@ export async function sendLaneShareDirectoryRequest(
   } catch {
     token = null;
   }
-  if (!token) throw new LaneShareGrantError("signed_out", "This machine is not signed in to an ADE account.");
+  if (!token) throw new LaneShareGrantError("signed_out", `This machine is not signed in to a ${BRAND.NAME} account.`);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);

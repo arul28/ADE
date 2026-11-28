@@ -1,6 +1,6 @@
 # Cloudflare costs
 
-What ADE pays Cloudflare, what drives each line, and what Cloud 2 cut. Rule for
+What DAEX pays Cloudflare, what drives each line, and what Cloud 2 cut. Rule for
 every cut: if it measures worse, it does not ship.
 
 Base period: Oct 8 to Nov 7, 2026. "After" numbers are estimates until a release
@@ -9,7 +9,7 @@ deployed from this branch. Recheck with the queries at the end.
 
 ## The bill
 
-| Product | What ADE uses it for | Oct 8 to Nov 7 | Included | Cost | Expected after cuts | Expected cost |
+| Product | What DAEX uses it for | Oct 8 to Nov 7 | Included | Cost | Expected after cuts | Expected cost |
 | --- | --- | --- | --- | --- | --- | --- |
 | Workers plan | Everything below | 1 account | - | $5.00 | same | $5.00 |
 | Durable Objects run time | Tunnel relay (497K of 533K GB-s), GitHub webhook relay | 533K GB-s | 400K | $12.50 | still over 400K at the current pace (see Relay) | $12.50 |

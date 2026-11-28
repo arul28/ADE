@@ -8,6 +8,7 @@ import type {
   MusicSearchResult,
 } from "../../../shared/types/music";
 import { MUSIC_MAX_COLLECTION_TRACKS } from "../../../shared/types/music";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The Spotify Web API, called from the main process with the signed-in user's
@@ -278,11 +279,11 @@ export function createSpotifyApi(args: {
       if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.value as T;
     }
     if (Date.now() < blockedUntil) {
-      throw new SpotifyApiError("Spotify is rate limiting ADE. Try again in a minute.", 429, "RATE_LIMITED", Math.ceil((blockedUntil - Date.now()) / 1000));
+      throw new SpotifyApiError(`Spotify is rate limiting ${BRAND.NAME}. Try again in a minute.`, 429, "RATE_LIMITED", Math.ceil((blockedUntil - Date.now()) / 1000));
     }
     const send = async (forceRefresh: boolean): Promise<Response> => {
       const token = await args.accessToken({ forceRefresh });
-      if (!token) throw new SpotifyApiError("Connect Spotify to use it in ADE.", 401, "UNAUTHORIZED");
+      if (!token) throw new SpotifyApiError(`Connect Spotify to use it in ${BRAND.NAME}.`, 401, "UNAUTHORIZED");
       const headers: Record<string, string> = { authorization: `Bearer ${token}`, accept: "application/json" };
       if (options.body !== undefined) headers["content-type"] = "application/json";
       try {
@@ -311,7 +312,7 @@ export function createSpotifyApi(args: {
       if (response.status === 429) {
         const retryAfter = Math.max(1, Number(response.headers.get("retry-after")) || 30);
         blockedUntil = Date.now() + retryAfter * 1000;
-        throw new SpotifyApiError("Spotify is rate limiting ADE. Try again in a minute.", 429, "RATE_LIMITED", retryAfter);
+        throw new SpotifyApiError(`Spotify is rate limiting ${BRAND.NAME}. Try again in a minute.`, 429, "RATE_LIMITED", retryAfter);
       }
       if (reason === "NO_ACTIVE_DEVICE" || (response.status === 404 && path.startsWith("/me/player"))) {
         throw new SpotifyApiError(SPOTIFY_NO_DEVICE_MESSAGE, response.status, "NO_ACTIVE_DEVICE");
@@ -322,7 +323,7 @@ export function createSpotifyApi(args: {
         throw new SpotifyApiError(
           path.startsWith("/me/player")
             ? "Spotify refused that command on this device."
-            : "Spotify refused ADE's request. If your Spotify app is in Development Mode, add your account under User Management.",
+            : `Spotify refused ${BRAND.NAME}'s request. If your Spotify app is in Development Mode, add your account under User Management.`,
           403,
           "FORBIDDEN",
         );
@@ -337,7 +338,7 @@ export function createSpotifyApi(args: {
       // Spotify answers some player commands (repeat, shuffle, seek) with a
       // 2xx and a body that is not JSON. The command worked: there is nothing
       // to read. A read with such a body is a real failure.
-      if (method === "GET") throw new SpotifyApiError("Spotify sent an answer ADE could not read. Try again.", response.status, "HTTP");
+      if (method === "GET") throw new SpotifyApiError(`Spotify sent an answer ${BRAND.NAME} could not read. Try again.`, response.status, "HTTP");
       value = undefined as T;
     }
     if (cacheable) {

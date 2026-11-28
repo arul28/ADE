@@ -16,6 +16,7 @@ import {
 } from "../../../desktop/src/main/services/native/nativeHelperPaths";
 import { parseDesktopManifest } from "./setupDesktop";
 import { withoutHelperEnv } from "./windowsDesktopRescue";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 /**
  * The macOS half of `brain update --apply-staged`: when the ADE app is
@@ -187,7 +188,7 @@ function verifyStagedApp(args: {
   // and any valid signature would pass.
   const installedTeam = readCodeSigningTeam(installed.appPath, { timeoutMs: CODESIGN_TIMEOUT_MS, run });
   if (!installedTeam) {
-    throw new Error("The installed ADE app has no signing team, so the download's publisher can't be confirmed.");
+    throw new Error(`The installed ${BRAND.NAME} app has no signing team, so the download's publisher can't be confirmed.`);
   }
   const stagedTeam = readCodeSigningTeam(stagedAppPath, { timeoutMs: CODESIGN_TIMEOUT_MS, run });
   if (stagedTeam !== installedTeam) {
@@ -292,7 +293,7 @@ async function installOverClosedApp(args: {
   onStep: (message: string) => Promise<void>;
 }): Promise<{ ok: boolean; applied: boolean; message: string }> {
   const { app, targetVersion, run } = args;
-  await args.onStep(`Downloading the ADE ${targetVersion} app.`);
+  await args.onStep(`Downloading the ${BRAND.NAME} ${targetVersion} app.`);
   const { archivePath } = await downloadAppArchive(args);
 
   const parent = path.dirname(app.appPath);
@@ -307,7 +308,7 @@ async function installOverClosedApp(args: {
     if (expand.status !== 0 || !fs.existsSync(stagedAppPath)) {
       throw new Error(`The app archive could not be expanded: ${(expand.stderr || expand.stdout).trim() || `no ${app.bundleName} inside`}.`);
     }
-    await args.onStep(`Checking the ADE ${targetVersion} app's signature.`);
+    await args.onStep(`Checking the ${BRAND.NAME} ${targetVersion} app's signature.`);
     verifyStagedApp({ run, installed: app, stagedAppPath, targetVersion });
   } catch (error) {
     await cleanupExpanded();
@@ -318,10 +319,10 @@ async function installOverClosedApp(args: {
   // under a running app takes it down mid-session.
   if (isMacDesktopAppRunning(app, run)) {
     await cleanupExpanded();
-    return { ok: false, applied: false, message: "ADE was opened while the update downloaded, so nothing was installed. Use Restart and install in ADE, or quit it and update again." };
+    return { ok: false, applied: false, message: `${BRAND.NAME} was opened while the update downloaded, so nothing was installed. Use Restart and install in ${BRAND.NAME}, or quit it and update again.` };
   }
 
-  await args.onStep(`Stopping the ADE background service to install ${targetVersion}.`);
+  await args.onStep(`Stopping the ${BRAND.NAME} background service to install ${targetVersion}.`);
   const stopped = args.stopService();
   if (!stopped.ok) {
     await cleanupExpanded();
@@ -351,8 +352,8 @@ async function installOverClosedApp(args: {
     if (!restarted.ok) errors.push(`restarting its background service failed (${restarted.detail})`);
     await cleanupExpanded();
     return errors.length === 0
-      ? `ADE ${app.version} and its background service were put back.`
-      : `Putting ADE ${app.version} back was incomplete: ${errors.join("; ")}.`;
+      ? `${BRAND.NAME} ${app.version} and its background service were put back.`
+      : `Putting ${BRAND.NAME} ${app.version} back was incomplete: ${errors.join("; ")}.`;
   };
 
   // The stop takes seconds, and ADE can be opened meanwhile. Its service goes
@@ -363,13 +364,13 @@ async function installOverClosedApp(args: {
     return {
       ok: false,
       applied: false,
-      message: `ADE was opened while its background service stopped, so nothing was installed. ${restarted.ok
+      message: `${BRAND.NAME} was opened while its background service stopped, so nothing was installed. ${restarted.ok
         ? "Its background service was started again."
-        : `Starting its background service again failed (${restarted.detail}); open ADE to start it.`} Use Restart and install in ADE, or quit it and update again.`,
+        : `Starting its background service again failed (${restarted.detail}); open ${BRAND.NAME} to start it.`} Use Restart and install in ${BRAND.NAME}, or quit it and update again.`,
     };
   }
 
-  await step(`Installing ADE ${targetVersion} over ${app.version}.`);
+  await step(`Installing ${BRAND.NAME} ${targetVersion} over ${app.version}.`);
   try {
     await fsp.rm(backupPath, { recursive: true, force: true });
     await fsp.rename(app.appPath, backupPath);
@@ -378,15 +379,15 @@ async function installOverClosedApp(args: {
     movedNew = true;
   } catch (error) {
     const restored = await restoreOldApp();
-    return { ok: false, applied: false, message: `Installing ADE ${targetVersion} failed (${error instanceof Error ? error.message : String(error)}). ${restored}` };
+    return { ok: false, applied: false, message: `Installing ${BRAND.NAME} ${targetVersion} failed (${error instanceof Error ? error.message : String(error)}). ${restored}` };
   }
 
-  await step(`Starting the background service on ADE ${targetVersion}.`);
+  await step(`Starting the background service on ${BRAND.NAME} ${targetVersion}.`);
   const installed: MacDesktopApp = { ...app, version: targetVersion };
   const started = startMacAppService(installed, args.env, run);
   if (!started.ok) {
     const restored = await restoreOldApp();
-    return { ok: false, applied: false, message: `ADE ${targetVersion} installed, but its background service did not start (${started.detail}). ${restored}` };
+    return { ok: false, applied: false, message: `${BRAND.NAME} ${targetVersion} installed, but its background service did not start (${started.detail}). ${restored}` };
   }
   const leftBehind = await fsp.rm(backupPath, { recursive: true, force: true }).then(
     () => null,
@@ -396,7 +397,7 @@ async function installOverClosedApp(args: {
   return {
     ok: true,
     applied: true,
-    message: `Installed ADE ${targetVersion} and started its background service on it.${leftBehind ? ` ${leftBehind}` : ""}`,
+    message: `Installed ${BRAND.NAME} ${targetVersion} and started its background service on it.${leftBehind ? ` ${leftBehind}` : ""}`,
   };
 }
 
@@ -407,18 +408,18 @@ function bridgeOutcome(
   const answer = routing.result;
   switch (answer.outcome) {
     case "installing":
-      return { ok: true, applied: true, message: `The open ADE app is installing ${answer.version ?? targetVersion}; it restarts the background service on it when it reopens.` };
+      return { ok: true, applied: true, message: `The open ${BRAND.NAME} app is installing ${answer.version ?? targetVersion}; it restarts the background service on it when it reopens.` };
     case "downloading":
-      return { ok: true, applied: true, message: `The open ADE app is downloading ${answer.version ?? targetVersion}; it installs it, and restarts the background service on it, when the download finishes.` };
+      return { ok: true, applied: true, message: `The open ${BRAND.NAME} app is downloading ${answer.version ?? targetVersion}; it installs it, and restarts the background service on it, when the download finishes.` };
     case "already_current":
       return "already_current";
     case "no_update":
-      return { ok: false, applied: false, message: `The open ADE app found no ${targetVersion} to install, so nothing was changed: updating only the brain would leave it on a different version from the app.` };
+      return { ok: false, applied: false, message: `The open ${BRAND.NAME} app found no ${targetVersion} to install, so nothing was changed: updating only the brain would leave it on a different version from the app.` };
     case "unsupported":
-      return { ok: false, applied: false, message: `The open ADE app cannot update itself (${answer.message || "a development or channel build"}), so nothing was changed.` };
+      return { ok: false, applied: false, message: `The open ${BRAND.NAME} app cannot update itself (${answer.message || "a development or channel build"}), so nothing was changed.` };
     case "failed":
     default:
-      return { ok: false, applied: false, message: `The open ADE app could not install ${targetVersion}: ${answer.message || "it did not say why"}. Nothing else was changed.` };
+      return { ok: false, applied: false, message: `The open ${BRAND.NAME} app could not install ${targetVersion}: ${answer.message || "it did not say why"}. Nothing else was changed.` };
   }
 }
 
@@ -451,7 +452,7 @@ export async function applyMacDesktopUpdate(args: MacDesktopUpdateArgs): Promise
   | { runtimeOnly: string }
 > {
   const lookup = findMacDesktopApp(args);
-  if (lookup.state === "none") return { runtimeOnly: "no ADE app is installed on this Mac" };
+  if (lookup.state === "none") return { runtimeOnly: `no ${BRAND.NAME} app is installed on this Mac` };
   if (lookup.state === "channel") {
     return { runtimeOnly: `${lookup.appName} has no update feed, so it stays on its own build and is now behind the brain; rebuild it to match` };
   }
@@ -472,11 +473,11 @@ export async function applyMacDesktopUpdate(args: MacDesktopUpdateArgs): Promise
     const started = startMacAppService(app, args.env, args.run);
     return await finish(started.ok
       ? { ok: true, applied: true, message: `${prefix} The background service runs the app's ${app.version} runtime.` }
-      : { ok: false, applied: false, message: `${prefix} Its background service did not start on the app's runtime (${started.detail}). Open ADE on this Mac to start it.` });
+      : { ok: false, applied: false, message: `${prefix} Its background service did not start on the app's runtime (${started.detail}). Open ${BRAND.NAME} on this Mac to start it.` });
   };
 
   if (compareUpdateVersions(app.version, args.targetVersion) >= 0) {
-    return await registerAppRuntime(`The ADE app is already on ${app.version}.`);
+    return await registerAppRuntime(`The ${BRAND.NAME} app is already on ${app.version}.`);
   }
 
   const routing = await args.requestAppUpdate(args.targetVersion).catch((error: unknown): DesktopAppUpdateRouting => ({
@@ -485,7 +486,7 @@ export async function applyMacDesktopUpdate(args: MacDesktopUpdateArgs): Promise
   }));
   if (routing.attached) {
     const outcome = bridgeOutcome(routing, args.targetVersion);
-    if (outcome === "already_current") return await registerAppRuntime(`The ADE app is already on ${app.version}.`);
+    if (outcome === "already_current") return await registerAppRuntime(`The ${BRAND.NAME} app is already on ${app.version}.`);
     return await finish(outcome);
   }
 
@@ -493,14 +494,14 @@ export async function applyMacDesktopUpdate(args: MacDesktopUpdateArgs): Promise
     return await finish({
       ok: false,
       applied: false,
-      message: `ADE ${app.version} is open but did not answer the update request, so nothing was changed. Use Restart and install in ADE, or quit it and update again.`,
+      message: `${BRAND.NAME} ${app.version} is open but did not answer the update request, so nothing was changed. Use Restart and install in ${BRAND.NAME}, or quit it and update again.`,
     });
   }
   if (!args.restartService) {
     return await finish({
       ok: false,
       applied: false,
-      message: `Updating the ADE app restarts the background service, so with --no-restart nothing was changed. The app is on ${app.version}.`,
+      message: `Updating the ${BRAND.NAME} app restarts the background service, so with --no-restart nothing was changed. The app is on ${app.version}.`,
     });
   }
   const unwritable = await unwritableAppPaths(app);
@@ -508,11 +509,11 @@ export async function applyMacDesktopUpdate(args: MacDesktopUpdateArgs): Promise
     return await finish({
       ok: false,
       applied: false,
-      message: `Your account can't replace ${app.appPath} (${unwritable.join(", ")}), so nothing was changed. Open ADE and use Restart and install (it asks for an administrator password), or run \`sudo chown -R "$(id -un)":"$(id -gn)" ${shellQuote(app.appPath)}\` and update again.`,
+      message: `Your account can't replace ${app.appPath} (${unwritable.join(", ")}), so nothing was changed. Open ${BRAND.NAME} and use Restart and install (it asks for an administrator password), or run \`sudo chown -R "$(id -un)":"$(id -gn)" ${shellQuote(app.appPath)}\` and update again.`,
     });
   }
 
-  await args.writeStatus("applying", `Updating the ADE app from ${app.version} to ${args.targetVersion}.`);
+  await args.writeStatus("applying", `Updating the ${BRAND.NAME} app from ${app.version} to ${args.targetVersion}.`);
   try {
     return await finish(await installOverClosedApp({
       app,
@@ -531,7 +532,7 @@ export async function applyMacDesktopUpdate(args: MacDesktopUpdateArgs): Promise
     return await finish({
       ok: false,
       applied: false,
-      message: `The ADE app was not updated, so nothing was changed: ${error instanceof Error ? error.message : String(error)}`,
+      message: `The ${BRAND.NAME} app was not updated, so nothing was changed: ${error instanceof Error ? error.message : String(error)}`,
     });
   }
 }

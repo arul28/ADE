@@ -67,6 +67,7 @@ import {
   type CloudDiskGrowOrigin,
   type CloudDiskGrowState,
 } from "./cloudDiskGuard";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * Near full: at this much used, or the guard's warning if that comes first,
@@ -490,7 +491,7 @@ export function createCloudDiskGrower(deps: {
     : null;
 
   const growingDetail = (toGb: number): string =>
-    `The disk filled up during setup. ADE is growing it to ${toGb} GB: the computer restarts for a moment, then setup runs again.`;
+    `The disk filled up during setup. ${BRAND.NAME} is growing it to ${toGb} GB: the computer restarts for a moment, then setup runs again.`;
 
   const grower = {
     /**
@@ -532,7 +533,7 @@ export function createCloudDiskGrower(deps: {
       ) {
         return { state: "growing", detail: growingDetail(asked.toGb), ready: waitForGrowth(asked.fromBytes, args.signal) };
       }
-      if (inFlight) return { state: "refused", error: "Setup filled this computer's disk while ADE was already growing it. Retry in a minute or two." };
+      if (inFlight) return { state: "refused", error: `Setup filled this computer's disk while ${BRAND.NAME} was already growing it. Retry in a minute or two.` };
       inFlight = true;
       try {
         let step = await growOneStep(args.stillIdle, disk, args.signal, onAsking);
@@ -549,9 +550,9 @@ export function createCloudDiskGrower(deps: {
           case "refused":
             return { state: "refused", error: `Setup filled this computer's ${step.diskGb} GB disk, and it can't grow: ${step.wayOut} Then retry.` };
           case "busy":
-            return { state: "refused", error: "Setup filled this computer's disk, and ADE can't grow it while something else runs there (a grow restarts the computer). Retry once that's done." };
+            return { state: "refused", error: `Setup filled this computer's disk, and ${BRAND.NAME} can't grow it while something else runs there (a grow restarts the computer). Retry once that's done.` };
           case "changed":
-            return { state: "refused", error: "Setup filled this computer's disk, and your computers' disk kept changing while ADE grew it. Retry in a moment." };
+            return { state: "refused", error: `Setup filled this computer's disk, and your computers' disk kept changing while ${BRAND.NAME} grew it. Retry in a moment.` };
           case "unsaved":
             return { state: "refused", error: LANE_SETUP_NO_ROOM_TO_SAVE_ERROR };
           case "unavailable":
@@ -561,7 +562,7 @@ export function createCloudDiskGrower(deps: {
         failedAt = now();
         const message = error instanceof Error ? error.message : String(error);
         deps.logger?.warn("cloud.disk_grow_for_setup_failed", { error: message });
-        return { state: "refused", error: `Setup filled this computer's disk, and ADE couldn't grow it right now (${message.replace(/[.\s]+$/, "")}). Retry to try again.` };
+        return { state: "refused", error: `Setup filled this computer's disk, and ${BRAND.NAME} couldn't grow it right now (${message.replace(/[.\s]+$/, "")}). Retry to try again.` };
       } finally {
         inFlight = false;
       }
@@ -584,7 +585,7 @@ export function createCloudDiskGrower(deps: {
     }): Promise<CloudDiskGrowAnswer> {
       const signal = ask.signal ?? new AbortController().signal;
       const disk = measure();
-      if (!disk) return { state: "unavailable", message: "ADE couldn't read this computer's disk, so it didn't grow it." };
+      if (!disk) return { state: "unavailable", message: `${BRAND.NAME} couldn't read this computer's disk, so it didn't grow it.` };
       const totalGb = Math.round(disk.space.totalBytes / 1024 ** 3);
       if (ask.needFreeBytes != null && disk.space.freeBytes >= ask.needFreeBytes) {
         return { state: "fits", diskGb: totalGb, freeGb: gbOneDecimal(disk.space.freeBytes), message: `This computer's disk already has ${gb(disk.space.freeBytes)} free, so nothing grew.` };
@@ -599,7 +600,7 @@ export function createCloudDiskGrower(deps: {
           : "";
         return grew && after
           ? { state: "grown", fromGb, toGb, message: `This computer's disk grew to ${toGb} GB; ${gb(after.freeBytes)} is free now.${short}` }
-          : { state: "growing", fromGb, toGb, message: `ADE ${already ? "already " : ""}asked to grow this disk to ${toGb} GB, and the computer hasn't restarted yet. Try again in a few minutes.` };
+          : { state: "growing", fromGb, toGb, message: `${BRAND.NAME} ${already ? "already " : ""}asked to grow this disk to ${toGb} GB, and the computer hasn't restarted yet. Try again in a few minutes.` };
       };
       // A grow already asked for whose disk hasn't grown yet: wait for it, never ask twice.
       const asked = readCloudDiskGrowState(stateFile, deps.instanceId);
@@ -622,13 +623,13 @@ export function createCloudDiskGrower(deps: {
           || ((ask.needFreeBytes == null || after.space.freeBytes >= ask.needFreeBytes) && (ask.toGb == null || asked.toGb >= ask.toGb));
         return met ? earlier : await grower.growToFit(ask);
       }
-      if (inFlight) return { state: "unavailable", message: "ADE is already growing this computer's disk. Try again in a minute or two." };
+      if (inFlight) return { state: "unavailable", message: `${BRAND.NAME} is already growing this computer's disk. Try again in a minute or two.` };
       inFlight = true;
       try {
         const client = await deps.client();
-        if (!client) return { state: "unavailable", message: "This computer can't reach ADE Cloud right now, so it didn't grow the disk." };
+        if (!client) return { state: "unavailable", message: `This computer can't reach ${BRAND.CLOUD_NAME} right now, so it didn't grow the disk.` };
         const instance = await client.getInstance(deps.instanceId);
-        if (!instance.resources) return { state: "unavailable", message: "ADE Cloud didn't say how big this computer's disk is, so ADE didn't grow it." };
+        if (!instance.resources) return { state: "unavailable", message: `${BRAND.CLOUD_NAME} didn't say how big this computer's disk is, so ${BRAND.NAME} didn't grow it.` };
         const fromGb = instance.resources.disk;
         if (ask.toGb != null && ask.toGb <= fromGb) {
           return { state: "fits", diskGb: fromGb, freeGb: gbOneDecimal(disk.space.freeBytes), message: `This computer's disk is already ${fromGb} GB, so nothing grew.` };
@@ -677,19 +678,19 @@ export function createCloudDiskGrower(deps: {
           case "refused":
             return limitAnswer(toGb, step.reason, `This computer's disk can't grow to ${toGb} GB: ${step.wayOut}`);
           case "busy":
-            return { state: "busy", message: "Something the restart would cut runs on this computer (a command in a terminal, a lane's setup, a copy or a move, or a chat waiting on a person's answer). The grow restarts the computer, so ADE didn't grow it. Try again once that's done." };
+            return { state: "busy", message: `Something the restart would cut runs on this computer (a command in a terminal, a lane's setup, a copy or a move, or a chat waiting on a person's answer). The grow restarts the computer, so ${BRAND.NAME} didn't grow it. Try again once that's done.` };
           case "changed":
-            return { state: "unavailable", message: "Your computers' disk kept changing while ADE grew this one. Try again in a moment." };
+            return { state: "unavailable", message: `Your computers' disk kept changing while ${BRAND.NAME} grew this one. Try again in a moment.` };
           case "unsaved":
-            return { state: "unavailable", message: "This computer's disk is too full for ADE to note the grow before the restart. Free a little space (or Clear caches in Settings › ADE Cloud), then try again." };
+            return { state: "unavailable", message: `This computer's disk is too full for ${BRAND.NAME} to note the grow before the restart. Free a little space (or Clear caches in Settings › ${BRAND.CLOUD_NAME}), then try again.` };
           case "unavailable":
-            return { state: "unavailable", message: "This computer can't reach ADE Cloud right now, so it didn't grow the disk." };
+            return { state: "unavailable", message: `This computer can't reach ${BRAND.CLOUD_NAME} right now, so it didn't grow the disk.` };
         }
       } catch (error) {
         failedAt = now();
         const message = error instanceof Error ? error.message : String(error);
         deps.logger?.warn("cloud.disk_grow_to_fit_failed", { origin: ask.origin, error: message });
-        return { state: "unavailable", message: `ADE couldn't grow this computer's disk right now (${message.replace(/[.\s]+$/, "")}). Try again in a minute.` };
+        return { state: "unavailable", message: `${BRAND.NAME} couldn't grow this computer's disk right now (${message.replace(/[.\s]+$/, "")}). Try again in a minute.` };
       } finally {
         inFlight = false;
       }
@@ -799,11 +800,11 @@ export function createCloudDiskGrower(deps: {
           const log = { launchId, freeMb: Math.round(space.freeBytes / 2 ** 20), lowMb: Math.round(lowFree / 2 ** 20), totalMb: Math.round(space.totalBytes / 2 ** 20), pressure, usedMb: usedBytes == null ? null : Math.round(usedBytes / 2 ** 20), peakMb: Math.round(peakBytes / 2 ** 20), grows: before?.grows ?? 0, line };
           if (!short) {
             deps.logger?.info("cloud.setup_disk_full_not_short", log);
-            return { grow: false, error: `Setup said there's no space left on the device, but this computer's disk kept at least ${gb(lowFree)} free during setup, so ADE didn't grow it (a tool's own limit or a full inode table says the same).${line ? ` Last error: ${line}` : ""} Fix that, then retry.` };
+            return { grow: false, error: `Setup said there's no space left on the device, but this computer's disk kept at least ${gb(lowFree)} free during setup, so ${BRAND.NAME} didn't grow it (a tool's own limit or a full inode table says the same).${line ? ` Last error: ${line}` : ""} Fix that, then retry.` };
           }
           if (before && (before.grows >= SETUP_MAX_GROWS || peakBytes <= before.peakBytes)) {
             deps.logger?.info("cloud.setup_disk_full_no_regrow", log);
-            return { grow: false, error: `Setup filled this computer's disk again after it grew to ${gb(space.totalBytes)}, and another step wouldn't help. Free some space (or use Clear caches in Settings > ADE Cloud), or make the setup lighter, then retry.` };
+            return { grow: false, error: `Setup filled this computer's disk again after it grew to ${gb(space.totalBytes)}, and another step wouldn't help. Free some space (or use Clear caches in Settings > ${BRAND.CLOUD_NAME}), or make the setup lighter, then retry.` };
           }
           // The reserve goes now, so the launch's mark (and the grow's own notes) have room on a full disk.
           freeReserve(launchId);

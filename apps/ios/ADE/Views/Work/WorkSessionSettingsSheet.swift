@@ -357,7 +357,7 @@ private func workRuntimeModeSubtitle(provider: String, mode: String) -> String {
   // Copy mirrors AGENT_CHAT_MUSE_PERMISSION_MODE_DETAILS in shared/types/chat.ts.
   case "muse":
     switch mode {
-    case "plan": return "Read-only Muse turns for planning, with ADE's plan guidance."
+    case "plan": return "Read-only Muse turns for planning, with \(Brand.name)'s plan guidance."
     case "denyUnmatched": return "Muse refuses any tool call its rules do not already allow."
     case "promptUnmatched": return "Muse asks before any tool call its rules do not already allow."
     case "allowAll": return "Muse runs every tool call without asking."

@@ -19,6 +19,7 @@ import type { SettingsProviderId } from "../types";
 import type { ApiCredentialSummary } from "../../../../../shared/types/apiCredentials";
 import { HARNESS_CREDENTIAL_STORE_PROVIDER } from "../../../../../shared/harnessCredentialProviders";
 import { MUSE_LOGIN_COMMAND } from "../../../../../shared/providers";
+import { BRAND } from "../../../../../shared/brand";
 
 export type ProviderKeyProtocol = NonNullable<ApiCredentialSummary["protocol"]>;
 
@@ -153,7 +154,7 @@ const SPECS: Record<SettingsProviderId, ProviderKeySpec> = {
     // Filed under the vendor, like `anthropic` for Claude Code.
     credentialProvider: "meta",
     keyEnvVar: "META_API_KEY",
-    keyHelp: "A Meta Model API key. ADE passes it to Muse as META_API_KEY, never on the command line.",
+    keyHelp: `A Meta Model API key. ${BRAND.NAME} passes it to Muse as META_API_KEY, never on the command line.`,
     endpoint: null,
     protocol: false,
     models: false,

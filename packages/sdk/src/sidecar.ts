@@ -2,7 +2,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { runtimeSpawnEnv } from "./download.js";
-import { AdeError, errorMessage } from "./errors.js";
+import { DaexError, errorMessage } from "./errors.js";
 import { JsonRpcConnection } from "./jsonRpc.js";
 import { removeRuntimePidfile, writeRuntimePidfile } from "./runtimePidfile.js";
 import { ensurePrivateSocketDirectory, isNamedPipePath } from "./socketPath.js";
@@ -128,7 +128,7 @@ export type ExitHooks = { install(): void; remove(): void };
  *
  * "Am I the only listener" is answered AFTER detaching our own handlers, at
  * signal time — never from a snapshot taken at install. A host that registers
- * its SIGINT handler after `createAdeChat` (an Electron main, a CLI that wires
+ * its SIGINT handler after `createDaexChat` (an Electron main, a CLI that wires
  * shutdown late) would fail an install-time snapshot in the worst way: we would
  * re-raise, that host handler would run a SECOND time, and the default exit
  * would still not apply because its listener is attached. Counting after
@@ -224,7 +224,7 @@ export async function startSidecar(options: SidecarOptions): Promise<Sidecar> {
 
   const childEnv: NodeJS.ProcessEnv = {
     // Scrubbed: the host's own ADE_* variables are NOT this sidecar's config.
-    // A developer running the SDK from inside a configured ADE shell would
+    // A developer running the SDK from inside a configured DAEX shell would
     // otherwise leak ADE_PROJECT_ROOT, ADE_DEFAULT_ROLE, ADE_SOCKET and friends
     // into an isolated runtime, silently pointing it at their real state.
     ...scrubAdeEnv(
@@ -270,7 +270,7 @@ export async function startSidecar(options: SidecarOptions): Promise<Sidecar> {
       detached: false,
     });
   } catch (error) {
-    throw new AdeError("spawn_failed", `Could not start ${binaryPath}: ${errorMessage(error)}`, {
+    throw new DaexError("spawn_failed", `Could not start ${binaryPath}: ${errorMessage(error)}`, {
       cause: error,
     });
   }
@@ -325,16 +325,16 @@ export async function startSidecar(options: SidecarOptions): Promise<Sidecar> {
     if (spawnError.value) {
       killChild(child);
       releaseSidecar(handle);
-      throw new AdeError(
+      throw new DaexError(
         "spawn_failed",
         `Could not start ${binaryPath}: ${errorMessage(spawnError.value)}`,
         { cause: spawnError.value },
       );
     }
     if (exit.value) {
-      throw new AdeError(
+      throw new DaexError(
         "spawn_failed",
-        `The ADE runtime exited during startup (code ${exit.value.code ?? "null"}, signal ${
+        `The DAEX runtime exited during startup (code ${exit.value.code ?? "null"}, signal ${
           exit.value.signal ?? "null"
         }).${stderrTail.length ? `\n${stderrTail.join("\n")}` : ""}`,
       );
@@ -382,9 +382,9 @@ export async function startSidecar(options: SidecarOptions): Promise<Sidecar> {
 
   killChild(child);
   releaseSidecar(handle);
-  throw new AdeError(
+  throw new DaexError(
     "connect_failed",
-    `The ADE runtime never accepted a connection on ${socketPath}: ${errorMessage(lastError)}${
+    `The DAEX runtime never accepted a connection on ${socketPath}: ${errorMessage(lastError)}${
       stderrTail.length ? `\n${stderrTail.join("\n")}` : ""
     }`,
     { cause: lastError },

@@ -13,9 +13,10 @@
 import type { AutomationAction, AutomationExecution, AutomationCloudTarget, AutomationTrigger } from "./types/config";
 import { isCloudTierId } from "./cloudTiers";
 import { CLOUD_AUTOMATION_PROMPT_VARIABLE } from "../../../account-directory/src/cloud/contract";
+import { BRAND } from "./brand";
 
 /** Why ADE Cloud can't be a rule's home on an account without it (the editor and the action say the same). */
-export const ADE_CLOUD_HOME_UNAVAILABLE = "ADE Cloud isn't available on this account. Pick a computer to run it.";
+export const ADE_CLOUD_HOME_UNAVAILABLE = `${BRAND.CLOUD_NAME} isn't available on this account. Pick a computer to run it.`;
 
 /** Built-in steps that work in the run's lane on this machine: they can't follow a lane on ADE Cloud. */
 const LOCAL_LANE_STEPS: ReadonlySet<AutomationAction["type"]> = new Set([
@@ -67,49 +68,49 @@ type CloudHomeRule = {
  */
 export function automationCloudHomeProblem(rule: CloudHomeRule): string | null {
   if (typeof rule.scope?.sessionId === "string" && rule.scope.sessionId.trim()) {
-    return "This rule belongs to one chat, which lives on its computer, so it can't run on ADE Cloud.";
+    return `This rule belongs to one chat, which lives on its computer, so it can't run on ${BRAND.CLOUD_NAME}.`;
   }
   const execution = rule.execution;
   if (!execution || execution.kind !== "agent-session") {
-    return "On ADE Cloud a rule runs an agent in a new lane. A rule of built-in steps runs on one of your computers.";
+    return `On ${BRAND.CLOUD_NAME} a rule runs an agent in a new lane. A rule of built-in steps runs on one of your computers.`;
   }
   if (execution.session?.chatSessionId?.trim()) {
-    return "A rule that runs in one chat can't run on ADE Cloud. Run each trigger in a new chat.";
+    return `A rule that runs in one chat can't run on ${BRAND.CLOUD_NAME}. Run each trigger in a new chat.`;
   }
   if (execution.laneMode !== "create") {
-    return "On ADE Cloud each run gets a new lane on its own computer. Pick \"A new lane each run\".";
+    return `On ${BRAND.CLOUD_NAME} each run gets a new lane on its own computer. Pick "A new lane each run".`;
   }
   // ADE Cloud's server doesn't count a rule's runs, so a rule that retires after some would keep running there.
   if (rule.oneShot || (typeof rule.maxRuns === "number" && rule.maxRuns > 0)) {
-    return "A rule that stops after a number of runs runs on one of your computers for now: ADE Cloud doesn't count its runs. Remove the run limit to run it on ADE Cloud.";
+    return `A rule that stops after a number of runs runs on one of your computers for now: ${BRAND.CLOUD_NAME} doesn't count its runs. Remove the run limit to run it on ${BRAND.CLOUD_NAME}.`;
   }
   const triggers = rule.triggers?.length ? rule.triggers : rule.trigger ? [rule.trigger] : [];
-  if (triggers.filter((trigger) => trigger.type === "schedule").length > 1) return "ADE Cloud takes one schedule per rule.";
-  if (triggers.filter((trigger) => trigger.type === "webhook").length > 1) return "ADE Cloud takes one webhook per rule.";
+  if (triggers.filter((trigger) => trigger.type === "schedule").length > 1) return `${BRAND.CLOUD_NAME} takes one schedule per rule.`;
+  if (triggers.filter((trigger) => trigger.type === "webhook").length > 1) return `${BRAND.CLOUD_NAME} takes one webhook per rule.`;
   for (const trigger of triggers) {
     if (trigger.secretRef?.trim() || trigger.webhook?.signature) {
-      return "This rule checks a signing secret, which stays on the computer that has it. Remove the signature check to run it on ADE Cloud.";
+      return `This rule checks a signing secret, which stays on the computer that has it. Remove the signature check to run it on ${BRAND.CLOUD_NAME}.`;
     }
     // The server doesn't read a trigger's active hours: it would run outside them.
-    if (trigger.activeHours) return "Active hours run on one of your computers for now. Remove them to run this rule on ADE Cloud.";
+    if (trigger.activeHours) return `Active hours run on one of your computers for now. Remove them to run this rule on ${BRAND.CLOUD_NAME}.`;
     if (trigger.type === "schedule" || trigger.type === "manual") continue;
     if (trigger.type === "webhook") {
-      if (!trigger.webhook?.hookId) return "This webhook has no ADE webhook URL yet. Make one, then pick ADE Cloud.";
-      if (trigger.webhook.filters?.length) return "Webhook filters run on one of your computers for now. Remove them to run this rule on ADE Cloud.";
+      if (!trigger.webhook?.hookId) return `This webhook has no ${BRAND.NAME} webhook URL yet. Make one, then pick ${BRAND.CLOUD_NAME}.`;
+      if (trigger.webhook.filters?.length) return `Webhook filters run on one of your computers for now. Remove them to run this rule on ${BRAND.CLOUD_NAME}.`;
       continue;
     }
-    if (trigger.type === "file.change") return "File-change triggers watch files on one computer, so they can't run on ADE Cloud.";
+    if (trigger.type === "file.change") return `File-change triggers watch files on one computer, so they can't run on ${BRAND.CLOUD_NAME}.`;
     if (trigger.type.startsWith("linear.")) return "Linear triggers run on one of your computers for now.";
     if (trigger.type.startsWith("github") || trigger.type.startsWith("git.pr_")) {
-      return "GitHub triggers run on one of your computers for now: ADE Cloud doesn't match GitHub's events yet.";
+      return `GitHub triggers run on one of your computers for now: ${BRAND.CLOUD_NAME} doesn't match GitHub's events yet.`;
     }
-    return "This trigger happens on one computer, so it can't start a rule on ADE Cloud. Use a schedule, a webhook or Run now.";
+    return `This trigger happens on one computer, so it can't start a rule on ${BRAND.CLOUD_NAME}. Use a schedule, a webhook or Run now.`;
   }
   // ADE Cloud's server fills a prompt's variables the way a computer does, but only these
   // (`CLOUD_AUTOMATION_PROMPT_VARIABLE`); any other would reach the agent meaning something else.
   for (const match of (rule.prompt ?? "").matchAll(/\{\{\s*((?:trigger|run)\.[^}\s]+)\s*\}\}/g)) {
     if (!CLOUD_AUTOMATION_PROMPT_VARIABLE.test(match[1]!)) {
-      return `On ADE Cloud the prompt can't use {{${match[1]}}}: ADE's server fills only {{trigger.type}}, {{trigger.method}}, {{trigger.body}} and its fields, {{date}} and {{time}}. Take it out to run this rule on ADE Cloud.`;
+      return `On ${BRAND.CLOUD_NAME} the prompt can't use {{${match[1]}}}: ${BRAND.NAME}'s server fills only {{trigger.type}}, {{trigger.method}}, {{trigger.body}} and its fields, {{date}} and {{time}}. Take it out to run this rule on ${BRAND.CLOUD_NAME}.`;
     }
   }
   return null;
@@ -139,15 +140,15 @@ export function automationCloudTarget(execution: Pick<AutomationExecution, "clou
 export function automationCloudProblem(execution: AutomationExecution | null | undefined): string | null {
   if (!automationCloudTarget(execution) || !execution) return null;
   if (execution.kind === "agent-session" && execution.session?.chatSessionId?.trim()) {
-    return "A rule that runs in one chat can't run on ADE Cloud. Run each trigger in a new chat, or turn ADE Cloud off.";
+    return `A rule that runs in one chat can't run on ${BRAND.CLOUD_NAME}. Run each trigger in a new chat, or turn ${BRAND.CLOUD_NAME} off.`;
   }
   if (execution.laneMode !== "create" && execution.laneMode !== "pr-branch") {
-    return "On ADE Cloud each run gets a new lane on its own computer. Pick \"A new lane each run\" or \"The PR's branch\".";
+    return `On ${BRAND.CLOUD_NAME} each run gets a new lane on its own computer. Pick "A new lane each run" or "The PR's branch".`;
   }
   if (execution.kind === "built-in") {
     const local = (execution.builtIn?.actions ?? []).find((action) => LOCAL_LANE_STEPS.has(action.type));
     if (local) {
-      return "Commands, tests, conflict checks, hand-offs and lane steps work in a lane on this machine, so they can't follow a lane on ADE Cloud. Remove them, or turn ADE Cloud off.";
+      return `Commands, tests, conflict checks, hand-offs and lane steps work in a lane on this machine, so they can't follow a lane on ${BRAND.CLOUD_NAME}. Remove them, or turn ${BRAND.CLOUD_NAME} off.`;
     }
   }
   return null;

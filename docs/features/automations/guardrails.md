@@ -1,185 +1,144 @@
 # Guardrails
 
-Automations publish effects — comments, PRs, Linear updates, external webhooks. Guardrails gate publishing so a low-confidence or unreviewed run doesn't write to external systems silently. This doc covers the review/verification path, confidence scoring, the queue that holds runs needing a human, and the permission/scope knobs that constrain what an automation can touch.
-
-Confidence scoring, queue evaluation, sandbox cwd checks, and secret resolution all run in the ADE runtime that owns the project — the renderer just edits and observes the gates.
+Guardrails keep an automation from publishing (comments, PRs, Linear updates,
+webhooks) silently when a run is low-confidence or held for review. Scoring,
+the queue, cwd checks and secret resolution all run in the brain that owns the
+project; the renderer edits and shows them.
 
 ## Source file map
 
-- `apps/desktop/src/main/services/automations/automationService.ts` — review queue, confidence scoring, verification gating, publish disposition, status mapping.
-- `apps/desktop/src/main/services/automations/automationSecretService.ts` — secret policy (env-ref only). The ADE runtime resolves `${env:VAR}` at dispatch time from the runtime process environment, not from the desktop renderer.
-- `apps/desktop/src/main/services/automations/automationPlannerService.ts` — rule validation before persistence.
-
-## Agent limits (opt-in)
-
-An automation's agent turn has **no clock by default** — it runs until it finishes or someone stops it, the same as a chat started by hand. Elapsed time is not a cost signal: an agent waiting on CI, notarization or TestFlight processing costs almost nothing. Cost is capped by the global budgets in the header Usage popup, not by rule time.
-
-Two optional limits live on the agent step (`execution.session` for a single-agent rule, the `agent-session` action for a chained step), typed as `AutomationAgentLimits`:
-
-- `stopAfterMin` — interrupt the turn after this many minutes, whatever it is doing.
-- `stopWhenIdleMin` — interrupt the turn after this many minutes with no activity. The watch restarts on every event of the turn and is paused while a tool call, command, foreground subagent or approval is open, so a long `gh run watch` never reads as idle.
-
-Either one calls the normal chat interrupt (`runSessionTurn`'s `timeoutMs` / `idleTimeoutMs`), fails the run with the reason, and leaves the chat open. With neither set, `agentTurnLimits` passes `timeoutMs: null`, so the chat service's own 5-minute headless default never applies to an automation. Values are normalized by `normalizeAutomationAgentLimits` (`shared/automationLimits.ts`) at save, at config load, and at dispatch, and clamped to 7 days; the chat service additionally floors each timer at 15 s. Background subagents are not tracked by the idle watch, so an agent that only waits on a background task can read as idle; long silent model thinking can too.
-
-A turn that ends `interrupted` (someone pressed Stop) or `failed` never counts as success: `unfinishedAgentTurn` fails the step, so later non-`alwaysRun` steps do not run, and a one-shot rule is not retired as a success. A stop, or a chat that is ended or deleted mid-turn (`SessionTurnAbandonedError`), is not retried even when the step sets `retry` (`NonRetryableActionError`); provider failures and limit stops still are, since a rule that sets `retry` asked for that. Non-positive values mean "no limit". The builder shows both behind a **Limits** row on every agent step; the collapsed row always states which limits apply.
-
-A `run-command` step's `timeoutMs` is a different thing: a kill switch for a hung shell process (default 5 min, max 12 h), shown as **Time limit** on the step. Agent steps ignore `timeoutMs`.
-
-There is no rule-level duration or dollar guardrail. A `guardrails.maxDurationMin` or `guardrails.budgetUsd` left in an older stored rule is ignored: `projectConfigService` drops it when the config is parsed and the planner normalizer drops it when the rule is saved.
-
-## Guardrail structure on a rule
-
-`AutomationRule.guardrails` (typed via `shared/types`):
-
-- `confidenceThreshold: number` — 0..1. A run with computed confidence below this threshold lands in `verification-required` instead of publishing. Default baseline is ~0.65; raising the threshold tightens the gate.
-- `requireHuman: boolean` — force human review regardless of confidence.
-- Path/lane allowlists — constrain `built-in` shell and file actions to specific lane worktrees or subpaths. `validateAutomationCwd` + `resolvePathWithinRoot` enforce them at dispatch.
-- `reviewProfile` — one of `quick` / `incremental` / `full` / `security` / `release-risk` / `cross-repo-contract`. Drives the confidence base:
-
-  | Profile | Base confidence |
-  | --- | --- |
-  | quick | 0.58 |
-  | incremental | 0.64 |
-  | full | 0.73 |
-  | security | 0.79 |
-  | release-risk | 0.75 |
-  | cross-repo-contract | 0.68 |
-
-## Confidence computation
-
-`computeConfidence(rule, procedureCount)` in `automationService.ts`:
-
-```
-base = baseByProfile[rule.reviewProfile]
-contextBoost = min(0.12, rule.contextSources.length * 0.015)
-procedureBoost = min(0.1, procedureCount * 0.03)
-thresholdPenalty = max(0, (threshold - 0.65)) * 0.25
-value = clamp(base + contextBoost + procedureBoost - thresholdPenalty, 0.2, 0.95)
-```
-
-Labels: `high` when `value >= 0.78`, `medium` when `value >= 0.52`, else `low`. Reason text is filled in based on retrieved procedures and context sources.
-
-## Verification modes
-
-`AutomationRule.verification`:
-
-- `verifyBeforePublish: boolean` — when true, the run must pass a verification step before external effects are applied.
-- `mode` — one of `intervention` (default), `dry-run`, or an implementation-specific mode.
-
-When `mode === "dry-run"`, the provider is forced into plan-mode at dispatch:
-
-```
-claude: "plan" instead of the configured edit mode
-codex: "plan" instead of the configured edit mode
-opencode: "plan" instead of the configured edit mode
-```
-
-This path is used for "what would this rule do?" dry runs — nothing persists externally, but the logs capture the planned effects.
-
-`requiresPublishGate(rule)` returns true when `verifyBeforePublish` is true and `mode !== "dry-run"`. Publish-gated runs set `verification_required = 1` on the run row and land in the review queue rather than executing their publish step.
-
-## Queue statuses
-
-`AutomationRunQueueStatus`:
-
-- `pending-review` — waiting for a reviewer.
-- `actionable-findings` — verification surfaced findings that need operator action.
-- `verification-required` — gated before publish; requires human approval.
-- `completed-clean` — ran, published, no follow-up needed.
-- `ignored` — reviewer chose to ignore.
-- `archived` — no longer active.
-
-`normalizeQueueStatus` coerces incoming values; `classifyQueueStatus` (via `deriveQueueStatus` in the service) picks the correct status based on verification state + findings count.
-
-## Run status
-
-`AutomationRunStatus` values: `queued`, `running`, `succeeded`, `failed`, `cancelled`, `paused`.
-
-Status mapping:
-
-- Worker-backed runs map runtime state into the shared run statuses above.
-- Legacy `needs_review` rows are normalized to `succeeded`; publish review lives in queue status and verification metadata.
-
-The key invariant: when a rule has `verifyBeforePublish`, completion keeps the run in the queue through `verification-required` rather than inventing a separate run status.
-
-## Publish disposition
-
-`AutomationRule.outputs.disposition`:
-
-- `comment-only` — write a comment.
-- `open-task` — create a follow-up task.
-- `open-lane` — open a lane for follow-up implementation.
-- `prepare-patch` — prepare changes without publishing them.
-- `open-pr-draft` — open a draft PR.
-
-Publish is only allowed when:
-
-1. The run's `verification_required` flag is cleared (either `verifyBeforePublish: false` or a reviewer approved).
-2. The run's confidence meets `guardrails.confidenceThreshold`.
-3. `guardrails.requireHuman` is not set, or a reviewer has approved.
-4. The disposition-specific path is available (e.g. Linear credentials exist for `linear-comment`).
-
-`PUBLISH_CAPABLE_TOOL_FAMILIES` (`github`, `linear`, `browser`, `external-cli`) is the set of families that can publish — built-in palettes like `repo`, `git`, and `tests` cannot publish externally regardless of disposition.
-
-## Human review
-
-Review gating creates a queue entry for `agent-session` and `built-in` runs. The operator:
-
-- Approves -> run transitions to `succeeded`, publish proceeds.
-- Rejects -> run transitions to `failed` or `cancelled` depending on the rejection reason.
-- Asks for more proof -> run returns to `needs_review` with an operator note.
-
-The queue dashboard surfaces the severity summary, suggested actions, and any procedure feedback (`AutomationProcedureFeedback`) so the reviewer can triage without opening each run.
-
-## Secrets
-
-`automationSecretService.ts` enforces an env-ref-only secret policy:
-
-- Raw secret-like values at sensitive keys are rejected.
-- Only `${env:VAR_NAME}` references are allowed.
-- Resolution happens at dispatch time; missing env vars produce a clear runtime error rather than a silent fallback.
-
-This applies to webhook secrets, relay access tokens, GitHub tokens used by built-in actions, and any adapter config.
-
-## Scope and sandboxing
-
-Built-in shell actions must stay within the allowed workdirs:
-
-- `resolveAutomationCwdBase(projectRoot, laneService, laneId)` picks the lane worktree if `laneId` is set, else the project root.
-- `validateAutomationCwd(baseCwd, cwdRaw)` resolves the requested cwd against the base and rejects anything outside.
-- Paths are resolved with `resolvePathWithinRoot` which handles symlink-resolution and rejects traversal.
-
-Agent-session rules run inside the ADE chat service's permission model (per-session allowed tools). They run full-auto unless the rule or step picks a mode. On any other mode, a card raised during the automation's own turn is refused on the spot, because nobody can answer it: the agent is told, the run carries on, and the chat keeps the card, its receipt and a notice. Linear agent runs are the exception, since the delegator answers from Linear. Built-in shell actions use the cwd and lane allowlists above.
-
-## Budget caps
-
-Shared via the top-bar Usage popup. The popup (`HeaderUsageControl`, `UsageLimitsBand`) renders the live provider quotas plus a collapsible Automation guardrails section that mounts `BudgetCapEditor`. Supporting widgets (`CostSummaryCard`, `UsageMeter`, `UsagePacingBadge`) still live under `apps/desktop/src/renderer/components/settings/` but are reused from the popup. Settings > Usage is a separate retrospective cross-client ADE activity dashboard; the Automations page continues to focus on rules, history, and ingress.
-
-Automations also support rule-level caps:
-
-- Billing codes (`billingCode`) flag spend so operators can slice usage by rule.
-- `budgetCapService` enforces hard caps at the project level; `usd-per-run` caps match the automation rule but evaluate usage records keyed to the active run id, so a prior run's spend does not block the next one. Breaches pause runs with an intervention.
-
-## Audit trail
-
-Every run writes:
-
-- Run row with executor, status, queue status, confidence, spend, trigger metadata, verification flag.
-- Action rows for each step with status and output.
-- Ingress event row (for webhook/relay triggers) with raw payload.
-- Proof artifacts (when `outputs.createArtifact` is true) for cross-surface indexing.
-- Procedure feedback (`AutomationProcedureFeedback`) — operator ratings and notes that feed back into the procedural learning service.
+- `apps/desktop/src/main/services/automations/automationService.ts`: confidence (`computeConfidence`), queue status (`deriveQueueStatus`, `normalizeQueueStatus`), publish gate (`requiresPublishGate`), dry-run permission modes, cwd checks (`resolveAutomationCwdBase`, `validateAutomationCwd`).
+- `apps/desktop/src/main/services/automations/automationSecretService.ts`: env-ref-only secrets.
+- `apps/desktop/src/main/services/automations/automationPlannerService.ts`: rule validation before save.
+- `apps/desktop/src/shared/automationLimits.ts`: agent and step limit bounds.
+- `apps/desktop/src/main/services/usage/budgetCapService.ts`: budget caps.
+- `apps/desktop/src/shared/types/config.ts`: `AutomationGuardrails`, `AutomationOutputs`, `AutomationVerification`.
 
 ## Gotchas
 
-- **Confidence threshold is multiplicative, not additive.** Raising the threshold penalizes base confidence; the penalty formula is fixed at `(threshold - 0.65) * 0.25`. Document expected confidence in rule descriptions.
-- **`verifyBeforePublish` does not imply `requireHuman`.** A verification run can auto-approve if a verification worker succeeds; human review is a separate opt-in.
-- **`dry-run` mode forces provider plan-mode.** Don't assume a dry run touches real files even if the action config would normally edit.
-- **`verification_required = 1` on the run row is sticky** until the review decision is applied. Changing it mid-run without triggering the correct status transition leaves the queue inconsistent.
-- **Publish happens after verification, not before.** Don't add a publish call inside the action-runner loop without gating it through the queue.
-- **Secrets validation is enforced at dispatch.** Missing env vars surface as run errors, not as silent skips — operators will see a clear failure in history.
+- **Agent turns have no default clock.** Do not add one or a floor; a `0` means
+  no limit.
+- **The threshold penalty is fixed**: `max(0, threshold - 0.65) * 0.25`.
+  Raising the threshold lowers confidence.
+- **`dry-run` forces plan mode** for every provider. Do not assume a dry run
+  edits files.
+- **`verification_required = 1` is sticky** until the review decision is
+  applied; changing it mid-run without the status transition leaves the queue
+  inconsistent.
+- **Publish comes after verification.** Do not publish from inside the action
+  loop without the queue gate.
+- **Missing env secrets fail the run** with a clear error, never a silent skip.
 
-## Cross-links
+## Agent limits (opt-in)
 
-- `README.md` — rule structure and execution surfaces.
-- `triggers-and-actions.md` — trigger surface and built-in action catalog.
+An automation's agent turn has **no clock by default**: it runs until it
+finishes or someone stops it. Cost is capped by the global budgets in the
+header Usage popup, not by time. Two optional limits on the agent step
+(`execution.session`, or an `agent-session` action), typed
+`AutomationAgentLimits`:
+
+- `stopAfterMin`: interrupt after this many minutes.
+- `stopWhenIdleMin`: interrupt after this many minutes with no activity. The
+  watch restarts on every event and pauses while a tool call, command,
+  foreground subagent or approval is open. Background subagents are not
+  tracked, so waiting only on one can read as idle.
+
+Either calls the chat interrupt (`runSessionTurn`'s `timeoutMs` /
+`idleTimeoutMs`), fails the run with the reason and leaves the chat open. With
+neither, `agentTurnLimits` passes `timeoutMs: null`, so the chat service's
+5-minute headless default never applies. `normalizeAutomationAgentLimits`
+normalizes at save, load and dispatch and clamps to 7 days; the chat service
+floors each timer at 15 s; non-positive means none. The builder shows both
+behind a **Limits** row.
+
+A turn that ends `interrupted` or `failed` never counts as success
+(`unfinishedAgentTurn`): later non-`alwaysRun` steps do not run and a one-shot
+rule is not retired. A stop, or a chat ended or deleted mid-turn
+(`SessionTurnAbandonedError`), is not retried even with `retry`
+(`NonRetryableActionError`); provider failures and limit stops are.
+
+A `run-command` step's `timeoutMs` is separate: a kill switch for a hung
+process (default 5 min, max 12 h), shown as **Time limit**. Agent steps ignore
+it. There is no rule-level duration or dollar guardrail; old
+`guardrails.maxDurationMin` / `budgetUsd` values are dropped on parse and save.
+
+## Guardrails on a rule
+
+`AutomationGuardrails`: `activeHours` (see the README gotchas),
+`confidenceThreshold` (0..1; below it the run lands in
+`verification-required`), `maxFindings`, `reserveBudget`.
+
+`reviewProfile` sets the confidence base:
+
+| Profile | Base |
+| --- | --- |
+| quick | 0.58 |
+| incremental | 0.64 |
+| full | 0.73 |
+| security | 0.79 |
+| release-risk | 0.75 |
+| cross-repo-contract | 0.68 |
+
+`computeConfidence(rule)`:
+
+```
+value = clamp(base + min(0.12, contextSources * 0.015) - max(0, threshold - 0.65) * 0.25, 0.2, 0.95)
+```
+
+Labels: `high` at 0.78 or more, `medium` at 0.52 or more, else `low`.
+
+## Verification
+
+`AutomationVerification` is `{ verifyBeforePublish, mode?: "intervention" |
+"dry-run" }`. `dry-run` forces plan mode (Claude, Codex, OpenCode, Cursor) and
+tells the agent not to publish. `requiresPublishGate(rule)` is true when
+`verifyBeforePublish` is set and the mode is not `dry-run`; such runs set
+`verification_required = 1`, land in the review queue, and get a narrower
+default permission mode.
+
+Queue statuses (`AutomationRunQueueStatus`): `pending-review`,
+`actionable-findings`, `verification-required`, `completed-clean`, `ignored`,
+`archived`. Run statuses (`AutomationRunStatus`): `queued`, `running`,
+`succeeded`, `failed`, `cancelled`, `paused`; legacy `needs_review` reads as
+`succeeded`.
+
+## Outputs
+
+`AutomationOutputs.disposition`: `comment-only`, `open-task`, `open-lane`,
+`prepare-patch`, `open-pr-draft`; plus `createArtifact` and
+`notificationChannel`. Only the `github`, `linear` and `browser` tool families
+can publish (`PUBLISH_CAPABLE_TOOL_FAMILIES`); `repo`, `git` and `tests` cannot.
+
+## Secrets
+
+`automationSecretService.ts` accepts only `${env:VAR_NAME}` references at
+sensitive keys, rejects raw secret-like values, and resolves at dispatch from
+the brain's environment. This covers webhook secrets, relay access tokens and
+tokens used by built-in actions.
+
+## Scope and sandboxing
+
+Built-in shell actions stay inside the lane worktree (or the project root with
+no lane): `resolveAutomationCwdBase` picks the base and `validateAutomationCwd`
+rejects any cwd outside it, through symlink-aware `resolvePathWithinRoot`.
+
+Agent-session rules use the chat permission model. They run full-auto unless the
+rule or step picks a mode. In any other mode, a card raised during the
+automation's own turn is refused at once (nobody can answer it): the agent is
+told, the run continues, and the chat keeps the card and a notice. Linear agent
+runs are the exception; the delegator answers from Linear.
+
+## Budget caps
+
+Set in the header Usage popup (`HeaderUsageControl`, `UsageLimitsBand`, with
+`BudgetCapEditor` from `components/settings/`). `budgetCapService` enforces
+project caps; `usd-per-run` caps read usage keyed to the active run id, so a
+previous run's spend does not block the next. A breach pauses the run with an
+intervention. `billingCode` (default `auto:<id>`) slices spend per rule.
+
+## Audit trail
+
+Each run writes a run row (executor, status, queue status, confidence, spend,
+trigger metadata, verification flag), one action row per step, an ingress event
+row for webhook and relay triggers (normalized fields only; no raw payload), and
+proof artifacts when `outputs.createArtifact` is set.

@@ -31,6 +31,7 @@ import type {
   PiLoginMethod,
   PiLoginProvider,
 } from "../../../shared/types/config";
+import { BRAND } from "../../../shared/brand";
 
 export type { PiAuthStatusEvent, PiLoginProvider } from "../../../shared/types/config";
 
@@ -171,7 +172,7 @@ function toNotice(payload: PiSdkUiNoticePayload): PiAuthNotice {
 
 function requireSdk(installation: PiInstallation): void {
   if (installation.sdkAvailable && installation.packageRoot && installation.packageEntry) return;
-  throw new Error(installation.blocker ?? "Pi's SDK package is unavailable, so ADE cannot sign in for you.");
+  throw new Error(installation.blocker ?? `Pi's SDK package is unavailable, so ${BRAND.NAME} cannot sign in for you.`);
 }
 
 function toLoginProvider(entry: JsonValue): PiLoginProvider | null {

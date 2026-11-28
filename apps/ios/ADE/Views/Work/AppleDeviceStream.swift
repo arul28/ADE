@@ -230,7 +230,7 @@ func appleDeviceFamilySymbol(_ family: String?) -> String {
 /// Worded as an instruction rather than a fact, unlike the Work tools absences:
 /// here the phone knows exactly what is wrong (the Mac predates the feature)
 /// and exactly what fixes it.
-let appleDeviceHostUnsupportedMessage = "Update ADE on your Mac to watch its simulator from here."
+let appleDeviceHostUnsupportedMessage = "Update \(Brand.name) on your Mac to watch its simulator from here."
 
 /// The sentence for a Mac whose ADE install has lost its simulator helper.
 ///
@@ -238,7 +238,7 @@ let appleDeviceHostUnsupportedMessage = "Update ADE on your Mac to watch its sim
 /// helper (a standalone brain that looks for it next to itself). What brings
 /// it back is a reinstall or an update of ADE on that Mac.
 let appleDeviceHelperMissingMessage =
-  "The simulator helper is missing on your Mac. Reinstall or update ADE on the Mac to restore it."
+  "The simulator helper is missing on your Mac. Reinstall or update \(Brand.name) on the Mac to restore it."
 
 /// A host's own capture or helper error, in words for this phone.
 ///
@@ -270,9 +270,9 @@ func appleStreamTicketFailureMessage(_ raw: String) -> String {
   let tail = raw[code.upperBound...].drop { $0 == ":" || $0 == " " }
   if let off = tail.range(of: " is off") {
     let name = tail[..<off.lowerBound].trimmingCharacters(in: .whitespaces)
-    if !name.isEmpty { return "\(name) is off on your Mac. Start it in ADE on the Mac to watch it here." }
+    if !name.isEmpty { return "\(name) is off on your Mac. Start it in \(Brand.name) on the Mac to watch it here." }
   }
-  return "The simulator is off on your Mac. Start it in ADE on the Mac to watch it here."
+  return "The simulator is off on your Mac. Start it in \(Brand.name) on the Mac to watch it here."
 }
 
 /// Why there is no device to watch. Mirrors the host's `unavailable` reasons.
@@ -281,7 +281,7 @@ func appleDeviceUnavailableMessage(_ reason: String?) -> String {
   case "unsupported":
     return "Simulators aren't available on this machine."
   case "desktop_not_attached", "desktop_not_attached_for_project":
-    return "ADE Desktop doesn't have this project open. Open it on your Mac to watch its simulator."
+    return "\(Brand.name) Desktop doesn't have this project open. Open it on your Mac to watch its simulator."
   case "no_device":
     return "No simulator is open in this lane."
   case "error":

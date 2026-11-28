@@ -49,6 +49,7 @@ import {
   type FileMark,
   type ProviderLoginStateFile,
 } from "./providerLoginState";
+import { BRAND } from "../../../shared/brand";
 
 /** A file younger than this may still be in the middle of a write. */
 export const STABLE_AGE_MS = 2_000;
@@ -287,10 +288,10 @@ export const OVERWRITE_SAFE: ReadonlySet<ProviderLoginLocalState> = new Set([
 export const APPLY_MESSAGES: Record<ProviderLoginApplyState, string> = {
   applied: "The account's sign-in is on this cloud computer.",
   own: "The sign-in in use was made on this cloud computer.",
-  key: "The saved ADE Cloud key is in use.",
-  none: "No sign-in is in use on ADE Cloud for this provider.",
-  kept_local: "A sign-in made on this cloud computer is not in your account yet, so ADE did not replace it.",
-  failed: "ADE couldn't write this sign-in here. It tries again on the next pass.",
+  key: `The saved ${BRAND.CLOUD_NAME} key is in use.`,
+  none: `No sign-in is in use on ${BRAND.CLOUD_NAME} for this provider.`,
+  kept_local: `A sign-in made on this cloud computer is not in your account yet, so ${BRAND.NAME} did not replace it.`,
+  failed: `${BRAND.NAME} couldn't write this sign-in here. It tries again on the next pass.`,
 };
 
 export type CloudAccessState = "ready" | "no_access" | "signed_out" | "unreadable";
@@ -382,15 +383,15 @@ export type ProviderLoginSyncDeps = {
 };
 
 export const OFF_MESSAGES: Record<ProviderLoginCaptureOffReason, string> = {
-  not_this_runtime: "This ADE process does not copy sign-ins. The ADE brain on this computer does.",
-  embedded: "This runtime keeps its own sign-ins, so ADE does not copy them.",
-  dev_brain: "This is a development build of ADE. It never copies sign-ins to your account.",
-  sync_off: "Account sync is off in this ADE brain, so ADE does not copy sign-ins.",
-  signed_out: "Sign in to ADE to copy this computer's sign-ins to your account.",
-  no_ade_cloud: "ADE Cloud isn't available on this account, so ADE does not copy sign-ins.",
-  ade_cloud_unknown: "ADE couldn't check this account's ADE Cloud access. It checks again in a few minutes.",
-  all_off: "Sign-ins for ADE Cloud are switched off for this account.",
-  vault_unavailable: "ADE hasn't synced with your account yet, so it waits before it copies sign-ins.",
+  not_this_runtime: `This ${BRAND.NAME} process does not copy sign-ins. The ${BRAND.NAME} brain on this computer does.`,
+  embedded: `This runtime keeps its own sign-ins, so ${BRAND.NAME} does not copy them.`,
+  dev_brain: `This is a development build of ${BRAND.NAME}. It never copies sign-ins to your account.`,
+  sync_off: `Account sync is off in this ${BRAND.NAME} brain, so ${BRAND.NAME} does not copy sign-ins.`,
+  signed_out: `Sign in to ${BRAND.NAME} to copy this computer's sign-ins to your account.`,
+  no_ade_cloud: `${BRAND.CLOUD_NAME} isn't available on this account, so ${BRAND.NAME} does not copy sign-ins.`,
+  ade_cloud_unknown: `${BRAND.NAME} couldn't check this account's ${BRAND.CLOUD_NAME} access. It checks again in a few minutes.`,
+  all_off: `Sign-ins for ${BRAND.CLOUD_NAME} are switched off for this account.`,
+  vault_unavailable: `${BRAND.NAME} hasn't synced with your account yet, so it waits before it copies sign-ins.`,
 };
 
 /**
@@ -405,17 +406,17 @@ export const GH_READ_MS = 20_000;
 export const LOCAL_MESSAGES: Record<ProviderLoginLocalState, string> = {
   captured: "In your account.",
   not_signed_in: "Not signed in on this computer.",
-  os_store: "The sign-in is in the OS keychain or keyring. ADE does not read it in the background.",
-  settling: "The login file just changed. ADE reads it on the next pass.",
+  os_store: `The sign-in is in the OS keychain or keyring. ${BRAND.NAME} does not read it in the background.`,
+  settling: `The login file just changed. ${BRAND.NAME} reads it on the next pass.`,
   too_large: "This sign-in is too big for your account.",
-  unreadable: "ADE found a login file but could not read a sign-in from it.",
-  account_unreadable: "ADE couldn't read your account's copy of this sign-in on this computer, so it keeps that copy as it is.",
+  unreadable: `${BRAND.NAME} found a login file but could not read a sign-in from it.`,
+  account_unreadable: `${BRAND.NAME} couldn't read your account's copy of this sign-in on this computer, so it keeps that copy as it is.`,
   removed_from_account: "You removed this sign-in from your account. Sign in again here to add it back.",
   other_owner_newer: "Another computer renews this sign-in, so your account keeps that computer's copy.",
-  written_back: "A cloud computer renewed this sign-in while this computer was off. ADE wrote the newer copy into the login file here.",
-  from_saved_key: "This file came from a saved ADE Cloud key. It stays a key.",
-  from_account: "This is the account's sign-in. ADE wrote it on this computer.",
-  account_refused: "Your account service doesn't take sign-ins yet. ADE keeps this one on this computer and tries again every hour.",
+  written_back: `A cloud computer renewed this sign-in while this computer was off. ${BRAND.NAME} wrote the newer copy into the login file here.`,
+  from_saved_key: `This file came from a saved ${BRAND.CLOUD_NAME} key. It stays a key.`,
+  from_account: `This is the account's sign-in. ${BRAND.NAME} wrote it on this computer.`,
+  account_refused: `Your account service doesn't take sign-ins yet. ${BRAND.NAME} keeps this one on this computer and tries again every hour.`,
   not_checked: "Not checked on this computer.",
 };
 

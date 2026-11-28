@@ -1,5 +1,6 @@
 import type { ChatErrorPresentation } from "../../../shared/chatErrorPresentation";
 import { codexErrorKind } from "../ai/providerVersionRejection";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Card copy for the Codex refusals a person can act on, read from what the
@@ -45,8 +46,8 @@ function readCodexModelProviderError(data: unknown): CodexModelProviderError | n
 const MODEL_PROVIDER_LABELS: Readonly<Record<string, string>> = {
   openai: "OpenAI",
   gcp: "Google Cloud Vertex AI",
-  ade: "an ADE preset",
-  "ade-proxy": "ADE's proxy",
+  ade: `a ${BRAND.NAME} preset`,
+  "ade-proxy": `${BRAND.NAME}'s proxy`,
 };
 
 function modelProviderLabel(id: string): string {

@@ -4,6 +4,7 @@ import type { PrComment } from "../../../../shared/types";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { usePrRuntimePin } from "../state/prMachines";
 import { plainErrorText } from "../../../lib/plainError";
+import { BRAND } from "../../../../shared/brand";
 
 export function usePrCommentEdit(args: {
   prId: string;
@@ -56,7 +57,7 @@ export function usePrCommentEdit(args: {
       setEditing(false);
       return true;
     } catch (error) {
-      setEditError(plainErrorText(error, "ADE couldn't save the comment."));
+      setEditError(plainErrorText(error, `${BRAND.NAME} couldn't save the comment.`));
       return false;
     } finally {
       setEditBusy(false);

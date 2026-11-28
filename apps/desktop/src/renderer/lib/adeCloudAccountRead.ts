@@ -18,6 +18,7 @@ import type {
   AdeCloudAccountCallFn,
   AdeCloudAccountResults,
 } from "../../shared/adeCloud/accountCalls";
+import { BRAND } from "../../shared/brand";
 
 export type AdeCloudAccountReadState<T> =
   | { status: "idle"; data: null }
@@ -48,7 +49,7 @@ export async function runAccountCall<C extends AdeCloudAccountCall>(
       ok: false,
       code: "network",
       status: 0,
-      message: error instanceof Error && error.message ? error.message : "ADE couldn't reach your ADE account. Try again.",
+      message: error instanceof Error && error.message ? error.message : `${BRAND.NAME} couldn't reach your ${BRAND.NAME} account. Try again.`,
     };
   }
 }

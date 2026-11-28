@@ -35,6 +35,7 @@ import type {
   WebMachineSessionSnapshot,
   WebMachineWorkspaceSnapshot,
 } from "./WebMachineSessionManager";
+import { BRAND } from "../../../shared/brand";
 
 export type WebMachineStatus = "live" | "connecting" | "parked" | "available" | "offline";
 
@@ -237,7 +238,7 @@ export function webMachineLastSeenPhrase(value: string | number | null): string 
 function reachabilityCopy(status: WebMachineStatus, lastSeenAt: string | number | null): string {
   switch (status) {
     case "live":
-      return "Connected — ADE Web is talking to this machine now";
+      return `Connected — ${BRAND.NAME} Web is talking to this machine now`;
     case "connecting":
       return "Connecting to this machine…";
     case "parked":
@@ -248,7 +249,7 @@ function reachabilityCopy(status: WebMachineStatus, lastSeenAt: string | number 
       const seen = webMachineLastSeenPhrase(lastSeenAt);
       return seen
         ? `Offline — last seen ${seen}`
-        : "Offline — sign in to ADE on this machine to bring it back";
+        : `Offline — sign in to ${BRAND.NAME} on this machine to bring it back`;
     }
   }
 }
@@ -339,7 +340,7 @@ export function mergeWebMachines(args: {
           ? accountPresenceLabel(entry.accountMachine)
           : webMachineStatusLabel(status),
         reachability: rememberedOnly
-          ? `This browser still remembers ${entry.name}, but it is not on your ADE account`
+          ? `This browser still remembers ${entry.name}, but it is not on your ${BRAND.NAME} account`
           : reachabilityCopy(status, lastSeenAt),
         connectStage: webConnectStage(entry.session?.status ?? null),
         projects: live ? liveProjects : (entry.catalog?.projects ?? []),

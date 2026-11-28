@@ -18,6 +18,7 @@ import { isDirectChildFolder, sameFolder } from "../shared/sameFolder";
 import { deletingTrashName, isInUseError, removeTrashInBackground, sweepDeletingTrash } from "../shared/deletingTrash";
 import { removeTreeOffProcess } from "../shared/removeTreeOffProcess";
 import { gitLongPathArgs } from "../git/gitLongPaths";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Clean build output out of idle lanes.
@@ -229,7 +230,7 @@ export function describeRemovalError(error: unknown): string {
       return "A program is using files in it.";
     case "EPERM":
     case "EACCES":
-      return "ADE isn't allowed to remove some files in it.";
+      return `${BRAND.NAME} isn't allowed to remove some files in it.`;
     case "ENOTEMPTY":
       return "Files kept appearing while it was removed. A program may be writing to it.";
     case "ENAMETOOLONG":
@@ -560,7 +561,7 @@ export function createLaneBuildOutputSweeper(options: LaneBuildOutputSweeperOpti
 
   const busyReason = (laneId: string): string | null => {
     const counts = options.liveWorkCounts?.(laneId) ?? null;
-    if (!counts) return "ADE can't see this lane's chats and terminals yet";
+    if (!counts) return `${BRAND.NAME} can't see this lane's chats and terminals yet`;
     if (counts.activeChatCount + counts.activePtyCount + counts.activeWatcherCount > 0) return "something is running in it";
     return null;
   };
@@ -731,7 +732,7 @@ export function createLaneBuildOutputSweeper(options: LaneBuildOutputSweeperOpti
     );
     if (activity >= idleSince) return skip("used recently");
     const worktree = await verifyWorktree(lane.worktree_path);
-    if (!worktree) return skip("not an ADE-managed lane folder");
+    if (!worktree) return skip(`not a ${BRAND.NAME}-managed lane folder`);
     if (processInside(args.probe, [worktree.root, worktree.realRoot])) return skip("a program is working in it");
     const files = await fileActivityMs(worktree);
     if (files == null) return skip("git could not read it");

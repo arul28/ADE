@@ -9,6 +9,7 @@ import { MENU_ITEM_CLASS, MENU_SCROLL_CLASS, POPOVER_SURFACE_CLASS } from "../ui
 import { usePortalContainer } from "../ui/portalContainer";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { Z_LAYERS } from "../ui/zLayers";
+import { BRAND } from "../../../shared/brand";
 
 export type DraftMachineOption = {
   id: string;
@@ -203,7 +204,7 @@ export function DraftMachinePicker({
   const hasCloudOption = machines.some((machine) => machine.kind === "cloud");
   const adeCloudSelected = selected?.kind === "cloud" && selected.cloudProvider === "cloud";
   const cloudNames = [
-    ...(machines.some((machine) => machine.kind === "cloud" && machine.cloudProvider === "cloud") ? ["ADE Cloud"] : []),
+    ...(machines.some((machine) => machine.kind === "cloud" && machine.cloudProvider === "cloud") ? [BRAND.CLOUD_NAME] : []),
     ...(machines.some((machine) => machine.kind === "cloud" && machine.cloudProvider === "cursor") ? ["Cursor Cloud"] : []),
     ...(machines.some((machine) => machine.kind === "cloud" && machine.cloudProvider === "devin") ? ["Devin Cloud"] : []),
   ];
@@ -212,7 +213,7 @@ export function DraftMachinePicker({
     : "Pick this computer or another paired computer. The lane list beside it follows your choice.";
   // The pick itself comes first, so the tooltip says where this draft runs now.
   const selectedLine = adeCloudSelected
-    ? "Runs on ADE Cloud: a new lane gets its own computer, and a lane you pick runs on the computer it has."
+    ? `Runs on ${BRAND.CLOUD_NAME}: a new lane gets its own computer, and a lane you pick runs on the computer it has.`
     : selected && !selected.unavailableReason
       ? `Runs on ${selected.name}.`
       : null;

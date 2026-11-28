@@ -17,6 +17,7 @@ import {
 import { windowsDesktopOperationFor } from "./useMacDesktopStatus";
 import { MAC_DESKTOP_SECONDARY_BUTTON, MacDesktopStateCard } from "./MacDesktopStateCard";
 import { WORK_TOOL_PRIMARY_BUTTON } from "../terminals/workToolChrome";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The Windows Desktop pane's no-picture states: setup, password, sign-in in
@@ -76,7 +77,7 @@ function progressCopy(args: {
   if (driverRestarting) {
     return {
       title: "The desktop helper is restarting…",
-      detail: "It stopped responding during this step. ADE will say what happened when it is back.",
+      detail: `It stopped responding during this step. ${BRAND.NAME} will say what happened when it is back.`,
     };
   }
   switch (kind) {
@@ -86,7 +87,7 @@ function progressCopy(args: {
         detail: `Choose Yes in the Windows admin prompt on that PC. ${TASKBAR_HINT} You only do this once.`,
       };
     case "forget_password":
-      return { title: "Forgetting the saved password…", detail: "Removing the password saved for ADE on that PC." };
+      return { title: "Forgetting the saved password…", detail: `Removing the password saved for ${BRAND.NAME} on that PC.` };
     case "shared":
       return { title: "Opening your main desktop…", detail: "The agent will work on your own Windows desktop." };
     default:
@@ -107,7 +108,7 @@ function progressCopy(args: {
       : { title: "Signing in…", detail: "Windows is signing in to your private screen." };
   }
   if (phase === "starting") {
-    return { title: "Starting your private screen…", detail: "Signed in. Connecting the screen to ADE." };
+    return { title: "Starting your private screen…", detail: `Signed in. Connecting the screen to ${BRAND.NAME}.` };
   }
   if (phase === "cleaning_up") {
     return {
@@ -315,7 +316,7 @@ export function WindowsDesktopStateCard({
         tone="error"
         icon={Warning}
         title={driver.title || "The desktop helper isn't running"}
-        detail={driver.message || "ADE could not start its Windows desktop helper."}
+        detail={driver.message || `${BRAND.NAME} could not start its Windows desktop helper.`}
         actions={(
           <button
             type="button"
@@ -465,7 +466,7 @@ export function WindowsDesktopStateCard({
         tone="idle"
         icon={Key}
         title="Save your Windows password"
-        detail="ADE signs in to your private screen with it. It stays in Windows Credential Manager on that PC. Use your password, not your PIN."
+        detail={`${BRAND.NAME} signs in to your private screen with it. It stays in Windows Credential Manager on that PC. Use your password, not your PIN.`}
         actions={(
           <>
             <button

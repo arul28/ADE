@@ -351,7 +351,7 @@ describe("macDesktopErrorHint", () => {
    * action that unblocks the code; the sentence around it is free to change.
    */
   function hintedAction(hint: string | null): string | null {
-    const verb = hint?.match(/ade (?:screen|mac-desktop) ([a-z-]+)/)?.[1];
+    const verb = hint?.match(/(?:daex|ade) (?:screen|mac-desktop) ([a-z-]+)/)?.[1];
     if (!verb) return null;
     const argv = ["screen", verb, ...(verb === "claim" ? ["--window", "1"] : verb === "open" ? ["Notes"] : [])];
     return actionName(plan(argv));
@@ -398,8 +398,8 @@ describe("macDesktopErrorHint", () => {
     const hint = macDesktopErrorHint(
       `${MAC_DESKTOP_NO_WINDOW_CODE}: Lane lane-1 has a display but no window to send a key to.`,
     );
-    expect(hint).toMatch(/ade screen open/);
-    expect(hint).toMatch(/ade screen claim --window/);
+    expect(hint).toMatch(/daex screen open/);
+    expect(hint).toMatch(/daex screen claim --window/);
     expect(hint).not.toMatch(/screen start/);
   });
 
@@ -432,7 +432,7 @@ describe("ade mac-desktop text output", () => {
       { text: true } as never,
       "mac-desktop-status",
     );
-    expect(text).toContain("ADE Mac Desktop");
+    expect(text).toContain("DAEX Mac Desktop");
     expect(text).toContain("2560x1440");
     expect(text).toContain("accessibility");
     expect(text).toContain("denied");
@@ -501,7 +501,7 @@ describe("ade mac-desktop text output", () => {
       "mac-desktop-windows",
     );
     expect(windows).toContain("[admin] wsl.exe");
-    expect(windows).toContain("ADE cannot click, type into, focus past or minimize it");
+    expect(windows).toContain("DAEX cannot click, type into, focus past or minimize it");
   });
 
   it("prints stop's quit apps and left-open sentences in full", () => {
@@ -623,7 +623,7 @@ describe("ade mac-desktop text output", () => {
       { text: true } as never,
       "mac-desktop-action",
     );
-    expect(text).toContain("ADE Mac Desktop action");
+    expect(text).toContain("DAEX Mac Desktop action");
     expect(text.split("\n").slice(0, 2)).toEqual([
       'hit: AXButton "Sign in" (obs-a1:e:3)',
       "effect: unconfirmed — nothing on screen changed; observe again before you continue",
@@ -886,11 +886,11 @@ describe("mac-desktop action answer lines", () => {
     const text = action({
       status: "unconfirmed",
       reason: "nothing on screen changed",
-      next: { method: "lease", reason: "ask for the lease", command: "ade mac-desktop lease --text" },
+      next: { method: "lease", reason: "ask for the lease", command: "daex mac-desktop lease --text" },
     });
     expect(text).toContain("effect: unconfirmed — nothing on screen changed");
     expect(text).not.toContain("observe again before you continue");
-    expect(text).toContain("next: ask for the lease — run: ade mac-desktop lease --text");
+    expect(text).toContain("next: ask for the lease — run: daex mac-desktop lease --text");
   });
 
   it("keeps the generic observe suffix when the effect has no next step", () => {

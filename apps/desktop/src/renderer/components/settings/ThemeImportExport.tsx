@@ -20,6 +20,7 @@ import { SettingsDisclosure, SettingsSectionAction } from "./primitives";
 import { showToast } from "../app/toast/toastStore";
 import { upsertCustomTheme } from "./themeCustomizerModel";
 import { openExternalUrl } from "../../lib/openExternal";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Import / export for themes.
@@ -126,7 +127,7 @@ export function ThemeImportExport() {
       <SettingsSectionAction
         icon={<UploadSimple size={13} />}
         label="Import"
-        title="Import a theme file: an ADE theme, or a VS Code colour theme (.json)"
+        title={`Import a theme file: a ${BRAND.NAME} theme, or a VS Code colour theme (.json)`}
         onClick={() => fileInputRef.current?.click()}
       />
       <SettingsSectionAction
@@ -140,7 +141,7 @@ export function ThemeImportExport() {
         open={unmapped != null}
         onOpenChange={(open) => { if (!open) setUnmapped(null); }}
         title={`Imported ${unmapped?.name ?? "theme"}`}
-        description="ADE mapped the interface, terminal and code colours it understands. These VS Code keys were not mapped."
+        description={`${BRAND.NAME} mapped the interface, terminal and code colours it understands. These VS Code keys were not mapped.`}
         size="md"
         tone="accent"
         actions={[{ label: "Done", onClick: () => setUnmapped(null), variant: "solid" }]}
@@ -190,7 +191,7 @@ export function ThemeFilesHelp() {
       <dl className="ade-theme-files">
         <dt>Import</dt>
         <dd>
-          An ADE theme or any VS Code colour theme (<code>.json</code>), saved on this computer. For a{" "}
+          A {BRAND.NAME} theme or any VS Code colour theme (<code>.json</code>), saved on this computer. For a{" "}
           <code>.vsix</code>, unzip it and pick a file in <code>themes/</code>.
         </dd>
         <dt>Export</dt>

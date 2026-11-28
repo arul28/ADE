@@ -32,6 +32,7 @@ import {
   withBoundedAttempt,
   type RemoteLaunchBudget,
 } from "../../lib/remoteLaunchBudget";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 type RemoteRoutePreference = "auto" | "lan" | "tailnet" | "relay";
 
@@ -57,19 +58,19 @@ async function pairedRouteAccountProof(args: {
     proof = await args.getAccountRelayProof();
   } catch (error) {
     throw new PairedRuntimeRelayAuthRequiredError(
-      "Sign in to ADE to connect through Relay. Direct local network and Tailscale routes stay reachable meanwhile.",
+      `Sign in to ${BRAND.NAME} to connect through Relay. Direct local network and Tailscale routes stay reachable meanwhile.`,
       error,
     );
   }
   if (!proof?.userId.trim() || !proof.token.trim()) {
     throw new PairedRuntimeRelayAuthRequiredError(
-      "Sign in to ADE to connect through Relay. Direct local network and Tailscale routes stay reachable meanwhile.",
+      `Sign in to ${BRAND.NAME} to connect through Relay. Direct local network and Tailscale routes stay reachable meanwhile.`,
     );
   }
   const expectedOwnerUserId = args.credentials.accountOwnerUserId?.trim() ?? "";
   if (expectedOwnerUserId && proof.userId.trim() !== expectedOwnerUserId) {
     throw new PairedRuntimeRelayAuthRequiredError(
-      "Sign in with the same ADE account as this computer to connect through Relay. Direct local network and Tailscale routes stay reachable meanwhile.",
+      `Sign in with the same ${BRAND.NAME} account as this computer to connect through Relay. Direct local network and Tailscale routes stay reachable meanwhile.`,
     );
   }
   return { userId: proof.userId.trim(), token: proof.token.trim() };
@@ -83,7 +84,7 @@ async function assertRelayAccountUnchanged(
   const currentProof = await getAccountRelayProof().catch(() => null);
   if (currentProof?.userId.trim() === initialProof.userId) return;
   throw new PairedRuntimeRelayAuthRequiredError(
-    "Your ADE account changed before the Relay connection finished. Sign in with the same account as this computer and try again.",
+    `Your ${BRAND.NAME} account changed before the Relay connection finished. Sign in with the same account as this computer and try again.`,
   );
 }
 
@@ -102,7 +103,7 @@ function pairedConnectionLabel(
   const host = `${url.hostname}${url.port ? `:${url.port}` : ""}`;
   if (candidate.kind === "lan") return `local network (${host})`;
   if (candidate.kind === "tailnet") return `Tailscale (${host})`;
-  return `ADE Relay (${url.hostname})`;
+  return `${BRAND.NAME} Relay (${url.hostname})`;
 }
 
 function remoteRoutePreferenceLabel(
@@ -111,7 +112,7 @@ function remoteRoutePreferenceLabel(
   if (preference === "auto") return "automatic";
   if (preference === "lan") return "local network";
   if (preference === "tailnet") return "Tailscale";
-  return "ADE Relay";
+  return `${BRAND.NAME} Relay`;
 }
 
 type PairedConnectionFailureReason =

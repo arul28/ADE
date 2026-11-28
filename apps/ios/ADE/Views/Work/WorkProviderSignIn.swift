@@ -757,19 +757,19 @@ struct WorkAdeCloudClaudePassCard: View {
   }
 
   var detail: String {
-    if ready { return "Send your message again to run it on ADE Cloud." }
+    if ready { return "Send your message again to run it on \(Brand.cloudName)." }
     let again = reason == .failedTurn ? " Then send your message again." : ""
     switch need {
     case .ended(let at):
       return providerCloudPassEndedDetail(at) + again
     case .off where ownPass:
-      return "This chat runs on a Claude pass that is off for ADE Cloud. Turn that pass on in the ADE desktop app, in Settings › Providers › ADE Cloud › Claude." + again
+      return "This chat runs on a Claude pass that is off for \(Brand.cloudName). Turn that pass on in the \(Brand.name) desktop app, in Settings › Providers › \(Brand.cloudName) › Claude." + again
     case .off:
-      return "Every Claude pass is off for ADE Cloud. Turn one on in the ADE desktop app, in Settings › Providers › ADE Cloud › Claude." + again
+      return "Every Claude pass is off for \(Brand.cloudName). Turn one on in the \(Brand.name) desktop app, in Settings › Providers › \(Brand.cloudName) › Claude." + again
     case .noPass:
-      return "ADE Cloud never uses Claude's own login. One approve in the ADE desktop app lets your cloud chats use your Claude plan for about a year." + again
+      return "\(Brand.cloudName) never uses Claude's own login. One approve in the \(Brand.name) desktop app lets your cloud chats use your Claude plan for about a year." + again
     case nil:
-      return "Cloud computers use your account's Claude pass, not a sign-in on the computer. Renew the pass in the ADE desktop app, in Settings › Providers › ADE Cloud › Claude." + again
+      return "Cloud computers use your account's Claude pass, not a sign-in on the computer. Renew the pass in the \(Brand.name) desktop app, in Settings › Providers › \(Brand.cloudName) › Claude." + again
     }
   }
 
@@ -782,7 +782,7 @@ struct WorkAdeCloudClaudePassCard: View {
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
             .fixedSize(horizontal: false, vertical: true)
-          Text("on ADE Cloud")
+          Text("on \(Brand.cloudName)")
             .font(.caption)
             .foregroundStyle(ADEColor.textMuted)
         }

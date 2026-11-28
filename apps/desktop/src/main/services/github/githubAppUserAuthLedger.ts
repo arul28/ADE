@@ -1,5 +1,6 @@
 import type { GitHubAppUserAuthRefreshError } from "../../../shared/types";
 import type { GitHubAppUserTokenRecord } from "./githubAppUserAuth";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The stored GitHub App user credential and the refresh ledger beside it, plus
@@ -155,7 +156,7 @@ export function parseLedger(value: unknown): RefreshLedger {
     lastFailure: failure && kind
       ? {
         kind,
-        message: trimmedOrNull(failure.message) ?? "GitHub refused to renew the ADE GitHub App authorization.",
+        message: trimmedOrNull(failure.message) ?? `GitHub refused to renew the ${BRAND.NAME} GitHub App authorization.`,
         status: typeof failure.status === "number" && Number.isFinite(failure.status)
           ? Math.trunc(failure.status)
           : null,

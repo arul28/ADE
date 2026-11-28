@@ -7,6 +7,7 @@ import type {
   SyncProjectCatalogPayload,
 } from "../../../shared/types/sync";
 import { SYNC_APPLICATION_COMPRESSION_CODECS } from "../../../shared/types/sync";
+import { BRAND } from "../../../shared/brand";
 
 export const SYNC_PROTOCOL_VERSION = 1;
 export const SYNC_PROTOCOL_MIN_SUPPORTED = 1;
@@ -32,8 +33,8 @@ export class BrowserSyncProtocolVersionMismatchError extends Error {
       : `${SYNC_PROTOCOL_MIN_SUPPORTED}-${SYNC_PROTOCOL_VERSION}`;
     const updateTarget = receivedVersion < SYNC_PROTOCOL_MIN_SUPPORTED ? "host" : "client";
     super(updateTarget === "host"
-      ? `Update ADE on your computer. It uses sync protocol ${receivedVersion}; this browser supports ${supported}.`
-      : `Update ADE in this browser. The computer uses sync protocol ${receivedVersion}; this browser supports ${supported}.`);
+      ? `Update ${BRAND.NAME} on your computer. It uses sync protocol ${receivedVersion}; this browser supports ${supported}.`
+      : `Update ${BRAND.NAME} in this browser. The computer uses sync protocol ${receivedVersion}; this browser supports ${supported}.`);
     this.name = "BrowserSyncProtocolVersionMismatchError";
     this.updateTarget = updateTarget;
   }

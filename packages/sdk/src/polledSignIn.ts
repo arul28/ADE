@@ -1,5 +1,5 @@
 import type { AccountInfo, SignInHandle, SignInStatus } from "./accounts.js";
-import { AdeError } from "./errors.js";
+import { DaexError } from "./errors.js";
 
 /** What a bridge's `accounts.signInStatus` answers. */
 export type PolledSignInResult<E> = { status: SignInStatus; account?: AccountInfo; error?: E };
@@ -47,7 +47,7 @@ export function createPolledSignIn<E>(
     publish(result.status);
     if (result.account) resolveDone(result.account);
     else if (result.error !== undefined) rejectDone(ops.toError(result.error));
-    else rejectDone(new AdeError("sign_in_failed", result.status.message ?? `Sign-in ${result.status.state}.`));
+    else rejectDone(new DaexError("sign_in_failed", result.status.message ?? `Sign-in ${result.status.state}.`));
   };
   const poll = async (): Promise<void> => {
     if (finished) return;

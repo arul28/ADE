@@ -7,6 +7,7 @@ import { isPathInside, pathsEqual } from "../../../shared/pathCompare";
 import { piAgentDir } from "../../../shared/providerConfigHomes";
 import { allAncestorsTopDown, exists, type Ctx } from "../fsScan";
 import { firstInstructionFile, folderLabel, instructionFile, mcpItems, type ProviderItems } from "../items";
+import { BRAND } from "../../../../../shared/brand";
 
 export async function piItems(ctx: Ctx): Promise<ProviderItems> {
   const agentDir = piAgentDir({ env: ctx.env, homeDir: ctx.home });
@@ -15,7 +16,7 @@ export async function piItems(ctx: Ctx): Promise<ProviderItems> {
   const append = await instructionFile(ctx, path.join(agentDir, "APPEND_SYSTEM.md"), {
     label: "APPEND_SYSTEM.md",
     kind: "system-prompt",
-    detail: "Added to the system prompt. ADE runs Pi untrusted, so a project's own file is not read.",
+    detail: `Added to the system prompt. ${BRAND.NAME} runs Pi untrusted, so a project's own file is not read.`,
   });
   if (append) items.push(append.item);
   const global = await firstInstructionFile(ctx, agentDir, names, (name) => `Global ${name}`);
@@ -39,7 +40,7 @@ export async function piItems(ctx: Ctx): Promise<ProviderItems> {
     if (found && !(shadowed && pathsEqual(found.item.path, shadowed))) items.push(found.item);
   }
   items.push(...await mcpItems(ctx, [{ file: path.join(agentDir, "mcp.json"), format: "json", key: "mcpServers", scope: "user" }], {
-    detail: "Pi's own MCP config: used only when MCP is on for Pi chats in ADE. Its tools arrive when it connects.",
+    detail: `Pi's own MCP config: used only when MCP is on for Pi chats in ${BRAND.NAME}. Its tools arrive when it connects.`,
   }));
   return { items, adeSkillsNative: true };
 }

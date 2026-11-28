@@ -608,8 +608,8 @@ private struct CommitHistoryConfirmation: Identifiable {
   }
   var message: String {
     switch kind {
-    case .revert: return "ADE will create a new commit that reverses \(commit.shortSha)."
-    case .cherryPick: return "ADE will apply \(commit.shortSha) onto the current lane."
+    case .revert: return "\(Brand.name) will create a new commit that reverses \(commit.shortSha)."
+    case .cherryPick: return "\(Brand.name) will apply \(commit.shortSha) onto the current lane."
     }
   }
   var confirmTitle: String {

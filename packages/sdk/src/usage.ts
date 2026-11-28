@@ -1,4 +1,4 @@
-import { AdeError } from "./errors.js";
+import { DaexError } from "./errors.js";
 import type { AgentChatEventEnvelope } from "./types.js";
 
 /** A host-side limit for the usage observed on one thread. */
@@ -22,18 +22,18 @@ export type ThreadUsage = {
 export function validateThreadBudget(value: ThreadBudget | undefined): ThreadBudget | undefined {
   if (value === undefined) return undefined;
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new AdeError("invalid_option", "budget must be an object with maxCostUsd and/or maxTokens.");
+    throw new DaexError("invalid_option", "budget must be an object with maxCostUsd and/or maxTokens.");
   }
   const entries = Object.entries(value);
   if (!entries.length) {
-    throw new AdeError("invalid_option", "budget must set maxCostUsd, maxTokens, or both.");
+    throw new DaexError("invalid_option", "budget must set maxCostUsd, maxTokens, or both.");
   }
   for (const [key, limit] of entries) {
     if (key !== "maxCostUsd" && key !== "maxTokens") {
-      throw new AdeError("invalid_option", `budget.${key} is not supported.`);
+      throw new DaexError("invalid_option", `budget.${key} is not supported.`);
     }
     if (typeof limit !== "number" || !Number.isFinite(limit) || limit < 0) {
-      throw new AdeError("invalid_option", `budget.${key} must be a finite, non-negative number.`);
+      throw new DaexError("invalid_option", `budget.${key} must be a finite, non-negative number.`);
     }
   }
   return { ...value };

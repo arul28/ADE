@@ -15,6 +15,7 @@ import {
 } from "../../state/accountCloudLaunches";
 import { CLOUD_REMOTE_SIGN_IN, type CloudLaunchRecord, type CloudLaunchSignIn, type CloudLaunchStage } from "../../../shared/accountCloudLaunches";
 import { humanizeProvider } from "../usage/usageProviderNames";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The launch's stage ids (`CloudLaunchStage.id`) by the step they show on.
@@ -110,7 +111,7 @@ function SignInDetail({ signIn, instanceId }: { signIn: CloudLaunchSignIn; insta
   if (signIn.kind === "desktop") {
     return (
       <p className="m-0 mt-1 text-[12px]" style={{ color: "var(--kit-text-2)" }}>
-        {signIn.reason ?? "Sign in from ADE desktop; it reaches ADE Cloud."} Sign in from ADE desktop, or pick another model.
+        {signIn.reason ?? `Sign in from ${BRAND.NAME} desktop; it reaches ${BRAND.CLOUD_NAME}.`} Sign in from {BRAND.NAME} desktop, or pick another model.
       </p>
     );
   }
@@ -122,7 +123,7 @@ function SignInDetail({ signIn, instanceId }: { signIn: CloudLaunchSignIn; insta
     setBusy(true);
     setError(null);
     try {
-      if (!signIn.signInId) throw new Error("ADE Cloud didn't say which key to save.");
+      if (!signIn.signInId) throw new Error(`${BRAND.CLOUD_NAME} didn't say which key to save.`);
       await api.saveSignIn(signIn.signInId, text);
       setKey("");
       setSaved(true);
@@ -204,9 +205,9 @@ function SignInDetail({ signIn, instanceId }: { signIn: CloudLaunchSignIn; insta
 type CardPhase = "working" | "ready" | "failed" | "cancelled";
 
 const CARD_TITLE: Record<CardPhase, string> = {
-  working: "Getting ADE Cloud ready",
-  ready: "Your chat is on ADE Cloud",
-  failed: "ADE Cloud couldn't start this chat",
+  working: `Getting ${BRAND.CLOUD_NAME} ready`,
+  ready: `Your chat is on ${BRAND.CLOUD_NAME}`,
+  failed: `${BRAND.CLOUD_NAME} couldn't start this chat`,
   cancelled: "Chat cancelled",
 };
 
@@ -273,7 +274,7 @@ export function CloudSetupCardList({
         />
       ))}
       {newest ? (
-        <section className="kit-panel flex w-full flex-col text-[12.5px]" aria-label="Earlier ADE Cloud launches" data-testid="ade-cloud-earlier-failures">
+        <section className="kit-panel flex w-full flex-col text-[12.5px]" aria-label={`Earlier ${BRAND.CLOUD_NAME} launches`} data-testid="ade-cloud-earlier-failures">
           <div className="flex items-center gap-2 px-3 py-1.5">
             <span className="shrink-0" style={{ color: "var(--kit-text-2)" }}>
               {earlier.length === 1 ? "Earlier launch failed" : `${earlier.length} earlier launches failed`}
@@ -352,7 +353,7 @@ function CompactSteps({ rows }: { rows: readonly SetupStep[] }) {
   if (!current) return null;
   return (
     <div className="flex flex-col gap-1">
-      <SetupSteps steps={[current]} label="Getting ADE Cloud ready" />
+      <SetupSteps steps={[current]} label={`Getting ${BRAND.CLOUD_NAME} ready`} />
       <span className="px-1 text-[11.5px]" style={{ color: "var(--kit-text-3)" }}>
         {done} of {rows.length} steps done
       </span>
@@ -370,7 +371,7 @@ function readyLine(laneName: string | null | undefined, state: LaunchChatState |
   if (state === "working") return lane ? `${lane} is working.` : "The agent is working.";
   if (state === "waiting") return lane ? `${lane} is waiting for you.` : "The agent is waiting for you.";
   if (state === "done") return lane ? `${lane} is done.` : "The agent is done.";
-  return lane ? `The chat is in ${lane.charAt(0).toLowerCase()}${lane.slice(1)}.` : "The chat is on ADE Cloud.";
+  return lane ? `The chat is in ${lane.charAt(0).toLowerCase()}${lane.slice(1)}.` : `The chat is on ${BRAND.CLOUD_NAME}.`;
 }
 
 /** What a failed launch said went wrong, if anything. */
@@ -469,7 +470,7 @@ export function CloudSetupCard({
   const cardName = launchCardName(entry);
 
   return (
-    <section className="kit-card w-full" aria-label="Getting ADE Cloud ready" data-testid="ade-cloud-setup-card">
+    <section className="kit-card w-full" aria-label={`Getting ${BRAND.CLOUD_NAME} ready`} data-testid="ade-cloud-setup-card">
       <header className="kit-card-head">
         <span className="shrink-0">{CARD_TITLE[phase]}</span>
         {cardName ? (
@@ -490,7 +491,7 @@ export function CloudSetupCard({
         {compact ? (
           <CompactSteps rows={rows} />
         ) : (
-          <SetupSteps steps={rows} label="Getting ADE Cloud ready" />
+          <SetupSteps steps={rows} label={`Getting ${BRAND.CLOUD_NAME} ready`} />
         )}
         {pending.length > 0 ? (
           <ul className="m-0 flex list-none flex-col gap-1.5 p-0" aria-label="Messages waiting to send">
@@ -517,7 +518,7 @@ export function CloudSetupCard({
               // The server's sentence once: the report's raw error is the same
               // text, so the notice hides its "›" line. The message rows above
               // already say "Not sent".
-              detail: failureReason ?? "ADE Cloud didn't say why.",
+              detail: failureReason ?? `${BRAND.CLOUD_NAME} didn't say why.`,
               actions: [{ label: "Retry", onClick: () => void retryAccountCloudLaunch(entry.launchId) }],
               report: { surface: "cloud_setup_card", code: "launch_failed", technicalDetail: failureReason },
             }}
@@ -561,7 +562,7 @@ export function CloudSetupCard({
         ) : null}
         {working && !compact ? (
           <p className="m-0 text-[11.5px]" style={{ color: "var(--kit-text-3)" }}>
-            You can close this tab. ADE Cloud sends your message when the computer is ready.
+            You can close this tab. {BRAND.CLOUD_NAME} sends your message when the computer is ready.
           </p>
         ) : null}
       </div>

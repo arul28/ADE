@@ -1,4 +1,5 @@
 import type { PendingInputRequest } from "./types/chat";
+import { BRAND } from "./brand";
 
 /**
  * The connect card: an agent that needs an integration which is not set up
@@ -100,7 +101,7 @@ const PROVIDERS: Record<ConnectProviderId, ConnectProviderSpec> = {
       {
         id: "oauth",
         label: "Sign in",
-        hint: "Opens Linear in your browser. Approve ADE and you are done.",
+        hint: `Opens Linear in your browser. Approve ${BRAND.NAME} and you are done.`,
         fields: [],
         signIn: "browser",
       },
@@ -147,7 +148,7 @@ const PROVIDERS: Record<ConnectProviderId, ConnectProviderSpec> = {
         fields: [{ id: CONNECT_FIELD_IDS.githubToken, label: "Token", kind: "secret", placeholder: "github_pat_… or ghp_…" }],
         help: {
           label: "Get a token",
-          url: "https://github.com/settings/tokens/new?scopes=repo,read:org,workflow&description=ADE",
+          url: `https://github.com/settings/tokens/new?scopes=repo,read:org,workflow&description=${BRAND.NAME}`,
         },
       },
       {
@@ -155,8 +156,8 @@ const PROVIDERS: Record<ConnectProviderId, ConnectProviderSpec> = {
         // PRs, so the token stays first. The host offers it only while reads
         // do not work yet.
         id: "app",
-        label: "ADE app",
-        hint: "Sign in with ADE's GitHub app. It reads and edits issues, but cannot push or open PRs.",
+        label: `${BRAND.NAME} app`,
+        hint: `Sign in with ${BRAND.NAME}'s GitHub app. It reads and edits issues, but cannot push or open PRs.`,
         fields: [],
         signIn: "device",
       },
@@ -166,9 +167,9 @@ const PROVIDERS: Record<ConnectProviderId, ConnectProviderSpec> = {
 
 /** The line an agent gets once the integration is connected: what to use now. */
 export const CONNECT_NEXT_STEP: Record<ConnectProviderId, string> = {
-  github: "Use `ade prs` and `ade github` (see the ade-pr-workflows skill).",
-  linear: "Use `ade linear` (see the ade-linear skill).",
-  jira: "Use `ade jira` (run `ade help jira`).",
+  github: "Use `daex prs` and `daex github` (see the daex-pr-workflows skill).",
+  linear: "Use `daex linear` (see the daex-linear skill).",
+  jira: "Use `daex jira` (run `daex help jira`).",
 };
 
 export function connectProviderSpec(id: ConnectProviderId): ConnectProviderSpec {

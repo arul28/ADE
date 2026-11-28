@@ -527,7 +527,7 @@ struct WorkToolsSheet: View {
       Image(systemName: "desktopcomputer")
         .font(.title3.weight(.semibold))
         .foregroundStyle(ADEColor.textMuted)
-      Text("Tools run on the desktop. Open ADE on your Mac to see them here.")
+      Text("Tools run on the desktop. Open \(Brand.name) on your Mac to see them here.")
         .font(.footnote)
         .foregroundStyle(ADEColor.textSecondary)
         .multilineTextAlignment(.center)

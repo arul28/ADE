@@ -137,6 +137,8 @@ import { findMachineProject } from "../../../shared/projectIdentity";
 import { isMachineScopeOlderBrainError, MACHINE_SCOPE_PROJECT_ID, machineScopeDomainAnswered, machineScopeUpdateMessage } from "../../../shared/machineScope";
 // How long a woken machine gets to come back online before the call fails as usual.
 import { WOKEN_MACHINE_CONNECT_WAIT_MS } from "../../../shared/wokenMachine";
+import { BRAND } from "../../../shared/brand";
+import { PRODUCT_NAME_PATTERN } from "../../../shared/brandNames";
 
 type StatusPatch = Partial<Omit<RemoteRuntimeConnectionStatus, "target">>;
 
@@ -383,6 +385,15 @@ export function automaticReconnectBackoffMs(failureCount: number): number {
   );
 }
 
+/**
+ * Link failures that carry no structured kind. A dropped "remote … connection"
+ * is `isRemoteRuntimeConnectionError`, checked before this.
+ */
+const CONNECTION_FAILURE_MESSAGE = new RegExp(
+  String.raw`sync (?:connection|websocket|endpoint).*(?:closed|failed)|remote target is not connected|SSH server at .* closed the connection before ${PRODUCT_NAME_PATTERN} could finish the SSH handshake|Timed out while waiting for the SSH handshake`,
+  "i",
+);
+
 function isImplicitConnectionFailure(error: unknown): boolean {
   // One oversized reply closed one RPC channel. The host answered, so the
   // machine is reachable; the next call opens a new channel.
@@ -399,10 +410,7 @@ function isImplicitConnectionFailure(error: unknown): boolean {
   if (error instanceof RemoteRuntimeConnectError) return true;
   if (error instanceof PairedRuntimeTransportUnavailableError) return true;
   if (isRemoteRuntimeConnectionError(error)) return true;
-  const message = errorMessage(error);
-  return /remote (?:runtime|ADE service) connection was interrupted|sync (?:connection|websocket|endpoint).*(?:closed|failed)|remote target is not connected|SSH server at .* closed the connection before ADE could finish the SSH handshake|Timed out while waiting for the SSH handshake/i.test(
-    message,
-  );
+  return CONNECTION_FAILURE_MESSAGE.test(errorMessage(error));
 }
 
 function isConnectionBackoffThrottle(error: unknown): boolean {
@@ -418,7 +426,7 @@ function asRecord(value: unknown): Record<string, unknown> {
 function coerceConnectionProject(value: unknown): RemoteRuntimeProjectRecord {
   const project = coerceProjects([value])[0];
   if (!project)
-    throw new Error("Remote ADE service did not return a project record.");
+    throw new Error(`Remote ${BRAND.NAME} service did not return a project record.`);
   return project;
 }
 
@@ -1039,7 +1047,7 @@ export class RemoteConnectionService {
     }
     if (!paired) {
       if (relayAuthError) throw relayAuthError;
-      throw new Error(`Could not pair with the ADE machine. ${failures.join("; ")}`);
+      throw new Error(`Could not pair with the ${BRAND.NAME} machine. ${failures.join("; ")}`);
     }
     paired = this.pairedStore.save({
       ...paired,
@@ -1316,7 +1324,7 @@ export class RemoteConnectionService {
     if (personFixGate) await personFixGate;
     if (!this.isDisconnectGenerationCurrent(target.id, disconnectGeneration)) {
       throw new Error(
-        "Remote target was disconnected before ADE finished connecting.",
+        `Remote target was disconnected before ${BRAND.NAME} finished connecting.`,
       );
     }
     this.pairedFallbackSshTrustByTargetId.delete(target.id);
@@ -1366,7 +1374,7 @@ export class RemoteConnectionService {
           this.pool.disconnect(target.id);
         }
         throw new Error(
-          "Remote target was disconnected before ADE finished connecting.",
+          `Remote target was disconnected before ${BRAND.NAME} finished connecting.`,
         );
       }
       // A first successful connection enables future reconnects. Once the
@@ -1638,7 +1646,7 @@ export class RemoteConnectionService {
     let outcome: ProjectRemovalOutcome;
     if (!supported) {
       if (request.deleteFolder) {
-        return { status: "refused", code: "unsupported", reason: `Update ADE on ${machineName} to delete its folder from here.` };
+        return { status: "refused", code: "unsupported", reason: `Update ${BRAND.NAME} on ${machineName} to delete its folder from here.` };
       }
       await this.callMachine(target, "projects.remove", { projectId }, { retryOnConnectionError: false });
       outcome = { status: "removed", folder: "kept", outsideLaneFolders: [] };
@@ -1681,7 +1689,7 @@ export class RemoteConnectionService {
     const target = this.requireTarget(targetId);
     const unsupported = () =>
       this.statusById.get(target.id)?.capabilities?.machineProjects?.setIcon === false;
-    const updateMessage = `Update ADE on ${target.name || target.hostname} to change its icon.`;
+    const updateMessage = `Update ${BRAND.NAME} on ${target.name || target.hostname} to change its icon.`;
     // Known-old host: say so without a round trip.
     if (unsupported()) throw new Error(updateMessage);
     try {
@@ -2438,7 +2446,7 @@ export class RemoteConnectionService {
     const savedTarget = this.requireTarget(target.id);
     if (!this.isDisconnectGenerationCurrent(target.id, disconnectGeneration)) {
       throw new Error(
-        "Remote target was disconnected before ADE finished connecting.",
+        `Remote target was disconnected before ${BRAND.NAME} finished connecting.`,
       );
     }
     this.assertImplicitReconnectAllowed(savedTarget.id);
@@ -2483,7 +2491,7 @@ export class RemoteConnectionService {
     if (!currentOwnerUserId?.trim()) return;
     this.reconcileAccountOwnership(currentOwnerUserId);
     throw new PairedRuntimeRelayAuthRequiredError(
-      "Sign in with the same ADE account as this machine to connect.",
+      `Sign in with the same ${BRAND.NAME} account as this machine to connect.`,
     );
   }
 
@@ -2502,7 +2510,7 @@ export class RemoteConnectionService {
     const current = this.requireTarget(target.id);
     if (!this.isDisconnectGenerationCurrent(target.id, disconnectGeneration)) {
       throw new Error(
-        "Remote target was disconnected before ADE finished connecting.",
+        `Remote target was disconnected before ${BRAND.NAME} finished connecting.`,
       );
     }
     this.assertImplicitReconnectAllowed(current.id);

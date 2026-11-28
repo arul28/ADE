@@ -280,7 +280,7 @@ describe("sendDiagnosticReport", () => {
 
   it("describes each failure in one plain sentence", async () => {
     expect(describeDiagnosticUpload({ ok: true, id: "abcdef1234", reference: "abcdef12" }))
-      .toBe("Sent to ADE — reference abcdef12");
+      .toBe("Sent to DAEX — reference abcdef12");
     expect(describeDiagnosticUpload({ ok: false, reason: "rate_limited" }))
       .toContain("already sent several reports today");
     expect(describeDiagnosticUpload({ ok: false, reason: "network" }))

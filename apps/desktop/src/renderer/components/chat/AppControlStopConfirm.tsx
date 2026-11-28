@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import type { AppControlSession } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { MAC_DESKTOP_SECONDARY_BUTTON } from "./MacDesktopStateCard";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Whether Stop quits the app or only lets go of it.
@@ -24,13 +25,13 @@ export function appControlStopSentence(session: Pick<AppControlSession, "label" 
   if (appControlStopQuitsApp(session)) {
     return {
       title: `Stop ${label}?`,
-      body: "ADE quits the app it launched and closes its launch terminal, even with unsaved work.",
+      body: `${BRAND.NAME} quits the app it launched and closes its launch terminal, even with unsaved work.`,
       confirmLabel: "Quit app",
     };
   }
   return {
     title: `Detach from ${label}?`,
-    body: "ADE stops driving it. The app keeps running.",
+    body: `${BRAND.NAME} stops driving it. The app keeps running.`,
     confirmLabel: "Detach",
   };
 }

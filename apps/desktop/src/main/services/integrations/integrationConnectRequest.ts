@@ -22,6 +22,7 @@ import {
   readCardArgs,
   type CardRequestChatInput,
 } from "../chat/chatCardRequest";
+import { BRAND } from "../../../shared/brand";
 
 export type IntegrationConnectionState = {
   connected: boolean;
@@ -94,7 +95,7 @@ export async function requestIntegrationConnect(
   const args = readCardArgs(rawArgs);
   const chatSessionId = typeof args.chatSessionId === "string" ? args.chatSessionId.trim() : "";
   if (!chatSessionId) {
-    throw new Error("Connecting an integration needs a chat to ask in. Run `ade integrations connect` from inside an ADE chat.");
+    throw new Error(`Connecting an integration needs a chat to ask in. Run \`ade integrations connect\` from inside a ${BRAND.NAME} chat.`);
   }
   const provider = typeof args.provider === "string" ? args.provider.trim().toLowerCase() : "";
   if (!isConnectProviderId(provider)) {
@@ -226,7 +227,7 @@ function connectedResult(
   account: string | null,
 ): IntegrationConnectRequestResult {
   const next = provider === "github" && method === "app"
-    ? "GitHub reads work through the ADE app. It cannot push or open PRs; ask again and pick Token when you need that."
+    ? `GitHub reads work through the ${BRAND.NAME} app. It cannot push or open PRs; ask again and pick Token when you need that.`
     : CONNECT_NEXT_STEP[provider];
   return { provider, connected: true, method, account, next };
 }

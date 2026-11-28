@@ -21,6 +21,7 @@ import {
   isSyncBinaryFrame,
   syncFrameByteLength,
 } from "./syncBinaryFrame";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 export const SYNC_PROTOCOL_VERSION: SyncProtocolVersion = 1;
 export const SYNC_PROTOCOL_MIN_SUPPORTED = 1;
@@ -312,7 +313,7 @@ export class SyncProtocolVersionMismatchError extends Error {
       ? String(SYNC_PROTOCOL_VERSION)
       : `${SYNC_PROTOCOL_MIN_SUPPORTED}-${SYNC_PROTOCOL_VERSION}`;
     super(
-      `Sync protocol version ${receivedVersion} is incompatible with this ADE host (supported: ${supported}).`,
+      `Sync protocol version ${receivedVersion} is incompatible with this ${BRAND.NAME} host (supported: ${supported}).`,
     );
     this.name = "SyncProtocolVersionMismatchError";
     this.updateTarget = updateTarget;
@@ -344,7 +345,7 @@ type VersionMismatchPayload = Extract<SyncHelloErrorPayload, { code: "protocol_v
 export function mobileAppTooOldHelloError(appBuild: number): VersionMismatchPayload {
   return {
     code: "protocol_version_mismatch",
-    message: "This version of ADE on your iPhone is too old for this computer. Update ADE from TestFlight or the App Store to keep using it.",
+    message: `This version of ${BRAND.NAME} on your iPhone is too old for this computer. Update ${BRAND.NAME} from TestFlight or the App Store to keep using it.`,
     receivedVersion: appBuild,
     currentVersion: MIN_SUPPORTED_MOBILE_APP_BUILD,
     minSupportedVersion: MIN_SUPPORTED_MOBILE_APP_BUILD,

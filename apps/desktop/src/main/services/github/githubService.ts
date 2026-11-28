@@ -134,6 +134,7 @@ import { redactGitOutput } from "../../utils/redaction";
 import type { AccountVaultBridge } from "../account/accountVaultBridge";
 import { createGithubPatAccountSync } from "./githubPatAccountSync";
 import { createGithubGhAccountSync, readGithubAccountCredentialState } from "./githubGhAccountSync";
+import { BRAND } from "../../../shared/brand";
 
 export { fetchAdeLatestRelease } from "./adeReleaseFeed";
 
@@ -2557,7 +2558,7 @@ export function createGithubService({
       method: "POST",
       path: "/gists",
       body: {
-        description: args.description?.trim() || "ADE PR chat transcript",
+        description: args.description?.trim() || `${BRAND.NAME} PR chat transcript`,
         public: false,
         files,
       },

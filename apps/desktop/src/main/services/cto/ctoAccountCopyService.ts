@@ -45,6 +45,7 @@ import { isAdeCloudComputer } from "../adeCloud/cloudComputerRules";
 import type { CtoMemoryService } from "./ctoMemoryService";
 import type { CtoStoryRecord } from "./ctoStory";
 import { createCtoArchiveCopySync } from "./ctoArchiveCopySync";
+import { BRAND } from "../../../shared/brand";
 
 const ENCODED_PREFIX = "gz1:";
 const SAVE_DEBOUNCE_MS = 3_000;
@@ -821,7 +822,7 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
     return {
       ok: false,
       homeName: homeName(record),
-      message: `${ctoName} is still on its way here: ADE can't reach your account to bring it over yet. Try again in a moment.`,
+      message: `${ctoName} is still on its way here: ${BRAND.NAME} can't reach your account to bring it over yet. Try again in a moment.`,
     };
   };
 

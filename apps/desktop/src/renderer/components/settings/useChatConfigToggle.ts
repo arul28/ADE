@@ -6,6 +6,7 @@ import { showToast } from "../app/toast/toastStore";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { requirePin } from "../../state/repositoryScope";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 type BooleanChatKey = {
   [K in keyof AiChatConfig]-?: NonNullable<AiChatConfig[K]> extends boolean ? K : never;
@@ -73,7 +74,7 @@ export function useChatConfigToggle(
       setEnabled(!value);
       showToast({
         title: "Couldn't save the setting",
-        message: plainErrorText(error, "ADE couldn't save the setting."),
+        message: plainErrorText(error, `${BRAND.NAME} couldn't save the setting.`),
         tone: "error",
       });
     } finally {

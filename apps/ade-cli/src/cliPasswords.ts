@@ -17,6 +17,7 @@ import {
   unwrapActionEnvelope,
   type CliPlan,
 } from "./cli";
+import { BRAND } from "../../desktop/src/shared/brand";
 
 /**
  * `ade code [wait] --site <host>`: a sign-in code for a site. Today's source is
@@ -48,7 +49,7 @@ export function buildCodePlan(args: string[]): CliPlan {
       progressNotice: `Waiting for a sign-in code${site ? ` for ${site}` : ""}…`,
     };
   }
-  if (!site) throw new CliUsageError("ade code needs --site <host>, e.g. ade code --site github.com");
+  if (!site) throw new CliUsageError("daex code needs --site <host>, e.g. daex code --site github.com");
   return {
     kind: "execute",
     label: "code",
@@ -136,7 +137,7 @@ export function formatSecretsExec(value: unknown): string {
   const status = result.timedOut === true ? "timed out" : `exit ${result.exitCode ?? asString(result.signal) ?? "?"}`;
   const lines = [
     out,
-    `[ade secrets exec: ${status}; secrets in its environment: ${injected.join(", ") || "none"}${result.truncated === true ? "; output cut at 1 MB" : ""}]`,
+    `[daex secrets exec: ${status}; secrets in its environment: ${injected.join(", ") || "none"}${result.truncated === true ? "; output cut at 1 MB" : ""}]`,
   ];
   if (unmasked.length) lines.push(`[too short to mask in output: ${unmasked.join(", ")}]`);
   return lines.filter(Boolean).join("\n");
@@ -156,10 +157,10 @@ export function formatPasswords(value: unknown): string {
     }).join("\n");
   }
   if (isRecord(result) && typeof result.enabled === "boolean") {
-    const here = result.machineKind === "cloud" ? "ADE Cloud computers" : "this computer";
+    const here = result.machineKind === "cloud" ? `${BRAND.CLOUD_NAME} computers` : "this computer";
     const lines = [
       `Passwords: ${result.signedIn === false ? "signed out" : result.enabled ? "on" : "off"} for ${here}`,
-      `ADE Cloud computers: ${result.cloudEnabled === false ? "off" : result.cloudEnabled === true ? "on" : "not set"}`,
+      `${BRAND.CLOUD_NAME} computers: ${result.cloudEnabled === false ? "off" : result.cloudEnabled === true ? "on" : "not set"}`,
     ];
     if (typeof result.itemCount === "number") lines.push(`Saved items: ${result.itemCount}`);
     return lines.join("\n");
@@ -176,6 +177,6 @@ export function formatPasswordsCode(value: unknown): string {
   if (isRecord(result) && result.source === "authenticator") {
     return `${asString(result.code) ?? ""}  (authenticator; valid ${String(result.secondsLeft ?? "?")} s more)`;
   }
-  if (!isRecord(result)) return "No authenticator code for that site. The person can add the site's authenticator key to its login in Settings › Passwords & Secrets, or the code comes by text or email (open the mail in the ADE browser).";
+  if (!isRecord(result)) return `No authenticator code for that site. The person can add the site's authenticator key to its login in Settings › Passwords & Secrets, or the code comes by text or email (open the mail in the ${BRAND.NAME} browser).`;
   return `${asString(result.code) ?? ""}  (${asString(result.site) ?? ""}${asString(result.username) ? ` as ${asString(result.username)}` : ""}; valid ${String(result.secondsLeft ?? "?")} s more)`;
 }

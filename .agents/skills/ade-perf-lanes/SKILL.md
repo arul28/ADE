@@ -1,6 +1,6 @@
 ---
 name: ade-perf-lanes
-description: Performance practices for ADE's Lanes tab. Read before editing
+description: Performance practices for DAEX's Lanes tab. Read before editing
   files under apps/desktop/src/renderer/components/lanes/**,
   apps/desktop/src/renderer/state/appStore.ts, or
   apps/desktop/src/main/services/lanes/**. Preserve these patterns unless a new
@@ -35,7 +35,6 @@ Use this as engineering guidance for keeping the Lanes tab fast while adding fea
 - Expanded/fullscreen panes must unmount the corresponding inline pane body when the duplicate would keep effects alive. CSS hiding is not enough.
 - Git Actions should have at most one active polling/effect owner per visible lane. Timers must clean up on lane switch, pane minimize, and fullscreen transitions.
 - Poll only visible or active surfaces. Hidden lanes, hidden panes, minimized panes, and closed dialogs should not keep expensive Git, PR, Linear, AI, or runtime status requests alive.
-- Background sync/local-runtime failures should be fast-pathed in disabled perf/dev modes at the IPC boundary. Do not make every renderer caller catch slow "service unavailable" failures.
 - Presence updates should be idempotent and de-duped by lane/signature so filter changes, layout switches, and tab clicks do not spam sync IPC.
 
 ## Dialog and menu rules
@@ -54,23 +53,11 @@ Use this as engineering guidance for keeping the Lanes tab fast while adding fea
 
 ## Proven patterns
 
-### Skip disabled local runtime bridge calls
-- **Why it helped**: When `ADE_DISABLE_LOCAL_RUNTIME_DAEMON=1`, preload still attempted local-runtime action/sync/event IPC before falling back to desktop IPC. Real `/lanes` runs showed slow `ade.localRuntime.*` spans and `lanes.idle-at-rest` hit V8 OOM before summary.
-- **Apply when**: Perf/dev launches disable the daemon but traces show slow `ade.localRuntime.callAction`, `ade.localRuntime.callSync`, or `ade.localRuntime.streamEvents`.
-- **Avoid**: Renderer-only caches that hide the symptom while the unavailable transport still burns time.
-- **Verification**: Baseline `lanes-20260511-1721-real-baseline-*` had local-runtime slow channels and idle OOM. Post-change `lanes-20260511-1725-real-optimized-{cold,switch,idle,scroll,stress}` passed with total fitness `7028.82` and no `ade.localRuntime.*` channels.
-
 ### Suppress hidden duplicate fullscreen pane bodies
 - **Why it helped**: Expanding Git Actions mounted the fullscreen pane while leaving the inline `LaneGitActionsPane` body alive, producing duplicate toolbars and duplicated effects.
 - **Apply when**: A Lanes expanded/fullscreen overlay reuses pane configs and a DOM snapshot shows duplicate pane bodies or repeated test regions while only one is visible.
 - **Avoid**: CSS-only hiding for duplicate pane bodies.
 - **Verification**: Git Actions expand went from 2 toolbars to 1. IPC dropped from 30 calls / 223 ms in `lanes-expand-prefix-20260511` to 29 calls / 192 ms in `lanes-expand-postfix-20260511`.
-
-### Fast-path disabled sync status and presence
-- **Why it helped**: Perf-mode Lanes traces hit `ade.sync.getStatus` and `ade.sync.setActiveLanePresence` even though the local runtime daemon and in-process sync service were unavailable. Failed calls cost about 250-370 ms each.
-- **Apply when**: `ADE_DISABLE_LOCAL_RUNTIME_DAEMON=1` and traces show failed `ade.sync.*` calls with "Sync service is not available."
-- **Avoid**: Removing Lanes presence calls globally or catching every failure in the renderer.
-- **Verification**: `lanes-expand-postfix-20260511` had 4 failed sync IPC calls totaling 1145 ms. `lanes-sync-postfix-20260511` had 3 successful sync IPC calls totaling 2 ms.
 
 ### Scope Git Actions refreshes to lane status
 - **Why it helped**: Stage/commit/fetch used to call full `listSnapshots`, rebuilding runtime and decoration state for local Git actions. The scoped path keeps status fresh and skips snapshot decorations.

@@ -71,7 +71,7 @@ cask "ade" do
   sha256 arm: "$arm_sha", intel: "$intel_sha"
 
   url "https://github.com/arul28/ADE/releases/download/v#{version}/ADE-#{version}-#{arch}.dmg"
-  name "ADE"
+  name "DAEX"
   desc "Agent development environment for orchestrating coding agents, lanes, and PRs"
   homepage "https://github.com/arul28/ADE"
 
@@ -84,6 +84,11 @@ cask "ade" do
   depends_on macos: :ventura
 
   app "ADE.app"
+  # \`daex\` is the command's name; \`ade\` stays its alias. The app puts \`ade\`
+  # on PATH itself (~/.local/bin, adeCliAutoInstall.ts), so only \`daex\` is
+  # linked here. Releases before the rename have no bin/daex: do not point
+  # this script at one.
+  binary "#{appdir}/ADE.app/Contents/Resources/ade-cli/bin/daex"
 
   zap trash: [
     "~/Library/Application Support/ADE",

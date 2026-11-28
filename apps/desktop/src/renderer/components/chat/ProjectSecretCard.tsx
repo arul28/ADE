@@ -23,6 +23,7 @@ import { cn } from "../ui/cn";
 import { Banner } from "../ui/notice";
 import { ChatCard, ChatCardRow, ChatCardTitle } from "./chatCardPrimitives";
 import { isImeComposing } from "../../lib/imeComposition";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The private secret card.
@@ -189,7 +190,7 @@ function DeliveryChoice({
   return (
     <div
       role="radiogroup"
-      aria-label="Where ADE keeps it"
+      aria-label={`Where ${BRAND.NAME} keeps it`}
       data-testid="project-secret-delivery"
       className="inline-flex flex-none rounded-md bg-fg/[0.04] p-0.5"
     >
@@ -210,7 +211,7 @@ function DeliveryChoice({
               selected ? "bg-fg/[0.09] text-fg/85" : "text-fg/40 hover:text-fg/70",
             )}
           >
-            {option.value === "file" ? "Temporary file" : "ADE secrets"}
+            {option.value === "file" ? "Temporary file" : `${BRAND.NAME} secrets`}
           </button>
         );
       })}

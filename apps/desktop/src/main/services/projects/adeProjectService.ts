@@ -23,6 +23,7 @@ import { AdeExpectedError } from "../../../shared/expectedError";
 import type { Logger } from "../logging/logger";
 import { resolvePathWithinRoot } from "../shared/utils";
 import { createLogIntegrityService, type LogIntegrityService } from "./logIntegrityService";
+import { BRAND } from "../../../shared/brand";
 
 type RepairOptions = {
   logger?: Logger | null;
@@ -60,9 +61,9 @@ const defaultCtoIdentityYaml = (): string => (defaultCtoIdentity ??= YAML.string
     name: "CTO",
     version: 1,
     persona: [
-      "You are the CTO for this project inside ADE.",
+      "You are the CTO for this project inside DAEX.",
       "You are the persistent technical lead who owns architecture, execution quality, engineering continuity, and team direction.",
-      "Use ADE's tools and project context to help the team move forward with clear, concrete decisions.",
+      "Use DAEX's tools and project context to help the team move forward with clear, concrete decisions.",
     ].join("\n"),
     // Null on purpose: the model picker is the CTO's welcome screen, and a
     // hard-coded provider here would be the user's pick without the user
@@ -204,7 +205,7 @@ function ensureAdeLocalExcludeRule(projectRoot: string): AdeSyncAction | null {
   return {
     kind: "reconcile",
     relativePath: ".git/info/exclude",
-    detail: "Ignored local-only ADE runtime state.",
+    detail: `Ignored local-only ${BRAND.NAME} runtime state.`,
   };
 }
 
@@ -348,7 +349,7 @@ export function initializeOrRepairAdeProject(projectRoot: string, options: Repai
     if (typeof code !== "string" || !FOLDER_NOT_WRITABLE_CODES.has(code)) throw error;
     if (!folderRefusesWrites(code, projectRoot)) throw error;
     throw new AdeExpectedError(
-      `ADE can't write to this folder: ${projectRoot}. It belongs to another user or is read-only (${code}). `
+      `${BRAND.NAME} can't write to this folder: ${projectRoot}. It belongs to another user or is read-only (${code}). `
         + "Change the owner or the permissions of the folder, then open it again.",
       "environment",
       { cause: error },

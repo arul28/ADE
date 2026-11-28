@@ -19,6 +19,7 @@ import {
 import { ACTION_NOT_CALLABLE_CODE, encodeCodedErrorMessage } from "../../../../desktop/src/shared/codedError";
 import { DESKTOP_CLIENT_NAMES, isRemoteBrainCallerClientName } from "../../../../desktop/src/shared/runtimeClientNames";
 import { thisDesktopOnlyRefusalFor } from "../../../../desktop/src/shared/adeActionAccess";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 const MACHINE_ACCOUNT_METHODS = {
   "cloud.call": "cloud",
@@ -81,11 +82,11 @@ export async function runMachineAccountAction(
   const thisDesktopOnly = thisDesktopOnlyRefusalFor(domain, action, Array.isArray(params.argsList) ? params.argsList[0] : params.args);
   if (thisDesktopOnly && !localDesktop) throw new JsonRpcError(JsonRpcErrorCode.policyDenied, thisDesktopOnly);
   if (isUserOnlyAdeAction(domain, action) && !localDesktop) {
-    throw new JsonRpcError(JsonRpcErrorCode.policyDenied, `${domain}.${action} is limited to the ADE desktop app on this computer.`);
+    throw new JsonRpcError(JsonRpcErrorCode.policyDenied, `${domain}.${action} is limited to the ${BRAND.NAME} desktop app on this computer.`);
   }
   // Only the local desktop reaches the restricted machine vault.
   if (domain === "account_vault" && !localDesktop) {
-    throw new JsonRpcError(JsonRpcErrorCode.policyDenied, `${method} is only for the ADE desktop app on this computer.`);
+    throw new JsonRpcError(JsonRpcErrorCode.policyDenied, `${method} is only for the ${BRAND.NAME} desktop app on this computer.`);
   }
   const service = (await domains?.())?.[domain] ?? null;
   const callable = service?.[action];

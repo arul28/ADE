@@ -284,7 +284,7 @@ struct ADEToastPreviewHost: View {
         .padding(16)
       }
       VStack(spacing: 12) {
-        ADEToastPill(message: ADEToastMessage(text: "Changed the icon for ADE.", kind: .info), onAction: {})
+        ADEToastPill(message: ADEToastMessage(text: "Changed the icon for \(Brand.name).", kind: .info), onAction: {})
         ADEToastPill(message: ADEToastMessage(text: "Branch deleted", action: ADEToastAction(title: "Undo") {}), onAction: {})
         ADEToastPill(
           message: ADEToastMessage(text: "Couldn't change Fast mode", kind: .failure, detail: "This machine's project connection isn't ready yet."),
@@ -292,7 +292,7 @@ struct ADEToastPreviewHost: View {
         )
         ADEToastPill(
           message: ADEToastMessage(
-            text: "Couldn’t open ADE",
+            text: "Couldn’t open \(Brand.name)",
             kind: .failure,
             action: ADEToastAction(title: "Retry") {},
             detail: "The computer took too long to answer."

@@ -8,6 +8,7 @@ import type {
   AutomationWebhookSignatureConfig,
   AutomationWebhookTriggerConfig,
 } from "./types/config";
+import { BRAND } from "./brand";
 
 export const WEBHOOK_HOOK_ID_PATTERN = /^[a-z0-9][a-z0-9-]{7,63}$/;
 export const WEBHOOK_MAX_BODY_BYTES = 1024 * 1024;
@@ -79,7 +80,7 @@ export const WEBHOOK_PRESETS: readonly WebhookPresetDef[] = [
     steps: [
       "In Stripe, open Developers → Webhooks → Add endpoint.",
       "Paste the URL into Endpoint URL and choose the events to send.",
-      "After saving, reveal the Signing secret (starts with whsec_). Save that value in ADE as the signing secret.",
+      `After saving, reveal the Signing secret (starts with whsec_). Save that value in ${BRAND.NAME} as the signing secret.`,
     ],
     sampleHeaders: { "content-type": "application/json" },
     sampleBody: {
@@ -101,7 +102,7 @@ export const WEBHOOK_PRESETS: readonly WebhookPresetDef[] = [
     steps: [
       "In Linear, open Settings → API → Webhooks → New webhook.",
       "Paste the URL, pick the data types to send, and create it.",
-      "Copy the signing secret Linear shows. Save that value in ADE as the signing secret.",
+      `Copy the signing secret Linear shows. Save that value in ${BRAND.NAME} as the signing secret.`,
     ],
     sampleHeaders: { "content-type": "application/json", "linear-event": "Issue" },
     sampleBody: {
@@ -123,7 +124,7 @@ export const WEBHOOK_PRESETS: readonly WebhookPresetDef[] = [
     steps: [
       "In Sentry, open Settings → Developer Settings → Custom Integrations → Create New Integration (Internal).",
       "Paste the URL into Webhook URL and enable the Issue or Error alerts you want.",
-      "Copy the integration's Client Secret. Save that value in ADE as the signing secret.",
+      `Copy the integration's Client Secret. Save that value in ${BRAND.NAME} as the signing secret.`,
     ],
     sampleHeaders: { "content-type": "application/json", "sentry-hook-resource": "issue" },
     sampleBody: {

@@ -8,6 +8,7 @@ import {
 } from "../../../desktop/src/main/services/pty/pinnedProviderCli";
 import type { TriageBundle } from "./triageContext";
 import { TriageCommandError, TriageUsageError } from "./triageErrors";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 /**
  * Which coding agent CLI `ade triage` hands the machine to, and how.
@@ -138,7 +139,7 @@ export function detectTriageProviders(
  */
 export function triageProviderUnavailableSentence(name: TriageProviderName): string {
   return pinnedProviderCliStateSentence(TRIAGE_PINNED_PROVIDER[name]!)
-    ?? `ADE could not start its copy of ${TRIAGE_PROVIDERS.find((spec) => spec.name === name)?.label ?? name} on this machine.`;
+    ?? `${BRAND.NAME} could not start its copy of ${TRIAGE_PROVIDERS.find((spec) => spec.name === name)?.label ?? name} on this machine.`;
 }
 
 export function parseTriageProviderName(value: string): TriageProviderName {

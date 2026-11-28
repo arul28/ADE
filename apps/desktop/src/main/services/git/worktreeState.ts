@@ -4,6 +4,7 @@ import { runGit } from "./git";
 import { isWithinDir } from "../shared/utils";
 import { adeScaffoldFileContents } from "../../../shared/adeLayout";
 import { markExpected } from "../../../shared/expectedError";
+import { BRAND } from "../../../shared/brand";
 
 /** The reason describeUnsavedWorktreeWork gives for an uncommitted or untracked file. */
 export const UNCOMMITTED_CHANGES_REASON = "Lane has uncommitted changes.";
@@ -24,7 +25,7 @@ export async function describeUnsavedWorktreeWork(worktreePath: string, timeoutM
     const reason = result.timedOut
       ? `git status did not finish within ${Math.round(timeoutMs / 1000)} seconds`
       : result.stderr.trim().split(/\r?\n/, 1)[0]?.slice(0, 300) || `git status exited with ${result.exitCode}`;
-    const refusal = new Error(`ADE could not verify whether the lane has uncommitted files (${reason}).`);
+    const refusal = new Error(`${BRAND.NAME} could not verify whether the lane has uncommitted files (${reason}).`);
     // A checkout too slow for git status to answer in time (a huge repo, a
     // busy disk): the delete is refused and the person retries
     // (ADE-DESKTOP-C7). Git failing outright stays a report.
@@ -132,9 +133,9 @@ async function describeRepoWork(
 ): Promise<string | null> {
   const name = label.charAt(0).toUpperCase() + label.slice(1);
   const atDepthLimit = depth + 1 >= SUBMODULE_INSPECT_MAX_DEPTH;
-  if (atDepthLimit && mode !== "found") return `${name} is nested too deep for ADE to check.`;
+  if (atDepthLimit && mode !== "found") return `${name} is nested too deep for ${BRAND.NAME} to check.`;
   const couldNotCheck = (stderr: string, exitCode: number | null) =>
-    mode === "found" ? null : `ADE could not check ${label}: ${stderr.trim() || `git exited ${exitCode}`}`;
+    mode === "found" ? null : `${BRAND.NAME} could not check ${label}: ${stderr.trim() || `git exited ${exitCode}`}`;
   // Each repository answers for itself; a nested one is checked below.
   const dirty = await runGit(["status", "--porcelain=v1", "--ignore-submodules=all"], { cwd: repoPath, timeoutMs });
   if (dirty.exitCode !== 0) return couldNotCheck(dirty.stderr, dirty.exitCode);
@@ -212,7 +213,7 @@ async function describeUnsavedSubmoduleWork(
   // Exit 1 means no submodule path is configured.
   if (listed.exitCode === 1) return null;
   if (listed.exitCode !== 0) {
-    return mode === "found" ? null : `ADE could not read the submodule list in ${repoPath}: ${listed.stderr.trim() || `git exited ${listed.exitCode}`}`;
+    return mode === "found" ? null : `${BRAND.NAME} could not read the submodule list in ${repoPath}: ${listed.stderr.trim() || `git exited ${listed.exitCode}`}`;
   }
   const realRepoPath = realPathOrNull(repoPath) ?? repoPath;
   for (const record of listed.stdout.split("\0")) {
@@ -229,13 +230,13 @@ async function describeUnsavedSubmoduleWork(
       stats = fs.statSync(submodulePath, { throwIfNoEntry: false });
     } catch (error) {
       if (mode === "found") continue;
-      return `ADE could not check submodule ${relPath}: ${error instanceof Error ? error.message : String(error)}`;
+      return `${BRAND.NAME} could not check submodule ${relPath}: ${error instanceof Error ? error.message : String(error)}`;
     }
     if (!stats?.isDirectory()) continue;
     const realSubmodulePath = realPathOrNull(submodulePath);
     if (!realSubmodulePath || realSubmodulePath === realRepoPath || !isWithinDir(realRepoPath, realSubmodulePath)) {
       if (mode === "found") continue;
-      return `Submodule ${relPath} points outside the lane, so ADE cannot check it.`;
+      return `Submodule ${relPath} points outside the lane, so ${BRAND.NAME} cannot check it.`;
     }
     if (!fs.existsSync(path.join(submodulePath, ".git"))) {
       // Git skips the folder of an uninitialized submodule in its own checks,
@@ -246,7 +247,7 @@ async function describeUnsavedSubmoduleWork(
         entries = fs.readdirSync(submodulePath);
       } catch (error) {
         if (mode === "found") continue;
-        return `ADE could not check submodule folder ${relPath}: ${error instanceof Error ? error.message : String(error)}`;
+        return `${BRAND.NAME} could not check submodule folder ${relPath}: ${error instanceof Error ? error.message : String(error)}`;
       }
       if (entries.length > 0) return `Submodule folder ${relPath} holds files that are not in any repository.`;
       continue;

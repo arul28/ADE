@@ -209,6 +209,9 @@ function makeSandbox(caseDir, providerId, arm, testCase) {
     `CLI_SRC=${quote(path.join(repoRoot, "apps/ade-cli/src/cli.ts"))}`,
     fs.readFileSync(path.join(here, "stub-ade.sh"), "utf8"),
   ].join("\n"));
+  // `daex` is the command agents are taught; `ade` stays its alias. Both run the stub.
+  fs.copyFileSync(path.join(shims, "ade"), path.join(shims, "daex"));
+  fs.chmodSync(path.join(shims, "daex"), 0o755);
   for (const name of [...SCREEN_TOOLS, "xcrun", "xcodebuild", "open"]) {
     writeStub(path.join(shims, name), `printf '%s\\n' "${name} $*" >> ${quote(log)}\necho ok`);
   }

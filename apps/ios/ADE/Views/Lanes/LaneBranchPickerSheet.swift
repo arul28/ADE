@@ -80,7 +80,7 @@ struct LaneBranchPickerSheet: View {
             Task { await prepareCreateBranch() }
           }
         } message: {
-          Text("Create '\(normalizedCreateName)' from '\(selectedCreateStartPoint)'. ADE will compare this lane against '\(selectedCreateBaseRef)' for rebase and merge readiness.")
+          Text("Create '\(normalizedCreateName)' from '\(selectedCreateStartPoint)'. \(Brand.name) will compare this lane against '\(selectedCreateBaseRef)' for rebase and merge readiness.")
         }
         .alert(
           "Active work in this lane",

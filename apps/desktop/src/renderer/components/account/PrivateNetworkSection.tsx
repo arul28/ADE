@@ -26,6 +26,7 @@ import { TailscaleMark } from "./MachineRoutes";
 import { Banner } from "../ui/notice";
 import { machineRouteItems, type MachineRouteItem } from "./machineRouteModel";
 import type { MachineRoutesState } from "./useMachineRoutes";
+import { BRAND } from "../../../shared/brand";
 
 /** Settings anchor; the manifest entry `account.privateNetwork` points here. */
 export const PRIVATE_NETWORK_SETTINGS_ANCHOR = "account-private-network";
@@ -53,7 +54,7 @@ const STEP_LOOK: Record<StepState, { icon: ReactNode; tone: SettingsTone }> = {
   blocked: { icon: <CircleDashed size={15} weight="bold" />, tone: "slate" },
 };
 
-const WAITING_ON_STEPS = "ADE sets this up once the steps above are done.";
+const WAITING_ON_STEPS = `${BRAND.NAME} sets this up once the steps above are done.`;
 
 /** The secure route's step, by the route's state. */
 const ROUTE_STEP: Record<MachineTailnetHttpsState, { state: StepState; hint: string | null }> = {
@@ -91,10 +92,10 @@ async function runOpenTailscale(open: () => Promise<{ opened: boolean; message?:
   try {
     const result = await open();
     if (result.opened) return;
-    message = result.message ?? "ADE couldn't open the Tailscale app.";
+    message = result.message ?? `${BRAND.NAME} couldn't open the Tailscale app.`;
   } catch (err) {
     failed = err;
-    message = err instanceof Error ? err.message : "ADE couldn't open the Tailscale app.";
+    message = err instanceof Error ? err.message : `${BRAND.NAME} couldn't open the Tailscale app.`;
   }
   showToast({
     tone: "error",
@@ -129,7 +130,7 @@ function tailscaleStep(routes: MachineConnectionRoutes): SetupStep {
   const offHint = ts.state === "running" || ts.state === "not_installed"
     ? null
     : ts.state === "unknown" && ts.readError
-      ? `ADE couldn't read Tailscale: ${ts.readError} Open the Tailscale app and make sure it's connected, then press Check again.`
+      ? `${BRAND.NAME} couldn't read Tailscale: ${ts.readError} Open the Tailscale app and make sure it's connected, then press Check again.`
       : TAILSCALE_OFF_HINT[ts.state];
   return {
     id: "installed",
@@ -163,7 +164,7 @@ export function setupSteps(routes: MachineConnectionRoutes): SetupStep[] {
     {
       id: "https",
       title: "HTTPS certificates",
-      hint: "Lets the ADE web app reconnect over Tailscale. Computer names show up in public certificate logs.",
+      hint: `Lets the ${BRAND.NAME} web app reconnect over Tailscale. Computer names show up in public certificate logs.`,
       state: !running || !ts.magicDnsEnabled ? "blocked" : ts.httpsCertsEnabled ? "done" : "todo",
       action: running && ts.magicDnsEnabled && !ts.httpsCertsEnabled
         ? { label: "Turn on", href: TAILSCALE_DNS_ADMIN_URL }
@@ -195,7 +196,7 @@ function RouteLadder({ onTailnet, total, routes, checking }: {
       name: "Tailscale",
       note: total > 0 ? `Anywhere, private · ${onTailnet} of ${total} on it` : "Anywhere, private and direct",
     },
-    { key: "relay", icon: <CloudArrowUp size={15} weight="bold" />, name: "ADE Relay", note: "Through ADE's servers, as a fallback" },
+    { key: "relay", icon: <CloudArrowUp size={15} weight="bold" />, name: `${BRAND.NAME} Relay`, note: `Through ${BRAND.NAME}'s servers, as a fallback` },
   ];
   return (
     <ol className="ade-net-ladder" aria-label="Route order">
@@ -346,7 +347,7 @@ export function PrivateNetworkSection({
       title="Connections"
       icon={<TailscaleMark size={15} />}
       tone="teal"
-      hint="How your phone, the web app and your other computers reach these computers. ADE tries each way in order and uses the first that answers."
+      hint={`How your phone, the web app and your other computers reach these computers. ${BRAND.NAME} tries each way in order and uses the first that answers.`}
       actions={(
         <button type="button" className="ade-acct-btn" disabled={checking} onClick={onRecheck}>
           {checking
@@ -366,8 +367,8 @@ export function PrivateNetworkSection({
             <div className="ade-ap-rowtitle">{complete ? "Tailscale is ready" : "Set up Tailscale"}</div>
             <div className="ade-ap-rowhint">
               {complete
-                ? "Your computers and phones on your tailnet connect without ADE Relay."
-                : "Faster and private, and it keeps working when ADE Relay is off."}
+                ? `Your computers and phones on your tailnet connect without ${BRAND.NAME} Relay.`
+                : `Faster and private, and it keeps working when ${BRAND.NAME} Relay is off.`}
             </div>
           </div>
           {complete && !expiringSoon ? (

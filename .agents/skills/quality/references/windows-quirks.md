@@ -1,6 +1,6 @@
 # Windows Quirks
 
-The Windows failure modes ADE has actually hit, with the in-repo fix for each.
+The Windows failure modes DAEX has actually hit, with the in-repo fix for each.
 Referenced by `/quality`, `/test`, `/ship`, `/audit`, `/plan`, `/finalize`, and
 `/optimize` so the list lives in one place.
 
@@ -160,7 +160,7 @@ false, but a refactor can silently opt into a pipe any local user can read.
 branch uses `<adeDir>/sock/ade.sock` instead. Listen through
 `apps/ade-cli/src/services/runtime/localIpcListenOptions.ts`, which spells
 `readableAll: false, writableAll: false` explicitly. New IPC endpoints must be
-scoped by ADE home, channel/service, and user identity, or Stable and Beta
+scoped by DAEX home, channel/service, and user identity, or Stable and Beta
 collide and a second account can reach the first account's runtime.
 
 ## 6. Open files cannot be deleted or renamed
@@ -172,10 +172,16 @@ and every concurrent credential write becomes a coin flip. Directories are
 worse: an SDK holding `state/index.db` open makes `fs.rmSync` fail outright, and
 a leaked child process holding a temp tree open starves later test suites.
 
-**Do instead.** Lock contention checks must accept `EPERM|EACCES|EBUSY` on
-`win32` — see `isLockContention()` in
-`apps/ade-cli/src/services/credentials/credentialStore.ts` and
-`isSocketSpawnLockContention` in `services/runtime/socketSpawnLock.ts`.
+**Do instead.** A lock whose holder deletes the file while others may still
+have it open must accept `EPERM|EACCES|EBUSY` on `win32` as contention — see
+`isLockContention()` in
+`apps/ade-cli/src/services/credentials/credentialFileIo.ts`. The shared
+exclusive lock (`isExclusiveFileLockContention` in
+`apps/ade-cli/src/lib/exclusiveFileLock.ts`, used by the socket spawn lock and
+the service install lock) accepts only `EEXIST` and `EBUSY`: libuv opens with
+`FILE_SHARE_DELETE`, so a delete-pending name does not occur there, and
+retrying `EPERM`/`EACCES` would hide a real permission error behind a timeout.
+Measure on Windows before widening either one.
 Directory removal needs bounded retries (`removeCursorSdkRuntimePath()` in
 `apps/desktop/src/main/services/chat/cursorSdkPool.ts` retries `fs.rmSync` 40×
 at 250 ms). Anything that opens a file another process may delete needs the
@@ -289,7 +295,7 @@ a lock file per read cost the brain another 13 s per 10 minutes — and for
 
 **Failure.** V8 caches a collator for `a.localeCompare(b)` only. Pass an options
 object — `localeCompare(b, undefined, { sensitivity: "base" })`, the shape used
-all over ADE for case-insensitive ordering — and every single comparison
+all over DAEX for case-insensitive ordering — and every single comparison
 constructs a fresh `Intl.Collator`. A 110-label sort measured 1.40 ms that way
 and 0.023 ms through one collator built at module scope: 60x. It is a cost on
 every platform, but Windows is where it was found, in a sort the chat pane ran on
@@ -304,9 +310,9 @@ options argument in a sort comparator is a finding.
 ## 13. A running process never sees a CLI installed after it started
 
 **Failure.** An installer adds its folder to the *persisted* user PATH in the
-registry. ADE and its long-lived brain keep the PATH they started with, so the
+registry. DAEX and its long-lived brain keep the PATH they started with, so the
 Cursor, Copilot or Codex CLI the user just installed reads as "not installed"
-until ADE restarts, and its models never load.
+until DAEX restarts, and its models never load.
 
 **Do instead.** Resolve CLIs through `resolveExecutableFromKnownLocations` in
 `apps/desktop/src/main/services/ai/cliExecutableResolver.ts`. On Windows it
@@ -317,7 +323,7 @@ cached 30 s) and the known install folders, including
 
 ## 14. `spawnAsync` keeps 10 KB of output and hides why a spawn failed
 
-**Failure.** `agent models` prints 12.9 KB; ADE read the first 10 KB, so 63 of
+**Failure.** `agent models` prints 12.9 KB; DAEX read the first 10 KB, so 63 of
 259 model rows never reached the picker, on every OS. And a command that
 could not start came back as `status: null` with no text, or, through
 `cmd.exe`, as exit 1 with "is not recognized", which looks like a real failure.
@@ -391,7 +397,7 @@ unknown, as `readFileWithinRootSecure` in `services/shared/utils.ts` does.
   blocked process's own event loop, nothing can: it waits the full
   `busy_timeout` of 5,000 ms and throws `database is locked`. Uncontended, the
   same writes cost 0.02-0.08 ms. Never run two brains on one project database,
-  and never add a write that another ADE process can hold a lock against.
+  and never add a write that another DAEX process can hold a lock against.
 - **The full local suite is not clean on a Windows host.** POSIX-only fixtures,
   Unix-socket browser tests, `chmod` assertions, and some SQLite teardown races
   fail there by design; only the focused Windows suites are signal-bearing

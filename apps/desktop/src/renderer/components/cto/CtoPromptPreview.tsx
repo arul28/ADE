@@ -6,6 +6,7 @@ import type {
 } from "../../../shared/types";
 import { Banner } from "../ui/notice";
 import { CopyButton } from "./ctoSettingsUi";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Everything the CTO is told, as the document it is: one block per part,
@@ -18,7 +19,7 @@ const SECTION_TITLES: Record<CtoSystemPromptPreviewSection["id"], string> = {
   doctrine: "How it works",
   continuity: "Staying continuous",
   memory: "Notes and open work",
-  knowledge: "What it knows about ADE",
+  knowledge: `What it knows about ${BRAND.NAME}`,
   capabilities: "What it can do",
 };
 
@@ -33,7 +34,7 @@ export function CtoPromptPreview({ pin }: { pin: OpenProjectBinding | null }) {
     if (!bridge || !pin) {
       setLoading(false);
       setPreview(null);
-      setError(bridge ? "Home machine unreachable" : "Reopen ADE to reconnect");
+      setError(bridge ? "Home machine unreachable" : `Reopen ${BRAND.NAME} to reconnect`);
       return () => { cancelled = true; };
     }
     setLoading(true);

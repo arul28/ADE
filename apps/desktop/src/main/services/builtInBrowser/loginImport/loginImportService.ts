@@ -49,6 +49,7 @@ import {
   type DiscoveredProfile,
   type LoginImportPathContext,
 } from "./loginImportSources";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * How long a read jar stays in memory between `listDomains` and `import`.
@@ -144,7 +145,7 @@ export function createBrowserLoginImportService(args: BrowserLoginImportServiceA
           reason = capability.reason;
         } else if (definition.engine === "safari" && safariAccessDenied(profile.cookieDatabasePath)) {
           status = "needs_full_disk_access";
-          reason = "ADE needs Full Disk Access to read Safari's cookies.";
+          reason = `${BRAND.NAME} needs Full Disk Access to read Safari's cookies.`;
         }
         resolved.push({
           definition,
@@ -328,7 +329,7 @@ export function createBrowserLoginImportService(args: BrowserLoginImportServiceA
         error,
         errorText: error instanceof Error ? error.message : String(error),
       });
-      return failure(input.sourceId, "read_failed", "ADE's browser profile is not available right now.");
+      return failure(input.sourceId, "read_failed", `${BRAND.NAME}'s browser profile is not available right now.`);
     }
 
     let imported = 0;

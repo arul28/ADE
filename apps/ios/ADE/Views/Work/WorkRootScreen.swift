@@ -2031,8 +2031,8 @@ struct WorkRootListScreen: View, Equatable {
           // With no computer connected too: this read goes to the account server.
           if cloudReadFailed {
             ADENoticeCard(
-              title: "ADE Cloud",
-              message: "ADE couldn't read your machines and ADE Cloud computers, so a new one may be missing.",
+              title: "\(Brand.cloudName)",
+              message: "\(Brand.name) couldn't read your machines and \(Brand.cloudName) computers, so a new one may be missing.",
               icon: "exclamationmark.triangle.fill",
               tint: ADEColor.danger,
               actionTitle: "Retry",
@@ -2223,7 +2223,7 @@ struct WorkRootListScreen: View, Equatable {
           Task { await performBulkDelete() }
         }
       } message: {
-        Text("This permanently removes the saved chat history from ADE.")
+        Text("This permanently removes the saved chat history from \(Brand.name).")
       }
       .alert("Action failed",
              isPresented: Binding(
@@ -2356,7 +2356,7 @@ struct WorkRootListScreen: View, Equatable {
           Task { await stopRuntime(session) }
         }
       } message: { session in
-        Text("ADE will stop the running process. The saved session stays available unless you delete it.")
+        Text("\(Brand.name) will stop the running process. The saved session stays available unless you delete it.")
       }
   }
 
@@ -2613,7 +2613,7 @@ struct WorkRootListScreen: View, Equatable {
 
     Section {
       if group.isOrphaned && !collapsed {
-        Text("The lane record is missing from the latest machine snapshot. Refresh to reconcile it. ADE will not delete sessions, branches, worktrees, commits, or pull requests.")
+        Text("The lane record is missing from the latest machine snapshot. Refresh to reconcile it. \(Brand.name) will not delete sessions, branches, worktrees, commits, or pull requests.")
           .font(.footnote)
           .foregroundStyle(.secondary)
           .padding(.horizontal, 12)

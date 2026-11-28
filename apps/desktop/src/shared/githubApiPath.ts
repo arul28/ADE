@@ -1,6 +1,7 @@
 import { codedError, isCodedError } from "./codedError";
 import { AdeExpectedError } from "./expectedError";
 import type { GitHubRepoRef } from "./types/git";
+import { BRAND } from "./brand";
 
 export type GitHubRepositoryApiPath = GitHubRepoRef & {
   isRepositoryRoot: boolean;
@@ -123,7 +124,7 @@ export async function resolveGithubCreateRepositoryRoute(
   const reason = lookupError instanceof Error ? lookupError.message : null;
   throw Object.assign(
     new AdeExpectedError(
-      `ADE couldn't confirm which GitHub account is signed in, so it didn't create ${account}'s repository. Try again.${reason ? ` (${reason})` : ""}`,
+      `${BRAND.NAME} couldn't confirm which GitHub account is signed in, so it didn't create ${account}'s repository. Try again.${reason ? ` (${reason})` : ""}`,
       "network",
       { cause: lookupError },
     ),
@@ -144,7 +145,7 @@ export function assertGithubRepositoryOwner(
   if (!requested) return;
   if (repository.owner.trim().toLowerCase() === requested.toLowerCase()) return;
   throw codedError(
-    `GitHub put the repository at ${repository.fullName || repository.owner}, not under ${requested}, so ADE did not push to it. Delete it on GitHub if you don't want it, then try again.`,
+    `GitHub put the repository at ${repository.fullName || repository.owner}, not under ${requested}, so ${BRAND.NAME} did not push to it. Delete it on GitHub if you don't want it, then try again.`,
     "repo_owner_mismatch",
   );
 }

@@ -9,7 +9,7 @@ import type {
 } from "../../../../desktop/src/shared/types/remoteMcp";
 import type { AccountProjectView } from "../../../../desktop/src/shared/accountProject";
 import { listAgentSkills, readAgentSkill } from "../skills/agentSkillCatalogService";
-import { adeWithheldAgentSkills } from "../../../../desktop/src/shared/agentSkillRoots";
+import { adeWithheldAgentSkills, isAgentSkillNamed } from "../../../../desktop/src/shared/agentSkillRoots";
 import { remoteMcpAdeVersion } from "./remoteMcpAccount";
 import { createRemoteMcpProjects, type RemoteMcpProject, type ResolvedProject } from "./remoteMcpProjects";
 import { checkRemoteAdeCommand, redactedCommandForLog, splitCommandLine } from "./remoteMcpCommandPolicy";
@@ -96,8 +96,16 @@ const FAN_OUT_TIMEOUT_MS = 60_000;
 const FORWARD_EXTRA_MS = 30_000;
 const MAX_FORWARD_MS = 10 * 60_000;
 const SUPPORTED_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
-const TOOL_NAME = "ade";
-const COMMANDS_RESOURCE_URI = "ade://commands";
+const TOOL_NAME = "daex";
+/**
+ * The tool's name before the DAEX rename. Still answered (never listed), so an
+ * app holding an older tool list keeps working, and forwarded run-tool calls
+ * are sent under it (`forwardedCall`); keep it until the `ade` alias is dropped.
+ */
+const LEGACY_TOOL_NAME = "ade";
+const COMMANDS_RESOURCE_URI = "daex://commands";
+/** The commands resource's address before the DAEX rename, still readable. */
+const LEGACY_COMMANDS_RESOURCE_URI = "ade://commands";
 const MAX_PROMPTS = 200;
 const MAX_PROMPT_DESCRIPTION_CHARS = 1_024;
 /** How long the command catalog is reused before it is read again. */
@@ -112,6 +120,10 @@ const NO_CALL_CONTEXT: RemoteMcpCallContext = { bearer: null, via: null, protoco
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function isCommandsResourceUri(uri: unknown): boolean {
+  return uri === COMMANDS_RESOURCE_URI || uri === LEGACY_COMMANDS_RESOURCE_URI;
 }
 
 /**
@@ -132,7 +144,7 @@ function failedRun(message: string): RemoteRunResult {
 /** Why a connection kept to one computer can't reach this computer, or the one it named. */
 function onlyMachineRefusal(only: NonNullable<RemoteMcpConnectionSummary["onlyMachine"]>): string {
   return `This connection reaches only ${only.name}. `
-    + "To reach every machine, connect the app with your account's address from ADE Settings → ADE MCP.";
+    + "To reach every machine, connect the app with your account's address from DAEX Settings → DAEX MCP.";
 }
 
 export function createRemoteMcpProtocol(deps: {
@@ -167,9 +179,9 @@ export function createRemoteMcpProtocol(deps: {
 
   const toolDefinition = (scope: RemoteMcpScope) => ({
     name: TOOL_NAME,
-    title: "Run an ADE command",
+    title: "Run a DAEX command",
     description: [
-      `Runs the \`ade\` CLI on ${deps.machineName()}, for what no other tool covers. Add --text for readable output.`,
+      `Runs the DAEX CLI (\`daex\`, or its alias \`ade\`) on ${deps.machineName()}, when no typed tool fits. Add --text for readable output.`,
       `["help"] or ${COMMANDS_RESOURCE_URI} lists the commands; ["<command>","--help"] explains one.`,
       scope === "read" ? "Read-only: commands that change things are refused." : "Full access, like the person's terminal.",
     ].join(" "),
@@ -179,7 +191,7 @@ export function createRemoteMcpProtocol(deps: {
         args: {
           type: "array",
           items: { type: "string" },
-          description: "The words after `ade`, e.g. [\"lanes\",\"list\",\"--text\"].",
+          description: "The words after `daex`, e.g. [\"lanes\",\"list\",\"--text\"].",
         },
         command: { type: "string", description: "Or the same as one string. No shell runs it." },
         project: PROJECT_INPUT,
@@ -197,7 +209,7 @@ export function createRemoteMcpProtocol(deps: {
       },
     },
     annotations: {
-      title: "Run an ADE command",
+      title: "Run a DAEX command",
       readOnlyHint: scope === "read",
       destructiveHint: scope === "write",
       idempotentHint: false,
@@ -231,13 +243,13 @@ export function createRemoteMcpProtocol(deps: {
     scope === "write" ? TYPED_TOOLS : TYPED_TOOLS.filter((tool) => !tool.write);
 
   const instructions = (scope: RemoteMcpScope): string => [
-    `ADE on ${deps.machineName()}: coding lanes (git worktrees), agent chats and pull requests.`,
-    "Use the typed tools; `ade` runs anything else.",
+    `DAEX on ${deps.machineName()}: coding lanes (git worktrees), agent chats and pull requests.`,
+    "Use typed tools; `daex` runs the rest.",
     "`machine` (a machines_list key or name) defaults to this machine, `project` to the last opened (chat_start and lanes_create need it); each result names both. A chat id finds its own.",
-    // An app without MCP prompts (Grok Bot) reads the same skill through the `ade` tool.
-    "The `ade-mcp-client` prompt (or `skill show ade-mcp-client`) explains the workflow.",
-    // Only for an account with ADE Cloud: the same answer that lists the `ade-cloud` prompt.
-    ...(adeWithheldAgentSkills().includes("ade-cloud") ? [] : ["Before an ADE Cloud lane, run `cloud status` and follow the `ade-cloud` prompt."]),
+    // An app without MCP prompts (Grok Bot) reads the same skill through the `daex` tool.
+    "The `daex-mcp-client` prompt (or `skill show daex-mcp-client`) explains the workflow.",
+    // Only for an account with ADE Cloud: the same answer that lists the `daex-cloud` prompt.
+    ...(isAgentSkillNamed("daex-cloud", adeWithheldAgentSkills()) ? [] : ["Before a DAEX Cloud lane, run `cloud status` and follow the `daex-cloud` prompt."]),
     ...(scope === "read" ? ["This connection is read-only."] : []),
   ].join(" ");
 
@@ -307,7 +319,7 @@ export function createRemoteMcpProtocol(deps: {
     // Write tools are not listed for a read-only connection; one that calls
     // one anyway gets the reason, not a policy list.
     if (typed?.write && connection.scope !== "write") {
-      return refuseHere("", `This connection is read-only, so it can't run ${typed.name}. The person can give this app full access in ADE Settings → ADE MCP.`);
+      return refuseHere("", `This connection is read-only, so it can't run ${typed.name}. The person can give this app full access in DAEX Settings → DAEX MCP.`);
     }
     let words: unknown;
     let stdin: string | null = null;
@@ -477,10 +489,10 @@ export function createRemoteMcpProtocol(deps: {
       cwd: "error" in resolved ? os.homedir() : resolved.cwd,
       timeoutMs: 30_000,
       connectionId: "catalog",
-      connectionLabel: "ADE MCP",
+      connectionLabel: "DAEX MCP",
       role: scope === "write" ? "cto" : "agent",
     });
-    if (result.exitCode !== 0 || result.truncated) throw new Error("ADE could not list its commands right now.");
+    if (result.exitCode !== 0 || result.truncated) throw new Error("DAEX could not list its commands right now.");
     return result.stdout;
   };
 
@@ -547,7 +559,7 @@ export function createRemoteMcpProtocol(deps: {
       if (!findTypedTool(name)?.fanOut) {
         return refuse(logBase, `machine "all" works with ${FAN_OUT_TOOL_NAMES.join(", ")}. Name one machine for ${name}.`);
       }
-      if (context.via) return refuse(logBase, `This call came through ${context.via}; ADE MCP sends a call on one hop only.`);
+      if (context.via) return refuse(logBase, `This call came through ${context.via}; DAEX MCP sends a call on one hop only.`);
       return await fanOut(connection, name, localParams, rest, context, only?.machineKey ?? null);
     }
     const resolved = await router.resolve(selector);
@@ -565,7 +577,7 @@ export function createRemoteMcpProtocol(deps: {
     if (context.via) {
       return refuse(
         logBase,
-        `This call came through ${context.via}; ADE MCP sends a call on one hop only, so it can't reach ${resolved.machine.name} from here.`,
+        `This call came through ${context.via}; DAEX MCP sends a call on one hop only, so it can't reach ${resolved.machine.name} from here.`,
       );
     }
     const reason = router.unavailableReason(resolved.machine);
@@ -624,7 +636,7 @@ export function createRemoteMcpProtocol(deps: {
     return Math.min(MAX_FORWARD_MS, toolMs + FORWARD_EXTRA_MS);
   };
 
-  /** The `ade` tool's command for this computer's log; a typed tool's is logged where it runs. */
+  /** The `daex` tool's command for this computer's log; a typed tool's is logged where it runs. */
   const commandForLog = (name: string, input: Record<string, unknown>): string => {
     if (name !== TOOL_NAME) return "";
     const words = Array.isArray(input.args)
@@ -636,6 +648,24 @@ export function createRemoteMcpProtocol(deps: {
   const firstText = (result: RemoteMcpToolResult): string =>
     result.content.find((item) => item?.type === "text" && typeof item.text === "string")?.text ?? "";
 
+  /**
+   * The run tool as another machine is sent it. Released machines know only
+   * the tool `ade` and strip only a leading `ade` from the command, and brains
+   * are not behind the client minimum version, so a forwarded run-tool call
+   * goes out as `ade` with a leading `daex` sent as `ade`. New machines map
+   * `ade` to `daex`. Keep until the `ade` alias is dropped.
+   */
+  const forwardedCall = (name: string, input: Record<string, unknown>): { name: string; arguments: Record<string, unknown> } => {
+    if (name !== TOOL_NAME) return { name, arguments: input };
+    let args = input;
+    if (Array.isArray(input.args)) {
+      if (input.args[0] === "daex") args = { ...input, args: ["ade", ...input.args.slice(1)] };
+    } else if (typeof input.command === "string" && /^\s*daex(?=\s|$)/.test(input.command)) {
+      args = { ...input, command: input.command.replace(/^(\s*)daex/, "$1ade") };
+    }
+    return { name: LEGACY_TOOL_NAME, arguments: args };
+  };
+
   const forwardTo = async (
     connection: RemoteMcpConnectionSummary,
     name: string,
@@ -645,7 +675,7 @@ export function createRemoteMcpProtocol(deps: {
     timeoutMs: number,
   ): Promise<RemoteMcpToolResult> => {
     const started = Date.now();
-    const result = await deps.machines.forward(machine, { name, arguments: input }, context, timeoutMs);
+    const result = await deps.machines.forward(machine, forwardedCall(name, input), context, timeoutMs);
     deps.record({
       ...logBaseFor(connection, name),
       command: commandForLog(name, input),
@@ -739,7 +769,7 @@ export function createRemoteMcpProtocol(deps: {
   const machinesToolDefinition = () => ({
     name: MACHINES_TOOL_NAME,
     title: "List machines",
-    description: "The machines on this ADE account: online, serving or why not, and which one answers.",
+    description: "The machines on this DAEX account: online, serving or why not, and which one answers.",
     inputSchema: { type: "object", properties: {} as Record<string, unknown> },
     annotations: { readOnlyHint: true, openWorldHint: false },
   });
@@ -779,7 +809,7 @@ export function createRemoteMcpProtocol(deps: {
     const only = connection.onlyMachine ?? null;
     if (only && only.machineKey !== deps.machines.thisMachine().key) {
       if (method === "prompts/list") return reply({ prompts: [] });
-      if (method === "prompts/get" || (method === "resources/read" && params.uri === COMMANDS_RESOURCE_URI)) {
+      if (method === "prompts/get" || (method === "resources/read" && isCommandsResourceUri(params.uri))) {
         return fail(-32602, onlyMachineRefusal(only));
       }
     }
@@ -796,7 +826,7 @@ export function createRemoteMcpProtocol(deps: {
             // Clients built on the draft before SEP-3415 read this key.
             events: {},
           },
-          serverInfo: { name: "ade", title: `ADE on ${deps.machineName()}`, version: remoteMcpAdeVersion() },
+          serverInfo: { name: "daex", title: `DAEX on ${deps.machineName()}`, version: remoteMcpAdeVersion() },
           instructions: instructions(connection.scope),
         });
       }
@@ -809,24 +839,29 @@ export function createRemoteMcpProtocol(deps: {
         return reply({ tools: appDrawsViews(connection.app) ? tools.map(withAppUi) : tools });
       }
       case "tools/call":
-        return reply(await routeToolCall(connection, params, context));
+        // The tool's old name runs as today's from here on (logs, forwarding).
+        return reply(await routeToolCall(
+          connection,
+          params.name === LEGACY_TOOL_NAME ? { ...params, name: TOOL_NAME } : params,
+          context,
+        ));
       case "resources/list":
         return reply({
           resources: [{
             uri: COMMANDS_RESOURCE_URI,
             name: "commands",
-            title: "ADE commands",
-            description: "Every ade command this connection can run, with a summary and examples (ade help --json).",
+            title: "DAEX commands",
+            description: "Every daex command this connection can run, with a summary and examples (daex help --json).",
             mimeType: "application/json",
           }, adeAppResourceListing()],
         });
       case "resources/read": {
         const appResource = readAdeAppResource(params.uri);
         if (appResource) return reply(appResource);
-        if (params.uri !== COMMANDS_RESOURCE_URI) return fail(-32002, `Resource not found: ${String(params.uri)}`);
+        if (!isCommandsResourceUri(params.uri)) return fail(-32002, `Resource not found: ${String(params.uri)}`);
         try {
           const text = await commandCatalog(connection.scope);
-          return reply({ contents: [{ uri: COMMANDS_RESOURCE_URI, mimeType: "application/json", text }] });
+          return reply({ contents: [{ uri: String(params.uri), mimeType: "application/json", text }] });
         } catch (error) {
           const message = getErrorMessage(error);
           deps.warn?.("remote_mcp.catalog_failed", { scope: connection.scope, error: message });

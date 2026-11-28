@@ -59,6 +59,7 @@ import {
   type CloudLaneLaunchDeps,
   type CloudLaneLaunchStartInput,
 } from "./cloudLaneLaunchSteps";
+import { BRAND } from "../../../shared/brand";
 
 export type { CloudLaneLaunchDeps, CloudLaneLaunchStartInput } from "./cloudLaneLaunchSteps";
 
@@ -544,7 +545,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
         store.persist(record);
         out.push({ ...attachment, path: uploaded.path });
       } catch (error) {
-        throw new LaunchStepError(`ADE couldn't send ${filename} to the new computer: ${getErrorMessage(error).replace(/\.$/, "")}. Retry to send it again.`);
+        throw new LaunchStepError(`${BRAND.NAME} couldn't send ${filename} to the new computer: ${getErrorMessage(error).replace(/\.$/, "")}. Retry to send it again.`);
       }
     }
     return out;
@@ -797,7 +798,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
   // ---------------------------------------------------------------------------
 
   const start = async (input: CloudLaneLaunchStartInput): Promise<ChatLaunchSnapshot> => {
-    if (disposed) throw new Error("ADE is shutting down.");
+    if (disposed) throw new Error(`${BRAND.NAME} is shutting down.`);
     const args = input.args;
     const launchId = requireLaunchId(args?.launchId);
     const existing = records.get(launchId);
@@ -812,7 +813,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     // The refusal above already asked for both; this narrows them.
     const project = githubClone(input.originUrl);
     const cloud = args.cloud;
-    if (!project || !cloud) throw new Error("ADE Cloud can't start this launch.");
+    if (!project || !cloud) throw new Error(`${BRAND.CLOUD_NAME} can't start this launch.`);
     // C4: a private repository needs a GitHub sign-in that follows the
     // account, checked before any computer is made (and hours spent).
     // No answer from GitHub goes on, and the card says what may happen.
@@ -943,7 +944,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
       // app has paired and read it, and then its work is never deleted here.
       const answer = await cancelOnServer(record);
       if (answer === "started") throw new Error(chatLaunchAlreadyStartedMessage(record.snapshot.kind));
-      if (answer === "unreached") throw new Error("ADE can't reach ADE Cloud to cancel this launch. Try again in a moment.");
+      if (answer === "unreached") throw new Error(`${BRAND.NAME} can't reach ${BRAND.CLOUD_NAME} to cancel this launch. Try again in a moment.`);
     }
     const runtime = runtimeFor(launchId);
     const pipeline = runtime.pipeline;

@@ -22,6 +22,7 @@ import {
   useBrowserAgentAccess,
 } from "../chat/browser/browserAgentAccess";
 import { isImeComposing } from "../../lib/imeComposition";
+import { BRAND } from "../../../shared/brand";
 
 /** Keys pressed this soon after the prompt appears were meant for something else. */
 const KEY_ARM_DELAY_MS = 600;
@@ -49,7 +50,7 @@ export function browserAgentAccessPromptTitle(prompt: BuiltInBrowserAgentAccessP
     : prompt.chatSessionId
       ? "A chat"
       : "An agent";
-  return lane ? `${chat} in lane ${lane} wants to use the ADE browser` : `${chat} wants to use the ADE browser`;
+  return lane ? `${chat} in lane ${lane} wants to use the ${BRAND.NAME} browser` : `${chat} wants to use the ${BRAND.NAME} browser`;
 }
 
 function BrowserAgentAccessPromptDialog({

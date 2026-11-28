@@ -27,6 +27,7 @@ import {
 } from "./issueViewerParts";
 import { LinearIssueView } from "./LinearIssueView";
 import { editLinearIssue, useLinearIssue, useLinearPickerCatalog } from "./linearIssueStore";
+import { BRAND } from "../../../shared/brand";
 
 /** A Linear issue in the shared viewer frame: read by identifier, editable in place. */
 export function LinearIssueViewer({
@@ -224,8 +225,8 @@ function IssueLoadState({
     model = {
       id: "issue-no-project",
       tone: "warning",
-      title: `Open the ADE project for ${label}`,
-      detail: "ADE reads Linear through a project's connection, and no project is open.",
+      title: `Open the ${BRAND.NAME} project for ${label}`,
+      detail: `${BRAND.NAME} reads Linear through a project's connection, and no project is open.`,
       actions: [{ label: "Open project picker", onClick: () => { onLeave?.(); setShowWelcome(true); } }, ...openAction],
     };
   } else if (reachability === "disconnected") {
@@ -302,9 +303,9 @@ function linearCopyEntries(issue: NormalizedLinearIssue, variant: IssueViewerPro
   entries.push({
     kind: "item",
     key: "deeplink",
-    label: "Copy ADE link",
+    label: `Copy ${BRAND.NAME} link`,
     icon: Copy,
-    onSelect: () => copy(buildDeeplink({ kind: "linear-issue", issueIdentifier: issue.identifier }), "ADE link"),
+    onSelect: () => copy(buildDeeplink({ kind: "linear-issue", issueIdentifier: issue.identifier }), `${BRAND.NAME} link`),
   });
   return entries;
 }

@@ -15,6 +15,7 @@ import {
   commandArrayToLine as sharedCommandArrayToLine,
   resolveCanonicalCommandLineLaunch,
 } from "../../../shared/shell";
+import { PRODUCT_NAME_PATTERN } from "../../../shared/brandNames";
 
 /**
  * The provider config home a transcript was found in, and the ADE launch
@@ -515,14 +516,21 @@ export function isAdeProbeSession(session: { preview?: string | null; messageCou
   return ADE_PROBE_PROMPT.test(session.preview?.trim() ?? "");
 }
 
+const CONTINUITY_CONTEXT_PREAMBLE = new RegExp(String.raw`^\s*System context \((?:CTO reconstruction|${PRODUCT_NAME_PATTERN} continuity), do not echo verbatim\)`, "u");
+
 /**
  * A prompt ADE itself wrote to restore context in a fresh provider session
  * (`agentChatService` prefixes it; older builds said "CTO reconstruction").
  * A session that starts this way is ADE's own work, not the user's.
  */
 export function isAdeContinuityPrompt(text: string | null | undefined): boolean {
-  return /^\s*System context \((?:CTO reconstruction|ADE continuity), do not echo verbatim\)/u.test(text ?? "");
+  return CONTINUITY_CONTEXT_PREAMBLE.test(text ?? "");
 }
+
+const KNOWN_PRODUCT_PREAMBLE = new RegExp(String.raw`\[${PRODUCT_NAME_PATTERN} launch directive\]|## ${PRODUCT_NAME_PATTERN} CLI primer|## Project agent rules|${PRODUCT_NAME_PATTERN} session guidance|# AGENTS\.md instructions|## Computer Use\nYou have computer-use capabilities available`, "iu");
+const LAUNCH_DIRECTIVE_BLOCK = new RegExp(String.raw`\[${PRODUCT_NAME_PATTERN} launch directive\][\s\S]*?(?=\n\n|$)`, "giu");
+const CLI_PRIMER_BLOCK = new RegExp(String.raw`## ${PRODUCT_NAME_PATTERN} CLI primer[\s\S]*?(?=User request:|<\/user_query>|$)`, "giu");
+const SESSION_GUIDANCE_BLOCK = new RegExp(String.raw`${PRODUCT_NAME_PATTERN} session guidance[\s\S]*?(?=\n\n|$)`, "giu");
 
 /**
  * Remove provider/ADE transport markup while preserving the user's actual
@@ -537,7 +545,7 @@ export function cleanExternalSessionUserText(raw: string): string | null {
     .replace(/<timestamp>[\s\S]*?<\/timestamp>/giu, " ");
   // Cursor marks each attached image as `[Image]` before its `<image_files>` note.
   text = text.replace(/\[Image\]/gu, " ");
-  const hasKnownAdePreamble = /\[ADE launch directive\]|## ADE CLI primer|## Project agent rules|ADE session guidance|# AGENTS\.md instructions|## Computer Use\nYou have computer-use capabilities available/iu.test(text);
+  const hasKnownAdePreamble = KNOWN_PRODUCT_PREAMBLE.test(text);
 
   const queryMatches = Array.from(text.matchAll(/<user_query>\s*([\s\S]*?)\s*<\/user_query>/giu));
   const lastQueryMatch = queryMatches.at(-1);
@@ -548,10 +556,10 @@ export function cleanExternalSessionUserText(raw: string): string | null {
 
   text = text
     .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/giu, " ")
-    .replace(/\[ADE launch directive\][\s\S]*?(?=\n\n|$)/giu, " ")
-    .replace(/## ADE CLI primer[\s\S]*?(?=User request:|<\/user_query>|$)/giu, " ")
+    .replace(LAUNCH_DIRECTIVE_BLOCK, " ")
+    .replace(CLI_PRIMER_BLOCK, " ")
     .replace(/## Project agent rules[\s\S]*?(?=User request:|<\/user_query>|$)/giu, " ")
-    .replace(/ADE session guidance[\s\S]*?(?=\n\n|$)/giu, " ")
+    .replace(SESSION_GUIDANCE_BLOCK, " ")
     .replace(/# AGENTS\.md instructions[\s\S]*?(?=User request:|<\/user_query>|$)/giu, " ")
     // ADE's computer-use directive (`agentChatService` builds it) runs up to the request.
     .replace(/## Computer Use\nYou have computer-use capabilities available[\s\S]*?(?=User request:|<\/user_query>|$)/giu, " ");

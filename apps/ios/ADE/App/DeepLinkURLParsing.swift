@@ -69,6 +69,33 @@ enum ADEDeepLinkURLParsing {
   static let legacyWebHosts: Set<String> = ["ade.app", "app.ade-app.dev"]
   private static let pathValueAllowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
 
+  /// Is this one of our deep link schemes: `ade`, `daex`, or the Beta app's
+  /// `ade-beta` / `daex-beta` (`Brand.linkSchemes`), in any case?
+  static func isADELinkScheme(_ scheme: String?) -> Bool {
+    guard let scheme else { return false }
+    return Brand.linkSchemes.contains(scheme.lowercased())
+  }
+
+  /// The same link under the `ade` scheme, which every route matches on, so a
+  /// `daex://`, `ade-beta://` or `daex-beta://` link routes like `ade://`.
+  /// Other URLs are returned as they are.
+  static func withADEScheme(_ url: URL) -> URL {
+    withScheme(url, "ade")
+  }
+
+  /// The same link under `Brand.linkSchemeForNewLinks` (`daex://`), for a link
+  /// passed on to a computer. Other URLs are returned as they are.
+  static func withNewLinkScheme(_ url: URL) -> URL {
+    withScheme(url, Brand.linkSchemeForNewLinks)
+  }
+
+  private static func withScheme(_ url: URL, _ target: String) -> URL {
+    guard let scheme = url.scheme?.lowercased(), scheme != target, isADELinkScheme(scheme),
+          var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+    components.scheme = target
+    return components.url ?? url
+  }
+
   static func isADEWebHost(_ value: String?) -> Bool {
     guard let value else { return false }
     let host = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()

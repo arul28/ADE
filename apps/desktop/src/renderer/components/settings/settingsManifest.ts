@@ -22,6 +22,7 @@ import {
 import { adeCloudEnabled } from "../../state/cloudAccess";
 import { isMacPlatform } from "../../lib/platform";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { BRAND } from "../../../shared/brand";
 
 export * from "../../../shared/settingsManifest";
 
@@ -198,9 +199,9 @@ export function searchSettingsEntries(query: string): SettingEntry[] {
 export function settingUnavailableReason(entry: SettingEntry): string | null {
   if (isSettingAvailable(entry)) return null;
   if (entry.macOnly && !isMacPlatform()) return "This setting is only on macOS.";
-  if (entry.webOnly) return "This setting is only in the ADE web app.";
+  if (entry.webOnly) return `This setting is only in the ${BRAND.NAME} web app.`;
   if (isWebClientMode()) {
-    if (entry.web === "hidden") return "Open ADE on your computer to change this.";
+    if (entry.web === "hidden") return `Open ${BRAND.NAME} on your computer to change this.`;
     return "Connect to a project to change this.";
   }
   return "Open a project to change this.";

@@ -1,5 +1,6 @@
 import path from "node:path";
 import { powerShellSingleQuotedLiteral } from "./common";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 /**
  * ADE-160. Three guards run before any brain work, in this order:
@@ -120,7 +121,7 @@ export function renderWindowsSupervisorGuardLines(options: {
     "  } elseif ($mutexError -eq 183) {",
     // ERROR_ALREADY_EXISTS: another supervisor of this account and channel
     // already holds it — the ADE-160 case. Leave the owner alone.
-    "    Write-SupervisorLog \"another ADE supervisor already owns $mutexName; exiting\"",
+    `    Write-SupervisorLog \"another ${BRAND.NAME} supervisor already owns $mutexName; exiting\"`,
     "    exit 0",
     "  }",
     "} else {",

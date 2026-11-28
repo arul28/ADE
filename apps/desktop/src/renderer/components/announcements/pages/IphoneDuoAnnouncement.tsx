@@ -3,6 +3,7 @@ import type { AnnouncementPageProps } from "../announcementPages";
 import { WhatsNewFeature } from "./WhatsNewFeature";
 import video from "./assets/iphone-duo.mp4";
 import still from "./assets/iphone-duo-still.webp";
+import { BRAND } from "../../../../shared/brand";
 
 /** iPhone Duo, the foldable, in ADE's iOS simulator. */
 export default function IphoneDuoAnnouncement({ close }: AnnouncementPageProps) {
@@ -18,7 +19,7 @@ export default function IphoneDuoAnnouncement({ close }: AnnouncementPageProps) 
         still,
         width: 1600,
         height: 1060,
-        alt: "An app on iPhone Duo in ADE's simulator, turning in 3D and folding as the hinge slider moves",
+        alt: `An app on iPhone Duo in ${BRAND.NAME}'s simulator, turning in 3D and folding as the hinge slider moves`,
       }}
     />
   );

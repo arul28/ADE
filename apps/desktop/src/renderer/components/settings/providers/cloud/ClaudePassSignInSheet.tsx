@@ -31,6 +31,7 @@ import {
   type SignInStage,
 } from "../signInSheetParts";
 import { isCheckingCode, verifyingHintFor } from "../signInSheetFrame";
+import { BRAND } from "../../../../../shared/brand";
 
 type ClaudePassStage = SignInStage | "pick" | "reading" | "saving" | "succeeded" | "saved_here";
 
@@ -263,13 +264,13 @@ export function ClaudePassSignInSheet({
     <SignInSheetDialog
       providerId="claude"
       title={title}
-      place="on ADE Cloud"
+      place={`on ${BRAND.CLOUD_NAME}`}
       turn={stage === "succeeded"}
       running={running}
       closeOnScrimClick={!running && !waitingOnPerson}
       closeLabel={closeLabel}
       onClose={close}
-      footerStatus={stage === "saving" ? "Saving to your ADE account…" : stage === "verifying" ? (verifyingHintFor(flow) ?? "Checking the account…") : stage === "starting" ? "Starting the sign-in…" : "Waiting for you to approve in the browser"}
+      footerStatus={stage === "saving" ? `Saving to your ${BRAND.NAME} account…` : stage === "verifying" ? (verifyingHintFor(flow) ?? "Checking the account…") : stage === "starting" ? "Starting the sign-in…" : "Waiting for you to approve in the browser"}
       actions={actions}
       testId="claude-pass-sign-in"
     >
@@ -338,7 +339,7 @@ export function ClaudePassSignInSheet({
             account={null}
             providerLabel="Claude"
             title={expected ? `Signed in. Labelled ${expected}.` : "Signed in."}
-            detail={expected ? "ADE couldn't check this account." : null}
+            detail={expected ? `${BRAND.NAME} couldn't check this account.` : null}
           />
         ) : (
           <SignInSuccess account={found} providerLabel="Claude" />

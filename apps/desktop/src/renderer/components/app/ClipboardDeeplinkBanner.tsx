@@ -9,6 +9,7 @@ import {
 } from "../../../shared/deeplinks";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { APP_BANNER_PRIORITY, useAppBanner } from "../ui/notice";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Watches the system clipboard when the ADE window gains focus. If the
@@ -87,7 +88,7 @@ export function ClipboardDeeplinkBanner(): null {
           id: "clipboard-deeplink",
           tone: "accent",
           icon: <LinkIcon size={14} weight="bold" />,
-          title: `Found ADE link in clipboard — open ${candidate.label}?`,
+          title: `Found ${BRAND.NAME} link in clipboard — open ${candidate.label}?`,
           actions: [{ label: "Open", variant: "solid", onClick: onOpen }],
           dismiss: { onDismiss },
         }

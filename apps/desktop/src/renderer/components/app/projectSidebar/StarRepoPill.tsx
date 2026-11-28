@@ -17,6 +17,7 @@ import { isInvitePillVisible, useInvitePillPrefs } from "../../../lib/invitePill
 import { useCloudAccount } from "../../../state/cloudAccountStore";
 import { useTourOpen } from "../../../onboarding/useTourOpen";
 import type { GitHubRepoStarState, OpenProjectBinding } from "../../../../shared/types";
+import { BRAND } from "../../../../shared/brand";
 
 /** How long "Thanks!" stays up before it fades. */
 const THANKS_HOLD_MS = 2_000;
@@ -172,10 +173,10 @@ export function StarRepoPill() {
           id: "star-repo",
           tone: "accent",
           icon: <Star size={14} weight="fill" />,
-          ariaLabel: "Star ADE on GitHub",
+          ariaLabel: `Star ${BRAND.NAME} on GitHub`,
           title: (
             <button type="button" className="ade-star-pill-link" onClick={openRepo}>
-              Star ADE on GitHub
+              Star {BRAND.NAME} on GitHub
             </button>
           ),
           dismiss: {

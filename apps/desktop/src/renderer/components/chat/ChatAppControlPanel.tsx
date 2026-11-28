@@ -85,6 +85,7 @@ import {
 import { isImeComposing } from "../../lib/imeComposition";
 import { usePinTargetsTab } from "../../state/crossMachineLanes";
 import { NO_CHAT_MACHINE_MESSAGE, requireChatPin } from "./chatMachinePin";
+import { BRAND } from "../../../shared/brand";
 
 type ChatAppControlPanelProps = {
   sessionId: string | null;
@@ -874,7 +875,7 @@ export function ChatAppControlPanel({
     try {
       await action();
     } catch (error) {
-      setMessage({ tone: "error", text: plainErrorText(error, "ADE couldn't finish that.") });
+      setMessage({ tone: "error", text: plainErrorText(error, `${BRAND.NAME} couldn't finish that.`) });
     } finally {
       setBusy(null);
     }
@@ -1304,8 +1305,8 @@ export function ChatAppControlPanel({
   const requestDebugHelp = useCallback(() => {
     onInsertDraft?.(
       [
-        "Set up this Electron app for ADE App Control.",
-        "Wire ADE_APP_CONTROL_DEBUG_FLAGS or ADE_APP_CONTROL_CDP_PORT into the launch command, then verify with `ade app-control launch --command \"<command>\" --text` and `ade app-control snapshot --text`.",
+        `Set up this Electron app for ${BRAND.NAME} App Control.`,
+        `Wire ADE_APP_CONTROL_DEBUG_FLAGS or ADE_APP_CONTROL_CDP_PORT into the launch command, then verify with \`${BRAND.CLI} app-control launch --command "<command>" --text\` and \`${BRAND.CLI} app-control snapshot --text\`.`,
       ].join("\n"),
     );
   }, [onInsertDraft]);
@@ -1429,7 +1430,7 @@ export function ChatAppControlPanel({
         tone: "notice",
         busy: true,
         sentence: `Starting ${appName ?? "the app"}. Waiting for its debug port on 127.0.0.1:${activeSession.cdpPort}.`,
-        detail: "ADE adds the debug flags for common npm, pnpm, yarn, bun and direct Electron launches. If this does not end, quit any older copy of the app, or pass ADE_APP_CONTROL_DEBUG_FLAGS to the launcher.",
+        detail: `${BRAND.NAME} adds the debug flags for common npm, pnpm, yarn, bun and direct Electron launches. If this does not end, quit any older copy of the app, or pass ADE_APP_CONTROL_DEBUG_FLAGS to the launcher.`,
         actions: terminal ? [{ label: "Show terminal", onClick: () => onShowTerminal?.(terminal), muted: true }] : undefined,
         testId: "app-control-waiting",
       };

@@ -8,6 +8,7 @@ import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
 import { runDeviceScript, type BootedDevice } from "./androidDeviceShell";
 import type { AndroidDiscoveredEmulator } from "./androidEmulatorProcess";
+import { BRAND } from "../../../shared/brand";
 
 /*
  * Parity with Apple's `laneDeviceMaintenance.ts`: the cleanup pass that keeps
@@ -48,7 +49,7 @@ import type { AndroidDiscoveredEmulator } from "./androidEmulatorProcess";
  */
 
 /** A power-off refused on the device's queue: something used the emulator, or the person pinned it, while the pass waited. */
-export const ANDROID_CAME_INTO_USE = "The emulator came into use or was pinned, so ADE left it running.";
+export const ANDROID_CAME_INTO_USE = `The emulator came into use or was pinned, so ${BRAND.NAME} left it running.`;
 
 const CLEANUP_FIRST_MS = 60_000;
 const CLEANUP_TICK_MS = 15 * 60_000;

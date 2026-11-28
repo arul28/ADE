@@ -90,6 +90,7 @@ import { groupChecksForList, rowLabel } from "./prChecksListModel";
 import { PrChecksGraphSkeleton } from "./PrChecksGraphSkeleton";
 import { OpenOnGitHubButton, STATE_COLOR, STATE_LABEL, StateIcon, fmtMs, tint } from "./prChecksVisuals";
 import { plainErrorText } from "../../../lib/plainError";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * React Flow is ~100 KB of JavaScript plus a stylesheet, and the PR detail pane
@@ -700,7 +701,7 @@ export function PrChecksTab({
     if (drawer.jobId == null) {
       setExcerpt(null);
       setLogLoading(false);
-      setLogError("ADE couldn't resolve a GitHub job id for this check, so there's no log to fetch.");
+      setLogError(`${BRAND.NAME} couldn't resolve a GitHub job id for this check, so there's no log to fetch.`);
       return undefined;
     }
     let cancelled = false;
@@ -720,7 +721,7 @@ export function PrChecksTab({
         // data the checks poll already holds.
         if (result.resolution === "skipped") return;
         if (result.resolution === "no-api") {
-          setLogError("This ADE runtime can't fetch CI logs yet — open the full log on GitHub instead.");
+          setLogError(`This ${BRAND.NAME} runtime can't fetch CI logs yet — open the full log on GitHub instead.`);
           return;
         }
         setExcerpt(result.excerpt);
@@ -729,7 +730,7 @@ export function PrChecksTab({
       .catch((err: unknown) => {
         if (cancelled) return;
         setExcerpt(null);
-        setLogError(plainErrorText(err, "ADE couldn't load that log."));
+        setLogError(plainErrorText(err, `${BRAND.NAME} couldn't load that log.`));
       })
       .finally(() => { if (!cancelled) setLogLoading(false); });
     return () => { cancelled = true; };
@@ -1068,13 +1069,13 @@ export function PrChecksTab({
       {activeGraph.status === "unreachable" ? (
         <div data-testid="pr-checks-swimlanes">
           <GraphUnavailableNote
-            copy="ADE couldn't reach GitHub to chart these checks, so it can't draw the pipeline. Everything it already knows is below."
+            copy={`${BRAND.NAME} couldn't reach GitHub to chart these checks, so it can't draw the pipeline. Everything it already knows is below.`}
             onRetry={retryGraph}
           />
           {buckets.total === 0
             ? (
               <div className="px-1 py-4 text-[12px]" style={{ color: COLORS.textDim, fontFamily: SANS_FONT }} data-testid="pr-checks-empty">
-                ADE has no check results for this pull request either.
+                {BRAND.NAME} has no check results for this pull request either.
               </div>
             )
             : renderSections("No checks to show for this attempt.")}
@@ -1105,7 +1106,7 @@ export function PrChecksTab({
             <GraphUnavailableNote
               copy={
                 !viewingLatestAttempt
-                  ? "ADE charts only the latest attempt, so this older attempt is shown grouped by workflow."
+                  ? `${BRAND.NAME} charts only the latest attempt, so this older attempt is shown grouped by workflow.`
                   : graphUnavailableCopy(graph.unavailableReason)
               }
             />

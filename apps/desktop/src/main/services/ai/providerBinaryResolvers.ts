@@ -33,6 +33,7 @@ import type {
   ProviderBinaryResolver,
   ResolvedProviderBinary,
 } from "./providerProbeSeams";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Anchored to this module, not to `process.cwd()`. Used to find `@cursor/sdk`
@@ -147,7 +148,7 @@ export const DEFAULT_RESOLVERS: Record<ShippedProvider, ProviderBinaryResolver> 
     }
     const userInstall = context.findOnPath("muse", context.env);
     const userNote = userInstall
-      ? ` A separate Muse install was found at ${userInstall}; ADE does not use it.`
+      ? ` A separate Muse install was found at ${userInstall}; ${BRAND.NAME} does not use it.`
       : "";
     return { path: null, detail: `${museBinaryBlocker(resolved) ?? ""}${userNote}` };
   },
@@ -168,7 +169,7 @@ export const DEFAULT_RESOLVERS: Record<ShippedProvider, ProviderBinaryResolver> 
     }
     return {
       path: null,
-      detail: "ADE's bundled @cursor/sdk package was not found.",
+      detail: `${BRAND.NAME}'s bundled @cursor/sdk package was not found.`,
     };
   },
 };

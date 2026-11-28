@@ -63,6 +63,7 @@ import { openReadOnlyDatabase } from "../projects/readOnlySqlite";
 import { deleteAppleSimulator } from "./simulatorPower";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * One simulator per lane, many per machine.
@@ -298,7 +299,7 @@ function appleLaneExtraDeviceLimit(): number {
 /**
  * The lane device's name.
  *
- * `ADE · <lane>` is the locked pattern: the separator makes an ADE device
+ * `DAEX · <lane>` is the locked pattern: the separator makes a DAEX device
  * obvious in Xcode's own device list, which is the list a user reaches for when
  * something looks wrong. A collision gets a numeric suffix rather than being
  * refused — two lanes can legitimately carry the same display name.
@@ -311,7 +312,7 @@ export function appleLaneDeviceName(input: {
 }): string {
   const requested = input.requested?.trim();
   const label = (input.laneName?.trim() || input.laneId.slice(0, 8)).replace(/\s+/g, " ");
-  const base = requested || `ADE · ${label}`;
+  const base = requested || `${BRAND.NAME} · ${label}`;
   const taken = new Set(input.taken ?? []);
   if (!taken.has(base)) return base;
   for (let suffix = 2; suffix < 100; suffix += 1) {
@@ -662,7 +663,7 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
         throw new Error(
           `${APPLE_EXTRA_DEVICE_LIMIT_CODE}: this lane already has ${held.length} extra devices `
           + `(${held.map((device) => device.name).join(", ")}). Delete one first: device-delete --device <udid>. `
-          + `The limit is ${limit}; ADE_APPLE_LANE_EXTRA_DEVICES in ADE's environment raises it (up to ${APPLE_LANE_EXTRA_DEVICE_MAX}).`,
+          + `The limit is ${limit}; ADE_APPLE_LANE_EXTRA_DEVICES in ${BRAND.NAME}'s environment raises it (up to ${APPLE_LANE_EXTRA_DEVICE_MAX}).`,
         );
       }
     } else {
@@ -688,7 +689,7 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
       laneName,
       // An extra device says what it is, so `--device "<name>"` reads well.
       requested: args.name?.trim()
-        || (extra ? `ADE · ${(laneName?.trim() || laneId.slice(0, 8)).replace(/\s+/g, " ")} · ${spec.deviceType.name}` : null),
+        || (extra ? `${BRAND.NAME} · ${(laneName?.trim() || laneId.slice(0, 8)).replace(/\s+/g, " ")} · ${spec.deviceType.name}` : null),
       taken: installed.map((device) => device.name),
     });
     // `simctl create` prints the new udid and nothing else. Anything on stderr

@@ -17,6 +17,7 @@ import { rootAppStoreApi } from "../../state/appStore";
 import { adeCloudLaneComputerForMachine, forgetCloudLaneComputer, type AdeCloudLaneComputer } from "../../state/adeCloudLaneIndex";
 import { resolveAdeCloudLaneBinding } from "../chat/adeCloudLaneBinding";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * What ADE does to a cloud lane's computer, from every place that shows one
@@ -34,7 +35,7 @@ import { isAdeAvailable } from "../../lib/adeAvailability";
  * person's. Each one is checked for: an older preload lacks them.
  */
 
-export const CLOUD_LANE_LIFE_UNAVAILABLE = "Do this in the ADE desktop app. This window can't change ADE Cloud lanes.";
+export const CLOUD_LANE_LIFE_UNAVAILABLE = `Do this in the ${BRAND.NAME} desktop app. This window can't change ${BRAND.CLOUD_NAME} lanes.`;
 
 function laneLife(): NonNullable<NonNullable<typeof window.ade.cloud>["laneLife"]> | null {
   // The web app's stand-in for a missing member is truthy: ask whether it is real.
@@ -164,7 +165,7 @@ export async function pushCloudLaneWork(instanceId: string): Promise<string> {
   const push = window.ade?.cloud?.pushAllWork;
   if (!isAdeAvailable(push)) throw new Error(CLOUD_LANE_LIFE_UNAVAILABLE);
   const result = await push(instanceId);
-  if (!result.ok) throw new Error(result.message || "ADE couldn't push the work.");
+  if (!result.ok) throw new Error(result.message || `${BRAND.NAME} couldn't push the work.`);
   return result.message || "Pushed all work to GitHub.";
 }
 

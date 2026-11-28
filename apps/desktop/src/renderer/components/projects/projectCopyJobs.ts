@@ -7,6 +7,7 @@ import {
   type CopyFailure,
   type CopyOpenTarget,
 } from "./projectCopies";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The clones that put a copy of a repository on a machine, one job per
@@ -109,7 +110,7 @@ async function cloneOnMachine(job: CopyJob): Promise<CopyOpenTarget> {
     // The hosted web client clones over that machine's own session
     // (`project_clone_request`); the desktop through its remote runtime.
     const clone = window.ade?.remoteRuntime?.cloneProject;
-    if (typeof clone !== "function") throw new Error("copy_unsupported: this ADE cannot clone on another machine.");
+    if (typeof clone !== "function") throw new Error(`copy_unsupported: this ${BRAND.NAME} cannot clone on another machine.`);
     const record = await clone(targetId, input);
     if (record.githubSignInMissing) {
       // The clone used this computer's GitHub sign-in once; nothing of it stays there.

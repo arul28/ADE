@@ -12,6 +12,7 @@ import { cn } from "../ui/cn";
 import { GITHUB_BRAND } from "../lanes/githubBrand";
 import { fgTint } from "../lanes/laneDesignTokens";
 import { useGitHubIssuePin, useProjectGitHubRepo } from "../issues/githubIssueStore";
+import { BRAND } from "../../../shared/brand";
 
 type IssueStateFilter = "open" | "closed" | "all";
 
@@ -91,7 +92,7 @@ export function GitHubIssueBrowser({
       if (!readPin) {
         setRepo(projectRepoRef.current.repo);
         setIssues(selectedIssue ? [selectedIssue] : []);
-        setError("No computer is online. ADE reads issues through a computer that has this project.");
+        setError(`No computer is online. ${BRAND.NAME} reads issues through a computer that has this project.`);
         return;
       }
       // The repository check is not done yet: show no rows of the last

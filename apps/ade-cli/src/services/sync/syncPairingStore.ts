@@ -8,6 +8,7 @@ import {
   type VerifiedAccountAttestation,
 } from "../account/accountAttestationVerifier";
 import type { SyncPinStore } from "./syncPinStore";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 export type SyncPairingRecord = {
   secretHash: string;
@@ -391,7 +392,7 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       if (existingAccountOwnerUserId && existingAccountOwnerUserId !== requestedOwnerUserId) {
         throw pairingError(
           "account_not_verified",
-          "This device pairing belongs to a different ADE account.",
+          `This device pairing belongs to a different ${BRAND.NAME} account.`,
         );
       }
       accountOwnerUserId = requestedOwnerUserId;

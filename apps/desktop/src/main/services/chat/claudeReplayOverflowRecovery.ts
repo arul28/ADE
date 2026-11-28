@@ -1,4 +1,5 @@
 import { replayBudgetChars, type TranscriptReplayFit } from "./crossProviderReplayFork";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Recovery for a Claude chat whose handoff transcript replay does not fit.
@@ -139,7 +140,7 @@ export function createClaudeReplayOverflowRecovery<TSession extends object, TRun
     }
     deps.emitNotice(session, {
       kind: "warning",
-      message: `The handoff transcript is too long for ${modelLabel}. ADE kept the newest ${keptTurnCount} turn${keptTurnCount === 1 ? "" : "s"}. Send your message again.`,
+      message: `The handoff transcript is too long for ${modelLabel}. ${BRAND.NAME} kept the newest ${keptTurnCount} turn${keptTurnCount === 1 ? "" : "s"}. Send your message again.`,
       turnId,
     });
     deps.logger.warn("agent_chat.claude_replay_overflow_gave_up", {
@@ -250,7 +251,7 @@ export function createClaudeReplayOverflowRecovery<TSession extends object, TRun
       deps.persist(session);
       deps.emitNotice(session, {
         kind: "info",
-        message: `That was too long for ${modelLabel}. ADE is sending your message again with the newest ${fit.keptTurnCount} turn${fit.keptTurnCount === 1 ? "" : "s"} of the handoff.`,
+        message: `That was too long for ${modelLabel}. ${BRAND.NAME} is sending your message again with the newest ${fit.keptTurnCount} turn${fit.keptTurnCount === 1 ? "" : "s"} of the handoff.`,
         turnId,
       });
       deps.logger.info("agent_chat.claude_replay_overflow_retry", {

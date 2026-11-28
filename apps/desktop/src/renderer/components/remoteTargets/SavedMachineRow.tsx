@@ -61,13 +61,14 @@ import {
   subTextStyle,
 } from "./remoteTargetListStyles";
 import { adeCloudMachineLabel, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
+import { BRAND } from "../../../shared/brand";
 
 const CONNECTING_STALE_MS = 20_000;
 
 const ROUTE_KIND_LABELS: Record<string, string> = {
   lan: "Local network",
   tailnet: "Tailscale",
-  relay: "ADE relay",
+  relay: `${BRAND.NAME} relay`,
   ssh: "SSH",
 };
 
@@ -690,7 +691,7 @@ export function SavedMachineRow({
             <span>
               Reconnect automatically
               <span style={{ display: "block", ...helperTextStyle, marginTop: 2 }}>
-                ADE will reconnect when the app opens. LAN and Tailscale work without signing in; ADE Relay needs the same account on both computers.
+                {BRAND.NAME} will reconnect when the app opens. LAN and Tailscale work without signing in; {BRAND.NAME} Relay needs the same account on both computers.
               </span>
             </span>
           </label>

@@ -22,7 +22,7 @@ struct WorkImportSessionSummaryRow: View {
   }
 
   private var importState: String? {
-    if session.alreadyImported { return "In ADE" }
+    if session.alreadyImported { return "In \(Brand.name)" }
     if session.importedBefore { return "Copied before" }
     return nil
   }
@@ -181,7 +181,7 @@ struct WorkImportStatusBadges: View {
     if session.alreadyImported || session.importedBefore || session.possiblyActive {
       HStack(spacing: 6) {
         if session.alreadyImported {
-          ADEKitTag(text: "In ADE", tone: .ok)
+          ADEKitTag(text: "In \(Brand.name)", tone: .ok)
         } else if session.importedBefore {
           ADEKitTag(text: "Copied before", tone: .neutral)
         }

@@ -9,6 +9,7 @@ import { ADE_CLOUD_NAME, CloudMark } from "../remoteTargets/cloudBrand";
 import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import { CloudDashboard } from "./cloudDashboard/CloudDashboard";
 import "./cloudDashboard/cloudDashboard.css";
+import { BRAND } from "../../../shared/brand";
 
 function errorText(error: unknown, fallback: string): string {
   return ipcErrorMessage(error) || fallback;
@@ -62,7 +63,7 @@ export function CloudSection() {
 
   if (!enabled) return null;
   if (!bridge) {
-    return <p className="adecd-pagestate-line">{ADE_CLOUD_NAME} is managed from the ADE desktop app.</p>;
+    return <p className="adecd-pagestate-line">{ADE_CLOUD_NAME} is managed from the {BRAND.NAME} desktop app.</p>;
   }
 
   const account = machines.result?.state === "ok" ? machines.result.account : null;
@@ -89,7 +90,7 @@ export function CloudSection() {
     <div className="adecd-pagestate">
       <CloudMark size={28} brand bold />
       {status?.signedOut ? (
-        <p>Sign in to ADE to use {ADE_CLOUD_NAME}.</p>
+        <p>Sign in to {BRAND.NAME} to use {ADE_CLOUD_NAME}.</p>
       ) : problem && !loading ? (
         <Banner
           layout="inline"

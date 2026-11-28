@@ -12,6 +12,7 @@
 import { ShieldWarning } from "@phosphor-icons/react";
 import type { BuiltInBrowserCertificateProblem } from "../../../../shared/types/builtInBrowser";
 import { Banner } from "../../ui/notice/Banner";
+import { BRAND } from "../../../../shared/brand";
 
 function endpointLabel(problem: BuiltInBrowserCertificateProblem): string {
   const host = problem.host.includes(":") ? `[${problem.host}]` : problem.host;
@@ -44,7 +45,7 @@ export function BrowserCertificateBanner({
 }) {
   const scope = isolatedProfile
     ? `Applies to the "${isolatedProfile}" sign-in until its tabs close.`
-    : "Remembered for this site until you remove it in Settings → ADE browser.";
+    : `Remembered for this site until you remove it in Settings → ${BRAND.NAME} browser.`;
   const issued = [
     problem.subjectName ? `Issued to ${problem.subjectName}` : null,
     problem.issuerName ? `by ${problem.issuerName}` : null,

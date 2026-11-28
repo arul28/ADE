@@ -6,6 +6,8 @@
 // know WHICH part failed in their own terms; a raw RPC string ("method
 // runtime.connect failed: ECONNREFUSED") reads as a broken app.
 
+import { BRAND } from "../../../shared/brand";
+
 /** Which step of the pair → connect → open chain produced the failure. */
 export type AttentionOpenStage = "pair" | "connect" | "open";
 
@@ -26,8 +28,8 @@ export function describeAttentionOpenFailure(
   const raw = errorText(error);
   const named = machineName?.trim() || null;
   // The fallback reads as a sentence start and, lowercased, mid-sentence.
-  const machine = named ?? "The owning ADE machine";
-  const machineMid = named ?? "the owning ADE machine";
+  const machine = named ?? `The owning ${BRAND.NAME} machine`;
+  const machineMid = named ?? `the owning ${BRAND.NAME} machine`;
   const offline =
     /offline|unreachable|not reachable|econnrefused|ehostunreach|enetunreach|etimedout|timed out|no route to host|could not connect|connection (refused|closed|reset)/i
       .test(raw);
@@ -44,14 +46,14 @@ export function describeAttentionOpenFailure(
       .test(raw);
 
   const message = signedOut
-    ? `Sign in to ADE again, then open this item from ${machineMid}.`
+    ? `Sign in to ${BRAND.NAME} again, then open this item from ${machineMid}.`
     : offline
       ? `${machine} is not reachable right now. Wake it or reconnect it to the network, then try again.`
       : stage === "pair"
-        ? `ADE could not pair with ${machineMid}. Open ADE on that machine, then try again.`
+        ? `${BRAND.NAME} could not pair with ${machineMid}. Open ${BRAND.NAME} on that machine, then try again.`
         : stage === "connect"
-          ? `ADE could not connect to ${machineMid}. Make sure ADE is running there, then try again.`
-          : `ADE connected to ${machineMid} but could not open this project.`;
+          ? `${BRAND.NAME} could not connect to ${machineMid}. Make sure ${BRAND.NAME} is running there, then try again.`
+          : `${BRAND.NAME} connected to ${machineMid} but could not open this project.`;
 
   const failure = new Error(message);
   if (raw) failure.cause = error;

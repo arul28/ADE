@@ -27,6 +27,7 @@ import { ChromiumKeyError, resolveChromiumKeys } from "./chromiumKeys";
 import { CookieSnapshotError, type ImportedCookie } from "./cookieDatabase";
 import { readFirefoxCookies } from "./firefoxCookies";
 import { readSafariCookies, SafariCookieReadError } from "./safariCookies";
+import { BRAND } from "../../../../shared/brand";
 
 export type LoginImportReadRequest = {
   engine: BrowserLoginImportEngine;
@@ -56,7 +57,7 @@ function classifyLoginImportReadFailure(
     return error.reason === "needs_full_disk_access"
       ? {
           status: "needs_full_disk_access",
-          reason: "ADE needs Full Disk Access to read Safari's cookies.",
+          reason: `${BRAND.NAME} needs Full Disk Access to read Safari's cookies.`,
         }
       : { status: "read_failed", reason: "Safari's cookie file could not be read." };
   }

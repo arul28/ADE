@@ -14,6 +14,7 @@ import {
 import type { AiPiProviderAuthSource, AiPiProviderStatus } from "../../../shared/types/config";
 import { getPinnedToolStatus, resolvePinnedTool } from "../../../../../ade-cli/src/services/tools/pinnedTool";
 import { pinnedToolBlocker } from "./pinnedProviderTools";
+import { BRAND } from "../../../shared/brand";
 
 export { PI_SDK_MIN_NODE } from "../chat/piSdkProtocol";
 export const PI_PACKAGE_NAME = "@earendil-works/pi-coding-agent" as const;
@@ -192,7 +193,7 @@ export function resolvePiInstallation(env: NodeJS.ProcessEnv = process.env): PiI
       ? "ADE_PI_PACKAGE_ROOT does not name an @earendil-works/pi-coding-agent package directory."
       : pinnedToolBlocker("Pi", getPinnedToolStatus("pi", { env }));
   } else if (!nodeVersionAtLeast(nodeVersion)) {
-    blocker = `Pi SDK requires Node >= ${PI_SDK_MIN_NODE}; ADE is running Node ${nodeVersion}.`;
+    blocker = `Pi SDK requires Node >= ${PI_SDK_MIN_NODE}; ${BRAND.NAME} is running Node ${nodeVersion}.`;
   }
   return {
     cliPath: location.root && location.entry ? location.cli : null,

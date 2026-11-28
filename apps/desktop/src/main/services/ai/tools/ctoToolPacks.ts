@@ -35,14 +35,14 @@ export type CtoToolPack = (typeof CTO_TOOL_PACK_NAMES)[number];
 
 /** One line per pack, reused verbatim by the capability manifest. */
 export const CTO_TOOL_PACK_SCOPES: Record<CtoToolPack, string> = {
-  core: "account machines and any ADE action on them, lanes, chats (on any machine), steering, session lifecycle, git, PRs, automations, handoff, memory, events, pictures and videos in your reply (showMedia, getChatProof), quick replies while you work (replyNow), ending a turn quietly (noReply) or with a reaction (react), the person's \"Waiting on you\" lines (setNeed)",
+  core: "account machines and any DAEX action on them, lanes, chats (on any machine), steering, session lifecycle, git, PRs, automations, handoff, memory, events, pictures and videos in your reply (showMedia, getChatProof), quick replies while you work (replyNow), ending a turn quietly (noReply) or with a reaction (react), the person's \"Waiting on you\" lines (setNeed)",
   linear: "Linear issues: read, comment, state, assignee, labels",
-  files: "lane file workspaces: tree, read, text search, ADE source search",
-  tests: "ADE test suites: list, run, stop, logs",
+  files: "lane file workspaces: tree, read, text search, DAEX source search",
+  tests: "DAEX test suites: list, run, stop, logs",
   conflicts: "cross-lane conflict prediction, proposals, merge simulation",
   scheduling: "durable scheduled work: create, list, cancel, pause",
   proof: "computer-use proof artifacts: list, preview, capture, review",
-  search: "project-wide universal search over ADE's own index",
+  search: "project-wide universal search over DAEX's own index",
   insights: "usage, spend, and budget reads",
   config: "project config reads and secret NAMES (never secret values)",
   devices: "iOS simulator, desktop app control, and built-in browser reads",

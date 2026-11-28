@@ -16,6 +16,7 @@ import { resumableChatCount } from "../remoteTargets/MachineUpdateImpact";
 import { useAutoUpdateSnapshot } from "./useAutoUpdateSnapshot";
 import { showToast } from "./toast/toastStore";
 import "../onboarding/launchGateGlass.css";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * "Update ADE to keep working": the full window, with no way past it, while
@@ -78,7 +79,7 @@ function UpdateRequiredScreen({
     if (!started) {
       installStarted.current = false;
       setRestarting(false);
-      setProblem("ADE could not restart to install the update. Try again, or download it from ade-app.dev.");
+      setProblem(`${BRAND.NAME} could not restart to install the update. Try again, or download it from ade-app.dev.`);
     }
   }, []);
 
@@ -98,9 +99,9 @@ function UpdateRequiredScreen({
     const after = snapshotRef.current;
     if (after.status === "error") return;
     if (after.status === "ready" && !versionMeets(after.version, requirement.minimumVersion)) {
-      setProblem(`ADE found ${after.version ?? "an older version"}, but needs ${requirement.minimumVersion} or newer. Try again in a few minutes, or download it from ade-app.dev.`);
+      setProblem(`${BRAND.NAME} found ${after.version ?? "an older version"}, but needs ${requirement.minimumVersion} or newer. Try again in a few minutes, or download it from ade-app.dev.`);
     } else if (after.status === "idle") {
-      setProblem("ADE did not find the update yet. Try again in a few minutes, or download it from ade-app.dev.");
+      setProblem(`${BRAND.NAME} did not find the update yet. Try again in a few minutes, or download it from ade-app.dev.`);
     }
   }, [install, requirement.minimumVersion]);
 
@@ -112,7 +113,7 @@ function UpdateRequiredScreen({
   const updaterError = wanted && snapshot.status === "error" ? snapshot.error?.trim() || "The update did not download." : null;
   const shownProblem = updaterError ?? problem;
   const busyLabel = restarting || snapshot.status === "installing"
-    ? "Restarting ADE…"
+    ? `Restarting ${BRAND.NAME}…`
     : wanted && snapshot.status === "checking"
       ? "Finding the update…"
       : wanted && snapshot.status === "downloading"
@@ -142,11 +143,11 @@ function UpdateRequiredScreen({
         <div className="ade-gate-stack">
           <div className="ade-glass-card" style={NO_DRAG}>
             <span className="ade-glass-mark">
-              <AdeWordmark alt="ADE" draggable={false} />
+              <AdeWordmark alt={BRAND.NAME} draggable={false} />
             </span>
-            <h1 id="update-required-title" className="ade-glass-title">Update ADE to keep working</h1>
+            <h1 id="update-required-title" className="ade-glass-title">Update {BRAND.NAME} to keep working</h1>
             <p className="ade-glass-sub">
-              This version of ADE is no longer supported. Your lanes, chats and work are saved. They will be here after the update.
+              This version of {BRAND.NAME} is no longer supported. Your lanes, chats and work are saved. They will be here after the update.
             </p>
             <p className="ade-glass-sub" data-testid="update-required-versions">
               <span style={{ fontVariantNumeric: "tabular-nums" }}>{requirement.currentVersion}</span>
@@ -204,7 +205,7 @@ function UpdateRequiredScreen({
             ) : null}
             {!canSelfUpdate ? (
               <p className="ade-glass-sub" style={{ fontSize: 12 }}>
-                This copy of ADE cannot install updates itself. Download the new version and install it.
+                This copy of {BRAND.NAME} cannot install updates itself. Download the new version and install it.
               </p>
             ) : null}
           </div>
@@ -214,7 +215,7 @@ function UpdateRequiredScreen({
             </button>
             {typeof window.ade?.clientUpdateGate?.quit === "function" ? (
               <button type="button" className="ade-glass-link" onClick={() => void window.ade.clientUpdateGate.quit?.()}>
-                Quit ADE
+                Quit {BRAND.NAME}
               </button>
             ) : null}
           </div>

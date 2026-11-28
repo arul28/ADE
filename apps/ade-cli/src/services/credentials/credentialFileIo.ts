@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * File-level plumbing shared by everything that reads or writes an ADE
@@ -509,7 +510,7 @@ export function withCredentialFileLock<T>(
       if (!isLockContention(error)) throw error;
       removeStaleLock(lockPath);
       if (Date.now() >= deadline) {
-        throw new Error("Timed out waiting for ADE credential store lock.", { cause: error });
+        throw new Error(`Timed out waiting for ${BRAND.NAME} credential store lock.`, { cause: error });
       }
       sleepSync(LOCK_RETRY_MS);
     }
@@ -557,7 +558,7 @@ export async function withCredentialFileLockAsync<T>(
       if (!isLockContention(error)) throw error;
       removeStaleLock(lockPath);
       if (Date.now() >= deadline) {
-        throw new Error("Timed out waiting for ADE credential store lock.", { cause: error });
+        throw new Error(`Timed out waiting for ${BRAND.NAME} credential store lock.`, { cause: error });
       }
       await new Promise<void>((resolve) => setTimeout(resolve, LOCK_RETRY_MS));
     }

@@ -3,6 +3,7 @@ import { Lightning } from "@phosphor-icons/react";
 import { setFastModeEnabled, useFastModeEnabled } from "../../lib/fastModePolicy";
 import { showToast } from "../app/toast/toastStore";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The account's Fast-mode permission, alone at the top of Chat settings.
@@ -20,7 +21,7 @@ export function FastModeSection() {
       showToast({
         tone: "error",
         title: "Couldn't change Fast mode",
-        message: "ADE's background service isn't available on this computer. Try again in a moment.",
+        message: `${BRAND.NAME}'s background service isn't available on this computer. Try again in a moment.`,
       });
     });
   };

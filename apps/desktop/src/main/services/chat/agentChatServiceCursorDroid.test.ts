@@ -1881,7 +1881,7 @@ describe("createAgentChatService", () => {
       expect(sent).toBeTruthy();
       const promptText = String(sent!.payload.promptText ?? "");
       // System-prompt sections should be present
-      expect(promptText).toContain("ADE control protocol");
+      expect(promptText).toContain("DAEX control protocol");
       expect(promptText).toContain("Cursor Cloud capability");
       expect(promptText).toContain("runtime: cloud");
       expect(promptText.length).toBeLessThanOrEqual(promptText.indexOf("Hi cloud.") + 1024);

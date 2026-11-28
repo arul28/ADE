@@ -2,7 +2,7 @@
  * The composer: a textarea, a send/steer button, a stop button while running,
  * an optional attachment hook, and a slot for the model rail.
  *
- * Interaction rules follow ADE's desktop composer
+ * Interaction rules follow DAEX's desktop composer
  * (`apps/desktop/src/renderer/components/chat/AgentChatComposer.tsx`) — Enter
  * sends, Shift+Enter is a newline, IME composition never sends, Escape stops a
  * running turn — but this is a fresh, small implementation rather than a port

@@ -1,6 +1,7 @@
 import { ACTIVITY_EVENT_CATALOG } from "../activityCatalog";
 import { normalizeCustomNotificationLink } from "../customNotificationLink";
 import type { WorkBoardColumn, WorkBoardWaitingReason } from "./chat";
+import { BRAND } from "../brand";
 
 export const ATTENTION_CONTRACT_VERSION = 1 as const;
 
@@ -421,7 +422,7 @@ export function parseAttentionAccountDevices(value: unknown): AttentionAccountDe
   const list = value && typeof value === "object" && !Array.isArray(value)
     ? (value as { devices?: unknown }).devices
     : null;
-  if (!Array.isArray(list)) throw new Error("ADE couldn’t read the account’s notification devices. Try again.");
+  if (!Array.isArray(list)) throw new Error(`${BRAND.NAME} couldn’t read the account’s notification devices. Try again.`);
   const devices: AttentionAccountDevice[] = [];
   for (const entry of list) {
     if (!entry || typeof entry !== "object") continue;
@@ -845,7 +846,7 @@ export function attentionDestinationDeepLink(
     if (destination.eventId) query.set("event", destination.eventId);
     appendOwnership(query);
     const suffix = query.size > 0 ? `?${query.toString()}` : "";
-    return `ade://session/${encodeURIComponent(destination.sessionId)}${suffix}`;
+    return `${BRAND.LINK_SCHEME_FOR_NEW_LINKS}://session/${encodeURIComponent(destination.sessionId)}${suffix}`;
   }
 
   const query = new URLSearchParams();
@@ -854,11 +855,11 @@ export function attentionDestinationDeepLink(
   appendOwnership(query);
   const suffix = query.size > 0 ? `?${query.toString()}` : "";
   if (destination.repoOwner && destination.repoName) {
-    return `ade://pr/${encodeURIComponent(destination.repoOwner)}/${encodeURIComponent(
+    return `${BRAND.LINK_SCHEME_FOR_NEW_LINKS}://pr/${encodeURIComponent(destination.repoOwner)}/${encodeURIComponent(
       destination.repoName,
     )}/${destination.number}${suffix}`;
   }
-  return `ade://pr/${destination.number}${suffix}`;
+  return `${BRAND.LINK_SCHEME_FOR_NEW_LINKS}://pr/${destination.number}${suffix}`;
 }
 
 export function sanitizeAttentionPreview(value: string, maxLength = 160): string {
@@ -962,7 +963,7 @@ export function describeCustomNotificationResult(
   if (devices === 0) {
     return {
       tone: "warn",
-      message: "No phone is signed in to this ADE account, so nothing was sent. Sign in on the ADE iPhone app to get notifications.",
+      message: `No phone is signed in to this ${BRAND.NAME} account, so nothing was sent. Sign in on the ${BRAND.NAME} iPhone app to get notifications.`,
     };
   }
   if (delivered === 0) {
@@ -970,7 +971,7 @@ export function describeCustomNotificationResult(
       tone: "warn",
       message: skipped > 0
         ? "Nothing was sent: every phone on the account has notifications off, is in quiet hours, or muted this machine."
-        : "ADE couldn't deliver the notification to any phone. Try again in a moment.",
+        : `${BRAND.NAME} couldn't deliver the notification to any phone. Try again in a moment.`,
     };
   }
   const quiet = skipped > 0 ? ` · ${skipped} quiet` : "";

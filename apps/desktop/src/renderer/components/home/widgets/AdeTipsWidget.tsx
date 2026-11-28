@@ -12,6 +12,7 @@ import type { HomeWidgetProps } from "../homeWidgetRegistry";
 import { useLocalDayStart } from "./widgetHooks";
 import "../homeWidgets.css";
 import "../../onboarding/tips/adeTips.css";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * One ADE tip at a time. Today's tip is picked from the date in this
@@ -38,11 +39,11 @@ export default function AdeTipsWidget({ item }: HomeWidgetProps) {
   return (
     <section
       className="kit-card ade-home-card ade-tipw"
-      aria-label="ADE Tips"
+      aria-label={`${BRAND.NAME} Tips`}
       data-size={item.size}
       style={{ "--tips-hue": group.hue } as CSSProperties}
     >
-      <WelcomeCardHead icon={Lightbulb} title="ADE Tips" action={preview ? null : { label: "All tips", onClick: () => openAdeTips(tip.id) }} />
+      <WelcomeCardHead icon={Lightbulb} title={`${BRAND.NAME} Tips`} action={preview ? null : { label: "All tips", onClick: () => openAdeTips(tip.id) }} />
       <div className="kit-card-body ade-tipw-body">
         <div className="ade-tipw-tip" aria-live="polite">
           <span className="ade-tipw-glyph" aria-hidden><TipIcon size={18} weight="duotone" /></span>

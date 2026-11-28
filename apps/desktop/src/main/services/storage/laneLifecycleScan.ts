@@ -10,6 +10,7 @@ import type { LaneAutoArchiveFacts } from "../lanes/laneService";
 import { LaneUnsavedWorkError } from "../lanes/laneFolderRemoval";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The lane cleanup rules, run by the storage doctor: archive idle, finished
@@ -28,7 +29,7 @@ const PENDING_REMOVAL_RETRY_MS = 10 * 60_000;
 const PENDING_REMOVAL_MAX_ATTEMPTS = 12;
 
 const STARTED_DURING_CHECK = "Kept: something started in it during the check.";
-const FOLDER_IN_USE = "Folder kept: files in it are still in use. ADE will try again.";
+const FOLDER_IN_USE = `Folder kept: files in it are still in use. ${BRAND.NAME} will try again.`;
 
 export type LaneLifecycleBackend = {
   list: (options: { includeArchived: boolean; includeStatus: boolean }) => Promise<Array<{
@@ -204,7 +205,7 @@ export function createLaneLifecycleScan(options: {
           laneId: row.lane_id,
           laneName: row.name,
           outcome: "failed",
-          detail: "Its folder stayed in use, so ADE stopped trying. Close what uses it and reclaim the lane again.",
+          detail: `Its folder stayed in use, so ${BRAND.NAME} stopped trying. Close what uses it and reclaim the lane again.`,
         });
         continue;
       }
@@ -217,7 +218,7 @@ export function createLaneLifecycleScan(options: {
         const message = errorText(error);
         if (error instanceof LaneUnsavedWorkError) {
           // The retry stops here and waits for the person, with the reason.
-          const reason = "It has work saved nowhere else, and ADE doesn't remove that on its own. Use Free up space again to confirm it may be lost.";
+          const reason = `It has work saved nowhere else, and ${BRAND.NAME} doesn't remove that on its own. Use Free up space again to confirm it may be lost.`;
           options.db.run(
             `update local_lane_storage_state
                 set reclaim_state = 'failed', pending_removal_at = null, last_error = ?, updated_at = ?
@@ -321,7 +322,7 @@ export function createLaneLifecycleScan(options: {
         // not loaded yet and the in-memory count reads 0 for a lane whose
         // chat is about to resume.
         const live = laneService.getLiveWorkCounts?.(laneId) ?? null;
-        if (!live) return "Kept: ADE hasn't loaded its chats and terminals yet.";
+        if (!live) return `Kept: ${BRAND.NAME} hasn't loaded its chats and terminals yet.`;
         if (live.activeChatCount + live.activePtyCount + live.activeWatcherCount > 0 || hasPersistedRunningSession(laneId)) {
           return "Kept: a chat or terminal is running in it.";
         }

@@ -26,6 +26,7 @@ import { tierChangeComputerOf } from "./cloudTierChangeFacts";
 import { answerCloudTierRequest, cloudTierRequestAnswersAvailable } from "./cloudLaneActions";
 import { useCloudLaneJobs } from "./cloudLaneStores";
 import "./cloudLane.css";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The ADE Cloud lane cards a chat shows:
@@ -214,7 +215,7 @@ function useTierRequestAnswer(input: {
   const [error, setError] = useState<string | null>(null);
   const send = async (answer: CloudTierRequestAnswer) => {
     if (!request) return;
-    if (!binding) throw new Error("ADE doesn't know which computer this chat is on.");
+    if (!binding) throw new Error(`${BRAND.NAME} doesn't know which computer this chat is on.`);
     await answerCloudTierRequest(binding, { chatSessionId: request.chatSessionId, requestId: request.requestId, answer });
   };
   /** Keep the size: the agent is told, then the card closes here. */
@@ -227,7 +228,7 @@ function useTierRequestAnswer(input: {
       if (cloudTierRequestAnswersAvailable()) await send("dismiss");
       rememberDismissed(request.requestId);
     } catch (dismissError) {
-      setError(`ADE couldn't tell the agent: ${ipcErrorMessage(dismissError) || "its computer didn't answer"}.`);
+      setError(`${BRAND.NAME} couldn't tell the agent: ${ipcErrorMessage(dismissError) || "its computer didn't answer"}.`);
     } finally {
       setBusy(false);
     }
@@ -433,7 +434,7 @@ function PinnedTierRequest({
           type="button"
           className="adecl-job-dismiss"
           aria-label={`Keep ${request.computerName} at its size`}
-          title="Keep the size (ADE tells the agent)"
+          title={`Keep the size (${BRAND.NAME} tells the agent)`}
           disabled={answer.busy}
           onClick={() => void answer.dismiss()}
         >

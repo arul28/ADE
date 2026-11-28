@@ -1,3 +1,4 @@
+import { BRAND } from "../shared/brand";
 import { MUSIC_SPOTIFY_REDIRECT_URI, type MusicBridge, type MusicProvider, type MusicState } from "../shared/types/music";
 
 /** Signed-out UI preview only. This never signs in, opens Spotify or plays audio. */
@@ -17,7 +18,7 @@ export function createBrowserMockMusic(): MusicBridge {
     queueRevision: 0,
   });
   const emit = () => { for (const listener of listeners) listener(state()); };
-  const unavailable = async () => ({ ok: false as const, error: "Music sign-in and playback need the ADE desktop app. This is a browser preview." });
+  const unavailable = async () => ({ ok: false as const, error: `Music sign-in and playback need the ${BRAND.NAME} desktop app. This is a browser preview.` });
   return {
     getState: async () => state(),
     selectProvider: async (next) => { provider = next; emit(); return state(); },

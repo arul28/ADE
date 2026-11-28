@@ -1,5 +1,6 @@
 import { Desktop, DeviceMobile, Eye, Power, SpinnerGap, WarningCircle } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The one shape every blocked state on the Apple stage wears: an icon, one
@@ -97,7 +98,7 @@ export function resolveIosSimBlocker(input: ResolveIosSimBlockerInput): IosSimBl
       kind: "no-simulators-installed",
       tone: "warn",
       label: "No simulators installed",
-      detail: "ADE only uses simulators you already have.",
+      detail: `${BRAND.NAME} only uses simulators you already have.`,
       action: "open-xcode",
       actionLabel: "Open Xcode",
       spinner: false,

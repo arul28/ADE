@@ -1309,7 +1309,7 @@ extension WorkRootListScreen {
       if let instanceId = cloudLaneComputer(lane.id, sync: syncService)?.id {
         CloudLaneActions.shared.manageComputer(instanceId: instanceId, fromMenu: true)
       } else {
-        actionErrorMessage = "ADE can't find this lane's computer on your account right now. Try again in a moment."
+        actionErrorMessage = "\(Brand.name) can't find this lane's computer on your account right now. Try again in a moment."
       }
       return
     }

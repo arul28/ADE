@@ -705,7 +705,7 @@ public struct ActivityRowPresentation: Identifiable, Hashable, Sendable {
 
         id = item.id
         title = item.kind == .message && hideDetails
-            ? Self.nonEmpty(item.privacyPreview) ?? "An ADE agent sent you a message."
+            ? Self.nonEmpty(item.privacyPreview) ?? "A \(Brand.name) agent sent you a message."
             : Self.nonEmpty(item.title) ?? "Untitled session"
         laneName = Self.nonEmpty(item.laneName)
         projectName = Self.nonEmpty(item.project.name) ?? "Project"

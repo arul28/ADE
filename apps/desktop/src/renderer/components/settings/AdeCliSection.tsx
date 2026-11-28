@@ -5,6 +5,7 @@ import { rendererPlatformAttribute } from "../../lib/platform";
 import { ModernRow, ModernRows, ModernSection } from "./primitives";
 import { Banner } from "../ui/notice";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The terminal installer this card's button mirrors: it drops the same `ade`
@@ -42,7 +43,7 @@ export function AdeCliSection({ embedded = false }: Props) {
     try {
       setStatus(await api.getStatus());
     } catch (error) {
-      setNotice({ kind: "error", text: plainErrorText(error, "ADE couldn't check the command line tool.") });
+      setNotice({ kind: "error", text: plainErrorText(error, `${BRAND.NAME} couldn't check the command line tool.`) });
     } finally {
       setLoading(false);
     }
@@ -62,17 +63,20 @@ export function AdeCliSection({ embedded = false }: Props) {
       setStatus(result.status);
       setNotice({ kind: result.ok ? "success" : "error", text: result.message });
     } catch (error) {
-      setNotice({ kind: "error", text: plainErrorText(error, "ADE couldn't install the command line tool.") });
+      setNotice({ kind: "error", text: plainErrorText(error, `${BRAND.NAME} couldn't install the command line tool.`) });
     } finally {
       setInstalling(false);
     }
   };
 
   const terminalReady = status?.terminalInstalled === true;
+  // `ade` on PATH from before `daex` existed: Install adds the `daex` name.
+  const aliasMissing = Boolean(status?.aliasCommand) && status?.terminalAliasCommandPath == null;
+  const terminalComplete = terminalReady && !aliasMissing;
   const agentReady = status?.agentPathReady === true;
   const bundledReady = status?.bundledAvailable === true;
   const installTargetDir = status?.installTargetPath
-    ? status.installTargetPath.replace(/[\\/](?:ade|ade\.cmd)$/i, "")
+    ? status.installTargetPath.replace(/[\\/](?:daex|ade)(?:\.cmd)?$/i, "")
     : "";
   let statusTone: "ok" | "warn" | "crit" | undefined;
   let statusLabel = "Manual action";
@@ -86,7 +90,7 @@ export function AdeCliSection({ embedded = false }: Props) {
     statusTone = "crit";
     statusLabel = "Unavailable";
   }
-  const installDisabled = loading || installing || terminalReady || !status?.installAvailable || !window.ade?.adeCli;
+  const installDisabled = loading || installing || terminalComplete || !status?.installAvailable || !window.ade?.adeCli;
 
   return (
     <ModernSection
@@ -94,8 +98,8 @@ export function AdeCliSection({ embedded = false }: Props) {
       anchor="ade-cli"
       title={embedded ? "Terminal CLI" : "Command line"}
       hint={embedded
-        ? <>Use <code className="ade-modern-code">ade</code> in your own Terminal. Agents launched by ADE already get the bundled CLI.</>
-        : <>Agents launched by ADE get the bundled CLI automatically. Installing it here makes <code className="ade-modern-code">ade</code> available in your Terminal.</>}
+        ? <>Use <code className="ade-modern-code">{BRAND.CLI}</code> in your own Terminal (<code className="ade-modern-code">{BRAND.LEGACY_CLI}</code> still works). Agents launched by {BRAND.NAME} already get the bundled CLI.</>
+        : <>Agents launched by {BRAND.NAME} get the bundled CLI automatically. Installing it here makes <code className="ade-modern-code">{BRAND.CLI}</code> available in your Terminal; <code className="ade-modern-code">{BRAND.LEGACY_CLI}</code> still works too.</>}
       actions={(
         <>
           <button
@@ -115,7 +119,7 @@ export function AdeCliSection({ embedded = false }: Props) {
             disabled={installDisabled}
             onClick={() => void installForUser()}
           >
-            {installing ? "Installing..." : terminalReady ? "Installed" : "Install for Terminal"}
+            {installing ? "Installing..." : terminalComplete ? "Installed" : "Install for Terminal"}
           </button>
         </>
       )}
@@ -127,7 +131,7 @@ export function AdeCliSection({ embedded = false }: Props) {
       <ModernRows>
         <ModernRow
           title="Agent sessions"
-          hint={agentReady ? "Ready for ADE agents" : status?.nextAction ?? "Checking agent PATH"}
+          hint={agentReady ? `Ready for ${BRAND.NAME} agents` : status?.nextAction ?? "Checking agent PATH"}
           control={<ReadinessTag ready={agentReady} loading={loading} />}
         />
         <ModernRow
@@ -135,6 +139,7 @@ export function AdeCliSection({ embedded = false }: Props) {
           hint={(
             <span className="ade-modern-path">
               {terminalReady ? status?.terminalCommandPath ?? "ade is on PATH" : `Not installed at ${status?.installTargetPath ?? "~/.local/bin/ade"}`}
+              {terminalReady && aliasMissing ? ` (${status?.aliasCommand} not installed yet)` : null}
             </span>
           )}
           control={<span className="kit-tag" data-tone={loading ? undefined : statusTone}>{loading ? "Checking" : statusLabel}</span>}
@@ -148,8 +153,8 @@ export function AdeCliSection({ embedded = false }: Props) {
             <span className="kit-num" style={{ fontSize: 11 }}>{installTargetDir}</span> is not on this shell PATH. Agents still get the bundled command; add that directory to your shell PATH for Terminal use.
             {embedded ? null : (
               <>
-                {" "}Installing here puts the same <code className="ade-modern-code">ade</code> in your Terminal
-                that ADE uses everywhere else. On a machine without the desktop app,{" "}
+                {" "}Installing here puts the same <code className="ade-modern-code">{BRAND.CLI}</code> command (and its <code className="ade-modern-code">{BRAND.LEGACY_CLI}</code> alias) in your Terminal
+                that {BRAND.NAME} uses everywhere else. On a machine without the desktop app,{" "}
                 <code className="ade-modern-code">{TERMINAL_INSTALL_COMMAND}</code> installs it and sets up
                 PATH for you.
               </>
@@ -165,9 +170,9 @@ export function AdeCliSection({ embedded = false }: Props) {
       {!status?.installAvailable && !terminalReady ? (
         <p className="ade-modern-muted" style={{ padding: "0 2px" }}>
           {!window.ade?.adeCli
-            ? "CLI install status is not available in this build. Agents still use ADE's bundled CLI when launched by ADE."
+            ? `CLI install status is not available in this build. Agents still use ${BRAND.NAME}'s bundled CLI when launched by ${BRAND.NAME}.`
             : status?.isPackaged
-              ? "This ADE build did not include the installer."
+              ? `This ${BRAND.NAME} build did not include the installer.`
               : "Local development uses npm link for Terminal installs."}
         </p>
       ) : null}

@@ -21,6 +21,7 @@ import {
   cardTimeoutMs,
   type CardRequestChatInput,
 } from "../../../../desktop/src/main/services/chat/chatCardRequest";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * `account.deleteMachine` from an agent in a chat: ask the person, in that
@@ -103,13 +104,13 @@ export async function requestMachineRemovalFromUser(
 ): Promise<MachineRemovalRequestResult> {
   const chatSessionId = args.chatSessionId.trim();
   if (!chatSessionId) {
-    throw new Error("Asking to remove a computer needs a chat to ask in. Run `ade machines remove` from inside an ADE chat.");
+    throw new Error(`Asking to remove a computer needs a chat to ask in. Run \`daex machines remove\` from inside a ${BRAND.NAME} chat.`);
   }
   const selector = args.machine.trim();
-  if (!selector) throw new Error("Name the computer to remove: its key, device id or name from `ade machines list`.");
+  if (!selector) throw new Error("Name the computer to remove: its key, device id or name from `daex machines list`.");
   const listed = await deps.listMachines();
   if (listed.state === "signed_out" || listed.state === "auth_expired") {
-    throw new Error("This computer is not signed in to ADE, so it cannot ask to remove a computer. Ask the person to sign in.");
+    throw new Error(`This computer is not signed in to ${BRAND.NAME}, so it cannot ask to remove a computer. Ask the person to sign in.`);
   }
   if (listed.state !== "ok") {
     throw new Error(listed.message ?? "The account's computer list is not reachable right now. Try again soon.");
@@ -169,18 +170,18 @@ async function askToRemove(
   };
   const response = await deps.requestChatInput({
     chatSessionId,
-    title: `Remove ${card.name} from your ADE account?`,
+    title: `Remove ${card.name} from your ${BRAND.NAME} account?`,
     body: `${facts}. ${MACHINE_REMOVAL_EFFECT}`,
     timeoutMs,
     allowsFreeform: false,
-    eventDescription: `Remove ${card.name} from your ADE account?`,
+    eventDescription: `Remove ${card.name} from your ${BRAND.NAME} account?`,
     providerMetadata: { [MACHINE_REMOVAL_REQUEST_METADATA_KEY]: card },
     beforeAccept,
     questions: [
       {
         id: MACHINE_REMOVAL_DECISION_QUESTION_ID,
         header: card.name,
-        question: `An agent asks to remove ${card.name} (${facts}) from your ADE account. ${MACHINE_REMOVAL_EFFECT}`,
+        question: `An agent asks to remove ${card.name} (${facts}) from your ${BRAND.NAME} account. ${MACHINE_REMOVAL_EFFECT}`,
         allowsFreeform: false,
         options: [
           { label: "Keep", value: MACHINE_REMOVAL_KEEP_VALUE, recommended: true },
@@ -192,7 +193,7 @@ async function askToRemove(
             id: MACHINE_REMOVAL_CONFIRM_QUESTION_ID,
             header: "Confirm",
             question: card.isThisComputer
-              ? `${card.name} is the computer this chat runs on. Removing it takes this ADE off your account until someone signs in here again.`
+              ? `${card.name} is the computer this chat runs on. Removing it takes this ${BRAND.NAME} off your account until someone signs in here again.`
               : `${card.name} is online now. Removing it cuts off the chats and terminals running on it from your other devices.`,
             allowsFreeform: false,
             options: [

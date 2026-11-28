@@ -24,20 +24,21 @@ import {
   detectClaudeVersionRejectionInMessage,
   type ClaudeVersionRejection,
 } from "./providerVersionRejection";
+import { BRAND } from "../../../shared/brand";
 
 const PROBE_TIMEOUT_MS = 20_000;
 const PROBE_CACHE_TTL_MS = 30_000;
 export const CLAUDE_RUNTIME_AUTH_ERROR =
-  "Claude Code is detected, but ADE chat could not authenticate it. Run `claude auth login` in a terminal or configure ANTHROPIC_API_KEY, then refresh AI settings.";
+  `Claude Code is detected, but ${BRAND.NAME} chat could not authenticate it. Run \`claude auth login\` in a terminal or configure ANTHROPIC_API_KEY, then refresh AI settings.`;
 const DEFAULT_RUNTIME_FAILURE =
-  "ADE could not confirm that its Claude Code runtime can start from this app session.";
+  `${BRAND.NAME} could not confirm that its Claude Code runtime can start from this app session.`;
 /**
  * First run on a cold tools cache: nothing is wrong, the pinned runtime is
  * simply still coming down. Surfacing the SDK's raw "not found" there reads as
  * a broken install, which it is not.
  */
 export const CLAUDE_RUNTIME_FETCH_PENDING_ERROR =
-  "ADE is still downloading the Claude Code runtime for this machine. "
+  `${BRAND.NAME} is still downloading the Claude Code runtime for this machine. `
   + "Start the chat again when it finishes.";
 /** The pinned tool that backs the Claude runtime, as named in the tools manifest. */
 const CLAUDE_TOOL_NAME = "claude-code";

@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useRef, useState, type FormEvent, type React
 import { AppleLogo, ArrowRight, CircleNotch, GithubLogo } from "@phosphor-icons/react";
 import { CLERK_CAPTCHA_ELEMENT_ID } from "../../webclient/account/clerkCaptcha";
 import { useClerkSignIn, type ClerkSignInSetup } from "../../webclient/account/useClerkSignIn";
+import { BRAND } from "../../../shared/brand";
 
 const PROVIDER_ORDER = ["oauth_google", "oauth_github", "oauth_apple"] as const;
 const PROVIDER_LABEL: Record<string, string> = {
@@ -227,7 +228,7 @@ export function ClerkSignInPanel({
             </form>
           </>
         ) : null}
-        <p className="ade-clerk-foot">New to ADE? The same steps create your account.</p>
+        <p className="ade-clerk-foot">New to {BRAND.NAME}? The same steps create your account.</p>
       </div>
     );
   }

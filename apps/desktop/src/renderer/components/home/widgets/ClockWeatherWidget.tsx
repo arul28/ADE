@@ -11,6 +11,7 @@ import type { HomeWidgetProps } from "../homeWidgetRegistry";
 import { usePolling } from "../../../hooks/usePolling";
 import "../homeWidgets.css";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * Clock & weather, in the same quiet card as the rest of the page: the time
@@ -357,7 +358,7 @@ export default function ClockWeatherWidget({ item }: HomeWidgetProps) {
       </WelcomeCardHead>
       <div className="kit-card-body ade-wx2-body">
         {!bridge ? (
-          <div className="ade-home-empty"><span>Weather needs the ADE desktop app.</span></div>
+          <div className="ade-home-empty"><span>Weather needs the {BRAND.NAME} desktop app.</span></div>
         ) : showPicker ? (
           <PlacePicker
             onCancel={place ? () => setPicking(false) : undefined}

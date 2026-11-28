@@ -23,6 +23,7 @@ import {
   installWindowsCliLauncher,
   resolveWindowsCliLauncherSource,
 } from "./windowsCliLauncher";
+import { BRAND } from "../../../shared/brand";
 
 type CreateAdeCliServiceArgs = {
   isPackaged: boolean;
@@ -154,6 +155,19 @@ function resolveCommandName(args: CreateAdeCliServiceArgs): string {
   return args.isPackaged ? "ade" : "ade-dev";
 }
 
+/**
+ * The `daex` name for an installed `ade` command name: `ade` -> `daex`,
+ * `ade-alpha` -> `daex-alpha`, `ade-dev` -> `daex-dev`. `daex` is the
+ * command's name and `ade` its permanent alias, so every place this service
+ * installs one installs the other beside it. Null for a custom name that is
+ * not an `ade` name.
+ */
+export function daexCommandName(commandName: string): string | null {
+  if (commandName === BRAND.LEGACY_CLI) return BRAND.CLI;
+  if (commandName.startsWith(`${BRAND.LEGACY_CLI}-`)) return `${BRAND.CLI}${commandName.slice(BRAND.LEGACY_CLI.length)}`;
+  return null;
+}
+
 function splitPathEntries(value: string | null | undefined): string[] {
   return (value ?? "").split(pathDelimiter()).map((entry) => entry.trim()).filter(Boolean);
 }
@@ -227,7 +241,7 @@ function createWindowsShimScript(args: {
     "    exit /b %ERRORLEVEL%",
     "  )",
     "  if not exist \"%TSX_IMPORT%\" (",
-    "    echo ade: Local source CLI fallback requires repo-local tsx. Run npm run install:apps or npm --prefix apps/ade-cli run build. 1>&2",
+    `    echo ${BRAND.CLI}: Local source CLI fallback requires repo-local tsx. Run npm run install:apps or npm --prefix apps/ade-cli run build. 1>&2`,
     "    exit /b 127",
     "  )",
     "  if defined ADE_CLI_NODE (",
@@ -247,7 +261,7 @@ function createWindowsShimScript(args: {
     "      exit /b %ERRORLEVEL%",
     "    )",
     "  )",
-    "  echo ade: Node.js 22+ or the ADE Electron runtime is required to run this source CLI. 1>&2",
+    `  echo ${BRAND.CLI}: Node.js 22+ or the ${BRAND.NAME} Electron runtime is required to run this source CLI. 1>&2`,
     "  exit /b 127",
     ")",
     "if defined ADE_CLI_NODE (",
@@ -267,7 +281,7 @@ function createWindowsShimScript(args: {
     "    exit /b %ERRORLEVEL%",
     "  )",
     ")",
-    "echo ade: Node.js 22+ or the ADE Electron runtime is required to run this CLI. 1>&2",
+    `echo ${BRAND.CLI}: Node.js 22+ or the ${BRAND.NAME} Electron runtime is required to run this CLI. 1>&2`,
     "exit /b 127",
     "",
   ].join("\r\n");
@@ -389,7 +403,7 @@ function writeDevShim(args: {
     "    exec \"$TSX_BIN\" \"$CLI_JS\" \"$@\"",
     "  fi",
     "  if [ ! -f \"$TSX_IMPORT\" ]; then",
-    "    echo \"ade: Local source CLI fallback requires repo-local tsx. Run npm run install:apps or npm --prefix apps/ade-cli run build.\" >&2",
+    `    echo "${BRAND.CLI}: Local source CLI fallback requires repo-local tsx. Run npm run install:apps or npm --prefix apps/ade-cli run build." >&2`,
     "    exit 127",
     "  fi",
     "  if [ -n \"${ADE_CLI_NODE:-}\" ]; then",
@@ -407,7 +421,7 @@ function writeDevShim(args: {
     "  if command -v asdf >/dev/null 2>&1; then",
     "    exec asdf exec node --import \"$TSX_IMPORT\" \"$CLI_JS\" \"$@\"",
     "  fi",
-    "  echo \"ade: Node.js 22+ or the ADE Electron runtime is required to run this source CLI.\" >&2",
+    `  echo "${BRAND.CLI}: Node.js 22+ or the ${BRAND.NAME} Electron runtime is required to run this source CLI." >&2`,
     "  exit 127",
     "fi",
     "if [ -n \"${ADE_CLI_NODE:-}\" ]; then",
@@ -425,17 +439,23 @@ function writeDevShim(args: {
     "if command -v asdf >/dev/null 2>&1; then",
     "  exec asdf exec node \"$CLI_JS\" \"$@\"",
     "fi",
-    "echo \"ade: Node.js 22+ or the ADE Electron runtime is required to run this CLI.\" >&2",
+    `echo "${BRAND.CLI}: Node.js 22+ or the ${BRAND.NAME} Electron runtime is required to run this CLI." >&2`,
     "exit 127",
     "",
   ].join("\n");
 
   try {
     fs.mkdirSync(binDir, { recursive: true });
-    fs.writeFileSync(commandPath, script, process.platform === "win32"
-      ? { encoding: "utf8" }
-      : { encoding: "utf8", mode: 0o755 });
-    if (process.platform !== "win32") fs.chmodSync(commandPath, 0o755);
+    // The same shim under the `daex` name too, so agents with this folder on
+    // PATH can type either. The script does not read its own name.
+    const aliasName = daexCommandName(args.commandName);
+    const shimPaths = [commandPath, ...(aliasName ? [path.join(binDir, commandFileName(aliasName))] : [])];
+    for (const shimPath of shimPaths) {
+      fs.writeFileSync(shimPath, script, process.platform === "win32"
+        ? { encoding: "utf8" }
+        : { encoding: "utf8", mode: 0o755 });
+      if (process.platform !== "win32") fs.chmodSync(shimPath, 0o755);
+    }
     return { commandPath, binDir };
   } catch (error) {
     args.logger.warn("ade_cli.dev_shim_failed", {
@@ -567,22 +587,34 @@ function ensureUserBinOnShellPath(
 }
 
 function statusMessage(args: {
+  /** The name to show: the `daex` name when there is one. */
   commandName: string;
+  /** The `ade` name, which may be on PATH while the `daex` name is not. */
+  legacyCommandName: string;
+  /** `ade` resolves on the Terminal PATH. */
   terminalInstalled: boolean;
+  /** There is a `daex` name and it does not resolve on the Terminal PATH. */
+  aliasMissing: boolean;
   bundledAvailable: boolean;
   agentPathReady: boolean;
   installAvailable: boolean;
   isPackaged: boolean;
 }): { message: string; nextAction: string | null } {
+  if (args.terminalInstalled && args.agentPathReady && !args.aliasMissing) {
+    return {
+      message: `The ${args.commandName} command is available to Terminal and ${BRAND.NAME}-launched agents.`,
+      nextAction: null,
+    };
+  }
   if (args.terminalInstalled && args.agentPathReady) {
     return {
-      message: `The ${args.commandName} command is available to Terminal and ADE-launched agents.`,
-      nextAction: null,
+      message: `${args.legacyCommandName} is installed for Terminal, but ${args.commandName} is not yet.`,
+      nextAction: args.installAvailable ? `Install for Terminal to add the ${args.commandName} command.` : null,
     };
   }
   if (args.agentPathReady && args.bundledAvailable) {
     return {
-      message: `ADE-launched agents can use ${args.commandName}. Terminal access is not installed yet.`,
+      message: `${BRAND.NAME}-launched agents can use ${args.commandName}. Terminal access is not installed yet.`,
       nextAction: args.installAvailable
         ? `Install the ${args.commandName} command for Terminal access.`
         : "Run npm link in apps/ade-cli for local development.",
@@ -591,15 +623,15 @@ function statusMessage(args: {
   if (args.bundledAvailable) {
     return {
       message: `The bundled ${args.commandName} command is present, but it is not on the agent PATH yet.`,
-      nextAction: "Restart ADE so new agent sessions receive the bundled CLI path.",
+      nextAction: `Restart ${BRAND.NAME} so new agent sessions receive the bundled CLI path.`,
     };
   }
   return {
     message: args.isPackaged
       ? `The bundled ${args.commandName} command is missing from this app build.`
-      : "The local ADE CLI build was not found.",
+      : `The local ${BRAND.NAME} CLI build was not found.`,
     nextAction: args.isPackaged
-      ? "Reinstall or update ADE."
+      ? `Reinstall or update ${BRAND.NAME}.`
       : "Run npm --prefix apps/ade-cli run build.",
   };
 }
@@ -652,6 +684,7 @@ function resolvePackagedWindowsCliLauncher(
 
 export function createAdeCliService(args: CreateAdeCliServiceArgs) {
   const commandName = resolveCommandName(args);
+  const aliasCommandName = daexCommandName(commandName);
   const resolved = resolveCliPaths(args, commandName);
   const bundledAgentSkillsRoot = resolveBundledAgentSkillsRoot(args);
   // Migrate away from the old user-global copies. New sessions receive the
@@ -742,6 +775,12 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
 
   const getStatus = async (): Promise<AdeCliStatus> => {
     const terminalCommandPath = resolveCommandOnPath(commandName, hostPathSnapshot, envSnapshot);
+    // `terminalInstalled` stays about `ade`: another install (Homebrew,
+    // install.sh) owning `ade` is what keeps the auto-install away. Whether
+    // `daex` resolves too is reported beside it.
+    const terminalAliasCommandPath = aliasCommandName
+      ? resolveCommandOnPath(aliasCommandName, hostPathSnapshot, envSnapshot)
+      : null;
     const targetPath = installTargetPath(commandName, envSnapshot);
     const targetDir = path.dirname(targetPath);
     const terminalInstalled = Boolean(terminalCommandPath);
@@ -752,8 +791,10 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
     const packagedInstallAvailable = resolved.source === "packaged" && isExecutable(resolved.installerPath);
     const installAvailable = packagedInstallAvailable || (resolved.source === "dev" && bundledAvailable);
     const message = statusMessage({
-      commandName,
+      commandName: aliasCommandName ?? commandName,
+      legacyCommandName: commandName,
       terminalInstalled,
+      aliasMissing: aliasCommandName != null && terminalAliasCommandPath == null,
       bundledAvailable,
       agentPathReady,
       installAvailable,
@@ -762,6 +803,8 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
 
     return {
       command: commandName,
+      aliasCommand: aliasCommandName,
+      terminalAliasCommandPath,
       platform: process.platform,
       isPackaged: args.isPackaged,
       bundledAvailable,
@@ -786,8 +829,8 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
       return {
         ok: false,
         message: args.isPackaged
-          ? "The ADE CLI installer is missing from this app build."
-          : "The local ADE CLI build was not found.",
+          ? `The ${BRAND.NAME} CLI installer is missing from this app build.`
+          : `The local ${BRAND.NAME} CLI build was not found.`,
         status,
       };
     }
@@ -798,26 +841,34 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
         fs.mkdirSync(path.dirname(targetPath), { recursive: true });
         fs.rmSync(targetPath, { force: true });
         fs.symlinkSync(resolved.commandPath!, targetPath);
+        if (aliasCommandName) {
+          const aliasTargetPath = installTargetPath(aliasCommandName, envSnapshot);
+          fs.rmSync(aliasTargetPath, { force: true });
+          fs.symlinkSync(resolved.commandPath!, aliasTargetPath);
+        }
       } else {
         const result = await spawnAsync(resolved.installerPath!, []);
         if (result.status !== 0) {
-          throw new Error(result.stderr.trim() || result.stdout.trim() || "ADE CLI installer failed.");
+          throw new Error(result.stderr.trim() || result.stdout.trim() || `${BRAND.NAME} CLI installer failed.`);
         }
       }
       const targetDir = path.dirname(installTargetPath(commandName, envSnapshot));
       const profileResult = ensureUserBinOnShellPath(targetDir, envSnapshot);
       const status = await getStatus();
+      // "daex (and its ade alias)": both names went in side by side.
+      const installedNames = aliasCommandName ? `${aliasCommandName} (and its ${commandName} alias)` : commandName;
+      const doctorName = aliasCommandName ?? commandName;
       return {
         ok: true,
         message: process.platform === "win32"
-          ? `Installed ${commandName} for Terminal access and added ${targetDir} to the user PATH if it was missing. Open a new terminal, then run: ${commandName} doctor.`
+          ? `Installed ${installedNames} for Terminal access and added ${targetDir} to the user PATH if it was missing. Open a new terminal, then run: ${doctorName} doctor.`
           : profileResult
           ? profileResult.modified
-            ? `Installed ${commandName} for Terminal access and added ${targetDir} to ${profileResult.profilePath}. Open a new terminal or source that file.`
-            : `Installed ${commandName} for Terminal access. PATH entry already present in ${profileResult.profilePath}; open a new terminal or source that file.`
+            ? `Installed ${installedNames} for Terminal access and added ${targetDir} to ${profileResult.profilePath}. Open a new terminal or source that file.`
+            : `Installed ${installedNames} for Terminal access. PATH entry already present in ${profileResult.profilePath}; open a new terminal or source that file.`
           : status.installTargetDirOnPath
-          ? `Installed ${commandName} for Terminal access.`
-          : `Installed ${commandName} at ${status.installTargetPath}. Add ${path.dirname(status.installTargetPath)} to PATH if your shell cannot find it.`,
+          ? `Installed ${installedNames} for Terminal access.`
+          : `Installed ${installedNames} at ${status.installTargetPath}. Add ${path.dirname(status.installTargetPath)} to PATH if your shell cannot find it.`,
         status,
       };
     } catch (error) {

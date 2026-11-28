@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { BRAND } from "../../../../../desktop/src/shared/brand";
 
 const execFileAsync = promisify(execFile);
 
@@ -198,7 +199,7 @@ export function writeCopyList(root: string, listFile: string, keep: readonly str
     child.on("close", (code) => {
       out.end(() => {
         if (code !== 0) {
-          reject(new Error(`ADE couldn't list every file in the project. ${firstLine(stderr)}`.trim()));
+          reject(new Error(`${BRAND.NAME} couldn't list every file in the project. ${firstLine(stderr)}`.trim()));
           return;
         }
         resolve(count);

@@ -11,6 +11,7 @@ import type { PrCheckLogExcerpt, PrWorkflowGraphNode } from "../../../../shared/
 import { buildCheckDetailPlan, type CheckStepRow } from "../detail/prChecksModel";
 import { COLORS, MONO_FONT, RADII, SANS_FONT } from "../../lanes/laneDesignTokens";
 import { STATE_COLOR, StateIcon, fmtMs, tint } from "../detail/prChecksVisuals";
+import { BRAND } from "../../../../shared/brand";
 
 /*
  * Status vocabulary comes from `prChecksVisuals` — the one status vocabulary for
@@ -185,7 +186,7 @@ export function PrCheckLogDrawer({
       ? "tail of the whole job log · GitHub didn't mark a failing step"
       : "tail of the failing step · fetched on open"
     : explicitReadFailed
-      ? "step times from this run · ADE couldn't read the log"
+      ? `step times from this run · ${BRAND.NAME} couldn't read the log`
       : plan.state === "running" || plan.state === "queued"
         ? "live step state · the job log isn't complete yet"
         : "step times from this run · no log fetched";

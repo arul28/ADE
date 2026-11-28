@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ArrowCounterClockwise } from "@phosphor-icons/react";
 import type { LocalRuntimeStatus } from "../../../shared/types";
 import { APP_BANNER_PRIORITY, useAppBanner } from "../ui/notice";
+import { BRAND } from "../../../shared/brand";
 
 type LastWedge = NonNullable<LocalRuntimeStatus["lastWedge"]>;
 
@@ -54,9 +55,9 @@ export const EXTERNAL_WATCHDOG_COMMAND = "external-watchdog";
 export function formatRecoveryMessage(lastWedge: { lastCommand: string; ts: string }): string {
   const at = formatRecoveryTime(lastWedge.ts);
   if (lastWedge.lastCommand.trim() === EXTERNAL_WATCHDOG_COMMAND) {
-    return `ADE restarted its background service at ${at} after it stopped responding.`;
+    return `${BRAND.NAME} restarted its background service at ${at} after it stopped responding.`;
   }
-  return `ADE recovered from a background issue at ${at} — a stuck task (${
+  return `${BRAND.NAME} recovered from a background issue at ${at} — a stuck task (${
     formatRecoveryCommand(lastWedge.lastCommand)
   }) was restarted.`;
 }

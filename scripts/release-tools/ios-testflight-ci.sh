@@ -9,7 +9,8 @@
 # (com.ade.ios.beta, the `Beta` build configuration) is a second TestFlight app
 # beside ADE (com.ade.ios), so a bad beta never replaces the normal app on a
 # phone. The normal app is built only for stable releases, by
-# ios-testflight.sh from the release skill. See docs/plans/ios-beta-app.md.
+# ios-testflight.sh from the release skill. See
+# docs/features/sync-and-multi-device/ios-companion.md ("DAEX and DAEX Beta").
 #
 # Steps: API key → signing → build number → archive → export → check the IPA →
 # validate → upload → dSYMs to Sentry and PostHog → wait for processing → What to Test →
@@ -158,7 +159,7 @@ if command -v asc > /dev/null; then
   APP="$(printf '%s' "$apps_json" | jq -r --arg b "$BUNDLE_ID" '(.data // [])[] | select(.attributes.bundleId == $b) | .id' | head -n1)"
 fi
 if [ -z "$APP" ]; then
-  [ "$DRY_RUN" = 1 ] || fail "App Store Connect has no app for $BUNDLE_ID. Create the ADE Beta app first (docs/plans/ios-beta-app.md)."
+  [ "$DRY_RUN" = 1 ] || fail "App Store Connect has no app for $BUNDLE_ID. Create the ADE Beta app first (docs/features/sync-and-multi-device/ios-companion.md)."
   log "no App Store Connect app for $BUNDLE_ID yet; the dry run numbers the build from ADE only"
 fi
 next_build_number() {

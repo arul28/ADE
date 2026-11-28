@@ -15,6 +15,7 @@ import {
   type ServiceManagerResult,
   type ServiceManagerSpawnSync,
 } from "./common";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 /**
  * The ancestry query could not be answered at all — the mechanism itself is
@@ -339,8 +340,8 @@ export function selfServiceMutationRefusal(args: {
   const verb = args.action === "install" ? "restart" : "stop";
   const pid = args.brainPid != null ? ` (pid ${args.brainPid})` : "";
   const subject = args.unconfirmed
-    ? `ADE brain${pid}: this command could not confirm that it runs outside that brain`
-    : `ADE brain from a command running inside that brain${pid}`;
+    ? `${BRAND.NAME} brain${pid}: this command could not confirm that it runs outside that brain`
+    : `${BRAND.NAME} brain from a command running inside that brain${pid}`;
   return {
     ok: false,
     selfMutationBlocked: true,
@@ -350,7 +351,7 @@ export function selfServiceMutationRefusal(args: {
     path: args.path,
     message:
       `Refusing to ${verb} ${subject}. Run this from an external terminal, or set `
-      + "ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION=1 if you intentionally want to tear down active ADE sessions.",
+      + `ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION=1 if you intentionally want to tear down active ${BRAND.NAME} sessions.`,
   };
 }
 

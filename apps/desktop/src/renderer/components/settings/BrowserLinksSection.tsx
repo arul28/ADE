@@ -8,10 +8,11 @@ import { ModernSection, SavedFlash, useSavedFlash } from "./primitives";
 import { saveProjectLocalConfig } from "../../lib/projectLocalConfig";
 import { useThisComputerCopyPin } from "./ProjectCopyScope";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 const OPTIONS: ReadonlyArray<{ value: BrowserLinkOpenMode; label: string; hint: string; icon: Icon }> = [
-  { value: "in-app", label: "In ADE", hint: "A tab in the ADE browser, beside your work.", icon: AppWindow },
-  { value: "external", label: "In system browser", hint: "Your default browser, outside ADE.", icon: Globe },
+  { value: "in-app", label: `In ${BRAND.NAME}`, hint: `A tab in the ${BRAND.NAME} browser, beside your work.`, icon: AppWindow },
+  { value: "external", label: "In system browser", hint: `Your default browser, outside ${BRAND.NAME}.`, icon: Globe },
 ];
 
 /**
@@ -65,7 +66,7 @@ export function BrowserLinksSection() {
       flash.flash();
     } catch (error) {
       setMode(previous);
-      flash.fail(plainErrorText(error, "ADE couldn't save the link setting."));
+      flash.fail(plainErrorText(error, `${BRAND.NAME} couldn't save the link setting.`));
     } finally {
       setBusy(false);
     }
@@ -76,7 +77,7 @@ export function BrowserLinksSection() {
       group="Links"
       anchor="link-open-mode"
       title="Open links"
-      hint={<>Clicks open where you pick below. {modifierKeyLabel}-click: system browser. Shift-click: ADE.</>}
+      hint={<>Clicks open where you pick below. {modifierKeyLabel}-click: system browser. Shift-click: {BRAND.NAME}.</>}
       actions={<SavedFlash state={flash.state} />}
     >
       <div role="radiogroup" aria-label="Open links" className="ade-modern-choices" style={{ opacity: busy ? 0.7 : 1 }}>

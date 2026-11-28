@@ -1,6 +1,6 @@
 # Performance baseline (macOS, measured)
 
-The numbers ADE has to stay inside. They were measured on one Mac after the
+The numbers DAEX has to stay inside. They were measured on one Mac after the
 performance pass in PR #1560, and every change that can move them is
 measured against this table during the work (see **Performance budget** in
 `AGENTS.md` and `CLAUDE.md`).
@@ -60,8 +60,8 @@ Measured with `route-sweep.mjs` (idle phase), `gpu-trace.mjs`, and
 | Work with a chat streaming: main-thread work | — | 39–43 ms/s, 36–40 style recalcs/s | 60 ms/s |
 | Work, idle Claude chat with mod UI on screen (dock with the band of three mods, 116 elements): main-thread work | — | 11–17 ms/s; 10–15 ms/s with the setting off, which is the default (Mac Studio M4 Max, 2026-10-12, not the baseline machine) | 30 ms/s |
 | Settings, nothing animating: frames drawn | — | 0/s | 0/s |
-| Lanes and Work after ADE Cloud save at rest (#2340) and the send-after-sleep queue fallback (#2364, #2369, #2373), idle after load: main-thread work, page elements, long tasks on switching | — | Lanes 4.8–15.6 ms/s (29.6 on the first, compiling visit), 2,305 elements; Work 0.4–3.4 ms/s, 922–925 elements; 0 ms long tasks on every switch; 0 IPC/min idle; main 1.4%, renderer 0.9%, brain 4.7% CPU over 15 s. The dev app has no account (sync off), so saved cloud rows are not on screen here; the queue fallback adds no work until a send fails (`route-sweep.mjs`, `process-cpu.sh`, Mac Studio M4 Max dev build, 2026-11-18, branch `ade/sentry-final-pass` on `1558e890bc`, not the baseline machine) | 30 ms/s; 5k / 3k elements; 100 ms |
-| Settings › Overview, Project › Lanes, Location, Computer › ADE service, idle after load: main-thread work | — | 0.2–0.4 ms/s (Overview 6.8–9.2 ms/s in the first 26 s while its lazy reads land, then 0.3 ms/s); 1.2–1.6k page elements (Mac Studio M4 Max dev build, 2026-10-18, on top of `13d6f10c2`, not the baseline machine) | 30 ms/s |
+| Lanes and Work after DAEX Cloud save at rest (#2340) and the send-after-sleep queue fallback (#2364, #2369, #2373), idle after load: main-thread work, page elements, long tasks on switching | — | Lanes 4.8–15.6 ms/s (29.6 on the first, compiling visit), 2,305 elements; Work 0.4–3.4 ms/s, 922–925 elements; 0 ms long tasks on every switch; 0 IPC/min idle; main 1.4%, renderer 0.9%, brain 4.7% CPU over 15 s. The dev app has no account (sync off), so saved cloud rows are not on screen here; the queue fallback adds no work until a send fails (`route-sweep.mjs`, `process-cpu.sh`, Mac Studio M4 Max dev build, 2026-11-18, branch `ade/sentry-final-pass` on `1558e890bc`, not the baseline machine) | 30 ms/s; 5k / 3k elements; 100 ms |
+| Settings › Overview, Project › Lanes, Location, Computer › DAEX service, idle after load: main-thread work | — | 0.2–0.4 ms/s (Overview 6.8–9.2 ms/s in the first 26 s while its lazy reads land, then 0.3 ms/s); 1.2–1.6k page elements (Mac Studio M4 Max dev build, 2026-10-18, on top of `13d6f10c2`, not the baseline machine) | 30 ms/s |
 | Settings › Machines (list with each machine's load) and one machine's page (Right now, What it can run), idle after load: main-thread work | — | list 4.7–7.6 ms/s, machine page 2.2–2.4 ms/s, no long task on opening; one `machine_stats.get` per machine on open, no poll (`route-sweep.mjs`, Mac Studio M4 Max dev build, 2026-10-30, branch `ade/machine-stats-and-preferences`, CPU 80–100% busy from other agents, not the baseline machine) | 30 ms/s |
 | Settings › Integrations (home with the 95-server MCP catalogue grid; the MCP servers and GitHub pages), idle after load: main-thread work and page elements | — | 2026-11-09, 95 servers (98 tiles): 2,940 elements against 2,987 for main's 72 servers in the same setup, so 23 more tiles cost nothing; a tile is 19 elements, was 25 (a logo's copies are its own `<svg>` with no wrapping span, and tiles and cards no longer draw the floor shadow they hid), pixel-identical; idle 0.2–0.5 ms/s, no long task on opening (`route-sweep.mjs` with `CDP_PORT`, against the Vite renderer preview in headless Chrome, not the Electron dev build, Mac Studio M4 Max, branch `ade/rakazo-ideas-discussion`). Earlier, home 0.3–1.3 ms/s, 2,480 elements (77 small 3D logos; 4,043 before a straight logo drew its thin edge with fewer copies); MCP page 0.4 ms/s, 808 elements; GitHub page 0.5 ms/s, 625 elements; no long task on opening (`route-sweep.mjs`, Mac Studio M4 Max dev build, 2026-11-04, branch `ade/integration-connect-cards-81787be4` on `27ed4b1dd`, sync off, load average ~5 from other agents, not the baseline machine) | 30 ms/s; 3k elements |
 | Settings › Passwords & Secrets (Logins with a login selected that has an authenticator code, so the live code counts down), idle after load: main-thread work and page elements | 2.4–2.8 ms/s, 1,083 elements (2026-11-13, `ade/passwords`) | 1.5–1.9 ms/s (Settings › Integrations in the same session 0.2–2.6 ms/s), about one layout per second from the code countdown (by design; the code is fetched again only when it runs out, every 30 s), 1,042–1,055 elements, no long task on opening. The redesign (one status bar instead of the switch and danger-zone cards) is lighter (`route-sweep.mjs` with `CDP_PORT`, against the Vite renderer preview in headless Chrome, not the Electron dev build, Mac Studio M4 Max, 2026-11-14, branch `ade/passwords-and-secrets`) | 30 ms/s; 3k elements |
@@ -157,7 +157,7 @@ be far smaller; it was not measured that way.
 | Work chat switch, warm, dev app on the owner's real ~/.ade with two other machines connected: first changed frame median / worst long frame; component renders per switch | `interaction.mjs chats 4` (3 alternated pairs), `chat-switch-renders.mjs 9333 8`; 2026-10-29 on `20465883b` (PR #1985) | 55-65 / ~86 ms; ~2,000 renders | 50-57 / 53-70 ms; 1,235 renders | 60 ms first frame |
 | Renderer busy per keystroke (production build, headless) | `scripts/perf-chat-stream.mjs` harness | 12–15 ms | 12–15 ms | 16 ms |
 | Streaming: cost per event (production build) | `scripts/perf-chat-stream.mjs` | 8.1 ms | 7.7 ms | 10 ms |
-| Chat code palette preparation for 300 blocks in one light theme | In-process Node 24 benchmark of Shiki theme data and cache lookup, warm median of seven samples, Mac Studio M1 Max, 2026-11-26 (PR #2633, base `18873d156`). Excludes theme resolution, Shiki initialization and rendering. | Solarized Light 1.43 ms. ADE Light used the stock theme. | Solarized Light 0.20 ms, ADE Light 0.17 ms. Reuse the contrast-adjusted palette for subsequent blocks. | — |
+| Chat code palette preparation for 300 blocks in one light theme | In-process Node 24 benchmark of Shiki theme data and cache lookup, warm median of seven samples, Mac Studio M1 Max, 2026-11-26 (PR #2633, base `18873d156`). Excludes theme resolution, Shiki initialization and rendering. | Solarized Light 1.43 ms. DAEX Light used the stock theme. | Solarized Light 0.20 ms, DAEX Light 0.17 ms. Reuse the contrast-adjusted palette for subsequent blocks. | — |
 | Shell code block Run control (mounts on first hover or focus): renderer task per streamed event / first rows, dev build, a 21,670-event transcript with ~300 shell blocks, interleaved A/B | `scripts/perf-chat-stream.mjs --stream 400 --rate 30`; Mac Studio M4 Max, 2026-11-02 on `921f81d9e` (PR #2027), not the baseline machine | 3.48–4.73 ms; 2.87–3.26 s (without Run) | 3.80–4.40 ms; 2.98–3.22 s (no measurable change) | 10 ms |
 | Session replay recording (analytics on; `renderer/lib/sessionReplay.ts`): renderer task per streamed event / renderer CPU while streaming; Work idle with no input, main-thread work / JS heap after GC | Browser mock + headless Chrome, `scripts/perf-chat-stream.mjs --stream 400 --rate 30` on a 580-line real transcript, 3 alternated pairs; idle: 20 s of `Performance.getMetrics` after 15 s settle, 2 pairs; replay pointed at a local mock PostHog. Mac Studio M4 Max, 2026-11-02 on `387f683d5`, not the baseline machine | off: 5.20–5.59 ms, 24.8–26.1%; idle 5.0–5.1 ms/s, 98 MB | on: 5.84–6.50 ms (+14%), 25.2–27.9%; idle 5.8–6.2 ms/s (+18%), 105 MB. With a click every 2 s idle is 7.3–7.5 ms/s (each interaction flushes a compressed chunk) | 10 ms per event; 30 ms/s idle |
 | Sponsored reply slot (`SponsoredReplySlot`, under the last finished reply; renders nothing on a chat on the person's own machine): renderer task per streamed event / script per event / renderer CPU | `scripts/perf-chat-stream.mjs --stream 400 --rate 30`, browser mock, a 2,291-line real transcript, 3 alternated pairs with the slot switched off by a local edit; Mac Studio M4 Max, 2026-11-22 on branch `ade/ade-cloud-ads-gravity`, not the baseline machine | without: 3.79 / 3.96 ms (one noisy 5.41), 1.97–2.40 ms, 16.7–22.3% | with: 3.90–4.21 ms, 2.00–2.09 ms, 17.3–18.6% (no measurable change) | 10 ms per event |
@@ -221,27 +221,27 @@ Run without the app (`scripts/perf/service/`).
 | `sessions.list` handler, 617 chat metadata files (synthetic, sized like a real project: 8.1 MB, p50 4.4 KB, p90 34 KB, max 152 KB). Chat-scoped (a chat pane's shells, per chat switch) / lane (`limit 200`) / unscoped (`limit 500`); median of 7 runs in each of 3 processes | `session-list.bench.mts` | — | chat-scoped 226 → 13 ms; lane 102 → 78 ms; unscoped 235 → 191 ms (main → head, with the orphan repair; medians of 3 interleaved processes). Chat metadata reads per call 500 → 0, 222 → 137, 500 → 351 | proposed, needs approval: chat-scoped 25 ms, lane 120 ms, unscoped 250 ms |
 | Onboarding discovery: first-run setup's project discovery (`app.discoverOnboardingProjects`, 460 agent folders → 12 projects, 11 providers) and one cold chat list (`app.listOnboardingProjectChats`), Electron main event loop. Mac Studio M4 Max, 2026-10-21, this branch (not the baseline machine) | one-off `vite-node` script on this machine's real provider history, 1 ms interval probe + `monitorEventLoopDelay` (no bench file yet) | — | discovery: longest main-thread block 2,742 → 7 ms, total 4.7 → 5.5 s (now in a child process; the extra is its start); cold chat list: block 769–957 → 3–7 ms, total 0.85–1.7 → 1.1–1.9 s; a list after discovery 0 ms (kept in main) | proposed, needs approval: longest main-thread block 50 ms |
 | Idle-lane build output cleanup (storage doctor step `fs.lane_build_output`, at most once a day): one run over a throwaway 8-lane project (git `ls-files`/`status`/`check-ignore` per lane, one `lsof -d cwd`, 8 folders removed); and the shared disk accounting (`diskUsage.measureTree`, allocated blocks + hard-link tally + pnpm store skip) against the old `stat.size` walk on this lane's `apps/desktop/node_modules` (114,573 files). Mac Studio, 2026-10-25, load average 400–800 from other agents' typechecks (not the baseline machine) | one-off `tsx` scripts driving `createStorageInsightsService` and `measureTree` (no bench file yet) | — | sweep 3.6 s for 8 lanes; accounting 3.6–9.2 s new vs 5.4–6.7 s old over 3 interleaved rounds (same file count, 3.10 GB allocated vs 2.77 GB length), longest event-loop gap 131 ms under that load. 2026-11-05 (Mac Studio M4 Max, load average ~7, at `237f83f8e` + storage-numbers): the accounting's queue no longer shifts its whole list per batch, 1.33–1.70 s → 0.90–0.93 s over 3 interleaved rounds on 119,717 files (3.25 GB, same result), longest event-loop gap 4–5 ms | sweep within its own 15 min budget; accounting within 25% of the old walk (approved by the owner 2026-10-26) |
-| Storage page open and background lane sizing. Page open: `getSnapshot({ forceRefresh })` for the ADE repository (19 lane folders, 125 GB of them; project on an external APFS volume, ADE home and temp on the internal disk). Lane sizing: the pass that measures every lane folder in full (`laneSizes`, `measureTree` with no entry cap, 4 folders at a time, 250 ms between lanes; at most every 12 h from the storage doctor, after boot for lanes never measured, and from Check again). Mac Studio M4 Max, 2026-11-05, load average ~7 (not the baseline machine) | one-off `vite-node` script driving `createStorageInsightsService` on a copy of the project database, 1 ms interval probe + `monitorEventLoopDelay` (no bench file yet) | page open 7.0 s cold / 4.0 s warm, longest event-loop gap 497 ms cold / 44 ms warm; lanes shown as ≥ 3.6 GB (`du`: 125.3 GB, 52 s) | page open with no lane measured yet 6.5 s / 4.1 s, gap 520 / 48 ms (unchanged); once measured 1.5 s / 1.5 s, gap 47 / 46 ms, lanes 125.32 GB; lane sizing pass 66 s for 17 lanes (3.02 M files, longest lane 4.8 s), longest event-loop gap 47 ms | proposed, needs approval: page open within the old row (no slower than before); lane sizing gap 50 ms |
+| Storage page open and background lane sizing. Page open: `getSnapshot({ forceRefresh })` for the ADE repository (19 lane folders, 125 GB of them; project on an external APFS volume, DAEX home and temp on the internal disk). Lane sizing: the pass that measures every lane folder in full (`laneSizes`, `measureTree` with no entry cap, 4 folders at a time, 250 ms between lanes; at most every 12 h from the storage doctor, after boot for lanes never measured, and from Check again). Mac Studio M4 Max, 2026-11-05, load average ~7 (not the baseline machine) | one-off `vite-node` script driving `createStorageInsightsService` on a copy of the project database, 1 ms interval probe + `monitorEventLoopDelay` (no bench file yet) | page open 7.0 s cold / 4.0 s warm, longest event-loop gap 497 ms cold / 44 ms warm; lanes shown as ≥ 3.6 GB (`du`: 125.3 GB, 52 s) | page open with no lane measured yet 6.5 s / 4.1 s, gap 520 / 48 ms (unchanged); once measured 1.5 s / 1.5 s, gap 47 / 46 ms, lanes 125.32 GB; lane sizing pass 66 s for 17 lanes (3.02 M files, longest lane 4.8 s), longest event-loop gap 47 ms | proposed, needs approval: page open within the old row (no slower than before); lane sizing gap 50 ms |
 | Lane archive rules: one lifecycle scan (`runLifecycleScanNow`) over a throwaway 10-lane project (local bare `origin`, every lane idle 10 days, 10,000 files of `node_modules` each; 2 lanes due to archive). Before: `laneService.list` with status, then per lane `getReclaimRisk` (git status, `rev-list`, `ls-remote` against the local origin, a full folder measure). After: database activity first, then `getAutoArchiveFacts` (status, reflog, `merge-base`, `rev-list`) for due lanes only. Mac Studio M4 Max, 2026-11-05, at `237f83f8e` (not the baseline machine). Re-measured 2026-11-06 after the rules moved to days and gained the archived-lane rules (free up space automatically, delete after): same project, same machine, "Archive idle lanes after 1 day"; then with every rule on (archived lanes not yet due cost one `existsSync` each; a lane that is due costs one `getAutoArchiveFacts` plus the removal itself) | one-off `tsx` script driving `createLaneService` + `createStorageInsightsService` (no bench file yet) | 958–2,159 ms (3 runs; a network `ls-remote` per lane adds its round trip on real projects) | 166–182 ms (3 runs). 2026-11-06, uncommitted on `237f83f8e`: before the change 165–175 ms, after 166–173 ms; every rule on 168–178 ms (3 runs each) | proposed, needs approval: 500 ms for 10 lanes |
-| Inline image fitting off the event loop (`fitImageForProviderInline` for a turn's pasted images on every inlining provider, `encodeDisplayImage` for artifact display copies; worker threads in `providerInlineImageWorkerPool.ts`): event-loop time while 4 real screenshots (2100–3004 px PNG, 0.9–1.5 MB) are fitted one after another; a mixed set (8.7 MB translucent 3000×2000 PNG, 14 MB 4032×3024 JPEG, two RGB PNGs); 4 display copies. Linux ADE Cloud lane computer (4 vCPU, 16 GB), Node 24.22.3, 2026-11-25, other agents running (not the baseline machine) | one-off esbuild bundle of `providerInlineImage.ts` with the worker bundle beside it (and a Node SEA with it as an asset), 5 ms interval probe + `eventLoopUtilization` (no bench file yet) | screenshots: loop busy 1,506–1,955 ms, longest block 158–228 ms (all 4 at once: 409 ms); mixed: busy 3,988 ms, longest 1,868 ms (the JPEG decode); display copies: busy 2,953 ms, longest 1,733 ms. The cloud brain once logged 2.9 s in one run (`brain.stall_profile`) | screenshots: busy 18–57 ms, longest 2–6 ms (one 68 ms gap under load), wall time unchanged (1.5–2.4 s; all 4 at once 0.9 s on two workers), identical bytes; mixed: busy 99 ms, longest 5 ms; display copies: busy 72 ms, longest 6 ms; SEA: 32 ms / 4 ms | longest event-loop block 50 ms (approved by the owner 2026-11-25) |
+| Inline image fitting off the event loop (`fitImageForProviderInline` for a turn's pasted images on every inlining provider, `encodeDisplayImage` for artifact display copies; worker threads in `providerInlineImageWorkerPool.ts`): event-loop time while 4 real screenshots (2100–3004 px PNG, 0.9–1.5 MB) are fitted one after another; a mixed set (8.7 MB translucent 3000×2000 PNG, 14 MB 4032×3024 JPEG, two RGB PNGs); 4 display copies. Linux DAEX Cloud lane computer (4 vCPU, 16 GB), Node 24.22.3, 2026-11-25, other agents running (not the baseline machine) | one-off esbuild bundle of `providerInlineImage.ts` with the worker bundle beside it (and a Node SEA with it as an asset), 5 ms interval probe + `eventLoopUtilization` (no bench file yet) | screenshots: loop busy 1,506–1,955 ms, longest block 158–228 ms (all 4 at once: 409 ms); mixed: busy 3,988 ms, longest 1,868 ms (the JPEG decode); display copies: busy 2,953 ms, longest 1,733 ms. The cloud brain once logged 2.9 s in one run (`brain.stall_profile`) | screenshots: busy 18–57 ms, longest 2–6 ms (one 68 ms gap under load), wall time unchanged (1.5–2.4 s; all 4 at once 0.9 s on two workers), identical bytes; mixed: busy 99 ms, longest 5 ms; display copies: busy 72 ms, longest 6 ms; SEA: 32 ms / 4 ms | longest event-loop block 50 ms (approved by the owner 2026-11-25) |
 
 On 2026-10-19, a focused Node 22 harness compared the existing 5-second
 desktop poll with the brain poll after this change. Both used the same activity
 summary over 35 registered projects (12 booted), with no active work, for 15 s:
 the old desktop loop used 0.711% process CPU for 3 summary reads; the brain loop
-used 0.082% for 4 reads. This is a service-only sample, not a full ADE process
+used 0.082% for 4 reads. This is a service-only sample, not a full DAEX process
 benchmark. The default remains `never`, so the brain adds no poll in the normal
 idle baseline above; the enabled path moves the existing poll to the brain and
 keeps its 5-second cadence.
 
 ### Agent prompt (Hello Tax)
 
-Input tokens on the first turn of a chat whose only message is `hi`, ADE versus
+Input tokens on the first turn of a chat whose only message is `hi`, DAEX versus
 the bare CLI in the same folder (this repo's lane worktree), same model, same
-provider home. ADE side: a Work chat on a dev brain with its own socket
-(`ade new chat --provider … --prompt hi`); bare side: the pinned CLI run by hand
+provider home. DAEX side: a Work chat on a dev brain with its own socket
+(`daex new chat --provider … --prompt hi`); bare side: the pinned CLI run by hand
 with stdin closed. Claude: Haiku 5.5, CLI 0.3.300, `CLAUDE_CONFIG_DIR` set to
-ADE's account home, `claude -p hi --model haiku --output-format json`, usage of
+DAEX's account home, `claude -p hi --model haiku --output-format json`, usage of
 the first assistant message in the transcript (input + cache write + cache
 read). Codex: `gpt-6-luna`, CLI 0.162.1, `codex exec --json -m gpt-6-luna hi`,
 the first `token_count` in the rollout. Mac Studio, 2026-10-20, on top of
@@ -255,8 +255,8 @@ bodies, captured through a local pass-through proxy (`ANTHROPIC_BASE_URL`).
 | Computer-use block in the first message (Mac host, lane screen available) | — | 9,775 chars with the lane directive | 2,629 chars with the lane directive | — |
 
 Per-turn cost on the providers that have no instruction channel but the user
-turn, or that got ADE's guidance in both places: growth in input tokens from
-turn 1 (`hi`) to turn 2 (`ok`), read from ADE's own `done` usage. Before:
+turn, or that got DAEX's guidance in both places: growth in input tokens from
+turn 1 (`hi`) to turn 2 (`ok`), read from DAEX's own `done` usage. Before:
 this repo's lane on the shared home (2026-10-20). After: a throwaway
 `ADE_HOME` and scratch project (the isolation rule forbids the real one); the
 growth does not depend on the repo, and Grok's own history shows turn 2 is the
@@ -273,18 +273,18 @@ bare `ok`. Droid (no API key here), Cursor (rate-limited), Kimi, Qwen and Muse
 
 Ceilings in the two tables above approved by the owner on 2026-10-20.
 
-Most of the Claude gap was `ENABLE_TOOL_SEARCH=auto`, which ADE forced on
+Most of the Claude gap was `ENABLE_TOOL_SEARCH=auto`, which DAEX forced on
 every query: "auto" only defers tool schemas once they pass a share of the
 context window, so every schema went inline. The bare CLI measured 30,624 with
 the variable unset or `true`, 45,010 with `false` and 48,454 with `auto`. A
-brain started from an older ADE's shell inherits the variable, so ADE now drops
+brain started from an older DAEX's shell inherits the variable, so DAEX now drops
 it from the query environment.
 
-Not ADE's: the `## Skills` listing Codex builds itself (~23k chars here), the
+Not DAEX's: the `## Skills` listing Codex builds itself (~23k chars here), the
 claude.ai connector tools and `AskUserQuestion`/plan-mode tools the SDK adds in
-streaming mode, and project or user skills ADE lists for Claude (this
+streaming mode, and project or user skills DAEX lists for Claude (this
 machine's `~/.codex` skills were 4.9k chars). A small repo pays the same
-ADE addition on a smaller base: bare Claude in a one-file repo was 22,525.
+DAEX addition on a smaller base: bare Claude in a one-file repo was 22,525.
 
 ### Desktop start-up (main process)
 
@@ -584,7 +584,7 @@ Checked and dropped, with numbers:
   account on this Mac and the owner's machines; a full SSH connect starts a
   runtime there. Not measured.
 
-`ade chat read --limit 10` on the 8.7 MB chat (CLI start included): 1,433 ms
+`daex chat read --limit 10` on the 8.7 MB chat (CLI start included): 1,433 ms
 (1,080-2,128) → 563 ms (555-626), output byte-identical.
 
 Roster on the real clone (`roster-dirty.bench.mts`): cold 104 ms, rebuild
@@ -675,7 +675,7 @@ vs 1.3 s / 17 KB.
   Mac Studio): the PR body's markdown parse and the mount of about 2,300
   elements.
 
-## Patterns that bloat ADE
+## Patterns that bloat DAEX
 
 Small repeated work caused most of the idle cost that the Mac mini M4
 reference pass found. No single loop was to blame. Check each pattern before
@@ -847,7 +847,7 @@ UI, against a running dev app (`scripts/perf/ui/`). The packaged app works too: 
 | `music.mjs first-play cold\|warm`, `music.mjs pushes <secs>` | Time from Play to the first playing state, with the host stopped or running; Music state pushes a window receives |
 | `music-library.mjs detail\|grid\|scroll\|memory` | Apple Music library: time to a playlist's first rows and full list, Playlists grid open and scroll (long tasks, IPC and Apple requests through the main process's inspector, artwork requests), renderer heap after opening playlists |
 | `loop-cost.mjs <case>,... [secs] [socket]` | One looping animation (the app's own markup) at a time, as plain CSS and on the stepped loop clock: compositor ticks, frames drawn, style recalcs and timers per second, plus process CPU with a socket |
-| `stream-render-compare.mjs --pandacode <dir> --t3 <dir> --ade-dist <dir>` | No app needed: PandaCode's open streaming bench (a 50 KB reply as 2,000 deltas of 25 B every 16 ms) against production web builds of ADE, PandaCode and T3 Code in one headless Chrome. Main-thread time and its parts, final paint, renderer and GPU process CPU, heap, DOM mutations, and an idle baseline with a turn running (compositor draws per second). `--profile` adds a trace and CPU profile, `--ade-init`/`--ade-b-init` run A/B arms |
+| `stream-render-compare.mjs --pandacode <dir> --t3 <dir> --ade-dist <dir>` | No app needed: PandaCode's open streaming bench (a 50 KB reply as 2,000 deltas of 25 B every 16 ms) against production web builds of DAEX, PandaCode and T3 Code in one headless Chrome. Main-thread time and its parts, final paint, renderer and GPU process CPU, heap, DOM mutations, and an idle baseline with a turn running (compositor draws per second). `--profile` adds a trace and CPU profile, `--ade-init`/`--ade-b-init` run A/B arms |
 
 Brain and services, no app needed (`scripts/perf/service/`, run from
 `apps/ade-cli` with `npx tsx ../../scripts/perf/service/<name>.bench.mts`):
@@ -1088,7 +1088,7 @@ Still over: JS (1,084 KB, ceiling 950). The Sentry SDK chunk is 445 KB of it
 and loads at idle, so errors before sign-in still report. Without it, JS is
 about 640 KB. Requests and heap are now at or under their ceilings.
 
-### ADE with no computer (web), 2026-11-16
+### DAEX with no computer (web), 2026-11-16
 
 Same Mac Studio, Chrome headless, `npm run bench:webclient -- --skip-chat
 --runs 3`, medians. The A/B compares the branch base `b6eeec271` (the merge of
@@ -1120,10 +1120,10 @@ New surfaces, signed in with a new account against a local account server
 | Setup card: launch reads while a launch runs | 1 per 3–10 s | 1 per 3 s | Backoff from 3 s to 10 s in `renderer/state/accountCloudLaunches.ts`; paused while the page is hidden, stopped when no launch is in progress. From the code, not measured live (the local server has no cloud computer provider) |
 
 The account project page (`ProjectWelcomeNoMachine`) and its rows are gone: a
-project tab with no own computer online now binds to ADE Cloud and uses the
+project tab with no own computer online now binds to DAEX Cloud and uses the
 normal tabs.
 
-Desktop route sweep with ADE Cloud as the tab's machine, 2026-11-17. This is a
+Desktop route sweep with DAEX Cloud as the tab's machine, 2026-11-17. This is a
 note, not a baseline: a small throwaway one-lane project, so the numbers sit
 below the ADE-repo rows above. `route-sweep.mjs` against the dev desktop, second
 warm pass, DevTools and the extra window closed, 10 s idle, nothing streaming,
@@ -1295,7 +1295,7 @@ value on 98.5-100% of frames, never differing for more than 2 frames (8 ms).
 A hidden window stops the clock (timers back to the app's own 5/s).
 Faster compositor loops stay CSS: driving the 60 steps/s Lanes mark from a
 timer cost the renderer more (4.3% → 8.3% in the prototype). At rest, with no
-agent live, ADE runs no loops at all (0 ticks, renderer 0.2%, GPU 0.0-0.1%),
+agent live, DAEX runs no loops at all (0 ticks, renderer 0.2%, GPU 0.0-0.1%),
 and a covered window draws nothing, so neither number moved.
 
 ### Apple Music (the macOS player host and the Music tab)
@@ -1401,7 +1401,7 @@ pass `CDP_PORT=<port>` (and edit the port in `process-cpu.sh`,
   and GPU processes. The Windows host (WebView2) measured 141 MB private.
 - **The Windows Spotify host** (same `ade-music-host.exe`, `--page page-spotify`,
   Spotify's Web Playback SDK instead of MusicKit) measured on 2026-10-15 at
-  `be5b0670b` on Arul's Windows 11 PC, dev build, playing a full track to ADE's
+  `be5b0670b` on Arul's Windows 11 PC, dev build, playing a full track to DAEX's
   own Connect device: 3.5% CPU and 237.7 MB private across the host and its 9
   WebView2 children; 0.2% and 237.2 MB paused. The memory is 1.7x the Apple
   Music host's 141 MB because the SDK runs its player in an `sdk.scdn.co`
@@ -1445,8 +1445,8 @@ against new, with no difference in either set:
 
 `appStore` is out of the signed-out graph: the appearance values live in
 `state/appearanceStore.ts`, which `appStore` registers with when it loads.
-Not measured: the signed-in client over ADE Relay. The bench cannot sign in,
-and a measurement in ADE's own browser would register a new device on the
+Not measured: the signed-in client over DAEX Relay. The bench cannot sign in,
+and a measurement in DAEX's own browser would register a new device on the
 account, so it waits for a go-ahead.
 
 ### Sign-in card with a picture
@@ -1575,7 +1575,7 @@ child of the brain):
 | PTY host memory with 8 terminals open | 8 hosts, ~144 MB (18 MB each) | 1 host, 18 MB | 40 MB |
 | Echo in a terminal while another in the same host floods, median / max | 27-32 ms / 0.7-1.1 s (separate hosts) | 2 ms / 562 ms | 100 ms / 2 s |
 
-WebGL contexts of parked terminals, measured directly with ADE's xterm and
+WebGL contexts of parked terminals, measured directly with DAEX's xterm and
 WebGL addon in the dev renderer (8 terminals, 3,000 colored lines each). The
 Work tab could not be driven: an isolated dev home stops at the sign-in gate.
 
@@ -1797,7 +1797,7 @@ itself, with 5 chats idle after one turn, ran 5 app-servers at 422 MB plus
 
 ### Codex chats: app-server processes
 
-N Codex chats created with `ade chat create` and all mid-turn at the sample
+N Codex chats created with `daex chat create` and all mid-turn at the sample
 (each runs `sleep 90` before printing its `ADE_CHAT_SESSION_ID`); physical
 footprint (`footprint`) of the `codex app-server` processes under the brain
 plus their `codex-code-mode-host` children. Every chat printed its own id.
@@ -1941,7 +1941,7 @@ host call are context, not ceilings.
   host's own revision bumps; switching to Merged still reads it three times,
   which is the next thing to trim.
 
-### Spotify (playing inside ADE)
+### Spotify (playing inside DAEX)
 
 Measured 2026-10-14 on this Mac Studio, dev build in an App Control session,
 signed in with Premium, DevTools closed, other agents running. Spotify's Web
@@ -1968,10 +1968,10 @@ Spotify's service sets when Spotify accepts the play, not when audio starts.
   the device over the network. None of it can be skipped, so the player starts
   when the tab opens (like Apple Music's host) and stops after five minutes
   without playing.
-- While ADE's own player plays, the Web API is read once a minute instead of
+- While DAEX's own player plays, the Web API is read once a minute instead of
   every 15 s: the SDK reports track, pause and position changes itself.
 - The service's request budget (`spotifyService.test.ts`, fake time): a closed
-  tab makes 0 requests; a device other than ADE playing 200-second songs makes
+  tab makes 0 requests; a device other than DAEX playing 200-second songs makes
   at most 46 reads and 6 pushes per ten minutes.
 - Windows (WebView2, Widevine) is measured separately; see the Windows numbers
   in the PR.
@@ -2009,11 +2009,11 @@ includes this long session and swings 50-80 MB between runs.
   viewer (the stop's 1 s grace timer died with the page); it now stops on
   `pagehide`. A renderer crash still leaves it to the next viewer's stop.
 
-### ADE Cloud iPhone on Revyl: the viewer page (2026-11-22)
+### DAEX Cloud iPhone on Revyl: the viewer page (2026-11-22)
 
 Measured 2026-11-22 on the Mac Studio (M4 Max), not the baseline machine,
 branch `ade/cloud-phone-providers` on `c5b1cc00f1`, other agents running. One
-live Revyl iPhone showing a still home screen. ADE's viewer page
+live Revyl iPhone showing a still home screen. DAEX's viewer page
 (`/cloud/phone/viewer`) draws Revyl's WebRTC video. Two versions of the page
 were compared, run in turns, two runs each:
 - **copy**: a hidden `<video>`, copied into a `<canvas>` on every video frame;
@@ -2077,7 +2077,7 @@ Codex read the real `~/.codex/config.toml` (Playwright via
 Claude read a throwaway `CLAUDE_CONFIG_DIR` whose `.claude.json` held a
 user-scope `npx @playwright/mcp@latest`, a local-scope
 `npx -y xcodebuildmcp@latest mcp` and one server switched off for the folder.
-Each chat was created with `ade chat create ... --prompt "Reply with exactly: ok"`;
+Each chat was created with `daex chat create ... --prompt "Reply with exactly: ok"`;
 footprint is `footprint -p` summed over every process under each chat's
 runtime (`codex app-server` / `claude`), shells excluded, 45 s after the
 last chat. Before is main at `0d9211fd1`, after is `338962c68`.
@@ -2144,26 +2144,26 @@ this branch, one lane screen at 1920x1080 with Google Chrome on a Wikipedia
 article, nothing else running on that display. CPU is the sum of `utime+stime`
 from `/proc` over the window, as % of one core; memory is PSS. Driven through
 the helper's NDJSON wire (a Python harness on the box) for the stream and
-recording rows, and through `ade screen` for the action rows. These are new
+recording rows, and through `daex screen` for the action rows. These are new
 rows: the ceilings are proposals and need approval.
 
 | Metric | How | Before (first build) | Baseline | Ceiling |
 |---|---|---:|---:|---:|
 | Empty lane screen (Xvfb + openbox), memory | PSS | — | 37 MB | proposed 80 MB |
-| `ade screen start` | wall clock, CLI | — | 1.6 s | proposed 3 s |
+| `daex screen start` | wall clock, CLI | — | 1.6 s | proposed 3 s |
 | Observe, Chrome on Wikipedia (266–383 elements) | driver `observe` | — | 0.29–0.59 s | proposed 1.5 s |
 | Live stream, still screen: helper + ffmpeg | 8 s window, one reader | — | 0.4–0.7% + 0.9–1.7% | proposed 3% |
 | Live stream, scrolling (~23–26 fps delivered): helper | 10 s window | 18% (frames over the X socket) | 5.3% (MIT-SHM) | proposed 10% |
 | Live stream, scrolling: ffmpeg (libx264 ultrafast) | same | 22% | 25% | proposed 40% |
 | Frame capture, 1920x1080 | helper timing log | 11–18 ms (GetImage) | 2 ms (MIT-SHM) | proposed 5 ms |
 | Recording while scrolling: ffmpeg | 10 s window, 30 fps MP4 | 44% (superfast) | 35% (ultrafast) | proposed 50% |
-| Chrome launched by `ade screen open`, scrolling | 10 s window, stream reader attached | 132% (SwiftShader compositing) | 28–34% (`--disable-gpu-compositing`) | proposed 60% |
+| Chrome launched by `daex screen open`, scrolling | 10 s window, stream reader attached | 132% (SwiftShader compositing) | 28–34% (`--disable-gpu-compositing`) | proposed 60% |
 
 Chrome is still the largest cost on such a box (~710 MB PSS for one tab).
 Before, it composited every frame through SwiftShader, a software GL, at
 115–165% of a core; the helper now launches Chromium and Electron apps with
 software compositing, which draws the same pixels for about a quarter of the
-CPU at the same delivered frame rate (25 fps), and WebGL still works. Over the ADE account relay from a Mac, the
+CPU at the same delivered frame rate (25 fps), and WebGL still works. Over the DAEX account relay from a Mac, the
 desktop app pinned to the box decoded 38 H.264 frames in a 9 s scroll window
 at ~0.8 Mb/s.
 
@@ -2200,7 +2200,7 @@ project's cr-sqlite clock tables.
 | Same, per minute (the after runs answered 29% more requests in the window) | 255-259 | 210 | 260 |
 | Git processes per lane status refresh | 7 | 4 | 5 |
 | Project-icon worker processes (a node and a CLI process each) per minute | 23-24 | 0 | 2 |
-| `ade lanes list` from a CLI, median | 1,577-1,592 ms | 767-850 ms | 1,200 ms |
+| `daex lanes list` from a CLI, median | 1,577-1,592 ms | 767-850 ms | 1,200 ms |
 | Synced database versions per second (one busy shell) | 1.85-1.86 | 0.94-0.96 | 1.2 |
 | Brain event-loop delay, p99 (median 5 s window / worst window) | 12.9-13.7 / 15.6-16.2 ms | 13.1-13.4 / 18-39.5 ms | 50 ms / 100 ms |
 | Brain event-loop delay, max | 92-109 ms | 79-107 ms | 250 ms |
@@ -2218,9 +2218,9 @@ preview with `last_output_at` again, two versions sent to every synced
 device; a tick that writes a preview now writes once.
 
 The racy-index row is git distrusting every file of a checkout written in the
-same second as its index. ADE's reads never write the index back
+same second as its index. DAEX's reads never write the index back
 (`GIT_OPTIONAL_LOCKS=0`), so before, every status and diff on a new lane
-re-read all its files until the first `git add`. ADE now refreshes the index
+re-read all its files until the first `git add`. DAEX now refreshes the index
 once, just past that second (`refreshNewWorktreeIndexSoon`).
 
 Project database reads, `db-reads.bench.mts` (new) on a copy of this
@@ -2326,7 +2326,7 @@ five interleaved runs per side (`main` e2f42f44c vs `744f102c3`), load 11-77.
 What is left is `git status` itself: ~50 ms per real worktree (33 ms for the
 tracked files, ~20 ms for the untracked walk), so 46 lanes are ~1.5 s of git
 whatever the order. The untracked cache and the fsmonitor daemon do not help
-while ADE reads with `GIT_OPTIONAL_LOCKS=0` (41-58 ms per status with the
+while DAEX reads with `GIT_OPTIONAL_LOCKS=0` (41-58 ms per status with the
 daemon). The conflict and rebase summaries now reuse the HEAD each lane's
 status printed, behind counts are kept per commit pair, and the search index
 lists the lanes once per pass instead of once per lane.
@@ -2404,7 +2404,7 @@ measurement brains: on `main` it is `security add-generic-password` timing out
 (spawnSync, 2,001-2,004 ms, from the credential store's key-material read); this
 branch makes no such call (0 near-misses in 10 runs vs 2 per run on `main`).
 
-Credential reads while another ADE process holds the store lock
+Credential reads while another DAEX process holds the store lock
 (`scripts/perf/service/credential-lock.bench.mts`: a second process holds
 the lock 3 s, a cold store reads one key with `getSync`, as the brain does
 on its event loop for the account lease, Linear and session reads), 3 runs:
@@ -2487,7 +2487,7 @@ project is first visited (two reads where one would do).
 the same with `--project <throwaway repo>` (5 runs), two interleaved pairs.
 `--keep-user-data` reuses one user-data folder across launches, as a relaunch
 does; `--project` opens a startup project (`ADE_PROJECT_ROOT`), the path a
-relaunch after an update (every restored tab) and `ade open` take. The bench
+relaunch after an update (every restored tab) and `daex open` take. The bench
 now passes `--use-mock-keychain`: without it the unsigned dev Electron waits on
 a login-keychain prompt until the run times out.
 
@@ -2501,7 +2501,7 @@ What changed: the login and interactive shell probes (`-lc`, `-ic`, up to
 1.5 s each) no longer run before the first window once one launch has saved
 their answers (`shell-path-cache.json` in user data); the saved PATH is used at
 once and refreshed in the background. The first window is created before the
-startup project opens and shows the "Starting ADE" splash; its window session
+startup project opens and shows the "Starting DAEX" splash; its window session
 answers once the project is open, so there is no welcome-screen flash. On this
 Mac the shells take 20 ms (`-lc`) and 40-190 ms (`-ic`); a heavier shell setup
 saves more, and a startup project behind a cold brain saves its whole open
@@ -2652,13 +2652,13 @@ UI rows: the browser-mock renderer (same renderer code) replaying those transcri
 Each cell is the median of 5 runs, with the worst run in brackets. Each target is measured the way its
 source measured it.
 
-| # | Target | How | ADE main | ADE branch |
+| # | Target | How | DAEX main | DAEX branch |
 |---|---|---|---|---|
 | D1 | Chat view renders per streamed reply: 18 short / 18 long | AgentChatPane renders per whole reply; real 15-line and 33-line replies streamed live | 83 (83) / 206 (209) | **10 (10) / 12 (13)** |
 | D2 | A background stream re-renders only its own sidebar row (27 sidebar renders in 15 s) | another chat streams 450 events over 15 s, big chat open; Work sidebar component renders | 16 (16) | **16 (16)**; chat pane 3 → 1 |
 | D3 | 500 streamed replacements into 10,000 items: 15.3 ms | 500 live tool-call resends into the last 10,000 events of a real 3,620-tool-call chat | 5.47 ms (10.6) | **5.41 ms (10.1)** |
 | D4 | Timeline scan, 1,000 items: 15.48 ms | one collapse + group pass over 1,000 real events | 1.07 ms (9.2) | **1.15 ms (8.5)** |
-| D5 | Coalescing: −49.9% bytes at a 25 ms delta cadence | a 4,000-character reply as 25 ms deltas vs ADE's 100 ms coalescing, serialized envelope bytes | −72.8% | **−72.8%** |
+| D5 | Coalescing: −49.9% bytes at a 25 ms delta cadence | a 4,000-character reply as 25 ms deltas vs DAEX's 100 ms coalescing, serialized envelope bytes | −72.8% | **−72.8%** |
 | D6 | Scroll a large thread: 70.5 ms stopped / 111.6 ms streaming, scroll → frame p95 | wheel through the whole real big chat, wheel input → next frame, p95, first pass | 29.2 (29.3) / 43.0 (44.9) ms | **30.4 (40.0) / 42.6 (44.6) ms** |
 | D7 | Typing key p99: 32–39 ms (Linux/Xvfb) | 300 keys at 40 ms into the composer of the real big chat, Event Timing keydown p99 | 24 (40) ms | **24 (32) ms** (macOS) |
 
@@ -2673,10 +2673,10 @@ clones, 30 ms RTT links; median of warm rounds 2-5, worst in brackets):
 | Warm switch time, Studio small / big | 33 / 53 ms | 36 / 57 ms (unchanged) |
 
 Notes:
-- D2: ADE's Work sidebar already re-rendered only the streaming chat's status label on main.
+- D2: DAEX's Work sidebar already re-rendered only the streaming chat's status label on main.
 - D6: in three of the branch's five scroll runs the replayed chat filled to a shorter height; their
   timings match the full-height runs. A dedicated trace loaded the full chat.
-- D7: ADE measured on macOS, the target on Linux under Xvfb.
+- D7: DAEX measured on macOS, the target on Linux under Xvfb.
 - D6 in Electron: the isolated dev app on this branch (`NO_DEVTOOLS=1`), the same real big chat
   fully loaded, native wheel input over CDP, wheel event → next animation frame, five valid runs:
   p95 12.4 ms (worst 15.1) on the first pass and 8.2 ms (8.2) on a repeat pass (p50 6.5 / 6.4 ms),
@@ -2744,9 +2744,9 @@ and the three flight runs, had none over 34 ms.
 
 `scripts/perf/ui/stream-render-compare.mjs`, PandaCode's open streaming bench
 (W1: a 50 KB Markdown reply as 2,000 deltas of 25 B, one every 16 ms) run on
-production web builds of ADE, PandaCode (`0336a2fb5`) and T3 Code
+production web builds of DAEX, PandaCode (`0336a2fb5`) and T3 Code
 (`6575ce325`) in one headless Chrome 155, 3 cold runs per app and mode,
-interleaved, median (min–max). ADE on top of `ff074045a` with this branch.
+interleaved, median (min–max). DAEX on top of `ff074045a` with this branch.
 Load average 10–40 from other agents during the runs. The idle rows keep a turn
 running for the same 32 s and deliver nothing.
 
@@ -2771,7 +2771,7 @@ last row, queued chat events flushed on the next animation frame, and a bounded
 32 s once `animationiteration` listeners were refused; the idle main-thread
 time that is left is mostly the one-second elapsed counters (one frame with
 layout and paint each second). The idle draw rate swings between 31 and 57 a
-second from run to run, and the GPU row swings with it. ADE's loops step at
+second from run to run, and the GPU row swings with it. DAEX's loops step at
 30 a second (the owner turned down 15); T3 Code draws about 13 frames a
 second. PandaCode's lower script and heap come from a much smaller app and a
 WebAssembly Markdown parser.
@@ -2999,7 +2999,7 @@ The fixes in this pass:
   service, and the service armed three timers (the cleanup pass at 60 s and
   every 15 min, the idle pass every 5 min) for every project, also with no
   Android use. Now the timers arm only while a lane holds an Android device
-  or an emulator that ADE started runs, and the idle pass only while such an
+  or an emulator that DAEX started runs, and the idle pass only while such an
   emulator runs. The service checks again after each lifecycle event, and
   each pass checks again when it ends.
 - **Remote cap restarts.** A cap change restarts the scrcpy session (a gap in
@@ -3177,7 +3177,7 @@ Two method notes:
 - **Mock heap: measure on a new tab.** In the 3-run matrix the heap after GC
   grew about 25 MB with each reload of the same tab, in both trees (A 191,
   219, 246 MB; B 211, 230, 240 MB). On a new tab both trees read 115 MB.
-- **An emulator that this brain started counted as ADE memory.** With the
+- **An emulator that this brain started counted as DAEX memory.** With the
   emulator a child of B's brain (qemu at 4.6–5.4 GB), the app's own memory
   read 6.3 GB, 17% of RAM. That is over the top bar's 8% pressure step, so
   its resource chip sampled every 2 s instead of every 10 s: 227 child
@@ -3185,7 +3185,7 @@ Two method notes:
   not in the app's tree and gave 107 in both trees. The behavior came from
   main, not from this branch. It is now fixed: the process sampler reads each
   process's file name (`ps … comm=`) and leaves the emulator launcher and its
-  `qemu-system-*` subtree out of ADE's count, the same as a simulator. The
+  `qemu-system-*` subtree out of DAEX's count, the same as a simulator. The
   `ps` output grows to about 160 KB for 1,100 processes, far under its 2 MB
   limit.
 
@@ -3240,9 +3240,9 @@ Dev app on the lane branch at `a14eb694c` against main at `d6b1696d9`, same
 Mac (MacBook Pro M3 Pro, 18 GB), same steps for both: a fresh launch with sync
 off on the throwaway project `~/Projects/ade-mac-desktop-test`, 20 s settle,
 one General visit, then `route-sweep.mjs` with 20 s idle (no perf run; the
-first visit of each page is dropped). Nothing streamed. ADE Cloud is off in a
-dev app with no account, so the ADE Cloud place and the pass warning were not
-on screen; their reads do not run while ADE Cloud is off.
+first visit of each page is dropped). Nothing streamed. DAEX Cloud is off in a
+dev app with no account, so the DAEX Cloud place and the pass warning were not
+on screen; their reads do not run while DAEX Cloud is off.
 
 | Row | Before (main) | After (branch) | Ceiling |
 | --- | --- | --- | --- |
@@ -3275,8 +3275,8 @@ first open after a fresh launch includes Vite's compile).
 
 | Window → computer | Before | After | Ceiling |
 | --- | --- | --- | --- |
-| ADE → This computer | 659 ms first (compile), then 35–42 ms | 37–46 ms | 150 ms |
-| ADE → "dev" (through its copy) | 138 ms after a brain restart; warm 409–616 ms | 59–115 ms | 750 ms |
+| DAEX → This computer | 659 ms first (compile), then 35–42 ms | 37–46 ms | 150 ms |
+| DAEX → "dev" (through its copy) | 138 ms after a brain restart; warm 409–616 ms | 59–115 ms | 750 ms |
 | `local-only` → This computer | 36 ms | 46–47 ms | 150 ms |
 | `local-only` → "dev" (no copy there; machine route) | not reachable ("through its copy of this repository") | 1,189 ms first after a fresh launch, 227 ms warm; after a brain restart 63–117 ms | 750 ms (first open after a brain start: 1.5 s) |
 | `remote-only` → This computer (machine route on this computer) | not reachable, and the page title named the other computer | 53–88 ms | 150 ms |
@@ -3303,14 +3303,14 @@ first-open row); the brain's start warms it otherwise.
 Dev app (own socket, sync off) on `ade/cloud-9-machine` against main at
 `31c7cf2fa` (its renderer checked out over the same tree in the same run, so
 both passes share the app and the brain). Mac Studio M4 Max, not the baseline
-machine, other agents running. The ADE window, bound to its copy on This
+machine, other agents running. The DAEX window, bound to its copy on This
 computer (on the external `/Volumes/Dev` drive). Each number is navigation
 from General to Settings › Providers until all 13 tiles are drawn and none
 says Checking (CDP, 7 runs after a reload; the first includes Vite's compile).
 
 | Window → computer | Before (main) | After (branch) | Ceiling |
 | --- | --- | --- | --- |
-| ADE → This computer | 73 ms first, then 19–23 ms | 60 ms first, then 19–24 ms | 150 ms (approved by owner 2026-11-14) |
+| DAEX → This computer | 73 ms first, then 19–23 ms | 60 ms first, then 19–24 ms | 150 ms (approved by owner 2026-11-14) |
 
 Main read the status through the bound copy, which a stalled project drive
 holds up. The branch reads it on This computer's machine route (`~/.ade`
@@ -3651,8 +3651,8 @@ the web page on the same project tab; the desktop page was idle on Work.
 | Work: IPC on open (perf run), same | 21 / 24 / 21 calls | 26 / 29 / 23 calls | — |
 | Idle IPC per minute, Work / Lanes open (perf run) | 175–255 / 235 | 170–225 / 220–250 | — |
 | Idle main-thread work, Work / Lanes | 3.2–3.9 / 5.2–8.0 ms/s | 3.8–4.8 / 5.1–5.5 ms/s | 30 ms/s |
-| ADE Web, idle, N machines connected: KB down per minute (new row) | 3.1 KB down, 1.2 up (1 machine read; the tab showed the other project's lane) | 5.7 KB down, 2.8 up (4 machines, 0.9–2.4 KB each) | not set (new row; ceilings are the owner's call) |
-| ADE Web, idle, 2 and 8 machines connected: KB down / up per minute | — | 2: 9.0 / 4.4; 8: 9.4 / 5.3 | not set |
+| DAEX Web, idle, N machines connected: KB down per minute (new row) | 3.1 KB down, 1.2 up (1 machine read; the tab showed the other project's lane) | 5.7 KB down, 2.8 up (4 machines, 0.9–2.4 KB each) | not set (new row; ceilings are the owner's call) |
+| DAEX Web, idle, 2 and 8 machines connected: KB down / up per minute | — | 2: 9.0 / 4.4; 8: 9.4 / 5.3 | not set |
 
 No row is more than 25% worse or over a ceiling. The Lanes and Work counts
 stay in the same range: the Lanes union already read every connected machine,
@@ -3660,7 +3660,7 @@ and the branch adds no timer or poll on the desktop. The desktop reaches the
 test brains on this Mac directly, so its relay bytes stay at 0 and the web is
 the only surface whose bytes move.
 
-ADE Web connects to every account machine that has a copy of the open project
+DAEX Web connects to every account machine that has a copy of the open project
 (the product rule: every machine's work shows in one tab). Each connected
 machine costs about 1–2 KB a minute down while idle, and 8 machines cost 9.4
 KB a minute in all. The 2- and 8-machine row is an earlier run of the same
@@ -3676,7 +3676,7 @@ What adds work, and when it runs:
   never wakes a sleeping cloud computer and stops at the person's Disconnect.
 - The no-computer page tries one connect per computer, once, and reads the
   account machine list on mount and on window focus (desktop; 15 s cache).
-- ADE Web asks its brain to host its own project again after a restart, at
+- DAEX Web asks its brain to host its own project again after a restart, at
   most once every 15 s.
 
 #### Fix round (2026-11-14)
@@ -3685,7 +3685,7 @@ Same branch at `2ed6cfa40` plus the fix round, against `2ed6cfa40` with the
 renderer files of the fix round put back (preload and brains the same in both
 arms). Mac Studio M4 Max (not the baseline machine), load average 9–22 from
 other agents. Rig: this computer's dev desktop in an isolated home with 8
-test brains connected, ADE Web in Chrome with the same 8 connected, the atlas
+test brains connected, DAEX Web in Chrome with the same 8 connected, the atlas
 tab open, "Plan the release" open on the web. Each arm was reloaded, given 60 s
 to settle, then measured: `route-sweep.mjs /work,/lanes 12`, three passes
 without a perf run and four in one (first pass left out), and the web page's
@@ -3697,8 +3697,8 @@ JSON; not the relay bytes of the rows above, so compare only with each other).
 | Lanes: IPC on open (perf run), 8 machines | 65 / 59 / 82 calls; 0.71–0.90 s | 60 / 60 / 69 calls; 0.58–0.92 s | 70 calls (Lanes row) |
 | Work: IPC on open (perf run), same | 29 / 41 / 27 calls | 43 / 27 / 58 calls | — |
 | Idle main-thread work, Work / Lanes (no perf run) | 25.3–25.8 / 13.1–19.3 ms/s (60 and 31 style recalcs/s) | 5.0–8.8 / 7.3–8.5 ms/s (2.7 style recalcs/s) | 30 ms/s |
-| ADE Web, idle, 8 machines: WebSocket KB down / up per minute in the page | 285.5 / 41.9 | 270.2 / 41.8 | not set |
-| ADE Web, idle: account directory reads per 3 min | 0 (one account attention read) | 0 (same) | — |
+| DAEX Web, idle, 8 machines: WebSocket KB down / up per minute in the page | 285.5 / 41.9 | 270.2 / 41.8 | not set |
+| DAEX Web, idle: account directory reads per 3 min | 0 (one account attention read) | 0 (same) | — |
 
 The idle Work drop is the header: on the base two chats still showed a
 spinning "running" glyph from subagents that had stopped with a brain restart,
@@ -3723,7 +3723,7 @@ What the fix round adds, and when it runs:
 
 Same branch on `a587eeef6` plus the round 2 fixes, against `a587eeef6` (the
 same page before the Android change). Mac Studio M4 Max (not the baseline
-machine). Rig: 8 test brains plus a dev desktop brain, ADE Web in headless
+machine). Rig: 8 test brains plus a dev desktop brain, DAEX Web in headless
 Chrome with 8 of 9 computers connected, alpha-chat open, the Tools pane
 closed, page visible. Each arm was reloaded and given 20 s or more to settle,
 then the page's WebSocket frames were counted for 120 s through CDP
@@ -3732,18 +3732,18 @@ rows above).
 
 | Row | Before | After | Ceiling |
 | --- | --- | --- | --- |
-| ADE Web, idle, 8 machines: commands sent per minute | 118.5 (`work.listSessions` 44, `android.status` 40, `lanes.list` 14, `prs.list` 14) | 79.5 (`android.status` 0; the rest the same) | not set |
-| ADE Web, idle, 8 machines: WebSocket KiB down / up per minute in the page | 332.4 / 43.2 | 303.3 / 29.2 | not set |
-| ADE Web, Android tool open: `android.status` reads per 30 s | 20 | 20 (2 lanes every 3 s, as before) | — |
+| DAEX Web, idle, 8 machines: commands sent per minute | 118.5 (`work.listSessions` 44, `android.status` 40, `lanes.list` 14, `prs.list` 14) | 79.5 (`android.status` 0; the rest the same) | not set |
+| DAEX Web, idle, 8 machines: WebSocket KiB down / up per minute in the page | 332.4 / 43.2 | 303.3 / 29.2 | not set |
+| DAEX Web, Android tool open: `android.status` reads per 30 s | 20 | 20 (2 lanes every 3 s, as before) | — |
 
-- `android.status`: ADE Web made Android events by re-reading lane status
+- `android.status`: DAEX Web made Android events by re-reading lane status
   every 3 s whenever anything listened, and the running pill, the corner card
   and the tools grid card listen in every chat. It now re-reads only while
   the Android tool or the floating player is open; the cards read once. The
   desktop gets these events from the brain and has no such poll.
 - `work.listSessions` (44 a minute) is the 10 s fallback read of each of the
   7 computers other than the tab's copy (`FOREIGN_MACHINE_REFRESH_MS`); left
-  as is. A per-machine change feed would replace it on ADE Web, but on the
+  as is. A per-machine change feed would replace it on DAEX Web, but on the
   desktop each feed costs a relay pump, so it is a design change, not waste.
 - `brain_status` (29 a minute, 61 KiB): relay peers already get the periodic
   status every 30 s. The rest follow real changes (each brain's `devices` row
@@ -3754,14 +3754,14 @@ rows above).
 #### Round 3 fixes (2026-11-14)
 
 Same branch on `029f2c5b2` plus the round 3 fixes. Same rig as round 2 (8
-test brains, a dev desktop brain, ADE Web in headless Chrome with 8 of 9
+test brains, a dev desktop brain, DAEX Web in headless Chrome with 8 of 9
 computers connected). Mac Studio M4 Max (not the baseline machine). No row
 above was measured again: the round adds reads that run only while a given
 surface is on screen, and removes listeners. Their cost:
 
 | Row | Before | After | Ceiling |
 | --- | --- | --- | --- |
-| New Tab visible: Activity snapshot reads per minute (desktop IPC, or the account `since` read on ADE Web) | 0.5–4 (15 s, backing off to 120 s while nothing changes) | 12 (every 5 s while New Tab is visible and the window is visible), plus the 15 s poll, which is unchanged; 0 while New Tab is closed or hidden. Computed from the timer; the test directory has no Activity endpoint, so the web rig made no such request to count | not set |
+| New Tab visible: Activity snapshot reads per minute (desktop IPC, or the account `since` read on DAEX Web) | 0.5–4 (15 s, backing off to 120 s while nothing changes) | 12 (every 5 s while New Tab is visible and the window is visible), plus the 15 s poll, which is unchanged; 0 while New Tab is closed or hidden. Computed from the timer; the test directory has no Activity endpoint, so the web rig made no such request to count | not set |
 | Connections panel open: account machine list reads per minute | 0 after the one on open | 3 (every 20 s while the panel is open and the window is visible) | — |
 | Desktop: project list re-reads of a connected computer whose list lacks the open project's repository | 0 (read only at connect) | at most 2 a minute for each such computer, and only while that is the case; 0 in the steady state | — |
 | Desktop: `connectionSnapshotChanged` IPC listeners in the window (reload, Connections opened, four chats opened) | 11, Node's `MaxListenersExceededWarning` | below 11, no warning in the same steps: every `useRemoteConnectionSnapshot` caller shares one listener and one snapshot read | — |
@@ -3771,7 +3771,7 @@ surface is on screen, and removes listeners. Their cost:
   never showed during a 45 s run. New Tab now reads it on open and every 5 s
   while it is visible. The read carries the store's revision, so an unchanged
   snapshot answers small.
-- ADE Web parks the least recently used computer that no visible chat or
+- DAEX Web parks the least recently used computer that no visible chat or
   terminal holds; this adds no read or timer.
-- `ade chat status` reads each spawned child's session row once per call (a
+- `daex chat status` reads each spawned child's session row once per call (a
   map lookup in the brain), only for a parent with spawned chats.

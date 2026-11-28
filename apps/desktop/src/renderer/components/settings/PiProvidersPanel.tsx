@@ -47,6 +47,7 @@ import { extractError } from "../../lib/format";
 import { providerBrand, providerThemeVars } from "./providers/providerBrand";
 import { formatSignInFailureReport } from "./providers/providerDiagnosticsReport";
 import { SignInAccountNote, SignInCodePanel, SignInFailure, SignInSteps, SignInSuccess } from "./providers/signInSheetParts";
+import { BRAND } from "../../../shared/brand";
 
 export function getPiTone(
   connection: AiProviderConnectionStatus | null | undefined,
@@ -88,10 +89,10 @@ export function buildPiMessage(
   }
   if (installation.installed && !installation.sdkAvailable) {
     return installation.blocker
-      ?? "ADE's pinned Pi is on this machine, but its SDK could not be loaded. Check again; if it persists, copy the diagnostics.";
+      ?? `${BRAND.NAME}'s pinned Pi is on this machine, but its SDK could not be loaded. Check again; if it persists, copy the diagnostics.`;
   }
   if (!installation.installed) {
-    return "ADE has not downloaded Pi for this machine yet. It downloads the first time this machine uses it. Pi keeps its own credentials and profile.";
+    return `${BRAND.NAME} has not downloaded Pi for this machine yet. It downloads the first time this machine uses it. Pi keeps its own credentials and profile.`;
   }
   return "Pi is ready, but no configured providers or available models were detected yet.";
 }
@@ -253,8 +254,8 @@ function PiTerminalFallback({ installation }: { installation: AiPiInstallationSt
   return (
     <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim, lineHeight: 1.5 }}>
       {installation.cliAvailable
-        ? "Signing in from ADE needs Pi's SDK. Until the blocker above is resolved, run pi in a terminal and use its /login command."
-        : "Sign in once ADE has downloaded Pi for this machine."}
+        ? `Signing in from ${BRAND.NAME} needs Pi's SDK. Until the blocker above is resolved, run pi in a terminal and use its /login command.`
+        : `Sign in once ${BRAND.NAME} has downloaded Pi for this machine.`}
     </span>
   );
 }

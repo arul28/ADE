@@ -18,6 +18,7 @@ import zlib from "node:zlib";
 import { resolveAdeLayout } from "../../../desktop/src/shared/adeLayout";
 import { createSessionService } from "../../../desktop/src/main/services/sessions/sessionService";
 import { openKvDb } from "../../../desktop/src/main/services/state/kvDb";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 export type SyntheticPerfProject = {
   projectRoot: string;
@@ -61,13 +62,13 @@ export async function buildSyntheticPerfProject(
 
   fs.mkdirSync(root, { recursive: true });
   git(["init", "-q", "-b", "main"], root);
-  fs.writeFileSync(path.join(root, "README.md"), "# Synthetic ADE perf project\n");
+  fs.writeFileSync(path.join(root, "README.md"), `# Synthetic ${BRAND.NAME} perf project\n`);
   fs.mkdirSync(path.join(root, "src"), { recursive: true });
   for (let i = 0; i < 40; i += 1) fs.writeFileSync(path.join(root, "src", `file-${i}.ts`), `export const value${i} = ${i};\n${"// filler\n".repeat(50)}`);
   // A 128x128 PNG icon (a solid square; size, not art, is what the wire pays for).
   fs.writeFileSync(path.join(root, "icon.png"), makePng(128, 128));
   git(["add", "."], root);
-  git(["-c", "user.email=perf@ade.invalid", "-c", "user.name=ADE perf", "commit", "-qm", "initial"], root);
+  git(["-c", "user.email=perf@ade.invalid", "-c", `user.name=${BRAND.NAME} perf`, "commit", "-qm", "initial"], root);
 
   const layout = resolveAdeLayout(root);
   fs.mkdirSync(layout.chatSessionsDir, { recursive: true });

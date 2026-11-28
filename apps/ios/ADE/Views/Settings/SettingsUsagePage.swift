@@ -147,10 +147,10 @@ func adeUsageRatesNote(sources: [String], pricingUpdatedAt: String?) -> String? 
     : adeUsageRelativeTime(pricingUpdatedAt)
   let fromList = age.map { "the public rate list, updated \($0)" } ?? "the public rate list"
   if known.contains("mixed") || known.count > 1 {
-    return "Rates from \(fromList), except a few models only ADE's built-in list knows."
+    return "Rates from \(fromList), except a few models only \(Brand.name)'s built-in list knows."
   }
   if known.contains("list") { return "Rates from \(fromList)." }
-  return "Rates from ADE's built-in list — the public rate list couldn't be reached."
+  return "Rates from \(Brand.name)'s built-in list — the public rate list couldn't be reached."
 }
 
 private extension Int {
@@ -310,7 +310,7 @@ struct SettingsUsagePage: View {
           label: "At full API rates",
           value: adeUsageCost(model.totalCostUsd),
           detail: billing.flatMap { $0.turns > 0
-            ? "ADE chats: \(adeUsageCost($0.billedUsd)) billed · \(adeUsageCost($0.planValueUsd)) plan value"
+            ? "\(Brand.name) chats: \(adeUsageCost($0.billedUsd)) billed · \(adeUsageCost($0.planValueUsd)) plan value"
             : nil },
           size: 30
         )
@@ -406,7 +406,7 @@ struct SettingsUsagePage: View {
       } else {
         Text(syncService.connectionState == .connected
           ? "Waiting for \(syncService.machineDisplayName) to check its limits."
-          : "Connect an up-to-date ADE computer to see live limits.")
+          : "Connect an up-to-date \(Brand.name) computer to see live limits.")
           .font(.system(size: 13))
           .foregroundStyle(ADEColor.textMuted)
       }
@@ -516,12 +516,12 @@ struct SettingsUsagePage: View {
       }
       .buttonStyle(.plain)
     }
-    Text(breakdownView == .account ? "ADE chats on \(syncService.machineDisplayName)." : "ADE chats in this project.")
+    Text(breakdownView == .account ? "\(Brand.name) chats on \(syncService.machineDisplayName)." : "\(Brand.name) chats in this project.")
       .font(.system(size: 12))
       .foregroundStyle(ADEColor.textMuted)
     if let breakdown, breakdown.by == breakdownView.rawValue {
       if breakdown.rows.isEmpty {
-        Text("No ADE chat turns in this range.")
+        Text("No \(Brand.name) chat turns in this range.")
           .font(ADEUsageType.detailFont())
           .foregroundStyle(ADEColor.textSecondary)
       } else {
@@ -811,7 +811,7 @@ struct SettingsUsageModelDetailScreen: View {
             priceSection(detail)
           }
         } else if failed {
-          Text("Model detail is not available from \(syncService.machineDisplayName) yet. Update ADE there and reconnect.")
+          Text("Model detail is not available from \(syncService.machineDisplayName) yet. Update \(Brand.name) there and reconnect.")
             .font(ADEUsageType.detailFont())
             .foregroundStyle(ADEColor.textSecondary)
         } else {

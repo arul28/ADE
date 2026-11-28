@@ -7,8 +7,11 @@
 // ---------------------------------------------------------------------------
 
 import { buildDeeplink } from "./deeplinks";
+import { BRAND } from "./brand";
 
-export const ADE_DEEPLINK_FOOTER_LOGO_URL = "https://ade-app.dev/logo.png";
+export const ADE_DEEPLINK_FOOTER_LOGO_URL = "https://ade-app.dev/icon-flat.png";
+/** The logo footers written before the square icon; still in older PR bodies. */
+export const ADE_DEEPLINK_FOOTER_LEGACY_LOGO_URL = "https://ade-app.dev/logo.png";
 
 const MARKER_OPEN_RE = /<!--\s*ade:link\s+v=\d+[^>]*-->/i;
 const MARKER_CLOSE = "<!-- /ade:link -->";
@@ -49,8 +52,8 @@ export function renderAdeDeeplinkFooter(opts: AdeDeeplinkFooterOptions): string 
   const lines = [
     meta,
     "<p>",
-    `  <img src="${ADE_DEEPLINK_FOOTER_LOGO_URL}" height="18" align="left" alt="ADE">`,
-    "  &nbsp;&nbsp;<strong>Open in ADE</strong>",
+    `  <img src="${ADE_DEEPLINK_FOOTER_LOGO_URL}" height="18" align="left" alt="${BRAND.NAME}">`,
+    `  &nbsp;&nbsp;<strong>Open in ${BRAND.NAME}</strong>`,
     `  &nbsp;·&nbsp; <a href="${escapeHtml(branchUrl)}">${escapeHtml(opts.branch)} branch</a>`,
     prUrl
       ? `  &nbsp;·&nbsp; <a href="${escapeHtml(prUrl)}">PR #${opts.prNumber}</a>`

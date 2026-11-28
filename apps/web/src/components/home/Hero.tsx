@@ -17,6 +17,7 @@ import { guessPlatform } from "./SiteNav";
 import { LiveDemo } from "./LiveDemo";
 import { CloudMark } from "../cloud/CloudMark";
 import { CloudBank, HeroSky } from "../cloud/HeroSky";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 const secondaryButton =
   "inline-flex h-11 items-center gap-2 rounded-full border border-white/15 bg-white/[0.04] px-5 text-[14px] font-medium text-white/85 transition-all hover:-translate-y-px hover:border-white/35 hover:bg-white/[0.08] hover:text-white";
@@ -211,7 +212,7 @@ function HeroDevices() {
           <div className="ade-float">
             <img
               src="/images/hero-v2/phone.webp"
-              alt="The same chat in the ADE iPhone app"
+              alt={`The same chat in the ${BRAND.NAME} iPhone app`}
               width={1206}
               height={2622}
               loading="eager"

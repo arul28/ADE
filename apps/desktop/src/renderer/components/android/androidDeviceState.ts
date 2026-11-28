@@ -15,6 +15,7 @@ import type {
   AndroidSdkStatus,
   AndroidSdkTool,
 } from "../../../shared/types/androidEmulator";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * What the Android pane shows, from the brain's status and the stream.
@@ -327,7 +328,7 @@ export function describeAndroidError(error: unknown): AndroidErrorDescription {
   const raw = errorText(error).replace(IPC_PREFIX, "").trim();
   const code = errorCode(error, raw);
   if (/Project is switching/i.test(raw)) {
-    return { sentence: "ADE was switching projects. Try again.", detail: null, code };
+    return { sentence: `${BRAND.NAME} was switching projects. Try again.`, detail: null, code };
   }
   // The brain's message is already one plain sentence for the panel; the code
   // in front of it (when it crossed a socket) is not for reading.

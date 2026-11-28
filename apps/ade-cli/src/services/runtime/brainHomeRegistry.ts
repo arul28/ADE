@@ -27,6 +27,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { PROCESS_START_TIME_TOLERANCE_MS } from "../../../../desktop/src/main/services/processes/processStartTime";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 export type BrainRegistryRecord = {
   pid: number;
@@ -173,8 +174,8 @@ export function createBrainHomeRegistry(deps: BrainHomeRegistryDeps) {
 export function describeOtherBrains(others: readonly BrainRegistryRecord[]): string | null {
   if (others.length === 0) return null;
   const list = others
-    .map((other) => `${other.label?.trim() || "ADE brain"} (pid ${other.pid}, ${other.endpoint})`)
+    .map((other) => `${other.label?.trim() || `${BRAND.NAME} brain`} (pid ${other.pid}, ${other.endpoint})`)
     .join("; ");
-  const count = others.length === 1 ? "Another ADE brain is" : `${others.length} other ADE brains are`;
-  return `${count} already using this ADE home: ${list}. They share one database, so a chat can only be owned by one of them.`;
+  const count = others.length === 1 ? `Another ${BRAND.NAME} brain is` : `${others.length} other ${BRAND.NAME} brains are`;
+  return `${count} already using this ${BRAND.NAME} home: ${list}. They share one database, so a chat can only be owned by one of them.`;
 }

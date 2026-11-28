@@ -33,6 +33,7 @@ import { wakeThroughTransition } from "./cloudInstanceOps";
 import { getErrorMessage } from "../shared/utils";
 import { withDeadline } from "../shared/withTimeout";
 import { pushWorkCommand } from "../../../../../account-directory/src/cloud/computerCommands";
+import { BRAND } from "../../../shared/brand";
 
 type Logger = {
   info?(event: string, meta?: Record<string, unknown>): void;
@@ -146,7 +147,7 @@ const PUSH_ALL_WORK_COMMAND = pushWorkCommand(false);
 const PUSH_WORK_CHECK_COMMAND = pushWorkCommand(true);
 /** An ADE on the computer from before `work-state`: its CLI or brain doesn't know the command. */
 const WORK_CHECK_UNKNOWN = /unknown (cloud )?command|method not found|can't read this computer's work/i;
-const WORK_CHECK_TOO_OLD = "This computer's ADE is too old to say what isn't pushed.";
+const WORK_CHECK_TOO_OLD = `This computer's ${BRAND.NAME} is too old to say what isn't pushed.`;
 
 /** One lane as `ade cloud push-work` left it (`CloudPushWorkLane` in the CLI). Older computers leave the list out. */
 export type CloudPushWorkLane = {
@@ -203,7 +204,7 @@ function readPushAllTally(stdout: string): CloudPushWorkTally | null {
 }
 
 function pushAllWorkResult(exitCode: number, tally: { pushed: number; failed: number; skipped: number } | null): CloudMachineActionResult {
-  if (exitCode !== 0 || !tally) return { ok: false, blocker: null, message: "ADE couldn't push this computer's work. Try again." };
+  if (exitCode !== 0 || !tally) return { ok: false, blocker: null, message: `${BRAND.NAME} couldn't push this computer's work. Try again.` };
   const { pushed, failed, skipped } = tally;
   if (pushed === 0 && failed === 0) {
     return { ok: true, blocker: null, message: skipped ? `Nothing new to push. ${skipped === 1 ? "One primary lane has" : `${skipped} primary lanes have`} local work left on the computer.` : "All work is already on GitHub." };
@@ -303,7 +304,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
         recordRead(await withDeadline(
           client.listInstances(),
           KNOWN_KEYS_READ_TIMEOUT_MS,
-          () => new Error(`ADE Cloud didn't answer in ${KNOWN_KEYS_READ_TIMEOUT_MS / 1000} s.`),
+          () => new Error(`${BRAND.CLOUD_NAME} didn't answer in ${KNOWN_KEYS_READ_TIMEOUT_MS / 1000} s.`),
         ), asked);
         return true;
       } catch (error) {
@@ -368,9 +369,9 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
 
   async function run(args: CloudMachineActionArgs): Promise<CloudMachineActionResult> {
     const client = await deps.client();
-    if (!client) return { ok: false, blocker: null, message: (await deps.whyNoClient?.()) ?? "ADE Cloud isn't available on this account yet." };
+    if (!client) return { ok: false, blocker: null, message: (await deps.whyNoClient?.()) ?? `${BRAND.CLOUD_NAME} isn't available on this account yet.` };
     const instanceId = typeof args?.instanceId === "string" ? args.instanceId.trim() : "";
-    if (!isCloudInstanceId(instanceId)) return { ok: false, blocker: null, message: "ADE doesn't know that computer." };
+    if (!isCloudInstanceId(instanceId)) return { ok: false, blocker: null, message: `${BRAND.NAME} doesn't know that computer.` };
     const action = args.action;
     logger.info?.("cloud.machine_action", { instanceId, action, shape: args.shape ?? null, disk: args.disk ?? null });
     try {
@@ -397,7 +398,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
             return {
               ok: false,
               blocker: null,
-              message: "ADE Cloud took the delete but hasn't finished it yet. Check again in a minute; if the computer is still there, delete it again.",
+              message: `${BRAND.CLOUD_NAME} took the delete but hasn't finished it yet. Check again in a minute; if the computer is still there, delete it again.`,
             };
           }
           logger.info?.("cloud.machine_deleted", { instanceId });
@@ -411,14 +412,14 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
                 ok: true,
                 blocker: null,
                 accountRowLeft: true,
-                message: `Deleted on ADE Cloud. ADE couldn't take it off your computers (${getErrorMessage(error).replace(/\.$/, "")}); use Remove from ADE on its row.`,
+                message: `Deleted on ${BRAND.CLOUD_NAME}. ${BRAND.NAME} couldn't take it off your computers (${getErrorMessage(error).replace(/\.$/, "")}); use Remove from ${BRAND.NAME} on its row.`,
               };
             }
           }
-          return { ok: true, blocker: null, message: "Deleted on ADE Cloud and removed from ADE." };
+          return { ok: true, blocker: null, message: `Deleted on ${BRAND.CLOUD_NAME} and removed from ${BRAND.NAME}.` };
         }
         default:
-          return { ok: false, blocker: null, message: "ADE can't do that to a computer." };
+          return { ok: false, blocker: null, message: `${BRAND.NAME} can't do that to a computer.` };
       }
     } catch (error) {
       logger.warn?.("cloud.machine_action_failed", { instanceId, action, error: getErrorMessage(error) });
@@ -442,7 +443,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
      */
     runPushWork: async (instanceId: string, options: { check: boolean }): Promise<{ tally: CloudPushWorkTally | null; error: string | null }> => {
       const client = await deps.client();
-      if (!client) return { tally: null, error: (await deps.whyNoClient?.()) ?? "ADE Cloud isn't available on this account yet." };
+      if (!client) return { tally: null, error: (await deps.whyNoClient?.()) ?? `${BRAND.CLOUD_NAME} isn't available on this account yet.` };
       try {
         await wakeThroughTransition(client, instanceId, now);
         const ran = await client.exec(instanceId, options.check ? PUSH_WORK_CHECK_COMMAND : PUSH_ALL_WORK_COMMAND, { timeoutMs: PUSH_ALL_WORK_TIMEOUT_MS });
@@ -450,7 +451,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
         logger.info?.("cloud.push_work_ran", { instanceId, check: options.check, exitCode: ran.exitCode, pushed: tally?.pushed, failed: tally?.failed });
         if (tally) return { tally, error: null };
         if (options.check && ran.exitCode !== 0 && WORK_CHECK_UNKNOWN.test(`${ran.stderr}\n${ran.stdout}`)) return { tally: null, error: WORK_CHECK_TOO_OLD };
-        return { tally: null, error: "ADE couldn't read this computer's work." };
+        return { tally: null, error: `${BRAND.NAME} couldn't read this computer's work.` };
       } catch (error) {
         logger.warn?.("cloud.push_work_failed", { instanceId, check: options.check, error: getErrorMessage(error) });
         return { tally: null, error: getErrorMessage(error) };
@@ -458,7 +459,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
     },
     pushAllWork: async (instanceId: string): Promise<CloudMachineActionResult> => {
       const client = await deps.client();
-      if (!client) return { ok: false, blocker: null, message: (await deps.whyNoClient?.()) ?? "ADE Cloud isn't available on this account yet." };
+      if (!client) return { ok: false, blocker: null, message: (await deps.whyNoClient?.()) ?? `${BRAND.CLOUD_NAME} isn't available on this account yet.` };
       try {
         await wakeThroughTransition(client, instanceId, now);
         const ran = await client.exec(instanceId, PUSH_ALL_WORK_COMMAND, { timeoutMs: PUSH_ALL_WORK_TIMEOUT_MS });
@@ -545,8 +546,8 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
      */
     setPhoneProvider: async (provider: CloudPhoneProviderChoice): Promise<CloudPhoneProviderChoiceAnswer> => {
       const client = await deps.client();
-      if (!client) throw new Error((await deps.whyNoClient?.()) ?? "ADE Cloud isn't available on this account yet.");
-      if (!client.setPhoneProvider) throw new Error("This ADE Cloud can't change the cloud iPhone provider yet.");
+      if (!client) throw new Error((await deps.whyNoClient?.()) ?? `${BRAND.CLOUD_NAME} isn't available on this account yet.`);
+      if (!client.setPhoneProvider) throw new Error(`This ${BRAND.CLOUD_NAME} can't change the cloud iPhone provider yet.`);
       const answer = await client.setPhoneProvider(provider);
       logger.info?.("cloud.phone_provider_set", { provider: answer.provider });
       return answer;
@@ -564,7 +565,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
      */
     redeemInvite: async (code: string): Promise<CloudInviteRedeemOutcome> => {
       const client = await deps.client();
-      if (!client) throw new Error((await deps.whyNoClient?.()) ?? "ADE Cloud isn't available on this account yet.");
+      if (!client) throw new Error((await deps.whyNoClient?.()) ?? `${BRAND.CLOUD_NAME} isn't available on this account yet.`);
       try {
         const result = await client.redeemInvite(code);
         logger.info?.("cloud.invite_redeemed", { rewarded: result.rewarded });

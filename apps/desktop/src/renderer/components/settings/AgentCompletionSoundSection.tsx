@@ -13,6 +13,7 @@ import {
   SettingsSlider,
   SettingsToggle,
 } from "./primitives";
+import { BRAND } from "../../../shared/brand";
 
 function soundLabel(id: AgentTurnCompletionSound): string {
   if (id === "off") return "Off";
@@ -127,10 +128,10 @@ export function AgentCompletionSoundSection({ extraRows }: { extraRows?: React.R
             />
             <ModernRow
               title="Only in the background"
-              hint="Skip the chime while ADE is the focused window."
+              hint={`Skip the chime while ${BRAND.NAME} is the focused window.`}
               control={
                 <SettingsToggle
-                  label="Only when ADE is in the background"
+                  label={`Only when ${BRAND.NAME} is in the background`}
                   checked={agentTurnCompletionSoundQuietWhenFocused}
                   onChange={setAgentTurnCompletionSoundQuietWhenFocused}
                 />

@@ -8,6 +8,7 @@ import { nextFilesOpenNonce, requestFilesOpenInTools } from "../files/v2/filesOp
 import { usePinTargetsTab } from "../../state/crossMachineLanes";
 import { cacheScopeKey } from "../../lib/tabBindingKey";
 import { withChatPin } from "./chatMachinePin";
+import { ADE_DEEPLINK_SCHEME_SOURCE } from "../../../shared/deeplinkSchemes";
 
 /**
  * Recognising the file paths an agent writes into chat, and turning them into
@@ -77,12 +78,14 @@ export function splitWorkspacePathLineSuffix(path: string): WorkspacePathLocatio
   };
 }
 
+const LINK_SCHEME_LEAD = new RegExp(`^${ADE_DEEPLINK_SCHEME_SOURCE}:`, "i");
+
 export function parseWorkspacePathLocation(value: string): WorkspacePathLocation | null {
   const trimmed = value.trim();
   if (!trimmed.length) return null;
   if (/^(?:https?|mailto|tel):/i.test(trimmed)) return null;
-  // `ade://settings/agents.providers` is a link, not a path with an extension.
-  if (/^ade:/i.test(trimmed)) return null;
+  // `daex://settings/agents.providers` (or `ade://…`) is a link, not a path with an extension.
+  if (LINK_SCHEME_LEAD.test(trimmed)) return null;
   if (/^#/.test(trimmed)) return null;
 
   let rawPath: string;

@@ -17,6 +17,7 @@ import type { MachineAddress } from "../../../shared/machineAddress";
 import { AccountReadFailed } from "../adeCloud/AccountReadFailed";
 import { Button } from "../ui/Button";
 import { normalizeTranscriptToGrid } from "./terminalTranscriptNormalize";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * CLI and shell copies of an ADE Cloud computer that is not on: the text the
@@ -101,7 +102,7 @@ function queuedLine(message: CloudChatQueuedMessage): string {
     case "sending":
       return "Sending to the CLI";
     case "waiting_for_sign_in":
-      return "Waits for a sign-in on ADE Cloud";
+      return `Waits for a sign-in on ${BRAND.CLOUD_NAME}`;
     case "failed":
       return message.error?.trim() || "It didn't reach the CLI.";
     default:
@@ -179,14 +180,14 @@ function SavedCliSendBox({ machineKey, sessionId }: { machineKey: string; sessio
         text: answer.wake.state === "awake"
           ? "Sent. The CLI gets it now."
           : answer.wake.state === "launching"
-            ? "Its computer is gone. A new ADE Cloud computer restores this CLI and sends it."
+            ? `Its computer is gone. A new ${BRAND.CLOUD_NAME} computer restores this CLI and sends it.`
             : answer.wake.state === "moving"
-              ? "This lane's computer is moving. ADE Cloud keeps this and sends it once the move is done."
-              : "Waking your ADE Cloud computer. The CLI gets this when it's up.",
+              ? `This lane's computer is moving. ${BRAND.CLOUD_NAME} keeps this and sends it once the move is done.`
+              : `Waking your ${BRAND.CLOUD_NAME} computer. The CLI gets this when it's up.`,
       });
       void refresh();
     } catch (error) {
-      setNotice({ tone: "error", text: error instanceof Error && error.message ? error.message : "ADE couldn't send that. Try again." });
+      setNotice({ tone: "error", text: error instanceof Error && error.message ? error.message : `${BRAND.NAME} couldn't send that. Try again.` });
     } finally {
       setSending(false);
     }
@@ -200,7 +201,7 @@ function SavedCliSendBox({ machineKey, sessionId }: { machineKey: string; sessio
       // Taken back: the "waking for it" line no longer says what happens.
       setNotice(answer.ok ? null : { tone: "error", text: answer.message });
     } catch (error) {
-      setNotice({ tone: "error", text: error instanceof Error && error.message ? error.message : "ADE couldn't take that back. Try again." });
+      setNotice({ tone: "error", text: error instanceof Error && error.message ? error.message : `${BRAND.NAME} couldn't take that back. Try again.` });
     }
     void refresh();
   };
@@ -218,7 +219,7 @@ function SavedCliSendBox({ machineKey, sessionId }: { machineKey: string; sessio
   if (unsupported) {
     return (
       <div className="shrink-0 border-t border-border/40 px-4 py-2.5 text-[11.5px] text-muted-fg/75">
-        This ADE Cloud can't take a message for a CLI yet. Continue opens the CLI on its computer.
+        This {BRAND.CLOUD_NAME} can't take a message for a CLI yet. Continue opens the CLI on its computer.
       </div>
     );
   }
@@ -303,7 +304,7 @@ export function SavedTerminalCopyView({
   const saved = savedAgoLabel(copy?.session.updatedAt ?? session.lastActivityAt);
   const continueWork = () => {
     wakeRestingCloudMachine(
-      { machineId: `${SAVED_CHATS_MACHINE_PREFIX}${address.machineKey}`, machineName: "ADE Cloud", hostname: copy?.session.instanceId ?? null },
+      { machineId: `${SAVED_CHATS_MACHINE_PREFIX}${address.machineKey}`, machineName: BRAND.CLOUD_NAME, hostname: copy?.session.instanceId ?? null },
       (connected) => focusLiveTerminalWhenListed(connected, address.sessionId, session.laneId ?? null),
     );
   };
@@ -315,7 +316,7 @@ export function SavedTerminalCopyView({
         <div className="min-w-0 flex-1">
           <div className="truncate text-[13px] font-semibold text-fg">{session.title ?? (isShell ? "Shell" : "CLI")}</div>
           <div className="truncate text-[11px] text-muted-fg/70">
-            {saved ?? "Saved"} on ADE Cloud. {isShell ? "The last lines it showed." : "Its screen when it went to rest."} Reading this doesn't wake it.
+            {saved ?? "Saved"} on {BRAND.CLOUD_NAME}. {isShell ? "The last lines it showed." : "Its screen when it went to rest."} Reading this doesn't wake it.
           </div>
         </div>
         <Button
@@ -338,7 +339,7 @@ export function SavedTerminalCopyView({
             <AccountReadFailed id="saved-terminal" what="the saved terminal" code={state.code} message={state.message} onRetry={retry} />
           </div>
         ) : state.status === "unsupported" ? (
-          <div className="p-4 text-[12px] text-muted-fg/75">This ADE can't read saved terminals. Continue to open it on its computer.</div>
+          <div className="p-4 text-[12px] text-muted-fg/75">This {BRAND.NAME} can't read saved terminals. Continue to open it on its computer.</div>
         ) : state.status === "ready" && !copy ? (
           <div className="flex flex-col items-start gap-2 p-4 text-[12px] text-muted-fg/75">
             <span>This terminal has no saved copy any more.</span>

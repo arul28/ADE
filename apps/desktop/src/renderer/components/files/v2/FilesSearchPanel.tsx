@@ -7,6 +7,7 @@ import { COLORS, MONO_FONT, outlineButton } from "../../lanes/laneDesignTokens";
 import { getFileIcon, useFileIconColor } from "../filePresentation";
 import { isImeComposing } from "../../../lib/imeComposition";
 import { ipcErrorMessage } from "../../../lib/format";
+import { BRAND } from "../../../../shared/brand";
 
 /** File names come from an in-memory index, so they can land almost immediately. */
 const NAME_DEBOUNCE_MS = 120;
@@ -97,7 +98,7 @@ type NameState = { key: string; items: FilesQuickOpenItem[]; error: string | nul
 type ContentState = { key: string; groups: FileMatchGroup[]; error: string | null };
 
 function searchFailureSentence(error: unknown): string {
-  return ipcErrorMessage(error) || "ADE couldn't search these files. Try again.";
+  return ipcErrorMessage(error) || `${BRAND.NAME} couldn't search these files. Try again.`;
 }
 
 function baseName(path: string): string {

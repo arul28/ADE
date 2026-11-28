@@ -28,6 +28,7 @@ import { notePrChangeFiles, prChangeSplitKey, setPrChangeSplitStandDown } from "
 import { PrRuntimePinProvider } from "./prMachines";
 import { readerPin, usePrsReader, type PrsReader } from "./prsReader";
 import { plainErrorText } from "../../../lib/plainError";
+import { BRAND } from "../../../../shared/brand";
 
 type PrRefreshArgs = { prId?: string; prIds?: string[] };
 
@@ -542,7 +543,7 @@ function PrsReaderProvider({
       setRefreshErrorRetryCount(0);
     } catch (err) {
       setRefreshErrorRetryCount((count) => count + 1);
-      setError(plainErrorText(err, "ADE couldn't load the pull requests."));
+      setError(plainErrorText(err, `${BRAND.NAME} couldn't load the pull requests.`));
     } finally {
       setLoading(false);
       initialLoadDone.current = true;

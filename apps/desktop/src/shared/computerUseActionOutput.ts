@@ -17,6 +17,7 @@ import {
 } from "./userBrowserLabels";
 import { androidAvdDisplayName } from "./androidDevicePresentation";
 import { readRecord } from "./readRecord";
+import { cliErrorLineText } from "./cliCommandNames";
 
 /* ── Output parsing ──────────────────────────────────────────────────────── */
 
@@ -168,8 +169,10 @@ export function parseOutput(output: string): ParsedOutput {
       parsed.effectReason = tail.join(" — ").trim() || null;
       continue;
     }
-    if (/^ade:\s/.test(trimmed) && parsed.errorMessage === null) {
-      parsed.errorMessage = trimmed.slice(4).trim().replace(/^[A-Z][A-Z0-9_]{3,}:\s*/, "") || null;
+    // The CLI's error line: "ade: …" from older CLIs, "daex: …" from newer ones.
+    const cliError = parsed.errorMessage === null ? cliErrorLineText(trimmed) : null;
+    if (cliError !== null) {
+      parsed.errorMessage = cliError.trim().replace(/^[A-Z][A-Z0-9_]{3,}:\s*/, "") || null;
       continue;
     }
     if (lower.startsWith(USER_BROWSER_ATTACHED_PREFIX) && parsed.attachedLine === null) {

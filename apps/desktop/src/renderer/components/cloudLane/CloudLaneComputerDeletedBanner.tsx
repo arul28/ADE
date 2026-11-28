@@ -29,6 +29,7 @@ import {
   savedChatFateSentence,
   type CloudLaneWithoutComputerRow,
 } from "./cloudLanesWithoutComputer";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * A lane whose ADE Cloud computer was deleted looks like a sleeping one: the
@@ -122,14 +123,14 @@ function WhyComputerDeleted({ onOpenPlans }: { onOpenPlans?: (() => void) | null
         <button
           type="button"
           className="ml-1 rounded px-0.5 font-medium text-fg/75 underline decoration-fg/25 underline-offset-2 hover:bg-fg/[0.06] hover:text-fg"
-          aria-label="Why ADE Cloud deleted this computer"
+          aria-label={`Why ${BRAND.CLOUD_NAME} deleted this computer`}
         >
           Why?
         </button>
       )}
     >
       <p className="m-0 text-[12px] leading-snug text-fg/85">
-        ADE Cloud deletes a computer that isn&apos;t used for a while, or to fit your plan, so it doesn&apos;t use your credits and disk.
+        {BRAND.CLOUD_NAME} deletes a computer that isn&apos;t used for a while, or to fit your plan, so it doesn&apos;t use your credits and disk.
       </p>
       <p className="m-0 text-[12px] leading-snug text-fg/85">
         Your chats and the work that isn&apos;t on GitHub stay on your account. A new computer gets them back.
@@ -234,7 +235,7 @@ export function CloudLaneComputerDeletedBanner({
           id: "cloud-lane-computer-deleted-blocked",
           tone: "warning",
           icon: <CloudMark size={13} brand />,
-          title: "ADE can't make a new computer for this lane",
+          title: `${BRAND.NAME} can't make a new computer for this lane`,
           detail: onlyChats ? `${facts.blocked.message} ${onlyChats}` : facts.blocked.message,
           actions: [...fixes, ...(onOpenChat ? [{ label: "Open chat", variant: "secondary" as const, onClick: onOpenChat }] : []), ...(deleteAction ? [deleteAction] : [])],
         }}
@@ -258,7 +259,7 @@ export function CloudLaneComputerDeletedBanner({
         id: "cloud-lane-computer-deleted",
         tone: "info",
         icon: <CloudMark size={13} brand />,
-        title: "This lane's ADE Cloud computer was deleted",
+        title: `This lane's ${BRAND.CLOUD_NAME} computer was deleted`,
         detail: (
           <>
             {facts.fate} {onlyChats ? `${onlyChats} ` : ""}{next}

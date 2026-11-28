@@ -24,6 +24,7 @@ import { SmartTooltip } from "../ui/SmartTooltip";
 import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
 import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 import { sessionLaneDisplayName } from "../../../shared/laneDisplayName";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The raw PROCESS column, not a session status. This is a different axis from
@@ -64,7 +65,7 @@ function lifecycleSourceLabel(source: TerminalSessionSummary["attentionSource"] 
   if (source === "linear") return "Linear";
   if (source === "turn_end_question") return "Question in the agent's reply";
   if (source === "pr_merge") return "Lane PR merge";
-  if (source === "operator") return "ADE operator";
+  if (source === "operator") return `${BRAND.NAME} operator`;
   if (source === "user") return "User action";
   return "—";
 }

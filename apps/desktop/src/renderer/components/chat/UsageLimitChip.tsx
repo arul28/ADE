@@ -8,6 +8,7 @@ import { StatusChip, type StatusChipAction } from "../ui/notice/StatusChip";
 import { useAgentChatApi } from "./agentChatApi";
 import { withChatPin } from "./chatMachinePin";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The usage-limit chip in the composer's status row. It sits beside the other
@@ -60,7 +61,7 @@ export function UsageLimitChip({
       })
       .catch((error: unknown) => {
         if (token !== runTokenRef.current) return;
-        showToast({ tone: "error", title: "Usage limit", message: plainErrorText(error, "ADE couldn't change the usage limit.") });
+        showToast({ tone: "error", title: "Usage limit", message: plainErrorText(error, `${BRAND.NAME} couldn't change the usage limit.`) });
       })
       .finally(() => {
         if (token === runTokenRef.current) setBusy(false);
@@ -76,7 +77,7 @@ export function UsageLimitChip({
       testId: "usage-limit-continue-on-account",
       onClick: () => run(async () => {
         const send = agentChatApi.continueUsageLimitOnAlternate;
-        if (typeof send !== "function") return "This ADE runtime can't switch accounts yet. Update the app and try again.";
+        if (typeof send !== "function") return `This ${BRAND.NAME} runtime can't switch accounts yet. Update the app and try again.`;
         const result = await withChatPin(runtimePin, (chatPin) => send({ sessionId }, chatPin));
         return result.ok ? null : result.message;
       }),

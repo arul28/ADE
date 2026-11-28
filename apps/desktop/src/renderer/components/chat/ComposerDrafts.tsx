@@ -50,6 +50,7 @@ import {
   sameAttachment,
 } from "./draftsFormat";
 import { withChatPin } from "./chatMachinePin";
+import { BRAND } from "../../../shared/brand";
 
 const DRAFTS_MENU_MAX_WIDTH = 380;
 const DRAFTS_MENU_VIEWPORT_MARGIN = 16;
@@ -444,7 +445,7 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
             // The composer remains intact even if an older runtime cannot roll
             // back the text-only compatibility write.
           }
-          throw new Error("The connected ADE runtime could not preserve the attached images. They are still in your composer.");
+          throw new Error(`The connected ${BRAND.NAME} runtime could not preserve the attached images. They are still in your composer.`);
         }
       }
       const operationBindingKey = operationBinding?.key ?? null;
@@ -803,7 +804,7 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     <div className="font-sans text-[11px] font-semibold text-fg/82">Drafts</div>
-                    <div className="mt-0.5 font-sans text-[9.5px] text-muted-fg/42">Shared through this project’s ADE runtime</div>
+                    <div className="mt-0.5 font-sans text-[9.5px] text-muted-fg/42">Shared through this project’s {BRAND.NAME} runtime</div>
                   </div>
                   <button
                     type="button"

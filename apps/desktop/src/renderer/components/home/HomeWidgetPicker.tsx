@@ -26,10 +26,11 @@ import { WidgetPreviewContext, useHomeGridMetrics } from "./HomeWidgetGrid";
 import "./homeWidgets.css";
 import { hasDesktopHome } from "../../lib/adeAvailability";
 import type { HomeWidgetMeta } from "./homeWidgetCatalog";
+import { BRAND } from "../../../shared/brand";
 
 /** Why a widget cannot be added here, or null when it can. */
 function unavailableReason(meta: HomeWidgetMeta): string | null {
-  return meta.comingSoon ?? (meta.desktopOnly && !hasDesktopHome() ? "Needs the ADE desktop app." : null);
+  return meta.comingSoon ?? (meta.desktopOnly && !hasDesktopHome() ? `Needs the ${BRAND.NAME} desktop app.` : null);
 }
 
 /**

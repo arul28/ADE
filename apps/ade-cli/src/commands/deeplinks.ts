@@ -23,9 +23,12 @@ import {
   type DeeplinkOwnership,
   type DeeplinkTarget,
   type OwnedDeeplinkTarget,
+  withNewLinkScheme,
 } from "../../../desktop/src/shared/deeplinks";
 import { WEB_CLIENT_BASE_URL, buildWebClientUrl } from "../../../desktop/src/shared/webClientUrl";
 import { copyToClipboard } from "../lib/clipboard";
+import { BRAND } from "../../../desktop/src/shared/brand";
+import { ADE_CLI_COMMAND_NAMES } from "../../../desktop/src/shared/cliCommandNames";
 
 export class CliDeeplinkUsageError extends Error {}
 
@@ -53,11 +56,11 @@ export type DeeplinkCommandOptions = {
 
 const HELP_OPEN = [
   "Usage:",
-  "  ade open <url>",
-  "  ade open --linear-issue <id> --branch <branch>",
+  "  daex open <url>",
+  "  daex open --linear-issue <id> --branch <branch>",
   "",
-  "  Opens an `ade://` or `https://ade-app.dev/open?...` URL via the OS, which",
-  "  routes it back to the running ADE desktop app (or launches it cold).",
+  "  Opens a `daex://` (or `ade://`) or `https://ade-app.dev/open?...` URL via the OS, which",
+  `  routes it back to the running ${BRAND.NAME} desktop app (or launches it cold).`,
   "",
   "  The --linear-issue / --branch form is what Linear's 'Open in coding",
   "  tool' menu passes us (Linear doesn't surface the GitHub repo, so the",
@@ -66,18 +69,18 @@ const HELP_OPEN = [
 
 const HELP_LINK = [
   "Usage:",
-  "  ade link lane <lane-uuid>",
-  "  ade link session <session-id> [--lane <lane-uuid>]",
-  "  ade link file <path> [--line <number>] [--lane <lane-uuid>]",
-  "  ade link commit <sha> [--lane <lane-uuid>]",
-  "  ade link artifact <id>",
-  "  ade link branch <owner/repo> <branch> [--pr <number>]",
-  "  ade link pr <owner/repo> <number>",
-  "  ade link linear-issue <ADE-123> [--branch <branch>]",
-  "  ade link <url>            # round-trip — parse + re-print canonical form",
+  "  daex link lane <lane-uuid>",
+  "  daex link session <session-id> [--lane <lane-uuid>]",
+  "  daex link file <path> [--line <number>] [--lane <lane-uuid>]",
+  "  daex link commit <sha> [--lane <lane-uuid>]",
+  "  daex link artifact <id>",
+  "  daex link branch <owner/repo> <branch> [--pr <number>]",
+  "  daex link pr <owner/repo> <number>",
+  "  daex link linear-issue <ADE-123> [--branch <branch>]",
+  "  daex link <url>            # round-trip — parse + re-print canonical form",
   "",
   "Options:",
-  "  --ade           Emit the custom `ade://` form (default: https)",
+  "  --ade           Emit the custom `daex://` form (default: https)",
   "  --no-envelope   Skip the best-effort lookup of repo/branch/PR and of the",
   "                  computer and project a lane, chat or PR link opens on",
   "  --web           Emit the hosted web client form (app.ade-app.dev)",
@@ -85,10 +88,10 @@ const HELP_LINK = [
 ].join("\n");
 
 const HELP_LINEAR = [
-  "Usage: ade linear install",
+  "Usage: daex linear install",
   "",
   "  Writes ~/.linear/coding-tools.json so Linear's 'Open issue in coding",
-  "  tool' dropdown can launch ADE. Backs up any existing file alongside.",
+  `  tool' dropdown can launch ${BRAND.NAME}. Backs up any existing file alongside.`,
 ].join("\n");
 
 export function runDeeplinkCommand(rest: string[]): DeeplinkCliResult {
@@ -105,7 +108,7 @@ export function runDeeplinkCommand(rest: string[]): DeeplinkCliResult {
       return runLinearCommand(verbArgs);
     default:
       throw new CliDeeplinkUsageError(
-        `Unknown deeplink subcommand: ${verb}. Try 'ade open <url>', 'ade link ...', or 'ade linear install'.`,
+        `Unknown deeplink subcommand: ${verb}. Try 'daex open <url>', 'daex link ...', or 'daex linear install'.`,
       );
   }
 }
@@ -127,7 +130,7 @@ export async function runDeeplinkCommandAsync(
       return runLinearCommand(verbArgs);
     default:
       throw new CliDeeplinkUsageError(
-        `Unknown deeplink subcommand: ${verb}. Try 'ade open <url>', 'ade link ...', or 'ade linear install'.`,
+        `Unknown deeplink subcommand: ${verb}. Try 'daex open <url>', 'daex link ...', or 'daex linear install'.`,
       );
   }
 }
@@ -165,10 +168,12 @@ export function runOpenCommand(args: string[]): DeeplinkCliResult {
   // URL form.
   const url = flags.positional[0];
   if (!url) {
-    throw new CliDeeplinkUsageError("ade open <url>  (or --linear-issue / --branch)");
+    throw new CliDeeplinkUsageError("daex open <url>  (or --linear-issue / --branch)");
   }
   const parsed = parseDeeplink(url);
-  if (parsed.ok) return openAndReport(url);
+  // An `ade://` link is opened as `daex://`, the scheme new links use; the
+  // installed app registers both.
+  if (parsed.ok) return openAndReport(withNewLinkScheme(url.trim()));
   // Allow unknown_type URLs (like the linear-issue form above) to still pass
   // through to the OS opener — the landing page / desktop can decide what
   // to do.
@@ -327,14 +332,14 @@ function buildLinkPlan(args: string[]): LinkPlan {
   if (verb === "lane") {
     const laneId = positional[1];
     if (!laneId) {
-      throw new CliDeeplinkUsageError("ade link lane <lane-uuid>");
+      throw new CliDeeplinkUsageError("daex link lane <lane-uuid>");
     }
     return plan({ kind: "lane", laneId }, { targetKind: "lane", laneId });
   }
   if (verb === "session") {
     const sessionId = positional[1];
     if (!sessionId) {
-      throw new CliDeeplinkUsageError("ade link session <session-id> [--lane <lane-uuid>]");
+      throw new CliDeeplinkUsageError("daex link session <session-id> [--lane <lane-uuid>]");
     }
     const laneId = flags.valued.get("lane");
     return plan(
@@ -345,13 +350,13 @@ function buildLinkPlan(args: string[]): LinkPlan {
   if (verb === "file") {
     const filePath = positional[1];
     if (!filePath) {
-      throw new CliDeeplinkUsageError("ade link file <path> [--line <number>] [--lane <lane-uuid>]");
+      throw new CliDeeplinkUsageError("daex link file <path> [--line <number>] [--lane <lane-uuid>]");
     }
     // Validate BEFORE building: the ade:// path form URL-normalizes dot
     // segments, so a post-build round-trip would silently accept ../secret
     // as a link to a different in-repo path.
     if (!isValidRepoRelativePath(filePath)) {
-      throw new CliDeeplinkUsageError("ade link file requires a repo-relative path (no leading /, no .. segments)");
+      throw new CliDeeplinkUsageError("daex link file requires a repo-relative path (no leading /, no .. segments)");
     }
     const lineRaw = flags.valued.get("line");
     const line = lineRaw != null ? parsePositiveInteger(lineRaw, "--line") : undefined;
@@ -366,7 +371,7 @@ function buildLinkPlan(args: string[]): LinkPlan {
   if (verb === "commit") {
     const sha = positional[1];
     if (!sha) {
-      throw new CliDeeplinkUsageError("ade link commit <sha> [--lane <lane-uuid>]");
+      throw new CliDeeplinkUsageError("daex link commit <sha> [--lane <lane-uuid>]");
     }
     const laneId = flags.valued.get("lane");
     return plan(
@@ -377,7 +382,7 @@ function buildLinkPlan(args: string[]): LinkPlan {
   if (verb === "artifact") {
     const artifactId = positional[1];
     if (!artifactId) {
-      throw new CliDeeplinkUsageError("ade link artifact <id>");
+      throw new CliDeeplinkUsageError("daex link artifact <id>");
     }
     return plan({ kind: "artifact", artifactId });
   }
@@ -386,7 +391,7 @@ function buildLinkPlan(args: string[]): LinkPlan {
     const branch = positional[2];
     if (!repo || !branch) {
       throw new CliDeeplinkUsageError(
-        "ade link branch <owner/repo> <branch> [--pr <number>]",
+        "daex link branch <owner/repo> <branch> [--pr <number>]",
       );
     }
     const { repoOwner, repoName } = parseRepoSlug(repo);
@@ -400,7 +405,7 @@ function buildLinkPlan(args: string[]): LinkPlan {
     const repo = positional[1];
     const numberRaw = positional[2];
     if (!repo || !numberRaw) {
-      throw new CliDeeplinkUsageError("ade link pr <owner/repo> <number>");
+      throw new CliDeeplinkUsageError("daex link pr <owner/repo> <number>");
     }
     const { repoOwner, repoName } = parseRepoSlug(repo);
     const prNumber = parsePositiveInteger(numberRaw, "PR number");
@@ -409,7 +414,7 @@ function buildLinkPlan(args: string[]): LinkPlan {
   if (verb === "linear-issue") {
     const issueIdentifier = positional[1];
     if (!issueIdentifier) {
-      throw new CliDeeplinkUsageError("ade link linear-issue <ADE-123> [--branch <branch>]");
+      throw new CliDeeplinkUsageError("daex link linear-issue <ADE-123> [--branch <branch>]");
     }
     const branchHint = flags.valued.get("branch");
     return plan(branchHint
@@ -565,7 +570,13 @@ function resolveAdeBinaryPath(): string {
   // run via node, argv[0] is node — fall back to a bare name and hope it's on
   // PATH (the Linear coding-tool spawner inherits the user's PATH).
   const argv0 = process.argv[0] ?? "";
-  if (/\bade\b/.test(argv0)) return argv0;
+  // The binary itself: `daex`, `ade` or a channel's `ade-beta`, with an optional
+  // Windows suffix. Never under Electron: the packaged wrappers run the CLI through
+  // the app's own executable (`ADE`, `ADE.exe`) with ELECTRON_RUN_AS_NODE, and that
+  // path would open the desktop app when Linear starts it. Case-sensitive for the
+  // same reason.
+  const name = path.basename(argv0).replace(/\.(?:exe|cmd)$/i, "").replace(/-(?:beta|alpha)$/, "");
+  if (!process.versions.electron && (ADE_CLI_COMMAND_NAMES as readonly string[]).includes(name)) return argv0;
   // On Windows `ade` is a .cmd shim, and Linear's spawner passes the value
   // straight to CreateProcess — a bare `ade` would not resolve.
   return process.platform === "win32" ? "ade.cmd" : "ade";

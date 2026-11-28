@@ -1,3 +1,4 @@
+import { BRAND } from "./brand";
 /**
  * Removing a project from one machine: the state report a machine gives about
  * its own copy, the request to remove it (entry only, or with its folder), and
@@ -155,12 +156,12 @@ export function summarizeCopyWork(state: ProjectCopyState): ProjectCopyWork {
     parts.push("commits on other branches that are not pushed");
   }
   if ((state.stashes ?? 0) > 0) parts.push(plural(state.stashes ?? 0, "stash", "stashes"));
-  if (state.checkouts.some((checkout) => checkout.hasSubmodules)) parts.push("submodules ADE can't check");
+  if (state.checkouts.some((checkout) => checkout.hasSubmodules)) parts.push(`submodules ${BRAND.NAME} can't check`);
   const unknown = state.unreadable.length > 0
     || state.stashes === null
     || state.unpushedOnBranches === null
     || state.checkouts.some((checkout) => checkout.changedFiles === null || checkout.unpushedCommits === null);
-  if (unknown && state.isGitRepo) parts.push("some changes ADE couldn't check");
+  if (unknown && state.isGitRepo) parts.push(`some changes ${BRAND.NAME} couldn't check`);
   if (!state.isGitRepo) parts.push("not a git folder, so nothing in it is saved elsewhere");
   // Only files inside the folder a delete removes. Names only, never contents.
   const ignoredEnvFiles = [

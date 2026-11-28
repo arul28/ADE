@@ -1,6 +1,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 import type { CloudModelCatalog } from "../../shared/accountCloudLaunches";
 import { isAdeAvailable } from "../lib/adeAvailability";
+import { BRAND } from "../../shared/brand";
 
 /**
  * The model list for a chat on ADE Cloud before any computer exists
@@ -33,7 +34,7 @@ async function load(): Promise<void> {
   set({ ...state, loading: true, error: null });
   try {
     const catalog = await read();
-    if (!catalog) throw new Error("ADE Cloud didn't list its models.");
+    if (!catalog) throw new Error(`${BRAND.CLOUD_NAME} didn't list its models.`);
     set({ catalog, error: null, loading: false });
   } catch (error) {
     set({ ...state, error: error instanceof Error ? error.message : String(error), loading: false });

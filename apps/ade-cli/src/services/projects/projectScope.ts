@@ -18,6 +18,7 @@ import { unansweringRootOf } from "../../../../desktop/src/main/services/state/u
 import { resolveBrainLoopWatchdogThresholdMs, trackBrainLoopWatchdogProjectOpen } from "../runtime/brainLoopWatchdog";
 import { logSlowProjectOpen } from "./projectFilesystemKind";
 import { QUEUED_OPEN_PHASE, type ProjectOpenStrikes } from "./projectOpenStrikes";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 type ScopeLogger = {
   warn: (event: string, meta?: Record<string, unknown>) => void;
@@ -139,7 +140,7 @@ export function describeSyncHostBlocker(blocker: SyncHostBlocker): string {
   const target = blocker.host
     ? ` at ${blocker.host}${blocker.port != null ? `:${blocker.port}` : ""}`
     : "";
-  return `This project is set to follow another ADE machine${target}, so this machine cannot open it for sync. Open it on that machine, or stop following it on this computer: in Connections, under This computer, choose Stop following.`;
+  return `This project is set to follow another ${BRAND.NAME} machine${target}, so this machine cannot open it for sync. Open it on that machine, or stop following it on this computer: in Connections, under This computer, choose Stop following.`;
 }
 
 /** The target project follows another machine, so this machine cannot host it. */
@@ -588,8 +589,8 @@ export class ProjectScopeRegistry {
           requestedBy: options.requestedBy ?? null,
         });
         throw markExpected(new Error(checkouts.length === 0
-          ? `This project is not on this ADE machine (Unknown projectId: ${projectId}). Open it on this machine once, then try again.`
-          : `This project has ${checkouts.length} copies on this ADE machine, and ADE does not guess which one you mean (Unknown projectId: ${projectId}). Open the copy you want from this machine's project list.`), "user");
+          ? `This project is not on this ${BRAND.NAME} machine (Unknown projectId: ${projectId}). Open it on this machine once, then try again.`
+          : `This project has ${checkouts.length} copies on this ${BRAND.NAME} machine, and ${BRAND.NAME} does not guess which one you mean (Unknown projectId: ${projectId}). Open the copy you want from this machine's project list.`), "user");
       }
       this.reportUnknownProjectId(projectId, options.requestedBy);
       throw new Error(`Unknown projectId: ${projectId}`);
@@ -1449,7 +1450,7 @@ export class ProjectScopeRegistry {
       });
     }
     throw Object.assign(
-      new Error(`This project is not on this ADE machine (Unknown projectId: ${projectId}). Select the project again and retry.`),
+      new Error(`This project is not on this ${BRAND.NAME} machine (Unknown projectId: ${projectId}). Select the project again and retry.`),
       { code: "project_not_open" },
     );
   }

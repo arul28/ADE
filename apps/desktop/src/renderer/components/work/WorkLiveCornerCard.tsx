@@ -78,6 +78,7 @@ import { useAndroidLaneDeviceCard } from "../android/useAndroidLaneDeviceCard";
 import { useAndroidRecording } from "../android/useAndroidRecording";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The floating live-preview card.
@@ -1011,7 +1012,7 @@ export function WorkLiveCornerCard({
       showToast({
         tone: "error",
         title: "Recording did not stop",
-        message: plainErrorText(error, "ADE couldn't stop the recording."),
+        message: plainErrorText(error, `${BRAND.NAME} couldn't stop the recording.`),
       });
     });
   }, [browserViewRoot, chatSessionId, recordingTabId, recordingTabOwned]);

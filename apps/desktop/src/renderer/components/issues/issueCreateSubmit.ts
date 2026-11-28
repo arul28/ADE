@@ -8,6 +8,7 @@ import {
 } from "../../../shared/githubIssueTemplates";
 import { normalizeGitHubIssue, type GitHubIssueDetail, type GitHubRepo } from "./githubIssueStore";
 import type { GitHubFields, JiraFields, LinearFields } from "./issueCreateDraft";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Sending a new issue to its tracker. Each function checks what the form
@@ -116,7 +117,7 @@ export async function submitJiraIssue(input: {
   if (!issueType) throw new Error("Reload the Jira issue types and choose one that is available.");
   const unsupportedRequired = issueType.fields.filter((field) => field.required && !field.supported);
   if (unsupportedRequired.length) {
-    throw new Error(`Jira requires fields ADE cannot fill: ${unsupportedRequired.map((field) => field.name).join(", ")}. Choose another issue type.`);
+    throw new Error(`Jira requires fields ${BRAND.NAME} cannot fill: ${unsupportedRequired.map((field) => field.name).join(", ")}. Choose another issue type.`);
   }
   const create = window.ade?.jira?.createIssue;
   if (!create) throw new Error("Creating Jira issues is not available here.");

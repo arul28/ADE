@@ -8,6 +8,7 @@ import {
   primaryButton,
 } from "../lanes/laneDesignTokens";
 import { helperTextStyle } from "./remoteTargetListStyles";
+import { BRAND } from "../../../shared/brand";
 
 type HostKeyTrustCardProps = {
   trust: RemoteRuntimeSshHostKeyTrustStatus;
@@ -54,8 +55,8 @@ export function HostKeyTrustCard({
       </div>
       <div style={helperTextStyle}>
         {changed
-          ? `ADE found a different SSH identity for ${trust.host}:${trust.port}. Review ${trust.knownHostsPath ?? "known_hosts"} before connecting.`
-          : `ADE found a new SSH identity for ${trust.host}:${trust.port}. Trust it once to connect.`}
+          ? `${BRAND.NAME} found a different SSH identity for ${trust.host}:${trust.port}. Review ${trust.knownHostsPath ?? "known_hosts"} before connecting.`
+          : `${BRAND.NAME} found a new SSH identity for ${trust.host}:${trust.port}. Trust it once to connect.`}
       </div>
       <div
         style={{

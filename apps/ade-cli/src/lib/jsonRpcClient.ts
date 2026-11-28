@@ -2,6 +2,7 @@ import net from "node:net";
 import { parseRpcUrlAuthToken, withRpcAuthParam } from "../rpcAuth";
 import { markExpectedFromWire } from "../../../desktop/src/shared/expectedError";
 import { hasRecentTraffic, RPC_LIVENESS_PROBE_TIMEOUT_MS } from "../../../desktop/src/shared/rpcLiveness";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 type PendingRequest = {
   method: string;
@@ -57,7 +58,7 @@ export class JsonRpcClient {
   ) {
     socket.on("data", (chunk: Buffer | string) => this.handleData(chunk));
     socket.on("error", (error) => this.handleSocketClosed(error));
-    socket.on("close", () => this.handleSocketClosed(new Error("ADE RPC socket closed.")));
+    socket.on("close", () => this.handleSocketClosed(new Error(`${BRAND.NAME} RPC socket closed.`)));
   }
 
   static connect(socketPath: string): Promise<JsonRpcClient> {
@@ -96,7 +97,7 @@ export class JsonRpcClient {
     params?: unknown,
     options: { timeoutMs?: number } = {},
   ): Promise<T> {
-    if (this.closed) return Promise.reject(new Error("ADE RPC socket is closed."));
+    if (this.closed) return Promise.reject(new Error(`${BRAND.NAME} RPC socket is closed.`));
     const id = this.nextId++;
     const pendingKey = String(id);
     let timeoutMs: number;
@@ -119,7 +120,7 @@ export class JsonRpcClient {
         // Only this request gives up: a busy brain is not a dead socket, and
         // closing it failed every other request in flight.
         this.pending.delete(pendingKey);
-        pending.reject(new RpcRequestTimeoutError(`ADE RPC socket timed out waiting for method ${method} (${timeoutMs}ms).`));
+        pending.reject(new RpcRequestTimeoutError(`${BRAND.NAME} RPC socket timed out waiting for method ${method} (${timeoutMs}ms).`));
         this.closeIfUnresponsive();
       }, timeoutMs);
       this.pending.set(pendingKey, {
@@ -154,7 +155,7 @@ export class JsonRpcClient {
         this.probing = false;
         // An error reply (an older brain without `ping`) is still a reply.
         if (this.closed || !(error instanceof RpcRequestTimeoutError)) return;
-        this.failConnection(new Error(`ADE RPC socket stopped answering (no reply to ping in ${RPC_LIVENESS_PROBE_TIMEOUT_MS}ms).`));
+        this.failConnection(new Error(`${BRAND.NAME} RPC socket stopped answering (no reply to ping in ${RPC_LIVENESS_PROBE_TIMEOUT_MS}ms).`));
       },
     );
   }
@@ -163,7 +164,7 @@ export class JsonRpcClient {
     // Mark closed before tearing down so the subsequent socket "close" event is
     // treated as intentional and does NOT fire the unexpected-close handlers.
     this.closed = true;
-    this.rejectAll(new Error("ADE RPC socket closed."));
+    this.rejectAll(new Error(`${BRAND.NAME} RPC socket closed.`));
     this.socket.end();
     this.socket.destroy();
   }
@@ -227,7 +228,7 @@ export class JsonRpcClient {
       try {
         parsed = JSON.parse(line) as JsonRpcResponse | JsonRpcResponse[];
       } catch (error) {
-        this.failConnection(new Error(`Failed to parse ADE RPC response: ${error instanceof Error ? error.message : String(error)}`));
+        this.failConnection(new Error(`Failed to parse ${BRAND.NAME} RPC response: ${error instanceof Error ? error.message : String(error)}`));
         return;
       }
       const responses = Array.isArray(parsed) ? parsed : [parsed];
@@ -250,12 +251,12 @@ export class JsonRpcClient {
       const idx = this.buffer.indexOf(0x0a);
       if (idx < 0) {
         if (this.buffer.length > MAX_RPC_BUFFER_BYTES) {
-          throw new Error(`ADE RPC socket sent an oversized partial frame (> ${MAX_RPC_BUFFER_BYTES} bytes).`);
+          throw new Error(`${BRAND.NAME} RPC socket sent an oversized partial frame (> ${MAX_RPC_BUFFER_BYTES} bytes).`);
         }
         return null;
       }
       if (idx > MAX_RPC_BUFFER_BYTES) {
-        throw new Error(`ADE RPC socket sent an oversized JSON line (> ${MAX_RPC_BUFFER_BYTES} bytes).`);
+        throw new Error(`${BRAND.NAME} RPC socket sent an oversized JSON line (> ${MAX_RPC_BUFFER_BYTES} bytes).`);
       }
       const payload = this.buffer.consume(idx).toString("utf8");
       this.buffer.discard(1);
@@ -263,7 +264,7 @@ export class JsonRpcClient {
     }
     const probe = this.buffer.peekAscii(Math.min(this.buffer.length, CONTENT_LENGTH_PREFIX.length)).toLowerCase();
     if (!CONTENT_LENGTH_PREFIX.startsWith(probe)) {
-      throw new Error("ADE RPC socket sent non-JSON output.");
+      throw new Error(`${BRAND.NAME} RPC socket sent non-JSON output.`);
     }
 
     const crlfBoundary = this.buffer.indexOfSequence(CRLF_HEADER_BOUNDARY);
@@ -272,18 +273,18 @@ export class JsonRpcClient {
     if (crlfBoundary >= 0) boundary = { index: crlfBoundary, length: 4 };
     else if (lfBoundary >= 0) boundary = { index: lfBoundary, length: 2 };
     if (!boundary && this.buffer.length > MAX_RPC_HEADER_BYTES) {
-      throw new Error(`ADE RPC socket sent an oversized Content-Length header (> ${MAX_RPC_HEADER_BYTES} bytes).`);
+      throw new Error(`${BRAND.NAME} RPC socket sent an oversized Content-Length header (> ${MAX_RPC_HEADER_BYTES} bytes).`);
     }
     if (!boundary) return null;
     const header = this.buffer.consume(boundary.index).toString("ascii");
     this.buffer.discard(boundary.length);
     const match = /^content-length\s*:\s*(\d+)\s*$/im.exec(header);
     if (!match) {
-      throw new Error("ADE RPC socket sent a malformed Content-Length frame.");
+      throw new Error(`${BRAND.NAME} RPC socket sent a malformed Content-Length frame.`);
     }
     const length = Number.parseInt(match[1]!, 10);
     if (!Number.isFinite(length) || length < 0 || length > MAX_RPC_BUFFER_BYTES) {
-      throw new Error(`ADE RPC socket sent an oversized Content-Length frame (${length} bytes).`);
+      throw new Error(`${BRAND.NAME} RPC socket sent an oversized Content-Length frame (${length} bytes).`);
     }
     this.pendingContentLength = length;
     return this.takeContentLengthBody();
@@ -441,7 +442,7 @@ function normalizeRpcTimeoutMs(value: number): number {
   const timeoutMs = Number(value);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_RPC_TIMEOUT_MS) {
     throw new Error(
-      `ADE RPC timeout must be a finite positive number no greater than ${MAX_RPC_TIMEOUT_MS}.`,
+      `${BRAND.NAME} RPC timeout must be a finite positive number no greater than ${MAX_RPC_TIMEOUT_MS}.`,
     );
   }
   return Math.ceil(timeoutMs);

@@ -42,6 +42,7 @@ import {
   readDefaultOsBoundKeyMaterial,
   readDefaultOsBoundKeyMaterialAsync,
 } from "./osBoundKeyMaterial";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 export interface CredentialStore {
   get(key: string): Promise<string | null>;
@@ -258,7 +259,7 @@ export function isFileBackedCredentialKey(key: string): boolean {
 function fileBackedCredentialWriteError(key: string): Error {
   return new Error(
     `${key} is file-backed; write it through the file credential store `
-    + "(credentials.json.enc), not the Electron-only safeStorage file the ADE "
+    + `(credentials.json.enc), not the Electron-only safeStorage file the ${BRAND.NAME} `
     + "brain cannot read.",
   );
 }
@@ -389,7 +390,7 @@ function deserializeStore(
 ): Record<string, string> {
   if (!raw || Object.keys(raw).length === 0) return {};
   if (!isStoredCredentialEnvelope(raw)) {
-    throw new Error("Unsupported ADE credential store format.");
+    throw new Error(`Unsupported ${BRAND.NAME} credential store format.`);
   }
   const decipher = crypto.createDecipheriv("aes-256-gcm", machineKey, Buffer.from(raw.iv, "base64"));
   decipher.setAAD(STORE_AAD);
@@ -411,7 +412,7 @@ function readMachineKeyIfExists(machineKeyPath: string): Buffer | null {
     const raw = fs.readFileSync(machineKeyPath, "utf8").trim();
     const key = Buffer.from(raw, "base64");
     if (key.length === 32) return key;
-    throw new Error("ADE credential machine key is invalid.");
+    throw new Error(`${BRAND.NAME} credential machine key is invalid.`);
   } catch (error: unknown) {
     if (isEnoent(error)) return null;
     throw error;
@@ -432,7 +433,7 @@ function readOrCreateMachineKey(machineKeyPath: string): Buffer {
     if (!isEexist(error)) throw error;
     const winner = readMachineKeyIfExists(machineKeyPath);
     if (winner) return winner;
-    throw new Error("ADE credential machine key is invalid.");
+    throw new Error(`${BRAND.NAME} credential machine key is invalid.`);
   }
 }
 
@@ -441,7 +442,7 @@ async function readMachineKeyIfExistsAsync(machineKeyPath: string): Promise<Buff
     const raw = (await fs.promises.readFile(machineKeyPath, "utf8")).trim();
     const key = Buffer.from(raw, "base64");
     if (key.length === 32) return key;
-    throw new Error("ADE credential machine key is invalid.");
+    throw new Error(`${BRAND.NAME} credential machine key is invalid.`);
   } catch (error: unknown) {
     if (isEnoent(error)) return null;
     throw error;
@@ -464,7 +465,7 @@ async function readOrCreateMachineKeyAsync(machineKeyPath: string): Promise<Buff
     if (!isEexist(error)) throw error;
     const winner = await readMachineKeyIfExistsAsync(machineKeyPath);
     if (winner) return winner;
-    throw new Error("ADE credential machine key is invalid.");
+    throw new Error(`${BRAND.NAME} credential machine key is invalid.`);
   }
 }
 
@@ -575,7 +576,7 @@ function decodeCredentialStore(
   if (!isStoredCredentialEnvelope(raw)) {
     return {
       ok: false,
-      error: new Error("Unsupported ADE credential store format."),
+      error: new Error(`Unsupported ${BRAND.NAME} credential store format.`),
       reason: "store_format",
       recoverableByPeer: false,
     };
@@ -1370,7 +1371,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
       // file would be silently replaced. The asynchronous path has always
       // rejected this shape; the synchronous one has to agree.
       return this.onUnreadable({
-        error: new Error("Unsupported ADE credential store format."),
+        error: new Error(`Unsupported ${BRAND.NAME} credential store format.`),
         reason: "store_format",
         recoverableByPeer: false,
         forWrite: args.forWrite,
@@ -1790,7 +1791,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   private assertProjectFolderPresent(): void {
     if (this.projectFolderPresent()) return;
     const error = new Error(
-      `The project folder ${this.projectRoot} isn't there. ADE did not save this credential and has not created a replacement.`,
+      `The project folder ${this.projectRoot} isn't there. ${BRAND.NAME} did not save this credential and has not created a replacement.`,
     ) as Error & { code?: string };
     error.code = "project_data_missing";
     throw error;

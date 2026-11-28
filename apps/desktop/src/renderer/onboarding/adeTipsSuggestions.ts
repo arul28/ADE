@@ -12,6 +12,7 @@ import {
   Stack,
   type Icon,
 } from "@phosphor-icons/react";
+import { BRAND } from "../../shared/brand";
 
 /**
  * Situational suggestions (tier 3 of onboarding) that the user postponed with
@@ -91,7 +92,7 @@ export const ADE_SUGGESTIONS: Record<AdeSuggestionId, AdeSuggestionDefinition> =
   },
   "chat-secret": {
     id: "chat-secret",
-    title: "ADE secrets keep keys out of your chats",
+    title: `${BRAND.NAME} secrets keep keys out of your chats`,
     why: "A message you sent looked like it had a key or password in it. "
       + "Saved as a secret, agents can use it without it sitting in a transcript.",
     icon: Key,
@@ -101,7 +102,7 @@ export const ADE_SUGGESTIONS: Record<AdeSuggestionId, AdeSuggestionDefinition> =
   "issue-tracker": {
     id: "issue-tracker",
     title: "A connected tracker turns issue links into issues",
-    why: "You sent a link to an issue in a tracker ADE is not connected to. "
+    why: `You sent a link to an issue in a tracker ${BRAND.NAME} is not connected to. `
       + "Connected, agents can read the issue and lanes can link to it.",
     icon: LinkSimple,
     actionLabel: "Connect it",
@@ -124,7 +125,7 @@ export const ADE_SUGGESTIONS: Record<AdeSuggestionId, AdeSuggestionDefinition> =
   },
   "pair-phone": {
     id: "pair-phone",
-    title: "ADE on your iPhone keeps up with your chats",
+    title: `${BRAND.NAME} on your iPhone keeps up with your chats`,
     why: "It has been a week and only this computer is connected. "
       + "On your phone you can follow chats, answer them and hear when one needs you.",
     icon: DeviceMobile,
@@ -132,9 +133,9 @@ export const ADE_SUGGESTIONS: Record<AdeSuggestionId, AdeSuggestionDefinition> =
   },
   "env-import": {
     id: "env-import",
-    title: "Import your .env to ADE secrets",
-    why: "This project has a .env file that git ignores, so new lanes and ADE Cloud start without it. "
-      + "As ADE secrets, its values reach every lane and computer, and agents never see them.",
+    title: `Import your .env to ${BRAND.NAME} secrets`,
+    why: `This project has a .env file that git ignores, so new lanes and ${BRAND.CLOUD_NAME} start without it. `
+      + `As ${BRAND.NAME} secrets, its values reach every lane and computer, and agents never see them.`,
     icon: FileLock,
     actionLabel: "Import it",
     neverPer: "scope",

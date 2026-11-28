@@ -1,384 +1,151 @@
 # Universal Search
 
-One deterministic full-text index over everything ADE knows about a project —
-chat transcripts, terminal/CLI-session scrollback, PRs, commits, and branches —
-unioned at query time with cheap or fast-changing sources (lanes, workspace
-files, proof artifacts, Linear issues) that are delegated to their owning
-service instead of being indexed. Every hit carries a canonical `ade://` deep
-link back to the exact surface (a chat message sequence, a scrollback byte
-offset, a PR, a commit, a lane, a file line, or a proof artifact). Session,
-lane, and commit links include the portable deeplink envelope when the owning
-lane can resolve repo / branch / PR / Linear context.
+One deterministic full-text index over a project's chat transcripts,
+terminal/CLI scrollback, PRs, commits and branches, unioned at query time with
+sources delegated to their owning service (lanes, workspace files, proof
+artifacts, Linear issues). Every hit carries a `daex://` deep link to the exact
+surface (a chat message sequence, a scrollback byte offset, a PR, commit, lane,
+file line or artifact), with the portable envelope where the lane can resolve it.
 
 The index is a **machine-local, disposable cache** at
-`.ade/cache/search-index.db` (SQLite + FTS5). It never lives inside `ade.db`,
-never syncs, and a rebuild is as cheap as deleting the file. Heavy text is
-ingested on a **debounced background queue** off the PTY/chat hot paths; the
-same `searchService` backs the desktop ⌘K command palette
-and the `ade search` CLI through one `search` ADE action domain.
+`.ade/cache/search-index.db` (SQLite + FTS5): never inside `ade.db`, never
+synced, rebuilt by deleting the file. Text is ingested on a debounced background
+queue. The same `searchService` backs the ⌘K palette and `daex search` (`ade
+search` still works) through the `search` action domain.
 
 ## Source file map
 
-Main-process service (`apps/desktop/src/main/services/search/`):
-
-- `searchService.ts` — the service core. Owns the debounced ingestion queue
-  (`enqueue` / `armTimer` / `processQueue` / `drainDueEntries`, serialized
-  through a single `workChain` promise), the per-source processors
-  (`processChatSession`, `processTerminalSession`, `processPr`,
-  `processPrSweep`, `processLaneGit`), cursor-based incremental reads with the
-  `sources` table, the deferred `startBackfill` reconcile pass, and `query`
-  (FTS candidate fetch + query-time delegation + deterministic ranking +
-  cursor pagination). Public surface: `query`, `indexStatus`, `rebuildIndex`,
-  `startBackfill`, exact-session live lookup (which overrides stale indexed
-  metadata for the same document), the `notify*` hooks (`notifyChatEvent`,
-  `notifyTerminalData`, `notifySessionChanged`, `notifyPrChanged`,
-  `notifyLaneActivity`), `processPendingNow` (tests/rebuild), `dispose`.
-- `searchIndexDb.ts` — opens/creates the disposable index DB. Owns the DDL
-  (`docs`, `docs_fts` FTS5 virtual table, `sources`, `meta`), the
-  `SEARCH_INDEX_SCHEMA_VERSION = 5` constant and the drop-and-recreate on schema
-  mismatch or corruption, WAL + `busy_timeout` pragmas, `clearSearchIndex`
-  (wipe rows, keep schema), and the `createRequire`-anchored `node:sqlite`
-  resolver (same pattern as `kvDb.ts`).
-- `searchQueryParser.ts` — deterministic query parser. Tokenizes bare terms
-  (AND-ed, matched as FTS5 prefix tokens), quoted phrases (exact), and
-  `kind:` / `lane:` / `session:` / `since:` filters (`since:` durations like
-  `7d` resolve against a caller-provided `now`). `buildFtsMatchExpression`
-  builds the FTS5 `MATCH` string (optionally column-scoped to `rank_title`);
-  `isMatchAllQuery` flags filter-only queries so callers never run FTS on them.
-- `searchRanking.ts` — the deterministic ranking tiers (exact title > title
-  prefix > title substring > FTS5 BM25 body), the `compareRanked` comparator
-  (tie-break by `updatedAt` desc, then `docId` asc), and the snippet marker
-  extraction (`extractSnippetRanges` turns SQLite `snippet()` markers into
-  typed `matchRanges`).
-- `terminalChunking.ts` — splits raw terminal transcript bytes into
-  newline-aligned, ANSI-stripped, control-sanitized chunks keyed by raw byte
-  offset (so a hit deep-links to the scrollback position). Leaves an
-  unterminated tail unconsumed unless `force` (session ended) is set.
-  `sanitizeIndexedText` strips control chars while keeping `\n` / `\t`.
-- `searchServiceWiring.ts` — `createProjectSearchService`, the host-level
-  assembly shared by the desktop main process and the `ade` runtime so their
-  wiring cannot drift. Binds the delegated sources, subscribes the
-  session/chat hooks, resolves the primary lane for file delegation, and owns
-  the deferred backfill kickoff.
-
-Shared contract:
-
-- `apps/desktop/src/shared/types/search.ts` — `SearchDocKind`,
-  `SearchResultItem`, `SearchQueryArgs` (including a legacy internal-only
-  `callerScope` filter),
-  `SearchQueryResult`, `SearchIndexStatus`, `SearchRebuildResult`. Re-exported
-  from `shared/types/index.ts`.
-
-ADE action domain + RPC scoping:
-
-- `apps/desktop/src/main/services/adeActions/registry.ts` — registers the
-  `search` domain (`ADE_ACTION_DOMAIN_NAMES`), its allowlist
-  (`query`, `indexStatus`, `rebuildIndex`), the CTO-only gate on
-  `rebuildIndex` (`ADE_ACTION_CTO_ONLY`, in `actionPolicy.ts`), and `buildSearchDomainService`
-  (returns `null` when the runtime has no `searchService`).
-- `apps/ade-cli/src/adeRpcServer.ts` — `scopeSearchAdeActionArgs` removes any
-  caller-supplied `callerScope`, so session-bound agents and unbound shells see
-  the same project-backed results.
-- `apps/ade-cli/src/multiProjectRpcServer.ts` — keeps non-chat kinds in the
-  active project and aggregates bounded chat hits from every registered
-  project, adding project identity to each result. Each project contributes at
-  most 200 hits to one aggregate query; `resultsTruncated` makes that ceiling
-  explicit so callers can narrow the query instead of mistaking the bounded
-  window for an exhaustive result set. Personal chats are outside the project
-  registry and are not queried. Only the active project and projects whose
-  runtime is already loaded answer through their search service; every other
-  project is read from its index file (see "Machine search policy").
-- `apps/desktop/src/main/services/search/searchIndexQuery.ts` — the read side
-  of the index: the one FTS candidate query (`queryFtsCandidates`), shared by
-  the live service and by `querySearchIndexReadOnly`, which answers for a
-  project from its index file alone. `searchIndexDb.ts#openSearchIndexDbReadOnly`
-  opens that file read-only and never creates, migrates or deletes it.
-- `apps/ade-cli/src/bootstrap.ts` — constructs the runtime's search service
-  via `createProjectSearchService`, wires `notifyTerminalData` into
-  `broadcastData`, `notifyLaneActivity` into `onLifecycleEvent`, and
-  `notifyPrChanged` into the PR event emitter; exposes `runtime.searchService`.
-
-Desktop main-process wiring + preload bridge:
-
-- `apps/desktop/src/main/main.ts` — constructs the search service after the
-  chat/pr/git/file services, wires the same PTY/lane/PR notify hooks, threads
-  it into `AppContext`, and disposes it on shutdown (`backfillDelayMs: 10_000`).
-- `apps/desktop/src/main/services/ipc/registerIpc.ts` — adds the optional
-  `searchService` field to `AppContext`.
-- `apps/desktop/src/preload/preload.ts` + `global.d.ts` — `window.ade.search`
-  (`query` / `indexStatus` / `rebuildIndex`). **Daemon-only by design:** every
-  call routes through the runtime action bridge
-  (`callProjectRuntimeActionIfBound`) with no in-process IPC fallback, so
-  packaged and remote-bound windows behave identically.
-
-Desktop ⌘K command palette:
-
-- `apps/desktop/src/renderer/components/app/commandPaletteSearch.tsx` — the
-  universal-search seam: `useUniversalSearch` (debounced `window.ade.search`
-  query), the `KindIcon` / highlight helpers, and the `SearchResultRow` entity
-  rows grouped by kind (`ENTITY_KIND_ORDER` / `ENTITY_KIND_LABEL`).
-  `withIndexedLaneName` names a result that came with no lane name from the
-  account lane index (see [With no computer awake](#with-no-computer-awake)).
-- `apps/desktop/src/renderer/webclient/adapter/search.ts` — the web
-  `window.ade.search`: `query` and `indexStatus` ask a computer only when it
-  has `search.query` / `search.indexStatus`, else answer null (the palette
-  skips that computer); `rebuildIndex` answers `{started:false}`.
-- `apps/desktop/src/renderer/components/app/CommandPalette.tsx`,
-  `commandPaletteLanePr.ts`, and `commandPaletteThreads.tsx` — host the
-  flat-index interleaving of command,
-  thread, and entity results, and `activateResult`'s `kind → navigate` switch
-  (chat/terminal/pr/lane/commit/branch/file/linear/artifact → the matching tab,
-  relying on the deep-link navigate listener to focus the target). Thread entries
-  always retain their owner machine name for matching; results show an amber
-  name marker only when that owner is not This computer, including threads from the
-  remote-bound active tab. With a chat on screen and words typed, the
-  `chatFind` section (`commandPaletteSections.ts`) offers `Find "…" in this
-  chat` — first, or right after the commands when the words lead a command
-  title. Its logic is `chat/chatFindPalette.ts`; the words are the parsed
-  free-text terms. Opening a chat from a message hit leaves the words for that
-  chat's find bar (`setPendingChatFind`, dropped after 10 s). The palette keeps
-  focus from snapping back when it closes into a find bar. The keyboard index
-  resolves commands in their rendered (grouped) order. When a lane is selected,
-  it adds an exact **Open PR #N: title** command from the same lane PR selector
-  and route builder as the Lanes badge; with no lane PR, it offers a creation
-  command prefilled for that lane. Both commands enter regular word matching
-  and Jev's candidates. PR reads remain on the active project binding and use
-  the existing event-driven lane PR source; the palette adds no poller.
-- Queries with at least three words (or two words with no direct command match)
-  ask Jev (`usePaletteSuggestions.ts`, candidates and descriptions in
-  `commandPaletteSuggestions.ts`) to rank up to 20 likely commands after a 500 ms pause (20 picked
-  the same command as 40 on 30 test queries, for 26% fewer tokens). The
-  `Suggested` group appears above normal results when
-  the top command probability is at least 0.35 and each shown command is above
-  0.15. Suggestions use the same command rows and still require an explicit
-  click or Enter; command confirmations stay in force. The request includes
-  the current tab and focused lane/chat context, uses the palette's runtime
-  pin, and caches results per query in a small in-memory LRU. Jev errors,
-  unavailable service, or answers below the probability floor leave the normal
-  word-matched palette in place. Adding the group preserves the selected normal
-  row's keyboard target.
-- `apps/desktop/src/renderer/components/app/commandPaletteMarks.tsx` — the
-  palette's icons and captions: `commandPaletteMark` / `CommandPaletteGlyph`
-  (a colored tile per command id, with Work tool marks from
-  `WORK_TOOL_DEFINITIONS`), `PaletteIconTile`, `paletteCaption` / `clipCaption`
-  (one short subtitle line, cut at seven words, with the cut index so match
-  highlights past the cut are dropped), and `settingsPaletteCaption` (short
-  captions for the "Go to" settings commands; the Settings page keeps the full
-  descriptions). The palette search input has the `ade-palette-search` class,
-  which removes the global focus ring from that autofocused field.
-
-`ade search` CLI + agent skill:
-
-- `apps/ade-cli/src/cli.ts` — `buildSearchPlan` (flags `--kind`/`--kinds`,
-  `--lane`/`--lane-id`, `--limit`, `--cursor`, `--status`, `--rebuild`,
-  `--text`/`--json`), the `search-results` / `search-status` text formatters,
-  the `search` help block, and `exitCodeFromResult` (exit `1` on no results,
-  `2` on a usage error such as an unknown `--kind`).
-- `apps/desktop/resources/agent-skills/ade-search/SKILL.md` — the bundled
-  `ade-search` agent skill (registered in
-  `apps/desktop/src/shared/adeCliGuidance.ts` and referenced in `AGENTS.md`).
-
-## Key concepts
-
-### Disposable cache DB — never inside `ade.db`
-
-The index is a machine-local cache, so it lives in its own SQLite file
-(`.ade/cache/search-index.db`), never inside `ade.db`. Three reasons force
-this: FTS5 virtual tables cannot be cr-sqlite CRRs, the index must never sync
-to other devices, and a rebuild must be as cheap as deleting the file. On
-schema-version mismatch or corruption, `openSearchIndexDb` drops and recreates
-the file rather than migrating — the ingestion cursors it loses are rebuilt by
-the backfill pass.
-
-### Ingestion queue + cursors
-
-Writes never run on hot paths. The `notify*` hooks (chat event, PTY data, PR
-refresh, lane lifecycle, session change) only `enqueue` a source key with a
-per-kind debounce (chat 300 ms, terminal 1200 ms, PR 500 ms, lane-git 1000 ms);
-the timer drains due entries on a single serialized `workChain` promise,
-yielding to the event loop between sources. Each source's progress is a cursor
-in the `sources` table: chat and terminal transcripts are read incrementally
-from a byte cursor (capped at 4 MiB per pass, re-enqueuing when more remains),
-so a growing transcript is indexed in bounded slices. When a transcript has
-been losslessly compacted to a `<transcript>.gz` generation, the processor
-reads the whole decompressed buffer through `readHistoryFileSync` and slices it
-in memory; because compaction is byte-identical, the existing byte cursor stays
-valid and the session is not reindexed. PR/lane-git sources
-re-derive their docs wholesale each run. `startBackfill` runs once, well past
-the host boot window, enqueues every session/PR/lane, and reconciles docs whose
-sessions were deleted while the service was down.
-
-For chat, a steer indexes once. Its rows share one document id,
-`chat:<session>:steer:<steerId>`, and the first row indexed keeps it. Later
-lifecycle rows of the same steer (`inline`, `delivered`, `failed`, Codex
-`processed`/`unprocessed`) do not create another document, so a steer that
-shows as "Steering…" and then "Steered", reconnect replay, and resolution
-events cannot duplicate one message in search. `queued` rows are not indexed, and a steer the turn refuses back to `queued` loses its hit until the row that sends it is indexed, because its bubble is hidden while it waits in the staging strip.
-
-A chat's **meta** document also carries the identifiers of every pull request
-linked to it — `#1237`, `owner/repo#1237`, the PR URL, and the PR title — so
-searching a PR number finds the chat working on it, not only the PR document.
-`prTermsByChatSession` is rebuilt from scratch on every PR index and PR sweep
-and returns the set of session ids whose terms changed, which then drives a
-re-index of just those chat meta docs. Rebuilding rather than appending is what
-removes the ordering dependency: a chat indexed before the first PR sweep would
-otherwise never receive its PR terms, and unlinking a PR would leave stale
-`#123` terms on the chat document forever. A sweep enqueues every PR at once, so
-the PR list and its term sync are read once per pass rather than once per PR;
-the memo is dropped at the start of every drain pass, and a failed read is
-retried by the next PR.
-
-### Deterministic ranking tiers
-
-Ranking is exactly specifiable and stable — the same query over the same corpus
-always produces the same order. Candidates tier by title match against the
-normalized query: exact title > title prefix > title substring > FTS5 BM25 body
-match. Only the body tier uses BM25; ties across all tiers break by `updatedAt`
-descending, then `docId` ascending. Message/chunk docs carry an empty
-`rankTitle` so they rank body-only and don't inherit their session's title
-rank. Because the BM25 candidate window is capped, a title-scoped candidate set
-is unioned in when the window fills, so a strong title match is never buried by
-body-match volume.
-
-### Query syntax
-
-Bare terms AND together (matched as FTS5 prefix tokens); `"quoted phrases"`
-match exactly. Inline filters narrow the set: `kind:<kind>` (with `kind:issue`
-as an alias for Linear), `lane:<id-or-name>` (names resolved against the lane
-list), `session:<id>`, and `since:<7d|2026-06-01>` (durations resolve against
-the service's `now`). The `--kind` / `--lane` CLI flags are the scriptable,
-validated form and can be mixed with inline filters. Linear is opt-in: it can
-hit the network, so it is excluded from the default kind set and only consulted
-when a caller explicitly asks for `kind:linear`.
-
-An exact `session:<id>` filter is also a freshness contract. The service reads
-the owning session directly before relying on the disposable index, replaces
-stale FTS metadata for that same document with the live result, and deduplicates
-the merged candidate set and totals. A just-accepted or just-resolved message
-therefore appears once even when the background ingestion debounce has not run.
-
-### Query-time delegation vs. FTS
-
-Only chat, terminal, PR, commit, and branch text is FTS-indexed. Lanes, files,
-artifacts, and Linear issues are **delegated at query time** to their owning
-service so results are always fresh and nothing duplicates an authoritative
-store. Exact session lookup is a narrow live-source exception for indexed chat
-and terminal ownership: it supplements the FTS cache, then replaces stale
-same-document metadata rather than appending a duplicate. FTS candidates and
-delegated candidates are ranked together through the one comparator, then
-paginated with an opaque base64 cursor.
-
-### Machine search policy
-
-`search.query` is not narrowed by the caller's chat session. The machine router
-queries the active project normally and queries every other registered project
-for chat hits only. Results carry `projectId`, `projectName`, and `projectRoot`;
-personal/no-project chats are excluded. PR/commit/branch/lane/file/terminal and
-other non-chat kinds remain active-project results. `rebuildIndex` is CTO-only.
-
-**A search never loads a project's runtime just to answer.** The router asks the
-active project, and any project whose runtime is already loaded, through its
-search service. Every other registered project is answered by
-`querySearchIndexReadOnly`, a read-only query of that project's
-`.ade/cache/search-index.db`. The router hands the event loop a turn between
-projects, which keeps the brain responsive on a machine with many projects.
-
-- A project with no index file yet counts as searched with no hits.
-- A project whose index is another schema version, or cannot be opened or read,
-  is listed in `projectsUnavailable` with a note to open that project in ADE
-  once; opening it rebuilds the index. The read path never creates, migrates or
-  deletes an index file.
-- A project whose root folder no longer exists is listed in
-  `projectsUnavailable`.
-- A `lane` filter is resolved against that project's own index: a lane id, else
-  an exact lane name, else a lane name containing the value. A project with no
-  matching lane has no hits.
-- An index read from disk is as fresh as the last time that project's runtime
-  ran; a project that is not loaded has no chats being written.
-
-`chat.readTranscript` follows the same rule: `resolveProjectBackedChatOwner`
-asks unloaded projects from their database on disk
-(`rosterBuilder.ts#readSessionToolTypeFromDisk`) and loads only the owning
-project.
-
-### With no computer awake
-
-Search runs on computers: the palette asks every online copy of the
-repository (`useOnlineCopyPins`, `callEachMachine`). With none online it makes
-no search call and shows no entity results. ADE Cloud computers at rest are
-not woken to search. The palette still matches the rows the Work list already
-holds, which include saved chats, saved terminal copies and cloud lanes.
-
-Each time the palette opens, it reads the account lane index once
-(`useLaneMentions`, `prs/state/accountLaneMentions.ts`). A result that came
-with no lane name gets one from it: by its own `laneId` first, else, for a PR
-result, the lane of that PR number, labelled "<lane> on <machine>" because it
-may be on another machine. A result that has a lane name keeps it.
-
-### Dual-host known limitation
-
-When the desktop app and the brain daemon are both up for one project, each
-runs its own ingestion over the shared index file. Writes still converge — doc
-ids are deterministic, upserts idempotent, cursors shared via the `sources`
-table, and WAL + `busy_timeout` serialize writers — at the cost of some
-duplicate IO and occasional `SQLITE_BUSY` retry noise in logs.
+- `apps/desktop/src/main/services/search/searchService.ts` — the core: the
+  debounced queue (one serialized `workChain`), per-source processors (chat,
+  terminal, PR, PR sweep, lane git), cursors in the `sources` table,
+  `startBackfill`, and `query` (FTS candidates + delegation + ranking + cursor
+  paging). Hooks: `notifyChatEvent`, `notifyTerminalData`, `notifySessionChanged`,
+  `notifyPrChanged`, `notifyLaneActivity`.
+- `searchIndexDb.ts` — DDL (`docs`, `docs_fts`, `sources`, `meta`),
+  `SEARCH_INDEX_SCHEMA_VERSION`, drop-and-recreate on mismatch or corruption,
+  `openSearchIndexDbReadOnly`.
+- `searchIndexQuery.ts` — the one FTS candidate query, shared by the live service
+  and `querySearchIndexReadOnly`.
+- `searchQueryParser.ts`, `searchRanking.ts`, `terminalChunking.ts`
+  (newline-aligned, ANSI-stripped chunks keyed by byte offset;
+  `sanitizeIndexedText`).
+- `searchServiceWiring.ts` — `createProjectSearchService`, shared by desktop
+  main and the brain (`apps/ade-cli/src/bootstrap.ts`).
+- `apps/desktop/src/shared/types/search.ts` — the contract.
+- `apps/desktop/src/main/services/adeActions/registry.ts` — the `search` domain
+  (`query`, `indexStatus`, `rebuildIndex`; `rebuildIndex` is CTO-only).
+- `apps/ade-cli/src/adeRpcServer.ts` — `scopeSearchAdeActionArgs` strips any
+  caller `callerScope`.
+- `apps/ade-cli/src/multiProjectRpcServer.ts` — the machine search policy (below).
+- `apps/desktop/src/preload/preload.ts` — `window.ade.search`, runtime-only (no
+  in-process fallback).
+- Palette: `renderer/components/app/commandPaletteSearch.tsx`
+  (`useUniversalSearch`, result rows, `withIndexedLaneName`), `CommandPalette.tsx`
+  (`activateResult`); web adapter `renderer/webclient/adapter/search.ts`.
+- CLI: `apps/ade-cli/src/cli.ts` (`buildSearchPlan`; exit 1 on no results, 2 on a
+  usage error); skill `apps/desktop/resources/agent-skills/daex-search/SKILL.md`.
 
 ## Gotchas / fragile areas
 
-- **Hot-path enqueue must stay cheap.** `notifyTerminalData` /
-  `notifyChatEvent` run inside `broadcastData` and the chat event emitter.
-  They only touch the in-memory queue and re-arm the timer (and only when the
-  new work is due before the armed wakeup). Never do DB work in a `notify*`
-  hook — all IO belongs in the debounced drain.
-- **Schema changes mean drop-and-rebuild.** Any DDL change must bump
-  `SEARCH_INDEX_SCHEMA_VERSION`. There is no migration path — a mismatch drops
-  and recreates the DB, and backfill rebuilds it. Do not hand-migrate the
-  cache.
-- **Torn-tail rule for incremental reads.** Transcript writers append whole
-  lines. The chat/terminal processors never consume an unterminated final line
-  (chat: no trailing newline; terminal chunker: unforced partial tail) —
-  consuming it would advance the cursor past a half-written record and
-  permanently drop it. A genuinely shrunk file (rewrite) is detected via
-  `fileSize < cursor` and triggers a from-scratch reindex of that session.
-  Lossless `.gz` history compaction is *not* a shrink: the transcript-path
-  resolver treats the `.gz` sibling as canonical (it strips the suffix before
-  the moved-path check), and `readHistoryFileSync` returns the same byte length,
-  so the cursor and indexed docs survive compaction untouched.
-- **Branches are indexed from the primary lane only.** `listBranches` returns
-  every branch visible from the repo, so indexing per lane would duplicate the
-  whole branch list N times. `processLaneGit` only indexes branches when the
-  lane is `primary`; commits are per lane (capped at 100 recent).
-- **PR documents are local rows only.** `processPr` indexes the PR title,
-  number, and URL already on `listAll()`. It must not call `getDetail` or
-  `getComments` — those are live GitHub REST reads (the pull itself plus issue
-  comments plus review comments), and a backfill or `prs-updated` fan-out over
-  hundreds of historical rows exhausts the hourly quota. Comment/body search
-  stays on the PR surface that already paid for those reads.
-- **Delegated sources are best-effort.** Every delegation (lanes, files,
-  artifacts, Linear) is wrapped so an unavailable source (missing worktree,
-  no file index, Linear not connected) yields no candidates rather than
-  failing the whole query. File and Linear delegation also require positive
-  query text — they are skipped for match-all/filter-only queries.
-- **Snippet markers rely on sanitized text.** The `\u0001` / `\u0002` (`SNIPPET_MARK_START` / `SNIPPET_MARK_END`) SQLite `snippet()` markers survive
-  into typed `matchRanges` only because `sanitizeIndexedText` strips control
-  chars from every indexed body, so those bytes can never appear in real
-  indexed text. Don't index raw bytes past the sanitizer.
+- **Search runs on each machine, by pin.** The palette asks every online copy of
+  the repository (`useOnlineCopyPins`, `callEachMachine`); there is no account
+  index. An offline computer or a resting DAEX Cloud computer is not searched and
+  never woken.
+- **Hot-path enqueue stays cheap.** `notify*` hooks touch only the in-memory
+  queue and timer; all IO is in the drain.
+- **Schema changes mean drop-and-rebuild**: bump `SEARCH_INDEX_SCHEMA_VERSION`;
+  never hand-migrate the cache.
+- **Torn-tail rule.** Processors never consume an unterminated final line. A
+  shrunk file reindexes the session. A `.gz` compaction is not a shrink
+  (`readHistoryFileSync` returns the same bytes, so cursors survive).
+- **Branches come from the primary lane only**; commits are per lane (100
+  recent).
+- **PR documents use local rows only** (title, number, URL from `listAll()`);
+  never call `getDetail` / `getComments` from indexing (GitHub quota).
+- **Delegated sources are best effort** and skipped for filter-only queries.
+- **Snippet markers** (`\u0001` / `\u0002`) work only because indexed text is
+  sanitized; never index raw bytes.
+
+## Key concepts
+
+### Ingestion queue and cursors
+
+`notify*` hooks enqueue a source with a per-kind debounce (chat 300 ms, terminal
+1,200 ms, PR 500 ms, lane git 1,000 ms). Chat and terminal transcripts are read
+incrementally from a byte cursor (4 MiB per pass); PR and lane-git docs are
+rebuilt wholesale. `startBackfill` runs once after boot (10 s on desktop),
+enqueues everything and drops docs of deleted sessions.
+
+- A steer indexes once (`chat:<session>:steer:<steerId>`, first row wins);
+  `queued` rows are not indexed.
+- A chat's meta document carries the identifiers of its linked PRs (`#1237`,
+  `owner/repo#1237`, URL, title). `prTermsByChatSession` is rebuilt on every PR
+  index and sweep, and only chats whose terms changed reindex.
+
+### Deterministic ranking
+
+Exact title > title prefix > title substring > BM25 body; ties by `updatedAt`
+desc, then `docId` asc. Message and chunk docs have an empty `rankTitle`. When
+the BM25 window fills, title matches are unioned in so they are never buried.
+
+### Query syntax
+
+Bare terms AND as prefix tokens; `"quoted phrases"` match exactly; filters
+`kind:` (`kind:issue` = Linear), `lane:<id-or-name>`, `session:<id>`,
+`since:<7d|2026-06-01>`. Linear is opt-in (`kind:linear`) because it hits the
+network. An exact `session:<id>` reads the live session first and replaces stale
+index metadata, so a just-sent message appears once.
+
+### Query-time delegation
+
+Only chat, terminal, PR, commit and branch text is indexed. Lanes, files,
+artifacts and Linear are asked live, ranked with the same comparator, and paged
+with an opaque cursor.
+
+### Machine search policy
+
+`search.query` is not narrowed by the caller's chat. The router answers the
+active project fully and every other registered project for chat hits only
+(results carry `projectId`, `projectName`, `projectRoot`; ≤200 hits per project,
+`resultsTruncated` says so). Personal chats are not searched. **A search never
+loads a project's runtime**: projects not loaded are read from their index file
+read-only (`querySearchIndexReadOnly`); a missing file means no hits; a wrong
+schema or unreadable file lists the project in `projectsUnavailable` ("open it
+once"). `chat.readTranscript` follows the same rule
+(`resolveProjectBackedChatOwner`, `readSessionToolTypeFromDisk`).
+
+### With no computer awake
+
+With no computer online the palette makes no search call and matches only the
+rows Work already holds (saved chats and copies, cloud lanes). On open it reads
+the account lane index once (`useLaneMentions`) to name results that came with no
+lane name.
+
+### The ⌘K palette
+
+`CommandPalette.tsx` interleaves commands, threads and search results;
+`activateResult` routes each kind to its tab through the deep-link listener.
+Threads keep their owner machine's name; an amber marker shows only for another
+machine. With a chat on screen, **Find "…" in this chat** (`chat/chatFindPalette.ts`,
+section `chatFind` in `commandPaletteSections.ts`) hands the words to that chat's
+find bar. A selected lane adds **Open PR #N** (or a create-PR command) from the
+same selector as the Lanes badge (`commandPaletteLanePr.ts`). Queries of three or
+more words (or two with no direct match) ask Jev (`usePaletteSuggestions.ts`,
+`commandPaletteSuggestions.ts`) after 500 ms to rank up to 20 commands; a
+**Suggested** group shows when the top probability is ≥0.35 (each shown ≥0.15),
+and still needs an explicit click or Enter. Icons and captions are in
+`commandPaletteMarks.tsx`.
+
+### Dual-host limitation
+
+When the desktop and the brain both run a project, each ingests into the shared
+index. Writes converge (deterministic ids, idempotent upserts, shared cursors,
+WAL + `busy_timeout`) at the cost of duplicate IO and some `SQLITE_BUSY` noise.
 
 ## Cross-links
 
-- [Chat](../chat/README.md) — chat transcripts are the FTS `chat` source.
-- [Terminals and Sessions](../terminals-and-sessions/README.md) — terminal /
-  CLI-session scrollback is the FTS `terminal` source.
-- [Pull requests](../pull-requests/README.md) — local PR titles and numbers are
-  the `pr` source. Live GitHub body/comment fetches are not part of indexing.
-- [Deeplinks](../deeplinks/README.md) — every result carries an `ade://` deep
-  link built through the shared deeplink contract; session results carry
-  `event` / `offset` anchors, and file / commit / artifact results use the
-  canonical shared URL builders.
-- [Files and Editor](../files-and-editor/README.md) — the file quick-open /
-  content-search index backs the delegated `file` kind.
-- [Storage and recovery](../storage-and-recovery/README.md) — the lossless
-  history compression whose `.gz` transcripts the ingestion processors read
-  transparently through `readHistoryFileSync`.
-- [System overview](../../ARCHITECTURE.md) — the `search` ADE action domain and
-  services catalog entry.
+- [Chat](../chat/README.md), [Terminals and Sessions](../terminals-and-sessions/README.md),
+  [Pull requests](../pull-requests/README.md) — the indexed sources.
+- [Deeplinks](../deeplinks/README.md) — result links and anchors.
+- [Files and Editor](../files-and-editor/README.md) — the delegated `file` kind.
+- [Storage and recovery](../storage-and-recovery/README.md) — `.gz` history.

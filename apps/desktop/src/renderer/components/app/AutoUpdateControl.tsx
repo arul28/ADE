@@ -15,12 +15,13 @@ import { updateRestartAction } from "./updateRestartAction";
 import { showToast } from "./toast/toastStore";
 import { Dialog } from "../ui/dialog";
 import { openWhatsNewAfterUpdate } from "../announcements/whatsNewEvents";
+import { BRAND } from "../../../shared/brand";
 
 // Main pushes a runtime status on every connect, reconnect and skew change,
 // and the skew is set only on those paths, so the push is what keeps this
 // current. The read on show and this slow backstop cover a missed push.
 const RUNTIME_SKEW_REFRESH_MS = 5 * 60_000;
-const RUNTIME_SKEW_TITLE = "ADE has an update. Update ADE before continuing.";
+const RUNTIME_SKEW_TITLE = `${BRAND.NAME} has an update. Update ${BRAND.NAME} before continuing.`;
 // A check that fails before it reaches the network ends in milliseconds. Keep
 // "Checking…" up long enough to read, so Check again never looks like a no-op.
 const MIN_RETRY_FEEDBACK_MS = 800;
@@ -233,7 +234,7 @@ export function AutoUpdateControl() {
         } else if (outcome.status === "idle") {
           showToast({
             tone: "success",
-            title: "ADE is up to date",
+            title: `${BRAND.NAME} is up to date`,
             message: outcome.currentVersion
               ? `v${outcome.currentVersion} is the latest version.`
               : undefined,
@@ -286,14 +287,14 @@ export function AutoUpdateControl() {
       case "downloading":
         return `Downloading ${versionLabel(snapshot.version)}${downloadProgress ? ` (${downloadProgress})` : ""}`;
       case "installing":
-        return "ADE is preparing to quit and reopen automatically";
+        return `${BRAND.NAME} is preparing to quit and reopen automatically`;
       default:
         return retryAfterFailedInstall
           ? `The last attempt to install ${versionLabel(snapshot.version)} quit without finishing. `
             + (downloadStillLocal
               ? "Try again — the download is already on this machine."
-              : "Try again — ADE will download it again first.")
-          : `${restartAction.label} — ${versionLabel(snapshot.version)}. ADE quits and reopens on its own.`;
+              : `Try again — ${BRAND.NAME} will download it again first.`)
+          : `${restartAction.label} — ${versionLabel(snapshot.version)}. ${BRAND.NAME} quits and reopens on its own.`;
     }
   }
 
@@ -309,7 +310,7 @@ export function AutoUpdateControl() {
           )}
           style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
           onClick={handleSkewUpdateCheck}
-          title={`${RUNTIME_SKEW_TITLE} Check for ADE updates.`}
+          title={`${RUNTIME_SKEW_TITLE} Check for ${BRAND.NAME} updates.`}
         >
           <WarningCircle size={12} weight="fill" />
           <span>Update required</span>
@@ -381,7 +382,7 @@ export function AutoUpdateControl() {
             </span>
           ) : null}
           {effectiveStatus === "installing" ? (
-            <span>ADE will quit and reopen</span>
+            <span>{BRAND.NAME} will quit and reopen</span>
           ) : null}
         </button>
       ) : null}
@@ -403,7 +404,7 @@ export function AutoUpdateControl() {
             setReleaseNotesOpen(true);
           }
         }}
-        title={installedVersion ? `Updated to v${installedVersion}` : "ADE updated"}
+        title={installedVersion ? `Updated to v${installedVersion}` : `${BRAND.NAME} updated`}
         tone="success"
         icon={<CheckCircle size={16} weight="fill" />}
         size={resumedChats.length > 0 ? "md" : "sm"}

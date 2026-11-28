@@ -5,6 +5,9 @@ param(
   [ValidateSet("stable", "beta", "alpha")]
   [string]$PackageChannel = "stable",
   [string]$ProductName = $(if ($PackageChannel -eq "stable") { "ADE" } else { "ADE " + (Get-Culture).TextInfo.ToTitleCase($PackageChannel) }),
+  # The Start menu shortcut and installed apps name (nsis.shortcutName and
+  # uninstallDisplayName from run-electron-builder.mjs). ProductName stays ADE.
+  [string]$DisplayName = $(if ($PackageChannel -eq "stable") { "DAEX" } else { "DAEX " + (Get-Culture).TextInfo.ToTitleCase($PackageChannel) }),
   [string]$CompanionInstallerPath = "",
   # Proof runs only: install and uninstall this many times first, counting
   # installer crashes without retrying, to measure the installer's crash rate.
@@ -224,9 +227,13 @@ function Assert-InstalledProduct([string]$Phase) {
   }
   $displayEntries = @(Get-ChildItem -LiteralPath $uninstallRoot -ErrorAction SilentlyContinue | ForEach-Object {
     Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue
-  } | Where-Object { $_.DisplayName -eq $ProductName })
+  } | Where-Object { $_.DisplayName -eq $DisplayName })
   if ($displayEntries.Count -ne 1 -or $displayEntries[0].DisplayVersion -notmatch '^\d+\.\d+\.\d+') {
-    throw "$Phase did not register exactly one installed $ProductName product with a version."
+    throw "$Phase did not register exactly one installed $DisplayName product with a version."
+  }
+  $startMenuLink = Join-Path ([Environment]::GetFolderPath("Programs")) "$DisplayName.lnk"
+  if (-not (Test-Path -LiteralPath $startMenuLink -PathType Leaf)) {
+    throw "$Phase did not create the $DisplayName Start menu shortcut."
   }
   $mdAssociation = Get-Item -LiteralPath "Registry::HKEY_CURRENT_USER\Software\Classes\.md\OpenWithProgids" -ErrorAction SilentlyContinue
   $associationNames = if ($mdAssociation) { @($mdAssociation.GetValueNames()) } else { @() }
@@ -336,7 +343,7 @@ try {
     if (-not (Test-Path -LiteralPath $companion -PathType Leaf)) {
       throw "Windows side-by-side smoke is missing the Beta installer: $companion"
     }
-    & $PSCommandPath -InstallerPath $companion -PackageChannel beta -ProductName "ADE Beta"
+    & $PSCommandPath -InstallerPath $companion -PackageChannel beta -ProductName "ADE Beta" -DisplayName "DAEX Beta"
     Assert-InstalledProduct "Stable after Beta side-by-side lifecycle"
     $mdDefault = [string](Get-Item -LiteralPath "Registry::HKEY_CURRENT_USER\Software\Classes\.md" -ErrorAction Stop).GetValue("")
     if ($mdDefault -ne $fileClass) {

@@ -39,6 +39,7 @@ import {
 } from "./providerFallForward";
 import { getMachineMainLogger } from "../logging/machineLogger";
 import { decideMuseFloor, parseMuseChannelDocument, type MuseFloorDecision } from "./providerVersionRejection";
+import { BRAND } from "../../../shared/brand";
 
 const CHANNEL_URL = "https://api.meta.ai/muse-code/channels/muse-stable";
 const CHANNEL_HOSTS = ["api.meta.ai"] as const;
@@ -265,12 +266,12 @@ export function museFloorNotice(outcome: MuseFloorOutcome): string | null {
       return null;
     case "switched":
       return `Meta stopped supporting Muse Code ${outcome.pinnedVersion} (it requires ${outcome.minVersion} or newer); `
-        + `ADE switched to the untested ${outcome.museVersion}. New Muse chats use it.${urgencyWords(outcome.urgency)}`;
+        + `${BRAND.NAME} switched to the untested ${outcome.museVersion}. New Muse chats use it.${urgencyWords(outcome.urgency)}`;
     case "update-ade":
-      return `Meta requires Muse Code ≥ ${outcome.minVersion}; this ADE has ${outcome.runningVersion}. Update ADE.${urgencyWords(outcome.urgency)}`;
+      return `Meta requires Muse Code ≥ ${outcome.minVersion}; this ${BRAND.NAME} has ${outcome.runningVersion}. Update ${BRAND.NAME}.${urgencyWords(outcome.urgency)}`;
     case "not-switched":
-      return `Meta requires Muse Code ≥ ${outcome.minVersion}; this ADE has ${outcome.runningVersion}. `
-        + `ADE could not switch to Meta's ${outcome.channelVersion} (${outcome.reason}${outcome.detail ? `: ${outcome.detail}` : ""}). Update ADE.`
+      return `Meta requires Muse Code ≥ ${outcome.minVersion}; this ${BRAND.NAME} has ${outcome.runningVersion}. `
+        + `${BRAND.NAME} could not switch to Meta's ${outcome.channelVersion} (${outcome.reason}${outcome.detail ? `: ${outcome.detail}` : ""}). Update ${BRAND.NAME}.`
         + urgencyWords(outcome.urgency);
   }
 }

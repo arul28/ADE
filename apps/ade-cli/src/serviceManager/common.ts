@@ -15,6 +15,7 @@ import {
   isSameElectronRuntime,
   resolveBrainNodeExecutable,
 } from "./brainExecutable";
+import { BRAND } from "../../../desktop/src/shared/brand";
 export { isSameElectronRuntime } from "./brainExecutable";
 import { markBrainStoppedBy } from "../sentry/brainStartsFile";
 import { isAdeRuntimeNamedPipePath } from "../../../desktop/src/shared/adeRuntimeIpc";
@@ -156,7 +157,7 @@ export type BackgroundItemStatus =
   | "unknown";
 
 export const BACKGROUND_ITEM_BLOCKED_MESSAGE =
-  "macOS is blocking ADE's background service. Turn on ADE in System Settings → General → Login Items & Extensions → Allow in the Background.";
+  `macOS is blocking ${BRAND.NAME}'s background service. Turn on ${BRAND.NAME} in System Settings → General → Login Items & Extensions → Allow in the Background.`;
 
 export type AdeServiceCommand = {
   command: string;
@@ -1361,16 +1362,16 @@ export function runtimeServiceStillStartingMessage(
 ): string {
   if (reason.kind === "recovery_owned") {
     return `${reason.installMessage} The registered service still owns recovery for this endpoint, `
-      + "so ADE did not start a competing manual brain.";
+      + `so ${BRAND.NAME} did not start a competing manual brain.`;
   }
   if (reason.kind === "wait_exhausted") {
-    return `${reason.installMessage} It had still not answered on ${reason.socketPath} when ADE stopped waiting, `
-      + "so ADE did not start a competing manual brain.";
+    return `${reason.installMessage} It had still not answered on ${reason.socketPath} when ${BRAND.NAME} stopped waiting, `
+      + `so ${BRAND.NAME} did not start a competing manual brain.`;
   }
   const detail = reason.installMessage?.trim() ? ` (${reason.installMessage.trim()})` : "";
-  return "ADE's background service is still starting — try again in a moment."
+  return `${BRAND.NAME}'s background service is still starting — try again in a moment.`
     + ` It had not answered on ${reason.socketPath} yet${detail}`
-    + ", so ADE did not start a second brain alongside it.";
+    + `, so ${BRAND.NAME} did not start a second brain alongside it.`;
 }
 
 export class RuntimeServiceStillStartingError extends Error {

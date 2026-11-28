@@ -18,6 +18,7 @@ import type {
   CreateLaneFromPrBranchResult,
 } from "../../../shared/types";
 import { redactGitOutput } from "../../utils/redaction";
+import { BRAND } from "../../../shared/brand";
 
 /** The two PR-service calls a `pr-branch` run needs. */
 export type AutomationPrLaneService = {
@@ -50,7 +51,7 @@ export async function resolvePrBranchLane(args: {
     if (args.triggerLane) return args.triggerLane;
     throw new Error("This automation runs in the PR's branch, but the trigger has no pull request.");
   }
-  if (!prService) throw new Error("The pull request service is unavailable, so ADE cannot open the PR's branch.");
+  if (!prService) throw new Error(`The pull request service is unavailable, so ${BRAND.NAME} cannot open the PR's branch.`);
   const [repoOwner, repoName] = (pr.repo ?? "").split("/");
   const locator: CreateLaneFromPrBranchArgs = pr.url
     ? { prUrlOrNumber: pr.url }
@@ -67,7 +68,7 @@ export async function resolvePrBranchLane(args: {
       return null;
     }
     const lane = (await args.listActiveLanes()).find((entry) => entry.id === block.laneId);
-    if (!lane) throw new Error(`${block.message} That lane is archived, so ADE will not run in it.`);
+    if (!lane) throw new Error(`${block.message} That lane is archived, so ${BRAND.NAME} will not run in it.`);
     // A PR can be linked to a lane on another branch (PRs tab "link to lane").
     // Running there would push the PR's work to the wrong branch.
     const headBranch = preflight.headBranch?.trim();
@@ -115,10 +116,10 @@ export async function advanceLaneToPrHead(worktreePath: string, laneName: string
   }
   const status = await runGit(["status", "--porcelain"], { cwd: worktreePath, timeoutMs: 15_000 });
   if (status.exitCode !== 0 || status.stdout.trim()) {
-    throw new Error(`Lane '${laneName}' has uncommitted changes, so ADE will not move it to PR #${prNumber}'s latest commit.`);
+    throw new Error(`Lane '${laneName}' has uncommitted changes, so ${BRAND.NAME} will not move it to PR #${prNumber}'s latest commit.`);
   }
   const merge = await runGit(["merge", "--ff-only", prHead], { cwd: worktreePath, timeoutMs: 30_000 });
   if (merge.exitCode !== 0) {
-    throw new Error(`Lane '${laneName}' has diverged from PR #${prNumber}'s branch, so ADE will not run in it.`);
+    throw new Error(`Lane '${laneName}' has diverged from PR #${prNumber}'s branch, so ${BRAND.NAME} will not run in it.`);
   }
 }

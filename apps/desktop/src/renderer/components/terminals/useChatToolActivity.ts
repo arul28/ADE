@@ -3,6 +3,7 @@ import type { OpenProjectBinding } from "../../../shared/types";
 import type { AgentChatEventEnvelope } from "../../../shared/types/chat";
 import { summarizeComputerUseCommand, type ComputerUseDomain } from "../../../shared/computerUseActionSummary";
 import { computerUseActionText } from "../../../shared/computerUseActionPresentation";
+import { ADE_CLI_NAME_SOURCE } from "../../../shared/cliCommandNames";
 import { subscribeWhenChatApiReady } from "../chat/chatEventSubscription";
 import { useReadRetryOnReconnect } from "../../state/projectMachines";
 
@@ -95,12 +96,12 @@ function unwrapShell(command: string): string {
 }
 
 /**
- * An ADE CLI call followed by `rest`: `ade …`, `ade.exe …`, a path to it, or
- * the path variable agents are told to use (`"$ADE_CLI_PATH" …`,
+ * A CLI call followed by `rest`: `daex …`, `ade …`, `ade.exe …`, a path to
+ * it, or the path variable agents are told to use (`"$ADE_CLI_PATH" …`,
  * `& "$env:ADE_CLI_PATH" …`, `"%ADE_CLI_PATH%" …`).
  */
 function adeCommand(rest: string): RegExp {
-  return new RegExp(String.raw`(?:\bade(?:\.exe|\.cmd|\.ps1)?|ADE_CLI_PATH\}?%?)["']?\s+` + rest, "i");
+  return new RegExp(String.raw`(?:\b${ADE_CLI_NAME_SOURCE}(?:\.exe|\.cmd|\.ps1)?|ADE_CLI_PATH\}?%?)["']?\s+` + rest, "i");
 }
 
 const ADE_SHELL_START = adeCommand(String.raw`shell\s+start\b`);

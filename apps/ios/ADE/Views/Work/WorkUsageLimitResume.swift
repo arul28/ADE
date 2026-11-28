@@ -332,20 +332,20 @@ func workUsageLimitSheetBodyLines(
   switch model.state {
   case .armed:
     if let fireAt = model.fireAt, fireAt > now {
-      lead = "ADE sends \u{201C}continue\u{201D} at \(workUsageLimitClockLabel(fireAt)) (\(workUsageLimitRelativePhrase(to: fireAt, now: now)))."
+      lead = "\(Brand.name) sends \u{201C}continue\u{201D} at \(workUsageLimitClockLabel(fireAt)) (\(workUsageLimitRelativePhrase(to: fireAt, now: now)))."
     } else if model.fireAt != nil {
-      lead = "ADE is sending \u{201C}continue\u{201D} now."
+      lead = "\(Brand.name) is sending \u{201C}continue\u{201D} now."
     } else {
-      lead = "ADE sends \u{201C}continue\u{201D} as soon as the limit lifts."
+      lead = "\(Brand.name) sends \u{201C}continue\u{201D} as soon as the limit lifts."
     }
   case .resuming:
-    lead = "ADE is sending \u{201C}continue\u{201D} now."
+    lead = "\(Brand.name) is sending \u{201C}continue\u{201D} now."
   case .paused:
-    lead = "ADE stopped after \(workUsageLimitAttemptsPhrase(model.attempts)). The limit did not lift at the published reset."
+    lead = "\(Brand.name) stopped after \(workUsageLimitAttemptsPhrase(model.attempts)). The limit did not lift at the published reset."
   case .optedOut:
     lead = "Auto-resume is off for this chat. Nothing will be sent until you say so."
   case .noReset:
-    lead = "\(model.providerName) published no reset time, so ADE won't resume on its own."
+    lead = "\(model.providerName) published no reset time, so \(Brand.name) won't resume on its own."
   case .unknown:
     lead = ""
   }

@@ -13,6 +13,7 @@ import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
 import { androidSdkInstaller, buildAndroidSdkSetupPlan, type AndroidSdkInstallDeps } from "./androidSdkInstall";
 import { locateAndroidSdk, readAndroidSdkStatus } from "./androidSdk";
 import type { AndroidSettingsFile } from "./androidMachinePreferences";
+import { BRAND } from "../../../shared/brand";
 
 /*
  * The service side of the guided SDK install and of "Use mine…".
@@ -30,7 +31,7 @@ export function createAndroidSdkSettingStore(settings: AndroidSettingsFile) {
       return typeof sdkPath === "string" && sdkPath.trim() ? sdkPath.trim() : null;
     },
     write(sdkPath: string | null): void {
-      if (!settings.persistent) throw new AndroidEmulatorFailure("ANDROID_SDK_PATH_INVALID", "This ADE cannot save an SDK folder.");
+      if (!settings.persistent) throw new AndroidEmulatorFailure("ANDROID_SDK_PATH_INVALID", `This ${BRAND.NAME} cannot save an SDK folder.`);
       // Merged into the file: its other keys (the machine `preferences`) stay.
       settings.writeKeys({ sdkPath });
     },
@@ -106,7 +107,7 @@ export function createAndroidSdkSetup(deps: AndroidSdkSetupDeps): AndroidEmulato
       }
       if (!plan.hostSupported) throw new AndroidEmulatorFailure("ANDROID_SDK_INSTALL_FAILED", plan.unsupportedReason ?? "This computer cannot run the Android emulator.");
       if (plan.repositoryError) throw new AndroidEmulatorFailure("ANDROID_SDK_INSTALL_FAILED", plan.repositoryError);
-      if (!plan.writable) throw new AndroidEmulatorFailure("ANDROID_SDK_PATH_INVALID", plan.writableDetail ?? `ADE cannot write to ${plan.sdkRoot}.`);
+      if (!plan.writable) throw new AndroidEmulatorFailure("ANDROID_SDK_PATH_INVALID", plan.writableDetail ?? `${BRAND.NAME} cannot write to ${plan.sdkRoot}.`);
       const accepted = new Set((Array.isArray(args?.acceptedLicenseIds) ? args.acceptedLicenseIds : []).filter((id): id is string => typeof id === "string"));
       // Every licence a missing part uses must be accepted in THIS request, even one an earlier install recorded:
       // the person installing now is the one agreeing.

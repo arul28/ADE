@@ -1090,7 +1090,7 @@ describe("explicit provider-thread continuity recovery", () => {
       .join("\n") ?? "";
     expect(ordinaryParams?.threadId).toBe("thread-1");
     expect(ordinaryInputText).toContain("Continue after recovery failed.");
-    expect(ordinaryInputText).not.toContain("[ADE launch directive]");
+    expect(ordinaryInputText).not.toContain("[DAEX launch directive]");
     service.forceDisposeAll();
   });
 
@@ -1134,7 +1134,7 @@ describe("explicit provider-thread continuity recovery", () => {
       reconstructedThreadId: "thread-2",
     });
     expect(events.some((entry) => entry.event.type === "user_message"
-      && entry.event.displayText === "Rebuilt this chat's AI thread from ADE history."
+      && entry.event.displayText === "Rebuilt this chat's AI thread from DAEX history."
       && entry.event.metadata?.hideFullPrompt === true)).toBe(true);
     expect(readThreadPointerLedger(path.dirname(metadataPath(session.id))).get(session.id)).toMatchObject({
       pointer: "thread-2",

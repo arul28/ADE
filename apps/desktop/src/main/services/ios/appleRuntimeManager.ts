@@ -22,6 +22,7 @@ import type { Logger } from "../logging/logger";
 import { appleDeviceFamily, parseAppleInstalledRuntimes, parseSimctlDevices } from "./appleSimulatorCatalog";
 import { appleRuntimeScore, newestAppleRuntimeRunning } from "../../../shared/appleRuntimeVersions";
 import { appleRuntimeInstallActive } from "../../../shared/appleRuntimeVersions";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Simulator runtimes: list what is installed and what depends on it, fetch the
@@ -877,7 +878,7 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
     // the generation bump stops a call still checking from spawning one.
     if (installActive() && installer.install) {
       installer.generation += 1;
-      installer.install = { ...installer.install, phase: "cancelled", message: "Stopped when ADE closed the project", finishedAt: now().toISOString() };
+      installer.install = { ...installer.install, phase: "cancelled", message: `Stopped when ${BRAND.NAME} closed the project`, finishedAt: now().toISOString() };
     }
     if (installer.child) {
       try {

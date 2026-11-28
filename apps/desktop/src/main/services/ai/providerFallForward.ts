@@ -18,6 +18,7 @@ import { spawn } from "node:child_process";
 import { resolveActiveToolVersionOverride } from "../../../../../ade-cli/src/services/tools/overrides";
 import type { Logger } from "../logging/logger";
 import { getMachineMainLogger } from "../logging/machineLogger";
+import { BRAND } from "../../../shared/brand";
 
 export type FallForwardLogger = Pick<Logger, "info" | "warn">;
 
@@ -55,7 +56,7 @@ export function fallForwardOnce<T>(
 export async function fetchVendorJson(url: string, hosts: readonly string[]): Promise<Record<string, unknown>> {
   const parsed = new URL(url);
   if (parsed.protocol !== "https:" || !hosts.includes(parsed.hostname)) {
-    throw new Error(`${parsed.hostname} is not a host ADE reads this from`);
+    throw new Error(`${parsed.hostname} is not a host ${BRAND.NAME} reads this from`);
   }
   const response = await fetch(url, {
     headers: { accept: "application/json" },
@@ -131,7 +132,7 @@ export function fallForwardStatusLine(tool: string, label: string, vendor: strin
   const active = resolveActiveToolVersionOverride(tool);
   if (!active) return null;
   const running = active.override.overrideToolVersion ?? active.override.overrideVersion;
-  const refused = active.override.rejectedToolVersion ?? `ADE's pinned build (${active.override.pinnedVersion})`;
+  const refused = active.override.rejectedToolVersion ?? `${BRAND.NAME}'s pinned build (${active.override.pinnedVersion})`;
   const scope = active.override.scope ? ` for ${active.override.scope}` : "";
   return `Running untested ${label} ${running}: ${vendor} stopped supporting ${refused}${scope}.`;
 }

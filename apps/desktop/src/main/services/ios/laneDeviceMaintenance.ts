@@ -11,6 +11,7 @@ import {
   simulatorReclaimFactsPhrase,
   type SimulatorReclaimFacts,
 } from "./simulatorMemoryReclaim";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The two background jobs that keep lane devices from piling up.
@@ -138,13 +139,13 @@ export function describeDevicePowerOff(
   if (record.reason === "memory") {
     const facts = simulatorReclaimFactsPhrase(record.facts);
     const name = deviceName || record.name || "";
-    return `ADE shut down this simulator${name ? ` (${name})` : ""} ${when} because the computer was short of memory`
+    return `${BRAND.NAME} shut down this simulator${name ? ` (${name})` : ""} ${when} because the computer was short of memory`
       + `${facts ? ` (${facts})` : ""}; ${next}`;
   }
   const why = record.reason === "cleanup"
     ? "in a Clean up"
     : `after ${record.idleMinutes} min idle`;
-  return `ADE powered ${deviceName || "this simulator"} off ${why} ${when}; ${next}`;
+  return `${BRAND.NAME} powered ${deviceName || "this simulator"} off ${why} ${when}; ${next}`;
 }
 
 /** What `APPLE_DEVICE_MEMORY_WARNING_FILE` holds. */

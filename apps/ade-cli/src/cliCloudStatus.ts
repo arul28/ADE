@@ -11,6 +11,7 @@
 import { formatCloudHoursRate } from "../../desktop/src/shared/adeCloud";
 import { CLOUD_CREDIT_WORDS, cloudUnitWords, type CloudUnitWords } from "../../desktop/src/shared/cloudUnitWords";
 import { isRecord } from "./cli";
+import { BRAND } from "../../desktop/src/shared/brand";
 
 /** "12.5" from a number of hours, "—" when unknown. */
 /** Hours to the tenth, rounded down, as the desktop writes them: 299.8 left reads "299.8", never "300". */
@@ -72,7 +73,7 @@ export function formatCloudStatus(value: unknown): string {
   const can = isRecord(status.canStartLane) ? status.canStartLane : {};
   const lines: string[] = [];
   if (can.ok === true) rows.push(["New lane", "can start now"]);
-  else lines.push(`No new lane on ADE Cloud now: ${typeof can.reason === "string" ? can.reason : "ADE couldn't tell why."}`);
+  else lines.push(`No new lane on ${BRAND.CLOUD_NAME} now: ${typeof can.reason === "string" ? can.reason : `${BRAND.NAME} couldn't tell why.`}`);
   const plan = isRecord(status.plan) ? status.plan : null;
   const hours = isRecord(status.hours) ? status.hours : null;
   if (plan) {
@@ -123,7 +124,7 @@ export function formatCloudStatus(value: unknown): string {
   const width = Math.max(...rows.map(([label]) => label.length));
   for (const [label, text] of rows) lines.push(`${label.padEnd(width)}  ${text}`);
   const lanes = Array.isArray(status.lanes) ? status.lanes.filter(isRecord) : [];
-  lines.push("", lanes.length ? "Lanes" : "No computers on ADE Cloud yet.");
+  lines.push("", lanes.length ? "Lanes" : `No computers on ${BRAND.CLOUD_NAME} yet.`);
   /** A computer's name in this listing: its lane's, else its own. */
   const boxName = (box: Record<string, unknown>): string => {
     const lane = isRecord(box.lane) ? box.lane : null;
@@ -140,7 +141,7 @@ export function formatCloudStatus(value: unknown): string {
       lane ? boxName(box) : `(no lane) ${boxName(box)}`,
       size,
       cloudRateText(box.hoursRate, words),
-      notJoined ? `${String(box.state ?? "")}, not joined to ADE yet` : String(box.state ?? ""),
+      notJoined ? `${String(box.state ?? "")}, not joined to ${BRAND.NAME} yet` : String(box.state ?? ""),
       lane && typeof lane.projectOrigin === "string" ? lane.projectOrigin : "",
       notJoined ? "" : cloudUpdateText(box.update),
       typeof box.deletesAt === "string" ? `computer deleted ${box.deletesAt.slice(0, 10)} unless used or kept` : "",
@@ -169,16 +170,16 @@ export function formatCloudStatus(value: unknown): string {
   // Lanes whose computer was deleted: the lane and its chats stay; the next message makes a new computer.
   const gone = Array.isArray(status.lanesComputerDeleted) ? status.lanesComputerDeleted.filter(isRecord) : [];
   // Null: ADE couldn't read them, which is not "none" (an older ADE sends no field at all).
-  if (status.lanesComputerDeleted === null) lines.push("", "Lanes whose computer was deleted: ADE couldn't read them just now. ade cloud lanes --deleted tries again.");
+  if (status.lanesComputerDeleted === null) lines.push("", `Lanes whose computer was deleted: ${BRAND.NAME} couldn't read them just now. daex cloud lanes --deleted tries again.`);
   if (gone.length) {
-    lines.push("", "Lanes whose computer was deleted (their next message makes a new one; ade cloud lanes)", ...table(gone.map((lane) => [
+    lines.push("", "Lanes whose computer was deleted (their next message makes a new one; daex cloud lanes)", ...table(gone.map((lane) => [
       String(lane.name ?? lane.laneId ?? "lane"),
       typeof lane.projectOrigin === "string" ? lane.projectOrigin : "",
       typeof lane.why === "string" ? lane.why : "",
     ])));
   }
   if (status.lanesComputerDeletedPartial === true) lines.push("  (Read from your newest saved chats only: a lane known only from older chats may be missing.)");
-  if (sizeRows.length) lines.push("", "Sizes (ade chat create --machine cloud --size <id>)", ...table(sizeRows));
+  if (sizeRows.length) lines.push("", "Sizes (daex chat create --machine cloud --size <id>)", ...table(sizeRows));
   const plans = Array.isArray(status.plans) ? status.plans.filter(isRecord) : [];
   if (plans.length) {
     lines.push("", `Plans (a month; Small computers are unlimited on every plan; past the plan's ${words.noun})`, ...table(plans.map((plan) => [

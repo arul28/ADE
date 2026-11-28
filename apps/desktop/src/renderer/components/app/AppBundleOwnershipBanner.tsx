@@ -9,6 +9,7 @@ import { Dialog } from "../ui/dialog";
 import { showToast } from "./toast/toastStore";
 import { CopyableCommand } from "../settings/providers/providerUi";
 import { captureError } from "../../../shared/sentry/capture";
+import { BRAND } from "../../../shared/brand";
 
 /** Read the bundle a little after the window settles, never on the boot path. */
 const FIRST_CHECK_DELAY_MS = 8_000;
@@ -66,7 +67,7 @@ export function AppBundleOwnershipBanner(): JSX.Element | null {
       },
       () => {
         setLastResult(null);
-        setCheckNote("ADE couldn't run the fix. Try the Terminal command in Details.");
+        setCheckNote(`${BRAND.NAME} couldn't run the fix. Try the Terminal command in Details.`);
       },
     ).finally(() => setFixing(false));
   }, [bridge, fixing]);
@@ -81,12 +82,12 @@ export function AppBundleOwnershipBanner(): JSX.Element | null {
         setStatus(next);
         if (next.state === "ok") {
           setDetailsOpen(false);
-          showToast({ tone: "success", title: "ADE's files belong to your account", message: "Updates won't ask for your password." });
+          showToast({ tone: "success", title: `${BRAND.NAME}'s files belong to your account`, message: "Updates won't ask for your password." });
         } else if (next.state === "needs_fix") {
-          setCheckNote("Checked again. Your account still can't change some of ADE's files.");
+          setCheckNote(`Checked again. Your account still can't change some of ${BRAND.NAME}'s files.`);
         }
       },
-      () => setCheckNote("ADE couldn't check its files."),
+      () => setCheckNote(`${BRAND.NAME} couldn't check its files.`),
     ).finally(() => setChecking(false));
   }, [bridge, checking]);
 
@@ -99,7 +100,7 @@ export function AppBundleOwnershipBanner(): JSX.Element | null {
           id: "app-bundle-ownership",
           tone: "warning",
           icon: <LockKey size={13} weight="bold" />,
-          title: "ADE will ask for your password on every update",
+          title: `${BRAND.NAME} will ask for your password on every update`,
           detail: status.ownerName === "root"
             ? "Its app files belong to the administrator account, so macOS can only update it as administrator."
             : status.ownerName
@@ -130,7 +131,7 @@ export function AppBundleOwnershipBanner(): JSX.Element | null {
     <Dialog
       open={detailsOpen}
       onOpenChange={setDetailsOpen}
-      title="Why ADE asks for your password on every update"
+      title={`Why ${BRAND.NAME} asks for your password on every update`}
       tone="warning"
       icon={<LockKey size={16} weight="fill" />}
       size="sm"
@@ -158,12 +159,12 @@ export function AppBundleOwnershipBanner(): JSX.Element | null {
         <Section title="What happened">
           {status.ownerName ? (
             <>
-              ADE's app files at <code>{bundlePath}</code> belong to{" "}
+              {BRAND.NAME}'s app files at <code>{bundlePath}</code> belong to{" "}
               {status.ownerName === "root" ? "the system administrator account (root)" : status.ownerName}, not to you.
               This usually comes from one install or update done with admin rights.
             </>
           ) : (
-            <>Your account can't change ADE's app files at <code>{bundlePath}</code>.</>
+            <>Your account can't change {BRAND.NAME}'s app files at <code>{bundlePath}</code>.</>
           )}
         </Section>
         <Section title="Why it keeps happening">
@@ -172,13 +173,13 @@ export function AppBundleOwnershipBanner(): JSX.Element | null {
           update asks too.
         </Section>
         <Section title="What Fix it does">
-          It asks for your password once and gives ADE's files back to your account. Nothing else on this Mac
-          changes, and ADE keeps running.
+          It asks for your password once and gives {BRAND.NAME}'s files back to your account. Nothing else on this Mac
+          changes, and {BRAND.NAME} keeps running.
         </Section>
         {status.parentWritable === false ? (
           <p style={{ margin: 0, color: "var(--color-warning)" }}>
-            Your account also can't write to the folder ADE is in, so updates may still ask for a password after the
-            fix. Moving ADE to a folder you can write to solves that.
+            Your account also can't write to the folder {BRAND.NAME} is in, so updates may still ask for a password after the
+            fix. Moving {BRAND.NAME} to a folder you can write to solves that.
           </p>
         ) : null}
         {status.manualCommand ? (

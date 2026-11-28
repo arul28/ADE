@@ -8,6 +8,7 @@ import { showToast } from "../app/toast/toastStore";
 import { chatReadFailure, requireChatPin, withChatPin, type ChatReadFailure } from "./chatMachinePin";
 import { useReadRetryOnReconnect } from "../../state/projectMachines";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * A chat's live terminal watches (`ade terminal watch`), read from the chat's
@@ -104,7 +105,7 @@ export function useChatTerminalWatches(
         // Not the terminal's title: a `--command` watch is titled with its
         // command, which may hold a secret, and error toasts reach telemetry.
         title: "Couldn't stop the terminal watch",
-        message: plainErrorText(error, "ADE couldn't stop the watch."),
+        message: plainErrorText(error, `${BRAND.NAME} couldn't stop the watch.`),
       });
     });
   }, []);

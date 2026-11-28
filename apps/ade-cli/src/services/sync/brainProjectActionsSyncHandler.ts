@@ -179,6 +179,7 @@ import {
   type VerifiedAccountAttestation,
 } from "../account/accountAttestationVerifier";
 import { hostUpdateFacts } from "../../lib/hostUpdateFacts";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 type BrainProjectActionsSyncHandlerArgs = {
   logger: Logger;
@@ -1543,7 +1544,7 @@ export function createBrainProjectActionsSyncHandler(
         verifyAccountToken: async (token, expectedUserId) => {
           const config = getAccountAttestationConfig();
           if (!config) {
-            throw new Error("This machine cannot verify ADE accounts.");
+            throw new Error(`This machine cannot verify ${BRAND.NAME} accounts.`);
           }
           return await verifyAccountAttestation({ token, expectedUserId, config });
         },
@@ -1595,7 +1596,7 @@ export function createBrainProjectActionsSyncHandler(
             peer.relayAuthorization?.dispose();
             peer.relayAuthorization = null;
             try {
-              peer.ws.close(SYNC_RELAY_AUTHORIZATION_CLOSE_CODE, "ADE account session changed");
+              peer.ws.close(SYNC_RELAY_AUTHORIZATION_CLOSE_CODE, `${BRAND.NAME} account session changed`);
             } catch {
               // ignore close failures
             }
@@ -1658,7 +1659,7 @@ export function createBrainProjectActionsSyncHandler(
                 ok: false,
                 error: {
                   code: "relay_account_required",
-                  message: "Sign in with the same ADE account on both machines.",
+                  message: `Sign in with the same ${BRAND.NAME} account on both machines.`,
                 },
               }, envelope.requestId);
               try {
@@ -1841,7 +1842,7 @@ export function createBrainProjectActionsSyncHandler(
             }
           };
           if (hello.auth?.kind === "guest" && transportOrigin !== "relay-bridge") {
-            refuseGuest("lane_share_refused", "A shared lane is reachable only through ADE Relay.");
+            refuseGuest("lane_share_refused", `A shared lane is reachable only through ${BRAND.NAME} Relay.`);
             return;
           }
           if (hello.auth?.kind === "guest" && hello.auth.deviceId !== hello.peer.deviceId) {
@@ -2031,7 +2032,7 @@ export function createBrainProjectActionsSyncHandler(
                     hasCurrentOwner: Boolean(currentOwner),
                   });
                   return authFail(
-                    "This machine is signed in to a different ADE account than the one that paired this device.",
+                    `This machine is signed in to a different ${BRAND.NAME} account than the one that paired this device.`,
                   );
                 }
               }
@@ -2097,7 +2098,7 @@ export function createBrainProjectActionsSyncHandler(
               // survives only for the checks that genuinely cannot say more.
               message: authFailure.message
                 ?? (authFailure.code === "relay_account_required"
-                  ? "Sign in with the same ADE account on both machines."
+                  ? `Sign in with the same ${BRAND.NAME} account on both machines.`
                   : "Sync authentication failed."),
               host: {
                 deviceId: rejectingHost.deviceId,

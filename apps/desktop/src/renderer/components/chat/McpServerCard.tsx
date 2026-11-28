@@ -22,6 +22,7 @@ import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { chatSettingsMachineId } from "./chatDeeplinks";
 import { CardBannerButtons, CardError, CardFieldInput, CardHeading, CardReceipt, cardEscapeHandler } from "./composerCardParts";
 import "./mcpServerCard.css";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The MCP server card.
@@ -165,11 +166,11 @@ export function McpServerRequestComposer({
         <CardHeading askerFamily={askerFamily} asker={asker} verb="asks to add" title={title} mono={!entry} />
         <span className="ade-icc-banner-tools">
           {entry ? (
-            <span className="ade-icc-chip" title={`${entry.publisher}'s own server, set up by ADE.`} data-testid="mcp-server-publisher">
+            <span className="ade-icc-chip" title={`${entry.publisher}'s own server, set up by ${BRAND.NAME}.`} data-testid="mcp-server-publisher">
               By {entry.publisher}
             </span>
           ) : (
-            <span className="ade-icc-chip" title="A server ADE has no setup for. Check what it runs before you add it." data-testid="mcp-server-custom">
+            <span className="ade-icc-chip" title={`A server ${BRAND.NAME} has no setup for. Check what it runs before you add it.`} data-testid="mcp-server-custom">
               Custom
             </span>
           )}

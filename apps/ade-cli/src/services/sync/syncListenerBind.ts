@@ -18,6 +18,7 @@ import {
 import { getRuntimeServiceMainPid } from "../../serviceManager";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
 import type { SyncListenerPortDiagnosis } from "./syncListenerPortInspect";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * Bind policy for the shared sync listener: which port it may take, who
@@ -259,7 +260,7 @@ export function createListenerBinder(
               // flip back and forth every check.
               const lanShadow = await findShadowedLocalAddress(port);
               if (lanShadow) {
-                throw new LoopbackShadowedError(port, `Another program answers on ${lanShadow}:${port}, not ADE.`);
+                throw new LoopbackShadowedError(port, `Another program answers on ${lanShadow}:${port}, not ${BRAND.NAME}.`);
               }
               cleanup();
               resolve(port);

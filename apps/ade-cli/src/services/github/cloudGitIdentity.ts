@@ -23,8 +23,9 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
-export const NEUTRAL_GIT_IDENTITY = { name: "ADE Cloud", email: "cloud@users.noreply.ade-app.dev" } as const;
+export const NEUTRAL_GIT_IDENTITY = { name: BRAND.CLOUD_NAME, email: "cloud@users.noreply.ade-app.dev" } as const;
 
 export type CloudGitIdentity = { name: string; email: string };
 export type CloudGitIdentitySource = "github" | "neutral";
@@ -107,7 +108,7 @@ export function validGithubUser(login: unknown, id: unknown): GithubUser | null 
 
 async function readUserWithToken(token: string): Promise<GithubUser | null> {
   const response = await fetch("https://api.github.com/user", {
-    headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}`, "user-agent": "ADE" },
+    headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}`, "user-agent": BRAND.NAME },
     signal: AbortSignal.timeout(GITHUB_USER_TIMEOUT_MS),
   });
   if (!response.ok) return null;

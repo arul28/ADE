@@ -21,7 +21,7 @@ enum ClipPairingError: LocalizedError, Equatable {
     case .unreachable:
       return "Couldn't reach the machine. Make sure your iPhone is on the same network."
     case .pinNotSet:
-      return "No pairing PIN is set on the computer. Open ADE on your computer and set one first."
+      return "No pairing PIN is set on the computer. Open \(Brand.name) on your computer and set one first."
     case .invalidPin:
       return "That PIN doesn't match. Check the code shown on your computer."
     case .failed(let message):

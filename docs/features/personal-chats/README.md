@@ -1,444 +1,265 @@
 # Personal chats
 
-Personal chats are machine-owned AI conversations that are not attached to an
-ADE project, lane, branch, or pull request. They use the same provider and model
-catalog as Work chat, but present a general-purpose conversation surface on
-desktop, the hosted web client, mobile, and the ADE CLI.
+Personal chats are machine-owned AI conversations with no project, lane,
+branch or pull request. They use the same provider and model catalog as Work
+chat, on desktop (the **Chats** tab, `/chats`), the hosted web client, the
+iPhone and the CLI (`daex chat … --personal`; `ade` still works).
 
-Personal chats stay on the machine that owns them. The account does not hold a
-copy, and ADE Cloud does not run them. A person with no computer of their own
-online sees no personal chats; the web app and the iPhone list the chats of
-each connected computer.
+They stay on the machine that owns them. The account holds no copy and DAEX
+Cloud does not run them. The web app and the iPhone list the chats of each
+connected computer; a person with no computer online sees none.
 
 ## Source file map
 
 | Path | Role |
 |---|---|
-| `apps/ade-cli/src/services/personalChats/personalChatScope.ts` | Machine-owned chat runtime, existing-state background prewarm, hidden persistence/scratch roots, personal-surface recovery for legacy session rows, action allowlist (including scheduled-work create/cancel/pause), attachment confinement, terminal ownership, event stream, push `subscribeEvents`, caller MCP forwarding, and the `chat` / `embedded` runtime profile. |
-| `apps/ade-cli/src/services/runtime/parentDeathWatchdog.ts` | Embedded-profile parent-death poll. An SDK sidecar sets `ADE_EMBEDDED_PARENT_PID`; if that process vanishes without unwinding, this guest runtime shuts itself down. |
-| `apps/desktop/src/shared/callerMcpServers.ts` | Shared caller-MCP validation and per-provider honesty table. Personal create forwards `mcpServers` / `strictMcpConfig` into the chat service; Pi and invalid payloads fail closed. |
-| `packages/sdk/` | Embeddable sidecar that speaks this machine RPC. See [ADE SDK](../sdk/README.md). |
-| `apps/ade-cli/src/services/imageAttachment.ts` | Shared image validation, MIME sniffing, and bounded temporary-attachment persistence used by project and personal chat ingress. |
-| `apps/ade-cli/src/services/projects/machineLayout.ts` | Resolves the channel-local `$ADE_HOME/personal-chats/{state,workspaces}` roots. |
-| `apps/ade-cli/src/multiProjectRpcServer.ts` | Project-independent `personalChats.call`, `personalChats.streamEvents`, and `personalChats.subscribeEvents` / `unsubscribeEvents` machine RPC methods plus capability advertisement (`pushEvents`, `mcpServers`, `updateMcpServers`, `mcpToolFilters`, `deferredMcpUpdates`). |
-| `apps/ade-cli/src/cli.ts` | Typed `ade chat ... --personal` commands; they require the machine brain and never fall back to a project/headless runtime. |
-| `apps/ade-cli/src/services/sync/` | Runtime-scoped personal-chat commands, feature advertisement, policy descriptors, and personal transcript subscriptions for controllers. Primary files: `syncService.ts`, `syncHostService.ts`, and `syncRemoteCommandService.ts`. |
-| `apps/desktop/src/shared/types/personalChats.ts` | Cross-process action, result, capability, queue-policy, scope, and event contracts, including the scheduled-work create/cancel/pause actions shared with project chat. |
-| `apps/desktop/src/main/services/ipc/runtimeBridge.ts` | Routes personal-chat calls to an explicitly named local or remote machine; when no target is supplied, retains the window's bound-machine behavior. |
-| `apps/desktop/src/main/services/chat/agentChatService.ts` | Durable `personal` chat surface, persisted-surface reconstruction/repair support, and neutral provider guidance/environment. |
-| `apps/desktop/src/renderer/components/personalChats/PersonalChatsPage.tsx` | Desktop Chats surface: conversation rail, model catalog, personal-scoped link routing, compact Browser/Terminal tool panels, and the real `AgentChatPane` (full composer, transcript, approvals, steer and queue) scoped to the selected personal chat's machine. |
-| `apps/desktop/src/renderer/components/personalChats/personalChatMachines.ts` | Lists chats across connected machines, routes each machine's calls and event stream, and supplies the new-chat machine picker. |
-| `apps/desktop/src/renderer/components/personalChats/personalAgentChatApi.ts` | The one adapter that re-points `window.ade.agentChat` at `personalChats.*`: every pane call becomes a personal action, the event stream is one shared poller, and actions personal chats lack refuse clearly instead of reaching a project runtime. |
-| `apps/desktop/src/renderer/components/chat/agentChatApi.tsx` | `ChatPaneScope` and the context the pane, composer and panels read their chat API from (`useAgentChatApi`). Absent scope means the project chat domain, unchanged. |
-| `apps/desktop/src/renderer/components/personalChats/ProjectlessSidebar.tsx` | Stateful conversation rail: pinned-then-recency-grouped, searchable cross-machine session list with machine badges, new-chat, per-session selection, inline rename, pin/unpin, archive and delete. |
-| `apps/desktop/src/main/services/chat/personalSession.ts` | Personal-surface rules: `isAssistantPersonalSession` / `isEmbeddedPersonalSession`, the lane-only skill list, and both system prompts (the neutral SDK one and the assistant one). |
-| `apps/desktop/src/renderer/components/personalChats/sessionHelpers.ts` | Pure helpers for session title/preview, relative timestamps, and provider→tool-logo mapping shared by the page and sidebar. |
-| `apps/desktop/src/renderer/components/chat/chatSurfaceTheme.ts` | Provider-accent theming for the surface, including `effectiveChatAccent` (accounts for the neutral chrome tint) and `chatAccentContrast` (readable glyph on the `--chat-accent` fill). |
-| `apps/desktop/src/renderer/components/app/` | Global `/chats` route, sidebar entry, and project/no-project shell integration in `App.tsx`, `AppShell.tsx`, and `TopBar.tsx`. The Chats top tab is a machine-level tab backed by `personalChatsTabOpen` in `state/appStore.ts` and rendered through the reusable `ShellNavTab.tsx` (shared by the Chats and New Tab shell tabs). |
-| `apps/desktop/src/main/services/builtInBrowser/builtInBrowserService.ts` | Global authenticated browser profile plus an independent personal-chat tab collection. Cookies and site storage are shared with project browser collections; visible tabs are not. |
-| `apps/desktop/src/renderer/webclient/adapter/personalChats.ts` | Hosted-web adapter over runtime-scoped sync commands. |
-| `apps/desktop/src/renderer/webclient/shell/` | Projectless Chats entry and shell routing without choosing an active project in `WebClientRoot.tsx`. |
-| `apps/ios/ADE/Views/PersonalChats/` | Native mobile list, new-chat, and chat destination flow. |
-| `apps/ios/ADE/Services/SyncService.swift` | Runtime-scoped commands and personal chat subscription routing. |
+| `apps/ade-cli/src/services/personalChats/personalChatScope.ts` | The machine-owned chat runtime: lazy start plus background prewarm when state exists, hidden state and scratch roots, repair of legacy session rows, the action allowlist, attachment confinement, terminal ownership, event stream and push subscription, caller MCP forwarding, and the `chat` / `embedded` runtime profile. |
+| `apps/ade-cli/src/services/personalChats/embeddedHostSettings.ts`, `rpcArgs.ts` | Embedded-host settings and RPC argument parsing for the scope. |
+| `apps/ade-cli/src/services/runtime/parentDeathWatchdog.ts` | Embedded profile: shuts the guest runtime down when `ADE_EMBEDDED_PARENT_PID` disappears. |
+| `apps/ade-cli/src/services/projects/machineLayout.ts` | The channel-local `$ADE_HOME/personal-chats/{state,workspaces}` roots. |
+| `apps/ade-cli/src/multiProjectRpcServer.ts` | Machine RPC methods `personalChats.call`, `personalChats.streamEvents`, `personalChats.subscribeEvents` / `unsubscribeEvents`, and capability advertisement. |
+| `apps/ade-cli/src/cli.ts` | `daex chat … --personal`; requires the machine brain, never falls back to a project runtime. |
+| `apps/ade-cli/src/services/sync/` (`syncService.ts`, `syncHostService.ts`, `syncRemoteCommandService.ts`) | Runtime-scoped `personalChats.*` sync commands, feature advertisement, policy descriptors, transcript subscriptions. |
+| `apps/ade-cli/src/services/imageAttachment.ts` | Image validation, MIME sniffing and bounded temporary attachments (shared with project chat). |
+| `apps/desktop/src/shared/types/personalChats.ts` | Cross-process actions, results, capabilities, queue policy, scope and events. |
+| `apps/desktop/src/shared/callerMcpServers.ts` | Caller-MCP validation and the per-provider honesty table. |
+| `apps/desktop/src/main/services/chat/personalSession.ts` | `isAssistantPersonalSession` / `isEmbeddedPersonalSession`, `PERSONAL_LANE_ONLY_AGENT_SKILLS`, both system prompts. |
+| `apps/desktop/src/main/services/chat/agentChatService.ts` | The durable `personal` surface, reconstruction and repair, neutral guidance and environment, `adoptLegacyPersonalSessionAsAssistant`. |
+| `apps/desktop/src/main/services/ipc/runtimeBridge.ts` | Routes personal-chat calls to the named local or remote machine. |
+| `apps/desktop/src/main/services/builtInBrowser/builtInBrowserService.ts` | The global browser profile and the separate personal tab collection. |
+| `apps/desktop/src/renderer/components/personalChats/PersonalChatsPage.tsx` | The Chats page: rail, model catalog, link routing, Browser/Terminal panels, and the real `AgentChatPane` scoped to the chat's machine. |
+| `…/personalChats/personalChatMachines.ts` | Lists chats across connected machines, routes each machine's calls and stream, the new-chat machine picker. |
+| `…/personalChats/personalAgentChatApi.ts` | Re-points the pane's `agentChat` API at `personalChats.*`; unsupported actions refuse instead of reaching a project runtime. |
+| `…/personalChats/ProjectlessSidebar.tsx`, `sessionHelpers.ts` | The conversation rail (pinned, then by recency; search; machine badges; rename, pin, archive, delete) and its helpers. |
+| `apps/desktop/src/renderer/components/chat/agentChatApi.tsx` | `ChatPaneScope` / `useAgentChatApi`; no scope means project chat. |
+| `apps/desktop/src/renderer/components/chat/chatSurfaceTheme.ts` | Provider accent (`effectiveChatAccent`, `chatAccentContrast`). |
+| `apps/desktop/src/renderer/components/app/` | `/chats` route and the machine-level Chats tab (`personalChatsTabOpen` in `state/appStore.ts`, rendered by `ShellNavTab.tsx`). |
+| `apps/desktop/src/renderer/state/lastOpenChat.ts` | The last open chat per machine. |
+| `apps/desktop/src/renderer/webclient/adapter/personalChats.ts`, `webclient/shell/` | Hosted web adapter and projectless routing. |
+| `apps/ios/ADE/Views/PersonalChats/`, `apps/ios/ADE/Services/SyncService.swift` | iPhone list, new-chat and chat screens; runtime-scoped commands and subscriptions. |
+| `packages/sdk/` | The embeddable sidecar that speaks this RPC ([DAEX SDK](../sdk/README.md)). |
+
+## Gotchas / fragile areas
+
+- **Never infer personal scope from a missing project id.** Require the
+  personal RPC/action or `chatScope: "personal"`. Older project paths treat an
+  unscoped subscription as the active project.
+- **Never fall back to the active project.** An older runtime without the
+  capability is an unsupported host, not a reason to create a project chat.
+- **The hidden project and lane are internal.** They exist because the chat
+  stack needs a lane id. Never register them in `projects.json`, show them in
+  recents, lane lists or the iPhone roster, or offer lane, git, PR, worktree or
+  **Open in** editor actions for them. Project delete cannot touch them.
+- **Keep state and scratch roots separate.** The provider cwd must not expose
+  the database or transcripts.
+- **Preserve `surface: "personal"`** on reconstruction. Only the personal
+  runtime may repair missing legacy markers; project runtimes never relabel.
+- **Browser calls need `tabCollection: "personal"`**, or they land in the
+  source window's project tab collection (auth storage is global either way).
+- **Personal content is sensitive.** Never log prompts or message bodies in
+  RPC or sync diagnostics.
+- **No push or deeplinks** from the hidden runtime until they have a personal
+  route; project links would open a Work surface.
+- **Capabilities are optional.** Treat `pushEvents`, `mcpServers`,
+  `updateMcpServers`, `mcpToolFilters`, `deferredMcpUpdates` as absent on older
+  runtimes (they would ignore the fields or refuse mid-turn with
+  `turn_in_flight`).
+- **Strict MCP is a Claude-only guarantee.** Branch on `mcpCapability.level`,
+  never on the object's presence ([SDK](../sdk/README.md#strict-mcp-honesty)).
+- **`pendingInputs` is resident state only.** After a runtime restart it is
+  empty; the provider processes that raised the requests are gone. An
+  unanswered approval blocks the turn with no timeout.
 
 ## Storage and runtime scope
 
-Personal chats deliberately do not make the existing project chat schema
-nullable. The machine runtime lazily creates an internal state root beneath the
-active channel's `ADE_HOME` and an internal primary lane because the mature
-chat/provider/session stack requires a lane. That internal project and lane are
-implementation details only:
+The machine runtime lazily creates a hidden state root under the channel's
+`ADE_HOME` and a hidden primary lane. It is channel-scoped, so stable, beta and
+dev homes do not share conversations. It runs no sync listener of its own.
 
-- they are never registered in `projects.json`;
-- they never appear in recents, project catalogs, lane lists, or the mobile
-  all-project roster;
-- state/transcripts and agent scratch files live in separate roots;
-- project delete/forget operations cannot remove personal chat state.
-
-The runtime is channel-scoped with the rest of ADE machine state, so stable,
-alpha, and isolated development homes do not share conversations. It is
-chat-only and remains lazy for fresh installs; when existing personal-chat
-state is present, the brain prewarms it in the background so opening Chats does
-not pay the cold-start cost. It does not run its own sync listener and
-suppresses the project-oriented push/deeplink publisher because those links
-would otherwise open a project Work surface.
-
-Personal-chat provider processes run from the separate workspace root. Their
-environment retains the session identity needed by the provider bridge but
-removes `ADE_PROJECT_ROOT`, `ADE_WORKSPACE_ROOT`, `ADE_REPO_ROOT`,
-`ADE_LANE_ID`, `INIT_CWD`, and `OLDPWD`; `PWD` points at the personal scratch
-workspace. The hidden lane exists for internal service compatibility, not as
-agent-visible project context.
+Provider processes run in the separate workspace root. Their environment keeps
+the session identity but drops `ADE_PROJECT_ROOT`, `ADE_WORKSPACE_ROOT`,
+`ADE_REPO_ROOT`, `ADE_LANE_ID`, `INIT_CWD` and `OLDPWD`; `PWD` is the scratch
+workspace.
 
 ## Protocol and capabilities
 
-The machine RPC exposes five methods outside project dispatch:
+Machine RPC methods outside project dispatch:
 
-- `personalChats.call({ action, args })` executes one allowlisted action;
-- `personalChats.streamEvents({ cursor, limit })` drains the personal runtime's
-  bounded chat/PTY event buffer;
-- `personalChats.subscribeEvents` / `personalChats.unsubscribeEvents` push
-  `runtime/event` notifications (`scope: "personal"`, `projectId: null`) to a
-  client holding the connection open. They are machine RPC methods, not entries
-  in the `personalChats.call` action registry, so they are absent from
-  `ade chat actions --personal`. The one-shot CLI still polls via
-  `streamEvents`;
-- `providers.status({ refresh? })` reports what each CLI-backed provider
-  actually is on this machine — binary path, version, credentials, and the
-  install and login commands ADE knows for it. It is a machine-scope method, not
-  a `personalChats.call` action, advertised as
-  `capabilities.providers = { status: true, cacheTtlMs: 60000 }`. Each record is
-  cached 60 s; `refresh: true` bypasses that and is the "I just installed it"
-  button, never a poll. See
-  [Provider status](../sdk/README.md#provider-status).
+- `personalChats.call({ action, args })`: one allowlisted action.
+- `personalChats.streamEvents({ cursor, limit })`: drains the bounded chat/PTY
+  event buffer (the one-shot CLI polls this).
+- `personalChats.subscribeEvents` / `unsubscribeEvents`: push `runtime/event`
+  (`scope: "personal"`, `projectId: null`). Not in the action registry, so not
+  listed by `daex chat actions --personal`.
+- `providers.status({ refresh? })`: what each CLI-backed provider is on this
+  machine (binary, version, credentials, install and login commands), cached
+  60 s; `refresh: true` is for "I just installed it", never a poll
+  ([Provider status](../sdk/README.md#provider-status)).
 
-`runtime/info.capabilities.personalChats` advertises version 1, the exact
-action set, and optional flags: `pushEvents`, `mcpServers`,
-`updateMcpServers`, `mcpToolFilters` and `deferredMcpUpdates`. An older
-runtime omits them; a client must keep draining and must not send MCP fields
-it would silently ignore. Clients must capability-gate the surface; an older
-runtime is an unsupported host, not an invitation to create a normal project
-chat.
+`runtime/info.capabilities.personalChats` advertises version 1, the action set
+and the optional flags above. Clients must gate the surface on it.
 
-`create` accepts caller-injected `mcpServers` and a tristate `strictMcpConfig`
-(see [Caller-injected MCP](../chat/README.md#caller-injected-mcp)). There are
-no typed `--mcp-servers` / `--strict-mcp` CLI flags in v1 — nested JSON is
-what `--arg-json` already carries, and the ADE SDK is the intended embedder
-API. The created session carries `mcpCapability`; branch on `level ===
-"enforced"`, never on the object's presence.
+### Create arguments
 
-Each server may carry `allowedTools` and `disallowedTools`, bare tool names as
-the server lists them. Codex enforces both through its per-server
-`enabled_tools` / `disabled_tools`. Claude enforces `disallowedTools` (the
-Agent SDK drops `mcp__<server>__<tool>` from the model's context) and refuses
-`allowedTools`, because hiding every unlisted tool needs the server's tool list
-before launch. Every other provider refuses both. OpenCode refuses them because
-every personal chat shares one OpenCode server config, so a filter for one chat
-would hide tools in all of them; Droid, Cursor and Muse have no per-tool switch
-ADE drives yet. A refusal is an
-`invalid_argument` naming the servers, at create, at `updateSession`, and at a
-model switch onto a provider that cannot enforce the filter. The names are
-kept in the chat record; they are not credentials.
+- **Caller MCP** (`mcpServers`, tristate `strictMcpConfig`; see
+  [Caller-injected MCP](../chat/README.md#caller-injected-mcp)). Accepted for
+  Claude (`enforced`) and Codex, Cursor, Droid, OpenCode and Muse
+  (`best-effort`); Pi and the rest refuse. No typed CLI flags; use
+  `--arg-json`. Per-server `allowedTools` / `disallowedTools`: Codex enforces
+  both (`enabled_tools` / `disabled_tools`); Claude enforces only
+  `disallowedTools` (Agent SDK drops `mcp__<server>__<tool>`); every other
+  provider refuses both (OpenCode because one shared server config serves all
+  personal chats). Refusals are `invalid_argument` at create, `updateSession`
+  and a model switch.
+- **`updateSession({ mcpServers })`** replaces the servers. Between turns it
+  restarts the provider on the same thread. Mid-turn it validates now and
+  queues until the turn ends (on Claude, also until background agents and
+  shells finish). Until then the summary has `mcpServersPending: true`. The
+  queue is in memory only.
+- **`instructions`** (`{ mode: "append" | "replace", text }` or a string =
+  append), **`requestedCwd`** (absolute dir replacing the scratch workspace),
+  **`settingSources`** (`none | project | user | all`). The session carries
+  `instructionsCapability` and `settingSourcesCapability`
+  ([per-provider tables](../sdk/README.md#instructions-cwd-settingsources)).
+- `requestedCwd` is validated before any row is written (`invalid_argument:`):
+  refused if relative, `~…`, a filesystem or drive root, a bare UNC share, the
+  home dir, or inside DAEX's state dir. It is created at 0755 and
+  canonicalized (symlinks resolved, real casing on Windows) before the check
+  and before storing, so a symlink or case variant cannot slip into DAEX's
+  state.
+- **`permissionPolicy`**: see
+  [Caller-supplied permission policy](../chat/README.md#caller-supplied-permission-policy);
+  read `permissionCapability.level`.
 
-`updateSession({ mcpServers })` replaces a personal chat's caller servers.
-Between turns it restarts the provider at once, on the same provider thread.
-Mid-turn it validates the new servers immediately and queues them: the end of
-the running turn (completed, interrupted or failed) installs them, and if that
-turn ended with no `done` event the next turn's start does. On Claude it also
-waits while the chat's background agents or shells run, because the restart
-would end them; it goes in at the first turn end after that work is gone. A later update
-replaces a queued one. Until the swap, the summary carries `mcpServersPending:
-true` and its `mcpServers` / `mcpCapability` still describe the running turn's
-servers, and error redaction covers both the live and the queued header
-values. The queue is in memory only; a runtime restart drops it, like every
-other header value. A model switch that the queued servers do not suit is
-refused.
+### Approvals
 
-`create` also accepts three host session arguments. `instructions`
-(`{ mode: "append" | "replace", text }`, or a bare string meaning append)
-replaces or extends ADE's own personal-chat prompt. `requestedCwd` names the
-absolute directory the provider runs in, replacing the 0700 scratch workspace.
-`settingSources` (`"none" | "project" | "user" | "all"`, default `"none"`) says
-which on-disk configuration layers the provider loads. The created session
-carries `instructionsCapability` and `settingSourcesCapability`; branch on
-`level`, never on the object's presence. See
-[Instructions, cwd, settingSources](../sdk/README.md#instructions-cwd-settingsources)
-for the per-provider tables.
+`approve({ sessionId, itemId, decision, responseText? })` with `accept`,
+`accept_for_session`, `decline` or `cancel`. `pendingInputs({ sessionId })`
+lists open requests so a reloaded host can redraw cards; it includes
+`question`, `structured_question`, `plan_approval` and `model_selection`, which
+`approve` cannot answer (the SDK refuses them with `invalid_option`).
 
-`requestedCwd` is validated in the scope before any session row is written, and
-the refusal message starts with `invalid_argument:`. The scope refuses a relative
-path, anything starting with `~`, a filesystem root, a Windows drive root, a bare
-UNC share root, the home directory itself, and any path inside ADE's own state
-directory. An accepted directory is created recursively at mode 0755, because the
-reason a host names one is a folder the user can open. The default scratch
-workspace is still created either way.
+### Other actions
 
-An accepted path is canonicalized before it is stored, resolving symlinks and,
-on Windows, the real casing. The session summary echoes the canonical form, not
-the caller's string. That is a containment rule rather than a tidiness one: a
-symlink into ADE's own state directory, or a path differing only in case, would
-otherwise pass a check the real directory fails. ADE's own directories are
-canonicalized the same way before they are compared.
+List/create/read/send and turn controls, metadata (`setPinned`), the composer's
+`slashCommands`, scheduled-work create/cancel/pause (rechecked to belong to
+`surface: "personal"`), model inventory, paged history, attachments, image
+readback, row reports (`setSessionActivity`, `setSessionStatusNote`,
+`requestSessionAttention`) and a chat-owned shell PTY.
 
-`create` also accepts a structured `permissionPolicy`, which is the third form
-of the permission surface alongside the two presets. The created session carries
-`permissionCapability`; branch on `level`, never on the object's presence. See
-[Caller-supplied permission policy](../chat/README.md#caller-supplied-permission-policy).
+- Attachments: any type up to the 10 MB base64 cap; declared images are
+  sniffed. Bytes go under a fresh UUID name in the hidden store. There is no
+  path-copy route, because paired clients can reach `personalChats.call`.
+- Image readback refuses anything outside the attachment store, artifact store
+  and scratch workspace. Terminal calls check the PTY belongs to this scope.
+- Transcripts use the project chat pager (1,000 events / 256 KiB first page,
+  256 KiB older pages, 60,000 events / 32 MiB view cap).
 
-Two actions serve the approval loop. `approve`
-(`{ sessionId, itemId, decision, responseText? }`, decision one of `accept`,
-`accept_for_session`, `decline`, `cancel`) answers one blocked request.
-`pendingInputs` (`{ sessionId }` → `{ requests }`) lists every request still
-awaiting an answer, so a host that reloaded its UI can redraw the cards. It is
-read-only and viewer-allowed, and it reads resident runtime state only — after a
-runtime restart it is empty, because the provider process that raised each
-request died with it. An unanswered approval blocks the turn with no timeout.
-
-`pendingInputs` lists question-shaped requests too — `question`,
-`structured_question`, `plan_approval`, `model_selection` — because a host has
-to redraw those cards as well. They cannot be answered through `approve`: they
-want prose or a choice, and the engine would take the decision while the request
-stayed unanswered. The SDK refuses them client-side with `invalid_option`.
-
-The action family covers list/create/read/send and interactive turn controls,
-session metadata/lifecycle (including `setPinned`, whose state `list` rows
-carry as `pinned: true`), the composer's `slashCommands`, scheduled-work create/cancel/pause, model inventory,
-paged event history, bounded attachment ingress (any file type up to the
-legacy 10 MB base64 cap; a payload that declares an image by MIME type or file
-extension is still sniffed against that type) and image readback, the agent's
-own row reports (`setSessionActivity`, `setSessionStatusNote`,
-`requestSessionAttention`), and a chat-owned shell PTY. Attachment ingress
-writes bytes under a fresh UUID name in the runtime's hidden attachment store,
-keeping only a validated extension from the caller's name; there is no
-path-copy route into it, because `personalChats.call` is reachable from paired
-clients and must never read a caller-named file. Scheduled-work mutations call the same chat service methods as
-project chat after rechecking that the supplied session belongs to
-`surface: "personal"`. Terminal calls also check that the PTY was created by
-this personal scope. Image readback resolves real paths and refuses
-anything outside the hidden attachment store, the artifact store and the
-scratch workspace (where the agent saves the pictures it views).
-
-Personal transcripts use the same bounded cursor pager as project chats:
-1,000 events / 256 KiB for the initial snapshot, 256 KiB older pages, and a
-60,000-event / 32 MiB selected-view cap. Paging survives empty physical
-transcript regions, retains a retryable cursor on transport or protocol
-failure, and rejects late responses after a chat switch or cursor change.
-Manual retry is one immediate request; automatic near-top loading owns the
-bounded retry ladder. Live events and older pages share the canonical
-event-identity key so provider sequence numbers that restart do not collapse
-distinct rows.
-
-Over sync the same actions are registered as `personalChats.*` with
-`scope: "runtime"`, so command envelopes carry no active `projectId` or project
-root. Only `personalChats.send` is offline-queueable. Creating a conversation
-requires a live host because there is no stable optimistic session id and
-replaying a queued create could duplicate chats.
-Scheduled-work create/cancel/pause are also live-only; controllers must gate
-each control on the matching `personalChats.*` descriptor. Create remains
-owner-only; paired viewers may pause/resume or cancel as recovery actions.
+Over sync the actions are `personalChats.*` with `scope: "runtime"` (no
+`projectId`). Only `send` is offline-queueable; create and scheduled-work
+mutations need a live host. Create is owner-only; paired viewers may pause,
+resume or cancel schedules.
 
 ## Client routing
 
-Desktop calls the machine RPC directly. A local or no-project window targets
-the local ADE brain; a window opened against a remote runtime targets that
-remote machine. The hosted web client and iOS use runtime-scoped sync commands,
-so no active `projectId` is inferred or attached.
+Desktop calls the machine RPC directly; web and iPhone use runtime-scoped sync
+commands. The chat stream carries `chatScope: "personal"`.
 
-The shared chat stream carries `chatScope: "personal"`. That discriminator
-routes transcript snapshots, live events, active-turn state, and interactive
-follow-up actions through the personal scope. A missing project id alone must
-never mean "personal": older project chat paths treat an unscoped subscription
-as the active project.
+The rail lists the chats of every connected machine at once
+(`personalChatMachines.ts`). Each machine is read separately with a timeout. A
+row's id is machine + session id, and every row action names its machine in
+`PersonalChatMachineTarget` (`THIS_MACHINE_ID` = this computer, from
+`shared/machineIdentity.ts`). The picker beside the composer only chooses where
+a **new** chat runs; nothing on the page moves the window's project tab. The
+Browser tab's docked chat runs on the window's machine, so "Open in the
+Browser tab" is offered only for that machine's chats.
 
-On desktop, `/chats` is a global route surfaced through a real machine-level
-**Chats** top tab rather than a route-derived pseudo-tab. Its existence is held
-in session-only `personalChatsTabOpen` app state (set on any `/chats` visit —
-from the projectless shell or a project's sidebar link); its active-ness is
-derived from the current route. The tab is a plain clickable tab: clicking it
-navigates to `/chats`, and it can sit alongside project tabs and the New Tab as
-an inactive tab. While it is the foreground surface, the bound project tab
-stays rendered but drops its active styling. Opening it as a global sidebar
-surface while a project remains selected keeps the window's existing project
-binding. Returning to a project route does not require reopening the project.
-
-The rail lists the personal chats of **every connected machine at once**, the
-way the Work tab lists every machine's sessions: This computer plus each
-connected remote runtime on the desktop, each live machine in the browser.
-`renderer/components/personalChats/personalChatMachines.ts` owns this. Each
-machine is read on its own and timed out, so one slow machine never holds the
-list, and each machine's event stream re-reads only that machine. A row's id is
-its machine plus its session id, and every action on a row (open, send,
-archive, delete, rename, pin, stop, the terminal panel) names the row's machine
-in `PersonalChatMachineTarget`; the main process sends it to that machine
-(`THIS_MACHINE_ID` is this computer, anything else a remote target id) and the
-hosted client sends it to that machine's chats adapter. A row from another
-machine shows the machine's name when more than one machine has chats, and the
-rail's footer names every machine it read, with a machine that did not answer
-marked. Nothing on the page moves the window's project tab: the machine picker
-beside the composer only chooses where a **new** chat runs (kept in
-localStorage on the desktop; in the browser it is the machine the Chats surface
-addresses). The Browser tab's docked chat still runs on the window's machine,
-so "Open in the Browser tab" is offered only for that machine's chats. Machine
-ids and the "This computer" name come from `shared/machineIdentity.ts`.
-
-Opening Chats (or Browser, or Music) from a pending New Tab fills that New Tab,
-as opening a project does; it no longer leaves a blank "New Tab" pill beside
-the Chats tab.
-
-The ADE CLI uses the same machine endpoint through explicit `--personal`
-commands, for example:
+The Chats tab is machine-level: `personalChatsTabOpen` (session-only) holds its
+existence, the route its active state. The page reopens the last open chat per
+machine and starts a new one only after **New**. A new draft remembers the last
+model and thinking level per machine.
 
 ```bash
-ade chat list --personal --text
-ade chat create --personal --provider codex --model openai/gpt-5.5 --prompt "Help me plan a trip"
-ade chat create --personal --provider claude --model anthropic/claude-opus-5 \
+daex chat list --personal --text
+daex chat create --personal --provider codex --model openai/gpt-6.2-sol --prompt "Help me plan a trip"
+daex chat create --personal --provider claude --model anthropic/claude-opus-5-5 \
   --arg-json mcpServers='{"docs":{"type":"http","url":"https://mcp.example/mcp"}}'
-ade chat read <session-id> --personal --text
-ade chat send <session-id> --personal --text "Make it a three-day itinerary"
+daex chat send <session-id> --personal --text "Make it a three-day itinerary"
 ```
 
-Project and personal flags are mutually exclusive.
+Project and personal flags are mutually exclusive; Linear flags are rejected.
 
 ## Profiles: `assistant` and `embedded`
 
-Every personal chat carries a persisted `personalProfile`:
+Every chat has a persisted `personalProfile`:
 
-- **`assistant`** — chats started from ADE's own UI (the desktop and web Chats
-  page and the iOS Chats page send it) and from `ade chat create --personal` (the
-  CLI defaults to it; pass `--arg personalProfile=embedded` for the SDK
-  surface). A normal ADE chat that is not tied to a project.
-- **`embedded`** — the SDK-host surface. Exactly the pre-profile behavior.
+- **`assistant`**: chats from DAEX's own Chats pages (desktop, web, iPhone) and
+  from `daex chat create --personal` (CLI default).
+- **`embedded`**: the SDK-host surface.
 
-**The rule for a missing value: absent means `embedded`, everywhere.** That
-covers SDK hosts (which never send the field) and every row written before
-profiles existed, so nothing gains skills or user MCP servers by omission. An
-embedded runtime (`ade runtime run --profile embedded`) forces `embedded`
-whatever the caller sends.
+**Absent means `embedded`, everywhere**, so nothing gains skills or user MCP by
+omission. `daex runtime run --profile embedded` forces `embedded`.
 
-**Legacy rows are upgraded by use, not by omission.** ADE's own Chats surfaces
-send `personalProfile: "assistant"` as a claim on the calls that use a chat
-(`PersonalChatAssistantClaim`): the desktop and web pane on `getSummary`,
-`send` and `steer`, iOS on `send`, and `ade chat send|steer --personal`. A
-claimed chat that has **no** profile (written before profiles existed) becomes
-`assistant`, persisted, with the `workflow` session profile; an idle provider
-process started under the old profile is stopped so the next turn starts with
-the assistant prompt, skills and settings
-(`agentChatService.adoptLegacyPersonalSessionAsAssistant`). Never upgraded: a
-chat with an explicit `embedded` profile (every SDK-host chat created since
-profiles exist), any chat on an embedded-profile runtime (the claim is ignored
-there), and any call without the claim, which is every SDK call. A pre-profile
-chat an SDK host created and the user then opens from ADE's Chats page does
-become an assistant chat: using it from ADE is the provenance signal. Row
-provenance from before profiles was never stored, so there is no better one.
-
-What `assistant` changes, provider by provider:
+**Legacy rows are upgraded by use.** DAEX's own surfaces send
+`personalProfile: "assistant"` as a claim (`PersonalChatAssistantClaim`) on
+`getSummary`, `send` and `steer` (iPhone on `send`; CLI on `send|steer`). A
+claimed chat with no profile becomes `assistant`, and an idle provider process
+under the old profile is stopped. An explicit `embedded`, an embedded runtime,
+or a call without the claim (every SDK call) never upgrades.
 
 | | `assistant` | `embedded` |
 |---|---|---|
-| Session profile | `workflow` (tool gate, approval and dialog cards, hooks) | `light` |
-| Prompt | the assistant prompt: shell, files wherever the user points, ADE browser, computer use, App Control, the `ade` CLI, the shared personal workspace (or the host's folder) by default | the neutral general-assistant prompt |
-| ADE skills | the bundled catalog minus `ade-lanes-git` and `ade-pr-workflows`, through the same per-provider channels as Work chats (Claude plugin root and listing, Codex skill roots and slash commands, Cursor shim, Qwen, Pi, `ADE_AGENT_SKILLS_DIRS`). The withheld skills are removed by a private filtered mirror of the root (`withoutAgentSkills`), because no provider takes a per-skill deny list. | none (Pi reads the env roots, as before) |
-| Claude `settingSources` | the caller's value, else `user` (`all` when the chat runs in a folder the user named), so the user's CLAUDE.md, MCP servers and skills load | the caller's value, else `none` |
-| Pi extensions | load, like `pi` in a terminal | off |
-| ADE browser | no token and no bridge on the personal runtime: a chat's `ade browser` call runs on the runtime its working directory resolves to, and its `ADE_CHAT_SCOPE=personal` claim puts its tabs in the personal tab collection (`scopeBuiltInBrowserAdeActionArgs`) | unchanged |
+| Session profile | `workflow` (tool gate, cards, hooks) | `light` |
+| Prompt | Assistant prompt: shell, files, DAEX browser, computer use, App Control, the `daex` CLI, the scratch workspace or host folder | Neutral general-assistant prompt |
+| DAEX skills | Bundled catalog minus `daex-lanes-git` and `daex-pr-workflows`, through the same per-provider channels as Work chats. Withheld skills are removed by a filtered mirror of the root (`withoutAgentSkills`), since no provider takes a per-skill deny list. | None (Pi reads the env roots) |
+| Claude `settingSources` | Caller's value, else `user` (`all` in a user-named folder) | Caller's value, else `none` |
+| Pi extensions | Load | Off |
+| DAEX browser | `ADE_CHAT_SCOPE=personal` puts tabs in the personal collection (`scopeBuiltInBrowserAdeActionArgs`) | Unchanged |
 
-Agent-set row reports are on for `assistant` and off for `embedded`. The
-personal runtime has no listening socket, so its chats never pin the CLI to
-one. Instead the CLI routes `ade chat activity|note|ask` to the personal scope
-through the brain: `--personal` on the command, or ADE_CHAT_SCOPE=personal,
-which ADE sets in every personal chat's agent environment. The session defaults
-to the caller's ADE_CHAT_SESSION_ID. The assistant prompt tells the agent the
-commands (`buildAdeSessionActivityGuidance` with the `personal` target, which
-spells `--personal --session <id>` on `note`, `ask` and `activity` alike, so
-OpenCode's shared server, which carries neither variable, reaches it too).
-The Chats rail shows the report the way a Work row does: "Needs you" after
-`ade chat ask`, the reported or detected activity ("Testing") during a live
-turn, and the status note as the row's second line.
+Row reports are on for `assistant`. The personal runtime has no socket, so the
+CLI routes `daex chat activity|note|ask` through the brain with `--personal`
+or `ADE_CHAT_SCOPE=personal` (set in every personal chat's environment); the
+prompt spells `--personal --session <id>` so OpenCode's shared server, which
+has neither variable, works too.
 
-Still off for both, on purpose: planning mode (ask mode or full permission
-only; the composer hides plan options), lane guidance and lane memory, the
-lane worktree directive, and the computer-use proof directive (the skill covers
-it). OpenCode keeps sharing
-one personal server, so an assistant OpenCode chat learns its skills from the
-prompt's skill roots rather than OpenCode's own `skills.paths` (that server's
-one config also serves `embedded` chats, which must not see ADE skills). A
-Cursor run that moves to the cloud gets the neutral prompt for both profiles:
-the assistant prompt describes this machine's shell, folder, skill roots and
-`ade` CLI, which a cloud VM does not have.
+Off for both, on purpose: planning mode, lane guidance and memory, the
+worktree directive, the computer-use proof directive. OpenCode shares one
+personal server, so assistant OpenCode chats learn skills from the prompt's
+roots, not `skills.paths`. A Cursor run moved to the cloud gets the neutral
+prompt for both profiles.
 
 ## Agent behavior
 
-The public session summary carries `surface: "personal"`, while the synthetic
-lane remains hidden. Provider launches of an `embedded` chat receive neutral
-general-assistant guidance rather than ADE's coding-agent prompt; an
-`assistant` chat receives the assistant prompt above. The environment exposes the
-chat session and personal scope, but omits project/lane/workspace identity
-variables.
+The session summary carries `surface: "personal"`. A personal chat's shell
+runs the CLI at role `agent`. With `--project-root <path>` it can list, read,
+create and message chats in any project on this machine, and with `--machine`
+on the account's other machines; a child it starts reports back through the
+brain's cross-scope router
+([Cross-machine agents](../sync-and-multi-device/cross-machine-agents.md)). It
+cannot settle sessions or run CTO-only actions and has no durable memory.
+Create strips project-only fields (lane/cwd, automation ownership, persistent
+identity).
 
-The hidden runtime is authoritative for personal-chat ownership. Session
-reconstruction must preserve the persisted `surface`, and the personal scope
-repairs older non-automation rows whose marker is missing or stale before
-listing, reading, or continuing them. A missing marker must not hide an intact
-transcript from the conversation rail.
+An embedded sidecar uses this scope too; its profile withholds machine-update
+and power controls and forces sync off.
 
-A personal chat's shell runs the `ade` CLI at role `agent`, like any chat
-(the CTO's included; its extra power is its own tool set, not its shell). With
-`--project-root <path>` it lists, reads, creates and messages chats in any
-project on this machine, and with `--machine` on the account's other machines.
-A child it starts in a project reports back to it through the brain's
-cross-scope router (see
-[Cross-machine agents](../sync-and-multi-device/cross-machine-agents.md)). It
-cannot settle sessions or run CTO-only actions, and it has no durable memory.
+## Surfaces
 
-Personal chat creation strips or overrides project-only fields such as a
-caller-supplied lane/cwd, automation ownership, and persistent project
-identity. The CLI separately rejects Linear attachment flags. Machine RPC actions are
-allowlisted rather than forwarding arbitrary ADE domains into the hidden
-runtime.
-
-An embedded sidecar (`ade runtime run --profile embedded`) uses this same
-personal scope. The profile withholds machine-update and power controls and
-forces sync off so a guest cannot restart the machine's ADE. Personal chats
-themselves are not trimmed.
-
-## Surface contract
-
-| Surface | Entry and behavior |
-|---|---|
-| Desktop | **Chats** works with no project selected. The welcome screen has a **Start a chat** action. Visiting `/chats` from the projectless shell opens a real machine-level **Chats** top tab (backed by `personalChatsTabOpen`) that stays present as a clickable tab across project open/switch/close. The "+" on `/chats` opens and activates Home/New Tab while the Chats tab stays as an inactive tab; closing New Tab returns to `/chats` when projectless; closing an inactive Chats tab does not navigate. The surface is the real chat pane (`AgentChatPane` with a personal `ChatPaneScope`): the full composer (attachments, paste, slash commands, steer and queue, model/reasoning/permission controls without planning modes), transcript and approval cards, with lane, git, PR and worktree chrome hidden; beside it a searchable conversation rail (pinned first, inline rename, pin, archive, delete, and the agent's status word and note) and compact Browser and Terminal buttons. A new chat shows suggestion chips under the composer that fill the draft (the pane's `emptyStateAccessory` and `composerHandleRef`); the Browser panel's **Inspect an element** (context chip with its screenshot) and **Insert into the message** (the element as text) reach the composer through the same handle. Attachment thumbnails read through the personal API, since a project runtime would refuse the personal store's paths. Fork, rewind, handoff, import, Codex goals and transcript recovery are hidden: personal chats have no backend action for them yet. |
-| ADE Browser | Personal chat uses the global authenticated browser profile and an explicit personal tab collection (`tabCollection: "personal"`). HTTP(S) links in the transcript are intercepted by the active personal-chat surface, open its Browser panel, and navigate with projectless scope so they cannot land invisibly in a retained project's collection. Navigation failures stay in ADE as a visible error instead of surprise-opening the system browser later. Cookies and site storage are shared across ADE, while personal visible tabs remain separate from project/window tabs. The machine-level **Browser** top tab (`/browser`, `BrowserPage.tsx`) shows the same personal collection full size; its **Ask agent** button docks a normal personal chat (assistant profile, listed in Chats) with the tab in front attached as one `<ade-browser-tab>` token (`formatBrowserTabMentionToken`, as **Attach to chat** does) and handed to the chat (`handTabToChat`, `ownerChatSessionId`). Links in a Chats page chat open in the Browser tab when it is open and the page's own Browser panel is not; a browsing chat offers **Show in the Browser tab**, and the dock offers **Open in Chats** (`/chats?chat=<id>`). See "The Browser top tab" in `docs/features/chat/README.md`. |
-| Hosted web | The project picker and shell can enter `/chats` without selecting a project. The adapter uses runtime-scoped commands and personal chat subscriptions; browser-native ADE Browser is absent, while terminal IO runs on the paired machine. |
-| iOS | The Hub card is the only entry. It shows live count/attention state and pushes a native searchable list, new-chat model sheet, and reused Work transcript destination with project/lane actions suppressed. Chat Info uses the personal action descriptors for durable-schedule Cancel and per-chat Pause/Resume; schedule creation remains an API capability rather than a native control. The list merges the focused machine's chats with every live fleet machine that advertises `personalChats.list`, requests each machine independently with a timeout, and badges a row with its machine when chats come from multiple machines. Chat actions, transcript subscriptions, and model-catalog requests follow the owning machine without changing focus. A failed machine keeps its cached rows and shows its name with Retry; the new-chat screen has a machine picker. Personal summaries are cached per machine for offline list display; create and schedule mutations require a live host, while sends may queue. |
-| ADE CLI | `ade chat ... --personal` reaches the machine RPC directly. `--personal` is mutually exclusive with lane/Linear project context and requires a running brain. |
-
-## UX contract
-
-- Desktop/web: a global `/chats` route with a conversation rail, focused
-  transcript, and shared model/reasoning/access controls. The sidebar entry is
-  available even on the welcome screen. Project-only Work, Git, Files, iOS,
-  App Control, CLI-launch, lane, repo, PR, and **Open in** editor affordances
-  are absent. The desktop Browser uses
-  its global profile; terminal commands run in the personal scratch workspace.
-  The page reopens the chat that was open last, per machine
-  (`renderer/state/lastOpenChat.ts`, persisted across restarts); it starts a
-  new chat only after **New** was pressed, and falls back to the most recent
-  chat when the remembered one was deleted or archived. A link to a specific
-  chat wins over the remembered one.
-  A new personal draft remembers its last model and thinking level for the
-  selected machine, including picks made in an existing personal chat or
-  before sending the first message.
-- iOS: the Hub is the only entry point. It pushes a native Chats page, then a
-  new-chat or existing-chat destination without selecting a project.
-- CLI: the regular `ade` CLI commands are supported.
-
-## Gotchas
-
-- Never add the internal personal-chat root to the machine project registry.
-- Never expose lane, repo, PR, or **Open in** editor actions on the
-  projectless surface. The hidden personal lane exists so the chat stack
-  has a lane id; it is not a worktree the user can open in VS Code or Zed.
-- Never route a personal command through the active project as a fallback.
-- Never infer personal scope from a null/missing project id; require the
-  personal RPC/action or `chatScope: "personal"` explicitly.
-- Keep state and scratch roots separate; the provider cwd must not expose the
-  hidden database or transcript directory.
-- Keep personal browser calls on `tabCollection: "personal"`; omitting it routes
-  the call to the source window's active project tab collection. This changes
-  visible tab routing only, never the global authentication storage profile.
-- Preserve `surface: "personal"` whenever a persisted session is reconstructed.
-  The hidden personal runtime may repair missing legacy markers, but regular
-  project runtimes must never relabel a session across surfaces.
-- Older runtimes should report the feature as unavailable. Do not silently
-  create a normal project chat.
-- The hosted web client has no local database. Lists and transcript updates
-  come from runtime commands and the chat stream.
-- Personal chat content may be more sensitive than repository chat. Do not log
-  prompts or message bodies in machine RPC/sync diagnostics.
-- Do not enable project push notifications for the hidden runtime until push
-  links and notification actions have an explicit personal-chat route.
-- Treat `capabilities.personalChats.mcpServers` / `pushEvents` /
-  `mcpToolFilters` / `deferredMcpUpdates` as optional. An older runtime
-  omitting them would ignore the fields (or, for a mid-turn update, refuse
-  with `turn_in_flight`) rather than honor them.
-- Strict MCP on this surface is Claude-only as a guarantee. Read
-  `mcpCapability.level`, not the object's presence. See [ADE SDK](../sdk/README.md#strict-mcp-honesty).
+- **Desktop:** works with no project. The pane is `AgentChatPane` with a
+  personal `ChatPaneScope`: full composer (no planning modes), transcript and
+  approval cards, lane/git/PR/worktree chrome hidden. Suggestion chips fill
+  the draft on a new chat (`emptyStateAccessory`, `composerHandleRef`).
+  Hidden for now (no backend action): fork, rewind, handoff, import, Codex
+  goals, transcript recovery.
+- **DAEX browser:** transcript links open the page's Browser panel in the
+  personal collection, or the Browser top tab (`/browser`, `BrowserPage.tsx`)
+  when it is open. The Browser tab's **Ask agent** docks an assistant personal
+  chat with the front tab attached (`formatBrowserTabMentionToken`,
+  `handTabToChat`). See "The Browser top tab" in
+  [chat/README.md](../chat/README.md).
+- **Hosted web:** `/chats` without a project; no local database; terminal IO
+  runs on the paired machine.
+- **iPhone:** the Hub card is the only entry. The list merges every live
+  machine advertising `personalChats.list` (each with a timeout; a failed one
+  keeps cached rows with Retry); new chats have a machine picker. Chat Info
+  offers schedule Cancel and Pause/Resume; creating schedules stays API-only.

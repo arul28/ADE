@@ -20,6 +20,7 @@ import { ClaudePassSignInSheet, type ClaudePassRequest } from "../settings/provi
 import { CardBannerButtons, CardError, cardEscapeHandler } from "./composerCardParts";
 import { ProviderCardFrame } from "./providerCardFrame";
 import { ProviderSignInComposer, providerSignInSpec, type ProviderSignInNeed } from "./ProviderSignInCard";
+import { BRAND } from "../../../shared/brand";
 
 /** How long the card shows a saved pass before it hands the prompt box back. */
 const PASS_SAVED_HOLD_MS = 900;
@@ -126,7 +127,7 @@ function CloudClaudePassCard({
   const heading = need.reason === "failed-turn" ? "Approve a Claude pass again" : "Approve a Claude pass";
   const reason = need.reason === "failed-turn"
     ? `${machineName} has no Claude pass that works. Approve one, and your message sends again.`
-    : `${machineName} runs on ADE Cloud. One approve lets your cloud chats use your Claude plan for about a year.`;
+    : `${machineName} runs on ${BRAND.CLOUD_NAME}. One approve lets your cloud chats use your Claude plan for about a year.`;
 
   return (
     <ProviderCardFrame
@@ -207,7 +208,7 @@ export function AccountSwitchRecoveryCard({
   const run = useCallback(async (which: "new" | "back", action: () => Promise<string | null>) => {
     setBusy(which);
     setError(null);
-    const failure = await action().catch((err: unknown) => plainErrorText(err, "ADE couldn't continue the chat."));
+    const failure = await action().catch((err: unknown) => plainErrorText(err, `${BRAND.NAME} couldn't continue the chat.`));
     setBusy(null);
     if (failure) setError(failure);
   }, []);

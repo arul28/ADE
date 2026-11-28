@@ -17,6 +17,7 @@ import type {
   PermissionModePickerOption,
   PermissionModeTone,
 } from "./PermissionModePicker";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The options every `PermissionModePicker` shows, per provider: labels, the
@@ -106,7 +107,7 @@ const MUSE_PERMISSION_OPTION_PRESENTATION: Record<AgentChatMusePermissionMode, P
   allowAll: { triggerLabel: "Full", tone: "red", icon: "full" },
 };
 export const MUSE_PERMISSION_OPTIONS: Array<PermissionModePickerOption<MusePermissionPickerValue>> = [
-  { value: "plan", label: "Plan", detail: "Read-only planning with ADE's guidance.", tone: "purple", icon: "plan" },
+  { value: "plan", label: "Plan", detail: `Read-only planning with ${BRAND.NAME}'s guidance.`, tone: "purple", icon: "plan" },
   ...BASE_MUSE_PERMISSION_OPTIONS.map((option) => ({ ...option, ...MUSE_PERMISSION_OPTION_PRESENTATION[option.value] })),
 ];
 

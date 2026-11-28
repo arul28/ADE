@@ -5,6 +5,7 @@ import { CLAUDE_AUTH_LOGIN_COMMAND } from "../../lib/claudeAuthPrompt";
 import { cn } from "../ui/cn";
 import { withChatPin } from "../chat/chatMachinePin";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 type RevealTerminalRequest = {
   terminalId: string;
@@ -47,7 +48,7 @@ export async function createClaudeLoginTerminal({
   runtimePin?: OpenProjectBinding | null;
 } = {}): Promise<ClaudeLoginTerminalCreated> {
   if (!window.ade?.pty?.create) {
-    throw new Error("Terminal sessions are not available in this ADE runtime.");
+    throw new Error(`Terminal sessions are not available in this ${BRAND.NAME} runtime.`);
   }
   const resolvedLaneId = await resolveClaudeLoginLaneId(laneId, runtimePin);
   const created = await withChatPin(runtimePin, (chatPin) => window.ade.pty.create({
@@ -180,7 +181,7 @@ export function ClaudeLoginPromptButton({
       }
     })()
       .catch((err: unknown) => {
-        setError(plainErrorText(err, "ADE couldn't open the sign-in."));
+        setError(plainErrorText(err, `${BRAND.NAME} couldn't open the sign-in.`));
       })
       .finally(() => setOpening(false));
   }, [chatSessionId, laneId, onRevealTerminal, onTerminalCreated, opening, runtimePin]);

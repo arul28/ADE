@@ -515,8 +515,8 @@ extension LanesTabView {
       // No computer's copy, and no cloud lane yet.
       ADEEmptyStateView(
         symbol: ADECloudMachine.symbol,
-        title: "No lanes on ADE Cloud yet",
-        message: "A chat you start on ADE Cloud in Work makes its own lane."
+        title: "No lanes on \(Brand.cloudName) yet",
+        message: "A chat you start on \(Brand.cloudName) in Work makes its own lane."
       )
       .padding(.top, 32)
       .adeFlatRow(separator: .hidden)
@@ -657,7 +657,7 @@ extension LanesTabView {
     }
     // With no computer connected too: this read goes to the account server.
     if cloudReadFailed {
-      ADEFlatInlineNotice(message: "ADE couldn't read your machines and ADE Cloud computers, so a new one may be missing.", tint: ADEColor.danger, retry: { Task { await refreshFromPullGesture() } })
+      ADEFlatInlineNotice(message: "\(Brand.name) couldn't read your machines and \(Brand.cloudName) computers, so a new one may be missing.", tint: ADEColor.danger, retry: { Task { await refreshFromPullGesture() } })
         .adeFlatRow(separator: .hidden)
     }
     if let errorMessage, laneStatus.phase == .ready, hostReachable {

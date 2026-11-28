@@ -160,6 +160,7 @@ describe("Cursor SDK policy", () => {
     "ade chat scheduled-work create --prompt=/test",
     "FOO=bar ade chat scheduled-work create --prompt /ship",
     "date\nade chat note /ship",
+    'daex chat note "/ship"',
   ])("allows a slash command in an ade prompt: %s", (command) => {
     expect(decide("full-auto", "shell", { command }).decision).toBe("allow");
   });
@@ -190,7 +191,7 @@ describe("Cursor SDK policy", () => {
       ["type .\\..\\..\\secret.txt", "outside the active lane"],
       ["type %USERPROFILE%\\.ssh\\id_rsa", "outside the active lane"],
       ["Get-Content $env:USERPROFILE\\.aws\\credentials", "outside the active lane"],
-      ["type .ade\\secrets\\token", "protected by ADE"],
+      ["type .ade\\secrets\\token", "protected by DAEX"],
     ];
     for (const [command, reason] of cases) {
       const result = decide("full-auto", "shell", { command }, { laneRoot, userHomeDir });

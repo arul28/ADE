@@ -7,6 +7,7 @@ import type {
   DiskPressureThresholds,
 } from "../../../shared/types/storage";
 import { readVolumeSpace } from "./volume";
+import { BRAND } from "../../../shared/brand";
 
 export type { DiskPressureSnapshot, DiskPressureState, DiskPressureThresholds } from "../../../shared/types/storage";
 
@@ -61,10 +62,10 @@ export function diskPressureThresholdsForSize(totalBytes: number): DiskPressureT
 }
 
 export const DISK_PRESSURE_REFUSAL_MESSAGES = {
-  chat_turn: "Your computer is almost out of storage. ADE paused new agent work to protect your chats and projects. Free up space, then resume.",
-  cli_launch: "Your computer is almost out of storage. ADE can't safely start a new CLI session until you free up space.",
-  high_write_job: "Your computer is almost out of storage. ADE didn't start this task to avoid writing more data. Free up space, then try again.",
-  compression: "Your computer is almost out of storage. ADE didn't start this task to avoid writing more data. Free up space, then try again.",
+  chat_turn: `Your computer is almost out of storage. ${BRAND.NAME} paused new agent work to protect your chats and projects. Free up space, then resume.`,
+  cli_launch: `Your computer is almost out of storage. ${BRAND.NAME} can't safely start a new CLI session until you free up space.`,
+  high_write_job: `Your computer is almost out of storage. ${BRAND.NAME} didn't start this task to avoid writing more data. Free up space, then try again.`,
+  compression: `Your computer is almost out of storage. ${BRAND.NAME} didn't start this task to avoid writing more data. Free up space, then try again.`,
 } satisfies Record<DiskPressureOperationKind, string>;
 
 const STATE_SEVERITY: Record<DiskPressureState, number> = {

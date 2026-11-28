@@ -1,9 +1,9 @@
 /**
- * Context + hooks binding components to an `AdeChatClient`.
+ * Context + hooks binding components to an `DaexChatClient`.
  *
  * Every component also accepts its data as plain props, so none of this is
  * mandatory — a host can render `<Transcript rows={…}>` with no provider at
- * all. The context exists so `<AdeChat>` can wire the default assembly without
+ * all. The context exists so `<DaexChat>` can wire the default assembly without
  * prop-drilling.
  */
 
@@ -19,8 +19,8 @@ import {
 } from "react";
 
 import type {
-  AdeChatClient,
-  AdeThread,
+  DaexChatClient,
+  DaexThread,
   AgentChatEventEnvelope,
   ApprovalDecision,
   ApprovalRequest,
@@ -39,39 +39,39 @@ import type { ActivityLabelConfig } from "../activity/labels";
 import { readThreadModelSelection } from "../models/modelSelection";
 import { TranscriptRowBuilder, type TranscriptRow } from "../transcript/transcriptRows";
 
-export type AdeChatContextValue = {
-  client: AdeChatClient | null;
+export type DaexChatContextValue = {
+  client: DaexChatClient | null;
   labels?: ActivityLabelConfig;
 };
 
-const AdeChatContext = createContext<AdeChatContextValue>({ client: null });
+const AdeChatContext = createContext<DaexChatContextValue>({ client: null });
 
-export type AdeChatProviderProps = {
-  client: AdeChatClient;
+export type DaexChatProviderProps = {
+  client: DaexChatClient;
   /** Activity label configuration shared by transcript, chips and indicator. */
   labels?: ActivityLabelConfig;
   children: ReactNode;
 };
 
-export function AdeChatProvider({ client, labels, children }: AdeChatProviderProps) {
-  const value = useMemo<AdeChatContextValue>(
+export function DaexChatProvider({ client, labels, children }: DaexChatProviderProps) {
+  const value = useMemo<DaexChatContextValue>(
     () => (labels ? { client, labels } : { client }),
     [client, labels],
   );
   return <AdeChatContext.Provider value={value}>{children}</AdeChatContext.Provider>;
 }
 
-export function useAdeChatContext(): AdeChatContextValue {
+export function useDaexChatContext(): DaexChatContextValue {
   return useContext(AdeChatContext);
 }
 
 /** The client from context, or the one passed explicitly. Throws if neither. */
-export function useAdeChatClient(explicit?: AdeChatClient): AdeChatClient {
-  const { client } = useAdeChatContext();
+export function useDaexChatClient(explicit?: DaexChatClient): DaexChatClient {
+  const { client } = useDaexChatContext();
   const resolved = explicit ?? client;
   if (!resolved) {
     throw new Error(
-      "@ade-dev/chat-ui: no AdeChatClient. Pass `client` or wrap the tree in <AdeChatProvider>.",
+      "@daex-dev/chat-ui: no DaexChatClient. Pass `client` or wrap the tree in <DaexChatProvider>.",
     );
   }
   return resolved;
@@ -93,8 +93,8 @@ export type ProvidersState = {
  * Provider statuses and the model catalog, kept live via
  * `client.providers.onChange`.
  */
-export function useAdeProviders(explicitClient?: AdeChatClient): ProvidersState {
-  const client = useAdeChatClient(explicitClient);
+export function useDaexProviders(explicitClient?: DaexChatClient): ProvidersState {
+  const client = useDaexChatClient(explicitClient);
   const [statuses, setStatuses] = useState<ProviderStatus[]>([]);
   const [models, setModels] = useState<ModelDescriptor[]>([]);
   const [loading, setLoading] = useState(true);
@@ -144,7 +144,7 @@ export function useAdeProviders(explicitClient?: AdeChatClient): ProvidersState 
 /* -------------------------------------------------------------------------- */
 
 export type ThreadState = {
-  thread: AdeThread | null;
+  thread: DaexThread | null;
   ready: boolean;
   rows: TranscriptRow[];
   status: ThreadStatus;
@@ -263,10 +263,10 @@ function cursorFrom(
  * with `ok: true`), the thread is re-opened and its history re-read. The old
  * rows stay on screen until the new history replaces them.
  */
-export function useAdeThread(
+export function useDaexThread(
   key: string,
   options?: ThreadOpenOptions & {
-    client?: AdeChatClient;
+    client?: DaexChatClient;
     /**
      * Hold the thread closed while this is false.
      *
@@ -285,8 +285,8 @@ export function useAdeThread(
     historyPageSize?: number;
   },
 ): ThreadState {
-  const client = useAdeChatClient(options?.client);
-  const [thread, setThread] = useState<AdeThread | null>(null);
+  const client = useDaexChatClient(options?.client);
+  const [thread, setThread] = useState<DaexThread | null>(null);
   const [rows, setRows] = useState<TranscriptRow[]>([]);
   /**
    * Every envelope folded in so far, in render order. Kept only so that an
@@ -541,7 +541,7 @@ export function useAdeThread(
     // `modelId` is intentionally absent: see requestedModelIdRef above.
   }, [client, key, providerId, resume, enabled, rebuildRows, reopenEpoch, reopenKeepingRows]);
 
-  const threadRef = useRef<AdeThread | null>(null);
+  const threadRef = useRef<DaexThread | null>(null);
   threadRef.current = thread;
 
   const send = useCallback(async (input: SendInput | string) => {
@@ -722,7 +722,7 @@ function isHistoryInvalidation(envelope: AgentChatEventEnvelope): boolean {
 /**
  * The de-duplication key for history/live overlap.
  *
- * CANONICAL DEFINITION: `envelopeDedupeKey` in `@ade-dev/sdk`
+ * CANONICAL DEFINITION: `envelopeDedupeKey` in `@daex-dev/sdk`
  * (`src/electron/protocol.ts`). This is a deliberate byte-identical mirror,
  * because that package is an OPTIONAL peer of this one and chat-ui must work
  * for a WebSocket proxy or a test double that has no SDK at all. The SDK's copy
@@ -793,8 +793,25 @@ function sortEnvelopes(envelopes: AgentChatEventEnvelope[]): AgentChatEventEnvel
  * Never fatal: a client with no `pendingApprovals` (an older SDK, a proxy, a
  * fake) and a call that fails both return nothing, and the thread opens.
  */
-async function readPendingApprovals(thread: AdeThread): Promise<readonly ApprovalRequest[]> {
+async function readPendingApprovals(thread: DaexThread): Promise<readonly ApprovalRequest[]> {
   if (typeof thread.pendingApprovals !== "function") return [];
   const pending = await thread.pendingApprovals().catch(() => [] as ApprovalRequest[]);
   return pending.filter((request) => Boolean(request.itemId));
 }
+
+// Pre-DAEX names, kept as deprecated aliases so code written against the
+// `@ade-dev` packages keeps compiling. Remove them in a future major version.
+/** @deprecated Use {@link DaexChatContextValue}. */
+export type AdeChatContextValue = DaexChatContextValue;
+/** @deprecated Use {@link DaexChatProvider}. */
+export const AdeChatProvider = DaexChatProvider;
+/** @deprecated Use {@link DaexChatProviderProps}. */
+export type AdeChatProviderProps = DaexChatProviderProps;
+/** @deprecated Use {@link useDaexChatClient}. */
+export const useAdeChatClient = useDaexChatClient;
+/** @deprecated Use {@link useDaexChatContext}. */
+export const useAdeChatContext = useDaexChatContext;
+/** @deprecated Use {@link useDaexProviders}. */
+export const useAdeProviders = useDaexProviders;
+/** @deprecated Use {@link useDaexThread}. */
+export const useAdeThread = useDaexThread;

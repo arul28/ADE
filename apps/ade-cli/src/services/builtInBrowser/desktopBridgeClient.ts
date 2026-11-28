@@ -10,6 +10,7 @@ import {
   type BuiltInBrowserDesktopBridgeClient,
 } from "./desktopBridgeMethods";
 import { desktopBridgeSocketMissing } from "./desktopBridgeConnection";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * Proxy `built_in_browser` service used by the runtime daemon.
@@ -76,7 +77,7 @@ export class DesktopBridgeUnavailableError extends Error {
  */
 const OLD_DESKTOP_AUTH_REFUSAL = /bridge authentication failed/i;
 const OLD_DESKTOP_MESSAGE =
-  "ADE Desktop is older than ADE's background service. Restart ADE Desktop to finish updating.";
+  `${BRAND.NAME} Desktop is older than ${BRAND.NAME}'s background service. Restart ${BRAND.NAME} Desktop to finish updating.`;
 
 function isClosedSocketError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
@@ -101,7 +102,7 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
     if (desktopBridgeSocketMissing(socketPath)) {
       throw new DesktopBridgeUnavailableError(
         socketPath,
-        `No ADE Desktop browser is attached to this machine (bridge socket ${socketPath} is not listening). The built-in browser runs inside ADE Desktop, so browser actions need a desktop attached here. \`ade browser open <url>\` is the exception: it forwards the URL to a desktop that has this lane pinned, which reaches this machine's localhost ports over a tunnel.`,
+        `No ${BRAND.NAME} Desktop browser is attached to this machine (bridge socket ${socketPath} is not listening). The built-in browser runs inside ${BRAND.NAME} Desktop, so browser actions need a desktop attached here. \`daex browser open <url>\` is the exception: it forwards the URL to a desktop that has this lane pinned, which reaches this machine's localhost ports over a tunnel.`,
       );
     }
     try {
@@ -115,7 +116,7 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
       // than being absent, so it is the same "no desktop here" condition.
       throw new DesktopBridgeUnavailableError(
         socketPath,
-        `Could not reach an ADE Desktop browser on this machine (${socketDescription}): ${
+        `Could not reach a ${BRAND.NAME} Desktop browser on this machine (${socketDescription}): ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
@@ -285,16 +286,16 @@ function bridgeProbeFailure(error: unknown): DesktopBridgeProbe & { attached: fa
       kind: "access_denied",
       reason: process.platform === "win32"
         ? `${ELEVATED_DESKTOP_TITLE}. ${ELEVATED_DESKTOP_MESSAGE}`
-        : "the ADE desktop app's bridge socket refused the background service",
+        : `the ${BRAND.NAME} desktop app's bridge socket refused the background service`,
     };
   }
   if (/timed out/i.test(message)) {
-    return { attached: false, kind: "timeout", reason: "the ADE desktop app did not answer in time" };
+    return { attached: false, kind: "timeout", reason: `the ${BRAND.NAME} desktop app did not answer in time` };
   }
   if (OLD_DESKTOP_AUTH_REFUSAL.test(message)) {
     return { attached: false, kind: "unreachable", reason: OLD_DESKTOP_MESSAGE };
   }
-  return { attached: false, kind: "unreachable", reason: `the ADE desktop app could not be reached (${message})` };
+  return { attached: false, kind: "unreachable", reason: `the ${BRAND.NAME} desktop app could not be reached (${message})` };
 }
 
 /**
@@ -308,16 +309,16 @@ export async function probeDesktopBridge(args: {
 }): Promise<DesktopBridgeProbe> {
   const timeoutMs = args.timeoutMs ?? PROBE_TIMEOUT_MS;
   if (desktopBridgeSocketMissing(args.socketPath)) {
-    return { attached: false, kind: "unreachable", reason: "the ADE desktop app is not running on this machine" };
+    return { attached: false, kind: "unreachable", reason: `the ${BRAND.NAME} desktop app is not running on this machine` };
   }
   let client: JsonRpcClient | null = null;
   const connecting = JsonRpcClient.connect(args.socketPath);
   try {
-    client = await raceWithTimeout(connecting, timeoutMs, "Timed out reaching the ADE desktop app's bridge.");
+    client = await raceWithTimeout(connecting, timeoutMs, `Timed out reaching the ${BRAND.NAME} desktop app's bridge.`);
     await raceWithTimeout(
       client.request("built_in_browser.authenticate", {}),
       timeoutMs,
-      "Timed out reaching the ADE desktop app's bridge.",
+      `Timed out reaching the ${BRAND.NAME} desktop app's bridge.`,
     );
     return { attached: true };
   } catch (error) {

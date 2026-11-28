@@ -3593,7 +3593,7 @@ describe("iosSimulatorService boot contract", () => {
     try {
       const status = await service.deviceStart({ laneId: "lane-b", create: { runtime: "iOS 26.3", deviceType: "iPhone 17 Pro" } });
       expect(status.deviceUdid).toBe("device-created");
-      expect(calls.some((call) => call.startsWith("xcrun simctl create ADE · lane-b "))).toBe(true);
+      expect(calls.some((call) => call.startsWith("xcrun simctl create DAEX · lane-b "))).toBe(true);
       expect(calls).toContain("xcrun simctl boot device-created");
       expect(phases()).toEqual(["starting", "booted", "streaming"]);
       const owned = await service.deviceList({ laneId: "lane-b", installed: false });
@@ -3730,7 +3730,7 @@ describe("iosSimulatorService boot contract", () => {
       // With no device, the lane creates and boots its own empty simulator.
       const status = await service.deviceStart({ laneId: "lane-f", agentCaller: true });
       expect(status.deviceUdid).toBe("device-created");
-      expect(calls.some((call) => call.startsWith("xcrun simctl create ADE · lane-f "))).toBe(true);
+      expect(calls.some((call) => call.startsWith("xcrun simctl create DAEX · lane-f "))).toBe(true);
       expect(calls.filter((call) => call.startsWith("xcrun simctl boot "))).toEqual(["xcrun simctl boot device-2", "xcrun simctl boot device-created"]);
 
       // Its own device, by udid, is fine.

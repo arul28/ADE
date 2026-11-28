@@ -4,9 +4,10 @@ import { Page } from "../../components/Page";
 import { Reveal } from "../../components/Reveal";
 import { MARKETING_FEATURES } from "../../lib/marketingAnalytics";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 export function NotFoundPage() {
-  useDocumentTitle("ADE — Not found");
+  useDocumentTitle(`${BRAND.NAME} — Not found`);
 
   return (
     <Page>
@@ -22,7 +23,7 @@ export function NotFoundPage() {
               </p>
               <div className="mt-6 flex flex-col gap-3 sm:flex-row">
                 <LinkButton to="/" analyticsFeature={MARKETING_FEATURES.VIEW_DOWNLOAD_PAGE} variant="primary">
-                  Get ADE
+                  Get {BRAND.NAME}
                 </LinkButton>
               </div>
             </div>

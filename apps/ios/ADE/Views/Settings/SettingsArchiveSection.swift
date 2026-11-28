@@ -271,7 +271,7 @@ struct ArchiveEverywhereSections: View {
       style: .settings,
       reloadToken: reloadToken,
       failedMessage: { "Couldn’t open \($0.name)’s archive." },
-      outdatedMessage: { "\($0.name) runs an older ADE. Update it there to see its archive." },
+      outdatedMessage: { "\($0.name) runs an older \(Brand.name). Update it there to see its archive." },
       noMachinesMessage: "Connect a computer to see what you archived.",
       loadingMessage: "Loading the archive…"
     ) {

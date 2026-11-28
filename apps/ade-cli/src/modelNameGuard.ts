@@ -15,6 +15,7 @@ import { customProviderModelProblem, findCustomProvider } from "../../desktop/sr
 import { isRoutePresetId } from "../../desktop/src/shared/harnessRoutes";
 import type { HarnessPreset } from "../../desktop/src/shared/harnessPresets";
 import { JsonRpcError, JsonRpcErrorCode } from "./jsonrpc";
+import { BRAND } from "../../desktop/src/shared/brand";
 
 type Fields = Record<string, unknown>;
 /** A model name and the provider the request runs it on, when it says. */
@@ -188,17 +189,17 @@ export function automationDraftMissingModels(draft: Fields | null): MissingRuleM
   if (kind === "agent-session") {
     return named(ruleModel)
       ? []
-      : [{ key: "rule", message: `Set modelConfig.modelId on the rule: it starts an agent, and ADE never picks its model. ${unknownModelHint()}` }];
+      : [{ key: "rule", message: `Set modelConfig.modelId on the rule: it starts an agent, and ${BRAND.NAME} never picks its model. ${unknownModelHint()}` }];
   }
   if (kind !== "built-in") return [];
   const missing: MissingRuleModel[] = [];
   automationDraftSteps(draft).forEach((step, index) => {
     const at = typeof step.id === "string" && step.id.trim() ? step.id.trim() : String(index);
     if (step.type === "agent-session" && !named(record(step.modelConfig)?.modelId) && !named(ruleModel)) {
-      missing.push({ key: `step:${at}`, message: `Set modelConfig.modelId on the agent step (or on the rule): ADE never picks its model. ${unknownModelHint()}` });
+      missing.push({ key: `step:${at}`, message: `Set modelConfig.modelId on the agent step (or on the rule): ${BRAND.NAME} never picks its model. ${unknownModelHint()}` });
     }
     if (step.type === "handoff" && !named(step.targetModelId)) {
-      missing.push({ key: `step:${at}`, message: `Set targetModelId on the handoff step: ADE never picks the model it hands to. ${unknownModelHint()}` });
+      missing.push({ key: `step:${at}`, message: `Set targetModelId on the handoff step: ${BRAND.NAME} never picks the model it hands to. ${unknownModelHint()}` });
     }
   });
   return missing;
@@ -218,7 +219,7 @@ function modelNameRefusal(modelRef: unknown, provider?: unknown): string | null 
   if (!raw || raw.includes("/") || !/claude|opus|sonnet|haiku|fable/i.test(raw) || getModelById(raw)) return null;
   const runs = resolveClaudeCliModelAlias(raw, null);
   if (!runs || runs.toLowerCase() === raw.toLowerCase()) return null;
-  return `"${raw}" is not a model ADE runs. Use "${runs}" or pick one from \`ade models catalog --text\`.`;
+  return `"${raw}" is not a model ${BRAND.NAME} runs. Use "${runs}" or pick one from \`daex models catalog --text\`.`;
 }
 
 function throwIfRefused(refusal: string | null): void {

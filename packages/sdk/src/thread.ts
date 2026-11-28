@@ -10,7 +10,7 @@ import {
 import { pendingQueue, restorableQueueId, type ThreadQueueItem } from "./threadQueue.js";
 import { ApprovalTracker } from "./approvalTracker.js";
 import { completeAttachments } from "./attachments.js";
-import { AdeError } from "./errors.js";
+import { DaexError } from "./errors.js";
 import type { ChatEventSource } from "./eventStream.js";
 import { readHistoryPage, type HistoryPageOptions } from "./historyPage.js";
 import {
@@ -37,7 +37,7 @@ import { budgetExceeded, ThreadUsageAccumulator, type ThreadBudget, type ThreadU
 import {
   STATUS_EVENT_TYPES,
   USAGE_EVENT_TYPES,
-  type AdeProvider,
+  type DaexProvider,
   type AgentChatEventEnvelope,
   type AgentChatFileRef,
   type McpCapabilityReport,
@@ -93,7 +93,7 @@ export type { ThreadQueueItem } from "./threadQueue.js";
 export type ThreadInterruptOptions = {
   /** Keep queued messages, or remove them along with the active turn. */
   queue?: "keep" | "drop";
-  /** Full ADE stop semantics. When set, this takes precedence over `queue`. */
+  /** Full DAEX stop semantics. When set, this takes precedence over `queue`. */
   mode?: AgentChatStopMode;
 };
 
@@ -194,7 +194,7 @@ export type ThreadRerunResult = {
   conversationRollback: "claude_fork" | "claude_new_session" | "codex_thread" | "not_delivered";
 };
 
-export interface AdeThread {
+export interface DaexThread {
   /**
    * The runtime session id. Stable for the life of the thread, EXCEPT across a
    * recreate: if an `autoRestart` finds the runtime lost the session, the key
@@ -244,7 +244,7 @@ export interface AdeThread {
    *
    * `level` is `"applied"` on Claude, Codex, OpenCode and Pi, which all take
    * instructions through a channel of their own; `"best-effort"` on Cursor and
-   * Droid, where ADE merges the text into a prompt it already prefixes.
+   * Droid, where DAEX merges the text into a prompt it already prefixes.
    */
   readonly instructionsCapability: InstructionsCapability | null;
   /**
@@ -294,7 +294,7 @@ export interface AdeThread {
    * Rename the thread, or change its reasoning effort or fast mode.
    *
    * A title-only update is allowed at any time. `reasoningEffort` and
-   * `fastMode` are refused while a turn is in flight (`AdeError` code
+   * `fastMode` are refused while a turn is in flight (`DaexError` code
    * `turn_in_flight`, SDK >= 0.4) unless `{ force: true }`:
    * on Codex a settings change the provider rejects tears the provider down,
    * which ends the turn without `error` or `done` — the silent truncation the
@@ -509,7 +509,7 @@ export interface AdeThread {
  */
 export type ThreadHostConfig = {
   /** The provider this thread runs, for attributing approval requests. */
-  provider?: AdeProvider;
+  provider?: DaexProvider;
   instructionsCapability?: InstructionsCapability | null;
   settingSourcesCapability?: SettingSourcesCapability | null;
   permissionCapability?: PermissionCapability | null;
@@ -610,7 +610,7 @@ const STATUS = new Set<string>(STATUS_EVENT_TYPES);
  * covers every open thread, and a client with twenty threads still holds one
  * runtime subscription rather than twenty.
  */
-export class Thread implements AdeThread {
+export class Thread implements DaexThread {
   /**
    * Written after `setModel` from the runtime's new report. A Claude thread
    * that later lands on Codex must not keep advertising `level: "enforced"`.
@@ -655,7 +655,7 @@ export class Thread implements AdeThread {
   private budgetTripped = false;
 
   /** The provider this thread runs, kept in step with `setModel`. */
-  private provider: AdeProvider;
+  private provider: DaexProvider;
   private readonly logger: (line: string) => void;
   /** Approvals seen on the wire, minus the ones seen settled. */
   private readonly approvals: ApprovalTracker;
@@ -666,8 +666,8 @@ export class Thread implements AdeThread {
   private lastMcpRefreshProblem: string | null = null;
   /** The constructor's subscription to the shared stream, released by `dispose()`. */
   private unsubscribeEvents: Unsubscribe | null = null;
-  readonly queue: AdeThread["queue"];
-  readonly usageLimit: AdeThread["usageLimit"];
+  readonly queue: DaexThread["queue"];
+  readonly usageLimit: DaexThread["usageLimit"];
 
   constructor(
     id: string,
@@ -713,14 +713,14 @@ export class Thread implements AdeThread {
       edit: async (id, text) => {
         this.assertAction("editSteer");
         if (typeof text !== "string" || !text.trim()) {
-          throw new AdeError("invalid_option", "queue.edit() needs non-empty text.");
+          throw new DaexError("invalid_option", "queue.edit() needs non-empty text.");
         }
         await this.chats.editSteer({ sessionId: this.id, steerId: this.requireId(id, "queue id"), text });
       },
       move: async (id, index) => {
         this.assertAction("moveSteer");
         if (!Number.isInteger(index) || index < 0) {
-          throw new AdeError("invalid_option", "queue.move() needs a zero-based index.");
+          throw new DaexError("invalid_option", "queue.move() needs a zero-based index.");
         }
         await this.chats.moveSteer({ sessionId: this.id, steerId: this.requireId(id, "queue id"), toIndex: index });
       },
@@ -791,14 +791,14 @@ export class Thread implements AdeThread {
 
   private assertBudgetCanStartTurn(action: string): void {
     if (this.hostConfig.budget && this.usageInitializationError) {
-      throw new AdeError(
+      throw new DaexError(
         "rpc_error",
         `Cannot ${action} on thread "${this.key}" because its usage history could not be loaded; the budget cannot be enforced.`,
         { cause: this.usageInitializationError },
       );
     }
     if (this.budgetTripped) {
-      throw new AdeError("invalid_option", `Thread "${this.key}" has exceeded its usage budget and cannot ${action}.`);
+      throw new DaexError("invalid_option", `Thread "${this.key}" has exceeded its usage budget and cannot ${action}.`);
     }
   }
 
@@ -926,7 +926,7 @@ export class Thread implements AdeThread {
     try {
       return summaryTurnActive(await this.chats.getSummary(this.id));
     } catch (error) {
-      throw new AdeError(
+      throw new DaexError(
         "rpc_error",
         `Cannot ${action} for "${this.key}": failed to read whether a turn is in flight. ` +
           `Await the turn, call interrupt() first, or pass { force: true } to accept losing it.`,
@@ -967,7 +967,7 @@ export class Thread implements AdeThread {
     await this.initializeUsage();
     this.assertBudgetCanStartTurn("start another turn");
     if (!text.trim() && !(opts.attachments?.length)) {
-      throw new AdeError("invalid_option", "send() needs text or at least one attachment.");
+      throw new DaexError("invalid_option", "send() needs text or at least one attachment.");
     }
     await this.refreshMcpHeadersBeforeTurn();
     await this.chats.send({
@@ -985,7 +985,7 @@ export class Thread implements AdeThread {
     this.assertBudgetCanStartTurn("accept another steer");
     const body = typeof text === "string" ? text : "";
     if (!body.trim() && !(opts.attachments?.length)) {
-      throw new AdeError("invalid_option", "steer() needs text or at least one attachment.");
+      throw new DaexError("invalid_option", "steer() needs text or at least one attachment.");
     }
     await this.chats.steer({
       sessionId: this.id,
@@ -999,7 +999,7 @@ export class Thread implements AdeThread {
     const args: Record<string, unknown> = { sessionId: this.id };
     if (patch.title !== undefined) {
       if (patch.title !== null && typeof patch.title !== "string") {
-        throw new AdeError("invalid_option", "update({ title }) takes a string or null.");
+        throw new DaexError("invalid_option", "update({ title }) takes a string or null.");
       }
       args.title = patch.title === null ? null : patch.title.trim() || null;
     }
@@ -1007,18 +1007,18 @@ export class Thread implements AdeThread {
     if (patch.reasoningEffort !== undefined) args.reasoningEffort = patch.reasoningEffort;
     if (patch.fastMode !== undefined) {
       if (typeof patch.fastMode !== "boolean") {
-        throw new AdeError("invalid_option", "update({ fastMode }) takes a boolean.");
+        throw new DaexError("invalid_option", "update({ fastMode }) takes a boolean.");
       }
       args.fastMode = patch.fastMode;
     }
     if (Object.keys(args).length === 1) {
-      throw new AdeError("invalid_option", "update() needs at least one of title, reasoningEffort, fastMode.");
+      throw new DaexError("invalid_option", "update() needs at least one of title, reasoningEffort, fastMode.");
     }
     // Same rule as `setModel`, for the same reason: a provider reconfigure can
     // end a running turn with no completion event. A rename cannot, so it is
     // never refused.
     if (reconfigures && !opts.force && (await this.turnInFlight("change reasoning settings"))) {
-      throw new AdeError(
+      throw new DaexError(
         "turn_in_flight",
         `Thread "${this.key}" has a turn in flight, and changing reasoningEffort or fastMode can end it without a completion event. ` +
           `Await the turn, call interrupt() first, or pass { force: true } to accept losing it.`,
@@ -1058,10 +1058,10 @@ export class Thread implements AdeThread {
 
   async editLast(text: string, opts: EditLastOptions = {}): Promise<ThreadRerunResult> {
     if (typeof text !== "string") {
-      throw new AdeError("invalid_option", "editLast() takes the new message text as a string.");
+      throw new DaexError("invalid_option", "editLast() takes the new message text as a string.");
     }
     if (!text.trim() && !(opts.attachments?.length)) {
-      throw new AdeError("invalid_option", "editLast() needs text or at least one attachment.");
+      throw new DaexError("invalid_option", "editLast() needs text or at least one attachment.");
     }
     return await this.rerunLastTurn(text, opts);
   }
@@ -1072,15 +1072,15 @@ export class Thread implements AdeThread {
     this.assertBudgetCanStartTurn("run another turn");
     const action = text === undefined ? "retry()" : "editLast()";
     if (this.provider !== "claude" && this.provider !== "codex") {
-      throw new AdeError(
+      throw new DaexError(
         "unsupported",
         `${action} is available for Claude and Codex threads; "${this.key}" runs on ${this.provider}.`,
       );
     }
     if (!this.hostConfig.rerunLastTurnSupported?.()) {
-      throw new AdeError(
+      throw new DaexError(
         "unsupported",
-        `${action} needs an ADE runtime with the rerunLastTurn action (1.2.82 or later).`,
+        `${action} needs a DAEX runtime with the rerunLastTurn action (1.2.82 or later).`,
       );
     }
     // A running turn is refused by the runtime itself (code `turn_in_flight`),
@@ -1094,7 +1094,7 @@ export class Thread implements AdeThread {
       ...(opts.attachments ? { attachments: completeAttachments(opts.attachments) } : {}),
     });
     if (!result || typeof result.retractedFromSequence !== "number") {
-      throw new AdeError("protocol_error", `The runtime answered ${action} without a result.`);
+      throw new DaexError("protocol_error", `The runtime answered ${action} without a result.`);
     }
     return result;
   }
@@ -1104,12 +1104,12 @@ export class Thread implements AdeThread {
   ): Promise<McpCapabilityReport | null> {
     this.assertUsable();
     if (!servers || typeof servers !== "object" || Array.isArray(servers)) {
-      throw new AdeError("invalid_option", "updateMcpServers() takes a map of server name to config.");
+      throw new DaexError("invalid_option", "updateMcpServers() takes a map of server name to config.");
     }
     if (!this.hostConfig.updateMcpServersSupported?.()) {
-      throw new AdeError(
+      throw new DaexError(
         "invalid_option",
-        "This ADE runtime cannot replace a thread's MCP servers (capabilities.personalChats.updateMcpServers is not set). " +
+        "This DAEX runtime cannot replace a thread's MCP servers (capabilities.personalChats.updateMcpServers is not set). " +
           "Upgrade the runtime, or open a new thread key with the new servers.",
       );
     }
@@ -1122,15 +1122,15 @@ export class Thread implements AdeThread {
   async refreshMcpHeaders(): Promise<McpCapabilityReport | null> {
     this.assertUsable();
     if (!this.hostConfig.resolveMcpHeaders) {
-      throw new AdeError(
+      throw new DaexError(
         "invalid_option",
-        "refreshMcpHeaders() needs an mcpHeaders callback on createAdeChat. Without one, send the new headers with updateMcpServers().",
+        "refreshMcpHeaders() needs an mcpHeaders callback on createDaexChat. Without one, send the new headers with updateMcpServers().",
       );
     }
     if (!this.hostConfig.updateMcpServersSupported?.()) {
-      throw new AdeError(
+      throw new DaexError(
         "invalid_option",
-        "This ADE runtime cannot replace a thread's MCP servers (capabilities.personalChats.updateMcpServers is not set).",
+        "This DAEX runtime cannot replace a thread's MCP servers (capabilities.personalChats.updateMcpServers is not set).",
       );
     }
     return await this.refreshResolvedMcpHeaders();
@@ -1149,9 +1149,9 @@ export class Thread implements AdeThread {
    */
   private async pushMcpServers(servers: Record<string, McpServerConfig>): Promise<McpCapabilityReport | null> {
     if (hasMcpToolFilters(servers) && !this.hostConfig.mcpToolFiltersSupported?.()) {
-      throw new AdeError(
+      throw new DaexError(
         "invalid_option",
-        "This ADE runtime does not support MCP tool filters (capabilities.personalChats.mcpToolFilters is not set), " +
+        "This DAEX runtime does not support MCP tool filters (capabilities.personalChats.mcpToolFilters is not set), " +
           "and would drop allowedTools / disallowedTools without a word. Upgrade the runtime or drop the filters.",
       );
     }
@@ -1178,7 +1178,7 @@ export class Thread implements AdeThread {
       if (!stored || !storedMcpServersNeedHeaders(stored)) return this.mcpCapability;
       const resolved = await withResolvedHeaders(this.key, stored, this.hostConfig.resolveMcpHeaders);
       if (resolved.missing.length > 0) {
-        throw new AdeError(
+        throw new DaexError(
           "invalid_option",
           `The mcpHeaders callback supplied no header values for ${resolved.missing
             .map((entry) => `${entry.server} (${entry.headerNames.join(", ")})`)
@@ -1233,7 +1233,7 @@ export class Thread implements AdeThread {
     this.assertUsable();
     const trimmed = typeof modelId === "string" ? modelId.trim() : "";
     if (!trimmed) {
-      throw new AdeError("invalid_option", "setModel() needs a catalog model id.");
+      throw new DaexError("invalid_option", "setModel() needs a catalog model id.");
     }
 
     // Mid-turn switching is refused by default. The engine permits it and the
@@ -1247,7 +1247,7 @@ export class Thread implements AdeThread {
     // sees events stop. A silently truncated answer is the worst outcome
     // available here, so it takes an explicit `force` to choose it.
     if (!opts.force && (await this.turnInFlight("switch models"))) {
-      throw new AdeError(
+      throw new DaexError(
         "turn_in_flight",
         `Thread "${this.key}" has a turn in flight, and switching models would end it without a completion event. ` +
           `Await the turn, call interrupt() first, or pass { force: true } to accept losing it.`,
@@ -1286,7 +1286,7 @@ export class Thread implements AdeThread {
       updated?.permissionCapability,
       this.requestedPermissionPolicy,
     );
-    if (selection.provider) this.provider = selection.provider as AdeProvider;
+    if (selection.provider) this.provider = selection.provider as DaexProvider;
     this.currentModel = selection;
     await this.hostConfig.onRecordChanged?.({
       ...(selection.provider ? { provider: selection.provider } : {}),
@@ -1372,7 +1372,7 @@ export class Thread implements AdeThread {
         }
       }
     }
-    if (!turnId) throw new AdeError("invalid_option", `Thread "${this.key}" has no turn id to recover.`);
+    if (!turnId) throw new DaexError("invalid_option", `Thread "${this.key}" has no turn id to recover.`);
     return await this.chats.recoverTurn({ sessionId: this.id, turnId, action: options.action ?? "wait" }) as AgentChatRecoverTurnResult;
   }
 
@@ -1381,7 +1381,7 @@ export class Thread implements AdeThread {
     this.assertAction("resolveUnprocessedMessage");
     const steerId = this.requireId(args?.steerId, "steer id");
     if (args.action !== "run_next" && args.action !== "dismiss") {
-      throw new AdeError("invalid_option", "resolveUnprocessed() action must be run_next or dismiss.");
+      throw new DaexError("invalid_option", "resolveUnprocessed() action must be run_next or dismiss.");
     }
     return await this.chats.resolveUnprocessedMessage({ sessionId: this.id, steerId, action: args.action }) as AgentChatResolveUnprocessedMessageResult;
   }
@@ -1394,14 +1394,14 @@ export class Thread implements AdeThread {
 
   private requireId(value: unknown, label: string): string {
     const id = typeof value === "string" ? value.trim() : "";
-    if (!id) throw new AdeError("invalid_option", `${label} must be a non-empty string.`);
+    if (!id) throw new DaexError("invalid_option", `${label} must be a non-empty string.`);
     return id;
   }
 
   private assertAction(action: string): void {
     this.assertUsable();
     if (this.hostConfig.actionListed?.(action) !== true) {
-      throw new AdeError("unsupported", `This ADE runtime does not advertise the ${action} action.`);
+      throw new DaexError("unsupported", `This DAEX runtime does not advertise the ${action} action.`);
     }
   }
 
@@ -1416,7 +1416,7 @@ export class Thread implements AdeThread {
     const history = await this.chats.getEventHistory({ sessionId: this.id });
     const recoveryId = restorableQueueId(history?.events ?? []);
     if (!recoveryId) {
-      throw new AdeError("invalid_option", `Thread "${this.key}" has no cancelled queue to restore.`);
+      throw new DaexError("invalid_option", `Thread "${this.key}" has no cancelled queue to restore.`);
     }
     await this.chats.restoreCancelledQueue({ sessionId: this.id, recoveryId });
   }
@@ -1429,11 +1429,11 @@ export class Thread implements AdeThread {
     this.assertUsable();
     const trimmed = typeof itemId === "string" ? itemId.trim() : "";
     if (!trimmed) {
-      throw new AdeError("invalid_option", "approve() needs the itemId from an approval_request.");
+      throw new DaexError("invalid_option", "approve() needs the itemId from an approval_request.");
     }
     const engineDecision = engineApprovalDecision(decision);
     if (!engineDecision) {
-      throw new AdeError(
+      throw new DaexError(
         "invalid_option",
         `approve() takes "accept", "accept_always" or "reject"; got ${JSON.stringify(decision)}.`,
       );
@@ -1447,7 +1447,7 @@ export class Thread implements AdeThread {
       (request) => request.itemId === trimmed || request.logicalItemId === trimmed,
     );
     if (!match) {
-      throw new AdeError(
+      throw new DaexError(
         "approval_not_found",
         `Thread "${this.key}" has no pending approval "${trimmed}". A stop, a teardown, or an ` +
           `earlier approve() already settled it.`,
@@ -1458,7 +1458,7 @@ export class Thread implements AdeThread {
     // this is that rule enforced rather than restated, because the engine
     // would accept the decision and the request would stay unanswered.
     if (match.requestKind !== undefined && !isApprovalShaped(match.requestKind)) {
-      throw new AdeError(
+      throw new DaexError(
         "invalid_option",
         `Thread "${this.key}" request "${match.itemId}" is a ${match.requestKind}, which approve() ` +
           `cannot answer: it wants prose or a choice, not accept/reject. Render it read-only.`,
@@ -1521,3 +1521,8 @@ export class Thread implements AdeThread {
     });
   }
 }
+
+// Pre-DAEX names, kept as deprecated aliases so code written against the
+// `@ade-dev` packages keeps compiling. Remove them in a future major version.
+/** @deprecated Use {@link DaexThread}. */
+export type AdeThread = DaexThread;

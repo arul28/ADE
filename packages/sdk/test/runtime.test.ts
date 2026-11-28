@@ -322,7 +322,7 @@ describe("resolveBinary resolution order", () => {
     expect(message).toContain("no binaryPath was supplied");
     expect(message).toContain("no @ade-dev/runtime-* platform package is installed");
     expect(message).toContain("no previous download is cached");
-    expect(message).toContain("no `ade` was found on PATH");
+    expect(message).toContain("neither `daex` nor `ade` was found on PATH");
     expect(message).toContain("@ade-dev/runtime-darwin-arm64");
   });
 

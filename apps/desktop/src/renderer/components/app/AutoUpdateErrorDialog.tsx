@@ -4,6 +4,7 @@ import type { AutoUpdatePhase, AutoUpdateSnapshot } from "../../../shared/types"
 import { Dialog, type DialogAction } from "../ui/dialog";
 import { TechnicalDetailsFold } from "./errorSurfaceKit";
 import { canRestartAde, restartAde } from "./restartAde";
+import { BRAND } from "../../../shared/brand";
 
 function formatBytes(bytes: number | null): string {
   if (bytes == null || !Number.isFinite(bytes) || bytes < 0) return "Not available";
@@ -41,42 +42,42 @@ export function isAutoUpdateCheckError(snapshot: AutoUpdateSnapshot): boolean {
 /** Short name for the failure, shared by the top-bar pill and this dialog's title. */
 export function autoUpdateErrorTitle(snapshot: AutoUpdateSnapshot): string {
   if (isAutoUpdateDiskSpaceError(snapshot)) return "Not enough space to update";
-  if (isAutoUpdateCheckError(snapshot)) return "ADE couldn't check for updates";
-  return "ADE update failed";
+  if (isAutoUpdateCheckError(snapshot)) return `${BRAND.NAME} couldn't check for updates`;
+  return `${BRAND.NAME} update failed`;
 }
 
 function updateErrorExplanation(snapshot: AutoUpdateSnapshot): string {
   const kind = snapshot.errorDetails?.kind;
   const checking = isAutoUpdateCheckError(snapshot);
   if (kind === "network_stuck") {
-    return "Your internet connection works, but ADE's connection to the update server is stuck. Restarting ADE clears it.";
+    return `Your internet connection works, but ${BRAND.NAME}'s connection to the update server is stuck. Restarting ${BRAND.NAME} clears it.`;
   }
   if (kind === "network") {
     return checking
-      ? "ADE can't reach the update server. Check your connection, then choose Check again."
-      : "ADE lost its connection to the update server before the download finished.";
+      ? `${BRAND.NAME} can't reach the update server. Check your connection, then choose Check again.`
+      : `${BRAND.NAME} lost its connection to the update server before the download finished.`;
   }
   if (kind === "insufficient_space" || kind === "disk_full") {
-    return "ADE does not have enough free space on the affected volume to safely download, stage, and replace the app.";
+    return `${BRAND.NAME} does not have enough free space on the affected volume to safely download, stage, and replace the app.`;
   }
   if (kind === "artifact_too_large") {
-    return "This release is too large for the macOS updater to install safely, so ADE stopped before it could crash. Download the latest version from the ADE website instead.";
+    return `This release is too large for the macOS updater to install safely, so ${BRAND.NAME} stopped before it could crash. Download the latest version from the ${BRAND.NAME} website instead.`;
   }
-  if (kind === "quota") return "The account or volume quota was reached while ADE was updating.";
-  if (kind === "signature" || kind === "verification") return "ADE could not verify that the downloaded update is complete and trusted.";
-  if (kind === "permission") return "ADE could not write to the update cache or replace the installed application.";
-  if (kind === "installer") return "The updater could not complete the installer handoff or quit and relaunch ADE.";
+  if (kind === "quota") return `The account or volume quota was reached while ${BRAND.NAME} was updating.`;
+  if (kind === "signature" || kind === "verification") return `${BRAND.NAME} could not verify that the downloaded update is complete and trusted.`;
+  if (kind === "permission") return `${BRAND.NAME} could not write to the update cache or replace the installed application.`;
+  if (kind === "installer") return `The updater could not complete the installer handoff or quit and relaunch ${BRAND.NAME}.`;
   return checking
-    ? "ADE didn't get an answer from the update server."
-    : "ADE could not complete the update.";
+    ? `${BRAND.NAME} didn't get an answer from the update server.`
+    : `${BRAND.NAME} could not complete the update.`;
 }
 
 function recoverySteps(snapshot: AutoUpdateSnapshot): string[] {
   const kind = snapshot.errorDetails?.kind;
   if (kind === "network_stuck") {
     return [
-      "Choose Restart ADE. If agents are running, ADE asks before it quits.",
-      "ADE reopens and checks for updates on its own.",
+      `Choose Restart ${BRAND.NAME}. If agents are running, ${BRAND.NAME} asks before it quits.`,
+      `${BRAND.NAME} reopens and checks for updates on its own.`,
     ];
   }
   if (kind === "network") {
@@ -87,26 +88,26 @@ function recoverySteps(snapshot: AutoUpdateSnapshot): string[] {
   }
   if (kind === "permission") {
     return [
-      "Make sure your account can write to the folder ADE is installed in and to its update cache.",
+      `Make sure your account can write to the folder ${BRAND.NAME} is installed in and to its update cache.`,
       "Choose Check again.",
     ];
   }
   if (kind === "signature" || kind === "verification") {
     return [
-      "Choose Check again. ADE downloads a fresh copy of the update.",
-      "If it fails again, install the latest version from the ADE website.",
+      `Choose Check again. ${BRAND.NAME} downloads a fresh copy of the update.`,
+      `If it fails again, install the latest version from the ${BRAND.NAME} website.`,
     ];
   }
   if (kind === "artifact_too_large") {
-    return ["Download the latest version from the ADE website and install it over this one."];
+    return [`Download the latest version from the ${BRAND.NAME} website and install it over this one.`];
   }
   if (kind === "installer") {
     return [
       "Choose Check again to retry the install.",
-      "If it fails again, quit ADE and install the latest version from the ADE website.",
+      `If it fails again, quit ${BRAND.NAME} and install the latest version from the ${BRAND.NAME} website.`,
     ];
   }
-  return ["Choose Check again.", "If it keeps failing, restart ADE."];
+  return ["Choose Check again.", `If it keeps failing, restart ${BRAND.NAME}.`];
 }
 
 function formatRetryTime(at: number): string {
@@ -177,7 +178,7 @@ export function AutoUpdateErrorDialog({
     ? [
         { ...checkAgain, variant: "secondary" },
         {
-          label: "Restart ADE",
+          label: `Restart ${BRAND.NAME}`,
           icon: <ArrowClockwise size={12} weight="bold" />,
           variant: "solid",
           autoFocus: true,
@@ -236,11 +237,11 @@ export function AutoUpdateErrorDialog({
         </ol>
         {details?.preservesDownload ? (
           <p style={{ margin: "8px 0 0", color: "var(--color-success)" }}>
-            The downloaded update was kept, so ADE can reuse it when safe.
+            The downloaded update was kept, so {BRAND.NAME} can reuse it when safe.
           </p>
         ) : snapshot.version && !isAutoUpdateCheckError(snapshot) ? (
           <p style={{ margin: "8px 0 0" }}>
-            ADE must download the update again to avoid reusing an incomplete or unverified file.
+            {BRAND.NAME} must download the update again to avoid reusing an incomplete or unverified file.
           </p>
         ) : null}
         {lastRetryAt != null && !retrying ? (

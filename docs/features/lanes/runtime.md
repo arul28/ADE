@@ -1,592 +1,271 @@
 # Lane runtime isolation
 
-Lane runtime isolation turns a lane from "just a worktree" into a full
-parallel dev environment: its own port range, its own `.localhost`
-hostname, its own OAuth callback routing, its own health signals, and
-optional per-lane env init. Shipped as Phase 5 workstreams W1–W6.
+Beyond its worktree, a lane can have its own port range, `*.localhost`
+hostname, OAuth callback routing, health checks and environment setup.
 
 ## Where this runs
 
-Every service below executes inside the **active runtime** for the
-window's project binding — the local ADE daemon (`ade serve`) for
-local-bound windows or the SSH-attached remote runtime for
-remote-bound windows. Port leases, proxy hostname routing, OAuth
-callback handling, env init, and runtime diagnostics all run on the
-machine that owns the lane's worktree. The desktop main-process copies
-under `apps/desktop/src/main/services/lanes/` are kept as fallback
-implementations only; the canonical ones now live alongside the runtime
-services in `apps/ade-cli/`. The renderer's `window.ade.lanes.*` APIs
-that touch this subsystem (`initEnv`, `getEnvStatus`, `port.*`,
-`proxy.*`, `oauth.*`, `diagnostics.*`) are routed through preload's
-`callProjectRuntimeActionOr("lane", …)` helper, which prefers the
-ADE runtime and only falls back to in-process handlers when no
-runtime is bound.
-
-For remote-bound windows the listening sockets, the `*.localhost`
-proxy, and the OAuth callback URL all live on the remote host. Preview
-URLs reflect that hostname.
-
-## Services
-
-Services keyed by workstream. Code paths shown for the desktop
-fallback target; the ADE runtime hosts the canonical instances.
-
-| Service | Workstream | Responsibility |
-|---------|-----------|----------------|
-| `laneEnvironmentService.ts` | W1 | Env file templating, docker services, dependency install, mount points, copy paths, setup script; docker teardown on archive/delete/reclaim; the per-lane init/cleanup queue and the incomplete-init marker; `onEvent` listeners and `abortLaneEnvironment` |
-| `laneEnvironmentProcesses.ts` | W1 | Runtime bookkeeping for env init: event fan-out to the runtime broadcast plus in-process `onEvent` listeners, the setup commands still running per working directory, and the cooperative cancellation flags. See [Aborting a lane's setup](#aborting-a-lanes-setup). |
-| `laneEnvironmentSetup.ts` | W1/W2 | `runLaneEnvironmentSetup` — the single post-create setup path (template merged over project config, or project config alone), shared by the `lane.*` actions, IPC, sync commands and the chat-launch service. `planNewLaneEnvironment` predicts, before a lane exists, whether it will get any setup. |
-| `laneEnvInitMerge.ts` | W1 | Dependency-free merge kernel for `LaneEnvInitConfig` / `LaneOverlayOverrides` (`mergeLaneEnvInitConfig`, `mergeLaneDockerConfig`, `cloneLaneEnvInitConfig`, `mergeLaneOverrides`). Imported by `projectConfigService`, `laneEnvironmentService`, and `laneEnvironmentSetup` (the one path IPC, the action-domain registry, and the ade-cli sync command service use to merge a template over project config). Kept free of service types so config parsing can import it without a cycle. |
-| `laneOverlayContext.ts` | W1 | `resolveLaneOverlayContext` — the one answer for "which lane, which overlay overrides, which env-init config", with the lane's active port lease folded in (`applyLeaseToOverrides`). Used by env init and by every teardown path so two teardowns of the same lane cannot disagree about which compose file to bring down. |
-| `setupScriptConfig.ts` | W2 | Leaf module resolving a `LaneSetupScriptConfig` to the platform's commands / script path (`resolveSetupScriptConfig`) and rejecting script files Windows cannot launch (`unsupportedWindowsScriptPathError`). Lets the executor resolve exactly what the template UI promises without importing template CRUD. |
-| `laneTemplateService.ts` | W2 | CRUD for reusable init recipes, platform-specific setup scripts, default-template selection |
-| `portAllocationService.ts` | W3 | Lease-based port range allocation, conflict detection, orphan recovery |
-| `laneProxyService.ts` | W4 | `*.localhost` reverse proxy, per-lane hostname routes |
-| `oauthRedirectService.ts` | W5 | OAuth callback routing (see [`oauth-redirect.md`](./oauth-redirect.md)) |
-| `runtimeDiagnosticsService.ts` | W6 | Aggregated health checks (port/proxy), fallback mode |
-
-Renderer surfaces:
-
-| Component | Role |
-|-----------|------|
-| `renderer/components/settings/LaneTemplatesSection.tsx` | Template management |
-| `renderer/components/settings/NewLaneSettingsSection.tsx` | Start defaults and lane templates. Cleanup policy lives in `health/HealthCleanups.tsx`. |
-
-## Environment initialization (W1)
-
-`laneEnvironmentService.initializeLane(laneId)` runs initialization
-steps in order:
-
-1. **`env-files`** — copy/template `.env` files with lane-specific
-   substitutions (port, hostname, API keys). Both source and
-   destination paths are validated against their roots via
-   `resolvePathWithinRoot` (symlink-aware) to prevent path traversal.
-2. **`docker`** — start lane-specific Docker Compose services.
-   Compose file path validated against the project root.
-3. **`dependencies`** — run install commands, each one directly (no
-   shell), in its `cwd`. Any command runs, like the setup script: both
-   come only from this machine's `.ade/local.yaml`. Working directories
-   must resolve inside the worktree.
-4. **`mount-points`** — configure runtime mount points for agent
-   profiles/context. Source and destination validated.
-5. **`copy-paths`** — same validation as env files; used for copying
-   non-template files from the project root into the worktree.
-6. **`setup-script`** — run the template's setup script, last, so it can
-   rely on every step above having finished. Only added to the run when
-   a setup script is actually configured for the current platform;
-   otherwise there is no step and nothing runs.
-
-Each step is reported through `LaneEnvInitProgress` IPC events with
-status (`pending | running | completed | failed | skipped`) and a
-duration. `skipped` carries a reason rather than a fault — it is what a
-cancelled run marks its remaining steps with — so the iOS renderer
-(`LaneEnvInitProgressView.swift`) shows a `skipped` step's message in
-muted text instead of the red used for `failed`.
-On desktop the create dialog does not wait for setup. `CreateLaneDialogHost`
-closes the dialog on submit and runs the create and the setup in the
-background (`runDetachedLaneCreate`), on the machine the user chose. The
-Lanes sidebar shows the progress from `renderer/lib/pendingLaneCreates.ts`: a
-"Creating…" row with Stop until the lane exists, then "Setting up…" on
-the lane's own row in the Lanes tab. A failed setup leaves a sticky toast
-that names the failed step and has a Retry action; a failed create leaves
-one with "Try again".
-
-A lane created by a new-lane chat launch runs its setup inside the
-launch instead: the brain's `chatLaunchService` calls
-`runLaneEnvironmentSetup` with the project's default lane template (or
-the project config alone), subscribes to `laneEnvironmentService.onEvent`,
-and mirrors each env step into the launch's "Apply lane template" / "Set
-up environment" stage. See
-[Chat › New-lane launches](../chat/README.md#new-lane-launches).
-
-### One setup path
-
-Every post-create environment setup goes through
-`runLaneEnvironmentSetup(deps, { laneId, templateId?, includeArchived? })`
-in `laneEnvironmentSetup.ts`: the `lane.initEnv` / `lane.applyTemplate`
-actions, the `ade.lanes.initEnv` / `ade.lanes.templates.apply` IPC
-handlers, the sync host's `lanes.initEnv` / `lanes.applyTemplate`
-commands, and the chat-launch environment stage. With a `templateId` it
-resolves the template to env init (`resolveTemplateAsEnvInit`), merges
-the template's env vars and port range into the lane's overlay overrides
-(an existing port range wins), and merges the template env init over the
-project's; without one it runs the project config alone, returning a
-zero-step `completed` progress when there is nothing to run. An unknown
-template throws `Template not found: <id>`. `includeArchived` defaults to
-true (the action domain's rule); IPC and the sync host pass false.
-
-Config types live in `src/shared/types/config.ts`:
-
-- `LaneEnvInitConfig` — top-level config with arrays of steps
-- `LaneEnvFileConfig`, `LaneDockerConfig`, `LaneDependencyInstallConfig`,
-  `LaneMountPointConfig`, `LaneCopyPathConfig`
-- `LaneSetupScriptConfig` — optional post-init script with
-  platform-specific variants (`commands` / `unixCommands` /
-  `macosCommands` / `linuxCommands` / `windowsCommands`, and the same five
-  for `scriptPath`; the field list is `LANE_SETUP_PLATFORM_FIELDS` in
-  `src/shared/laneSetupPlatform.ts`). Supports
-  `injectPrimaryPath` to expose `$PRIMARY_WORKTREE_PATH` to shell
-  commands. Carried on `LaneEnvInitConfig` as `setupScript`, which is
-  how it reaches the executor.
-
-### Setup script execution
-
-`laneTemplateService.resolveTemplateAsEnvInit()` copies the template's
-`setupScript` onto the resulting `LaneEnvInitConfig`, so the script runs
-on **every** path that runs env init with a template: lane create,
-`lanes.applyTemplate`, `lanes.initEnv`, and unarchive that recreates the
-worktree. When both a project-level and a template/overlay setup script
-exist, the more specific one wins — a lane runs one setup script.
-
-- **Platform selection.** `resolveSetupScriptConfig` picks the most
-  specific list: on Windows `windowsCommands` / `windowsScriptPath`; on
-  macOS `macosCommands` / `macosScriptPath`, then `unixCommands` /
-  `unixScriptPath`; on Linux (an ADE Cloud computer) `linuxCommands` /
-  `linuxScriptPath`, then the unix pair; each falling back to the
-  generic `commands` / `scriptPath`. A list of its own, even an empty one,
-  is what that OS runs. If nothing resolves for the current
-  platform, the step is not created at all. "Is there work for *this*
-  platform" is a different question from "is a script configured at
-  all", and only the second one may decide what persists:
-  normalization, merging, and the config that ships to other hosts use
-  the platform-agnostic `laneSetupScriptHasWork` predicate (exported
-  from `src/shared/types/config.ts`), so a `windowsCommands`-only script
-  survives a save made on macOS. A config carrying only
-  `injectPrimaryPath` fails both tests — it configures nothing to run,
-  so it is not a setup script.
-- **macOS commands on Linux.** When Linux would run shared macOS/Linux
-  or any-OS commands that call macOS-only tools (`cp -c`, `xcrun`,
-  `ditto`, `pbcopy` and similar; `macosOnlyToolOnLinux` in
-  `laneSetupPlatform.ts`), the step still runs, logs
-  `lane_env_init.setup_script_macos_on_linux`, and its label says the
-  script is written for macOS and to add Linux commands to the template.
-  The template editor shows the same warning. Giving the template
-  `linuxCommands` clears it.
-- **Shell semantics (commands).** Configured `commands` are
-  user-authored shell, not argv: they run through `/bin/sh -c` on
-  macOS/Linux and through `cmd.exe /d /s /c` (via
-  `resolveWindowsCmdLineInvocation`) on Windows, so pipes, `&&`, and
-  variable expansion work — `$VAR` on POSIX, `%VAR%` on Windows.
-- **Script files are spawned, not shelled.** A configured `scriptPath`
-  is a path, so it goes through `resolveCliSpawnInvocation` as a real
-  argv spawn rather than being pasted into a shell line: `.ps1` runs
-  under an absolutely-resolved `powershell.exe`
-  (`windowsPowerShellCommand()`, `-NoLogo -NoProfile -NonInteractive
-  -ExecutionPolicy Bypass -File`) so a `powershell.exe` sitting at the
-  lane worktree root cannot win resolution, `.cmd`/`.bat` go through
-  ComSpec, and on macOS/Linux the script path is executed directly.
-  **A POSIX script file must therefore be executable (`chmod +x`) and
-  start with a shebang** — without both, the step fails with the OS
-  error (`EACCES` / `ENOEXEC`) rather than being interpreted by a
-  shell. On Windows the reverse case is caught before spawning:
-  `unsupportedWindowsScriptPathError` fails the step for a script whose
-  extension Windows cannot launch (anything outside `.ps1`, `.cmd`,
-  `.bat`, `.exe`, `.com` — a `scripts/setup.sh` or an extension-less
-  path), with a message naming `windowsScriptPath` / `windowsCommands`
-  as the fix, instead of a raw `ENOEXEC` that reads like an ADE bug.
-- **No trust gate, because nothing arrives from the repo.** `.ade/ade.yaml` is
-  no longer read and its executable keys are dropped during the one-time
-  carry-over. A setup script can only come from the machine-local effective
-  config or a local lane template, so the step runs without an approval check.
-  A malformed `local.yaml` still propagates its own config error and fails the
-  step.
-- **Order.** Configured commands run first, in order, then the script
-  file if one is set. `scriptPath` is resolved against the project root
-  with the same symlink-aware traversal check as env files.
-- **Working directory.** The lane's worktree root.
-- **Environment.** The ADE process environment plus the lane runtime
-  vars: `LANE_ID`, `LANE_NAME`, `LANE_SLUG`, `LANE_BRANCH`,
-  `LANE_WORKTREE`, `PORT`, `PORT_RANGE_START`, `PORT_RANGE_END`,
-  `HOSTNAME`, `PROXY_HOSTNAME`, and any overlay `env` entries. With
-  `injectPrimaryPath` enabled, `PRIMARY_WORKTREE_PATH` is also set to
-  the primary lane's root (the project checkout).
-- **Failure.** Fail-fast, like every other step: the first non-zero exit
-  fails the `setup-script` step with the failing command and a stderr
-  excerpt, marks the whole init failed, and skips the remaining
-  commands. A configured `scriptPath` that does not exist is a failure,
-  not a silent skip. Each command has a 300 s timeout.
-
-### Teardown on archive, delete, and reclaim
-
-`laneEnvironmentService.cleanupLaneEnvironment(lane, config)` runs
-`docker compose -f <composePath> -p <projectName> down --remove-orphans`
-for the lane's compose project. It runs on all four lifecycle paths:
-
-| Path | How teardown is reached |
-|------|-------------------------|
-| Delete | `teardownEnv` passed by the caller into `laneService.delete` |
-| Archive & reclaim | `teardownEnv` passed into `laneService.archiveAndReclaim` |
-| Plain archive | The late-bound `setOnLaneArchivedEnvTeardown` hook, run inside `laneService.archive` |
-| Unarchive | `docker compose up` runs again — full env init when the worktree had to be recreated or the lane's last init never finished, docker-only otherwise |
-
-**What "the lane's compose project" means, exactly.** Every teardown
-path resolves the config the same way, through
-`laneRuntimeLifecycle.buildLaneEnvTeardown` →
-`laneOverlayContext.resolveLaneOverlayContext`: project-level
-`laneEnvInit` merged with the matching lane overlay overrides. That
-resolver lives in `laneOverlayContext.ts` rather than in the merge
-kernel `laneEnvInitMerge.ts`, which stays free of service types so
-`projectConfigService` can import it without dragging the lane services
-(and an import cycle) in with it. **A
-`docker.composePath` configured only on a lane template is not covered.**
-`applyTemplate` composes it up, but the applied template is not
-persisted per lane, so no teardown resolver can see it — archive,
-delete, and reclaim will all leave that stack running. Put a compose
-path on `laneEnvInit` (or on an overlay policy that matches the lane) if
-you want it torn down.
-
-Plain archive used to skip teardown, so an archived lane's containers
-kept running and holding ports with nothing in the UI pointing at them.
-The hook lives in `laneService.archive` rather than at each caller
-because archive is reached from the IPC handler, the action-domain
-registry, the sync command service, the PR service (post-merge lane
-cleanup), and storage auto-archive — one list, not six. It is wired by
-the host (`main.ts`, `bootstrap.ts`) once `laneEnvironmentService`
-exists, resolved through
-`laneRuntimeLifecycle.teardownArchivedLaneEnvironment`.
-
-Teardown on archive is best-effort: a failing `compose down` is logged
-(`lane.archive.env_teardown_failed`) and the archive still succeeds.
-
-Restore is deliberately asymmetric. When the worktree had to be
-recreated, unarchive re-runs the whole env init
-(`restoreRecreatedLaneRuntime`). After a plain unarchive the worktree
-was never removed, so only the Docker step re-runs
-(`restoreUnarchivedLaneDocker`) — re-copying env files, reinstalling
-dependencies, or re-running the setup script would clobber work that
-survived the archive. Run **Init env** (`lanes.initEnv`) by hand if you
-do want the full sequence again.
-
-### Cancelling an init that a teardown is waiting on
-
-Init and cleanup for the same lane are serialized on one promise queue,
-and an archive or delete arriving mid-init raises a flag that
-`initLaneEnvironment` reads at every step boundary: the remaining steps
-are marked `skipped` with "Cancelled: lane is being torn down" (neutral
-copy and neutral styling — it fires for delete and archive-and-reclaim
-too, not only archive) and the run ends `failed`. Already-spawned child
-processes keep their own timeouts; nothing is killed.
-
-### Aborting a lane's setup
-
-`laneEnvironmentService.abortLaneEnvironment(laneId, worktreePath)` is
-the hard stop, used when a new-lane launch that owns the lane is
-cancelled and the lane is about to be deleted. It raises the same
-cooperative flag (when an init is in flight), so the run stops at its
-next step boundary, and additionally kills (`terminateProcessTree`) every
-tracked setup command whose working directory is inside the worktree —
-an `npm install` or setup script does not outlive the worktree it runs
-in. Setup children are tracked from spawn until `close` / `error`
-(`laneEnvironmentProcesses.trackChild`).
-
-That leaves a half-initialized worktree, and the evidence disappears
-with it: cleanup deletes the lane's progress entry. So an init that
-does not run every planned step — cancelled or failed — records the
-lane in `.ade/lane-env-init-incomplete.json` (local runtime state,
-gitignored). `restoreUnarchivedLaneDocker` reads it through
-`laneEnvironmentService.wasLastInitIncomplete(laneId)` and re-runs the
-**whole** env init instead of the docker-only restore, including for a
-lane with no Docker step at all. The marker is durable rather than
-in-memory because the gap it covers spans restarts; it is removed when
-a later init for that lane completes. A lane deleted while marked
-leaves an inert stale id behind.
-
-## Lane templates (W2)
-
-Templates package a complete `LaneEnvInitConfig` + overlay overrides
-+ setup script. `resolveSetupScriptConfig(setupScript, platform)` in
-`services/lanes/setupScriptConfig.ts` returns the platform-appropriate
-commands / script path or `null` if nothing is configured for that
-platform; it is a leaf module so `laneEnvironmentService` (the executor)
-resolves exactly what the template UI promises without importing
-template CRUD.
-
-The `NO_DEFAULT_LANE_TEMPLATE` sentinel distinguishes "no default
-set" from "default explicitly cleared" so the Settings UI can surface
-the difference.
-
-IPC: `ade.lanes.templates.list / get / getDefault / setDefault / apply`.
-
-### From the CLI
-
-Use `ade lanes templates list|show|save|default|apply|delete` to manage lane
-templates, and `ade lanes deps` to check lockfiles and installed dependencies.
-The agent tools `create_lane` and `import_lane` set a new lane up themselves,
-the way the desktop dialog does: `templateId`, else the default template, else
-the project's lane environment config, and they wait for it (`skipSetup: true`
-leaves a plain worktree). So `ade lanes create`,
-`create-from-linear`, `batch-create-from-linear`, `ade chat create` with a new
-lane all get it; `ade lanes create` takes `--template <id>` and
-`--no-template`. A failed setup is returned in `setup.error` or the progress,
-not thrown: the lane exists.
-
-The phone's paths that make a lane for a chat (the Hub composer, Work's new
-chat, Linear launch) send `setup: "default"` with the sync `lanes.create`
-command. The host answers with the lane at once and then runs the default
-template (or the lane environment config) in the background, the way the
-desktop's Work tab does; progress reaches every client through the lane env
-events, and a failure is logged as `sync.lane_default_setup_failed`. The phone's
-lane sheet keeps its own explicit template step and does not send the flag. An
-older host ignores the field. Pass `--machine <name>` to run a command on another machine. Templates
-are stored per machine and do not sync.
-
-## Main checkout packages
-
-New lanes get no packages from ADE. Until 2026-10 every new lane had its root
-and `apps/*/node_modules` linked to the main checkout's; that hardcoded step is
-gone, because one shared folder let an install in a lane change the main
-checkout and every other lane, and the links leaked into commits. Lanes created
-before the change keep their links. A project that wants packages in each lane
-uses a default lane template.
-
-`lane.getDependencyStatus` (`laneDependencyStatus.ts`, `ade lanes deps`) reads
-the main checkout of the machine that owns it and never installs anything:
-
-- **Which lockfiles.** `git ls-files --cached --others --exclude-standard` for
-  the known lockfile names, so ignored folders (`node_modules`) and nested
-  repositories are never walked. At most 50; `truncated` says when there are
-  more. Without git, only the root is read.
-- **Installed and out of date.** Tools with an install record are read
-  directly: npm compares `package-lock.json` with the hidden
-  `node_modules/.package-lock.json` (exact, per package); pnpm, yarn and
-  Composer compare the lockfile's time with the install record's
-  (`.modules.yaml`, `.yarn-state.yml` / `install-state.gz`,
-  `vendor/composer/installed.json`), and remember the content last seen
-  installed so a branch switch away and back is not reported; CocoaPods compares
-  `Podfile.lock` with `Pods/Manifest.lock`. bun, Bundler, Poetry, uv and Pipenv
-  leave no record ADE can read (`tracksInstall: false`): the first fingerprint
-  ADE sees counts as installed, a different one later is out of date, and
-  `lane.acknowledgeDependencyStatus` makes the current one count. Cargo, Go and
-  SwiftPM fetch at build time and are never out of date. A lockfile whose
-  install folder does not exist is "not installed", not out of date.
-- **Fingerprints** live in the project's machine-local `.ade/cache/dependency-baselines.json`.
-- **Cost.** One `git ls-files` plus a `stat` per lockfile; a lockfile is hashed
-  (and npm's two lockfiles parsed) only when its size or time changed. Results
-  are cached for 20 s. The ADE repo (11 lockfiles) reads in about 90 ms.
-- **`updateCommand`** is one line `ade lanes deps` prints for a person to copy:
-  POSIX `(cd 'dir' && npm install) && …`, or PowerShell `Push-Location
-  -LiteralPath 'dir'; npm install; Pop-Location; …` on Windows. The desktop
-  does not run it.
-
-The desktop shows two notices from it (`useLaneDependencyBanners.tsx`), for the
-open project tab's machine:
-
-- **Packages in the main checkout are out of date** (docked, info). **Update**
-  opens one tracked shell per out-of-date folder in the primary lane, started in
-  that folder and running only its install command (no shell syntax, so it runs
-  the same in zsh, fish, PowerShell, cmd and Git Bash), shows the first in
-  Work, and checks again every 15 s until the lockfiles read as installed (then
-  a success toast). Tools ADE cannot watch are acknowledged when Update starts.
-  Dismissing it lasts until a lockfile changes again; it can be dismissed while
-  the update runs.
-- **Set up a lane template** (floating prompt, accent) when the project has
-  lockfiles and no default template. **Set up with an agent** opens a new chat
-  draft in the primary lane with a setup prompt (`laneTemplateSetupPrompt.ts`)
-  and snoozes the prompt two weeks; × also snoozes it two weeks; **Don't show
-  again** hides it for that project on that machine. Settings › Lane templates
-  has the same **Set up with an agent** button for the machine the page shows.
-
-The prompt tells the agent what lanes and templates are, lists the lockfiles,
-asks the user whether to make one template for all machines or one per machine
-(`--machine`), suggests (without doing) a faster package manager or setting
-after online research, forbids changing the package manager or lockfiles, and
-lists the checks: a test lane, its own folders, one quick check, the main
-checkout unchanged, real disk with `df`, then delete the test lane.
-
-The hosted web client has no sync command for the status, so it shows neither
-notice.
-
-### Template step limits
-
-Each install command and each setup command or script may run 20 minutes
-(`LANE_ENV_COMMAND_TIMEOUT_MS`). The callers of `lane.initEnv` and
-`lane.applyTemplate` wait 45 minutes (`LANE_ENV_SETUP_TIMEOUT_MS`: local
-runtime table, IPC, and the remote transport a little shorter). Install steps
-used to accept only twelve tools (npm, pnpm, …) and skipped any other command
-without a word; they now run any command, as the setup script already could.
-
-## Overlay policies
-
-`LaneOverlayOverrides` extends the base overlay fields with Phase 5
-additions:
-
-```ts
-type LaneOverlayOverrides = {
-  env?: Record<string, string>;
-  cwd?: string;
-  testSuiteIds?: string[];
-  portRange?: { start: number; end: number };
-  proxyHostname?: string;
-  envInit?: LaneEnvInitConfig;
-};
-```
-
-The matcher in `src/main/services/config/laneOverlayMatcher.ts` evaluates policies
-at lane creation:
-
-- `portRange`, `proxyHostname`: last-wins merge
-- `envInit`: deep-merged through `laneEnvInitMerge.ts` — env files,
-  dependencies, mount points, and copy paths concatenate across
-  policies; docker configs shallow-merge (a later `services` list
-  replaces an earlier one); `setupScript` is last-wins, because a lane
-  runs exactly one setup script
-
-## Port allocation (W3)
-
-Deterministic, lease-based. Defaults: `basePort = 3000`, `portsPerLane
-= 100`, `maxPort = 9999`. Lane N gets `[basePort + N*100, basePort +
-N*100 + 99]`.
-
-`PortLease`:
-
-```ts
-type PortLease = {
-  laneId: string;
-  rangeStart: number;
-  rangeEnd: number;
-  status: "active" | "released" | "orphaned";
-  leasedAt: string;
-  releasedAt?: string;
-};
-```
-
-Conflict detection runs automatically after orphan recovery. When
-conflicts are detected, `PortConflict` records are emitted and the
-UI surfaces them in the diagnostics panel with a "Reassign port"
-action.
-
-Config validation at service creation:
-
-- `basePort` must be a positive integer
-- `portsPerLane` must be a positive integer
-- `maxPort >= basePort`
-- `maxSlots()` clamps to zero for degenerate configs so the service
-  can still boot and return empty allocations.
-
-IPC: `ade.lanes.port.getLease / listLeases / listConflicts / acquire
-/ release / recoverOrphans / event`.
-
-## Hostname proxy (W4)
-
-`laneProxyService` runs a single HTTP reverse proxy on `proxyPort`
-(default 8080). Traffic is routed by Host header:
-
-```
-incoming: feat-auth.localhost:8080
-proxy strips suffix → "feat-auth"
-looks up route by hostname → route.targetPort
-forwards to 127.0.0.1:<targetPort>
-```
-
-Hostname collision-safety: `buildHostname` appends `-lane` or
-`-<laneIdSlug>` suffixes when the preferred slug is already used by a
-different lane's active route.
-
-IPv6 normalization (`[::1]`, `::ffff:127.0.0.1`) is handled in
-`normalizeHostHeader` so localhost traffic still resolves.
-
-Cookie/auth isolation is automatic: browsers scope cookies by
-hostname, so `feat-auth.localhost` and `bugfix.localhost` never
-share session cookies.
-
-Preview URLs are generated via `getPreviewInfo(laneId)` and opened
-with `openPreview(laneId)` (uses the OS default browser).
-
-Hardening (commit `6677edf`): Host header validation, route lookup
-hardening, proxy error page sanitization (HTML-escaped lane id +
-message).
-
-IPC: `ade.lanes.proxy.getStatus / start / stop / addRoute / removeRoute
-/ getPreviewInfo / openPreview / event`.
-
-## Runtime diagnostics (W6)
-
-`runtimeDiagnosticsService` aggregates signals from the port and proxy
-services into a per-lane `LaneHealthCheck`:
-
-```ts
-type LaneHealthStatus = "healthy" | "degraded" | "unhealthy" | "unknown";
-type LaneHealthIssue = {
-  type: "port-unresponsive" | "proxy-route-missing"
-      | "port-conflict" | "env-init-failed";
-  message: string;
-  actionLabel?: string;
-  actionType?: "reassign-port" | "restart-proxy" | "reinit-env"
-             | "enable-fallback" | "refresh-preview";
-};
-type LaneHealthCheck = {
-  laneId: string;
-  status: LaneHealthStatus;
-  portResponding: boolean;
-  respondingPort: number | null;
-  proxyRouteActive: boolean;
-  fallbackMode: boolean;
-  lastCheckedAt: string;
-  issues: LaneHealthIssue[];
-};
-```
-
-Check steps inside `runCheck(laneId)`:
-
-1. **Port responding** — `findResponsivePort` probes the route's
-   target port first, then the lease's `rangeStart`, then sweeps
-   the rest of the range with a 75 ms per-port timeout in parallel.
-2. **Proxy route active** — route exists, proxy server is running,
-   route's target port matches the actually responding port. When
-   any condition fails, the service emits a precise `proxy-route-missing`
-   issue with a context-specific message (proxy stopped, port
-   mismatch, route missing, etc).
-3. **Port conflicts** — scan `getPortConflicts()` for unresolved
-   conflicts involving this lane.
-
-Status derivation (`deriveStatus`):
-
-- No issues, no fallback → `healthy`
-- No issues, fallback active → `degraded`
-- Has `port-unresponsive` → `unhealthy`
-- Otherwise → `degraded`
-
-**Proxy status unavailable** short-circuits to `unhealthy` with a
-single `proxy-route-missing` issue. This is the load-bearing check
-that tells the UI "the proxy itself failed" vs "this one lane is
-broken."
-
-Fallback mode (`activateFallback(laneId)`):
-
-- Adds the lane to the `fallbackLanes` set.
-- Re-derives the cached health so the lane reports `degraded` rather
-  than `unhealthy` when isolation is bypassed.
-- Emits `fallback-activated` / `fallback-deactivated` events.
-
-`deactivateFallback` is idempotent. Both activate/deactivate are
-safe to call on a lane that has no cached health (no-op).
-
-IPC: `ade.lanes.diagnostics.getStatus / getLaneHealth / runHealthCheck
-/ runFullCheck / activateFallback / deactivateFallback / event`.
+Every service here runs on the machine that holds the lane's worktree: the
+brain for a local binding, the remote runtime for a remote one. The code is in
+`apps/desktop/src/main/services/lanes/`; the brain imports it. Renderer calls
+(`window.ade.lanes.initEnv`, `getEnvStatus`, `port.*`, `proxy.*`, `oauth.*`,
+`diagnostics.*`) go through preload to the bound runtime, with in-process IPC
+only when no runtime is bound. For a remote binding the sockets, the proxy and
+the OAuth callback URL all live on the remote host.
+
+## Source file map
+
+| File | Responsibility |
+|------|----------------|
+| `laneEnvironmentService.ts` | Env files, Docker, dependency installs, mount points, copy paths, setup script; Docker teardown; the per-lane init/cleanup queue; the incomplete-init marker; `onEvent`, `abortLaneEnvironment`. |
+| `laneEnvironmentProcesses.ts` | Event fan-out, running setup children per working directory, cooperative cancel flags. |
+| `laneEnvironmentSetup.ts` | `runLaneEnvironmentSetup` (the one post-create setup path) and `planNewLaneEnvironment`. |
+| `laneEnvInitMerge.ts` | Dependency-free merge kernel for env-init configs and overlay overrides (imports no services, so config parsing can use it without a cycle). |
+| `laneOverlayContext.ts` | `resolveLaneOverlayContext`: lane, overlay overrides with the port lease folded in (`applyLeaseToOverrides`), effective env-init config. Shared by setup and every teardown. |
+| `setupScriptConfig.ts` | `resolveSetupScriptConfig` (platform choice), `unsupportedWindowsScriptPathError`. |
+| `laneTemplateService.ts` | Template CRUD, default template (`NO_DEFAULT_LANE_TEMPLATE` tells "none set" from "cleared"). |
+| `laneDependencyStatus.ts` | Main checkout lockfiles and install state. |
+| `portAllocationService.ts` | Port range leases, conflicts, orphan recovery. |
+| `laneProxyService.ts` | `*.localhost` reverse proxy. |
+| `oauthRedirectService.ts` | OAuth callbacks; see [oauth-redirect.md](./oauth-redirect.md). |
+| `runtimeDiagnosticsService.ts` | Per-lane health checks, fallback mode. |
+| `apps/desktop/src/shared/laneSetupPlatform.ts` | `LANE_SETUP_PLATFORM_FIELDS`, `macosOnlyToolOnLinux`. |
+| `apps/desktop/src/shared/types/config.ts` | `LaneEnvInitConfig` and step types, `LaneSetupScriptConfig`, `laneSetupScriptHasWork`. |
+| `renderer/components/settings/LaneTemplatesSection.tsx`, `NewLaneSettingsSection.tsx` | Templates and start defaults in Settings. |
+| `renderer/components/app/useLaneDependencyBanners.tsx`, `renderer/lib/laneTemplateSetupPrompt.ts` | Main checkout notices and the template setup prompt. |
+| `apps/ios/ADE/Views/Lanes/LaneEnvInitProgressView.swift` | Setup progress on the phone. |
 
 ## Gotchas
 
-- **Probe timing**. `checkPort` uses a 500 ms default timeout;
-  `findResponsivePort` shortens to 150 ms for preferred ports and
-  75 ms for sweeps. A slow dev server may momentarily flap into
-  `port-unresponsive` on cold start. If this happens, the event
-  stream will settle once the server finishes binding.
-- **Preferred-port list**. `findResponsivePort` prefers the proxy
-  route's `targetPort` first, then the lease's `rangeStart`. If the
-  dev server binds to a different port in the lease range, detection
-  still works but takes longer.
-- **Fallback is a manual opt-in**. When isolation fails, the UI
-  prompts but does not auto-enable fallback. This is intentional:
-  fallback disables cookie isolation, and silently breaking that
-  contract has caused bug reports before.
-- **Orphaned leases on crash**. If ADE crashes while a lease is
-  `active`, recovery on next boot marks it `orphaned` and frees the
-  slot for reallocation. `recoverOrphans` is called after
-  persistence load during service init.
-- **Proxy hardening**. Proxy error pages HTML-escape all
-  user-controlled fields. Do not relax this — a proxy error can be
-  triggered by a malicious OAuth provider redirecting to
-  `<script>…`.
-- **Diagnostics refresh storms**. Keep health refreshes separate from
-  preview routing / port / OAuth refreshes. Proxy and port events plus
-  the 30s routing safety poll own those reads.
+- **One setup path.** Every post-create setup goes through
+  `runLaneEnvironmentSetup`. Add behavior there, not in an entry point.
+- **A compose path set only on a lane template is never torn down.** The
+  applied template is not stored per lane, so no teardown can see it. Put
+  `docker.composePath` on `laneEnvInit` or a matching overlay policy.
+- **Persistence vs platform.** Normalizing, merging and syncing a setup script
+  use the platform-agnostic `laneSetupScriptHasWork`, so a
+  `windowsCommands`-only script survives a save on macOS. Only execution asks
+  "is there work for this platform".
+- **Probe timing.** `checkPort` waits 500 ms, preferred ports 150 ms, sweeps
+  75 ms. A dev server on cold start can flap into `port-unresponsive`.
+- **Fallback is manual.** It disables cookie isolation, so the UI prompts but
+  never turns it on itself.
+- **Proxy error pages HTML-escape every user-controlled field.** A malicious
+  OAuth redirect can trigger one. Do not relax it.
+- **Keep health refreshes separate** from preview, port and OAuth refreshes;
+  proxy and port events plus the 30 s routing safety poll own those reads.
+- **Orphaned leases** from a crash are marked `orphaned` and freed by
+  `recoverOrphans` at service start.
+
+## Environment setup
+
+`laneEnvironmentService.initializeLane(laneId)` runs, in order:
+
+1. **`env-files`**: copy or template `.env` files with lane values. Source and
+   destination are checked with symlink-aware `resolvePathWithinRoot`.
+2. **`docker`**: start the lane's Compose services.
+3. **`dependencies`**: run each install command directly (no shell) in its
+   `cwd`, which must resolve inside the worktree.
+4. **`mount-points`**: runtime mount points for agent profiles and context.
+5. **`copy-paths`**: copy non-template files from the project root.
+6. **`setup-script`**: last, and only when one is configured for this
+   platform.
+
+Each step reports `LaneEnvInitProgress` (`pending | running | completed |
+failed | skipped`) with a duration. `skipped` carries a reason (a cancelled run
+marks its remaining steps so), shown muted, not red. Each install, setup
+command or script may run 20 minutes (`LANE_ENV_COMMAND_TIMEOUT_MS`); callers
+of `lane.initEnv` and `lane.applyTemplate` wait 45
+(`LANE_ENV_SETUP_TIMEOUT_MS`).
+
+On desktop the create dialog closes on submit and `runDetachedLaneCreate`
+runs create and setup in the background on the chosen machine; the sidebar
+shows "Creating…" then "Setting up…", and a failure leaves a sticky toast with
+Retry. A lane made by a new-lane chat launch runs setup inside the launch
+(`chatLaunchService` subscribes to `onEvent`); see
+[Chat › New-lane launches](../chat/README.md#new-lane-launches).
+
+`runLaneEnvironmentSetup(deps, { laneId, templateId?, includeArchived? })` is
+called by the `lane.initEnv` / `lane.applyTemplate` actions, the
+`ade.lanes.initEnv` / `ade.lanes.templates.apply` IPC handlers, the sync
+`lanes.initEnv` / `lanes.applyTemplate` commands and chat launch. With a
+template it resolves it (`resolveTemplateAsEnvInit`), merges its env vars and
+port range into the overlay (an existing port range wins) and its env init over
+the project's; without one it runs the project config alone (zero steps →
+`completed`). An unknown template throws `Template not found: <id>`.
+`includeArchived` defaults to true; IPC and sync pass false.
+
+### Setup script execution
+
+The template's `setupScript` runs on every path that runs env init with a
+template: create, apply template, init env, and an unarchive that recreates
+the worktree. When project and template both have one, the more specific wins;
+a lane runs one setup script.
+
+- **Platform.** Windows: `windowsCommands` / `windowsScriptPath`. macOS:
+  `macosCommands`, then `unixCommands`. Linux (a DAEX Cloud computer):
+  `linuxCommands`, then `unixCommands`. Each falls back to generic `commands` /
+  `scriptPath`. A list of its own, even empty, is what that OS runs. Nothing
+  resolved → no step. A config with only `injectPrimaryPath` is not a script.
+- **macOS tools on Linux.** When Linux would run shared commands that call
+  macOS-only tools (`cp -c`, `xcrun`, `ditto`, `pbcopy`…), the step still runs,
+  logs `lane_env_init.setup_script_macos_on_linux`, and its label and the
+  template editor say to add Linux commands.
+- **Commands are shell**: `/bin/sh -c` on macOS/Linux, `cmd.exe /d /s /c`
+  (`resolveWindowsCmdLineInvocation`) on Windows.
+- **Script files are spawned, not shelled** (`resolveCliSpawnInvocation`):
+  `.ps1` through an absolutely resolved `powershell.exe`
+  (`windowsPowerShellCommand()`, so a `powershell.exe` in the worktree cannot
+  win), `.cmd`/`.bat` through ComSpec. A POSIX script must be executable and
+  start with a shebang. On Windows, an extension it cannot launch fails early
+  with `unsupportedWindowsScriptPathError`, naming `windowsScriptPath` /
+  `windowsCommands`.
+- **No trust gate.** Setup scripts come only from the machine-local config
+  (`.ade/local.yaml`) or a local template, never from the repo. A malformed
+  `local.yaml` fails the step.
+- **Order:** commands, then the script file (resolved against the project root
+  with the symlink-aware check). **Cwd:** the worktree root.
+- **Environment:** the process environment plus `LANE_ID`, `LANE_NAME`,
+  `LANE_SLUG`, `LANE_BRANCH`, `LANE_WORKTREE`, `PORT`, `PORT_RANGE_START`,
+  `PORT_RANGE_END`, `HOSTNAME`, `PROXY_HOSTNAME`, overlay `env`, and with
+  `injectPrimaryPath` `PRIMARY_WORKTREE_PATH` (the main checkout).
+- **Failure:** fail fast with the command and a stderr excerpt. A missing
+  `scriptPath` fails.
+
+### Teardown on archive, delete and reclaim
+
+`cleanupLaneEnvironment` runs `docker compose -f <composePath> -p <project>
+down --remove-orphans`. Delete and archive-and-reclaim get it through the
+caller's `teardownEnv`; plain archive through the `setOnLaneArchivedEnvTeardown`
+hook inside `laneService.archive` (one place for all archive callers),
+best effort (`lane.archive.env_teardown_failed`). Every path resolves the
+compose project the same way (`laneRuntimeLifecycle.buildLaneEnvTeardown` →
+`resolveLaneOverlayContext`).
+
+Unarchive is asymmetric: a recreated worktree re-runs the whole init
+(`restoreRecreatedLaneRuntime`); a plain unarchive re-runs only Docker
+(`restoreUnarchivedLaneDocker`), so surviving work is not clobbered, unless the
+last init was incomplete.
+
+### Cancelling and aborting
+
+Init and cleanup for a lane share one queue. An archive or delete arriving
+mid-init raises a flag read at each step boundary: remaining steps become
+`skipped` ("Cancelled: lane is being torn down") and the run ends `failed`.
+Running children are not killed.
+
+`abortLaneEnvironment(laneId, worktreePath)` is the hard stop, used when a
+new-lane launch is cancelled: it raises the same flag and kills
+(`terminateProcessTree`) every tracked setup child inside the worktree
+(`laneEnvironmentProcesses.trackChild`).
+
+An init that does not finish every step records the lane in
+`.ade/lane-env-init-incomplete.json` (machine-local). `wasLastInitIncomplete`
+makes the next unarchive run the whole init. The marker clears when a later
+init completes.
+
+## Lane templates
+
+A template packages a `LaneEnvInitConfig`, overlay overrides and a setup
+script. Templates are stored per machine and do not sync. IPC:
+`ade.lanes.templates.list / get / getDefault / setDefault / apply`.
+
+CLI: `daex lanes templates list|show|save|default|apply|delete`;
+`--machine <name>` targets another machine. The agent tools `create_lane` and
+`import_lane` set the lane up like the dialog (`templateId`, else the default
+template, else the project config) and wait; `skipSetup: true` leaves a plain
+worktree. So `daex lanes create`, `create-from-linear`,
+`batch-create-from-linear` and `daex chat create` with a new lane all get it;
+`daex lanes create` takes `--template <id>` and `--no-template`. A failed setup
+is returned in `setup.error`, not thrown.
+
+The phone's chat paths that make a lane (Hub composer, Work new chat, Linear
+launch) send `setup: "default"` with the sync `lanes.create` command; the host
+answers at once and runs setup in the background (failure logged as
+`sync.lane_default_setup_failed`). The phone's lane sheet keeps its own
+template step.
+
+## Main checkout packages
+
+DAEX puts no packages in new lanes; a project that wants them uses a default
+lane template. (Older lanes may still have `node_modules` links to the main
+checkout; DAEX no longer makes them, because a shared folder let one lane's
+install change every other lane.)
+
+`lane.getDependencyStatus` (`daex lanes deps`) reads the main checkout of the
+machine that owns it and never installs:
+
+- **Lockfiles:** `git ls-files --cached --others --exclude-standard` for known
+  names, so ignored folders and nested repos are never walked. At most 50
+  (`truncated`). Without git, only the root.
+- **State:** npm compares `package-lock.json` with
+  `node_modules/.package-lock.json`; pnpm, yarn and Composer compare the
+  lockfile time with their install record and remember the content last seen
+  installed; CocoaPods compares `Podfile.lock` with `Pods/Manifest.lock`. bun,
+  Bundler, Poetry, uv and Pipenv leave no record (`tracksInstall: false`): the
+  first fingerprint counts as installed and `lane.acknowledgeDependencyStatus`
+  accepts the current one. Cargo, Go and SwiftPM are never out of date. A
+  missing install folder is "not installed".
+- **Fingerprints:** `.ade/cache/dependency-baselines.json` (machine-local).
+- **Cost:** one `git ls-files` plus a `stat` per lockfile; hashing only on
+  change; cached 20 s.
+- **`updateCommand`:** one line for a person to copy (POSIX or PowerShell).
+
+Desktop notices (`useLaneDependencyBanners.tsx`), for the tab's machine:
+
+- **Packages in the main checkout are out of date.** **Update** opens one
+  tracked shell per out-of-date folder in the main checkout running only its
+  install command, shows the first in Work, and checks every 15 s until
+  installed. Dismissal lasts until a lockfile changes.
+- **Set up a lane template**, when the project has lockfiles and no default
+  template. **Set up with an agent** opens a chat draft in the main checkout
+  with `laneTemplateSetupPrompt.ts`; snooze two weeks, or **Don't show again**
+  per project and machine. Settings › Lane templates has the same button.
+
+The web client has no sync command for the status and shows neither notice.
+
+## Overlay policies
+
+`LaneOverlayOverrides` adds `portRange`, `proxyHostname` and `envInit` to `env`,
+`cwd` and `testSuiteIds`. `config/laneOverlayMatcher.ts` evaluates policies at
+lane creation: `portRange` and `proxyHostname` last-wins; `envInit` merged by
+`laneEnvInitMerge.ts` (lists concatenate, Docker shallow-merges, `setupScript`
+last-wins).
+
+## Port allocation
+
+Lease-based and deterministic: `basePort = 3000`, `portsPerLane = 100`,
+`maxPort = 9999`; slot N gets `[3000 + N*100, 3000 + N*100 + 99]`. A
+`PortLease` is `active | released | orphaned`. Conflict detection runs after
+orphan recovery; conflicts show in diagnostics with **Reassign port**. Bad
+configs are rejected at start; `maxSlots()` clamps to zero. IPC:
+`ade.lanes.port.getLease / listLeases / listConflicts / acquire / release /
+recoverOrphans / event`.
+
+## Hostname proxy
+
+One HTTP reverse proxy on `proxyPort` (default 8080) routes by Host header:
+`feat-auth.localhost:8080` → route → `127.0.0.1:<targetPort>`. `buildHostname`
+adds `-lane` or `-<laneIdSlug>` when the slug is taken. `normalizeHostHeader`
+handles IPv6 loopback forms. Browsers scope cookies by hostname, so lanes never
+share sessions. `getPreviewInfo` / `openPreview` open the lane's URL. IPC:
+`ade.lanes.proxy.getStatus / start / stop / addRoute / removeRoute /
+getPreviewInfo / openPreview / event`.
+
+## Runtime diagnostics
+
+`runCheck(laneId)` builds a `LaneHealthCheck` (`healthy | degraded |
+unhealthy | unknown`, with typed issues and suggested actions):
+
+1. **Port responding:** `findResponsivePort` tries the route's target port, the
+   lease start, then sweeps the range in parallel.
+2. **Proxy route active:** route exists, proxy running, target matches the
+   responding port; otherwise a specific `proxy-route-missing` issue.
+3. **Port conflicts** involving the lane.
+
+`deriveStatus`: no issues → `healthy` (or `degraded` in fallback);
+`port-unresponsive` → `unhealthy`; else `degraded`. Proxy status unavailable
+short-circuits to `unhealthy`. `activateFallback` / `deactivateFallback` are
+idempotent and emit events. IPC: `ade.lanes.diagnostics.getStatus /
+getLaneHealth / runHealthCheck / runFullCheck / activateFallback /
+deactivateFallback / event`.

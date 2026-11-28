@@ -6,6 +6,7 @@ import {
 } from "../../../shared/deeplinks";
 import { resolveAccountProjectLink, type AccountProjectListResult } from "../../../shared/accountProject";
 import type { OwnedLinkFailure } from "./ownedLinkResolution";
+import { BRAND } from "../../../shared/brand";
 
 // Loaded only for a link that names an account project, so a plain start of
 // ADE Web does not pay for the account list code.
@@ -40,8 +41,8 @@ export function accountProjectLinkStep(
         noCopy: null,
         failure: {
           kind: "project-removed",
-          title: `${resolved.name} was removed from ADE.`,
-          detail: "Add it again in ADE on a computer that has it, then open the link again.",
+          title: `${resolved.name} was removed from ${BRAND.NAME}.`,
+          detail: `Add it again in ${BRAND.NAME} on a computer that has it, then open the link again.`,
           retryable: false,
           offerComputers: false,
         },
@@ -54,8 +55,8 @@ export function accountProjectLinkStep(
           noCopy: null,
           failure: {
             kind: "project-unknown",
-            title: "This project isn't in your ADE account.",
-            detail: "The link may be from another ADE account.",
+            title: `This project isn't in your ${BRAND.NAME} account.`,
+            detail: `The link may be from another ${BRAND.NAME} account.`,
             retryable: false,
             offerComputers: false,
           },
@@ -67,7 +68,7 @@ export function accountProjectLinkStep(
         failure: {
           kind: "no-copy",
           title: `No computer that is online has a copy of ${resolved.project.name}.`,
-          detail: "It opened with no computer. Start ADE on a computer that has it, or add a copy.",
+          detail: `It opened with no computer. Start ${BRAND.NAME} on a computer that has it, or add a copy.`,
           retryable: true,
           offerComputers: true,
         },

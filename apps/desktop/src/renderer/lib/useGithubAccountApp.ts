@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { GitHubAccountAppAccountStatus } from "../../shared/types";
+import { BRAND } from "../../shared/brand";
 
 /**
  * The ADE account's GitHub App sign-in, as Settings shows it.
@@ -231,8 +232,8 @@ export function githubSignInFailureDetail(phase: Extract<GithubAccountAppSignInP
       : phase.reason === "rate_limited"
         ? "Too many sign-ins in a short time. Wait a few minutes, then connect again."
         : phase.reason === "signed_out"
-          ? "Sign in to your ADE account first."
+          ? `Sign in to your ${BRAND.NAME} account first.`
           : phase.reason === "unsupported"
-            ? "Your ADE account can't hold a GitHub sign-in yet."
-            : phase.message ?? "ADE couldn't start the GitHub sign-in. Check your connection and try again.";
+            ? `Your ${BRAND.NAME} account can't hold a GitHub sign-in yet.`
+            : phase.message ?? `${BRAND.NAME} couldn't start the GitHub sign-in. Check your connection and try again.`;
 }

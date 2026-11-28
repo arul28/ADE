@@ -2,6 +2,7 @@ import type { ProjectIcon } from "./core";
 import type { SyncPairingHostIdentity, UpdateBlockHolder } from "./sync";
 
 import type { SlowLinkPreference, SlowLinkStatus } from "../slowLinkMode";
+import { BRAND } from "../brand";
 
 export type RemoteRuntimeTransportKind = "ssh" | "paired";
 
@@ -451,7 +452,7 @@ export const REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE =
 
 /** What a development ADE says when it would dial a machine the person did not connect in it. */
 export const REMOTE_RUNTIME_EXPLICIT_CONNECT_ONLY_MESSAGE =
-  "This development ADE connects to other machines only when you press Connect, so the installed ADE keeps its connections.";
+  `This development ${BRAND.NAME} connects to other machines only when you press Connect, so the installed ${BRAND.NAME} keeps its connections.`;
 
 export type RemoteRuntimeParsedPairingInput = {
   hostIdentity: SyncPairingHostIdentity;

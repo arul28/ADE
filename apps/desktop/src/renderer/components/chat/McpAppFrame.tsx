@@ -40,6 +40,7 @@ import { useSceneTheme } from "./sceneTheme";
 import { useSceneOnScreen } from "./useSceneOnScreen";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { withChatPin } from "./chatMachinePin";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Host for an MCP App: the page an MCP server ships with one of its tools.
@@ -148,7 +149,7 @@ function useMcpAppDocument(
     const cached = appCache.get(cacheKey);
     const prepare = async (app: McpAppDocument): Promise<string> => {
       const url = await window.ade.scene?.prepareApp({ html: app.html, csp: app.csp });
-      if (typeof url !== "string" || !url.length) throw new Error("ADE could not prepare this app.");
+      if (typeof url !== "string" || !url.length) throw new Error(`${BRAND.NAME} could not prepare this app.`);
       return url;
     };
     setLoad({ status: "loading" });
@@ -238,7 +239,7 @@ function answerAppRequest(message: Extract<McpAppFrameMessage, { kind: "request"
         id,
         result: {
           protocolVersion: MCP_APP_PROTOCOL_VERSION,
-          hostInfo: { name: "ADE", version: "1" },
+          hostInfo: { name: BRAND.NAME, version: "1" },
           hostCapabilities: {
             openLinks: {},
             serverTools: {},
@@ -286,7 +287,7 @@ function answerAppRequest(message: Extract<McpAppFrameMessage, { kind: "request"
       ctx.forward(id, method, params);
       return;
     default:
-      refuse("ADE does not support this request from an app.", MCP_APP_ERROR_METHOD_NOT_FOUND);
+      refuse(`${BRAND.NAME} does not support this request from an app.`, MCP_APP_ERROR_METHOD_NOT_FOUND);
   }
 }
 
@@ -498,7 +499,7 @@ export function McpAppCard({ card }: { card: AdeCardPayload }) {
       containerDimensions: { ...(width > 0 ? { width } : {}), maxHeight: MCP_APP_LIMITS.maxHeight },
       locale: navigator.language,
       timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      userAgent: "ADE",
+      userAgent: BRAND.NAME,
       platform: "desktop",
       deviceCapabilities: { touch: false, hover: true },
     };

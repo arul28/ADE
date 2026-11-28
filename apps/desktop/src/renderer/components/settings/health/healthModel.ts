@@ -1,4 +1,5 @@
 import type { ProjectHealthIssue, ProjectHealthReport } from "../../../../shared/types/projectHealth";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * Which settings page shows a project check. Lane problems sit with the lane
@@ -62,21 +63,21 @@ export function healthAgentPrompt(report: ProjectHealthReport, only?: readonly P
     }
     if (issue.fix) {
       lines.push(issue.fix.kind === "terminal"
-        ? `   ADE's fix ("${issue.fix.label}"): ${issue.fix.description} (opens a terminal and runs a command)`
-        : `   ADE's fix ("${issue.fix.label}"): ${issue.fix.description}`);
+        ? `   ${BRAND.NAME}'s fix ("${issue.fix.label}"): ${issue.fix.description} (opens a terminal and runs a command)`
+        : `   ${BRAND.NAME}'s fix ("${issue.fix.label}"): ${issue.fix.description}`);
     }
     return lines.join("\n");
   });
   return [
     list.length === 1
-      ? `ADE's project check found one issue in the project at \`${report.projectRoot}\`. Go through it with me: explain what it means and what happens if it is left, check it yourself, and offer a fix. Ask me before you change anything.`
-      : `ADE's project check found ${list.length} issues in the project at \`${report.projectRoot}\`. Go through them with me: for each, explain what it means and what happens if it is left, check it yourself, and offer a fix. Ask me before you change anything.`,
+      ? `${BRAND.NAME}'s project check found one issue in the project at \`${report.projectRoot}\`. Go through it with me: explain what it means and what happens if it is left, check it yourself, and offer a fix. Ask me before you change anything.`
+      : `${BRAND.NAME}'s project check found ${list.length} issues in the project at \`${report.projectRoot}\`. Go through them with me: for each, explain what it means and what happens if it is left, check it yourself, and offer a fix. Ask me before you change anything.`,
     "",
     "## Issues",
     ...issues,
     "",
     "Rules:",
-    "- Where ADE has its own fix, say so: I can press it in Settings → Project. Offer to do the same by hand only if I ask.",
+    `- Where ${BRAND.NAME} has its own fix, say so: I can press it in Settings → Project. Offer to do the same by hand only if I ask.`,
     "- Don't delete files, branches or lanes, and don't run installs, without my OK.",
     "- Keep the report short: what you checked, what you fixed (only with my OK), what I need to do.",
   ].join("\n");

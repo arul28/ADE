@@ -96,7 +96,7 @@ struct MachineUpdateImpact: Equatable {
 
   /// The quiet line for what a restart ends for good, or what can't be known.
   var note: String? {
-    guard checked else { return "Anything running there stops when ADE restarts." }
+    guard checked else { return "Anything running there stops when \(Brand.name) restarts." }
     guard cliSessions + terminals > 0 else { return nil }
     let cliReopen = cliSessions > 0 && cliSessionsReopen && continueAfterRestart != false
     // Name only what is open: CLI sessions, terminals, or both.
@@ -268,11 +268,11 @@ private let machineUpdateBlockClockSlack: TimeInterval = 30
 /// `machineUpdateStatus.ts`); change both together.
 func describeHostUpdateBlock(_ block: HostUpdateBlock) -> String {
   var names = block.holders.prefix(3).map { "\($0.name) (PID \($0.pid))" }
-  guard !names.isEmpty else { return "something on it kept ADE’s old files in use." }
+  guard !names.isEmpty else { return "something on it kept \(Brand.name)’s old files in use." }
   let more = block.holders.count - names.count
   if more > 0 { names.append("\(more) more") }
   let list = names.count == 1 ? names[0] : names.dropLast().joined(separator: ", ") + " and " + names[names.count - 1]
-  return "\(list) had ADE’s files open."
+  return "\(list) had \(Brand.name)’s files open."
 }
 
 /// Where an attempt is now, against the machine as the phone sees it.
@@ -324,7 +324,7 @@ func describeMachineUpdateAttempt(
   }
   return MachineUpdateStatus(
     ok: false,
-    message: "Not back yet after the update to \(pending). Check that ADE is running on that machine.",
+    message: "Not back yet after the update to \(pending). Check that \(Brand.name) is running on that machine.",
     inFlight: false
   )
 }
@@ -677,7 +677,7 @@ final class MachineUpdateStore: ObservableObject {
 
   private static func sendFailureMessage(_ error: Error, name: String) -> String {
     let message = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
-    return message.isEmpty ? "ADE could not ask \(name) to update." : message
+    return message.isEmpty ? "\(Brand.name) could not ask \(name) to update." : message
   }
 
   private func readImpact(machineKey: String) async -> MachineUpdateImpact {

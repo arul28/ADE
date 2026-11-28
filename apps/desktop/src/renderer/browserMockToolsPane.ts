@@ -171,7 +171,7 @@ export function applyBrowserMockToolsPane(
         if (!isChatRow(row)) continue;
         deps.emitChatEvent(row.id, {
           type: "command",
-          command: "ade apple tap \"General\" --machine \"Studio Mac\"",
+          command: "daex apple tap \"General\" --machine \"Studio Mac\"",
           cwd: "/",
           output: "",
           itemId: `tap-${row.id}`,

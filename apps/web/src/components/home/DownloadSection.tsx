@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { CLOUD_SMALL_UNLIMITED_SHORT } from "../../lib/cloudPricing";
 import { MARKETING_CTA_POSITIONS, MARKETING_FEATURES } from "../../lib/marketingAnalytics";
 import { InstallBlock } from "./Hero";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /** The last screen: one line, what is free, and the same download choices as the hero. */
 export function DownloadSection() {
@@ -23,7 +24,7 @@ export function DownloadSection() {
           <span className="text-white/45">On every screen.</span>
         </h2>
         <p className="mx-auto mt-5 max-w-[30rem] text-[15px] leading-[1.6] text-white/55">
-          The app costs nothing. ADE Cloud is optional, with{" "}
+          The app costs nothing. {BRAND.CLOUD_NAME} is optional, with{" "}
           <Link
             to="/pricing"
             data-ade-analytics-feature={MARKETING_FEATURES.VIEW_PRICING}

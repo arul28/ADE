@@ -3,6 +3,7 @@
 // shapes are typed from @linear/sdk's generated GraphQL types (`import type`:
 // erased at build, so the CJS main and CLI bundles never load the ESM-only SDK).
 
+import { BRAND } from "../../../shared/brand";
 import type { LinearDocument as L } from "@linear/sdk";
 import type { Logger } from "../logging/logger";
 import {
@@ -274,16 +275,16 @@ function toRefusal(error: unknown): LinearViewPreferencesRefusal {
   if (/invalid combination/i.test(message)) {
     return new LinearViewPreferencesRefusal(
       "team-scoped",
-      "Linear keeps this tab's display settings per team, so ADE kept the change here only.",
+      `Linear keeps this tab's display settings per team, so ${BRAND.NAME} kept the change here only.`,
     );
   }
   if (/scope|permission|forbidden|not authorized/i.test(message)) {
     return new LinearViewPreferencesRefusal(
       "scope",
-      "Linear's connection doesn't allow saving display settings, so ADE kept the change here only.",
+      `Linear's connection doesn't allow saving display settings, so ${BRAND.NAME} kept the change here only.`,
     );
   }
-  return new LinearViewPreferencesRefusal("other", `Linear didn't save the change (${message}), so ADE kept it here only.`);
+  return new LinearViewPreferencesRefusal("other", `Linear didn't save the change (${message}), so ${BRAND.NAME} kept it here only.`);
 }
 
 export function createLinearViewData(args: { request: LinearRequest; logger?: Logger | null }) {

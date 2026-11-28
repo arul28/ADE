@@ -1,7 +1,7 @@
 /**
- * Wire types for the ADE machine-scoped chat surface.
+ * Wire types for the DAEX machine-scoped chat surface.
  *
- * PROVENANCE — every type in this file is a hand-copied subset of ADE's own
+ * PROVENANCE — every type in this file is a hand-copied subset of DAEX's own
  * shared contracts. The package deliberately does NOT import across the repo
  * boundary (`apps/desktop/src/shared/**`) so it builds and publishes on its
  * own. When the engine contract moves, this file moves with it:
@@ -26,7 +26,7 @@ import type {
 } from "./hostConfig.js";
 
 /** Known provider ids for autocomplete; provider strings remain open for newer runtimes. */
-export type AdeProvider =
+export type DaexProvider =
   | "claude"
   | "codex"
   | "cursor"
@@ -117,7 +117,7 @@ export type AgentChatInstructions = {
  *
  *   - `"applied"` — the provider received the value through a first-class
  *     channel of its own.
- *   - `"best-effort"` — ADE reached the same outcome through a mechanism it
+ *   - `"best-effort"` — DAEX reached the same outcome through a mechanism it
  *     already owns (a prompt prefix, a containment root), and `detail` names
  *     what that costs.
  *   - `"ignored"` — the provider has no switch for it and the value did not
@@ -167,7 +167,7 @@ export type McpServerConfig =
 /**
  * What the provider could actually do with a caller's MCP request.
  *
- * Mirrors `AgentChatMcpCapability` in chat.ts. Only ADE's Claude adapter can
+ * Mirrors `AgentChatMcpCapability` in chat.ts. Only DAEX's Claude adapter can
  * enforce strict mode outright; the rest are best-effort with a named residual,
  * and Pi has no MCP surface at all (a thread that asks for `mcpServers` on Pi
  * is refused by the runtime rather than silently opened without them).
@@ -209,7 +209,7 @@ export type McpCapabilityReport = {
    */
   residual: string | null;
   /**
-   * Whether this thread asked ADE to withhold the user's and project's own MCP
+   * Whether this thread asked DAEX to withhold the user's and project's own MCP
    * config — i.e. `loadUserMcpServers: false`, explicitly or by supplying
    * `mcpServers` without opting back in.
    *
@@ -301,7 +301,7 @@ export type AgentChatEvent = {
  * Which provider raised a pending input request.
  *
  * `"acp"` covers all four ACP dialects, because the permission round trip is
- * one method there. `"ade"` is a request ADE staged itself.
+ * one method there. `"ade"` is a request DAEX staged itself.
  */
 /**
  * Who raised a pending input. The ACP harnesses (Qwen, Kimi, Grok, Copilot,
@@ -323,7 +323,7 @@ export type PendingInputSource =
  *
  * `"approval"` and `"permissions"` are the two approval-shaped kinds — a
  * yes/no on an action the model wants to take. The other four want prose or a
- * choice, and `AdeThread.approve` cannot answer them: render them read-only.
+ * choice, and `DaexThread.approve` cannot answer them: render them read-only.
  */
 export const PENDING_INPUT_KINDS = [
   "approval",
@@ -484,7 +484,7 @@ export type ProviderCapabilities = {
  */
 export type UsageLimitResume = {
   state: "armed" | "resuming" | "paused" | "opted_out" | "no_reset" | (string & {});
-  provider: AdeProvider;
+  provider: DaexProvider;
   /** When the resume prompt is sent (reset + buffer). Null when unknown. */
   fireAt: string | null;
   /** The reset the provider published. Null when unknown. */
@@ -502,7 +502,7 @@ export type UsageLimitEvent = {
   /** Thread key; empty when the session is not one this client opened by key. */
   key: string;
   sessionId: string;
-  provider: AdeProvider;
+  provider: DaexProvider;
   /** The current state, or null when the limit cleared. */
   status: UsageLimitResume | null;
 };
@@ -591,14 +591,14 @@ export type KnownAgentChatEvent =
     }
   | { type: "done"; [key: string]: unknown };
 
-/** Event types the SDK routes to the `usage` channel of `AdeThread.on`. */
+/** Event types the SDK routes to the `usage` channel of `DaexThread.on`. */
 export const USAGE_EVENT_TYPES = [
   "tokens",
   "context_usage",
   "codex_token_usage",
 ] as const;
 
-/** Event types the SDK routes to the `status` channel of `AdeThread.on`. */
+/** Event types the SDK routes to the `status` channel of `DaexThread.on`. */
 export const STATUS_EVENT_TYPES = [
   "status",
   "done",
@@ -650,7 +650,7 @@ export type CapabilitiesChangedEvent = {
  * The four capability reports a thread carries, as one object.
  *
  * Returned by `setModel` and carried by `capabilities_changed`. Each report
- * keeps its own null rule — see the matching field on `AdeThread`.
+ * keeps its own null rule — see the matching field on `DaexThread`.
  */
 export type ThreadCapabilities = {
   mcpCapability: McpCapabilityReport | null;
@@ -683,7 +683,7 @@ export type ThreadModelSelection = {
 /**
  * One page of a thread's durable transcript, newest page first.
  *
- * Returned by `AdeThread.historyPage`. `events` are in transcript order
+ * Returned by `DaexThread.historyPage`. `events` are in transcript order
  * (oldest first) within the page.
  */
 export type ThreadHistoryPage = {
@@ -715,18 +715,18 @@ export type AgentChatEventEnvelope = {
   event: AgentChatEvent;
   sequence?: number;
   /**
-   * Mirrors `AgentChatEventEnvelope["provenance"]` in ADE's `shared/types/chat.ts`,
+   * Mirrors `AgentChatEventEnvelope["provenance"]` in DAEX's `shared/types/chat.ts`,
    * NARROWED on purpose: only the keys an SDK consumer can act on are named.
    *
-   * ADE stamps more than this — orchestration routing (`targetKind`,
+   * DAEX stamps more than this — orchestration routing (`targetKind`,
    * `sourceSessionId`, `attemptId`, `stepKey`, `laneId`, `runId`), fork shape
-   * (`replayFork`), and other ADE-only metadata. These describe surfaces this
+   * (`replayFork`), and other DAEX-only metadata. These describe surfaces this
    * package does not have: a sidecar drives its own thread with the `agent`
-   * role, so it is never the orchestrator reading routing keys or ADE metadata.
+   * role, so it is never the orchestrator reading routing keys or DAEX metadata.
    * Naming them here would advertise surfaces that do not exist.
    *
    * The index signature is what makes that narrowing safe rather than lossy:
-   * the runtime is downloaded and can be newer than the SDK, so every key ADE
+   * the runtime is downloaded and can be newer than the SDK, so every key DAEX
    * stamps still arrives and still reads, typed `unknown`. Add a key to the
    * named set only when this package grows a use for it.
    */
@@ -861,24 +861,24 @@ export type AgentChatModelCatalog = {
 
 /** Flattened, SDK-facing model row. */
 export type ModelCatalogEntry = {
-  /** Canonical ADE registry id — this is what `ThreadOpenOptions.model` takes. */
+  /** Canonical DAEX registry id — this is what `ThreadOpenOptions.model` takes. */
   id: string;
   displayName: string;
   /**
    * The provider group this model belongs to. One of the six
-   * {@link AdeProvider} values for every model this SDK can open a thread on;
+   * {@link DaexProvider} values for every model this SDK can open a thread on;
    * typed open because the runtime's catalog is downloaded and can list a
    * provider group newer than this SDK.
    *
-   * Because it is open, `ThreadOpenOptions.provider` (typed `AdeProvider`) will
+   * Because it is open, `ThreadOpenOptions.provider` (typed `DaexProvider`) will
    * not take it without narrowing. Narrow it with `isSupportedProvider` — an
    * SDK export since 0.4 — rather than a cast:
    *
    *   if (!isSupportedProvider(entry.provider)) return;
-   *   ade.threads.open(key, { provider: entry.provider, model: entry.id });
+   *   daex.threads.open(key, { provider: entry.provider, model: entry.id });
    */
-  provider: AdeProvider | (string & {});
-  /** Provider-native model ref ADE sends under the hood. */
+  provider: DaexProvider | (string & {});
+  /** Provider-native model ref DAEX sends under the hood. */
   runtimeModelId: string;
   isDefault: boolean;
   isAvailable: boolean;
@@ -911,7 +911,7 @@ export type ProviderStatus = {
    * A usable binary or package was found.
    *
    * On a derived record this is `modelCount > 0`, which answers a different
-   * question — "does ADE know models for this provider" — so do not present it
+   * question — "does DAEX know models for this provider" — so do not present it
    * as a filesystem fact unless `source` is `"probed"`.
    */
   installed: boolean;
@@ -929,7 +929,7 @@ export type ProviderStatus = {
   authenticated: boolean;
   /** How, when the probe could tell: subscription, api-key, oauth, unknown. */
   authMethod?: string | null;
-  /** Remediation ADE supplies. Null on a derived record. */
+  /** Remediation DAEX supplies. Null on a derived record. */
   installCommand: string | null;
   loginCommand: string | null;
   docsUrl: string | null;
@@ -1090,7 +1090,7 @@ export type DoctorReport = {
      *
      * An unsupported runtime still connects: features it lacks are detected
      * and degrade with a logged line. Pass `requireCompatibleRuntime: true` to
-     * `createAdeChat` to refuse it instead. A dev build (`0.0.0`, or no version
+     * `createDaexChat` to refuse it instead. A dev build (`0.0.0`, or no version
      * at all) counts as supported and says so in `note`.
      */
     compatibility: RuntimeCompatibility;
@@ -1131,3 +1131,8 @@ export type RuntimeCompatibility = {
 
 
 export type Unsubscribe = () => void;
+
+// Pre-DAEX names, kept as deprecated aliases so code written against the
+// `@ade-dev` packages keeps compiling. Remove them in a future major version.
+/** @deprecated Use {@link DaexProvider}. */
+export type AdeProvider = DaexProvider;

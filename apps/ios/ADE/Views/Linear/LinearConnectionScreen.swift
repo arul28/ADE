@@ -86,7 +86,7 @@ struct LinearConnectionScreen: View {
       }
       Button("Cancel", role: .cancel) {}
     } message: {
-      Text("This clears Linear for the whole machine (\(machineName)). Every ADE surface on it will need to reconnect.")
+      Text("This clears Linear for the whole machine (\(machineName)). Every \(Brand.name) surface on it will need to reconnect.")
     }
   }
 
@@ -160,7 +160,7 @@ struct LinearConnectionScreen: View {
         }
 
         if !supportsReconnect && !supportsDisconnect {
-          Text("Update ADE on your computer to manage Linear connections from your phone.")
+          Text("Update \(Brand.name) on your computer to manage Linear connections from your phone.")
             .font(.footnote)
             .foregroundStyle(ADEColor.textSecondary)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -325,7 +325,7 @@ struct LinearConnectActions: View {
       }
 
       if !supportsOAuth && !supportsApiKey {
-        Text("Update ADE on your computer to manage Linear connections from your phone.")
+        Text("Update \(Brand.name) on your computer to manage Linear connections from your phone.")
           .font(.footnote)
           .foregroundStyle(ADEColor.textSecondary)
           .frame(maxWidth: .infinity, alignment: .leading)

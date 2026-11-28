@@ -17,6 +17,7 @@ import { cloudLanePowerOfState } from "./cloudLaneStatus";
 import { freeCloudLaneWithConfirm } from "./deleteCloudLane";
 import "./cloudLane.css";
 import "./cloudLaneStatus.css";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Manage lane's Computer tab for an ADE Cloud lane: what a person can do with
@@ -52,7 +53,7 @@ export function CloudLaneComputerPanel({
   const [sizing, setSizing] = useState(false);
   const [freeing, setFreeing] = useState(false);
   if (!computer) {
-    return <p className="adecl-muted">ADE can&apos;t find this lane&apos;s computer right now. Open the ADE Cloud page to see it.</p>;
+    return <p className="adecl-muted">{BRAND.NAME} can&apos;t find this lane&apos;s computer right now. Open the {BRAND.CLOUD_NAME} page to see it.</p>;
   }
   const life = cloudLaneChangesAvailable();
   const awake = computer.state === "running";
@@ -71,7 +72,7 @@ export function CloudLaneComputerPanel({
     <div className="adecl-manage">
       <div className="adecl-manage-head">
         <CloudMark size={16} brand />
-        <span>ADE Cloud computer</span>
+        <span>{BRAND.CLOUD_NAME} computer</span>
         {/* "Deleting" is on its way out, not in trouble: the going-to-sleep mark. */}
         <span className="adecl-status-state" data-power={computer.state === "deleting" ? "stopping" : cloudLanePowerOfState(computer.state)}>
           <i aria-hidden />
@@ -83,7 +84,7 @@ export function CloudLaneComputerPanel({
           <ManageRow
             icon={<Clock size={14} />}
             title="Keep this computer"
-            hint={idle.held ? "ADE couldn't save its work, so it wasn't deleted." : `It isn't used, so it is ${idleCleanupWhen(idle.deletesAt, Date.now())}.`}
+            hint={idle.held ? `${BRAND.NAME} couldn't save its work, so it wasn't deleted.` : `It isn't used, so it is ${idleCleanupWhen(idle.deletesAt, Date.now())}.`}
             tone="warn"
           >
             <button type="button" className="kit-btn" data-size="sm" onClick={() => void keepLaneComputer(computer.instanceId, laneName)}>Keep it</button>
@@ -103,7 +104,7 @@ export function CloudLaneComputerPanel({
           <ManageRow
             icon={<Package size={14} />}
             title="Keep the lane, free its computer"
-            hint="ADE pushes its work, then removes the computer. Your next message makes a new one."
+            hint={`${BRAND.NAME} pushes its work, then removes the computer. Your next message makes a new one.`}
           >
             <button type="button" className="kit-btn" data-size="sm" disabled={freeing} onClick={() => void free()}>
               {freeing ? "Freeing…" : "Free computer"}
@@ -120,7 +121,7 @@ export function CloudLaneComputerPanel({
               navigateToAppTarget({ kind: "settings", tab: "ade-cloud", anchor: "cloud-lanes" });
             }}
           >
-            Open ADE Cloud
+            Open {BRAND.CLOUD_NAME}
           </button>
         </ManageRow>
         {life ? (

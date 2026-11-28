@@ -17,7 +17,7 @@ struct CloudPhoneSleep: Decodable, Equatable {
     switch state {
     case "auto": return "after \(afterMinutes ?? 10) min idle"
     case "never": return "never"
-    default: return "once ADE on it updates"
+    default: return "once \(Brand.name) on it updates"
     }
   }
 }
@@ -113,7 +113,8 @@ struct CloudPhoneMachine: Decodable, Identifiable, Equatable, Hashable {
   var id: String { instanceId }
   var displayName: String {
     if let laneName = lane?.laneName, !laneName.isEmpty { return laneName }
-    if let name, !name.isEmpty, name != "ADE Cloud computer" { return name }
+    // The name DAEX gives a computer with no lane, under either product name, is no name.
+    if let name, !name.isEmpty, name != "\(Brand.cloudName) computer", name != "\(Brand.formerName) Cloud computer" { return name }
     return "Computer \(instanceId.prefix(6))"
   }
   var isVM: Bool { type == "vm" }
@@ -452,7 +453,7 @@ struct CloudPhoneAccount: Decodable, Equatable {
     sponsored = c.lenient(CloudSponsoredState.self, forKey: .sponsored)
   }
 
-  /// The plan's computer limit (`docs/plans/pricing-v2-and-gravity.md`).
+  /// The plan's computer limit (`docs/features/ade-cloud/README.md`, "Plans, credits and sizes").
   var computerLimit: Int? {
     guard let limit = computers?.limit, limit > 0 else { return nil }
     return limit
@@ -652,7 +653,7 @@ extension SyncService {
       return outcome
     } catch {
       ProductAnalytics.shared.captureInvite(.codeEntered, outcome: "refused_unavailable")
-      return CloudPhoneInviteOutcome(ok: false, rewarded: nil, referral: nil, reason: "unavailable", message: "ADE couldn't check that code. Try again in a moment.")
+      return CloudPhoneInviteOutcome(ok: false, rewarded: nil, referral: nil, reason: "unavailable", message: "\(Brand.name) couldn't check that code. Try again in a moment.")
     }
   }
 
@@ -1040,7 +1041,7 @@ extension SyncService {
   func wakeCloudMachineThroughServer(machineKey: String, name: String) async -> CloudWakeResult {
     guard let client = await cloudServerClient(),
           let owner = AccountService.shared.currentPairingAuthorization
-    else { return .failed("Sign in to ADE to wake \(name).") }
+    else { return .failed("Sign in to \(Brand.name) to wake \(name).") }
     var listed = false
     do {
       let instances = try await client.instances()
@@ -1049,11 +1050,11 @@ extension SyncService {
       guard AccountService.shared.isPairingCommitAuthorized(owner) else { return .skipped }
       cloudServerInstances = instances.filter { !$0.isGone }
       guard let box = instances.first(where: { !$0.isGone && $0.machineKey == machineKey }) else {
-        return .failed("\(name) is no longer on this account's ADE Cloud.")
+        return .failed("\(name) is no longer on this account's \(Brand.cloudName).")
       }
       if box.isAwake || box.isComingUp { return .started }
       // The server refuses a suspended computer itself.
-      if box.pastDue { return .failed("\(name) can't wake: the ADE Cloud bill is past due.") }
+      if box.pastDue { return .failed("\(name) can't wake: the \(Brand.cloudName) bill is past due.") }
       try await client.start(instanceId: box.id)
       return .started
     } catch let failure as CloudServerClient.Failure {
@@ -1061,19 +1062,19 @@ extension SyncService {
       case .noAccess:
         // After a good list, a 404 is the computer, not the account.
         return .failed(listed
-          ? "\(name) is no longer on this account's ADE Cloud."
-          : "This account has no ADE Cloud access, so \(name) can't wake.")
-      case .unauthorized: return .failed("ADE Cloud did not accept this sign-in. Sign in again to wake \(name).")
+          ? "\(name) is no longer on this account's \(Brand.cloudName)."
+          : "This account has no \(Brand.cloudName) access, so \(name) can't wake.")
+      case .unauthorized: return .failed("\(Brand.cloudName) did not accept this sign-in. Sign in again to wake \(name).")
       // The server said no and why (blocked, out of hours, too many awake): its sentence.
       case .refused(_, let message): return .failed(message)
       case .computerLimit(let limit): return .failed(limit.headline)
-      case .transport: return .failed("ADE Cloud did not answer. Check the connection and try again.")
-      case .unreadable: return .failed("ADE Cloud sent an answer this app can't read.")
+      case .transport: return .failed("\(Brand.cloudName) did not answer. Check the connection and try again.")
+      case .unreadable: return .failed("\(Brand.cloudName) sent an answer this app can't read.")
       case .server(let status, let message):
-        return .failed(message ?? "ADE Cloud could not wake \(name) (error \(status)).")
+        return .failed(message ?? "\(Brand.cloudName) could not wake \(name) (error \(status)).")
       }
     } catch {
-      return .failed("ADE Cloud did not answer. Check the connection and try again.")
+      return .failed("\(Brand.cloudName) did not answer. Check the connection and try again.")
     }
   }
 

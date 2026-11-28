@@ -13,6 +13,7 @@ import {
 } from "../../../shared/projectSecretRequest";
 import type { ProjectSecretSetArgs, ProjectSecretSummary, ProjectSecretsListResult } from "../../../shared/types/projectSecrets";
 import { cardTimeoutMs, cardWasDeclined, joinInFlight, readCardArgs, type CardRequestChatInput } from "../chat/chatCardRequest";
+import { BRAND } from "../../../shared/brand";
 
 export type ProjectSecretRequestDeps = {
   requestChatInput: CardRequestChatInput;
@@ -60,7 +61,7 @@ export async function requestProjectSecretFromUser(
   const args = readCardArgs(rawArgs);
   const chatSessionId = typeof args.chatSessionId === "string" ? args.chatSessionId.trim() : "";
   if (!chatSessionId) {
-    throw new Error("Asking for a secret needs a chat to ask in. Run `ade secrets request` from inside an ADE chat.");
+    throw new Error("Asking for a secret needs a chat to ask in. Run `daex secrets request` from inside a DAEX chat.");
   }
   const rawRequestId = typeof args.requestId === "string" ? args.requestId.trim() : "";
   if (rawRequestId && !REQUEST_ID_PATTERN.test(rawRequestId)) {
@@ -102,7 +103,7 @@ async function askProjectSecret(
   if (!askedDelivery) throw new Error("--delivery must be `secrets` or `file`.");
   const secretFiles = deps.secretFiles ?? null;
   if (askedDelivery === "file" && !secretFiles) {
-    throw new Error("This ADE runtime cannot write temporary secret files. Ask without --delivery file.");
+    throw new Error("This DAEX runtime cannot write temporary secret files. Ask without --delivery file.");
   }
   const delivery: ProjectSecretDelivery = askedDelivery;
   const ttlMs = typeof args.ttlMs === "number" && Number.isFinite(args.ttlMs) ? Math.floor(args.ttlMs) : null;
@@ -121,7 +122,7 @@ async function askProjectSecret(
       ? [{
           id: PROJECT_SECRET_DELIVERY_QUESTION_ID,
           header: name,
-          question: `Where should ADE keep ${name}?`,
+          question: `Where should ${BRAND.NAME} keep ${name}?`,
           allowsFreeform: false,
           options: PROJECT_SECRET_DELIVERY_OPTIONS.map((option) => ({
             label: option.label,
@@ -171,7 +172,7 @@ async function askProjectSecret(
         fileResult = secretFiles.write({ chatSessionId, requestId, name, value, ttlMs });
       } catch (error) {
         const detail = error instanceof Error ? error.message : "unknown error";
-        throw new Error(`ADE could not write the private file for ${name}: ${detail}`);
+        throw new Error(`DAEX could not write the private file for ${name}: ${detail}`);
       }
       saved = true;
       return;
@@ -184,7 +185,7 @@ async function askProjectSecret(
     } catch (error) {
       // The service's own messages never carry the value.
       const detail = error instanceof Error ? error.message : "unknown error";
-      throw new Error(`ADE could not save ${name}: ${detail}`);
+      throw new Error(`DAEX could not save ${name}: ${detail}`);
     }
     saved = true;
     replaced = exists;

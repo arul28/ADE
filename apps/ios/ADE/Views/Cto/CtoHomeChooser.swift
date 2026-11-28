@@ -192,10 +192,10 @@ struct CtoHomeChooser: View {
         .foregroundStyle(ADEColor.textMuted)
         .frame(width: 24)
       VStack(alignment: .leading, spacing: 2) {
-        Text("ADE Cloud")
+        Text(Brand.cloudName)
           .font(.system(size: 15))
           .foregroundStyle(ADEColor.textPrimary)
-        Text(cloudPaid == true ? "Set it up from ADE on a computer" : "Needs a paid plan")
+        Text(cloudPaid == true ? "Set it up from \(Brand.name) on a computer" : "Needs a paid plan")
           .font(.system(size: 12.5))
           .foregroundStyle(ADEColor.textMuted)
           .fixedSize(horizontal: false, vertical: true)
@@ -207,7 +207,7 @@ struct CtoHomeChooser: View {
     .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
     .opacity(0.6)
     .accessibilityElement(children: .combine)
-    .accessibilityHint("Made from ADE on a computer, not on the iPhone")
+    .accessibilityHint("Made from \(Brand.name) on a computer, not on the iPhone")
   }
 
   private var confirmTitle: String {

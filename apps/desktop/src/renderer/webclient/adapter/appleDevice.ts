@@ -7,6 +7,7 @@ import {
   withStreamTicketToken,
   type StreamTicket,
 } from "./streamTicket";
+import { BRAND } from "../../../shared/brand";
 
 /** Kept here for the existing importers; the helpers live in `streamTicket.ts`. */
 export { APPLE_STREAM_PIPE_KIND, resolveAppleStreamUrl } from "./streamTicket";
@@ -39,7 +40,7 @@ type AppleCall = <T>(
   idempotent?: boolean,
 ) => Promise<T>;
 
-const NO_HOST = "The Apple device environment isn't available on the connected ADE host.";
+const NO_HOST = `The Apple device environment isn't available on the connected ${BRAND.NAME} host.`;
 
 export function createAppleDeviceNamespace(
   call: AppleCall,

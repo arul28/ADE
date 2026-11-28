@@ -10,8 +10,9 @@ import {
 import { ReportIssueFooter } from "./ReportIssueFooter";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { reloadForStaleChunk } from "../../lib/staleChunkReload";
+import { BRAND } from "../../../shared/brand";
 
-const RENDERER_CRASH_HEADLINE = "ADE needs to reload this window";
+const RENDERER_CRASH_HEADLINE = `${BRAND.NAME} needs to reload this window`;
 
 type RendererErrorBoundaryState = {
   hasError: boolean;
@@ -113,7 +114,7 @@ export class RendererErrorBoundary extends React.Component<{ children: React.Rea
                   onClick={() => window.location.reload()}
                 >
                   <ArrowsClockwise size={13} weight="bold" aria-hidden="true" />
-                  Reload ADE
+                  Reload {BRAND.NAME}
                 </button>
               </div>
 

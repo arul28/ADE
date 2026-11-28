@@ -1,5 +1,6 @@
 import type { LANE_SHARE_MAX_GUESTS_PER_LANE, LaneShareRisk } from "../../../account-directory/src/laneShares/contract";
 import { encodeCodedErrorMessage } from "./codedError";
+import { BRAND } from "./brand";
 
 /**
  * What every ADE client reads from the account directory's lane share
@@ -56,7 +57,7 @@ export function laneShareDirectoryProblem(status: number, body: unknown, path: s
     ? error.message.trim().slice(0, 300)
     : `The account directory answered ${status}.`;
   const problem = (code: string, text = message): LaneShareDirectoryProblem => ({ code, message: text, directoryCode });
-  if (status === 401) return problem("signed_out", "Sign in to your ADE account.");
+  if (status === 401) return problem("signed_out", `Sign in to your ${BRAND.NAME} account.`);
   if (status === 404) {
     return laneShareDirectoryNotFound(path, body)
       ? problem("not_found")

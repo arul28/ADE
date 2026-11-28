@@ -1,10 +1,10 @@
 import { useState, type FormEvent } from "react";
 
-import type { AdeChatClient, ProviderId } from "../sdkTypes";
+import type { DaexChatClient, ProviderId } from "../sdkTypes";
 
 export type ApiKeyFormProps = {
   provider: ProviderId;
-  client?: AdeChatClient;
+  client?: DaexChatClient;
   onSubmit?: (input: { provider: ProviderId; key: string; label?: string }) => unknown | Promise<unknown>;
   className?: string;
 };

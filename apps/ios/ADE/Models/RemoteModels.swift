@@ -476,7 +476,7 @@ func adeVersionValue(_ version: String) -> String {
 
 /// The same with the product name: "ADE 1.2.3", or "Dev build".
 func adeVersionDisplayLabel(_ version: String) -> String {
-  adeVersionIsDevBuild(version) ? "Dev build" : "ADE \(version)"
+  adeVersionIsDevBuild(version) ? "Dev build" : "\(Brand.name) \(version)"
 }
 
 /// Whether an ADE version is a Beta-track build. The same rule as desktop's
@@ -648,7 +648,7 @@ extension SyncDomainStatus {
     }
     return SyncDomainFailureNotice(
       title: title,
-      message: "ADE couldn't get fresh \(domain.contentNoun) from your machine. You're seeing the ones it loaded last.",
+      message: "\(Brand.name) couldn't get fresh \(domain.contentNoun) from your machine. You're seeing the ones it loaded last.",
       nextAction: "Tap Retry to load them again.\nIf it keeps failing, check the machine in Settings.",
       technicalDetail: normalized.isEmpty ? nil : normalized
     )

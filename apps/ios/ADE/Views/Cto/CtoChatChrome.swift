@@ -311,7 +311,7 @@ func ctoRemoteSpawn(_ card: WorkToolCardModel) -> (title: String?, remote: CtoRe
   else { return nil }
   let cloud = result["adeCloud"] as? Bool == true
   // Every ADE Cloud lane has its own computer, but the person sees one machine: ADE Cloud.
-  guard let machineName = cloud ? "ADE Cloud" : ctoStr(result["machineName"]) else { return nil }
+  guard let machineName = cloud ? "\(Brand.cloudName)" : ctoStr(result["machineName"]) else { return nil }
   let args = ctoJSONObject(card.argsText) ?? [:]
   // An ADE Cloud launch result names no provider; the model the CTO asked for does.
   let provider = ctoStr(result["provider"]) ?? ctoProviderId(modelId: result["modelId"]) ?? ctoProviderId(modelId: args["modelId"])

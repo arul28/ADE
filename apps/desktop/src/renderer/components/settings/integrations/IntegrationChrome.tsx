@@ -10,6 +10,7 @@ import { integrationBrand, integrationThemeVars, type IntegrationHeroBrand, type
 import type { IntegrationCredentialStorage } from "../../../../shared/types/integrationCredentialStorage";
 import "../providers/providerPage.css";
 import "./integrationPage.css";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * Colour carries status only: ok, needs attention, broken, nothing to say,
@@ -30,7 +31,7 @@ export type IntegrationFact = {
 export function credentialStorageFact(storage: IntegrationCredentialStorage | null | undefined): IntegrationFact | null {
   if (!storage) return null;
   return storage.storage === "account"
-    ? { label: "Saved", value: "All your machines", title: "Your ADE account carries this credential to your other machines for this project." }
+    ? { label: "Saved", value: "All your machines", title: `Your ${BRAND.NAME} account carries this credential to your other machines for this project.` }
     : { label: "Saved", value: "This computer only", tone: "warn", title: storage.message?.trim() || "This credential stays on this computer." };
 }
 

@@ -32,6 +32,7 @@ import type {
 } from "../../../shared/types/macDesktop";
 import type { Logger } from "../logging/logger";
 import type { MacDesktopLeaseRegistry } from "./macDesktopLease";
+import { BRAND } from "../../../shared/brand";
 
 export type MacDesktopRequestChatInput = (args: {
   chatSessionId: string;
@@ -76,7 +77,7 @@ export const MAC_DESKTOP_INPUT_LEASE_WAIT_MS = 170_000;
 
 /** What the caller is told when the user did not answer the lease card in time. */
 export const MAC_DESKTOP_INPUT_LEASE_UNANSWERED_MESSAGE =
-  "The user did not answer the real-input card within about 3 minutes, so ADE withdrew it. "
+  `The user did not answer the real-input card within about 3 minutes, so ${BRAND.NAME} withdrew it. `
   + "Carry on with accessibility actions, or ask again when the user is back.";
 
 /**
@@ -293,11 +294,11 @@ export function createMacDesktopLeaseFlow(deps: MacDesktopLeaseFlowDeps) {
           chatSessionId,
           title: "Real input on the lane's display",
           body: windowsHost
-            ? `ADE would like to ${reason}. Accessibility actions do not need this; real pointer and keyboard events do, and they are global to this PC.`
+            ? `${BRAND.NAME} would like to ${reason}. Accessibility actions do not need this; real pointer and keyboard events do, and they are global to this PC.`
             // A Mac has one pointer. The card is the user's only warning that
             // saying yes lets the agent move it, which is what took one user's
             // mouse three times in a row while they were working.
-            : `ADE would like to ${reason}. While it acts, your mouse pointer jumps onto the lane's screen for each click. Clicks, scrolls and drags inside the lane's own apps do not need this; only a hover or a drop onto another app does.`,
+            : `${BRAND.NAME} would like to ${reason}. While it acts, your mouse pointer jumps onto the lane's screen for each click. Clicks, scrolls and drags inside the lane's own apps do not need this; only a hover or a drop onto another app does.`,
           questionId: "mac_desktop_input_lease",
           header: "Real input",
           question: `Allow this chat to use real pointer and keyboard input on its ${product} display?`,
@@ -318,7 +319,7 @@ export function createMacDesktopLeaseFlow(deps: MacDesktopLeaseFlowDeps) {
         // chat is not an approval, and it is not a crash either: it is the same
         // "nobody said yes" the decline path returns.
         deps.logger.warn("mac_desktop.lease_prompt_failed", { laneId, error: answer.error });
-        return refuse("unasked", `ADE could not show the real-input card in this chat (${answer.error}), so nobody was asked.`);
+        return refuse("unasked", `${BRAND.NAME} could not show the real-input card in this chat (${answer.error}), so nobody was asked.`);
       }
       if (answer.outcome !== "allow") {
         return refuse(

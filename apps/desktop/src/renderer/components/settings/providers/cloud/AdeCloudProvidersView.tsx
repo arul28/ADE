@@ -39,6 +39,7 @@ import { AdeCloudProviderPage } from "./AdeCloudProviderPage";
 import { AdeCloudClaudePage } from "./AdeCloudClaudePage";
 import { ClaudePassSignInSheet, type ClaudePassRequest } from "./ClaudePassSignInSheet";
 import "../../machines/machinesPage.css";
+import { BRAND } from "../../../../../shared/brand";
 
 const PROVIDER_ANCHOR_PREFIX = "ai-provider-";
 
@@ -158,18 +159,18 @@ export function AdeCloudProvidersView({
   const setSwitch = useCallback(async (key: string, on: boolean, confirmOn: boolean): Promise<boolean> => {
     if (on && confirmOn) {
       const ok = await confirmDialog({
-        title: "Use this GitHub login on ADE Cloud?",
+        title: `Use this GitHub login on ${BRAND.CLOUD_NAME}?`,
         message: `Copilot works on each cloud computer with no new sign-in. ${COPILOT_REPO_LINE}`,
         confirmLabel: "Turn on",
       });
       if (!ok) return false;
     }
-    await runWrite(`switch:${key}`, () => window.ade?.providerLogins?.setCloud?.({ key, on }, accountPin), "ADE couldn't change that sign-in. Try again.");
+    await runWrite(`switch:${key}`, () => window.ade?.providerLogins?.setCloud?.({ key, on }, accountPin), `${BRAND.NAME} couldn't change that sign-in. Try again.`);
     return true;
   }, [accountPin, runWrite]);
 
   const turnOnAll = useCallback(() => {
-    void runWrite("all", () => window.ade?.providerLogins?.setCloudAll?.({ on: true }, accountPin), "ADE couldn't turn on sign-ins for ADE Cloud. Try again.");
+    void runWrite("all", () => window.ade?.providerLogins?.setCloudAll?.({ on: true }, accountPin), `${BRAND.NAME} couldn't turn on sign-ins for ${BRAND.CLOUD_NAME}. Try again.`);
   }, [accountPin, runWrite]);
 
   const { allowing, allow: allowKeychain } = useAllowAntigravityKeychain(runWrite, accountPin);
@@ -226,13 +227,13 @@ export function AdeCloudProvidersView({
       case "switch":
         return {
           kind: "switch",
-          aria: `Use ${descriptor.label} on ADE Cloud`,
+          aria: `Use ${descriptor.label} on ${BRAND.CLOUD_NAME}`,
           checked: action.on,
           busy: busy.has(`switch:${action.key}`),
           run: (next) => void setSwitch(action.key, next, action.confirmOn),
         };
       case "recheck":
-        return { kind: "button", label: "Re-check", aria: `Re-check ${descriptor.label} on ADE Cloud`, busy: signIns.rechecking, run: () => void recheck() };
+        return { kind: "button", label: "Re-check", aria: `Re-check ${descriptor.label} on ${BRAND.CLOUD_NAME}`, busy: signIns.rechecking, run: () => void recheck() };
       case "sign-in-here":
         // Copilot's sign-in is the GitHub CLI login, turned on on this computer's Copilot page.
         return descriptor.id === "copilot"
@@ -250,7 +251,7 @@ export function AdeCloudProvidersView({
         return {
           kind: "button",
           label: action.renewKey ? "Renew" : "Sign in",
-          aria: action.renewKey ? "Renew your Claude pass for ADE Cloud" : "Sign in to Claude for ADE Cloud",
+          aria: action.renewKey ? `Renew your Claude pass for ${BRAND.CLOUD_NAME}` : `Sign in to Claude for ${BRAND.CLOUD_NAME}`,
           run: () => setPassRequest(renewRequest(action.renewKey)),
         };
       default:

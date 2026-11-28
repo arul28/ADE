@@ -4,6 +4,7 @@ import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { resolveCrsqliteExtensionPath } from "../../../../../desktop/src/main/services/state/crsqliteExtension";
 import { hasColumn, hasTable, loadNodeSqlite } from "../../../../../desktop/src/main/services/projects/readOnlySqlite";
 import { remapUnderRoot } from "./moveGitLinks";
+import { BRAND } from "../../../../../desktop/src/shared/brand";
 
 /**
  * Every column that stores a path under the project. Synced tables first,
@@ -73,7 +74,7 @@ export async function snapshotProjectDatabase(sourceDbPath: string, destinationD
 function openWithCrsqlite(dbPath: string): DatabaseSyncType {
   const extensionPath = resolveCrsqliteExtensionPath();
   if (!extensionPath) {
-    throw new Error("ADE couldn't find its sync extension, so it can't update the project's data.");
+    throw new Error(`${BRAND.NAME} couldn't find its sync extension, so it can't update the project's data.`);
   }
   const { DatabaseSync } = loadNodeSqlite();
   const db = new DatabaseSync(dbPath, { allowExtension: true });
@@ -234,7 +235,7 @@ export function rewriteProjectDatabasePaths(args: {
   try {
     const projects = db.prepare("select id from projects").all() as Array<{ id: string }>;
     if (projects.length !== 1) {
-      throw new Error(`The project's data lists ${projects.length} projects, so ADE won't change it.`);
+      throw new Error(`The project's data lists ${projects.length} projects, so ${BRAND.NAME} won't change it.`);
     }
     db.exec("begin immediate");
     try {

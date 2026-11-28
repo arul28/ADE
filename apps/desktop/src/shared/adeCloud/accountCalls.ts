@@ -37,6 +37,7 @@ import {
   type CloudLinearQueryResult,
   type CloudSessionCopy,
 } from "../../../../account-directory/src/cloud/contract";
+import { BRAND } from "../brand";
 
 export type AdeCloudAccountCall =
   | { call: "account" }
@@ -90,11 +91,11 @@ export type AdeCloudAccountAnswer<T> =
  * to a browser). Agents on every computer, ADE Cloud too, still use them.
  */
 export const WEB_PASSWORDS_SENTENCE =
-  "Open ADE desktop or the iPhone to see and change Passwords. Agents on every computer, ADE Cloud too, still use them.";
+  `Open ${BRAND.NAME} desktop or the iPhone to see and change Passwords. Agents on every computer, ${BRAND.CLOUD_NAME} too, still use them.`;
 
 /** The sentence for a request that never reached the account server. */
-export const ADE_CLOUD_ACCOUNT_UNREACHABLE = "ADE couldn't reach your ADE account. Try again.";
-export const ADE_CLOUD_ACCOUNT_SIGNED_OUT = "Sign in to ADE to see this with no computer on.";
+export const ADE_CLOUD_ACCOUNT_UNREACHABLE = `${BRAND.NAME} couldn't reach your ${BRAND.NAME} account. Try again.`;
+export const ADE_CLOUD_ACCOUNT_SIGNED_OUT = `Sign in to ${BRAND.NAME} to see this with no computer on.`;
 
 const ID = /^[A-Za-z0-9_.:-]{1,128}$/;
 const ORIGIN_MAX = 500;
@@ -110,13 +111,13 @@ function text(value: unknown, max: number): string | null {
 
 function required(value: unknown, max: number, what: string): string {
   const parsed = text(value, max);
-  if (!parsed) throw new InvalidCall(`ADE couldn't read the ${what} for this request.`);
+  if (!parsed) throw new InvalidCall(`${BRAND.NAME} couldn't read the ${what} for this request.`);
   return parsed;
 }
 
 function id(value: unknown, what: string): string {
   const parsed = text(value, 128);
-  if (!parsed || !ID.test(parsed)) throw new InvalidCall(`ADE couldn't read the ${what} for this request.`);
+  if (!parsed || !ID.test(parsed)) throw new InvalidCall(`${BRAND.NAME} couldn't read the ${what} for this request.`);
   return parsed;
 }
 
@@ -145,7 +146,7 @@ function limitsUpdate(value: unknown): CloudAgentLimitsUpdate {
   }
   const extraDiskMonthCents = cloudAgentExtraDiskCentsOf(limits.extraDiskMonthCents);
   if (limits.extraDiskMonthCents === null || extraDiskMonthCents != null) out.extraDiskMonthCents = extraDiskMonthCents;
-  if (Object.keys(out).length === 0) throw new InvalidCall("ADE couldn't read the limits to save.");
+  if (Object.keys(out).length === 0) throw new InvalidCall(`${BRAND.NAME} couldn't read the limits to save.`);
   const ifRevision = given.ifRevision === null ? null : text(given.ifRevision, 200);
   return { limits: out, ...(given.ifRevision !== undefined ? { ifRevision } : {}) };
 }
@@ -153,11 +154,11 @@ function limitsUpdate(value: unknown): CloudAgentLimitsUpdate {
 /** A list of model ids for a favorites change; an empty list when none was sent. */
 function modelIds(value: unknown): string[] {
   if (value == null) return [];
-  if (!Array.isArray(value) || value.length > ACCOUNT_MODEL_FAVORITES_MAX) throw new InvalidCall("ADE couldn't read the favorite models to save.");
+  if (!Array.isArray(value) || value.length > ACCOUNT_MODEL_FAVORITES_MAX) throw new InvalidCall(`${BRAND.NAME} couldn't read the favorite models to save.`);
   const out: string[] = [];
   for (const raw of value) {
     const id = text(raw, ACCOUNT_MODEL_FAVORITE_ID_MAX);
-    if (!id) throw new InvalidCall("ADE couldn't read the favorite models to save.");
+    if (!id) throw new InvalidCall(`${BRAND.NAME} couldn't read the favorite models to save.`);
     if (!out.includes(id)) out.push(id);
   }
   return out;
@@ -170,7 +171,7 @@ function linearVars(value: unknown): Record<string, unknown> | undefined {
   try {
     size = JSON.stringify(vars).length;
   } catch {
-    throw new InvalidCall("ADE couldn't read this Linear request.");
+    throw new InvalidCall(`${BRAND.NAME} couldn't read this Linear request.`);
   }
   if (size > VARS_MAX_BYTES) throw new InvalidCall("This Linear request is too large.");
   return vars;
@@ -214,7 +215,7 @@ async function dispatch(api: CloudApiClient, call: Record<string, unknown>): Pro
       const kind = typeof call.kind === "string" && (CLOUD_ACCOUNT_SECRET_KINDS as readonly string[]).includes(call.kind)
         ? call.kind as CloudAccountSecretKind
         : undefined;
-      if (call.kind != null && !kind) throw new InvalidCall("ADE can't list that kind of secret.");
+      if (call.kind != null && !kind) throw new InvalidCall(`${BRAND.NAME} can't list that kind of secret.`);
       return await api.accountSecrets({ ...(kind ? { kind } : {}), origin: text(call.origin, ORIGIN_MAX) });
     }
     case "accountLanes": {
@@ -226,10 +227,10 @@ async function dispatch(api: CloudApiClient, call: Record<string, unknown>): Pro
     case "changeModelFavorites": {
       const add = modelIds(call.add);
       const remove = modelIds(call.remove);
-      if (!add.length && !remove.length) throw new InvalidCall("ADE couldn't read the favorite models to save.");
+      if (!add.length && !remove.length) throw new InvalidCall(`${BRAND.NAME} couldn't read the favorite models to save.`);
       // The server compares it with the caller's user id. A supplied account is always sent, never dropped.
       const account = call.account == null ? undefined : text(call.account, 512);
-      if (account === null) throw new InvalidCall("ADE couldn't read the account for these favorites.");
+      if (account === null) throw new InvalidCall(`${BRAND.NAME} couldn't read the account for these favorites.`);
       return await api.changeModelFavorites({ add, remove, ...(account ? { account } : {}) });
     }
     case "savedSession":
@@ -242,7 +243,7 @@ async function dispatch(api: CloudApiClient, call: Record<string, unknown>): Pro
       });
     case "linearQuery": {
       const op = typeof call.op === "string" && (CLOUD_LINEAR_OPS as readonly string[]).includes(call.op) ? call.op as CloudLinearOp : null;
-      if (!op) throw new InvalidCall("ADE can't run that Linear request.");
+      if (!op) throw new InvalidCall(`${BRAND.NAME} can't run that Linear request.`);
       const vars = linearVars(call.vars);
       return await api.linearQuery({ origin: required(call.origin, ORIGIN_MAX, "repository"), op, ...(vars ? { vars } : {}) });
     }
@@ -264,7 +265,7 @@ async function dispatch(api: CloudApiClient, call: Record<string, unknown>): Pro
     case "jiraIssue":
       return await api.jiraIssue({ origin: required(call.origin, ORIGIN_MAX, "repository"), key: id(call.key, "Jira issue") });
     default:
-      throw new InvalidCall("ADE doesn't know this account request.");
+      throw new InvalidCall(`${BRAND.NAME} doesn't know this account request.`);
   }
 }
 

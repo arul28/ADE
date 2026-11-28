@@ -35,7 +35,7 @@ export const ADE_ERROR_CODES = [
  * Kept as its own union rather than derived from {@link ADE_ERROR_CODES} so
  * each member can carry its own doc comment; a test asserts the two agree.
  */
-export type AdeErrorCode =
+export type DaexErrorCode =
   | "binary_not_found"
   | "download_failed"
   | "checksum_mismatch"
@@ -64,13 +64,13 @@ export type AdeErrorCode =
   | "approval_not_found"
   /**
    * A bridge refused the call before it reached the SDK — the host's
-   * `authorize` hook said no. Used by `@ade-dev/sdk/electron`.
+   * `authorize` hook said no. Used by `@daex-dev/sdk/electron`.
    */
   | "unauthorized"
   | "disposed"
   /**
    * The runtime's version is outside `SUPPORTED_RUNTIME_RANGE` and the host
-   * asked `createAdeChat` to refuse it (`requireCompatibleRuntime: true`).
+   * asked `createDaexChat` to refuse it (`requireCompatibleRuntime: true`).
    * Without that option an unsupported runtime connects with a logged warning.
    */
   | "runtime_incompatible"
@@ -102,8 +102,8 @@ export type AdeErrorCode =
  * silently unvalidatable string at the Electron boundary.
  */
 type _CodesMatch =
-  (typeof ADE_ERROR_CODES)[number] extends AdeErrorCode
-    ? AdeErrorCode extends (typeof ADE_ERROR_CODES)[number]
+  (typeof ADE_ERROR_CODES)[number] extends DaexErrorCode
+    ? DaexErrorCode extends (typeof ADE_ERROR_CODES)[number]
       ? true
       : never
     : never;
@@ -113,15 +113,15 @@ void _codesMatch;
 const CODE_SET: ReadonlySet<string> = new Set<string>(ADE_ERROR_CODES);
 
 /** A code read back off the wire, or null when it is not one this SDK declares. */
-export function readAdeErrorCode(value: unknown): AdeErrorCode | null {
-  return typeof value === "string" && CODE_SET.has(value) ? (value as AdeErrorCode) : null;
+export function readAdeErrorCode(value: unknown): DaexErrorCode | null {
+  return typeof value === "string" && CODE_SET.has(value) ? (value as DaexErrorCode) : null;
 }
 
-export class AdeError extends Error {
-  readonly code: AdeErrorCode;
+export class DaexError extends Error {
+  readonly code: DaexErrorCode;
   override readonly cause?: unknown;
 
-  constructor(code: AdeErrorCode, message: string, options?: { cause?: unknown }) {
+  constructor(code: DaexErrorCode, message: string, options?: { cause?: unknown }) {
     super(message);
     this.name = "AdeError";
     this.code = code;
@@ -136,3 +136,12 @@ export function toError(value: unknown): Error {
 export function errorMessage(value: unknown): string {
   return value instanceof Error ? value.message : String(value);
 }
+
+// Pre-DAEX names, kept as deprecated aliases so code written against the
+// `@ade-dev` packages keeps compiling. Remove them in a future major version.
+/** @deprecated Use {@link DaexError}. */
+export const AdeError = DaexError;
+/** @deprecated Use {@link DaexError}. */
+export type AdeError = DaexError;
+/** @deprecated Use {@link DaexErrorCode}. */
+export type AdeErrorCode = DaexErrorCode;

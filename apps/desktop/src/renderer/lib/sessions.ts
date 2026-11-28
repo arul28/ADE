@@ -7,6 +7,8 @@ import { isProviderSlashCommandInput } from "../../shared/chatSlashCommands";
 import { stripElectronErrorWrapper } from "../../shared/codedError";
 import { cursorOwnsSessionName as cursorOwnsCloudAgentId } from "../../shared/cursorCloudNaming";
 import { isChatToolType } from "../../shared/sessionSpawnNesting";
+import { BRAND } from "../../shared/brand";
+import { PRODUCT_NAME_PATTERN } from "../../shared/brandNames";
 
 export { CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE } from "../../shared/cursorCloudNaming";
 export { isChatToolType };
@@ -43,6 +45,8 @@ export function isPtyContextInsertableToolType(toolType: TerminalSessionSummary[
     || toolType === "antigravity";
 }
 
+const OWNED_BY_ANOTHER_RUNTIME = new RegExp(`is still owned by another ${PRODUCT_NAME_PATTERN} runtime`, "i");
+
 /**
  * Turns a runtime rejection into copy a person can act on.
  *
@@ -63,8 +67,8 @@ export function formatSessionActionError(error: unknown, action: string): string
     // showing the raw id for.
     return `${action} failed: that session is no longer on the machine this tab is connected to. Refresh the list, or switch to the machine that owns it and try again.`;
   }
-  if (/is still owned by another ADE runtime/i.test(message)) {
-    return `${action} failed: another ADE runtime still owns this session. Stop it from that machine first.`;
+  if (OWNED_BY_ANOTHER_RUNTIME.test(message)) {
+    return `${action} failed: another ${BRAND.NAME} runtime still owns this session. Stop it from that machine first.`;
   }
   return `${action} failed: ${message}`;
 }

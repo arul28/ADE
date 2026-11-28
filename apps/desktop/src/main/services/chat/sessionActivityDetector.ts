@@ -1,6 +1,7 @@
 import { hasNonEmptyRecord } from "../../../shared/agentObservationNormalizers";
 import type { AcpToolKind, AgentChatEvent } from "../../../shared/types/chat";
 import type { SessionActivityValue } from "../../../shared/types/sessions";
+import { ADE_CLI_NAME_SOURCE } from "../../../shared/cliCommandNames";
 
 /**
  * Detects what a live chat turn is doing from the tool calls it makes, so the
@@ -128,8 +129,8 @@ const ADE_CLI_VARIABLE = /"\$(?:\{ADE_CLI_PATH\}|ADE_CLI_PATH|env:ADE_CLI_PATH)"
 const QUOTED_COMMAND = /(^|&&|\|\||[;|&(\n{])(\s*)"(?:[^"\n]*[\\/])?([^"\\/\s]+)"/g;
 /** A quoted span is an argument (a commit message, an `echo`), never a command. */
 const QUOTED_SPAN = /'[^']*'|"(?:[^"\\]|\\.)*"/g;
-/** The ADE CLI named by path at command position: `ade`, `/usr/local/bin/ade`, `C:\tools\ade.exe`. */
-const ADE_CLI_PATH_SPELLING = /^(?:\S*[\\/])?ade(?:\.exe|\.cmd)?(?=\s|$)/i;
+/** The CLI named by path at command position: `daex`, `ade`, `/usr/local/bin/daex`, `C:\tools\ade.exe`. */
+const ADE_CLI_PATH_SPELLING = new RegExp(String.raw`^(?:\S*[\\/])?${ADE_CLI_NAME_SOURCE}(?:\.exe|\.cmd)?(?=\s|$)`, "i");
 
 /**
  * How much of a command line the wrapper unwrap reads. Larger than the

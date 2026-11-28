@@ -1,13 +1,13 @@
 /**
  * The whole renderer. No React, no build step — the point is the bridge, not
- * the view. `@ade-dev/chat-ui` drops in here unchanged: `adaptSdkClient(client)`
- * accepts this exact object, because `createAdeIpcClient` returns the shape it
+ * the view. `@daex-dev/chat-ui` drops in here unchanged: `adaptSdkClient(client)`
+ * accepts this exact object, because `createDaexIpcClient` returns the shape it
  * expects with no cast.
  */
 
-/* global AdeElectron */
+/* global DaexElectron */
 
-const client = AdeElectron.createAdeIpcClient(window.ade);
+const client = DaexElectron.createDaexIpcClient(window.ade);
 
 const transcript = document.getElementById("transcript");
 const state = document.getElementById("state");
@@ -56,7 +56,7 @@ async function pickModel() {
   const models = await client.models.list();
   const usable = models.filter((model) => model.isAvailable !== false);
   const chosen = usable[0] || models[0];
-  if (!chosen) throw new Error("ADE knows no models. Install and sign in to a provider CLI.");
+  if (!chosen) throw new Error("DAEX knows no models. Install and sign in to a provider CLI.");
   return chosen;
 }
 

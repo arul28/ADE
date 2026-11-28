@@ -69,6 +69,7 @@ import { AdeExpectedError } from "../../../../desktop/src/shared/expectedError";
 import { runGitWithGithubAuthFallback } from "../../../../desktop/src/main/services/git/gitTransportAuth";
 import { restoreCloudChat, type CloudChatRestoreDeps, type CloudChatRestoreResult } from "./cloudChatRestore";
 import { prepareLaneBranchFromBackup, restoreLaneBackupIfNeeded } from "./cloudLaneBackup";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 type Logger = {
   info: (event: string, meta?: Record<string, unknown>) => void;
@@ -263,7 +264,7 @@ function fromComputerOf(args: unknown): CloudKeptLaneRestoreFromComputer | null 
   const raw = (args as { fromComputer?: unknown } | null)?.fromComputer;
   if (raw == null) return null;
   const instanceId = typeof (raw as { instanceId?: unknown }).instanceId === "string" ? (raw as { instanceId: string }).instanceId.trim() : "";
-  if (!INSTANCE_ID.test(instanceId)) throw new AdeExpectedError("ADE doesn't know that ADE Cloud computer.", "user");
+  if (!INSTANCE_ID.test(instanceId)) throw new AdeExpectedError(`${BRAND.NAME} doesn't know that ${BRAND.CLOUD_NAME} computer.`, "user");
   return { instanceId };
 }
 
@@ -282,18 +283,18 @@ async function asleepSource(api: CloudApiClient, laneId: string, from: CloudKept
     instance = await api.computer(from.instanceId);
   } catch (error) {
     if (error instanceof CloudApiError && error.status === 404) {
-      throw new AdeExpectedError("This lane's ADE Cloud computer is gone already. Open the lane again to move it from its saved copy.", "user");
+      throw new AdeExpectedError(`This lane's ${BRAND.CLOUD_NAME} computer is gone already. Open the lane again to move it from its saved copy.`, "user");
     }
     throw error;
   }
   const lane = cloudMachineLaneFactsOf(instance.metadata);
-  if (!lane || lane.laneId !== laneId) throw new AdeExpectedError("That ADE Cloud computer doesn't hold this lane.", "user");
+  if (!lane || lane.laneId !== laneId) throw new AdeExpectedError(`That ${BRAND.CLOUD_NAME} computer doesn't hold this lane.`, "user");
   const resting = isRestingStatus(instance.status);
   const saved = resting && instance.backups?.saved === true;
   const reason = saved
     ? null
     : !resting
-      ? "This lane's ADE Cloud computer is awake, so ADE moves the lane from the computer itself."
+      ? `This lane's ${BRAND.CLOUD_NAME} computer is awake, so ${BRAND.NAME} moves the lane from the computer itself.`
       : instance.backups?.problems?.[0]?.reason
         ?? (instance.backups ? CLOUD_BACKUP_NOT_SAVED_SENTENCE : CLOUD_BACKUP_NEVER_SAVED_SENTENCE);
   return {
@@ -321,7 +322,7 @@ class ReleaseRefusedError extends Error {}
 
 function laneIdOf(args: unknown): string {
   const laneId = typeof (args as { laneId?: unknown } | null)?.laneId === "string" ? (args as { laneId: string }).laneId.trim() : "";
-  if (!LANE_ID.test(laneId)) throw new AdeExpectedError("ADE doesn't know that lane.", "user");
+  if (!LANE_ID.test(laneId)) throw new AdeExpectedError(`${BRAND.NAME} doesn't know that lane.`, "user");
   return laneId;
 }
 
@@ -337,14 +338,14 @@ export function createKeptLaneRestores(deps: KeptLaneRestoresDeps): KeptLaneRest
 
   const ready = async (): Promise<{ api: CloudApiClient; machineKey: string }> => {
     const api = await deps.api();
-    if (!api) throw new AdeExpectedError("Sign in to your ADE account on this computer to move a lane here.", "user");
+    if (!api) throw new AdeExpectedError(`Sign in to your ${BRAND.NAME} account on this computer to move a lane here.`, "user");
     const machineKey = deps.machineKey();
-    if (!machineKey) throw new AdeExpectedError("This computer isn't set up with your ADE account yet. Open ADE on it once, then try again.", "user");
+    if (!machineKey) throw new AdeExpectedError(`This computer isn't set up with your ${BRAND.NAME} account yet. Open ${BRAND.NAME} on it once, then try again.`, "user");
     return { api, machineKey };
   };
   const keptLane = async (api: CloudApiClient, laneId: string): Promise<CloudLaneWithoutComputer> => {
     const kept = (await api.lanesWithoutComputer()).find((lane) => lane.laneId === laneId);
-    if (!kept) throw new AdeExpectedError("ADE Cloud has no kept lane like that any more. It may have moved already.", "user");
+    if (!kept) throw new AdeExpectedError(`${BRAND.CLOUD_NAME} has no kept lane like that any more. It may have moved already.`, "user");
     return kept;
   };
 
@@ -369,7 +370,7 @@ export function createKeptLaneRestores(deps: KeptLaneRestoresDeps): KeptLaneRest
     try {
       const instance = await api.computer(instanceId);
       if (instance.deleteOnlyIfSaved !== true) {
-        throw new ReleaseRefusedError("ADE Cloud can't move this asleep lane from its saved copy yet. Wake the computer to move the lane.");
+        throw new ReleaseRefusedError(`${BRAND.CLOUD_NAME} can't move this asleep lane from its saved copy yet. Wake the computer to move the lane.`);
       }
       await api.deleteComputer(instanceId, { reason: "moved", keepLane: { branchRef: source.branchRef, onlyIfSaved: true } });
     } catch (error) {
@@ -385,7 +386,7 @@ export function createKeptLaneRestores(deps: KeptLaneRestoresDeps): KeptLaneRest
       const kept = (await api.lanesWithoutComputer()).find((lane) => lane.laneId === source.laneId);
       if (kept) return kept;
       if (Date.now() >= deadline) {
-        throw new Error("ADE Cloud deleted the computer but doesn't list the lane yet. Open the lane again to move it from its saved copy.");
+        throw new Error(`${BRAND.CLOUD_NAME} deleted the computer but doesn't list the lane yet. Open the lane again to move it from its saved copy.`);
       }
       await new Promise((resolve) => setTimeout(resolve, RELEASE_LIST_POLL_MS));
     }
@@ -451,7 +452,7 @@ export function createKeptLaneRestores(deps: KeptLaneRestoresDeps): KeptLaneRest
           });
           // A CLI's copy moves after it runs here; one still on the deleted computer would go with the forget.
           if (row.kind === "cli" && !sameKey(row.fromMachineKey, machineKey) && !result.moved) {
-            throw new Error("ADE couldn't move this CLI's saved copy to this computer. Try again.");
+            throw new Error(`${BRAND.NAME} couldn't move this CLI's saved copy to this computer. Try again.`);
           }
           entry.state = "restored";
           entry.history = historyOf(result.restoredWith);
@@ -466,14 +467,14 @@ export function createKeptLaneRestores(deps: KeptLaneRestoresDeps): KeptLaneRest
       if (failed > 0) {
         record.state = "failed";
         record.error = failed === 1
-          ? "One chat didn't come back. The lane stays on ADE Cloud too: try again to go on."
-          : `${failed} chats didn't come back. The lane stays on ADE Cloud too: try again to go on.`;
+          ? `One chat didn't come back. The lane stays on ${BRAND.CLOUD_NAME} too: try again to go on.`
+          : `${failed} chats didn't come back. The lane stays on ${BRAND.CLOUD_NAME} too: try again to go on.`;
         return;
       }
       // The forget deletes every saved copy left on ADE Cloud: not while some were never listed.
       if (!complete) {
         record.state = "failed";
-        record.error = "This lane has more chats than one move brings back. The lane stays on ADE Cloud too: try again to bring the rest.";
+        record.error = `This lane has more chats than one move brings back. The lane stays on ${BRAND.CLOUD_NAME} too: try again to bring the rest.`;
         logger.warn("cloud.kept_lane_rows_left", { restoreId: record.restoreId, chats: record.chats.length });
         return;
       }
@@ -484,7 +485,7 @@ export function createKeptLaneRestores(deps: KeptLaneRestoresDeps): KeptLaneRest
         await api.forgetMovedLaneWithoutComputer(kept.laneId, { toMachineKey: machineKey, keepBackups: lane.keepBackups });
       } catch (error) {
         if (error instanceof CloudApiError && error.status === 404) {
-          throw new Error("ADE Cloud can't finish this move yet: the lane came back here, and it still shows on ADE Cloud. Try again later.");
+          throw new Error(`${BRAND.CLOUD_NAME} can't finish this move yet: the lane came back here, and it still shows on ${BRAND.CLOUD_NAME}. Try again later.`);
         }
         throw error;
       }
@@ -571,7 +572,7 @@ export function createKeptLaneRestores(deps: KeptLaneRestoresDeps): KeptLaneRest
           throw new AdeExpectedError("This project isn't the lane's repository. Open a clone of it on this computer, then move the lane there.", "user");
         }
         if (!kept.branchRef || !BRANCH.test(branchNameOf(kept.branchRef))) {
-          throw new AdeExpectedError("ADE Cloud doesn't know this lane's branch, so ADE can't bring it here.", "user");
+          throw new AdeExpectedError(`${BRAND.CLOUD_NAME} doesn't know this lane's branch, so ${BRAND.NAME} can't bring it here.`, "user");
         }
         const at = now();
         const record: CloudKeptLaneRestoreRecord = {
@@ -642,7 +643,7 @@ export async function restoreKeptLaneBranch(args: {
 }): Promise<{ localLaneId: string; keepBackups: boolean }> {
   const { api, kept, projectRoot, logger } = args;
   const branch = branchNameOf(args.branchRef);
-  if (!BRANCH.test(branch)) throw new AdeExpectedError("ADE Cloud doesn't know this lane's branch, so ADE can't bring it here.", "user");
+  if (!BRANCH.test(branch)) throw new AdeExpectedError(`${BRAND.CLOUD_NAME} doesn't know this lane's branch, so ${BRAND.NAME} can't bring it here.`, "user");
   const lanes = await args.lanes.list();
   const live = lanes.filter((lane) => !lane.archived && !lane.primary);
   let lane: { id: string; worktreePath: string } | null = live.find((entry) => entry.id === kept.laneId && entry.branchRef === branch)
@@ -673,7 +674,7 @@ export async function restoreKeptLaneBranch(args: {
     projectRoot,
     logger,
   });
-  if (outcome === "failed") throw new Error("ADE couldn't read the lane's branch on this computer.");
+  if (outcome === "failed") throw new Error(`${BRAND.NAME} couldn't read the lane's branch on this computer.`);
   return { localLaneId: lane.id, keepBackups: outcome === "kept_newer_local_work" || outcome === "kept_branch_differs" };
 }
 

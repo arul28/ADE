@@ -23,6 +23,7 @@ import { forgetCloudComputerStatus, useCloudComputerStatus } from "./useCloudCom
 import "../remoteTargets/cloudBrand.css";
 import "../remoteTargets/connections.css";
 import "./cloudLaneStatus.css";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * A cloud lane's chat header: one cloud button for the lane's computer. Its
@@ -60,8 +61,8 @@ export function CloudLaneHeaderButton({ laneId, turnRunning }: { laneId: string 
     online: scope.isRemote && scope.online,
   });
   const title = [
-    `ADE Cloud computer · ${CLOUD_LANE_POWER_TEXT[power]}`,
-    idle ? (idle.held ? "It wasn't deleted: ADE couldn't save its work" : `It will be ${idleCleanupWhen(idle.deletesAt, Date.now())} because it isn't used`) : null,
+    `${BRAND.CLOUD_NAME} computer · ${CLOUD_LANE_POWER_TEXT[power]}`,
+    idle ? (idle.held ? `It wasn't deleted: ${BRAND.NAME} couldn't save its work` : `It will be ${idleCleanupWhen(idle.deletesAt, Date.now())} because it isn't used`) : null,
   ].filter(Boolean).join(". ");
 
   const wakeNow = async () => {
@@ -76,7 +77,7 @@ export function CloudLaneHeaderButton({ laneId, turnRunning }: { laneId: string 
       showToast({
         tone: "warning",
         title: `Couldn't wake ${name}'s computer`,
-        message: result?.message || "This window can't reach ADE Cloud. Try it from the ADE desktop app.",
+        message: result?.message || `This window can't reach ${BRAND.CLOUD_NAME}. Try it from the ${BRAND.NAME} desktop app.`,
       });
     }
     refreshCloudMachines();
@@ -88,7 +89,7 @@ export function CloudLaneHeaderButton({ laneId, turnRunning }: { laneId: string 
         {...menu.triggerProps}
         type="button"
         className={WORK_HEADER_ICON_BUTTON_CLASS}
-        aria-label={`ADE Cloud computer of ${name}: ${CLOUD_LANE_POWER_TEXT[power]}`}
+        aria-label={`${BRAND.CLOUD_NAME} computer of ${name}: ${CLOUD_LANE_POWER_TEXT[power]}`}
         title={title}
       >
         <span className="adecl-power">
@@ -171,7 +172,7 @@ function CloudLaneStatusMenu({
       onClose={menu.close}
       placement="bottom-end"
       role="menu"
-      aria-label={`ADE Cloud computer of ${name}`}
+      aria-label={`${BRAND.CLOUD_NAME} computer of ${name}`}
       className="ade-cx-menu adecl-status-menu"
       zIndex={Z_LAYERS.contextMenu}
       onKeyDown={menu.closeOnEscape}
@@ -224,7 +225,7 @@ function CloudLaneStatusMenu({
             type="button"
             role="menuitem"
             className="ade-cx-menu-item"
-            aria-label={idle.held ? "Keep this computer. ADE couldn't save its work, so it wasn't deleted." : `Keep this computer. Otherwise it is ${idleCleanupWhen(idle.deletesAt, Date.now())}.`}
+            aria-label={idle.held ? `Keep this computer. ${BRAND.NAME} couldn't save its work, so it wasn't deleted.` : `Keep this computer. Otherwise it is ${idleCleanupWhen(idle.deletesAt, Date.now())}.`}
             onClick={run(() => void keepLaneComputer(computer.instanceId, name))}
           >
             <span className="ade-cx-menu-icon"><Clock size={13} /></span>
@@ -262,11 +263,11 @@ function CloudLaneStatusMenu({
             type="button"
             role="menuitem"
             className="ade-cx-menu-item"
-            aria-label="Disk, credits and more on the ADE Cloud page"
+            aria-label={`Disk, credits and more on the ${BRAND.CLOUD_NAME} page`}
             onClick={run(() => navigateToAppTarget({ kind: "settings", tab: "ade-cloud", anchor: "cloud-lanes" }))}
           >
             <span className="ade-cx-menu-icon"><ArrowSquareOut size={13} /></span>
-            ADE Cloud page
+            {BRAND.CLOUD_NAME} page
           </button>
         </div>
         {life ? (
@@ -316,7 +317,7 @@ export async function keepLaneComputer(instanceId: string, name: string): Promis
     console.warn("[cloud] keeping a lane's computer failed", error);
     return { ok: false, message: error instanceof Error ? error.message : undefined };
   });
-  if (result?.ok) showToast({ tone: "success", title: `Kept ${name}'s computer`, message: "ADE Cloud won't delete it. Its unused days count again from now." });
+  if (result?.ok) showToast({ tone: "success", title: `Kept ${name}'s computer`, message: `${BRAND.CLOUD_NAME} won't delete it. Its unused days count again from now.` });
   else showToast({ tone: "warning", title: `Couldn't keep ${name}'s computer`, message: result?.message || "Send a message in the lane to keep it." });
   refreshCloudMachines();
 }
@@ -334,7 +335,7 @@ export async function sleepLaneComputer(instanceId: string, name: string, runnin
     showToast({
       tone: "warning",
       title: `Couldn't put ${name}'s computer to sleep`,
-      message: result?.message || "This window can't reach ADE Cloud. Try it from the ADE desktop app.",
+      message: result?.message || `This window can't reach ${BRAND.CLOUD_NAME}. Try it from the ${BRAND.NAME} desktop app.`,
     });
   }
   refreshCloudMachines();

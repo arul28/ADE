@@ -1,8 +1,8 @@
 ---
 name: ade-perf-work
-description: Performance and UX patterns discovered for ADE's Work tab, including chat/CLI/shell launch surfaces, the Work tools pane, Git/Files/iOS/App Control/Browser panels, and local-runtime-disabled perf runs. Read before editing Work tab code.
+description: Performance and UX patterns discovered for DAEX's Work tab, including chat/CLI/shell launch surfaces, the Work tools pane, Git/Files/iOS/App Control/Browser panels. Read before editing Work tab code.
 metadata:
-  author: ADE
+  author: DAEX
   version: 0.1.0
 ---
 
@@ -25,7 +25,7 @@ Use the real Work tab first. For local perf runs, reset and open the perf-pass r
 
 ```bash
 scripts/reset-perf-pass.sh
-NO_DEVTOOLS=1 ADE_DISABLE_LOCAL_RUNTIME_DAEMON=1 ADE_LOCAL_RUNTIME_FALLBACK=1 ADE_MODEL_OVERRIDE=gpt-5-codex \
+NO_DEVTOOLS=1 ADE_MODEL_OVERRIDE=gpt-5-codex \
   node scripts/perf-launch.mjs --tab work --run-id work-ui-audit-<date>-<n>
 ```
 
@@ -111,27 +111,14 @@ Measured Work runs:
 If changing usage/cost telemetry, test with a large local `~/.codex` /
 `~/.claude` history and re-run a Work perf launch for at least 45 seconds.
 
-### Skip the local runtime bridge when the local daemon is disabled
+### Answer sync status fast when the sync service is unavailable
 
-In Work perf runs with `ADE_DISABLE_LOCAL_RUNTIME_DAEMON=1`, the preload bridge must not try `ade.localRuntime.callAction`, `ade.localRuntime.callSync`, or `ade.localRuntime.streamEvents` for local project bindings.
-
-Measured Work cold run:
-
-- Before: `67` failed `ade.localRuntime.*` IPC calls, `19,427ms` aggregate failed IPC time.
-- After: `0` failed `ade.localRuntime.*` IPC calls.
-
-Keep the preload guard in `apps/desktop/src/preload/preload.ts` intact. If changing project binding or remote runtime event pump logic, re-run a local-runtime-disabled Work audit and confirm local runtime IPC remains zero.
-
-### Fast-path sync status when the local runtime daemon is disabled
-
-`ade.sync.getStatus` is called during Work startup and periodically from shell chrome. In local-runtime-disabled runs it must not spawn the disabled runtime or fail before falling back.
-
-Measured Work run:
-
-- Before sync fix: `ade.sync.getStatus` failed and consumed `606ms` across two calls in the startup window.
-- After: the same status path returned successfully in `0-1ms`.
-
-Keep the unavailable sync snapshot in `apps/desktop/src/main/services/ipc/registerIpc.ts`. It is a perf-mode/status fallback, not a replacement for real sync service behavior.
+`ade.sync.getStatus` is called during Work startup and periodically from shell
+chrome. When the sync service is not available it must return the unavailable
+snapshot at once instead of failing slowly; keep the
+`isSyncServiceUnavailableError` fallbacks in
+`apps/desktop/src/main/services/ipc/registerIpc.ts`. They are a status
+fallback, not a replacement for real sync service behavior.
 
 ### A web transport connect must not launch domain work
 
@@ -241,9 +228,7 @@ Measured Work run `work-chat-controls-20260512-02`:
   `/clear Clear chat history`. Do not promote `work.chat.command.select` from
   that state; use a fixture or real session state with a non-clear command.
 - Handoff controls are not an empty-draft surface. They appear only for standard
-  locked Work chats. Use focused `AgentChatPane.submit.test.tsx -t "handoff"`
-  evidence for open/permission/launch logic unless you intentionally create a
-  real throwaway chat in perf-pass.
+  locked Work chats. Create a real throwaway chat in perf-pass to measure them.
 - The proof/artifacts drawer is also not exposed on the empty draft surface in
   Work. Use a selected standard chat/session or a focused companion-toolbar
   fixture before measuring proof drawer open/close or right-pane resize.
@@ -258,8 +243,7 @@ Measured Work run `work-chat-controls-20260512-02`:
   run, selecting a Cursor SDK model exposed a native mode select with `Agent`,
   `Ask`, `Plan`, and `Full auto`; the `Cursor Cloud actions` menu exposed
   `Send to Cursor Cloud` and `Open existing cloud chat` without launching a
-  cloud session. `CursorCloudInlineLaunch.test.tsx` covers canceling an inline
-  Cursor Cloud send without creating a run.
+  cloud session.
 - `work.chat.composer.clear` is not an empty-draft affordance in the current
   Work composer. The visible `Clear` button is gated by `turnActive` alongside
   steer/stop controls, so measure it with an active-turn fixture or sandbox chat
@@ -270,7 +254,7 @@ Measured Work run `work-chat-controls-20260512-02`:
   `Chat context is unavailable here`, so measure screenshot start/cancel from a
   selected chat/context-capable surface.
 - Chat attachment search uses the composer lane, not the Files tools workspace.
-  In perf-pass, switch the composer lane to `Primary` before searching for
+  In perf-pass, switch the composer lane to the main checkout before searching for
   `README.md`; a missing lane worktree legitimately returns no file results.
   For React-controlled picker inputs, prefer focused CDP text input over simply
   assigning `input.value`, because DOM-only value changes can leave the picker
@@ -288,27 +272,17 @@ Measured Work run `work-chat-controls-20260512-02`:
   render through `ChatWorkLogBlock`, not the old standalone `ToolResultCard`;
   keep long-result `show all` / `collapse` behavior on that reachable
   `ChatWorkLogBlock` row path.
-- `AgentChatPane.submit.test.tsx` has valid focused fixture evidence for
-  selecting chat tabs in the Work chat pane. Its CLI-created terminal tests only
-  auto-reveal terminal tabs; terminal drawer toggle, resize, and manual
-  tab-switch need live evidence.
-- `AgentChatPane.companionDrawers.test.tsx` covers chat companion iOS, App
-  Control, proof drawer open/close, right-pane split resize, archived-chat
-  restore, and persistent identity `Clear view` through the real
-  `AgentChatPane` chrome. This is non-Work fixture evidence for the lane tool
-  drawers: normal Work embedding passes `hideLaneToolDrawers`, so iOS/App
-  Control drawer buttons are intentionally absent there.
+- Terminal drawer toggle, resize, and manual tab-switch in the Work chat pane
+  need live evidence.
 - `ChatSubagentsPanel.test.tsx` can cover the subagents drawer toggle, detail
   view, Back navigation, hidden timeline expansion, and copy-id behavior without
   spawning real subagents.
 - `AgentChatComposer.test.tsx` can cover the active-turn `Clear` composer
   control, queued steer edit/remove callbacks, prompt-suggestion Tab
   acceptance, rich visual-context chip select/remove, slash-command selection,
-  and dismissing an attachment error. `FilesPage.test.tsx` can cover the
-  non-embedded Files editor theme toggle, primary-workspace `TRUST & EDIT`
-  toggle, and Files tree context-menu `COPY PATH`. Embedded Work Files does not
-  render those non-embedded chrome controls, so keep live embedded fail markers
-  separate from focused Files chrome coverage.
+  and dismissing an attachment error. Embedded Work Files does not render the
+  non-embedded Files chrome controls (editor theme toggle, `TRUST & EDIT`), so
+  keep live embedded fail markers separate from Files-page coverage.
 - `SessionListPane.test.tsx` can cover the stale running-session warning, child
   shell section collapse/expand, and bulk restore footer wiring.
 - Browser back/forward/reload can use a localhost two-page fixture. For
@@ -336,9 +310,9 @@ Measured Work run `work-chat-controls-20260512-02`:
   value afterward, and treat close/submit behavior as separate evidence.
 - The detached App Control tools pane can safely measure local text entry in
   `App Control launch command` and `CDP port` if the fields are restored and
-  Run/Connect are not clicked. `Help wire CDP` is not rendered there unless
-  `canAttachToChat` is true, and Control/Inspect mode plus focused-element
-  typing need an active app session.
+  Run/Connect are not clicked. `Help wire CDP` is rendered only when the panel
+  is given an `onHelpWireCdp` handler, and Control/Inspect mode plus
+  focused-element typing need an active app session.
 - `ChatAppControlPanel.test.tsx` can cover safe App Control state controls
   without launching or driving an app: inserting the Help wire CDP draft,
   showing the launch terminal, refreshing a
@@ -355,20 +329,9 @@ Measured Work run `work-chat-controls-20260512-02`:
   Capture mode, and the preview agent-action selector are safe state-only
   controls; Create preview prompt buttons need a chat-capable fixture or
   explicit clipboard/draft handling.
-- `ChatIosSimulatorPanel.test.tsx` can cover iOS stream retry/recovery by
-  emitting a `stream-error` event and verifying the panel restarts the stream
-  for the selected device. It can also cover state-only launch-target select,
-  Preview-target select, setup install-command copy, Preview `Create closer preview`, and
-  no-target `Create preview` without launching Simulator or Xcode.
-  The same fixture can cover live simulator Control/Inspect mode switches,
-  active-app text-field entry before Send, inspector refresh, and starting
-  screenshot capture mode. It can also cover selecting a mocked ADE-inspector
-  element and opening Preview Lab scoped to that element's source file; keep
-  Preview rendering as separate sandbox-only evidence. It also covers clearing
-  stale launch-target/project-root errors after the project root changes and a
-  later `listLaunchTargets` call succeeds; preserve that behavior when editing
-  iOS refresh or lane/project-root handling. It does not cover sending text or
-  dragging a screenshot crop.
+- When editing iOS refresh or lane/project-root handling, keep clearing stale
+  launch-target/project-root errors once the project root changes and a later
+  `listLaunchTargets` call succeeds.
 - The iOS Simulator device selector can be measured without booting a simulator:
   switch to the iOS Sim tools tab, change the populated device `<select>`,
   verify the label changes, then restore the original selection. Launch-target
@@ -449,9 +412,10 @@ Do not expose the raw `Error invoking remote method ...` prefix in Work Git hist
 
 ## Watch list
 
-- `ade.ai.getStatus` is now the largest first-window Work startup IPC in the
-  local-runtime-disabled perf pass, around `260ms`. Optimize only after checking
-  model/provider availability behavior in Settings and launch surfaces.
+- `ade.ai.getStatus` was the largest first-window Work startup IPC (around
+  `260ms`, measured in the since-removed daemon-off mode; re-measure). Optimize
+  only after checking model/provider availability behavior in Settings and
+  launch surfaces.
 - Browser panel mount creates built-in browser tabs and can cost about `400-500ms` per tab creation in UI probes. Optimize only after checking that tab reuse and hidden WebContentsView bounds behavior remain correct.
 - iOS Simulator status calls are visible costs when those panels mount. Keep them lazy to the tools pane being open.
 - Avoid hidden panel polling. App Control, iOS Simulator, and Browser must never
@@ -511,7 +475,7 @@ restore" (fake per-key layout, both render paths).
 
 ### Chat thread scrolling and history (measured with `scripts/perf-chat-scroll.mjs`)
 
-Bench: launch the dev app with `ade app-control launch --command "NO_DEVTOOLS=1 node scripts/dev-desktop.mjs --auto"`
+Bench: launch the dev app with `daex app-control launch --command "NO_DEVTOOLS=1 node scripts/dev-desktop.mjs --auto"`
 (`dev.cjs` forwards `ADE_APP_CONTROL_DEBUG_FLAGS`; without them a window behind
 others stops painting and every frame metric reads 0), then
 `node scripts/perf-chat-scroll.mjs --port <cdp> --reload --park <small chat> --session <big chat> [--scenario wheel|top|idle]`.
@@ -576,9 +540,10 @@ Preserve all of these:
   linger 4 s off screen); GPU while scrolling is LOWER than with stills
   (36–51% vs 39–58%), since big PNG stills cost more to raster.
 - **Remounts reuse the document and its prepared URL** (renderer cache of 24;
-  main's store is LRU on read). Per-document stamps (`readySrc`,
-  `settledSrc`, `revealedSrc`) are cleared when the frame unmounts, or a
-  remount on the same cached URL reads as ready and shows a blank frame.
+  main's store is LRU on read). The per-document stage (`FrameStage` in
+  `SceneFrame.tsx`: `ready`, `settled`, `revealed`, keyed by `src`) is reset
+  when the frame unmounts, or a remount on the same cached URL reads as ready
+  and shows a blank frame.
 - **A scene with a still takes no new still.** Each capture is a window grab,
   a PNG encode and a file; scenes now remount on every scroll back.
 - **One theme observer for the app** (`sceneTheme.ts`), and a theme change is
@@ -734,9 +699,9 @@ chat still forces layout in `ThreadCommentLayer` and re-parses markdown
 Measured in the dev app on a real project, App Control detached, `ps`
 cputime over 15 s windows, one chat streaming throughout.
 
-- **Measure with App Control detached.** An attached `ade app-control` session
+- **Measure with App Control detached.** An attached `daex app-control` session
   kept the Electron main process at ~86% of a core and the GPU near 60%,
-  independent of the UI on screen. Detach (`ade app-control stop`) before
+  independent of the UI on screen. Detach (`daex app-control stop`) before
   sampling; toggle UI with a CDP `eval` click instead.
 - **The window backdrop must not wake on other elements' scrolls.** The top
   bar's `WorkToolPickerBackdrop` listened to capture-phase `scroll` on the
@@ -768,7 +733,7 @@ over-counts by 10x), plus per-component prop-diff and hook-diff logging.
   once a second at idle. They now return the previous state when the merge is
   shallow-equal.
 - **Re-read lists keep identity.** `useWorkSessions` reconciles each IPC read
-  against the previous rows (`reconcileSessionRows`: equal rows keep their
+  against the previous rows (`reconcileRowsById` in `lib/stableIdentity.ts`: equal rows keep their
   object, an unchanged list keeps its array), and `AgentChatPane` compares its
   chat-session list by value before `setSessions`. Session cards went from
   ~15 renders/s at idle to 0.
@@ -896,10 +861,10 @@ renders per switch; warm first frame 55-65 → 50-57 ms, worst frame ~86 → 53-
 
 `scripts/perf/ui/stream-render-compare.mjs` runs PandaCode's open method
 (a 50 KB Markdown reply as 2,000 deltas of 25 B, one every 16 ms) against the
-production web builds of ADE, PandaCode and T3 Code in one headless Chrome, and
+production web builds of DAEX, PandaCode and T3 Code in one headless Chrome, and
 reports main-thread task time, process CPU, final paint, heap and an idle
 baseline with a turn running. It also records long tasks and a CPU profile
-(`--profile`), and runs ADE A/B arms (`--ade-init`).
+(`--profile`), and runs DAEX A/B arms (`--ade-init`).
 
 - **Parse each settled block once.** The paced row split its text into a
   settled prefix and a tail, but the settled prefix parsed as one string, so
@@ -948,10 +913,13 @@ baseline with a turn running. It also records long tasks and a CPU profile
   (before `createRoot`): idle main-thread frames with a turn running fell from
   173 to 55 per 32 s, and the idle main thread from about 155 to 105 ms. A
   trace shows it as frames with `EventDispatch` > React `Pn` at each loop end.
-- **A worker canvas for a loop that has no compositor form.** The glyph morph
-  is drawn by a shared `OffscreenCanvas` worker (`thinkingGlyphPainter.ts`) on
-  the page timeline's 1/30 s grid. Read the size and color from observers, not
-  on each render: reading them per render forced a layout per streamed event.
+- **The thinking glyph is a compositor-only CSS loop** (`CssGlyph` in
+  `components/ui/ThinkingIndicator.tsx`): its turn is baked into 80 precomputed
+  shapes on the 50 ms work beat, so nothing rotates around the moving strip.
+  It is not drawn by a worker into an `OffscreenCanvas`: such a canvas sends
+  its own compositor frames, and one working chat cost about 37 window
+  composites a second instead of 21. The loops rest while DAEX is not focused
+  or the indicator is off screen.
 - **Pin the bottom from the content's ResizeObserver,** not from the next
   animation frame. Layout is current in the callback, so the pin forces no
   layout and lands in the frame of the growth. The rAF pin with two follow-up
@@ -1119,8 +1087,10 @@ chat 136 to 47-51 ms, page tab 118 to 24-26 ms, project 137 to 44-51 ms.
   reading the path again and comparing with a snapshot, so the events are
   chokidar's. Check a change to it with
   `scripts/perf/service/tree-watcher-parity.mts` and
-  `tree-watcher.bench.mts`. `withMacosSafeChokidarOptions` is still right for
-  a handful of named files (`configReloadService`).
+  `tree-watcher.bench.mts`. For a handful of named files use `watchFileSet`
+  (`services/shared/fileSetWatcher.ts`, as `configReloadService` does): a
+  native watch per file, with a slow poll only for a file that is missing or
+  refused a watch.
 - Count polled paths in the brain with `process.getActiveResourcesInfo()`
   (`StatWatcher`; `FSEventWrap` is a native watch), after
   `process._debugProcess(<pid>)`. Poll CPU is on the libuv worker threads, so

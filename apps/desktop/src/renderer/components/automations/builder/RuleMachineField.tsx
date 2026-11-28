@@ -8,6 +8,7 @@ import { AUTOMATION_HOME_HANDOVER_MINUTES } from "../../../../shared/automationH
 import type { AutomationCloudHomeState } from "../../../../shared/types";
 import { ADE_CLOUD_HOME_UNAVAILABLE } from "../../../../shared/automationCloud";
 import { Banner } from "../../ui/notice";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * "Runs on [machine ▾]" — the machine a rule runs on, as part of the recipe.
@@ -52,7 +53,7 @@ function CloudHomeRuns({ state }: { state: AutomationCloudHomeState }) {
   const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : null);
   return (
     <div className="space-y-0.5" data-testid="automation-cloud-runs">
-      {!state.registered ? <p>ADE Cloud doesn't have this rule yet. It gets it once a computer with ADE open syncs.</p> : null}
+      {!state.registered ? <p>{BRAND.CLOUD_NAME} doesn't have this rule yet. It gets it once a computer with {BRAND.NAME} open syncs.</p> : null}
       {state.pausedReason === "storm" ? (
         <Banner layout="inline" model={{ id: "automation-cloud-paused", tone: "warning", title: "Paused after too many runs in an hour. Turn the rule off and on again to start it again." }} />
       ) : null}
@@ -132,7 +133,7 @@ export function RuleMachineField({
               <option value={UNREACHABLE_HOME} disabled>{unreachableHomeName} (not connected to this window)</option>
             ) : null}
             {cloudHome && (cloudHome.available || onCloud) ? (
-              <option value={ADE_CLOUD} disabled={!cloudHome.available && !onCloud}>ADE Cloud (runs with no computer on)</option>
+              <option value={ADE_CLOUD} disabled={!cloudHome.available && !onCloud}>{BRAND.CLOUD_NAME} (runs with no computer on)</option>
             ) : null}
             {machines.map((machine) => (
               <option key={machine.machineId} value={machine.machineId} disabled={!machine.online}>
@@ -146,7 +147,7 @@ export function RuleMachineField({
       {onCloud ? (
         <div className="space-y-1 text-[10.5px] text-muted-fg/60" data-testid="automation-machine-cloud">
           <p>
-            ADE Cloud watches its schedule or webhook and starts each run on a new computer of its own, as an unattended
+            {BRAND.CLOUD_NAME} watches its schedule or webhook and starts each run on a new computer of its own, as an unattended
             agent under your agent limits. After the run its work is pushed and the computer is freed; its lane stays.
           </p>
           {cloudHome?.problem ? (

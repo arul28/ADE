@@ -6,6 +6,8 @@
  */
 import { sanitizeAgentFailureText } from "../../../shared/chatErrorPresentation";
 import type { CloudProvider } from "./cloudProvider";
+import { PRODUCT_NAME_PATTERN } from "../../../shared/brandNames";
+import { cliErrorLineText } from "../../../shared/cliCommandNames";
 
 /**
  * Starts a device sign-in on the box in the background (it keeps polling for
@@ -88,12 +90,15 @@ function cloudSignInFailureReason(output: string): string | null {
     if (/[▀-▟]/.test(line) || /^at\s+\S/.test(line) || /^Waiting for sign-in/i.test(line)) continue;
     // The sign-in instructions themselves: a code was shown, they are no reason.
     if (/^(?:To finish signing in|Or,? (?:open|to sign in))\b/i.test(line)) continue;
-    const cleaned = scrubSignInLine(line.replace(/^ade:\s*/i, "")).replace(/\s+/g, " ").trim();
+    // The computer's CLI may be older ("ade:") or newer ("daex:") than this app.
+    const cleaned = scrubSignInLine(cliErrorLineText(line) ?? line).replace(/\s+/g, " ").trim();
     if (!/[A-Za-z]{3}/.test(cleaned)) continue;
     return cleaned.length > 220 ? `${cleaned.slice(0, 219)}…` : cleaned;
   }
   return null;
 }
+
+const SIGN_IN_START_UNREACHABLE = new RegExp(String.raw`device service (?:could not be reached|timed out)|fetch failed|\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH)\b|Failed to initialize the ${PRODUCT_NAME_PATTERN} brain`, "i");
 
 /**
  * A reason a moment later may fix: the computer couldn't reach ADE's account
@@ -102,7 +107,7 @@ function cloudSignInFailureReason(output: string): string | null {
  */
 function isTransientCloudSignInFailure(reason: string | null): boolean {
   if (!reason) return false;
-  return /device service (?:could not be reached|timed out)|fetch failed|\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH)\b|Failed to initialize the ADE brain/i.test(reason);
+  return SIGN_IN_START_UNREACHABLE.test(reason);
 }
 
 /** The card's sentence when a computer's sign-in didn't start, with the computer's own reason. */
@@ -119,6 +124,8 @@ export type CloudBoxSignInStart = {
   /** Its `ade login` already kept trying: starting it again would stack a second wait on the first. */
   retriedOnItsOwn: boolean;
 };
+
+const KEPT_TRYING_NOTE = new RegExp(String.raw`\b${PRODUCT_NAME_PATTERN} kept trying\b`);
 
 /**
  * Starts a device sign-in on the box (see `startSignInCommand`) and returns its
@@ -139,7 +146,7 @@ async function startCloudBoxSignIn(
     exitCode: started.exitCode,
     reason: userCode ? null : cloudSignInFailureReason(output),
     // A newer image's `ade login` retries an unreachable account service itself and says so.
-    retriedOnItsOwn: !userCode && /\bADE kept trying\b/.test(output),
+    retriedOnItsOwn: !userCode && KEPT_TRYING_NOTE.test(output),
   };
 }
 

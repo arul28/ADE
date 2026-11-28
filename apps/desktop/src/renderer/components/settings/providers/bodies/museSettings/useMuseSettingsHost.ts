@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { MuseSettingsRequest, MuseSettingsResult } from "../../../../../../shared/museSettings";
 import type { OpenProjectBinding } from "../../../../../../shared/types";
 import type { MuseRun } from "./museSettingsShared";
+import { BRAND } from "../../../../../../shared/brand";
 
 function newHandleId(): string {
   return typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
@@ -27,7 +28,7 @@ export function useMuseSettingsHost(pin: OpenProjectBinding | null): { run: Muse
   const run = useCallback(
     async <R extends MuseSettingsRequest>(request: R): Promise<MuseSettingsResult<R["kind"]>> => {
       const call = window.ade?.ai?.museSettings;
-      if (!call) throw new Error("This ADE build cannot manage Muse settings on that machine. Update ADE there and try again.");
+      if (!call) throw new Error(`This ${BRAND.NAME} build cannot manage Muse settings on that machine. Update ${BRAND.NAME} there and try again.`);
       return await call({ handleId, request }, pinRef.current);
     },
     [handleId],

@@ -25,7 +25,7 @@ struct ADELockScreenWidget: Widget {
             LockScreenWidgetEntryView(entry: entry)
                 .containerBackground(.fill.tertiary, for: .widget)
         }
-        .configurationDisplayName("ADE Activity")
+        .configurationDisplayName("\(Brand.name) Activity")
         .description("How many agents need you, are working, are waiting, or are done.")
         .supportedFamilies([
             .accessoryRectangular,
@@ -253,7 +253,7 @@ private struct LockScreenColumnsRectangularView: View {
             .padding(.horizontal, 2)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("ADE status")
+        .accessibilityLabel("\(Brand.name) status")
         .accessibilityValue(
             ActivityBoardColumn.allCases
                 .map { "\(columns[$0, default: 0]) \($0.label.lowercased())" }
@@ -283,7 +283,7 @@ private struct LockScreenColumnsCircularView: View {
         }
         .widgetAccentable()
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("ADE status")
+        .accessibilityLabel("\(Brand.name) status")
         .accessibilityValue("\(count) \(column.label.lowercased())")
     }
 }
@@ -298,7 +298,7 @@ private struct LockScreenColumnsInlineView: View {
             .labelStyle(.titleAndIcon)
             .lineLimit(1)
             .minimumScaleFactor(0.82)
-            .accessibilityLabel("ADE")
+            .accessibilityLabel(Brand.name)
             .accessibilityValue(text)
     }
 }
@@ -329,7 +329,7 @@ private struct LockScreenRectangularView: View {
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("ADE status")
+        .accessibilityLabel("\(Brand.name) status")
         .accessibilityValue(accessibilityValue)
     }
 
@@ -494,7 +494,7 @@ private struct LockScreenCircularView: View {
         .widgetAccentable()
         .opacity(isLuminanceReduced ? 0.85 : 1)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("ADE status")
+        .accessibilityLabel("\(Brand.name) status")
         .accessibilityValue(status.inlineText)
     }
 }
@@ -509,7 +509,7 @@ private struct LockScreenInlineView: View {
             .labelStyle(.titleAndIcon)
             .lineLimit(1)
             .minimumScaleFactor(0.82)
-            .accessibilityLabel("ADE")
+            .accessibilityLabel(Brand.name)
             .accessibilityValue(status.inlineText)
     }
 }

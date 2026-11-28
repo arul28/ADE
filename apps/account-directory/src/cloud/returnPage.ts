@@ -19,7 +19,7 @@ import { CLOUD_PLANS, isPaidPlanId, type CloudPaidPlanId } from "./plans";
  * where the plan, extra hours and Manage billing are.
  */
 
-const OPEN_ADE_CLOUD = "ade://settings/integrations.ade-cloud";
+const OPEN_ADE_CLOUD = "daex://settings/integrations.ade-cloud";
 const DOCS = "https://ade-app.dev/docs/cloud/overview";
 const LINKS = {
   firstLane: `${DOCS}#start-a-lane-on-ade-cloud`,
@@ -150,10 +150,10 @@ function contentFor(kind: ReturnKind, plan: CloudPaidPlanId | null): Content {
   switch (kind) {
     case "done":
       return {
-        title: plan ? `You're on ADE Cloud ${CLOUD_PLANS[plan].label}` : "Thanks for buying ADE Cloud",
+        title: plan ? `You're on DAEX Cloud ${CLOUD_PLANS[plan].label}` : "Thanks for buying DAEX Cloud",
         eyebrow: "Payment complete",
         heading: plan ? `Thank you. You're on ${CLOUD_PLANS[plan].label}.` : "Thank you. Your plan is ready.",
-        lede: "It shows in ADE in a moment. Your credits start fresh today.",
+        lede: "It shows in DAEX in a moment. Your credits start fresh today.",
         body: plan ? planFacts(plan) : "",
         tiles: [tile(LINKS.firstLane, "lane", "Start your first cloud lane"), tile(LINKS.hours, "hours", "How credits work"), tile(LINKS.billing, "card", "Manage billing")],
       };
@@ -171,7 +171,7 @@ function contentFor(kind: ReturnKind, plan: CloudPaidPlanId | null): Content {
         title: "Card saved",
         eyebrow: "Card saved",
         heading: "Your free credits are on.",
-        lede: "You weren't charged. They show in ADE in a moment.",
+        lede: "You weren't charged. They show in DAEX in a moment.",
         body: "",
         tiles: [tile(LINKS.firstLane, "lane", "Start your first cloud lane"), tile(LINKS.hours, "hours", "How credits work")],
       };
@@ -186,10 +186,10 @@ function contentFor(kind: ReturnKind, plan: CloudPaidPlanId | null): Content {
       };
     case "portal":
       return {
-        title: "Back to ADE",
+        title: "Back to DAEX",
         eyebrow: "Billing",
         heading: "All set.",
-        lede: "Any change you made shows in ADE in a moment.",
+        lede: "Any change you made shows in DAEX in a moment.",
         body: "",
         tiles: [tile(LINKS.billing, "card", "Manage billing"), tile(LINKS.pricing, "plans", "Compare the plans")],
       };
@@ -378,20 +378,20 @@ export function cloudReturnPageHtml(to: string, planParam: string | null): strin
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <meta name="robots" content="noindex">
-<title>${escapeHtml(content.title)} · ADE Cloud</title>
+<title>${escapeHtml(content.title)} · DAEX Cloud</title>
 <style>${STYLE}</style>
 </head>
 <body>
 ${sky()}
 <main class="wrap">
-  <a class="lockup" href="https://ade-app.dev">${cloudMark("lockup", "mark")}ADE Cloud</a>
+  <a class="lockup" href="https://ade-app.dev">${cloudMark("lockup", "mark")}DAEX Cloud</a>
   <section class="card">
     ${cloudMark("hero", "hero-mark")}
     <p class="eyebrow">${escapeHtml(content.eyebrow)}</p>
     <h1>${escapeHtml(content.heading)}</h1>
     <p class="lede">${escapeHtml(content.lede)}</p>
     ${content.body}
-    <a class="cta" href="${OPEN_ADE_CLOUD}">${cloudMark("cta", "mark")}<span>Open ADE</span>${ARROW}</a>
+    <a class="cta" href="${OPEN_ADE_CLOUD}">${cloudMark("cta", "mark")}<span>Open DAEX</span>${ARROW}</a>
   </section>
   <nav class="tiles" aria-label="Next steps">${content.tiles.join("")}</nav>
   <p class="foot">You can close this page.</p>

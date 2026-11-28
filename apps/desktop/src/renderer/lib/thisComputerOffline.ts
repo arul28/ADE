@@ -3,6 +3,7 @@ import {
   isAccountDirectoryNoReply,
   type SyncRouteHealth,
 } from "../../shared/types/sync";
+import { BRAND } from "../../shared/brand";
 
 export type RelayRouteHealth = SyncRouteHealth["relay"];
 
@@ -90,7 +91,7 @@ export function deriveThisComputerOffline(
 
 /** The other cause of the offline state, said wherever the state is shown. */
 export const THIS_COMPUTER_OFFLINE_HINT =
-  "If this computer is online, a VPN, proxy or firewall may be blocking ADE.";
+  `If this computer is online, a VPN, proxy or firewall may be blocking ${BRAND.NAME}.`;
 
 /**
  * Re-renders the caller once when the relay outage crosses its grace. That

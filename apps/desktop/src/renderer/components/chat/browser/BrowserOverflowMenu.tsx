@@ -57,6 +57,7 @@ import {
   TOOLBAR_MOTION,
   type BrowserChromeShared,
 } from "./browserChrome";
+import { BRAND } from "../../../../shared/brand";
 
 export type BrowserOverflowMenuProps = {
   open: boolean;
@@ -382,7 +383,7 @@ export function BrowserOverflowMenu({
                   linkMode === "in-app" ? "opacity-100" : "opacity-0",
                 )}
               />
-              <span className="min-w-0 flex-1 truncate">In ADE</span>
+              <span className="min-w-0 flex-1 truncate">In {BRAND.NAME}</span>
             </DropdownMenu.RadioItem>
             <DropdownMenu.RadioItem value="external" className={MENU_ITEM_CLASS}>
               <Check

@@ -7,6 +7,7 @@ import { Banner } from "../ui/notice";
 import { ModernRow, ModernRows, ModernSection } from "./primitives";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 function databaseName(copy: DatabaseCopyInfo): string {
   if (copy.databaseKind === "machine") return "This computer";
@@ -21,8 +22,8 @@ function takenAt(ms: number): string {
 function moveText(copy: DatabaseCopyInfo): string {
   if (copy.kept) {
     return copy.fromVersion
-      ? `Set aside when ADE went back from ${copy.fromVersion} to ${copy.toVersion}`
-      : `Set aside when ADE went back to ${copy.toVersion}`;
+      ? `Set aside when ${BRAND.NAME} went back from ${copy.fromVersion} to ${copy.toVersion}`
+      : `Set aside when ${BRAND.NAME} went back to ${copy.toVersion}`;
   }
   return copy.fromVersion
     ? `Before the update from ${copy.fromVersion} to ${copy.toVersion}`
@@ -59,7 +60,7 @@ export function DatabaseCopiesSection() {
     try {
       setCopies(await api.list());
     } catch (err) {
-      setError(plainErrorText(err, "ADE couldn't list the database copies."));
+      setError(plainErrorText(err, `${BRAND.NAME} couldn't list the database copies.`));
       setCopies([]);
     }
   }, []);
@@ -81,8 +82,8 @@ export function DatabaseCopiesSection() {
     const confirmed = await confirmDialog({
       title: "Delete this copy?",
       message: copy.kept
-        ? `${databaseName(copy)}: what the newer version left when ADE went back, saved ${takenAt(copy.takenAt)}. ADE support may ask for it.`
-        : `${databaseName(copy)}: your data from before the update to ${copy.toVersion}, saved ${takenAt(copy.takenAt)}. Without it, ADE can't go back to that version if the update breaks.`,
+        ? `${databaseName(copy)}: what the newer version left when ${BRAND.NAME} went back, saved ${takenAt(copy.takenAt)}. ${BRAND.NAME} support may ask for it.`
+        : `${databaseName(copy)}: your data from before the update to ${copy.toVersion}, saved ${takenAt(copy.takenAt)}. Without it, ${BRAND.NAME} can't go back to that version if the update breaks.`,
       confirmLabel: "Delete",
       destructive: true,
     });
@@ -93,7 +94,7 @@ export function DatabaseCopiesSection() {
       const result = await window.ade?.databaseCopies?.delete(copy.path);
       if (result && !result.deleted) setError(result.reason);
     } catch (err) {
-      setError(plainErrorText(err, "ADE couldn't delete that database copy."));
+      setError(plainErrorText(err, `${BRAND.NAME} couldn't delete that database copy.`));
     } finally {
       setBusyPath(null);
       void refresh();
@@ -107,14 +108,14 @@ export function DatabaseCopiesSection() {
       group="Database copies"
       anchor="database-copies"
       title="Database copies"
-      hint="ADE keeps one copy of each database from the last update, and deletes it once the update has worked for a day."
+      hint={`${BRAND.NAME} keeps one copy of each database from the last update, and deletes it once the update has worked for a day.`}
     >
       {error ? <Banner layout="inline" model={{ id: "database-copies-error", tone: "error", title: error }} /> : null}
       <ModernRows>
         {copies === null ? (
           <ModernRow title="Loading…" />
         ) : copies.length === 0 ? (
-          <ModernRow title="No copies right now" hint="ADE makes one the next time an update changes your data." />
+          <ModernRow title="No copies right now" hint={`${BRAND.NAME} makes one the next time an update changes your data.`} />
         ) : (
           copies.map((copy) => (
             <ModernRow

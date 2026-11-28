@@ -14,6 +14,7 @@ import type {
 import type { Logger } from "../logging/logger";
 import { readGlobalState, readGlobalStateForUpdate, writeGlobalState } from "../state/globalState";
 import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
+import { BRAND } from "../../../shared/brand";
 
 /** The window has this long to show the prompt before main asks natively. */
 const QUIT_PROMPT_SHOWN_TIMEOUT_MS = 1_500;
@@ -207,7 +208,7 @@ export function createQuitPrompt(deps: QuitPromptDeps): QuitPrompt {
       defaultId: Math.max(0, model.actions.findIndex((action) => action.primary)),
       cancelId: model.actions.findIndex((action) => action.choice === "keep"),
       noLink: true,
-      title: request.relaunch ? "Restart ADE?" : "Quit ADE?",
+      title: request.relaunch ? `Restart ${BRAND.NAME}?` : `Quit ${BRAND.NAME}?`,
       message: model.title,
       detail: model.description,
       ...(model.dontAskAgainLabel ? { checkboxLabel: model.dontAskAgainLabel, checkboxChecked: false } : {}),

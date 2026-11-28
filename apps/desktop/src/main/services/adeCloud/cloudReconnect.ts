@@ -25,6 +25,7 @@ import { cloudSignInNotStartedMessage, startCloudBoxSignInWhenReady } from "./cl
 import type { CloudMachineCreatorDeps } from "./cloudMachineCreator";
 import { enableCloudSleep } from "./cloudSleep";
 import { wakeThroughTransition } from "./cloudInstanceOps";
+import { BRAND } from "../../../shared/brand";
 
 /** In the account: signed in, and the account did not remove it. */
 function inAccount(auth: Record<string, unknown> | null): boolean {
@@ -62,7 +63,7 @@ async function reconnect(
   const progress = (stage: CloudCreateProgress["stage"], message: string, instanceId?: string, approvalUrl?: string) =>
     onProgress({ requestId, stage, message, ...(instanceId ? { instanceId } : {}), ...(approvalUrl ? { approvalUrl } : {}) });
   const directory = deps.directoryBaseUrl();
-  if (!directory) throw new Error("ADE's account service isn't set up in this build.");
+  if (!directory) throw new Error(`${BRAND.NAME}'s account service isn't set up in this build.`);
   const client = await deps.client();
   const instance = await client.getInstance(args.instanceId);
   const name = instance.name ?? instance.id;
@@ -71,7 +72,7 @@ async function reconnect(
     progress("creating", `Waking ${name}…`, instance.id);
     await wakeThroughTransition(client, instance.id);
   }
-  progress("waiting_for_brain", `Asking ADE on ${name}…`, instance.id);
+  progress("waiting_for_brain", `Asking ${BRAND.NAME} on ${name}…`, instance.id);
   const auth = await waitForCloudBoxAuth(client, instance.id, { signal, sleep, machine: name });
   if (!inAccount(auth)) {
     progress("signing_in", `Signing ${name} back in to your account…`, instance.id);

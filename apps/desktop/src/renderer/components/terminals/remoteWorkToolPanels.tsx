@@ -9,6 +9,7 @@ import type { AppleDriverChat } from "../apple/AppleDevicePane";
 import { Banner } from "../ui/notice/Banner";
 import { HELD_ELSEWHERE_ACTION_LABEL, HELD_ELSEWHERE_STATE_LABEL } from "../remoteTargets/remoteMachineModel";
 import { WORK_TOOL_CHROME_CHIP, WorkToolEmptyLine } from "./workToolChrome";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * A tool's view of the chat's work copy on another machine, once this window
@@ -77,7 +78,7 @@ function RemoteWorkReachGate({
       />
     );
   }
-  return <WorkToolEmptyLine title={`Update ADE on ${use.machineName} to see this chat's work there`} />;
+  return <WorkToolEmptyLine title={`Update ${BRAND.NAME} on ${use.machineName} to see this chat's work there`} />;
 }
 
 /**

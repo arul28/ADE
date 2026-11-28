@@ -3,6 +3,7 @@ import { Banner } from "../ui/notice";
 import { captureError } from "../../../shared/sentry/capture";
 import type { OpenProjectBinding, ProjectConfigAccountNotice } from "../../../shared/types";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Settings that follow the ADE account and need the person, on the computer
@@ -80,7 +81,7 @@ export function AccountSettingNotices({
         fingerprint: ["project_config", "resolve_account_notice"],
         handled: true,
       });
-      if (current()) setError(plainErrorText(cause, "ADE couldn't apply your choice."));
+      if (current()) setError(plainErrorText(cause, `${BRAND.NAME} couldn't apply your choice.`));
     } finally {
       if (current()) setBusyKey(null);
     }
@@ -110,7 +111,7 @@ export function AccountSettingNotices({
             id: `account-setting-${notice.key}`,
             tone: "info",
             title: `${notice.label}: ${computer} had a different value.`,
-            detail: "ADE now uses the value saved in your account for this repository.",
+            detail: `${BRAND.NAME} now uses the value saved in your account for this repository.`,
             busy: busyKey === notice.key,
             error: busyKey === null && error ? error : undefined,
             actions: [
@@ -141,5 +142,5 @@ function keptHereTitle(notice: Extract<ProjectConfigAccountNotice, { kind: "kept
   if (notice.reason === "machine_path") {
     return `${notice.label} names a folder on ${computer}, so it can't follow your account.`;
   }
-  return `${notice.label} is too large to follow your ADE account.`;
+  return `${notice.label} is too large to follow your ${BRAND.NAME} account.`;
 }

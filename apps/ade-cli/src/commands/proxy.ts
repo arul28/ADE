@@ -1,3 +1,4 @@
+import { BRAND } from "../../../desktop/src/shared/brand";
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -15,7 +16,7 @@ export function formatProxyStatus(value: unknown): string {
   const status = isRecord(value) ? value : {};
   const logins = Array.isArray(status.logins) ? status.logins.filter(isRecord) : [];
   const lines = [
-    "ADE subscription proxy",
+    `${BRAND.NAME} subscription proxy`,
     `installed: ${yesNo(status.installed)}`,
     `running: ${yesNo(status.running)}`,
     `port: ${typeof status.port === "number" ? status.port : "—"}`,

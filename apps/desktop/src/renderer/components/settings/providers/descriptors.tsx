@@ -38,6 +38,7 @@ import type {
 import { statusProbeFailed } from "./types";
 import { providerStatusConnected } from "./providerConnected";
 import { SIGNED_IN_LABEL, signInStatusView } from "./providerSignInView";
+import { BRAND } from "../../../../shared/brand";
 
 // The words a tile is allowed to say — sentence case. The sign-in ones come
 // from `signInStatusView`; the rest are "Checking…", "Needs attention", "Not
@@ -107,8 +108,8 @@ function cliStatus(ctx: ProvidersViewContext, cli: "codex" | "droid" | "cursor" 
 
 /** Where ADE's OpenCode binary came from, in words (the host reports a token). */
 const OPENCODE_BINARY_SOURCE_LABELS: Record<string, string> = {
-  "tools-cache": "ADE's pinned copy",
-  bundled: "Bundled with ADE",
+  "tools-cache": `${BRAND.NAME}'s pinned copy`,
+  bundled: `Bundled with ${BRAND.NAME}`,
   missing: "Not downloaded",
 };
 
@@ -185,7 +186,7 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
         return {
           state: "connected",
           label: SIGNED_IN_LABEL,
-          message: "Signed in. ADE uses this key for Cursor chat and Cursor Cloud agents.",
+          message: `Signed in. ${BRAND.NAME} uses this key for Cursor chat and Cursor Cloud agents.`,
           account: (ctx.cursorAuth?.email ?? ctx.status?.providerConnections?.cursor?.accountEmail)?.trim() || null,
         };
       }
@@ -254,13 +255,13 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
   {
     id: "muse",
     label: PROVIDER_DISPLAY_NAME.muse,
-    tagline: "Meta's coding agent. ADE runs its own pinned build with your Meta sign-in or a Meta API key.",
+    tagline: `Meta's coding agent. ${BRAND.NAME} runs its own pinned build with your Meta sign-in or a Meta API key.`,
     logo: (size) => <MuseLogo size={size} />,
     permissions: { family: "muse", isCliWrapped: true, key: "muse" },
     status: (ctx) => {
       if (statusProbeFailed(ctx)) return probeFailedView(ctx, PROVIDER_DISPLAY_NAME.muse);
       if (ctx.isInitialCheckInFlight) {
-        return { ...CHECKING, message: "Checking ADE's Muse build and sign-in." };
+        return { ...CHECKING, message: `Checking ${BRAND.NAME}'s Muse build and sign-in.` };
       }
       const connection = ctx.status?.providerConnections?.muse ?? null;
       const message = connection?.blocker ?? "Ready.";
@@ -301,7 +302,7 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
   {
     id: "pi",
     label: "Pi",
-    tagline: "Runs ADE’s pinned Pi SDK with your Pi profile’s sign-in (shown redacted).",
+    tagline: `Runs ${BRAND.NAME}’s pinned Pi SDK with your Pi profile’s sign-in (shown redacted).`,
     logo: (size) => <PiLogo size={size} />,
     permissions: { family: "pi", isCliWrapped: false, key: "pi" },
     status: (ctx) => {
@@ -366,7 +367,7 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
         return {
           state: "not-installed",
           label: "Not downloaded",
-          message: "OpenCode powers every subscription, API key, and local model. ADE downloads it for this machine the first time it is used.",
+          message: `OpenCode powers every subscription, API key, and local model. ${BRAND.NAME} downloads it for this machine the first time it is used.`,
         };
       }
       if (ctx.status?.opencodeInventoryError) {

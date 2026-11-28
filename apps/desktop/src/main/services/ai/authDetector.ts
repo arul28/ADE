@@ -39,6 +39,7 @@ import { expectedErrorKind, markExpected } from "../../../shared/expectedError";
 import { isOfflineFetchError } from "../../../shared/sentry/expectedFailure";
 import { forwardLogToSentry } from "../../../shared/sentry/logBridge";
 import { resolveMuseExecutable } from "./museExecutable";
+import { BRAND } from "../../../shared/brand";
 
 type CliName =
   | "claude"
@@ -1218,7 +1219,7 @@ export async function verifyProviderApiKey(
         return {
           provider: normalizedProvider,
           ok: false,
-          message: "API key is valid, but ADE could not verify GPT-5 access with a cheap test model. Check model availability for this account.",
+          message: `API key is valid, but ${BRAND.NAME} could not verify GPT-5 access with a cheap test model. Check model availability for this account.`,
           endpoint: listRequest.url,
           statusCode: listResponse.status,
           verifiedAt,
@@ -1602,13 +1603,13 @@ export async function checkCliSignInLive(cli: "claude" | "codex" | "droid"): Pro
   const label = LIVE_CHECK_LABEL[cli];
   const pinned = pinnedCliCommand(cli);
   if (!pinned) {
-    return { state: "unknown", reason: `ADE's copy of ${label} is not on this computer yet, so it could not check.` };
+    return { state: "unknown", reason: `${BRAND.NAME}'s copy of ${label} is not on this computer yet, so it could not check.` };
   }
   if (cli === "droid") {
     // Droid has no sign-in command that does not spend a model call, so the
     // check is that ADE's copy runs and its saved sign-in is there.
     const presence = await inspectDroidCliPresence(pinned, { deep: true });
-    if (!presence.installed) return { state: "unknown", reason: `ADE's copy of ${label} did not start.` };
+    if (!presence.installed) return { state: "unknown", reason: `${BRAND.NAME}'s copy of ${label} did not start.` };
     const seen = await droidCredentialSeen();
     if (seen === "key") return { state: "signed-in", reason: null };
     if (seen === "sign_in") {
@@ -1621,7 +1622,7 @@ export async function checkCliSignInLive(cli: "claude" | "codex" | "droid"): Pro
   return {
     state: "unknown",
     reason: auth.authenticated
-      ? `${label} does not report its sign-in in a form ADE can read.`
+      ? `${label} does not report its sign-in in a form ${BRAND.NAME} can read.`
       : `${label} did not answer the sign-in check.`,
   };
 }

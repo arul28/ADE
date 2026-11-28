@@ -337,6 +337,7 @@ import {
   type MusePermissionPickerValue,
 } from "../shared/permissionModePickerOptions";
 import { chatApiPin, requireChatPin, withChatPin } from "./chatMachinePin";
+import { BRAND } from "../../../shared/brand";
 
 export type ComposerDraftEditIntent = {
   previousText: string;
@@ -1106,7 +1107,7 @@ function ComposerMachineChip({
         description: cloud
           ? "This chat is a live view of a Cursor Cloud agent. Replies run in cloud."
           : onAdeCloud
-            ? "This chat runs on its lane's own ADE Cloud computer, which is being set up."
+            ? `This chat runs on its lane's own ${BRAND.CLOUD_NAME} computer, which is being set up.`
             : "This chat runs on the machine that owns its lane. To move it, open the session menu and choose Hand off… → Another machine.",
       }}
     >
@@ -2324,7 +2325,7 @@ function JiraIssueSelectModal({
         try {
           const jira = window.ade?.jira;
           if (!jira?.getConnectionStatus || !jira.listIssues) {
-            throw new Error("Jira is not available in this ADE window.");
+            throw new Error(`Jira is not available in this ${BRAND.NAME} window.`);
           }
           const status = await jira.getConnectionStatus(pinRef.current);
           if (!status.connected || !status.siteUrl) {
@@ -4410,7 +4411,7 @@ function AgentChatComposerImpl({
         .catch((error: unknown) => {
           if (cancelled) return;
           setAttachmentResults([]);
-          setAttachmentSearchError(ipcErrorMessage(error) || "ADE couldn't search the files. Try again.");
+          setAttachmentSearchError(ipcErrorMessage(error) || `${BRAND.NAME} couldn't search the files. Try again.`);
         })
         .finally(() => { if (!cancelled) setAttachmentBusy(false); });
     }, 120);
@@ -6798,7 +6799,7 @@ function AgentChatComposerImpl({
       "workspace-write": "Workspace write",
       "danger-full-access": "Danger full access",
     }[csUse ?? "workspace-write"];
-    return `Custom Codex mode: ${ccsUse === "flags" ? "ADE flags" : "config.toml"} - ${approvalLabel} - ${sandboxLabel}`;
+    return `Custom Codex mode: ${ccsUse === "flags" ? `${BRAND.NAME} flags` : "config.toml"} - ${approvalLabel} - ${sandboxLabel}`;
   }, [capUse, ccsUse, codexPreset, csUse, sp]);
   /**
    * How each harness's permission picker applies a choice: to the parallel

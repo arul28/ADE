@@ -18,9 +18,9 @@
  */
 import { randomUUID } from "node:crypto";
 import {
-  CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT,
   CROSS_MACHINE_RETURN_REFUSED_CODE,
   decodeCrossMachineLaneImportArgs,
+  isCrossMachineHandoffDefaultPrompt,
   sanitizePortableGitRemote,
 } from "../../../shared/crossMachineHandoff";
 import { isSameGitRepository } from "../github/githubSshAlias";
@@ -46,6 +46,7 @@ import type { ChatScheduledWorkScheduler } from "./chatScheduledWorkScheduler";
 import type { CrossMachineHandoffPersisted } from "./crossMachineHandoffOrchestrator";
 import { requireGitBranch, requireGitOutput, requireHandoffId } from "./crossMachineHandoffSource";
 import { landHandoffGitBundle, validateHandoffGitBundle } from "./handoffGitBundle";
+import { BRAND } from "../../../shared/brand";
 
 /** The destination's own transaction for one accepted handoff, keyed by handoffId. */
 export type CrossMachineHandoffRecord = {
@@ -156,7 +157,7 @@ export function crossMachineScheduledWorkIds(capsule: AgentChatCrossMachineHando
 }
 
 const primaryCheckoutRefusal = (laneName: string, branchRef: string): string =>
-  `'${branchRef}' is checked out in this machine's primary checkout ('${laneName}'), and ADE never writes moved work into it. Switch that checkout to another branch, then retry the move.`;
+  `'${branchRef}' is checked out in this machine's primary checkout ('${laneName}'), and ${BRAND.NAME} never writes moved work into it. Switch that checkout to another branch, then retry the move.`;
 
 type RunGit = (args: string[], opts: GitRunOptions) => Promise<GitRunResult>;
 
@@ -426,7 +427,7 @@ export function createCrossMachineHandoffDestination<TManaged extends { session:
         existingLane: lane,
         fetchEnv: await deps.gitEnv(),
         importLane: async () => {
-          throw new Error("An existing lane is reused here; ADE never imports another.");
+          throw new Error(`An existing lane is reused here; ${BRAND.NAME} never imports another.`);
         },
         deleteLane: async () => {},
         onLaneImported: (laneId) => args.onLaneBound?.(laneId),
@@ -712,16 +713,16 @@ export function createCrossMachineHandoffDestination<TManaged extends { session:
       ? "The original parent chat remains on the source machine. This chat arrived without a local parent link."
       : null;
     return [
-      `ADE moved this chat from ${capsule.source.machineName} to ${machineName}.`,
+      `${BRAND.NAME} moved this chat from ${capsule.source.machineName} to ${machineName}.`,
       `Its new worktree is ${lanePath}.`,
       "Processes from the source machine did not travel: dev apps, typechecks, terminals, background shells, and monitors must be started again here.",
       setup,
       "Ignored files such as .env, node_modules, and build output did not travel.",
       "Continue the task from where it stopped and rerun any check it was waiting on.",
       parentNotice,
-      capsule.batchMove?.modeFallbackReason ? `ADE used a brief because: ${capsule.batchMove.modeFallbackReason}` : null,
+      capsule.batchMove?.modeFallbackReason ? `${BRAND.NAME} used a brief because: ${capsule.batchMove.modeFallbackReason}` : null,
       capsule.batchMove?.note ? `Batch note: ${capsule.batchMove.note}` : null,
-      capsule.continuationPrompt !== CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT
+      !isCrossMachineHandoffDefaultPrompt(capsule.continuationPrompt)
         ? `Continuation instruction: ${capsule.continuationPrompt}`
         : null,
       "",
@@ -951,7 +952,7 @@ export function createCrossMachineHandoffDestination<TManaged extends { session:
           if (writes) {
             return refuse(
               "original_lane_primary",
-              `The original chat's lane is this machine's primary checkout ('${lane.name}'), and ADE never writes moved work into it`,
+              `The original chat's lane is this machine's primary checkout ('${lane.name}'), and ${BRAND.NAME} never writes moved work into it`,
             );
           }
         }
@@ -1055,7 +1056,7 @@ export function createCrossMachineHandoffDestination<TManaged extends { session:
               "## User continuation instruction",
               capsule.continuationPrompt,
             ].join("\n\n")
-          : capsule.continuationPrompt !== CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT
+          : !isCrossMachineHandoffDefaultPrompt(capsule.continuationPrompt)
             ? capsule.continuationPrompt.trim()
             : "";
         if (returnPrompt) {

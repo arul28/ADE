@@ -7,6 +7,7 @@ import type {
   AdeAccountDeviceLoginStart,
   AdeAccountStatus,
 } from "../../shared/types";
+import { BRAND } from "../../shared/brand";
 
 // Drives the machine-owned account OAuth PKCE login from the renderer: start the
 // flow in main, open the browser to the authorize URL, then poll until the
@@ -103,7 +104,7 @@ export function useAccountLogin(options?: {
       if (attemptRef.current !== attemptId) return;
       setPhase("error");
       setError(
-        err instanceof Error ? err.message : "Couldn't start ADE account sign-in.",
+        err instanceof Error ? err.message : `Couldn't start ${BRAND.NAME} account sign-in.`,
       );
       return;
     }
@@ -213,7 +214,7 @@ export async function runAccountDeviceLogin(options: {
       status: "failed",
       message: err instanceof Error && err.message
         ? err.message
-        : "ADE couldn't start a sign-in on this computer. Try again in a moment.",
+        : `${BRAND.NAME} couldn't start a sign-in on this computer. Try again in a moment.`,
     };
   }
 

@@ -27,6 +27,7 @@ import {
   laneLastActivityAt,
   laneSidebarAgentStatus,
 } from "./laneSidebarModel";
+import { BRAND } from "../../../../shared/brand";
 
 const MAX_AVATARS = 3;
 const AVATAR_SIZE = 14;
@@ -291,8 +292,8 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
           event.preventDefault();
           return;
         }
-        const url = `ade://lane/${encodeURIComponent(lane.id)}`;
-        const title = (laneDisplayName(lane) || "ADE lane")
+        const url = `${BRAND.LINK_SCHEME_FOR_NEW_LINKS}://lane/${encodeURIComponent(lane.id)}`;
+        const title = (laneDisplayName(lane) || `${BRAND.NAME} lane`)
           .replace(/&/g, "&amp;")
           .replace(/</g, "&lt;")
           .replace(/>/g, "&gt;")

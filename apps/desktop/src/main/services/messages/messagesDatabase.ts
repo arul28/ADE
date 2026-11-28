@@ -24,6 +24,7 @@ import path from "node:path";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 
 import { decodeAttributedBody } from "./attributedBody";
+import { BRAND } from "../../../shared/brand";
 
 /** Apple's reference date, 2001-01-01T00:00:00Z, in UNIX milliseconds. */
 const APPLE_EPOCH_OFFSET_MS = 978_307_200_000;
@@ -175,7 +176,7 @@ export function checkMessagesDatabaseAccess(
       return { ok: false, code: "no_database", message: "Messages has no database on this Mac yet." };
     }
     return isFullDiskAccessDenial(error)
-      ? { ok: false, code: "needs_full_disk_access", message: "ADE needs Full Disk Access to read Messages." }
+      ? { ok: false, code: "needs_full_disk_access", message: `${BRAND.NAME} needs Full Disk Access to read Messages.` }
       : { ok: false, code: "error", message: "Messages' database could not be reached." };
   }
 
@@ -184,7 +185,7 @@ export function checkMessagesDatabaseAccess(
     handle = fs.openSync(dbPath, "r");
   } catch (error) {
     return isFullDiskAccessDenial(error)
-      ? { ok: false, code: "needs_full_disk_access", message: "ADE needs Full Disk Access to read Messages." }
+      ? { ok: false, code: "needs_full_disk_access", message: `${BRAND.NAME} needs Full Disk Access to read Messages.` }
       : { ok: false, code: "error", message: "Messages' database could not be opened." };
   } finally {
     if (handle !== null) {
@@ -209,7 +210,7 @@ export function checkMessagesDatabaseAccess(
       ok: false,
       code: "error",
       message: isFullDiskAccessDenial(error)
-        ? "ADE needs Full Disk Access to read Messages."
+        ? `${BRAND.NAME} needs Full Disk Access to read Messages.`
         : "Messages' database could not be read.",
     };
   } finally {

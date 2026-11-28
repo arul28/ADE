@@ -3,6 +3,7 @@
 // card and the iOS companion so the question/plan header
 // reads the same on every surface.
 import { PROVIDER_DISPLAY_NAME } from "./providers";
+import { BRAND } from "./brand";
 
 const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   claude: "Claude",
@@ -25,7 +26,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   // Every ACP provider raises permissions through the same protocol method, so
   // the shared source needs a name a person recognises rather than "Acp".
   acp: "Agent",
-  ade: "ADE",
+  ade: `${BRAND.NAME}`,
   agent: "Agent",
 };
 

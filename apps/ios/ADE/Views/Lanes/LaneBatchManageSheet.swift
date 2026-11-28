@@ -170,7 +170,7 @@ struct LaneBatchManageSheet: View {
 
               if !cloudLaneNames.isEmpty {
                 ADESettingsNotice(
-                  message: "Not deleted here: \(cloudLaneNames.joined(separator: ", ")). Delete an ADE Cloud lane from its own menu, so its computer goes with it.",
+                  message: "Not deleted here: \(cloudLaneNames.joined(separator: ", ")). Delete a \(Brand.cloudName) lane from its own menu, so its computer goes with it.",
                   tone: .neutral
                 )
               }
@@ -181,7 +181,7 @@ struct LaneBatchManageSheet: View {
                     Text("Also delete lanes with uncommitted work: \(dirtyLaneNames.joined(separator: ", "))")
                       .font(.system(size: 14.5))
                       .foregroundStyle(ADEColor.textPrimary)
-                    Text("ADE keeps a copy for 30 days. Restore it from Archived › Recently deleted.")
+                    Text("\(Brand.name) keeps a copy for 30 days. Restore it from Archived › Recently deleted.")
                       .font(.system(size: 12))
                       .foregroundStyle(ADEColor.textMuted)
                   }

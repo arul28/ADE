@@ -60,6 +60,7 @@ import {
   resolveWindowsServiceLauncherPath,
   windowsRunValuePrefix,
 } from "../serviceManager/installWindows";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 export type DoctorRowStatus = "ok" | "warn" | "fail";
 
@@ -288,7 +289,7 @@ const DOCTOR_STORAGE_MAX_FILES = 120;
 const DOCTOR_STORAGE_MAX_DIRECTORIES = 24;
 const DOCTOR_STORAGE_TIME_BUDGET_MS = 250;
 /** Rewrites the launch agent, which is how the missing policy key is granted. */
-const INSTALL_SERVICE_COMMAND = "ade runtime install-service";
+const INSTALL_SERVICE_COMMAND = "daex runtime install-service";
 const PUBLISH_FAILURE_RED_MS = 2 * 60 * 1_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -360,9 +361,9 @@ export async function probeDoctorBrain<Options extends DoctorCommandOptions>(
   try {
     const remaining = () => Math.max(1, deadlineAt - Date.now());
     client = await doctorTimeout(
-      dependencies.connectRuntime(socketPath, remaining(), "ADE brain"),
+      dependencies.connectRuntime(socketPath, remaining(), `${BRAND.NAME} brain`),
       remaining(),
-      "ADE brain connection",
+      `${BRAND.NAME} brain connection`,
     );
     const initializeResult = await doctorTimeout(
       client.request(
@@ -370,14 +371,14 @@ export async function probeDoctorBrain<Options extends DoctorCommandOptions>(
         dependencies.buildInitializeParams(options, "ade-doctor"),
       ),
       remaining(),
-      "ADE brain initialize",
+      `${BRAND.NAME} brain initialize`,
     );
     const runtimeInfo = dependencies.readMachineRuntimeInfo(initializeResult);
     const runtimeStatus = doctorRuntimeStatusFromInitialize(initializeResult);
     const expectedBuildHash = await doctorTimeout(
       dependencies.resolveExpectedMachineRuntimeBuildHash(),
       remaining(),
-      "ADE runtime build identity",
+      `${BRAND.NAME} runtime build identity`,
     ).catch(() => null);
     const mismatchReason = dependencies.machineRuntimeMismatchReason(
       runtimeInfo,
@@ -390,7 +391,7 @@ export async function probeDoctorBrain<Options extends DoctorCommandOptions>(
         client.request("account.call", { action: "status", args: {} }),
       ]),
       remaining(),
-      "ADE brain health reads",
+      `${BRAND.NAME} brain health reads`,
     ).catch((error): [
       PromiseRejectedResult,
       PromiseRejectedResult,
@@ -672,7 +673,7 @@ function windowsDesktopRows(
   probe: WindowsDesktopDoctorProbe | null | undefined,
 ): DoctorRow[] {
   if (!probe) return [];
-  const setupFix = "Open Windows Desktop in ADE and run its setup.";
+  const setupFix = `Open Windows Desktop in ${BRAND.NAME} and run its setup.`;
   const rows: DoctorRow[] = [
     {
       key: "windows_child_sessions",
@@ -731,8 +732,8 @@ function windowsDesktopRows(
         + (probe.supervisorCount == null || probe.runValueCount == null
           ? " · Supervisor or startup entry could not be checked."
           : probe.supervisorCount > 1 || probe.runValueCount > 1
-            ? " · Run `ade brain restart` to remove the duplicate."
-            : " · Run `ade brain restart` to restore the missing supervisor or startup entry."),
+            ? " · Run `daex brain restart` to remove the duplicate."
+            : " · Run `daex brain restart` to restore the missing supervisor or startup entry."),
   });
   return rows;
 }
@@ -843,14 +844,14 @@ function appRow(input: DoctorInput["app"]): DoctorRow {
         key: "app",
         label: "App",
         status: "warn",
-        detail: `ADE desktop found at ${input.path}, but its version is unknown. Start the app to record its version.`,
+        detail: `${BRAND.NAME} desktop found at ${input.path}, but its version is unknown. Start the app to record its version.`,
       };
     }
     return {
       key: "app",
       label: "App",
       status: "warn",
-      detail: "ADE desktop was not found on disk.",
+      detail: `${BRAND.NAME} desktop was not found on disk.`,
     };
   }
   if (!input.latestKnownVersion) {
@@ -878,7 +879,7 @@ function standaloneCliRows(cli: DoctorStandaloneCli | null | undefined, brain: D
   if (!cli) return [];
   const label = "Standalone ade";
   if (!cli.version) {
-    return [{ key: "standalone_cli", label, status: "warn", detail: `${cli.path} did not report its version · run \`ade brain update\` to replace it, or delete it` }];
+    return [{ key: "standalone_cli", label, status: "warn", detail: `${cli.path} did not report its version · run \`daex brain update\` to replace it, or delete it` }];
   }
   const brainVersion = brain.running ? brain.version : null;
   const comparison = brainVersion ? compareDoctorVersions(cli.version, brainVersion) : null;
@@ -891,7 +892,7 @@ function standaloneCliRows(cli: DoctorStandaloneCli | null | undefined, brain: D
     status: "warn",
     // The table cuts long details, so the fix comes first. ADE.app updates
     // without this file, and an `ade` before 1.2.126 never warns that it differs.
-    detail: `run \`ade brain update\` (or delete it) · ${cli.path} is ${cli.version}, the brain ${brainVersion}`,
+    detail: `run \`daex brain update\` (or delete it) · ${cli.path} is ${cli.version}, the brain ${brainVersion}`,
   }];
 }
 
@@ -999,8 +1000,8 @@ function syncPortRow(input: DoctorInput): DoctorRow {
         : "no holders visible to this user (a root-owned holder such as"
           + " tailscaled is invisible here — check `tailscale serve status`"
           + " and `netstat -an -p tcp`)",
-      "ADE retries 8787 first and migrates back when it is free;"
-        + " `ade brain restart` also returns it to 8787",
+      `${BRAND.NAME} retries 8787 first and migrates back when it is free;`
+        + " `daex brain restart` also returns it to 8787",
     ].join(" · "),
   };
 }
@@ -1026,7 +1027,7 @@ function publishRow(
   // CLI's equivalent, so name it here rather than leaving an agent holding a
   // bare `token_unreadable` with no next step.
   const remedy = isBrainAccountSessionFailure(health.state)
-    ? " · run `ade brain restart` so the brain re-reads the account session"
+    ? " · run `daex brain restart` so the brain re-reads the account session"
     : "";
   // The refusals the directory answers with — a removed machine, a pairing that
   // needs a fresh sign-in — all arrive as `state: "http_error"`, and the
@@ -1173,8 +1174,8 @@ function credentialsRow(health: CredentialStoreHealth | null): DoctorRow {
         // Platform-neutral on purpose: the same state is a macOS keychain item
         // the brain cannot reach and a Windows DPAPI blob it cannot unprotect.
         ? "sealed with a key this process cannot read"
-          + " · open the ADE app on this computer to unlock it"
-        : `cannot be read (${health.reason}) · sign in again in the ADE app`,
+          + ` · open the ${BRAND.NAME} app on this computer to unlock it`
+        : `cannot be read (${health.reason}) · sign in again in the ${BRAND.NAME} app`,
     };
   }
   if (health.quarantine) {
@@ -1184,8 +1185,8 @@ function credentialsRow(health: CredentialStoreHealth | null): DoctorRow {
       label,
       status: "warn",
       detail: health.quarantine.recoverable
-        ? `an earlier credential file was set aside ${setAside} · open the ADE app on this computer to restore it`
-        : `an unreadable credential file was set aside ${setAside} · sign in again in the ADE app`,
+        ? `an earlier credential file was set aside ${setAside} · open the ${BRAND.NAME} app on this computer to restore it`
+        : `an unreadable credential file was set aside ${setAside} · sign in again in the ${BRAND.NAME} app`,
     };
   }
   if (health.state === "missing") {
@@ -1239,7 +1240,7 @@ export async function readStorageEnvironmentForDoctor(
     }
     return collectStorageEnvironment(
       [
-        { label: "ADE home", path: layout.adeDir },
+        { label: `${BRAND.NAME} home`, path: layout.adeDir },
         ...(projectRoot ? [{ label: "Project", path: projectRoot }] : []),
       ],
       {

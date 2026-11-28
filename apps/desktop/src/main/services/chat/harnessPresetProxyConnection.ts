@@ -20,6 +20,7 @@ import {
   readCliProxyApiState,
   writeCliProxyApiState,
 } from "../../../../../ade-cli/src/services/proxy/cliProxyApiConfig";
+import { BRAND } from "../../../shared/brand";
 
 export type ProxySubscriptionConnectionParts = {
   port: number;
@@ -31,7 +32,7 @@ export type ProxySubscriptionConnectionParts = {
 export function borrowFailureMessage(provider: string): string {
   // "Claude" and "Codex" for an account; the CLI's own name for the others.
   const label = isHarnessPresetAccountProvider(provider) ? harnessAccountProviderLabel(provider) : harnessBodyLabel(provider);
-  return `ADE could not borrow your ${label} sign-in. Sign in to ${label} under Settings › Providers, then try again.`;
+  return `${BRAND.NAME} could not borrow your ${label} sign-in. Sign in to ${label} under Settings › Providers, then try again.`;
 }
 
 /**

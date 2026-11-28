@@ -153,7 +153,7 @@ describe("renderSummary", () => {
 
   it("omits 'What's left' entirely on a clean install", () => {
     const out = renderSummary([step()], totals, plain);
-    expect(out).toContain("ADE is ready");
+    expect(out).toContain("DAEX is ready");
     expect(out).not.toContain("What's left");
   });
 
@@ -180,9 +180,9 @@ describe("renderSummary", () => {
 
   it("keeps the heading ASCII on a terminal that renders an em dash as mojibake", () => {
     const failed = step({ state: "failed", detail: "didn't finish", nextAction: "ade connect" });
-    expect(renderSummary([failed], totals, plain)).toContain("ADE installed - 1 step");
+    expect(renderSummary([failed], totals, plain)).toContain("DAEX installed - 1 step");
     expect(renderSummary([failed], totals, { ...plain, unicode: true }))
-      .toContain("ADE installed — 1 step");
+      .toContain("DAEX installed — 1 step");
   });
 
   it("reports elapsed time and bytes downloaded", () => {
@@ -509,7 +509,7 @@ describe("runSetupCommand", () => {
       verify: async () => ({
         ok: false,
         detail: "sign-in didn't finish",
-        nextAction: "ade connect",
+        nextAction: "daex connect",
       }),
     }));
 
@@ -517,7 +517,7 @@ describe("runSetupCommand", () => {
     expect(result.verified).toBe(false);
     const account = result.steps.find((s) => s.id === "account");
     expect(account?.state).toBe("failed");
-    expect(account?.nextAction).toBe("ade connect");
+    expect(account?.nextAction).toBe("daex connect");
     expect(chunks.join("")).toContain("What's left");
   });
 
@@ -547,12 +547,12 @@ describe("runSetupCommand", () => {
     const account = result.steps.find((s) => s.id === "account");
     expect(account?.state).toBe("skipped");
     expect(account?.detail).toContain("still starting");
-    expect(account?.nextAction).toBe("ade connect");
+    expect(account?.nextAction).toBe("daex connect");
     // No step failed, so the install is not reported as one.
     expect(result.ok).toBe(true);
     const output = chunks.join("");
-    expect(output).toContain("Starting ADE's background service");
-    expect(output).not.toContain("the ADE brain is not running");
+    expect(output).toContain("Starting DAEX's background service");
+    expect(output).not.toContain("the DAEX brain is not running");
   });
 
   it("still reports a real failure once the background service is answering", async () => {
@@ -569,14 +569,14 @@ describe("runSetupCommand", () => {
       verify: async () => ({
         ok: false,
         detail: "sign-in didn't finish",
-        nextAction: "ade connect",
+        nextAction: "daex connect",
       }),
     }));
 
     expect(result.ok).toBe(false);
     expect(result.steps.find((s) => s.id === "account")?.state).toBe("failed");
     // Nothing was waited on, so nothing announced a wait.
-    expect(chunks.join("")).not.toContain("Starting ADE's background service");
+    expect(chunks.join("")).not.toContain("Starting DAEX's background service");
   });
 
   it("fails verification for a signed-in machine that never reached the account", async () => {
@@ -670,7 +670,7 @@ describe("runSetupCommand", () => {
     expect(ask).not.toHaveBeenCalled();
     const account = result.steps.find((s) => s.id === "account");
     expect(account?.state).toBe("skipped");
-    expect(account?.nextAction).toBe("ade connect");
+    expect(account?.nextAction).toBe("daex connect");
   });
 
   it("skips the 1 GB download when that exact version is already installed", async () => {
@@ -858,7 +858,7 @@ path: ADE-1.2.54-win-x64.exe
       verify: async () => ({
         ok: false,
         detail: "sign-in didn't finish",
-        nextAction: "ade connect",
+        nextAction: "daex connect",
       }),
     }));
 
@@ -936,7 +936,7 @@ describe("describeUnpublishedMachine", () => {
       "No active sync scope is available.",
     );
     // The diagnostic points to the process that holds the machine-wide lease.
-    expect(described.detail).toMatch(/another ADE app on this computer/i);
+    expect(described.detail).toMatch(/another DAEX app on this computer/i);
   });
 
   it("never renders the publisher's skipReason, for any state", async () => {
@@ -954,7 +954,7 @@ describe("describeUnpublishedMachine", () => {
     const described = describeUnpublishedMachine("some_future_state", "raw internal detail");
     expect(described.detail).not.toContain("raw internal detail");
     expect(described.detail).not.toContain("some_future_state");
-    expect(described.nextAction).toBe("ade doctor");
+    expect(described.nextAction).toBe("daex doctor");
   });
 
   it("matches the desktop pane, because both read one shared table", async () => {

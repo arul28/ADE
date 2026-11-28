@@ -35,6 +35,7 @@ import {
 import type { AgentCliLoginCliState, AgentCliLoginPty } from "../ai/agentCliLoginRunner";
 import { COMPLETE_CLAUDE_TOKEN_PATTERN, CLAUDE_TOKEN_PATTERN } from "../../../shared/cloudSignIns";
 import type { ClaudePassVerifyResult } from "./claudePassVerify";
+import { BRAND } from "../../../shared/brand";
 
 const AUTH_HOSTS = ["claude.ai", "anthropic.com", "claude.com"];
 
@@ -64,10 +65,10 @@ export type ClaudePassSaveResult = boolean | { key: string; upload?: ClaudePassU
 /** Why a kept pass is not in the account yet, in one sentence. */
 export function claudePassUploadMessage(upload: ClaudePassUpload): string | null {
   if (upload === "refused") {
-    return "Your ADE account doesn't take Claude passes yet. ADE keeps the pass on this computer and tries again every hour.";
+    return `Your ${BRAND.NAME} account doesn't take Claude passes yet. ${BRAND.NAME} keeps the pass on this computer and tries again every hour.`;
   }
   if (upload === "pending") {
-    return "ADE couldn't reach your account yet. The pass is kept on this computer, and ADE sends it on its own.";
+    return `${BRAND.NAME} couldn't reach your account yet. The pass is kept on this computer, and ${BRAND.NAME} sends it on its own.`;
   }
   return null;
 }
@@ -174,7 +175,7 @@ export function createCloudClaudeSignIn(deps: CloudClaudeSignInDeps) {
       (result) => {
         if (record !== target || target.status.state !== "saving") return;
         if (!result) {
-          end(target, "failed", "ADE couldn't save the pass to your account. Sign in to ADE on this computer, then try again.");
+          end(target, "failed", `${BRAND.NAME} couldn't save the pass to your account. Sign in to ${BRAND.NAME} on this computer, then try again.`);
           return;
         }
         target.savedKey = typeof result === "object" ? result.key : null;
@@ -196,7 +197,7 @@ export function createCloudClaudeSignIn(deps: CloudClaudeSignInDeps) {
       () => {
         if (record !== target || target.status.state !== "saving") return;
         deps.logger?.warn?.("cloud.claude_token_save_threw", { reason: "vault_write_threw" });
-        end(target, "failed", "ADE couldn't save the pass to your account. Try again.");
+        end(target, "failed", `${BRAND.NAME} couldn't save the pass to your account. Try again.`);
       },
     );
   }
@@ -243,7 +244,7 @@ export function createCloudClaudeSignIn(deps: CloudClaudeSignInDeps) {
         setTimer(target, CLAUDE_PASS_MISMATCH_HOLD_MS, () => {
           if (record !== target || target.status.state !== "mismatch") return;
           deps.logger?.info?.("claude_pass.dropped", { reason: "not_kept" });
-          end(target, "cancelled", "ADE dropped the pass for the other account, since nobody kept it.");
+          end(target, "cancelled", `${BRAND.NAME} dropped the pass for the other account, since nobody kept it.`);
         });
       },
       () => {

@@ -301,7 +301,7 @@ describe("bootstrapPairedRuntime", () => {
           token: "must-not-leave-this-process",
         })),
       },
-    })).rejects.toThrow(/same ADE account/i);
+    })).rejects.toThrow(/same DAEX account/i);
 
     expect(openTransport).not.toHaveBeenCalled();
   });

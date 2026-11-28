@@ -14,6 +14,7 @@ import "../../music/music.css";
 import "../homeWidgets.css";
 import "./NowPlayingWidget.css";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * Now Playing, in the Music player's language: a frosted card with the cover
@@ -460,7 +461,7 @@ export default function NowPlayingWidget({ item }: HomeWidgetProps) {
   let body: React.ReactNode;
   let idle = false;
   if (!hasBridge) {
-    body = <div className="ade-home-empty"><span>Available in the ADE desktop app.</span></div>;
+    body = <div className="ade-home-empty"><span>Available in the {BRAND.NAME} desktop app.</span></div>;
   } else if (!state && !own) {
     body = <div className="ade-home-empty"><span>Listening…</span></div>;
   } else if (own && music.nowPlaying) {

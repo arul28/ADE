@@ -16,6 +16,7 @@ import { checkboxConfirmDialog } from "../ui/dialog/confirm";
 import { newestAppleRuntimeRunning } from "../../../shared/appleRuntimeVersions";
 import { appleRuntimeInstallActive } from "../../../shared/appleRuntimeVersions";
 import { showToast } from "../app/toast/toastStore";
+import { BRAND } from "../../../shared/brand";
 
 /** The Mac App Store page for Xcode. */
 // https, not macappstore://: external links allow only http(s) and mailto,
@@ -96,7 +97,7 @@ export async function confirmRemoval(input: {
         {simulators.map((simulator) => (
           <li key={simulator.udid} className="break-words">
             {simulator.name}
-            <span className="text-muted-fg">{simulator.ade ? " · ADE" : " · yours"}</span>
+            <span className="text-muted-fg">{simulator.ade ? ` · ${BRAND.NAME}` : " · yours"}</span>
             {stranded.includes(simulator) ? (
               <span className="text-warning">{" · no newer runtime runs it"}</span>
             ) : null}

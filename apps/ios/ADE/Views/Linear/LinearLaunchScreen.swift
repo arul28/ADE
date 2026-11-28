@@ -369,7 +369,7 @@ struct LinearLaunchScreen: View {
       syncService.linearPanePresented = false
     } catch let error as LinearAmbiguousAgentLaunchError {
       ADEHaptics.error()
-      errorMessage = "ADE kept the new lane because the agent may already have started. \(error.localizedDescription)"
+      errorMessage = "\(Brand.name) kept the new lane because the agent may already have started. \(error.localizedDescription)"
       busy = false
     } catch is QueuedRemoteCommandError {
       if config.sessionType.needsAgentConfig {

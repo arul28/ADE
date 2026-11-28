@@ -64,6 +64,7 @@ import { createLaneBuildOutputSweeper } from "./laneBuildOutput";
 import { createLaneLifecycleScan, type LaneLifecycleBackend, type LifecycleLaneRow } from "./laneLifecycleScan";
 import { parseGitWorktreePorcelain } from "../lanes/gitWorktreePorcelain";
 import { isDirectChildFolder, isFolderInside, sameFolder } from "../shared/sameFolder";
+import { BRAND } from "../../../shared/brand";
 
 const DEFAULT_CACHE_TTL_MS = 5 * 60_000;
 const DEFAULT_SCAN_ENTRY_LIMIT = 200_000;
@@ -1277,7 +1278,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       if (target.kind === "archived_lane_worktree") {
         return {
           valid: null,
-          reason: "Use Archive & Reclaim so ADE can check running, dirty, and unmerged work before removing this lane folder.",
+          reason: `Use Archive & Reclaim so ${BRAND.NAME} can check running, dirty, and unmerged work before removing this lane folder.`,
         };
       }
       // Removal is `git worktree remove --force`, which discards uncommitted
@@ -1292,7 +1293,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       const inSystemStaging = isDirectChildFolder(stagingTmpRoot, targetPath) && /^ade-/.test(path.basename(targetPath));
       const inProjectStaging = isDirectChildFolder(adeTmpDir, targetPath);
       if (!inSystemStaging && !inProjectStaging) {
-        return { valid: null, reason: "This path is not ADE staging data." };
+        return { valid: null, reason: `This path is not ${BRAND.NAME} staging data.` };
       }
       if (inProjectStaging && await hasSymlinkAncestor(projectRoot, targetPath)) {
         return { valid: null, reason: "Links cannot be used in a cleanup path." };
@@ -1318,7 +1319,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
         return { valid: null, reason: "Terminal history is protected from automatic cleanup." };
       }
       if (isSameOrWithin(journalPath, targetPath) || isSameOrWithin(`${journalPath}.tmp`, targetPath)) {
-        return { valid: null, reason: "This is ADE's cleanup history. It is kept." };
+        return { valid: null, reason: `This is ${BRAND.NAME}'s cleanup history. It is kept.` };
       }
       label = "Rebuildable cache";
     } else if (target.kind === "recovery_backup") {
@@ -1393,7 +1394,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     }
     const worktrees = await runGit(["worktree", "list", "--porcelain"], { cwd: projectRoot, timeoutMs: 15_000 });
     if (worktrees.exitCode !== 0 && await lstatOrNull(path.join(projectRoot, ".git"))) {
-      return "ADE couldn't list this project's worktrees, so this folder is kept.";
+      return `${BRAND.NAME} couldn't list this project's worktrees, so this folder is kept.`;
     }
     const holdsWorktree = parseGitWorktreePorcelain(worktrees.stdout).some(({ path: listed }) => (
       isFolderInside(worktreePath, listed) && fs.existsSync(path.join(listed, ".git"))
@@ -1402,7 +1403,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     if (!(await lstatOrNull(path.join(worktreePath, ".git")))) return null;
     const status = await runGit(["status", "--porcelain", "--untracked-files=normal"], { cwd: worktreePath, timeoutMs: 15_000 });
     if (status.exitCode !== 0) {
-      return "ADE couldn't check this folder for uncommitted work, so it is kept. Remove it by hand if you are sure nothing in it is needed.";
+      return `${BRAND.NAME} couldn't check this folder for uncommitted work, so it is kept. Remove it by hand if you are sure nothing in it is needed.`;
     }
     const changed = status.stdout.split("\n").filter((line) => line.trim().length > 0).length;
     if (changed > 0) {
@@ -1415,7 +1416,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       { cwd: worktreePath, timeoutMs: 15_000 },
     );
     if (unheld.exitCode !== 0) {
-      return "ADE couldn't check this folder for commits that only it holds, so it is kept.";
+      return `${BRAND.NAME} couldn't check this folder for commits that only it holds, so it is kept.`;
     }
     const count = Number.parseInt(unheld.stdout.trim(), 10);
     if (Number.isFinite(count) && count > 0) {

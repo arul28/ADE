@@ -32,6 +32,7 @@ import { isRecord, nowIso } from "../shared/utils";
 import type { AutomationPrLaneService } from "./automationPrBranchLane";
 import type { TriggerContext } from "./automationService";
 import { automationRunNeedsLane } from "../../../shared/automationRunLane";
+import { BRAND } from "../../../shared/brand";
 
 /** `resolvePlaceholders` from automationService, passed in so this module does not import it back. */
 export type ResolvePlaceholders = (node: unknown, trigger: TriggerContext) => unknown;
@@ -41,7 +42,7 @@ export const TEST_NOTIFICATION_PREFIX = "[Test] ";
 
 /** The first lines of the agent's prompt in a safe test. */
 export const SAFE_TEST_AGENT_NOTICE =
-  "This is a TEST run of an ADE automation, in a throwaway lane. Do the work and check it locally, "
+  `This is a TEST run of a ${BRAND.NAME} automation, in a throwaway lane. Do the work and check it locally, `
   + "but do not push, open, merge, or comment on pull requests, change GitHub or Linear issues, or send messages. "
   + "Where the task says to do one of those, stop and write what you would have sent instead.";
 
@@ -78,7 +79,7 @@ export function safeTestHoldsBack(action: AutomationAction): string | null {
     case "ade-action": {
       if (isNotificationStep(action)) return null;
       const name = `${action.adeAction?.domain ?? "?"}.${action.adeAction?.action ?? "?"}`;
-      return `A safe test does not call ADE actions that change things outside the test (${name}).`;
+      return `A safe test does not call ${BRAND.NAME} actions that change things outside the test (${name}).`;
     }
     case "handoff":
       return "A safe test does not hand a chat off to another model.";

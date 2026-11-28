@@ -1,456 +1,128 @@
 # Editor Surfaces
 
-Renderer surfaces that present the Files tab and embed Monaco editors for
-edit, diff, and conflict-oriented file workflows.
+The renderer surfaces of the Files tab and its embedded Monaco editors. Paths
+are under `apps/desktop/src/renderer/components/files/`.
 
-## Main Entry: `FilesTab.tsx`
+## `FilesTab.tsx`
 
-Path: `apps/desktop/src/renderer/components/files/FilesTab.tsx`
+The entry for the Files route and the Work tools pane; it always renders
+`FilesWorkbench`. It turns the router state a chat click leaves into one
+`FilesNavigationOpenRequest`: `openFilePath`, `laneId`, `startLine` /
+`startColumn`, `openPathType: "directory"` (reveal in the tree), `searchQuery`
+(open search when a name matched several files) and `filesPin`. Router state is
+untrusted: `filesPin` is accepted only as a complete `OpenProjectBinding`
+(`local` with `displayName`; `remote` with `targetId`, `projectId`,
+`runtimeName`), because the machine chip reads those unguarded.
 
-`FilesTab` is the shared entry point for the standalone Files route and the
-embedded Work sidebar. It renders `FilesWorkbench` unconditionally.
+## `v2/FilesWorkbench.tsx`
 
-It also reads the router state a chat click leaves behind and hands it down as
-a single `FilesNavigationOpenRequest`: `openFilePath` / `laneId` /
-`startLine` / `startColumn` as before, plus `openPathType: "directory"` (reveal
-in the tree instead of opening an editor tab), `searchQuery` (open the search
-panel with that query, for a name that matched several files), and `filesPin`
-(the machine that owns the file). Router state is untrusted, so `filesPin` is
-accepted only when it is genuinely an `OpenProjectBinding` — a `local` binding
-must carry `displayName`, a `remote` one `targetId`, `projectId`, and
-`runtimeName`, because the machine chip reads those unguarded.
+The shell: the machine pin and its bound Files API, workspace resolution, the
+tree (`useFilesTree`), `FilesExplorer`, editor groups with preview and pinned
+tabs, splits and drag moves, `FilesSearchPanel`, create prompts, the context
+menu (open, rename, delete, copy paths and name, reveal in Finder), and the
+status bar. Props: `preferredLaneId` (Work), `embedded`, `active` (gates loading
+and keys for inactive project tabs), `pin`.
 
-## Workbench Shell: `FilesWorkbench.tsx`
+### Machine pin
 
-Path: `apps/desktop/src/renderer/components/files/v2/FilesWorkbench.tsx`
+`machinePin` is set when the files live on a machine other than the tab's (a
+navigation from another machine's chat, or the Work pane's `pin`), and cleared
+by **Back to this computer** or picking a bound-machine workspace. Everything
+keys off `projectBinding = machinePin ?? boundProjectBinding`.
 
-`FilesWorkbench` owns the VS Code-style shell:
+- `createPinnedFilesApi(machinePin)` (`v2/pinnedFilesApi.ts`) is cached per binding key, so its identity changes exactly when the machine does. `useFilesTree`, editor groups, `ViewerHost`, `useFileContent`, `streamFileBytes` and every viewer get it. **Viewers must use it**: a workspace id is a synced lane id, so a call to `window.ade.files` silently hits the local worktree.
+- Nothing is published to the dirty-buffer map while pinned.
+- Caches written under a pinned key are released on unpin in a `queueMicrotask`, after `useFilesTree` unpins the tree (`filesTreeCache` refuses to release a pinned entry). `App.tsx` cannot do this, since it never sees pin-derived keys.
+- A host-supplied `pin` wins whenever its binding key changes; equal bindings rebuilt per render do not thrash the roster.
 
-- the machine pin, and the Files API bound to it
-- workspace resolution from `files.listWorkspaces()`
-- cached root tree loading and git decorations (delegated to `useFilesTree`)
-- the reusable `FilesExplorer` tree
-- editor groups with preview and pinned tabs
-- split editor groups and tab move/drop behavior
-- the unified `FilesSearchPanel`, in the sidebar column and as a centred modal
-- file and directory creation prompts
-- context-menu actions for open, rename, delete, copy full/relative path,
-  copy name, and reveal (`openPathInEditor` with `target: "finder"`).
-  Lane/session **Open in** (detected VS Code / Zed / …) is a separate
-  submenu — see [README.md](./README.md#opening-in-an-external-editor).
-- status bar with branch, group, open-tab, dirty counts, and the active
-  full path
+### Tree, caches and sessions
 
-The component accepts `preferredLaneId`, `embedded`, and `active`. The
-`active` prop gates IPC loading and keybindings for inactive project tabs.
-`preferredLaneId` selects a lane workspace when Files is mounted from Work.
-`embedded` compacts the Work-sidebar mount without introducing a separate
-implementation path.
+- `v2/useFilesTree.ts` owns listing, paging, expansion and decorations for one (workspace, machine), including the per-path queue that stops a watcher refresh from shrinking a window "Load more" just grew. Keep its callback identities stable: the workbench's watcher subscription keys on them.
+- `v2/filesTreeCache.ts` keeps the roster and tree warm across remounts, keyed `"<bindingKey>::<projectRoot>"` (`local` or `remote:<targetId>`), so local and remote sessions of one path never mix.
+- Editor state is per `filesSessionKey(projectRoot, laneId)` (`useEditorGroupsStore`), keyed by root, not binding, so tabs and dirty buffers survive a local↔remote rebind.
+- **Restored-tab remap.** After every `listWorkspaces`, `store.remapTabWorkspaces` keeps tabs whose workspace still exists (and `external-local:*` tabs), remaps the rest by `laneId` (else the primary workspace), recomputes `workspaceId::path` tab ids, dedupes, and moves Monaco models with `registry.rekey` plus the dirty set and reload tokens.
 
-### Machine pin and the bound Files API
+### Workspaces and editability
 
-`machinePin` is the machine this workbench is reading from when that is *not*
-the machine the project tab is bound to. It is set by a navigation request that
-came from a chat on another machine and cleared by **Back to this computer** or
-by picking a workspace from the bound machine. Everything downstream keys off
-`projectBinding = machinePin ?? boundProjectBinding` and
-`projectRootPath = machinePin?.rootPath ?? boundProjectRootPath`, so the
-workspace roster, the tree caches, and every read and write follow the pin
-without the window rebinding.
+The standalone route shows `WorkspacePicker`; embedded Files preselects the
+active lane. On a computer every workspace is editable. The one read-only case
+is an account-answered lane (`FilesExplorer` `readOnlyReason`; see
+[README.md](./README.md#with-no-computer-awake)). Otherwise
+`viewerRegistry.tabIsTextEditable` decides: code, markdown Source and CSV Source
+edit when the full payload loaded; a partial streamed payload stays read-only
+so a truncated buffer is never saved.
 
-`createPinnedFilesApi(machinePin)` (`v2/pinnedFilesApi.ts`) produces the Files
-API with that machine already attached, cached per binding key so its identity
-changes exactly when the machine does. That object — not `window.ade.files` —
-is what `useFilesTree`, `EditorGroups`, `EditorGroup`, `ViewerHost`,
-`useFileContent`, `streamFileBytes`, and every viewer receive. Viewers **must**
-use it: a workspace id is a lane id, lane rows sync across machines, so an
-unpinned read or write resolves the local worktree for that lane and silently
-succeeds against the wrong disk.
+## Explorer
 
-Two consequences worth remembering:
+`FilesExplorer.tsx` renders `FileTreeNode[]`; expanding a folder pages through
+`listTreeChildren` (`nextOffset`) up to a safety cap. Icons come from
+`filePresentation.tsx`, colors and directory dots from git decorations. The
+context menu (`v2/ContextMenu.tsx`) clamps to the viewport. The explorer owns
+the search *field*; while a query is set it renders the workbench's
+`searchResults` in place of the tree.
 
-- The workbench publishes nothing into the dirty-buffer map while pinned (that
-  map is machine-less and feeds local agent reads), and resumes only once the
-  roster has been re-listed for the bound machine.
-- Roster and tree caches written under a pinned cache key are released on
-  unpin, in a `queueMicrotask` so the release lands after `useFilesTree`'s
-  `unpinCachedTree` cleanup — `filesTreeCache` refuses to release a still-pinned
-  entry. `App.tsx` cannot do this itself: it derives cache keys from a
-  surface's own binding and never sees a key produced by a pin chosen in here.
+## Editor groups and Monaco
 
-### Tree state: `useFilesTree`
+`v2/editorGroupsStore.ts` (immutable group/tab ops), `v2/EditorGroups.tsx`,
+`v2/EditorGroup.tsx`, `v2/ViewerHost.tsx`. Single-click opens or reuses a
+preview tab; activation, edit or save pins it.
 
-`v2/useFilesTree.ts` owns tree state, root listing, directory paging,
-expansion, and git decorations — the one genuinely closed unit in the
-workbench, driven by (workspace, machine) alone. It also owns the per-path
-serialization queue that keeps a watcher refresh from shrinking a window a
-load-more just grew, and the `decorationsTruncated` flag behind the "Some git
-decorations hidden" strip.
-
-The file watcher stays in the workbench: that effect refreshes the tree *and*
-reloads open editor tabs, so it coordinates two layers. Keep the hook's
-callback identities stable, because the watcher subscription is keyed on
-them — a widened dependency there costs a real watcher tear-down and
-re-subscribe, not just a re-render.
-
-Module-level caches in `v2/filesTreeCache.ts` keep workspaces and root
-trees warm across route remounts. Both are keyed by the **binding
-identity** — `filesProjectCacheKey` joins a `bindingKey` of `local` or
-`remote:<targetId>` to the project root path as
-`"<bindingKey>::<projectRoot>"` — so a local session and a remote
-session for the same on-disk path never pollute each other's cached
-workspace list or tree:
-
-- the workspace roster cache, keyed by `projectCacheKey` (bounded LRU)
-- the explorer tree cache, keyed by `projectCacheKey::workspaceId`
-  (node/byte-accounted LRU; mounted workbenches pin their rendered tree
-  and warm-project-surface eviction releases a project's entries)
-
-Editor state is kept per `filesSessionKey(projectRoot, laneId)` through
-`useEditorGroupsStore`. Editor sessions are keyed by project root
-(not binding), so open tabs and dirty buffers survive a local↔remote
-rebind of the same path; the tab workspace-remap pass (below) repairs
-any stale workspace ids the rebind leaves behind.
-
-`files.listWorkspaces()` is retried on failure with a capped backoff
-(`1s → 2s → 5s → 10s`, then steady at 10s) instead of being swallowed,
-so a Files tab opened before a remote runtime finishes connecting
-recovers its workspace list on its own once the host answers.
-
-### Restored-tab workspace remap
-
-Restored tabs carry the `workspaceId` they were persisted with, but
-those ids are not portable across binding identities: connecting to a
-remote host lists workspaces whose ids are the **host machine's** lane
-UUIDs, so a locally-persisted tab's `workspaceId` is stale against the
-freshly listed set. After every successful `listWorkspaces`, the
-workbench calls `store.remapTabWorkspaces(sessionKey, mapper)`. The
-mapper keeps any tab whose `workspaceId` is still present (or is an
-`external-local:*` id — those are local-only and deliberately
-untouched) and otherwise remaps by `laneId` to the matching host
-workspace, falling back to the primary workspace (or the first host
-workspace). Composite tab ids (`workspaceId::path`) are recomputed;
-collisions with an authoritative tab dedupe to the authoritative copy;
-`activeTabId` and `recentTabIds` are rewritten to the surviving ids.
-The workbench then migrates the live editor state to the new ids:
-Monaco models are moved with `registry.rekey`, and the dirty-tab set,
-per-tab reload tokens, and dirty-buffer revision follow the remap.
-
-## Workspace Selector
-
-The standalone route renders `WorkspacePicker`; embedded Work Files omits the
-picker chrome and preselects the active lane worktree. Switching workspaces:
-
-1. Resolves the new workspace id.
-2. Loads the root tree and git decorations.
-3. Switches the editor-group session key.
-4. Leaves file service and preload contracts unchanged.
-
-The main-process file service remains the source of truth for path
-safety and workspace roots. On a computer every resolved workspace is
-editable. The one read-only case is an account-answered lane (an ADE Cloud
-lane at rest, read from GitHub): New file and New folder do nothing and say
-why (`FilesExplorer` `readOnlyReason`); see
-[README.md](./README.md#with-no-computer-awake). Otherwise whether a tab shows
-editable Monaco is decided purely by viewer capability plus payload
-(`viewerRegistry.tabIsTextEditable`): code, markdown Source, and CSV
-Source tabs edit whenever the full text payload loaded; image/pdf/
-large-text/binary viewers are naturally read-only, and a partial
-streamed payload stays read-only so a truncated buffer can never be
-saved back.
-
-## File Explorer Tree
-
-Implementation: `FilesExplorer.tsx` over `FileTreeNode[]` from
-`files.listTree`.
-
-Lazy loading uses `files.listTreeChildren` when a directory is expanded,
-following `nextOffset` until all children are loaded or the renderer hits its
-safety cap. `listTree` and `listTreeChildren` share filtering and ordering:
-volatile `.ade` runtime paths and `.git` are hidden, ignored files respect
-`includeIgnored`, and directories sort before files.
-
-Visual indicators per node:
-
-- file icons by extension via `filePresentation.tsx`
-- change status coloring from git decorations
-- directory change dots for descendants with changes
-
-Context-menu actions are built in `FilesWorkbench` and rendered by
-`v2/ContextMenu.tsx`. The menu clamps to the viewport before opening.
-
-The explorer owns the search *field* but not the search: it renders whatever
-the workbench passes as `searchResults` in place of the tree while the query is
-non-empty, and skips its own flatten/filter pass entirely. The old
-`onOpenQuickOpen` / `onOpenContentSearch` / `onSearchSubmit` /
-`singleRowHeader` props are gone along with the separate Quick Open and Content
-Search buttons.
-
-## Editor Groups
-
-Implementation:
-
-- `v2/editorGroupsStore.ts` for immutable group/tab operations
-- `v2/EditorGroups.tsx` for the group grid
-- `v2/EditorGroup.tsx` for one group, tab strip, diff toggle, and active tab
-- `v2/ViewerHost.tsx` for resolving and rendering the active viewer
-
-Tabs can be preview or pinned. Opening a file from single click creates or
-reuses a preview tab; activation/edit/save promotes it. Tabs can be closed,
-closed-other-tabs, split into a new group, or moved between groups by drag.
-
-The active group's active tab is the status-bar source for path, language,
-branch, and dirty state.
-
-## Monaco Model Lifecycle
-
-### ADE's own Monaco themes
-
-`monacoLoader.ts` defines `ade-dark` and `ade-light` (`ADE_MONACO_DARK_THEME` /
-`ADE_MONACO_LIGHT_THEME`, selected by `adeMonacoTheme(theme)`) rather than using
-stock `vs` / `vs-dark`. They inherit their base's tokenization and override only
-the surfaces — editor, gutter, sticky scroll and its hover, minimap, and overview
-ruler — so the editor sits on the same background as the pane around it instead
-of a near-black rectangle inside a themed panel. The two surface colours are
-literals (`#16141E`, `#faf8f5`) rather than a read of the live `--color-surface`
-token, because `defineAdeThemes` runs once inside the memoized `monacoInit`
-promise and a token read would freeze *both* themes to whichever was active when
-the first editor opened. Keep them in step with `index.css`.
+- `monacoModelRegistry.ts` keeps one model per path; tab switches call `setModel`, preserving undo and tokenization. Dispose only on close, rename/delete, workspace switch or unmount. `registry.rekey` moves a model to a new tab id; on collision the dirty buffer wins.
+- Dirty tracking uses Monaco alternative version ids. Save writes through the files bridge, updates the baseline, invalidates the content cache and refreshes decorations. Save is gated on `viewerIsEditable(viewerKind)`. The fallback save path writes only a *dirty* model (a clean parked model may be stale). ⌘S also saves a code tab shown in diff mode.
+- `v2/monacoLoader.ts` defines `ade-dark` / `ade-light`, overriding only surface colors. The colors are literals because the themes are defined once inside the memoized init; keep them in step with `index.css`.
 
 ### ⌘F belongs to whoever has focus
 
-Monaco's own ⌘F keybinding never fires on the packaged app: ⌘F is a native menu
-accelerator that Electron consumes in the browser process. `CodeViewer` claims
-the `find` app-menu command instead (`lib/appMenuCommands.ts`) and runs the same
-`actions.find` Monaco would have — when the editor is on screen (not a parked or
-`inert` column) and has Monaco's text focus or owns ⌘F under the shared rule
-below. Declining leaves the
-chord to whoever does own it, or to nothing.
+Electron consumes ⌘F as a menu accelerator, so Monaco's own binding never
+fires. `CodeViewer` claims the `find` app-menu command (`lib/appMenuCommands.ts`)
+only when it is on screen (not parked or `inert`) and owns ⌘F. Every ⌘F surface
+marks its root with `data-ade-find-scope`; `lib/findScope.ts` gives ⌘F to the
+innermost scope around the focused element, or around the last press when
+nothing has focus.
 
-Every ⌘F surface marks its root with `data-ade-find-scope` (`code-editor`,
-`diff`, `diff-editor`, `browser`, `chat-pane`, `chat-transcript`), and
-`lib/findScope.ts` gives ⌘F to the innermost scope around the focused element —
-or around the last press when focus is on nothing, which is what clicking plain
-text (a diff line, a chat reply) leaves. So a diff inside a chat pane finds in
-the diff, and a click on chat text takes ⌘F away from a browser pane that would
-otherwise answer "focus is nowhere". Nothing claims it on the Lanes page outside
-a diff, so ⌘F there still focuses the lane filter.
-
-### Find in a diff
-
-`AdeDiffViewer` has its own find bar (`useDiffFind.ts`). Pierre draws every line
-of the file's diff into an open shadow root, so the hook searches each
-`[data-line]` element there, orders matches top to bottom (old side before new),
-paints them with the shared highlight names (the two `::highlight` rules are
-repeated in the viewer's `unsafeCSS`, because the document's CSS does not reach
-a shadow root; their colours are the `--ade-find-*` variables from `index.css`,
-which do inherit into it), and scrolls the current one into view, sideways too for long
-lines. Collapsed unchanged lines are not drawn: when a file holds more matches
-than were drawn on its side, the viewer draws the whole file (`expandUnchanged`;
-a patch view switches to the full files it was given) until the bar closes.
-A truncated patch has no full files, so its collapsed lines stay unsearched; a
-truncated file-pair preview searches and expands the text it was drawn from.
-`resolveDiffView` picks what the viewer draws (patch, files, or a state message)
-in one place, find's full-files case included. The editable working-tree diff
-(`MonacoDiffView`) claims ⌘F under the same rule and opens Monaco's find on the
-side that has focus.
-
-`monacoModelRegistry.ts` keeps one Monaco text model per
-workspace-relative path. Switching tabs calls `editor.setModel(existing)`
-instead of dispose/recreate, preserving tokenization and undo stacks.
-
-Callers dispose models on tab close, rename/delete cleanup, workspace switch,
-and unmount. Do not dispose models on tab switch, theme change, or group move.
-
-`registry.rekey(oldKey, newKey)` moves a cached model to a new tab id in
-place so the live buffer, undo stack, and dirty baseline follow a tab-id
-remap (see the restored-tab workspace remap above) instead of being
-disposed and reloaded. On a key collision the dirty buffer wins: if the
-incoming entry has unsaved edits and the resident one does not, the
-resident is disposed and replaced; otherwise the incoming entry is
-discarded.
-
-Dirty tracking is based on Monaco alternative version ids. A save writes
-through the files write bridge, updates the model baseline, invalidates the
-content cache, and refreshes git decorations. Every editable-viewer tab is
-saveable — the save button and the `Cmd+S` / `Ctrl+S` handler are gated on
-`viewerIsEditable(viewerKind)` (code, markdown Source, and CSV Source),
-not on `viewerKind === "code"`. When no mounted editor API is present the
-fallback save path only writes a *dirty* model: a clean parked model may be
-stale (external edits reload the tab content, not the model), so saving a
-clean tab must never revert an external change. The group-level save handler
-also catches `Cmd+S` / `Ctrl+S` while a code tab is in diff mode, saving the
-hidden Monaco model without forcing the user back to edit mode.
+`AdeDiffViewer` has its own find bar (`useDiffFind.ts`): it searches the
+`[data-line]` elements in Pierre's shadow root, highlights with
+`::highlight` rules repeated in the viewer's `unsafeCSS`, and expands collapsed
+lines when matches are hidden (a truncated patch cannot). `resolveDiffView`
+decides what the viewer draws. `MonacoDiffView` opens Monaco's find on the
+focused side.
 
 ## Viewers
 
-Viewer selection lives in `v2/viewerRegistry.ts`. The shell can force special
-viewer kinds such as `diff` or `conflict`; normal file viewers are selected
-from path extension and file metadata.
+`v2/viewerRegistry.ts` picks the viewer from extension and metadata; the shell
+can force `diff` or `conflict`.
 
-Supported viewers:
+- `CodeViewer` (Monaco), `MarkdownViewer` (Preview↔Source; preview shows the dirty buffer when edited), `CsvViewer` (Table↔Source, Source only for a round-trippable payload).
+- `ImageViewer`: fit/zoom/pan; SVG Source is read-only and the picture is drawn only through `<img>`, so SVG script never runs. TIFF/HEIC convert to JPEG on a Mac (`app.convertImageToJpeg`, `sips`), else the open-externally card.
+- `MermaidViewer` (strict-mode render, keeps the last good render on error), `FontViewer` (bytes as a `FontFace`, never a URL fetch), `MediaViewer` (size-capped Blob URL), `PdfViewer`, Office viewers ([README › Office previews](./README.md#office-previews)), `DocumentViewer` (legacy Office: open in the OS default app), `LargeTextViewer`, `BinaryViewer`, `DiffViewer`.
 
-- `CodeViewer` for editable text and Monaco-backed source files
-- `MarkdownViewer` — Preview↔Source toggle; Source mounts the editable
-  `CodeViewer`, and Preview renders the dirty buffer only when the tab has
-  unsaved edits (otherwise the authoritative file payload)
-- `ImageViewer` — fit/zoom/pan, a transparency grid for formats that can carry
-  alpha, and an Image↔Source toggle for `.svg` (Source is read-only; the
-  picture itself is only ever drawn through `<img>`, so script in an SVG never
-  runs). `.tif`/`.tiff`/`.heic`/`.heif` are converted to JPEG on this machine
-  (macOS `sips`, through `app.convertImageToJpeg`) from bytes read through the
-  pin; elsewhere the viewer shows the open-externally card with the reason
-- `MermaidViewer` for `.mmd`/`.mermaid` — Diagram↔Source toggle; Source is the
-  editable `CodeViewer`, Diagram renders the dirty buffer through the shared
-  strict-mode `MermaidDiagram`, keeps the last good render (dimmed) under a
-  render error, zooms only on pinch / Cmd+wheel, and copies SVG or source
-- `FontViewer` for `.ttf`/`.otf`/`.woff`/`.woff2` — loads the bytes as a
-  `FontFace` (removed on unmount; never a URL fetch), with an editable sample,
-  size and variable-axis sliders, a size waterfall, a capped character grid
-  (click copies) and the name-table details from `viewers/fontInfo.ts`. WOFF2 is
-  rendered by Chromium but its tables are not decoded, so it shows common
-  characters instead of measured coverage
-- `WordViewer` for `.docx` — see [Office previews](./README.md#office-previews)
-- `MediaViewer` for audio/video files Chromium can play, with a renderer-side
-  size cap before it builds a Blob URL
-- `CsvViewer` — virtualized sortable/filterable table with a Table↔Source
-  toggle; Source is offered only when the payload round-trips as text
-  (`!readOnly`), so a partial streamed CSV stays a read-only table
-- `PdfViewer`
-- `LargeTextViewer` for streamed large text
-- `DocumentViewer` for the legacy binary Office formats (`.doc`, `.xls`,
-  `.ppt`); it shows type/path metadata and opens the file in the OS default app
-- `BinaryViewer`
-- `DiffViewer`, backed by `window.ade.diff` and `AdeDiffViewer`
+Follow-up chunks use `readFileRange` through `ViewerProps.files` (the pinned
+API), never `window.ade.files`.
 
-Large text and media/document previews use `readFileRange` for follow-up
-chunks, through the `PinnedFilesApi` on `ViewerProps.files` rather than
-`window.ade.files` — a viewer that reaches for the global would read the wrong
-machine's disk whenever a pin is active. Unsupported binary content remains
-non-editable.
+## Search and create prompt
 
-## Search Panel And Create Prompt
+`v2/FilesSearchPanel.tsx` has two variants sharing the workbench's
+`searchQuery` and `machinePin`: `sidebar` (in the explorer's results slot; keys
+read a ref-backed snapshot because the field is outside the panel; stays open
+after an open) and `overlay` (the modal; dismisses on open and clears the
+query). The sidebar copy is suppressed while the modal is open. ⌘P and ⌘⇧F open
+the modal; a content hit calls `setPendingReveal` so the next `CodeViewer` jumps
+to the line. Behavior: [README › The search UI](./README.md#the-search-ui).
+`v2/overlays.tsx` holds `CreatePromptModal`.
 
-`v2/FilesSearchPanel.tsx` is the only Files search surface. One component,
-two variants:
+## Embedded Files in Work
 
-- `variant="sidebar"` — rendered into `FilesExplorer`'s `searchResults` slot,
-  driven by the search field in the explorer header. Keys are handled by a
-  document listener reading a ref-backed snapshot, because the field lives
-  outside the panel's subtree. It stays open after an open, so several hits can
-  be opened in a row.
-- `variant="overlay"` — the centred modal, with its own focused input. It is a
-  one-shot pick and dismisses on open; every exit clears the shared query, so
-  the search does not keep running behind a closed modal.
+`WorkSidebar` mounts `FilesTab` with `preferredLaneId`, `embedded` and
+`pin={runtimePin}`: the same services and viewers, a narrower explorer, no
+picker, one `WORK_TOOL_CHROME_ROW` with the breadcrumb, and monochrome file
+icons (`MonochromeFileIconsContext`).
 
-Both mounts share the workbench's `searchQuery`, and the sidebar copy is
-suppressed while the modal is open so the same workspace is never searched
-twice. Both are handed the workbench's `machinePin`, so searching a pinned
-machine's workspace runs on that machine.
-
-Names (`quickOpen`, 120 ms debounce) and contents (`searchText`, 250 ms
-debounce) are independent requests; the panel also owns the persisted
-"Include ignored files" toggle. See
-[README.md](./README.md#the-search-ui) for the full behaviour.
-
-`v2/overlays.tsx` holds only `CreatePromptModal` (new file / new directory
-prompts) and re-exports the shared `Backdrop` / panel surface from
-`FilesSearchPanel`.
-
-`Cmd+P` / `Ctrl+P` and `Cmd+Shift+F` / `Ctrl+Shift+F` both open the search
-modal. File hits open directly; content hits call `setPendingReveal` so the
-next `CodeViewer` mount jumps to the matching line.
-
-## Embedded Files In Work
-
-`WorkSidebar` mounts `FilesTab` with `preferredLaneId={laneId}`,
-`embedded={true}`, and `pin={runtimePin}`. The embedded layout keeps the same
-service calls, editor groups, viewers, tree behavior, and search as the
-standalone route, but uses a narrower explorer column, compact explorer
-controls, and no workspace picker.
-
-Embedded chrome is the pane's shared vocabulary, not a second one: the
-surviving controls collapse into a single `WORK_TOOL_CHROME_ROW` carrying the
-file-path breadcrumb, and `MonochromeFileIconsContext` is provided `true` so
-every file glyph paints `COLORS.textMuted` instead of its catalogue colour
-(`useFileIconColor` returns the mapper once per component, because most callers
-spend it inside a `.map()` where a hook cannot go).
-
-### Single-surface mode below 520 px
-
-Below `EMBEDDED_SINGLE_SURFACE_PX` (520) the 220 px tree and the editor beside
-it are each too narrow to read, so the embedded workbench shows **one surface at
-a time**, tracked as `embeddedSurface` (`"tree" | "editor"`) and exposed on the
-root as `data-single-surface`. The tree shows until a file is open; the editor
-then takes the pane with a "Back to files" crumb as the one way back — a crumb,
-not a tab bar, because there is only one other screen. The inactive column stays
-**mounted but `inert`**, which preserves scroll position and Monaco models; any
-focus-sensitive claim must therefore check `closest("[inert]")` before answering,
-as `CodeViewer`'s ⌘F claim does. Above the threshold the pane is the ordinary
-two-column grid (`220px 1fr` embedded, `260px 1fr` standalone).
-
-`FilesTab` / `FilesWorkbench` take an optional `pin` — the machine the files
-live on, for hosts that already know it is not this tab's machine (the Work
-tools pane, following its chat). Null keeps the historical behavior: the tab's
-bound machine. The prop seeds `FilesWorkbench`'s `machinePin` state, and a
-host-supplied pin wins whenever it changes; identity is compared by binding key
-so an equal binding rebuilt each render does not thrash the roster. Navigation
-requests still repin as they did before — the prop only supplies the starting
-machine.
-
-The embedded mount is also the **only** listener on the
-`v2/filesOpenRequests.ts` channel: a filename clicked in a chat on this machine,
-in that chat's own lane, opens here next to the conversation rather than
-throwing the user into the Files tab. `TerminalsPage` subscribes separately just
-to switch the Work sidebar to Files — the request itself waits in the channel
-until this workbench mounts and drains it, and the mount that takes it clears
-the channel's hold so a later mount cannot replay it. Everything else (another
-lane, another machine, a chat outside `/work`) routes to the Files tab through
-router state instead, so the destination stays deep-linkable.
-
-The embedded mount shares Work's right-edge sidebar. Keep context menus,
-overlays, and editor controls clamped to the renderer viewport so they remain
-usable in the narrower column.
-
-## Keyboard Shortcuts
-
-Registered through the global keybinding service
-(`apps/desktop/src/main/services/keybindings/`) and Files-local handlers:
-
-| Shortcut | Action |
-|---|---|
-| `Cmd+S` / `Ctrl+S` | save |
-| `Cmd+P` / `Ctrl+P` | search/open |
-| `Cmd+Shift+F` / `Ctrl+Shift+F` | search/open |
-| `Cmd+W` / `Ctrl+W` | close current tab |
-| `Cmd+Tab` / `Ctrl+Tab` | next tab |
-| `Cmd+\` / `Ctrl+\` | toggle file explorer |
-| `Cmd+Shift+E` | focus file explorer |
-| `F2` | rename in explorer |
+- **Below 520 px** (`EMBEDDED_SINGLE_SURFACE_PX`) it shows one surface at a time (`embeddedSurface`, `data-single-surface`), with a "Back to files" crumb. The hidden column stays mounted but `inert`, so focus claims (like ⌘F) must check `closest("[inert]")`.
+- It is the only listener on `v2/filesOpenRequests.ts`: a file clicked in a chat on this machine and lane opens beside the chat. The mount that drains a request clears the hold so it cannot replay. Anything else goes to the Files tab via router state.
 
 ## Gotchas
 
-- **External change plus dirty tab.** File watcher events must not overwrite
-  unsaved Monaco models. Surface the external change and require an explicit
-  user choice.
-- **Primary checkout writes.** The primary repo root and lane worktrees are
-  freely editable — there is no edit-protection gate on file writes. Path-safety
-  and trust policy is still enforced by the file service and preload boundary;
-  renderer affordances are only presentation.
-- **Large files.** Oversized text opens as read-only streamed content. Do not
-  force large files through the editable Monaco viewer. Media playback has a
-  fixed byte cap so large videos are handed off instead of loaded into
-  renderer memory.
-- **Session warmth.** Editor group order lives in renderer memory for the
-  session key. Recent files are persisted in local storage per session key,
-  bounded to the warm empty-state list, and pruned on rename/delete/tree
-  refresh so stale root-level paths do not linger.
-
-## Cross-Links
-
-- Main-process services and watcher:
-  [file-watcher-and-trust.md](./file-watcher-and-trust.md)
-- Files tab entry from the app shell:
-  `apps/desktop/src/renderer/components/app/App.tsx`
-- Conflict resolution data: `apps/desktop/src/main/services/conflicts/`
-- Diff data: `apps/desktop/src/main/services/diffs/`
+- **External change plus dirty tab:** watcher events never overwrite unsaved models.
+- **Large files** open as read-only streamed content; media has a byte cap and is handed off past it.
+- **Recent files** persist per session key, bounded, and are pruned on rename, delete and tree refresh.
+- Path safety is enforced by the file service and preload; renderer affordances are presentation only.

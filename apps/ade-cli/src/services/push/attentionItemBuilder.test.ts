@@ -102,8 +102,8 @@ describe("attention item vocabulary", () => {
     expect(roster[0]?.phase).toBe("stale");
     expect(live[0]?.title).toBe("Fix login");
     expect(roster[0]?.title).toBe("Disk session");
-    expect(live[0]?.privacyPreview).toBe("An ADE agent is idle.");
-    expect(roster[0]?.privacyPreview).toBe("An ADE agent is idle.");
+    expect(live[0]?.privacyPreview).toBe("A DAEX agent is idle.");
+    expect(roster[0]?.privacyPreview).toBe("A DAEX agent is idle.");
   });
 
   it("says 'idle' and never 'stale' or 'quiet' for the resting state", async () => {
@@ -117,7 +117,7 @@ describe("attention item vocabulary", () => {
       runs: new Map([["s-1", run({ phase: "stale" })]]),
     }));
 
-    expect(item?.privacyPreview).toBe("An ADE agent is idle.");
+    expect(item?.privacyPreview).toBe("A DAEX agent is idle.");
     for (const copy of [item?.title ?? "", item?.privacyPreview ?? ""]) {
       expect(copy.toLowerCase()).not.toMatch(/stale|quiet/);
     }
@@ -135,7 +135,7 @@ describe("attention item vocabulary", () => {
       backgroundTaskIds: new Set(["task-1"]),
     }))).toBe("agent_running");
     expect(agentAttentionTitle("Claude", "completed")).toBe("Claude is done");
-    expect(agentAttentionPrivacyPreview("needs_you")).toBe("An ADE agent needs you.");
+    expect(agentAttentionPrivacyPreview("needs_you")).toBe("A DAEX agent needs you.");
   });
 
   it("resolves the cross-machine project id once per item", () => {

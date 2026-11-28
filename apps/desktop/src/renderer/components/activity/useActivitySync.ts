@@ -12,6 +12,7 @@ import { useAccountStatus } from "../../lib/account";
 import { useHasOwnComputer } from "../../state/ownComputers";
 import { createBackoffPoller } from "../../lib/backoffPoller";
 import { createPresenceReporter, type PresenceReporter } from "../../lib/presenceReporter";
+import { BRAND } from "../../../shared/brand";
 
 const POLL_INTERVAL_MS = 15_000;
 // The snapshot is incremental: an unchanged revision costs a relay round trip
@@ -80,8 +81,8 @@ function unavailableActivitySnapshot(error: unknown): {
       snapshotScope: activityStore.getState().snapshotScope ?? (signedIn ? "account" : "machine"),
       availability: {
         state: "incompatible",
-        title: "Update the connected ADE host",
-        message: "This host cannot refresh Activity yet. Update ADE, restart its brain, then retry. Last-known work remains available.",
+        title: `Update the connected ${BRAND.NAME} host`,
+        message: `This host cannot refresh Activity yet. Update ${BRAND.NAME}, restart its brain, then retry. Last-known work remains available.`,
         recovery: "update_host",
       },
     };
@@ -94,8 +95,8 @@ function unavailableActivitySnapshot(error: unknown): {
         ? "Account Activity is reconnecting"
         : "This machine’s Activity is unavailable",
       message: signedIn
-        ? "ADE couldn’t refresh the account stream. Last-known work remains available while you retry."
-        : "ADE couldn’t refresh this machine. Retry to restore live updates.",
+        ? `${BRAND.NAME} couldn’t refresh the account stream. Last-known work remains available while you retry.`
+        : `${BRAND.NAME} couldn’t refresh this machine. Retry to restore live updates.`,
       recovery: "retry",
     },
   };
@@ -103,7 +104,7 @@ function unavailableActivitySnapshot(error: unknown): {
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message.trim();
-  return "ADE couldn’t refresh account Activity.";
+  return `${BRAND.NAME} couldn’t refresh account Activity.`;
 }
 
 /** The account the Activity store currently belongs to (null when signed out). */
@@ -291,7 +292,7 @@ function fallbackDeviceIdentity(): { deviceId: string; deviceName: string } {
   } catch {
     deviceId = `desktop-${Date.now().toString(36)}`;
   }
-  return { deviceId, deviceName: "ADE Desktop" };
+  return { deviceId, deviceName: `${BRAND.NAME} Desktop` };
 }
 
 async function resolveDesktopIdentity(): Promise<{ deviceId: string; deviceName: string }> {

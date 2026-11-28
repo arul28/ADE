@@ -16,6 +16,7 @@ import { adeCloudSettingsSearch } from "../../SettingsMachineScope";
 import { stateLine, type PassLine } from "./adeCloudClaudeModel";
 import { passTitle, readClaudePasses, type CloudPassRow } from "./adeCloudSignInModel";
 import { usePinnedProviderLoginStatus } from "./usePinnedProviderLoginStatus";
+import { BRAND } from "../../../../../shared/brand";
 
 
 /** The pass rows of the page's computer, by key; empty while `enabled` is false or before the read. */
@@ -37,7 +38,7 @@ const EMPTY: ReadonlyMap<string, CloudPassRow> = new Map();
 /** The card's name for a pass with no email: as on ADE Cloud's Claude page. */
 export function passAccountTitle(row: CloudPassRow | undefined, now: number): string {
   if (!row) return "Claude pass";
-  if (row.unreadable) return "Claude pass ADE can't read";
+  if (row.unreadable) return `Claude pass ${BRAND.NAME} can't read`;
   return passTitle(row, now);
 }
 
@@ -47,7 +48,7 @@ export function passAccountTitle(row: CloudPassRow | undefined, now: number): st
  */
 export function passAccountLine(row: CloudPassRow | undefined, now: number): PassLine {
   if (!row) return { text: "Claude pass", tone: null };
-  if (row.unreadable) return { text: "ADE can't read this Claude pass", tone: "warn" };
+  if (row.unreadable) return { text: `${BRAND.NAME} can't read this Claude pass`, tone: "warn" };
   const line = stateLine(row, now, { short: true });
   return line.text ? line : { text: "Claude pass", tone: null };
 }
@@ -71,7 +72,7 @@ export function AdeCloudPassLink({ state }: { state: PassLine }) {
           }}
           style={{ padding: 0, border: 0, background: "transparent", color: "var(--color-accent)", font: "inherit", cursor: "pointer" }}
         >
-          Change it on ADE Cloud
+          Change it on {BRAND.CLOUD_NAME}
         </button>
       </span>
     </span>

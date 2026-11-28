@@ -229,7 +229,7 @@ struct LinearDisplayMenu: View {
     if let notice = store.displaySaveNotice { return notice }
     switch preferences.source {
     case "linear-view", "linear-user": return "From your Linear display settings"
-    case "ade": return "Saved in ADE for this project"
+    case "ade": return "Saved in \(Brand.name) for this project"
     default: return "Linear\u{2019}s default display"
     }
   }

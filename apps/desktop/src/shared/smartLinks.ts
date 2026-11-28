@@ -1,3 +1,5 @@
+import { BRAND } from "./brand";
+import { ADE_DEEPLINK_URL_PREFIX_SOURCE, hasAdeDeeplinkScheme } from "./deeplinkSchemes";
 // Detection and classification of link-shaped text ONLY. Display labels and
 // glyphs belong to the shared chip model (`./chips`), which every surface
 // renders from; keeping a second set here is what let the composer and the
@@ -38,7 +40,9 @@ export type SmartLinkMatch = SmartLinkPreview & {
   end: number;
 };
 
-const URL_CANDIDATE_RE = /(?:https?:\/\/|ade:\/\/)[^\s<>"'`]+/gi;
+// `ade://` and `daex://` come from deeplinkSchemes.ts, not deeplinks.ts: the
+// preload bundle imports this file.
+const URL_CANDIDATE_RE = new RegExp(`(?:https?:\\/\\/|${ADE_DEEPLINK_URL_PREFIX_SOURCE})[^\\s<>"'\`]+`, "gi");
 const TRAILING_PUNCTUATION = new Set([".", ",", "!", "?", ";", ":"]);
 
 function trimTrailingUrlPunctuation(value: string): string {
@@ -126,7 +130,7 @@ function parseJiraIssueLink(url: URL, rawUrl: string): SmartLinkPreview | null {
 export function deriveSmartLinkPreview(rawValue: string): SmartLinkPreview | null {
   const rawUrl = trimTrailingUrlPunctuation(rawValue.trim());
   if (!rawUrl) return null;
-  if (/^ade:\/\//i.test(rawUrl)) {
+  if (hasAdeDeeplinkScheme(rawUrl)) {
     try {
       const parsed = new URL(rawUrl);
       const target = [parsed.hostname, ...parsed.pathname.split("/").filter(Boolean)].filter(Boolean).join("/");
@@ -134,7 +138,7 @@ export function deriveSmartLinkPreview(rawValue: string): SmartLinkPreview | nul
         url: rawUrl,
         provider: "ade",
         kind: "ade_deeplink",
-        label: target ? `ADE · ${target}` : "ADE link",
+        label: target ? `${BRAND.NAME} · ${target}` : `${BRAND.NAME} link`,
       };
     } catch {
       return null;

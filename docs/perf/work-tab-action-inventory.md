@@ -18,7 +18,7 @@ Coverage states:
 - `prompt-only`: destructive or externally visible path. Open and measure the
   confirmation/preflight, then cancel unless explicitly allowed.
 - `external-skip`: opens another app, browser, Xcode, docs, or Simulator.app.
-  Measure only up to the ADE preflight/button state unless explicitly allowed.
+  Measure only up to the DAEX preflight/button state unless explicitly allowed.
 
 ## Work shell and layout
 
@@ -49,7 +49,7 @@ Coverage states:
 | work.pane.expand | Expand a minimized embedded work pane | measured | `WorkViewArea.tsx` |
 | work.packed.select | Select packed grid tile | measured | `PackedSessionGrid.tsx` |
 | work.packed.resize | Resize packed grid tile | measured | `PackedSessionGrid.tsx` |
-| work.sidebar.open | Open ADE tools pane | measured | `WorkViewArea.tsx` |
+| work.sidebar.open | Open DAEX tools pane | measured | `WorkViewArea.tsx` |
 | work.sidebar.close | Close Work sidebar | measured | `WorkSidebar.tsx` |
 | work.sidebar.tab.git | Select Git tools tab | measured | `WorkSidebar.tsx` |
 | work.sidebar.tab.files | Select Files tools tab | measured | `WorkSidebar.tsx` |
@@ -154,7 +154,7 @@ Coverage states:
 | work.chat.copy-code | Copy code block | measured | `AgentChatMessageList.tsx` |
 | work.chat.open-file-link | Open transcript file link in Files | measured | `AgentChatMessageList.tsx` |
 | work.chat.open-url | Open transcript external URL | external-skip | `AgentChatMessageList.tsx` |
-| work.chat.open-pr-browser | Open PR URL in ADE browser | measured | `AgentChatMessageList.tsx` |
+| work.chat.open-pr-browser | Open PR URL in DAEX browser | measured | `AgentChatMessageList.tsx` |
 | work.chat.message.disclosure | Toggle message disclosure/details | measured | `AgentChatMessageList.tsx` |
 | work.chat.message.jira-context-refresh | Refresh Jira context chip after a turn-end snapshot update | not measured | `AgentChatPane.tsx`, `UserMessageIssueContext.tsx` |
 | work.chat.message.markdown-brief | Render a user markdown brief formatted in the bubble | not measured | `AgentChatMessageList.tsx` |

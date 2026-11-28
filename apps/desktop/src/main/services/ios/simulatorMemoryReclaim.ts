@@ -20,6 +20,7 @@
  */
 
 import { formatGb } from "../../../shared/formatting";
+import { BRAND } from "../../../shared/brand";
 
 /** The simulators matter when they hold at least this much memory... */
 export const SIMULATOR_RECLAIM_MIN_MB = 3 * 1024;
@@ -371,5 +372,5 @@ export function simulatorMemoryWarningText(args: { machineName: string; deviceNa
   const machine = args.machineName.trim() || "this computer";
   const device = args.deviceName.trim() || "a simulator";
   return `Memory on ${machine} is low. Your lane has simulator ${device} booted. Shut it down if you do not need it now. `
-    + "ADE shuts down idle simulators to keep the computer running.";
+    + `${BRAND.NAME} shuts down idle simulators to keep the computer running.`;
 }

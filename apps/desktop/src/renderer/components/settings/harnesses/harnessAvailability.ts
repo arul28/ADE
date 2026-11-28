@@ -10,6 +10,7 @@
 
 import type { AiSettingsStatus } from "../../../../shared/types";
 import { HARNESS_PRESET_BODIES, type HarnessPresetBody } from "../../../../shared/harnessPresets";
+import { BRAND } from "../../../../shared/brand";
 
 export type HarnessAvailability = {
   available: boolean;
@@ -36,7 +37,7 @@ export function harnessAvailability(
   if (harness === "claude") {
     const claude = providers?.claude;
     if (!claude) return UNKNOWN;
-    if (!claude.binary?.present) return { available: false, reason: "ADE has not downloaded Claude Code for this machine yet." };
+    if (!claude.binary?.present) return { available: false, reason: `${BRAND.NAME} has not downloaded Claude Code for this machine yet.` };
     if (!claude.auth?.ready) return { available: false, reason: "Claude Code is not signed in." };
     return { available: true, reason: "" };
   }
@@ -57,14 +58,14 @@ export function harnessAvailability(
   }
   if (harness === "opencode") {
     if (status.opencodeBinaryInstalled === false) {
-      return { available: false, reason: "ADE has not downloaded OpenCode for this machine yet." };
+      return { available: false, reason: `${BRAND.NAME} has not downloaded OpenCode for this machine yet.` };
     }
     return { available: true, reason: "" };
   }
   if (harness === "pi") {
     const pi = status.piInstallation;
     if (!pi) return UNKNOWN;
-    if (!pi.installed) return { available: false, reason: "ADE has not downloaded Pi for this machine yet." };
+    if (!pi.installed) return { available: false, reason: `${BRAND.NAME} has not downloaded Pi for this machine yet.` };
     if (pi.blocker) return { available: false, reason: pi.blocker };
     return { available: true, reason: "" };
   }

@@ -21,6 +21,7 @@ import type {
   ProjectSecretValueResult,
 } from "../../../shared/types/projectSecrets";
 import { readGitConfigOriginUrl, readGitOriginUrl } from "../projects/recentProjectSummary";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * A project's secrets, as its processes and `ade secrets` see them.
@@ -81,7 +82,7 @@ function copySourceScope(from: string): string {
   const repo = githubSlugUrl(from) ?? (isGitRemoteAddress(from) ? from : null);
   if (repo) {
     const scope = accountRepoScopeKey(repo);
-    if (!scope) throw new AdeExpectedError(`ADE can't read ${from} as a repository. Pass owner/repo or the project's folder.`, "user");
+    if (!scope) throw new AdeExpectedError(`${BRAND.NAME} can't read ${from} as a repository. Pass owner/repo or the project's folder.`, "user");
     return scope;
   }
   if (!path.isAbsolute(from)) throw new AdeExpectedError(`Pass the project's full folder path, or owner/repo: ${from} is neither.`, "user");
@@ -242,7 +243,7 @@ export function createProjectSecretService(projectRoot: string, options: Project
     if (!store) return null;
     const indexRaw = store.getSync(LEGACY_INDEX_KEY);
     // The store answers an unreadable file as empty; that is a failed read, not "no secrets".
-    if (store.getLastReadState() === "unreadable") throw new Error("ADE couldn't read this project's old secrets file.");
+    if (store.getLastReadState() === "unreadable") throw new Error(`${BRAND.NAME} couldn't read this project's old secrets file.`);
     const index = JSON.parse(indexRaw ?? "null") as {
       entries?: Record<string, { storage?: string; updatedAt?: string; source?: string; accountUserId?: string | null }>;
     } | null;
@@ -627,11 +628,11 @@ export function createProjectSecretService(projectRoot: string, options: Project
         if (vault && service.accountUserId()) {
           for (const legacyScope of legacyVaultScopes(repoScopeForRoot(projectRoot))) {
             const listed = await vault.list(legacyScope);
-            if (!listed.ok) throw new AdeExpectedError(`ADE couldn't check the account's old copies of ${name}. Try again in a moment.`, "environment");
+            if (!listed.ok) throw new AdeExpectedError(`${BRAND.NAME} couldn't check the account's old copies of ${name}. Try again in a moment.`, "environment");
             const live = listed.value.find((item) => item.scope === legacyScope && item.kind === LEGACY_VAULT_KIND && item.key === name && !item.deleted);
             if (live) {
               const removed = await vault.remove(legacyScope, LEGACY_VAULT_KIND, name, live.revision ? { expectedRevision: live.revision } : undefined);
-              if (!removed.ok) throw new AdeExpectedError(`ADE couldn't remove the account's old copy of ${name}: it changed. Try again.`, "environment");
+              if (!removed.ok) throw new AdeExpectedError(`${BRAND.NAME} couldn't remove the account's old copy of ${name}: it changed. Try again.`, "environment");
             }
           }
         }
@@ -676,7 +677,7 @@ export function createProjectSecretService(projectRoot: string, options: Project
           .filter((entry) => entry.projectScope === sourceScope)
           .map((entry) => [entry.name, entry] as const));
         if (source.size === 0) {
-          throw new AdeExpectedError(`${from} has no secrets of its own on this computer's ADE. Check the folder or owner/repo.`, "user");
+          throw new AdeExpectedError(`${from} has no secrets of its own on this computer's ${BRAND.NAME}. Check the folder or owner/repo.`, "user");
         }
         const missing = only?.filter((name) => !source.has(name)) ?? [];
         if (missing.length) {

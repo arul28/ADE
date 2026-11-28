@@ -17,13 +17,14 @@ import { providerActionMessage } from "./providerErrorMessage";
 import { linkHost, signInAccountMismatch, type SignInStage } from "./signInSheetParts";
 import { isCheckingCode, SignInSheetFrame, STATUS_POLL_MS, useSuccessHold, verifyingHintFor, type SignInMachine, type SignInSheetView } from "./signInSheetFrame";
 import { useSettingsMachineScope } from "../SettingsMachineScope";
+import { BRAND } from "../../../../shared/brand";
 
 type AccountPhase = "form" | "signing" | "success" | "failed";
 
 function accountStartFailure(err: unknown): string {
   // A pinned machine on an ADE from before in-app sign-in has no login actions.
   if (isUnsupportedAdeActionError(err)) {
-    return "That machine runs an older ADE that cannot sign in from Settings. Update ADE there, then sign in to this account again.";
+    return `That machine runs an older ${BRAND.NAME} that cannot sign in from Settings. Update ${BRAND.NAME} there, then sign in to this account again.`;
   }
   return providerActionMessage(err, "That sign-in could not be started.");
 }
@@ -126,7 +127,7 @@ function AccountSignInSheet({
   }, []);
 
   const startLogin = useCallback(async (id: string) => {
-    if (!api?.loginStart) throw new Error("This ADE host cannot run a sign-in from Settings. Update ADE on that machine.");
+    if (!api?.loginStart) throw new Error(`This ${BRAND.NAME} host cannot run a sign-in from Settings. Update ${BRAND.NAME} on that machine.`);
     const seq = ++startSeqRef.current;
     // A second start (a quick "Try again") supersedes the first; stop the one
     // still running so its CLI does not linger.
@@ -298,7 +299,7 @@ function AccountSignInSheet({
           title: !login && error ? "The sign-in could not start." : login?.state === "cancelled" ? "The sign-in was stopped." : "Sign-in did not complete.",
           detail: !login && error
             ? error
-            : login?.message ?? `ADE found no working login for ${accountName}. ${providerLabel} saves it only after you approve in the browser.`,
+            : login?.message ?? `${BRAND.NAME} found no working login for ${accountName}. ${providerLabel} saves it only after you approve in the browser.`,
           stopped: login?.state === "cancelled",
           extra: existingInstance ? (
             <span className="ade-sis-hint">

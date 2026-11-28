@@ -6,6 +6,7 @@ import { PROVIDER_LOGINS_CLOUD_SETTING, readCloudSetting } from "../../../shared
 import { MCP_SERVERS_SETTING_KEY, MCP_TRANSPORT_LABEL, normalizeMcpRegistry } from "../../../shared/mcpRegistry";
 import { Banner } from "../ui/notice";
 import { SettingsToggle } from "./primitives/SettingsControls";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Settings › ADE Cloud on ADE Web with no computer of the person's own: the
@@ -19,7 +20,7 @@ import { SettingsToggle } from "./primitives/SettingsControls";
 
 type AccountRead<T> = { state: "loading" } | { state: "failed" } | { state: "ready"; value: T };
 
-const READ_FAILED = "ADE couldn't read this from your account. Try again.";
+const READ_FAILED = `${BRAND.NAME} couldn't read this from your account. Try again.`;
 
 function readAccountSetting(key: string): Promise<{ ok: true; value: unknown } | { ok: false }> {
   const store = window.ade?.accountSettings;
@@ -92,25 +93,25 @@ export function WebSignInSharingCard() {
     try {
       const answer = await store.set({ scope: ACCOUNT_SCOPE_ALL, key: PROVIDER_LOGINS_CLOUD_SETTING, value });
       if (answer.ok) replace(value);
-      else setError("ADE couldn't save that to your account. Try again.");
+      else setError(`${BRAND.NAME} couldn't save that to your account. Try again.`);
     } catch {
-      setError("ADE couldn't save that to your account. Try again.");
+      setError(`${BRAND.NAME} couldn't save that to your account. Try again.`);
     } finally {
       setPending(null);
     }
   };
 
   return (
-    <section id="web-sign-in-sharing" className="kit-card adecd-card" aria-label="Share sign-ins with ADE Cloud">
+    <section id="web-sign-in-sharing" className="kit-card adecd-card" aria-label={`Share sign-ins with ${BRAND.CLOUD_NAME}`}>
       <header className="kit-card-head">
         <ShareNetwork size={14} />
-        Sign-ins on ADE Cloud
+        Sign-ins on {BRAND.CLOUD_NAME}
       </header>
       <div className="kit-card-body">
         {read.state === "failed" ? <ReadFailed id="web-sign-in-sharing-read" onRetry={reload} /> : null}
         <div className="adecd-signin-switch">
           <div>
-            <b>Share my sign-ins with ADE Cloud</b>
+            <b>Share my sign-ins with {BRAND.CLOUD_NAME}</b>
             <small>
               {on === false
                 ? "Off: you sign in on each cloud computer yourself."
@@ -120,7 +121,7 @@ export function WebSignInSharingCard() {
           <SettingsToggle
             checked={pending ?? on ?? false}
             disabled={read.state !== "ready" || pending !== null}
-            label="Share my sign-ins with ADE Cloud"
+            label={`Share my sign-ins with ${BRAND.CLOUD_NAME}`}
             onChange={(next) => void setOn(next)}
           />
         </div>
@@ -148,11 +149,11 @@ export function WebMcpServersCard() {
       <div className="kit-card-body">
         {read.state === "failed" ? <ReadFailed id="web-mcp-servers-read" onRetry={reload} /> : null}
         {read.state === "ready" && servers.length === 0 ? (
-          <p className="adecd-lead">No MCP servers in your account. Add one in ADE on a computer and every agent gets it, ADE Cloud too.</p>
+          <p className="adecd-lead">No MCP servers in your account. Add one in {BRAND.NAME} on a computer and every agent gets it, {BRAND.CLOUD_NAME} too.</p>
         ) : null}
         {servers.length ? (
           <>
-            <p className="adecd-lead">Agents on every computer, ADE Cloud too, get these. Add or change them in ADE on a computer.</p>
+            <p className="adecd-lead">Agents on every computer, {BRAND.CLOUD_NAME} too, get these. Add or change them in {BRAND.NAME} on a computer.</p>
             <ul className="kit-panel adecd-signin-list">
               {servers.map((server) => (
                 <li key={server.name} className="adecd-signin">

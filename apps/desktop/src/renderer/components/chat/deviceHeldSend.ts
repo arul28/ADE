@@ -6,6 +6,7 @@ import { withChatPin } from "./chatMachinePin";
 import { hasHeldAttachments, stageHeldAttachments } from "./heldChatAttachments";
 import { threadCommentsHeldOnDevice } from "./threadCommentsHeldOnDevice";
 import { handOverHeldThreadComments } from "./threadCommentsStore";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The sentence a send shows when what this device kept could not go: what
@@ -20,8 +21,8 @@ function notReached(what: "files" | "comments", machineName: string | null | und
   if (reason.includes(SAVED_CHAT_COMPUTER_GONE_MESSAGE)) return new Error(`Not sent. ${SAVED_CHAT_COMPUTER_GONE_MESSAGE}`);
   const machine = machineName?.trim() || "the chat's computer";
   return new Error(what === "files"
-    ? `Not sent. ADE couldn't copy your files to ${machine}. Your message and files are still in the box, so press Send to try again.`
-    : `Not sent. ADE couldn't hand your comments to ${machine}. Your message and comments are still here, so press Send to try again.`);
+    ? `Not sent. ${BRAND.NAME} couldn't copy your files to ${machine}. Your message and files are still in the box, so press Send to try again.`
+    : `Not sent. ${BRAND.NAME} couldn't hand your comments to ${machine}. Your message and comments are still here, so press Send to try again.`);
 }
 
 /**

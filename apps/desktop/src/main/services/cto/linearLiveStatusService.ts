@@ -1,6 +1,7 @@
 import type { Logger } from "../logging/logger";
 import type { LaneLinearIssue } from "../../../shared/types";
 import type { IssueTracker } from "./issueTracker";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Live Linear status round-trip (Item 6 "extra", gated OFF by default).
@@ -127,7 +128,7 @@ export function createLinearLiveStatusService(args: {
         const laneLabel = input.laneName?.trim() ? ` in lane "${input.laneName.trim()}"` : "";
         await tracker.createComment(
           issue.id,
-          `ADE started an agent${laneLabel} on branch \`${branch}\`.`,
+          `${BRAND.NAME} started an agent${laneLabel} on branch \`${branch}\`.`,
         );
       } catch (error) {
         warn("linear_live_status.launch_comment_failed", {
@@ -151,7 +152,7 @@ export function createLinearLiveStatusService(args: {
     if (!url) return;
     for (const issueId of new Set(input.issueIds.map((id) => id.trim()).filter(Boolean))) {
       try {
-        await tracker.createComment(issueId, `ADE opened PR #${input.prNumber}: ${url}`);
+        await tracker.createComment(issueId, `${BRAND.NAME} opened PR #${input.prNumber}: ${url}`);
       } catch (error) {
         warn("linear_live_status.pr_comment_failed", {
           issueId,

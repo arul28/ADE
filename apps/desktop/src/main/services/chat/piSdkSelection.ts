@@ -9,6 +9,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { PI_THINKING_LEVELS, normalizePiSdkModelRef, type PiSdkModelRef } from "./piSdkProtocol";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Pi's own thinking level when settings.json names none (`DEFAULT_THINKING_LEVEL`
@@ -155,6 +156,6 @@ export async function resolvePiExactModel(runtime: unknown, ref: PiSdkModelRef):
     ? `Pi's "${provider}" provider has no model "${id}"`
     : `Pi has no provider "${provider}" with models`;
   throw new Error(
-    `Pi model "${provider}/${id}" is unavailable: ${reason}. ADE runs only the exact model you picked, so pick another model or add this one to your Pi profile.`,
+    `Pi model "${provider}/${id}" is unavailable: ${reason}. ${BRAND.NAME} runs only the exact model you picked, so pick another model or add this one to your Pi profile.`,
   );
 }

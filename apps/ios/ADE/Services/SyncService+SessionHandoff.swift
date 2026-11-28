@@ -223,7 +223,7 @@ extension SyncService {
   ) async throws -> Any {
     guard laneMoveActionAvailable(action, route: route) else {
       throw NSError(domain: "ADE", code: 15, userInfo: [
-        NSLocalizedDescriptionKey: "That computer needs an ADE update to move a lane from the phone. Update ADE there, then try again."
+        NSLocalizedDescriptionKey: "That computer needs a \(Brand.name) update to move a lane from the phone. Update \(Brand.name) there, then try again."
       ])
     }
     return try await sendMachineCommand(
@@ -371,7 +371,7 @@ extension SyncService {
     func reason(online: Bool, name: String, route: LaneMoveRoute) -> String? {
       if !online { return "\(name) is not on." }
       if !laneMoveActionAvailable("cloud.restoreKeptLane", route: route) {
-        return "\(name) needs an ADE update to bring a lane back."
+        return "\(name) needs a \(Brand.name) update to bring a lane back."
       }
       return nil
     }

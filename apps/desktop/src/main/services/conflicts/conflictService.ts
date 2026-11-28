@@ -60,6 +60,7 @@ import { findBuiltOnMergedPr, listRecentMergedPrHeads, rebaseArgsFor, type Merge
 import { redactSecretsDeep } from "../../utils/redaction";
 import { extractFirstJsonObject } from "../ai/utils";
 import { asString, isRecord, parseDiffNameOnly, parseDiffNameOnlySorted, parseNumstatRecordsZ, safeJsonParse, uniqueSorted } from "../shared/utils";
+import { BRAND } from "../../../shared/brand";
 
 type PredictionStatus = "clean" | "conflict" | "unknown";
 
@@ -2319,7 +2320,7 @@ export function createConflictService({
       required: ["explanation", "confidence", "diffPatch"]
     };
     const prompt = [
-      "You are ADE's conflict resolution assistant.",
+      `You are ${BRAND.NAME}'s conflict resolution assistant.`,
       "Produce a safe proposal using only provided context. Do not invent files or hunks.",
       "",
       "Return JSON with keys: explanation, confidence (0..1), diffPatch (unified diff).",
@@ -2461,7 +2462,7 @@ export function createConflictService({
     const commitMessage =
       args.commitMessage?.trim() ??
       (applyMode === "commit"
-        ? `Resolve conflicts via ADE (${new Date().toISOString().slice(0, 10)})`
+        ? `Resolve conflicts via ${BRAND.NAME} (${new Date().toISOString().slice(0, 10)})`
         : "");
     if (applyMode === "commit" && !commitMessage) {
       throw new Error("commitMessage is required when applyMode='commit'");

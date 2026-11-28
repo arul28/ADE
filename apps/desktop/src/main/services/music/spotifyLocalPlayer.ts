@@ -2,6 +2,7 @@ import { MUSIC_SPOTIFY_ADE_DEVICE_NAME, MUSIC_SPOTIFY_DEFAULT_VOLUME } from "../
 import { clampVolume } from "./musicVolume";
 import { MusicHostError, startMusicHost, type MusicHost, type MusicHostEvent } from "./musicHostProcess";
 import type { SpotifyTrack } from "./spotifyApi";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Spotify playing inside ADE: Spotify's Web Playback SDK on a page
@@ -109,7 +110,7 @@ export function createSpotifyLocalPlayer(args: {
     // A start a stop has since abandoned will fail; wait it out, then start fresh.
     if (starting && startingGen !== generation) return starting.then(() => start(), () => start());
     if (starting) return starting;
-    if (!args.hostExecutable) return Promise.reject(new Error("Spotify plays in ADE on Windows and macOS."));
+    if (!args.hostExecutable) return Promise.reject(new Error(`Spotify plays in ${BRAND.NAME} on Windows and macOS.`));
     const gen = generation;
     startingGen = gen;
     starting = (async () => {
@@ -139,7 +140,7 @@ export function createSpotifyLocalPlayer(args: {
         else if (event.event === "playerError" && ["initialization_error", "authentication_error", "account_error"].includes(String(event.kind))) {
           readyReject(new Error(
             event.kind === "account_error"
-              ? "Spotify needs Premium to play in ADE."
+              ? `Spotify needs Premium to play in ${BRAND.NAME}.`
               : event.kind === "authentication_error"
                 ? "Spotify needs you to connect again."
                 : "Spotify's player couldn't start here.",

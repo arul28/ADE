@@ -11,7 +11,7 @@
  * Pure on purpose: it takes what the open resolved and returns the lines, and
  * the caller logs them. That makes the honesty rules — the part of this surface
  * most likely to be edited next — testable without a runtime, a socket, or a
- * `createAdeChat` round trip.
+ * `createDaexChat` round trip.
  */
 
 import type {

@@ -22,6 +22,7 @@ import { execFile } from "node:child_process";
 import { execFileOffThread, offThreadSpawnEnabled } from "../shared/offThreadSpawn";
 import type { SystemSleepConfig } from "../../../shared/types/keepAwake";
 import { resolveTrustedWindowsTool } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
+import { BRAND } from "../../../shared/brand";
 
 /** `pmset` answers instantly or it is wedged; never stall the settings read. */
 const PMSET_TIMEOUT_MS = 3_000;
@@ -246,5 +247,5 @@ export async function disableSystemSleepOnAc(
       : { ok: false, error: "Windows wouldn't change the sleep setting." };
   }
 
-  return { ok: false, error: "ADE can't change this on this system." };
+  return { ok: false, error: `${BRAND.NAME} can't change this on this system.` };
 }

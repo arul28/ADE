@@ -24,11 +24,11 @@ struct PhoneUpdateBlockedScreen: View {
             .foregroundStyle(ADEColor.accent)
             .accessibilityHidden(true)
           VStack(spacing: 10) {
-            Text("Update ADE to keep working")
+            Text("Update \(Brand.name) to keep working")
               .font(.title2.weight(.semibold))
               .foregroundStyle(ADEColor.textPrimary)
               .multilineTextAlignment(.center)
-            Text("This version of ADE is no longer supported. Your work on your computers and in ADE Cloud is saved.")
+            Text("This version of \(Brand.name) is no longer supported. Your work on your computers and in \(Brand.cloudName) is saved.")
               .font(.body)
               .foregroundStyle(ADEColor.textSecondary)
               .multilineTextAlignment(.center)
@@ -48,7 +48,7 @@ struct PhoneUpdateBlockedScreen: View {
           .padding(.vertical, 8)
           .background(ADEKit.track, in: Capsule(style: .continuous))
           .accessibilityElement(children: .ignore)
-          .accessibilityLabel("You have \(requirement.currentLabel). ADE needs \(requirement.requiredLabel).")
+          .accessibilityLabel("You have \(requirement.currentLabel). \(Brand.name) needs \(requirement.requiredLabel).")
           Button(requirement.buttonTitle) {
             UIApplication.shared.open(requirement.updateURL)
           }
@@ -185,7 +185,7 @@ struct MachineVersionBlockScreen: View {
         .font(.system(size: 22, weight: .semibold))
         .foregroundStyle(ADEColor.accent)
         .accessibilityHidden(true)
-      Text("\(block.machineName) runs an old version of ADE (\(block.requirement.currentVersion) → \(block.requirement.targetVersion)). Update it to keep working on it. Its lanes, chats and work are saved.")
+      Text("\(block.machineName) runs an old version of \(Brand.name) (\(block.requirement.currentVersion) → \(block.requirement.targetVersion)). Update it to keep working on it. Its lanes, chats and work are saved.")
         .font(.body)
         .foregroundStyle(ADEColor.textPrimary)
         .fixedSize(horizontal: false, vertical: true)
@@ -202,7 +202,7 @@ struct MachineVersionBlockScreen: View {
     case .cloudUpdate(let instanceId):
       cloudUpdate(instanceId: instanceId)
     case .updateOnMachine:
-      Text("Open ADE on \(block.machineName) and update it there.")
+      Text("Open \(Brand.name) on \(block.machineName) and update it there.")
         .font(.subheadline)
         .foregroundStyle(ADEColor.textSecondary)
         .fixedSize(horizontal: false, vertical: true)
@@ -275,7 +275,7 @@ struct MachineVersionBlockScreen: View {
       id = syncService.cloudServerInstance(fleetKey: block.machineKey)?.id
     }
     guard let id else {
-      cloudResult = (false, "ADE Cloud couldn’t find this computer. Try again in a moment.")
+      cloudResult = (false, "\(Brand.cloudName) couldn’t find this computer. Try again in a moment.")
       return
     }
     if let failure = await AccountCloudStore.shared.updateComputer(instanceId: id, using: syncService) {

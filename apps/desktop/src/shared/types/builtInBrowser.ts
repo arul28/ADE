@@ -7,6 +7,8 @@ import type {
   ComputerUseActionEffect,
 } from "./agentObservation";
 import { RECORDING_MAX_MS, type DemoArtifactMetadata } from "../demoVideo/demoContract";
+import { BRAND } from "../brand";
+import { PRODUCT_NAME_PATTERN } from "../brandNames";
 
 export type BuiltInBrowserProvider = "cdp";
 
@@ -16,9 +18,9 @@ export type BuiltInBrowserProvider = "cdp";
  * refused. One sentence for the brain's reason, the desktop's log and the
  * app-wide banner.
  */
-export const ELEVATED_DESKTOP_TITLE = "ADE is running as administrator";
+export const ELEVATED_DESKTOP_TITLE = `${BRAND.NAME} is running as administrator`;
 export const ELEVATED_DESKTOP_MESSAGE =
-  "The ADE background service cannot reach it, so agents cannot use the browser, record App Control, or make demo videos. Quit ADE and open it normally.";
+  `The ${BRAND.NAME} background service cannot reach it, so agents cannot use the browser, record App Control, or make demo videos. Quit ${BRAND.NAME} and open it normally.`;
 
 export type BuiltInBrowserFrame = AgentFrame;
 
@@ -350,6 +352,8 @@ export const BUILT_IN_BROWSER_APPROVAL_WAIT_MS = 2 * 60_000;
  */
 export const BUILT_IN_BROWSER_APPROVAL_CALL_BUDGET_MS = 15_000;
 
+const BROWSER_PERMISSION_WAIT = new RegExp(`waiting for the user to (allow this (?:chat|lane) to use the ${PRODUCT_NAME_PATTERN} browser)`);
+
 /**
  * What an `approval_pending: …` message is waiting for, as a phrase that reads
  * after "waiting for the user to" (e.g. "allow this chat to use the ADE
@@ -359,11 +363,11 @@ export function parseBuiltInBrowserApprovalPending(message: string): { waitingFo
   const index = message.indexOf(`${BUILT_IN_BROWSER_APPROVAL_PENDING_CODE}:`);
   if (index < 0) return null;
   const tail = message.slice(index);
-  const current = /waiting for the user to (allow this (?:chat|lane) to use the ADE browser)/.exec(tail);
+  const current = BROWSER_PERMISSION_WAIT.exec(tail);
   if (current) return { waitingFor: current[1]! };
   // An older desktop's per-site prompt.
   const legacy = /approve (\S+) in ADE/.exec(tail);
-  return { waitingFor: legacy ? `approve ${legacy[1]} in ADE` : "answer the ADE browser prompt" };
+  return { waitingFor: legacy ? `approve ${legacy[1]} in ${BRAND.NAME}` : `answer the ${BRAND.NAME} browser prompt` };
 }
 
 /**
@@ -1990,7 +1994,13 @@ export const BUILT_IN_BROWSER_NARROW_PAGE_WIDTH = 640;
  * (the project root follows). Matched by the runtime across the desktop
  * bridge, where only an error's message survives.
  */
-export const BUILT_IN_BROWSER_NO_PROJECT_WINDOW_MESSAGE = "No ADE browser window is open for project";
+export const BUILT_IN_BROWSER_NO_PROJECT_WINDOW_MESSAGE = `No ${BRAND.NAME} browser window is open for project`;
+
+/** Whether an error message is that one; a desktop from before the rename wrote "No ADE browser window…". */
+export function isBuiltInBrowserNoProjectWindowMessage(message: string): boolean {
+  return message.includes(BUILT_IN_BROWSER_NO_PROJECT_WINDOW_MESSAGE)
+    || message.includes(`No ${BRAND.FORMER_NAME} browser window is open for project`);
+}
 
 /**
  * The page size of a tab that is being recorded.

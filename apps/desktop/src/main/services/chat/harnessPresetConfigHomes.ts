@@ -24,6 +24,7 @@ import {
   adeUpstreamId,
   removeCliProxyApiUpstreams,
 } from "../../../../../ade-cli/src/services/proxy/cliProxyApiUpstreams";
+import { BRAND } from "../../../shared/brand";
 
 export type HarnessCleanupLogger = {
   warn: (message: string, meta?: Record<string, unknown>) => void;
@@ -75,7 +76,7 @@ function ownedConfigHome(
   const root = path.resolve(adeHome, "provider-homes", namespace);
   const candidate = path.resolve(root, ...segments.map(configHomeSegment));
   if (pathEscapesRoot(root, candidate)) {
-    throw new Error(`Provider-home path escapes ADE's ${namespace} directory.`);
+    throw new Error(`Provider-home path escapes ${BRAND.NAME}'s ${namespace} directory.`);
   }
   return candidate;
 }
@@ -408,13 +409,13 @@ export function buildCodexPresetConfigToml(
 ): string {
   const resolved = (baseUrl?.trim() || "https://api.openai.com/v1").replace(/\/+$/, "");
   const lines = [
-    "# Written by ADE for a harness preset. Edits here are overwritten on launch.",
-    "# ADE never writes to ~/.codex/config.toml; CODEX_HOME points Codex at this",
+    "# Written by DAEX for a harness preset. Edits here are overwritten on launch.",
+    "# DAEX never writes to ~/.codex/config.toml; CODEX_HOME points Codex at this",
     "# directory instead, so the user's own Codex sign-in is untouched.",
     'model_provider = "ade"',
     "",
     "[model_providers.ade]",
-    'name = "ADE"',
+    'name = "DAEX"',
     `base_url = "${resolved}"`,
     'wire_api = "responses"',
     'env_key = "ADE_PRESET_OPENAI_API_KEY"',
@@ -429,8 +430,8 @@ export function buildCodexProxyConfigToml(
   subagent?: HarnessSubagentLaunch,
 ): string {
   const lines = [
-    "# Written by ADE for a harness preset borrowing a subscription through",
-    "# ADE's proxy. Edits here are overwritten on launch. ADE never writes to",
+    "# Written by DAEX for a harness preset borrowing a subscription through",
+    "# DAEX's proxy. Edits here are overwritten on launch. DAEX never writes to",
     "# ~/.codex/config.toml; CODEX_HOME points Codex at this directory instead.",
     'model_provider = "ade-proxy"',
     "",

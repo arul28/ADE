@@ -90,6 +90,131 @@ export function joinAdeAgentSkillRoots(roots: readonly string[]): string {
   return normalizedRoots.join(pathDelimiter());
 }
 
+/**
+ * The Claude plugin the bundled skills ship as (`.claude-plugin/plugin.json`
+ * `name`), so Claude names them `daex:<skill>`. Builds before the DAEX rename
+ * shipped the plugin as `ade`, so saved prompts and transcripts say
+ * `ade:ade-<skill>`; {@link canonicalBundledAgentSkillName} maps those.
+ */
+export const BUNDLED_AGENT_SKILL_PLUGIN = "daex";
+export const LEGACY_BUNDLED_AGENT_SKILL_PLUGIN = "ade";
+
+/**
+ * Every bundled skill folder under `apps/desktop/resources/agent-skills`, by
+ * its DAEX name. `adeBundledAgentSkills` (prompt order) and the packaging
+ * roster mirror this set; bundledAgentSkills.test.ts binds them to the disk.
+ */
+export const BUNDLED_AGENT_SKILL_NAMES = [
+  "daex-android",
+  "daex-app-control",
+  "daex-apple",
+  "daex-browser",
+  "daex-cli-control-plane",
+  "daex-cloud",
+  "daex-computer-use",
+  "daex-deeplinks",
+  "daex-harnesses",
+  "daex-lanes-git",
+  "daex-linear",
+  "daex-mcp-client",
+  "daex-pr-workflows",
+  "daex-proof-artifacts",
+  "daex-scene",
+  "daex-search",
+  "daex-webhooks",
+] as const;
+
+export type BundledAgentSkillName = (typeof BUNDLED_AGENT_SKILL_NAMES)[number];
+
+const bundledAgentSkillNameSet: ReadonlySet<string> = new Set(BUNDLED_AGENT_SKILL_NAMES);
+
+/**
+ * Old bundled skill name → the DAEX skill that answers it now. Every skill was
+ * `ade-<x>` before the rename (now `daex-<x>`); two names were already retired
+ * aliases with no folder of their own. These names are never listed to an
+ * agent; ADE accepts them wherever it resolves a skill by name (`ade skill
+ * show`, ADE MCP prompts, withheld-skill checks, the `/` menu filters).
+ */
+export const LEGACY_BUNDLED_AGENT_SKILL_ALIASES: Readonly<Record<string, BundledAgentSkillName>> = Object.freeze({
+  ...Object.fromEntries(
+    BUNDLED_AGENT_SKILL_NAMES.map((name) => [`ade-${name.slice("daex-".length)}`, name]),
+  ),
+  "ade-desktop": "daex-computer-use",
+  "ade-ios-simulator": "daex-apple",
+});
+
+/** The old names of {@link LEGACY_BUNDLED_AGENT_SKILL_ALIASES}, for filters that hide them from listings. */
+export const LEGACY_BUNDLED_AGENT_SKILL_NAMES: ReadonlySet<string> = new Set(Object.keys(LEGACY_BUNDLED_AGENT_SKILL_ALIASES));
+
+/**
+ * A skill name as someone may type it (`ade-browser`, `/ade:ade-browser`,
+ * `daex:daex-browser`, `$daex-browser`), as the bundled DAEX name when it
+ * names a bundled skill, else the bare name unchanged (lowercased, without a
+ * leading `/` or `$`). Callers that look a skill up by name try the exact
+ * name first, so a project skill that happens to carry an old name still wins.
+ */
+export function canonicalBundledAgentSkillName(name: string): string {
+  let bare = String(name ?? "").trim().replace(/^[/$]+/, "").trim().toLowerCase();
+  const separator = bare.indexOf(":");
+  if (separator > 0) {
+    const plugin = bare.slice(0, separator);
+    if (plugin === BUNDLED_AGENT_SKILL_PLUGIN || plugin === LEGACY_BUNDLED_AGENT_SKILL_PLUGIN) {
+      bare = bare.slice(separator + 1);
+    }
+  }
+  if (bundledAgentSkillNameSet.has(bare)) return bare;
+  return LEGACY_BUNDLED_AGENT_SKILL_ALIASES[bare] ?? bare;
+}
+
+/** True when `name` (any spelling {@link canonicalBundledAgentSkillName} takes) is one of these skills. */
+export function isAgentSkillNamed(name: string, skills: readonly string[]): boolean {
+  const canonical = canonicalBundledAgentSkillName(name);
+  return skills.some((skill) => canonicalBundledAgentSkillName(skill) === canonical);
+}
+
+/**
+ * A message that opens with an old bundled-skill command, sent under the
+ * DAEX name: `/ade:ade-browser go` → `/daex:daex-browser go` (Claude's plugin
+ * form) and `/ade-browser go` → `/daex-browser go` (the bare form Codex,
+ * Copilot and the `/` menus use). Saved prompts, automations and muscle memory
+ * still type the old names, and no provider knows them any more. Any other
+ * text, including an old-looking name that is not a bundled skill, is
+ * returned unchanged, and so is a bare `/ade-<x>` when `ownSkillExists` says
+ * a project or user skill carries that exact name: it wins, as in
+ * {@link canonicalBundledAgentSkillName}.
+ */
+export function rewriteLegacyBundledSkillCommand(text: string, ownSkillExists?: (name: string) => boolean): string {
+  const match = /^(\s*)\/(ade:)?(ade-[a-z0-9-]+)(?=\s|$)/.exec(text);
+  if (!match) return text;
+  const target = LEGACY_BUNDLED_AGENT_SKILL_ALIASES[match[3]!];
+  if (!target) return text;
+  if (!match[2] && ownSkillExists?.(match[3]!)) return text;
+  const command = match[2] ? `/${BUNDLED_AGENT_SKILL_PLUGIN}:${target}` : `/${target}`;
+  return `${match[1]}${command}${text.slice(match[0].length)}`;
+}
+
+/**
+ * A withheld list with each bundled skill under both its DAEX and its old
+ * name, so a root that still carries an old folder (an older brain's
+ * `agent-skills` on another machine, an `ADE_AGENT_SKILLS_DIRS` from an older
+ * build) is filtered the same, and callers that still check an old name
+ * (`includes("ade-cloud")`) keep their answer.
+ */
+export function withLegacyAgentSkillNames(names: readonly string[]): string[] {
+  const out = new Set<string>();
+  for (const name of names) {
+    out.add(name);
+    const canonical = canonicalBundledAgentSkillName(name);
+    if (!bundledAgentSkillNameSet.has(canonical)) continue;
+    out.add(canonical);
+    for (const [legacy, target] of Object.entries(LEGACY_BUNDLED_AGENT_SKILL_ALIASES)) {
+      // A retired alias (`ade-ios-simulator` -> `daex-apple`) follows its target.
+      if (target === canonical) out.add(legacy);
+    }
+  }
+  return [...out];
+}
+
 /** Every process's default for bundled skills held back from agents, until a brain knows better. */
 const ALWAYS_WITHHELD_AGENT_SKILLS: readonly string[] = [
   // ADE Cloud's old skill name: a remote machine's older agent-skills folder can still carry it.
@@ -97,12 +222,15 @@ const ALWAYS_WITHHELD_AGENT_SKILLS: readonly string[] = [
 ];
 
 /**
- * Skills whose `ade` commands run only on a Mac: `ade apple` drives Xcode's
+ * Skills whose `daex` commands run only on a Mac: `daex apple` drives Xcode's
  * simulators and answers `supported: false` on any other host. Every other
  * bundled skill works on macOS, Windows and Linux (Android needs a machine
  * with virtualization, which a Linux VM or a full cloud computer has).
  */
-const MAC_ONLY_AGENT_SKILLS: readonly string[] = ["ade-apple", "ade-ios-simulator"];
+const MAC_ONLY_AGENT_SKILLS: readonly string[] = withLegacyAgentSkillNames(["daex-apple"]);
+
+/** The DAEX Cloud skill, under both names: held back until the account is on the access list. */
+const CLOUD_AGENT_SKILL_NAMES: readonly string[] = withLegacyAgentSkillNames(["daex-cloud"]);
 
 /**
  * The bundled skills this host cannot use. The host is the process that builds
@@ -116,34 +244,35 @@ export function adeHostWithheldAgentSkills(
 }
 
 let adeCloudSkillVisible = false;
-/** The account has the ADE Cloud iPhone: `ade-apple` is for any host then, not only a Mac. */
+/** The account has the ADE Cloud iPhone: `daex-apple` is for any host then, not only a Mac. */
 let adeCloudIphoneVisible = false;
 let agentSkillAccessRefresh: (() => void) | null = null;
 let agentSkillRootFilter: ((roots: readonly string[]) => string[]) | null = null;
 
 /**
- * Bundled skills no agent may see right now: `ade-cloud` unless this account
+ * Bundled skills no agent may see right now: `daex-cloud` unless this account
  * is on ADE Cloud's access list, and the skills this host cannot run
- * ({@link adeHostWithheldAgentSkills}), except `ade-apple` for an account
+ * ({@link adeHostWithheldAgentSkills}), except `daex-apple` for an account
  * with the ADE Cloud iPhone, which any host drives. Every skill channel (prompt listing,
- * the skill roots, the `ade-*` line of guidance, `ade skill`) reads this one set.
+ * the skill roots, the `daex-*` line of guidance, `ade skill`) reads this one set.
+ * Each skill is named both ways ({@link withLegacyAgentSkillNames}).
  */
 export function adeWithheldAgentSkills(): readonly string[] {
   return [
     ...adeAccessWithheldAgentSkills(),
-    ...adeHostWithheldAgentSkills().filter((name) => !(adeCloudIphoneVisible && name === "ade-apple")),
+    ...adeHostWithheldAgentSkills().filter((name) => !(adeCloudIphoneVisible && canonicalBundledAgentSkillName(name) === "daex-apple")),
   ];
 }
 
 /**
  * The skills an agent may not read even when it asks for one by name
  * (`ade skill show`): the access rules only. A skill this host merely can't
- * run here (`ade-apple` on Windows) still reads by name, because a chat
+ * run here (`daex-apple` on Windows) still reads by name, because a chat
  * here drives a Mac's simulator (`--machine`) or the ADE Cloud iPhone with it.
  */
 export function adeAccessWithheldAgentSkills(): readonly string[] {
   agentSkillAccessRefresh?.();
-  return [...ALWAYS_WITHHELD_AGENT_SKILLS, ...(adeCloudSkillVisible ? [] : ["ade-cloud"])];
+  return [...ALWAYS_WITHHELD_AGENT_SKILLS, ...(adeCloudSkillVisible ? [] : CLOUD_AGENT_SKILL_NAMES)];
 }
 
 /** Whether the account has the ADE Cloud iPhone (`access: "on"`), from whoever just asked the server. */
@@ -370,7 +499,7 @@ export function formatAdeAgentSkillRootsForPrompt(roots: readonly string[]): str
     .map((root) => normalizePathEntry(root))
     .filter((root): root is string => Boolean(root));
   if (!normalized.length) {
-    return "The exact agent skill roots are exposed as `ADE_AGENT_SKILLS_DIRS` when ADE launches this CLI; inspect that env var if your runtime does not auto-list skills.";
+    return "The exact agent skill roots are exposed as `ADE_AGENT_SKILLS_DIRS` when DAEX launches this CLI; inspect that env var if your runtime does not auto-list skills.";
   }
   return `Agent skill root${normalized.length === 1 ? "" : "s"} for this session: ${normalized.join(", ")}. Read \`<root>/<skill-name>/SKILL.md\` on demand when a named skill is relevant.`;
 }

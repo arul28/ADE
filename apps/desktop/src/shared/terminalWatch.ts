@@ -1,3 +1,4 @@
+import { BRAND } from "./brand";
 /**
  * Terminal watch: a chat asks ADE to wake it when an ADE terminal prints
  * something new, instead of polling `ade terminal read`.
@@ -223,7 +224,7 @@ export function describeTerminalWatchStop(reason: TerminalWatchStopReason, exitC
     case "wake_limit":
       return "the watch woke you too many times in an hour";
     case "delivery_failed":
-      return "ADE could not deliver its wakes";
+      return `${BRAND.NAME} could not deliver its wakes`;
     case "chat_gone":
       return "the chat was archived or deleted";
     case "replaced":

@@ -13,6 +13,7 @@ import { COLORS, SANS_FONT, SECTION_LABEL_STYLE, outlineButton } from "../../../
 import { useSettingsMachineScope } from "../../SettingsMachineScope";
 import { CursorSignInSheetView, type CursorSignInOutcome } from "../ProviderSignInSheet";
 import type { ProvidersViewContext } from "../types";
+import { BRAND } from "../../../../../shared/brand";
 
 /** Cursor account OAuth (email in the detail page) is not the same as a
  * verified ADE Cursor API key. The tile must not say "Sign in required"
@@ -71,7 +72,7 @@ export function CursorAuthActions({ ctx }: { ctx: ProvidersViewContext }) {
     <section style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <div style={SECTION_LABEL_STYLE}>Sign in with Cursor</div>
       <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-        Opens a browser and mints a Cursor API key for ADE. Does not copy Cursor IDE cookies.
+        Opens a browser and mints a Cursor API key for {BRAND.NAME}. Does not copy Cursor IDE cookies.
       </div>
       {oauthSignedIn ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>

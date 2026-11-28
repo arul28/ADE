@@ -26,6 +26,7 @@ import {
   threadCommentsHeldOnDevice,
   withHeldChanges,
 } from "./threadCommentsHeldOnDevice";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Pending thread comments per chat, as last reported by the chat's host.
@@ -639,7 +640,7 @@ export async function handOverHeldThreadComments(
   reach: ThreadCommentSendReach,
 ): Promise<void> {
   if (!threadCommentsHeldOnDevice(sessionId)) return;
-  if (!api) throw new Error("This version of ADE can't hand your comments to the chat's computer.");
+  if (!api) throw new Error(`This version of ${BRAND.NAME} can't hand your comments to the chat's computer.`);
   await applyHeldChanges(sessionId, api, reach);
   for (const planned of heldChat(sessionId).comments.filter((comment) => comment.includeInNextSend)) {
     // Edited, held back or deleted while an earlier one was out: the latest word counts.

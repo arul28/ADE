@@ -12,6 +12,7 @@
  * under the lead's chat.
  */
 
+import { BRAND } from "../shared/brand";
 import { parseModelMentions } from "../shared/modelMentions";
 
 type Emit = (sessionId: string, event: Record<string, unknown>) => void;
@@ -35,7 +36,7 @@ export type DemoReplyHooks = {
   finishChild?: (sessionId: string) => void;
 };
 
-const PREPARED_NOTICE = "This is a prepared reply for the website demo. In ADE, a real agent does this work on your code.";
+const PREPARED_NOTICE = `This is a prepared reply for the website demo. In ${BRAND.NAME}, a real agent does this work on your code.`;
 
 /**
  * The reply clock. In the browser it is the wall clock. The website's film
@@ -163,11 +164,11 @@ function finish(turnId: string, files?: Array<{ path: string; additions: number;
 
 function browserScript(turnId: string): Step[] {
   return [
-    ...start(turnId, "Open the checkout in ADE's browser, pay with the test card, and check the total against the cart."),
+    ...start(turnId, `Open the checkout in ${BRAND.NAME}'s browser, pay with the test card, and check the total against the cart.`),
     ...say(turnId, "m1", "I'll check it in the browser first."),
-    ...shell(turnId, "t1", "ade browser open localhost:5173/checkout --text", "Open the checkout page in ADE's browser", "opened: tab-checkout http://localhost:5173/checkout\ntitle    Checkout · acme-shop"),
-    ...shell(turnId, "t2", "ade browser fill --tab tab-checkout --selector \"input[name=card]\" 4242424242424242 && ade browser click --tab tab-checkout --text-match Pay", "Pay with the test card", "hit: button \"Pay\"\neffect: observed (navigated to /receipt)"),
-    ...shell(turnId, "t3", "ade browser screenshot --tab tab-checkout --text", "Save a screenshot as proof", "saved: receipt.png (1440×900) · filed to the proof drawer"),
+    ...shell(turnId, "t1", "daex browser open localhost:5173/checkout --text", `Open the checkout page in ${BRAND.NAME}'s browser`, "opened: tab-checkout http://localhost:5173/checkout\ntitle    Checkout · acme-shop"),
+    ...shell(turnId, "t2", "daex browser fill --tab tab-checkout --selector \"input[name=card]\" 4242424242424242 && daex browser click --tab tab-checkout --text-match Pay", "Pay with the test card", "hit: button \"Pay\"\neffect: observed (navigated to /receipt)"),
+    ...shell(turnId, "t3", "daex browser screenshot --tab tab-checkout --text", "Save a screenshot as proof", "saved: receipt.png (1440×900) · filed to the proof drawer"),
     ...say(turnId, "m2", "The checkout works in the browser. I paid with the test card, the receipt shows **$48.00**, and it matches the cart to the cent. I saved a screenshot of the receipt as proof."),
     ...finish(turnId),
   ];
@@ -177,9 +178,9 @@ function simulatorScript(turnId: string): Step[] {
   return [
     ...start(turnId, "Build the iOS app for the iPhone 17 simulator, tap through checkout, and look at the receipt screen."),
     ...say(turnId, "m1", "Building for the iPhone 17 simulator."),
-    ...shell(turnId, "t1", "xcodebuild -scheme AcmeShop -destination 'name=iPhone 17' build && ade apple start --text", "Build and start the iPhone 17 simulator", "** BUILD SUCCEEDED ** (41s)\nbooted iPhone 17 (iOS 27.0) · streaming", 1600),
-    ...shell(turnId, "t2", "ade apple tap-element --label Checkout && ade apple tap-element --label Pay", "Tap through checkout", "hit: Button \"Pay\"\neffect: observed (Receipt screen)"),
-    ...shell(turnId, "t3", "ade apple record-stop --keep --text", "Save the run as a video", "kept recording 0:14 · filed to the proof drawer"),
+    ...shell(turnId, "t1", "xcodebuild -scheme AcmeShop -destination 'name=iPhone 17' build && daex apple start --text", "Build and start the iPhone 17 simulator", "** BUILD SUCCEEDED ** (41s)\nbooted iPhone 17 (iOS 27.0) · streaming", 1600),
+    ...shell(turnId, "t2", "daex apple tap-element --label Checkout && daex apple tap-element --label Pay", "Tap through checkout", "hit: Button \"Pay\"\neffect: observed (Receipt screen)"),
+    ...shell(turnId, "t3", "daex apple record-stop --keep --text", "Save the run as a video", "kept recording 0:14 · filed to the proof drawer"),
     ...say(turnId, "m2", "It works on iPhone. Checkout goes straight to the receipt, the total is **$48.00**, and the receipt no longer re-fetches while the timer runs. I recorded a 14-second video of the run."),
     ...finish(turnId),
   ];
@@ -196,7 +197,7 @@ function sceneScript(turnId: string): Step[] {
     "| Wed | 451 | 2 |",
     "| Thu | 497 | 1 |",
     "",
-    "Failed payments dropped from 9 to 1 after Tuesday's fix. In ADE I can also draw this as a live chart right in the chat.",
+    `Failed payments dropped from 9 to 1 after Tuesday's fix. In ${BRAND.NAME} I can also draw this as a live chart right in the chat.`,
   ].join("\n");
   return [
     ...start(turnId, "Pull the checkout numbers for the week and show the trend."),
@@ -358,7 +359,7 @@ function machineScript(turnId: string, machines: string[]): Step[] {
     ...shell(
       turnId,
       "t1",
-      `ade chat create --machine "${list}" --type subagent --provider claude --model anthropic/claude-sonnet-5-5 --prompt "Check out checkout-fix, build it, and run the checkout tests."`,
+      `daex chat create --machine "${list}" --type subagent --provider claude --model anthropic/claude-sonnet-5-5 --prompt "Check out checkout-fix, build it, and run the checkout tests."`,
       `Start a check on ${machines.join(" and ")}`,
       machines.map((name, i) => `started: chat-${(0x7f3a + i * 0x1d9).toString(16)} on ${name}`).join("\n"),
       700,
@@ -393,7 +394,7 @@ function checkScript(turnId: string, platform: "mac" | "windows"): Step[] {
     ...shell(
       turnId,
       "t4",
-      mac ? "ade apple start --text && ade apple tap-element --label Pay" : "npx playwright test checkout --project=msedge",
+      mac ? "daex apple start --text && daex apple tap-element --label Pay" : "npx playwright test checkout --project=msedge",
       mac ? "Pay on the iPhone 17 simulator" : "Pay in Edge",
       mac ? "booted iPhone 17 (iOS 27.0)\nhit: Button \"Pay\"\neffect: observed (Receipt screen)" : "  ✓ checkout › pays and shows the receipt (3.1s)\n  1 passed (4.0s)",
       900,

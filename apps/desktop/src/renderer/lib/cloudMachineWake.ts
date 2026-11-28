@@ -7,6 +7,7 @@ import { showToast } from "../components/app/toast/toastStore";
 import { connectMachine } from "./machineConnect";
 import { ipcErrorMessage } from "./format";
 import { MachineConnectError, type MachineAddress } from "../../shared/machineAddress";
+import { BRAND } from "../../shared/brand";
 
 /**
  * Wakes from a list, by machine key: one under way (a second open of the same
@@ -120,12 +121,12 @@ export function wakeRestingCloudMachine(
       pendingIntents.delete(machineKey);
       // The server's sentence for a refusal (hours, a block, too many awake); never the computer's name.
       const reason = ipcErrorMessage(error).trim();
-      const message = reason ? `Can't wake: ${reason}` : "ADE couldn't wake your ADE Cloud computer. Try again.";
+      const message = reason ? `Can't wake: ${reason}` : `${BRAND.NAME} couldn't wake your ${BRAND.CLOUD_NAME} computer. Try again.`;
       failure = { state: "failed", message };
       // A failed connect result is a known sentence (a refusal, asleep, out of
       // reach), not an ADE bug, so it offers no report. Any other throw does.
       showToast({
-        title: "Couldn't wake your ADE Cloud computer",
+        title: `Couldn't wake your ${BRAND.CLOUD_NAME} computer`,
         message: reason || message,
         tone: "error",
         ...(error instanceof MachineConnectError ? { report: false as const } : {}),

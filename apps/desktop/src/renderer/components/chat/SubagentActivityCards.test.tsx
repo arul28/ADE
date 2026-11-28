@@ -295,8 +295,8 @@ describe("SubagentResultCard", () => {
 
   it.each([
     ["user", null, "you interrupted"],
-    ["system", "the ADE brain restarted", "the ADE brain restarted"],
-    ["foreign-brain", "another ADE brain took over this chat", "another ADE brain took over this chat"],
+    ["system", "the ADE brain restarted", "the DAEX brain restarted"],
+    ["foreign-brain", "another ADE brain took over this chat", "another DAEX brain took over this chat"],
     ["provider", "the provider ended the turn", "the provider ended the turn"],
     ["unknown", null, "work lost"],
   ] as const)("names the stop source on a lone stopped card (%s)", (stopSource, stopReason, expected) => {
@@ -327,7 +327,7 @@ describe("SubagentResultCard", () => {
       />,
     );
     expect(container.querySelector("[data-subagent-overview]")?.textContent).toBe("Kickoff turn finished.");
-    expect(container.querySelector("[data-subagent-card]")?.getAttribute("title")).toContain("the ADE brain restarted");
+    expect(container.querySelector("[data-subagent-card]")?.getAttribute("title")).toContain("the DAEX brain restarted");
   });
 
   it("fills a stopped card with no report with its activity, its stopper and the work's fate", () => {
@@ -345,7 +345,7 @@ describe("SubagentResultCard", () => {
     );
     // The stop sentence restates the status line; it is never the body.
     expect(container.querySelector("[data-subagent-overview]")?.textContent)
-      .toBe("Reading authRouter.ts · the ADE brain restarted · work lost");
+      .toBe("Reading authRouter.ts · the DAEX brain restarted · work lost");
   });
 
   it("says who stopped it and whether the work survived when there is no activity either", () => {
@@ -450,7 +450,7 @@ describe("SubagentStoppedGroupCard", () => {
         event={groupEvent("interrupt", { stopSource: "system", stopReason: "the ADE brain restarted" })}
       />,
     );
-    expect(container.textContent).toContain("3 agents stopped: the ADE brain restarted");
+    expect(container.textContent).toContain("3 agents stopped: the DAEX brain restarted");
     expect(container.textContent).not.toContain("when you interrupted");
   });
 
@@ -463,7 +463,7 @@ describe("SubagentStoppedGroupCard", () => {
         })}
       />,
     );
-    expect(container.textContent).toContain("3 agents stopped: another ADE brain took over this chat");
+    expect(container.textContent).toContain("3 agents stopped: another DAEX brain took over this chat");
     expect(container.textContent).not.toContain("when you interrupted");
   });
 

@@ -65,6 +65,7 @@ import {
 import { requirePinnedProviderExecutable } from "./pinnedProviderTools";
 import { providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import { getErrorMessage } from "../shared/utils";
+import { BRAND } from "../../../shared/brand";
 
 /** A sign-in that has not finished in this long is abandoned. */
 const SIGN_IN_TIMEOUT_MS = 5 * 60_000;
@@ -511,7 +512,7 @@ export async function startAntigravitySignIn(args: AntigravitySignInStartArgs): 
         });
       }
     } catch (error) {
-      finish(flow, "failed", `ADE could not save the Agent Platform settings: ${getErrorMessage(error)}`);
+      finish(flow, "failed", `${BRAND.NAME} could not save the Agent Platform settings: ${getErrorMessage(error)}`);
       return snapshot(flow);
     }
   }
@@ -552,5 +553,5 @@ export async function cancelAntigravitySignIn(args: AntigravitySignInCancelArgs)
 
 /** Stop a running flow (process shutdown). */
 export function disposeAntigravitySignIn(): void {
-  if (current && !current.done) finish(current, "cancelled", "ADE is shutting down.");
+  if (current && !current.done) finish(current, "cancelled", `${BRAND.NAME} is shutting down.`);
 }

@@ -10,6 +10,7 @@ import type {
   SyncRelayReauthorizeResultPayload,
 } from "../../../../desktop/src/shared/types";
 import { publicKeyFromX963Base64 } from "./syncDpop";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 export const SYNC_RELAY_REAUTH_CONTEXT = "ade-relay-reauth-v1";
 export const SYNC_RELAY_AUTHORIZATION_CLOSE_CODE = 4003;
@@ -266,7 +267,7 @@ export function createRelayAuthorizationLifecycle(options: {
         armTimers();
         return;
       }
-      closeExpired("ADE Relay account proof expired");
+      closeExpired(`${BRAND.NAME} Relay account proof expired`);
     }, clampTimerDelay(closeAt - now()));
     expiryTimer.unref?.();
   };
@@ -391,8 +392,8 @@ export function createRelayAuthorizationLifecycle(options: {
     const before = await options.captureHostAuthorization();
     if (!isCurrent(expectedGeneration)) return;
     if (!before || before.userId !== current.ownerUserId) {
-      const result = failure("relay_account_changed", "The ADE account session changed.", false);
-      respondAndClose(expectedGeneration, result, requestId, "ADE account session changed");
+      const result = failure("relay_account_changed", `The ${BRAND.NAME} account session changed.`, false);
+      respondAndClose(expectedGeneration, result, requestId, `${BRAND.NAME} account session changed`);
       return;
     }
 
@@ -409,9 +410,9 @@ export function createRelayAuthorizationLifecycle(options: {
       if (verifierCode === "account_mismatch") {
         respondAndClose(expectedGeneration, failure(
           "relay_account_changed",
-          "The Relay account token belongs to a different ADE account.",
+          `The Relay account token belongs to a different ${BRAND.NAME} account.`,
           false,
-        ), requestId, "ADE account session changed");
+        ), requestId, `${BRAND.NAME} account session changed`);
         return;
       }
       if (verifierCode === "token_expired") {
@@ -449,8 +450,8 @@ export function createRelayAuthorizationLifecycle(options: {
       || after.userId !== current.ownerUserId
       || after.generation !== before.generation
     ) {
-      const result = failure("relay_account_changed", "The ADE account session changed.", false);
-      respondAndClose(expectedGeneration, result, requestId, "ADE account session changed");
+      const result = failure("relay_account_changed", `The ${BRAND.NAME} account session changed.`, false);
+      respondAndClose(expectedGeneration, result, requestId, `${BRAND.NAME} account session changed`);
       return;
     }
     if (!Number.isFinite(attestation.expiresAtMs) || attestation.expiresAtMs <= current.expiresAtMs) {

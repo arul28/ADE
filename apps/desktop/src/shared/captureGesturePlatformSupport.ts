@@ -1,3 +1,4 @@
+import { BRAND } from "./brand";
 /**
  * Per-platform availability of the global capture gesture.
  *
@@ -30,7 +31,7 @@
  * subtly wrong.
  */
 export const CAPTURE_GESTURE_UNSUPPORTED_BLOCKER =
-  "Screen capture with a keyboard gesture needs a native helper, and ADE only ships one for macOS and Windows.";
+  `Screen capture with a keyboard gesture needs a native helper, and ${BRAND.NAME} only ships one for macOS and Windows.`;
 
 /**
  * True on macOS and Windows, false everywhere else.

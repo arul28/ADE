@@ -117,8 +117,9 @@ func cuParseOutput(_ output: String) -> CUOutput {
       parsed.effectReason = reason.isEmpty ? nil : reason
       continue
     }
-    if parsed.errorMessage == nil, cuTests(#"^ade:\s"#, trimmed) {
-      let message = String(trimmed.dropFirst(4)).trimmingCharacters(in: .whitespacesAndNewlines)
+    // The CLI's error line: "ade: …" from older CLIs, "daex: …" from newer ones.
+    if parsed.errorMessage == nil, let rest = cuCliErrorLineText(trimmed) {
+      let message = rest.trimmingCharacters(in: .whitespacesAndNewlines)
         .replacingOccurrences(of: #"^[A-Z][A-Z0-9_]{3,}:\s*"#, with: "", options: .regularExpression)
       parsed.errorMessage = message.isEmpty ? nil : message
       continue
@@ -196,6 +197,18 @@ func cuParseOutput(_ output: String) -> CUOutput {
     }
   }
   return parsed
+}
+
+/// The message on one of the CLI's error lines (`daex: …`, or `ade: …` from
+/// older CLIs), or nil when the line has no such prefix. Mirrors
+/// `cliErrorLineText` in apps/desktop/src/shared/cliCommandNames.ts.
+private func cuCliErrorLineText(_ line: String) -> String? {
+  for name in Brand.cliCommandNames where line.hasPrefix("\(name):") {
+    let rest = line.dropFirst(name.count + 1)
+    // Whitespace must follow the colon: `daex://…` is a link, not an error line.
+    return rest.first?.isWhitespace == true ? String(rest) : nil
+  }
+  return nil
 }
 
 // MARK: - Field readers

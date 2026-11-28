@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { OpenProjectBinding } from "../../../../../shared/types";
 import type { RunWrite } from "./signInWrites";
+import { BRAND } from "../../../../../shared/brand";
 
 /** One call in flight for each slot (the keyring allow, the GitHub CLI read), outside any view. */
 const inFlight = new Map<string, Promise<unknown>>();
@@ -55,7 +56,7 @@ export function useAllowAntigravityKeychain(runWrite: RunWrite, accountPin: Open
   const run = useCallback(() => runWrite(
     "allow:antigravity",
     () => window.ade?.providerLogins?.allowKeychain?.({ provider: "antigravity" }, accountPin),
-    "ADE couldn't copy the Antigravity sign-in from this computer.",
+    `${BRAND.NAME} couldn't copy the Antigravity sign-in from this computer.`,
   ), [accountPin, runWrite]);
   return useAllowKeychain(run);
 }

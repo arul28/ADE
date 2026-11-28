@@ -724,7 +724,7 @@ func macDesktopDisplayGeometry(_ display: WorkToolsMacDesktopDisplay?) -> MacDes
   )
 }
 
-let macDesktopNoGeometryMessage = "This machine's ADE doesn't say where the screen sits, so clicks stay off."
+let macDesktopNoGeometryMessage = "This machine's \(Brand.name) doesn't say where the screen sits, so clicks stay off."
 
 // MARK: - Zoom
 

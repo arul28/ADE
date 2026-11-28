@@ -1,6 +1,6 @@
 ---
 title: "Accounts"
-description: "Isolated provider sign-in, accounts, API credentials, endpoint presets, and usage-limit handling in the ADE SDK."
+description: "Isolated provider sign-in, accounts, API credentials, endpoint presets, and usage-limit handling in the DAEX SDK."
 icon: "users"
 ---
 
@@ -16,7 +16,7 @@ reused. **BREAKING from SDK 0.6:** to keep using machine logins, pass
 `useMachineLogin: true` explicitly:
 
 ```ts
-const client = await createAdeChat({
+const client = await createDaexChat({
   home: "./.ade-embed",
   useMachineLogin: true,
 });
@@ -29,7 +29,7 @@ Check this before describing which credentials a thread can use.
 Isolation covers the providers' sign-in folders. It does not cover API keys in
 your app's own environment: the runtime inherits your process environment, so
 an `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `CURSOR_API_KEY` set there is still
-visible to it. Pass an `env` to `createAdeChat` without them if
+visible to it. Pass an `env` to `createDaexChat` without them if
 your users should only ever run on their own logins and keys.
 
 ## Provider accounts
@@ -116,7 +116,7 @@ When a key lives in your own vault instead, pass its id to a thread and supply
 the value with `resolveSecret`:
 
 ```ts
-const client = await createAdeChat({
+const client = await createDaexChat({
   home,
   // Called with the thread's harness ("codex") and the credential id.
   resolveSecret: (provider, credentialId) => vault.get(provider, credentialId),
@@ -155,7 +155,7 @@ New threads default to `onUsageLimit: "wait"`. Choose another policy when
 creating the client:
 
 ```ts
-const client = await createAdeChat({ home, onUsageLimit: "failover" });
+const client = await createDaexChat({ home, onUsageLimit: "failover" });
 client.on("usageLimit", (event) => showLimitNotice(event));
 ```
 
@@ -186,10 +186,10 @@ runtime, and create the client again.
 
 Account, credential, and preset methods are refused for renderers by default.
 Enable them only for trusted frames by passing `allowAccountManagement` to
-`registerAdeIpc`:
+`registerDaexIpc`:
 
 ```ts
-registerAdeIpc(ipcMain, client, {
+registerDaexIpc(ipcMain, client, {
   authorize: (event) => isTrustedFrame(event.sender),
   allowAccountManagement: (event, method) => isTrustedFrame(event.sender) && method.startsWith("accounts."),
 });

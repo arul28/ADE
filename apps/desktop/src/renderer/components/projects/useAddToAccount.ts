@@ -5,6 +5,7 @@ import { adeCloudProjectOf } from "../../state/adeCloudTabs";
 import { accountProjectListEpoch, noteAccountProjectChange } from "../../state/accountProjectListClient";
 import { showToast } from "../app/toast/toastStore";
 import type { AccountProjectChangeResult, AccountProjectView } from "../../../shared/accountProject";
+import { BRAND } from "../../../shared/brand";
 
 /** A project just added to the account: the list learns it, and its tab opens on ADE Cloud (no computer has it yet). */
 export function openAddedAccountProject(project: AccountProjectView): void {
@@ -29,7 +30,7 @@ export type AccountAddOutcome = "added" | "closed" | "no_account" | "failed";
 export async function addRepoToAccount(repoUrl: string): Promise<{ answer: AccountAddAnswer; accountChanged: boolean }> {
   const accountAdd = window.ade?.project?.accountAdd;
   if (typeof accountAdd !== "function") {
-    return { answer: { ok: false, code: "unavailable", message: "This ADE can't add projects to your account." }, accountChanged: false };
+    return { answer: { ok: false, code: "unavailable", message: `This ${BRAND.NAME} can't add projects to your account.` }, accountChanged: false };
   }
   const accountUser = () => window.ade?.account?.status?.().then((status) => status?.userId ?? null, () => null) ?? Promise.resolve(null);
   const epoch = accountProjectListEpoch();
@@ -104,7 +105,7 @@ export function useAddToAccount(args: { folderName: string; onClose: () => void 
       showToast({
         tone: "success",
         title: `Added ${answer.project.name}`,
-        message: options.successMessage ?? "Send a chat from its page to start work on ADE Cloud.",
+        message: options.successMessage ?? `Send a chat from its page to start work on ${BRAND.CLOUD_NAME}.`,
       });
       onClose();
     }

@@ -3,6 +3,7 @@ import {
   type ThisMachineRefusal,
 } from "../../../../desktop/src/shared/accountMachineRefusal";
 import type { SyncAccountDirectoryHealth } from "../../../../desktop/src/shared/types/sync";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * The CLI's words for an account-directory refusal of THIS computer.
@@ -48,17 +49,17 @@ export function thisMachineRefusalState(refusal: ThisMachineRefusal): string {
   if (refusal.code === "pairing_authentication_required") {
     return `must confirm it's you to rejoin${removedOn ? ` (removed on ${removedOn})` : ""}`;
   }
-  return removedOn ? `removed from your ADE account on ${removedOn}` : "removed from your ADE account";
+  return removedOn ? `removed from your ${BRAND.NAME} account on ${removedOn}` : `removed from your ${BRAND.NAME} account`;
 }
 
 /** One sentence with the date, the give-up, and the command that fixes it. */
 export function describeThisMachineRefusal(refusal: ThisMachineRefusal): string {
   const removedOn = isoDay(refusal.revokedAt);
   const lead = refusal.code === "pairing_authentication_required"
-    ? `This computer must confirm it's you before it can rejoin your ADE account${removedOn ? ` (removed on ${removedOn})` : ""}.`
-    : `This computer was removed from your ADE account${removedOn ? ` on ${removedOn}` : ""}.`;
+    ? `This computer must confirm it's you before it can rejoin your ${BRAND.NAME} account${removedOn ? ` (removed on ${removedOn})` : ""}.`
+    : `This computer was removed from your ${BRAND.NAME} account${removedOn ? ` on ${removedOn}` : ""}.`;
   const gaveUp = refusal.recoveryGaveUpAt != null
-    ? " ADE stopped trying to reconnect it on its own."
+    ? ` ${BRAND.NAME} stopped trying to reconnect it on its own.`
     : "";
-  return `${lead}${gaveUp} Run \`ade machines reconnect\` to rejoin.`;
+  return `${lead}${gaveUp} Run \`daex machines reconnect\` to rejoin.`;
 }

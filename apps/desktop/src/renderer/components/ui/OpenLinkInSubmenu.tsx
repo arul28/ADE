@@ -20,6 +20,7 @@ import {
 } from "./MenuSubmenu";
 import { useInstalledTargets } from "./useInstalledTargets";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * "Open this link in ▸" — ADE's own browser, the system default, and every
@@ -115,7 +116,7 @@ export function OpenLinkInSubmenu({
       {ade ? (
         <button type="button" role="menuitem" className={MENU_ITEM_CLASS} onClick={openInAde}>
           <MenuRowIcon icon={AppWindow} />
-          ADE Browser
+          {BRAND.NAME} Browser
         </button>
       ) : null}
       {external ? (

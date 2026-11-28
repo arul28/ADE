@@ -203,7 +203,7 @@ describe("collectDiagnosticReport", () => {
 
     expect(report).toContain("### Desktop main (project)");
     expect(report).toContain("deeplink.scheme_claimed");
-    expect(report).toContain("### ADE CLI");
+    expect(report).toContain("### DAEX CLI");
     expect(report).toContain("no project was open");
     // The project's absolute path must not ride along with its logs.
     expect(report).not.toContain(projectRoot);

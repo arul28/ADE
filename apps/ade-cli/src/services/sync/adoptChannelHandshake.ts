@@ -15,6 +15,7 @@ import {
 } from "../../../../desktop/src/shared/sync/adoptChannelCrypto";
 import { toOptionalString } from "../../../../desktop/src/main/services/shared/utils";
 import type { SyncDpopProof, SyncHelloPayload } from "../../../../desktop/src/shared/types";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * The sealed account-adoption handshake, shared by the two hosts that serve
@@ -147,7 +148,7 @@ export function validateAccountChallenge(args: {
       ok: false,
       refusal: {
         kind: "legacy_unbound",
-        message: "This ADE version must advertise account adoption ciphers. Update ADE on this device.",
+        message: `This ${BRAND.NAME} version must advertise account adoption ciphers. Update ${BRAND.NAME} on this device.`,
       },
     };
   }
@@ -157,7 +158,7 @@ export function validateAccountChallenge(args: {
       ok: false,
       refusal: {
         kind: "incompatible",
-        message: "No compatible account adoption cipher is available. Update ADE on both devices.",
+        message: `No compatible account adoption cipher is available. Update ${BRAND.NAME} on both devices.`,
         challenge,
       },
     };

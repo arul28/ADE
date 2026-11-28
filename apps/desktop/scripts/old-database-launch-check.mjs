@@ -164,7 +164,8 @@ async function startBrain(command, socket, logFile) {
   const deadline = Date.now() + 120_000;
   while (Date.now() < deadline) {
     if (child.exitCode !== null) fail(`the brain exited ${child.exitCode} before it listened:\n${fs.readFileSync(logFile, "utf8")}`);
-    if (fs.readFileSync(logFile, "utf8").includes("ADE brain listening on")) return child;
+    // The old release prints "ADE brain listening on", the new build "DAEX brain listening on".
+    if (/(?:DAEX|ADE) brain listening on/.test(fs.readFileSync(logFile, "utf8"))) return child;
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   fail(`the brain did not listen within 120 s:\n${fs.readFileSync(logFile, "utf8")}`);
@@ -193,7 +194,7 @@ if (!git(["init", "-q"]) || !git(["-c", "user.email=ci@ade.invalid", "-c", "user
 }
 
 // The old release makes the database.
-const oldVersion = run(oldCommand, ["--version"]).trim().replace(/^ade\s+/, "");
+const oldVersion = run(oldCommand, ["--version"]).trim().replace(/^(?:daex|ade)\s+/, "");
 const oldSocket = socketFor("old");
 const oldBrain = await startBrain(oldCommand, oldSocket, path.join(work, "old-brain.log"));
 run(oldCommand, ["--socket", oldSocket, "init", project]);
@@ -205,7 +206,7 @@ log(`${oldVersion} made ${dbPath} (${fs.statSync(dbPath).size} bytes), lane ${la
 
 // The new build opens it.
 const newCommand = newAppCommand();
-const newVersion = run(newCommand, ["--version"]).trim().replace(/^ade\s+/, "");
+const newVersion = run(newCommand, ["--version"]).trim().replace(/^(?:daex|ade)\s+/, "");
 const newSocket = socketFor("new");
 const newLog = path.join(work, "new-brain.log");
 const newBrain = await startBrain(newCommand, newSocket, newLog);

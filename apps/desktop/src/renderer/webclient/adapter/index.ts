@@ -41,6 +41,7 @@ import { createWebGithubDirectNamespace } from "../github/directAdapter";
 import type { AdapterEvents, AdapterInfra } from "./types";
 import { guardPreloadPassPinnedMembers } from "./preloadPassPins";
 import { createSearchNamespace } from "./search";
+import { BRAND } from "../../../shared/brand";
 
 export type AdeWebAdapter = {
   ade: Window["ade"];
@@ -232,25 +233,25 @@ export function createAdeWebAdapter(
     updateCheckTrackSwitch: async (target: UpdateTrack) => ({
       allowed: false as const,
       target,
-      reason: "Switch update tracks in the ADE desktop app on that computer.",
+      reason: `Switch update tracks in the ${BRAND.NAME} desktop app on that computer.`,
     }),
     updateSwitchTrack: async (target: UpdateTrack) => ({
       ok: false as const,
       target,
-      reason: "Switch update tracks in the ADE desktop app on that computer.",
+      reason: `Switch update tracks in the ${BRAND.NAME} desktop app on that computer.`,
     }),
     // The owner shares a lane from the desktop app on the account; the web
     // client has no runtime action channel for the owner's lane_share verbs.
     laneShare: {
-      list: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
-      create: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
-      updateRights: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
-      revoke: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
-      resendInvite: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
-      listReceived: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
-      leave: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
+      list: async () => { throw new Error(`lane_share_desktop_only: Share lanes from the ${BRAND.NAME} desktop app.`); },
+      create: async () => { throw new Error(`lane_share_desktop_only: Share lanes from the ${BRAND.NAME} desktop app.`); },
+      updateRights: async () => { throw new Error(`lane_share_desktop_only: Share lanes from the ${BRAND.NAME} desktop app.`); },
+      revoke: async () => { throw new Error(`lane_share_desktop_only: Share lanes from the ${BRAND.NAME} desktop app.`); },
+      resendInvite: async () => { throw new Error(`lane_share_desktop_only: Share lanes from the ${BRAND.NAME} desktop app.`); },
+      listReceived: async () => { throw new Error(`lane_share_desktop_only: Share lanes from the ${BRAND.NAME} desktop app.`); },
+      leave: async () => { throw new Error(`lane_share_desktop_only: Share lanes from the ${BRAND.NAME} desktop app.`); },
       // A move lands work through a machine's own runtime; the web client has no such channel.
-      move: async () => { throw new Error("lane_share_desktop_only: Move chats from the ADE desktop app."); },
+      move: async () => { throw new Error(`lane_share_desktop_only: Move chats from the ${BRAND.NAME} desktop app.`); },
       onEvent: () => () => {},
     },
     // The guest's side of lane sharing needs no machine: this browser's own
@@ -262,7 +263,7 @@ export function createAdeWebAdapter(
     }),
     // ADE MCP belongs to a physical machine; the manifest hides it on web.
     remoteMcpCall: async () => {
-      throw new Error("Manage ADE MCP on the computer itself.");
+      throw new Error(`Manage ${BRAND.NAME} MCP on the computer itself.`);
     },
     keepAwakeGet: webKeepAwakeMethods.keepAwakeGet,
     keepAwakeSetLevel: webKeepAwakeMethods.keepAwakeSetLevel,

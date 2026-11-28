@@ -12,6 +12,7 @@ import type { CloudDiskUsageReport, CloudIgnoredFiles, CloudSustainedCpuReport }
 import { readCloudIgnoredFiles } from "./cloudIgnoredFiles";
 import type { ProjectScopeRegistry } from "../projects/projectScope";
 import type { ProjectRegistry } from "../projects/projectRegistry";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * After a failed update check or start, the idle step waits this long before
@@ -96,7 +97,7 @@ export function createCloudComputerReports(deps: {
     },
     send: async (report: CloudDiskUsageReport) => {
       const client = await (await getCloudBrainAccess()).client();
-      if (!client?.reportDiskUsage) throw new Error("no ADE Cloud access");
+      if (!client?.reportDiskUsage) throw new Error(`no ${BRAND.CLOUD_NAME} access`);
       await client.reportDiskUsage(instanceId, report);
     },
     // Idle and behind its channel's checked image: update now (it restarts), not sleep.
@@ -119,13 +120,13 @@ export function createCloudComputerReports(deps: {
     reportSustainedCpu: async (report: CloudSustainedCpuReport) => {
       if (!instanceId) return;
       const client = await (await getCloudBrainAccess()).client();
-      if (!client?.reportSustainedCpu) throw new Error("no ADE Cloud access");
+      if (!client?.reportSustainedCpu) throw new Error(`no ${BRAND.CLOUD_NAME} access`);
       await client.reportSustainedCpu(instanceId, report);
     },
     reportBooted: async () => {
       if (!instanceId) return { sleepWhenIdle: false };
       const client = await (await getCloudBrainAccess()).client();
-      if (!client) throw new Error("no ADE Cloud access");
+      if (!client) throw new Error(`no ${BRAND.CLOUD_NAME} access`);
       return await client.reportBooted(instanceId, deps.version);
     },
   };

@@ -15,6 +15,7 @@ import {
 } from "./streamTicket";
 import type { AdeNamespace } from "./types";
 import { isAndroidStatusWatched } from "../../lib/androidStatusWatch";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The `androidEmulator` namespace for the hosted web client.
@@ -61,8 +62,8 @@ type AndroidCall = <T>(
 
 type AndroidMethod = (args?: unknown, pin?: unknown) => Promise<unknown>;
 
-const NO_HOST = "The Android emulator isn't available on the connected ADE host.";
-const SETUP_ON_MACHINE = "Set up Android in the ADE desktop app on that computer.";
+const NO_HOST = `The Android emulator isn't available on the connected ${BRAND.NAME} host.`;
+const SETUP_ON_MACHINE = `Set up Android in the ${BRAND.NAME} desktop app on that computer.`;
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};

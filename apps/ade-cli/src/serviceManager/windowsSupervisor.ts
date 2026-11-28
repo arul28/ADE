@@ -17,6 +17,7 @@ import {
   type ServiceManagerSpawnSync,
 } from "./common";
 import { renderWindowsSupervisorGuardLines } from "./windowsSupervisorGuards";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 /**
  * Trusted `powershell.exe`, resolved on first use and then memoized.
@@ -522,7 +523,7 @@ export function renderWindowsServiceLauncher(
     "    $runtimeStartedAt = [DateTimeOffset]::UtcNow",
     "    try {",
     "      $process = [System.Diagnostics.Process]::Start($startInfo)",
-    "      if ($null -eq $process) { throw 'Windows failed to start the ADE brain process.' }",
+    `      if ($null -eq $process) { throw 'Windows failed to start the ${BRAND.NAME} brain process.' }`,
     "      Start-BrainOutputPump $process",
     "      $lastLaunchError = $null",
     "      $nextRestartAt = $null",
@@ -624,7 +625,7 @@ export function renderWindowsServiceLauncher(
     // win it; the owner keeps it, and the mutex rule means only one supervisor
     // should exist per account and channel. Log and exit so the loop ends.
     "      if (Test-SocketOwnedByOther -since $runtimeStartedAt) {",
-    "        Write-SupervisorLog \"brain could not bind $runtimePipePath because another ADE brain owns it; exiting so the owner keeps the pipe\"",
+    `        Write-SupervisorLog \"brain could not bind $runtimePipePath because another ${BRAND.NAME} brain owns it; exiting so the owner keeps the pipe\"`,
     "        break",
     "      }",
     "      if ($runtimeLifetimeMs -ge $healthyRuntimeMs) { $restartCount = 0 } else { $restartCount += 1 }",
@@ -798,7 +799,7 @@ export const defaultWindowsRuntimeReadiness: WindowsRuntimeReadinessProbe = (arg
     return {
       ready: false,
       supervised: true,
-      diagnostic: `Supervisor PID ${pidRecord.supervisorPid} is running, but the ADE brain is between restart attempts${restart}.${launchError}`,
+      diagnostic: `Supervisor PID ${pidRecord.supervisorPid} is running, but the ${BRAND.NAME} brain is between restart attempts${restart}.${launchError}`,
     };
   }
   const runtime = run(
@@ -904,7 +905,7 @@ export function queryWindowsSupervisor(args: {
     running: false,
     pid: null,
     record,
-    error: serviceManagerResultText(result) || "Unable to inspect the ADE startup process.",
+    error: serviceManagerResultText(result) || `Unable to inspect the ${BRAND.NAME} startup process.`,
     diagnostic: null,
   };
 }

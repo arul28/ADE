@@ -1,1210 +1,397 @@
 # Activity, notifications, and Live Activities
 
-ADE uses one account-wide Activity stream for agent work and pull requests
-across every signed-in machine and project. Desktop Activity, the
-iOS Activity drawer, APNs notifications, Lock Screen widgets, and Live
-Activities all render the same items and route to the same destination.
+DAEX has one account-wide **Activity** stream for agent work and pull requests
+across every signed-in machine and project. Desktop Activity, the iOS drawer,
+APNs pushes, widgets and the Live Activity render the same items and route to
+the same destination. Wire and storage names still say `attention`
+(`AttentionItem`, relay routes, IPC channels, log ids).
 
-The product name for the shared system is **Activity**. Compatibility contracts
-still use `attention` names, including `AttentionItem`, relay routes, IPC
-channels, persistence fields, and analytics/log identifiers.
+Activity is account data: the relay (`apps/push-relay/`) holds it and every
+client reads the same answer; navigation still carries the owning machine,
+project and session.
+
+## Source file map
+
+- `apps/ade-cli/src/services/push/pushPublisherService.ts` — the brain's
+  publisher for every project it hosts; the durable machine-revoked gate;
+  agent messages.
+- `apps/ade-cli/src/services/push/attentionItemBuilder.ts` — the item
+  projection `(runs, recentRuns, prActivities, roster) → AttentionItem[]`.
+- `apps/ade-cli/src/services/push/activityFingerprint.ts` — content and alert
+  fingerprints, `activityRosterFingerprint`.
+- `apps/ade-cli/src/services/push/pushRegistrationStore.ts`,
+  `pushRelayClient.ts` — durable delivery state; the relay client (one forced
+  refresh after a 401, owner fences).
+- `apps/ade-cli/src/services/account/machinePairingRepair.ts` — re-pairing after
+  removal.
+- `apps/desktop/src/shared/types/attention.ts` — the cross-client contract,
+  acknowledgment chunking (`ATTENTION_ACKNOWLEDGMENT_BATCH_LIMIT`,
+  `runAcknowledgmentChunks`).
+- `apps/desktop/src/shared/attention/activityBoardColumn.ts` (+
+  `activityBoardColumn.cases.json`), `activityStateGroup.cases.json`,
+  `apps/desktop/src/shared/activityCatalog.ts` (events and default policy).
+- `apps/desktop/src/main/services/attention/` — `attentionAccountCoordinator.ts`
+  (desktop reads and writes), `remoteProjectIdentity.ts`,
+  `attentionOpenErrors.ts`, `userActivityProbe.ts`.
+- `apps/desktop/src/main/services/deeplinks/localProjectResolution.ts`,
+  `projectNavigationWindowSelection.ts` — opening an item.
+- `apps/desktop/src/renderer/components/activity/` — `ActivityPanel.tsx`,
+  `HeaderActivityControl.tsx`, `ActivityPane.tsx`, `ActivityCard.tsx` (read its
+  header comment before reusing `SessionCard`), `activityPriority.ts`,
+  `activityPresentation.ts`, `useActivitySync.ts`; state in
+  `renderer/state/activityStore.ts`.
+- `apps/desktop/src/renderer/webclient/adapter/attention.ts` — the web reader.
+- `apps/push-relay/src/attention.ts`, `attentionAuth.ts`, `liveActivity.ts`,
+  `attentionShared.ts`, `relay.ts` — merge, auth, APNs, Live Activity, routes.
+- iOS: `PushNotificationService.swift`, `LiveActivityService.swift`,
+  `Views/Activity/`, `Shared/ActivityRowPresentation.swift`, `ADEWidgets/`; see
+  [iOS companion](ios-companion.md).
 
 ## Product rules
 
-- **Activity is an agent feed.** The session list carries `kind: "agent"` items
-  only. Pull requests, checks, and review outcomes keep pushing, badging, and
-  toasting, but they render in a separate **Notifications** column rather than
-  as rows beside the agent working on them, so one lane with an open PR shows
+- **Activity is an agent feed.** Sessions carry `kind: "agent"` items. PRs,
+  checks and reviews go to a separate Inbox, so a lane with an open PR shows
   once.
-- Running work is ambient. It belongs in Activity, widgets, and
-  Live Activities, not in a stream of toast or push interruptions.
-- Only urgent events push by default: an agent that needs you, an agent that
-  failed, and failing checks. Everything else updates Activity and the Live
-  Activity without a push. Users can turn other events on per kind.
-- A push is two short lines: the session or PR title, then the state and where
-  it is. Agent text never goes in a push, with one exception: a message an
-  agent sent because the user asked to be told (see "Agent messages").
-- Completed and merged work remains visible until it is seen or dismissed.
-- Every row owns an exact ADE destination. A PR can target Overview, Checks, or
-  Review; an agent item can target a session, question, approval, or event.
-- Account views group work by machine and project. They never assume the
-  currently open project or the current machine is the whole account.
-- Opening an item from another machine is expected to just work: ADE pairs,
-  connects, and opens, and reports which of those three steps failed in the
-  user's own words when it cannot.
-- Remote actions are conservative. Account items from another machine open the
-  correct context; they do not execute a current-host App Intent by accident.
-- Notification previews and Live Activity content honor the same
-  `hideDetails` preference.
+- Only urgent events push by default (needs you, failed, checks failing);
+  running work is ambient.
+- A push is two short lines (title; state and where). Agent text never goes in
+  a push, except an agent message the user asked for.
+- Every row has an exact destination (a PR tab; a session, question, approval or
+  event).
+- Account views never assume the open project or machine is the whole account.
+- Opening an item from another machine pairs, connects and opens, and names the
+  step that failed.
+- Remote items never run a current-host App Intent.
+- Previews and Live Activity content honor `hideDetails`.
 
 ## The four states
 
-Every surface that counts agents uses the Work board's four columns. The desktop
-Activity panel, the Work board, the iOS Hub and Activity drawer, the widgets, and
-the Live Activity all show the same numbers.
+Every surface counts agents in the Work board's columns:
 
 | Column | Tone | Means |
 | --- | --- | --- |
-| `needs_you` | amber | the user's move: a question, an approval, or a failure |
-| `working` | blue | an agent is mid-turn |
-| `waiting` | neutral | snoozed, a scheduled wake is pending, a subagent is busy, or the lane's PR has CI running or a review requested |
-| `done` | emerald | finished, resting, or settled |
+| `needs_you` | amber | a question, an approval or a failure |
+| `working` | blue | mid-turn |
+| `waiting` | neutral | snoozed, scheduled wake, busy subagent, or lane PR with CI running / review requested |
+| `done` | emerald | finished, resting, settled |
 
-A failure files under Needs you, with its own red status mark. A failed turn is
-the user's move until they settle the session or send a new turn. Pull requests
-are notifications, not agents, so they are never counted in a column.
-
-The publishing brain decides the column and writes it on each agent item as
-`boardColumn`, with `waitingReason` (`snoozed`, `ci`, `review`, `scheduled`,
-`subagent`) for Waiting:
-
-- A roster row maps its status: awaiting and failed are Needs you, running is
-  Working, idle and ended are Done.
-- A running row waits instead when its lane's open PR has CI pending or a review
-  requested. The roster builder reads that from the `pull_requests` table into
-  `SyncRosterLane.prWaitingReason`, with the same `lanePrWaitingReason` rule the
-  renderer's board uses.
-- An idle row whose chat has a pending scheduled wake (`SyncRosterChat.nextWakeAt`,
-  read from the booted chat service) is Waiting with reason `scheduled`.
-- A snoozed row that is not failed or asking is Waiting with reason `snoozed`.
-- The board also parks a finished parent while a nested subagent is busy
-  (`subagent`). The roster has no spawn links, so the brain cannot see that
-  yet; such a parent reads Done in Activity. Clients still accept the reason.
-- A live run maps its phase (`runBoardColumn`). When it replaces a roster row
-  that waits on CI or review, it keeps that wait, because a run knows its lane
-  only by name.
-
-Readers group with `activityBoardColumn` in
-`apps/desktop/src/shared/attention/activityBoardColumn.ts`. It trusts a valid
-published column and otherwise derives one from the phase for items an older
-brain sent (it never derives Waiting). The function is implemented in
-TypeScript, in Swift for iOS, and in the push relay, which imports nothing from
-this repo. `activityBoardColumn.cases.json` beside it pins all three: change the
-rule there first, update the cases, then let the mirrors follow.
-
-The six-group table (needs-you, failed, planning, working, idle, done) lives in
-the relay, which fills the Live Activity's `groups` field from it for app builds
-that predate the four columns. `activityStateGroup.cases.json` pins the relay
-and the iOS mirror. Desktop and the hosted web client do not read it.
+The brain writes `boardColumn` and `waitingReason` (`snoozed`, `ci`, `review`,
+`scheduled`, `subagent`) on each agent item. Readers group with
+`activityBoardColumn`, which trusts a valid published column and otherwise
+derives one from the phase (never Waiting). It exists in TypeScript, Swift and
+the relay; `activityBoardColumn.cases.json` pins all three — change the cases
+first. The older six-group table lives in the relay (for old Live Activity
+builds) and is pinned by `activityStateGroup.cases.json`.
 
 ## Topology
 
-```text
-agentChatService ─┐
-pty/session state ├─ pushPublisherService (brain; canonical item derivation)
-prPollingService ─┘          │
-                            │ HMAC machine auth + signed-in account token
-                            ▼
-                ade-push-relay (Cloudflare Worker + D1)
-                    │                       │
-                    │ account snapshots     │ APNs alert / Live Activity
-                    ▼                       ▼
- Desktop + web + iOS                   iPhone system surfaces
-```
-
-Each brain publishes a bounded full snapshot for its machine, covering every
-project currently hosted by that brain rather than the project selected in any
-one client. The relay merges machine snapshots into an account revision stream.
-Signed-in desktop, hosted web, and iOS clients read that stream
-incrementally through an account-scoped path independent of navigation
-selection. They acknowledge items, report presence where supported, and update
-account/device preferences. Exact destinations still identify the owning
-machine, project, session, event, or PR tab.
-
-The legacy paired-machine push routes remain available for older clients. Once
-an account Activity publish succeeds, the brain suppresses duplicate legacy
-alerts and the legacy per-machine Live Activity.
+Each brain publishes a bounded snapshot of every project it hosts, signed with
+the machine HMAC **and** the account's Clerk token. The relay merges machine
+snapshots into an account revision stream. Desktop, web and iOS read it
+incrementally through an account-scoped path, acknowledge items, report presence
+and edit preferences. Once an account publish succeeds the brain suppresses the
+legacy per-machine alerts and Live Activity.
 
 ## Shared contract
 
-The TypeScript source of truth is
-`apps/desktop/src/shared/types/attention.ts`.
+`AttentionItem` (`shared/types/attention.ts`): id, source `revision`, times,
+fingerprints and tier, kind/event/phase, machine and project, optional lane,
+provider, model, `chatActivityMode`, plan progress, previews (public and
+privacy-safe), exact destination, bounded actions, `seenAt` / `dismissedAt`.
+`ATTENTION_CONTRACT_VERSION` versions the item shape; the publish protocol is
+versioned separately.
 
-An `AttentionItem` includes:
-
-- stable `id`, source `revision`, occurrence/update/expiry time;
-- two fingerprints and an activity tier (see below);
-- kind, event, and phase;
-- machine and project identity;
-- optional lane, provider, model, `chatActivityMode`, plan progress, and recent
-  activity;
-- public preview plus a separate privacy-safe preview;
-- exact session or PR destination;
-- bounded actions such as open, approve, deny, restart, rerun checks, mark
-  seen, and dismiss;
-- `seenAt` and `dismissedAt` acknowledgment state.
-
-### Two project ids
-
-`AttentionProjectRef` carries both. `projectId` is the publishing machine's own
-`randomUUID()` from its `ade.db` and resolves nowhere else — the same machine's
-`projects.list` answers with the registry id `project_<sha256(rootPath)>`, so the
-two spaces never intersect and resolving a cross-machine item by `projectId`
-alone failed every time. `canonicalId` is that machine-independent
-`deriveProjectId(rootPath)` form, and it is what `attentionDestinationDeepLink`
-prefers when stamping a link. It is optional: an older publisher omits it, and
-the relay parses and re-emits only `projectId`, `name`, and `rootPath`, so an
-account-scope reader generally does not see it. `rootPath` is therefore the
-identity both sides always agree on, and the reason resolution falls back to it
-before ever trusting `projectId` across a machine boundary.
-
-### `chatActivityMode`
-
-Optional, additive, and currently one literal: `"planning"`. It mirrors what the
-sidebar derives from `interactionMode === "plan"`. It exists as its own field
-because the state glyph language names planning while `AttentionPhase` cannot
-carry it — the phase vocabulary is frozen push wire, and widening it would break
-every older client. Readers validate it at the boundary and fall back to the
-phase, so a future value degrades to `working` rather than painting an unstyled
-tone.
-
-### Turn completion versus background work
-
-A run that finishes its foreground turn while background subagents are still
-alive stays published as `running`. The publisher tracks live background-task
-ids per run and holds the terminal phase in `deferredTerminalPhase` until the
-last one drains, so the terminal phase is published exactly once — when the work
-is actually over — instead of announcing "done" over a session that is
-demonstrably still working. Desktop's sidebar already treated an active
-background-task count that way; this is the publisher's copy of the same fact.
-
-### Two fingerprints and the activity tier
-
-An item carries a **content** fingerprint and an **alert** fingerprint, derived
-in `apps/ade-cli/src/services/push/activityFingerprint.ts`. They answer two
-different questions and are deliberately not the same value:
-
-- The content fingerprint is *what the row looks like* — identity, phase, lane,
-  provider, model, title, destination, action ids, plan progress, and the
-  preview with elapsed durations and token/file counters normalized away. A
-  running agent whose preview ticks from "12s" to "13s" therefore produces an
-  unchanged snapshot, and the relay writes nothing.
-- The alert fingerprint is *the stable identity of one phase entry* — for a PR,
-  the item, event, phase, `statusSince`, and PR number. It survives the item
-  being removed and republished, which is what stops a reconnecting machine
-  from re-alerting a phone about work it already announced.
-
-`activityTier` (`signal` / `ambient` / `idle`) is the item's own claim about
-whether it is worth interrupting for. Only `signal` items are eligible to
-notify. Legacy publishers omit both fingerprints and the tier; the relay falls
-back to the single `fingerprint` for each and treats a missing tier as
-alertable.
-
-Contract version 1 (`ATTENTION_CONTRACT_VERSION`) limits text, actions,
-progress counts, snapshots, and tombstones before data is stored or delivered.
-It versions the *item shape*; the publish protocol is versioned separately (see
-"Publish protocol 2" below). Relay validation also enforces:
-
-- agent ids/events cannot masquerade as PR ids/events, and vice versa;
-- the item id and embedded machine identity must match the authenticated
-  publishing machine;
-- session and PR destinations use the expected shape and known PR tabs;
-- action payloads contain only bounded scalar values;
-- plan progress is finite, non-negative, and internally consistent.
-
-Source revisions are independent from account cursor revisions. Tombstones
-carry the source revision that deleted the item, so delayed snapshots cannot
-resurrect old work and delayed tombstones cannot remove a newer item.
-
-Snapshots also carry their explicit `scope` (`account` or `machine`), the
-`accountOwnerId` that was current when they loaded, and a user-facing
-`availability` state. Mutations are fenced to that loaded owner. The brain
-persists machine acknowledgments by account owner + item and rechecks ownership
-around each asynchronous relay reconciliation.
+- **Two project ids.** `projectId` is the publishing machine's local id and
+  resolves nowhere else; `canonicalId` is `deriveProjectId(rootPath)` and is
+  optional (the relay drops it). `rootPath` is the identity both sides agree on.
+- **`chatActivityMode`** is one literal, `"planning"`, separate from the frozen
+  phase vocabulary; unknown values degrade to the phase.
+- **Background work.** A run whose turn ended while background tasks live stays
+  `running`; the terminal phase is held in `deferredTerminalPhase` and published
+  once.
+- **Fingerprints.** The content fingerprint is what the row looks like (with
+  durations and counters normalized), so ticking progress writes nothing. The
+  alert fingerprint is one phase entry's identity and survives a republish, so a
+  reconnecting machine cannot re-alert. `activityTier` (`signal` / `ambient` /
+  `idle`): only `signal` notifies.
+- **Tombstones** carry the deleting revision, so delayed snapshots cannot
+  resurrect work. Snapshots carry `scope`, `accountOwnerId` and `availability`;
+  mutations are fenced to the loaded owner.
 
 ### Acknowledgments
 
-The relay does not fence an acknowledgment on the source revision, because the
-revision advances on every publish. `alertFingerprints` maps
-`itemId -> the alert identity the caller had on screen`, and the relay refuses
-only when the stored alert has changed since. This stops a "Clear all" that is
-in flight from clearing a `needs_you` published after the poll. An item with no
-quoted fingerprint is not fenced, so one bulk call still clears an inbox.
-
-One acknowledgment request may carry at most
-`ATTENTION_ACKNOWLEDGMENT_BATCH_LIMIT` (64) item ids. That is the relay's own
-hard bound: `handleAcknowledgment` rejects a larger request with 400 before
-parsing anything else, because every id becomes one statement in a single D1
-batch. Callers with more than 64 ids therefore **chunk, never truncate** —
-`chunkAttentionAcknowledgmentItemIds` and `runAcknowledgmentChunks` in
-`shared/types/attention.ts` are shared by the Electron coordinator and the
-browser adapter so the two shells cannot drift. Three hosts still truncate at
-the same 64 internally (`multiProjectRpcServer.ts`, `syncRemoteCommandService.ts`,
-and the desktop action registry); client-side chunking is the only reason those
-truncations are unreachable, which is why raising the limit alone is a
-regression rather than a fix.
-
-Chunking **aborts on the first throwing chunk**. A chunk that throws is systemic
-(expired auth, network down, relay 5xx) — item-specific refusals come back as
-returned ids without throwing — so pushing the remainder at a host that just
-failed only multiplies the damage. The result is `AttentionAcknowledgmentOutcome`,
-three disjoint lists that together cover every id the caller sent:
-
-| List | Meaning | Caller's move |
-| --- | --- | --- |
-| `acknowledged` | the host applied it | optimistic state stands |
-| `stale` | the host answered and refused: it changed underneath | roll back, tell the user to refresh |
-| `unreached` | no answer ever came — the chunk failed, or an earlier one aborted the loop | roll back, report the transport failure (`unreachedReason`) |
-
-`unreached` exists because filing a transport abort under `stale` told the user
-something had changed when nothing had, and sent them to refresh a list that was
-already correct. Both optional fields are omitted entirely when no chunk failed,
-so a successful batch serializes exactly as it did before they existed.
+The relay fences an acknowledgment on `alertFingerprints` (the alert the caller
+had on screen), not on the revision, so "Clear all" cannot clear a newer
+`needs_you`. A request carries at most 64 ids
+(`ATTENTION_ACKNOWLEDGMENT_BATCH_LIMIT`, the relay's hard bound); callers
+**chunk, never truncate**, and abort on the first throwing chunk. The outcome
+has `acknowledged`, `stale` (refused: roll back, refresh) and `unreached` (no
+answer: roll back, report the transport failure).
 
 ## Relay and trust model
 
-The Worker lives in `apps/push-relay/`.
-
-Machine publishing requires both:
-
-1. the existing HMAC-signed machine request; and
-2. a verified Clerk bearer token for the account receiving the snapshot.
-
-Account clients use the verified bearer token for snapshot, acknowledgment,
-presence, preferences, device registration, and activity-token routes. Clerk
-production and secondary/development issuers are configured as complete,
-distinct issuer/JWKS/OAuth-client triples and selected by the token's exact
-`iss`. Verification accepts RS256 only. Clerk native session tokens may omit
-`aud`; OAuth access tokens that carry audience metadata must match the
-configured OAuth client through `aud` or `azp`. The relay hashes verified
-issuer plus subject into the D1 account key so equal opaque subjects from
-different Clerk instances cannot share data.
-
-JWKS transport/parse failures are a configuration/service outage (`503`), not
-a false sign-out (`401`). Deployment runs schema/trigger validation separately
-from authentication verification: it refuses to start without both Clerk
-secret triples and short-lived primary/secondary smoke tokens, deploys, checks
-the fixed `/health` authentication flags, then calls the real authenticated
-account snapshot endpoint once per issuer. A green migration or Worker upload
-therefore cannot mask an account endpoint that rejects every valid user.
-
-Every iOS installation also persists a positive, JavaScript-safe monotonic
-`ownershipEpoch`. Account device PUT and DELETE bodies both carry that epoch.
-Sign-out commits an unowned epoch before revocation; a direct account switch
-commits `account A → unowned → account B`, so the old-account DELETE and the
-new-account PUT never tie. Relay retains the latest epoch even after deletion
-and returns `409` for a stale or equal-epoch foreign-owner mutation. The phone
-treats that response as safely superseded rather than retrying an obsolete
-request. Registration PUTs are serialized and queued refreshes coalesce to the
-latest request, so network reordering cannot restore an earlier account owner.
-
-The account routes are:
-
-```text
-GET    /attention/account/snapshot?since=<revision>
-POST   /attention/account/ack
-POST   /attention/account/presence
-POST   /attention/account/notify
-GET    /attention/account/preferences
-PUT    /attention/account/preferences
-PATCH  /attention/account/preferences/devices/:deviceId
-PATCH  /attention/account/preferences/machines/:machineKey
-PATCH  /attention/account/preferences/projects/:projectId
-PUT    /attention/account/devices/:deviceId
-DELETE /attention/account/devices/:deviceId
-PUT    /attention/account/devices/:deviceId/activities/:activityId
-DELETE /attention/account/devices/:deviceId/activities/:activityId
-DELETE /attention/account/machines/:machineKey
-POST   /attention/account/machines/:machineKey/pairing
-POST   /machines/:machineKey/attention
-```
-
-Any other `/attention/account/*` path is a 404 rather than a silent fallthrough.
-
-A browser may call only the Activity routes: the snapshot, ack, presence,
-preferences and account settings (`BROWSER_ACCOUNT_ROUTES` in
-`apps/push-relay/src/relay.ts`). A request with an `Origin` header to any
-other account route gets a 403 before authentication. So the vault, the
-Passwords key and items, provider sign-ins, and machine and device changes stay
-native-only, and a script on the ADE Web origin can never read a secret. The
-web and the iPhone read account data that holds no secret through the account
-server instead (for example `GET /cloud/sign-ins`, which returns status only).
-
-D1 stores account revisions, machine links, items, tombstones, revoked machines,
-device registrations, Live Activity state/tokens, presence, preferences, and
-delivery receipts. Snapshots and fan-out are capped. Expired items, old
-tombstones, and stale presence are pruned. The heavier sweeps —
-`sweepExpiredAttentionItems` and `sweepOrphanedMachineActivity` (machines silent
-for 14 days) — are cron-only rather than hung off device registration and
-publish, because a Worker request path has CPU and subrequest ceilings the
-sweeps could exhaust. `pruneAttentionState` stays cheap enough to run
-opportunistically.
-
-Every deletion path emits tombstones through `commitAttentionRevision`, which is
-what lets protocol-2 deltas never imply a deletion: clients converge on removals
-because a tombstone said so, not because an id went missing from a partial list.
-
-The Live Activity projection lives in `apps/push-relay/src/liveActivity.ts`, with
-the environment/bounds/helper vocabulary both it and `attention.ts` need split
-into `attentionShared.ts` to break the import cycle. `attentionShared.ts` is also
-where the relay declares `chatActivityMode` on its parsed item — parsed
-leniently, so an unknown value degrades to absent rather than rejecting the item.
-
-APNs registrations and invalid-token cleanup retain the existing push relay
-behavior. See `apps/push-relay/README.md` for deployment variables, Clerk
-issuer configuration, APNs configuration, abuse limits, and migrations.
+- Machine publishing needs the HMAC-signed request and a verified Clerk bearer.
+  Issuers are distinct issuer/JWKS/OAuth-client triples selected by `iss`; RS256
+  only. Account keys hash issuer plus subject. A JWKS failure is `503`, not a
+  sign-out.
+- **Device ownership.** Each iOS install keeps a monotonic `ownershipEpoch`;
+  device PUT and DELETE carry it, sign-out commits an unowned epoch, and the
+  relay answers `409` to a stale epoch.
+- **Routes** are under `/attention/account/*` (snapshot, ack, presence, notify,
+  preferences and their scope patches, devices, activities, machines, pairing)
+  plus `POST /machines/:machineKey/attention`; anything else is 404.
+- **Browsers** may call only `BROWSER_ACCOUNT_ROUTES` (`apps/push-relay/src/relay.ts`:
+  snapshot, ack, presence, preferences, account settings). Any other account
+  route with an `Origin` header is 403, so the vault and device changes stay
+  native-only.
+- D1 holds revisions, items, tombstones, revocations, devices, Live Activity
+  state, presence, preferences and receipts. Heavy sweeps
+  (`sweepExpiredAttentionItems`, `sweepOrphanedMachineActivity` for machines
+  silent 14 days) are cron-only. Every deletion emits a tombstone through
+  `commitAttentionRevision`.
+- Deployment and APNs config: `apps/push-relay/README.md`.
 
 ## Machine removal and re-pairing
 
-Removing a machine from the account is real and terminal. It is not a roster
-edit; heartbeats never re-register a removed machine.
-
-`DELETE /account/machines/:machineKey` on the account directory does its work in
-a deliberate order: write the revocation into `revoked_machines` (carrying the
-device id, upserted with `coalesce` so a retry after a failure cannot erase it),
-delete the `machines` row, then call the relay's purge. The revocation is written
-first because a half-completed removal must fail closed. If the relay hand-off
-fails the directory answers `502 activity_purge_failed` with `machineRemoved:
-true`, and `accountMachineDirectoryService` raises a typed
-`AccountMachineActivityPurgeError` rather than reporting a clean removal.
-
-The relay's `DELETE /attention/account/machines/:machineKey` commits one
-revision that tombstones every item that machine published, deletes those items
-and its machine link, records it in `attention_revoked_machines`, and drops its
-legacy delivery targets — `device_registrations`, `live_activity_tokens`, and
-`publish_suppression`. Attention device ownership rows for that machine are
-deactivated rather than dropped, so a delayed request cannot reclaim the
-installation, and the account Live Activity is re-delivered so the phone's
-aggregate stops counting the machine. Before any of that it checks that the
-account actually knows the machine key: keys are not secret (they ride items and
-deep links), so an arbitrary signed-in account must not be able to terminally
-403 a stranger's machine.
-
-Revocation is then enforced on two different lookups, on purpose. The
-account-scoped one gates the protocol-2 publish route. An any-account lookup
-gates the legacy machine-signed publish, Live-Activity-token, and
-device-registration routes — a removed machine must stop delivering even if it
-tries a different account. Both answer `403 machine_revoked` with `revokedAt` and
-recovery copy. Brain-side, `pushPublisherService` latches that into durable state
-(`machineRevokedAt`), so the gate survives a restart; the publisher stays
-readable and revivable rather than disposing itself.
+Removal is terminal. `DELETE /account/machines/:machineKey` (account directory)
+writes the revocation first, deletes the row, then asks the relay to purge; a
+failed purge is `502 activity_purge_failed` with `machineRemoved: true`
+(`AccountMachineActivityPurgeError`). The relay's purge tombstones the machine's
+items, records the revocation and drops its delivery targets, after checking the
+account knows the key. Revoked machines get `403 machine_revoked` on publish (by
+account) and on legacy routes (any account); the brain latches it durably
+(`machineRevokedAt`).
 
 ### Proving a fresh sign-in
 
-Getting back on requires a `pairing: true` registration plus proof that a human
-just signed in interactively on that machine. Two proofs are accepted:
-
-- **A token claim.** `auth_time` (OIDC) or Clerk's `fva` first-factor age, within
-  10 minutes. Never derived from `iat`, and it fails closed: a token carrying
-  neither claim proves nothing.
-- **A single-use pairing grant.** `POST /device/code` now accepts the machine
-  key (and an optional `machine_name`, display text for the browser page only),
-  and `POST /device/token` mints a grant — 32 random bytes, base64url —
-  only after it wins the one-time consume, so a racing second redemption cannot
-  mint a second grant. Only the SHA-256 digest is stored, in
-  `machine_pairing_grants`, bound to both the signing-in user and that machine
-  key, with a 10-minute TTL swept by cron. Redemption is a single conditional
-  `DELETE` that both consumes and validates, so two concurrent registrations
-  cannot both spend it. The grant is spent before the relay hand-off and is
-  deliberately not restored if that hand-off fails.
-
-This is why the repair path runs the **device** login flow rather than the
-loopback PKCE flow the ordinary sign-in card uses: only the device flow passes
-through ADE's own account directory, so only it can end with a grant.
-
-On success the directory calls the relay's pairing restore first — which requires
-directory provenance, a constant-time comparison against the shared
-`DIRECTORY_AUTH_SECRET` on `x-ade-directory-auth`, before it reads anything — and
-only then deletes the revocation row.
+Getting back needs a `pairing: true` registration plus either an `auth_time` /
+Clerk `fva` under 10 minutes (never `iat`), or a single-use pairing grant minted
+at the end of a device-flow sign-in (`POST /device/token`; only its SHA-256 is
+stored, 10-minute TTL, spent by one conditional `DELETE`). That is why repair
+uses the device flow, not loopback PKCE. On success the directory restores the
+relay pairing (`DIRECTORY_AUTH_SECRET` on `x-ade-directory-auth`) before
+deleting the revocation.
 
 ### The repair itself
 
-`repairMachinePairing` in
-`apps/ade-cli/src/services/account/machinePairingRepair.ts` owns the two halves
-and the order they lift in. It reads whether either half was gated, publishes the
-pairing registration to the directory, and clears the push half **only after the
-directory accepts**. A machine back on the roster but silently undelivering is
-worse than one that is plainly gone, so a failed publish deliberately leaves the
-push gate latched and forwards the refusal code verbatim.
-
-The result reports `repaired`, `wasRevoked`, `published`, `pushRestored`, a
-`state`, a human `reason`, and an optional machine-readable `reasonCode`. The
-code is typed as a plain string across the version boundary — a newer brain may
-name a refusal an older desktop has never heard of, and anything unrecognized
-(including absence) must read as "unknown", never as "not that code".
-
-Four entry points reach it:
-
-- `ade machines reconnect` (alias `repair`), which takes no machine selector
-  because a brain can only lift its own machine's revocation. With `--text` it
-  prints one sentence from `shared/reconnectOutcome.ts`, the same words the
-  desktop button shows. When the directory
-  answers `pairing_authentication_required`, the CLI prints the recovery line,
-  runs the device sign-in, and re-executes the plan — no second command.
-- `account.call { action: "repairMachinePairing" }` on the multi-project RPC
-  server, CTO-gated alongside `renameMachine` so a subagent cannot re-pair on the
-  owner's behalf, and also fired best-effort with `onlyIfRevoked: true` after any
-  completed login.
-- **Reconnect this computer** in the desktop, over
-  `ade.account.repairMachinePairing`. The Account page shows it when this
-  machine is missing from the account list; the shell bar, the Connections
-  pane's This computer card and the Machines list show it when the directory
-  refuses this machine. Every surface runs one flow per window
-  (`renderer/lib/reconnectThisComputer.ts`, behind `useReconnectThisComputer`),
-  so a second press joins the running attempt. The flow runs the same
-  device-login recovery ("Confirm it's you") when the directory demands fresh
-  proof and reports the honest outcome — including the case where the machine
-  re-joined but push has not resumed.
-- `machinePairingAutoRecovery`, the brain's own slow loop, which calls the same
-  function unattended once a refusal has been latched for a while. A headless
-  box has no Settings button to press, so without it a stale row or a key
-  rotation left the machine off the account permanently. It runs on a persisted
-  6-hour budget and stays idle for the first ten minutes after a revocation, so
-  it can never undo a removal the user just performed — see *Getting back on
-  after a refusal* in [README.md](./README.md#getting-back-on-after-a-refusal).
+`repairMachinePairing` publishes to the directory first and clears the push gate
+**only after the directory accepts** (a machine back on the roster but not
+delivering is worse than one plainly gone). `reasonCode` is a plain string:
+unknown means unknown. Entry points: `daex machines reconnect` (alias `repair`),
+`account.call { action: "repairMachinePairing" }` (CTO-gated; also run with
+`onlyIfRevoked` after a login), **Reconnect this computer** on the desktop
+(`renderer/lib/reconnectThisComputer.ts`), and `machinePairingAutoRecovery`
+([sync README](README.md#getting-back-on-after-a-refusal)).
 
 ## Brain publisher
 
-`apps/ade-cli/src/services/push/pushPublisherService.ts` owns the machine's
-publish lifecycle. It publishes the same state that desktop and mobile display
-rather than rebuilding notification meaning in each client.
-
-The publisher:
-
-- observes chat approvals/questions/failures/completions, tracked CLI session
-  state, session removals, and PR notification transitions;
-- republishes on changes, and on a 30-second heartbeat rebuilds the roster,
-  hashes it with `activityRosterFingerprint`, and posts `presence` only when
-  that hash matches the last accepted roster — so a machine that went quiet
-  still corrects idle/working decay instead of waiting for the 30-minute
-  reconcile. After four unchanged rebuilds the rebuild itself backs off to at
-  most every two minutes; presence posts stay on the 30 s cadence;
-- uses unchanged heartbeats to retry a failed or missed account Live Activity
-  start; successful starts remain deduplicated by durable state and content
-  fingerprint;
-- includes every active project known to that brain, not just the foreground
-  desktop project;
-- keeps recent terminal outcomes long enough for acknowledgment;
-- emits exact PR tabs and exact session pending-item/event anchors;
-- persists seen/dismissed mutations made while the account stream is degraded,
-  partitioned by account owner, then reconciles them only after a successful
-  account publish;
-- skips duplicate legacy notifications and Live Activities after a successful
-  account publish.
+`pushPublisherService.ts` publishes what desktop and mobile show; clients do not
+rebuild notification meaning. It republishes on change; on a 30 s heartbeat it
+rebuilds the roster and posts `presence` when `activityRosterFingerprint` is
+unchanged (after four unchanged rebuilds, rebuilds back off to every two
+minutes). Seen/dismissed made while degraded persist per account owner and
+reconcile after a good publish.
 
 ### Item derivation
 
-The projection itself lives in
-`apps/ade-cli/src/services/push/attentionItemBuilder.ts`:
-`(runs, recentRuns, prActivities, roster) → AttentionItem[]`, holding no state
-and doing no I/O beyond the roster loader it is handed, so the one function every
-phone and desktop row derives from can be exercised without booting a
-publisher.
+`attentionItemBuilder.ts`:
 
-What it filters and how:
-
-- **Identity chats are excluded.** A roster chat with an `identityKey` (CTO and
-  the other identity threads) never becomes an item. The sync roster already
-  omits those rows and their descendants; this filter covers an old roster
-  payload.
-- **Child shells fold into their parent.** A roster chat whose parent chat is
-  itself in the roster is dropped — a shell attached to a visible chat is one
-  piece of work, and publishing 1 + N items per chat inflated every count.
-- **Background work keeps a run alive.** `runHasBackgroundWork` is the single
-  predicate; a `completed` or `stale` run with live background tasks publishes as
-  `running`, and `failed` is deliberately never overridden. `settleRun` parks the
-  real outcome in `deferredTerminalPhase` and publishes it once the last task
-  drains, and `resumeRunOnActivity` waits out a 10 s grace before resuming a
-  terminal run so a done→working→done flap cannot mint three alert-fingerprint
-  phase entries.
-- **Chat metadata is polled, not inferred.** Neither a chat's title nor its
-  interaction mode is announced on the chat event stream — a chat is born with a
-  placeholder title and renamed seconds later, once the runtime has read the
-  prompt — so `refreshChatRunMeta` re-reads the session summary for every live
-  non-terminal chat run on one bounded 10 s cadence (`CHAT_META_REFRESH_MS`,
-  stamped as `chatMetaCheckedAt`). One read, one cadence, because both facts come
-  from the same summary. `interactionMode === "plan"` becomes
-  `chatActivityMode: "planning"`, emitted only while the published phase is
-  `running`.
-
-  The first resolution and every refresh go through **one** `applyChatSummary`.
-  So a renamed chat's row always shows its current title. The attempt is stamped *before* the await, so a slow or failing read cannot make
-  every flush retry the same session, and a thrown read keeps the last known
-  metadata rather than blanking the title or flipping the glyph. A terminal run
-  is skipped: it cannot be renamed into something the user is waiting on.
-- **Lifetimes.** Running/starting rows expire after 2 h, recent outcomes after
-  24 h, and idle roster rows after 7 days. Every row expires, because only the
-  owning machine can tombstone a row, and a deleted chat's machine may never
-  come back.
-- **Deletion tombstones immediately.** The publisher subscribes to session
-  removals; a delete drops the run, its pending alerts, and the 10 s roster disk
-  cache, then flushes, so the protocol-2 delta tombstones the id on the spot
-  rather than waiting for an expiry.
-- **Roster wins over a frozen run.** When the roster says `running` and the live
-  run says `completed`/`stale`, the run item is skipped: a stale publisher view
-  must not bury a session the booted runtime says is working.
-- **Snooze demotes a running row to idle.** A snoozed roster chat that is not
-  `failed` or `needs_you` publishes as phase `stale` / tier `idle`, and a live
-  run for that id is not allowed to revive it as working. Failed and needs-you
-  stay visible. The same overlay is what Hub `runningCount` excludes.
-
-`canonicalProjectId` memoizes `deriveProjectId(rootPath)` per root and stamps
-`project.canonicalId`, returning `null` rather than a fabricated id when no root
-is known.
-
-`prActivityId` requires owner + repo to mint a stable id. Without them it adopts
-an existing row only when the match is unambiguous and otherwise drops the event
-with a log line, instead of degrading to a shared scope literal that minted
-duplicate PR rows.
+- Identity chats (CTO) are excluded; child shells fold into their parent.
+- `runHasBackgroundWork` keeps a completed run `running` (never overrides
+  `failed`); `resumeRunOnActivity` waits 10 s so a flap cannot mint three alert
+  entries.
+- Chat title and plan mode are polled: `refreshChatRunMeta` re-reads the summary
+  every 10 s (`CHAT_META_REFRESH_MS`) through one `applyChatSummary`.
+- Lifetimes: running 2 h, outcomes 24 h, idle roster rows 7 days (only the
+  owner can tombstone, so every row expires). A session delete tombstones at
+  once.
+- The roster beats a frozen run; a snoozed chat (not failed or asking) publishes
+  as `stale` / `idle`.
+- `prActivityId` needs owner and repo; otherwise it drops the event rather than
+  minting duplicates.
 
 ### Publish protocol 2
 
-Every publish response carries a `protocol` number, and the publisher records
-the highest one the relay has reported. Protocol 2 replaces "always send the
-whole machine" with three modes on `POST /machines/:machineKey/attention`:
-
-| Mode | When | What it sends |
-| --- | --- | --- |
-| `reconcile` | first publish after start, after an account change, and after any cap shrink | the full roster, paged, with `final: true` on the last page |
-| `delta` | ordinary changes | only the items that changed, paged if they exceed one wire page |
-| `presence` | heartbeat skip when `activityRosterFingerprint` matches the last accepted roster, or when rebuild backoff is in effect | no items — it holds `last_seen_at` and lets a due alert retry without rewriting the feed |
-
-Each publish stamps a monotonic `rosterEpoch`. A `reconcile` run bumps the
-epoch, and its `final` page seals it: anything still carrying an older epoch for
-that machine is state the machine no longer claims, so it is removed in one
-commit rather than by inference from an absent id. A `delta` reuses the current
-epoch and therefore never implies a deletion, which is what makes it safe to
-send a partial list at all.
-
-The relay echoes current acknowledgment state (`acks`) on every publish,
-including the no-op paths, so a brain that came back from a disconnect learns
-what other devices already dismissed without waiting for its own read. If the
-account item cap truncates the publish, the response says `itemsTruncated` and
-the publisher schedules a fresh reconcile rather than leaving the relay holding
-a silently trimmed roster.
-
-A relay that reports `protocol` below 2 does not understand any of this. The
-publisher notices, falls back to the legacy full-snapshot publish, and keeps a
-reconcile pending so the first protocol-2 response resynchronizes cleanly.
-
-The paired-machine compatibility publisher tracks Live Activity delivery per
-phone. A failed start, update, or end retries only that phone while healthy
-phones continue receiving new content, and relay suppression is keyed per
-device so a sibling phone's success cannot falsely satisfy the retry.
+`POST /machines/:machineKey/attention` has three modes: `reconcile` (full roster,
+paged, `final: true` seals a new `rosterEpoch` and removes anything older),
+`delta` (changed items; never implies a deletion) and `presence` (no items). The
+relay echoes `acks` on every publish and reports `itemsTruncated`, which
+schedules a reconcile. A relay below protocol 2 gets the legacy full snapshot.
 
 ## Delivery policy and preferences
 
-Defaults (`defaultPolicy` in `apps/desktop/src/shared/activityCatalog.ts`,
-mirrored by `DEFAULT_NOTIFY_EVENTS` in the relay):
+Defaults (`defaultPolicy` in `activityCatalog.ts`, mirrored by
+`DEFAULT_NOTIFY_EVENTS` in the relay): Needs you, Failed and Checks failing
+notify; everything else is ambient. `eventPolicyDefaultsVersion` upgrades old
+saved maps (version 2 moved review/merge-ready to ambient; version 3 raised the
+desktop-first delay).
 
-| Event | Default |
-| --- | --- |
-| Needs you | Notify |
-| Failed | Notify |
-| Checks failing | Notify |
-| Running / progress | Ambient |
-| Review requested / changes requested / merge ready | Ambient |
-| Completed / merged / opened / closed | Ambient |
-
-Review requests, requested changes and merge-ready PRs notified by default
-before policy-defaults version 2. Every save writes the whole `eventPolicies`
-map, so a saved "notify" for one of them cannot tell a choice from the old
-default. `eventPolicyDefaultsVersion` on the account scope settles it: a scope
-without version 2 reads those three "notify" values as the new default
-("ambient"). The desktop settings model applies the same upgrade on load
-(`upgradeAttentionEventPolicies`) and saves version 2, so a choice the user makes
-after that stays.
+- **Scopes.** Account defaults with device, project (keyed by the normalized Git
+  identity), and machine overrides, merged per event
+  (`resolveScopedDeliveryPreferences` on the relay, `resolveAttentionScope` on
+  the desktop). Scope patches (`AttentionScopePatch`) take `null` to drop an
+  override. Settings › Notifications › Events edits them.
+- **Quiet hours** per scope, each with its saved time zone.
+- **Desktop-first** (default on, `desktopFirstDelaySeconds` 120): while a
+  non-phone client reported foreground presence in the last 45 s, the phone waits
+  the delay. The desktop also reports `userActive` from the OS input clock
+  (`userActivityProbe.ts`); while any computer is in use the phone stays quiet.
+  The main process stamps the field; the relay caps `observedAt` at its own
+  clock.
+- **Gates before preferences:** only `signal` tier alerts, and nothing older than
+  15 minutes (so a reconnect's backlog never pushes).
+- **Dedupe:** a short per item/device/state receipt, then a 30-day alert log
+  keyed by alert fingerprint.
 
 ### Push copy
 
-`attentionAlertCopy` in the relay builds every account push:
-
-| Kind | Title | Body |
-| --- | --- | --- |
-| Agent | the session title | state · project · machine, for example `Needs you · ADE · Arul's Mac Studio` |
-| Pull request | `#1514` and the PR title | state · project, for example `Checks failing · ADE` |
-| Hide details on | `Agent: Needs you` or `Pull request: Checks failing` | none |
-
-Each line is cut at 64 characters with an ellipsis. The agent's preview text
-never goes in a push: it is a paragraph nobody reads on a Lock Screen, and the
-row the push opens shows it in full. An agent item that offers both Approve and
-Deny carries the `ADE_APPROVAL` category, so the banner shows the two buttons.
-
-Preferences support account defaults plus device, project, and machine
-overrides, and one account-wide list of muted chats (`mutedSessionIds`, see
-"Muting one chat"). The `machines` scope is keyed by machine key and is what "mute this
-Mac" writes: it silences one machine's items everywhere rather than muting a
-category on one phone. Its size is capped like the other scopes:
-
-- event delivery policies;
-- notifications;
-- Live Activities;
-- desktop-first delivery and its delay;
-- sounds (off by default);
-- celebrations;
-- hidden preview details;
-- quiet hours;
-- muted sessions.
-
-Registration provides defaults that the account, project, machine, and device
-can override. Turning notifications off at any of those levels stops delivery.
-Event policies merge per event (`resolveScopedDeliveryPreferences` on the relay,
-`resolveAttentionScope` on the desktop): a project, machine or phone that sets
-one event keeps the account's choice for every other event. A project scope is
-keyed by the normalized Git repository identity so different checkout paths
-share settings. Folders without an origin use their checkout identity. The relay
-and desktop also read existing overrides under earlier project ids.
-
-The three scope routes take the same patch (`AttentionScopePatch`): any scope
-field, plus `eventPolicies` that merges into the scope's map. `null`, for a
-field or one event, removes that override so the scope follows the account
-again; a scope left empty is removed. Unknown events or levels answer 400.
-Settings › Notifications › Events edits them: a scope switcher (Everywhere,
-Project, Computer, Phone) above the matrix, and "Choose events" on each
-computer and phone under Machines. A phone scope is what reaches that phone.
-Settings shows the scope switcher when the relay advertises support for scoped
-events. If a project save returns 404, Settings hides the Project choice and
-explains why.
-
-The event matrix includes messages from agents and automations, goal outcomes,
-chat resumes after a usage limit, and background-service notices. Messages
-have a phone delivery policy. Goal outcomes, usage-limit resumes, and
-background-service notices are computer events. Background-service notices
-can be configured everywhere or for one computer.
-
-Quiet hours hold a push when an account, project, computer, or phone window
-covers now. Each window uses its saved time zone. The default schedule takes
-the local zone when enabled. Time edits keep the saved zone, and **Use** with
-the local zone's name switches it explicitly. Desktop alerts check the same
-scoped windows.
-The **Send notifications to** switch in desktop and web settings controls
-account delivery to one iPhone or iPad. The iOS **Notifications on this device**
-switch controls that device's own preference. iOS shows when account settings
-pause delivery for the whole account or for this device. Each client saves its
-own setting, so a phone's preference sync preserves the account's delivery
-choice. A failed phone preference save retries with capped exponential
-backoff until it succeeds, the account changes, or a newer local preference
-replaces it.
-
-When desktop-first delivery is enabled (the default) and the user is at a
-computer, the relay waits for the configured bounded delay
-(`desktopFirstDelaySeconds`, 2 minutes by default) before notifying the phone.
-ADE cannot tell whether someone is looking at an open window, so the delay is
-the test: at the computer, the user opens the item (from Activity or the
-desktop notification, which marks it seen) and the phone never buzzes; away,
-nothing is opened and the phone gets it. Policy-defaults version 3 raised the
-default from 30 s, and a 30 saved under an older version reads as the new
-default, the same way version 2 moved event policies. "At
-a computer" means any client that is not a phone reported presence in the last
-45 s with a foreground ADE window, or a visible Activity surface showing that
-exact item. Desktops on Windows and Linux report platform `unknown` and the
-hosted web client `web`; both count. The next
-machine heartbeat escalates an item that is still unseen after the delay.
-
-The delay is only the fallback. The desktop app also reports `userActive`
-from the OS input clock (`main/services/attention/userActivityProbe.ts`,
-Electron `powerMonitor`): input in the last 2 minutes, screen unlocked,
-machine awake. While any computer reports `userActive: true`, the phone stays
-quiet for as long as that holds, not just for the delay: that computer shows
-its own system notification. Locking the screen, sleeping, quitting or two
-idle minutes release it, and the next machine heartbeat sends the alert (the
-15-minute staleness gate still applies). A computer that reports itself idle,
-locked or asleep does not count as attended at all, even with ADE in front.
-The main process stamps the field on every report, so a window cannot claim
-"in use" (it may only say it is leaving); lock and suspend resend the last
-report as away at once, and unlock and resume refresh it. While the computer
-can tell (active or idle), the window keeps the 30 s visible cadence even when
-hidden: active, because the relay's presence window is 45 s; idle, so coming
-back to the keyboard holds the phone within one beat. Away and back reports go
-out one after the other, so a quick lock and unlock cannot land "away" last. The clock counts as known only after it has
-been seen to move: some Linux/Wayland sessions report 0 forever, and taking
-that at face value would keep the phone quiet for good. The web client, older
-desktops and phones send no `userActive` and keep the timed hold. Older relays
-drop the field and keep the timed hold too. The relay stores a report's
-`observedAt` no later than its own clock, so a desktop whose clock runs ahead
-cannot keep a stale "in use" report fresh, and the phone quiet, for hours.
-
-Two gates run before any preference is consulted, because they are about
-whether the item deserves an interruption at all:
-
-- **Tier.** An item whose `activityTier` is not `signal` never alerts.
-- **Staleness.** An item whose `updatedAt` is more than 15 minutes old never
-  alerts. This is what makes a reconnect safe: a machine that was offline
-  republishes its roster, and none of that recovered backlog fires a push.
-
-Notification delivery is then deduped twice. A short-lived per
-item/device/state delivery receipt claims the send, so two concurrent publishes
-cannot both notify. Behind it, a durable **alert log** keyed by account + alert
-fingerprint + device records what each phone was actually told, and is retained
-for 30 days — well past the item's own lifetime. Deleting and republishing an
-item therefore cannot re-alert, which the receipt alone could not prevent
-because receipts are keyed by item id and pruned at 7 days.
+`attentionAlertCopy` (relay): agent = session title / `state · project ·
+machine`; PR = `#number title` / `state · project`; with Hide details, only
+`Agent: Needs you` or `Pull request: Checks failing`. Lines cut at 64
+characters. Approve/Deny items carry the `ADE_APPROVAL` category.
 
 ### A question is not an approval
 
-`approval_request` carries both flavours, and only its optional `requestKind`
-tells them apart (see
-[chat composer docs](../chat/composer-and-ui.md#approval-vs-question)). The
-publisher classifies with the shared `isQuestionKind` from
-`shared/pendingInputAnswers.ts`:
-
-| | phase | notification category |
-|---|---|---|
-| question / structured question | `waiting_for_input` | none |
-| everything else, and any event with no `requestKind` | `waiting_for_approval` | `APPROVAL_NOTIFICATION_CATEGORY` |
-
-The category *is* the notification's inline Approve/Deny buttons. A question has
-nothing for them to do, so it ships without them — the same shape
-`structured_question` already published. Before this, every `AskUserQuestion`
-went out as `waiting_for_approval`, so the phone offered
-Approve/Deny for something that wants prose, and the answer branch in the
-attention item builder was dead code. Both flavours use the per-card
-`alert:<sessionId>:approval:<itemId>` dedupe key (`approvalAlertDedupeKey`; an
-event with no item id falls back to `alert:<sessionId>:approval`). One chat can
-hold several open cards at once (the main agent's and its subagents'), and a
-shared per-chat key dropped every card after the first. A card answered before
-its alert flushes drops that alert, and a new card in the chat drops the older
-cards' queued alerts (`dropApprovalAlerts`). A subagent's card is titled
-"`<name>` needs you". An event with no `requestKind` is an approval, which is
-what older hosts meant.
-
-The run keeps one entry per open card (`AgentRunState.openCards`). Answering a
-card moves the phase to the newest card still open. A subagent's card keeps the
-run waiting past its parent's turn end, because the subagent still runs: the
-turn end is kept as the deferred phase and lands when the last card closes. A
-main-agent card does not hold the run past turn end.
-
-The `needs_you` privacy preview reads **"An ADE agent needs you."** — the same
-two words the status label and the title suffix use. "needs your input" was a third phrasing for one state, on the
-surface with the least room to explain itself. Where a specific line is
-available instead, chat surfaces supply `waitingOnYouDescription()` from
-`shared/types/chat.ts` (`Waiting on your answer.` / `…answers.`), which is also
-the lock-screen preview.
-
-Quiet hours, muted sessions, preview privacy, sound, and exact deep links are
-applied before APNs fan-out. `needs_you` can use time-sensitive interruption;
-other notifying events use active interruption. Alert pushes also carry
-`content-available`, so the visible alert doubles as a background wake for a
-snapshot refresh — foreground polling remains the guaranteed path, not this.
+`approval_request` with a question `requestKind` (`isQuestionKind`,
+`shared/pendingInputAnswers.ts`) publishes as `waiting_for_input` with no
+category; everything else (including no `requestKind`) is `waiting_for_approval`
+with Approve/Deny. Dedupe is per card (`alert:<sessionId>:approval:<itemId>`).
+The run keeps every open card (`AgentRunState.openCards`); a subagent's card
+holds the run waiting past the parent's turn end. The privacy preview is "A DAEX
+agent needs you."
 
 ### Muting one chat
 
-A mute is a statement about the chat, so it applies on every device. The list
-is the account preferences' top-level `mutedSessionIds`, written only through
-`PATCH /attention/account/preferences/sessions/:sessionId` with
-`{ "muted": boolean }`, which edits it atomically (bounded at 500, oldest mute
-dropped first). A whole-document `PUT` keeps the stored list whatever it
-carries, so a stale settings save cannot undo a mute made elsewhere. When the
-relay decides whether a phone stays quiet, it takes the account list together
-with that phone's own older per-device list.
-
-Desktop shows **Mute notifications** / **Unmute notifications** in a session's
-context menu once the account preferences have loaded; the phone shows it in
-the chat header. The mute silences pushes, desktop notifications and message
-toasts for that chat. The chat keeps its row and state in Activity.
+`mutedSessionIds` is account-wide, edited only by
+`PATCH /attention/account/preferences/sessions/:sessionId` (bounded 500); a
+whole-document PUT keeps the stored list. A mute silences pushes, desktop
+notifications and toasts; the row stays in Activity.
 
 ## Agent messages
 
-`ade notify` run by an agent inside a chat sends that chat's message (see the
-`ade-cli-control-plane` skill for when an agent may). The chat comes from the
-caller's identity, so an agent cannot post as another chat; `--session` lets a
-person's terminal name one.
+`daex notify` inside a chat sends that chat's message (the chat comes from the
+caller's identity).
 
-- **Brain.** `pushPublisherService.sendChatMessage` checks the limits (6 per
-  chat and 30 per machine in any rolling hour; the same title and body from
-  one chat within ten minutes is a repeat and sends nothing), stores the message
-  in the push registration file (so a restart neither drops it nor resets the
-  limits), and publishes it. A machine keeps its newest 50 messages: an older
-  one leaves Activity for good once 50 newer ones exist, before its 24 hours if
-  need be, so a busy day cannot crowd chats out of the machine's roster. A seen
-  or dismissed message leaves the roster at once. The chat gets a `system_notice` with status
-  `user_notified` ("Notified you: <title>", body in `detail`). Deleting the chat
-  drops its messages.
-- **Item.** `kind: "message"`, `eventKind: "agent_message"` (outside the
-  event-policy vocabulary: a message has no policy, the user asked for it),
-  `phase: "completed"`, tier `signal`, id `message:<machineKey>:<uuid>`, the
-  chat as destination, the chat title in `detail`, a 24-hour expiry. It files
-  in the Inbox until seen or dismissed and is never counted in a column, the
-  Live Activity or a widget.
-- **Older clients.** Every older client validates the whole snapshot and
-  rejects an unknown kind, so the relay returns message items only to readers
-  that send `include=message` (`ATTENTION_SNAPSHOT_INCLUDE_MESSAGES`). Older
-  clients still get the push.
-- **Push.** The relay sends the agent's title and body (title only with Hide
-  previews on), subject to notifications off, quiet hours, a muted machine, a
-  muted chat, and desktop-first. Alerts about one chat share the APNs
-  `thread-id` `session:<sessionId>`, so they stack together.
-
-Run outside a chat, `ade notify` keeps the plain account push described next.
+- The brain limits 6 per chat and 30 per machine per hour, drops repeats within
+  ten minutes, stores messages durably and keeps the newest 50. The chat gets a
+  `user_notified` notice.
+- Item: `kind: "message"`, `eventKind: "agent_message"`, Inbox only, 24 h, never
+  counted. Only readers that send `include=message`
+  (`ATTENTION_SNAPSHOT_INCLUDE_MESSAGES`) get message items (older clients reject
+  unknown kinds); everyone gets the push.
+- Alerts about one chat share the APNs `thread-id` `session:<sessionId>`.
 
 ## Desktop notifications
 
-A fresh, unseen Activity event set to Notify can raise a desktop notification
-when ADE is in the background. The local brain reports questions, failures,
-goals and messages immediately. Account snapshots carry events from all
-machines, including pull requests. The same event only alerts once when both
-sources report it. Clicking opens the associated chat or pull request.
-
-Desktop alerts respect the event's project and computer settings, chat mutes,
-quiet hours and Hide previews. The phone delivery switch applies to phones.
-Goal and background service outcomes are desktop notices. A message received
-while ADE is focused appears as an in-app toast.
+A fresh, unseen event set to Notify can raise a desktop notification while DAEX
+is in the background, from the local brain (immediate) or the account snapshot
+(other machines); one event alerts once. They follow project and computer
+settings, mutes, quiet hours and Hide previews.
 
 ## Custom notifications
 
-Outside a chat, `ade notify --title "<t>" [--body "<b>"] [--open <ade link>]`
-sends a push the caller wrote to every phone on the account. Agents use it when the user asked to
-be told ("tell me when the deploy is done"), and automations use it through the
-**Send notification to mobile app** step (an ADE-action step for
-`attention.sendNotification`).
-
-The path is CLI or automation → the brain → the account relay client →
-`POST /attention/account/notify` with the account's Clerk bearer token, like
-every other account route. The brain sends its own relay machine key, so a
-phone that muted this machine stays quiet. An automation calls
-`attention.sendNotification` in its project. The CLI calls the machine-wide
-`notify.send` RPC (agent role or higher), so it works from any folder and with
-sync off, and it never registers the folder it runs in as a project. A chat or
-pull request link is stamped with the caller's project only when that folder is
-a registered ADE project.
-
-| Field | Limit |
-| --- | --- |
-| `title` | required, up to 64 characters |
-| `body` | optional, up to 160 characters |
-| `deepLink` | optional, `ade://` links only (the brain converts an `https://ade-app.dev/open` link) |
-| `machineKey` | optional, the sending machine |
-
-A link is only worth sending if the phone can open it, so
-`normalizeCustomNotificationLink` (`shared/customNotificationLink.ts`) accepts
-what ADE opens — a chat, a pull request (`ade://pr/<number>` included),
-Activity with an optional `state=<column>`, `ade://workspace`, a Linear issue,
-and the lane, file, commit, branch and proof links the phone hands to the
-computer — and refuses the rest, such as `ade://pr/` or `ade://prs`. `ade
-notify` refuses a bad link; an automation whose link resolves badly at run time
-sends without it and reports `linkSkipped`. Before sending, the sender stamps
-its account machine key and the canonical project id onto a chat or pull
-request link that names no machine (`stampCustomNotificationLinkOwner`), so the
-phone opens it on the machine that owns it rather than the one in front.
-
-The relay sends the text exactly as written: no agent text, no state suffix.
-Each phone gets the alert unless its notifications are off, it is in quiet
-hours, or it muted the sending machine (`machines[<key>].notificationsEnabled`).
-With Hide previews on, the phone gets the title only: the body never reaches
-the lock screen, and the tap still opens the link.
-`soundsEnabled` applies as it does to other alerts. The response counts
-`devices`, `delivered`, `skipped` and `failed`, plus `remaining` for the hour.
-
-An account may send **60 per hour window**. The relay counts them in
-`rate_counters` (bucket `notify:<account>`) before the fan-out, so parallel
-calls cannot slip past the cap, and keeps those rows past the 15-minute rate
-prune so a quiet spell cannot reopen the hour early. Past the cap it answers
-`429` with `retryAfterSeconds` and a `Retry-After` header; `ade notify` exits
-non-zero and says when to try again. It also exits non-zero when this machine
-is signed out. Every call still counts against the daily request budget.
-
-Cost: APNs is free. One custom push costs about one Worker request and one D1
-row write (the counter upsert); a rejected call over the cap writes nothing.
+Outside a chat, `daex notify --title "<t>" [--body "<b>"] [--open <link>]` (or
+the automation step for `attention.sendNotification`) sends to every phone on
+the account: CLI → the machine-wide `notify.send` RPC → the relay's
+`POST /attention/account/notify`. Title up to 64 characters, body 160; links must
+be openable (`normalizeCustomNotificationLink` in
+`shared/customNotificationLink.ts`) and are stamped with the owner machine
+(`stampCustomNotificationLinkOwner`). The relay sends the text as written,
+honoring notifications off, quiet hours, a muted machine and Hide previews.
+**60 per account per hour** (`rate_counters`, bucket `notify:<account>`); past
+it, `429` with `retryAfterSeconds`.
 
 ## Desktop Activity
 
-`AttentionAccountCoordinator` in Electron main owns desktop reads and
-mutations. For a signed-in user it talks directly to the account relay; it does
-not ask the window's selected local or remote brain to proxy the account
-snapshot. An old, disconnected, or unauthenticated selected machine therefore
-cannot poison the global account view. One rejected relay request may force a
-safe account-token refresh; a final auth/configuration failure becomes
-actionable availability copy instead of exposing a raw RPC stack.
+`AttentionAccountCoordinator` (Electron main) talks to the relay directly, never
+through the window's selected brain. With the account service down it may ask
+this computer's brain for a machine snapshot, labeled degraded; signed out, the
+same, with a sign-in offer. `useActivitySync` stays mounted in `AppShell`; the
+header count is the Needs you column only.
 
-If account service is unavailable, the coordinator may ask **this Mac's local
-brain** for a machine snapshot and labels it degraded. A signed-out desktop uses
-the same local-only path and offers sign-in. If neither source is safe, the
-surface reports which component failed and how to recover rather than inventing
-an empty account.
-
-`useActivitySync` remains mounted in `AppShell`, so the global-header control
-stays truthful across project switches and while `/activity` is
-closed. The header count is the Needs you column (failures included) and nothing else; live work is
-an ambient pulse rather than an inflated inbox count.
-
-Both sizes of Activity are one panel, `ActivityPanel.tsx`, fed by
-`activityPriority.ts`:
-
-- `activityFeedItems` — live, non-dismissed `kind: "agent"` rows.
-- `activitySections` — those rows grouped by Work-board column with
-  `activityBoardColumn`, always returning all four descriptors in board order.
-- `activityNotificationItems` — everything that is not an agent and is
-  inbox-eligible, sorted. Eligibility rather than "every PR", because an open
-  pull request nobody is waiting on is not a notification.
-- `summarizeActivity` — the counts the trigger, the chips and the footer share.
-  The badge is the Needs you column, failures included.
-
-The panel, in both sizes, is a **Sessions / Inbox** switch with counts, then
-for Sessions the chips **All · Needs you · Working · Waiting · Done** with
-counts (single-select; the counts never narrow with the chip, so every column
-stays one click away), then the rows grouped by column. Done folds into one
-"N done" line until it is opened, from that line or the Done chip, and folds
-back from its heading. A row shows the lane or branch, the machine chip, its
-column state with time in that state (`activityRowStatus`), the title, one
-quiet line (the status note or preview) and the provider mark. A failed agent
-reads **Failed** in red under Needs you; a Waiting row carries its reason tag
-(**Snoozed**, **CI running**, **Review requested**). An offline machine's rows
-sit below a labelled divider. The Inbox groups pull request, check and review
-outcomes by project, with per-row dismiss and a single-call **Clear all**.
-
-The **compact** size is the top-bar popover (`HeaderActivityControl`). It is
-mounted only while open, so it costs nothing while idle; the always-visible
-trigger is the badge and a stepped live pulse. It shows six rows per column and
-hands the rest to the expanded view. A row click opens its destination.
-
-The **expanded** size is the "Open all" view (`ActivityPane`), a modal over
-whatever tab is in front. It adds:
-
-- Machine / Project / Type / Model filters (`ActivityFilters`), AND-ed;
-- multi-select: a checkbox on hover, on a checked row, and on every row while
-  anything is checked, with bulk **Mark seen**, **Dismiss** (both through the
-  account acknowledgement path, one call, partial outcomes said out loud) and
-  **Open** (the first eight, stopping at the first that fails). Snooze and
-  Settle are not offered: they are session mutations on the owning machine, and
-  a window can only reach its own (see the note at the top of
-  `ActivityCard.tsx`);
-- an all-clear beat when the last raised hand goes down: a quiet
-  `role="status"` strip, fired on the transition only and held for 1.8 s;
-- an exact detail sheet that slides over the list: the plain-language state
-  sentence (`activityStateSentence` — "Claude needs you", "Claude is waiting on
-  CI"), time in the current state from the immutable `statusSince`, plan
-  progress, recent activity, safe actions, seen/dismiss state, offline
-  explanation, and retryable acknowledgment;
-- account delivery/privacy controls.
+`ActivityPanel.tsx`, fed by `activityPriority.ts` (`activityFeedItems`,
+`activitySections`, `activityNotificationItems`, `summarizeActivity`), is one
+panel in two sizes: a **Sessions / Inbox** switch, chips (All · Needs you ·
+Working · Waiting · Done), rows by column with Done folded. The compact size is
+the header popover (mounted only while open). The expanded size (`ActivityPane`)
+adds filters, multi-select (Mark seen, Dismiss, Open — not Snooze or Settle,
+which are session mutations on the owning machine) and a detail sheet.
 
 ### Opening an item from another machine
 
-Seeing an item means its machine is already on the account, so a click is
-expected to pair, connect, and open without ceremony.
+`resolveLocalProjectRoot` tries exact id, then the carried root path, then a
+recomputed `deriveProjectId`; the remote twin (`resolveRemoteProjectBinding` in
+`runtimeBridge.ts`) matches by root path with platform rules read from the path's
+shape. A cross-machine item never rebinds the working window
+(`selectWindowForProjectNavigation`). `describeAttentionOpenFailure` names the
+failed step (`pair`, `connect`, `open`); `RemoteProjectNotFoundError` is a class
+because recovery branches on it.
 
-Resolution has to cross the two project-id spaces described above.
-`resolveLocalProjectRoot` (`main/services/deeplinks/localProjectResolution.ts`)
-tries this machine's own projects by exact id, then by the root path the link
-carried, then by recomputing `deriveProjectId` from each known root. The remote
-twin is `resolveRemoteProjectBinding` in `services/ipc/runtimeBridge.ts`, which
-falls back to `matchRemoteProjectByRootPath` — an exact normalized match wins
-outright, and a case-folded match is accepted only when unambiguous, with
-Windows-versus-POSIX spelling read from the path's own shape rather than the
-host platform, because the path belongs to a machine that may not run this OS.
-
-A cross-machine item never rebinds the window the user is working in. Binding a
-remote project replaces that window's global project context, so
-`selectWindowForProjectNavigation` prefers a window already showing the project,
-then one that has it open as a tab, and otherwise opens a new window. When the
-chain genuinely fails, `describeAttentionOpenFailure` turns the stage that broke
-— `pair`, `connect`, or `open` — into one actionable sentence and keeps the raw
-error as `cause` for the logs. `RemoteProjectNotFoundError` is a class rather
-than a message match, because the user-visible recovery instruction branches on
-it and a copy edit should not silently reroute the user.
-
-Presence reports include foreground state, whether an ambient Activity surface
-is visible, the currently visible item ids, and (desktop app only) `userActive`.
-The relay stores `ambientSurfaceVisible` too; before it did, the "this exact
-item is on screen" hold could never apply. They are posted every 30 s while
-the ADE window is visible and every 120 s while it is hidden, plus promptly on
-focus, on blur, on becoming visible again, and when the visible items change: a
-hidden window still has to hold its claim, but it does not need to hold it at
-foreground rates, and a 120 s-stale "hidden" claim right as the user returns is
-the one case that misleads other devices. Going hidden does not force an extra
-report, because `blur` has already reported the foreground change. Changes
-inside 250 ms go out as one report carrying the latest state, because one window
-switch can flip focus several times (`lib/presenceReporter.ts`).
-
-Presence is best effort, and a bad network must not turn it into a stream of
-errors. When the relay cannot be reached (no HTTP answer, a timeout, a 429 or a
-5xx), the desktop's `AttentionAccountCoordinator` drops presence reports and
-answers preference reads with `null` ("unknown, keep what you have"), backing
-off from 5 s to 5 minutes for every window at once and logging one
-`attention.relay_unavailable` line per outage. A report that does fail (a relay
-refusal, the local-brain path) doubles the renderer's heartbeat interval, up to
-10 minutes, until one succeeds. The settings surfaces lock their controls and
-offer Try again when preferences did not load, so the defaults they hold can
-never be saved over the account's real settings.
-
-An item is marked seen only after its exact destination opens successfully.
-Account changes and stale machine revisions fail closed and require a refresh.
-
-Every Activity read the desktop polls answers inside the 30 s IPC timer. One
-relay request (the account token, the fetch, and the one forced retry after a
-401) shares a single deadline: 20 s (`PUSH_RELAY_FOREGROUND_DEADLINE_MS`) on
-every route a person waits on (Activity reads and writes, machine mute and
-removal, notifications), 60 s on the brain's background loops. A snapshot gives the account
-leg 18 s, then answers from this computer's brain with whatever is left of a
-25 s budget, so a relay that hangs degrades to "this computer only" instead of
-to nothing. The renderer races a 35 s backstop above that, which only catches a
-renderer-side hang. When the backstop wins, Activity reports that it took too
-long and offers a retry instead of leaving the header pinned on syncing.
+- **Presence** (`lib/presenceReporter.ts`): foreground, ambient surface visible,
+  visible item ids, `userActive`; every 30 s visible, 120 s hidden, plus on focus
+  changes (coalesced 250 ms). When the relay is unreachable the coordinator drops
+  presence and answers preference reads with `null`, backing off 5 s → 5 min.
+  Settings lock their controls until preferences load.
+- An item is marked seen only after its destination opens.
+- **Deadlines.** One relay request shares 20 s
+  (`PUSH_RELAY_FOREGROUND_DEADLINE_MS`) on routes a person waits on, 60 s for
+  background loops. A snapshot gives the relay 18 s, then falls back to this
+  computer's brain within 25 s.
 
 ## Hosted web Activity
 
-The hosted web client has no push notifications. It shows Activity only while
-a page is open.
-
-The hosted web client renders the desktop renderer, so it shows the same
-Activity panel in both sizes, with the same four columns and chips. Only the
-data source differs: the hosted browser adapter reads account Activity directly from the relay with
-its in-memory Clerk access token, independently of the paired machine and
-selected project used for Work, Files, and PR commands. It validates the entire
-snapshot/preferences contract at the network boundary and performs at most one
-forced token refresh after a 401.
-
-Signed-out compatibility environments may read a real machine snapshot only
-from their explicitly paired host through the viewer-allowed
-`attention.getMachineSnapshot` command. Their acknowledgments return through
-`attention.acknowledgeMachine`, fenced on the loaded account owner. Source
-revisions still ride along, but the brain records them rather than refusing on
-them: it reports ids it does not recognize as `skipped` instead of rejecting
-the whole batch, so one unknown row cannot fail a Clear all. An older host that
-lacks those actions produces an Update host state;
-the adapter never converts an unsupported call into an empty list. If the
-browser account changes after a snapshot loads, opening or acknowledging that
-snapshot is rejected until Activity refreshes under the new owner.
+The web client shows the same panel while a page is open (no pushes). It reads
+the relay directly with its in-memory Clerk token, validates the whole payload,
+and refreshes the token once after a 401. Signed-out compatibility environments
+read their paired host through `attention.getMachineSnapshot` /
+`attention.acknowledgeMachine`; an older host produces an Update host state,
+never an empty list.
 
 ## iOS Activity drawer
 
-The mobile app stores the account snapshot in the App Group container using the
-same delta/tombstone/expiry rules as desktop.
-
-A signed-in app polls the account snapshot every 20 s while it is foreground,
-and stops on background or sign-out. Each start bumps a generation counter that
-the loop rechecks after every sleep, so repeated starts cannot leave two pollers
-running and a stopped poller cannot resume after its account changed. This poll
-is the guaranteed freshness path; the `content-available` flag on alert pushes
-is an opportunistic wake on top of it, not a substitute.
-
-Acknowledgments made while the relay is unreachable go to an App Group-backed
-**pending-ack queue** partitioned by account owner, and drain on the next
-successful refresh. Reads normalize duplicate item ids, so a crash between
-enqueue and cleanup cannot multiply relay writes. The queue is bounded three
-ways — 200 entries per owner, 24 hours of age, and 5 failed attempts per entry —
-so an acknowledgment the relay will never accept expires instead of retrying
-forever.
-
-The global Activity drawer shows all signed-in machines and projects. Project
-drawers are lenses over that same account model, not separate notification
-inboxes. Tapping an item follows its exact destination. Remote items expose only
-actions that are safe without assuming the currently paired host owns them.
-
-Rows are unified across the drawer, the widgets, and the Live Activity through
-`ActivityRowPresentation.swift`, which owns iOS's copy of the four-column rule
-(`activityBoardColumn`, pinned by `activityBoardColumn.cases.json`) and of the
-older six-group table (`ActivityStateGroup`, pinned by its own fixture). The
-drawer and the Hub filter with the same five chips (All plus the four
-columns); the drawer groups Sessions by column with Done folded. A row leads with a state mark — the group's glyph on a tone-tinted disc,
-with a pulse while the work is live — rather than a provider logo plus a separate
-status dot, and the model is a compact brand chip. `chatActivityMode` decodes
-losslessly into `planning` or an unrecognized value, and no `planning` member was
-added to the phase enum: the phase vocabulary stays frozen.
-
-Account-only signed-in users can register APNs and Live Activity tokens without
-pairing a machine. Sign-out best-effort deletes the account device registration
-and ends account-wide local Live Activities.
-ActivityKit authorization is independent of alert permission. Disabling Live
-Activities sends an explicit push-to-start-token clear to every active account
-and paired-machine route; omitted tokens preserve the existing registration.
+The app polls the account snapshot every 20 s in the foreground (a generation
+counter stops duplicate pollers) and stores it in the App Group with the same
+delta, tombstone and expiry rules. Acknowledgments made while offline go to a
+pending queue per owner (200 entries, 24 h, 5 attempts). Project drawers are
+lenses over the account model. Rows share `ActivityRowPresentation.swift` with
+the widgets and the Live Activity. Account-only users can register APNs and Live
+Activity tokens without pairing a machine.
 
 ## Live Activity and widgets
 
 There is one account-wide `agent-runs` Live Activity per iPhone, and only the
-relay starts it. A brain never starts a Live Activity of its own, so a phone
-never shows two. The relay's legacy `/machines/:key/publish` route still lets an
-older brain end the activity it started, and reports its start and update frames
-as suppressed so the brain stops retrying.
+relay starts it.
 
-The content state leads with `columns`: `{ needsYou, working, waiting, done }`,
-the account-wide agent counts in the four states. It is always present, zeros
-included. For app builds that predate the four tiles, the relay also sends
-`runs`, `prs`, `activeCount`, `groups` (the account-wide agent tally per state
-group; PR rows never count) and `moreCount` (the roster overflow). It omits
-`groups` and `moreCount` when it has nothing to say.
-
-- The activity lives while any agent needs you, works, or waits. When only Done
-  remains, the relay ends it.
-- A push-to-start carries an alert, as ActivityKit requires. Its title is `ADE`
-  and its body is the counts, for example `2 need you · 5 working`.
-- A needs-you change pushes at once. A change to the working, waiting or done
-  counts pushes at most once every 5 minutes
-  (`LIVE_ACTIVITY_COUNT_REFRESH_MS`), so a busy account cannot use up the
-  ActivityKit budget while every number still settles within minutes. Each
-  machine's presence heartbeat re-runs the check, so a count the window held
-  back goes out on the first heartbeat after the window, even when nothing else
-  changes. With nothing pending, that check only reads.
-- Completed/merged outcomes remain until seen, then disappear.
-- Disabling Live Activities actively ends an existing account activity.
-- When `hideDetails` is enabled, per-device content is redacted before APNs
-  delivery while preserving internal ids needed for exact routing.
-- Account-wide starts and content carry the installation's non-PII monotonic
-  `ownershipEpoch`. The app ends activities whose attribute/content epochs do
-  not match the current account owner. The widget extension applies the same
-  check before rendering and shows only a neutral Updating ADE state during the
-  brief interval before the app can end a delayed old-account activity.
-
-**iOS rendering.** The Lock Screen is four equal tiles in one row — Needs you,
-Working, Waiting, Done — each an SF Symbol, a big number and a label in the
-column colour; a zero tile dims, and each tile links to
-`ade://activity?state=<column>`. The Dynamic Island's compact leading is the
-Needs-you count (amber) when it is above zero, else the Working count (blue);
-the compact trailing is Working when the leading shows Needs you; the expanded
-island is the four tiles. A frame without `columns` (an older relay) is counted
-from `groups`, or from the run roster. On launch and on foreground the app ends
-every machine-scoped activity at once and never observes its tokens, and keeps
-one account-wide activity. The rectangular accessory widget shows four count pairs, the circular one
-the Needs-you count (or Working), and the inline one "2 need you · 5 working".
-
-App builds that predate the four tiles render one focused row, an overflow
-count and up to two agent rows in the expanded island, from the older fields.
-Each row has its own `Link`.
-
-When the app is foreground, `LiveActivityService.refreshLocalContent` writes the
-merged account+live feed into the running Activity with a local
-`Activity.update` (hash-deduped, at most once a second). This local write is
-the real-time path. The relay push is the backstop for a suspended app, and it
-spends the ActivityKit budget only on the transitions above.
-`Run.statusSince` lets a working row show a relative date that the system
-updates.
-
-`chatActivityMode` never spends a push on its own. It is excluded from the alert
-fingerprint and from the relay's APNs transition gate, because planning and
-working flip back and forth several times within one turn; the distinction rides
-along on the next transition that was already earned.
-
-Account Live Activity `Run` and `PullRequest` rows carry the source
-`accountMachineKey` as an additive optional wire field. Their exact ADE links
-preserve that key together with the session item/event or PR tab anchor. Older
-payloads without the field remain decodable, but account-wide payloads include
-it so the app can adopt/select the owning machine before opening the row.
-Account APNs alert payloads carry the same routing key.
-
-Interactive approval App Intents remain available only where the activity is
-known to belong to the current host. Account-wide remote items use exact Open
-or Reply navigation instead of executing an action against the wrong machine.
+- The content leads with `columns: { needsYou, working, waiting, done }`; older
+  builds also get `runs`, `prs`, `activeCount`, `groups`, `moreCount`.
+- It lives while anything needs you, works or waits; the relay ends it when only
+  Done remains.
+- A needs-you change pushes at once; other count changes at most every 5 minutes
+  (`LIVE_ACTIVITY_COUNT_REFRESH_MS`), re-checked on each machine heartbeat.
+- `hideDetails` redacts per device before APNs. Starts and content carry the
+  `ownershipEpoch`; the app and extension ignore a mismatched one.
+- In the foreground, `LiveActivityService.refreshLocalContent` writes the merged
+  feed locally (hash-deduped, at most once a second); the relay push is the
+  backstop.
+- `chatActivityMode` never spends a push on its own.
+- Rows carry `accountMachineKey`; approval App Intents run only for the current
+  host's items.
+- Lock Screen: four tiles linking to `daex://activity?state=<column>`; the
+  Dynamic Island shows Needs you, else Working.
 
 ### Widgets and freshness
 
-`ADELockScreenWidget` serves the accessory families (rectangular, circular,
-inline) and, through `ADEActivityHomeWidget.swift`, the Home Screen families
-(small, medium, large) from one definition. All read the same App Group
-snapshot under the same privacy and routing rules. Small and medium show the
-four tiles. Large adds up to six rows under a four-count header, an "N more"
-tail and one events line. Each row has its own `Link`.
-
-A widget cannot say "I am current" by rendering, so the snapshot is written with
-an explicit fetch timestamp and every surface derives a `Freshness` from it:
-fresh, aging past 10 minutes, and untrusted past 2 hours, with a visible
-staleness tag on the last two. The timeline emits a second, pre-dated entry at
-the aging threshold, so a widget that stops being refreshed degrades honestly
-instead of showing hours-old work as current.
-
-Two paths keep it fed. The app registers a `BGAppRefreshTask`
-(`com.ade.ios.activity.refresh`, permitted in `Info.plist` alongside the `fetch`
-background mode) which re-arms itself first, then bootstraps the account and
-refreshes the snapshot, and always reloads widget timelines even when the refresh
-fails. A silent push refreshes the snapshot and then reloads, also when nothing
-changed, because that still proves the data is current.
-
-When there is no account feed at all, the Home Screen families fall back to the
-machine-local `LockScreenPriorityStatus` derivation rather than an empty card.
+`ADELockScreenWidget` serves the accessory families and, via
+`ADEActivityHomeWidget.swift`, the Home Screen families from one App Group
+snapshot. The snapshot carries its fetch time; surfaces derive `Freshness`
+(fresh, aging after 10 minutes, untrusted after 2 hours, tagged), and the
+timeline pre-dates an entry at the aging threshold. `BGAppRefreshTask`
+(`com.ade.ios.activity.refresh`) and silent pushes refresh it and always reload
+timelines. With no account feed the Home Screen falls back to
+`LockScreenPriorityStatus`.
 
 ## Validation boundaries
 
-Simulator and unit validation can prove snapshot merging, expiry/tombstones,
-preference mapping, exact links, intent safety, widget decoding, and rendering.
-
-A physical iPhone is still required to prove real APNs delivery,
-push-to-start-token minting, background Live Activity updates, and system
-notification presentation.
+Simulator and unit tests can prove merging, expiry, preferences, links, intent
+safety and rendering. Real APNs delivery, push-to-start tokens, background Live
+Activity updates and system presentation need a physical iPhone.

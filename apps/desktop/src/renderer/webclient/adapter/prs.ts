@@ -19,6 +19,7 @@ import type { AdapterInfra, AdeNamespace } from "./types";
 import { createCoalescingReadCache } from "./infra/coalescingReadCache";
 import { unavailableOnHost } from "./misc";
 import { assertWebRuntimePinRoutable, guardPinnedMembers, type RuntimePinArg } from "./runtimePinGuard";
+import { BRAND } from "../../../shared/brand";
 
 const READ_CACHE_TTL_MS = 3_000;
 
@@ -428,7 +429,7 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     listChatSessionsForPr: (args: unknown) => read("prs.listChatSessionsForPr", args, []),
     setChatWatch: async (args: unknown) => {
       // A host without PR Watch must say so; a null result reads as "turned off".
-      if (!commands.hasAction("prs.setChatWatch")) throw new Error("This machine's ADE does not have PR Watch yet. Update it to use Watch and Ship.");
+      if (!commands.hasAction("prs.setChatWatch")) throw new Error(`This machine's ${BRAND.NAME} does not have PR Watch yet. Update it to use Watch and Ship.`);
       const result = await call<PrChatWatchSummary | null>("prs.setChatWatch", args, null, false);
       invalidatePrsReads();
       return result;
@@ -509,7 +510,7 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     // would read as "nobody matches".
     searchMentionables: async (args: unknown, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("prs.searchMentionables", pin, infra);
-      if (!commands.hasAction("prs.searchMentionables")) throw markExpected(new Error("Update ADE on that computer to search for people here."), "environment");
+      if (!commands.hasAction("prs.searchMentionables")) throw markExpected(new Error(`Update ${BRAND.NAME} on that computer to search for people here.`), "environment");
       return await commands.call<SearchPrMentionablesResult>("prs.searchMentionables", asRecord(args), {
         fallback: () => {
           throw markExpected(new Error("That computer did not answer the search. Try again."), "network");
@@ -518,7 +519,7 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     },
     getRepoReferences: async (args: unknown, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("prs.getRepoReferences", pin, infra);
-      if (!commands.hasAction("prs.getRepoReferences")) throw markExpected(new Error("Update ADE on that computer to search for issues and PRs here."), "environment");
+      if (!commands.hasAction("prs.getRepoReferences")) throw markExpected(new Error(`Update ${BRAND.NAME} on that computer to search for issues and PRs here.`), "environment");
       // No empty-list fallback: it would read as "nothing matches".
       return await commands.call<PrRepoReference[]>("prs.getRepoReferences", asRecord(args), {
         fallback: () => {
@@ -530,7 +531,7 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     // rows (and read-only assignees) instead of reading an empty answer.
     setAssignees: async (args: unknown, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("prs.setAssignees", pin, infra);
-      if (!commands.hasAction("prs.setAssignees")) throw new Error("This machine's ADE cannot assign people yet. Update it to edit assignees.");
+      if (!commands.hasAction("prs.setAssignees")) throw new Error(`This machine's ${BRAND.NAME} cannot assign people yet. Update it to edit assignees.`);
       // A mutation has no fallback: the host's own answer or a rejection, so
       // the card keeps its draft when no project is open on that machine.
       const result = await commands.call<SetPrAssigneesResult>("prs.setAssignees", asRecord(args), mutation);
@@ -539,7 +540,7 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     },
     listGitHubFilterOptions: async (args: unknown, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("prs.listGitHubFilterOptions", pin, infra);
-      if (!commands.hasAction("prs.listGitHubFilterOptions")) throw new Error("This machine's ADE cannot search GitHub filters yet.");
+      if (!commands.hasAction("prs.listGitHubFilterOptions")) throw new Error(`This machine's ${BRAND.NAME} cannot search GitHub filters yet.`);
       return await read<ListGitHubPrFilterOptionsResult>("prs.listGitHubFilterOptions", args, {
         kind: "label",
         query: "",
@@ -549,7 +550,7 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     },
     searchGitHubPrs: async (args: unknown, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("prs.searchGitHubPrs", pin, infra);
-      if (!commands.hasAction("prs.searchGitHubPrs")) throw new Error("This machine's ADE cannot search GitHub yet.");
+      if (!commands.hasAction("prs.searchGitHubPrs")) throw new Error(`This machine's ${BRAND.NAME} cannot search GitHub yet.`);
       return await call<SearchGitHubPrsResult>("prs.searchGitHubPrs", args, {
         items: [],
         totalCount: 0,

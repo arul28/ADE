@@ -8,6 +8,7 @@
 import { hostContinuationReasonLabel, type AgentChatEvent } from "../../../shared/types/chat";
 import { splitChatOutputContextSegments, type ChatOutputContextSegment } from "../../../shared/chatOutputContext";
 import { parseThreadReviewBlock, type ParsedThreadReviewComment } from "../../../shared/threadComments";
+import { BRAND } from "../../../shared/brand";
 
 type UserMessageEvent = Extract<AgentChatEvent, { type: "user_message" }>;
 type BoardMove = NonNullable<NonNullable<UserMessageEvent["metadata"]>["boardMove"]>;
@@ -113,7 +114,7 @@ function foldedMessage(event: UserMessageEvent): FoldedMessage | null {
   if (continuation && typeof continuation.reason === "string") {
     // The host's line when it sent one, else this build's (`HOST_CONTINUATION_REASON_LABEL`).
     const reason = continuation.label?.trim() || hostContinuationReasonLabel(continuation.reason);
-    const fold = make("ade", "ADE", null);
+    const fold = make("ade", BRAND.NAME, null);
     return reason ? { ...fold, preview: reason } : fold;
   }
   return null;

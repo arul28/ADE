@@ -8,6 +8,7 @@
 import type { KeybindingDefinition, KeybindingsSnapshot } from "./types";
 import { KEYBINDING_UNASSIGNED } from "./keybindings";
 import { quickSlotLeaderModifiers, type QuickSlotsPreferences } from "./quickSlots";
+import { BRAND } from "./brand";
 
 export type KeyboardPlatform = "mac" | "windows" | "linux";
 
@@ -236,8 +237,8 @@ const MENU_ALL: ReservedRow[] = [
 ];
 
 const MAC_ROWS: ReservedRow[] = [
-  { chord: "Mod+Q", owner: "menu", what: "Quit ADE" },
-  { chord: "Mod+H", owner: "menu", what: "Hide ADE" },
+  { chord: "Mod+Q", owner: "menu", what: `Quit ${BRAND.NAME}` },
+  { chord: "Mod+H", owner: "menu", what: `Hide ${BRAND.NAME}` },
   { chord: "Mod+Alt+H", owner: "menu", what: "Hide others" },
   { chord: "Mod+M", owner: "menu", what: "Minimize" },
   { chord: "Mod+Alt+I", owner: "menu", what: "Developer tools" },
@@ -318,12 +319,12 @@ function reservedRows(platform: KeyboardPlatform, web: boolean): ReservedRow[] {
 function reservedReason(row: ReservedRow, platform: KeyboardPlatform): string {
   switch (row.owner) {
     case "editing": return `${row.what} uses this chord in every text field.`;
-    case "menu": return `ADE's menu uses this for ${row.what}, and the menu gets the key first.`;
+    case "menu": return `${BRAND.NAME}'s menu uses this for ${row.what}, and the menu gets the key first.`;
     case "browser": return `Your browser keeps this chord for ${row.what}; the page never sees it.`;
     case "altgr": return row.what;
     case "system":
     default:
-      return `${platform === "mac" ? "macOS" : platform === "windows" ? "Windows" : "Your desktop"} uses this for ${row.what}, before ADE sees the key.`;
+      return `${platform === "mac" ? "macOS" : platform === "windows" ? "Windows" : "Your desktop"} uses this for ${row.what}, before ${BRAND.NAME} sees the key.`;
   }
 }
 

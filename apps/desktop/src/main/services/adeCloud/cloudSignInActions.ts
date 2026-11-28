@@ -55,13 +55,14 @@ import {
   type ClaudePassVault,
 } from "./claudePassStore";
 import { verifyClaudePass, type ClaudePassVerifyResult } from "./claudePassVerify";
+import { BRAND } from "../../../shared/brand";
 
 type Logger = {
   info?(event: string, meta?: Record<string, unknown>): void;
   warn?(event: string, meta?: Record<string, unknown>): void;
 } | null | undefined;
 
-const SIGNED_OUT = "Sign in to ADE on this computer first: ADE keeps your sign-ins in your account.";
+const SIGNED_OUT = `Sign in to ${BRAND.NAME} on this computer first: ${BRAND.NAME} keeps your sign-ins in your account.`;
 
 type ClaudeVerify = (token: string, options: { signal: AbortSignal }) => Promise<ClaudePassVerifyResult>;
 
@@ -109,7 +110,7 @@ function optionalEmail(args: unknown, field: "forEmail" | "labelEmail"): string 
 function optionalPassKey(args: unknown): string | null {
   const raw = args && typeof args === "object" ? (args as { renewKey?: unknown }).renewKey : undefined;
   if (raw == null || raw === "") return null;
-  if (!isClaudePassKey(raw)) throw new AdeExpectedError("ADE doesn't know that Claude pass.", "user");
+  if (!isClaudePassKey(raw)) throw new AdeExpectedError(`${BRAND.NAME} doesn't know that Claude pass.`, "user");
   return raw;
 }
 
@@ -283,7 +284,7 @@ export function buildCloudSignInActions(deps: {
       const renewKey = optionalPassKey(args);
       // A Renew names a pass of THIS account, never a key a window made up.
       if (renewKey && !(await readPasses(vaults, []))?.some((pass) => pass.key === renewKey)) {
-        throw new AdeExpectedError("ADE doesn't know that Claude pass.", "user");
+        throw new AdeExpectedError(`${BRAND.NAME} doesn't know that Claude pass.`, "user");
       }
       const options: ClaudeSignInStartOptions = {
         forEmail: optionalEmail(args, "forEmail"),
@@ -331,7 +332,7 @@ export function buildCloudSignInActions(deps: {
       const cleaned = cleanCloudCloudKey(args && typeof args === "object" ? (args as { key?: unknown }).key : undefined);
       if (!cleaned.ok) throw new AdeExpectedError(cleaned.message, "user");
       if (!(await save(requireVaults(), id, cleaned.key))) {
-        throw new Error(`ADE couldn't save your ${spec.keyName} to your account. Try again.`);
+        throw new Error(`${BRAND.NAME} couldn't save your ${spec.keyName} to your account. Try again.`);
       }
       deps.logger?.info?.("cloud.cloud_key_saved", { id });
       notifyProviderLoginsChanged();
@@ -350,7 +351,7 @@ export function buildCloudSignInActions(deps: {
       const passVault = id === "claude" ? deps.passVault?.() ?? null : null;
       const passesRemoved = passVault ? removeAllClaudePasses(passVault, deps.logger) : true;
       if (!(await removeCloudSignIn(vaults, id, deps.logger)) || !passesRemoved) {
-        throw new Error("ADE couldn't remove it from your account. Try again.");
+        throw new Error(`${BRAND.NAME} couldn't remove it from your account. Try again.`);
       }
       deps.logger?.info?.("cloud.cloud_sign_in_removed", { id });
       notifyProviderLoginsChanged();

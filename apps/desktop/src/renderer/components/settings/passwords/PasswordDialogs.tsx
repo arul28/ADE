@@ -13,6 +13,7 @@ import { SECRET_NAME_PATTERN, SECRET_NAME_RULE, type PasswordItemSummary, type P
 import { Dialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
 import { errorText, personCheckDeclined, scopeLabel } from "./passwordsFormat";
+import { BRAND } from "../../../../shared/brand";
 
 
 /** The project picker of a secret: every project, then this computer's projects. */
@@ -170,7 +171,7 @@ export function NewLoginDialog({
       onSaved(saved);
     } catch (err) {
       setPassword("");
-      setError(errorText(err, "ADE couldn't save this login."));
+      setError(errorText(err, `${BRAND.NAME} couldn't save this login.`));
     } finally {
       setSaving(false);
     }
@@ -302,7 +303,7 @@ export function NewSecretDialog({
       onSaved(saved);
     } catch (err) {
       setValue("");
-      setError(errorText(err, "ADE couldn't save this secret."));
+      setError(errorText(err, `${BRAND.NAME} couldn't save this secret.`));
     } finally {
       setSaving(false);
     }
@@ -419,7 +420,7 @@ export function ImportEnvDialog({
           });
       onImported(result, scope);
     } catch (err) {
-      setError(errorText(err, "ADE couldn't import those secrets."));
+      setError(errorText(err, `${BRAND.NAME} couldn't import those secrets.`));
     } finally {
       setBusy(false);
     }
@@ -520,7 +521,7 @@ export function ChangeValueDialog({
       onSaved(saved);
     } catch (err) {
       setValue("");
-      setError(errorText(err, isLogin ? "ADE couldn't change this password." : "ADE couldn't change this secret."));
+      setError(errorText(err, isLogin ? `${BRAND.NAME} couldn't change this password.` : `${BRAND.NAME} couldn't change this secret.`));
     } finally {
       setSaving(false);
     }
@@ -584,7 +585,7 @@ export function ResetPasswordsDialog({
       const next = await window.ade.passwords.reset({ confirm: "reset" });
       onReset(next);
     } catch (err) {
-      if (!personCheckDeclined(err)) setError(errorText(err, "ADE couldn't reset Passwords."));
+      if (!personCheckDeclined(err)) setError(errorText(err, `${BRAND.NAME} couldn't reset Passwords.`));
     } finally {
       setBusy(false);
     }

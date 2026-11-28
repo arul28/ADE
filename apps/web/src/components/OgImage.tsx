@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 /**
  * Social link-preview card, rendered at exactly 1200×630 and screenshotted to
@@ -56,7 +57,7 @@ export function OgImage() {
       {/* the ADE icon */}
       <img
         src="/images/ade-dock-icon.webp"
-        alt="ADE"
+        alt={BRAND.NAME}
         className="absolute left-1/2 -translate-x-1/2"
         style={{
           top: 18,

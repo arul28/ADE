@@ -5,6 +5,7 @@ import { safeJsonParse } from "../../../../desktop/src/main/services/shared/util
 import { writeFileAtomic } from "../../../../desktop/src/main/services/state/durableFile";
 import { DEFAULT_ADE_TUNNEL_RELAY_URL } from "../../../../desktop/src/shared/accountDirectory";
 import { FileStampedMemo, readTextIfExists } from "../../lib/fileStampedMemo";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 const DEFAULT_RELAY_URL = DEFAULT_ADE_TUNNEL_RELAY_URL;
 
@@ -713,7 +714,7 @@ export function createSyncCloudRelayStore(args: {
   };
 
   const busyError = (): Error =>
-    new Error("The ADE Relay configuration is being updated by another live ADE process.");
+    new Error(`The ${BRAND.NAME} Relay configuration is being updated by another live ${BRAND.NAME} process.`);
 
   /**
    * The best answer a reader may have while ANOTHER process owns the rotation

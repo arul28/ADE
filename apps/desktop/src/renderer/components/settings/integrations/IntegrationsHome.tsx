@@ -36,6 +36,7 @@ import { MessagesIntegrationCard } from "./MessagesIntegrationCard";
 import { requirePin } from "../../../state/repositoryScope";
 import { MachineIntegrationWarning } from "./MachineIntegrationWarning";
 import { useCatalogueFilter } from "./useCatalogueFilter";
+import { BRAND } from "../../../../shared/brand";
 
 /** A page under Integrations: GitHub, Linear or Jira, or the MCP servers. */
 export type IntegrationsPageId = IntegrationId | "mcp";
@@ -53,8 +54,8 @@ const OFFLINE: Summary = { tone: "neutral", label: "Machine offline" };
 
 const DESCRIPTIONS: Record<IntegrationId, string> = {
   github: "Open, review and merge pull requests, follow checks, and work on issues.",
-  linear: "Start lanes from Linear issues, link them to PRs, and let your team assign work to ADE.",
-  jira: "Bring a Jira Cloud site's issues into ADE and tie them to this project.",
+  linear: `Start lanes from Linear issues, link them to PRs, and let your team assign work to ${BRAND.NAME}.`,
+  jira: `Bring a Jira Cloud site's issues into ${BRAND.NAME} and tie them to this project.`,
 };
 
 /** Where the credential lives: what the status says, else where a new one is saved. */
@@ -325,7 +326,7 @@ export function IntegrationsHome({
 
         {builtIn.length ? (
           <div className="ade-ix-group" data-settings-group="built-in">
-            <h4 className="ade-ix-subheading">Built into ADE</h4>
+            <h4 className="ade-ix-subheading">Built into {BRAND.NAME}</h4>
             <div className="ade-ig-grid">
               {builtIn.map((id) => {
                 const brand = integrationBrand(id);

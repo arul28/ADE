@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { AdeError } from "./errors.js";
-import { isDirectory, isFile } from "./fsProbe.js";
+import { DaexError } from "./errors.js";
+import { isDirectory, runtimeBinaryIn } from "./fsProbe.js";
 
 /**
  * The runtime a host copied into its own app bundle.
@@ -25,16 +25,16 @@ export type ResolvePackagedRuntimeOptions = {
 };
 
 /**
- * Spread straight into `createAdeChat`:
+ * Spread straight into `createDaexChat`:
  *
- *   createAdeChat({ ...resolvePackagedRuntime(process.resourcesPath), home, allowDownload: false })
+ *   createDaexChat({ ...resolvePackagedRuntime(process.resourcesPath), home, allowDownload: false })
  *
- * The field names ARE the `createAdeChat` option names, which is the point:
+ * The field names ARE the `createDaexChat` option names, which is the point:
  * no host-side mapping to get wrong. `source: "packaged"` makes
  * `doctor().runtime.source` report `"packaged"`.
  */
 export type PackagedRuntime = {
-  /** Absolute path of `bin/ade` (`bin/ade.exe` on Windows). */
+  /** Absolute path of `bin/daex`, or `bin/ade` in an older bundle (`.exe` on Windows). */
   binaryPath: string;
   /** Absolute path of `native/`, which becomes `ADE_RUNTIME_ROOT`. */
   runtimeRoot: string;
@@ -97,14 +97,14 @@ function machOCpuTypes(filePath: string): number[] | null {
  *
  * Returns null — so the caller can fall back to `resolveBundledRuntime()` in
  * development — when:
- *   - `<resourcesPath>/<dir>/bin/ade[.exe]` does not exist; or
+ *   - neither `<resourcesPath>/<dir>/bin/daex[.exe]` nor `bin/ade[.exe]` exists; or
  *   - on macOS, the binary's Mach-O header names no slice for `arch`. An
  *     arm64-only runtime inside an app running under Rosetta on Intel would
  *     otherwise fail at spawn with an error that names neither architecture.
  *     A universal binary matches when it contains the arch. A header this
  *     function does not recognize is not treated as a mismatch.
  *
- * Throws `AdeError("binary_not_found")`, naming the path, when the binary is
+ * Throws `DaexError("binary_not_found")`, naming the path, when the binary is
  * there but `native/node_modules` is not: the binary dlopens those modules,
  * so a bundle missing them is a packaging mistake to fail on, not a fallback
  * to take quietly.
@@ -118,8 +118,10 @@ export function resolvePackagedRuntime(
   const dir = opts.dir?.trim() || "ade-runtime";
   if (typeof resourcesPath !== "string" || !resourcesPath.trim()) return null;
   const root = path.resolve(resourcesPath, dir);
-  const binaryPath = path.join(root, "bin", platform === "win32" ? "ade.exe" : "ade");
-  if (!isFile(binaryPath)) return null;
+  // `bin/daex` when the bundle carries it, else `bin/ade` (bundles made before
+  // the DAEX rename).
+  const { binaryPath, found } = runtimeBinaryIn(path.join(root, "bin"), platform);
+  if (!found) return null;
 
   if (platform === "darwin") {
     const wanted = CPU_TYPE_BY_ARCH[arch];
@@ -130,9 +132,9 @@ export function resolvePackagedRuntime(
   const runtimeRoot = path.join(root, "native");
   const runtimeNodeModules = path.join(runtimeRoot, "node_modules");
   if (!isDirectory(runtimeNodeModules)) {
-    throw new AdeError(
+    throw new DaexError(
       "binary_not_found",
-      `The packaged ADE runtime at ${binaryPath} has no native modules at ${runtimeNodeModules}. ` +
+      `The packaged DAEX runtime at ${binaryPath} has no native modules at ${runtimeNodeModules}. ` +
         `Copy the whole runtime package (bin/ and native/) into the app's resources.`,
     );
   }

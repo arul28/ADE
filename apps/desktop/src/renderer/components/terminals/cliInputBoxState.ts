@@ -2,6 +2,7 @@ import { useSyncExternalStore } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import { sendAgentCliText } from "./agentCliTypeSend";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * State behind the Work input box for a running agent CLI: the person's
@@ -220,7 +221,7 @@ function loadQueue(sessionId: string): readonly CliInputQueueItem[] {
       return {
         ...item,
         state: "unconfirmed" as const,
-        error: "ADE was interrupted while typing this. Check the terminal before sending it again.",
+        error: `${BRAND.NAME} was interrupted while typing this. Check the terminal before sending it again.`,
         claimedBy: null,
         claimedAt: null,
       };

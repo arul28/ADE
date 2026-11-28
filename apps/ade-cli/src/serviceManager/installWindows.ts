@@ -62,6 +62,7 @@ import {
   type WindowsServicePidRecord,
 } from "./windowsSupervisor";
 import { RUNTIME_SERVICE_INSTALL_LOCK_WAIT_MS } from "./runtimeServiceBudgets";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 export {
   buildWindowsRuntimeQueryArgs,
@@ -527,7 +528,7 @@ export const WINDOWS_SESSION_BOUND_WARNING =
   + "will terminate it -- with no exit code and no restart -- as soon as that "
   + "terminal, editor or agent exits. It will come back at your next sign-in via "
   + "the startup entry. To make it always-on now, allow scheduled-task "
-  + "registration or WMI process creation for your user, or run `ade brain "
+  + "registration or WMI process creation for your user, or run `daex brain "
   + "start` from a session that is not job-confined.";
 
 /** Transient one-shot task used only to escape the caller's job object. */
@@ -705,7 +706,7 @@ export function buildWindowsStartLauncherArgs(launcherPath: string): string[] {
     "$startInfo.UseShellExecute = $true",
     "$startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden",
     "$process = [System.Diagnostics.Process]::Start($startInfo)",
-    "if ($null -eq $process) { throw 'Windows failed to start the ADE brain supervisor.' }",
+    `if ($null -eq $process) { throw 'Windows failed to start the ${BRAND.NAME} brain supervisor.' }`,
     "[Console]::Out.Write($process.Id)",
   ].join("; ");
   return ["-NoProfile", "-NonInteractive", "-Command", command];
@@ -1060,7 +1061,7 @@ async function planWindowsStartupRemoval(
   if (!installed && query.status !== REGISTRY_VALUE_NOT_FOUND_EXIT_CODE) {
     return {
       ok: false,
-      message: `Unable to query the ADE per-user startup entry: ${serviceManagerResultText(query) || "reg query failed."}`,
+      message: `Unable to query the ${BRAND.NAME} per-user startup entry: ${serviceManagerResultText(query) || "reg query failed."}`,
     };
   }
 
@@ -1104,7 +1105,7 @@ async function planWindowsStartupRemoval(
     ) {
       return {
         ok: false,
-        message: `Could not verify the ADE startup process ${supervisorPid}; it was left running. Nothing was changed.`,
+        message: `Could not verify the ${BRAND.NAME} startup process ${supervisorPid}; it was left running. Nothing was changed.`,
       };
     }
     if (read.state === "found") supervisorFacts = read.facts;
@@ -1142,7 +1143,7 @@ async function removeWindowsStartupEntry(
     if (outcome === "not-proven" || outcome === "failed") {
       return {
         ok: false,
-        message: `Could not verify the ADE startup process ${plan.supervisor.pid}; it was left running.`,
+        message: `Could not verify the ${BRAND.NAME} startup process ${plan.supervisor.pid}; it was left running.`,
       };
     }
   }
@@ -1170,7 +1171,7 @@ async function removeWindowsStartupEntry(
     if (remove.status !== 0) {
       return {
         ok: false,
-        message: `Unable to delete the ADE per-user startup entry: ${serviceManagerResultText(remove) || "reg delete failed."}`,
+        message: `Unable to delete the ${BRAND.NAME} per-user startup entry: ${serviceManagerResultText(remove) || "reg delete failed."}`,
       };
     }
   }
@@ -1206,7 +1207,7 @@ function pruneWindowsRunValues(
     return {
       ok: false,
       removed: [],
-      message: `Unable to list the ADE per-user startup entries: ${serviceManagerResultText(query) || "reg query failed."}`,
+      message: `Unable to list the ${BRAND.NAME} per-user startup entries: ${serviceManagerResultText(query) || "reg query failed."}`,
     };
   }
   const removed: string[] = [];
@@ -1223,7 +1224,7 @@ function pruneWindowsRunValues(
       return {
         ok: false,
         removed,
-        message: `Unable to remove a stale ADE per-user startup entry: ${serviceManagerResultText(remove) || "reg delete failed."}`,
+        message: `Unable to remove a stale ${BRAND.NAME} per-user startup entry: ${serviceManagerResultText(remove) || "reg delete failed."}`,
       };
     }
     removed.push(value.name);
@@ -1231,7 +1232,7 @@ function pruneWindowsRunValues(
   if (removed.length > 0) {
     try {
       process.stderr.write(
-        `ADE removed ${removed.length} stale startup ${removed.length === 1 ? "entry" : "entries"}: ${removed.join(", ")}\n`,
+        `${BRAND.NAME} removed ${removed.length} stale startup ${removed.length === 1 ? "entry" : "entries"}: ${removed.join(", ")}\n`,
       );
     } catch { /* logging is best effort */ }
   }
@@ -1345,14 +1346,14 @@ function readWindowsPredecessorListing(
   if (result.status !== 0) {
     return {
       ok: false,
-      message: `Unable to verify the existing ADE supervisors: ${serviceManagerResultText(result) || "the identity check failed."} Nothing was changed.`,
+      message: `Unable to verify the existing ${BRAND.NAME} supervisors: ${serviceManagerResultText(result) || "the identity check failed."} Nothing was changed.`,
     };
   }
   const groups = parseWindowsPredecessorListing(String(result.stdout ?? ""));
   if (!groups) {
     return {
       ok: false,
-      message: "Unable to verify the existing ADE supervisors: the process listing was unreadable. Nothing was changed.",
+      message: `Unable to verify the existing ${BRAND.NAME} supervisors: the process listing was unreadable. Nothing was changed.`,
     };
   }
   return { ok: true, groups };
@@ -1386,7 +1387,7 @@ async function confirmWindowsPredecessors(
     if (supervisor === "unverified") {
       return {
         ok: false,
-        message: `Could not verify the ADE supervisor process ${group.supervisor.pid}; it was left running. Nothing was changed.`,
+        message: `Could not verify the ${BRAND.NAME} supervisor process ${group.supervisor.pid}; it was left running. Nothing was changed.`,
       };
     }
     if (supervisor === "gone") continue;
@@ -1396,7 +1397,7 @@ async function confirmWindowsPredecessors(
       if (live === "unverified") {
         return {
           ok: false,
-          message: `Could not verify the ADE brain process ${child.pid}; it was left running. Nothing was changed.`,
+          message: `Could not verify the ${BRAND.NAME} brain process ${child.pid}; it was left running. Nothing was changed.`,
         };
       }
       if (live !== "gone") children.push(live);
@@ -1422,7 +1423,7 @@ async function stopWindowsPredecessors(
     if (supervisorOutcome === "not-proven" || supervisorOutcome === "failed") {
       return {
         ok: false,
-        message: `Could not stop the ADE supervisor ${group.supervisor.pid}; it was left running.`,
+        message: `Could not stop the ${BRAND.NAME} supervisor ${group.supervisor.pid}; it was left running.`,
       };
     }
     if (supervisorOutcome === "killed") removed = true;
@@ -1431,7 +1432,7 @@ async function stopWindowsPredecessors(
       if (outcome === "not-proven" || outcome === "failed") {
         return {
           ok: false,
-          message: `Could not stop the ADE brain process ${child.pid}; it was left running.`,
+          message: `Could not stop the ${BRAND.NAME} brain process ${child.pid}; it was left running.`,
         };
       }
       // Replaced on purpose, not a crash, for the restart-loop record.
@@ -1536,7 +1537,7 @@ async function withWindowsServiceInstallLock(
     return await withExclusiveFileLock(
       path.join(path.dirname(launcherPath), "service-install.lock"),
       task,
-      { waitMs: RUNTIME_SERVICE_INSTALL_LOCK_WAIT_MS, label: "ADE service install lock" },
+      { waitMs: RUNTIME_SERVICE_INSTALL_LOCK_WAIT_MS, label: `${BRAND.NAME} service install lock` },
     );
   } catch (error) {
     if (!(error instanceof ExclusiveFileLockTimeoutError)) throw error;
@@ -1545,7 +1546,7 @@ async function withWindowsServiceInstallLock(
       serviceName,
       action,
       path: null,
-      message: `${error.message} Another ADE service install or uninstall is still running; retry once it finishes.`,
+      message: `${error.message} Another ${BRAND.NAME} service install or uninstall is still running; retry once it finishes.`,
     };
   }
 }
@@ -1702,7 +1703,7 @@ async function installWindowsServiceImpl(
           serviceName,
           action: "install",
           path: taskName,
-          message: "ADE per-user startup entry is already installed and the channel brain is running.",
+          message: `${BRAND.NAME} per-user startup entry is already installed and the channel brain is running.`,
         });
       }
       // A registry failure falls through to the full install, which reports it.
@@ -1741,7 +1742,7 @@ async function installWindowsServiceImpl(
         serviceName,
         action: "install",
         path: taskName,
-        message: "ADE per-user startup entry is already installed; the channel brain finished starting.",
+        message: `${BRAND.NAME} per-user startup entry is already installed; the channel brain finished starting.`,
       });
     }
     if (youngReadiness.supervised) {
@@ -1751,14 +1752,14 @@ async function installWindowsServiceImpl(
         serviceName,
         action: "install",
         path: taskName,
-        message: `ADE per-user startup entry is installed; the channel brain is still starting on ${runningSocketPath}: ${youngReadiness.diagnostic}`,
+        message: `${BRAND.NAME} per-user startup entry is installed; the channel brain is still starting on ${runningSocketPath}: ${youngReadiness.diagnostic}`,
       });
     }
     // The young brain died while we waited: fall through and replace it.
   }
   // The scheduled task is read now and removed only after the startup entry has been
   // identified below, so a refusal leaves it in place.
-  const currentTask = inspectWindowsTask(run, taskName, "existing ADE service scheduled task");
+  const currentTask = inspectWindowsTask(run, taskName, `existing ${BRAND.NAME} service scheduled task`);
   if (!currentTask.ok) {
     return {
       ok: false,
@@ -1826,7 +1827,7 @@ async function installWindowsServiceImpl(
     const currentRemoval = endAndDeleteWindowsTask(
       run,
       taskName,
-      "existing ADE service scheduled task",
+      `existing ${BRAND.NAME} service scheduled task`,
       currentTask,
     );
     if (!currentRemoval.ok) {
@@ -1915,7 +1916,7 @@ async function installWindowsServiceImpl(
       serviceName,
       action: "install",
       path: taskName,
-      message: serviceManagerResultText(registration) || "Unable to create the ADE per-user startup entry.",
+      message: serviceManagerResultText(registration) || `Unable to create the ${BRAND.NAME} per-user startup entry.`,
     };
   }
   const startFailure = startWindowsSupervisorDetached(run, launcherPath, taskName);
@@ -1929,14 +1930,14 @@ async function installWindowsServiceImpl(
       serviceName,
       action: "install",
       path: taskName,
-      message: `ADE per-user startup entry was installed, but the background service failed to start: ${startFailure}`,
+      message: `${BRAND.NAME} per-user startup entry was installed, but the background service failed to start: ${startFailure}`,
     };
   }
   // A stale candidate that could not be proven is still running. Say so, rather than
   // claim the replacement took over from a clean slate. Every return below that
   // reports the replacement carries it, including the one that is still starting.
   const staleWarning = unverifiedStalePids.length > 0
-    ? ` Left running ${unverifiedStalePids.length === 1 ? "1 ADE process" : `${unverifiedStalePids.length} ADE processes`} that could not be verified as this channel's brain (pid ${unverifiedStalePids.join(", ")}); they were not stopped.`
+    ? ` Left running ${unverifiedStalePids.length === 1 ? `1 ${BRAND.NAME} process` : `${unverifiedStalePids.length} ${BRAND.NAME} processes`} that could not be verified as this channel's brain (pid ${unverifiedStalePids.join(", ")}); they were not stopped.`
     : "";
   const readiness = await waitForWindowsRuntimeReadiness({
     command: serviceCommand,
@@ -1967,7 +1968,7 @@ async function installWindowsServiceImpl(
       action: "install",
       path: taskName,
       message:
-        `ADE per-user startup entry installed; the channel brain is still starting on ${socketPath}: `
+        `${BRAND.NAME} per-user startup entry installed; the channel brain is still starting on ${socketPath}: `
         + readiness.diagnostic
         + staleWarning,
     };
@@ -1980,7 +1981,7 @@ async function installWindowsServiceImpl(
       path: taskName,
       failureStep: "replacement_responsive",
       message:
-        `ADE per-user startup entry was installed, but the channel brain did not become ready on ${socketPath}: `
+        `${BRAND.NAME} per-user startup entry was installed, but the channel brain did not become ready on ${socketPath}: `
         + readiness.diagnostic,
     };
   }
@@ -1995,8 +1996,8 @@ async function installWindowsServiceImpl(
     action: "install",
     path: taskName,
     message: (sessionBound
-      ? `ADE per-user startup entry installed and the channel brain is ready, but it is bound to this session. ${WINDOWS_SESSION_BOUND_WARNING}`
-      : "ADE per-user startup entry installed and channel brain is ready.") + staleWarning,
+      ? `${BRAND.NAME} per-user startup entry installed and the channel brain is ready, but it is bound to this session. ${WINDOWS_SESSION_BOUND_WARNING}`
+      : `${BRAND.NAME} per-user startup entry installed and channel brain is ready.`) + staleWarning,
   };
 }
 
@@ -2133,7 +2134,7 @@ async function uninstallWindowsServiceImpl(
   const { run, serviceName, taskName, launcherPath, pidPath } = targets;
   // The scheduled tasks are read now and removed only after everything below has been
   // identified, so a refusal leaves them in place.
-  const currentTask = inspectWindowsTask(run, taskName, "ADE service scheduled task");
+  const currentTask = inspectWindowsTask(run, taskName, `${BRAND.NAME} service scheduled task`);
   // Identify everything this uninstall would stop before any registration is removed
   // or changed. A refusal returns here, with the existing service untouched.
   const decision = await decideWindowsUninstall(targets);
@@ -2143,7 +2144,7 @@ async function uninstallWindowsServiceImpl(
   if (!currentTask.ok) {
     currentRemoval = currentTask;
   } else if (currentTask.present) {
-    currentRemoval = endAndDeleteWindowsTask(run, taskName, "ADE service scheduled task", currentTask);
+    currentRemoval = endAndDeleteWindowsTask(run, taskName, `${BRAND.NAME} service scheduled task`, currentTask);
   }
   const { legacyTask } = decision;
   const legacyRemoval: WindowsTaskRemovalResult = !legacyTask.ok
@@ -2191,7 +2192,7 @@ async function uninstallWindowsServiceImpl(
       serviceName,
       action: "uninstall",
       path: launcherPath,
-      message: `ADE startup entry was removed, but its launcher could not be deleted: ${
+      message: `${BRAND.NAME} startup entry was removed, but its launcher could not be deleted: ${
         error instanceof Error ? error.message : String(error)
       }`,
     };
@@ -2201,7 +2202,7 @@ async function uninstallWindowsServiceImpl(
     serviceName,
     action: "uninstall",
     path: taskName,
-    message: "ADE background service startup entry removed.",
+    message: `${BRAND.NAME} background service startup entry removed.`,
   };
 }
 
@@ -2315,7 +2316,7 @@ function getWindowsServiceStatusImpl(
       running: false,
       path: taskName,
       message:
-        "A legacy ADE scheduled task for this channel is installed, but runtime readiness cannot be verified. Run `ade brain start` to migrate it to the per-user startup supervisor.",
+        `A legacy ${BRAND.NAME} scheduled task for this channel is installed, but runtime readiness cannot be verified. Run \`daex brain start\` to migrate it to the per-user startup supervisor.`,
     };
   }
   const startupResult = run(windowsRegCommand(), buildWindowsRunKeyQueryArgs(taskName), {
@@ -2350,7 +2351,7 @@ function getWindowsServiceStatusImpl(
         running: false,
         path: taskName,
         message: supervisor.diagnostic
-          ?? "ADE per-user startup entry is installed, but the supervisor is not running.",
+          ?? `${BRAND.NAME} per-user startup entry is installed, but the supervisor is not running.`,
       };
     }
     const socketPath = resolveReachableMachineRuntimeSocketPath(runtimeEnv, "win32");
@@ -2362,7 +2363,7 @@ function getWindowsServiceStatusImpl(
       spawnSync: run,
     });
     const base = readiness.ready
-      ? `ADE per-user channel brain is ready on ${socketPath}.`
+      ? `${BRAND.NAME} per-user channel brain is ready on ${socketPath}.`
       : readiness.diagnostic;
     return {
       ok: true,
@@ -2387,7 +2388,7 @@ function getWindowsServiceStatusImpl(
       installed: null,
       running: null,
       path: taskName,
-      message: serviceManagerResultText(taskResult) || "Unable to query the legacy ADE scheduled task.",
+      message: serviceManagerResultText(taskResult) || `Unable to query the legacy ${BRAND.NAME} scheduled task.`,
     };
   }
   if (startupResult.status !== REGISTRY_VALUE_NOT_FOUND_EXIT_CODE) {
@@ -2398,7 +2399,7 @@ function getWindowsServiceStatusImpl(
       installed: null,
       running: null,
       path: taskName,
-      message: serviceManagerResultText(startupResult) || "Unable to query the ADE per-user startup entry.",
+      message: serviceManagerResultText(startupResult) || `Unable to query the ${BRAND.NAME} per-user startup entry.`,
     };
   }
   const legacy = probeGlobalLegacyTask(run, command);
@@ -2411,7 +2412,7 @@ function getWindowsServiceStatusImpl(
       running: false,
       path: TASK_NAME,
       message:
-        "A legacy ADE Runtime scheduled task from a pre-channel install belongs to this channel, but runtime readiness cannot be verified for it. Run `ade brain start` to migrate it to the per-user startup supervisor.",
+        "A legacy ADE Runtime scheduled task from a pre-channel install belongs to this channel, but runtime readiness cannot be verified for it. Run `daex brain start` to migrate it to the per-user startup supervisor.",
     };
   }
   if (legacy.present) {
@@ -2423,8 +2424,8 @@ function getWindowsServiceStatusImpl(
       running: false,
       path: taskName,
       message: legacy.owned === false
-        ? "ADE background service startup entry is not installed for this channel. A legacy ADE Runtime scheduled task belongs to a different ADE install and was left running. Run `ade brain start` to install this channel's startup entry, and uninstall the other ADE to clear its legacy task."
-        : "ADE background service startup entry is not installed for this channel. A legacy ADE Runtime scheduled task is registered on this machine, but its owning install could not be determined, so it was left running. Run `ade brain start` to install this channel's startup entry.",
+        ? `${BRAND.NAME} background service startup entry is not installed for this channel. A legacy ADE Runtime scheduled task belongs to a different ${BRAND.NAME} install and was left running. Run \`daex brain start\` to install this channel's startup entry, and uninstall the other ${BRAND.NAME} to clear its legacy task.`
+        : `${BRAND.NAME} background service startup entry is not installed for this channel. A legacy ADE Runtime scheduled task is registered on this machine, but its owning install could not be determined, so it was left running. Run \`daex brain start\` to install this channel's startup entry.`,
     };
   }
   return {
@@ -2434,6 +2435,6 @@ function getWindowsServiceStatusImpl(
     installed: false,
     running: false,
     path: taskName,
-    message: "ADE background service startup entry is not installed.",
+    message: `${BRAND.NAME} background service startup entry is not installed.`,
   };
 }

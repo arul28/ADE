@@ -19,6 +19,7 @@
  * orchestration is unit-testable with fakes.
  */
 
+import { BRAND } from "../../../desktop/src/shared/brand";
 export class ConnectUsageError extends Error {}
 
 /** Per-platform name for the login-persistence mechanism, in user-facing copy. */
@@ -30,7 +31,7 @@ export function serviceMechanismLabel(platform: NodeJS.Platform): string {
 }
 
 /** The command that removes the service again, per platform. */
-const UNINSTALL_SERVICE_COMMAND = "ade runtime uninstall-service";
+const UNINSTALL_SERVICE_COMMAND = "daex runtime uninstall-service";
 
 const DEFAULT_WEB_CLIENT_URL = "https://app.ade-app.dev";
 
@@ -179,7 +180,7 @@ function findMachine(list: ConnectMachineList, machineKey: string): ConnectMachi
 function machineListStateMessage(list: ConnectMachineList): string {
   switch (list.state) {
     case "signed_out":
-      return "the ADE brain is not signed in";
+      return `the ${BRAND.NAME} brain is not signed in`;
     case "auth_expired":
       return "the account session expired";
     case "not_configured":
@@ -235,18 +236,18 @@ export function parseConnectArgs(rest: readonly string[]): ConnectOptions {
       case "--max-wait": {
         const raw = inlineValue ?? rest[++index];
         if (raw === undefined) {
-          throw new ConnectUsageError(`ade connect ${name} requires a value in seconds.`);
+          throw new ConnectUsageError(`daex connect ${name} requires a value in seconds.`);
         }
         const seconds = Number(raw);
         if (!Number.isFinite(seconds) || seconds <= 0) {
           throw new ConnectUsageError(
-            `ade connect ${name} expects a positive number of seconds; got "${raw}".`,
+            `daex connect ${name} expects a positive number of seconds; got "${raw}".`,
           );
         }
         const ms = Math.round(seconds * 1000);
         if (ms < MIN_MACHINE_WAIT_MS || ms > MAX_MACHINE_WAIT_MS) {
           throw new ConnectUsageError(
-            `ade connect ${name} must be between ${MIN_MACHINE_WAIT_MS / 1000} and ${
+            `daex connect ${name} must be between ${MIN_MACHINE_WAIT_MS / 1000} and ${
               MAX_MACHINE_WAIT_MS / 1000
             } seconds.`,
           );
@@ -256,10 +257,10 @@ export function parseConnectArgs(rest: readonly string[]): ConnectOptions {
       }
       default:
         if (name.startsWith("-")) {
-          throw new ConnectUsageError(`ade connect does not support ${name}.`);
+          throw new ConnectUsageError(`daex connect does not support ${name}.`);
         }
         throw new ConnectUsageError(
-          `ade connect takes no positional arguments; got "${token}".`,
+          `daex connect takes no positional arguments; got "${token}".`,
         );
     }
   }
@@ -280,11 +281,11 @@ function renderConnectEpilogue(result: ConnectResult): string {
   const lines: string[] = [""];
   if (result.connected && result.ok) {
     lines.push(
-      `This machine is now reachable from ADE desktop, web (${result.webClientUrl}), and iOS.`,
+      `This machine is now reachable from ${BRAND.NAME} desktop, web (${result.webClientUrl}), and iOS.`,
     );
     lines.push("");
     lines.push("To undo:");
-    lines.push("  ade logout                      Sign out of this ADE account");
+    lines.push(`  daex logout                      Sign out of this ${BRAND.NAME} account`);
     lines.push(
       `  ${UNINSTALL_SERVICE_COMMAND.padEnd(32)}Remove the ${result.service.mechanism}`,
     );
@@ -306,7 +307,7 @@ function renderConnectEpilogue(result: ConnectResult): string {
  */
 export function renderConnectSummary(result: ConnectResult): string {
   if (result.connected && result.ok) {
-    const identity = result.account.identity ?? "ADE account";
+    const identity = result.account.identity ?? `${BRAND.NAME} account`;
     const machine = result.machine.name ?? result.machine.machineKey ?? "this machine";
     return `Connected as ${identity} · machine "${machine}"`;
   }
@@ -343,14 +344,14 @@ export async function runConnectCommand(
     pushStep({
       id: "account",
       state: "ok",
-      detail: `Signed in as ${accountIdentity(account) ?? "ADE account"}`,
+      detail: `Signed in as ${accountIdentity(account) ?? `${BRAND.NAME} account`}`,
     });
   } else if (options.statusOnly) {
     pushStep({
       id: "account",
       state: "failed",
       detail: "Not signed in",
-      nextAction: "Run `ade connect` to sign in.",
+      nextAction: "Run `daex connect` to sign in.",
     });
     accountFailed = true;
   } else if (!options.login) {
@@ -368,7 +369,7 @@ export async function runConnectCommand(
         id: "account",
         state: "failed",
         detail: error instanceof Error ? error.message : String(error),
-        nextAction: "Retry with `ade connect`, or `ade connect --headless` without a browser.",
+        nextAction: "Retry with `daex connect`, or `daex connect --headless` without a browser.",
       });
       accountFailed = true;
     }
@@ -377,14 +378,14 @@ export async function runConnectCommand(
         pushStep({
           id: "account",
           state: "ok",
-          detail: `Signed in as ${accountIdentity(account) ?? "ADE account"}`,
+          detail: `Signed in as ${accountIdentity(account) ?? `${BRAND.NAME} account`}`,
         });
       } else {
         pushStep({
           id: "account",
           state: "failed",
           detail: "Sign-in did not complete",
-          nextAction: "Retry with `ade connect`, or `ade connect --headless` without a browser.",
+          nextAction: "Retry with `daex connect`, or `daex connect --headless` without a browser.",
         });
         accountFailed = true;
       }
@@ -404,14 +405,14 @@ export async function runConnectCommand(
         id: "service",
         state: "failed",
         detail: `${mechanism} installed but not running`,
-        nextAction: "Run `ade brain start`.",
+        nextAction: "Run `daex brain start`.",
       });
     } else {
       pushStep({
         id: "service",
         state: "failed",
         detail: `${mechanism} is not installed`,
-        nextAction: "Run `ade connect`.",
+        nextAction: "Run `daex connect`.",
       });
     }
   } else if (!options.service) {
@@ -456,7 +457,7 @@ export async function runConnectCommand(
         state: "failed",
         detail: install.message?.trim() || `Could not register the ${mechanism}`,
         nextAction:
-          "Run `ade serve` in the foreground to keep this machine reachable while you investigate.",
+          "Run `daex serve` in the foreground to keep this machine reachable while you investigate.",
       });
     }
   }
@@ -472,11 +473,11 @@ export async function runConnectCommand(
     machineDetail = options.login
       ? "Not published — this machine has no account session"
       : "Not published — sign-in was skipped";
-    machineNextAction = options.login ? "Run `ade connect` once sign-in succeeds." : undefined;
+    machineNextAction = options.login ? "Run `daex connect` once sign-in succeeds." : undefined;
   } else if (!machineKey) {
     machineDetail =
       "This machine has no sync identity yet, so it cannot publish to the account directory";
-    machineNextAction = "Start the ADE brain with `ade brain start`, then retry `ade connect`.";
+    machineNextAction = `Start the ${BRAND.NAME} brain with \`daex brain start\`, then retry \`daex connect\`.`;
   } else {
     // The brain publishes on sign-in and then every 30s; poll for our own row.
     const deadline = now() + (options.statusOnly ? 0 : options.machineWaitMs);
@@ -510,7 +511,7 @@ export async function runConnectCommand(
         : `Published as "${label}"`;
     } else if (lastList && lastList.state !== "ok") {
       machineDetail = `Not published — ${machineListStateMessage(lastList)}`;
-      machineNextAction = "Run `ade doctor --text` to inspect account-directory health.";
+      machineNextAction = "Run `daex doctor --text` to inspect account-directory health.";
     } else {
       const health = publishHealthDetail(
         deps.getPublishHealth ? await deps.getPublishHealth().catch(() => null) : null,
@@ -519,8 +520,8 @@ export async function runConnectCommand(
         ? `Not published within the wait window — publisher reports ${health}`
         : "Not published within the wait window";
       machineNextAction = serviceSkipped
-        ? "The brain must stay running to publish. Start it with `ade brain start`, then retry `ade connect --status`."
-        : "Run `ade doctor --text` to inspect account-directory health, then retry `ade connect --status`.";
+        ? "The brain must stay running to publish. Start it with `daex brain start`, then retry `daex connect --status`."
+        : "Run `daex doctor --text` to inspect account-directory health, then retry `daex connect --status`.";
     }
   }
   pushStep({
@@ -560,8 +561,8 @@ export async function runConnectCommand(
     message: failedStep
       ? failedStep.detail
       : connected
-        ? `This machine is now reachable from ADE desktop, web (${webClientUrl}), and iOS.`
-        : "This machine is set up for local use; it is not linked to an ADE account.",
+        ? `This machine is now reachable from ${BRAND.NAME} desktop, web (${webClientUrl}), and iOS.`
+        : `This machine is set up for local use; it is not linked to a ${BRAND.NAME} account.`,
     ...(failedStep?.nextAction ? { nextAction: failedStep.nextAction } : {}),
   };
   write(renderConnectEpilogue(result));

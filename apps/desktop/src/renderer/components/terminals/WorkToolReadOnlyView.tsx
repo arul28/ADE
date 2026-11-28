@@ -32,6 +32,7 @@ import {
 } from "../chat/macDesktopWebStream";
 import { useMacDesktopStreamSubscription } from "../chat/useMacDesktopStreamSubscription";
 import { extractError } from "../../lib/format";
+import { BRAND } from "../../../shared/brand";
 
 export { createMacDesktopStreamSource } from "../chat/macDesktopWebStream";
 
@@ -571,7 +572,7 @@ function MacDesktopPanel({
       const next = await api.takeControl({
         laneId,
         controllerId: controllerToken,
-        controllerLabel: "ADE Web",
+        controllerLabel: `${BRAND.NAME} Web`,
       });
       if (!next) throw new Error("The host did not grant control.");
       holdingSinceRef.current = Date.now();

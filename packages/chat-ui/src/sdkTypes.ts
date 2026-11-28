@@ -1,20 +1,20 @@
 /**
- * Public SDK surface that `@ade-dev/chat-ui` renders against.
+ * Public SDK surface that `@daex-dev/chat-ui` renders against.
  *
  * PROVENANCE: the event shapes below are a hand-trimmed subset of
  * `apps/desktop/src/shared/types/chat.ts` (`AgentChatEvent`,
  * `AgentChatEventEnvelope`), reduced to the card set this package draws:
  * user text, assistant text, reasoning, tool call/result, error, status, and
- * the two approval events. ADE-internal event kinds (subagent lifecycle,
+ * the two approval events. DAEX-internal event kinds (subagent lifecycle,
  * scheduled work, plans, todo updates, delegation, ade_card, work-log grouping)
- * are deliberately absent — this package has no ADE dev concepts in it.
+ * are deliberately absent — this package has no DAEX dev concepts in it.
  *
- * Approvals are the exception to "internal", because they are not an ADE dev
+ * Approvals are the exception to "internal", because they are not a DAEX dev
  * concept at all: they are the provider asking the person at the keyboard for
  * permission, and the turn stays blocked until someone answers.
  *
  * This file is a *copy*, not an import: the package is standalone and takes
- * `@ade-dev/sdk` only as an optional peer. `@ade-dev/sdk` is being built in parallel to
+ * `@daex-dev/sdk` only as an optional peer. `@daex-dev/sdk` is being built in parallel to
  * exactly this contract; the assumptions it must honour are listed in
  * README.md under "SDK contract assumptions".
  */
@@ -34,7 +34,7 @@ export type ProviderStatus = {
    * reports it directly (`source: "probed"`), and `installed: false` then means
    * "looked, found nothing". A runtime that cannot probe leaves the adapter to
    * derive it from the model catalog (`source: "derived"`), where the same
-   * `false` only means "ADE knows no models for it" — which is why the card
+   * `false` only means "DAEX knows no models for it" — which is why the card
    * says "Not detected" rather than "Not installed" in that case.
    */
   installed: boolean;
@@ -89,7 +89,7 @@ export type ModelDescriptor = {
  * id forward to its successor, so `modelId` here may not be in the catalog the
  * picker shows. `displayName` is the runtime's name for it, and a UI should
  * prefer it over printing a raw id. Mirrors the type of the same name in
- * `@ade-dev/sdk` >= 0.3; every field past `modelId` is optional so an older
+ * `@daex-dev/sdk` >= 0.3; every field past `modelId` is optional so an older
  * SDK or a proxy that forwards less still fits.
  */
 export type ThreadModelSelection = {
@@ -139,7 +139,7 @@ export type ChatAttachment = {
    * `false` makes the attachment reference-only: the runtime never reads its
    * bytes (no staging copy, no download of a cloud placeholder) and the model
    * gets the path. An image sent this way arrives as a path, not as pixels.
-   * Omitted means the runtime default (read the file). Needs an ADE runtime
+   * Omitted means the runtime default (read the file). Needs a DAEX runtime
    * that understands the flag; an older one ignores it and reads the file.
    */
   hydrate?: boolean;
@@ -294,7 +294,7 @@ export type AccountInfo = {
   usage?: AccountUsage;
 };
 
-/** A provider sign-in's status, as `@ade-dev/sdk`'s `SignInStatus` reports it. */
+/** A provider sign-in's status, as `@daex-dev/sdk`'s `SignInStatus` reports it. */
 export type SignInUpdate = {
   loginId?: string;
   state: "running" | "verifying" | "succeeded" | "failed" | "cancelled" | "expired" | (string & {});
@@ -464,7 +464,7 @@ export type ChatEventStatus = {
   message?: string;
   /**
    * Set only on the SDK's own `"failed"` status for a runtime that went away
-   * mid-turn (`@ade-dev/sdk` >= 0.3); the runtime never sends it. It ends the
+   * mid-turn (`@daex-dev/sdk` >= 0.3); the runtime never sends it. It ends the
    * turn like any `"failed"`.
    */
   synthetic?: true;
@@ -519,12 +519,12 @@ export type RenderedChatEvent =
 /**
  * Any other event kind, carried but not drawn.
  *
- * ADE's own event union has ~60 members and grows every release, and `@ade-dev/sdk`
+ * DAEX's own event union has ~60 members and grows every release, and `@daex-dev/sdk`
  * models it as exactly this open record. Closing it here would make an SDK
  * envelope unassignable to this one — a compile error for every embedder — and
  * would invite a runtime cast at the boundary. Open instead: the renderer
  * narrows with `RENDERED_TYPES` and ignores what it does not recognise, so a
- * newer runtime adds event kinds without breaking an older `@ade-dev/chat-ui`.
+ * newer runtime adds event kinds without breaking an older `@daex-dev/chat-ui`.
  */
 export type UnknownChatEvent = { type: string; [key: string]: unknown };
 
@@ -565,7 +565,7 @@ export type ThreadHistoryPage = {
   nextBeforeSequence?: number | null;
 };
 
-/** A change to an open thread's settings (`AdeThread.update`). */
+/** A change to an open thread's settings (`DaexThread.update`). */
 export type ThreadUpdatePatch = {
   /** New title. `null` clears the host title. */
   title?: string | null;
@@ -576,15 +576,15 @@ export type ThreadUpdatePatch = {
 };
 
 /**
- * What `AdeThread.update` resolves to. An SDK thread resolves `{ title, model }`;
+ * What `DaexThread.update` resolves to. An SDK thread resolves `{ title, model }`;
  * only `model` is read, and a client may resolve nothing.
  */
 export type ThreadUpdateReply = { model?: unknown } | null | void;
 
-/** The runtime lifecycle events a client can report (`AdeChatClient.on`). */
-export type AdeChatClientEventMap = {
+/** The runtime lifecycle events a client can report (`DaexChatClient.on`). */
+export type DaexChatClientEventMap = {
   /**
-   * One automatic runtime restart attempt finished (`@ade-dev/sdk`
+   * One automatic runtime restart attempt finished (`@daex-dev/sdk`
    * `autoRestart`). `ok: true` means the runtime is back and open threads were
    * reattached. `attempt` counts from 1 per outage.
    */
@@ -592,14 +592,14 @@ export type AdeChatClientEventMap = {
   usageLimit: UsageLimitEvent;
 };
 
-export interface AdeThread {
+export interface DaexThread {
   readonly key: string;
   send(input: SendInput | string): Promise<void>;
   /**
    * Deliver a message into an already-running turn.
    *
    * Attachments on `input` are forwarded, and an attachment-only steer (empty
-   * text) is valid. Both need `@ade-dev/sdk` >= 0.3: an older SDK thread's
+   * text) is valid. Both need `@daex-dev/sdk` >= 0.3: an older SDK thread's
    * `steer(text)` ignores the attachments, and refuses an empty text.
    */
   steer(input: SendInput | string): Promise<void>;
@@ -646,7 +646,7 @@ export interface AdeThread {
   /**
    * Read one page of history, newest first by page (each page oldest-first).
    *
-   * OPTIONAL: `useAdeThread` uses it when present — the newest page on open,
+   * OPTIONAL: `useDaexThread` uses it when present — the newest page on open,
    * older pages on demand — and falls back to one `history()` read otherwise.
    * A client without it (an SDK before 0.3, a proxy) loads the whole window.
    */
@@ -661,15 +661,15 @@ export interface AdeThread {
   readonly model?: ThreadModelSelection | null;
   /**
    * Change the thread's title, reasoning effort or fast mode
-   * (`@ade-dev/sdk` >= 0.3 `thread.update`).
+   * (`@daex-dev/sdk` >= 0.3 `thread.update`).
    *
    * OPTIONAL for the same reason as `setModel`. `ThreadState.canUpdate`
    * reports its presence. A reasoning or fast-mode change is refused while a
-   * turn runs (`AdeError` code `turn_in_flight` on `@ade-dev/sdk` >= 0.4).
+   * turn runs (`DaexError` code `turn_in_flight` on `@daex-dev/sdk` >= 0.4).
    */
   update?(patch: ThreadUpdatePatch): Promise<ThreadUpdateReply>;
   /**
-   * Run the last user message again (`@ade-dev/sdk` >= 0.4 `thread.retry`).
+   * Run the last user message again (`@daex-dev/sdk` >= 0.4 `thread.retry`).
    * The runtime rolls the provider conversation back to before that message,
    * removes the old turn from the transcript, and sends the message again.
    * Files the old turn changed are not restored.
@@ -690,7 +690,7 @@ export interface AdeThread {
   on(type: "status", cb: (status: ThreadStatus) => void): Unsubscribe;
 }
 
-export interface AdeChatClient {
+export interface DaexChatClient {
   providers: {
     status(): Promise<ProviderStatus[]>;
     onChange(cb: (statuses: ProviderStatus[]) => void): Unsubscribe;
@@ -707,7 +707,7 @@ export interface AdeChatClient {
     list(): Promise<ModelDescriptor[]>;
   };
   threads: {
-    open(key: string, opts?: ThreadOpenOptions): Promise<AdeThread>;
+    open(key: string, opts?: ThreadOpenOptions): Promise<DaexThread>;
   };
   /** Account management is optional and disabled for untrusted renderers by default. */
   accounts?: AccountManagement;
@@ -717,12 +717,21 @@ export interface AdeChatClient {
    * Runtime lifecycle events.
    *
    * OPTIONAL: a client without a runtime it can restart has nothing to report.
-   * `useAdeThread` subscribes to `restart` and, after a successful restart,
+   * `useDaexThread` subscribes to `restart` and, after a successful restart,
    * re-opens the thread and re-reads its history, so the transcript shows what
    * the runtime has rather than what this view held before the outage.
    */
-  on?<E extends keyof AdeChatClientEventMap>(
+  on?<E extends keyof DaexChatClientEventMap>(
     event: E,
-    cb: (payload: AdeChatClientEventMap[E]) => void,
+    cb: (payload: DaexChatClientEventMap[E]) => void,
   ): Unsubscribe;
 }
+
+// Pre-DAEX names, kept as deprecated aliases so code written against the
+// `@ade-dev` packages keeps compiling. Remove them in a future major version.
+/** @deprecated Use {@link DaexChatClient}. */
+export type AdeChatClient = DaexChatClient;
+/** @deprecated Use {@link DaexChatClientEventMap}. */
+export type AdeChatClientEventMap = DaexChatClientEventMap;
+/** @deprecated Use {@link DaexThread}. */
+export type AdeThread = DaexThread;

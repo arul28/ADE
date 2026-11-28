@@ -25,6 +25,7 @@ import { useSettingsMachines } from "../machines/settingsMachinesContext";
 import { MachineUpdateRows } from "./MachineUpdateRows";
 import { NeedsAttentionStrip } from "./NeedsAttentionStrip";
 import "./general.css";
+import { BRAND } from "../../../../shared/brand";
 
 function formatCheckTime(ms: number): string {
   return new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
@@ -80,7 +81,7 @@ function YouCard({ sources, onOpen }: { sources: Sources; onOpen: () => void }) 
   const { status } = useAccountStatus();
   const name = status.signedIn ? status.name?.trim() || null : null;
   const email = status.signedIn ? status.email?.trim() || null : null;
-  const primary = status.signedIn ? name || email || "Your ADE account" : accountSessionShortLabel(accountSessionState(status));
+  const primary = status.signedIn ? name || email || `Your ${BRAND.NAME} account` : accountSessionShortLabel(accountSessionState(status));
   const daily = sources.usage?.dailyUsage7d ?? null;
   const week = useMemo(() => {
     if (!daily) return null;
@@ -233,7 +234,7 @@ function AdeCard({ info, onOpenAdvanced }: { info: AppInfo | null; onOpenAdvance
         <div className="ade-gen-hero-wash" aria-hidden />
         <div className="ade-gen-hero-row">
           <div className="ade-gen-hero-mark">
-            <img src={`${import.meta.env.BASE_URL}logo.png`} alt="ADE" draggable={false} />
+            <img src={`${import.meta.env.BASE_URL}logo.png`} alt={BRAND.NAME} draggable={false} />
           </div>
           <div className="ade-gen-hero-id">
             <div className="ade-gen-hero-version">

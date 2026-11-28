@@ -82,7 +82,7 @@ final class MobileUsageQuotaStore: ObservableObject {
       stats = nil
       statsRange = nil
       statsLoading = false
-      statsErrorMessage = "Update ADE on this machine to view usage activity."
+      statsErrorMessage = "Update \(Brand.name) on this machine to view usage activity."
       return
     }
 
@@ -139,7 +139,7 @@ final class MobileUsageQuotaStore: ObservableObject {
     guard syncService.supportsRemoteAction(action) else {
       loadGeneration += 1
       snapshot = nil
-      errorMessage = "Update ADE on this machine to view live usage limits."
+      errorMessage = "Update \(Brand.name) on this machine to view live usage limits."
       refreshing = false
       return
     }

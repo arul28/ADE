@@ -26,6 +26,8 @@ import { STANDARD_EASE } from "../../lib/motion";
 import { cn } from "../ui/cn";
 import { Banner } from "../ui/notice";
 import { extractError } from "../../lib/format";
+import { BRAND } from "../../../shared/brand";
+import { Z_LAYERS } from "../ui/zLayers";
 
 /**
  * Import the logins you already have.
@@ -119,7 +121,7 @@ export function BrowserLoginImportDialog({
   const loadSources = useCallback(async () => {
     const api = loginImportApi();
     if (!api) {
-      setError("This ADE build does not expose browser login import.");
+      setError(`This ${BRAND.NAME} build does not expose browser login import.`);
       return;
     }
     setBusy(true);
@@ -250,7 +252,8 @@ export function BrowserLoginImportDialog({
                 as the same kind of interruption rather than a stray panel. */}
             <Dialog.Overlay asChild>
               <motion.div
-                className="fixed inset-0 z-[120] bg-black/70 backdrop-blur-2xl"
+                className="fixed inset-0 bg-black/70 backdrop-blur-2xl"
+                style={{ zIndex: Z_LAYERS.dialog }}
                 initial={reduceMotion ? false : { opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
@@ -260,11 +263,13 @@ export function BrowserLoginImportDialog({
             <Dialog.Content asChild>
               <motion.div
                 className={cn(
-                  "fixed left-1/2 top-[12%] z-[130] flex max-h-[76vh] w-[560px] max-w-[94vw] -translate-x-1/2",
+                  "fixed left-1/2 top-[12%] flex max-h-[76vh] w-[560px] max-w-[94vw] -translate-x-1/2",
                   "flex-col overflow-hidden rounded-[var(--radius-xl)]",
                   "font-sans text-[12px] text-fg/80 focus:outline-none",
                 )}
                 style={{
+                  // The scrim's layer too: the panel comes after it, so it draws on top.
+                  zIndex: Z_LAYERS.dialog,
                   background:
                     "radial-gradient(120% 120% at 0% 0%, rgba(167,139,250,0.10), transparent 55%), "
                     + "radial-gradient(100% 100% at 100% 100%, rgba(82,56,175,0.10), transparent 60%), "
@@ -298,10 +303,10 @@ export function BrowserLoginImportDialog({
                 </div>
                 <Dialog.Description className="px-3.5 pt-2.5 text-[11px] leading-[16px] text-muted-fg">
                   {step === "sources"
-                    ? "Copy cookies from a browser you are already signed in to, so ADE's browser opens those sites signed in too. Passwords are never read."
+                    ? `Copy cookies from a browser you are already signed in to, so ${BRAND.NAME}'s browser opens those sites signed in too. Passwords are never read.`
                     : step === "domains"
                       ? "Pick the sites worth carrying over. Everything else stays where it is."
-                      : "Here is what landed in ADE's browser profile."}
+                      : `Here is what landed in ${BRAND.NAME}'s browser profile.`}
                 </Dialog.Description>
 
                 <AnimatePresence initial={false}>
@@ -495,7 +500,7 @@ function SourceList({
   if (sources.length === 0) {
     return (
       <div className="py-6 text-[11px] leading-[17px] text-muted-fg">
-        No browser profiles turned up on this machine. If you use a browser ADE did not find, open it
+        No browser profiles turned up on this machine. If you use a browser {BRAND.NAME} did not find, open it
         once and check again.
       </div>
     );
@@ -609,7 +614,7 @@ function DomainPicker({
       {domains.length === 0 ? (
         <div className="py-5 text-[11px] text-muted-fg">
           {totalCount === 0
-            ? "That profile has no cookies ADE can import."
+            ? `That profile has no cookies ${BRAND.NAME} can import.`
             : "No sites match that search."}
         </div>
       ) : (
@@ -676,7 +681,7 @@ function ImportSummary({
         </ul>
       ) : null}
       <p className="text-[10.5px] leading-[15px] text-muted-fg">
-        Open one of these sites in ADE's browser to check you are signed in. Nothing was changed in the
+        Open one of these sites in {BRAND.NAME}'s browser to check you are signed in. Nothing was changed in the
         browser you imported from.
       </p>
     </div>

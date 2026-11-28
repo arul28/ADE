@@ -144,6 +144,20 @@ describe("evaluatePermissionPolicy precedence", () => {
     })).toBe("deny");
   });
 
+  // `ade-cto` was renamed `daex-cto`: a deny rule matches both names, an allow
+  // rule covers old → new only, so a rule for `daex-cto` never lets a foreign
+  // server that calls itself `ade-cto` through.
+  it.each<[string, AgentChatPermissionPolicy, string, "allow" | "deny" | "ask"]>([
+    ["a deny for the new name denies the old", { fallback: "ask", deniedTools: ["mcp:daex-cto:*"] }, "mcp__ade-cto__spawnChat", "deny"],
+    ["a deny for the old name denies the new", { fallback: "ask", deniedTools: ["mcp__ade-cto__spawnChat"] }, "mcp:daex-cto:spawnChat", "deny"],
+    ["an allow for the old name allows the new", { fallback: "ask", allowedTools: ["mcp:ade-cto:*"] }, "mcp__daex-cto__spawnChat", "allow"],
+    ["an auto-approve for the old name allows the new", { fallback: "ask", autoApproveMcpServers: ["ade-cto"] }, "mcp:daex-cto:spawnChat", "allow"],
+    ["an allow for the new name does not allow the old", { fallback: "ask", allowedTools: ["mcp:daex-cto:*"] }, "mcp__ade-cto__spawnChat", "ask"],
+    ["an auto-approve for the new name does not allow the old", { fallback: "ask", autoApproveMcpServers: ["daex-cto"] }, "mcp:ade-cto:spawnChat", "ask"],
+  ])("renamed server: %s", (_label, policy, toolName, expected) => {
+    expect(evaluatePermissionPolicy(policy, { toolName, provider: "claude" })).toBe(expected);
+  });
+
   it("matches a policy written in either spelling", () => {
     const neutral: AgentChatPermissionPolicy = { fallback: "deny", allowedTools: ["mcp:srv:*"] };
     const claude: AgentChatPermissionPolicy = { fallback: "deny", allowedTools: ["mcp__srv__*"] };

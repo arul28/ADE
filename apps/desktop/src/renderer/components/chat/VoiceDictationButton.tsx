@@ -9,6 +9,7 @@ import {
 } from "../../services/globalVoiceRecorder";
 import { RecordingPill } from "../voice/RecordingPill";
 import { microphonePermissionGuidance } from "./microphonePermissionGuidance";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Voice-to-text dictation control for chat composers (desktop).
@@ -104,7 +105,7 @@ export function VoiceDictationButton({
       forceEnabled
       content={{
         label: "Voice input",
-        description: "Dictate a prompt. ADE transcribes on-device and inserts cleaned text at the cursor.",
+        description: `Dictate a prompt. ${BRAND.NAME} transcribes on-device and inserts cleaned text at the cursor.`,
       }}
     >
       <button

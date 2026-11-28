@@ -250,6 +250,7 @@ import {
   readClaudeResetCredits,
   type ClaudeResetCredits,
 } from "./claudeResetCredits";
+import { BRAND } from "../../../shared/brand";
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -3482,7 +3483,7 @@ function collectAdeUsageStats({
     },
     sourceNotes: [
       "Provider totals are deduplicated from local provider ledgers.",
-      "ADE sessions, code movement, and client activity come from the project database.",
+      `${BRAND.NAME} sessions, code movement, and client activity come from the project database.`,
       ...(resolvedGithubStats.available ? ["GitHub commit and pull request activity is cached separately."] : []),
     ],
   };
@@ -6286,7 +6287,7 @@ export function createUsageTrackingService({
       : {
         ok: false,
         status: "failure" as const,
-        message: `This reset is banked on ${lentFrom.label}, and ADE here cannot reach it. Spend it there.`,
+        message: `This reset is banked on ${lentFrom.label}, and ${BRAND.NAME} here cannot reach it. Spend it there.`,
       };
     if (result.status === "failure") {
       logger.warn("usage.peer_reset_credit_failed", { provider, error: result.message ?? null });
@@ -6720,7 +6721,7 @@ export function createUsageTrackingService({
           provider,
           kind: "no_usage_data",
           title: `${providerTitle(provider)} balance has no usage data`,
-          detail: `The last new ${providerTitle(provider)} chat stayed on the default account because ADE has no quota readings for your accounts. Open the Usage panel and refresh it.`,
+          detail: `The last new ${providerTitle(provider)} chat stayed on the default account because ${BRAND.NAME} has no quota readings for your accounts. Open the Usage panel and refresh it.`,
           at: nowIso(),
         });
       } else {

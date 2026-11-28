@@ -6,9 +6,10 @@
 
 import type { AdeRuntime } from "../../bootstrap";
 import { classifyGitPushFailure } from "../../../../desktop/src/main/services/git/gitPushFailure";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 import { checkPushForSecrets, type PushSecretCheck } from "./cloudPushSecretCheck";
 
-const COMMIT_MESSAGE = "Work saved from ADE Cloud";
+const COMMIT_MESSAGE = `Work saved from ${BRAND.CLOUD_NAME}`;
 /**
  * The whole fetch step per project, including the wait for the lane's queue
  * (git's own fetch budget is GIT_FETCH_TIMEOUT_MS): a computer GitHub can't
@@ -106,7 +107,7 @@ async function pushLane(
   const stopped = (check: Exclude<PushSecretCheck, { ok: true }>) => {
     if (!check.found) return { error: new Error(check.error) };
     const secretFiles = check.more > 0 ? [...check.files, `+${check.more} more`] : check.files;
-    return { error: new Error(`ADE found what looks like a secret in ${secretFiles.join(", ")}, so it didn't push this lane.`), reason: "secret_found" as const, secretFiles };
+    return { error: new Error(`${BRAND.NAME} found what looks like a secret in ${secretFiles.join(", ")}, so it didn't push this lane.`), reason: "secret_found" as const, secretFiles };
   };
   try {
     const secretValues = Object.values(runtime.projectSecretService?.valuesForProcess() ?? {});

@@ -321,13 +321,13 @@ struct AccountProjectsClient {
       do {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
-          throw ChangeError(status: nil, message: "ADE can't reach your account right now. Try again.", unconfirmed: true)
+          throw ChangeError(status: nil, message: "\(Brand.name) can't reach your account right now. Try again.", unconfirmed: true)
         }
         return (data, http)
       } catch let error as ChangeError {
         throw error
       } catch {
-        throw ChangeError(status: nil, message: "ADE can't reach your account right now. Try again.", unconfirmed: true)
+        throw ChangeError(status: nil, message: "\(Brand.name) can't reach your account right now. Try again.", unconfirmed: true)
       }
     }
     var (data, http) = try await send(token)
@@ -341,13 +341,13 @@ struct AccountProjectsClient {
       let message = (try? JSONDecoder().decode(AccountProjectChangeFailure.self, from: data))?.error?.message
       switch http.statusCode {
       case 401, 403:
-        throw ChangeError(status: http.statusCode, message: "Sign in to ADE again, then try again.")
+        throw ChangeError(status: http.statusCode, message: "Sign in to \(Brand.name) again, then try again.")
       default:
         // A server error can come after the change was saved, or from a proxy
         // in front of the account: the change may have happened.
         throw ChangeError(
           status: http.statusCode,
-          message: message ?? "Your ADE account could not make that change. Try again.",
+          message: message ?? "Your \(Brand.name) account could not make that change. Try again.",
           unconfirmed: http.statusCode >= 500
         )
       }
@@ -355,7 +355,7 @@ struct AccountProjectsClient {
     do {
       return try JSONDecoder().decode(Response.self, from: data)
     } catch {
-      throw ChangeError(status: http.statusCode, message: "Your ADE account sent an answer ADE can't read.", unconfirmed: true)
+      throw ChangeError(status: http.statusCode, message: "Your \(Brand.name) account sent an answer \(Brand.name) can't read.", unconfirmed: true)
     }
   }
 }
@@ -675,13 +675,13 @@ final class AccountProjectStore: ObservableObject {
     _ call: (AccountProjectsClient, URL, String, @escaping () async -> String?) async throws -> Response
   ) async throws -> Response {
     guard let requestedUserId = userId, let baseURL = AccountConfig.directoryBaseURL else {
-      throw AccountProjectsClient.ChangeError(status: nil, message: "Sign in to ADE to change your projects.")
+      throw AccountProjectsClient.ChangeError(status: nil, message: "Sign in to \(Brand.name) to change your projects.")
     }
     let account = AccountService.shared
     guard let session = await account.pairingSession(),
           session.authorization.ownerId == requestedUserId,
           userId == requestedUserId else {
-      throw AccountProjectsClient.ChangeError(status: nil, message: "Sign in to ADE again, then try again.")
+      throw AccountProjectsClient.ChangeError(status: nil, message: "Sign in to \(Brand.name) again, then try again.")
     }
     let response = try await call(client, baseURL, session.token) {
       guard account.isPairingCommitAuthorized(session.authorization) else { return nil }

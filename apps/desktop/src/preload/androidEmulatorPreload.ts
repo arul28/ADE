@@ -45,6 +45,7 @@ import type {
   AndroidTextArgs,
   AndroidTouchArgs,
 } from "../shared/types/androidEmulator";
+import { BRAND } from "../shared/brand";
 
 /**
  * `window.ade.androidEmulator`, built from a table the way `macDesktop` is.
@@ -91,7 +92,7 @@ export function createAndroidEmulatorBridge(deps: AndroidEmulatorBridgeDeps): An
   const runtimeOnly = <K extends AndroidToolsPreloadAction>(action: K): AndroidToolsPreloadMethod<K> =>
     (args: Parameters<AndroidEmulatorServiceApi[K]>[0], pin?: OpenProjectBinding | null) =>
       deps.callAction<AndroidServiceResult<K>>(pin, action, { args: args as Record<string, unknown> }, () =>
-        Promise.reject(new Error(`Android ${action} needs an open project. Open a project so ADE can reach its Android service.`)),
+        Promise.reject(new Error(`Android ${action} needs an open project. Open a project so ${BRAND.NAME} can reach its Android service.`)),
       );
 
   /** The same routed method, for the reads whose argument is optional. */

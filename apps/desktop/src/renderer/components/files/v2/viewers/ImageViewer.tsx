@@ -26,6 +26,7 @@ import { ZoomControls } from "./ZoomControls";
 import { readViewerMode, rememberViewerMode } from "./viewerModeMemory";
 import { isAdeAvailable } from "../../../../lib/adeAvailability";
 import { plainErrorText } from "../../../../lib/plainError";
+import { BRAND } from "../../../../../shared/brand";
 
 /** SVG is held whole (as an image and as Source text). */
 const MAX_SVG_BYTES = 25 * 1024 * 1024;
@@ -85,7 +86,7 @@ async function loadConverted(
   // Reject by declared size before streaming bytes the converter would refuse.
   if (ctx.size > MAX_CONVERTED_IMAGE_BYTES) {
     throw new Error(
-      `This ${format} image is ${formatBytes(ctx.size)}. ADE converts images up to ${formatBytes(MAX_CONVERTED_IMAGE_BYTES)} for preview.`,
+      `This ${format} image is ${formatBytes(ctx.size)}. ${BRAND.NAME} converts images up to ${formatBytes(MAX_CONVERTED_IMAGE_BYTES)} for preview.`,
     );
   }
   const bytes = await streamFileBytes(ctx.files, ctx.workspaceId, ctx.path, {
@@ -104,8 +105,8 @@ async function loadConverted(
   if (!result?.ok) {
     throw new Error(
       result?.errorCode === "unavailable" || !result
-        ? `This system can't decode ${format} images in ADE.`
-        : "ADE could not convert this image for preview.",
+        ? `This system can't decode ${format} images in ${BRAND.NAME}.`
+        : `${BRAND.NAME} could not convert this image for preview.`,
     );
   }
   if (ctx.isCancelled()) return null;
@@ -399,7 +400,7 @@ export function ImageViewer(props: ViewerProps) {
       },
       (err: unknown) => {
         if (!cancelled)
-          setError(plainErrorText(err, "ADE couldn't open the picture."));
+          setError(plainErrorText(err, `${BRAND.NAME} couldn't open the picture.`));
       },
     );
 
@@ -431,7 +432,7 @@ export function ImageViewer(props: ViewerProps) {
     } catch (err) {
       showToast({
         title: "Could not copy the picture",
-        message: plainErrorText(err, "ADE couldn't copy the picture."),
+        message: plainErrorText(err, `${BRAND.NAME} couldn't copy the picture.`),
         tone: "error",
       });
     }

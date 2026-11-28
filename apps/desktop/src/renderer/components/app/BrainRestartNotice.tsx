@@ -3,6 +3,7 @@ import { ArrowCounterClockwise } from "@phosphor-icons/react";
 import type { LocalRuntimeStatus } from "../../../shared/types";
 import { APP_BANNER_PRIORITY, useAppBanner } from "../ui/notice";
 import { formatRecoveryTime } from "./BrainRecoveryNotice";
+import { BRAND } from "../../../shared/brand";
 
 type UnplannedRestart = NonNullable<LocalRuntimeStatus["lastUnplannedRestart"]>;
 
@@ -11,7 +12,7 @@ export const RESTART_ACK_STORAGE_KEY = "ade.brainRestart.ackedTs";
 
 /** What the banner says: when the service came back, and what kept going. */
 export function formatRestartMessage(restart: UnplannedRestart): string {
-  const head = `ADE's background service restarted at ${formatRecoveryTime(restart.ts)}.`;
+  const head = `${BRAND.NAME}'s background service restarted at ${formatRecoveryTime(restart.ts)}.`;
   const chats = restart.chats > 0;
   const sessions = restart.cliSessions > 0;
   const chatWord = restart.chats === 1 ? "chat" : "chats";

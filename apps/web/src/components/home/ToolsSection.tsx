@@ -24,6 +24,7 @@ import {
 import { cn } from "../../lib/cn";
 import { LINKS } from "../../lib/links";
 import { AppleMark, GithubMark, LinearMark, LinuxMark, WindowsMark } from "./marks";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /*
  * What agents can do, as rows in the style of Cursor's feature rows: one
@@ -67,11 +68,11 @@ export function ToolsSection() {
         visual={
           <>
             <Window className="absolute left-0 top-0 w-[86%]">
-              <Clip src="/film/devices-iphone.mp4" poster="/film/devices-iphone.jpg" label="An agent in ADE testing the Crumb app on a folding iPhone simulator, folding and turning it" />
+              <Clip src="/film/devices-iphone.mp4" poster="/film/devices-iphone.jpg" label={`An agent in ${BRAND.NAME} testing the Crumb app on a folding iPhone simulator, folding and turning it`} />
             </Window>
             <img
               src="/images/home/tools/android-pixel.webp"
-              alt="The Android emulator's Pixel, as ADE renders it"
+              alt={`The Android emulator's Pixel, as ${BRAND.NAME} renders it`}
               width={700}
               height={1278}
               loading="lazy"
@@ -93,7 +94,7 @@ export function ToolsSection() {
         points={[
           { icon: <Monitor className={icon} />, text: "Its own display, pointer and keyboard" },
           { icon: <Layers className={icon} />, text: "Native apps, Safari, Xcode: anything with a window" },
-          { icon: <Cloud className={icon} />, text: "Linux on your own boxes and on ADE Cloud computers" },
+          { icon: <Cloud className={icon} />, text: `Linux on your own boxes and on ${BRAND.CLOUD_NAME} computers` },
           { icon: <GitFork className={icon} />, text: "Drive any of your computers from any other" },
         ]}
         link={{ href: `${LINKS.docs}/computer-use/overview`, label: "How private desktops work" }}
@@ -101,12 +102,12 @@ export function ToolsSection() {
         visual={
           <>
             <Window className="absolute left-0 top-0 w-[80%]">
-              <Clip src="/film/devices-mac.mp4" poster="/film/devices-mac.jpg" label="A chat in ADE starting its private Mac screen, then opening TextEdit there, with the Mac Desktop pane beside the chat" />
+              <Clip src="/film/devices-mac.mp4" poster="/film/devices-mac.jpg" label={`A chat in ${BRAND.NAME} starting its private Mac screen, then opening TextEdit there, with the Mac Desktop pane beside the chat`} />
             </Window>
             <OsLogos className="absolute bottom-[5%] left-0" />
             <img
               src="/images/home/tools/slide-windows.webp"
-              alt="ADE with an agent's private Windows desktop open in the Windows Desktop pane"
+              alt={`${BRAND.NAME} with an agent's private Windows desktop open in the Windows Desktop pane`}
               width={2400}
               height={1447}
               decoding="async"
@@ -128,7 +129,7 @@ export function ToolsSection() {
         link={{ href: `${LINKS.docs}/concepts/subagents`, label: "How orchestration works" }}
         visual={
           <Window>
-            <Clip src="/film/compose.mp4" poster="/film/compose-done.jpg" label="One chat in ADE splitting a job across three agents on three models, each reporting back" />
+            <Clip src="/film/compose.mp4" poster="/film/compose-done.jpg" label={`One chat in ${BRAND.NAME} splitting a job across three agents on three models, each reporting back`} />
           </Window>
         }
       />
@@ -147,7 +148,7 @@ export function ToolsSection() {
         visual={
           <img
             src="/images/home/tools/slide-work.webp"
-            alt="A real pull request in ADE with its checks and merge panel, beside a GitHub issue"
+            alt={`A real pull request in ${BRAND.NAME} with its checks and merge panel, beside a GitHub issue`}
             width={2400}
             height={1447}
             loading="lazy"
@@ -160,7 +161,7 @@ export function ToolsSection() {
         tone="violet"
         kicker={{ icons: [<Globe key="b" className={mark} />], label: "Browser" }}
         title="A browser that's signed in as you."
-        body="Agents open your site in ADE's browser with your sign-ins, click through it and show you what they found."
+        body={`Agents open your site in ${BRAND.NAME}'s browser with your sign-ins, click through it and show you what they found.`}
         points={[
           { icon: <KeyRound className={icon} />, text: "Your logins, without the agent ever seeing a password" },
           { icon: <MousePointerClick className={icon} />, text: "Clicks, forms and page reads" },
@@ -170,7 +171,7 @@ export function ToolsSection() {
         visual={
           <img
             src="/images/home/tools/slide-browser.webp"
-            alt="An agent's steps in ADE beside ADE's browser, showing the download dialog it opened on ade-app.dev"
+            alt={`An agent's steps in ${BRAND.NAME} beside ${BRAND.NAME}'s browser, showing the download dialog it opened on ade-app.dev`}
             width={2400}
             height={1447}
             loading="lazy"

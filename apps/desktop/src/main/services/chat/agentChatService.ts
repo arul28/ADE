@@ -241,7 +241,7 @@ import { discoverCodexSlashCommandsAsync } from "./codexSlashCommandDiscovery";
 import { codexImageGenerationRefFields, looksLikeInlineBase64Image } from "../../../shared/codexImageGeneration";
 import { codexDaybreakProgram, readCodexCyberAccessPrograms, type CodexAccessProgram, type CodexDaybreakProgram } from "../../../shared/codexDaybreak";
 import { accountMachineDisplayName } from "../../../shared/accountDirectory";
-import { mergeSlashCommands } from "./markdownSlashCommandDiscovery";
+import { ancestorConfigRoots, mergeSlashCommands } from "./markdownSlashCommandDiscovery";
 import {
   SIDE_CHAT_READ_ONLY_MESSAGE,
   parseSideSlashCommand,
@@ -1477,6 +1477,7 @@ import {
   type TranscriptHistoryPageRead,
 } from "./chatTranscriptHistoryPager";
 import { extractLeadingSlashCommand, isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
+import { getAgentSkillRootsWithSource, rewriteLegacyBundledSkillCommand } from "../../../shared/agentSkillRoots";
 import { CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE, cursorOwnsSessionName } from "../../../shared/cursorCloudNaming";
 import { COMPACT_BLOCKED_TURN_ACTIVE, isManualCompactCommand, manualCompactInstructions } from "../../../shared/contextCompaction";
 import {
@@ -1493,6 +1494,7 @@ import { resolveSubagentCapability } from "../../../shared/subagentCapabilities"
 import {
   CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT,
   decodeCrossMachineDestinationPreflightArgs,
+  isCrossMachineHandoffDefaultPrompt,
   normalizeGitRemoteIdentity,
   sanitizePortableGitRemote,
 } from "../../../shared/crossMachineHandoff";
@@ -1915,6 +1917,7 @@ import {
   withholdCallerMcpHeaderValues,
   type CallerMcpDeliveryProblem,
   type CallerMcpServers,
+  CTO_MCP_SERVER_NAME,
 } from "../../../shared/callerMcpServers";
 import type { AcpMcpServer } from "./acpHost/acpProtocolTypes";
 import { acpMcpServersFromCaller } from "./acpHost/acpMcpServers";
@@ -2108,7 +2111,7 @@ const CLAUDE_UNATTENDED_APPROVAL_MESSAGE = "This automation run has nobody to ap
 const CLAUDE_UNATTENDED_PLAN_MESSAGE = "This automation run has nobody to approve a plan, so the plan was not approved. Finish without implementing it and report the plan in your final message.";
 const UNATTENDED_QUESTION_MESSAGE = "This automation run has nobody to answer questions. Do not wait for an answer: use your best judgment, and say what you assumed in your final message.";
 /** canUseTool's answer when ADE closed the card (a Stop, the asking subagent ended) before anyone answered. */
-const CLAUDE_CARD_CLOSED_MESSAGE = "ADE closed this approval before the user answered (the turn was stopped or the asking agent ended). Nobody denied it.";
+const CLAUDE_CARD_CLOSED_MESSAGE = "DAEX closed this approval before the user answered (the turn was stopped or the asking agent ended). Nobody denied it.";
 /** canUseTool's answer when Claude withdrew the request; the SDK discards it. */
 const CLAUDE_REQUEST_WITHDRAWN_MESSAGE = "Claude withdrew this request.";
 /** Longer than a recurring schedule lives (seven days), so a claim never lapses mid-schedule. */
@@ -3885,7 +3888,7 @@ const CLAUDE_BUILT_IN_SLASH_COMMANDS: AgentChatSlashCommand[] = [
 
 const CODEX_BUILT_IN_SLASH_COMMAND_NAMES = new Set(CODEX_BUILT_IN_SLASH_COMMANDS.map((command) => slashCommandKey(command.name)));
 const CLAUDE_BUILT_IN_SLASH_COMMAND_NAMES = new Set(CLAUDE_BUILT_IN_SLASH_COMMANDS.map((command) => slashCommandKey(command.name)));
-const CLAUDE_LOGIN_NOT_SDK_COMMAND = "ADE Claude chat is hosted through the Claude Agent SDK, and /login is not an SDK-dispatchable command. Run `claude auth login` in a terminal or configure ANTHROPIC_API_KEY, then refresh AI settings.";
+const CLAUDE_LOGIN_NOT_SDK_COMMAND = `${BRAND.NAME} Claude chat is hosted through the Claude Agent SDK, and /login is not an SDK-dispatchable command. Run \`claude auth login\` in a terminal or configure ANTHROPIC_API_KEY, then refresh AI settings.`;
 // Terse one-liner shown when a turn fast-fails on a logout — paired with the
 // fuller CLAUDE_RUNTIME_AUTH_ERROR card body emitted by the catch path.
 const CLAUDE_AUTH_STOPPED_NOTICE = "Claude couldn't sign in — stopped retrying.";
@@ -5675,7 +5678,7 @@ const CTO_REFRESH_REASONS: ReadonlySet<string> = new Set<CtoProviderThreadRefres
   "occupancy", "compaction", "overflow", "model_fallback", "manual", "cold_cache",
 ]);
 const CTO_NO_HANDOFF_MESSAGE =
-  "The CTO keeps its one thread, so ADE does not start a new chat on the other account. It tries the CTO's backup models instead.";
+  `The CTO keeps its one thread, so ${BRAND.NAME} does not start a new chat on the other account. It tries the CTO's backup models instead.`;
 /** How long a CTO send waits for a fresh live-state snapshot before using the last one. */
 const CTO_LIVE_STATE_SEND_WAIT_MS = 350;
 /** Quick replies one CTO turn may post, however many mid-task messages arrive. */
@@ -9283,7 +9286,7 @@ function isCursorSdkTransportErrorResult(result: unknown): boolean {
  * retry too, so the key itself has to be re-authorized.
  */
 const CURSOR_SDK_STALE_TOKEN_MESSAGE =
-  "Cursor's session expired. ADE reconnected and retried, but Cursor rejected the request again — "
+  `Cursor's session expired. ${BRAND.NAME} reconnected and retried, but Cursor rejected the request again — `
   + "sign in to Cursor again in Settings, then resend.";
 
 /**
@@ -10261,7 +10264,7 @@ function buildExecutionModeDirective(
 
   if (provider === "codex" && mode === "parallel") {
     return [
-      "[ADE launch directive]",
+      "[DAEX launch directive]",
       "Use Codex parallel delegation for independent subtasks when it improves latency or coverage.",
       "Split bounded work into parallel subagents, keep each delegate narrowly scoped, then reconcile results before the final answer.",
       "If the task is tightly coupled, stay focused instead of forcing delegation.",
@@ -10270,7 +10273,7 @@ function buildExecutionModeDirective(
 
   if (provider === "claude" && (mode === "subagents" || mode === "parallel")) {
     return [
-      "[ADE launch directive]",
+      "[DAEX launch directive]",
       "Use Claude subagents for independent subtasks when they will materially improve latency or coverage.",
       "Split bounded work into narrowly scoped delegates, let them complete independently, then reconcile the results before the final answer.",
       "If the task is tightly coupled, stay focused instead of forcing delegation.",
@@ -10279,7 +10282,7 @@ function buildExecutionModeDirective(
 
   if (provider === "droid" && (mode === "parallel" || mode === "subagents" || mode === "teams")) {
     return [
-      "[ADE launch directive]",
+      "[DAEX launch directive]",
       "Use Droid's available delegation tools for independent subtasks when they will materially improve latency or coverage.",
       "Split bounded work into narrowly scoped delegates, let them complete independently, then reconcile the results before the final answer.",
       "If the task is tightly coupled, stay focused instead of forcing delegation.",
@@ -10288,7 +10291,7 @@ function buildExecutionModeDirective(
 
   if (provider === "muse" && (mode === "parallel" || mode === "subagents" || mode === "teams")) {
     return [
-      "[ADE launch directive]",
+      "[DAEX launch directive]",
       "Use Muse's subagents and workflows for independent subtasks when they will materially improve latency or coverage.",
       "Give each worker a narrow objective, let them run in parallel, then reconcile their results before the final answer.",
       "If the task is tightly coupled, stay focused instead of forcing delegation.",
@@ -10304,7 +10307,7 @@ function buildClaudeInteractionModeDirective(
 ): string | null {
   if (provider !== "claude" || mode !== "plan") return null;
   return [
-    "[ADE launch directive]",
+    "[DAEX launch directive]",
     "You are in plan mode for this turn.",
     "Stay inspect-only: analyze the request, outline the implementation, surface risks, and do not make edits or run commands.",
   ].join("\n");
@@ -10315,9 +10318,9 @@ function buildLaneWorktreeDirective(args: { laneId: string; laneWorktreePath: st
   const laneWorktreePath = args.laneWorktreePath.trim();
   if (!laneId.length || !laneWorktreePath.length) return null;
   return [
-    "[ADE launch directive]",
-    `ADE launched this session in lane '${laneId}' at worktree '${laneWorktreePath}'.`,
-    "Read-only inspection outside that worktree is allowed when needed. Edit files and run mutating commands only inside that worktree unless ADE explicitly relaunches you elsewhere.",
+    "[DAEX launch directive]",
+    `DAEX launched this session in lane '${laneId}' at worktree '${laneWorktreePath}'.`,
+    "Read-only inspection outside that worktree is allowed when needed. Edit files and run mutating commands only inside that worktree unless DAEX explicitly relaunches you elsewhere.",
   ].join("\n");
 }
 
@@ -10346,13 +10349,13 @@ function composeLaunchDirectives(baseText: string, directives: Array<string | nu
 function buildEpochDirectiveRevocation(kind: EpochDirective): string {
   switch (kind) {
     case "computerUse":
-      return "ADE computer use is not available in this session now. Earlier computer-use instructions no longer apply.";
+      return "DAEX computer use is not available in this session now. Earlier computer-use instructions no longer apply.";
     case "laneScreen":
       return "This lane has no private screen now. Earlier lane-screen instructions no longer apply.";
     case "laneDevices":
-      return "ADE: the lane device last announced is no longer bound. Earlier <ade-lane-tools> instructions no longer apply: this lane has no Apple device or Android emulator. Create one with `ade apple start` or `ade android device-create` if this chat needs it.";
+      return "DAEX: the lane device last announced is no longer bound. Earlier <ade-lane-tools> instructions no longer apply: this lane has no Apple device or Android emulator. Create one with `daex apple start` or `daex android device-create` if this chat needs it.";
     case "laneGuidance":
-      return "ADE's guidance for this session changed. Earlier guidance no longer applies.";
+      return "DAEX's guidance for this session changed. Earlier guidance no longer applies.";
   }
 }
 
@@ -10418,9 +10421,9 @@ export function buildLinearSessionDirective(
   // workflow state-id, so the skill is the authoritative reference.
   return [
     "## Linear-tracked work",
-    `This work is tracked by Linear issue(s) ${idList}. You have ADE's Linear connection — read and update them with the \`ade linear\` CLI (issue, comment, set-state, assign, label; run \`ade linear --help\` or see the bundled **ade-linear** skill for exact syntax).`,
-    "Prefer `ade linear` over any Linear MCP or direct Linear API — those are not authenticated in this environment.",
-    "When you comment on Linear directly, include relevant ADE deeplinks unless ADE already posted a lane/chat/PR card; see the bundled **ade-deeplinks** skill.",
+    `This work is tracked by Linear issue(s) ${idList}. You have DAEX's Linear connection — read and update them with the \`daex linear\` CLI (issue, comment, set-state, assign, label; run \`daex linear --help\` or see the bundled **daex-linear** skill for exact syntax).`,
+    "Prefer `daex linear` over any Linear MCP or direct Linear API — those are not authenticated in this environment.",
+    "When you comment on Linear directly, include relevant DAEX deeplinks unless DAEX already posted a lane/chat/PR card; see the bundled **daex-deeplinks** skill.",
   ].join("\n");
 }
 
@@ -10489,8 +10492,8 @@ export function buildComputerUseDirective(
     [
       "## Computer Use",
       ownScreen
-        ? "For any screen, app, simulator or browser work, read **ade-computer-use** first. The user's own screen and windows are not yours: never close, quit or hide an app you did not open; use `mcp__computer_use`, `osascript`, `cliclick` or `screencapture` only when asked, never `@oai/sky`."
-        : "For any screen, app, simulator or browser work, read **ade-computer-use** first. The user's own screen and windows are not yours: never close, quit or hide an app you did not open, and act on them only when asked. When the `mcp__computer_use` tools are present, they drive that screen: start with `list_apps` or `get_app_state`, honor their per-app approval prompts, and never use `@oai/sky`.",
+        ? "For any screen, app, simulator or browser work, read **daex-computer-use** first. The user's own screen and windows are not yours: never close, quit or hide an app you did not open; use `mcp__computer_use`, `osascript`, `cliclick` or `screencapture` only when asked, never `@oai/sky`."
+        : "For any screen, app, simulator or browser work, read **daex-computer-use** first. The user's own screen and windows are not yours: never close, quit or hide an app you did not open, and act on them only when asked. When the `mcp__computer_use` tools are present, they drive that screen: start with `list_apps` or `get_app_state`, honor their per-app approval prompts, and never use `@oai/sky`.",
       // Only an external backend has a status to read.
       ...(hasExternalBackends
         ? ["If `get_computer_use_backend_status` is exposed, call it before computer use; if it is not exposed, do not stall. Respect the backend the user requested: if it is unavailable, stop and report instead of switching."]
@@ -10513,7 +10516,7 @@ export function buildComputerUseDirective(
         "",
         "Tips:",
         "- Always call ghost_context before interacting with an app to orient yourself",
-        "- For Electron dev apps (like ADE itself), the app may register as \"Electron\" — use ghost_find or text queries rather than app-targeted commands",
+        "- For Electron dev apps (like DAEX itself), the app may register as \"Electron\" — use ghost_find or text queries rather than app-targeted commands",
         "- Use ghost_annotate for a labeled screenshot with clickable coordinates",
         "- For web apps in Chrome, prefer dom_id for clicking elements",
         "- Use ghost_wait after clicks in web apps to wait for state changes",
@@ -10556,6 +10559,7 @@ import {
   mapPermissionToClaude,
   mapPermissionToCodex
 } from "./permissionMapping";
+import { BRAND } from "../../../shared/brand";
 
 /** The stale-run sweep's notes for a spawned chat that only went quiet: its card says done. */
 const SWEEP_STOP_SUMMARIES: ReadonlySet<string> = new Set([
@@ -11482,8 +11486,7 @@ function collectSpawnLineageFields(
   return out;
 }
 
-const CTO_MCP_SERVER_NAME = "ade-cto";
-const CTO_CODEX_TOOL_NAMESPACE = "ade_cto";
+const CTO_CODEX_TOOL_NAMESPACE = "daex_cto";
 
 /** A started HTTP MCP server bound to one session and one tool set. */
 type HttpMcpLease = {
@@ -11518,7 +11521,7 @@ function buildSpawnSelfReportGuidance(
   }
   // `peer` is the stored name of a chat that does not report back.
   if (session.spawnKind === "peer") {
-    return `Chat ${session.orchestrationParentSessionId.trim()} started you. Nobody waits for your result. If that chat needs it, report it with \`ade chat message\`. ${selfReportCommandGuidance}`;
+    return `Chat ${session.orchestrationParentSessionId.trim()} started you. Nobody waits for your result. If that chat needs it, report it with \`daex chat message\`. ${selfReportCommandGuidance}`;
   }
   return "This chat has a parent chat but no spawn type. Report your result directly to `$ADE_PARENT_CHAT_SESSION_ID`.";
 }
@@ -11534,8 +11537,8 @@ function buildAdeSessionLineageGuidance(
   if (!session) return null;
   const sessionEnvironmentReference = process.platform === "win32" ? "$env:ADE_CHAT_SESSION_ID" : "$ADE_CHAT_SESSION_ID";
   const sessionBinding = options.sessionIdFromEnvironment === true
-    ? `This ADE chat session's id is in \`${sessionEnvironmentReference}\`; pass it as \`--session\` to its status commands.`
-    : `This ADE chat session is \`${session.id}\`. Pass \`--session ${session.id}\` to its status commands.`;
+    ? `This DAEX chat session's id is in \`${sessionEnvironmentReference}\`; pass it as \`--session\` to its status commands.`
+    : `This DAEX chat session is \`${session.id}\`. Pass \`--session ${session.id}\` to its status commands.`;
   const spawnGuidance = buildSpawnSelfReportGuidance(session, opts);
   return [sessionBinding, spawnGuidance].filter(Boolean).join("\n");
 }
@@ -13842,7 +13845,7 @@ export function createAgentChatService(args: {
         sessionId: managed.session.id,
         error: error instanceof Error ? error.message : String(error),
       });
-      launchPlanBlockBySession.set(managed.session.id, "ADE could not prepare it on this machine.");
+      launchPlanBlockBySession.set(managed.session.id, `${BRAND.NAME} could not prepare it on this machine.`);
       managed.launchRouteFellBack = true;
       return null;
     }
@@ -16974,7 +16977,7 @@ export function createAgentChatService(args: {
     if (!managedSessions.has(sessionId.trim()) && readTrackedCliRow(sessionId)) {
       throw new Error(
         `Session '${sessionId.trim()}' is a CLI terminal session and has no paged chat transcript. `
-          + `Read it with \`ade chat read ${sessionId.trim()}\` (latest report) or \`ade terminal read ${sessionId.trim()}\` (full output).`,
+          + `Read it with \`daex chat read ${sessionId.trim()}\` (latest report) or \`daex terminal read ${sessionId.trim()}\` (full output).`,
       );
     }
     const managed = ensureManagedSession(sessionId);
@@ -18826,7 +18829,7 @@ export function createAgentChatService(args: {
       || (done.status === "failed" && isUsageLimitFailureText(preview));
     if (!limited) return preview;
     return `Stopped at the usage limit before the job ran${preview ? ` (${clipText(preview, 120)})` : ""}. `
-      + "ADE continues the chat when the limit resets.";
+      + `${BRAND.NAME} continues the chat when the limit resets.`;
   };
 
   // Persist the CTO's live model selection back into its identity model
@@ -19155,7 +19158,7 @@ export function createAgentChatService(args: {
   };
 
   const CURSOR_CONTINUITY_DISCLAIMER =
-    "Use this ADE transcript context to continue the user's work. Do not claim access to hidden Cursor SDK state that was not restored.";
+    "Use this DAEX transcript context to continue the user's work. Do not claim access to hidden Cursor SDK state that was not restored.";
 
   /**
    * Shared seeding for every case where a Cursor conversation has to continue
@@ -19273,7 +19276,7 @@ export function createAgentChatService(args: {
         ? Math.max(0, Math.floor(maxComposedChars) - restartNoteChars)
         : 0;
       replay = fitTranscriptReplayTextToBudget(replay, budget);
-      const reconstructionPrefix = "System context (ADE continuity, do not echo verbatim):\n";
+      const reconstructionPrefix = "System context (DAEX continuity, do not echo verbatim):\n";
       const separatorLength = replay && reconstruction ? 2 : 0;
       const reconstructionBudget = Math.max(
         0,
@@ -19316,10 +19319,10 @@ export function createAgentChatService(args: {
     // transcript a second time after a restart.
     persistChatState(managed);
     const parts: string[] = [];
-    if (restartNote) parts.push(`System notice from ADE (not from the user):\n${restartNote}`);
+    if (restartNote) parts.push(`System notice from DAEX (not from the user):\n${restartNote}`);
     if (replay) parts.push(replay);
     if (reconstruction) {
-      parts.push(`System context (ADE continuity, do not echo verbatim):\n${reconstruction}`);
+      parts.push(`System context (DAEX continuity, do not echo verbatim):\n${reconstruction}`);
     }
     return {
       composed: parts.join("\n\n"),
@@ -19354,7 +19357,7 @@ export function createAgentChatService(args: {
     }
     stageCursorSdkContinuityHeader(managed, [
       "Cursor SDK continuity recovery",
-      `ADE attempted to resume Cursor SDK agent ${previousAgentId}, but the Cursor SDK opened agent ${nextAgentId} instead.`,
+      `DAEX attempted to resume Cursor SDK agent ${previousAgentId}, but the Cursor SDK opened agent ${nextAgentId} instead.`,
       "The conversation so far was replayed into this agent in full.",
       CURSOR_CONTINUITY_DISCLAIMER,
     ].join("\n"));
@@ -19403,7 +19406,7 @@ export function createAgentChatService(args: {
   ): void => {
     stageCursorSdkContinuityHeader(created, [
       "Forked Cursor chat",
-      "This chat was forked from an earlier ADE chat. Cursor threads cannot be resumed twice, so this is a brand-new Cursor agent and the earlier conversation was replayed into it in full.",
+      "This chat was forked from an earlier DAEX chat. Cursor threads cannot be resumed twice, so this is a brand-new Cursor agent and the earlier conversation was replayed into it in full.",
       CURSOR_CONTINUITY_DISCLAIMER,
     ].join("\n"));
   };
@@ -19481,7 +19484,7 @@ export function createAgentChatService(args: {
     const goal = trimLine(sourceSession.goal)
       ?? summaryLines[0]
       ?? trimLine(sourceSession.title)
-      ?? "Continue the same ADE work item from the previous chat.";
+      ?? "Continue the same DAEX work item from the previous chat.";
     const preservedContext = uniqueNonEmpty([
       trimLine(sourceSession.title) ? `Previous title: ${trimLine(sourceSession.title)}` : null,
       trimLine(sourceSession.summary) ? `Existing session summary: ${trimLine(sourceSession.summary)}` : null,
@@ -19553,7 +19556,7 @@ export function createAgentChatService(args: {
       return `${speaker}: ${entry.text}`;
     }).join("\n");
     const prompt = [
-      "You are ADE's chat handoff assistant.",
+      "You are DAEX's chat handoff assistant.",
       "Rewrite the source context into a compact Markdown handoff brief for another coding model.",
       "Return exactly these headings in this order:",
       "## Current goal",
@@ -19612,8 +19615,8 @@ export function createAgentChatService(args: {
 
   const buildHandoffPrompt = (brief: string, handoffNote: string | null = null): string => {
     return [
-      "This message was injected automatically by ADE during a chat handoff.",
-      "You are taking over from a previous ADE work chat that the user is handing off to this new model.",
+      "This message was injected automatically by DAEX during a chat handoff.",
+      "You are taking over from a previous DAEX work chat that the user is handing off to this new model.",
       "Continue the same task in the same lane. Do not restart discovery from scratch unless the brief below is clearly missing a required detail.",
       "The user will keep discussing the same work in this new chat.",
       handoffNote ? "Apply the user's handoff note below as the highest-priority instruction for this handoff." : null,
@@ -20358,7 +20361,7 @@ export function createAgentChatService(args: {
     if (piDownload) await piDownload;
     const installation = resolvePiInstallation(buildAgentRuntimeEnv(managed));
     if (!installation.sdkAvailable || !installation.packageRoot || !installation.packageEntry) {
-      throw new Error(installation.blocker ?? "ADE could not load its Pi package on this machine.");
+      throw new Error(installation.blocker ?? `${BRAND.NAME} could not load its Pi package on this machine.`);
     }
     const descriptor = resolveSessionModelDescriptor(managed.session);
     const piProfileId = managed.session.piProfileId?.trim() || descriptor?.piProfileId?.trim() || "default";
@@ -21538,7 +21541,7 @@ export function createAgentChatService(args: {
     emitChatEvent(managed, {
       type: "system_notice",
       noticeKind: "info",
-      message: `The lane's worktree folder was missing, so ADE recreated it from branch '${result.branch}'. Uncommitted changes from the old folder are gone.`,
+      message: `The lane's worktree folder was missing, so ${BRAND.NAME} recreated it from branch '${result.branch}'. Uncommitted changes from the old folder are gone.`,
     });
   };
 
@@ -22468,7 +22471,7 @@ export function createAgentChatService(args: {
     evictOldestEntries(managed.unprocessedMessageResolutionReceipts, 64);
     if (!persistChatState(managed, { fsync: true })) {
       throw new Error(
-        "The provider accepted this message, but ADE could not save its delivery receipt. Retry without closing this chat.",
+        `The provider accepted this message, but ${BRAND.NAME} could not save its delivery receipt. Retry without closing this chat.`,
       );
     }
   };
@@ -23548,7 +23551,7 @@ export function createAgentChatService(args: {
               provider,
               originalThreadId: null,
               at: updatedAt,
-              detail: "ADE could not reconstruct the original provider thread pointer from durable sources.",
+              detail: `${BRAND.NAME} could not reconstruct the original provider thread pointer from durable sources.`,
             },
           }),
       updatedAt,
@@ -25184,7 +25187,7 @@ export function createAgentChatService(args: {
       to = null;
     }
     if (!from || !to || to.provider !== provider) {
-      return { ok: false, message: "ADE could not find that account." };
+      return { ok: false, message: `${BRAND.NAME} could not find that account.` };
     }
     // Stop the runtime first, so nothing writes the thread while it is copied.
     // The kept resume pointer still serves the old account if the copy fails.
@@ -25243,7 +25246,7 @@ export function createAgentChatService(args: {
       noticeKind: "rate_limit",
       severity: "info",
       message: `Continuing on ${alternate.label}.`,
-      detail: `The ${from.label || from.id} account hit its usage limit. ADE moved this chat to ${alternate.label} and resumes the same thread there.`,
+      detail: `The ${from.label || from.id} account hit its usage limit. ${BRAND.NAME} moved this chat to ${alternate.label} and resumes the same thread there.`,
     });
     if (provider === "claude") dismissClaudeSessionQuota(managed);
     // A queue the limit held runs on the new account in place of the continue.
@@ -25442,7 +25445,7 @@ export function createAgentChatService(args: {
       return {
         ok: false,
         reason: "handoff_in_flight",
-        message: "ADE is already moving this chat to another account.",
+        message: `${BRAND.NAME} is already moving this chat to another account.`,
       };
     }
     usageLimitHandoffInFlight.add(managed.session.id);
@@ -25451,7 +25454,7 @@ export function createAgentChatService(args: {
       return {
         ok: false,
         reason: "handoff_failed",
-        message: "This chat has no lane, so ADE can't start the other account here.",
+        message: `This chat has no lane, so ${BRAND.NAME} can't start the other account here.`,
       };
     }
     let createdId: string | null = null;
@@ -25516,14 +25519,14 @@ export function createAgentChatService(args: {
       return {
         ok: false,
         reason: "handoff_failed",
-        message: `ADE couldn't continue on ${alternate.label}. ${message}`,
+        message: `${BRAND.NAME} couldn't continue on ${alternate.label}. ${message}`,
       };
     }
     if (!createdId) {
       return {
         ok: false,
         reason: "handoff_failed",
-        message: `ADE couldn't continue on ${alternate.label}.`,
+        message: `${BRAND.NAME} couldn't continue on ${alternate.label}.`,
       };
     }
     usageLimitHandedOffTargets.set(managed.session.id, createdId);
@@ -25535,7 +25538,7 @@ export function createAgentChatService(args: {
       noticeKind: "rate_limit",
       severity: "info",
       message: `Continuing on ${alternate.label}.`,
-      detail: `This chat hit a usage limit, so ADE started a new chat on ${alternate.label}.`
+      detail: `This chat hit a usage limit, so ${BRAND.NAME} started a new chat on ${alternate.label}.`
         + (movedCount ? " Your queued messages moved there too." : "")
         + " This chat will not also resume.",
     });
@@ -25679,7 +25682,7 @@ export function createAgentChatService(args: {
       return {
         ok: false,
         reason: "handoff_in_flight",
-        message: "ADE is already moving this chat to another account.",
+        message: `${BRAND.NAME} is already moving this chat to another account.`,
       };
     }
     // The thread file is copied, so a turn still writing it, or an open
@@ -25733,7 +25736,7 @@ export function createAgentChatService(args: {
       return {
         ok: false,
         reason: "handoff_failed",
-        message: `ADE couldn't continue on ${alternate.label}. ${message}`,
+        message: `${BRAND.NAME} couldn't continue on ${alternate.label}. ${message}`,
       };
     } finally {
       usageLimitMoveInFlight.delete(normalizedSessionId);
@@ -28284,7 +28287,7 @@ export function createAgentChatService(args: {
     guardrail.pendingInternalCompactionNotice = {
       message: trigger === "recovery"
         ? "context overflowed — compacted; please re-send your last message"
-        : "ADE compacted the context because Claude's automatic compaction had not run.",
+        : `${BRAND.NAME} compacted the context because Claude's automatic compaction had not run.`,
       ...(turnId ? { turnId } : {}),
     };
     logger.info("agent_chat.claude_context_compaction_observed", {
@@ -29928,7 +29931,7 @@ export function createAgentChatService(args: {
           type: "system_notice",
           noticeKind: "info",
           message: reportedBudgetLimit
-            ? "Goal limit removed. ADE keeps goals unlimited."
+            ? `Goal limit removed. ${BRAND.NAME} keeps goals unlimited.`
             : "Goal updated.",
           ...(turnId ? { turnId } : {}),
         });
@@ -31479,13 +31482,13 @@ export function createAgentChatService(args: {
         emitChatEvent(managed, {
           type: "system_notice",
           noticeKind: "info",
-          message: "ADE stopped this Codex turn while the app or project was closing. Send again to continue the saved thread.",
+          message: `${BRAND.NAME} stopped this Codex turn while the app or project was closing. Send again to continue the saved thread.`,
           ...(interruptedTurnId ? { turnId: interruptedTurnId } : {}),
         });
         emitChatEvent(managed, {
           type: "status",
           turnStatus: "interrupted",
-          message: "Stopped while ADE was closing.",
+          message: `Stopped while ${BRAND.NAME} was closing.`,
           ...(interruptedTurnId ? { turnId: interruptedTurnId } : {}),
         });
         if (interruptedTurnId) {
@@ -32653,7 +32656,7 @@ export function createAgentChatService(args: {
           questions: [{
             id: "goal_action",
             header: "Goal",
-            question: "A goal already exists. What should ADE do?",
+            question: `A goal already exists. What should ${BRAND.NAME} do?`,
             allowsFreeform: false,
             options: [
               {
@@ -33177,7 +33180,7 @@ export function createAgentChatService(args: {
         emitChatEvent(managed, {
           type: "system_notice",
           noticeKind: "info",
-          message: "Native Codex plan mode is unavailable for this session, so ADE is continuing in default collaboration mode.",
+          message: `Native Codex plan mode is unavailable for this session, so ${BRAND.NAME} is continuing in default collaboration mode.`,
         });
         runtime.planModeFallbackNotified = true;
       } else if (collaborationMode?.mode === "plan") {
@@ -38255,8 +38258,8 @@ export function createAgentChatService(args: {
       ? [
           "",
           "## Project slash commands and skills",
-          "ADE walks up from the lane worktree to discover `.claude/commands/*.md` plus `.claude/skills/<name>/SKILL.md`, `.agents/skills/<name>/SKILL.md`, `.ade/skills/<name>/SKILL.md`, user skill roots, and ADE bundled skills. Claude Code already lists `<cwd>/.claude/`, `~/.claude/`, and ADE's bundled `ade:*` plugin skills for you, so this section lists only the roots it cannot see.",
-          "**User-invoked (`/<name>`):** When the user sends a message that is exactly `/<name>` or `/<name> <args>`, ADE may pre-expand the file's body and substitute `$ARGUMENTS` before it reaches you. You'll see the expanded instructions, not necessarily the literal `/<name>`.",
+          "DAEX walks up from the lane worktree to discover `.claude/commands/*.md` plus `.claude/skills/<name>/SKILL.md`, `.agents/skills/<name>/SKILL.md`, `.ade/skills/<name>/SKILL.md`, user skill roots, and DAEX bundled skills. Claude Code already lists `<cwd>/.claude/`, `~/.claude/`, and DAEX's bundled `daex:*` plugin skills for you, so this section lists only the roots it cannot see.",
+          "**User-invoked (`/<name>`):** When the user sends a message that is exactly `/<name>` or `/<name> <args>`, DAEX may pre-expand the file's body and substitute `$ARGUMENTS` before it reaches you. You'll see the expanded instructions, not necessarily the literal `/<name>`.",
           "**Mid-sentence reference:** When the user mentions a command/skill mid-sentence, read the file at the path below and follow it.",
           "**Autonomous skill use:** If, while working on a task, you decide a discovered skill applies, read its SKILL.md file and follow it as if it had been invoked.",
           ...(injectionPlan.commands.length ? [
@@ -38268,7 +38271,7 @@ export function createAgentChatService(args: {
             "",
             "Skills (autonomously usable when relevant):",
             ...renderedSkills.lines,
-            ...(renderedSkills.omitted > 0 ? [`- ${renderedSkills.omitted} more skill(s) omitted to stay inside ADE's skill-listing budget. Run \`ade skill list --text\` if none of the listed skills fits.`] : []),
+            ...(renderedSkills.omitted > 0 ? [`- ${renderedSkills.omitted} more skill(s) omitted to stay inside DAEX's skill-listing budget. Run \`daex skill list --text\` if none of the listed skills fits.`] : []),
           ] : []),
         ]
       : [];
@@ -38290,12 +38293,12 @@ export function createAgentChatService(args: {
     return [
       harnessPrompt,
       "",
-      "**Lifecycle:** Keep working in the background when useful. ADE keeps the transcript and session pointer, and later user messages may arrive by Agent View reply or by resuming the saved conversation.",
-      "**UI contract:** Do not ask the user to run `claude attach`, `claude logs`, or a resume command. ADE owns those mechanics.",
+      "**Lifecycle:** Keep working in the background when useful. DAEX keeps the transcript and session pointer, and later user messages may arrive by Agent View reply or by resuming the saved conversation.",
+      "**UI contract:** Do not ask the user to run `claude attach`, `claude logs`, or a resume command. DAEX owns those mechanics.",
       "",
-      "## ADE Workspace",
-      `ADE launched this session in lane worktree: ${managed.laneWorktreePath}.`,
-      "Read-only inspection outside that worktree is allowed when needed. Edit files and run mutating commands only inside that worktree unless ADE explicitly relaunches you elsewhere.",
+      "## DAEX Workspace",
+      `DAEX launched this session in lane worktree: ${managed.laneWorktreePath}.`,
+      "Read-only inspection outside that worktree is allowed when needed. Edit files and run mutating commands only inside that worktree unless DAEX explicitly relaunches you elsewhere.",
       "",
       buildAdeSessionLineageGuidance(managed.session, spawnSelfReportOpts(managed.session)) ?? "",
       "",
@@ -38461,7 +38464,7 @@ export function createAgentChatService(args: {
     }
     const attachmentText = args.resolvedAttachments.length
       ? [
-          "ADE attached files/images for this turn:",
+          "DAEX attached files/images for this turn:",
           ...args.resolvedAttachments.map((attachment) => {
             const pathText = attachmentAgentPath(attachment);
             const label = path.basename(pathText) || pathText;
@@ -39036,7 +39039,7 @@ export function createAgentChatService(args: {
     if (executable.source === "fallback-command" && !args.acpSpawnOverride) {
       throw pinnedTool
         ? pinnedToolNotReadyError(pinnedTool.tool, pinnedTool.label)
-        : new Error(`ADE has no ${dialect.displayName} runtime on this machine.`);
+        : new Error(`${BRAND.NAME} has no ${dialect.displayName} runtime on this machine.`);
     }
 
     const configHome = acpConfigHomeFor(provider, runtimeEnv);
@@ -40121,7 +40124,7 @@ export function createAgentChatService(args: {
         void runtime.host.command("subagent/stop", {
           sessionId: runtime.museSessionId,
           subagentId: origin.subagentId,
-          reason: "Its approval was dismissed in ADE",
+          reason: "Its approval was dismissed in DAEX",
         }).catch((error) => {
           // Muse would stay parked on an approval ADE no longer shows: stop the
           // turn instead, the same way out a card with no fitting choice takes.
@@ -42146,7 +42149,7 @@ export function createAgentChatService(args: {
     emitChatEvent(managed, {
       type: "system_notice",
       noticeKind: "info",
-      message: `ADE stopped ${parts} ${cause}. Ask the agent to start ${stopped.shells + stopped.children === 1 ? "it" : "them"} again if still needed.`,
+      message: `${BRAND.NAME} stopped ${parts} ${cause}. Ask the agent to start ${stopped.shells + stopped.children === 1 ? "it" : "them"} again if still needed.`,
     });
   };
 
@@ -42157,10 +42160,10 @@ export function createAgentChatService(args: {
       case "ended_session": return "when the chat ended";
       case "project_close": return "when the project closed";
       case "paused_run": return "when the run paused";
-      case "shutdown": return "when ADE or its OpenCode server stopped";
-      case "pool_compaction": return "when ADE freed this chat's connection to OpenCode";
+      case "shutdown": return `when ${BRAND.NAME} or its OpenCode server stopped`;
+      case "pool_compaction": return `when ${BRAND.NAME} freed this chat's connection to OpenCode`;
       case "restart": return "when the agent session restarted";
-      default: return "when ADE closed this chat's connection to OpenCode";
+      default: return `when ${BRAND.NAME} closed this chat's connection to OpenCode`;
     }
   };
 
@@ -42366,7 +42369,7 @@ export function createAgentChatService(args: {
     logger.warn("agent_chat.opencode_server_exited", { sessionId: managed.session.id, error: error.message });
     finishOpenCodeTurn(managed, runtime, {
       status: "failed",
-      error: new Error("The OpenCode server stopped unexpectedly. Send again to continue; ADE starts a new server."),
+      error: new Error(`The OpenCode server stopped unexpectedly. Send again to continue; ${BRAND.NAME} starts a new server.`),
     });
     // The session itself is intact in OpenCode's store; the next send reopens it.
     teardownRuntime(managed, "shutdown");
@@ -42638,7 +42641,7 @@ export function createAgentChatService(args: {
     if (!toolDefinition) {
       runtime.sendResponse(id, {
         success: false,
-        contentItems: [{ type: "inputText", text: `ADE dynamic tool '${toolName}' is not available for this session.` }],
+        contentItems: [{ type: "inputText", text: `DAEX dynamic tool '${toolName}' is not available for this session.` }],
       });
       return;
     }
@@ -43246,7 +43249,7 @@ export function createAgentChatService(args: {
       method === "attestation/generate"
       || method === "account/chatgptAuthTokens/refresh"
     ) {
-      runtime.sendError(id, `ADE does not provide Codex app-server capability '${method}'.`, -32601);
+      runtime.sendError(id, `DAEX does not provide Codex app-server capability '${method}'.`, -32601);
       return;
     }
 
@@ -44381,7 +44384,7 @@ export function createAgentChatService(args: {
           await runtime.host.command("subagent/stop", {
             sessionId: runtime.museSessionId,
             subagentId: ref.subagentId,
-            reason: "Stopped from ADE",
+            reason: "Stopped from DAEX",
           });
         } else {
           await runtime.host.command("task/stop", { sessionId: runtime.museSessionId, taskId: id });
@@ -45746,7 +45749,7 @@ export function createAgentChatService(args: {
     }
     const runtime = managed.runtime?.kind === "codex" ? managed.runtime : null;
     if (provider !== "codex" || !runtime) {
-      throw new Error("This chat has no background work ADE can watch. Only Claude, OpenCode, and Codex report background jobs.");
+      throw new Error("This chat has no background work DAEX can watch. Only Claude, OpenCode, and Codex report background jobs.");
     }
     await refreshCodexBackgroundTerminals(managed, runtime);
     const live = [...runtime.backgroundTerminalsByProcessId.keys()];
@@ -45764,7 +45767,7 @@ export function createAgentChatService(args: {
     return {
       held: wanted,
       nativeWake: false,
-      message: `ADE wakes you when ${wanted.length === 1 ? "it ends" : "each of them ends"}. End your turn now.`,
+      message: `DAEX wakes you when ${wanted.length === 1 ? "it ends" : "each of them ends"}. End your turn now.`,
     };
   };
 
@@ -48397,7 +48400,7 @@ export function createAgentChatService(args: {
         // The working line reads this notice while the turn waits on it.
         status: AGENT_DOWNLOAD_NOTICE_STATUS,
         message: `Getting ${label} ready`,
-        detail: `ADE downloads each agent the first time this machine uses it. This turn starts when ${label} is ready.`,
+        detail: `${BRAND.NAME} downloads each agent the first time this machine uses it. This turn starts when ${label} is ready.`,
       });
     }
     // onDemand.ts logs the outcome; a failure leaves resolution as it was.
@@ -48551,7 +48554,7 @@ export function createAgentChatService(args: {
       type: "system_notice",
       noticeKind: "warning",
       severity: "warning",
-      message: `OpenAI says ${rejection.model} needs a newer Codex. ADE is checking with one short request whether a newer Codex fixes it…`,
+      message: `OpenAI says ${rejection.model} needs a newer Codex. ${BRAND.NAME} is checking with one short request whether a newer Codex fixes it…`,
       ...turnScope,
     });
     const accountEnv = launch?.env ?? buildAgentRuntimeEnv(managed);
@@ -48979,7 +48982,7 @@ export function createAgentChatService(args: {
       initializeResponse = await host.initialize<{ userAgent?: unknown }>({
         clientInfo: {
           name: "ade_desktop",
-          title: "ADE Desktop",
+          title: "DAEX Desktop",
           version: appVersion
         },
         capabilities: {
@@ -49330,14 +49333,14 @@ export function createAgentChatService(args: {
     const head = text.slice(0, halfPreviewChars);
     const tail = text.slice(Math.max(halfPreviewChars, text.length - halfPreviewChars));
     const updatedToolOutput = [
-      `[ADE] Large ${input.tool_name} tool output trimmed before model context.`,
+      `[DAEX] Large ${input.tool_name} tool output trimmed before model context.`,
       `Original size: ${originalBytes} bytes. Retained first and last ${halfPreviewChars} characters.`,
       "",
       "----- BEGIN FIRST PREVIEW -----",
       head,
       "----- END FIRST PREVIEW -----",
       "",
-      `[ADE] ${Math.max(0, originalBytes - Buffer.byteLength(head + tail, "utf8"))} bytes omitted.`,
+      `[DAEX] ${Math.max(0, originalBytes - Buffer.byteLength(head + tail, "utf8"))} bytes omitted.`,
       "",
       "----- BEGIN LAST PREVIEW -----",
       tail,
@@ -49975,7 +49978,7 @@ export function createAgentChatService(args: {
       type: "system_notice",
       noticeKind: "warning",
       severity: "warning",
-      message: "Anthropic refused this Claude Code as too old. ADE is checking for a newer build for this machine…",
+      message: `Anthropic refused this Claude Code as too old. ${BRAND.NAME} is checking for a newer build for this machine…`,
       ...turnScope,
     });
     const outcome = await handleClaudeVersionRejection({
@@ -50054,8 +50057,8 @@ export function createAgentChatService(args: {
       ? [
         "",
         "## Project slash commands and skills",
-        "ADE walks up from the lane worktree to discover `.claude/commands/*.md` plus `.claude/skills/<name>/SKILL.md`, `.agents/skills/<name>/SKILL.md`, `.ade/skills/<name>/SKILL.md`, user skill roots, and ADE bundled skills. Claude Code already lists `<cwd>/.claude/`, `~/.claude/`, and ADE's bundled `ade:*` plugin skills for you, so this section lists only the roots it cannot see — do not expect it to repeat your own listing.",
-        "**User-invoked (`/<name>`):** When the user sends a message that is exactly `/<name>` or `/<name> <args>`, ADE pre-expands the file's body (commands take precedence over same-named skills) and substitutes `$ARGUMENTS` before it reaches you. You'll see the expanded instructions, not the literal `/<name>`.",
+        "DAEX walks up from the lane worktree to discover `.claude/commands/*.md` plus `.claude/skills/<name>/SKILL.md`, `.agents/skills/<name>/SKILL.md`, `.ade/skills/<name>/SKILL.md`, user skill roots, and DAEX bundled skills. Claude Code already lists `<cwd>/.claude/`, `~/.claude/`, and DAEX's bundled `daex:*` plugin skills for you, so this section lists only the roots it cannot see — do not expect it to repeat your own listing.",
+        "**User-invoked (`/<name>`):** When the user sends a message that is exactly `/<name>` or `/<name> <args>`, DAEX pre-expands the file's body (commands take precedence over same-named skills) and substitutes `$ARGUMENTS` before it reaches you. You'll see the expanded instructions, not the literal `/<name>`.",
         "**Mid-sentence reference:** When the user mentions a command/skill mid-sentence (e.g. \"please /audit this\", \"can you do a /security-review\") the message is NOT auto-expanded. Read the file at the path below and follow it.",
         "**Autonomous skill use:** If, while working on a task, you decide a discovered skill applies (its description matches the situation), Read its SKILL.md file and follow it as if it had been invoked. Don't ask the user — just use the skill when warranted.",
         ...(visibleProjectCommandFiles.length ? [
@@ -50068,7 +50071,7 @@ export function createAgentChatService(args: {
           "",
           "Skills (autonomously usable when relevant):",
           ...renderedSkills.lines,
-          ...(renderedSkills.omitted > 0 ? [`- ${renderedSkills.omitted} more skill(s) omitted to stay inside ADE's skill-listing budget. Run \`ade skill list --text\`, or look under the agent skill roots above, if none of the listed skills fits.`] : []),
+          ...(renderedSkills.omitted > 0 ? [`- ${renderedSkills.omitted} more skill(s) omitted to stay inside DAEX's skill-listing budget. Run \`daex skill list --text\`, or look under the agent skill roots above, if none of the listed skills fits.`] : []),
         ] : []),
       ]
       : [];
@@ -50114,7 +50117,7 @@ export function createAgentChatService(args: {
         // whole machine). Until then each ask waits for an answer: it reads
         // "Needs you" on every connected window and phone.
         status: CLAUDE_ROOT_FULL_ACCESS_NOTICE_STATUS,
-        message: "Claude Code does not allow Full access when ADE runs as root, so this chat uses Accept edits: Claude waits for you to allow each command. Allow Full access for agents on this machine, or run ADE as a normal user.",
+        message: `Claude Code does not allow Full access when ${BRAND.NAME} runs as root, so this chat uses Accept edits: Claude waits for you to allow each command. Allow Full access for agents on this machine, or run ${BRAND.NAME} as a normal user.`,
       });
     }
     managed.session.claudePermissionMode = claudePermissionMode;
@@ -52996,7 +52999,7 @@ export function createAgentChatService(args: {
       } catch (error) {
         return { ok: false, message: error instanceof Error ? error.message : String(error) };
       }
-      if (!fromHome || !toHome) return { ok: false, message: "ADE could not find that account's folder." };
+      if (!fromHome || !toHome) return { ok: false, message: `${BRAND.NAME} could not find that account's folder.` };
       if (pathsEqual(fromHome, toHome)) return { ok: true };
       const moved = await moveProviderThread({ provider, threadId: conversationId, fromConfigHome: fromHome, toConfigHome: toHome });
       return moved.ok ? { ok: true } : { ok: false, message: moved.message };
@@ -54510,7 +54513,7 @@ export function createAgentChatService(args: {
     // leave out the provider. Only a model ADE knows or a preset names one.
     if (!effectiveProvider) {
       throw new AdeExpectedError(
-        "invalid_argument: chat.createSession needs a provider, a model ADE knows, or a presetId.",
+        `invalid_argument: chat.createSession needs a provider, a model ${BRAND.NAME} knows, or a presetId.`,
         "user",
       );
     }
@@ -55130,7 +55133,7 @@ export function createAgentChatService(args: {
         message: cappedByParent
           ? `Permissions capped at "${label}" to match the chat that started this one.`
           : unknownCaller
-            ? `Permissions capped at "${label}": the chat that ran this command isn't on this ADE, so ADE can't tell how much access it has. Start the chat from the desktop, or from a chat on the same ADE as the command.`
+            ? `Permissions capped at "${label}": the chat that ran this command isn't on this ${BRAND.NAME}, so ${BRAND.NAME} can't tell how much access it has. Start the chat from the desktop, or from a chat on the same ${BRAND.NAME} as the command.`
             : `Permissions capped at "${label}": an agent can't start a chat with more access than its own.`,
       });
       logger.info("agent_chat.parent_permission_ceiling", {
@@ -55421,7 +55424,7 @@ export function createAgentChatService(args: {
       throw new Error("A CLI session can only be forked whole; choosing a turn applies to chats.");
     }
     if (ptyService && agentCliWakeDeferred(sourceId)) {
-      throw new Error("This CLI is mid-turn (or another ADE runtime holds its terminal). Hand it off when its prompt is free.");
+      throw new Error(`This CLI is mid-turn (or another ${BRAND.NAME} runtime holds its terminal). Hand it off when its prompt is free.`);
     }
     const context = await cliLifecycle.handoffContext(row);
     const requestedModelId = typeof args.targetModelId === "string" ? args.targetModelId.trim() : "";
@@ -55533,7 +55536,7 @@ export function createAgentChatService(args: {
     if (caller.requestedFor === "self" || caller.requestedFor === "descendant") return;
     throw new Error(
       `Session '${sessionId}' is a CLI session your chat didn't start, so only the person can move it (Work menu › Hand off › Another machine). `
-      + "To ask once for several, use `ade chat move`, which asks for approval on your chat.",
+      + "To ask once for several, use `daex chat move`, which asks for approval on your chat.",
     );
   };
 
@@ -56020,7 +56023,7 @@ export function createAgentChatService(args: {
     if (launch.presetId != null) portable(launch.presetId, 300, "preset");
     if (cli.conversation !== undefined) {
       if (cli.conversation.kind !== "claude-jsonl" && cli.conversation.kind !== "codex-rollout") {
-        throw new Error("The handoff capsule has a CLI conversation ADE can't place.");
+        throw new Error(`The handoff capsule has a CLI conversation ${BRAND.NAME} can't place.`);
       }
       // The same limits a fork's provider history has.
       validateForkTransport({ ...capsule, mode: "fork", forkTransport: cli.conversation });
@@ -56440,7 +56443,7 @@ export function createAgentChatService(args: {
       timeoutMs: 30_000,
     });
     if (remote.exitCode !== 0) {
-      throw new Error(`ADE could not read '${branchRef}' on origin. Check remote access. ${redactGitOutput(remote.stderr.trim())}`.trim());
+      throw new Error(`${BRAND.NAME} could not read '${branchRef}' on origin. Check remote access. ${redactGitOutput(remote.stderr.trim())}`.trim());
     }
     // A never-pushed branch is fine with changes: its base commits come from
     // origin's history or the bundle.
@@ -56535,7 +56538,7 @@ export function createAgentChatService(args: {
         throw new Error("Full-history fork requires a Claude session id. Send a Claude message first, then try again.");
       }
       const source = findClaudeSessionTranscript(sdkSessionId, laneWorktreePath);
-      if (!source) throw new Error("ADE could not find the Claude transcript to fork.");
+      if (!source) throw new Error(`${BRAND.NAME} could not find the Claude transcript to fork.`);
       const mainContent = readCrossMachineForkMainFile(source.transcriptPath);
       const sideFiles = collectClaudeForkSideFiles(sdkSessionId, source.transcriptPath);
       return {
@@ -56564,7 +56567,7 @@ export function createAgentChatService(args: {
         logger,
         env: sessionProviderLookupEnv(managed),
       });
-      if (!sourcePath) throw new Error("ADE could not find the Codex rollout to fork.");
+      if (!sourcePath) throw new Error(`${BRAND.NAME} could not find the Codex rollout to fork.`);
       if (sourcePath.endsWith(".zst")) {
         throw new Error("This Codex chat is stored compressed and can't be forked across machines yet. Use a brief instead.");
       }
@@ -57144,7 +57147,7 @@ export function createAgentChatService(args: {
         );
       } catch {
         // Reading failed: that says nothing about whether the files changed.
-        throw new Error("ADE couldn't read the source lane's files to compare them with the prepared handoff.");
+        throw new Error(`${BRAND.NAME} couldn't read the source lane's files to compare them with the prepared handoff.`);
       }
       if (!currentTree || currentTree !== preparedTree) throw new CrossMachineSourceStaleError(changedMessage);
       const carriedChanges = Boolean(gitBundle || batchMove?.carriedChanges);
@@ -57236,7 +57239,7 @@ export function createAgentChatService(args: {
       completion: null,
     } as unknown as AgentChatSessionSummary;
     return [
-      `Source: a ${cliName} CLI terminal session in ADE (${context.source === "provider_transcript" ? "from its own conversation file" : "from its last terminal output; ADE could not read its conversation"}).`,
+      `Source: a ${cliName} CLI terminal session in DAEX (${context.source === "provider_transcript" ? "from its own conversation file" : "from its last terminal output; DAEX could not read its conversation"}).`,
       "",
       buildDeterministicHandoffBrief({
         sourceSession: sourceSummary,
@@ -57265,7 +57268,7 @@ export function createAgentChatService(args: {
   ): Promise<AgentChatPrepareCrossMachineHandoffResult> => {
     const handoffId = requireHandoffId(args.handoffId);
     const provider = cliMoveProvider(row);
-    if (!provider) throw new Error("ADE doesn't know which agent this CLI runs, so it can't move it.");
+    if (!provider) throw new Error(`${BRAND.NAME} doesn't know which agent this CLI runs, so it can't move it.`);
     if (row.archivedAt) throw new Error("This CLI session is archived. Unarchive it before moving it.");
     const source = cliMoveSource(row);
     if (source.awaitingInput) throw new Error("This CLI is waiting at its own prompt for an answer. Answer it, then move it.");
@@ -57511,10 +57514,10 @@ export function createAgentChatService(args: {
     // it starts (cliCrossMachineMove.ts).
     const cliToolType = args.cliToolType?.trim() || null;
     if (cliToolType && !isTrackedAgentCliToolType(cliToolType as TerminalToolType)) {
-      blockingErrors.push(`ADE here doesn't know the '${cliToolType}' CLI. Update ADE on this machine.`);
+      blockingErrors.push(`${BRAND.NAME} here doesn't know the '${cliToolType}' CLI. Update ${BRAND.NAME} on this machine.`);
     }
     if (!cliToolType && (!targetDescriptor || targetDescriptor.deprecated)) {
-      blockingErrors.push(`Model '${targetId || "unknown"}' is not supported by this ADE runtime.`);
+      blockingErrors.push(`Model '${targetId || "unknown"}' is not supported by this ${BRAND.NAME} runtime.`);
     }
 
     let providerAuthorized = Boolean(cliToolType);
@@ -57542,7 +57545,7 @@ export function createAgentChatService(args: {
         );
         providerAuthorized = availableModels.length > 0;
       } catch (error) {
-        warnings.push(`ADE could not finish the destination model check: ${error instanceof Error ? error.message : String(error)}`);
+        warnings.push(`${BRAND.NAME} could not finish the destination model check: ${error instanceof Error ? error.message : String(error)}`);
       }
       if (!providerAuthorized) blockingErrors.push(`Sign in to ${targetProvider} on this machine and refresh its model list.`);
       else if (!modelAvailable) blockingErrors.push(`${targetDescriptor.displayName} is not available on this machine.`);
@@ -57614,7 +57617,7 @@ export function createAgentChatService(args: {
       // primary checkout: say so now rather than after earlier batch items moved.
       if (hasGitBundle && args.returnToLaneId && lanes.some((lane) => lane.id === args.returnToLaneId && lane.laneType === "primary")) {
         blockingErrors.push(
-          `'${branchRef}' returns to this machine's primary checkout, which ADE never writes moved changes into. Commit and push them on the source, then move without changes.`,
+          `'${branchRef}' returns to this machine's primary checkout, which ${BRAND.NAME} never writes moved changes into. Commit and push them on the source, then move without changes.`,
         );
       }
       if (existingLane && hasGitBundle && ownedLaneId === existingLane.id) {
@@ -57634,7 +57637,7 @@ export function createAgentChatService(args: {
         if (existingHead.exitCode !== 0 || !laneHead) {
           blockingErrors.push(`Destination lane '${existingLane.name}' does not have a readable commit.`);
         } else if (laneHead === expectedHead && !existingLane.status.dirty && !existingLane.status.rebaseInProgress) {
-          warnings.push(`ADE will reuse the existing clean lane '${existingLane.name}'.`);
+          warnings.push(`${BRAND.NAME} will reuse the existing clean lane '${existingLane.name}'.`);
         } else if (hasGitBundle) {
           // The bundle fast-forwards a clean lane itself; no origin round trip.
           // Dirty and rebasing lanes were already blocked above.
@@ -57647,7 +57650,7 @@ export function createAgentChatService(args: {
           if (ancestor?.exitCode === 1) {
             blockingErrors.push(`Destination lane '${existingLane.name}' has diverged from the source commit.`);
           } else if (ancestor) {
-            warnings.push(`ADE will fast-forward the existing lane '${existingLane.name}' to the handed-off commit.`);
+            warnings.push(`${BRAND.NAME} will fast-forward the existing lane '${existingLane.name}' to the handed-off commit.`);
           }
         } else if (laneHead !== expectedHead && fetchedExpectedHead) {
           const ancestor = await runGit(["merge-base", "--is-ancestor", laneHead, expectedHead], {
@@ -57671,7 +57674,7 @@ export function createAgentChatService(args: {
                 behindBy,
               };
               warnings.push(
-                `Destination lane '${existingLane.name}' is ${behindBy} ${behindBy === 1 ? "commit" : "commits"} behind — ADE can fast-forward it.`,
+                `Destination lane '${existingLane.name}' is ${behindBy} ${behindBy === 1 ? "commit" : "commits"} behind — ${BRAND.NAME} can fast-forward it.`,
               );
             } else {
               blockingErrors.push(`Destination lane '${existingLane.name}' is not at the source commit.`);
@@ -57710,7 +57713,7 @@ export function createAgentChatService(args: {
           if (!ancestor || ancestor.exitCode === 1) {
             blockingErrors.push(`A different local branch named '${branchRef}' already exists on the destination.`);
           } else {
-            warnings.push(`ADE will move the local branch '${branchRef}' forward to the handed-off commit.`);
+            warnings.push(`${BRAND.NAME} will move the local branch '${branchRef}' forward to the handed-off commit.`);
           }
         }
       }
@@ -57904,7 +57907,7 @@ export function createAgentChatService(args: {
   const buildCrossMachineHandoffPrompt = (capsule: AgentChatCrossMachineHandoffCapsule): string =>
     formatContinuationPrompt({
       preamble: [
-        "This message was injected automatically by ADE during a cross-machine chat handoff.",
+        "This message was injected automatically by DAEX during a cross-machine chat handoff.",
         `The user moved this task from ${capsule.source.machineName} to this machine.`,
         `The destination lane was recreated from ${capsule.source.branchRef} at ${capsule.source.headSha}.`,
         "Continue the same task from the bounded brief below. Do not claim access to the source machine's provider history, terminals, secrets, caches, or untransferred artifacts.",
@@ -58267,9 +58270,9 @@ export function createAgentChatService(args: {
   }): Promise<{ sessionId: string; restoredWith: "capsule" | "fresh" | "earlier" }> => {
     const sessionId = restoreArgs.sessionId.trim();
     const toolType = restoreArgs.toolType.trim() as TerminalToolType;
-    if (!isTrackedAgentCliToolType(toolType)) throw new Error(`ADE here can't start the '${restoreArgs.toolType}' CLI. Update ADE on this computer.`);
+    if (!isTrackedAgentCliToolType(toolType)) throw new Error(`${BRAND.NAME} here can't start the '${restoreArgs.toolType}' CLI. Update ${BRAND.NAME} on this computer.`);
     const provider = cliMoveProvider({ toolType, resumeMetadata: null });
-    if (!provider) throw new Error("ADE can't tell which agent this CLI ran, so it can't continue it here.");
+    if (!provider) throw new Error(`${BRAND.NAME} can't tell which agent this CLI ran, so it can't continue it here.`);
     const hasPrompt = restoreArgs.prompt.trim().length > 0;
     const typeMessage = async () => {
       if (!hasPrompt) return;
@@ -58279,7 +58282,7 @@ export function createAgentChatService(args: {
         holdUntilFree: true,
         clientMessageId: restoreArgs.clientMessageId,
       });
-      if (typed.outcome === "ended") throw new Error("The restored CLI stopped before ADE could type the message. Open it and send the message again.");
+      if (typed.outcome === "ended") throw new Error(`The restored CLI stopped before ${BRAND.NAME} could type the message. Open it and send the message again.`);
     };
     // The send id this CLI already has, kept in the project database so a
     // retry after a brain restart (the in-memory type ledger is gone) still
@@ -58304,7 +58307,7 @@ export function createAgentChatService(args: {
       return { sessionId, restoredWith: "earlier" };
     }
     const lane = await laneService.getSummary(restoreArgs.laneId);
-    if (!lane?.worktreePath) throw new Error("ADE couldn't find the lane on this computer, so it can't continue the CLI.");
+    if (!lane?.worktreePath) throw new Error(`${BRAND.NAME} couldn't find the lane on this computer, so it can't continue the CLI.`);
     const cli = restoreArgs.capsule?.cli && restoreArgs.capsule.cli.provider === provider ? restoreArgs.capsule.cli : null;
     const title = restoreArgs.title?.trim() || cliProviderName(provider);
     const keptInstanceId = cli?.accountEmail ? localProviderAccountByEmail(provider, cli.accountEmail) : null;
@@ -58332,7 +58335,7 @@ export function createAgentChatService(args: {
     }
     const infoLine = resumeTargetId
       ? ""
-      : `This ${cliProviderName(provider)} CLI session goes on in a new ADE Cloud computer. Its earlier conversation could not move here, so it starts fresh in the same lane.`;
+      : `This ${cliProviderName(provider)} CLI session goes on in a new ${BRAND.CLOUD_NAME} computer. Its earlier conversation could not move here, so it starts fresh in the same lane.`;
     const launched = await cliLifecycle.launchMovedCli({
       id: sessionId,
       laneId: lane.id,
@@ -58355,7 +58358,7 @@ export function createAgentChatService(args: {
       // With no message, a fresh CLI starts with no prompt: nothing runs until the person types.
       brief: hasPrompt
         ? [
-            infoLine || `This ${cliProviderName(provider)} CLI session goes on in a new ADE Cloud computer, so it starts fresh in the same lane.`,
+            infoLine || `This ${cliProviderName(provider)} CLI session goes on in a new ${BRAND.CLOUD_NAME} computer, so it starts fresh in the same lane.`,
             "",
             restoreArgs.prompt,
           ].join("\n")
@@ -58512,7 +58515,7 @@ export function createAgentChatService(args: {
         resumeTargetId = placed.conversationId;
       } catch (error) {
         logger.warn("agent_chat.cross_machine_cli_conversation_place_failed", { handoffId, error: getErrorMessage(error) });
-        notices.push(`Started a new CLI with a brief: ADE couldn't write its conversation here (${getErrorMessage(error)}).`);
+        notices.push(`Started a new CLI with a brief: ${BRAND.NAME} couldn't write its conversation here (${getErrorMessage(error)}).`);
       }
     } else if (cli.freshReason) {
       notices.push(cli.freshReason);
@@ -58544,7 +58547,7 @@ export function createAgentChatService(args: {
         `This CLI session moved here from ${capsule.source.machineName}; continue its work in this folder.`,
         "",
         capsule.brief,
-        ...(capsule.continuationPrompt !== CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT ? ["", `Note: ${capsule.continuationPrompt}`] : []),
+        ...(!isCrossMachineHandoffDefaultPrompt(capsule.continuationPrompt) ? ["", `Note: ${capsule.continuationPrompt}`] : []),
       ].join("\n"),
       goal: cli.goal ?? null,
       parent,
@@ -58695,7 +58698,7 @@ export function createAgentChatService(args: {
       ...(capsule.cli ? { cliToolType: capsule.cli.toolType } : {}),
     }, { ownedLaneId: priorRecord?.laneId ?? batchLaneRecord?.laneId ?? null });
     if (capsule.batchMove && destinationPreflight.batchMoveSupport !== 1) {
-      throw new Error("This ADE destination needs an update to accept batch moves safely.");
+      throw new Error(`This ${BRAND.NAME} destination needs an update to accept batch moves safely.`);
     }
     if (capsule.mode === "fork" && destinationPreflight.forkHandoffSupport?.supported === false) {
       throw new Error(
@@ -58979,7 +58982,7 @@ export function createAgentChatService(args: {
           const continuationPrompt = batchArrivalPrompt ?? capsule.continuationPrompt.trim();
           if (
             continuationPrompt
-            && (batchArrivalPrompt !== null || capsule.continuationPrompt !== CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT)
+            && (batchArrivalPrompt !== null || !isCrossMachineHandoffDefaultPrompt(capsule.continuationPrompt))
           ) {
             await sendMessage({
               sessionId: session.id,
@@ -59011,7 +59014,7 @@ export function createAgentChatService(args: {
             `Chat handed off from ${capsule.source.machineName}`,
             capsule.batchMove
               ? `New worktree: ${destinationLane.worktreePath}`
-              : capsule.continuationPrompt !== CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT
+              : !isCrossMachineHandoffDefaultPrompt(capsule.continuationPrompt)
               ? `Continuation note: ${capsule.continuationPrompt}`
               : "Continue from the handoff brief.",
           ].join("\n\n"),
@@ -60536,7 +60539,7 @@ export function createAgentChatService(args: {
     if (!NATIVE_CHAT_CONTINUE_PROVIDERS.has(provider)) {
       throw externalChatImportError(
         "EXTERNAL_CHAT_SESSION_INVALID_ARGS",
-        `${label} sessions can't be continued as an ADE chat. Open a copy instead.`,
+        `${label} sessions can't be continued as a ${BRAND.NAME} chat. Open a copy instead.`,
       );
     }
     if (hasPathSeparator(externalSessionId)) {
@@ -60697,7 +60700,7 @@ export function createAgentChatService(args: {
     if (!replayDescriptor) {
       throw externalChatImportError(
         "EXTERNAL_CHAT_SESSION_INVALID_ARGS",
-        `No model is available to open this ${importProviderLabel(provider)} session as an ADE chat.`,
+        `No model is available to open this ${importProviderLabel(provider)} session as a ${BRAND.NAME} chat.`,
       );
     }
     return importExternalChatSessionViaReplay(normalizedArgs, {
@@ -60964,7 +60967,7 @@ export function createAgentChatService(args: {
       && accountUnknownFromOtherHome(readPersistedState(sessionId))
     ) {
       throw new Error(
-        `This chat ran on a ${managed.session.provider} account that this ADE (home ${brainAdeHome}) does not have, so it cannot resume its conversation here. Open it from the ADE where it was created, or start a new chat.`,
+        `This chat ran on a ${managed.session.provider} account that this ${BRAND.NAME} (home ${brainAdeHome}) does not have, so it cannot resume its conversation here. Open it from the ${BRAND.NAME} where it was created, or start a new chat.`,
       );
     }
     // A Claude sign-out is not refused here. The turn runs, stops on the
@@ -61386,9 +61389,9 @@ export function createAgentChatService(args: {
       status: recovery.state,
       message: recovery.state === "required"
         ? autoRecovery === "pending"
-          ? "Reconnecting this chat from ADE's saved copy."
+          ? `Reconnecting this chat from ${BRAND.NAME}'s saved copy.`
           : "This chat's original AI thread could not be resumed. Your chat history and project files are still here."
-        : "Reconnected this chat from ADE's saved copy.",
+        : `Reconnected this chat from ${BRAND.NAME}'s saved copy.`,
       detail: {
         kind: "continuity_recovery",
         state: recovery.state,
@@ -61816,14 +61819,14 @@ export function createAgentChatService(args: {
     if (decision === "accept" || decision === "accept_for_session") {
       return allowCursorHook();
     }
-    return denyCursorHook("ADE denied this Cursor tool call.");
+    return denyCursorHook("DAEX denied this Cursor tool call.");
   };
 
   const cursorSdkAdeControlDirective = (): string =>
     [
-      "ADE renders Cursor planning controls from private fenced control blocks in assistant text.",
-      "ADE consumes these blocks and removes them from the visible transcript; treat them as private formatting instructions and do not explain this mechanism in user-facing replies.",
-      "Any prior transcript text that says ADE planning controls are unavailable or require external planning tools is obsolete.",
+      "DAEX renders Cursor planning controls from private fenced control blocks in assistant text.",
+      "DAEX consumes these blocks and removes them from the visible transcript; treat them as private formatting instructions and do not explain this mechanism in user-facing replies.",
+      "Any prior transcript text that says DAEX planning controls are unavailable or require external planning tools is obsolete.",
       "To publish a visible plan, include ```ade_update_plan followed by JSON like {\"explanation\":\"...\",\"steps\":[{\"text\":\"Inspect wiring\",\"status\":\"pending\"}]} and close the fence.",
       "To ask a blocking question, output only ```ade_request_user_input followed by JSON like {\"title\":\"Input requested\",\"questions\":[{\"id\":\"scope\",\"header\":\"Scope\",\"question\":\"Which scope should I use?\",\"options\":[{\"label\":\"UI\"},{\"label\":\"Backend\"}],\"allowsFreeform\":true}]} and close the fence, then stop.",
       "When a plan is ready for approval, include ```ade_plan_approval followed by JSON like {\"planDescription\":\"1. Inspect\\n2. Patch\\n3. Verify\"} and close the fence.",
@@ -62282,7 +62285,7 @@ export function createAgentChatService(args: {
           queueCursorControlFollowup(
             managed,
             runtime,
-            "The user approved the plan. Continue implementation under ADE approval gates.",
+            "The user approved the plan. Continue implementation under DAEX approval gates.",
           );
         } else {
           queueCursorControlFollowup(
@@ -63039,7 +63042,7 @@ export function createAgentChatService(args: {
       });
       if (preflight === "allow") return allowCursorHook();
       if (preflight === "deny") {
-        return denyCursorHook(req.reason ?? "ADE denied this Cursor tool call.");
+        return denyCursorHook(req.reason ?? "DAEX denied this Cursor tool call.");
       }
 
       const itemId = req.id || randomUUID();
@@ -63081,7 +63084,7 @@ export function createAgentChatService(args: {
         toolName: waiter.toolName,
       });
       // The waiter's resolve removes it from `permissionWaiters`.
-      cancelCursorPermissionWaiter(waiter, "The Cursor tool hook stopped waiting for ADE's approval.");
+      cancelCursorPermissionWaiter(waiter, "The Cursor tool hook stopped waiting for DAEX's approval.");
       emitPendingInputResolved(managed, {
         itemId,
         decision: "cancel",
@@ -63863,7 +63866,7 @@ export function createAgentChatService(args: {
         type: "system_notice",
         noticeKind: "info",
         steerId: steer.steerId,
-        message: "Queued message cancelled because ADE recycled the Cursor thread — resend it if still needed.",
+        message: `Queued message cancelled because ${BRAND.NAME} recycled the Cursor thread — resend it if still needed.`,
         turnId,
       });
     }
@@ -66521,7 +66524,7 @@ export function createAgentChatService(args: {
         });
         const choice = response.answers["copilot-exit-plan"]?.[0];
         const approved = (response.decision === "accept" || response.decision === "accept_for_session") && choice !== "reject";
-        if (!approved) return { approved: false, feedback: response.responseText || "Plan not approved in ADE." };
+        if (!approved) return { approved: false, feedback: response.responseText || "Plan not approved in DAEX." };
         // Copilot leaves plan mode with manual approvals (see the worker's
         // applyPermissionMode), which is ADE's Ask.
         if (target.session.copilotPermissionMode === "plan") {
@@ -66614,13 +66617,13 @@ export function createAgentChatService(args: {
         // The approval card answers with a decision (ACCEPT / ACCEPT ALL) and no
         // option; the question form answers with an option. Both must approve.
         if (choice === "reject" || response.decision === "decline" || response.decision === "cancel") {
-          return { kind: "reject", feedback: response.responseText || "Denied in ADE." };
+          return { kind: "reject", feedback: response.responseText || "Denied in DAEX." };
         }
         if (response.decision === "accept_for_session" || choice === "approve-for-session") {
           return sessionApproval ?? { kind: "approve-once", approvedInteractively: true };
         }
         if (response.decision === "accept") return { kind: "approve-once", approvedInteractively: true };
-        return { kind: "reject", feedback: response.responseText || "Denied in ADE." };
+        return { kind: "reject", feedback: response.responseText || "Denied in DAEX." };
       };
       acquired.pooled.bridge.onUserInputRequest = async (chatId, _waiterId, rawRequest) => {
         const target = managedSessions.get(chatId);
@@ -66747,10 +66750,10 @@ export function createAgentChatService(args: {
             }
           })();
           const signInMessage = token.off
-            ? `${serverName} needs a sign-in, but ${registryName} is off here in ADE's MCP servers. Turn it on in Settings → MCP servers, then start a new chat.`
+            ? `${serverName} needs a sign-in, but ${registryName} is off here in ${BRAND.NAME}'s MCP servers. Turn it on in Settings → MCP servers, then start a new chat.`
             : token.registryConfigured
               ? `${serverName} needs a sign-in. Sign in to ${registryName} from Settings → MCP servers, then start a new chat.`
-              : `${serverName} needs a sign-in. Add it to ADE's MCP servers (Settings → MCP servers: Import, or Add with ${shownUrl}) and sign in once — every agent will use it.`;
+              : `${serverName} needs a sign-in. Add it to ${BRAND.NAME}'s MCP servers (Settings → MCP servers: Import, or Add with ${shownUrl}) and sign in once — every agent will use it.`;
           const key = `${chatId}:${serverUrl || serverName}`;
           if (!copilotMcpAuthNotices.has(key)) {
             copilotMcpAuthNotices.add(key);
@@ -68384,7 +68387,7 @@ export function createAgentChatService(args: {
         sessionId: args.sessionId,
         error: error instanceof Error ? error.message : String(error),
       });
-      throw new Error("ADE could not read this chat's comments, so nothing was sent. Try again.");
+      throw new Error(`${BRAND.NAME} could not read this chat's comments, so nothing was sent. Try again.`);
     }
     if (!taken.block) return untouched;
     return {
@@ -68506,6 +68509,20 @@ export function createAgentChatService(args: {
       return;
     }
     args = withSideChatRole(managed, args);
+    // `/ade:ade-browser` and `/ade-browser` (saved prompts, automations, habit)
+    // name skills that are `daex:daex-browser` / `daex-browser` now, unless a
+    // project or user skill, or a Claude or Cursor custom command
+    // (`commands/<name>.md`), still carries the old name. Checked only when
+    // the message opens with an old bundled name.
+    if (!options?.preparedMessage && typeof args.text === "string") {
+      const cwd = managed.laneWorktreePath;
+      const renamed = rewriteLegacyBundledSkillCommand(args.text, (name) =>
+        getAgentSkillRootsWithSource({ cwd })
+          .some(({ root, source }) => source !== "bundled" && fs.existsSync(path.join(root, name, "SKILL.md")))
+        || [...ancestorConfigRoots(cwd, ".claude"), ...ancestorConfigRoots(cwd, ".cursor")]
+          .some((root) => fs.existsSync(path.join(root, "commands", `${name}.md`))));
+      if (renamed !== args.text) args = { ...args, text: renamed };
+    }
     await accountSwitchesInFlight.get(args.sessionId)?.catch(() => undefined);
     // The CTO has no Compact first offer: when its cache has gone cold and
     // this send would re-read a big thread at full price, it moves to a fresh
@@ -70851,8 +70868,8 @@ export function createAgentChatService(args: {
     const awaitingInputBefore = hasLivePendingInput(managed);
     if (awaitingInputBefore && normalizedKind !== "wake") {
       throw new Error(
-        `${PENDING_INPUT_SEND_BLOCKED_MESSAGE} See the pending input with \`ade chat pending ${sessionId} --text\`, `
-        + `answer it with \`ade chat respond ${sessionId} --option <n> | --text "<answer>" | --approve | --deny\` `
+        `${PENDING_INPUT_SEND_BLOCKED_MESSAGE} See the pending input with \`daex chat pending ${sessionId} --text\`, `
+        + `answer it with \`daex chat respond ${sessionId} --option <n> | --text "<answer>" | --approve | --deny\` `
         + "(chat.respondToInput).",
       );
     }
@@ -72857,7 +72874,7 @@ export function createAgentChatService(args: {
       && row.ownerPid !== processRegistry.pid
       && processRegistry.isProcessIdentityLive(row.ownerPid, row.ownerProcessStartedAt)
     ) {
-      throw new Error("Chat session is owned by another ADE process; cannot resume from here.");
+      throw new Error(`Chat session is owned by another ${BRAND.NAME} process; cannot resume from here.`);
     }
     // The row's `owner_pid` is stamped at creation, so it goes stale the moment
     // a different brain legitimately takes a dormant chat over. The runtime
@@ -73104,7 +73121,7 @@ export function createAgentChatService(args: {
     const lane = laneService.getLaneBaseAndBranch(managed.session.laneId);
     return [
       "This chat's earlier AI session could not be reopened: the provider no longer has it.",
-      "ADE kept its own copy of the conversation, and here it is. Carry on exactly where it left off.",
+      "DAEX kept its own copy of the conversation, and here it is. Carry on exactly where it left off.",
       lastUserIndex >= 0 && !answered
         ? "The user's last message has not been answered yet: answer it now."
         : "Wait for the user's next message; do not repeat finished work.",
@@ -73326,7 +73343,7 @@ export function createAgentChatService(args: {
       preparedCapsule = prepareSendMessage({
         sessionId,
         text: capsule,
-        displayText: "Rebuilt this chat's AI thread from ADE history.",
+        displayText: `Rebuilt this chat's AI thread from ${BRAND.NAME} history.`,
         metadata: {
           kind: "continuity_recovery",
           hostContinuation: { reason: "continuity_recovery" },
@@ -73366,7 +73383,7 @@ export function createAgentChatService(args: {
         await sendMessage({
           sessionId,
           text: capsule,
-          displayText: "Rebuilt this chat's AI thread from ADE history.",
+          displayText: `Rebuilt this chat's AI thread from ${BRAND.NAME} history.`,
           metadata: {
             kind: "continuity_recovery",
             hostContinuation: { reason: "continuity_recovery" },
@@ -73427,7 +73444,7 @@ export function createAgentChatService(args: {
         await sendMessage({
           sessionId,
           text: capsule,
-          displayText: "Rebuilt this chat's AI thread from ADE history.",
+          displayText: `Rebuilt this chat's AI thread from ${BRAND.NAME} history.`,
           metadata: {
             kind: "continuity_recovery",
             hostContinuation: { reason: "continuity_recovery" },
@@ -73533,8 +73550,8 @@ export function createAgentChatService(args: {
             runtime,
             interruptedTurnId,
             restarting
-              ? "Interrupted so ADE could restart and resume the Codex thread"
-              : "Interrupted so ADE could retry the Codex turn",
+              ? "Interrupted so DAEX could restart and resume the Codex thread"
+              : "Interrupted so DAEX could retry the Codex turn",
           );
         }
 
@@ -74677,7 +74694,7 @@ export function createAgentChatService(args: {
     assertDeliverableHere: (sessionId) => {
       assertChatRuntimeOwnedHere(sessionId, "arm a wait that wakes");
       if (agentCliOwnedByAnotherRuntime(sessionId)) {
-        throw new Error(`Terminal session '${sessionId}' runs under another live ADE runtime; arm the wait from there.`);
+        throw new Error(`Terminal session '${sessionId}' runs under another live ${BRAND.NAME} runtime; arm the wait from there.`);
       }
     },
     whenReady: () => scheduledWorkReady,
@@ -76481,7 +76498,7 @@ export function createAgentChatService(args: {
       // spent, and this one is only knowable after the attempt. The transcript
       // already carries why the send was refused; the caller needs to know the
       // resume did not happen.
-      throw new Error("ADE could not start the resume turn. The usage limit resume is still armed.");
+      throw new Error(`${BRAND.NAME} could not start the resume turn. The usage limit resume is still armed.`);
     }
     // No `resetStreak` here: the awaited cancel above already zeroed the counter
     // and the pause flag, and only a turn that actually started gets to keep
@@ -76576,7 +76593,7 @@ export function createAgentChatService(args: {
   const queueNoteForNextTurn = (managed: ManagedChatSession, note: string): boolean => {
     const text = note.trim();
     if (!text || managed.deleted || managed.closed) return false;
-    managed.pendingRestartNote = mergePendingRestartNote(managed.pendingRestartNote, `ADE note: ${text}`);
+    managed.pendingRestartNote = mergePendingRestartNote(managed.pendingRestartNote, `DAEX note: ${text}`);
     persistChatState(managed);
     return true;
   };
@@ -77598,7 +77615,7 @@ export function createAgentChatService(args: {
   };
 
   const PENDING_INPUT_ANSWER_REROUTED_MESSAGE =
-    "That request had already closed, so ADE sent your answer as a message instead.";
+    `That request had already closed, so ${BRAND.NAME} sent your answer as a message instead.`;
 
   /**
    * Deliver an answer whose waiter is gone, or refuse to lose it.
@@ -77659,7 +77676,7 @@ export function createAgentChatService(args: {
         type: "system_notice",
         noticeKind: "info",
         status: SUBAGENT_ANSWER_UNSENT_NOTICE_STATUS,
-        message: `${request.subagent.name} stopped (ADE restarted, or the subagent ended), so your answer did not reach it.`,
+        message: `${request.subagent.name} stopped (${BRAND.NAME} restarted, or the subagent ended), so your answer did not reach it.`,
         ...(messageText.trim().length
           ? { detail: `Answer for the subagent "${request.subagent.name}" (it stopped before it got this):\n\n${messageText}` }
           : {}),
@@ -77683,7 +77700,7 @@ export function createAgentChatService(args: {
             type: "system_notice",
             noticeKind: "warning",
             severity: "warning",
-            message: "That request closed before your answer reached it, and ADE could not send the answer as a message either. It is back in the composer — send it again.",
+            message: `That request closed before your answer reached it, and ${BRAND.NAME} could not send the answer as a message either. It is back in the composer — send it again.`,
           });
           persistChatState(managed);
           throw new Error(`That request is no longer active, and your answer could not be sent as a message: ${reason}`);
@@ -77723,13 +77740,13 @@ export function createAgentChatService(args: {
       itemId,
       decision,
       secretCard && accepted
-        ? `The agent that asked for ${secretCard.name} stopped waiting, so ADE did not save it. Add it with Add secret… in the composer, or ask the agent again.`
+        ? `The agent that asked for ${secretCard.name} stopped waiting, so ${BRAND.NAME} did not save it. Add it with Add secret… in the composer, or ask the agent again.`
         : connectLabel && accepted
           ? connectSignedIn
             ? `${connectLabel} is signed in, but the agent that asked stopped waiting. Tell it to go on.`
-            : `The agent that asked to connect ${connectLabel} stopped waiting, so ADE did not save the key. Connect it in Settings › Integrations, or ask the agent again.`
+            : `The agent that asked to connect ${connectLabel} stopped waiting, so ${BRAND.NAME} did not save the key. Connect it in Settings › Integrations, or ask the agent again.`
           : mcpServerCard && accepted
-            ? `The agent that asked to add the MCP server ${mcpServerCard.server.name} stopped waiting, so ADE did not add it. Add it in Settings › Integrations › MCP servers, or ask the agent again.`
+            ? `The agent that asked to add the MCP server ${mcpServerCard.server.name} stopped waiting, so ${BRAND.NAME} did not add it. Add it in Settings › Integrations › MCP servers, or ask the agent again.`
             : undefined,
     );
   };
@@ -80394,7 +80411,7 @@ export function createAgentChatService(args: {
     emitChatEvent(managed, {
       type: "system_notice",
       noticeKind: "info",
-      message: `Background work here hadn't reported anything for ${formatWorkingDuration(RUNTIME_WORKLOAD_EXEMPTION_MAX_SILENCE_MS)}, so ADE stopped it and released the agent. Ask for a re-run if it's still needed.`,
+      message: `Background work here hadn't reported anything for ${formatWorkingDuration(RUNTIME_WORKLOAD_EXEMPTION_MAX_SILENCE_MS)}, so ${BRAND.NAME} stopped it and released the agent. Ask for a re-run if it's still needed.`,
     });
   };
 
@@ -80838,7 +80855,7 @@ export function createAgentChatService(args: {
         ? "The CLI was still working when the wait ran out."
         : reason === "needs_input"
           ? "The CLI stopped at a prompt that needs an answer in its terminal."
-          : "ADE stopped before the CLI's turn ended.";
+          : `${BRAND.NAME} stopped before the CLI's turn ended.`;
       const body = providerMessage?.trim() || terminalTail?.trim() || "";
       return {
         sessionId,
@@ -81192,7 +81209,7 @@ export function createAgentChatService(args: {
     const requestedPresetId = typeof requestedPresetIdArg === "string" ? requestedPresetIdArg.trim() : "";
     const requestedPreset = requestedPresetId ? readPresetLaunchTarget(requestedPresetId, resolveMachineAdeDir()) : null;
     if (requestedPresetId && !requestedPreset?.model) {
-      throw new Error(`Custom provider '${requestedPresetId}' is not on this machine. \`ade harness providers --text\` lists them.`);
+      throw new Error(`Custom provider '${requestedPresetId}' is not on this machine. \`daex harness providers --text\` lists them.`);
     }
     if (requestedPresetIdArg === null && modelId === undefined) {
       throw new Error("Pick a model to switch to from the Custom provider.");
@@ -82351,13 +82368,13 @@ export function createAgentChatService(args: {
     // An action call with no arguments arrives as `undefined`; say what is
     // missing instead of failing on a property read.
     if (!args || typeof args !== "object" || typeof args.sessionId !== "string" || !args.sessionId.trim()) {
-      throw new AdeExpectedError("chat.updateSession needs { sessionId, ...fields }, e.g. `ade chat update <session> --title \"New title\"`.", "user");
+      throw new AdeExpectedError("chat.updateSession needs { sessionId, ...fields }, e.g. `daex chat update <session> --title \"New title\"`.", "user");
     }
     // A parent sent here used to be dropped without a word, so the caller
     // believed the chat was relinked.
     const loose = args as Record<string, unknown>;
     if (loose.orchestrationParentSessionId !== undefined || loose.parentSessionId !== undefined) {
-      throw new Error("updateSession does not change a chat's parent. Use chat.setParent (`ade chat set-parent`).");
+      throw new Error("updateSession does not change a chat's parent. Use chat.setParent (`daex chat set-parent`).");
     }
     const session = await updateSession(args);
     const touchesDefaults = LAUNCH_DEFAULT_UPDATE_FIELDS.some((field) => args[field] !== undefined);
@@ -84560,7 +84577,7 @@ export function createAgentChatService(args: {
     if (!last) throw new Error("This chat has no user message to run again.");
     const retractedFromSequence = last.envelope.sequence;
     if (!transcriptPaths.some((transcriptPath) => transcriptHoldsSequenceSync(transcriptPath, retractedFromSequence))) {
-      throw new Error("ADE could not find the last turn in this chat's transcript file. Nothing was changed.");
+      throw new Error(`${BRAND.NAME} could not find the last turn in this chat's transcript file. Nothing was changed.`);
     }
 
     const target = last.event;
@@ -84662,7 +84679,7 @@ export function createAgentChatService(args: {
     // A send can also return without sending: an empty prepared message, a
     // slash command handled locally, the disk-pressure gate.
     if ((managed.lastUserMessageSequence ?? 0) === userMessageBeforeResend) {
-      const notSent = new Error("ADE did not send the message again. It is kept in the chat; send it again to retry.");
+      const notSent = new Error(`${BRAND.NAME} did not send the message again. It is kept in the chat; send it again to retry.`);
       keepUnsentMessage(notSent);
       throw notSent;
     }
@@ -86252,7 +86269,7 @@ ${schedule.prompt}`
           const { slashCommandsSection, listedEntries } = buildClaudeSdkSlashCommandsSection(session, cwd, pluginPaths, bundledPluginPaths);
           if (slashCommandsSection.length) listing = { text: slashCommandsSection.join("\n").trim(), entries: listedEntries };
           return {
-            label: "ADE system prompt",
+            label: `${BRAND.NAME} system prompt`,
             timing: "every-request",
             detail: "Added after Claude Code's own prompt for every request.",
             text: [
@@ -86269,7 +86286,7 @@ ${schedule.prompt}`
         case "codex":
           activity = buildSessionActivityGuidance(session, true);
           return {
-            label: "ADE developer instructions",
+            label: `${BRAND.NAME} developer instructions`,
             timing: "every-request",
             detail: "Sent as the thread's developer instructions.",
             text: buildCodexDeveloperInstructions({
@@ -86283,7 +86300,7 @@ ${schedule.prompt}`
         case "opencode":
           activity = buildOpenCodeSessionActivityGuidance(session, true);
           return {
-            label: "ADE session instructions",
+            label: `${BRAND.NAME} session instructions`,
             timing: "every-request",
             detail: "Sent as the session's instruction entry.",
             text: buildOpenCodeSystemPrompt({
@@ -86295,7 +86312,7 @@ ${schedule.prompt}`
           };
         case "copilot":
           return {
-            label: "ADE system message",
+            label: `${BRAND.NAME} system message`,
             timing: "every-request",
             detail: "Added after Copilot's own instructions for every request.",
             text: [buildCodingAgentSystemPrompt({ ...harnessArgs, runtime: "copilot-sdk" }), lineage].filter(Boolean).join("\n\n"),
@@ -86307,7 +86324,7 @@ ${schedule.prompt}`
             process.platform !== "win32" && piTools.includes("bash"),
           ));
           return {
-            label: "ADE system prompt",
+            label: `${BRAND.NAME} system prompt`,
             timing: "every-request",
             detail: "Replaces Pi's own base prompt.",
             text: [
@@ -86321,7 +86338,7 @@ ${schedule.prompt}`
           const droidListing = buildDroidSkillListing(cwd, skillRoots);
           if (droidListing.lines.length) listing = { text: droidListing.lines.join("\n"), entries: droidListing.entries };
           return {
-            label: "ADE system prompt",
+            label: `${BRAND.NAME} system prompt`,
             timing: "every-request",
             detail: "Added after Droid's own prompt when the session is created.",
             text: buildDroidFraming(preview),
@@ -86330,7 +86347,7 @@ ${schedule.prompt}`
         case "cursor":
           perTurn = buildCursorSdkModeDirective(preview, resolveCursorSdkPolicy(session));
           return {
-            label: "ADE lane guidance",
+            label: `${BRAND.NAME} lane guidance`,
             timing: "chat-start",
             detail: "Put before the first message of each Cursor agent.",
             text: [
@@ -86342,7 +86359,7 @@ ${schedule.prompt}`
           // Muse and the ACP agents have only the user turn: the guidance rides
           // the first message of each provider session.
           return {
-            label: "ADE lane guidance",
+            label: `${BRAND.NAME} lane guidance`,
             timing: "chat-start",
             detail: "Put before the first message of the chat.",
             text: buildAdeGuidanceForLane(cwd, session, spawnSelfReportOpts(session)),
@@ -86413,7 +86430,7 @@ ${schedule.prompt}`
     if (!id) throw new AdeExpectedError("sessionId is required.", "user");
     if (agentCliActions.target(id, "keep a device choice for")) {
       throw new Error(
-        "A device choice is kept for ADE chats; this session is an agent CLI in a terminal. "
+        `A device choice is kept for ${BRAND.NAME} chats; this session is an agent CLI in a terminal. `
           + "Pass --machine <name> on each device command instead.",
       );
     }
@@ -86441,7 +86458,7 @@ ${schedule.prompt}`
       next[kind] = chosen;
     } else {
       throw new Error(source?.kind === "cloud"
-        ? "Only the iPhone has an ADE Cloud source (ios@cloud)."
+        ? `Only the iPhone has a ${BRAND.CLOUD_NAME} source (ios@cloud).`
         : "source must be { kind: \"here\" }, { kind: \"machine\", machineKey, machineName } or { kind: \"cloud\" }.");
     }
     managed.deviceSources = Object.keys(next).length ? next : null;
@@ -87175,7 +87192,7 @@ ${schedule.prompt}`
       const sessionId = typeof listArgs?.sessionId === "string" ? listArgs.sessionId.trim() : "";
       if (!sessionId) {
         throw new AdeExpectedError(
-          "Expected 'sessionId' to be a non-empty string: name the chat whose questions to list (`ade chat pending <sessionId>`).",
+          "Expected 'sessionId' to be a non-empty string: name the chat whose questions to list (`daex chat pending <sessionId>`).",
           "user",
         );
       }

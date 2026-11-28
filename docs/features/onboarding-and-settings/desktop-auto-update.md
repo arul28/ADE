@@ -1,905 +1,296 @@
-# Desktop auto-update disk-space behavior
+# Desktop auto-update
 
-## Update tracks on other machines
+Packaged builds check for and download updates on their own; installing is
+manual unless the person turns on automatic installs. One `quitAndInstall()`
+path serves the top-bar control, the restart banner, Settings, `daex update
+install`, remote "Update & restart", idle auto-apply and install-on-quit.
 
-In desktop Settings, **Update other machines** shows a **Stable / Beta** choice
-for eligible connected computers. The selected computer checks whether the
-release can open its databases, then downloads it and restarts. The row reports
-progress and shows the new track when that computer reconnects on it. ADE Cloud
-manages its own updates. A manually installed Linux package is updated on the
-computer itself. The web app and the phone don't offer this switch: the web
-client has no `switchUpdateTrack`, so the row shows no Stable / Beta choice there.
+## Source file map
 
-## macOS update path
+Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
 
-ADE uses `electron-updater` with the macOS ZIP target. The behavior below was
-verified against the installed `electron-updater` 6.8.3 source and the official
-[electron-builder auto-update documentation](https://www.electron.build/docs/features/auto-update/).
+- `main/services/updates/autoUpdateService.ts`: the electron-updater wrapper and
+  `AutoUpdateSnapshot` (status `idle` / `checking` / `downloading` / `ready` /
+  `installing` / `error`, `currentVersion`, `latestKnownVersion`, `parked`,
+  `lastInstallFailed`, `autoApplyPending`, `updateTransaction`, …).
+- `autoUpdateErrors.ts`: error classification and the macOS artifact limit.
+- `downloadStallWatchdog.ts`, `updaterNetRecovery.ts`: stalled downloads and a
+  wedged Chromium session.
+- `updateTrackFeed.ts`, `trackSwitchGuard.ts`, `shared/updateTrack.ts`,
+  `apps/ade-cli/src/services/runtime/updateTrackStore.ts`: Stable and Beta.
+- `updateTransaction.ts`, `runtimeRestartVerification.ts`: the post-update
+  transaction.
+- `installOnQuit.ts`, `windowsInstallProgress.ts`, `remoteUpdateInstall.ts`,
+  `updateWorkspace.ts`, `nativeUpdateInstall.ts`.
+- `clientUpdateGate.ts`, `shared/clientUpdateGate.ts`: the minimum-build gate.
+- `appBundleOwnership.ts`, `registerAppBundleOwnershipIpc.ts`,
+  `app/AppBundleOwnershipBanner.tsx`: a root-owned app bundle on macOS.
+- `shared/updateVersions.ts`: the one version comparator
+  (`compareUpdateVersions`) and `isWindowsSelfInstallBlocked`.
+- `app/useAutoUpdateSnapshot.ts`, `app/AutoUpdateControl.tsx`,
+  `app/AutoUpdateBanner.tsx`, `settings/AutoUpdatesSection.tsx`: the UI.
+- `apps/ade-cli/src/commands/brainUpdate.ts`, `macDesktopUpdate.ts`,
+  `windowsDesktopRescue.ts`: `daex brain update`, which also updates an
+  installed desktop app.
+- `apps/desktop/scripts/artifact-size-budget.cjs`: release size budgets.
 
-1. `checkForUpdates()` reads `latest-mac.yml` and emits `update-available`.
-2. ADE keeps `autoDownload` disabled so it can inspect the artifact size and
-   preflight the updater-cache volume before calling `downloadUpdate()`.
-3. `electron-updater` writes the full archive under the updater cache's
-   `pending/` directory. ADE disables differential downloads, so new updates
-   do not create or retain the root `update.zip` differential cache copy. An
-   `update.zip` left by an older ADE version may still be present; it is never
-   the staged installer.
-4. After the archive is ready, `MacUpdater` starts a loopback HTTP server and
-   emits `update-downloaded`. Native Squirrel.Mac later fetches the cached ZIP
-   through that server.
-5. `quitAndInstall()` returns `void`. If Squirrel has not fetched the archive
-   yet, `MacUpdater` asks the native updater to check again and waits for its
-   `update-downloaded` event before quitting. Native failures arrive through the
-   updater's `error` event; there is no install-completion promise.
-6. Squirrel/ShipIt stages, expands, replaces, and relaunches the application on
-   the installed application's volume.
+## Gotchas
 
-A `ready` snapshot is not proof the ZIP still exists. ADE stores the archive
-under `~/Library/Caches/ade-desktop-updater` (Windows: `%LOCALAPPDATA%\ade-desktop-updater`),
-which the OS may purge while ADE stays running. `MacUpdater` also starts the
-loopback HTTP server at download time, not at install time, so a days-old
-`ready` state can hand Squirrel a dead pipe. Squirrel pipes the pending ZIP
-recorded as `downloadedFile`; a root `update.zip`, if one remains from an older
-ADE version, is only a differential cache copy. ADE therefore:
+- **Compare versions with `compareUpdateVersions`**, never `===`.
+- **Install refreshes before quitting.** `quitAndInstall()` re-runs the feed
+  check before `installing`, or DAEX could install a stale download.
+- **`installing` is sticky; `ready` is not.** While installing, the service
+  ignores `update-not-available`, `checking-for-update` and `error`.
+- **Parked is not failed.** An aborted install goes to `snapshot.parked`, not
+  `error`; the download stays.
+- **A `ready` snapshot is not proof the archive exists.** The OS may purge the
+  updater cache (`~/Library/Caches/ade-desktop-updater`,
+  `%LOCALAPPDATA%\ade-desktop-updater`), and on macOS the loopback server that
+  feeds Squirrel starts at download time. DAEX re-downloads a vanished archive
+  before handoff and on the periodic ready check, and treats install-time
+  `Cannot pipe` / `ENOENT` / "network connection was lost" as a vanished archive
+  (restore and retry once, then park as `handoff_failed`).
+- **`artifact_too_large` is never classified from message text**; the
+  preflight passes its `kind` explicitly.
 
-- Re-downloads the staged archive **before** uninstalling the background
-  service or calling native `quitAndInstall`, whenever the recorded
-  `downloadedFile` or updater-cache ZIP/EXE is gone.
-- Re-downloads on the periodic ready check so a vanished cache does not sit
-  on the Install button until the user clicks it, and skips the feed check
-  for that cycle.
-- Treats install-phase `The network connection was lost` / `Cannot pipe` /
-  `ENOENT` as a vanished local archive: restore the ZIP (which recreates the
-  loopback server) and retry native handoff once. A second failure parks as
-  `handoff_failed`. Leftover updater `error` / cancelled / not-available events
-  during that restore do not wipe the archive or take the download-error path;
-  `downloadUpdate()` resolving with a present ZIP is the source of truth.
+## The minimum-build gate
 
-The same `quitAndInstall()` path serves the desktop pill, the orange Restart
-banner, Settings, `ade update install`, and idle auto-apply.
-There is no per-surface installer.
+The account server can require a minimum build (`GET /client/minimum`). Desktop
+main reads it at launch, every 3 hours and on focus after 30 minutes without a
+read (`main/services/updates/clientUpdateGate.ts`; rule
+`desktopUpdateRequirement`; iOS `ClientUpdateGate.swift`). A stale or failed
+read never blocks. A blocked build shows the update screen and drops its own
+Sentry events. Setting and undoing it: [the update gate
+playbook](../../playbooks/update-gate.md).
 
-The practical volume checks are therefore:
+## Platform paths
 
-- Before download: ADE's resolved updater cache path.
-- Before staging/install: `process.execPath`, which resolves to the installed
-  application bundle's volume on macOS.
+**macOS**: `electron-updater` with the ZIP target. `autoDownload` is off so
+DAEX can preflight size and free space first; differential downloads are off.
+After download, Squirrel.Mac fetches the ZIP through a loopback server and
+ShipIt replaces and relaunches the app. Volume checks: the updater cache before
+download, `process.execPath` before install.
+
+**Windows**: per-user NSIS with `latest.yml` + blockmap. `app-update.yml` comes
+from the build's publish config and must match `ADE_RELEASE_REPOSITORY` (default
+`arul28/ADE`; forks override). The handoff is silent
+(`quitAndInstall(true, true)`).
+
+- **Progress window.** `windowsInstallProgress.ts` starts
+  `windows-update-progress.ps1` from `%LOCALAPPDATA%\ADE\update-progress-<channel>\`
+  (outside the install folder, not `%TEMP%`) through `cmd /c start`. It shows
+  "Updating DAEX to vX" until the new DAEX has a window. If no new DAEX appears,
+  or the installer runs past 10 minutes, it stops the installer and opens DAEX
+  itself, because a remote update has nobody at the PC. Its heartbeat makes a
+  copy opened by hand mid-install step aside.
+- **No installer dialog may wait during a silent update.** `installer.nsh`
+  replaces electron-builder's "uninstall failed" box
+  (`customUnInstallCheck*`): it reopens the old DAEX on a silent update and
+  exits 2, leaving the old install for a retry. First it runs
+  `build/ade-update-holders.ps1` (Restart Manager) and writes the processes
+  holding the install folder to `<ade home>\runtime\update-blocked.json`. The
+  brain reports it in its handshake (`runtimeInfo.lastUpdateBlock`,
+  `apps/ade-cli/src/lib/hostUpdateFacts.ts`), and another computer's Machines
+  card names the blocker
+  (`renderer/components/remoteTargets/machineUpdateStatus.ts`; the phone has
+  the same rules in `MachineUpdateStore.swift`).
+- **In-place updates do only what an update needs** (`-Updating`): stop the
+  service, refresh the terminal shim, leave PATH, link handlers, associations
+  and the firewall rule. The relaunched app reinstalls and restarts the service
+  (the transaction below). Every step logs to `runtime/install-steps.log` in the
+  channel's DAEX home.
+- **Service-removal preflight.** `readRecordedBrain`
+  (`apps/ade-cli/src/serviceManager/installWindows.ts`) refuses to stop a brain
+  whose recorded command differs from the one DAEX would launch.
+  `checkWindowsServiceRemovable` runs it read-only, so `remoteUpdateInstall.ts`
+  answers `failed` with the reason instead of dying. Builds that cannot
+  self-install (`isWindowsSelfInstallBlocked`) are updated through a remote
+  terminal ([Remote runtime](../remote-runtime/README.md#machineupdateandrestart)).
+- `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1` gates publishing Windows release
+  assets; the build fails closed on Authenticode.
+
+**`daex brain update --apply-staged` updates the app too.** On Windows with an
+app installed, `applyWindowsDesktopUpdate` verifies the installer's sha512 and
+Authenticode signer, stops the service, runs the installer with `--updated /S`
+and restarts the service from the app's CLI; failure restores the old service.
+On macOS with `ADE.app` in `/Applications` or `~/Applications`,
+`applyMacDesktopUpdate` asks an open app to install its own update, or swaps a
+closed app's bundle after checking the zip's SHA-512, `codesign`, Team ID,
+bundle id and version, and registers the service on the app's runtime. Anything
+unsafe changes nothing and says why. An Alpha app has no feed and is reported as
+behind. On Linux the app updates itself or through the package manager.
 
 ### App bundle ownership
 
 A root-owned `/Applications/ADE.app` makes every update ask for a password.
-`appBundleOwnership.ts` detects it and `AppBundleOwnershipBanner.tsx` docks
-"ADE will ask for your password on every update" with Fix it (an `osascript`
-admin `chown -R` of the bundle to the user) and Details. The IPC
-(`registerAppBundleOwnershipIpc.ts`, types in `shared/types/appBundleOwnership.ts`)
-is local-only and takes no pin: it acts on this computer's bundle.
-
-## Windows update path
-
-Windows x64 uses electron-builder's per-user NSIS target and
-`electron-updater`'s `latest.yml` + blockmap contract:
-
-1. Electron-builder generates the installed `resources/app-update.yml` from
-   the package's GitHub publish configuration. ADE does not copy the
-   source-tree YAML into the package. `ADE_RELEASE_REPOSITORY=owner/repo`
-   lets CI bind a fork package to the repository that produced it while the
-   source default remains the upstream `arul28/ADE`.
-2. `checkForUpdates()` reads `latest.yml`; ADE keeps `autoDownload` disabled
-   until it has run the same cache-volume capacity preflight used on macOS.
-3. `downloadUpdate()` writes the NSIS installer and blockmap into the updater
-   cache. `quitAndInstall()` hands off to the external NSIS updater, so Windows
-   uses the 60-second hard quit bound and has no in-process Squirrel staging
-   signal. If that installer file is gone from `%LOCALAPPDATA%\ade-desktop-updater`
-   when Install runs, ADE re-downloads it first — the same vanished-archive
-   restore used on macOS — then hands off to NSIS.
-4. The packaged-artifact smoke test requires the generated update authority
-   to match `ADE_RELEASE_REPOSITORY`, preventing a fork build from silently
-   checking a different repository.
-
-### What the person sees, and what the installer does
-
-The handoff is silent (`quitAndInstall(true, true)`; it has to be, or the
-assisted installer never relaunches ADE), so ADE shows its own window for the
-gap. Right before the handoff, `windowsInstallProgress.ts` copies
-`resources/ade-cli/windows-update-progress.ps1` to
-`%LOCALAPPDATA%\ADE\update-progress-<channel>\` and starts it through
-`cmd /c start`. It runs from outside the install folder because the installer
-renames that folder away and kills every process whose image lives in it, and
-not from `%TEMP%` because some machines point TEMP at a folder other users can
-write. It uses `cmd start` because, from Electron, a `detached`
-powershell.exe exits without running and an attached one dies with ADE. The
-small, topmost "Updating ADE to vX" window follows the old app quitting, the
-installer running, and the steps in `install-steps.log`. It closes when the new
-ADE has a window on screen. If the installer ends and no new ADE appears, or
-the installer is still running after 10 minutes, it says so on the window and
-then acts without waiting for a click, because a remote update (from another
-machine or the phone) has nobody at the PC: it stops a still-running installer
-together with its child processes, then opens ADE. Whichever version is
-installed comes up and puts its background service back, so the machine
-returns to the relay. The heartbeat says `failed` first, so that ADE does not
-defer to the window (below). An install the person quit into only gets the
-stuck installer stopped. Its log is read into `ade-update.jsonl` as
-`autoUpdate.install_progress_report` 30 s into the next launch.
-
-No installer dialog may wait for an answer during a silent update: a
-`MessageBox` without `/SD` is shown even under `/S`. electron-builder's own
-"uninstall failed" box (`handleUninstallResult`, after the old uninstaller has
-failed five times) has none, so `installer.nsh` replaces it through the
-`customUnInstallCheck` and `customUnInstallCheckCurrentUser` hooks. The old
-uninstaller fails when it cannot rename a file out of the install folder, which
-a process outside that folder causes by holding a file open (a dev brain from a
-checkout with the installed `resources\app.asar` open did it on 2026-11-18,
-and the PC sat on the hidden box for two hours with no ADE and no service). The
-hook answers the box, reopens the old ADE when the run is a silent update, and
-exits with code 2, leaving the old install in place for a later retry. Before
-that reopen it closes this install's live update window through the window's
-own cancel file (killing it after 5 s), because the running window is the
-installed release's script: while it beats a non-failed heartbeat, the old ADE
-would take the launch as a hand-launch mid-install and exit. Stable and Beta
-keep their windows side by side in `%LOCALAPPDATA%\ADE`, so only a window whose
-`appExe` is this install's exe counts. A window for an install on
-quit is left alone and ADE stays closed, the same rule the window follows,
-unless the person opened ADE during the install (`launch-requested.json` is
-beside the window): then it is closed and ADE reopened.
-
-First, though, the hook names what blocked the update. It unpacks
-`build/ade-update-holders.ps1` into its plugins folder and runs it. The script
-asks Windows' Restart Manager which processes have the install folder's
-programs, libraries, native modules or `app.asar` open, and adds any process
-whose command line names the folder. Processes from outside the folder come
-first. It writes them to `<ADE home>\runtime\update-blocked.json` and adds an
-`install update_blocked … holders=` line to `install-steps.log`. On 2026-11-19
-an orphaned dev app from a PC lane blocked four updates in a row, and nothing
-said so. The brain reports the file in its handshake
-(`runtimeInfo.lastUpdateBlock`, `ade-cli/src/lib/hostUpdateFacts.ts`). It
-drops a report once that version is installed, or after 6 h. The brain reads the
-file off the event loop, at most every 30 s. Another computer's Machines card
-then reads "didn't install: node.exe (PID 7292) had ADE's files open. Close it,
-then press Update". The card uses a report only once the far brain has
-restarted since the update was sent, because the installer writes the report
-before it reopens the old ADE.
-
-That card also stops waiting out its grace (5 min, or 35 min while
-downloading) when the far brain has restarted since the update was sent and
-has stayed up a minute on the old version (`hostStartedAt`, taken from the
-handshake's `startedAgoMs`). `startedAgoMs` is wall-clock time since the brain
-started; `uptimeMs` stops while a Mac or Linux machine sleeps, so it is not
-used. A link that only dropped keeps the same brain, so it does not count. The
-phone gets both from the sync hello instead: every host's `brain` metadata
-carries `startedAgoMs` and `lastUpdateBlock` (`hostUpdateFacts`).
-`HostUpdateFacts` in `MachineUpdateStore.swift` reads them, and the phone's
-card applies the same two rules. The card logic lives in
-`renderer/components/remoteTargets/machineUpdateStatus.ts`.
-
-The window also writes a heartbeat. A copy of the old ADE opened by hand during
-the install (the person sees nothing happening and clicks the shortcut) reads
-it, brings the window forward, and exits before starting anything, instead of
-being force-killed by the installer seconds later. An `ade://` link opened in
-that window of time is dropped with it.
-
-An in-place update does only what an update needs. The old uninstaller runs with
-`--updated`, so `customUnInstall` passes `-Updating`: it stops the background
-service without starting ADE.exe, and leaves the terminal shim, the user PATH
-entry, `ade://`, file associations and the firewall rule in place.
-`customInstall` passes `-Updating` to `windows-install-setup.ps1`, which then
-refreshes only the shim. If that refresh fails, the script puts the previous
-shim back, logs `update_continues`, and still exits 0: the update flow has
-already removed the service, and NSIS does not relaunch ADE after an abort, so
-failing here used to leave no brain and no ADE window. When the previous shim
-cannot be put back either, the script also writes
-`runtime/cli-shim-repair-request` in the channel's ADE home, and the relaunched
-app rewrites the shim even though its one-time `ade` install already ran,
-removing the request once that succeeds. The relaunched app
-reinstalls, restarts and verifies the service itself (`runUpdateTransaction`). Every `--updated` install comes
-from `quitAndInstall` (`autoInstallOnAppQuit` is off), which records the
-pending install that makes that launch run the transaction. The trade: if the
-new ADE does not open at all, the brain stays down, and the machine is
-unreachable from the phone, until ADE is next opened. The update window's
-recovery above is what opens it when nobody is there. `install-path.cmd` broadcasts
-`WM_SETTINGCHANGE` only when PATH actually changed, and detached. Its 5 s
-per-window timeout stacked to 82 s inside the installer. `customCheckAppRunning`
-replaces electron-builder's app-running check with one PowerShell pass instead
-of three or four. Every step appends its duration to
-`runtime/install-steps.log` in the channel's ADE home (`~/.ade`, or `~/.ade-alpha`
-on the Alpha channel).
-
-Measured in Windows Sandbox with real installers (2026-10-07): from
-`quit_and_install` to the new ADE on screen took 77 s before these changes
-(1.2.94 → next). The steady state, one fixed version to the next, took 43-50 s.
-Over half of that was the sandbox copying files; the same copy takes 7 s on
-recent hardware. The first update after this change still runs the previous
-version's uninstaller, so it gets the install-side savings only.
-
-### Windows: the service-removal preflight and blocked builds
-
-The update transaction removes the background service before the installer
-runs. `readRecordedBrain` (`serviceManager/installWindows.ts`) refuses to stop a
-brain whose recorded command does not match the one ADE would launch. From
-Electron main, `resolveAdeServeCommand()` (`serviceManager/common.ts`) describes
-`ADE.exe <resources>\ade-cli\cli.cjs serve` through `electronMainCliScript`
-(`ADE_CLI_JS` when set, else the packaged `cli.cjs`); `readRecordedBrain` also
-accepts the command recorded in the service launcher script
-(`readLauncherBrainCommand`). ADE 1.2.112 and 1.2.113 described a bare
-`ADE.exe serve`, so they refused to stop the real brain and aborted every
-in-app update.
-
-`checkWindowsServiceRemovable` / `checkRuntimeServiceRemovable` run the same
-check read-only. `remoteUpdateInstall.ts` calls it before replying, so a remote
-install answers `failed` with the reason instead of `installing` and then
-dying. `isWindowsSelfInstallBlocked` (`shared/updateVersions.ts`) names the
-builds that cannot self-install. For a connected Windows machine on such a
-build, the desktop's Update routes through a remote terminal instead
-(`remoteTerminalUpdate.ts`; see
-[Remote runtime](../remote-runtime/README.md#machineupdateandrestart)).
-
-The machine itself recovers with `brain update --apply-staged`, run by the
-newly downloaded standalone binary. On Windows with a stable app installed,
-`applyWindowsDesktopUpdate` (`ade-cli/src/commands/windowsDesktopRescue.ts`)
-installs the desktop app rather than swapping the service to the standalone
-runtime:
-
-1. Verify the installer's sha512 against `latest.yml` and its Authenticode
-   signer against the installed app's; a mismatch fails closed.
-2. Stop the service through the staged binary.
-3. Run the installer with `--updated /S` (plus `--force-run` when the app was
-   open).
-4. With the app closed, start the service through the app's own
-   `cli.cjs brain start`. The NSIS `-Updating` setup path skips the service.
-5. If the installer fails, restore the old service with `brain start`.
-
-Helper-only environment (staged runtime paths, `ADE_CLI_PATH`, self-mutation
-flags) is stripped before the installer and the app CLI run, and so is
-`ELECTRON_RUN_AS_NODE` for the installer, so the app it reopens starts as an
-app. The app CLI gets the module paths its installer's setup step uses. With no app installed, the standalone runtime swap runs as before.
-`cliDelegation.ts` never delegates `brain update --apply-staged` to
-`ADE_CLI_PATH`; from an ADE terminal it used to hand the install back to the
-old app's CLI.
-
-### The app and the brain move together (macOS)
-
-On macOS `brain update --apply-staged` used to swap only the standalone
-`~/.ade/bin/ade` and point the service at it. The app stayed behind (a 1.2.123
-app beside a 1.2.125 brain, 2026-10-27) until someone pressed Restart and
-install. `applyMacDesktopUpdate` (`ade-cli/src/commands/macDesktopUpdate.ts`)
-now runs first when the stable `ADE.app` is in `/Applications` or
-`~/Applications`:
-
-1. App on the target or newer: the service is registered on the app's own
-   runtime with its `cli.cjs brain start`.
-2. App open: the brain asks it over the desktop bridge to install its own
-   update, the same request "Update & restart" sends. The app's install and
-   its post-update transaction move the service. An app that is open but does
-   not answer refuses the update.
-3. App closed: download `latest-mac.yml` and the app zip, check the zip's
-   SHA-512 against the feed, expand it beside the app, and check it with
-   `codesign --verify --deep --strict`, the installed app's TeamIdentifier, its
-   bundle id and its version. Then check again that the app is still closed,
-   stop the service through the staged binary, swap the bundle, and register
-   the service on the new app's runtime. A failed swap or service start puts
-   the old app and its service back.
-
-The service ends on the app's runtime, not the standalone one, because the app
-owns the brain: it keeps the app's privacy permissions, and an app that sees a
-brain of its own version built differently takes the service back anyway. When
-the app part succeeds, the standalone `ade` is still promoted to the same
-version, as a command only. Anything that cannot be done safely changes
-nothing and says why: an unwritable bundle (with the `chown` to run), a failed
-check, `--no-restart`, or a feed with no such version. An Alpha app has
-no feed; its app is left alone and the status says it is behind. With no app
-installed (servers) only the brain is updated, as before. On Linux the desktop
-app is updated by the app itself or by the package manager, never by this command.
-
-`brain update --dry-run` names the app it would update (`desktopApp`).
-"Update & restart" counts the app's version too (`installedApp`), on every
-platform, so a brain already on the target beside an older closed app is still
-updated. It reads the app through the same `readInstalledDesktopApp`
-(`nativeHelperPaths.ts`) the brain reports, `ade doctor` shows and the macOS
-app update swaps, so a machine is judged on the version it reports. An Alpha
-app behind its brain is reported as such ("has no update feed … rebuild
-it"), not offered an update that would change nothing. The macOS swap restores
-the old app only when it moved it, and checks again that ADE is still closed
-after the service stops.
-`ade setup` never swaps an app that is open, and an older app it does not
-replace is reported as kept, not as "not installed".
-
-`ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1` is the single gate. It builds Windows
-fresh on the release tag and adds the installer, blockmap, and `latest.yml` to
-the draft release. The build is fail-closed on Authenticode: the installer and
-packaged `ADE.exe` must share the pinned publisher identity and carry a trusted
-RFC3161 timestamp, or the release fails. Keep the gate disabled until the signed
-installer has passed the clean standard-user Windows checks, which the
-`windows_proof` dispatch input on `prepare-release.yml` produces without
-publishing anything. Validate version-to-version automatic updating after two
-signed Windows releases exist.
+`AppBundleOwnershipBanner.tsx` offers **Fix it** (an admin `chown -R` through
+`osascript`). The IPC is local-only and takes no pin.
 
 ## Update tracks (Stable and Beta)
 
-Beta is an update track of the normal install. It is not a separate app. Both
-tracks use `ADE.app` (app id `com.ade.desktop`), `~/.ade`, the `com.ade.runtime`
-service and the `ade` CLI. The plan is `docs/plans/beta-track.md`.
+Beta is an update track of the normal install, not a separate app: same
+`ADE.app`, `~/.ade`, service and CLI.
 
-- **Reading the track.** The track of a build comes from its version only.
-  A `X.Y.Z-beta.N` version is Beta. Any other version is Stable.
-  See `apps/desktop/src/shared/updateTrack.ts`.
-- **The choice.** `~/.ade/update-track.json` holds `{ track, updatedAt }`. The app,
-  the brain and the CLI all read it. A missing file means the track of the
-  running version. `apps/ade-cli/src/services/runtime/updateTrackStore.ts`
-  reads it for the brain and the CLI.
-- **The Beta feed.** Beta reads the fixed GitHub prerelease `beta-feed`. It holds
-  `latest-mac.yml`, `latest.yml` and `beta.json`. A 404 means no Beta build
-  exists now, so ADE shows no error. electron-updater's GitHub provider is not
-  used for Beta. For a `-beta.` version it takes the newest release of any kind,
-  including Stable. The fixed feed names exactly one build.
-  `apps/desktop/src/main/services/updates/autoUpdateService.ts` reads it.
-- **The offer filter.** Ordinary checks offer a build only when it is on the
-  selected track and newer than the running build. They never cross tracks.
-  An install that lands on the other track does not count as landed.
-- **The guarded switch.** Settings > About > Updates has the Update track
-  control. A switch first reads `release-manifest.json` of the target build.
-  It compares the manifest `dbCompat` with the `<db>.compat.json` level of each
-  local database. The switch is blocked when a database level is higher.
-  It is also blocked when a level or the manifest cannot be read. Unknown blocks.
-  See `apps/desktop/src/main/services/updates/trackSwitchGuard.ts` and
-  `apps/desktop/src/main/services/state/dbCompatRecord.ts`.
-  `DB_COMPAT_LEVEL` is in `apps/desktop/src/shared/releaseCompat.ts`.
-- **Database copy.** Before the first open by a new app version, ADE copies each
-  database to `<db>.pre-<version>-from-<previous>.bak`. The copy uses the SQLite
-  online backup in small steps. ADE keeps the last 3 copies. `dbCompatRecord.ts` makes them.
-- **Remote "Update & restart".** It never moves a machine across tracks. A
-  request that names a build of the other track updates the machine on its own
-  track. See `apps/ade-cli/src/services/runtime/machineUpdateAndRestart.ts`.
-  A phone or ADE Web asks for the same run (`machine.updateImpact` /
-  `machine.updateAndRestart`), and learns each track's newest build from the
-  account directory's `GET /releases/latest`, which runs the desktop's own
-  reader over the same two release manifests; a track only ever takes a build of
-  that track.
-- **`ade brain update`.** The version `latest` follows the machine track. On Beta
-  it is the build that `beta.json` names. It never falls back to the other
-  track. See `apps/ade-cli/src/commands/brainUpdate.ts`.
+- **A build's track comes from its version**: `X.Y.Z-beta.N` is Beta
+  (`shared/updateTrack.ts`).
+- **The choice** is `~/.ade/update-track.json`, read by app, brain and CLI. A
+  missing file means the running version's track.
+- **The Beta feed** is the fixed GitHub prerelease `beta-feed`
+  (`latest-mac.yml`, `latest.yml`, `beta.json`); a 404 means no Beta build and
+  shows no error. electron-updater's GitHub provider is not used for Beta.
+- **Checks never cross tracks.** A build is offered only when it is on the
+  selected track and newer.
+- **The guarded switch** (`trackSwitchGuard.ts`) reads the target's
+  `release-manifest.json` and blocks when any local database's compat level
+  (`dbCompatRecord.ts`, `DB_COMPAT_LEVEL` in `shared/releaseCompat.ts`) is
+  higher, or unreadable.
+- **Database copies**: before a new version first opens a database, DAEX copies
+  it to `<db>.pre-<version>-from-<previous>.bak` (SQLite online backup; last 3
+  kept). Settings › Advanced › Database copies lists them.
+- **Other machines.** Remote "Update & restart"
+  (`apps/ade-cli/src/services/runtime/machineUpdateAndRestart.ts`) never moves a
+  machine across tracks. Each update check reads the newest Stable and Beta
+  manifests (`latestByTrack.ts`), so another machine is offered the newest
+  build on its own track. The phone and DAEX Web learn it from the account
+  directory's `GET /releases/latest`. General's update rows offer a Stable/Beta
+  choice per eligible computer; the web has no `switchUpdateTrack`.
+- `daex brain update` with `latest` follows the machine's track.
 
-Beta builds come from `.github/workflows/beta.yml`. See "CI notes" in the plan.
+Beta builds come from `.github/workflows/beta.yml`.
 
-## Artifact size limits
+## Size and space
 
-`MacUpdater` hands the downloaded ZIP to native Squirrel.Mac, which buffers the
-whole archive into one contiguous `CFData` grown by doubling. Past 1 GiB that
-asks for a 2 GiB reallocation, which Chromium's PartitionAlloc refuses: the app
-dies with `EXC_BREAKPOINT` about a minute after launch, before the user can even
-decline the update. v1.2.52 shipped a 1054 MB arm64 ZIP and did exactly that.
+- **Artifact limits** (`artifact-size-budget.cjs`, `npm run
+  assert:artifact-size`): 800 MiB per macOS ZIP, 900 MiB per Windows installer.
+  Squirrel.Mac buffers the whole ZIP and crashes the app past 1 GiB, so the
+  runtime refuses a darwin download over 800 MiB (`artifact_too_large`,
+  `exceedsMacUpdateArtifactLimit`). Missing size metadata is allowed through.
+  Each packaging job pins `ADE_RUNTIME_TARGET` so the bundle carries one
+  runtime target.
+- **Required space**: download `2 × archive + 512 MiB`; install `5 × archive +
+  512 MiB`; 512 MiB assumed without metadata.
 
-Two defenses, both below the cliff:
+## Failures
 
-| Layer | Limit | Where |
-| --- | --- | --- |
-| CI, primary | 800 MiB per macOS ZIP; 900 MiB per Windows installer | `apps/desktop/scripts/artifact-size-budget.cjs`, enforced post-packaging by `npm run assert:artifact-size` in both release jobs |
-| Runtime, backstop | 800 MiB reported artifact size on darwin | `exceedsMacUpdateArtifactLimit` in `autoUpdateErrors.ts`, checked before `downloadUpdate()` |
+| Failure | Classification | Cache |
+|---|---|---|
+| Size or capacity preflight | `artifact_too_large` / `insufficient_space` | nothing downloaded, or keep a verified download |
+| `ENOSPC` / `EDQUOT` | `disk_full` / `quota` | keep a verified download, clear partial data |
+| Network, stalled download | `network` | retry; partial data may be cleared |
+| Checksum / signature | `verification` / `signature` | clear |
+| Permission | `permission` | keep a verified download |
+| Installer handoff | `installer` | keep |
 
-The runtime guard refuses the download with an `artifact_too_large` error rather
-than letting Squirrel crash the app. It matches the CI budget, so an artifact
-that passed CI can never trip it. If release metadata omits the size the update
-is allowed through — the CI gate is the real defense, and a malformed manifest
-must not block every update.
-
-`artifact_too_large` is the one kind that is never recovered from message text.
-The preflight raised the failure itself, so it passes `kind` to
-`setErrorSnapshot` explicitly and `classifyUpdateError` is skipped entirely;
-message-sniffing stays reserved for the opaque errors electron-updater emits.
-Round-tripping ADE's own wording back through a regex would have made the
-classification hostage to a copy edit.
-
-The Windows cap is a bloat tripwire, not a crash guard: the NSIS installer is
-streamed to disk and run as an external process, so nothing buffers it whole.
-
-The root cause of the 1054 MB ZIP was foreign-platform runtime payloads. Each
-packaging job now pins `ADE_RUNTIME_TARGET` to the single target it builds, and
-the desktop bundle carries only that target's `ade-<target>` sidecar. Every
-target is still published as a standalone release asset, so `ade brain update`
-and the standalone installers are unaffected.
-
-## Required-space estimate
-
-Release metadata reports compressed archive size, not expanded application
-size. ADE uses a conservative peak-space estimate:
-
-- Download: `2 × compressed archive + 512 MiB`.
-- Install/staging: `5 × compressed archive + 512 MiB`.
-- If metadata omits size, assume a 512 MiB archive.
-
-The download estimate remains a conservative upper bound for the pending
-archive and temporary updater writes. The install estimate accounts for
-another staged archive, up to 4× expansion/replacement space, and fixed
-filesystem/rollback headroom. The UI labels this value as an estimate rather
-than an exact installer requirement.
-
-## Failure timing and cache policy
-
-| Failure | Observation path | Snapshot classification | Cache policy |
-| --- | --- | --- | --- |
-| Artifact size preflight (macOS) | Synchronous ADE check before download | `artifact_too_large` at the download phase | Nothing downloaded; no cache to preserve |
-| Capacity preflight | Synchronous ADE check before download/install | `insufficient_space` with measured free/required bytes and affected path | Preserve only after a verified download |
-| `ENOSPC` | Synchronous throw, rejected download, or updater `error` event | `disk_full` at the active phase | Preserve a verified download; clear incomplete download data |
-| `EDQUOT` | Rejected download or updater `error` event | `quota` at the active phase | Same as `ENOSPC` |
-| Network | Rejected check/download or updater `error` event; `net::ERR_*` included | `network` (phase `check` when the feed request itself failed) | Retry; incomplete cache may be cleared |
-| Stalled download | No progress events or growth of the partial file under `pending/` for 2 minutes | `network` at phase `download` | Cancel with electron-updater's cancellation token; clear the incomplete download and retry from the latest release on the next check or Check again. A stalled staged-archive restore returns to its saved `ready` snapshot |
-| Wedged updater session | Feed check fails with `net::ERR_*` while Node's `fetch` reaches the feed; ADE retries with a fresh session, then switches the updater to Node HTTP/HTTPS if Chromium still fails | Recovered checks continue normally; if the Node transport also fails, the check reports `network` at phase `check` | Same as a check failure |
-| Checksum/signature | Rejected verification or updater `error` event | `verification` / `signature` | Clear unsafe cached data |
-| Permission | Synchronous throw or updater `error` event | `permission` | Preserve only a previously verified download |
-| Installer handoff | Synchronous throw, async updater `error`, or watchdog expiry | `installer` | Preserve the verified download |
-| Vanished staged archive | Missing ZIP/EXE at install or periodic ready check; Squirrel `network connection was lost` / `Cannot pipe` during install | Re-download, then continue the same consented install | Clear the empty cache and fetch again; leftover updater errors during restore do not wipe a restored ZIP; park as `refresh_failed` or `handoff_failed` only if restore or the retry still fails |
-
-The service tests reproduce each feasible boundary deterministically by
-injecting disk measurements and updater errors. Preparation has a 30-second
-watchdog, while the native Squirrel handoff has a separate five-minute watchdog
-so loopback transfer and staging are not mistaken for a stalled quit. Handoff
-timeouts retain the pending-install marker because Squirrel may still complete;
-an explicit updater error clears it.
-
-## Wedged updater session
-
-electron-updater fetches through Chromium's `net` on one session it caches for
-the life of the process. That session can stop working while the machine is
-online: checks then fail with `net::ERR_FAILED` a few milliseconds after they
-start, before any request leaves the machine. ADE now recovers the updater
-transport for the rest of that launch.
-
-When a check fails with `net::ERR_*`, `checkFeedRecoveringNetSession` asks
-Node's `fetch` for the channel file (`latest-mac.yml` / `latest.yml`) on the
-configured feed (`updaterNetRecovery.ts`). If Node gets no success response
-either (no answer, a 404, a 5xx, a captive portal's page), the feed itself is
-unavailable: `network`, "ADE can't reach the update server". If Node gets a
-success response, the updater gets a fresh in-memory session
-(`electron-updater-recovered-<n>`) and the check runs once more. If Chromium
-still fails on that session, ADE replaces the updater executor's request
-creation with Node's `http` / `https` transports and retries again. The Node
-executor follows `location` redirects for both feed checks and artifact
-downloads, and remains active for the rest of that launch.
-
-`autoUpdate.net_wedge_detected` records the Node probe and starts recovery
-without waiting for Chromium diagnostics. `autoUpdate.chromium_net_diagnostics`
-later records default-session reachability, network-service pid/age, and app
-uptime. `autoUpdate.net_wedge_recovered` records whether a fresh Chromium
-session or Node transport recovered the check. Only if the final Node request
-also fails does the check report a normal `network` error; a feed reachable by
-Node no longer requires restarting ADE just because Chromium's updater session
-is stuck.
-
-## Stalled downloads
-
-electron-updater's request timeout does not catch a quiet download in Electron:
-it waits for a `socket` event that Electron's network requests do not emit. If
-no bytes arrive, the download can remain pending and later checks wait behind
-it until ADE restarts. ADE watches download progress and growth of the partial
-file under the updater cache's `pending/` directory, so servers that omit
-`Content-Length` are covered too. After two minutes without either signal, ADE
-cancels the download with electron-updater's cancellation token. A new check,
-including the next periodic check or Check again, starts a fresh full-archive
-download from the newest release. Windows uses the same watchdog and
-cancellation for its full NSIS installer download.
-
-The watchdog stands down once progress reports show every byte has arrived;
-the rename and the Windows signature check can then finish without progress
-reports. A server that omits `Content-Length` never reports completion, so
-there the watchdog keeps running through those steps; they take seconds (the
-checksum is computed while the bytes stream in), far inside the two minutes. If the
-Mac sleeps and the watchdog misses more than four polling intervals, it resets
-the inactivity window instead of treating sleep as a stalled connection. If
-electron-updater did not provide a cancellation token, ADE logs that the
-download is unwatched. A staged-archive restore that stalls returns to its
-saved `ready` state, as it does after any failed restore.
-
-## Quit deadline during the native handoff
-
-`quitAndInstall` arms a deadline before entering `electron-updater` so a quit
-that never happens cannot strand the app in `installing` forever. The window has
-to respect what Squirrel.Mac actually does after that call: pull the archive
-from the loopback server, expand it, code-sign verify the expanded bundle, then
-spawn ShipIt. On a ~750 MB archive that is roughly ten seconds, and it scales
-with bundle size and disk contention.
-
-So the deadline is staged rather than a single hard bound:
-
-| Stage | Default | Behavior |
-| --- | --- | --- |
-| Soft mark | 10s | Logs `autoUpdate.quit_staging_slow`. Never fatal. |
-| Native staging complete | — | Electron's own `autoUpdater` emits `update-downloaded`; logs `autoUpdate.native_staging_complete` and re-arms the short bound below. |
-| Post-staging bound | 15s | ShipIt is already running, so a process still alive here is genuinely wedged: escalate. |
-| Hard bound | 5min (macOS) / 60s elsewhere | Staging never signalled at all: escalate. |
-
-The staging signal comes from Electron's own `autoUpdater` — the Squirrel.Mac
-binding `electron-updater`'s `MacUpdater` drives underneath — resolved through
-`require("electron")` at construction and only on darwin, degrading to "no
-staging signal" if it is absent rather than throwing. Everywhere else the
-installer is an external process (NSIS, AppImage) that never emits that event,
-so nothing stages in-process, the long bound could only hang the app in
-`installing` for five minutes, and the shorter 60-second bound applies from the
-start.
-
-Escalation logs `autoUpdate.quit_escalated` with its `hard_deadline` /
-`post_staging` reason and whether staging had completed, captures the matching
-`ade_update_quit_escalated` analytics event, and calls `logger.flushSync()`
-before `forceQuit`, because `forceQuit` ends the process and ordinary log writes
-are batched onto an async stream — without the sync drain the escalation record
-dies with the process and the failure leaves no trace.
-
-A single hard bound around ten seconds cannot work: it force-quits the process
-mid-staging and loses that race most of the time, so the app quits, nothing
-installs, and it relaunches on the old version.
-
-## When an install does not land
-
-Relaunching on the old version while a `pendingInstallUpdate` marker exists
-means the handoff never completed. `reconcilePersistedUpdateState` records this
-in the `failedInstallAttempts` global-state row (target version + consecutive
-count + timestamp), logs `autoUpdate.install_did_not_land`, captures the
-internal-only `ade_update_install_did_not_land` event with just the bounded
-`attempt` counter, and exposes `lastInstallFailed` on the snapshot so the
-top-bar pill reads "Retry install vX" instead of silently offering the same
-update again. Requesting another install clears `lastInstallFailed` (the new
-attempt supersedes the notice). A launch on the target version or newer clears
-`failedInstallAttempts` entirely, even when no pending marker remains, as when
-an earlier launch already consumed the marker; a landed retry does not log
-`install_did_not_land`.
-
-The first such failure **keeps** the cached archive. It was checksum-verified
-before the update was ever offered, so a lost quit race says nothing about the
-bytes, and re-downloading the whole release on every retry is pure cost. A
-second consecutive failure on the same version stops trusting the archive and
-clears the updater cache.
+- **Stalled downloads**: electron-updater's timeout does not fire in Electron.
+  `downloadStallWatchdog.ts` cancels after 2 minutes with no progress and no
+  growth of the partial file; sleep resets the window.
+- **Wedged updater session**: when a check fails with `net::ERR_*` but Node's
+  `fetch` reaches the feed, DAEX retries on a fresh session, then switches the
+  updater to Node `http`/`https` for the rest of the launch
+  (`updaterNetRecovery.ts`; logs `autoUpdate.net_wedge_detected` /
+  `_recovered`).
+- **Quit deadline** during handoff: a soft mark at 10 s, 15 s after Squirrel
+  signals staging complete, and a hard bound of 5 min on macOS (60 s
+  elsewhere). Escalation logs `autoUpdate.quit_escalated` and calls
+  `logger.flushSync()` before force-quitting. A single short bound would kill
+  Squirrel mid-staging.
+- **An install that does not land**: relaunching on the old version with a
+  pending marker records `failedInstallAttempts`, logs
+  `autoUpdate.install_did_not_land` and sets `lastInstallFailed` ("Retry install
+  vX"). The first failure keeps the archive; a second on the same version clears
+  the cache.
 
 ## Checking while an update is staged
 
-A staged update does not pause update checks. The startup timer, the periodic
-timer, the Settings **Check for updates** button, `ade update`, and the
-`update.checkForUpdates` ADE action all reach the same code, and it behaves the
-same way for all of them while the status is `ready`:
+A staged update does not pause checks; every entry point behaves the same while
+`ready`:
 
-| Feed answer | Result |
-| --- | --- |
-| Same or older than the staged version | Ignored (`autoUpdate.update_available_ignored`). The status, the staged version, and the cached archive do not change; `latestKnownVersion` still records what the feed reported. |
-| Strictly newer | Supersedes. The recorded `downloadedFile` is dropped, the updater cache is wiped with reason `superseded_ready_update`, any auto-apply countdown for the old version is cancelled, and the snapshot runs `checking` → `downloading` → `ready` on the new version. The countdown re-arms on the new `ready`. |
-| The check fails | The staged version, ready status, and cached archive stay intact. ADE records the failure kind, message, and time in `checkFailure`, and logs `autoUpdate.ready_check_failed`. |
+- Same or older feed answer: ignored; `latestKnownVersion` still updates.
+- Strictly newer: supersedes (cache wiped, countdown cancelled, download
+  restarts).
+- A failed check keeps the staged version and records `checkFailure`.
 
-Every answered feed check records `lastCheckedAt` and clears any prior
-`checkFailure`. Settings → About shows the last check time, or the failure kind
-and time when the latest check did not get an answer. `ade update status` exposes
-the same timestamps and failure kind to CLI users.
+Only a running `quitAndInstall()` blocks a check, because the status stays
+`ready` until the handoff and a supersede then would delete the archive being
+handed to Squirrel or NSIS. The pre-install refresh inside it parks as
+`refresh_failed` on failure.
 
-Every entry point first logs `autoUpdate.check_requested` with the current
-status and a `userInitiated` label, so an operator can tell whether a check was
-requested at all and what state it found. The flag does not change whether the
-check runs.
+## Install and recovery UI
 
-This is what stops the top-right pill from offering a release the feed has
-already replaced.
+`useAutoUpdateSnapshot` is the one subscription for the top-bar control, the
+banner and Settings, so they never disagree. Settings shows the staged version
+as "Installed" once it is `ready` or `parked`.
 
-A failure *after* a supersede has started is an ordinary download failure: the
-status is no longer `ready`, so it takes the normal error path. The old archive
-is already gone at that point, which matches what a relaunch would have done.
-
-When the staged archive has vanished, that cycle restores the archive and skips
-the feed check, so one cycle never runs a restore and a check at the same time.
-
-An install that is already running blocks the check entirely. The status stays
-`ready` for the whole `quitAndInstall()` transaction, across the
-`beforeQuitAndInstall` service uninstall, so a check started in that window
-could supersede and delete the archive the install is about to hand to
-Squirrel or NSIS. The pre-install refresh inside that transaction is the one
-exception, and it keeps its own failure handling: a feed failure there aborts
-the install with `parked.reason === "refresh_failed"` and returns the snapshot
-to `ready` on the staged version.
-
-## Truthful version surfaces
-
-Every version surface reads from one shared snapshot so they can never disagree
-about what is running versus what is staged. `AutoUpdateSnapshot` carries both
-`currentVersion` (the running build) and `latestKnownVersion` (the newest
-version `electron-updater` has observed from its configured feed), plus the
-staged `version`, `parked`, and `autoApplyPending` fields below.
-`useAutoUpdateSnapshot` (`renderer/components/app/useAutoUpdateSnapshot.ts`)
-does the initial `updateGetState()` read and subscribes to `onUpdateEvent`; the
-top-bar pill (`AutoUpdateControl`), the app-shell banner (`AutoUpdateBanner`),
-and the Settings About panel (`AboutSection`) all consume it. About shows the
-running version as "Installed" and `latestKnownVersion` as "Latest", but swaps
-"Installed" to the staged version when a download is `ready` or `parked`, so the
-user sees the version they will get after the next restart rather than a stale
-"you're up to date".
-
-## Transactional install and exceptional recovery banners
-
-`quitAndInstall()` is transactional. Before flipping the snapshot to
-`installing` it re-runs `updater.checkForUpdates()` to
-confirm the staged installer is still the latest, verifies the staged ZIP or
-NSIS installer is still on disk (and re-downloads it if macOS or Windows
-removed it), and only then uninstalls the background service, persists
-`pendingInstallUpdate`, and calls `updater.quitAndInstall(false, true)`. A
-consent that aborts before the native updater can take over does not silently
-vanish: the snapshot records `parked: { reason, at }` where `reason` is a typed
-`AutoUpdateInstallAbortReason` — `refresh_failed`, `install_preflight_failed`,
-`prepare_failed`, `prepare_timeout`, or `handoff_failed`. The app-shell
-`AutoUpdateBanner` renders this exceptional state as "ADE update didn't finish
-— Restart to retry". It also renders "ADE update did not install — Restart to
-retry" when launch reconciliation proves that a requested install returned on
-the old version. Both provide a **Restart now** action wired to
-`updateQuitAndInstall()`. A normally downloaded `ready` update appears as a
-floating app-shell prompt with its version and a **Restart and update** action
-(**Restart and switch to Stable** or **to Beta** when the downloaded build is on
-the other track; `updateRestartAction.ts` names it once for the prompt, the
-top-right control, Settings and the dialog),
-alongside the flashing top-right `AutoUpdateControl`. Both actions use the same
-impact confirmation and install handler. Dismissing the floating prompt hides
-it for that version in the current app session; the top-right control remains
-available, and a new version raises a fresh prompt. Recovery-banner dismissal
-is keyed on a stable failure signature so a fresh abort or failed attempt
-reappears while an unchanged state stays hidden.
+- `quitAndInstall()` re-checks the feed, verifies the staged file, uninstalls
+  the background service, saves `pendingInstallUpdate` and hands off. An abort
+  before handoff sets `parked` with an `AutoUpdateInstallAbortReason`
+  (`refresh_failed`, `install_preflight_failed`, `prepare_failed`,
+  `prepare_timeout`, `handoff_failed`).
+- A `ready` update shows a floating prompt (**Restart and update**, or **Restart
+  and switch to Stable/Beta** when the build is on the other track;
+  `updateRestartAction.ts` names it once for every surface). Dismissal hides it
+  for that version this session.
+- Recovery banners: "DAEX update didn't finish — Restart to retry" (parked) and
+  "DAEX update did not install — Restart to retry" (did not land), dismissed by
+  failure signature.
+- The install prompt says what the restart stops, read from the brain's
+  `runtime.updateImpact` (`main/services/runtime/updateImpactProbe.ts`).
 
 ## Applying an update is one transaction
 
-Replacing the application bundle does not touch the background service, which
-keeps running the old code until something reinstalls and restarts it. That
-repair used to happen invisibly inside `localRuntimeConnectionPool`'s
-build-hash mismatch path, so a failure produced a silently broken app.
+Replacing the app bundle does not restart the background service, so the
+relaunch after an update runs one transaction: `swap` → `service` → `restart`
+→ `health` (`runUpdateTransaction`, `updateTransaction.ts`; pure, dependencies
+injected). `main.ts` runs it once when the snapshot has `recentlyInstalled` and
+shares one `ProjectRecoveryService` with `registerIpc`, so repair and this
+restart exclude each other.
 
-The relaunch after an update now runs one explicit transaction with four steps —
-`swap`, `service`, `restart`, `health` — modelled by the dependency-injected
-`runUpdateTransaction` in `apps/desktop/src/main/services/updates/updateTransaction.ts`.
-It is pure: no Electron, no timers. `main.ts` runs it once when the snapshot
-carries `recentlyInstalled`, binding the steps to the paths that already exist —
-`localRuntimePool.installServiceBestEffort()` for `service`,
-`runVerifiedRuntimeRestart` (which drives the shared
-`ProjectRecoveryService.restartBrain()`) for `restart`, and `checkRuntimeIdentity`
-for `health`. There is no second restart path, and `main.ts` now owns the single
-recovery service instance it shares with `registerIpc`, so repair and restart
-stay mutually exclusive.
+- **The restart step checks identity, not `ok`.** An old brain answers `ok`.
+  `verifyRuntimeIdentity` returns `matches`, `unreachable`, `incompatible`,
+  `version`, `build` or `stale_runtime`; anything but `matches` (or a newer
+  compatible brain) restarts and re-verifies up to 2 times, then fails the step.
+  The machine's identity is probed before the reinstall so a squatting old pid
+  can be named (`processes/processStartTime.ts`).
+- **Repair is suppressed while an update applies.** `main.ts` brackets both
+  update paths with `localRuntimePool.beginUpdateWindow` / `endUpdateWindow`;
+  inside, the pool skips its repair and refuses connects with "DAEX is applying
+  an update…". The window expires after `LOCAL_RUNTIME_UPDATE_WINDOW_MAX_MS`
+  (2 minutes).
+- **That launch waits for the transaction** (up to 30 s) before opening
+  projects, since the pool refuses them meanwhile.
+- **Failures**: the first failed step stops the sequence (later ones
+  `skipped`). A failed `swap` is a warning in `AutoUpdateBanner`; any other
+  failed step means the service is down and `BrainDownNotice` owns it
+  ([the brain-down notice](../storage-and-recovery/README.md#the-recovery-screen-and-the-brain-down-notice)).
 
-### The restart step has to be told the truth
+### Resuming interrupted chats
 
-Reinstalling the service does not necessarily replace the brain. The old
-process can survive the reinstall and keep the socket, the machine-wide
-sync-host lease, and everything that follows from holding it. The step used to
-ask the endpoint whether it was `ok`, and a pre-update brain answers `ok`
-perfectly well — so the transaction reported a green restart while the machine
-went on running yesterday's code, invisibly, until something else broke.
+Whether a chat continues after the update is the machine's **Continue chats
+after restarts** setting (`~/.ade/continue-after-restart.json`), by the same
+rule as a crash (`continueAfterRestartHold` in `agentChatService.ts`). The
+accepted list is saved with the pending install, and only the launch that lands
+the install arms the resumes (`armUpdateResume`, durable `update_restart` rows
+with deterministic ids, so a chat continues once). Typing into a chat cancels
+its pending resume. The brain side is independent: before the service stops it
+writes the `accepted_update` stop intent and saves its work
+([work in flight across a brain stop](../storage-and-recovery/README.md#work-in-flight-across-a-brain-stop)).
 
-`updates/runtimeRestartVerification.ts` replaces that question with an identity
-check. `verifyRuntimeIdentity` is pure and returns a named verdict:
+## Automatic installation
 
-| Verdict | Meaning |
-| --- | --- |
-| `matches` | The brain answering is the one this update installed. |
-| `unreachable` | Nothing answered the endpoint. |
-| `incompatible` | Something answered but the handshake failed. |
-| `version` | The answering brain reports the wrong version. |
-| `build` | Right version, wrong build hash. |
-| `stale_runtime` | A live pre-update brain is still running under a different pid. |
+`AutoUpdatePreferences` (Settings › General, saved in `ade-state.json`):
+`automaticInstall` (default false) and `onlyWhenIdle` (default true).
 
-A skip is now something the step has to *earn*: version, build hash, and the
-absence of a live mismatched pid must all agree. A newer compatible brain
-deliberately passes — a user who is already ahead of this update does not need
-their brain restarted backwards. Anything else restarts and re-verifies, up to
-`maxRestarts` (2), and a run that still cannot prove the right brain is running
-returns a **failed** step ("… Still wrong after N restart(s)") rather than a
-green one. The `restart` and `health` steps call the same
-`checkRuntimeIdentity`, so the two cannot disagree about what is running.
+- With idle-only on, the service polls `RuntimeActivitySummary` and starts the
+  `autoApplyPending` countdown after a continuous idle grace period; activity
+  clears it. Without idle-only, a ready update starts the countdown at once.
+- The toast "DAEX will update in Ns" offers **Cancel**, which sets
+  `autoApplySuppressedUntil`.
+- `ADE_DISABLE_AUTO_UPDATE_APPLY=1` is the kill switch; dev launches never
+  auto-apply.
 
-Recognising a stale brain requires having seen it: the transaction probes the
-machine's identity *before* reinstalling, so the pid it may later find squatting
-is one it can name. `processes/processStartTime.ts` guards that record — a pid
-alone is not identity once the OS starts recycling them.
-
-### Resuming the chats an update interrupts
-
-Installing an update quits the app and restarts the brain, which stops every
-chat with a live turn. The restart dialog draws one row per machine (tile,
-name, track chip when Beta is in the picture, current → target build, what is
-running there, and whether its chats continue). There is no resume checkbox:
-whether a chat continues is the machine's **Continue chats after restarts**
-(Settings › Chat, one value per machine in `~/.ade/continue-after-restart.json`,
-migrated once from the old per-project `ai.chat.continueAfterRestart`: off when
-any project had turned it off). Each chat row comes from
-`listInterruptedChats` with its `continueHold`, worked out by the same rule a
-crash or reboot uses (`continueAfterRestartHold` in `agentChatService.ts`):
-the setting is on, the chat is not archived (a settled chat resumes), it is not
-waiting on the user's answer. An accepted update starts the resume cap again,
-and a chat whose crash recovery already continued it is not resumed a second
-time. When the user accepts, the list is persisted with the pending install; it
-is not turned into work yet.
-
-Another machine is offered the newest build **on its own track**. Each update
-check also reads the newest Stable and Beta `release-manifest.json`
-(`latestByTrack.ts`, one small read per track, never on its own timer; a failed
-or 404 read keeps the last known build, and a manifest naming a build of the
-other track is ignored), and `knownAdeVersions` / `machineUpdateTargetVersion`
-pick the newest known build on that machine's track. A machine whose track has
-no known build here is not called behind. The brain refuses to cross tracks
-too: a pinned build from the other track becomes "newest on this machine's
-track", answers "already current" when nothing is newer instead of restarting,
-and `createMachineUpdateControls` refuses to install such a pin.
-
-The launch that actually lands the install is the only one that arms the resume.
-`reconcilePersistedUpdateState` moves the list onto `recentlyInstalledUpdate`,
-and main arms one durable scheduled-work row per chat under the `update_restart`
-source. A failed or declined install clears the pending record, so it can never
-leave a resume behind: nothing is armed until the new version is running. Each
-armed session is consumed from the persisted list, so a later launch does not
-arm it twice; a chat whose project was not reachable stays on the list and gets
-another attempt.
-
-**That launch waits for the transaction above before it opens anything.** The
-pool refuses every project while the transaction's update window is open
-(`createConnection` answers "ADE is applying an update…"), so a project opened
-during it — a restored tab, the startup project, or the one the resume has to
-reach — was refused and dropped, and the resume found no project to ask at all.
-The wait is bounded at 30 seconds and applies only to a launch with a project to
-open or a resume to arm; every install recorded so far finished the whole
-transaction in two to four seconds. Past that bound the launch opens its window
-immediately, and the resume — which opens nothing — is still armed the moment
-the transaction lets the pool go.
-
-The arm happens in exactly one place, on the far side of that wait, because
-`armUpdateResume` upserts a deterministic row id: arming a session twice
-re-schedules a row that may already have fired, and the chat is told to continue
-a second time. What goes wrong instead is now named in the log:
-`update_resume.arm_no_project` when no project was reachable to ask,
-`update_resume.arm_failed` when a project that was asked refused,
-`update_resume.arm_chain_failed` for a throw outside both,
-`autoUpdate.post_update_transaction_wait_timeout` when the install outlasted the
-wait, and `autoUpdate.install_superseded_unarmed_resumes` when a later install
-drops a resume the record never placed.
-
-Dismissing the "ADE updated" notice is not a refusal to resume. The record is
-kept, marked `noticeDismissedAt`, for the resumes it still owes — it simply
-stops being surfaced as a notice, including on the next launch — and it is
-dropped entirely once it owes nothing or a later install replaces it.
-
-The brain side does not depend on this list. Before the service uninstall,
-`prepareAutoUpdateInstall` writes the `accepted_update` stop intent
-(`noteBrainStopIntent`, cleared when the uninstall fails), and the stopping
-brain saves its chats and CLIs at work for its next start, with the continue
-cap starting again. `ade brain update` does the same before each service stop
-and the restart, and clears the intent when one fails. Both paths use the same
-durable row id, so a chat is continued once. See
-[work in flight across a brain stop](../storage-and-recovery/README.md#work-in-flight-across-a-brain-stop).
-
-If the native handoff goes stale and the update re-downloads
-(`recoverStaleInstallHandoff`), the retry is the same request: it keeps the
-resume flag, `requestedRemotely` and `closeAfterInstall`, and carries the
-chats the first attempt listed, because the brain that attempt stopped can no
-longer list them.
-
-Each row delivers the "ADE restarted, so your last turn ended early…" continue prompt (the same rows re-arm chats after a quit-prompt Repair)
-once. Only rows that actually landed `scheduled` (not paused) are reported in
-the post-update "Scheduled N chats to resume" notice, and typing into a chat
-cancels its pending resume. Remote-machine chats and terminals are never
-included.
-
-### Repair is suppressed while an update is applying
-
-The connection pool repairs a machine endpoint that is missing or incompatible
-by reinstalling and restarting the service. During an update those are exactly
-the shapes the updater itself creates, and repairing them starts the old brain
-alongside the new one — the pool racing the updater to fix a machine that is not
-broken.
-
-`main.ts` therefore brackets both update paths with
-`localRuntimePool.beginUpdateWindow(reason)` / `endUpdateWindow(reason)`: around
-`prepare_quit_and_install` (ended if the uninstall fails, and unconditionally at
-the top of the abort path) and around the post-relaunch transaction (ended in
-its `finally`). Inside the window the pool declines its opportunistic repair,
-logs `local_runtime.service_repair_suppressed`, and answers refused connects
-with "ADE is applying an update. The background service is restarting."
-
-The window is capped at `LOCAL_RUNTIME_UPDATE_WINDOW_MAX_MS` (2 minutes) and
-expires on its own, because suppression that depends on a transaction remembering
-to end it would disable recovery for the rest of the session the first time one
-does not settle. Outside the window, repair is still throttled — 0 / 5 s / 15 s /
-30 s / 60 s, then once a minute — since a mismatched runtime previously spawned
-one installer per connect attempt.
-
-The typed result rides the existing `AutoUpdateSnapshot` over
-`IPC.updateEvent` / `updateGetState` as `updateTransaction`; no new channel. A
-failure names the step in plain words. A failed `swap` is a warning banner in
-`AutoUpdateBanner` (it stands down while the staleness banner already offers
-the retry). Every other failed step means the background service is down, and
-`BrainDownNotice` owns it: one error banner with the cause, **Fix it** (the real
-service reinstall and restart), then **Restart ADE**, then **Reset ADE**, and
-**Report this error to ADE…** under the text — see
-[the brain-down notice](../storage-and-recovery/README.md#the-recovery-screen-and-the-brain-down-notice).
-A project open the pool refused mid-update (`LOCAL_RUNTIME_UPDATE_IN_PROGRESS_MESSAGE`)
-is part of the same notice ("Finishing the update"), never a second banner.
-
-| Step | Line |
-| --- | --- |
-| `swap` | The update didn't finish installing. ADE is still on the old version. |
-| `service` | ADE's background service didn't start after the update |
-| `restart` | ADE's background service didn't restart after the update |
-| `health` | ADE's background service isn't responding after the update |
-
-When the live service status says macOS's "Allow in the Background" is off,
-the notice says that instead of the step's line.
-
-The first failure stops the sequence; later steps are recorded `skipped`. A
-dependency that throws becomes a `failed` step, never an unhandled rejection.
-Every step is platform-agnostic: install and restart both dispatch through the
-ade-cli service manager, which picks launchd or the Windows per-user service,
-and the health probe uses whatever endpoint `resolveMachineAdeLayout` reports
-(unix socket on macOS/Linux, named pipe on Windows).
-
-## Automatic installation policy
-
-Packaged builds keep checking for and downloading updates, but restarting to
-install them is manual by default. Settings → General (the ADE card) exposes the machine-local
-`AutoUpdatePreferences` contract:
-
-- `automaticInstall: false` by default. A `ready` update waits for the user to
-  install it from the top-right control.
-- `onlyWhenIdle: true` by default. This nested setting is shown only after
-  automatic installation is enabled.
-
-With both options enabled, the service polls the runtime's
-`RuntimeActivitySummary`. `idle` is true only when there are no active agent
-turns and no active work sessions. After the runtime stays idle through the
-grace period, the snapshot gets an `autoApplyPending: { deadlineAt }`
-countdown. If `onlyWhenIdle` is disabled, a newly ready update starts the same
-countdown immediately without querying runtime activity.
-
-`AutoUpdateBanner` renders the countdown as an "ADE will update in Ns" toast
-that ticks once per second. Reaching the deadline while the policy is still
-enabled and any required idle condition still holds calls the transactional
-`quitAndInstall(true)` path and emits `ade_update_auto_applied`. It asks to
-continue chats like a manual install: idle is read before the feed refresh,
-and a chat that starts after that read is continued after the update. Renewed activity
-clears an idle-only countdown. An explicit **Cancel**
-(`updateCancelAutoApply`) sets `autoApplySuppressedUntil` so another countdown
-does not start until that epoch passes. Disabling automatic installation also
-clears a pending countdown. `ADE_DISABLE_AUTO_UPDATE_APPLY=1` is the
-process-level kill switch for all automatic installation.
-
-Changing either preference persists it to the Electron user-data
-`ade-state.json` and records one privacy-bounded `ade_feature_used` event at the
-update-service boundary. Only the coarse automatic/manual and
-idle-only/immediate choices are included, with a 24-hour deduplication window
-per combination; no paths, versions, session details, or activity counts leave
-the machine.
-
-### Installing on quit
-
-With automatic install on, quitting ADE installs a downloaded update. It is
-the same install as Restart and install (`quitAndInstall` with
-`closeAfterInstall`), so the background service moves with the app. A plain
-quit leaves the brain running its agents, and an install restarts it, so
-`decideInstallOnQuit` (`services/updates/installOnQuit.ts`) allows it only
-when that stops nothing:
-
-- the service brain answers and runs no chat turn, CLI session or terminal;
-- or ADE runs the brain itself (`app_fallback`), which the quit stops anyway.
-
-Busy, an isolated brain, or a probe that timed out defers: the quit is a plain
-quit and the update waits for the automatic install of a later launch. The quit
-prompt says which ("installs as ADE quits" or "installs later, when no agent is
-running"), and the log has `autoUpdate.quit_install_start` or
-`autoUpdate.quit_install_deferred`. The work is read before the prompt, again
-after it, and once more right before the background service stops (after the
-feed re-check), since an agent can start meanwhile. That last look turns the
-install back into a plain quit (`InstallOnQuitDeferredError`); the update stays
-downloaded.
-
-The install relaunches ADE, as every install does. Only the updater's own
-relaunch (`isQuitInstallRelaunch`) starts with a hidden window and no Dock
-icon: on Windows it carries the installer's `--updated`, on Linux the AppImage
-updater's `APPIMAGE_SILENT_INSTALL`, and it must come within 10 minutes of the
-quit. Squirrel.Mac relaunches with no marker, so macOS has only a 3-minute
-window. Any other launch that lands the install (the installer's relaunch lost
-the single-instance lock and the person opened ADE) runs the transaction in
-the open. The hidden launch runs the post-update transaction and closes once it
-passes, leaving the brain on the new build. It opens no projects and keeps the
-saved workspace for the next launch. It shows its window when the transaction
-fails, or when the person opens ADE meanwhile (Dock, second launch, a deep link
-or a file). On Windows the "Updating ADE" window shows for a quit-install too:
-its heartbeat is what makes a copy opened by hand mid-install step aside. In
-that mode it closes once the new ADE.exe starts after the installer. The
-controller is `createInstallOnQuitController`; `main.ts` only wires it. With
-automatic install off, a quit never installs.
-
-`installing` remains a sticky status throughout: the service ignores
-`update-not-available` / `checking-for-update` / `error` while a
-`quitAndInstall` is in flight.
+**Installing on quit**: with automatic install on, quitting installs a
+downloaded update only when that stops nothing (`decideInstallOnQuit`,
+`installOnQuit.ts`): the service brain runs no chat turn, CLI or terminal, or
+the app runs the brain itself. Work is re-read right before the service stops.
+The updater's own relaunch starts hidden, runs the transaction and closes
+(windows of 10 minutes, 3 on macOS where Squirrel leaves no marker).

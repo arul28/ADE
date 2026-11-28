@@ -136,7 +136,7 @@ struct CursorCloudAgentDetailScreen: View {
       if let lane = entry.ownership.laneName {
         factRow("Lane", lane)
       } else {
-        factRow("Linked", "Unlinked — not started from an ADE chat")
+        factRow("Linked", "Unlinked — not started from a \(Brand.name) chat")
       }
       if let issue = entry.ownership.linearIssueId { factRow("Linear", issue) }
       if let prUrl = displayPrUrl, let url = URL(string: prUrl) {
@@ -249,7 +249,7 @@ struct CursorCloudAgentDetailScreen: View {
         Button {
           Task { await openInAde() }
         } label: {
-          Text("Open in ADE")
+          Text("Open in \(Brand.name)")
             .frame(maxWidth: .infinity)
         }
         .buttonStyle(.borderedProminent)

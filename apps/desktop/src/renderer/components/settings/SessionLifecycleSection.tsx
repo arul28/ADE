@@ -4,6 +4,7 @@ import { ModernRow, SettingsToggle } from "./primitives";
 import { Banner } from "../ui/notice";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { requirePin } from "../../state/repositoryScope";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The "Chats" group of Disk space → Rules: settle a lane's chats when
@@ -54,7 +55,7 @@ export function SessionLifecycleSection() {
         ...patch,
       }, requirePin(pinRef.current)));
     } catch {
-      setError("ADE couldn't save this chat setting.");
+      setError(`${BRAND.NAME} couldn't save this chat setting.`);
     } finally {
       setSaving(false);
     }

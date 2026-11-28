@@ -47,6 +47,7 @@ import {
 } from "./threadCommentsStore";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { withChatPin } from "./chatMachinePin";
+import { BRAND } from "../../../shared/brand";
 
 const HIGHLIGHT_PENDING = "ade-thread-comment";
 const HIGHLIGHT_HELD = "ade-thread-comment-held";
@@ -509,7 +510,7 @@ export function ThreadCommentLayer({
     if (!draft) return;
     const api = threadCommentsApi();
     if (!api) {
-      setDraftError({ text: "This version of ADE cannot save comments.", connection: false });
+      setDraftError({ text: `This version of ${BRAND.NAME} cannot save comments.`, connection: false });
       return;
     }
     // The comment shows (highlight, margin card, send badge) the moment it is

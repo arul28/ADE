@@ -18,9 +18,10 @@ import {
   createAccountActionBridge,
   type AccountActionPool,
 } from "./accountActionBridge";
+import { BRAND } from "../../../shared/brand";
 
 export const ACCOUNT_VAULT_UNAVAILABLE_MESSAGE =
-  "ADE's background service isn't running on this computer, so account vault items stay on this machine for now.";
+  `${BRAND.NAME}'s background service isn't running on this computer, so account vault items stay on this machine for now.`;
 export const ACCOUNT_VAULT_REJECTED_MESSAGE =
   "The account vault write was rejected because account ownership changed. It will be retried.";
 

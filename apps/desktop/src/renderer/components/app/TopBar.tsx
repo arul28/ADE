@@ -155,6 +155,7 @@ import { isAdeAvailable } from "../../lib/adeAvailability";
 import { useProjectTabStripOverflow } from "./useProjectTabStripOverflow";
 import { AdeWordmark } from "../ui/AdeWordmark";
 import { machineLabelForMachine } from "../../state/adeCloudLaneIndex";
+import { BRAND } from "../../../shared/brand";
 
 /** What the window shows in front: the binding, and whether Home covers it. */
 /** Main refused the open because the ADE Cloud computer is asleep (`CloudComputerAsleepError`; Electron keeps the name in the text). */
@@ -470,7 +471,7 @@ function ResourcePressureIndicator({ enabled }: { enabled: boolean }) {
       forceEnabled
       side="bottom"
       content={{
-        label: "ADE is under load",
+        label: `${BRAND.NAME} is under load`,
         description,
       }}
       wrapperStyle={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
@@ -478,7 +479,7 @@ function ResourcePressureIndicator({ enabled }: { enabled: boolean }) {
       <button
         type="button"
         role="status"
-        aria-label={`ADE resource pressure level ${level}`}
+        aria-label={`${BRAND.NAME} resource pressure level ${level}`}
         title={description}
         {...view.attributes}
         className={cn(
@@ -2043,14 +2044,14 @@ export function TopBar({
       const closingTabs = plans.filter((plan) => !plan.fallback && !waitingTabs.some((entry) => entry.tab.key === plan.tab.key));
       const reconnectCopy = action === "remove"
         ? "Add the machine again to reconnect."
-        : "ADE will not reconnect to this machine until you connect again.";
+        : `${BRAND.NAME} will not reconnect to this machine until you connect again.`;
       const message = (() => {
         if (affectedCount === 0) {
           return action === "remove"
             ? target.transport === "paired"
               ? "This computer will forget the machine and stop connecting to it."
               : "Removing this machine will delete its saved SSH details."
-            : "Disconnecting will stop this remote connection. ADE will not reconnect to this machine until you connect again.";
+            : `Disconnecting will stop this remote connection. ${BRAND.NAME} will not reconnect to this machine until you connect again.`;
         }
         const lines: string[] = [];
         if (stayingTabs.length > 0) {
@@ -2069,7 +2070,7 @@ export function TopBar({
             `${waitingTabs.length} open project tab${plural} ${waitingTabs.length === 1 ? "is" : "are"} on no other computer that is online:`,
             waitingTabs.map((plan) => `- ${plan.tab.displayName}`).join("\n"),
             "",
-            `${waitingTabs.length === 1 ? "It stays" : "They stay"} open on ADE Cloud until a computer with the project is online.`,
+            `${waitingTabs.length === 1 ? "It stays" : "They stay"} open on ${BRAND.CLOUD_NAME} until a computer with the project is online.`,
           );
         }
         if (closingTabs.length > 0) {
@@ -2874,7 +2875,7 @@ export function TopBar({
 
       {/* Branding */}
       <AdeWordmark
-        alt="ADE"
+        alt={BRAND.NAME}
         className="shrink-0 select-none"
         style={{ height: 20 }}
         draggable={false}

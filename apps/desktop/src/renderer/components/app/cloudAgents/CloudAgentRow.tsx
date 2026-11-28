@@ -19,6 +19,7 @@ import { Banner } from "../../ui/notice";
 import { AnchoredMenu } from "../../ui/AnchoredMenu";
 import { Z_LAYERS } from "../../ui/zLayers";
 import { STATUS_TONE, modelLabel, relativeAge, type CloudProviderBrand } from "./cloudAgentsModel";
+import { BRAND } from "../../../../shared/brand";
 
 export type CloudAgentRowActions = {
   onOpen: (agent: CloudAgent) => void;
@@ -77,7 +78,7 @@ export function CloudAgentRow({
   const canStop = capabilities.stop && (agent.status === "working" || agent.status === "starting" || agent.status === "needs_you");
   const model = modelLabel(agent.model, models);
   const pr = agent.pullRequest;
-  const openLabel = agent.link ? "Open" : "Open in ADE";
+  const openLabel = agent.link ? "Open" : `Open in ${BRAND.NAME}`;
   const openHint = agent.link
     ? `Open this ${brand.noun}'s chat in ${agent.link.laneName ? `“${agent.link.laneName}”` : "its lane"}`
     : agent.branch

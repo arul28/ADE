@@ -11,6 +11,7 @@ import { confirmAppleDeviceRelease } from "./appleReleaseConfirm";
 import type { AppleLaneDeviceCard } from "./useAppleLaneDeviceCard";
 import { useDeviceMachinePin } from "./useDeviceMachinePin";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The Apple Development card's action menu.
@@ -84,7 +85,7 @@ export function AppleToolCardMenu({
       .catch((error: unknown) => {
         showToast({
           title: `${action} failed`,
-          message: plainErrorText(error, "ADE couldn't finish that."),
+          message: plainErrorText(error, `${BRAND.NAME} couldn't finish that.`),
           tone: "error",
         });
       })

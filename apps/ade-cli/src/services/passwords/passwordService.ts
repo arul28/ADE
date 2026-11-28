@@ -52,6 +52,7 @@ import { newPasswordItemId, savedForExactOrigin, summarizePasswordItem as summar
 import { matchLoginsForOrigin, normalizeLoginOrigin } from "./passwordMatching";
 import { createProjectSecrets } from "./passwordProjectSecrets";
 import { parseTotp, totpCode } from "./passwordTotp";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 export type PasswordsRelay = {
   /** `epoch`: the account's current key epoch (a newer one means another computer reset Passwords). */
@@ -161,10 +162,10 @@ export function createPasswordService(args: {
 
   const accountOrThrow = (): string => {
     const accountId = args.getAccountUserId();
-    if (!accountId) throw new PasswordsUnavailableError("Sign in to ADE to use Passwords & Secrets.");
+    if (!accountId) throw new PasswordsUnavailableError(`Sign in to ${BRAND.NAME} to use Passwords & Secrets.`);
     if (!isEnabled()) {
       throw new PasswordsUnavailableError(isCloud
-        ? "Passwords & Secrets is off for ADE Cloud computers. The person can turn it on in Settings › Passwords & Secrets."
+        ? `Passwords & Secrets is off for ${BRAND.CLOUD_NAME} computers. The person can turn it on in Settings › Passwords & Secrets.`
         : "Passwords & Secrets is off on this computer. The person can turn it on in Settings › Passwords & Secrets.");
     }
     return accountId;
@@ -216,7 +217,7 @@ export function createPasswordService(args: {
       }
     }
     const deviceId = args.getDeviceId();
-    if (!args.relay || !deviceId) throw new PasswordsUnavailableError("Passwords needs ADE's account service; try again when online.");
+    if (!args.relay || !deviceId) throw new PasswordsUnavailableError(`Passwords needs ${BRAND.NAME}'s account service; try again when online.`);
     const released = await args.relay.requestPasswordKey({ deviceId, machineKind: args.machineKind });
     if (!released) throw new PasswordsUnavailableError("Passwords & Secrets is unavailable right now; try again shortly.");
     if (purgedSince(startedAt, accountId)) throw purgedError();
@@ -733,7 +734,7 @@ export function createPasswordService(args: {
      * turns it on, the ADE Cloud switch starts on.
      */
     async setEnabled(enabled: boolean): Promise<PasswordsStatus> {
-      if (isCloud) throw new PasswordsUnavailableError("On an ADE Cloud computer, Passwords follows the ADE Cloud switch in Settings › Passwords & Secrets.");
+      if (isCloud) throw new PasswordsUnavailableError(`On a ${BRAND.NAME} Cloud computer, Passwords follows the ${BRAND.CLOUD_NAME} switch in Settings › Passwords & Secrets.`);
       // Before turning off, send what is still waiting (a save made offline),
       // while the switch still allows it. Offline, the purge still runs: off means off.
       if (!enabled && isEnabled() && args.getAccountUserId()) {
@@ -760,7 +761,7 @@ export function createPasswordService(args: {
 
     /** The account-wide switch for ADE Cloud computers. */
     async setCloudEnabled(enabled: boolean): Promise<PasswordsStatus> {
-      if (!args.setCloudEnabled) throw new PasswordsUnavailableError("Passwords needs ADE's account service; try again when online.");
+      if (!args.setCloudEnabled) throw new PasswordsUnavailableError(`Passwords needs ${BRAND.NAME}'s account service; try again when online.`);
       args.setCloudEnabled(enabled);
       if (isCloud && !enabled) await purgeLocal();
       logger.info("passwords.cloud_enabled_changed", { enabled });
@@ -775,7 +776,7 @@ export function createPasswordService(args: {
     async reset(): Promise<PasswordsStatus> {
       const accountId = accountOrThrow();
       const deviceId = args.getDeviceId();
-      if (!args.relay || !deviceId) throw new PasswordsUnavailableError("Passwords needs ADE's account service; try again when online.");
+      if (!args.relay || !deviceId) throw new PasswordsUnavailableError(`Passwords needs ${BRAND.NAME}'s account service; try again when online.`);
       const released = await args.relay.requestPasswordKey({ deviceId, machineKind: args.machineKind, reset: true });
       if (!released) throw new PasswordsUnavailableError("Passwords & Secrets is unavailable right now; try again shortly.");
       await purgeLocal();

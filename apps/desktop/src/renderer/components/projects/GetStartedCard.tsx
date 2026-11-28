@@ -14,6 +14,7 @@ import { showToast } from "../app/toast/toastStore";
 import { extractError } from "../../lib/format";
 import { openExternalUrl } from "../../lib/openExternal";
 import { addRepoToAccount, openAddedAccountProject } from "./useAddToAccount";
+import { BRAND } from "../../../shared/brand";
 
 const DONE_KEY = "ade.getStarted.done.v1";
 const INSTALL_CHIP_DISMISSED_KEY = "ade.getStarted.installChip.dismissed.v1";
@@ -136,7 +137,7 @@ export function GetStartedCard({
         ? undefined
         : github.phase.kind === "failed"
           ? githubSignInFailureDetail(github.phase)
-          : "ADE reads your repositories and opens pull requests with it.",
+          : `${BRAND.NAME} reads your repositories and opens pull requests with it.`,
       state: githubDone ? "done" : connecting ? "running" : github.phase.kind === "failed" ? "failed" : "todo",
       action: githubDone ? undefined : (
         <button
@@ -154,7 +155,7 @@ export function GetStartedCard({
     {
       id: "project",
       title: projectDone && firstProject ? `Added ${firstProject.owner}/${firstProject.name}` : "Add a project",
-      hint: projectDone ? undefined : "Pick a repository. It stays on GitHub; ADE works on a copy.",
+      hint: projectDone ? undefined : `Pick a repository. It stays on GitHub; ${BRAND.NAME} works on a copy.`,
       state: projectDone ? "done" : "todo",
       action: projectDone ? undefined : (
         <button type="button" className={githubDone ? "kit-btn kit-btn-primary" : "kit-btn"} data-size="sm" onClick={onAddProject}>
@@ -182,7 +183,7 @@ export function GetStartedCard({
     {
       id: "chat",
       title: "Send your first chat",
-      hint: chatDone ? undefined : "The first message starts a computer on ADE Cloud for it.",
+      hint: chatDone ? undefined : `The first message starts a computer on ${BRAND.CLOUD_NAME} for it.`,
       state: chatDone ? "done" : "todo",
       action: chatDone || !firstProject ? undefined : (
         <button type="button" className="kit-btn kit-btn-primary" data-size="sm" onClick={() => openAccountProject(firstProject)}>
@@ -193,10 +194,10 @@ export function GetStartedCard({
   ];
 
   return (
-    <section className="kit-card ade-get-started" aria-label="Get started with ADE" data-testid="ade-get-started">
-      <header className="kit-card-head">Get started with ADE</header>
+    <section className="kit-card ade-get-started" aria-label={`Get started with ${BRAND.NAME}`} data-testid="ade-get-started">
+      <header className="kit-card-head">Get started with {BRAND.NAME}</header>
       <div className="kit-card-body" style={{ paddingTop: 4 }}>
-        <SetupSteps steps={steps} label="Get started with ADE" />
+        <SetupSteps steps={steps} label={`Get started with ${BRAND.NAME}`} />
       </div>
     </section>
   );
@@ -213,7 +214,7 @@ export function InstallAdeChip() {
     <div className="kit-panel flex items-center gap-2 px-3 py-1.5" style={{ maxWidth: 520, width: "100%", flex: "none" }} data-testid="ade-install-chip">
       <Laptop size={14} aria-hidden style={{ color: "var(--kit-text-3)", flex: "none" }} />
       <span className="min-w-0 flex-1 text-[12px]" style={{ color: "var(--kit-text-2)" }}>
-        Have a computer? Install ADE and it shows up here by itself.
+        Have a computer? Install {BRAND.NAME} and it shows up here by itself.
       </span>
       <button
         type="button"
@@ -221,7 +222,7 @@ export function InstallAdeChip() {
         data-size="sm"
         onClick={() => openExternalUrl(ADE_DOWNLOAD_PAGE_URL)}
       >
-        Get ADE
+        Get {BRAND.NAME}
       </button>
       <button
         type="button"

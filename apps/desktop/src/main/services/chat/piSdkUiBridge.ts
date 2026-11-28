@@ -23,6 +23,7 @@ import {
   type PiSdkUiResponsePayload,
   type PiSdkWorkerResponse,
 } from "./piSdkProtocol";
+import { BRAND } from "../../../shared/brand";
 
 export type PiUiBridge = {
   /**
@@ -204,7 +205,7 @@ export function createPiExtensionUiContext(options: PiExtensionUiContextOptions)
     bridge.notify({
       origin: "extension",
       level: "warn",
-      message: `This Pi extension used "${method}", which only works in Pi's terminal UI. ADE ignored it.`,
+      message: `This Pi extension used "${method}", which only works in Pi's terminal UI. ${BRAND.NAME} ignored it.`,
       detail: { method },
     });
   };
@@ -340,7 +341,7 @@ export function createPiExtensionUiContext(options: PiExtensionUiContextOptions)
     getAllThemes(): unknown[] { return []; },
     getTheme(): undefined { return undefined; },
     setTheme(): { success: false; error: string } {
-      return { success: false, error: "ADE renders Pi extensions with its own chat styling." };
+      return { success: false, error: `${BRAND.NAME} renders Pi extensions with its own chat styling.` };
     },
   };
   return context;

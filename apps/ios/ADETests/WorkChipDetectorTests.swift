@@ -396,12 +396,12 @@ final class WorkChipMessageRenderingTests: XCTestCase {
 
   func testLaneAndChatMentionsGetInAppDeeplinks() {
     let lane = workChipNavigationURL(chip("@lane:25f280a4-1b2c-4d3e-8f90-abcdef123456"))
-    XCTAssertEqual(lane?.scheme, "ade")
+    XCTAssertEqual(lane?.scheme, "daex")
     XCTAssertEqual(lane?.host, "lane")
     XCTAssertTrue(lane?.path.contains("25f280a4-1b2c-4d3e-8f90-abcdef123456") == true)
 
     let chat = workChipNavigationURL(chip("@chat:9e2315e8ddef"))
-    XCTAssertEqual(chat?.scheme, "ade")
+    XCTAssertEqual(chat?.scheme, "daex")
     XCTAssertEqual(chat?.host, "session")
     XCTAssertTrue(chat?.path.contains("9e2315e8ddef") == true)
   }

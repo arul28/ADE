@@ -1,12 +1,12 @@
 import { app, BrowserWindow } from "electron";
 
 import {
-  ADE_DEEPLINK_SCHEME,
   ADE_DEEPLINK_HTTPS_PATH,
   deeplinkToNavigationTarget,
   isAdeDeeplinkHttpsHost,
   parseDeeplink,
 } from "../../../shared/deeplinks";
+import { ADE_DEEPLINK_SCHEME_SOURCE, ADE_DEEPLINK_SCHEMES, hasAdeDeeplinkScheme } from "../../../shared/deeplinkSchemes";
 import { IPC } from "../../../shared/ipc";
 import type {
   AppNavigationRequest,
@@ -19,11 +19,9 @@ export type DeeplinkDispatcher = (
   request: AppNavigationRequest,
 ) => Promise<void> | void;
 
-const ADE_SCHEME_RE = new RegExp(`^${ADE_DEEPLINK_SCHEME}://`, "i");
-
 export function isAdeDeeplinkArg(arg: unknown): arg is string {
   if (typeof arg !== "string") return false;
-  if (ADE_SCHEME_RE.test(arg)) return true;
+  if (hasAdeDeeplinkScheme(arg)) return true;
   try {
     const url = new URL(arg);
     return url.protocol === "https:"
@@ -101,22 +99,27 @@ export function registerAdeProtocolHandler(options: {
       // app entry, so pass argv through unchanged — applying path.resolve to
       // non-flag args turns flag VALUES (e.g. `YES` after
       // `-ApplePersistenceIgnoreState`) into bogus paths.
-      app.setAsDefaultProtocolClient(
-        ADE_DEEPLINK_SCHEME,
-        process.execPath,
-        respawnArgs,
-      );
-      log("deeplink.scheme_claimed", {
-        scheme: ADE_DEEPLINK_SCHEME,
-        mode: "dev",
-        respawnArgs,
-      });
+      // Every scheme (`ade://` and `daex://`) goes to the same process.
+      for (const scheme of ADE_DEEPLINK_SCHEMES) {
+        app.setAsDefaultProtocolClient(
+          scheme,
+          process.execPath,
+          respawnArgs,
+        );
+        log("deeplink.scheme_claimed", {
+          scheme,
+          mode: "dev",
+          respawnArgs,
+        });
+      }
     } else {
-      app.setAsDefaultProtocolClient(ADE_DEEPLINK_SCHEME);
-      log("deeplink.scheme_claimed", { scheme: ADE_DEEPLINK_SCHEME, mode: "packaged" });
+      for (const scheme of ADE_DEEPLINK_SCHEMES) {
+        app.setAsDefaultProtocolClient(scheme);
+        log("deeplink.scheme_claimed", { scheme, mode: "packaged" });
+      }
     }
   } else {
-    log("deeplink.scheme_skipped", { scheme: ADE_DEEPLINK_SCHEME });
+    for (const scheme of ADE_DEEPLINK_SCHEMES) log("deeplink.scheme_skipped", { scheme });
   }
 
   const coldStartDeeplinkArgs = process.argv.slice(1).filter(isAdeDeeplinkArg);
@@ -204,8 +207,10 @@ export function registerAdeProtocolHandler(options: {
  * A deeplink as the log may keep it. An ADE Cloud invite's code is left out
  * (`ade://invite/<redacted>`), as everywhere else ADE logs an invite.
  */
+const INVITE_LINK_CODE = new RegExp(`^(\\s*${ADE_DEEPLINK_SCHEME_SOURCE}:\\/*invite\\/)[^?#]*`, "i");
+
 function deeplinkForLog(rawUrl: string): string {
-  return rawUrl.replace(/^(\s*ade:\/*invite\/)[^?#]*/i, "$1<redacted>");
+  return rawUrl.replace(INVITE_LINK_CODE, "$1<redacted>");
 }
 
 /**

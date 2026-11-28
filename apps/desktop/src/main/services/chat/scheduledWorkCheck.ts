@@ -81,7 +81,7 @@ export function scheduledWorkCheckWakeText(
   check: { because: "changed" | "failed"; detail: string },
 ): string {
   const head = check.because === "failed"
-    ? `(Check \`${command}\` failed. ADE will not wake you for it again until it passes.)`
+    ? `(Check \`${command}\` failed. DAEX will not wake you for it again until it passes.)`
     : `(Check \`${command}\` printed something new since the last run.)`;
   return `${head}\n\`\`\`\n${check.detail.replace(/```/g, "ˋˋˋ")}\n\`\`\``;
 }

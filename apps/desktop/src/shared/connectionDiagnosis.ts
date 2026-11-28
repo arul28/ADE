@@ -4,6 +4,7 @@ import type {
   SyncRouteHealth,
 } from "./types/sync";
 import type { RemoteRuntimeConnectionRecovery } from "./types/remoteRuntime";
+import { BRAND } from "./brand";
 
 /**
  * Plain-language answers to "why can't my devices reach that computer?".
@@ -58,8 +59,8 @@ export function describeHostStall(
     return {
       title: `${machine} froze${when}`,
       detail: stall.blockedPath
-        ? `ADE there waited ${formatSeconds(stall.durationMs)} to read ${stall.blockedPath} and restarted itself. macOS may have been asking for permission on its screen.`
-        : `ADE there stopped responding for ${formatSeconds(stall.durationMs)} and restarted itself.`,
+        ? `${BRAND.NAME} there waited ${formatSeconds(stall.durationMs)} to read ${stall.blockedPath} and restarted itself. macOS may have been asking for permission on its screen.`
+        : `${BRAND.NAME} there stopped responding for ${formatSeconds(stall.durationMs)} and restarted itself.`,
     };
   }
   const load = stall.loadAverage1m;
@@ -69,7 +70,7 @@ export function describeHostStall(
     title: `${machine} froze for ${formatSeconds(stall.durationMs)}${when}`,
     detail: overloaded
       ? `Its CPU is overloaded (load ${Math.round(load)} on ${cores} cores).`
-      : `ADE on ${machine} was too busy to answer.`,
+      : `${BRAND.NAME} on ${machine} was too busy to answer.`,
   };
 }
 
@@ -99,19 +100,19 @@ export function describeHostStorageWait(
     return {
       title: `${machine} can't read ${wait.path}`,
       detail: onMac
-        ? `ADE isn't allowed to use it. On ${machine}, allow ADE in System Settings › Privacy & Security › Files and Folders.`
-        : `ADE there isn't allowed to read it. Check the folder's permissions on ${machine}.`,
+        ? `${BRAND.NAME} isn't allowed to use it. On ${machine}, allow ${BRAND.NAME} in System Settings › Privacy & Security › Files and Folders.`
+        : `${BRAND.NAME} there isn't allowed to read it. Check the folder's permissions on ${machine}.`,
     };
   }
   if (onMac) {
     return {
       title: `${machine} is waiting for permission`,
-      detail: `macOS is asking on ${screen} screen whether ADE may use ${wait.path}. Click Allow there. If no prompt is showing, the drive is not responding.`,
+      detail: `macOS is asking on ${screen} screen whether ${BRAND.NAME} may use ${wait.path}. Click Allow there. If no prompt is showing, the drive is not responding.`,
     };
   }
   return {
     title: `${wait.path} on ${machine} is not responding`,
-    detail: "The drive it is on may be disconnected or asleep. ADE keeps working and reads it again once it answers.",
+    detail: `The drive it is on may be disconnected or asleep. ${BRAND.NAME} keeps working and reads it again once it answers.`,
   };
 }
 
@@ -148,7 +149,7 @@ export function hostStorageWaitFromHealth(
  * took it, so this names the likely ones instead of guessing.
  */
 export const OTHER_ADE_APP_ON_THIS_COMPUTER =
-  "Another ADE app on this computer (for example ADE Beta or a dev build)";
+  `Another ${BRAND.NAME} app on this computer (for example ${BRAND.BETA_NAME} or a dev build)`;
 
 /**
  * Another ADE app on this computer took this app's link to `machineName`.
@@ -167,9 +168,9 @@ export function describeLinkHeldByOtherAdeApp(
 
 /** Another ADE app on this computer holds this computer's own relay connection. */
 export const RELAY_HELD_BY_OTHER_ADE_APP = {
-  title: "Another ADE app on this computer took over syncing",
+  title: `Another ${BRAND.NAME} app on this computer took over syncing`,
   detail: `${OTHER_ADE_APP_ON_THIS_COMPUTER} took over the relay connection.`,
-  fix: "Quit the other ADE app on this computer (a beta, alpha or dev build), then restart ADE.",
+  fix: `Quit the other ${BRAND.NAME} app on this computer (a beta, alpha or dev build), then restart ${BRAND.NAME}.`,
 } as const;
 
 /** What a link that dropped because its host went away is waiting on. */
@@ -187,8 +188,8 @@ export function describeHostWentAway(
 ): string {
   const machine = machineLabel(machineName, "that machine");
   return recovery === "reconnecting"
-    ? `Lost the link to ${machine}. ADE there may be restarting, and this app reconnects on its own when it is back.`
-    : `ADE on ${machine} restarted or went away. This app is waiting for you: press Reconnect when it is back.`;
+    ? `Lost the link to ${machine}. ${BRAND.NAME} there may be restarting, and this app reconnects on its own when it is back.`
+    : `${BRAND.NAME} on ${machine} restarted or went away. This app is waiting for you: press Reconnect when it is back.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -249,13 +250,13 @@ function exitNodePhrase(name: string): string {
 }
 
 const RELAY_FIREWALL_FIX =
-  "Check this computer's internet connection. A VPN, proxy or firewall that blocks secure WebSockets to ADE's relay stops it too.";
+  `Check this computer's internet connection. A VPN, proxy or firewall that blocks secure WebSockets to ${BRAND.NAME}'s relay stops it too.`;
 
 /** The relay's fix when an exit node is on: it names the exit node itself. */
 function exitNodeRelayFix(facts: HostReachabilityFacts): string | null {
   const exitNode = facts.tailscale?.exitNodeName ?? null;
   return exitNode !== null
-    ? `This computer sends its traffic through ${exitNodePhrase(exitNode)}. Turn the exit node off, or allow ADE's relay through it.`
+    ? `This computer sends its traffic through ${exitNodePhrase(exitNode)}. Turn the exit node off, or allow ${BRAND.NAME}'s relay through it.`
     : null;
 }
 
@@ -267,8 +268,8 @@ function relayCheck(facts: HostReachabilityFacts): HostReachabilityCheck {
       id: "relay",
       label: "Relay",
       state: "off",
-      detail: "The relay needs this computer to be signed in to ADE.",
-      fix: "Sign in to ADE to reach this computer from anywhere.",
+      detail: `The relay needs this computer to be signed in to ${BRAND.NAME}.`,
+      fix: `Sign in to ${BRAND.NAME} to reach this computer from anywhere.`,
     };
   }
   if (!relay.enabled) {
@@ -293,7 +294,7 @@ function relayCheck(facts: HostReachabilityFacts): HostReachabilityCheck {
       id: "relay",
       label: "Relay",
       state: "failed",
-      detail: "This computer is not connected to ADE's relay.",
+      detail: `This computer is not connected to ${BRAND.NAME}'s relay.`,
       fix: exitNodeFix ?? RELAY_FIREWALL_FIX,
     };
   }
@@ -302,8 +303,8 @@ function relayCheck(facts: HostReachabilityFacts): HostReachabilityCheck {
       id: "relay",
       label: "Relay",
       state: "failed",
-      detail: "The relay is connected, but it cannot hand connections to ADE here.",
-      fix: "Restart ADE on this computer.",
+      detail: `The relay is connected, but it cannot hand connections to ${BRAND.NAME} here.`,
+      fix: `Restart ${BRAND.NAME} on this computer.`,
     };
   }
   if (facts.relaySelfProbe && !facts.relaySelfProbe.ok) {
@@ -321,7 +322,7 @@ function relayCheck(facts: HostReachabilityFacts): HostReachabilityCheck {
     state: "ok",
     detail: facts.relaySelfProbe?.ok
       ? "A test connection through the relay reached this computer."
-      : "Connected to ADE's relay.",
+      : `Connected to ${BRAND.NAME}'s relay.`,
   };
 }
 
@@ -329,10 +330,10 @@ function listenerCheck(health: SyncRouteHealth["listener"]): HostReachabilityChe
   if (!health.listenerBound) {
     return {
       id: "listener",
-      label: "ADE",
+      label: `${BRAND.NAME}`,
       state: "failed",
-      detail: "ADE is not accepting connections on this computer.",
-      fix: "Restart ADE on this computer.",
+      detail: `${BRAND.NAME} is not accepting connections on this computer.`,
+      fix: `Restart ${BRAND.NAME} on this computer.`,
     };
   }
   if (!health.loopbackAdeValidated) {
@@ -341,32 +342,32 @@ function listenerCheck(health: SyncRouteHealth["listener"]): HostReachabilityChe
     if (health.port != null && health.shadowedBy) {
       return {
         id: "listener",
-        label: "ADE",
+        label: `${BRAND.NAME}`,
         state: "warning",
-        detail: `Another program (${health.shadowedBy}) is using port ${health.port} on this computer. ADE is working around it; Wi-Fi and relay connections keep working.`,
-        fix: "Nothing to do unless this stays. If it does, quit that program or restart ADE.",
+        detail: `Another program (${health.shadowedBy}) is using port ${health.port} on this computer. ${BRAND.NAME} is working around it; Wi-Fi and relay connections keep working.`,
+        fix: `Nothing to do unless this stays. If it does, quit that program or restart ${BRAND.NAME}.`,
       };
     }
     // No holder was found: the check may simply not have been answered in
     // time (a busy computer), so do not claim another program has the port.
     return {
       id: "listener",
-      label: "ADE",
+      label: `${BRAND.NAME}`,
       state: "warning",
       detail: health.port != null
-        ? `ADE could not confirm its connection on port ${health.port}. It keeps checking and repairs this by itself; Wi-Fi and relay connections keep working.`
-        : "ADE could not confirm its connection port. It keeps checking and repairs this by itself.",
-      fix: "Nothing to do unless this stays. If it does, restart ADE.",
+        ? `${BRAND.NAME} could not confirm its connection on port ${health.port}. It keeps checking and repairs this by itself; Wi-Fi and relay connections keep working.`
+        : `${BRAND.NAME} could not confirm its connection port. It keeps checking and repairs this by itself.`,
+      fix: `Nothing to do unless this stays. If it does, restart ${BRAND.NAME}.`,
     };
   }
   return {
     id: "listener",
-    label: "ADE",
+    label: `${BRAND.NAME}`,
     state: "ok",
     detail: health.port == null
       ? "Accepting connections."
       : health.shadowedBy
-        ? `Accepting connections on port ${health.port}. Another program (${health.shadowedBy}) is using that port on this computer only; ADE routed around it.`
+        ? `Accepting connections on port ${health.port}. Another program (${health.shadowedBy}) is using that port on this computer only; ${BRAND.NAME} routed around it.`
         : `Accepting connections on port ${health.port}.`,
   };
 }
@@ -398,7 +399,7 @@ function tailnetCheck(facts: HostReachabilityFacts): HostReachabilityCheck {
       id: "tailnet",
       label: "Tailscale",
       state: "off",
-      detail: health.reason?.trim() || "ADE is not offering this computer on your tailnet.",
+      detail: health.reason?.trim() || `${BRAND.NAME} is not offering this computer on your tailnet.`,
     };
   }
   if (!health.tailscaleReachable) {
@@ -406,8 +407,8 @@ function tailnetCheck(facts: HostReachabilityFacts): HostReachabilityCheck {
       id: "tailnet",
       label: "Tailscale",
       state: "warning",
-      detail: health.reason?.trim() || "ADE could not offer this computer on your tailnet.",
-      fix: "Open Tailscale, check that it is connected, then restart ADE.",
+      detail: health.reason?.trim() || `${BRAND.NAME} could not offer this computer on your tailnet.`,
+      fix: `Open Tailscale, check that it is connected, then restart ${BRAND.NAME}.`,
     };
   }
   return {
@@ -448,10 +449,10 @@ export function diagnoseHostReachability(
   if (!facts.accountSignedIn) {
     checks.push({
       id: "account",
-      label: "ADE account",
+      label: `${BRAND.NAME} account`,
       state: "warning",
       detail: "Not signed in, so only devices on your network or tailnet can connect.",
-      fix: "Sign in to ADE.",
+      fix: `Sign in to ${BRAND.NAME}.`,
     });
   }
   if (facts.lastStall) {
@@ -472,7 +473,7 @@ export function diagnoseHostReachability(
       label: "Project folders",
       state: "warning",
       detail: `${wait.title}. ${wait.detail}`,
-      fix: "ADE keeps serving everything else; that folder's projects wait until it answers.",
+      fix: `${BRAND.NAME} keeps serving everything else; that folder's projects wait until it answers.`,
     });
   }
 

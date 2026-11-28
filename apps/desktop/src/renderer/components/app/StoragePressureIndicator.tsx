@@ -5,10 +5,11 @@ import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { BRAND } from "../../../shared/brand";
 
 const STORAGE_PRESSURE_SAMPLE_MS = 30_000;
-const WARNING_DESCRIPTION = "Storage is running low — ADE and your active projects may create more files while agents work. Click to review ADE storage.";
-const CRITICAL_DESCRIPTION = "Your computer is almost out of storage — ADE paused new agent work to protect your chats and projects. Click to review ADE storage.";
+const WARNING_DESCRIPTION = `Storage is running low — ${BRAND.NAME} and your active projects may create more files while agents work. Click to review ${BRAND.NAME} storage.`;
+const CRITICAL_DESCRIPTION = `Your computer is almost out of storage — ${BRAND.NAME} paused new agent work to protect your chats and projects. Click to review ${BRAND.NAME} storage.`;
 
 function useStoragePressure(enabled: boolean): DiskPressureSnapshot | null {
   const [snapshot, setSnapshot] = useState<DiskPressureSnapshot | null>(null);
@@ -67,7 +68,7 @@ export function StoragePressureIndicator({ enabled }: { enabled: boolean }) {
       <button
         type="button"
         role="status"
-        aria-label={`ADE storage pressure ${snapshot.state}`}
+        aria-label={`${BRAND.NAME} storage pressure ${snapshot.state}`}
         title={description}
         data-ade-storage-pressure-state={snapshot.state}
         className={cn(

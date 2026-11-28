@@ -545,8 +545,8 @@ final class GitHubAccountConnection: ObservableObject {
       return
     case .failure(let failure):
       problem = failure == .unsupported
-        ? "Your ADE account can't connect GitHub yet."
-        : "ADE can't reach your account right now. Try again."
+        ? "Your \(Brand.name) account can't connect GitHub yet."
+        : "\(Brand.name) can't reach your account right now. Try again."
       return
     case .success(let answer):
       guard answer.status == 200 || answer.status == 201,
@@ -556,8 +556,8 @@ final class GitHubAccountConnection: ObservableObject {
         problem = answer.status == 429
           ? "Too many GitHub sign-ins in a short time. Try again in a few minutes."
           : (answer.status == 404 || answer.errorCode == "github_app_not_configured")
-            ? "Your ADE account can't connect GitHub yet."
-            : "ADE could not start the GitHub sign-in. Try again."
+            ? "Your \(Brand.name) account can't connect GitHub yet."
+            : "\(Brand.name) could not start the GitHub sign-in. Try again."
         return
       }
       authorizeURL = url
@@ -627,11 +627,11 @@ final class GitHubAccountConnection: ObservableObject {
     problem = nil
     switch await call("DELETE", path: "github/app/grant") {
     case .failure:
-      problem = "ADE can't reach your account right now. Try again."
+      problem = "\(Brand.name) can't reach your account right now. Try again."
       return nil
     case .success(let answer):
       guard (200..<300).contains(answer.status) else {
-        problem = "ADE could not disconnect GitHub. Try again."
+        problem = "\(Brand.name) could not disconnect GitHub. Try again."
         return nil
       }
       dropToken()
@@ -705,7 +705,7 @@ struct GitHubConnectCallback: Equatable {
   let status: String?
 
   init?(url: URL) {
-    guard url.scheme?.lowercased() == "ade", url.host?.lowercased() == "github" else { return nil }
+    guard ADEDeepLinkURLParsing.isADELinkScheme(url.scheme), url.host?.lowercased() == "github" else { return nil }
     let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
     func value(_ name: String) -> String? { items.first { $0.name == name }?.value }
     let id = value("signIn")

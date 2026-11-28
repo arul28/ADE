@@ -1,4 +1,5 @@
 import type { ProviderContextItemKind, ProviderContextTiming } from "../../../shared/types/providerContext";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The text ADE itself sends a new lane chat of one provider, built by the same
@@ -77,17 +78,17 @@ export function assembleAdeChatContextParts(input: {
   if (inMain(input.cliGuidance)) {
     inner.push({
       id: "ade-cli-guidance",
-      label: "ADE CLI guidance",
+      label: `${BRAND.NAME} CLI guidance`,
       kind: "instructions",
       timing: main.timing,
       text: input.cliGuidance.trim(),
-      detail: "How to use the `ade` command and where ADE's skills are.",
+      detail: `How to use the \`ade\` command and where ${BRAND.NAME}'s skills are.`,
     });
   }
   if (inMain(input.activity)) {
     inner.push({
       id: "ade-activity",
-      label: "ADE status reporting",
+      label: `${BRAND.NAME} status reporting`,
       kind: "instructions",
       timing: main.timing,
       text: input.activity.trim(),
@@ -97,7 +98,7 @@ export function assembleAdeChatContextParts(input: {
   if (input.listing && inMain(input.listing.text)) {
     inner.push({
       id: "ade-skill-listing",
-      label: "ADE skill listing",
+      label: `${BRAND.NAME} skill listing`,
       kind: "skills",
       timing: main.timing,
       text: input.listing.text,
@@ -121,10 +122,10 @@ export function assembleAdeChatContextParts(input: {
   const directive = (id: string, label: string, text: string | null, timing: ProviderContextTiming, detail?: string) => {
     if (text?.trim()) parts.push({ id, label, kind: "instructions", timing, text, ...(detail ? { detail } : {}) });
   };
-  directive("ade-turn-directive", "ADE turn directive", input.perTurn?.trim() ?? null, "every-request", "Put before every message: ADE's plan and question controls.");
-  directive("ade-launch-directive", "ADE launch directive", input.launchDirective, "chat-start", "Names the lane and its folder, on the first message.");
-  directive("ade-computer-use", "ADE computer-use rules", input.computerUse, "chat-start", "Screen, browser and proof rules, on the first message.");
-  directive("ade-lane-screen", "ADE lane screen", input.laneScreen, "chat-start");
-  directive("ade-apple-device", "ADE lane devices", input.laneDevices, "chat-start");
+  directive("ade-turn-directive", `${BRAND.NAME} turn directive`, input.perTurn?.trim() ?? null, "every-request", `Put before every message: ${BRAND.NAME}'s plan and question controls.`);
+  directive("ade-launch-directive", `${BRAND.NAME} launch directive`, input.launchDirective, "chat-start", "Names the lane and its folder, on the first message.");
+  directive("ade-computer-use", `${BRAND.NAME} computer-use rules`, input.computerUse, "chat-start", "Screen, browser and proof rules, on the first message.");
+  directive("ade-lane-screen", `${BRAND.NAME} lane screen`, input.laneScreen, "chat-start");
+  directive("ade-apple-device", `${BRAND.NAME} lane devices`, input.laneDevices, "chat-start");
   return parts;
 }

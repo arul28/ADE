@@ -17,6 +17,7 @@ import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { useBannerDismissals } from "../../../lib/bannerDismiss";
 import { Banner } from "../../ui/notice/Banner";
 import { machinesNeedingAttention, type MachineNeedingAttention } from "../adeMcp/adeMcpState";
+import { BRAND } from "../../../../shared/brand";
 
 /** How many computers the line names before it says "and N more". */
 const NAMED_MAX = 3;
@@ -57,8 +58,8 @@ export function MachineIntegrationWarning() {
 
   const [first] = needing;
   const title = needing.length === 1
-    ? `ADE MCP isn't working on ${machineName(first)}`
-    : `ADE MCP isn't working on ${needing.length} of your computers`;
+    ? `${BRAND.NAME} MCP isn't working on ${machineName(first)}`
+    : `${BRAND.NAME} MCP isn't working on ${needing.length} of your computers`;
   const detail = needing.length === 1
     ? `${first.state.label}. ${first.state.detail}`
     : needing.slice(0, NAMED_MAX).map((entry) => `${machineName(entry, true)}: ${entry.state.label}`).join(" · ")
@@ -78,7 +79,7 @@ export function MachineIntegrationWarning() {
           detail,
           // A computer's state, not a failure of this page: no "Report".
           report: false,
-          actions: [{ label: "Open ADE MCP", onClick: () => navigate("/settings?tab=ade-mcp") }],
+          actions: [{ label: `Open ${BRAND.NAME} MCP`, onClick: () => navigate("/settings?tab=ade-mcp") }],
           dismiss: { key: DISMISS_KEY, fingerprint },
         }}
       />

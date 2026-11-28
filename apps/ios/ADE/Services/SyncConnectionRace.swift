@@ -111,7 +111,7 @@ extension SyncConnectionRouteKind: Comparable {
 /// must not be recorded as an endpoint failure.
 struct SyncRelayDialInFlight: Error, LocalizedError {
   var errorDescription: String? {
-    "A connection to this machine through the ADE relay is already opening."
+    "A connection to this machine through the \(Brand.name) relay is already opening."
   }
 }
 

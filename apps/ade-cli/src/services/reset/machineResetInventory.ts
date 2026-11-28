@@ -12,6 +12,8 @@ import {
   type MachineResetPlan,
   type MachineResetProject,
 } from "../../../../desktop/src/shared/types/machineReset";
+import { BRAND } from "../../../../desktop/src/shared/brand";
+import { ADE_CLI_COMMAND_NAMES } from "../../../../desktop/src/shared/cliCommandNames";
 
 /**
  * What the hard reset finds on a machine, and the plan it shows: every ADE
@@ -547,8 +549,8 @@ export function inventoryMachinePaths(
   }
   // The CLI links ADE installed on PATH. Only links into an ADE install: a
   // file named `ade` the person put there themselves stays.
-  for (const suffix of CHANNEL_SUFFIXES) {
-    const link = path.join(home, ".local", "bin", `ade${suffix}`);
+  // Both names: `daex` is the command and `ade` its alias, installed side by side.
+  for (const link of CHANNEL_SUFFIXES.flatMap((suffix) => ADE_CLI_COMMAND_NAMES.map((name) => path.join(home, ".local", "bin", `${name}${suffix}`)))) {
     try {
       if (fs.lstatSync(link).isSymbolicLink() && /ade-cli|ADE( Beta| Alpha)?\.app/.test(fs.readlinkSync(link))) {
         paths.push(link);
@@ -697,7 +699,7 @@ export function inventory(deps: MachineResetDeps): Inventory {
     && backgroundItemBlocked(service.plistPath, deps))) {
     // The one thing a reset cannot undo, and the likeliest reason it was
     // needed: macOS keeps this switch outside every folder ADE owns.
-    notes.push("Your Mac is blocking ADE from running in the background, and a reset can't change that. After the reset, open System Settings, go to General, then Login Items, and turn on ADE under \"Allow in the Background\".");
+    notes.push(`Your Mac is blocking ${BRAND.NAME} from running in the background, and a reset can't change that. After the reset, open System Settings, go to General, then Login Items, and turn on ${BRAND.NAME} under \"Allow in the Background\".`);
   }
   return {
     adeHomes,
@@ -741,12 +743,12 @@ export function findAdeAncestor(deps: MachineResetDeps, options: { allowPid?: nu
 function describeMachinePath(target: string, deps: MachineResetDeps): string {
   const name = path.basename(target);
   if (target.startsWith(deps.tmpDir)) return "Temporary file";
-  if (/^\.ade/.test(name) && path.dirname(target) === deps.homeDir) return "ADE's data folder";
+  if (/^\.ade/.test(name) && path.dirname(target) === deps.homeDir) return `${BRAND.NAME}'s data folder`;
   if (name.endsWith(".plist")) return "Settings file";
   if (target.includes(`${path.sep}.claude${path.sep}`) || target.includes(`${path.sep}.cursor${path.sep}`)) {
     return "Coding-agent data for a lane";
   }
-  return "ADE folder";
+  return `${BRAND.NAME} folder`;
 }
 
 export function planMachineReset(deps: MachineResetDeps): MachineResetPlan {
@@ -758,7 +760,7 @@ function toPlan(found: Inventory, deps: MachineResetDeps): MachineResetPlan {
   const items: MachineResetItem[] = [
     ...found.processes.map((entry) => ({
       kind: "process" as const,
-      label: "Running ADE process",
+      label: `Running ${BRAND.NAME} process`,
       target: `${entry.pid} ${entry.command.slice(0, 160)}`,
     })),
     ...found.services.map((service) => ({
@@ -787,7 +789,7 @@ function toPlan(found: Inventory, deps: MachineResetDeps): MachineResetPlan {
     })),
     ...found.simulators.map((simulator) => ({
       kind: "directory" as const,
-      label: "Simulator ADE created",
+      label: `Simulator ${BRAND.NAME} created`,
       target: simulator.udid,
     })),
     ...found.keychainServices.map((service) => ({
@@ -797,11 +799,11 @@ function toPlan(found: Inventory, deps: MachineResetDeps): MachineResetPlan {
     })),
     ...found.shellRcFiles.map((file) => ({
       kind: "config_entry" as const,
-      label: "PATH line ADE added",
+      label: `PATH line ${BRAND.NAME} added`,
       target: file,
     })),
     ...(found.cursorHooksJson
-      ? [{ kind: "config_entry" as const, label: "Cursor hook ADE added", target: found.cursorHooksJson }]
+      ? [{ kind: "config_entry" as const, label: `Cursor hook ${BRAND.NAME} added`, target: found.cursorHooksJson }]
       : []),
   ];
   const projects: MachineResetProject[] = found.projects.map(({ rootPath, displayName, exists: projectExists, lanes }) => ({
@@ -825,7 +827,7 @@ function toPlan(found: Inventory, deps: MachineResetDeps): MachineResetPlan {
 
 /** Plain-text summary for `ade reset --text`. */
 export function formatMachineResetPlan(plan: MachineResetPlan): string {
-  const lines = ["ADE reset plan", ""];
+  const lines = [`${BRAND.NAME} reset plan`, ""];
   lines.push(`Projects (${plan.projects.length}):`);
   for (const project of plan.projects) {
     lines.push(`  ${project.rootPath}${project.exists ? "" : " (folder is gone)"}`);

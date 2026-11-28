@@ -11,6 +11,7 @@
 import { accountRepoScopeKey } from "../../../shared/accountSettingsScope";
 import type { IntegrationCredentialStorage } from "../../../shared/types/integrationCredentialStorage";
 import { readGitOriginUrl } from "../projects/recentProjectSummary";
+import { BRAND } from "../../../shared/brand";
 
 export type { IntegrationCredentialStorage };
 
@@ -41,14 +42,14 @@ export function describeIntegrationCredentialStorage(args: {
     return {
       storage: "device",
       reason: "signed_out",
-      message: "Sign in to your ADE account to use this connection on your other computers.",
+      message: `Sign in to your ${BRAND.NAME} account to use this connection on your other computers.`,
     };
   }
   if (!args.hasVault) {
     return {
       storage: "device",
       reason: "vault_unavailable",
-      message: "ADE's account vault isn't reachable here, so this connection stays on this computer for now.",
+      message: `${BRAND.NAME}'s account vault isn't reachable here, so this connection stays on this computer for now.`,
     };
   }
   return { storage: "account", reason: null, message: null };

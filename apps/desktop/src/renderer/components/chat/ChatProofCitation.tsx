@@ -19,6 +19,7 @@ import {
   useArtifactPreview,
 } from "./useArtifactPreview";
 import { withChatPin } from "./chatMachinePin";
+import { BRAND } from "../../../shared/brand";
 import { SavedProofPicture, useSavedChatProof } from "./SavedChatProof";
 
 /**
@@ -316,7 +317,7 @@ export function CitedProofSlot({ artifactId, caption, compact, fallback }: {
     return (
       <CitationPlaceholder tone="warning">
         <WarningCircle size={14} aria-hidden />
-        {`ADE has no proof with the id ${artifactId}.${caption?.trim() ? ` It was cited as "${caption.trim()}".` : ""}`}
+        {`${BRAND.NAME} has no proof with the id ${artifactId}.${caption?.trim() ? ` It was cited as "${caption.trim()}".` : ""}`}
       </CitationPlaceholder>
     );
   }

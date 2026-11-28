@@ -15,6 +15,7 @@ import { LANE_SHARE_GRANT_ID_PATTERN } from "./laneShareDirectory";
 //   ade://settings/<entry-id>[?machine=<machine-id>]
 //   ade://open/<place>
 //   ade://invite/<CODE>
+//   (`daex://…` parses exactly like `ade://…`; see ADE_DEEPLINK_SCHEMES)
 //
 //   https://ade-app.dev/open?type=<lane|session|file|commit|artifact|branch|pr|linear-issue|settings>&...
 //   (param names: lane→id; session→id[+lane,event,offset]; file→path[+line,lane];
@@ -43,9 +44,27 @@ import { LANE_SHARE_GRANT_ID_PATTERN } from "./laneShareDirectory";
 import { isUuid } from "./uuid";
 import type { AppNavigationTarget } from "./types/core";
 import { cloudInviteLink, parseCloudInviteCode } from "../../../account-directory/src/cloud/contract";
+import { BRAND } from "./brand";
+import {
+  ADE_DEEPLINK_SCHEME,
+  hasAdeDeeplinkScheme,
+  isAdeDeeplinkScheme,
+} from "./deeplinkSchemes";
 
-export const ADE_DEEPLINK_SCHEME = "ade";
-export const ADE_DEEPLINK_HTTPS_HOST = "ade-app.dev";
+// The scheme helpers live in `./deeplinkSchemes` (light enough for the
+// preload bundle); existing importers keep this path.
+export {
+  ADE_DEEPLINK_SCHEME,
+  ADE_DEEPLINK_SCHEME_SOURCE,
+  ADE_DEEPLINK_SCHEMES,
+  ADE_DEEPLINK_URL_PREFIX_SOURCE,
+  hasAdeDeeplinkScheme,
+  isAdeDeeplinkScheme,
+  withNewLinkScheme,
+} from "./deeplinkSchemes";
+
+/** The host `https://…/open` links are minted on: the old domain, which serves the hand-off page. */
+export const ADE_DEEPLINK_HTTPS_HOST = BRAND.LEGACY_DOMAIN;
 /**
  * Hosts whose `/open` links still parse: the old domain, and the web client's
  * own host, which `ade link --web` once minted. Every link minted now uses
@@ -704,7 +723,7 @@ export function parseDeeplink(rawUrl: string): ParseResult {
   } catch {
     return { ok: false, error: { kind: "malformed", reason: "not a URL" }, rawUrl };
   }
-  if (url.protocol === `${ADE_DEEPLINK_SCHEME}:`) return parseAdeUrl(url, rawUrl);
+  if (isAdeDeeplinkScheme(url.protocol)) return parseAdeUrl(url, rawUrl);
   if (url.protocol === "https:") {
     if (!isAdeDeeplinkHttpsHost(url.hostname)) {
       return { ok: false, error: { kind: "unsupported_host", host: url.hostname }, rawUrl };
@@ -1125,7 +1144,7 @@ export function looksLikeAdeDeeplink(rawUrl: string): boolean {
   if (!rawUrl || typeof rawUrl !== "string") return false;
   const trimmed = rawUrl.trim();
   if (trimmed.length > 2048) return false;
-  if (trimmed.startsWith(`${ADE_DEEPLINK_SCHEME}://`)) return true;
+  if (hasAdeDeeplinkScheme(trimmed)) return true;
   try {
     const parsed = new URL(trimmed);
     return parsed.protocol === "https:"
@@ -1159,13 +1178,13 @@ export function describeTarget(target: DeeplinkTarget): string {
     case "linear-issue":
       return target.branch ? `${target.issueIdentifier} (${target.branch})` : target.issueIdentifier;
     case "settings":
-      return "ADE setting";
+      return `${BRAND.NAME} setting`;
     case "lane-share":
       return "shared lane";
     case "open":
-      return `ADE ${target.place}`;
+      return `${BRAND.NAME} ${target.place}`;
     case "invite":
-      return "ADE Cloud invite";
+      return `${BRAND.CLOUD_NAME} invite`;
   }
 }
 

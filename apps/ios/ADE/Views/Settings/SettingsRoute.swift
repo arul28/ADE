@@ -37,7 +37,7 @@ enum SettingsRoute: String, CaseIterable, Identifiable, Hashable {
     case .chat: return "Chat"
     case .providers: return "Providers"
     case .integrations: return "Integrations"
-    case .adeCloud: return "ADE Cloud"
+    case .adeCloud: return Brand.cloudName
     case .notifications: return "Notifications"
     case .appearance: return "Appearance"
     case .lanes: return "Lanes"
@@ -54,10 +54,10 @@ enum SettingsRoute: String, CaseIterable, Identifiable, Hashable {
     case .general, .account, .providers, .machines: return nil
     case .usage: return "Spend and pacing across your providers and machines."
     case .chat: return "How agents behave in chat, and what they may spend."
-    case .integrations: return "GitHub, Linear, Jira and webhooks: the services ADE and your agents use."
+    case .integrations: return "GitHub, Linear, Jira and webhooks: the services \(Brand.name) and your agents use."
     case .adeCloud: return nil
-    case .notifications: return "What ADE tells you about running work, and where."
-    case .appearance: return "How ADE looks on this \(UIDevice.current.model)."
+    case .notifications: return "What \(Brand.name) tells you about running work, and where."
+    case .appearance: return "How \(Brand.name) looks on this \(UIDevice.current.model)."
     case .lanes: return "How new lanes start in this project."
     case .deletedArchived: return "Lanes and chats you deleted or archived, on every computer."
     case .advanced: return "How this phone reaches its machine, delivery checks, and this build."
@@ -137,7 +137,7 @@ enum SettingsPageCopy {
   static let openProject = "Open a project to change these."
 
   static func updateADE(on machine: String) -> String {
-    "Update ADE on \(machine) to change this here."
+    "Update \(Brand.name) on \(machine) to change this here."
   }
 
   static func queued(on machine: String) -> String {

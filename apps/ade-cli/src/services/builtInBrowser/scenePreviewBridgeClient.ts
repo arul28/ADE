@@ -1,5 +1,6 @@
 import type { ScenePreviewRequest, ScenePreviewResult } from "../../../../desktop/src/shared/scenePreview";
 import { createDesktopBridgeConnection } from "./desktopBridgeConnection";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * The desktop app's scene previewer as the runtime daemon reaches it.
@@ -21,7 +22,7 @@ export function isScenePreviewBridgeMethod(name: string): name is ScenePreviewBr
 
 /** Above the previewer's own deadline, so the desktop's clearer error arrives first. */
 const RENDER_TIMEOUT_MS = 45_000;
-export const SCENE_PREVIEW_NO_DESKTOP = "Previewing a scene needs the ADE desktop app on this machine, and none is attached.";
+export const SCENE_PREVIEW_NO_DESKTOP = `Previewing a scene needs the ${BRAND.NAME} desktop app on this machine, and none is attached.`;
 
 export type ScenePreviewer = {
   render(request: ScenePreviewRequest): Promise<ScenePreviewResult>;

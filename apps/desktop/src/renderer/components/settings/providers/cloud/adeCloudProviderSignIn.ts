@@ -25,6 +25,7 @@ import {
   type AdeCloudCloudPart,
   type AdeCloudTileAction,
 } from "./adeCloudSignInModel";
+import { BRAND } from "../../../../../shared/brand";
 
 export type AdeCloudProviderSignIn =
   /** ADE Cloud can run this provider now. `via` says with what. */
@@ -50,7 +51,7 @@ export function adeCloudProviderSignIn(
   },
 ): AdeCloudProviderSignIn {
   if (!isProviderLoginProvider(provider)) {
-    return { state: "unknown", provider, line: "ADE Cloud doesn't keep a sign-in for this provider." };
+    return { state: "unknown", provider, line: `${BRAND.CLOUD_NAME} doesn't keep a sign-in for this provider.` };
   }
   const tile = adeCloudTile({
     provider,

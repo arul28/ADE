@@ -387,7 +387,7 @@ describe("shared account directory trust boundary", () => {
     expect(result).toEqual({
       state: "auth_expired",
       machines: [],
-      message: "Your ADE account session expired. Sign in again.",
+      message: "Your DAEX account session expired. Sign in again.",
     });
     expect(cancelled).toBe(true);
     expect(result.message).not.toContain("top-secret-bearer");
@@ -648,7 +648,7 @@ describe("desktop account machine lifecycle", () => {
       {
         machineKey: "machine-a",
         stage: "relay",
-        label: "Connecting through ADE relay…",
+        label: "Connecting through DAEX relay…",
       },
       {
         machineKey: "machine-a",
@@ -727,7 +727,7 @@ describe("desktop account machine lifecycle", () => {
 
       expect(error).toBeInstanceOf(Error);
       expect((error as Error).message).toBe(
-        "Couldn't reach Studio over Tailscale (timed out after 25s). Make sure ADE is open on that computer, then try again.",
+        "Couldn't reach Studio over Tailscale (timed out after 25s). Make sure DAEX is open on that computer, then try again.",
       );
       expect(logMachineEvent).toHaveBeenCalledWith(
         "warn",

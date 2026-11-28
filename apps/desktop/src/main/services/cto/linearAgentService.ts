@@ -20,6 +20,7 @@ import { normalizedLinearIssueToLaneIssue } from "../../../shared/laneLinearIssu
 import type { LinearAgentActivityContent, LinearAgentPlanStep, LinearAgentRelayClient } from "./linearAgentRelayClient";
 import { getErrorMessage, isRecord, toOptionalString as asString } from "../shared/utils";
 import { unwrapShell } from "../chat/sessionActivityDetector";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Runs the ADE side of the Linear agent.
@@ -334,9 +335,9 @@ export function createLinearAgentService(deps: LinearAgentServiceDeps) {
       post(info.id, {
         type: "error",
         body: [
-          `No ADE automation handles ${triggerType === "linear.agent_mentioned" ? "mentions" : "delegations"} for this issue${deps.machine.name ? ` (checked on ${deps.machine.name})` : ""}.`,
+          `No ${BRAND.NAME} automation handles ${triggerType === "linear.agent_mentioned" ? "mentions" : "delegations"} for this issue${deps.machine.name ? ` (checked on ${deps.machine.name})` : ""}.`,
           "",
-          "Open ADE → **Settings → Integrations → Linear → ADE agent** and choose a model, or add a rule in **Automations** with the trigger *Delegated to ADE* / *Mentioned ADE*.",
+          `Open ${BRAND.NAME} → **Settings → Integrations → Linear → ${BRAND.NAME} agent** and choose a model, or add a rule in **Automations** with the trigger *Delegated to ${BRAND.NAME}* / *Mentioned ${BRAND.NAME}*.`,
         ].join("\n"),
       });
       return;
@@ -378,7 +379,7 @@ export function createLinearAgentService(deps: LinearAgentServiceDeps) {
       return null;
     });
     if (result?.status === "ignored") {
-      post(info.id, { type: "error", body: "No enabled ADE automation matched this issue, so nothing started. Check the rule's team, project and label filters in ADE → Automations." });
+      post(info.id, { type: "error", body: `No enabled ${BRAND.NAME} automation matched this issue, so nothing started. Check the rule's team, project and label filters in ${BRAND.NAME} → Automations.` });
     }
   };
 
@@ -398,7 +399,7 @@ export function createLinearAgentService(deps: LinearAgentServiceDeps) {
       await deps.chat.interrupt({ sessionId: chatSessionId }).catch((error) => {
         logger.warn("linear_agent.stop_failed", { agentSessionId: info.id, error: getErrorMessage(error) });
       });
-      post(info.id, { type: "response", body: "Stopped. The lane and chat are still in ADE if you want to pick it up again." });
+      post(info.id, { type: "response", body: `Stopped. The lane and chat are still in ${BRAND.NAME} if you want to pick it up again.` });
       return;
     }
     if (!body.trim()) return;
@@ -409,7 +410,7 @@ export function createLinearAgentService(deps: LinearAgentServiceDeps) {
     if (!creatorId || authorId !== creatorId) {
       post(info.id, {
         type: "thought",
-        body: `Only ${info.creatorName ?? "the person who started this session"} can direct this session, so ADE ignored that reply.`,
+        body: `Only ${info.creatorName ?? "the person who started this session"} can direct this session, so ${BRAND.NAME} ignored that reply.`,
       });
       return;
     }
@@ -446,7 +447,7 @@ export function createLinearAgentService(deps: LinearAgentServiceDeps) {
       text: `${info.creatorName ?? "The Linear user"} replied in Linear:\n\n${body.trim()}`,
       displayText: body.trim(),
     }).catch((error) => {
-      post(info.id!, { type: "error", body: `ADE could not pass your message to the agent: ${getErrorMessage(error)}` });
+      post(info.id!, { type: "error", body: `${BRAND.NAME} could not pass your message to the agent: ${getErrorMessage(error)}` });
     });
   };
 
@@ -467,9 +468,9 @@ export function createLinearAgentService(deps: LinearAgentServiceDeps) {
   const hooks: AutomationLinearAgentHooks = {
     async beforeRun({ rule }) {
       const modelId = rule.modelConfig?.modelId?.trim();
-      if (!modelId) throw new Error(`The automation "${rule.name}" has no model. Choose one in ADE → Automations; the ADE agent never picks a model on its own.`);
+      if (!modelId) throw new Error(`The automation "${rule.name}" has no model. Choose one in ${BRAND.NAME} → Automations; the ${BRAND.NAME} agent never picks a model on its own.`);
       const descriptor = getModelById(modelId);
-      if (!descriptor) throw new Error(`The automation "${rule.name}" uses the model "${modelId}", which this ADE does not know.`);
+      if (!descriptor) throw new Error(`The automation "${rule.name}" uses the model "${modelId}", which this ${BRAND.NAME} does not know.`);
       const provider = resolveProviderGroupForModel(descriptor);
       const available = await deps.chat.getAvailableModels({ provider, activateRuntime: provider !== "claude" && provider !== "codex" })
         .catch(() => [] as Array<{ id: string; modelId?: string | null }>);
@@ -513,7 +514,7 @@ export function createLinearAgentService(deps: LinearAgentServiceDeps) {
       }
       const ownership = deps.linkOwnership?.() ?? null;
       const url = buildDeeplink({ kind: "session", sessionId, laneId, ...(ownership ? { ownership } : {}) });
-      void relay.updateSession(agentSessionId, { addedExternalUrls: [{ label: "Open in ADE", url }] }).catch(() => {});
+      void relay.updateSession(agentSessionId, { addedExternalUrls: [{ label: `Open in ${BRAND.NAME}`, url }] }).catch(() => {});
       void relay.startWork(agentSessionId).catch(() => {});
       const laneName = await deps.lanes.getLaneName(laneId).catch(() => null);
       post(agentSessionId, {
@@ -530,7 +531,7 @@ export function createLinearAgentService(deps: LinearAgentServiceDeps) {
       if (sessionId && byChat.has(sessionId)) return;
       post(agentSessionId, {
         type: "error",
-        body: `ADE could not start: ${error ?? "unknown error"}\n\nThe failed run is in ADE → Automations → History.`,
+        body: `${BRAND.NAME} could not start: ${error ?? "unknown error"}\n\nThe failed run is in ${BRAND.NAME} → Automations → History.`,
       });
     },
   };
@@ -699,7 +700,7 @@ export function createLinearAgentService(deps: LinearAgentServiceDeps) {
         } else if (event.status === "failed") {
           post(agentSessionId, {
             type: "error",
-            body: truncate(state.lastError ?? (final || "The agent's turn failed. The chat in ADE has the details."), MAX_RESPONSE_CHARS),
+            body: truncate(state.lastError ?? (final || `The agent's turn failed. The chat in ${BRAND.NAME} has the details.`), MAX_RESPONSE_CHARS),
           });
         } else if (event.status === "interrupted" && !stoppedFromLinear.delete(agentSessionId)) {
           // A declined tool can end the turn too; say why instead of a bare "Stopped.".

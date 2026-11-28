@@ -1,7 +1,7 @@
 {
   "$schema": "https://mintlify.com/docs.json",
   "theme": "maple",
-  "name": "ADE",
+  "name": "DAEX",
   "colors": {
     "primary": "#7C3AED",
     "light": "#A78BFA",
@@ -12,8 +12,8 @@
   },
   "favicon": "/favicon.png",
   "logo": {
-    "light": "/logo/ade-wordmark.png",
-    "dark": "/logo/ade-wordmark.png",
+    "light": "/logo/daex-light.png",
+    "dark": "/logo/daex-dark.png",
     "href": "https://ade-app.dev"
   },
   "seo": {
@@ -22,7 +22,7 @@
     }
   },
   "search": {
-    "prompt": "Search ADE docs..."
+    "prompt": "Search DAEX docs..."
   },
   "navigation": {
     "tabs": [
@@ -42,7 +42,7 @@
             ]
           },
           {
-            "group": "Set up ADE",
+            "group": "Set up DAEX",
             "icon": "flag-checkered",
             "pages": [
               "getting-started/install",
@@ -305,7 +305,7 @@
             "href": "/key-concepts"
           },
           {
-            "label": "Embed ADE chat",
+            "label": "Embed DAEX chat",
             "href": "/sdk/overview"
           }
         ]

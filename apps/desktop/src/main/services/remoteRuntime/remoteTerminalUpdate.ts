@@ -7,6 +7,7 @@ import type {
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import { isRecord } from "../shared/utils";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * "Update & restart" for a Windows machine on an ADE build whose app cannot
@@ -101,11 +102,11 @@ function staged(
     currentVersion: status.version,
     targetVersion,
     steps: [
-      { id: "check", status: "ok", detail: `${status.version ?? "This build"} can't install updates in its app, so ADE ran its updater in a terminal there.` },
-      { id: "apply", status: "pending", detail: "Installing the new ADE app." },
+      { id: "check", status: "ok", detail: `${status.version ?? "This build"} can't install updates in its app, so ${BRAND.NAME} ran its updater in a terminal there.` },
+      { id: "apply", status: "pending", detail: `Installing the new ${BRAND.NAME} app.` },
       { id: "restart", status: "pending", detail: "The background service restarts on the new build." },
     ],
-    message: `Installing ADE ${targetVersion ?? "update"} on ${status.target.name} — ADE there restarts on its own in a few minutes.`,
+    message: `Installing ${BRAND.NAME} ${targetVersion ?? "update"} on ${status.target.name} — ${BRAND.NAME} there restarts on its own in a few minutes.`,
     route: "terminal",
     pendingVersion: targetVersion,
   };
@@ -161,7 +162,7 @@ export async function updateViaRemoteTerminal(args: {
   // least likely to refuse.
   const project = pickLiveCheckout(status.projects);
   if (!project) {
-    return failed(status, targetVersion, `ADE ${status.version ?? ""} on ${status.target.name} can't install updates itself, and it has no project to open a terminal in. ${manualHint}`);
+    return failed(status, targetVersion, `${BRAND.NAME} ${status.version ?? ""} on ${status.target.name} can't install updates itself, and it has no project to open a terminal in. ${manualHint}`);
   }
   let laneId: string | null;
   try {
@@ -188,7 +189,7 @@ export async function updateViaRemoteTerminal(args: {
         laneId,
         cols: TERMINAL_COLS,
         rows: TERMINAL_ROWS,
-        title: `Update ADE to ${targetVersion ?? "the newest version"}`,
+        title: `Update ${BRAND.NAME} to ${targetVersion ?? "the newest version"}`,
         tracked: false,
         toolType: "shell",
         startupCommand: commands.powershell,
@@ -251,5 +252,5 @@ export async function updateViaRemoteTerminal(args: {
         error: error instanceof Error ? error.message : String(error),
       }));
   }
-  return failed(status, targetVersion, `The update on ${status.target.name} was still downloading after ${Math.round(args.timeoutMs / 60_000)} minutes, so ADE stopped waiting. ${manualHint}`);
+  return failed(status, targetVersion, `The update on ${status.target.name} was still downloading after ${Math.round(args.timeoutMs / 60_000)} minutes, so ${BRAND.NAME} stopped waiting. ${manualHint}`);
 }

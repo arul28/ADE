@@ -1414,14 +1414,14 @@ describe("createAgentChatService", () => {
           laneId: "lane-1",
           cwd: tmpRoot,
           fork: false,
-        })).rejects.toThrow("Grok sessions can't be continued as an ADE chat. Open a copy instead.");
+        })).rejects.toThrow("Grok sessions can't be continued as a DAEX chat. Open a copy instead.");
         await expect(service.importExternalChatSession({
           provider: "cursor",
           externalSessionId: "cursor-session-1",
           laneId: "lane-1",
           cwd: tmpRoot,
           fork: false,
-        })).rejects.toThrow("Cursor sessions can't be continued as an ADE chat. Open a copy instead.");
+        })).rejects.toThrow("Cursor sessions can't be continued as a DAEX chat. Open a copy instead.");
 
         expect(vi.mocked(loadExternalSessionEvents)).not.toHaveBeenCalled();
         expect(sessionService.get("test-uuid-1")).toBeNull();
@@ -1989,9 +1989,9 @@ describe("createAgentChatService", () => {
         .join("\n");
       expect(appended).toContain("Linear-tracked work");
       expect(appended).toContain("ADE-123");
-      expect(appended).toContain("ade linear");
-      expect(appended).toContain("Prefer `ade linear`");
-      expect(appended).toContain("ade-deeplinks");
+      expect(appended).toContain("daex linear");
+      expect(appended).toContain("Prefer `daex linear`");
+      expect(appended).toContain("daex-deeplinks");
     });
 
     it("keeps ADE tooling guidance out of Claude SDK user turns", async () => {
@@ -2036,14 +2036,14 @@ describe("createAgentChatService", () => {
       // rule, the CLI guidance) live in the session's system prompt, not in
       // front of the message; this file mocks the prompt builder, so the
       // prompt's own wording is checked in `systemPrompt.test.ts`.
-      expect(userTurnPayload).not.toContain("[ADE launch directive]");
-      expect(userTurnPayload).not.toContain("CLI controls ADE state");
-      expect(userTurnPayload).not.toContain("ade actions list --text");
+      expect(userTurnPayload).not.toContain("[DAEX launch directive]");
+      expect(userTurnPayload).not.toContain("CLI controls DAEX state");
+      expect(userTurnPayload).not.toContain("daex actions list --text");
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
       expect(opts?.systemPrompt?.append).toContain("system prompt");
       // The session is named through its env var, so the prompt holds no
       // per-chat value and a second chat in the lane reuses the prompt cache.
-      expect(opts?.systemPrompt?.append).toContain("This ADE chat session's id is in `$ADE_CHAT_SESSION_ID`");
+      expect(opts?.systemPrompt?.append).toContain("This DAEX chat session's id is in `$ADE_CHAT_SESSION_ID`");
       expect(opts?.systemPrompt?.append).not.toContain(session.id);
     });
 
@@ -2809,10 +2809,10 @@ describe("createAgentChatService", () => {
       });
 
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as any;
-      const server = opts?.mcpServers?.["ade-cto"];
+      const server = opts?.mcpServers?.["daex-cto"];
       expect(server?.type).toBe("sdk");
       expect(createSdkMcpServer).toHaveBeenCalledWith(expect.objectContaining({
-        name: "ade-cto",
+        name: "daex-cto",
         // The transport only backstops; ADE's own per-tool deadline ends a call.
         timeout: 65 * 60_000,
       }));
@@ -2846,7 +2846,7 @@ describe("createAgentChatService", () => {
       });
 
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as any;
-      expect(opts?.mcpServers?.["ade-cto"]).toBeUndefined();
+      expect(opts?.mcpServers?.["daex-cto"]).toBeUndefined();
     });
 
     it("keeps lightweight sessions lean by ignoring on-disk MCP config (strictMcpConfig)", async () => {
@@ -2923,14 +2923,14 @@ describe("createAgentChatService", () => {
         });
         const prompt = opts.systemPrompt as string;
         expect(typeof prompt).toBe("string");
-        expect(prompt).toContain("ADE personal chat");
+        expect(prompt).toContain("DAEX personal chat");
         expect(prompt.endsWith("The project codeword is HALYARD.")).toBe(true);
       });
 
       it("accepts a bare string as an append", async () => {
         const opts = await openPersonalClaudeSession({ instructions: "The codeword is HALYARD." });
         const prompt = opts.systemPrompt as string;
-        expect(prompt).toContain("ADE personal chat");
+        expect(prompt).toContain("DAEX personal chat");
         expect(prompt.endsWith("The codeword is HALYARD.")).toBe(true);
       });
 
@@ -2940,7 +2940,7 @@ describe("createAgentChatService", () => {
           instructions: { mode: "replace", text: "You are the Halyard assistant." },
         });
         expect(opts.systemPrompt).toBe("You are the Halyard assistant.");
-        expect(opts.systemPrompt as string).not.toContain("ADE personal chat");
+        expect(opts.systemPrompt as string).not.toContain("DAEX personal chat");
       });
 
       it("reports what the provider did on the session summary", async () => {
@@ -3144,8 +3144,8 @@ describe("createAgentChatService", () => {
       expect(append).not.toContain("/zz-native-cmd");
       expect(append).not.toContain("/native-only");
       // Bundled ADE skills are listed alongside the lane's own.
-      expect(append).toContain("/ade-cli-control-plane");
-      expect(append).toContain("/ade-linear");
+      expect(append).toContain("/daex-cli-control-plane");
+      expect(append).toContain("/daex-linear");
     });
 
     it("clips an over-long skill description instead of letting it set the prompt size", async () => {

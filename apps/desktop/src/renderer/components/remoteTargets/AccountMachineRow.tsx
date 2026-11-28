@@ -18,6 +18,7 @@ import {
   accountMachineInstallLabel,
   accountMachineRowName,
 } from "../../../shared/accountDirectory";
+import { appPackageChannelDisplayName } from "../../../shared/packageChannel";
 import type { MachinePresence } from "../../../shared/types/power";
 import {
   accountMachinePresence,
@@ -48,6 +49,7 @@ import {
   subTextStyle,
 } from "./remoteTargetListStyles";
 import { adeCloudMachineLabel, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
+import { BRAND } from "../../../shared/brand";
 
 type AccountMachineRowProps = {
   row: AccountMachineRowModel;
@@ -181,7 +183,7 @@ export function AccountMachineRow({
   const cloudLabel = adeCloudMachineLabel({ machineKey: machine.machineKey, hostname: machine.name }, cloudIndex);
   const shownName = cloudLabel ?? displayName;
   const installLabel = accountMachineInstallLabel(machine);
-  const installTag = installLabel && installLabel !== "ADE" ? installLabel : null;
+  const installTag = installLabel && installLabel !== appPackageChannelDisplayName("stable") ?installLabel : null;
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(displayName);
   const [renameBusy, setRenameBusy] = useState(false);
@@ -455,8 +457,8 @@ export function AccountMachineRow({
           </div>
           <div style={helperTextStyle}>
             {needsSetup
-              ? "On that computer, open ADE and sign in to this same ADE account. Once it's online and up to date, it appears here automatically."
-              : "This computer hasn't checked in recently. Open ADE on it, then try again."}
+              ? `On that computer, open ${BRAND.NAME} and sign in to this same ${BRAND.NAME} account. Once it's online and up to date, it appears here automatically.`
+              : `This computer hasn't checked in recently. Open ${BRAND.NAME} on it, then try again.`}
           </div>
           {!needsSetup && machine.reachableEndpoints.length > 0 ? (
             <div style={{ display: "grid", gap: 4 }}>

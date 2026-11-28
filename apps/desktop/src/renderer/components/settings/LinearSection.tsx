@@ -31,6 +31,7 @@ import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { isImeComposing } from "../../lib/imeComposition";
 import { requirePin } from "../../state/repositoryScope";
 import { plainError, plainErrorText, type PlainError } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 const LINEAR_API_SETTINGS_URL = "https://linear.app/settings/api";
 
@@ -97,7 +98,7 @@ function rememberAdded(repoSlug: string, keyPrefix: string): void {
  */
 function refusedLinksNote(refusal: string, repoSlug: string | null, exampleIssueKey: string): string {
   if (GITHUB_AUTOLINKS_SIGN_IN_LACKS_ADMIN.test(refusal)) return refusal;
-  return `Only an admin of ${repoSlug ?? "this repository"} can add these on GitHub. In ADE's PR view, keys like ${exampleIssueKey} already open the issue.`;
+  return `Only an admin of ${repoSlug ?? "this repository"} can add these on GitHub. In ${BRAND.NAME}'s PR view, keys like ${exampleIssueKey} already open the issue.`;
 }
 
 export function LinearSection() {
@@ -250,7 +251,7 @@ export function LinearSection() {
     } catch (err) {
       if (autolinksRequestIdRef.current !== requestId) return;
       setGithubAutolinks([]);
-      setAutolinkError(plainError(err, { fallback: "ADE couldn't read this repository's links on GitHub." }));
+      setAutolinkError(plainError(err, { fallback: `${BRAND.NAME} couldn't read this repository's links on GitHub.` }));
     } finally {
       if (autolinksRequestIdRef.current === requestId) {
         setAutolinksLoading(false);
@@ -419,7 +420,7 @@ export function LinearSection() {
     if (!openExternal) {
       setOauthSessionIdState(null);
       setOauthStartingState(false);
-      showToast({ tone: "error", title: "Browser sign-in unavailable", message: "Browser sign-in is not available in this ADE build." });
+      showToast({ tone: "error", title: "Browser sign-in unavailable", message: `Browser sign-in is not available in this ${BRAND.NAME} build.` });
       return;
     }
     invalidateLoadRequests();
@@ -478,7 +479,7 @@ export function LinearSection() {
         rememberAdded(repoSlug, candidate.keyPrefix);
         setGithubAutolinks((current) => [...current, created]);
       } catch (err) {
-        failure ??= plainError(err, { fallback: `ADE couldn't add the ${candidate.keyPrefix} link on GitHub.` });
+        failure ??= plainError(err, { fallback: `${BRAND.NAME} couldn't add the ${candidate.keyPrefix} link on GitHub.` });
       }
     }
     setCreatingAutolinkId(null);
@@ -504,7 +505,7 @@ export function LinearSection() {
     if (!missing.length) return;
     for (const candidate of missing) autoAddTriedRef.current.add(addedKey(githubRepoSlug, candidate.keyPrefix));
     void addAutolinks(missing).then((failure) => {
-      if (failure) setAutoAddFailure(`ADE couldn't add these on GitHub: ${failure.text}`);
+      if (failure) setAutoAddFailure(`${BRAND.NAME} couldn't add these on GitHub: ${failure.text}`);
     });
   }, [addAutolinks, autolinkCandidates, autolinkError, autolinksLoading, autolinksRead, creatingAutolinkId, githubRepoSlug, hasWorkspaceKey]);
 
@@ -541,7 +542,7 @@ export function LinearSection() {
           {isRemoteRuntime
             ? "Browser sign-in can't reach a project on another computer. Use an API key; it's saved on that computer."
             : connection?.oauthAvailable === false
-              ? "Browser sign-in isn't available in this build of ADE. Use an API key."
+              ? `Browser sign-in isn't available in this build of ${BRAND.NAME}. Use an API key.`
               : "Opens Linear in your browser and connects the workspace you have selected there."}
         </p>
         <div className="ade-ig-form-row">
@@ -660,7 +661,7 @@ export function LinearSection() {
       ) : null}
       {autoAddFailure ? <p className="ade-ig-note">{autoAddFailure}</p> : null}
       {!teamKeys.length && githubRepoSlug ? (
-        <p className="ade-ig-note">Links for your team keys appear once ADE has loaded the workspace&rsquo;s projects.</p>
+        <p className="ade-ig-note">Links for your team keys appear once {BRAND.NAME} has loaded the workspace&rsquo;s projects.</p>
       ) : null}
       {autolinkError && !autolinksRefused ? (
         <Banner
@@ -688,7 +689,7 @@ export function LinearSection() {
           : isConnected
             ? { tone: "ok", label: "Connected" }
             : { tone: "neutral", label: "Not connected" }}
-        accountNote={statusReadFailed && !connection ? "ADE couldn't read this machine's Linear connection." : undefined}
+        accountNote={statusReadFailed && !connection ? `${BRAND.NAME} couldn't read this machine's Linear connection.` : undefined}
         account={isConnected ? {
           avatar: <LinearWorkspaceAvatar organizationName={connection?.organizationName} logoUrl={connection?.organizationLogoUrl} />,
           title: workspaceLabel ?? "Linear",

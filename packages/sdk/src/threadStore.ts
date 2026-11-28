@@ -12,7 +12,7 @@ import { validateThreadBudget, type ThreadBudget } from "./usage.js";
  * This is what makes threads *named*: an app reopens `"support-bot"` after a
  * restart and gets the same conversation back. The file is the SDK's own state,
  * separate from the runtime's database, so a caller can inspect or reset the
- * mapping without touching ADE internals.
+ * mapping without touching DAEX internals.
  *
  * Writes are atomic (temp file + rename): a crash mid-write must never leave a
  * truncated JSON that loses every mapping the app ever made.

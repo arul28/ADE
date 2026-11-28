@@ -517,7 +517,7 @@ describe("account machine publisher health", () => {
     expect(service.getPublisherHealth()).toMatchObject({
       state: "no_active_sync_scope",
       skipReason:
-        "Another ADE app on this computer owns sync for this machine (ADE Alpha, pid 9253).",
+        "Another DAEX app on this computer owns sync for this machine (ADE Alpha, pid 9253).",
     });
   });
 
@@ -2172,7 +2172,7 @@ describe("account machine registration publisher", () => {
     );
     const health = service.getPublisherHealth();
     expect(health.lastHttpStatus).toBe(403);
-    expect(health.skipReason).toMatch(/removed from your ADE account/i);
+    expect(health.skipReason).toMatch(/removed from your DAEX account/i);
 
     // Terminal: further heartbeats are no-ops, not retries.
     await service.publishNow();

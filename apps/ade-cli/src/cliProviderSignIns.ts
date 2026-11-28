@@ -12,6 +12,7 @@
 import { CHAT_PROVIDER_IDS } from "../../desktop/src/shared/types/chat";
 import { buildDeeplink } from "../../desktop/src/shared/deeplinks";
 import { settingsEntryById } from "../../desktop/src/shared/settingsManifest";
+import { BRAND } from "../../desktop/src/shared/brand";
 
 export type ProviderSignInState = "signed_in" | "needs_sign_in" | "not_installed" | "unknown";
 
@@ -55,7 +56,7 @@ function connectionState(connection: Record<string, unknown>): { state: Provider
   if (signIn === "signed-out" || (signIn === undefined && connection.authAvailable === false)) {
     return { state: "needs_sign_in", detail: blocker };
   }
-  return { state: "unknown", detail: blocker ?? "ADE can't tell from the saved login (a keychain that did not answer, say)." };
+  return { state: "unknown", detail: blocker ?? `${BRAND.NAME} can't tell from the saved login (a keychain that did not answer, say).` };
 }
 
 /** OpenCode keeps its own provider logins; `opencodeProviders` lists them. */
@@ -92,7 +93,7 @@ export function providerSignInRows(status: unknown): ProviderSignInRow[] {
       ? openCodeState(record)
       : connection
         ? connectionState(connection)
-        : { state: "unknown" as const, detail: "This machine's ADE does not report this provider (an older version)." };
+        : { state: "unknown" as const, detail: `This machine's ${BRAND.NAME} does not report this provider (an older version).` };
     return {
       provider,
       label: settingsEntryById(`agents.provider.${provider}`)?.label ?? provider,
@@ -127,7 +128,7 @@ export function formatProviderSignIns(value: unknown, machineName: string | null
     `Providers ${where}:`,
     ...lines,
     needs > 0
-      ? "A link opens that provider's page in ADE Settings (pick the machine there when it is not this one); the person signs in there."
+      ? `A link opens that provider's page in ${BRAND.NAME} Settings (pick the machine there when it is not this one); the person signs in there.`
       : "",
   ].filter(Boolean).join("\n");
 }

@@ -141,7 +141,7 @@ async function startRevylPhone(env: CloudEnv, userId: string, device: CloudPhone
     if (started.status === 429) return fail("phone_busy", "Too many phones started in a row. Wait a minute, then try again.", 429);
     // A 5xx, a timeout, or a success with no session id may have made a phone: unknown (502), never a refusal.
     const unknown = started.status >= 500 || started.status < 300;
-    return fail("phone_unavailable", unknown ? "The ADE Cloud iPhone isn't answering right now. Try again in a moment." : `The ADE Cloud iPhone refused that: ${withoutPhoneProviderNames(revylErrorOf(started).message)}`, unknown ? 502 : 400);
+    return fail("phone_unavailable", unknown ? "The DAEX Cloud iPhone isn't answering right now. Try again in a moment." : `The DAEX Cloud iPhone refused that: ${withoutPhoneProviderNames(revylErrorOf(started).message)}`, unknown ? 502 : 400);
   }
   const read = await readRevylPhone(env, userId, sessionId, named);
   return {
@@ -171,14 +171,14 @@ async function stopRevylPhone(env: CloudEnv, userId: string, phoneId: string): P
  */
 async function revylViewUrl(env: CloudEnv, userId: string, ref: string, origin: string, control: boolean): Promise<{ url: string; points: { width: number; height: number } | null } | Response> {
   const workspace = await knownWorkspace(env, userId);
-  if (!workspace) return fail("phone_not_running", "Your ADE Cloud iPhone isn't running. Start it first.", 409);
+  if (!workspace) return fail("phone_not_running", "Your DAEX Cloud iPhone isn't running. Start it first.", 409);
   const answer = await workspaceJson(env, workspace, "GET", `/execution/streaming/worker-connection/${encodeURIComponent(ref)}`);
   const whep = answer.body?.whep_url;
   const socket = answer.body?.worker_ws_url;
   if (answer.status !== 200 || typeof whep !== "string" || !whep.startsWith("https://")) {
-    if (answer.status === 200 && answer.body?.status === "not_ready") return fail("phone_starting", "Your ADE Cloud iPhone is still starting. Try again in a moment.", 409);
+    if (answer.status === 200 && answer.body?.status === "not_ready") return fail("phone_starting", "Your DAEX Cloud iPhone is still starting. Try again in a moment.", 409);
     reportCloudFailure("cloud.phone_view_failed.revyl", { userId, status: answer.status, code: revylErrorOf(answer).code }, "cloud-phone");
-    return fail("phone_unavailable", "The ADE Cloud iPhone isn't answering right now. Try again in a moment.", 502);
+    return fail("phone_unavailable", "The DAEX Cloud iPhone isn't answering right now. Try again in a moment.", 502);
   }
   const width = Number(answer.body?.device_width);
   const height = Number(answer.body?.device_height);
@@ -370,13 +370,13 @@ function passthrough(response: Response): Response {
 async function routeRevylCall(env: CloudEnv, userId: string, phone: { id: string; ref: string | null }, body: Record<string, unknown>, now: number): Promise<Response> {
   const { action, args, query } = callParts(body);
   const workspace = await knownWorkspace(env, userId);
-  if (!workspace) return fail("phone_not_running", "Your ADE Cloud iPhone isn't running. Start it first.", 409);
+  if (!workspace) return fail("phone_not_running", "Your DAEX Cloud iPhone isn't running. Start it first.", 409);
 
   if (action.startsWith("proxy.")) {
     const name = action.slice("proxy.".length);
     const method = Object.hasOwn(PROXY_ACTIONS, name) ? PROXY_ACTIONS[name] : undefined;
     if (!method) return fail("bad_request", `${action} isn't a cloud iPhone action.`, 400);
-    if (!phone.ref) return fail("phone_starting", "Your ADE Cloud iPhone is still starting. Try again in a moment.", 409);
+    if (!phone.ref) return fail("phone_starting", "Your DAEX Cloud iPhone is still starting. Try again in a moment.", 409);
     // Revyl names a recording only when it starts: the phone's row keeps it, so any brain of the account stops it.
     const stopping = name === "stop_screen_recording";
     if (stopping && typeof args.recording_id !== "string") {
@@ -410,7 +410,7 @@ async function routeRevylCall(env: CloudEnv, userId: string, phone: { id: string
   // build.install: the build's app, into the live phone.
   const version = stringArg(args.version_id);
   if (!version || !UUID.test(version)) return fail("bad_request", "version_id is the build's version.", 400);
-  if (!phone.ref) return fail("phone_starting", "Your ADE Cloud iPhone is still starting. Try again in a moment.", 409);
+  if (!phone.ref) return fail("phone_starting", "Your DAEX Cloud iPhone is still starting. Try again in a moment.", 409);
   const build = await workspaceJson(env, workspace, "GET", `/apps/builds/${encodeURIComponent(version)}`, { query: { include_download_url: "true" } });
   if (build.status !== 200 || build.body?.app_id !== app) return fail("bad_request", "That build isn't one of this account's.", 400);
   const named = typeof build.body?.download_url === "string" && build.body.download_url.startsWith("https://") ? build.body.download_url : undefined;
@@ -468,7 +468,7 @@ export const REVYL_PHONE: PhoneProviderServer = {
   startAnswer: async (_env, _session, _userId, now) => ({ token: { token: "", expiresAt: now + TOKEN_MINUTES * 60_000 }, apiBase: "" }),
 
   async view(env, { userId, phone, control, origin, now }) {
-    if (!phone.ref) return fail("phone_starting", "Your ADE Cloud iPhone is still starting. Try again in a moment.", 409);
+    if (!phone.ref) return fail("phone_starting", "Your DAEX Cloud iPhone is still starting. Try again in a moment.", 409);
     const view = await revylViewUrl(env, userId, phone.ref, origin, control);
     if (view instanceof Response) return view;
     // The stream link lasts the phone's life; the pane asks again before this.

@@ -18,6 +18,7 @@ import { isInsideTempFolder } from "../../../../desktop/src/main/services/shared
 import type { ProjectAccountLink, ProjectRecord, ProjectRegistry } from "./projectRegistry";
 import type { ProjectFolderState } from "./projectFolderPresence";
 import type { GithubRepoLookup, GithubRepoLookupResult } from "./githubRepoLookup";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * The machine side of the account's project list.
@@ -839,18 +840,18 @@ export function createAccountProjectSync(options: AccountProjectSyncOptions): Ac
     const requested = rawCheckoutId.trim();
     const checkoutId = (requested && options.registry.resolveMovedProjectId(requested)) || requested;
     if (stopped) {
-      return { ok: false, code: "not_publishing", message: "This computer is not sending its projects to your ADE account right now." };
+      return { ok: false, code: "not_publishing", message: `This computer is not sending its projects to your ${BRAND.NAME} account right now.` };
     }
     const userId = options.getAccountUserId();
-    if (!userId) return { ok: false, code: "signed_out", message: "Sign in to ADE on this computer first." };
+    if (!userId) return { ok: false, code: "signed_out", message: `Sign in to ${BRAND.NAME} on this computer first.` };
     const candidates = await eligibleCandidates();
     const target = candidates.find((candidate) => candidate.record.projectId === checkoutId);
     if (!target) {
-      return { ok: false, code: "not_a_copy", message: "That folder is not a GitHub project ADE lists on this computer." };
+      return { ok: false, code: "not_a_copy", message: `That folder is not a GitHub project ${BRAND.NAME} lists on this computer.` };
     }
     // Signed out or switched while the folders were checked.
     if (stopped || options.getAccountUserId() !== userId) {
-      return { ok: false, code: "signed_out", message: "The ADE account on this computer changed. Try again." };
+      return { ok: false, code: "signed_out", message: `The ${BRAND.NAME} account on this computer changed. Try again.` };
     }
     const loaded = readAccountProjectState(options.adeDir, logger);
     const state = stateForAccount(loaded, userId);
@@ -871,7 +872,7 @@ export function createAccountProjectSync(options: AccountProjectSyncOptions): Ac
         writeState(options.adeDir, state);
       } catch (error) {
         logger.warn?.("account_projects.main_write_failed", { error: errorReason(error) });
-        return { ok: false, code: "write_failed", message: "ADE could not save the change on this computer." };
+        return { ok: false, code: "write_failed", message: `${BRAND.NAME} could not save the change on this computer.` };
       }
     }
     // The next heartbeat runs in full and publishes the new main copy.

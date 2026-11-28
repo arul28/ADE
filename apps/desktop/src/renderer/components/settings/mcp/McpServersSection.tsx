@@ -25,6 +25,7 @@ import "./mcpServers.css";
 import "../integrations/integrationPage.css";
 import { isImeComposing } from "../../../lib/imeComposition";
 import { plainErrorText } from "../../../lib/plainError";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * Settings › Integrations › MCP servers.
@@ -233,7 +234,7 @@ export function McpServersSection() {
               title: "MCP servers can't be changed right now",
               // The real cause in plain words (`plainError` replaces text
               // written for logs, such as "Domain 'account_settings' ...").
-              detail: `${plainErrorText(registry.message, "ADE's background service did not answer.")} The list below is the copy saved on this computer.`,
+              detail: `${plainErrorText(registry.message, `${BRAND.NAME}'s background service did not answer.`)} The list below is the copy saved on this computer.`,
               actions: [{
                 label: registry.reloading ? "Trying again…" : "Try again",
                 busy: registry.reloading,
@@ -247,7 +248,7 @@ export function McpServersSection() {
           group="In your account"
           anchor="mcp-servers"
           title="In your account"
-          hint="Every ADE agent gets these, on every computer you sign in on."
+          hint={`Every ${BRAND.NAME} agent gets these, on every computer you sign in on.`}
           actions={(
             <span className="ade-mcp-head-actions">
               {registry.servers.length > 0 || registry.found.length > 0 || needle ? (
@@ -284,7 +285,7 @@ export function McpServersSection() {
                 ? "Loading…"
                 : ready
                   ? "No servers yet. Add one, or import one this computer already has."
-                  : "Your servers will show here once ADE can read them."}
+                  : `Your servers will show here once ${BRAND.NAME} can read them.`}
             </div>
           ) : (
             <div className="ade-modern-rows" data-mcp-server-list="">
@@ -314,7 +315,7 @@ export function McpServersSection() {
         <ModernSection
           group="Found on this computer"
           anchor="mcp-found"
-          title="Found on this computer, not in ADE"
+          title={`Found on this computer, not in ${BRAND.NAME}`}
           hint="From your provider tools' own settings. Import one to give it to every agent."
           actions={(
             <button type="button" className="ade-modern-btn" data-variant="ghost" disabled={registry.phase === "loading"} onClick={() => void registry.reload()}>
@@ -328,7 +329,7 @@ export function McpServersSection() {
                 ? "Loading…"
                 : registry.found.length > 0
                   ? <>Nothing found here matches &ldquo;{query.trim()}&rdquo;.</>
-                  : "Nothing here that ADE does not already have."}
+                  : `Nothing here that ${BRAND.NAME} does not already have.`}
             </div>
           ) : (
             <div className="ade-modern-rows" data-mcp-found-list="">
@@ -359,7 +360,7 @@ export function McpServersSection() {
           <McpPager total={filteredFound.length} page={foundShown.page} pages={foundShown.pages} onPage={setFoundPage} label="Servers found on this computer" />
           {registry.skipped.length > 0 ? (
             <p className="ade-modern-muted">
-              Not offered, because ADE can't hold a server with this name or shape: {list(registry.skipped)}.
+              Not offered, because {BRAND.NAME} can't hold a server with this name or shape: {list(registry.skipped)}.
             </p>
           ) : null}
         </ModernSection>
@@ -546,11 +547,11 @@ function LevelSwitch({
 }
 
 function expiresLine(expiresAt: string | null): string {
-  if (!expiresAt) return "Every ADE agent uses this sign-in, on every computer you use.";
+  if (!expiresAt) return `Every ${BRAND.NAME} agent uses this sign-in, on every computer you use.`;
   const ms = Date.parse(expiresAt) - Date.now();
   const days = Math.floor(ms / 86_400_000);
   const when = days >= 2 ? `in ${days} days` : ms > 3_600_000 ? `in ${Math.round(ms / 3_600_000)} hours` : "soon";
-  return `Every ADE agent uses this sign-in, on every computer you use. It runs out ${when}.`;
+  return `Every ${BRAND.NAME} agent uses this sign-in, on every computer you use. It runs out ${when}.`;
 }
 
 /** A server's browser sign-in: the ask, the wait on the browser, or who is signed in. */
@@ -576,7 +577,7 @@ function SignInNote({
       <div className="ade-modern-note" data-mcp-sign-in="waiting">
         <Key size={14} weight="fill" />
         <div className="ade-modern-note-body">
-          <span>Finish signing in to {name} in your browser. ADE is waiting for it.</span>
+          <span>Finish signing in to {name} in your browser. {BRAND.NAME} is waiting for it.</span>
           <div className="ade-mcp-secret">
             <button type="button" className="ade-modern-btn" onClick={onCancel}>Cancel</button>
           </div>
@@ -605,7 +606,7 @@ function SignInNote({
         <span>
           {signIn?.state === "expired"
             ? `Your sign-in to ${name} ran out. Agents can't use its tools until you sign in again.`
-            : `${name} asks you to sign in before agents can use its tools. Sign in once here and every ADE agent gets it, on every computer.`}
+            : `${name} asks you to sign in before agents can use its tools. Sign in once here and every ${BRAND.NAME} agent gets it, on every computer.`}
         </span>
         <div className="ade-mcp-secret">
           <button type="button" className="ade-modern-btn" data-tone="primary" disabled={disabled} onClick={onSignIn}>

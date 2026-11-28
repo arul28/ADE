@@ -10,9 +10,9 @@
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 
-import { useAdeProviders } from "../context/AdeChatContext";
-import type { AdeChatClient, ProviderStatus } from "../sdkTypes";
-import { AdeLink, AdeLinkHandlerProvider, type AdeLinkClickHandler } from "../transcript/links";
+import { useDaexProviders } from "../context/AdeChatContext";
+import type { DaexChatClient, ProviderStatus } from "../sdkTypes";
+import { DaexLink, DaexLinkHandlerProvider, type DaexLinkClickHandler } from "../transcript/links";
 import { safeHref } from "../transcript/markdown";
 
 export type ProviderCardProps = {
@@ -27,11 +27,11 @@ export type ProviderCardProps = {
    */
   showDetail?: boolean;
   /**
-   * Handle the "Documentation" link yourself (see `AdeLinkClickHandler`).
+   * Handle the "Documentation" link yourself (see `DaexLinkClickHandler`).
    * Without it the link opens with `target="_blank"`, which in Electron is a
    * new app window; an Electron host should pass this.
    */
-  onLinkClick?: AdeLinkClickHandler;
+  onLinkClick?: DaexLinkClickHandler;
   className?: string;
 };
 
@@ -100,7 +100,7 @@ export function ProviderCard({
   const docsHref = status.docsUrl ? safeHref(status.docsUrl) : null;
 
   return (
-    <AdeLinkHandlerProvider onLinkClick={onLinkClick}>
+    <DaexLinkHandlerProvider onLinkClick={onLinkClick}>
       <div
         className={["adechat-providercard", className].filter(Boolean).join(" ")}
         data-state={state}
@@ -133,16 +133,16 @@ export function ProviderCard({
           : null}
 
         {docsHref ? (
-          <AdeLink
+          <DaexLink
             className="adechat-providercard-detail"
             href={docsHref}
             source="provider-docs"
           >
             Documentation
-          </AdeLink>
+          </DaexLink>
         ) : null}
       </div>
-    </AdeLinkHandlerProvider>
+    </DaexLinkHandlerProvider>
   );
 }
 
@@ -187,7 +187,7 @@ function CopyableCommand({
 export type ProviderCardsProps = {
   /** Supply statuses directly; omit to read from the client/context. */
   statuses?: readonly ProviderStatus[];
-  client?: AdeChatClient;
+  client?: DaexChatClient;
   /**
    * Show only providers that need attention. Default true. Pass `false` for a
    * settings page that lists every provider: a ready provider then renders as
@@ -213,7 +213,7 @@ export function ProviderCards(props: ProviderCardsProps) {
 }
 
 function ConnectedProviderCards(props: ProviderCardsProps) {
-  const connected = useAdeProviders(props.client);
+  const connected = useDaexProviders(props.client);
   return <ProviderCardsView {...props} statuses={connected.statuses} />;
 }
 

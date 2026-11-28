@@ -27,10 +27,11 @@ import { cloudLaneStartBlock, type CloudLaneMachine } from "../../../shared/clou
 import { cloudHoursOnSizesLine, cloudTierOfMachine, cloudTierUsesHours, cloudTiers, type CloudTierId } from "../../../shared/cloudTiers";
 import { cloudUnitWords } from "../../../shared/cloudUnitWords";
 import { NO_PROVIDER_SENTENCE } from "./cloudAccess";
+import { BRAND } from "../../../shared/brand";
 
 
 /** What a credit is, without `CLOUD_CREDIT_UNIT_SENTENCE`'s "Small computers use none." (for a catalog that charges Small). */
-const CLOUD_CREDIT_DEFINITION = "A credit is an hour on a Medium computer or a minute on the ADE Cloud iPhone.";
+const CLOUD_CREDIT_DEFINITION = `A credit is an hour on a Medium computer or a minute on the ${BRAND.CLOUD_NAME} iPhone.`;
 /**
  * `cloud.status`: the whole ADE Cloud account in one read (plan, hours,
  * computers, each lane, the sizes, what agents may do, and whether a new lane
@@ -41,11 +42,11 @@ const CLOUD_CREDIT_DEFINITION = "A credit is an hour on a Medium computer or a m
  */
 
 /** Where a person changes how many new computers agents may start a day (Settings, the ADE Cloud card). */
-export const CLOUD_DAILY_LIMIT_SETTING = "Settings › Integrations › ADE Cloud › What agents may do › New computers a day";
+export const CLOUD_DAILY_LIMIT_SETTING = `Settings › Integrations › ${BRAND.CLOUD_NAME} › What agents may do › New computers a day`;
 
 /** `cloud.status` when the computers listed but the plan and hours didn't. */
 const CLOUD_ACCOUNT_UNKNOWN_MESSAGE =
-  "ADE couldn't read your ADE Cloud plan and hours, so it can't say if a new lane can start. Try again in a minute.";
+  `${BRAND.NAME} couldn't read your ${BRAND.CLOUD_NAME} plan and hours, so it can't say if a new lane can start. Try again in a minute.`;
 
 const milliToHours = (milli: number): number => Math.round(Math.max(0, milli)) / 1000;
 
@@ -228,7 +229,7 @@ export function canStartLaneOf(result: CloudMachinesResult): CloudCanStartLane {
     return no("not_available", reason);
   }
   if (result.state === "access_refused") return no("not_available", result.message ?? NO_PROVIDER_SENTENCE.no_access);
-  if (result.state === "unreachable") return no("unreachable", result.message ?? "ADE couldn't reach ADE Cloud. Try again in a minute.");
+  if (result.state === "unreachable") return no("unreachable", result.message ?? `${BRAND.NAME} couldn't reach ${BRAND.CLOUD_NAME}. Try again in a minute.`);
   if (!result.account) return no("account_unknown", CLOUD_ACCOUNT_UNKNOWN_MESSAGE);
   const block = cloudLaneStartBlock(result.account, { newLane: true });
   return block ? no(block.code, block.message) : { ok: true, reason: null, code: null };

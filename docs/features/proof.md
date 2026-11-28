@@ -1,825 +1,260 @@
 # Proof
 
-## Overview
+Proof in DAEX is **intentional**, never auto-captured. An agent does computer
+use however it wants; DAEX does not wrap or observe external tools. When a
+moment deserves evidence, the agent (or user) runs a `daex proof …` command or
+a surface's own `proof` / `record` command (`daex browser proof`, `daex apple
+proof`, `daex screen proof`, `daex app-control proof`). A proof set is a
+handful of captioned screenshots and short demo videos a reviewer can skim.
 
-Proof in ADE is **intentional**, not auto-captured. The agent does computer use however it wants — `claude`'s `computer_use`, the `codex` shell, a scripted browser, whatever. ADE does not wrap, proxy, or observe external tools. When the agent (or the user) decides that a moment deserves evidence, the agent runs the `ade proof` CLI or promotes an ADE Browser scratch observation with `ade browser proof`. Those commands are the intentional proof interface.
-
-The old system sat upstream of the agent and tried to normalize every backend. It carried a readiness model, a policy surface (`off`/`auto`/`enabled`), per-phase coverage requirements, an auto-observer, and a separate tool-delivery path. Those control-plane layers are gone. What stays is a small CLI, the canonical artifact-and-owner-link tables, and lightweight collection views in chat.
-
-The result: one interface for all models, no backend matrix, no coverage math. A proof set is a handful of captioned screenshots a reviewer can skim in under a minute.
-
-## The explicit-only rule
-
-**Only a proof-named call creates a proof-drawer entry.** Capturing pixels and
-filing evidence are two different acts: an agent looks at the screen constantly,
-and a drawer that collects every one of those looks is a dump, not a proof set.
-So the capture tools are scratch by default and the `ade proof …` commands — the
-ones a human or an agent runs on purpose, with a caption — are the only writers.
-
-Three paths used to file records without anyone asking:
-
-| Path | Now |
-|---|---|
-| `captureScreenshot` chat tool (formerly `apps/desktop/src/main/services/ai/tools/workflowTools.ts`) | Gone, along with `workflowTools.ts` itself. It was a name with no registry behind it, so it filed nothing because it never ran. Agents use `ade proof capture --caption` / `ade proof attach`. |
-| `screenshot_environment` / `record_environment` RPC tools (`apps/ade-cli/src/adeRpcServer.ts`) | File a record only when the call passes `proof: true`, which `ade proof capture` and `ade proof record` set. A proof call captures the caller's lane Mac Desktop display, and is refused when the lane has none unless it also passes `realScreen: true`. A bare call — agent vision, an automation run's `browser` tool family — still captures the real screen, writes to `.ade/cache/tmp/computer-use/` and returns the path. |
-| `computer_use_artifacts` action domain (`apps/desktop/src/main/services/adeActions/registry.ts`) | No longer exposes `ingest`. `ade actions call computer_use_artifacts.ingest` reached the broker past `validateComputerUseOwnerClaims` and the authorized caller-root check; ingestion now happens only through `ingest_computer_use_artifacts`, where both live. The domain exposes reads and record lifecycle. |
-
-Nothing is lost on the scratch paths. The bytes stay on disk in a root the
-broker already accepts for import, so `ade proof attach <path> --caption "…"`
-promotes any of them after the fact.
+Commands use `daex`; `ade` still works.
 
 ## Source file map
 
-| Path | Role |
+| Path | Owns |
 |---|---|
-| `apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts` | Canonical ingest, list, delete, broken-record audit/prune/recovery, lane/project cleanup, review compatibility fields, and bounded preview reads. |
-| `apps/desktop/src/main/services/computerUse/controlPlane.ts` | Owner-scoped snapshots used by the proof drawer. |
-| `apps/desktop/src/main/services/computerUse/localComputerUse.ts` | Local capture capabilities plus artifact path/URI helpers. |
-| `apps/desktop/src/main/services/computerUse/proofFingerprint.ts`, `mediaCreationTime.ts` | Duplicate-bytes refusal (`PROOF_DUPLICATE`) and the older-video flag from the file's own `mvhd` creation time. |
-| `apps/desktop/src/shared/proofProvenance.ts` | `proofSource` values, broker-only metadata keys, and the provenance line each proof surface prints. |
-| `apps/ade-cli/src/services/proof/adeCaptureRegistry.ts` | Files the RPC server's capture actions wrote, by path and hash. A CLI ingest is filed as ADE's capture only on a one-shot match. |
-| `apps/desktop/src/main/services/computerUse/artifactMediaServer.ts`, `artifactStreamProtocol.ts`, `artifactByteRange.ts`, `apps/desktop/src/shared/artifactStreamUrl.ts` | Loopback video server, shared MIME/Range/containment rules, bounded range reads, and the preview URL scheme. |
-| `apps/desktop/src/main/services/state/kvDb.ts` | `computer_use_artifacts` / `computer_use_artifact_links` schema, including the optional lane ownership column used by lane cleanup. |
-| `apps/desktop/src/shared/types/computerUseArtifacts.ts` | Cross-process artifact, availability, deletion, recovery, event, and owner contracts. |
-| `apps/desktop/src/main/services/adeActions/registry.ts`, `apps/desktop/src/main/services/ipc/registerIpc.ts`, `apps/desktop/src/preload/preload.ts` | Runtime action, IPC, and renderer bridge for the proof surface. |
-| `apps/ade-cli/src/cli.ts`, `apps/ade-cli/src/adeRpcServer.ts` | Typed `ade proof …` commands and JSON-RPC tools. |
-| `apps/desktop/src/renderer/components/chat/ChatComputerUsePanel.tsx` | Full proof drawer, artifact tiles, preview states, and delete action. |
-| `apps/desktop/src/renderer/components/terminals/CliAgentPane.tsx` | The same drawer in a tracked agent CLI's actions pane, floated over its terminal. A CLI carries its own session id as `ADE_CHAT_SESSION_ID`, so `ade proof attach` from it is filed to the `chat_session` owner of that CLI (`resolveComputerUseOwners`), and the pane reads that owner's snapshot from the CLI's machine. |
-| `apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx`, `chatCardPrimitives.tsx` | Turn-time bucketing plus the "N proof filed" count (`ChatProofCount`) that opens the drawer narrowed to a turn. |
-| `apps/desktop/src/shared/demoVideo/demoContract.ts`, `demoPlanner.ts`, `demoCameraPlanner.ts`, `demoProofText.ts` | The demo contract (track, analysis, plan, `.aderaw`, limits), the pure planner and its camera, and the proof sentences and chapters every surface shares. |
-| `apps/desktop/src/main/services/demoVideo/` | The track registry, the render service, the recording guard, the engine set, the three engine clients (`swiftDemoEngine.ts`, `chromiumDemoEngine.ts`, `ffmpegDemoEngine.ts`), and `demoMp4Source.ts` (an H.264 MP4, such as the Windows driver's recording, read for the Chromium engine). |
+| `apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts` | The only ingest path: owner checks, list, delete, broken-record audit/prune/recover, lane/project cleanup, bounded preview reads. |
+| `apps/desktop/src/main/services/computerUse/controlPlane.ts`, `localComputerUse.ts` | Owner snapshots for the drawer; local capture capabilities and artifact path helpers. |
+| `apps/desktop/src/main/services/computerUse/proofFingerprint.ts`, `mediaCreationTime.ts` | Duplicate-bytes refusal (`PROOF_DUPLICATE`); the older-video flag from `mvhd`. |
+| `apps/desktop/src/main/services/computerUse/proofPlayableVideo.ts` | H.264 MP4 copies of other video formats. |
+| `apps/desktop/src/main/services/computerUse/artifactMediaServer.ts`, `artifactStreamProtocol.ts`, `artifactByteRange.ts`, `apps/desktop/src/shared/artifactStreamUrl.ts` | Loopback video server and Range reads. |
+| `apps/desktop/src/shared/proofProvenance.ts`, `proofCitation.ts`, `proofDrawerModel.ts` | `proofSource` values; citation forms; drawer grouping. |
+| `apps/desktop/src/shared/types/computerUseArtifacts.ts` | Artifact, owner and event contracts. |
+| `apps/desktop/src/main/services/state/kvDb.ts` | `computer_use_artifacts` / `computer_use_artifact_links` schema. |
+| `apps/ade-cli/src/cli.ts`, `adeRpcServer.ts`, `proofPublish.ts` | `daex proof …` commands, RPC tools, PR publish. |
+| `apps/ade-cli/src/services/proof/adeCaptureRegistry.ts` | Files DAEX's own capture actions wrote, by path and hash. |
+| `apps/desktop/src/shared/demoVideo/` (`demoContract.ts`, `demoPlanner.ts`, `demoCameraPlanner.ts`, `demoProofText.ts`) | Demo contract, pure planner and camera, proof text. |
+| `apps/desktop/src/main/services/demoVideo/` | Track registry, render service, recording guard, engines (`swiftDemoEngine.ts`, `chromiumDemoEngine.ts`, `ffmpegDemoEngine.ts`), `demoMp4Source.ts`, `demoChildStop.ts`, `proofReview.ts` + `sheetFrames.ts` (`daex proof review`). |
 | `apps/desktop/native/ADEMedia/` | `ade-media`, the macOS demo engine. |
+| `apps/desktop/src/main/services/cto/ctoProofShare.ts` | Proof in the CTO's answer. |
+| `apps/desktop/src/renderer/components/chat/ChatComputerUsePanel.tsx`, `ChatProofCitation.tsx`, `components/terminals/CliAgentPane.tsx` | Proof drawer, inline citations, the CLI actions pane's drawer. |
+| `apps/ios/ADE/Views/Work/WorkProofSheet.swift` | The phone's proof sheet. |
+
+## Gotchas
+
+- **Only a proof-named call files proof.** Capture tools are scratch by default; never make one file on an agent's behalf.
+- **The broker is the only ingest path**; every caller goes through its owner checks (`validateComputerUseOwnerClaims`).
+- **Bytes do not replicate.** Records sync through cr-sqlite; previews stream from the machine that holds the files and are unavailable while it is unreachable.
+- **Proof lives on the runtime's machine** (`.ade/artifacts/computer-use/`), so a remote session's proof is on the remote host.
+- **`metadata.proofSource`, `turnId` and duplicate fingerprints are broker-written**; caller metadata cannot set them.
+
+## The explicit-only rule
+
+Capturing pixels and filing evidence are different acts: an agent looks at the
+screen constantly, and a drawer of every look is a dump.
+
+- `screenshot_environment` / `record_environment` RPC tools file a record only with `proof: true`, which `daex proof capture` and `daex proof record` set.
+- The `computer_use_artifacts` action domain does not expose `ingest`.
+- There is no `captureScreenshot` chat tool.
+
+Scratch bytes stay on disk in roots the broker accepts, so
+`daex proof attach <path> --caption "…"` promotes any of them later.
 
 ## Runtime ownership
 
-Proof storage and the broker are owned by the ADE runtime (`ade serve`) that owns the project. Artifacts on disk live under the runtime machine's `.ade/artifacts/computer-use/` directory; the SQLite rows live in that runtime's `.ade/ade.db`. For local projects that is the user's machine; for remote projects it is the remote machine. The desktop renderer and the headless ADE CLI both call into the broker over JSON-RPC; nothing about the proof pipeline lives in the renderer or in a separate host process.
-
-That means: proof captured during a remote-runtime session lives on the remote host. Desktop transcript and drawer cards fetch bounded preview bytes through the same SSH-tunneled JSON-RPC channel as the rest of the remote project surface; raw artifact files are not synced back to the desktop machine, and proof is only viewable while the runtime that captured it is reachable.
-
----
+The broker and storage belong to the runtime (`daex serve`) that owns the
+project: files under that machine's `.ade/artifacts/computer-use/`, rows in its
+`.ade/ade.db`. Desktop and the CLI reach it over JSON-RPC. Remote proof is
+viewable only while that runtime is reachable.
 
 ## CLI reference
 
-Common subcommands under `ade proof` print a JSON summary on success and exit non-zero on failure. Use `ade help proof` for the complete current flag list.
+`daex help proof` has the full flag list. Commands print JSON, or one
+confirmation line with `--text`.
 
-### `ade proof capture`
-
-Take a screenshot of your lane's Mac Desktop display now and file it as proof.
-
-```
-ade proof capture [--caption "<text>"] [--real-screen] [--owner-kind chat|lane] [--owner-id <id>]
-```
-
-- `--caption` — short free-text label. Prominent in the drawer grid.
-- `--real-screen` — capture the whole real screen with `screencapture` instead. macOS only.
-- Owner flags — override inferred owner (see below). Rarely needed.
-
-ADE does not capture your real screen by default. The runtime finds the
-caller's lane the same way it finds the proof owner: the chat's lane, then the
-lane whose worktree contains the caller's root, then a lane the caller named.
-
-- **The lane has a Mac Desktop display.** ADE takes the screenshot through the
-  Mac Desktop service and files it the way `ade mac-desktop proof` does:
-  "Captured by ADE", owned by the lane and the chat, and linked to the lane's
-  PR. `--text` prints a `captured from: Mac Desktop display …` line.
-- **The lane has no display.** The command is refused and captures nothing:
-
-  ```
-  ade: proof capture failed — refused: this lane has no Mac Desktop display, and ADE does not capture your real screen by default. Use `ade mac-desktop proof`, `ade apple proof`, `ade app-control proof` or `ade browser proof`, or pass --real-screen to capture the whole real screen.
-  ```
-
-  Off macOS no lane can have a display, so the line names only
-  `ade browser proof`, `ade app-control proof` and `ade proof attach <file>`.
-- **`--real-screen`.** The old path: `screencapture -x` on the runtime host,
-  filed as "Captured by ADE". It runs headless unless `--socket` is passed.
-  Off macOS it fails because `screencapture` does not exist.
-
-The default path talks to the running ADE runtime, because the lane display
-lives there. With no runtime reachable, the CLI falls back to headless mode,
-which has no display, so the command is refused.
-
-Example:
+### `daex proof capture`
 
 ```
-ade proof capture --caption "logged in as admin"
-ade proof capture --caption "order #1234 submitted, confirmation visible"
+daex proof capture [--caption "<text>"] [--real-screen] [--owner-kind chat|lane] [--owner-id <id>]
 ```
 
-Exit codes: `0` success. `1` when the capture was refused or failed, or the
-record could not be read back; stderr has one `… failed — <reason>` line.
-`2` for a usage error.
+DAEX does not capture the real screen by default. The runtime finds the
+caller's lane (the chat's lane, then the lane containing the caller's root,
+then a named lane):
 
-### `ade proof attach`
+- **The lane has a Mac Desktop display:** the screenshot is taken there and filed like `daex screen proof` (owned by lane and chat, linked to the lane's PR).
+- **No display:** refused, nothing captured; the error names the surface commands to use instead.
+- **`--real-screen`:** `screencapture -x` on the runtime host (macOS only).
 
-Promote an existing image, video, or browser trace file to proof. Useful for headless-browser screenshots, Playwright traces rendered as PNG, or anything the agent produced out-of-band.
+Exit codes: `0` filed; `1` refused, failed, or not readable back; `2` usage.
 
-```
-ade proof attach <path> [--caption "<text>"] [--title "<text>"] [--owner-kind ...] [--owner-id ...]
-```
-
-The CLI infers the proof kind from the file extension:
-
-| Extension | Inferred kind |
-|---|---|
-| `.png`, `.jpg`/`.jpeg`, `.webp`, `.gif`, `.heic`/`.heif`, `.tif`/`.tiff` | `screenshot` |
-| `.mov`, `.mp4`, `.m4v`, `.webm` | `video_recording` |
-| `.zip`, `.har` | `browser_trace` |
-| any other allow-listed extension | `browser_verification` |
-
-Example:
+### `daex proof attach`
 
 ```
-ade proof attach "$TMPDIR/checkout-success.png" --caption "checkout flow completes on Firefox"
+daex proof attach <path> [--caption "<text>"] [--title "<text>"] [--owner-kind …] [--owner-id …]
 ```
 
-Imports are restricted to a fixed set of roots: the project root, the lane
-worktree, `.ade/artifacts`, `.ade/cache`, `.ade/tmp`, the OS temp dir
-(`os.tmpdir()` / `$TMPDIR`, which on macOS lives under `/var/folders`), the
-platform's conventional temp dir (`/tmp`, plus its realpath `/private/tmp` on
-macOS; on Windows `%TEMP%`/`%TMP%` already *are* `os.tmpdir()`), and
-`~/.agent-browser`. Both temp conventions are roots because both are the same
-world-writable scratch space, and the evidence-extension allow-list plus the
-`.ade/secrets` deny-list — not the root list — decide what may be copied in.
+Kind from extension: images → `screenshot`; `.mov`/`.mp4`/`.m4v`/`.webm` →
+`video_recording`; `.zip`/`.har` → `browser_trace`; other allowed types →
+`browser_verification`. The file is copied in; the original stays.
 
-### Which directory the call claims
+- **Import roots:** project root, lane worktree, `.ade/artifacts`, `.ade/cache`, `.ade/tmp`, the OS temp dir and `/tmp` (with `/private/tmp` on macOS), and `~/.agent-browser`. The evidence-extension allow-list and the `.ade/secrets` deny-list decide what may be copied; `.env`, databases, keys and certificates are refused. Symlinks resolve before both checks and the source opens with `O_NOFOLLOW`.
+- **Which directory the call claims:** `callerRoot` is `ADE_WORKSPACE_ROOT` if set, else omitted when only `ADE_LANE_ID` is set (the runtime uses the authorized worktree), else `process.cwd()`. A failure names the path, its source and the authorized root.
+- **Confirmation:** `attach`, `capture`, `ingest` and `record` re-read the record through the drawer's list path; exit `0` only when it exists. Anything else prints one line containing `failed`. `--no-verify` skips the re-read.
+- **Duplicates:** bytes matching earlier proof in the project (by size, then SHA-256) are refused with `PROOF_DUPLICATE`, including Apple recordings on disk that never reached the drawer. DAEX's own captures (matched one-shot in `adeCaptureRegistry.ts` by path and hash) skip the check for stills, never for videos.
+- **Older videos:** an MP4/MOV whose `mvhd` creation time is more than 60 s before the owning chat's turn started still lands, with `metadata.recordedBeforeRequest: true` and an amber "recorded before this request" line.
+- `metadata.proofSource` is `ade-recorder`, `ade-capture` or `attached`.
 
-The runtime authorizes ingestion against the lane worktree it resolved for the
-caller, and compares it against the `callerRoot` the CLI sends. The CLI derives
-that root from the environment first:
-
-| Environment | `callerRoot` sent | Source reported |
-|---|---|---|
-| `ADE_WORKSPACE_ROOT` set | that path | `env ADE_WORKSPACE_ROOT` |
-| only `ADE_LANE_ID` set | omitted — the runtime uses the lane worktree it authorized | `env ADE_LANE_ID=<id>` |
-| neither | `process.cwd()` | `cwd` |
-
-This is what makes a call spawned from a shell parked outside the worktree
-succeed: the lane environment, not the wandering cwd, describes the workspace.
-When the check still fails, the error names all three facts — the path used,
-where it came from, and the authorized root:
+### `daex proof publish`
 
 ```
-callerRoot must be inside the server-authorized lane worktree: used /elsewhere
-(from env ADE_WORKSPACE_ROOT), authorized root is /repo/.ade/worktrees/lane-9.
-Run ade from inside that worktree, or set ADE_WORKSPACE_ROOT to it.
+daex proof publish --pr <number|url> <artifact-id>… [--heading "<text>"] [--note "<text>"] [--replace]
+daex proof publish --pr <number|url> --in-body
 ```
 
-### Confirming that a capture landed
+- Posts one PR comment with `gh pr comment --attach` on the machine holding the files. Only the caller's own proof can be posted. `--replace` deletes the account's earlier DAEX proof comments after the new one posts.
+- `--in-body` uploads the proof the PR text cites (`![caption](ade-proof://<id>)`, `proof-compare` fences) with `gh pr edit --attach` and rewrites the citations (`shared/prBodyProof.ts`); `daex prs create` / `daex prs body` do the same. See [PRs › Proof in the PR text](./pull-requests/README.md#proof-in-the-pr-text).
+- Needs `gh` 2.99.0+ and a `gh` login, not the DAEX GitHub App token (GitHub's upload endpoint refuses App tokens). On a DAEX Cloud computer it uses the account's copy of a `gh` login from DAEX's token endpoint (`use=upload`); with none, it refuses before uploading.
+- Limits: 10 MB per picture; 10 MB per video on GitHub Free, 100 MB on paid plans. Skipped items are listed with the reason.
+- Posted items get a `github_pr` owner link, shown as a "PR #N" chip.
 
-`ade proof attach`, `capture`, `ingest`, and `record` re-read the record they
-just filed through the same list path the drawer uses, and in `--text` mode end
-with one unambiguous line:
+### Other commands
 
-```
-Attached 1 artifact to lane improving-browser-4bb19b3f / chat 8f3c2a11 (roots check)
-```
+- `daex proof list [--owner-kind …] [--owner-id …] [--limit n]`: the inferred owner's proof; `--text` leads with the scope the runtime authorized.
+- `daex proof record --seconds <n>` (1–120): records the lane's Mac Desktop display and files a demo; refused with no display unless `--real-screen`.
+- `daex proof step "<text>" [--focus x,y,w,h]`: a caption (≤ 60 chars) and optional camera focus for every recording running on the caller's lane.
+- `daex proof review <id>`: see [below](#checking-a-demo-daex-proof-review).
+- `daex proof rm`, `broken`, `prune [--broken]`, `recover <id>`: deletion and broken-record maintenance.
+- `daex proof status`, `launch`, `interact`, `environment`, `ingest --input-json`: lower-level helpers.
 
-Exit code is `0` only when that record exists. Every other outcome — a refused
-path, a rejected root, a scratch-only capture, a record that cannot be read back
-— exits non-zero and prints a single line containing the word `failed`:
-
-```
-ade: proof attach failed — the runtime filed no proof record: Scratch capture …
-```
-
-`--no-verify` skips the re-read. Nothing skips the confirmation line.
-
-The file is copied into `.ade/artifacts/computer-use/`; the original is left in place. Internally `attach` calls the same `ingest_computer_use_artifacts` RPC tool with `backendStyle: "manual"` and `backendName: "ade-cli"`.
-
-### Already-filed bytes and older videos
-
-ADE stores the SHA-256 and byte size of every proof file it keeps
-(`metadata.contentSha256`, `metadata.contentBytes`). An attach whose bytes match
-earlier proof in the project, a renamed copy included, is refused:
-
-```
-ade: proof attach failed — PROOF_DUPLICATE: Same bytes as "Simulator recording · iPhone 17 · 0:12" (filed 5:19 AM). This file is already proof. Record a new one, or report that recording failed.
-```
-
-The check compares by size first and hashes only same-size rows that have no
-stored hash (at most 8 per attach, then written back). It also checks Apple
-recordings on disk under `.ade/artifacts/apple-recordings/` that never reached
-the drawer. Scene stills are not compared. The check applies to
-`ade proof attach`, `ade proof ingest`, and the CTO's `captureProof`. Two
-identical inputs in one call are also refused.
-
-The in-process recorders and captures (the Apple recorder, Apple screenshots,
-scene snapshots) pass `provenance` on the ingest request and skip the check.
-The CLI's capture commands (`ade apple proof`, `ade app-control proof`,
-`ade browser proof`, `ade proof capture`, `ade proof record`) file through the
-same `ingest_computer_use_artifacts` tool. The RPC server does not trust the
-labels in those arguments. Instead, it keeps a registry of the files that its
-own capture actions wrote, with each file's hash
-(`apps/ade-cli/src/services/proof/adeCaptureRegistry.ts`). An ingest is filed
-as ADE's capture only when every input is a remembered file with unchanged
-bytes, and all inputs come from the same source. Each match is one-shot: the
-first filing claims it, so a second filing of the same file is an attach. A
-failed filing gives the claim back. A still that ADE captured skips the
-duplicate check, because an unchanged screen can give the same bytes. A video
-never skips it. The broker hashes the bytes again when it files them. If they
-changed, it files the call as an attach, with every check on.
-
-For an attached MP4/MOV, ADE reads the video's own creation time from
-`moov/mvhd` (`metadata.mediaCreatedAt`). If it is more than 60 s before the
-owning chat's current or latest turn started, the attach still lands, with
-`metadata.recordedBeforeRequest: true`, and the command prints:
-
-```
-warning: This video was recorded at 5:19 AM, before this request. It will be marked as older in the proof drawer.
-```
-
-A missing or zero creation time is unknown and is never flagged.
-
-Every new proof also records `metadata.proofSource`: `ade-recorder` (the Apple
-recorder, `ade proof record`, with `recordedFrom`/`recordedTo`), `ade-capture`
-(ADE screenshots and scene snapshots), or `attached` (an existing file). The
-broker writes these fields itself and drops them from caller metadata. Rows
-filed before these fields existed have none and show nothing.
-
-On-disk imports are intentionally allow-listed to renderable evidence types
-(images, video, browser traces, and text/log files). Files such as `.env`,
-databases, private keys, and certificates are rejected even when they are under
-the project root. The broker resolves symlinks for both its allow- and deny-root
-checks and opens the source with `O_NOFOLLOW` before copying.
-
-### `ade proof publish`
-
-Post chosen proof to a GitHub pull request as one comment.
-
-```
-ade proof publish --pr <number|url> <artifact-id> [<artifact-id>...] [--heading "<text>"] [--note "<text>"] [--replace]
-```
-
-- `--replace`: after the new comment posts, delete the signed-in account's
-  earlier ADE proof comments on the PR (found by the comment's closing
-  "Posted by ADE from the chat's proof." line), never the one just posted. A
-  failed post deletes nothing; a failed delete is a warning.
-
-- The CLI reads the items through `list_computer_use_artifacts`, so a caller
-  can post only its own chat's or lane's proof.
-- It runs `gh pr comment <pr> --body-file … --attach …` on the machine that
-  holds the files (`apps/ade-cli/src/proofPublish.ts`). Each item becomes a
-  `proof-N.ext` image reference plus its caption; `gh` uploads the files as
-  GitHub attachments and rewrites the references. A video renders as a player.
-- It needs `gh` 2.99.0 or later and refuses an older one with the upgrade
-  command. A PR number needs a GitHub remote in the current repository;
-  otherwise pass the PR URL.
-- It needs a `gh` login, not the ADE GitHub App's token. GitHub's upload
-  endpoint refuses most App tokens whatever the App's permissions (it answers
-  404, which gh words as "attaching files requires write access"). With a
-  token or `gh` login of the machine's own, `gh` runs as it is. When only ADE
-  gives `gh` a token (an ADE Cloud computer), every `gh` call of the publish
-  uses the account's copy of a `gh` login, asked for from ADE's token
-  endpoint with `use=upload` (`ghUploadEnv`). With no copy, the command
-  refuses before it uploads and says to run `gh auth login` on that computer
-  or on one of the person's own computers, which shares the login with the
-  account.
-- Limits: 10 MB per picture; 10 MB per video on GitHub Free, 100 MB on paid
-  plans. A larger item, a trace, or an item with no stored file is skipped
-  with the reason; a video over 10 MB posts with a warning.
-- After the post, `link_computer_use_artifacts_to_pr` adds a `github_pr`
-  owner link (`published_to`, keyed by the PR URL, `metadata.commentUrl`) to
-  each posted item. The drawer shows it as a "PR #N" chip. If the link fails,
-  the command still reports the comment and prints a warning.
-- Exit codes: `0` when the comment posted; `1` when nothing posted.
-
-#### In the PR's own text
-
-```
-ade proof publish --pr <number|url> --in-body
-```
-
-Takes no ids. It reads the PR text from GitHub, uploads each proof item the
-text cites (`![caption](ade-proof://<id>)` or a `proof-compare` fence) with
-`gh pr edit --attach`, and rewrites the citations in place
-(`publishProofIntoPullRequestBody`, `shared/prBodyProof.ts`). `ade prs create`
-and `ade prs body` run the same upload when the text they send cites proof.
-An item that cannot go up keeps its citation and is listed as not uploaded.
-The same `gh` version, size limits and `github_pr` link apply. How ADE draws
-the result: `docs/features/pull-requests/README.md` ("Proof in the PR text").
-
-### `ade proof list`
-
-Print the proof set for the current session as JSON, or as a table with `--text`.
-
-```
-ade proof list [--owner-kind chat|lane] [--owner-id <id>] [--limit <n>]
-```
-
-No args: lists the inferred session. Primarily for agents to see what they have
-already captured — and it is the confirmation step after any attach.
-
-`--text` output leads with the scope that was listed and carries an `owner`
-column, so an agent can tell whose drawer it is reading:
-
-```
-Proof for lane improving-browser-4bb19b3f · chat 8f3c2a11: 2 artifacts
-kind        created                   owner                                    title         path
-----------  ------------------------  ---------------------------------------  ------------  ----
-screenshot  2026-09-08T10:00:00.000Z  lane improving-browser-4bb19b3f · chat …  roots check   …
-```
-
-The scope comes from the runtime (`scope.owners`, `scope.projectWide`), not from
-what the caller asked for, so it reflects the authorized owner set.
-
-### Other proof commands
-
-- `ade proof status --text` shows capture/back-end capabilities.
-- `ade proof record --seconds <n>` records the lane's Mac Desktop display for
-  `n` seconds (1–120, default 10). It starts the Mac Desktop recorder, waits,
-  stops it, and files the video the way `ade mac-desktop record stop` does,
-  as a demo. It refuses when a recording is already running on the
-  lane. With no lane display it is refused like `capture`; `--real-screen`
-  records the whole real screen with `screencapture -v` instead.
-- `ade proof step "<text>" [--focus x,y,w,h]` adds a step caption (at most 60
-  characters) and an optional camera focus to every recording running on
-  the caller's lane (or its chat, when no lane resolves). See
-  [Demo videos](#demo-videos).
-- `ade proof launch`, `ade proof interact`, and `ade proof environment` are lower-level computer-use helpers for capture workflows.
-- `ade proof ingest --input-json ...` ingests externally produced artifacts directly through the proof broker.
-- `ade proof rm <artifact-id> [<artifact-id>…]` irreversibly deletes the selected
-  records and any stored files inside the artifact jail. Missing ids are
-  reported but do not make deletion non-idempotent.
-- `ade proof broken` lists records whose file is missing or whose historic URI
-  never pointed into the artifact store.
-- `ade proof prune` is the non-destructive broken-record listing; add
-  `--broken` to delete every broken record.
-- `ade proof recover <artifact-id>` re-imports a broken record when its original
-  file still exists in an allowed project, lane-worktree, cache, temp, or
-  browser-output root.
-
----
+`environment`, `launch`, `interact` and `--real-screen` captures prefer
+headless mode unless `--socket` is passed; plain `capture` and `record` need
+the running runtime, because the lane display lives there.
 
 ## Demo videos
 
-Every recording ADE files is a demo: the agent returns a short, readable video
-of what it did, not a raw screen capture. This holds on every recording surface:
-the Apple device, the lane's Mac Desktop, App Control (window capture on macOS,
-the CDP screencast on Windows and Linux) and the built-in browser.
+Every recording DAEX files is a demo: a short, readable video of what the
+agent did, on every surface (Apple device, the lane's Mac Desktop, App Control,
+the built-in browser). `record start --plain` skips everything but the size fit,
+only when the user asks for the raw recording.
 
 ### What a demo does
 
 | Step | Rule |
 |---|---|
-| Still time | A still stretch over 2 s keeps 0.75 s; the rest is cut. |
-| Waits | A page load, or a small change (spinner, progress bar) after an action while the agent waits on a tool, plays at 2×, 4×, 8× or 16× so it lasts about 2.5 s. A `4×` badge shows. Past 16× the middle is cut. |
-| Agent thinking | While the agent thinks and acts on nothing, the screen counts as still, even if a clock or an animation changes. |
-| Actions | 0.3 s before to 1.2 s after each action always plays at normal speed. |
-| Focus | Once any `ade proof step` has `--focus x,y,w,h` (fractions of the recorded frame), the steps drive the camera and nothing else does: a focused step moves the camera to its region (up to 3×) as it starts and holds it to the next step, moving straight across when that step is focused too; an unfocused step shows the whole frame. |
-| Home view | A computer recording rests on the part of the screen where anything happened (every action, step focus and change after the first frame, plus a margin), in the frame's aspect, instead of the whole frame, so a small app or dialog in a big frame fills the video from its first frame to its last. It applies only when it gains at least 1.2× and the picture stays sharp, and never after a change of the whole screen or a navigation. |
-| Zoom | Without a focused step, the recording splits into scenes at each navigation or change of the whole screen. In each scene the camera zooms once (at most 2×) to one steady view that holds every action and every change in it, holds that view, and zooms out at the end of the scene. It does not move between actions in a scene. A scene with a short zoom, or one whose view would be almost the whole screen, gets no zoom. A phone recording does not zoom unless it started with `--zoom`; then each tap gets a short 1.3× zoom. |
-| Pointer | Mac Desktop, App Control and the browser get a drawn pointer that glides to each action and hover (quick for a short hop, longer across the screen), carries a drag from its start to its end, and rings each click. The Apple device gets tap rings. |
-| Typing and drags | While a surface records, typed text appears a character at a time (45 ms apart, faster for long text so it takes about 2.7 s at most) instead of all at once: the browser and App Control insert it in pieces; Mac Desktop, Windows and Linux drivers and the simulator pause between keys (`typePaceMs` in the driver payload, `paceMs` to the simulator helper), and a Mac or Windows field that takes its value directly grows by one character at a time. A browser drag moves in eased steps over about 0.75 s. Not recording, all of it stays as fast as before. The time it takes plays at normal speed. |
-| Keys | A named key (Enter, Tab, an arrow, Space, F5…) or a press with Cmd, Ctrl, Alt or Meta shows as a badge in the top right corner for 1.3 s ("Enter", "Cmd + K", "↓"); the same key again within a second counts up ("Tab ×3"). A bare character ("a", "Shift + A") shows nothing, so text typed key by key (a password) never appears. A key pressed during a speed-up interrupts the `4×` badge, which comes back after it. |
-| Captions | Each `ade proof step "<text>"` (at most 60 characters; longer is refused) shows from that moment until the next step (at most 5 s), as a dark rounded pill with centered text. It sits at the bottom, or at the top when the actions during it are low in the view and none is high (typing into a prompt box); while a top caption shows, the badge always sits below it (every engine does the same). With no steps there are no captions: an action's own label ("Click Save") reads like a log. A speed-up shows its `4×` badge; a cut shows nothing. |
-| Size | Every file, plain ones included, ends under 10 MB: GitHub Free's limit for a PR video. The output steps down 1080p30 → 720p30 → 720p15 → 720p10 → 540p10 until the bitrate that fits reads well, then the timing gets stricter. |
-
-`record start --plain` (older name `--keep-idle`) skips everything but the
-size fit. Agents use it only when the user asks for the recording as it was
-recorded.
+| Still time | A still stretch over 2 s keeps 0.75 s. |
+| Waits | A load or small change while the agent waits plays at 2×–16× (about 2.5 s) with a speed badge; past 16× the middle is cut. Agent thinking counts as still. |
+| Actions | 0.3 s before to 1.2 s after each action plays at normal speed. |
+| Camera | Focused steps (`--focus`) drive the camera when present. Otherwise a computer recording rests on the region where anything happened, and each scene zooms once (≤ 2×). A phone recording zooms only with `--zoom`. |
+| Pointer and keys | A drawn pointer glides to each action and rings clicks (tap rings on the Apple device). Named keys and modifier chords show as badges; bare characters never do, so typed text (a password) never appears. Typing is paced while recording. |
+| Captions | Each `daex proof step` shows until the next (≤ 5 s). No steps, no captions. |
+| Size | Every file ends under 10 MB (GitHub Free's PR video limit), stepping 1080p30 → 540p10 as needed. |
 
 ### How it works
 
-1. `record start` begins a raw recording at wall clock with nothing drawn:
-   an MP4 from the Swift recorders and the Windows desktop driver (Media
-   Foundation, H.264), or an `.aderaw` capture (JPEG frames or H.264 access
-   units) from the Chromium-side recorders. It sits beside the
-   final path as `<name>.raw.<ext>`.
-2. While it runs, the process that owns the recording logs a track
-   (`demoTrackRegistry.ts`): every action with its point and element, page
-   loads, step captions, and the owning chat's state (thinking, or waiting on
-   a tool), read from the chat's own `tool_call`/`tool_result`/`done` events.
-3. At the stop, `produceDemoVideo` (`demoRenderService.ts`) asks an engine to
-   measure the raw file, plans the demo (`demoPlanner.ts`, pure), asks the
-   engine to render the plan, refits once or twice when the file is over
-   10 MB, and deletes the raw file. ADE never keeps two files of one
-   recording.
-4. The proof is filed with `metadata.demo`: the source and output lengths,
-   what was cut and sped up, and the steps with their times in the video.
-   ADE's player lists the steps as chapters on the desktop and on iOS.
+1. `record start` writes a raw recording beside the final path: MP4 from the Swift recorders and the Windows driver, or `.aderaw` (JPEG or H.264 units) from Chromium-side recorders.
+2. The owning process logs a track (`demoTrackRegistry.ts`): actions, loads, steps, and the chat's thinking/tool state from its own events.
+3. At stop, `produceDemoVideo` (`demoRenderService.ts`) has an engine measure the raw file, plans (`demoPlanner.ts`, pure), renders, refits when over 10 MB, and deletes the raw file.
+4. The proof carries `metadata.demo` (lengths, cuts, steps); players list the steps as chapters on desktop and iOS.
 
-Three engines execute the same plan (`demoContract.ts`), so a demo looks the
-same on every OS:
+Three engines run the same plan, tried in order until one reads the file:
+`ade-media` (macOS), the Chromium engine in the desktop app (WebCodecs; reads
+`.aderaw` and H.264 MP4 via `demoMp4Source.ts`, reached from the brain over the
+desktop bridge), and `ffmpeg` (the machine's, or DAEX's pinned static build on
+Linux and Windows, downloaded when a recording starts). ffmpeg text goes
+through `textfile=`, never `text=`.
 
-- **`ade-media`** (`apps/desktop/native/ADEMedia`), macOS only. It reads MP4
-  and MOV, runs in the headless brain, and ships to remote Macs with the other
-  native helpers.
-- **The Chromium engine** (`chromiumDemoEngine.ts`), in the ADE desktop app on
-  any OS. It reads `.aderaw` and H.264 MP4/MOV, decodes and encodes with
-  WebCodecs, and muxes with `mp4-muxer`. An MP4 is read by
-  `demoMp4Source.ts`: it parses the movie's sample tables and streams the
-  samples to the hidden renderer as `.aderaw` records (Annex-B, SPS/PPS in
-  front of each key frame), so there is no ffmpeg, no temporary file and no
-  re-encode before the render. It reads a finished, non-fragmented movie with
-  one H.264 track; anything else falls back as below. The brain reaches it
-  over the desktop bridge, which takes `.aderaw`, `.mp4`, `.mov` and `.m4v`
-  inputs under a project's `.ade/artifacts/computer-use`. Both the brain and
-  Electron main give the Mac/Windows Desktop service this engine after
-  `ade-media`, so on Windows a lane recording becomes a demo whenever the
-  desktop app is attached; on macOS `ade-media` still goes first.
-- **`ffmpeg`** (`ffmpegDemoEngine.ts`), the machine's own ffmpeg, last. It
-  reads MP4, MOV and MKV and runs in the headless brain, so a Linux box with
-  only the brain — a lane screen records MP4 there — still files a demo.
-  Captions and badges are written to files and passed as `textfile=`, never
-  as `text=`, so no text is parsed as a filter expression. When the machine
-  has no ffmpeg, ADE downloads its pinned static build on demand
-  (`apps/ade-cli/scripts/pins/ffmpeg.json`; Linux x64/arm64 and Windows x64,
-  verified by sha256) as the recording starts, so the stop does not wait on
-  a download; `ade` never fetches it for any other reason.
+- When no engine can read it, an MP4 is filed as recorded with `fallbackReason` (and `demoNote` when the desktop app was not connected). An empty MP4 or an `.aderaw` is not filed.
+- A media process that does not exit 10 s after SIGKILL is stuck on a dead drive (`demoChildStop.ts`, `isStuckMediaProcessError`): nothing touches that drive again, no fallback runs, and the raw file stays.
 
-One recording is tried on every engine that reads it, in that order: an
-engine that fails hands the recording to the next instead of filing it
-uncut, which is what covers a desktop bridge that was offered and then gone.
+### Checking a demo: `daex proof review`
 
-When no engine can read the raw file, an MP4 is filed as recorded and the
-metadata says why (`fallbackReason`); its length comes from the movie's own
-index, never 0. When the missing engine is the desktop app's, the reason says
-so ("the ADE desktop app was not connected to make the demo", with the cause
-when one is known, such as a desktop app running as administrator on Windows),
-and the stop's result carries the same sentence as `demoNote`, which `ade screen
-record stop` prints on its `demo` line. The brain attaches to the desktop app
-when the app connects to it, retrying a slow answer for about a minute; a
-refused pipe or token is not retried and is logged as
-`built_in_browser_bridge.runtime_auth_configured` with `verified: false` and a
-`reason`. An MP4 that holds nothing (empty, never finalised, no frames)
-is not filed: the stop reports `The recording was not filed. <reason>` and
-deletes it. An `.aderaw` capture cannot be played, so the stop reports the
-failure and files nothing. A demo render that fails is tried once more as a
-plain render first.
-
-A media process that does not exit 10 s after its SIGKILL is stuck in the
-kernel on a drive that stopped answering (`demoChildStop.ts`). The caller is
-answered with an error marked stuck (`isStuckMediaProcessError`), and nothing
-touches that drive again: no partial-file cleanup, no plain retry, no other
-engine, no raw-file fallback, and the iOS and Android recorders file nothing
-(a synchronous call there would freeze the process with the drive). The raw
-recording stays where it is.
-
-Windows and macOS produce the same demo from the same plan: cuts, sped-up
-waits, zoom, the drawn pointer and click rings, step captions, the speed badge,
-and `metadata.demo.steps` as the player's chapters. Chapters live in the proof
-metadata on both, not in the MP4 container.
-
-### Checking a demo: `ade proof review`
-
-`ade proof review <id> --text` (`review_computer_use_artifact`,
-`proofReview.ts`) gives the agent something to look at before a person sees
-the proof. For a video it writes a contact sheet of its key moments to
-`.ade/cache/proof-review/` (the newest 20 kept), made by the first engine with
-`contactSheet` (`ade-media`, then ffmpeg; a request outside the contract's
-limits, at most 64 frames and tiles 16–4096 px wide, gets a sheet error
-instead); for a picture it gives the file.
-
-Which frames (`sheetFrames.ts`, `pickSheetFrames`): one per second of the
-video, 4–12, raised to 16 so every step caption gets one. In order of
-importance: the first and last frame; each step's outcome (the screen 0.35 s
-after the step's last change of 2 % of the screen or more, else three quarters
-into the step); the biggest other changes, each once settled and no closer
-than half a slot to a chosen frame; then even fill in the widest gaps. Change
-comes from the engine's `analyze` of the finished file (the measure the demo
-planner cuts still stretches with; a file it cannot measure gets ends, steps
-and fill only, and the analysis also sizes a movie the MP4 reader cannot).
-Each frame comes back as `frames: [{ t, why, step }]` (`why` is `start`,
-`end`, `step`, `change` or `even`; `step` the caption showing), and `--text`
-lists them by number and time. Tiles are 384 px (4 a row; 240 px, 6 a row for
-portrait), so a 12-frame sheet stays near the 1.15 megapixels vision models
-read without scaling. `--from`/`--to` (seconds) look closer at part of it at
-three frames a second; `--frames` sets the count (1–16); `--chat <id>`
-reviews that chat's newest available video, else its newest picture, and
-lists its other proof in `otherProof`. The result names the owning chat and
-lane (`chatSessionId`, `laneId`), which ADE MCP's `proof_review` turns into a
-link to watch it. Both come with findings from the
-file and its record: under 3 s, over 90 s, no captions, a plain or fallback
-recording, recorded before the request, a picture under 700 px on its shorter side or a thin
-strip. It reads the caller's own proof only (the listing's owner rule), and a
-machine-targeted CLI reviews the proof on its own machine, where it was filed.
-Every command that files proof prints a `next:` line under its `cite:` lines
-naming `ade proof review <id>`; the ids come from the result's proof fields,
-never from its text, so a command that passes text through (a file read) is
-not changed.
+`daex proof review <id> --text` (`proofReview.ts`) writes a contact sheet of a
+video's key moments to `.ade/cache/proof-review/` (newest 20 kept) using the
+first engine with `contactSheet`. `pickSheetFrames` chooses 4–16 frames: ends,
+each step's outcome, the biggest changes, then even fill. Findings flag
+recordings under 3 s or over 90 s, no captions, plain or fallback recordings,
+older videos, and small pictures. It reads the caller's own proof only. Every
+filing command prints a `next:` line naming the review command.
 
 ### Limits every recording shares
 
 | Limit | Value | Stop reason |
 |---|---|---|
-| Length | 5 minutes of wall clock (`--max-seconds` sets less) | `cap` |
-| No action | 2 minutes with no action, load or step on the track | `idle` |
+| Length | 5 minutes (`--max-seconds` sets less) | `cap` |
+| No action | 2 minutes with nothing on the track | `idle` |
 | Raw file | 2 GB | `disk` |
 | Free disk | under 5 GB on the raw file's volume | `disk` |
 
-A chat's recording that a limit stops is filed as proof, with or without a
-caption. A recording's stop answers after the demo is filed; the desktop
-client gives the four `stopRecording`/`recordStop` actions four minutes, and
-the panes show "Making demo…" meanwhile.
+A limit-stopped chat recording is still filed. Stop answers after the demo is
+filed; desktop gives `stopRecording` / `recordStop` four minutes.
 
 ## Owner inference
 
-The CLI resolves the owner of a capture from environment variables set by the desktop app when it spawns an agent subprocess:
+The CLI infers the owner from `ADE_CHAT_SESSION_ID` (chat, wins) or
+`ADE_LANE_ID` (lane). A tracked agent CLI carries its own id as
+`ADE_CHAT_SESSION_ID`, so its proof files to that CLI. With no owner,
+`daex proof capture` fails: un-owned proof has no home in the UI.
 
-| Env var | Owner kind | Precedence |
-|---|---|---|
-| `ADE_CHAT_SESSION_ID` | `chat` | highest |
-| `ADE_LANE_ID` | `lane` | lowest |
-
-Agents spawned inside ADE pick up the right owner automatically. If more than one var is set — e.g. a chat also has a lane — the highest-precedence kind wins.
-
-If no owner can be found, `ade proof capture` exits `1` with a `failed` line that says the record has no lane, chat session, automation run, PR or issue. This is deliberate: an un-owned proof has no home in the UI.
-
-### Explicit owner on RPC tools
-
-The `screenshot_environment`, `record_environment`, `ingest_computer_use_artifacts`, `get_environment_info`, `interact_gui`, and `list_computer_use_artifacts` JSON-RPC tools accept explicit `ownerKind` + `ownerId` fields. On `screenshot_environment` / `record_environment` those fields are read only when the call also passes `proof: true`; a scratch capture files nothing, so it has no ownership to authorize. `resolveComputerUseOwners` in `apps/ade-cli/src/adeRpcServer.ts` is the single normalizer:
-
-- Canonical kinds: `lane`, `chat_session`, `automation_run`, `github_pr`, `linear_issue`.
-- Friendly aliases: `chat` → `chat_session`, `pr` → `github_pr`. Any other value raises a `JsonRpcError(invalidParams)` with an "Unsupported proof ownerKind" message.
-
-Explicit owners are added in addition to the session identity inferred from `ADE_*` env vars, so an agent can attach the same artifact to its current chat plus a specific PR in one call.
-
-A client whose environment names no chat and no attempt makes a caller id from its name and pid, such as `ade-cli:5504` (`apps/desktop/src/shared/syntheticCallerId.ts`). That id identifies a process. It never becomes a `chat_session` owner. The RPC server also does not fill it in with the brain's own env identity.
-
----
+RPC tools (`screenshot_environment`, `record_environment`,
+`ingest_computer_use_artifacts`, `list_computer_use_artifacts`, …) accept
+explicit `ownerKind` + `ownerId`, added to the inferred identity.
+`resolveComputerUseOwners` (`adeRpcServer.ts`) normalizes kinds `lane`,
+`chat_session`, `automation_run`, `github_pr`, `linear_issue` (aliases `chat`,
+`pr`). A synthetic caller id like `ade-cli:5504` (`shared/syntheticCallerId.ts`)
+identifies a process and never becomes a chat owner.
 
 ## Storage
 
-Images live on disk under the project's `.ade/` scaffold on the runtime host:
-
-```
-<runtime host>/<project root>/.ade/artifacts/computer-use/<uuid>.<ext>
-```
-
-(Path will move to `.ade/artifacts/proof/` in a future phase.)
-
-Metadata is a single SQLite row per capture in `computer_use_artifacts`, with ownership links in `computer_use_artifact_links`. The columns relevant to the proof surface include `id`, `kind`, `uri`, `mime_type`, `title`/`description`, `lane_id`, and `created_at`, plus the owner link rows. `lane_id` is resolved from an explicit lane owner or from the owning chat session; it is optional on the wire for compatibility with older runtimes.
-
-There is no age-based retention policy. Captures persist until the user deletes
-them, deletes their lane, clears project-local artifacts, or removes the proof
-storage category in Settings. All of those paths delete matching database rows
-with the bytes so the drawer never retains knowingly dead tiles. Archiving a
-lane is non-destructive. For remote-runtime projects, the disk being filled is
-the remote host's, not the desktop machine's.
-
-Ingest resolves every item in a batch before inserting any row. A missing file,
-denied source, disallowed extension, or path outside the allowed roots fails the
-whole batch instead of leaving a half-committed retry. Relative paths resolve
-from the caller's lane worktree (`callerRoot`) before the project root.
-
-Each view includes an optional availability classification:
-
-- `available` — URL-backed or stored bytes are readable.
-- `missing_file` — a canonical artifact URI exists but the file is gone.
-- `unimported` — a historic record points outside the artifact store.
-
-Older hosts may omit the field; clients optimistically attempt the preview.
-
-ADE browser-agent observations are intentionally not proof. `ade browser observe` and post-action browser observations write scratch PNG/JSON files under `.ade/cache/browser-observations/` for project collections and the current ADE channel's machine-local `browser-observations/personal/` root for personal collections. They include a bounded DOM element list plus console/network diagnostics by default for agent targeting, can add a numbered visual UI map with `--map`, and prune to the latest 3 observations per tab by default. DOM elements carry short-lived handles such as `obs-...:e:3` so agents can click/fill/press/wait without another hit-test, including same-origin iframe/open-shadow-root targets when the observation captured that context. `ade browser session start --tab <id>` only creates a reusable tab-targeting handle for repeated agent actions; session observations and traces are still scratch state until promoted. `ade browser trace --tab <id>` or `ade browser trace --browser-session <id>` exposes the bounded per-tab action log for debugging but remains scratch state. Promote only reviewer-facing checkpoints into proof through `ade browser proof --tab <id> --caption "..."`, `ade browser proof --browser-session <id> --caption "..."`, the shorthand `ade browser session proof <session-id> --caption "..."`, or the lower-level `ade proof attach` / `ingest` commands. The proof broker explicitly allows the project cache and personal browser scratch roots so browser scratch PNGs can be promoted without accepting arbitrary user-data files.
-
----
+- Files: `<project>/.ade/artifacts/computer-use/<uuid>.<ext>` on the runtime host. Rows in `computer_use_artifacts`, owners in `computer_use_artifact_links`; `lane_id` comes from a lane owner or the owning chat.
+- No age-based retention. Proof goes when the user deletes it or its lane, clears project artifacts, or removes the proof storage category; rows go with the bytes. Archiving a lane keeps it.
+- Ingest resolves every item before inserting any row; one bad item fails the batch.
+- Views carry `availability`: `available`, `missing_file`, `unimported`.
+- Browser observations (`daex browser observe`, traces, sessions) are scratch under `.ade/cache/browser-observations/` (or the personal root) and pruned; promote checkpoints with `daex browser proof`.
 
 ## Chat UI
 
-Proof surfaces across chat and linked workflow contexts:
+- **Transcript:** proof is bucketed into the turn that filed it; the turn shows "N proof filed", which opens the drawer narrowed to those records. "Filed proof" action rows open a small thumbnail in place.
+- **Proof drawer** (`ChatComputerUsePanel.tsx`, `shared/proofDrawerModel.ts`): grouped by turn, newest first; "In the answer" items before "Also filed"; `proof-compare` pairs shown together; search, Pictures/Videos, "In answers" and PR filters.
+- **iOS** (`WorkProofSheet.swift`): the same grouping and tabs, and a full-screen viewer with one page per artifact. See [iOS companion › The Proof sheet and viewer](./sync-and-multi-device/ios-companion.md#the-proof-sheet-and-viewer).
+- A video flagged as older keeps its amber line; no other provenance line is drawn.
 
-- **Chat transcript** — proof is bucketed by capture time into the turn that
-  produced it. The turn rule and the turn's fold line show a "N proof filed"
-  count that opens the drawer narrowed to those records. The pictures open
-  under the "Filed proof" action rows that filed them on a click: a small
-  thumbnail (`ProofActionThumbnail`) that enlarges in place, no drawer needed.
-  They start closed, since the turn's proof shows at its end. Proof is never
-  pinned to the thread tail.
-- **Proof drawer** — the Proof section of the chat actions drawer
-  (`ChatComputerUsePanel.tsx`, grouping in `shared/proofDrawerModel.ts`).
-  Proof is grouped by the turn that filed it, newest first, under that turn's
-  prompt. Inside a turn, "In the answer" (items an answer cites, in citation
-  order) comes before "Also filed". Two items a `proof-compare` block names
-  show as one Before/After pair. A search box, a Pictures/Videos filter, an
-  "In answers" filter and a PR chip (from the `github_pr` owner link) sit on
-  top. Deletion stays. Opened from a thread count, the drawer shows only those
-  records under a "This turn · N ✕" chip; the chip clears it, and so does
-  closing the drawer or switching chats. A turn's count in the thread counts
-  only proof the answer does not already show.
-- **Chat actions drawer layout** — the drawer never scrolls as a whole
-  (`ChatActionsDrawerPanel.tsx`). It grows with its content up to the pane's
-  height; past that, each section keeps its own region and scrolls inside it.
-  A region never shrinks below its content or 160 px, whichever is smaller.
-  Tasks, Subagents, Proof and Sources share one collapsible, sticky header.
-- **iOS chat** — proof stays in the message timeline, and the Proof sheet
-  (`WorkProofSheet.swift`) is the phone's drawer. It uses the same grouping as
-  the desktop (`workProofDrawerGroups`) and the same four tabs (All, Pictures,
-  Videos, In answers) as a segmented control under the search field. Each turn
-  is one quiet line (the prompt and the time) over a two-column grid of
-  thumbnails; a Before/After pair fills its row so the two pictures sit side
-  by side. Pull-to-refresh. Tapping
-  a row opens a full-screen viewer with **one page per artifact**, so the rest
-  of the set is one swipe away; page dots show only when there is somewhere to
-  swipe. Preview/share actions, no review-state chrome. See
-  [iOS companion › The Proof sheet and viewer](./sync-and-multi-device/ios-companion.md#the-proof-sheet-and-viewer).
-- **Where it came from** — the record keeps `proofSource`, but no proof
-  surface draws it any more (the owner found the lines to be noise); the iOS
-  row still speaks it to VoiceOver. A video flagged as older keeps its amber
-  line: `Recorded at 5:19 AM, before this request.`
-- **Lane and PR review** — linked proof can be surfaced alongside lane work and PR closeout.
-
-Both clients resolve media through the owning runtime instead of opening the
-runtime host's filesystem path. Desktop shows local images through the
-`ade-artifact://project/` protocol. Every video, local or remote, and every
-image on a paired machine plays from main's token-guarded loopback media
-server, which answers each Range read; a remote file is pulled in 1 MiB slices
-from that machine's broker. Main keeps a paired machine's pictures in memory
-(64 MiB, least recently used out first, pictures up to 24 MiB), so showing one
-again after a scroll, a remount or the lightbox costs no round trip; stored
-proof is never rewritten in place, so a kept copy cannot go stale. A paired
-machine too old for range reads, and the web client, fall back to
-`computerUse.readArtifactPreview` (a data URL, capped at 10 MiB). See
-[computer use › Renderer](./computer-use/README.md#renderer). The thumbnail a
-"Filed proof" row opens reads its picture through the same preview path as answer
-citations, local or on a paired machine; a record it cannot draw (a trace, a
-log, a missing file) draws nothing, since the row's words already say what was
-filed. A preview that failed for a reason another try can fix (the machine was
-slow, away, or did not send the bytes) offers **Retry**; a record whose stored
-file is gone does not.
-
-iOS requests artifact content over its sync command surface and caches
-renderable images locally. A chat of another project or another machine lists
-its proof from the host that holds it (`computerUse.listArtifacts`, routed like
-the chat's other commands), and its file reads name that project, so the
-answer's pictures load there too; the phone's replica holds only the focused
-machine's active project. A picture over the host's 8 MiB whole-file read is
-pulled in slices, like a video. Pictures decode at most 2,400 px on the long
-side. A failed load shows its reason with **Retry**. When a runtime is
-unreachable the artifact remains listed with an unavailable-preview state.
-
----
+Media resolves through the owning runtime. Desktop shows local images through
+`ade-artifact://project/`; videos and paired-machine images play from main's
+token-guarded loopback server with Range reads (paired files pulled in 1 MiB
+slices; paired pictures cached in memory, 64 MiB). Older machines and the web
+fall back to `computerUse.readArtifactPreview` (≤ 10 MiB). A retryable failure
+offers **Retry**; a missing file does not. See
+[computer use › Renderer](./computer-use/README.md#renderer).
 
 ## Proof in the answer
 
-The agent puts proof inside its own answer, directly under the claim it
-proves. Two plain-markdown forms (`apps/desktop/src/shared/proofCitation.ts`):
+The agent cites proof under the claim it proves
+(`apps/desktop/src/shared/proofCitation.ts`):
 
-- **Citation:** `![caption](ade-proof://<artifactId>)`. A picture shows inline
-  at a readable size; a video plays inline. The caption goes under it, with the
-  provenance line.
-- **Comparison:** a fenced `proof-compare` block with `before: <id> <label>`,
-  `after: <id> <label>` and an optional `caption: <sentence>`. The two sides
-  show side by side.
+- `![caption](ade-proof://<artifactId>)` shows a picture or plays a video inline.
+- A fenced `proof-compare` block (`before: <id> <label>`, `after: <id> <label>`, optional `caption:`) shows two items side by side.
 
-Every proof command prints the id and a ready snippet (`cite: ![…](ade-proof://…)`),
-and its JSON result carries `artifacts[].citation`. There is no limit on how
-many items an answer cites. An agent can also compose its own picture (a crop,
-a side-by-side), attach it, and cite it.
-
-The answer shows each item with its caption only. It adds no badge and no
-provenance line; the one exception is the amber line for a video recorded
-before the request. The drawer still shows where each item came from.
-
-Each new artifact that a chat owns stores `metadata.turnId`: the id of the
-chat's latest turn when it was filed, the same id the transcript's `done` row
-carries. The broker stamps it; callers cannot set it.
-
-Renderers:
-
-- **Desktop and web client:** `chatMarkdownBlock.tsx` renders the image
-  override and the fence through `ChatProofCitation.tsx`. The figure finds the
-  artifact in the chat's proof list, else reads it by id through the chat's
-  runtime (`computerUse.listArtifacts({ artifactId })`), and loads bytes with
-  `useArtifactPreview` like the drawer. A click opens `MediaLightbox`
-  (`components/ui/MediaLightbox.tsx`): the picture fits the window, with a
-  floating copy, download and close toolbar. The Files image viewer has the
-  same copy and download actions.
-- **iOS:** `WorkMarkdownParsing.swift` makes a `proofCitation` block from a
-  line that holds only a citation, and a `proofCompare` block from the fence.
-  `WorkProofCitationView` reads the chat's proof list and loads bytes with the
-  proof sheet's loader. An id outside the chat's list shows "This chat has no
-  proof with the id …".
-- A client that predates this shows the alt text or the code fence.
-- **Hosted web client, large files:** a picture or video over the host's 8 MiB
-  whole-file read is pulled in `readArtifactRange` slices into a blob URL
-  (`webclient/adapter/computerUse.ts`), up to 256 MiB; the last four stay
-  cached. Larger proof says to open it in the ADE app. The page's policy
-  (`webclient/public/_headers`) allows `media-src 'self' data: blob:`; with no
-  `media-src` the browser blocked every proof video on the web.
+Every proof command prints a ready `cite:` line and returns
+`artifacts[].citation`. Each chat-owned artifact stores `metadata.turnId`
+(broker-stamped). Desktop and web render through `ChatProofCitation.tsx` (by
+id through the chat's runtime if not in the list); iOS through
+`WorkProofCitationView`. The web client pulls files over 8 MiB in
+`readArtifactRange` slices into a blob URL (≤ 256 MiB); its CSP allows
+`media-src 'self' data: blob:`.
 
 ### Proof in the CTO's answer
 
-The CTO cites proof the same way, and every client resolves the id through
-the CTO chat on the CTO's home machine. So the proof must be there, owned by
-the CTO chat (`cto/ctoProofShare.ts`):
+Clients resolve the CTO's citations through the CTO chat on its home machine,
+so the proof must be there, owned by the CTO chat (`cto/ctoProofShare.ts`):
 
-- **A child on the same machine.** When a child chat (or tracked CLI) reports
-  back, ADE links the proof it filed in that turn to the CTO chat
-  (`broker.linkArtifactsToChat`: one more owner link, no copy) and the wake
-  carries the cite lines. A tracked CLI has no turn stamps, so its newest
-  proof is shared. When the report's turn id matches no proof (a fallback id
-  the broker never stamped), the newest proof the CTO chat does not hold yet
-  is shared instead; a real turn that filed none shares none. A record whose
-  file is gone is skipped with that reason. The record keeps its lane, so
-  deleting the child's lane deletes the proof here too, and the citation then
-  says the file is gone. The wake waits at most 45 s for the lines (a long
-  video to convert); past that, it tells the CTO to call `getChatProof` and
-  the copy keeps going. A delivery retry reuses the lines.
-- **A child on another machine or an ADE Cloud lane.** The wake (or the
-  check-in) tells the CTO to call `getChatProof({ sessionId, machine })`.
-  The home brain lists that chat's proof there and pulls each file in
-  `computer_use_artifacts.readArtifactRange` slices, then files it as the
-  CTO's with `metadata.importedFrom` (machine, artifact, chat). It pulls a
-  record once; a repeat call reuses the copy, which stays viewable after that
-  machine sleeps or after the file there is deleted. The limit is 512 MiB per file. A machine on an older ADE
-  refuses slices to another brain, so the pull falls back to its 10 MiB
-  whole-file preview and says to update it for larger files.
-- **A file the CTO or a helper made.** `showMedia({ path, caption })` files it
-  as the CTO's proof and returns the cite. The path is checked against the
-  import roots and the secrets folder (`broker.assertImportableSource`) before
-  any conversion, since the MP4 copy itself sits in an allowed folder.
-- **One copy at a time.** A conversion or a pull runs once per CTO chat and
-  record; a second caller (a report's wake and a `getChatProof` call) joins it.
-- **Video conversion.** A MOV, MKV, WebM or AVI gets an H.264 MP4 copy
-  (`computerUse/proofPlayableVideo.ts`). It is remuxed when the video is
-  already H.264, and re-encoded with ffmpeg otherwise (the machine's ffmpeg,
-  or ADE's pinned copy on Linux and Windows). On a Mac with no ffmpeg, a MOV
-  goes through `avconvert`. The copy has `metadata.convertedFrom`. When nothing
-  can convert it, the original is shown with a note. An MP4 is probed too:
-  HEVC or VP9 inside one gets the same H.264 copy. Any local ffmpeg with
-  libx264 converts (the demo renderer's extra need, drawtext, does not apply).
-- **More than one page.** At most 8 come back per call; `more` counts the
-  rest and `getChatProof({ skip })` reaches them.
-- **The other machine asleep.** `getChatProof` with `machine` returns the
-  copies pulled from that chat before, with a note that they are not a live
-  read.
-
-A remote brain is refused secret-bearing actions, and raw proof bytes are one
-of them. The one exception is `readArtifactRange` for a caller at the CTO role
-(`isCtoBrainCopyableAdeAction` in `actionPolicy.ts`). There, the CTO's code
-copies the bytes, never its model: `runMachineAction` still refuses the
-action, and an agent's bridge is still refused.
-
-The doctrine (`ctoStateService.ts`, "How you show proof") has the CTO ask a
-child for proof when its work shows on screen or runs on another machine. It
-puts the cites in its done reply, and when there is no proof it says what was
-not shown or tested.
+- **A child on the same machine:** when it reports back, its turn's proof is linked to the CTO chat (`broker.linkArtifactsToChat`, no copy) and the wake carries the cite lines (waiting ≤ 45 s for conversions).
+- **A child on another machine or a DAEX Cloud lane:** the CTO calls `getChatProof({ sessionId, machine })`; the home brain pulls each file in `readArtifactRange` slices (≤ 512 MiB) and files a copy with `metadata.importedFrom`. Repeat calls reuse copies; an asleep machine returns earlier copies with a note.
+- **A file the CTO made:** `showMedia({ path, caption })` checks import roots and the secrets folder first, then files it.
+- Non-MP4 video (and HEVC/VP9 in MP4) gets an H.264 copy (`proofPlayableVideo.ts`; ffmpeg, or `avconvert` on a Mac without it).
+- Raw proof bytes are secret-bearing: a remote brain may read them only via `readArtifactRange` at the CTO role (`isCtoBrainCopyableAdeAction` in `actionPolicy.ts`), and only DAEX's code copies them, never the model.
 
 ## For agents
 
-When an agent session starts inside ADE, the system prompt includes a short priming directive:
-
-> When you reach a checkpoint worth showing — a login succeeds, a form submits, an error reproduces, a test passes — file proof from the tool that shows it. Captions are what reviewers skim; write them like a teammate is reading them.
-
-The directive depends on the host. When the lane can have a Mac Desktop, it
-says `ade mac-desktop proof` / `ade proof capture` and `ade mac-desktop record`
-/ `ade proof record` capture the lane's screen, never the user's. Otherwise it
-points to `ade browser proof`, `ade app-control proof`, `ade apple proof` and
-`ade proof attach`. Both say `--real-screen` captures the user's whole screen
-and is for when the user asks.
-
-A good proof set is three to eight captures with captions a reviewer can read in one pass. Avoid dumping a screenshot after every click. Avoid captions like "screenshot 3"; prefer the exact state being proven.
-
----
+When the host can capture or give the lane its own screen, the system prompt
+adds a computer-use directive (`buildComputerUseDirective` in
+`agentChatService.ts`): read the **daex-computer-use** skill first, never act
+on the user's own screen unless asked, and file proof with each surface's
+`proof` or `record` command (`adeCliGuidance.ts`). A good set is three to eight
+captures with captions that name the exact state proven.
 
 ## Not supported
 
-- **Cinematic post-processing.** No before/after stitching, no annotated overlays — deferred.
-- **Offline artifact replication.** Proof records replicate via cr-sqlite, but
-  image/video bytes do not. A connected desktop or phone streams a preview from
-  the runtime that owns the project; the media is unavailable when that runtime
-  cannot be reached.
-- **Auto-capture.** The old proof observer is gone. Nothing watches the agent and files screenshots for it, and no capture tool files on the agent's behalf — see [The explicit-only rule](#the-explicit-only-rule).
-
-Headless-browser screenshots *are* supported — use `ade proof attach` with the output file path.
-
-`proof environment`, `proof launch`, `proof interact`, and `proof capture` / `proof record` with `--real-screen` set `preferHeadless: true` on the CLI plan: the connection layer drops to headless mode unless `--socket` is explicitly passed. This lets agent subprocesses capture proof without depending on the machine runtime endpoint being live; visual proof state still flows back to the broker on the next reconcile. Plain `proof capture` and `proof record` do not, because the lane display lives in the running runtime.
-
----
-
-## Architecture
-
-```
-  agent (any model, any runtime host)
-      │
-      │  shell invocation
-      ▼
-  ade proof capture --caption "…"
-      │
-      │  JSON-RPC over ~/.ade/sock/ade.sock when socket-backed
-      ▼
-  proof action (runtime: ade serve)
-      │
-      ├── lane has a Mac Desktop display ─► macDesktopService.screenshot /
-      │     startRecording + stopRecording (files its own proof)
-      ├── --real-screen ─► screencapture ─► <runtime host>/.ade/artifacts/computer-use/<uuid>.png
-      ├── neither ─► refused, nothing captured
-      │
-      └── computerUseArtifactBrokerService
-              │
-              │  SQLite insert into <runtime host>/.ade/ade.db
-              ▼
-          computer_use_artifacts + …_artifact_links
-                                     │
-                                     ▼
-                          drawer UI (renderer reads via
-                          window.ade.computerUse.* → preload →
-                          local or remote runtime RPC)
-```
-
-The broker (`apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts`) is the only ingest path. The `ade proof` CLI and every in-process caller go through it. RPC callers reach `ingest` through the `ingest_computer_use_artifacts` tool and the `proof: true` branch of `screenshot_environment` / `record_environment`. In-process callers are the Apple recorder and screenshot, scene stills, and the CTO's `captureProof`. An in-process caller passes `provenance` to say where the bytes came from. The same module is loaded by the desktop main process for local projects and by the standalone `ade serve` runtime for headless / remote use. Supporting modules in the same directory:
-
-- `controlPlane.ts` builds owner snapshots + backend status for the UI.
-- `localComputerUse.ts` reports macOS-only proof-capture capabilities (`screencapture`, app launch, GUI interaction). Reflects the runtime host's environment, not the desktop machine's. The lane display path does not use these; the Mac Desktop service checks its own support.
-
-Provider execution can be provisioned by ADE (for example the signed direct Codex Computer Use MCP client), but proof remains explicit. Every piece downstream of `ade proof` is a thin line to disk, a broker insert, and the drawer. No passive observer promotes provider tool calls automatically — the proof observer was deleted with this rebuild, along with `ComputerUsePolicy` and the Settings > Computer Use panel.
+- Annotated overlays (an agent can compose its own picture and attach it).
+- Offline byte replication.
+- Auto-capture of any kind ([The explicit-only rule](#the-explicit-only-rule)).

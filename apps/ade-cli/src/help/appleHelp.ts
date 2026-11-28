@@ -1,5 +1,6 @@
 import { APPLE_DEVICE_CLEANUP_INTERVAL_MS, APPLE_RELEASED_DEVICE_GRACE_MS } from "../../../desktop/src/shared/types/iosSimulator";
 import { ADE_BANNER } from "./banner";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 const GRACE_MINUTES = Math.round(APPLE_RELEASED_DEVICE_GRACE_MS / 60_000);
 const CLEANUP_MINUTES = Math.round(APPLE_DEVICE_CLEANUP_INTERVAL_MS / 60_000);
@@ -11,9 +12,9 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Shows macOS support, Xcode and simulator-control readiness, the active booted device,
   and the drawer's active simulator session. Start here when a simulator action
-  fails or when an agent needs to know whether ADE owns a running session.
+  fails or when an agent needs to know whether ${BRAND.NAME} owns a running session.
 
-    $ ade --socket apple status --text
+    $ daex --socket apple status --text
 
   Flags:
     --text                 Compact human-readable readiness summary.
@@ -24,7 +25,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Lists available iOS simulator devices. Aliases: list, ls.
 
-    $ ade --socket apple devices --text
+    $ daex --socket apple devices --text
 
   Flags:
     --text                 Compact table.
@@ -37,7 +38,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   apps/*/*.xcodeproj projects, DerivedData, and apps already installed on the
   selected simulator. Aliases: targets, launchable, launchables.
 
-    $ ade --socket apple apps --device <udid> --text
+    $ daex --socket apple apps --device <udid> --text
 
   Flags:
     --device, --udid <id>  Simulator device to inspect.
@@ -49,13 +50,13 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   iOS Simulator: launch
 
   Boots the simulator, resolves/builds/installs a target, launches the app, and
-  claims the ADE drawer session. Use --socket when the drawer and agents should
+  claims the ${BRAND.NAME} drawer session. Use --socket when the drawer and agents should
   share one long-lived simulator service. Alias: open.
 
-    $ ade --socket apple launch --target <id> --text
-    $ ade --socket apple launch --bundle-id com.example.app --no-build --text
-    $ ade --socket apple launch --configuration Release --text
-    $ ade --socket apple launch --bundle-id com.ade.ios --no-build --text -- -adePreviewScreen duo-home
+    $ daex --socket apple launch --target <id> --text
+    $ daex --socket apple launch --bundle-id com.example.app --no-build --text
+    $ daex --socket apple launch --configuration Release --text
+    $ daex --socket apple launch --bundle-id com.ade.ios --no-build --text -- -adePreviewScreen duo-home
 
   Everything after "--" is passed to the app as launch arguments (put --text
   before it). The summary names the configuration it built.
@@ -69,7 +70,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   --code fresh throws away changes made there). A cold build waits as long
   as it would here and prints "still running" lines to stderr meanwhile.
   --clone sets this repo up there first. The simulator session there is let
-  go when this chat's turn ends (the device stays on). ade devices use
+  go when this chat's turn ends (the device stays on). daex devices use
   ios@<name> sends every apple command there with no flag.
 
   Flags:
@@ -100,7 +101,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Captures a simulator screenshot and files it in the chat's proof drawer.
   Alias: promote.
 
-    $ ade --socket apple proof --caption "Settings screen after the fix" --text
+    $ daex --socket apple proof --caption "Settings screen after the fix" --text
 
   Flags:
     --caption <text>       Artifact description; also the default title.
@@ -119,8 +120,8 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   another chat owns is refused with IOS_SIMULATOR_OWNED_BY_OTHER_SESSION unless
   you say you mean it. Re-attributing only the lane never trips the guard.
 
-    $ ade --socket apple claim --lane <lane-id> --text
-    $ ade --socket apple claim --lane <lane-id> --ignore-ownership --text
+    $ daex --socket apple claim --lane <lane-id> --text
+    $ daex --socket apple claim --lane <lane-id> --ignore-ownership --text
 
   Flags:
     --lane, --lane-id <id>   Required; defaults to $ADE_LANE_ID.
@@ -147,9 +148,9 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   hard reset), and so does naming the owner's own chat session id, which
   "ios-sim status" reports to anyone who asks. Ask before evicting another chat.
 
-    $ ade --socket apple shutdown --text
-    $ ade --socket apple shutdown --force --text
-    $ ade --socket apple shutdown --ignore-ownership --text
+    $ daex --socket apple shutdown --text
+    $ daex --socket apple shutdown --force --text
+    $ daex --socket apple shutdown --ignore-ownership --text
 
   Flags:
     --force, -f            Release a session owned by another chat, and hard-reset
@@ -161,11 +162,11 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   actions: `${ADE_BANNER}
   iOS Simulator: actions
 
-  Lists every callable ios_simulator action exposed through ADE's generic action
+  Lists every callable ios_simulator action exposed through ${BRAND.NAME}'s generic action
   bridge. Use this when a typed subcommand is missing a niche argument.
 
-    $ ade --socket apple actions --text
-    $ ade actions run ios_simulator.getStatus --text
+    $ daex --socket apple actions --text
+    $ daex actions run ios_simulator.getStatus --text
 `,
   screenshot: `${ADE_BANNER}
   iOS Simulator: screenshot
@@ -176,8 +177,8 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   that line to show it (attaching the same file again is refused as a
   duplicate). --no-proof takes a scratch shot that files nothing.
 
-    $ ade --socket apple screenshot --out shot.png --text
-    $ ade --socket apple screenshot --no-proof --text
+    $ daex --socket apple screenshot --out shot.png --text
+    $ daex --socket apple screenshot --no-proof --text
 
   Flags:
     --out <path>           Where to write the PNG; must be under the build root (relative paths resolve there).
@@ -192,7 +193,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   simulator screen. Use this before asking an agent to find the current screen
   in SwiftUI code. Aliases: screen, elements.
 
-    $ ade --socket apple snapshot --text
+    $ daex --socket apple snapshot --text
 
   Flags:
     --device, --udid <id>  Simulator device.
@@ -205,7 +206,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Reads the DEBUG ADEInspector snapshot published by the launched app. This is
   lower-level than "snapshot" and does not include screenshot/accessibility fallback.
 
-    $ ade --socket apple inspector --text
+    $ daex --socket apple inspector --text
 
   Flags:
     --device, --udid <id>  Simulator device.
@@ -216,7 +217,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Hit-tests a point and returns the best matching context item without committing
   it to the drawer composer. Aliases: hit-test, hover.
 
-    $ ade --socket apple inspect --x 120 --y 420 --screenshot --text
+    $ daex --socket apple inspect --x 120 --y 420 --screenshot --text
 
   Flags:
     --x <n> --y <n>        Required screenshot-pixel coordinates.
@@ -231,10 +232,10 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Xcode running state, selected project window, setup warnings, and docs URL.
   Alias: preview-doctor.
 
-    $ ade --socket apple preview-status --source apps/ios/ADE/Views/Home.swift --line 42 --text
+    $ daex --socket apple preview-status --source apps/ios/ADE/Views/Home.swift --line 42 --text
 
   Flags:
-    --project-root <path>  ADE project root.
+    --project-root <path>  ${BRAND.NAME} project root.
     --source, --file <p>   Swift file used to bias preview discovery.
     --line <n>             Source line used to bias preview discovery.
 `,
@@ -244,10 +245,10 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Lists discoverable #Preview and PreviewProvider definitions, ranked around a
   selected Swift file when supplied. Aliases: preview-list, list-previews.
 
-    $ ade --socket apple previews --source apps/ios/ADE/Views/Home.swift --text
+    $ daex --socket apple previews --source apps/ios/ADE/Views/Home.swift --text
 
   Flags:
-    --project-root <path>  ADE project root.
+    --project-root <path>  ${BRAND.NAME} project root.
     --source, --file <p>   Swift file to rank nearby previews.
     --line <n>             Optional source line.
 `,
@@ -257,10 +258,10 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Resolves the best Preview Lab target for the current simulator/source context.
   Aliases: match-preview, resolve-preview.
 
-    $ ade --socket apple preview-match --source apps/ios/ADE/Views/Home.swift --line 42 --text
+    $ daex --socket apple preview-match --source apps/ios/ADE/Views/Home.swift --line 42 --text
 
   Flags:
-    --project-root <path>  ADE project root.
+    --project-root <path>  ${BRAND.NAME} project root.
     --source, --file <p>   Selected Swift file.
     --line <n>             Optional source line.
     --label <text>         Visible element label used for a suggested preview title.
@@ -272,10 +273,10 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Opens this lane's iOS project in Xcode when needed and waits briefly for
   Xcode MCP Preview Lab readiness. Aliases: ensure-preview, preview-workspace.
 
-    $ ade --socket apple preview-ensure --text
+    $ daex --socket apple preview-ensure --text
 
   Flags:
-    --project-root <path>  ADE project root.
+    --project-root <path>  ${BRAND.NAME} project root.
     --source, --file <p>   Optional Swift file context.
     --line <n>             Optional source line.
     --no-open              Check readiness without opening Xcode.
@@ -288,7 +289,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   This is the final command agents should run after finding or adding a preview.
   Aliases: render-preview, preview.
 
-    $ ade --socket apple preview-render --source apps/ios/ADE/Views/Home.swift --index 0 --text
+    $ daex --socket apple preview-render --source apps/ios/ADE/Views/Home.swift --index 0 --text
 
   Flags:
     --source, --file <p>   Required Swift source file. Absolute, project-relative,
@@ -296,7 +297,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     --index <n>            Preview definition index in the file; default 0.
     --tab, --tab-identifier <id> Xcode window tab from preview-status.
     --timeout <sec>        Render timeout, 5-240 seconds; default 120.
-    --project-root <path>  ADE project root.
+    --project-root <path>  ${BRAND.NAME} project root.
 `,
   "preview-current": `${ADE_BANNER}
   iOS Simulator: preview-current
@@ -305,9 +306,9 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   selection. Run "select" first, or pass --source/--line explicitly.
   Aliases: current-preview, preview-open-current, open-current-preview.
 
-    $ ade --socket apple select --x 120 --y 420 --text
-    $ ade --socket apple preview-current --text
-    $ ade --socket apple preview-current --source apps/ios/ADE/Views/Home.swift --line 42 --text
+    $ daex --socket apple select --x 120 --y 420 --text
+    $ daex --socket apple preview-current --text
+    $ daex --socket apple preview-current --source apps/ios/ADE/Views/Home.swift --line 42 --text
 
   Flags:
     --source, --file <p>   Optional Swift source file; defaults to last selected element.
@@ -316,7 +317,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     --component-id <id>    ADEInspector component id used for a suggested preview.
     --tab, --tab-identifier <id> Xcode window tab from preview-status.
     --timeout <sec>        Render timeout, 5-240 seconds; default 120.
-    --project-root <path>  ADE project root.
+    --project-root <path>  ${BRAND.NAME} project root.
 `,
   "preview-open": `${ADE_BANNER}
   iOS Simulator: preview-open
@@ -324,15 +325,15 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Opens apps/ios/ADE.xcodeproj in Xcode so Xcode MCP Preview Lab can connect.
   Aliases: open-preview-workspace, open-xcode.
 
-    $ ade apple preview-open --project-root <path> --text
+    $ daex apple preview-open --project-root <path> --text
 
   Flags:
-    --project-root <path>  ADE project root.
+    --project-root <path>  ${BRAND.NAME} project root.
 `,
   "stream-start": `${ADE_BANNER}
   iOS Simulator: stream-start
 
-  Starts ADE's live H.264 view of the device framebuffer via the vendored
+  Starts ${BRAND.NAME}'s live H.264 view of the device framebuffer via the vendored
   helper. No Screen Recording grant and no Simulator.app window. There is one
   encoder now, so there is no backend to choose and no second start verb.
   Boots the device first if it is off: this is an explicit start. Viewers
@@ -340,8 +341,8 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Aliases: start-stream, stream, window-start, start-window, mirror-start,
   start-mirror, preview-start, start-preview.
 
-    $ ade --socket apple stream-start --fps 60 --text
-    $ ade --socket apple stream-start --scale-factor 0.5 --bitrate-kbps 2500 --text
+    $ daex --socket apple stream-start --fps 60 --text
+    $ daex --socket apple stream-start --scale-factor 0.5 --bitrate-kbps 2500 --text
 
   Flags:
     --device, --udid <id>       Simulator device.
@@ -356,7 +357,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Shows whether the live view is active, the refresh rate, simulator control
   status, and last error.
 
-    $ ade --socket apple stream-status --text
+    $ daex --socket apple stream-status --text
 `,
   "stream-stop": `${ADE_BANNER}
   iOS Simulator: stream-stop
@@ -364,7 +365,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Stops the live view without necessarily releasing the simulator session.
   Aliases: stop-stream, live-stop, stop-live.
 
-    $ ade --socket apple stream-stop --text
+    $ daex --socket apple stream-stop --text
 `,
   select: `${ADE_BANNER}
   iOS Simulator: select
@@ -372,7 +373,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Hit-tests a point, emits a drawer selection event, and attaches the resulting
   iOS context to the active chat composer. Use --socket so the drawer receives it.
 
-    $ ade --socket apple select --x 120 --y 420 --text
+    $ daex --socket apple select --x 120 --y 420 --text
 
   Flags:
     --x <n> --y <n>        Required screenshot-pixel coordinates.
@@ -384,8 +385,8 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Sends a tap when simulator controls are available.
 
-    $ ade --socket apple tap --x 120 --y 420 --text
-    $ ade --socket apple tap 120 420 --text
+    $ daex --socket apple tap --x 120 --y 420 --text
+    $ daex --socket apple tap 120 420 --text
 
   Flags:
     --x <n> --y <n>        Required point coordinates.
@@ -398,8 +399,8 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   starts a drag to reorder. A tap holds for no time at all. Aliases:
   longpress, press-and-hold.
 
-    $ ade --socket apple long-press 120 420 --text
-    $ ade --socket apple long-press --x 120 --y 420 --duration-ms 1500 --text
+    $ daex --socket apple long-press 120 420 --text
+    $ daex --socket apple long-press --x 120 --y 420 --duration-ms 1500 --text
 
   Flags:
     --x <n> --y <n>        Required point coordinates (device points).
@@ -411,8 +412,8 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Sends a swipe to the active launched app. "swipe" is an alias of drag.
 
-    $ ade --socket apple drag --start-x 120 --start-y 700 --end-x 120 --end-y 250 --text
-    $ ade --socket apple swipe 120 700 120 250 --duration-ms 250 --text
+    $ daex --socket apple drag --start-x 120 --start-y 700 --end-x 120 --end-y 250 --text
+    $ daex --socket apple swipe 120 700 120 250 --duration-ms 250 --text
 
   Flags:
     --start-x <n> --start-y <n> Required start coordinates.
@@ -431,7 +432,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Flags:
     --value, --message <v> Text to type. --text <value> is also accepted for
-                           compatibility, but --text by itself controls ADE's
+                           compatibility, but --text by itself controls ${BRAND.NAME}'s
                            human-readable output mode.
     --submit               Press Return after the text (submits a search or form).
     --device, --udid <id>  Simulator device.
@@ -461,12 +462,12 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   A device session is not an app session. It builds nothing and installs
   nothing. Use it to look at a simulator, or to drive an app that is already
-  installed. Use "launch" when you want ADE to build and install your code.
+  installed. Use "launch" when you want ${BRAND.NAME} to build and install your code.
 
-  ADE shuts the device down again only when ADE booted it.
+  ${BRAND.NAME} shuts the device down again only when ${BRAND.NAME} booted it.
 
-    $ ade --socket apple open-device --text
-    $ ade --socket apple open-device --device <udid> --no-window --text
+    $ daex --socket apple open-device --text
+    $ daex --socket apple open-device --device <udid> --no-window --text
 
   Flags:
     --device, --udid <id>  Simulator device; defaults to a booted device.
@@ -480,15 +481,15 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Releases this chat's device session. Alias: close-sim.
 
-  The simulator keeps running unless ADE booted it. Pass --shutdown to shut
-  down a device ADE did not boot.
+  The simulator keeps running unless ${BRAND.NAME} booted it. Pass --shutdown to shut
+  down a device ${BRAND.NAME} did not boot.
 
   A shutdown is skipped while another chat runs an app on that device, even
   with --shutdown. Only --force goes through. --ignore-ownership does not:
   it steps around the device-session guard in your own name and nothing else.
 
-    $ ade --socket apple close-device --text
-    $ ade --socket apple close-device --shutdown --text
+    $ daex --socket apple close-device --text
+    $ daex --socket apple close-device --shutdown --text
 
   Flags:
     --device, --udid <id>  Simulator device.
@@ -497,19 +498,19 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
                            device down even when another chat runs an app there.
     --ignore-ownership     Skip the device-session owner check in your own name.
                            Never shuts down a device another chat is using.
-    --shutdown             Shut the device down even when ADE did not boot it.
+    --shutdown             Shut the device down even when ${BRAND.NAME} did not boot it.
 `,
   "device-session": `${ADE_BANNER}
   iOS Simulator: device-session
 
-  Reports the device session ADE holds: which simulator, which chat owns it,
-  which lane it is bound to, when it opened, and whether ADE booted the device.
+  Reports the device session ${BRAND.NAME} holds: which simulator, which chat owns it,
+  which lane it is bound to, when it opened, and whether ${BRAND.NAME} booted the device.
   Alias: session.
 
   Answers null when no device session is open. "status" reports the same record
   alongside the app session and the live view; this reads it on its own.
 
-    $ ade --socket apple device-session --text
+    $ daex --socket apple device-session --text
 
   Flags:
     --text                 Compact human-readable record.
@@ -522,9 +523,9 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   location, and status bar override state. Alias: device-settings.
 
   simctl cannot read a location or a status bar back. Those two fields report
-  what ADE last set in this process, and reset when the runtime restarts.
+  what ${BRAND.NAME} last set in this process, and reset when the runtime restarts.
 
-    $ ade --socket apple settings --text
+    $ daex --socket apple settings --text
 
   Flags:
     --device, --udid <id>  Simulator device.
@@ -534,8 +535,8 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Switches the device between light and dark mode. Runs "simctl ui appearance".
 
-    $ ade --socket apple appearance dark --text
-    $ ade --socket apple appearance --appearance light --text
+    $ daex --socket apple appearance dark --text
+    $ daex --socket apple appearance --appearance light --text
 
   Flags:
     --appearance light|dark  Appearance to set; a positional value works too.
@@ -546,7 +547,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Sets the Dynamic Type size. Runs "simctl ui content_size". Alias: text-size.
 
-    $ ade --socket apple content-size accessibility-extra-large --text
+    $ daex --socket apple content-size accessibility-extra-large --text
 
   Flags:
     --content-size, --size <name>  Size to set; a positional value works too.
@@ -563,13 +564,13 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Turns one accessibility option on or off. Alias: a11y.
 
-  Only increase-contrast is a "simctl ui" option. ADE writes the rest to
+  Only increase-contrast is a "simctl ui" option. ${BRAND.NAME} writes the rest to
   com.apple.Accessibility and then posts a notifyutil notification, because a
   preference written without the notification is read by nothing until the app
   relaunches.
 
-    $ ade --socket apple accessibility reduce-motion on --text
-    $ ade --socket apple a11y --option bold-text --off --text
+    $ daex --socket apple accessibility reduce-motion on --text
+    $ daex --socket apple a11y --option bold-text --off --text
 
   Flags:
     --option <name>        Option to set; a positional value works too. Values:
@@ -584,9 +585,9 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Sets or clears the simulated GPS location. Runs "simctl location".
 
-    $ ade --socket apple location 37.7749 -122.4194 --text
-    $ ade --socket apple location --latitude 37.7749 --longitude -122.4194 --text
-    $ ade --socket apple location --clear --text
+    $ daex --socket apple location 37.7749 -122.4194 --text
+    $ daex --socket apple location --latitude 37.7749 --longitude -122.4194 --text
+    $ daex --socket apple location --clear --text
 
   Flags:
     --latitude, --lat <n>  Latitude, -90 to 90; a positional value works too.
@@ -603,8 +604,8 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   A reset takes the whole service back to its default and needs no bundle id.
   A grant or a revoke acts on one app and needs one.
 
-    $ ade --socket apple permission grant photos --bundle-id com.example.app --text
-    $ ade --socket apple privacy reset location --text
+    $ daex --socket apple permission grant photos --bundle-id com.example.app --text
+    $ daex --socket apple privacy reset location --text
 
   Flags:
     --action <name>        grant, revoke, or reset; a positional works too.
@@ -621,11 +622,11 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Sends an APNs notification to an installed app. Runs "simctl push".
 
   Pass --title and --body for a simple alert. Pass --payload for a full APNs
-  body. ADE fills aps.alert in from --title and --body when the payload omits
+  body. ${BRAND.NAME} fills aps.alert in from --title and --body when the payload omits
   it. The payload file is deleted after the send.
 
-    $ ade --socket apple push --bundle-id com.example.app --title Hi --body "You have mail" --text
-    $ ade --socket apple push --bundle-id com.example.app --payload '{"aps":{"badge":3}}' --text
+    $ daex --socket apple push --bundle-id com.example.app --title Hi --body "You have mail" --text
+    $ daex --socket apple push --bundle-id com.example.app --payload '{"aps":{"badge":3}}' --text
 
   Flags:
     --bundle-id <id>       Required target app.
@@ -639,7 +640,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Opens a URL or a deeplink on the device. Runs "simctl openurl".
 
-    $ ade --socket apple open-url myapp://settings --text
+    $ daex --socket apple open-url myapp://settings --text
 
   Flags:
     --url <url>            URL to open; a positional value works too.
@@ -650,7 +651,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Stops a running app on the device. Runs "simctl terminate". Alias: kill-app.
 
-    $ ade --socket apple terminate --bundle-id com.example.app --text
+    $ daex --socket apple terminate --bundle-id com.example.app --text
 
   Flags:
     --bundle-id <id>       Required app to stop.
@@ -663,8 +664,8 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   "simctl launch". It does not build. Use "launch" to see a code change; use
   this to see the app from its first screen again.
 
-    $ ade --socket apple relaunch --bundle-id com.example.app --text
-    $ ade --socket apple relaunch --bundle-id com.ade.ios --text -- -adePreviewScreen duo-home
+    $ daex --socket apple relaunch --bundle-id com.example.app --text
+    $ daex --socket apple relaunch --bundle-id com.ade.ios --text -- -adePreviewScreen duo-home
 
   Everything after "--" is passed to the app as launch arguments.
 
@@ -683,7 +684,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   holding the device session. Name your chat with --chat-session, or take it
   anyway with --force.
 
-    $ ade --socket apple uninstall --bundle-id com.example.app --text
+    $ daex --socket apple uninstall --bundle-id com.example.app --text
 
   Flags:
     --bundle-id <id>       Required app to remove.
@@ -697,8 +698,8 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Overrides or clears the status bar. Runs "simctl status_bar". Set 9:41 and
   full bars before a screenshot so the shot stays stable.
 
-    $ ade --socket apple status-bar --time 9:41 --wifi-bars 3 --battery-level 100 --text
-    $ ade --socket apple status-bar --clear --text
+    $ daex --socket apple status-bar --time 9:41 --wifi-bars 3 --battery-level 100 --text
+    $ daex --socket apple status-bar --clear --text
 
   Flags:
     --time <text>          Displayed time, such as 9:41.
@@ -716,7 +717,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Reports whether an app runs right now, and its pid. Reads "launchctl list"
   on the device. A shut down device answers "not running" rather than failing.
 
-    $ ade --socket apple app-state --bundle-id com.example.app --text
+    $ daex --socket apple app-state --bundle-id com.example.app --text
 
   Flags:
     --bundle-id <id>       Required app to check.
@@ -727,10 +728,10 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Starts the device event log. Alias: logs-start.
 
-  ADE streams "log stream" from the device and interleaves its own actions in
-  the same order, so the log shows what ADE did between two app log lines.
+  ${BRAND.NAME} streams "log stream" from the device and interleaves its own actions in
+  the same order, so the log shows what ${BRAND.NAME} did between two app log lines.
 
-    $ ade --socket apple log-start --bundle-id com.example.app --text
+    $ daex --socket apple log-start --bundle-id com.example.app --text
 
   The log follows one app. "log stream" reads the whole device, so a run with
   no bundle id returns every other app's rows and the system's besides.
@@ -765,7 +766,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   is the only one that can stop it. Owning the device session or the app
   session is not enough on its own.
 
-    $ ade --socket apple log-stop --text
+    $ daex --socket apple log-stop --text
 
   Flags:
     --chat-session <id>    Caller chat session; defaults to $ADE_CHAT_SESSION_ID.
@@ -779,8 +780,8 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Each page returns a cursor. Pass it back as --since to read only new rows.
   The page also reports how many rows the ring dropped since the last read.
 
-    $ ade --socket apple log --limit 100 --text
-    $ ade --socket apple log --since 412 --text
+    $ daex --socket apple log --limit 100 --text
+    $ daex --socket apple log --since 412 --text
 
   Flags:
     --device, --udid <id>  Simulator device.
@@ -796,8 +797,8 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   A query is a claim about the app, such as "the button labelled Continue".
   A coordinate tap is a guess that the layout did not move.
 
-    $ ade --socket apple find-element --label Continue --text
-    $ ade --socket apple find --role Button --index 1 --text
+    $ daex --socket apple find-element --label Continue --text
+    $ daex --socket apple find --role Button --index 1 --text
 
   Flags:
     --ref <ref>            Element ref from a snapshot (its ref column). Refs come
@@ -824,12 +825,12 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   fails loudly when the element is gone, where a coordinate tap hits whatever
   moved into that spot.
 
-    $ ade --socket apple tap-element --label Continue --text
-    $ ade --socket apple tap-element --identifier signup-submit --text
-    $ ade --socket apple tap-element --text-match Everything --hold-ms 1000 --text
+    $ daex --socket apple tap-element --label Continue --text
+    $ daex --socket apple tap-element --identifier signup-submit --text
+    $ daex --socket apple tap-element --text-match Everything --hold-ms 1000 --text
 
   When several elements match, the answer says which it used and why, lists
-  the others with their points, and names the --index for the next. A tab ADE
+  the others with their points, and names the --index for the next. A tab ${BRAND.NAME}
   inferred from source (marked "(inferred)" in the snapshot) is refused, with
   the point to tap instead.
 
@@ -845,8 +846,8 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   typed: verified, not-seen (the text is not in the field: check the screen)
   or unknown (a secure field, or the field moved). Alias: fill.
 
-    $ ade --socket apple fill-element --identifier email-field --value ada@example.com --text
-    $ ade --socket apple fill --label Email "ada@example.com" --text
+    $ daex --socket apple fill-element --identifier email-field --value ada@example.com --text
+    $ daex --socket apple fill --label Email "ada@example.com" --text
 
   Flags:
     --value <text>         Text to type; a positional value works too.
@@ -860,8 +861,8 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Waits until an element appears, or disappears with --gone. Alias: wait-for.
   Use it after a tap instead of a fixed sleep.
 
-    $ ade --socket apple wait-for-element --label Welcome --timeout-ms 8000 --text
-    $ ade --socket apple wait-for --label Spinner --gone --text
+    $ daex --socket apple wait-for-element --label Welcome --timeout-ms 8000 --text
+    $ daex --socket apple wait-for --label Spinner --gone --text
 
   Flags:
     --timeout-ms <n>       Wait budget; defaults to 5000 and caps at 60000.
@@ -875,7 +876,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Checks that an element is on screen right now. Alias: assert. Use it as the
   last step of a flow so the result states what was proven.
 
-    $ ade --socket apple assert-visible --label "Order confirmed" --text
+    $ daex --socket apple assert-visible --label "Order confirmed" --text
 
   Flags:
     Same element query as "find-element": --ref, --identifier, --label, --text,
@@ -892,8 +893,8 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   device from the one captured, and records the reason in the metadata rather
   than pairing one device's shot with another device's rows.
 
-    $ ade --socket apple proof-bundle --caption "Signup succeeds" --text
-    $ ade --socket apple proof-bundle --out .ade/tmp/proof --log-rows 200 --text
+    $ daex --socket apple proof-bundle --caption "Signup succeeds" --text
+    $ daex --socket apple proof-bundle --out .ade/tmp/proof --log-rows 200 --text
 
   Flags:
     --out <path>           Directory to write into; relative to the build root.
@@ -910,19 +911,19 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Makes a new, empty device for this lane from an installed runtime. Nothing
   is copied from another simulator. Defaults: the newest installed iOS runtime,
   and the device type this project used last, else the newest iPhone.
-  ADE deletes the device, and all its data, when the lane is archived or
+  ${BRAND.NAME} deletes the device, and all its data, when the lane is archived or
   deleted. Never downloads a runtime: APPLE_NO_INSTALLED_SIMULATORS when none
   is installed, APPLE_RUNTIME_NOT_INSTALLED when the one you named is not.
   Run "device-list --runtimes" to see what this Mac has.
 
-    $ ade --socket apple device-create --text
-    $ ade --socket apple device-create --runtime "iOS 26.3" --device-type "iPhone 17e" --text
-    $ ade --socket apple device-create --from "iPhone 17 Pro" --text
-    $ ade --socket apple device-create --extra --device-type "iPad Air 11-inch (M4)" --text
+    $ daex --socket apple device-create --text
+    $ daex --socket apple device-create --runtime "iOS 26.3" --device-type "iPhone 17e" --text
+    $ daex --socket apple device-create --from "iPhone 17 Pro" --text
+    $ daex --socket apple device-create --extra --device-type "iPad Air 11-inch (M4)" --text
 
   --extra makes a SECOND device beside the lane's own (an iPad next to an
   iPhone Duo; at most 2, APPLE_EXTRA_DEVICE_LIMIT, or ADE_APPLE_LANE_EXTRA_DEVICES
-  in ADE's environment, up to 8). It comes up booted, and
+  in ${BRAND.NAME}'s environment, up to 8). It comes up booted, and
   any command reaches it with --device <udid|name>; without --device every
   command still drives the lane's own device. It is deleted with the lane,
   or now with "device-delete --device <udid>".
@@ -932,30 +933,30 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     --runtime <id|name>          Runtime, e.g. "iOS 26.3".
     --device-type, --model <id|name>  Device type, e.g. "iPhone 17 Pro".
     --from, --simulator <id>     Copy this installed simulator's model and runtime (not its data).
-    --name <name>                Device name; defaults to "ADE · <lane>".
+    --name <name>                Device name; defaults to "DAEX · <lane>".
     --lane, --lane-id <id>       Lane that will own the device.
 `,
   "device-cleanup": `${ADE_BANNER}
   Apple device: device-cleanup
 
-  Runs the cleanup pass now (ADE also runs it every ${CLEANUP_MINUTES} minutes):
-  deletes ADE devices that no live lane holds, releases the devices of lanes
+  Runs the cleanup pass now (${BRAND.NAME} also runs it every ${CLEANUP_MINUTES} minutes):
+  deletes ${BRAND.NAME} devices that no live lane holds, releases the devices of lanes
   that were archived or deleted, and drops lane records whose simulator is
-  gone. It only deletes a device ADE made (one with ADE's marker). The
+  gone. It only deletes a device ${BRAND.NAME} made (one with ${BRAND.NAME}'s marker). The
   user's own simulators are never touched. Alias: cleanup.
 
-  Idle ADE devices are powered off after 30 minutes with no use
+  Idle ${BRAND.NAME} devices are powered off after 30 minutes with no use
   (ADE_APPLE_IDLE_POWER_OFF_MINUTES; 0 turns it off). --power-off-idle
-  powers off every ADE device nothing is using now.
+  powers off every ${BRAND.NAME} device nothing is using now.
 
-    $ ade --socket apple device-cleanup --text
-    $ ade --socket apple device-cleanup --power-off-idle --text
+    $ daex --socket apple device-cleanup --text
+    $ daex --socket apple device-cleanup --power-off-idle --text
 `,
   test: `${ADE_BANNER}
   Apple device: test
 
   Runs "xcodebuild test" on this lane's own device. DerivedData goes to the
-  lane's cache (<worktree>/.ade/cache/ios-simulator/DerivedData), which ADE
+  lane's cache (<worktree>/.ade/cache/ios-simulator/DerivedData), which ${BRAND.NAME}
   deletes with the lane. Parallel testing is off, and one test run goes at a
   time on this Mac (APPLE_TEST_RUN_BUSY). A failing test is a result, not an
   error: the output says passed: false with the failures and the log path.
@@ -967,9 +968,9 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   same list as failures: [{test, file, line, message}]; an XCTest name there
   (ADETests/SyncTests/testX) is what --only takes.
 
-    $ ade --socket apple test --scheme ADE --text
-    $ ade --socket apple test --target <id> --only ADETests/SyncTests --text
-    $ ade --socket apple test --scheme ADE --build-only --text
+    $ daex --socket apple test --scheme ${BRAND.NAME} --text
+    $ daex --socket apple test --target <id> --only ADETests/SyncTests --text
+    $ daex --socket apple test --scheme ${BRAND.NAME} --build-only --text
 
   Flags:
     --target <id>                 Launch target id from "apps"; tests its project and scheme.
@@ -985,12 +986,12 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   "device-attach": `${ADE_BANNER}
   Apple device: device-attach
 
-  Binds an existing installed simulator to this lane. ADE never deletes an
-  attached simulator. When the lane ends, ADE powers it off and uninstalls
-  only the apps ADE put on it. An agent may attach a simulator the user named,
+  Binds an existing installed simulator to this lane. ${BRAND.NAME} never deletes an
+  attached simulator. When the lane ends, ${BRAND.NAME} powers it off and uninstalls
+  only the apps ${BRAND.NAME} put on it. An agent may attach a simulator the user named,
   but never one another lane holds (APPLE_DEVICE_NOT_LANE_OWNED).
 
-    $ ade --socket apple device-attach --simulator <udid|name> --text
+    $ daex --socket apple device-attach --simulator <udid|name> --text
 
   Flags:
     --simulator, --device, --udid <id>  Required installed simulator.
@@ -1006,9 +1007,9 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   as apple.device.state events (starting → booted → streaming). Unlike
   device-attach and device-create, this boots.
 
-    $ ade --socket apple start --text
-    $ ade --socket apple start --udid <udid> --text
-    $ ade --socket apple start --runtime "iOS 26.3" --device-type "iPhone 17e" --text
+    $ daex --socket apple start --text
+    $ daex --socket apple start --udid <udid> --text
+    $ daex --socket apple start --runtime "iOS 26.3" --device-type "iPhone 17e" --text
 
   Flags:
     --udid, --simulator, --device <id>  Installed simulator to attach when the lane has none.
@@ -1021,13 +1022,13 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Lists installed simulators and/or the one device this lane owns.
 
-    $ ade --socket apple device-list --installed --text
-    $ ade --socket apple device-list --runtimes --text
-    $ ade --socket apple device-list --disk --text
-    $ ade --socket apple device-list --text
+    $ daex --socket apple device-list --installed --text
+    $ daex --socket apple device-list --runtimes --text
+    $ daex --socket apple device-list --disk --text
+    $ daex --socket apple device-list --text
 
   Flags:
-    --installed            Installed simulators for a picker. ADE never downloads one.
+    --installed            Installed simulators for a picker. ${BRAND.NAME} never downloads one.
     --runtimes             Installed runtimes and the device types each one runs.
     --disk, --storage      Disk use per device, and who each device belongs to.
     --lane, --lane-id <id> The lane whose device to report; defaults to $ADE_LANE_ID.
@@ -1042,8 +1043,8 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Refused while another chat is driving the device, unless you pass --force or
   --ignore-ownership. Ask before you stop a device another chat uses.
 
-    $ ade --socket apple stop --text
-    $ ade --socket apple stop --udid <udid> --text
+    $ daex --socket apple stop --text
+    $ daex --socket apple stop --udid <udid> --text
 
   Flags:
     --udid, --device <id>  Power off this simulator instead of the lane's.
@@ -1059,25 +1060,25 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   depends on who made the device:
 
   - A simulator the user attached stays installed, keeps its power state, and
-    shows as a free device in the picker. ADE uninstalls only the apps it put
+    shows as a free device in the picker. ${BRAND.NAME} uninstalls only the apps it put
     on it.
-  - A device ADE made becomes a leftover. The cleanup pass deletes it after a
+  - A device ${BRAND.NAME} made becomes a leftover. The cleanup pass deletes it after a
     ${GRACE_MINUTES}-minute grace, at its next run (every ${CLEANUP_MINUTES} minutes), so it is gone within
     about ${GRACE_MINUTES + CLEANUP_MINUTES} minutes. To keep it, attach it again before then:
     "device-attach --simulator <udid>". The answer prints the time.
     --keep (only when the user asks to keep it) leaves it as a free
     simulator that nothing deletes; the user deletes it from the picker.
 
-  Use "device-delete" to remove the lane's ADE device now. Alias: detach.
+  Use "device-delete" to remove the lane's ${BRAND.NAME} device now. Alias: detach.
 
   Refused while another chat is driving the device, like stop.
 
-    $ ade --socket apple device-detach --text
+    $ daex --socket apple device-detach --text
 
   Flags:
     --force, -f            Detach a device another chat is driving as well.
     --ignore-ownership     Detach without the owner check. Ask first.
-    --keep                 An ADE-made device stays as a free simulator (the user asked).
+    --keep                 A DAEX-made device stays as a free simulator (the user asked).
     --chat-session <id>    Caller chat session; defaults to $ADE_CHAT_SESSION_ID.
     --lane, --lane-id <id> Lane whose device to detach.
 `,
@@ -1087,14 +1088,14 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Makes one of the lane's extra devices (device-create --extra) the lane's own
   device: the one that streams, records, launches builds and runs tests. What
   is installed and signed in on it stays. The old lane device stays installed:
-  an ADE device becomes an extra in its place, an attached simulator is
+  a ${BRAND.NAME} device becomes an extra in its place, an attached simulator is
   detached back to the user.
 
   Refused (APPLE_LANE_DEVICE_BUSY) while the old device streams, records, runs
   tests or a launch, or another chat holds the lane's lease; and while another
   chat drives the lane's device, like stop.
 
-    $ ade --socket apple device-promote --device <udid|name> --text
+    $ daex --socket apple device-promote --device <udid|name> --text
 
   Flags:
     --device, --udid <id>  The extra device to promote (udid or name).
@@ -1105,15 +1106,15 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   "device-delete": `${ADE_BANNER}
   Apple device: device-delete
 
-  Deletes this lane's ADE device and all its data. Attached devices refuse unless --force,
-  and --force only detaches them — ADE never deletes a simulator it did not create.
+  Deletes this lane's ${BRAND.NAME} device and all its data. Attached devices refuse unless --force,
+  and --force only detaches them — ${BRAND.NAME} never deletes a simulator it did not create.
   Refused while another chat is driving the device, like stop. --force does
   not change this; only --ignore-ownership does. To keep the simulator, use
   "device-detach".
 
-    $ ade --socket apple device-delete --text
-    $ ade --socket apple device-delete --force --text
-    $ ade --socket apple device-delete --device <udid> --text   One of the lane's extra devices
+    $ daex --socket apple device-delete --text
+    $ daex --socket apple device-delete --force --text
+    $ daex --socket apple device-delete --device <udid> --text   One of the lane's extra devices
 
   Flags:
     --device, --udid <id>  One of the lane's extra devices (device-create --extra).
@@ -1130,15 +1131,15 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   while an auto recording is running converts it to manual (no restart, no gap).
 
   A recording becomes a demo when it stops: still stretches are cut, waits
-  play faster, tap rings are drawn, and step captions (ade proof step
+  play faster, tap rings are drawn, and step captions (daex proof step
   "<text>") show. The camera does not zoom on a phone unless you pass --zoom. Every video ends under 10 MB.
   record-stop reports durationMs (video), wallDurationMs (real time) and
   idleCutMs. A recording stops itself after 5 minutes (stopReason "cap") or
   after 2 minutes with no input ("idle"), and is filed as proof.
 
-    $ ade --socket apple record-start --text
-    $ ade --socket apple record-start --overlays off --label "signup" --text
-    $ ade --socket apple record-start --plain --max-seconds 120 --text
+    $ daex --socket apple record-start --text
+    $ daex --socket apple record-start --overlays off --label "signup" --text
+    $ daex --socket apple record-start --plain --max-seconds 120 --text
 
   Flags:
     --overlays on|off      Tap rings and typed text in the demo; default is Settings.
@@ -1154,9 +1155,9 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Stops the running recording. --discard is only allowed for a recording this
   chat owns that is not marked proof.
 
-    $ ade --socket apple record-stop --text
-    $ ade --socket apple record-stop --keep --text
-    $ ade --socket apple record-stop --discard --text
+    $ daex --socket apple record-stop --text
+    $ daex --socket apple record-stop --keep --text
+    $ daex --socket apple record-stop --discard --text
 
   Flags:
     --keep                 Keep the file (default).
@@ -1168,7 +1169,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Lists recordings for this lane. There is no auto-delete.
 
-    $ ade --socket apple record-list --text
+    $ daex --socket apple record-list --text
 
   Flags:
     --lane, --lane-id <id> Lane whose recordings to list.
@@ -1179,7 +1180,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Deletes a recording this chat owns that is not marked proof. Anything else
   is refused with APPLE_RECORDING_PINNED.
 
-    $ ade --socket apple record-delete --id <id> --text
+    $ daex --socket apple record-delete --id <id> --text
 
   Flags:
     --id <id>              Recording id from record-list.
@@ -1193,8 +1194,8 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   which round-trips simctl. Fails with APPLE_STREAM_NOT_RUNNING when no stream
   is active; screenshot does not need one.
 
-    $ ade --socket apple frame --text
-    $ ade --socket apple frame --out shot.png --text
+    $ daex --socket apple frame --text
+    $ daex --socket apple frame --out shot.png --text
 
   Flags:
     --out, --out-path <p>  File path; relative to the build root.
@@ -1208,16 +1209,16 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   helper does not implement it — the service refuses with
   APPLE_BUTTON_UNSUPPORTED.
 
-    $ ade --socket apple button home --text
-    $ ade --socket apple button volume-up --text
-    $ ade --socket apple button app-switcher --text
+    $ daex --socket apple button home --text
+    $ daex --socket apple button volume-up --text
+    $ daex --socket apple button app-switcher --text
 
   Names: home, lock, volume-up, volume-down, siri, shake, app-switcher.
 
   app-switcher is Simulator's own App Switcher command: two home presses
   150 ms apart, sent by the helper as one command. To close an app the way a
   person does, open the switcher, then swipe the app's card up (see the
-  ade-apple skill). "apple terminate --bundle-id <id>" stops an app without
+  daex-apple skill). "apple terminate --bundle-id <id>" stops an app without
   showing anything.
 
   Flags:
@@ -1229,11 +1230,11 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Apple device: show
 
   Puts this chat's Apple device on the user's screen: the Apple tool in the
-  tools pane, or the floating player with --floating. Same as "ade ui show
-  apple" / "ade ui show floating-apple".
+  tools pane, or the floating player with --floating. Same as "daex ui show
+  apple" / "daex ui show floating-apple".
 
-    $ ade apple show --text
-    $ ade apple show --floating --text
+    $ daex apple show --text
+    $ daex apple show --floating --text
 
   Prints shown, held (a window has the project open but not this chat; it opens
   when the user goes to the chat) or no_desktop (nothing was shown; exits 1).
@@ -1247,8 +1248,8 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Turns the device, then reads the screen to see whether it moved.
 
-    $ ade --socket apple rotate landscape-left --text
-    $ ade --socket apple rotate --orientation portrait --text
+    $ daex --socket apple rotate landscape-left --text
+    $ daex --socket apple rotate --orientation portrait --text
 
   Orientations: portrait, portrait-upside-down, landscape-left, landscape-right.
 
@@ -1282,10 +1283,10 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   then reads the pose back. The live view and input follow the panel that is
   on: the cover when closed, the inner display when open.
 
-    $ ade apple fold closed --text
-    $ ade apple fold open --text
-    $ ade apple fold --angle 120 --text
-    $ ade apple fold --sequence closed,open,tent --text
+    $ daex apple fold closed --text
+    $ daex apple fold open --text
+    $ daex apple fold --angle 120 --text
+    $ daex apple fold --sequence closed,open,tent --text
 
   Poses: closed (0°), open (180°), laptop (90°, landscape), book (90°,
   portrait), tent (80°, face down). --sequence runs them in order and adds a
@@ -1312,15 +1313,15 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Renders the device in 3D with its live screen and files the images (and an
   optional turntable video) to the proof drawer. No pane needs to be open:
-  any ADE desktop window with the project open does the rendering, off screen
+  any ${BRAND.NAME} desktop window with the project open does the rendering, off screen
   (the lane's Apple pane does it when one is live; a project on another
   machine must be the window's front tab). The device must be on;
   a render never boots it. For an iPhone Duo, each pose folds the real
   simulator first.
 
-    $ ade apple render --text
-    $ ade apple render --angles front,three-quarter-right --lighting studio --text
-    $ ade apple render --poses closed,laptop,open --sheet --video --text
+    $ daex apple render --text
+    $ daex apple render --angles front,three-quarter-right --lighting studio --text
+    $ daex apple render --poses closed,laptop,open --sheet --video --text
 
   Flags:
     --angles <a,b>         front, three-quarter-left, three-quarter-right, current.
@@ -1348,11 +1349,11 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   another's. Give each subagent its own --holder (e.g. --holder ui-agent)
   so status shows who has it.
 
-    $ ade apple lease --wait 300 --holder ui-agent --text   Wait up to 5 min; prints the token
-    $ ade apple lease --token <t> --text                    Renew your turn
-    $ ade apple lease release --token <t> --text
-    $ ade apple lease --device <udid> --wait 300 --text     An extra device's own lease
-    $ ade apple lease status --text
+    $ daex apple lease --wait 300 --holder ui-agent --text   Wait up to 5 min; prints the token
+    $ daex apple lease --token <t> --text                    Renew your turn
+    $ daex apple lease release --token <t> --text
+    $ daex apple lease --device <udid> --wait 300 --text     An extra device's own lease
+    $ daex apple lease status --text
 
   acquired no means another holder has it (named, with when it lapses), and
   the command exits 1, so "lease --wait 300 && <device work>" never runs the
@@ -1385,7 +1386,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   outer edges, so CoreDevice calls it face down on a table, and the cover is
   the screen facing the viewer.
 
-    $ ade apple posture --text
+    $ daex apple posture --text
 
   Flags:
     --device, --udid <id>  Simulator device.
@@ -1401,7 +1402,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   refills each panel of the iPhone Duo as it folds. A lane that already has
   the skill keeps its copy.
 
-    $ ade apple duo-skill --text
+    $ daex apple duo-skill --text
 
   Flags:
     --lane, --lane-id <id> Lane to add the skill to.
@@ -1416,9 +1417,9 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   reused; --no-build installs that build as it is. One build runs at a time
   in a lane's DerivedData (APPLE_BUILD_BUSY). Alias: install-app.
 
-    $ ade apple install --device <udid|name> --launch --text
-    $ ade apple install --device <udid> --configuration Release --text
-    $ ade apple install --device <udid> --no-build --launch --text -- -someArg 1
+    $ daex apple install --device <udid|name> --launch --text
+    $ daex apple install --device <udid> --configuration Release --text
+    $ daex apple install --device <udid> --no-build --launch --text -- -someArg 1
 
   Flags:
     --device <udid|name>   The extra (or the lane's own device). Default: the lane's device.
@@ -1446,13 +1447,13 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   APPLE_WINDOWING_UNAVAILABLE: no resizable window (an iPhone, or an iPad set
   to Full Screen Apps in Settings > Multitasking & Gestures).
 
-    $ ade apple window --text                    Where the window is
-    $ ade apple window --size 600x800 --text
-    $ ade apple window --move 0,0 --text         Top-left corner to 0,0
-    $ ade apple window --left --text             Also --right, --top, --bottom
-    $ ade apple window --split --text            Also --thirds, --quarters
-    $ ade apple window --fill --text
-    $ ade apple window --slide-over --text
+    $ daex apple window --text                    Where the window is
+    $ daex apple window --size 600x800 --text
+    $ daex apple window --move 0,0 --text         Top-left corner to 0,0
+    $ daex apple window --left --text             Also --right, --top, --bottom
+    $ daex apple window --split --text            Also --thirds, --quarters
+    $ daex apple window --fill --text
+    $ daex apple window --slide-over --text
 
   snapshot and tap-element give screen points wherever the window is. A
   window a read could not place (one still opening) shows its rows as
@@ -1475,10 +1476,10 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Settings > Apple Development turns it off for the whole Mac. A recording
   already running still sees the input.
 
-    $ ade apple auto-record --text               Lane and machine switch
-    $ ade apple auto-record off --text
-    $ ade apple auto-record on --text
-    $ ade apple tap 120 420 --no-record --text
+    $ daex apple auto-record --text               Lane and machine switch
+    $ daex apple auto-record off --text
+    $ daex apple auto-record on --text
+    $ daex apple tap 120 420 --no-record --text
 
   Flags:
     --lane, --lane-id <id> Lane to set.
@@ -1492,13 +1493,13 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Xcode needs. Removing a runtime is the person's call, from the Apple
   Development panel.
 
-    $ ade apple runtimes --text
-    $ ade apple runtimes install --text
-    $ ade apple runtimes install --version 27.0 --text
-    $ ade apple runtimes cancel --text
+    $ daex apple runtimes --text
+    $ daex apple runtimes install --text
+    $ daex apple runtimes install --version 27.0 --text
+    $ daex apple runtimes cancel --text
 
   install returns at once; the download runs on the machine that owns the
-  lane. Re-run \`ade apple runtimes\` to see its progress.
+  lane. Re-run \`daex apple runtimes\` to see its progress.
 
   "missing" names each runtime by what its models need, not by the SDK: on
   Xcode 27.1 with iOS 27.1 installed (it runs only the iPhone Duo), every

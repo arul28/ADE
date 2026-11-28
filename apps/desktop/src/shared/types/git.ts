@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import type { GitHubServiceHealth } from "../githubServiceHealth";
+import { BRAND } from "../brand";
 
 export type GitSyncMode = "merge" | "rebase";
 export type GitPullMode = "ff-only" | "rebase" | "merge";
@@ -706,8 +707,8 @@ export type GitHubGitTransportStatus = {
 export const GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY = {
   subState: "credential-store-unreadable",
   statusLabel: "Can't read sign-in",
-  title: "ADE can't read your saved sign-in on this computer",
-  detail: "Your GitHub connection may still be there — ADE just can't open it. Repair it in Settings → Connections.",
+  title: `${BRAND.NAME} can't read your saved sign-in on this computer`,
+  detail: `Your GitHub connection may still be there — ${BRAND.NAME} just can't open it. Repair it in Settings → Connections.`,
   action: "Open connections",
 } as const;
 
@@ -826,7 +827,7 @@ export type GitHubAppUserAuthRefreshError = {
  * the sentence names ADE, not GitHub, and asks for nothing.
  */
 export const GITHUB_APP_USER_AUTH_RENEWING_COPY =
-  "ADE is renewing this authorization — this takes a moment.";
+  `${BRAND.NAME} is renewing this authorization — this takes a moment.`;
 
 /**
  * Why ADE has no GitHub App user token for a check that needed one.

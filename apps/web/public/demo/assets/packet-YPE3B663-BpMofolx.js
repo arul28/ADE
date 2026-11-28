@@ -1,0 +1,1 @@
+import{bgt as e}from"./demo-shared-DFDfOeUE.js";export{e as createPacketServices};

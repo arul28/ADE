@@ -27,14 +27,11 @@ final class DeepLinkRouter {
     SyncService.shared?.landOnHub(notice: notice)
   }
 
-  /// The ADE Beta app registers `ade-beta` instead of `ade`, so an outside
-  /// `ade://` link opens the normal app. An `ade-beta://` link routes the same
-  /// way as `ade://`.
+  /// The Beta app registers `ade-beta` (and `daex-beta`) instead of `ade`, so
+  /// an outside `ade://` link opens the normal app. `daex://`, `ade-beta://`
+  /// and `daex-beta://` links route the same way as `ade://`.
   private static func withADEScheme(_ url: URL) -> URL {
-    guard url.scheme?.lowercased() == "ade-beta",
-          var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
-    components.scheme = "ade"
-    return components.url ?? url
+    ADEDeepLinkURLParsing.withADEScheme(url)
   }
 
   /// Is this a link meant for ADE? Other URLs (an auth callback, a stray
@@ -71,7 +68,7 @@ final class DeepLinkRouter {
     let before = routedCount
     route(url, attentionItemId: attentionItemId)
     guard routedCount == before, Self.isADELink(url) else { return }
-    landOnHub("ADE could not open that link.")
+    landOnHub("\(Brand.name) could not open that link.")
   }
 
   private func route(_ url: URL, attentionItemId: String?) {
@@ -401,7 +398,7 @@ final class DeepLinkRouter {
 
   /// The link is an ADE link, but its shape is wrong. Desktop's wording.
   private func landOnBrokenLink() {
-    landOnHub("This ADE link is broken.")
+    landOnHub("This \(Brand.name) link is broken.")
   }
 
   private func accountProjectParse(from url: URL) -> ADEDeeplinkAccountProjectParse {
@@ -460,11 +457,11 @@ final class DeepLinkRouter {
     // "Send to your computer" card, which needs no account.
     if account.phase == .loading || (account.phase == .signedOut && waitsForSignIn) {
       if account.phase == .signedOut {
-        sync.landOnHub(notice: "Sign in to ADE to open this link.")
+        sync.landOnHub(notice: "Sign in to \(Brand.name) to open this link.")
       }
       guard await waitUntilSignedIn(account) else {
         guard waitsForSignIn else { return false }
-        if !Task.isCancelled { sync.landOnHub(notice: "Sign in to ADE to open this link.") }
+        if !Task.isCancelled { sync.landOnHub(notice: "Sign in to \(Brand.name) to open this link.") }
         return true
       }
     }
@@ -724,9 +721,9 @@ final class DeepLinkRouter {
       if account.phase == .loading || account.phase == .signedOut {
         // The link names an account project: it needs the account, as an
         // owned link does.
-        if account.phase == .signedOut { sync.landOnHub(notice: "Sign in to ADE to open this link.") }
+        if account.phase == .signedOut { sync.landOnHub(notice: "Sign in to \(Brand.name) to open this link.") }
         guard await self.waitUntilSignedIn(account) else {
-          if !Task.isCancelled { sync.landOnHub(notice: "Sign in to ADE to open this link.") }
+          if !Task.isCancelled { sync.landOnHub(notice: "Sign in to \(Brand.name) to open this link.") }
           return
         }
         guard !Task.isCancelled else { return }
@@ -772,10 +769,10 @@ final class DeepLinkRouter {
       }
       switch target {
       case .removed:
-        sync.landOnHub(notice: "This project was removed from ADE.")
+        sync.landOnHub(notice: "This project was removed from \(Brand.name).")
       case .unknown:
         if owner != nil { return fallback() }
-        sync.landOnHub(notice: "This project isn't in your ADE account.")
+        sync.landOnHub(notice: "This project isn't in your \(Brand.name) account.")
       case .noCopy(let name):
         sync.landOnHub(notice: "No computer that is online has a copy of \(name).")
       case .copy(let machineKey, let checkoutId):
@@ -803,10 +800,10 @@ final class DeepLinkRouter {
     let account = AccountService.shared
     if account.phase != .signedIn {
       if account.phase == .signedOut {
-        sync.landOnHub(notice: "Sign in to ADE to open this link.")
+        sync.landOnHub(notice: "Sign in to \(Brand.name) to open this link.")
       }
       guard await waitUntilSignedIn(account) else {
-        if !Task.isCancelled { sync.landOnHub(notice: "Sign in to ADE to open this link.") }
+        if !Task.isCancelled { sync.landOnHub(notice: "Sign in to \(Brand.name) to open this link.") }
         return
       }
     }
@@ -821,8 +818,8 @@ final class DeepLinkRouter {
     }
     guard let owner else {
       sync.landOnHub(notice: account.isSignedIn
-        ? "This link is from a computer that isn't in your ADE account."
-        : "Sign in to ADE to open this link.")
+        ? "This link is from a computer that isn't in your \(Brand.name) account."
+        : "Sign in to \(Brand.name) to open this link.")
       return
     }
     let machineName = owner.displayName
@@ -832,8 +829,8 @@ final class DeepLinkRouter {
     guard reached else {
       let online = machine()?.online ?? owner.online
       sync.landOnHub(notice: online
-        ? "ADE could not reach \(machineName)."
-        : "\(machineName) is offline. Wake it or start ADE there, then try again.")
+        ? "\(Brand.name) could not reach \(machineName)."
+        : "\(machineName) is offline. Wake it or start \(Brand.name) there, then try again.")
       return
     }
 
@@ -855,8 +852,8 @@ final class DeepLinkRouter {
     }
     guard let project = found else {
       sync.landOnHub(notice: sync.connectionState == .connected
-        ? "That project isn't in ADE on \(machineName)."
-        : "ADE could not reach \(machineName).")
+        ? "That project isn't in \(Brand.name) on \(machineName)."
+        : "\(Brand.name) could not reach \(machineName).")
       return
     }
 
@@ -887,7 +884,7 @@ final class DeepLinkRouter {
       }
     }
     guard sync.isActiveProject(project) else {
-      sync.landOnHub(notice: "ADE could not open \(project.displayName) on \(machineName).")
+      sync.landOnHub(notice: "\(Brand.name) could not open \(project.displayName) on \(machineName).")
       return
     }
     open(project)
@@ -901,7 +898,7 @@ final class DeepLinkRouter {
     let before = routedCount
     routeNotificationUserInfo(userInfo)
     guard routedCount == before else { return }
-    landOnHub("ADE could not find what that notification points to.")
+    landOnHub("\(Brand.name) could not find what that notification points to.")
   }
 
   private func routeNotificationUserInfo(_ userInfo: [AnyHashable: Any]) {

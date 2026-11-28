@@ -14,6 +14,7 @@ import type { CloudTierId } from "./cloudTiers";
 import type { CloudLaneWithoutComputer } from "./cloudLaneLaunch";
 import type { ChatLaunchStageStatus } from "./types/chatLaunch";
 import type { OpenProjectBinding } from "./types/core";
+import { BRAND } from "./brand";
 
 export type { CloudLaneWithoutComputer };
 
@@ -108,7 +109,7 @@ export const CLOUD_LANE_JOB_STAGE_LABELS: Record<CloudLaneJobStageId, string> = 
   resize: "Change size",
   computer: "Make computer",
   copy: "Copy lane",
-  start: "Start ADE",
+  start: `Start ${BRAND.NAME}`,
   connect: "Connect",
   remove: "Remove old computer",
 };
@@ -324,17 +325,17 @@ export function cloudComputerFateSentence(fate: CloudComputerFate | null | undef
     case "freed":
       return `You freed its computer${when}.`;
     case "idle":
-      return `ADE deleted its computer${when} because it wasn't used.`;
+      return `${BRAND.NAME} deleted its computer${when} because it wasn't used.`;
     case "plan":
-      return `ADE deleted its computer${when} to fit your plan.`;
+      return `${BRAND.NAME} deleted its computer${when} to fit your plan.`;
     case "inactive":
-      return `ADE deleted its computer${when} after 30 days without use.`;
+      return `${BRAND.NAME} deleted its computer${when} after 30 days without use.`;
     case "automation":
-      return `Its automation finished${when}, and ADE deleted its computer.`;
+      return `Its automation finished${when}, and ${BRAND.NAME} deleted its computer.`;
     case "project":
       return `Its project's computers were deleted${when}.`;
     case "launch":
-      return `Its launch didn't finish, so ADE deleted its computer${when}.`;
+      return `Its launch didn't finish, so ${BRAND.NAME} deleted its computer${when}.`;
     default:
       return `Its computer was deleted${when}.`;
   }

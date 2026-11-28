@@ -26,6 +26,7 @@ import {
   type CloudPhoneToolAnswer,
 } from "./cloudPhoneDriver";
 import { findElement, readTarget, screenOf, screenText, stepWords, targetWords, type Screen, type StepTarget } from "./cloudPhoneScreenText";
+import { BRAND } from "../../../shared/brand";
 
 type Raw = { status: number; type: string | null; body: Buffer };
 /** One command's calls: its first finding no live phone means the phone ended before it (`CloudPhoneGoneError`). */
@@ -142,11 +143,11 @@ function perfText(body: Record<string, unknown>, seconds: number): string {
   const rssMb = nums((item) => (item.memory_app as Record<string, unknown> | undefined)?.rss_kb).map((kb) => kb / 1024);
   const fps = nums((item) => item.fps);
   if (!items.length || (!cpu.length && !rssMb.length && !fps.length)) {
-    return `No samples in ${seconds} s. They come from the app ADE launched last while it runs: launch your app (ade apple relaunch --bundle-id <id>), then run this again.`;
+    return `No samples in ${seconds} s. They come from the app ${BRAND.NAME} launched last while it runs: launch your app (${BRAND.CLI} apple relaunch --bundle-id <id>), then run this again.`;
   }
   const avg = (values: number[]): number => values.reduce((sum, value) => sum + value, 0) / values.length;
   const lines = [
-    `${items.length} samples over ${seconds} s, for the app ADE launched last:`,
+    `${items.length} samples over ${seconds} s, for the app ${BRAND.NAME} launched last:`,
     cpu.length ? `CPU: ${avg(cpu).toFixed(1)}% average, ${Math.max(...cpu).toFixed(1)}% peak` : null,
     rssMb.length ? `Memory: ${avg(rssMb).toFixed(0)} MB average, ${Math.max(...rssMb).toFixed(0)} MB peak` : null,
     fps.length ? `Frame rate: ${avg(fps).toFixed(1)} fps average, ${Math.min(...fps).toFixed(1)} fps lowest` : "Frame rate: none drawn (the screen didn't change)",
@@ -168,8 +169,8 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
       // Checked before every dispatch, a retry too: the call carries the token signed in now, and
       // after a switch that is another account's, never this command's next step.
       const client = await ctx.client();
-      if (!client.phoneCall) throw new CloudPhoneError("Update ADE to drive this cloud iPhone.", "no_account");
-      if ((client.account ?? null) !== phone.account) throw new CloudPhoneError("The ADE account changed while the cloud iPhone was in use. Try again.", "no_account");
+      if (!client.phoneCall) throw new CloudPhoneError(`Update ${BRAND.NAME} to drive this cloud iPhone.`, "no_account");
+      if ((client.account ?? null) !== phone.account) throw new CloudPhoneError(`The ${BRAND.NAME} account changed while the cloud iPhone was in use. Try again.`, "no_account");
       // `phoneId`: the held phone. A replacement (another chat stopped and started one) is refused
       // `phone_not_running`, so a command never goes on on a phone it didn't start on.
       const raw = await client.phoneCall({ action, phoneId: phone.phoneId, ...(body ? { body } : {}), ...(options.query ? { query: options.query } : {}) }, { timeoutMs: options.timeoutMs });
@@ -203,7 +204,7 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
       throw new CloudPhoneError(`Reading the screen: ${message || `the phone answered ${raw.status}`}.`, code);
     }
     // An unreadable tree is an error, never an empty screen: a `gone` would pass on it.
-    const unreadable = (): CloudPhoneError => new CloudPhoneError("Reading the screen: the cloud iPhone answered a screen ADE couldn't read.", "screen_unreadable");
+    const unreadable = (): CloudPhoneError => new CloudPhoneError(`Reading the screen: the cloud iPhone answered a screen ${BRAND.NAME} couldn't read.`, "screen_unreadable");
     let tree: unknown;
     try {
       tree = JSON.parse(raw.body.toString("utf8"));
@@ -384,8 +385,8 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
     const by = Date.now() + CONNECT_WAIT_MS;
     for (;;) {
       const client = await ctx.client();
-      if (!client.phoneCall) throw new CloudPhoneError("Update ADE to drive this cloud iPhone.", "no_account");
-      if ((client.account ?? null) !== account) throw new CloudPhoneError("The ADE account changed while the cloud iPhone was in use. Try again.", "no_account");
+      if (!client.phoneCall) throw new CloudPhoneError(`Update ${BRAND.NAME} to drive this cloud iPhone.`, "no_account");
+      if ((client.account ?? null) !== account) throw new CloudPhoneError(`The ${BRAND.NAME} account changed while the cloud iPhone was in use. Try again.`, "no_account");
       const raw = await client.phoneCall({
         action,
         body,
@@ -510,7 +511,7 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
         const exit = /failed with exit code (\d+)\s*$/.exec(value.trim());
         return exit ? `Its build step failed with exit code ${exit[1]}.` : value.trim().split("\n").pop()!.trim().slice(0, 300);
       });
-    const more = complete && compiler.length ? [] : ["", `The whole log: ade apple build-log ${job} --out <file>.`];
+    const more = complete && compiler.length ? [] : ["", `The whole log: ${BRAND.CLI} apple build-log ${job} --out <file>.`];
     return ["The build failed.", ...why, ...(shown.length ? ["", ...shown] : []), ...more].join("\n");
   }
 
@@ -583,7 +584,7 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
     if (!input.launch) {
       return { answer: textAnswer(input.prebuilt ? `Installed ${installed.bundleId ?? "the app"}.` : `${done} and installed ${installed.bundleId ?? "the app"}.`), bundleId: installed.bundleId };
     }
-    if (!installed.bundleId) return { answer: textAnswer(`${done} and installed. Launch it with ade apple relaunch --bundle-id <id>.`), bundleId: null };
+    if (!installed.bundleId) return { answer: textAnswer(`${done} and installed. Launch it with ${BRAND.CLI} apple relaunch --bundle-id <id>.`), bundleId: null };
     const launched = await act(phone, "launch", { bundle_id: installed.bundleId, ...launchValues({ env: input.env }) });
     if (launched) return { answer: textAnswer(`${done} and installed ${installed.bundleId}, but launching it failed: ${launched}.`, true), bundleId: installed.bundleId };
     return { answer: textAnswer(`${done}, installed ${installed.bundleId} and launched it.\n\n${await settledScreen(phone)}`), bundleId: installed.bundleId };

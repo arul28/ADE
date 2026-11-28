@@ -2,8 +2,9 @@ import { createContext, useContext, useState, type CSSProperties } from "react";
 import type { CloudChatQueuedMessage } from "../../../../../account-directory/src/cloud/contract";
 import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/types/chat";
 import { Banner } from "../ui/notice";
+import { BRAND } from "../../../shared/brand";
 
-const FAILED_FALLBACK = "ADE couldn't send this message.";
+const FAILED_FALLBACK = `${BRAND.NAME} couldn't send this message.`;
 
 /** A failed message put back in a message box: words the person is typing stay, and the message goes after them. */
 export function draftWithPutBack(current: string, text: string): string {
@@ -89,7 +90,7 @@ export function CloudQueuedBubbleStatus({ event }: { event: Extract<AgentChatEve
           setCancelling(true);
           setError(null);
           void cancel(facts.messageId)
-            .catch((err: unknown) => setError(err instanceof Error && err.message ? err.message : "ADE couldn't cancel that message."))
+            .catch((err: unknown) => setError(err instanceof Error && err.message ? err.message : `${BRAND.NAME} couldn't cancel that message.`))
             .finally(() => setCancelling(false));
         }}
       >
@@ -128,7 +129,7 @@ export function CloudQueuedMessages({
       model={{
         id: "chat-cloud-failed-messages",
         tone: "warning",
-        title: failed.length === 1 ? "A message didn't reach your ADE Cloud computer." : `${failed.length} messages didn't reach your ADE Cloud computer.`,
+        title: failed.length === 1 ? `A message didn't reach your ${BRAND.CLOUD_NAME} computer.` : `${failed.length} messages didn't reach your ${BRAND.CLOUD_NAME} computer.`,
         report: false,
         extra: (
           <ul className="mt-1 flex flex-col gap-1.5" aria-label="Messages that didn't send">

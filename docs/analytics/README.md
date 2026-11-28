@@ -1,10 +1,14 @@
 # Analytics tracking plan
 
-`tracking-plan.json` lists every event any ADE surface sends to PostHog: its
+`tracking-plan.json` lists every event any DAEX surface sends to PostHog: its
 name, the platforms that send it, the file that owns it, why it exists, and the
 properties it may carry (beyond the common ones listed at the top of the file).
 `docs/logging.md` holds the privacy rules, consent, budgets and architecture;
 this folder is the catalog.
+
+Event names (`ade_*`), survey prefixes (`[ade:pmf]`), and the names of PostHog
+objects (dashboards `ADE · …`, transformations, scouts) keep the old product
+name on purpose: renaming them would break every series and saved query.
 
 `scripts/check-analytics-tracking-plan.mjs` runs in CI (the `docs`
 job) and fails when the code, the plan and the dashboards disagree: an event is
@@ -67,27 +71,27 @@ brain event is declared but never captured, or a dashboard in
 
 ## In-app surveys
 
-ADE draws its own survey card (no posthog-js). A survey shows only when it is a
-PostHog survey of type **API**, launched, and named with an ADE key prefix:
+DAEX draws its own survey card (no posthog-js). A survey shows only when it is a
+PostHog survey of type **API**, launched, and named with a DAEX key prefix:
 
 | Name starts with | Who sees it |
 |---|---|
-| `[ade:pmf]` | Used ADE on 7 or more days in the last 28 |
-| `[ade:returning]` | Opened ADE after 10 or more days away |
+| `[ade:pmf]` | Used DAEX on 7 or more days in the last 28 |
+| `[ade:returning]` | Opened DAEX after 10 or more days away |
 | `[ade:early]` | 3 to 10 days after first open, used on at most 2 days |
 
 At most one survey per install every 21 days, never in the first session or
 during onboarding, never the same survey twice, and nothing (not even the
 fetch) while analytics is off. A survey appears only after ten minutes of use
-in that launch (time with the window focused), and never for ADE's own team:
-before it offers one, ADE asks PostHog for the feature flag
+in that launch (time with the window focused), and never for DAEX's own team:
+before it offers one, DAEX asks PostHog for the feature flag
 `surveys-real-users` with the install's distinct id, and anything but a clear
 yes means no survey. `survey dismissed` and `survey sent` carry
 `shown_for_ms`, how long the card was on screen. Supported questions: open text, rating (1–5,
 1–7 or 0–10), single choice, multiple choice (with an optional "Other"), and
 link. Put the question you want to read at a glance first: dashboards show the
 first question's answer as `$survey_response`. Do not use PostHog targeting,
-URL or event conditions; ADE's rules above decide who sees a survey.
+URL or event conditions; DAEX's rules above decide who sees a survey.
 
 ## Weekly review
 
@@ -137,11 +141,11 @@ them in PostHog and update this list in the same branch.
   applies to events ingested after 2026-11-03; older history still lacks the
   property (group by `app_version` for that).
 - **Feature flag `session-replay-real-users`** (linked to recording): false
-  for `is_internal` people, so ADE's own accounts are never recorded. Its only
+  for `is_internal` people, so DAEX's own accounts are never recorded. Its only
   use; do not repurpose it. The site's per-browser opt-out is
   `?ade_no_replay=1`.
 - **Feature flag `surveys-real-users`**: false for `is_internal` people, so
-  ADE's own accounts never see an in-app survey (`surveyService.ts`). Its only
+  DAEX's own accounts never see an in-app survey (`surveyService.ts`). Its only
   use. It reads the person property, which the `Analytics reconcile` workflow
   sets; an internal account whose person is not flagged yet still gets surveys.
 - **Dashboard "ADE · Agent turns (LLM analytics)"** is managed by
@@ -174,18 +178,18 @@ them in PostHog and update this list in the same branch.
   as a Linear issue in team ADE with the `posthog` label and Linear priority
   (P0 Urgent, P1 High, P2 Medium); P3, P4 and unranked reports stay in the
   PostHog inbox. No report gets `auto-fix`, and the automation rules that
-  started an ADE agent from it (`posthog-report-investigate`,
+  started a DAEX agent from it (`posthog-report-investigate`,
   `linear-auto-fix-labeled`) are off: a person decides what an agent works on.
   It authenticates with a Linear API key; the source copy is the project
   secret `LINEAR_API_KEY`.
   - Scouts on (daily unless noted): General, Anomaly detection, Customer
     analytics, Inbox validation, Product analytics (Mondays), Surveys
-    (Mondays), Data pipelines (Mondays), and ADE's own "ADE reliability" and
+    (Mondays), Data pipelines (Mondays), and DAEX's own "ADE reliability" and
     "ADE update installs" (Mondays), which feed the others and do not report
-    on their own. The rest are paused: they watch products ADE does not use
+    on their own. The rest are paused: they watch products DAEX does not use
     or repeat the Sentry and error-tracking sources.
   - The team instructions every scout reads say who is internal, which data
-    breaks are known (the list below), and that ADE sends no autocapture.
+    breaks are known (the list below), and that DAEX sends no autocapture.
     Internal accounts are left out of usage counts only: an error on a team
     machine is a real defect, reported like any other (the Sentry and error
     tracking steering say the same), because the team's machines run the
@@ -256,7 +260,7 @@ them in PostHog and update this list in the same branch.
   disagree, Clerk is right: `scripts/analytics/reconcile-signups.mjs` compares
   them every week (`.github/workflows/analytics-reconcile.yml`) and backfills
   missing sign-ups with the same uuid, so PostHog never counts one twice. The
-  same run keeps ADE's own accounts marked internal (above).
+  same run keeps DAEX's own accounts marked internal (above).
 - **Which events fill a daily budget.** `ade_analytics_budget` says how many
   events an install dropped and why, not which. Ask PostHog for the events of
   the installs that dropped `daily_budget` on that day; most `dropped_count`

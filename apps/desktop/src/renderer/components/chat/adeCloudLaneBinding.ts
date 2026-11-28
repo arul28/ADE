@@ -8,6 +8,7 @@ import type { AdeCloudLaneComputer } from "../../state/adeCloudLaneIndex";
 import { connectWithRetry } from "./connectWithRetry";
 import { connectMachine } from "../../lib/machineConnect";
 import { MachineConnectError, sameMachineKey } from "../../../shared/machineAddress";
+import { BRAND } from "../../../shared/brand";
 
 type RemoteBinding = OpenProjectBinding & { kind: "remote" };
 
@@ -74,7 +75,7 @@ export async function resolveAdeCloudLaneBinding(args: {
 
   let target: { id: string; name: string; hostname?: string | null } | null = connection?.target ?? null;
   if (!target) {
-    if (!lane.machineKey) throw new Error(`ADE can't reach the computer of ${lane.laneName} yet. Try again in a minute.`);
+    if (!lane.machineKey) throw new Error(`${BRAND.NAME} can't reach the computer of ${lane.laneName} yet. Try again in a minute.`);
     // Never connected from here: contract C2 wakes a sleeping computer, pairs
     // this one with it through the account, and connects.
     args.onWaking();
@@ -102,7 +103,7 @@ export async function resolveAdeCloudLaneBinding(args: {
   });
   if (!connected) {
     const reason = lastError ? ipcErrorMessage(lastError) : "";
-    throw new Error(`ADE couldn't wake ${lane.laneName}${reason ? `: ${reason}` : "."}`);
+    throw new Error(`${BRAND.NAME} couldn't wake ${lane.laneName}${reason ? `: ${reason}` : "."}`);
   }
   const project = projectByOrigin(await window.ade.remoteRuntime.listProjects(targetId), origin);
   if (!project) throw new Error(`The computer of ${lane.laneName} doesn't have this project.`);

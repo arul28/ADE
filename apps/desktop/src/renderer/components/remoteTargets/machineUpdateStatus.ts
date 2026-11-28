@@ -1,6 +1,7 @@
 import type { RemoteRuntimeConnectionStatus, RemoteRuntimeUpdateBlock } from "../../../shared/types";
 import { isMachineVersionCurrent, machineUpdateTrack, type ConnectedMachine } from "./remoteMachineModel";
 import { updateTrackOfVersion } from "../../../shared/updateTrack";
+import { BRAND } from "../../../shared/brand";
 
 // ---------------------------------------------------------------------------
 // Where an "Update & restart" sent to another machine stands: in flight,
@@ -158,7 +159,7 @@ export function describeMachineUpdateAttempt(
   }
   return {
     ok: false,
-    message: `Not back yet after the update to ${pending}. Check that ADE is running on that machine.`,
+    message: `Not back yet after the update to ${pending}. Check that ${BRAND.NAME} is running on that machine.`,
     inFlight: false,
   };
 }
@@ -170,11 +171,11 @@ export function describeMachineUpdateAttempt(
  */
 export function describeUpdateBlock(block: RemoteRuntimeUpdateBlock): string {
   const names = block.holders.slice(0, 3).map((holder) => `${holder.name} (PID ${holder.pid})`);
-  if (!names.length) return "something on it kept ADE's old files in use.";
+  if (!names.length) return `something on it kept ${BRAND.NAME}'s old files in use.`;
   const more = block.holders.length - names.length;
   if (more > 0) names.push(`${more} more`);
   const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
-  return `${list} had ADE's files open.`;
+  return `${list} had ${BRAND.NAME}'s files open.`;
 }
 
 /**

@@ -1,5 +1,6 @@
 import { dialog, shell, type BrowserWindow, type MenuItemConstructorOptions } from "electron";
 import type { AutoUpdateSnapshot } from "../../../shared/types";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * "Install update" from outside the page: the macOS ADE menu and the Windows
@@ -62,18 +63,18 @@ async function message(win: BrowserWindow | null, options: Electron.MessageBoxOp
 }
 
 function notReadyMessage(snapshot: AutoUpdateSnapshot): Electron.MessageBoxOptions {
-  const releases = "You can also download ADE from https://github.com/arul28/ADE/releases/latest.";
+  const releases = `You can also download ${BRAND.NAME} from https://github.com/arul28/ADE/releases/latest.`;
   switch (snapshot.status) {
     case "error":
-      return { type: "warning", message: "ADE could not check for updates.", detail: `${snapshot.error ?? "The update check failed."} ${releases}`, buttons: ["OK"] };
+      return { type: "warning", message: `${BRAND.NAME} could not check for updates.`, detail: `${snapshot.error ?? "The update check failed."} ${releases}`, buttons: ["OK"] };
     case "downloading":
-      return { type: "info", message: `ADE is downloading ${versionLabel(snapshot.version)}.`, detail: "Choose Install Update from this menu again when it finishes.", buttons: ["OK"] };
+      return { type: "info", message: `${BRAND.NAME} is downloading ${versionLabel(snapshot.version)}.`, detail: "Choose Install Update from this menu again when it finishes.", buttons: ["OK"] };
     case "checking":
-      return { type: "info", message: "ADE is still checking for updates.", detail: "Try again in a moment.", buttons: ["OK"] };
+      return { type: "info", message: `${BRAND.NAME} is still checking for updates.`, detail: "Try again in a moment.", buttons: ["OK"] };
     case "installing":
-      return { type: "info", message: "ADE is already installing an update.", detail: "It restarts when the install finishes.", buttons: ["OK"] };
+      return { type: "info", message: `${BRAND.NAME} is already installing an update.`, detail: "It restarts when the install finishes.", buttons: ["OK"] };
     default:
-      return { type: "info", message: `ADE is up to date (${versionLabel(snapshot.currentVersion)}).`, buttons: ["OK"] };
+      return { type: "info", message: `${BRAND.NAME} is up to date (${versionLabel(snapshot.currentVersion)}).`, buttons: ["OK"] };
   }
 }
 
@@ -96,7 +97,7 @@ export async function runNativeUpdateInstall(service: NativeUpdateService, win: 
   if (snapshot.installMode === "manual") {
     const { response } = await message(win, {
       type: "info",
-      message: `ADE ${versionLabel(snapshot.version)} is available.`,
+      message: `${BRAND.NAME} ${versionLabel(snapshot.version)} is available.`,
       detail: "Download and install the package to update this computer.",
       buttons: ["Open download page", "Cancel"],
       defaultId: 0,
@@ -107,8 +108,8 @@ export async function runNativeUpdateInstall(service: NativeUpdateService, win: 
   }
   const { response } = await message(win, {
     type: "question",
-    message: `Install ADE ${versionLabel(snapshot.version)} and restart?`,
-    detail: "ADE quits, installs the update and opens again. Running chats resume when it is back; any unsaved work may be lost. Your other machines are not updated from here.",
+    message: `Install ${BRAND.NAME} ${versionLabel(snapshot.version)} and restart?`,
+    detail: `${BRAND.NAME} quits, installs the update and opens again. Running chats resume when it is back; any unsaved work may be lost. Your other machines are not updated from here.`,
     buttons: ["Install and Restart", "Cancel"],
     defaultId: 0,
     cancelId: 1,
@@ -119,7 +120,7 @@ export async function runNativeUpdateInstall(service: NativeUpdateService, win: 
     await message(win, {
       type: "warning",
       message: "The update did not start.",
-      detail: "Try again in a moment, or download ADE from https://github.com/arul28/ADE/releases/latest and install it over this copy.",
+      detail: `Try again in a moment, or download ${BRAND.NAME} from https://github.com/arul28/ADE/releases/latest and install it over this copy.`,
       buttons: ["OK"],
     });
   }

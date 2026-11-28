@@ -21,6 +21,7 @@ import { cn } from "../ui/cn";
 import { Dialog } from "../ui/dialog";
 import type { RewindPreviewFile } from "./rewindFilesPreview";
 import { withChatPin } from "./chatMachinePin";
+import { BRAND } from "../../../shared/brand";
 
 export type RewindFilesConfirmRequest = {
   messageId: string;
@@ -79,7 +80,7 @@ function statusLabel(status: TurnDiffFile["status"]): string {
 function skippedReasonLabel(reason: AgentChatRewindSkippedFile["reason"]): string {
   if (reason === "dirty_before_turn") return "Had uncommitted changes before this turn";
   if (reason === "other_chat") return "Another chat in this worktree changed it since";
-  return "ADE did not record this file's state before this turn";
+  return `${BRAND.NAME} did not record this file's state before this turn`;
 }
 
 function getDiffCacheKey(args: AgentChatGetTurnFileDiffArgs): string {
@@ -109,7 +110,7 @@ function DiffPreview({
     return (
       <div className="flex min-h-[170px] items-center justify-center border-t border-fg/[0.05] bg-black/15 px-4 py-5 text-center">
         <div className="max-w-[420px] text-[12px] leading-5 text-fg/45">
-          ADE can restore this file from the checkpoint, but no turn-level diff summary was captured for a preview.
+          {BRAND.NAME} can restore this file from the checkpoint, but no turn-level diff summary was captured for a preview.
         </div>
       </div>
     );
@@ -278,7 +279,7 @@ export function RewindFilesConfirmDialog({
           <div className="mt-4">
             <div className="mb-2 flex items-center justify-between gap-3">
               <div className="text-[12px] font-medium text-fg/70">
-                {contextRollback ? "Files ADE can restore" : "Files that will be restored"}
+                {contextRollback ? `Files ${BRAND.NAME} can restore` : "Files that will be restored"}
               </div>
               <div className="font-mono text-[11px] text-fg/42">
                 {filesCount} file{filesCount === 1 ? "" : "s"}
@@ -360,7 +361,7 @@ export function RewindFilesConfirmDialog({
 
           <div className="mt-4 rounded-md border border-fg/[0.055] bg-black/14 px-3 py-2 text-[12px] text-fg/48">
             {contextRollback
-              ? "The agent's conversation context will roll back. Saved ADE transcript stays visible."
+              ? `The agent's conversation context will roll back. Saved ${BRAND.NAME} transcript stays visible.`
               : "Conversation history is not affected."}
           </div>
     </Dialog>

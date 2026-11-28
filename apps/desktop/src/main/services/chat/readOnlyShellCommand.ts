@@ -2,9 +2,9 @@
  * Whether a shell command only reads.
  *
  * Plan mode and side chats are read-only, and both still need the agent to
- * look things up from a shell: `git log`, `rg`, and above all ADE's own
- * reads, such as `ade linear issue ADE-296 --text` for the issue the chat
- * was started on. A command passes only when every part of it is a reader
+ * look things up from a shell: `git log`, `rg`, and above all DAEX's own
+ * reads, such as `daex linear issue ADE-296 --text` (or the `ade` alias) for
+ * the issue the chat was started on. A command passes only when every part of it is a reader
  * from the lists below, so a wrong answer can only refuse a read, never let a
  * write through.
  *
@@ -16,6 +16,8 @@
  * redirection to a file, an environment assignment in front of a command,
  * and, for PowerShell, script blocks and `(...)` expressions.
  */
+
+import { ADE_CLI_COMMAND_NAMES } from "../../../shared/cliCommandNames";
 
 export type ReadOnlyShellDialect = "bash" | "powershell";
 
@@ -311,11 +313,13 @@ function programName(word: Word | undefined, trustedDirs?: RegExp): string | nul
   if (!word) return null;
   const raw = word.text;
   if (/^\$(\{)?(env:)?ADE_CLI_PATH(\})?$/i.test(raw)) return "ade";
-  if (/^\$(\{)?(env:)?ADE_CLI_BIN_DIR(\})?[\\/]ade(\.cmd|\.exe|\.ps1)?$/i.test(raw)) return "ade";
+  if (/^\$(\{)?(env:)?ADE_CLI_BIN_DIR(\})?[\\/](?:daex|ade)(\.cmd|\.exe|\.ps1)?$/i.test(raw)) return "ade";
   if (word.unsafe) return null;
   if (/[\\/]/.test(raw) && !(trustedDirs && trustedDirs.test(raw))) return null;
   const base = raw.split(/[\\/]/).pop() ?? raw;
-  return base.replace(/\.(exe|cmd|bat|ps1)$/i, "").toLowerCase();
+  const name = base.replace(/\.(exe|cmd|bat|ps1)$/i, "").toLowerCase();
+  // `daex` and its alias `ade` are one CLI: both are judged, and matched in `programs`, as `ade`.
+  return (ADE_CLI_COMMAND_NAMES as readonly string[]).includes(name) ? "ade" : name;
 }
 
 function adeCommandIsReadOnly(args: string[]): boolean {

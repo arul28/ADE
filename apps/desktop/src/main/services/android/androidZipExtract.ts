@@ -3,6 +3,7 @@ import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Transform } from "node:stream";
 import zlib from "node:zlib";
+import { BRAND } from "../../../shared/brand";
 
 /*
  * Extracts the SDK's zip archives (platform-tools, the emulator, a system
@@ -270,7 +271,7 @@ export async function extractZip(zipPath: string, destination: string, options: 
         continue;
       }
       if (entry.method !== 0 && entry.method !== 8) {
-        throw new ZipExtractError(`The archive entry ${entry.name} uses compression method ${entry.method}, which ADE cannot read.`);
+        throw new ZipExtractError(`The archive entry ${entry.name} uses compression method ${entry.method}, which ${BRAND.NAME} cannot read.`);
       }
       fs.mkdirSync(path.dirname(outPath), { recursive: true });
       const start = entryDataOffset(fd, entry);

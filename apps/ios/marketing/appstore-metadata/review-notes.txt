@@ -1,0 +1,16 @@
+DAEX is a companion app for DAEX, a developer tool that runs AI coding agents on the user's own computer or on DAEX Cloud computers.
+
+Sign in:
+1. Open the app, enter the email appreview+clerk_test@ade-app.dev and tap "Continue with email".
+2. When it asks for a code, enter 424242. This account uses a fixed code; no email is sent.
+
+What you can try with this account (no computer of your own needed):
+- The project "Hello-World" (a public GitHub repository) is already on the account. Open it, tap New chat, type a message and send it. DAEX Cloud starts a computer for it and shows each setup step. Setup stops at "Sign in to Claude", because running the agent needs the user's own Claude or Codex account.
+- Settings > DAEX Cloud: plan, hours and computers. Open a computer to change its size, sleep or wake it, or delete its lane. The free plan's hours show "on hold" (they need a GitHub account); this account has 50 earned hours, which the computers use.
+- Settings > Account: account details, and Delete account (deletes the account and its data).
+- Add project > From GitHub: a public repository can be added by its address (for example octocat/Hello-World) without a GitHub sign-in.
+
+Running coding agents needs the user's own AI provider sign-in (for example Claude or Codex), which we cannot provide. A user can also pair a Mac running the free DAEX desktop app (https://ade-app.dev/download) from Settings > Connections.
+
+The app sells nothing. DAEX Cloud plans are bought on the website, and the app has no links or buttons to buy them.
+

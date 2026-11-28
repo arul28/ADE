@@ -10,6 +10,7 @@ import type {
   AndroidSystemImage,
 } from "../../../shared/types/androidEmulator";
 import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
+import { BRAND } from "../../../shared/brand";
 
 /*
  * Where this machine's Android SDK is and what it holds: the tools, the
@@ -432,7 +433,7 @@ export async function readAndroidSdkStatus(options: AndroidSdkStatusOptions = {}
       available: Boolean(paths.sdkmanager && isFile(paths.sdkmanager)),
       path: paths.sdkmanager && isFile(paths.sdkmanager) ? paths.sdkmanager : null,
       version: cmdlineDir ? androidPackageRevision(cmdlineDir) : null,
-      detail: paths.sdkmanager && isFile(paths.sdkmanager) ? null : "Android SDK Command-line Tools are not installed. ADE reads the hardware profiles from them (or from Android Studio); without either it can only use AVDs you already have.",
+      detail: paths.sdkmanager && isFile(paths.sdkmanager) ? null : `Android SDK Command-line Tools are not installed. ${BRAND.NAME} reads the hardware profiles from them (or from Android Studio); without either it can only use AVDs you already have.`,
     },
     {
       id: "system-image",

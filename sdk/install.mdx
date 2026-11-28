@@ -1,29 +1,29 @@
 ---
 title: "Install"
-description: "Install @ade-dev/sdk and @ade-dev/chat-ui. Node 22, an isolated home directory, and how the sidecar finds an ade binary."
+description: "Install @daex-dev/sdk and @daex-dev/chat-ui. Node 22, an isolated home directory, and how the sidecar finds an ade binary."
 icon: "download"
 ---
 
 ```bash
-npm install @ade-dev/sdk
+npm install @daex-dev/sdk
 ```
 
 Optional UI:
 
 ```bash
-npm install @ade-dev/chat-ui
+npm install @daex-dev/chat-ui
 ```
 
 Requires **Node 22**. The packages ship ESM + CJS.
 
 ## Isolated home
 
-Pass a directory your app owns. The sidecar stores thread keys and runtime state there. Never point it at the developer's `~/.ade` or at ADE's default machine socket.
+Pass a directory your app owns. The sidecar stores thread keys and runtime state there. Never point it at the developer's `~/.ade` or at DAEX's default machine socket.
 
 ```ts
-import { createAdeChat } from "@ade-dev/sdk";
+import { createDaexChat } from "@daex-dev/sdk";
 
-const ade = await createAdeChat({
+const ade = await createDaexChat({
   home: "./.ade-embed", // created if missing, mode 0700
 });
 ```
@@ -33,27 +33,27 @@ In Electron, use the main process and a path under `userData`:
 ```ts
 import path from "node:path";
 import { app } from "electron";
-import { createAdeChat } from "@ade-dev/sdk";
+import { createDaexChat } from "@daex-dev/sdk";
 
-const ade = await createAdeChat({
+const ade = await createDaexChat({
   home: path.join(app.getPath("userData"), "ade"),
 });
 ```
 
 Two clients on one `home` fight over the same socket and SQLite root. Open **one** client per isolated home.
 
-## Where `ade` comes from
+## Where the runtime binary comes from
 
 Resolution order:
 
 1. `binaryPath` — pin a specific build; skips everything below.
-2. An installed `@ade-dev/runtime-<target>` platform package.
+2. An installed `@ade-dev/runtime-<target>` platform package (its `bin/daex`, or `bin/ade` in packages built before the rename).
 3. A previously downloaded binary in the home cache.
-4. `ade` on `PATH` (optional; tests can disable this).
-5. Download from the ADE GitHub release, fail-closed against that release's `SHA256SUMS`.
+4. `daex` on `PATH`, or `ade` when there is no `daex` (optional; tests can disable this).
+5. Download from the DAEX GitHub release, fail-closed against that release's `SHA256SUMS`.
 
 ```ts
-const ade = await createAdeChat({
+const ade = await createDaexChat({
   home: "./.ade-embed",
   binaryPath: "/usr/local/bin/ade",  // skip everything below
   runtimeNodeModules: "/opt/ade/native/node_modules", // when they are not beside the binary
@@ -76,12 +76,12 @@ Downloads verify checksums before the binary is used. A mismatch is a hard error
 
 ## Electron
 
-Run `@ade-dev/sdk` from the **main process**, not the renderer. Spawn owns a child process and a Unix socket (or a Windows named pipe), and a sandboxed renderer has neither.
+Run `@daex-dev/sdk` from the **main process**, not the renderer. Spawn owns a child process and a Unix socket (or a Windows named pipe), and a sandboxed renderer has neither.
 
-Do not write the bridge yourself. `@ade-dev/sdk/electron` ships it: one function per process, listener teardown on reload, and the history-and-live ordering rule in code.
+Do not write the bridge yourself. `@daex-dev/sdk/electron` ships it: one function per process, listener teardown on reload, and the history-and-live ordering rule in code.
 
 <Card title="Electron bridge" href="/sdk/electron" icon="atom" horizontal>
-  `registerAdeIpc`, `exposeAdeBridge`, `createAdeIpcClient`, and what `sandbox: true` requires.
+  `registerDaexIpc`, `exposeDaexBridge`, `createDaexIpcClient`, and what `sandbox: true` requires.
 </Card>
 
 ## Windows

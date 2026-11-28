@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { resolvePathWithinRoot } from "../shared/utils";
+import { BRAND } from "../../../shared/brand";
 import {
   BUILT_IN_BROWSER_MAX_RECORDING_MS,
   BUILT_IN_BROWSER_RECORDING_FPS_OPTIONS,
@@ -29,7 +30,7 @@ export const BUILT_IN_BROWSER_DEFAULT_NETWORK_LOG_LIMIT = 50;
 export const BUILT_IN_BROWSER_MAX_NETWORK_LOG_LIMIT = BUILT_IN_BROWSER_NETWORK_LOG_CAPACITY;
 export const BUILT_IN_BROWSER_OBSERVATION_NETWORK_LOG_LIMIT = 10;
 
-export const BUILT_IN_BROWSER_REDACTED_HEADER_VALUE = "[redacted by ADE]";
+export const BUILT_IN_BROWSER_REDACTED_HEADER_VALUE = `[redacted by ${BRAND.NAME}]`;
 
 /**
  * Credential-bearing headers whose values never reach an observation, a HAR
@@ -247,12 +248,12 @@ export function buildBuiltInBrowserHar(args: {
   return {
     log: {
       version: "1.2",
-      creator: { name: "ADE built-in browser", version: args.creatorVersion },
+      creator: { name: `${BRAND.NAME} built-in browser`, version: args.creatorVersion },
       pages: [
         {
           startedDateTime: pageStartedDateTime,
           id: pageId,
-          title: args.pageTitle ?? args.pageUrl ?? "ADE browser tab",
+          title: args.pageTitle ?? args.pageUrl ?? `${BRAND.NAME} browser tab`,
           pageTimings: { onContentLoad: -1, onLoad: -1 },
         },
       ],

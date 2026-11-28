@@ -869,7 +869,7 @@ struct LiveInspectFailure: LocalizedError {
   static func visibleMessage(for error: Error) -> String {
     let nsError = error as NSError
     if (nsError.userInfo["ADEErrorCode"] as? String) == "unsupported_action" {
-      return "Update ADE on your Mac to inspect its screens from here."
+      return "Update \(Brand.name) on your Mac to inspect its screens from here."
     }
     let raw = nsError.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
     guard let colon = raw.firstIndex(of: ":") else {

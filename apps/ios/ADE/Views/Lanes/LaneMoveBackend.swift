@@ -73,7 +73,7 @@ struct SyncLaneMoveBackend: LaneMoveBackend {
           sync.laneMoveActionAvailable("chat.startCrossMachineBatchMove", route: route),
           sync.laneMoveActionAvailable("chat.getCrossMachineBatchMove", route: route)
     else {
-      throw LaneMoveReadFailure(message: "The computer this lane is on needs an ADE update to move a lane from the phone.")
+      throw LaneMoveReadFailure(message: "The computer this lane is on needs a \(Brand.name) update to move a lane from the phone.")
     }
     let options = try await sync.laneMoveOptions(route: route, viaSessionId: via)
     if let sessions = source.sessions, let chats = source.chats {

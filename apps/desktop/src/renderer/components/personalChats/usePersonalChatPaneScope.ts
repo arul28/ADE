@@ -13,6 +13,7 @@ import {
 } from "../shared/ModelPicker/modelCatalog";
 import { createPersonalAgentChatApi, personalCallResult, type PersonalChatsBridge } from "./personalAgentChatApi";
 import { callPersonalOn, personalAgentChatApiFor } from "./personalChatMachines";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The machine's personal-chat bridge. Resolved per call, so a runtime without
@@ -20,7 +21,7 @@ import { callPersonalOn, personalAgentChatApiFor } from "./personalChatMachines"
  */
 export function personalChatsBridge(): PersonalChatsBridge {
   const candidate = (window.ade as typeof window.ade & { personalChats?: PersonalChatsBridge }).personalChats;
-  if (!candidate) throw new Error("Personal chats are not available in this ADE runtime.");
+  if (!candidate) throw new Error(`Personal chats are not available in this ${BRAND.NAME} runtime.`);
   return candidate;
 }
 

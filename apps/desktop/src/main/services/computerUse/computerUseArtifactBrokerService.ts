@@ -61,6 +61,7 @@ import {
   type AttachPolicy,
   type ContentFingerprint,
 } from "./proofFingerprint";
+import { BRAND } from "../../../shared/brand";
 
 type StoredArtifactRow = {
   id: string;
@@ -1102,7 +1103,7 @@ export function createComputerUseArtifactBrokerService(args: {
       available: agentBrowserInstalled,
       state: agentBrowserInstalled ? "installed" : "missing",
       detail: agentBrowserInstalled
-        ? "agent-browser CLI is installed and can produce artifacts for ADE ingestion."
+        ? `agent-browser CLI is installed and can produce artifacts for ${BRAND.NAME} ingestion.`
         : "agent-browser CLI is not installed on this machine.",
       supportedKinds: [
         "screenshot",
@@ -1119,8 +1120,8 @@ export function createComputerUseArtifactBrokerService(args: {
         available: local.overallState === "present",
         state: local.overallState,
         detail: local.overallState === "present"
-          ? "ADE local computer-use tools are available as a fallback."
-          : `ADE local computer-use tools are fallback-only and currently ${local.overallState}.`,
+          ? `${BRAND.NAME} local computer-use tools are available as a fallback.`
+          : `${BRAND.NAME} local computer-use tools are fallback-only and currently ${local.overallState}.`,
         supportedKinds: localKinds,
       },
     };

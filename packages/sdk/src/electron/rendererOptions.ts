@@ -11,14 +11,14 @@ import type { ThreadResumeOptions } from "../client.js";
 import type { AgentChatFileRef } from "../types.js";
 
 /** The renderer `threads.open` fields the bridge forwards without an `openOptions` hook. */
-export const ADE_IPC_RENDERER_OPEN_FIELDS = ["provider", "model", "title", "reasoningEffort"] as const;
+export const DAEX_IPC_RENDERER_OPEN_FIELDS = ["provider", "model", "title", "reasoningEffort"] as const;
 
 /** The `threads.open` options a renderer may choose (see `rendererOpenOptions`). */
-export type RendererOpenOptions = Pick<ThreadResumeOptions, (typeof ADE_IPC_RENDERER_OPEN_FIELDS)[number]>;
+export type RendererOpenOptions = Pick<ThreadResumeOptions, (typeof DAEX_IPC_RENDERER_OPEN_FIELDS)[number]>;
 
 /**
  * The `threads.open` options a renderer may choose when the host has no
- * `openOptions` hook: `ADE_IPC_RENDERER_OPEN_FIELDS`, strings only. Null when
+ * `openOptions` hook: `DAEX_IPC_RENDERER_OPEN_FIELDS`, strings only. Null when
  * none remain.
  */
 export function rendererOpenOptions(
@@ -27,14 +27,14 @@ export function rendererOpenOptions(
   log: (line: string) => void,
 ): RendererOpenOptions | null {
   if (!rendererOptions) return null;
-  const allowed = new Set<string>(ADE_IPC_RENDERER_OPEN_FIELDS);
+  const allowed = new Set<string>(DAEX_IPC_RENDERER_OPEN_FIELDS);
   const filtered: Record<string, string> = {};
   for (const [field, value] of Object.entries(rendererOptions)) {
     if (value === undefined) continue;
     if (!allowed.has(field)) {
       log(
         `[ade-electron] threads.open "${key}": dropped renderer option "${field}"; ` +
-          `only ${ADE_IPC_RENDERER_OPEN_FIELDS.join(", ")} cross the bridge. Use the openOptions hook to configure threads.`,
+          `only ${DAEX_IPC_RENDERER_OPEN_FIELDS.join(", ")} cross the bridge. Use the openOptions hook to configure threads.`,
       );
       continue;
     }
@@ -44,7 +44,7 @@ export function rendererOpenOptions(
     }
     filtered[field] = value;
   }
-  // Every key passed the ADE_IPC_RENDERER_OPEN_FIELDS check above, and each
+  // Every key passed the DAEX_IPC_RENDERER_OPEN_FIELDS check above, and each
   // of those fields is a string option.
   return Object.keys(filtered).length > 0 ? (filtered as RendererOpenOptions) : null;
 }
@@ -105,3 +105,8 @@ function rendererFileRef(item: unknown): AgentChatFileRef[] {
   if (typeof entry.hydrate === "boolean") ref.hydrate = entry.hydrate;
   return [ref];
 }
+
+// Pre-DAEX names, kept as deprecated aliases so code written against the
+// `@ade-dev` packages keeps compiling. Remove them in a future major version.
+/** @deprecated Use {@link DAEX_IPC_RENDERER_OPEN_FIELDS}. */
+export const ADE_IPC_RENDERER_OPEN_FIELDS = DAEX_IPC_RENDERER_OPEN_FIELDS;

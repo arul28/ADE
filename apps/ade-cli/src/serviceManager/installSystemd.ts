@@ -37,6 +37,7 @@ import {
   uninstallDetachedRuntimeService,
 } from "./detachedSupervisor";
 import { restartEntrypointSupervisedBrain } from "./entrypointSupervisor";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 type SystemdServiceManagerDeps = {
   command?: AdeServiceCommand;
@@ -107,7 +108,7 @@ export function renderSystemdUnit(command: AdeServiceCommand, options: { runtime
     ? `\nStandardOutput=append:${logPath("systemd.out.log")}\nStandardError=append:${logPath("systemd.err.log")}`
     : "";
   return `[Unit]
-Description=ADE runtime service
+Description=${BRAND.NAME} runtime service
 
 [Service]
 Type=simple
@@ -324,7 +325,7 @@ export async function installSystemdService(
         serviceName: ADE_RUNTIME_SERVICE_NAME,
         action: "install",
         path: targetPath,
-        message: "ADE service systemd user service is already installed and running.",
+        message: `${BRAND.NAME} service systemd user service is already installed and running.`,
       };
     }
   }
@@ -359,7 +360,7 @@ export async function installSystemdService(
       serviceName: ADE_RUNTIME_SERVICE_NAME,
       action: "install",
       path: targetPath,
-      message: "ADE service systemd user service is already installed; its background service finished starting.",
+      message: `${BRAND.NAME} service systemd user service is already installed; its background service finished starting.`,
     };
   }
   if (young.kind === "starting") {
@@ -369,7 +370,7 @@ export async function installSystemdService(
       serviceName: ADE_RUNTIME_SERVICE_NAME,
       action: "install",
       path: targetPath,
-      message: `ADE service systemd user service is installed; the background service (pid ${young.pid}) is still starting.`,
+      message: `${BRAND.NAME} service systemd user service is installed; the background service (pid ${young.pid}) is still starting.`,
     };
   }
   if (young.kind === "died") {
@@ -446,14 +447,14 @@ export async function installSystemdService(
     return handoverFailure(
       targetPath,
       "predecessor_exit",
-      `ADE service handover failed because predecessor pid ${oldPid} is still alive.`,
+      `${BRAND.NAME} service handover failed because predecessor pid ${oldPid} is still alive.`,
     );
   }
   if (replacementPid == null || replacementPid === oldPid) {
     return handoverFailure(
       targetPath,
       "replacement_pid",
-      `ADE service handover failed because systemd did not report a distinct replacement pid (old ${oldPid ?? "none"}, new ${replacementPid ?? "none"}).`,
+      `${BRAND.NAME} service handover failed because systemd did not report a distinct replacement pid (old ${oldPid ?? "none"}, new ${replacementPid ?? "none"}).`,
     );
   }
   if (!replacementResponsive) {
@@ -468,13 +469,13 @@ export async function installSystemdService(
         serviceName: ADE_RUNTIME_SERVICE_NAME,
         action: "install",
         path: targetPath,
-        message: `ADE service systemd user service installed; the background service (pid ${replacementPid}) is still starting after ${timeoutMs}ms.${lingerNote}`,
+        message: `${BRAND.NAME} service systemd user service installed; the background service (pid ${replacementPid}) is still starting after ${timeoutMs}ms.${lingerNote}`,
       };
     }
     return handoverFailure(
       targetPath,
       "replacement_responsive",
-      `ADE service handover failed because replacement pid ${replacementPid} did not initialize over ${socketPath} within ${timeoutMs}ms.`,
+      `${BRAND.NAME} service handover failed because replacement pid ${replacementPid} did not initialize over ${socketPath} within ${timeoutMs}ms.`,
     );
   }
   return {
@@ -483,7 +484,7 @@ export async function installSystemdService(
     serviceName: ADE_RUNTIME_SERVICE_NAME,
     action: "install",
     path: targetPath,
-    message: `ADE service systemd user service installed.${lingerNote}`,
+    message: `${BRAND.NAME} service systemd user service installed.${lingerNote}`,
   };
 }
 
@@ -500,7 +501,7 @@ function ensureLinger(run: ServiceManagerSpawnSync): string {
   if (show.status === 0 && /Linger=yes/.test(serviceManagerResultText(show))) return "";
   const enable = run("loginctl", ["enable-linger", ...(user ? [user] : [])], { encoding: "utf8" });
   if (enable.status === 0) return "";
-  return ` To keep ADE running after logout and reboot, run once: sudo loginctl enable-linger ${user || "$USER"}`;
+  return ` To keep ${BRAND.NAME} running after logout and reboot, run once: sudo loginctl enable-linger ${user || "$USER"}`;
 }
 
 /**
@@ -553,7 +554,7 @@ export async function uninstallSystemdService(
     serviceName: ADE_RUNTIME_SERVICE_NAME,
     action: "uninstall",
     path: targetPath,
-    message: "ADE service systemd user service removed.",
+    message: `${BRAND.NAME} service systemd user service removed.`,
   };
 }
 
@@ -576,7 +577,7 @@ export function getSystemdServiceStatus(): ServiceManagerStatusResult {
       installed: false,
       running: false,
       path: targetPath,
-      message: "ADE service systemd user service is not installed.",
+      message: `${BRAND.NAME} service systemd user service is not installed.`,
     };
   }
 
@@ -589,7 +590,7 @@ export function getSystemdServiceStatus(): ServiceManagerStatusResult {
     running,
     path: targetPath,
     message: running
-      ? "ADE service systemd user service is running."
-      : serviceManagerResultText(active) || "ADE service systemd user service is installed but not running.",
+      ? `${BRAND.NAME} service systemd user service is running.`
+      : serviceManagerResultText(active) || `${BRAND.NAME} service systemd user service is installed but not running.`,
   };
 }

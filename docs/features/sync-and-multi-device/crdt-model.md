@@ -1,606 +1,172 @@
 # CRDT Model (cr-sqlite)
 
-ADE's replicated state is a CRDT: every row of every eligible table
-carries per-column Lamport timestamps, and merges use last-writer-wins
-per column. This document describes how cr-sqlite is wired up on desktop,
-how iOS emulates the same contract without the loadable extension, and
-the schema implications that fall out of the CRR retrofit.
+DAEX's replicated state is a CRDT: each row of each eligible table carries
+per-column Lamport clocks, and merges are last-writer-wins per column. Desktop
+and the brain load the cr-sqlite extension; iOS emulates the same contract in
+SQL.
 
 ## Where it plugs in
 
-The entire CRDT layer lives inside the shared DB adapter:
-`apps/desktop/src/main/services/state/kvDb.ts` exposes an `AdeDb` with
-an `AdeDb.sync` object. The same module is consumed both by the
-Electron main process and by the **ADE runtime** (`ade serve`);
-both open the same `.ade/ade.db` and use the same `AdeDb.sync`
-surface, so a change in either place is wire-compatible with the other.
+`apps/desktop/src/main/services/state/kvDb.ts` exposes `AdeDb` with
+`AdeDb.sync`, used by Electron main and by the brain (`daex serve`) over the
+same `.ade/ade.db`:
 
-Every other service talks to plain SQLite (`run`, `get`, `all`,
-`prepare`); `AdeDb.sync` exposes:
-
-- `getSiteId(): string` — the local cr-sqlite site identifier.
-- `getDbVersion(): number` — the monotonic replication version.
+- `getSiteId()`, `getDbVersion()`.
 - `exportChangesSince(version, { maxRows?, throughDbVersion?, excludeTables?,
-  rejectOversizedVersionGroup? }):
-  CrsqlChangeRow[]` — the changes generated since the given version.
-  Exports are **windowed and bounded**: callers constrain the scan to
-  a `db_version` range (the sync pump and peer relay walk 250k-version
-  windows per poll, ~4 batches of rows at a time) and the scan runs
-  inside a read transaction that pins the WAL snapshot. Both are
-  load-bearing: the `crsql_changes` vtab aborts any scan
-  (`SQLITE_ABORT`) when another connection commits mid-read, a bare
-  `LIMIT` cannot bound a vtab scan (it applies after the full backlog
-  is materialized and sorted), and version-range constraints are the
-  only thing that pushes down to the indexed clock tables. Truncation
-  only happens at complete `db_version` groups so ack watermarks stay
-  correct. `excludeTables` applies inside the SQL query before limiting.
-  With `rejectOversizedVersionGroup`, a group larger than `maxRows` throws
-  `crsql_export_version_group_too_large` instead of materializing the whole
-  transaction in memory.
-- `applyChanges(rows: CrsqlChangeRow[]): ApplyRemoteChangesResult` —
-  apply remote changes locally, after dropping rows for retired,
-  locally-absent, and local-only tables (see [Apply](#apply)).
-- `discardUnpublishedChangesForTables(tableNames: string[]): void` —
-  records a per-table, per-site high-water mark in the local-only
-  `local_crr_change_suppressions` table so subsequent
-  `exportChangesSince` calls filter local-site rows for those tables at
-  or below the current `db_version`. Used when local viewer state
-  (e.g. the device registry on a viewer join) must be cleared without
-  relaying those clears to sync peers.
+  rejectOversizedVersionGroup? })` — **windowed and bounded**: callers scan a
+  `db_version` range (250,000-version windows) inside a read transaction that
+  pins the WAL snapshot, because the `crsql_changes` vtab aborts when another
+  connection commits mid-read and a bare `LIMIT` cannot bound a vtab scan.
+  Truncation happens only at whole `db_version` groups.
+  `rejectOversizedVersionGroup` throws
+  `crsql_export_version_group_too_large` instead of loading a huge group.
+- `applyChanges(rows)` — see [Apply](#apply).
+- `discardUnpublishedChangesForTables(tableNames)` — see *Local clears*.
 
-The canonical `syncHostService` and `syncPeerService`
-(`apps/ade-cli/src/services/sync/`) use those four primitives plus
-`syncProtocol.ts` envelope encoding to do the actual wire exchange.
-The desktop tree's matching files are one-line re-exports of the
-ade-cli modules — there is no second implementation to keep in sync.
+`syncHostService` and `syncPeerService` (`apps/ade-cli/src/services/sync/`) use
+these with `syncProtocol.ts`.
 
-## Desktop / daemon: native loadable extension
+## Desktop and brain: native loadable extension
 
-Both the Electron main process and the `ade serve` daemon open SQLite
-through `node:sqlite` and load a vendored `crsqlite.dylib` (macOS),
-`crsqlite.dll` (Windows x64), or `crsqlite.so` (Linux x64 and arm64) as a
-loadable extension. A fresh connection runs
-`SELECT load_extension(...)` once, then `AdeDb` marks every eligible
-non-virtual table as a CRR at startup:
+`node:sqlite` loads `crsqlite.dylib`, `crsqlite.dll` (Windows x64) or
+`crsqlite.so` (Linux x64/arm64), then `crsql_as_crr` marks every table except
+`sqlite_%`, `crsql_%` and `LOCAL_ONLY_CRR_EXCLUDED_TABLES`. Discovery is dynamic:
+a new table becomes a CRR at next startup. `ADD COLUMN` is wrapped in
+`crsql_begin_alter` / `crsql_commit_alter`.
 
-```sql
-SELECT crsql_as_crr('table_name');
-```
+Startup self-heals in `kvDb.ts`:
 
-**Exclusions:**
+- `removeOrphanedCrrMetadata` drops clock/pks tables whose base table is gone
+  (otherwise every `crsql_changes` scan aborts and export silently dies).
+- Two processes can open a new DB at once, so `rebuildTableInTransaction`
+  re-plans under `BEGIN IMMEDIATE` from the live schema. `convertToCrr` logs
+  `db.crr_conversion_failed` for a schema cr-sqlite refuses
+  (`hasCrrRefusedSchema`) instead of failing the open; phone-critical tables
+  still throw.
+- Copy-table rebuilds drop a leftover `__ade_crr_repair_<name>` staging table
+  before their `CREATE`, and `sweepOrphanedRepairStagingTables()` clears orphans
+  at open; otherwise every retrofit throws `table already exists` and loops.
 
-- `sqlite_%`, `crsql_%` — virtual / internal tables
+`validate-win-artifacts.mjs` loads the packaged DLL and proves a real
+`crsql_changes` row, so a broken Windows package fails CI.
+`SyncRoleSnapshot.crdtSyncAvailable` disables pairing and shows reinstall
+guidance when the extension cannot load.
 
-The migration is dynamic: any new table that appears in
-`sqlite_master` and is not in the excluded set is marked as a CRR
-automatically at next startup. There is no hand-curated CRR list to
-maintain when a feature adds a table.
-
-Startup also self-heals **orphaned CRR shadow tables**
-(`removeOrphanedCrrMetadata` in `kvDb.ts`): if a base table was
-dropped but its `__crsql_clock` / `__crsql_pks` shadow tables were
-left behind, every `crsql_changes` scan fails instantly with
-`SQLITE_ABORT` — the vtab unions all clock tables it finds — silently
-killing changeset export (mobile sync, peer relay) while writes keep
-working. The repair drops shadow tables whose base table no longer
-exists before any other CRR work, so existing DBs heal on the next
-brain start.
-
-The desktop and the brain can open a brand-new database at the same time.
-The retrofit therefore plans each table's rebuild again under `BEGIN IMMEDIATE`
-(`rebuildTableInTransaction` takes a `resolvePlan` called with the write lock
-held), from the live schema: a table the other process already rebuilt or made
-a CRR is skipped. Planning from the earlier snapshot once joined an old table
-definition to fresh column defaults and built a table `crsql_as_crr` refuses
-("NOT NULL column without a DEFAULT VALUE"), which failed the open in both
-processes. A half-converted table (a clock without all three triggers) is now
-rebuilt too, keeping its clock and pks history. As a backstop, `convertToCrr`
-logs `db.crr_conversion_failed` and moves on for a schema cr-sqlite refuses
-(`hasCrrRefusedSchema`) rather than fail the open; phone-critical tables still
-throw, and a busy or locked error is rethrown so the open retries.
-
-Startup also self-heals **orphaned rebuild staging tables**. Copy-table
-migrations (`rebuildTableInTransaction`, used for the column drop/rename that
-CRR forbids in place — see Rule 2) issue a bare
-`CREATE TABLE __ade_crr_repair_<name>`. A rebuild whose process was killed, or
-whose row-copy failed on a bloated source table, can leave that staging table
-behind — and then every retrofit throws `table already exists`, wedging the sync
-host in an infinite repair loop that silently starves changeset export. Two
-guards prevent this: `rebuildTableInTransaction` now drops any leftover staging
-table (and its `__crsql_clock` / `__crsql_pks` siblings) inside the same
-transaction before the `CREATE`, and `sweepOrphanedRepairStagingTables()` runs at
-`openKvDb` — after `recoverInterruptedTableRebuilds()` has salvaged interrupted
-renames — to clear any orphan recovery could not reconcile (staging bases it
-deliberately marked ambiguous are skipped, since retrofit already skips them).
-Every drop uses `if exists` and the whole sweep is wrapped so it never throws out
-of open, and original tables are untouched, so no user data is lost. The
-root-cause bloat is bounded separately: `automation_ingress_events` now has a
-hard 10,000-rows-per-project cap (any status) on top of the 2,000 active-row cap,
-so an always-on brain dispatching high webhook volume can't grow the table inside
-the 7-day retention window to the point where its rebuild fails mid-copy (see
-[ARCHITECTURE §3.1](../../ARCHITECTURE.md)).
-
-### Windows package proof and failure surface
-
-`validate-win-artifacts.mjs` does more than check that `crsqlite.dll` exists.
-Its installed-package smoke launches Electron as Node, loads the unpacked DLL
-into an in-memory `node:sqlite` database, converts a probe table with
-`crsql_as_crr`, inserts a row, and requires at least one matching
-`crsql_changes` record. A Windows installer therefore cannot pass CI with a
-wrong-architecture, misplaced, or unloadable extension.
-
-At runtime, `SyncRoleSnapshot.crdtSyncAvailable` carries the typed capability
-to the Connections panel. If the Windows runtime still cannot load the
-extension, phone pairing/sync is disabled and the **This computer** card shows
-reinstall-and-restart guidance. Older runtimes that omit the typed field remain
-compatible through the existing bounded status-text fallback.
-
-Sync-managed tables support later `ALTER TABLE ... ADD COLUMN` through
-automatic `crsql_begin_alter` / `crsql_commit_alter` wrapping in the
-adapter.
-
-### Site identity
-
-Each device has a unique local site id stored at
-`.ade/secrets/sync-site-id`. It is generated once on first launch and
-persisted. Clearing the file forces a fresh site id and re-initializes
-replication state (use only as a last resort; it looks like a new
-device to every connected peer).
+Each device's site id is `.ade/secrets/sync-site-id`; clearing it makes the
+device look new to every peer.
 
 ## iOS: pure-SQL CRR emulation
 
-Source file: `apps/ios/ADE/Services/Database.swift` (~2,200 lines).
+iOS system SQLite cannot load extensions (`sqlite3_load_extension`,
+`sqlite3_auto_extension` are refused), so `apps/ios/ADE/Services/Database.swift`
+implements the CRR contract in SQL:
 
-iOS system SQLite does not support `sqlite3_load_extension()`, rejects
-`sqlite3_auto_extension()` on Apple platforms, and crashes when
-`sqlite3_crsqlite_init()` is called directly because the SQLite API
-thunk pointer is nil in a loadable-extension binary. Rather than
-fighting those restrictions with a static-link wrapper (which was the
-original path before the pivot), iOS implements the **CRR contract in
-SQL** against stock system SQLite.
-
-What this means concretely:
-
-### Metadata tables
-
-The iOS app creates the same metadata tables cr-sqlite would:
-
-- `crsql_master` (tracked tables)
-- `crsql_site_id` (this device's stable site id)
-- `crsql_changes` (change log — `[table]`, `pk`, `cid`, `val`,
-  `col_version`, `db_version`, `site_id`, `cl`, `seq`)
-- `<table>__crsql_clock` (per-table clock table), matching the
-  cr-sqlite schema
-
-Indexes match cr-sqlite's expected shape:
-
-```sql
-CREATE UNIQUE INDEX idx_crsql_changes_unique
-  ON crsql_changes([table], pk, cid, db_version, site_id, cl, seq);
-
-CREATE INDEX idx_crsql_changes_version
-  ON crsql_changes(db_version, cl, seq);
-
-CREATE INDEX idx_crsql_changes_table_pk
-  ON crsql_changes([table], pk);
-```
-
-### Custom SQLite functions
-
-Registered at connection open via `sqlite3_create_function_v2`:
-
-- `ade_next_db_version()` — returns `max(db_version) + 1` from
-  `crsql_changes`. Used by trigger bodies to stamp each generated
-  row.
-- `ade_local_site_id()` — returns the local hex site id.
-- `ade_capture_local_changes()` — batched change-capture helper.
-
-These are the trigger context cr-sqlite normally provides in C code.
-
-### Per-table change-capture triggers
-
-For each CRR-marked table, the iOS code installs three triggers:
-`AFTER INSERT`, `AFTER UPDATE`, `AFTER DELETE`. Each writes a row into
-`crsql_changes` for every affected column (or a tombstone row with
-`cid = "-1"` for deletes). Example (elided) INSERT body:
-
-```sql
-INSERT INTO crsql_changes([table], pk, cid, val, col_version,
-                          db_version, site_id, cl, seq)
-SELECT 'table_name',
-       NEW.primary_key_column,
-       'column_name',
-       NEW.column_name,
-       1,
-       ade_next_db_version(),
-       ade_local_site_id(),
-       0, 0;
-```
-
-This matches the semantics the desktop cr-sqlite extension produces.
-
-### `enableCrr(for:)`
-
-Dynamically discovers tables from `sqlite_master` (excluding
-`sqlite_%`, `crsql_%`, `%__crsql_clock`, `%__crsql_pks`) and installs
-the triggers. Symmetric to desktop's dynamic startup behavior.
-
-### Wire compatibility
-
-`exportChangesSince(version:)` and `applyChanges(_:)` read/write the
-same `crsql_changes` row format that desktop cr-sqlite uses, so
-changesets are byte-for-byte wire compatible. A row originating on an
-iPhone is indistinguishable from a row originating on a Mac (beyond
-the `site_id`), and round-trips through the host without translation.
-
-### Legacy iOS cache DB
-
-On first launch the iOS app detects and replaces the legacy
-disposable iOS cache DB with the new replicated DB path
-(`Application Support/ADE/ade.db`).
-
-### What iOS does **not** support
-
-The pure-SQL emulation covers the CRR contract that ADE actually uses.
-It does not implement:
-
-- cr-sqlite's higher-level schema helpers beyond `crsql_as_crr`
-  behavior (which on iOS is `enableCrr(for:)`).
-- Any cr-sqlite feature that relies on extension-exclusive C hooks
-  not mirrored by the custom functions above.
-
-In practice ADE has been careful to use only CRR-marked tables plus
-standard SQL on the host side, so iOS stays in parity.
+- The same metadata tables (`crsql_master`, `crsql_site_id`, `crsql_changes`,
+  `<table>__crsql_clock`) and indexes.
+- Functions registered at open: `ade_next_db_version()`,
+  `ade_local_site_id()`, `ade_capture_local_changes()`.
+- `AFTER INSERT/UPDATE/DELETE` triggers per table write `crsql_changes` rows
+  (deletes as `cid = "-1"` tombstones); `enableCrr(for:)` installs them for
+  every discovered table.
+- Changesets are wire-compatible with the extension. iOS sends primary keys
+  unpacked; desktop's `normalizeIncomingCrsqlChange` repacks them.
+- Only the CRR contract DAEX uses is implemented; a desktop-only cr-sqlite
+  feature would break parity.
+- `ade_next_db_version()` is unlocked; iOS relies on one serialized writer.
 
 ## Merge semantics
 
-- **Last-writer-wins per column.** A write on device A and a write on
-  device B to the same row but different columns both apply; writes
-  to the same column resolve by Lamport timestamp, with site id as
-  tiebreaker.
-- **Deletes are tombstones.** `cid = "-1"` (see `localDeleteColumnId`
-  in `Database.swift`) marks the row dead. A resurrection from
-  another device with a newer `col_version` wins over the tombstone.
-- **A merge is not a caller, so a host-side check cannot guard a
-  replicated column.** Where a column encodes a decision only the host
-  may make, a controller's optimistic write to it merges in on the
-  ordinary LWW rule and simply overwrites the decision — including a
-  decision to *refuse*. Nothing on the host is reached, so no amount of
-  validation there closes it. Such columns are declared host-authoritative
-  and filtered out of the offending peer's inbound changesets;
-  `terminal_sessions.settled_at` / `settle_override` / `settle_source` are
-  the current set. A peer that legitimately runs the same chokepoint still
-  replicates them; the receiving host re-asserts the merged value through its
-  own chokepoint so the write cannot bypass its lifecycle revision. See
-  [Host-authoritative columns](./README.md#host-authoritative-columns-are-peer-scoped)
-  and
-  [settle-teardown-design.md](../terminals-and-sessions/settle-teardown-design.md) §6d.
+- **Last-writer-wins per column**, Lamport clock first, site id as tiebreaker.
+- **Deletes are tombstones** (`cid = "-1"`); a newer `col_version` resurrects.
+- **A merge is not a caller**, so a host-side check cannot guard a replicated
+  column. Host-decided columns are filtered from offending peers' inbound
+  changesets (`terminal_sessions` settle and activity columns); see
+  [Host-authoritative columns](README.md#host-authoritative-columns-are-peer-scoped)
+  and [settle-teardown-design.md](../terminals-and-sessions/settle-teardown-design.md).
 
 ## Schema implications
 
-The CRR retrofit is not free. Key rules the engineering handbook
-enforces:
-
-### Rule 1: Upserts target the primary key only
-
-```sql
--- OK: on conflict targets PK
-INSERT INTO lanes(id, name, ...)
-VALUES (?, ?, ...)
-ON CONFLICT(id) DO UPDATE SET ...;
-
--- BROKEN after CRR retrofit: secondary UNIQUE is not replicated
-INSERT INTO lanes(id, slug, ...)
-VALUES (?, ?, ...)
-ON CONFLICT(slug) DO UPDATE SET ...;
-```
-
-The CRR retrofit strips non-PK UNIQUE constraints from replicated
-tables because two devices can legitimately write conflicting values
-to a unique column before syncing. Upserts that relied on a secondary
-UNIQUE must fall back to explicit select-then-update.
-
-Legacy secondary unique indexes also need to be removed on upgrade
-before CRR conversion. `lane_linear_issue_links` is the current model:
-startup drops the old `(project_id, lane_id, issue_id, role)` unique
-index, deduplicates to the newest row per tuple, and keeps non-unique
-lookup indexes only. The iOS bootstrap SQL mirrors that cleanup so a
-fresh phone database can enable CRR for the table without hitting a
-unique-index constraint.
-
-### Rule 2: `ALTER TABLE ADD COLUMN` is safe; `DROP COLUMN` is not
-
-The adapter wraps `ADD COLUMN` with `crsql_begin_alter` /
-`crsql_commit_alter`, which re-registers the trigger set for the new
-column. Dropping or renaming a column on a replicated table is not
-supported by the current adapter and must be migrated through a copy
-table.
-
-A table whose sync metadata is broken (its clock table without its pks
-table, or a `crsql_commit_alter` that fails) would otherwise fail the
-same ALTER on every open. The adapter strips that table's metadata
-(`stripCrrMetadata`, which keeps `crsql_db_version()` from rewinding
-through `pre_compact_dbversion`), runs the ALTER as a plain table and
-makes it a CRR again at once, logging `db.crr_alter_metadata_reset` and reporting it to Sentry as an issue.
-Every row gets a fresh clock at column version 1: a peer holding a
-higher version of a cell keeps its value until this machine writes
-that cell past it. Inside a caller's transaction the fallback does
-not run, because a failed commit rolls back the whole transaction.
-
-### Rule 3: Machine-bound state is not a CRR
-
-Do not add tables to the replicated set that only matter on one
-device. Worktrees, PTY handles, transcripts, and caches are
-explicitly excluded. If a table is useful as "the host knows X", it
-should live outside `.ade/ade.db` or be designed so the host owns
-all writes and controllers only read. The local-only excluded set
-is enumerated in `kvDb.ts`'s `LOCAL_ONLY_CRR_EXCLUDED_TABLES` — the
-lane and PR projections (`lane_detail_snapshots`, `lane_list_snapshots`,
-`github_pr_projections`, `github_pr_stacks`, `github_pr_stack_entries`,
-`pr_auto_link_ignores`), machine-local
-automation and runtime bookkeeping (`automation_ingress_events`,
-`automation_schedule_occurrences`, `automation_scheduled_cleanups`,
-`github_webhook_deliveries`, `runtime_processes`, `test_suites`,
-`usage_events`), the sync-suppression ledger
-(`local_crr_change_suppressions`), and the local storage/worktree state
-(`local_worktree_residual_cleanups`, `local_lane_storage_state`,
-`local_storage_lifecycle_runs`). Read the constant for the current set
-and the per-table reason; several entries are excluded because a
-non-PK UNIQUE index is illegal on a CRR, not merely because the data is
-machine-bound.
-
-**Moving an existing table into that set is a rollout-hazard change,
-and it is only safe because `applyChanges` now skips inbound rows for
-local-only tables** — see [Apply](#apply).
-
-"The host owns all writes and controllers only read" is a design intent,
-not a property the CRR gives you: nothing stops a controller writing the
-column anyway, and the write replicates. When the value is one a host
-*decision* rests on, back the intent with the host-authoritative column
-filter described in [Merge semantics](#merge-semantics).
+1. **Upserts target the primary key only.** The retrofit strips non-PK UNIQUE
+   constraints (two devices can write conflicting values before syncing); use
+   select-then-update. Legacy unique indexes are dropped before conversion (for
+   example `lane_linear_issue_links`, mirrored in the iOS bootstrap SQL).
+2. **`ADD COLUMN` is safe; `DROP`/rename is not** — migrate through a copy table.
+   A table with broken metadata gets `stripCrrMetadata`, the plain ALTER, and a
+   fresh CRR (`db.crr_alter_metadata_reset`, reported to Sentry); every row then
+   restarts at column version 1.
+3. **Machine-bound state is not a CRR.** `LOCAL_ONLY_CRR_EXCLUDED_TABLES` in
+   `kvDb.ts` lists them with reasons (projections, automation and runtime
+   bookkeeping, `usage_events`, local storage state, and tables needing a non-PK
+   UNIQUE index). "The host owns all writes" is intent, not enforcement; back it
+   with the host-authoritative filter when a decision rests on it.
 
 ### Local clears that must not propagate
 
-Some bookkeeping tables are CRRs on every device but occasionally
-need to be wiped on one device without that wipe being relayed to
-peers — the canonical case is the device registry on a viewer join,
-where the daemon clears its local `devices` and `sync_cluster_state`
-rows before adopting the host's snapshot. The naive approach
-(running `DELETE FROM devices`) generates CRR tombstones that the
-peer would then ship back to the host, erasing the host's authoritative
-registry.
-
-`AdeDb.sync.discardUnpublishedChangesForTables(tableNames)` is the
-escape hatch:
-
-1. Capture the current `getDbVersion()` as the suppression
-   high-water mark.
-2. Upsert one row per `(table_name, site_id)` into
-   `local_crr_change_suppressions` with `through_db_version` set to
-   that mark (or `max(existing, new)` on conflict).
-3. `exportChangesSince(version)` consults the suppression map for the
-   local site id and drops any local-site rows whose `db_version <=
-   through_db_version` for a suppressed table. Foreign-site rows for
-   the same table are still exported normally.
-
-After the clear, the caller is expected to advance the peer client's
-outbound cursor (`syncPeerService.acknowledgeLocalDbVersion()`) so
-nothing in the suppressed range can ever be queued for transmission.
-`local_crr_change_suppressions` is itself in
-`LOCAL_ONLY_CRR_EXCLUDED_TABLES`, so the suppression bookkeeping never
-syncs.
+A viewer join clears local `devices` and `sync_cluster_state` without shipping
+tombstones that would erase the authority's registry.
+`discardUnpublishedChangesForTables` records a per-table, per-site high-water
+mark in the local-only `local_crr_change_suppressions`; export drops local-site
+rows at or below it. The caller then advances the peer cursor
+(`syncPeerService.acknowledgeLocalDbVersion()`).
 
 ## Changeset extraction and application
 
 ### Extract
 
-```sql
-SELECT * FROM crsql_changes
- WHERE db_version > ? AND db_version <= ?   -- bounded version window
- ORDER BY db_version, cl, seq;
-```
+`SELECT * FROM crsql_changes WHERE db_version > ? AND db_version <= ? ORDER BY
+db_version, cl, seq` inside `exportChangesSince`. Batches target 250 rows /
+256 KB (64 KB for a peer with active chat subscriptions); a single `db_version`
+group is never split, even past a target. Background changesets defer at most
+2 s behind foreground work.
 
-Wrapped in `AdeDb.sync.exportChangesSince(version, options)`, run
-inside a read transaction that pins the WAL snapshot (concurrent
-commits otherwise abort the vtab scan). The sync pump and peer relay
-scan a 250,000-version window per poll and advance the cursor across
-empty windows; suppression-filtered fetches keep scanning forward
-until surviving rows appear or the range is exhausted, so a truncated
-fetch can never silently skip rows. Returned `CrsqlChangeRow`s are
-batched into `changeset_batch` envelopes. Because the replication
-watermark is the integer `db_version`, the transport must not split
-rows that share one `db_version` across separate host batches.
-
-Normal host/desktop-peer batches target 250 rows / 256 KB. A peer with
-active chat subscriptions gets a 64 KB byte target, and the host may defer
-background changesets while its socket buffer is above 512 KB — but for at
-most 2 seconds, so a busy chat cannot starve CRR convergence. The byte/row
-limits are split targets rather than hard transaction caps: one complete
-`db_version` group is admitted even when that group alone exceeds a target.
-
-Hosted browsers negotiate `invalidationOnlyV1` because they have no local CRR
-replica and `compactInvalidationV1` when they understand bounded refresh hints.
-A supporting host confirms both capabilities in `hello_ok`, starts a new
-browser at the current database watermark, and sends post-connect
-`invalidation_batch` envelopes containing only database-version bounds and
-changed table names after the browser's initial full-domain refresh. These
-envelopes have a hard 16 KB serialized limit; an invalid or oversized table set
-collapses to a compact full-refresh hint, so a single large CRR value cannot
-overflow the Relay bridge. Same-DB socket handoff restores the deposited live
-cursor so writes committed during the handoff window are not skipped.
-Foreground requests defer invalidation scans only for their own peer and for at
-most 2 seconds; the forced fairness scan uses the active-chat 64 KB/64-row
-limits. Browsers close with desktop update guidance when an older host does not
-confirm both contracts, preventing a historical replay or oversized live row
-from overflowing Relay. Older browsers that advertise only
-`invalidationOnlyV1` remain on their existing `changeset_batch` hint path.
-
-Replica iOS peers advertising both `changesetAck` and `chunkedEnvelopes` use a
-compact reseed when their host cursor is strictly more than 5,000 versions
-behind. The host fixes a target version and scans current CRR state from version
-0 in 250,000-version windows, at most 1,000 relevant rows per poll. Mobile-only
-exclusions and host-authoritative tables are removed in SQL. The shared build
-and logical payload are capped at 10,000 rows / 4 MiB; a larger state or version
-group falls back to normal incremental replay. A successful build is sent as
-one logical `reason: "catchup"` batch (using `envelope_chunk` frames as needed),
-and writes after its fixed target resume incrementally. A phone that has
-scanned nothing yet (host cursor 0) first gets one ordinary batch, which holds
-the project row its first screen waits for; the compact batch follows, built or
-not. The build reads its windows on the export helper connection, off the
-host's event loop, one step at a time.
+- **Browsers** negotiate `invalidationOnlyV1` and `compactInvalidationV1`: no
+  replica; the host sends `invalidation_batch` envelopes (version bounds and
+  table names, hard 16 KB) after the browser's first full refresh.
+- **Far-behind phones** (ack and chunk capable, more than 5,000 versions behind)
+  get one compact `catchup` batch of current state (≤10,000 rows / 4 MiB,
+  built off the event loop), else normal replay.
 
 ### Apply
 
-```sql
-INSERT INTO crsql_changes(...);
-```
+`applyChanges` inserts into `crsql_changes` in one transaction; cr-sqlite (or the
+iOS triggers) resolves conflicts. Before the transaction `kvDb.ts` filters rows
+for retired tables (`unified_memories` and its FTS tables), tables missing
+locally, and `LOCAL_ONLY_CRR_EXCLUDED_TABLES`.
 
-Wrapped in `AdeDb.sync.applyChanges(rows)`. cr-sqlite and the iOS
-emulation both handle conflict resolution inside the insert trigger
-(accept newer `col_version`, tombstone semantics for deletes, last
-writer wins on ties by `site_id`).
+- **Invariant: moving a table to local-only is safe only because of that
+  skip.** A local-only table still exists, but cr-sqlite has no schema for it,
+  so one inbound row would throw, roll back the whole batch and wedge the peer's
+  cursor forever. Do not reintroduce a throw.
+- **Unknown columns are deferred.** A change whose `cid` is not a local column is
+  kept in the local-only `sync_deferred_column_changes` (log
+  `sync.unknown_column_deferred`) and the rest applies;
+  `replayDeferredColumnChanges` applies it once a build has the column. New
+  synced columns must tolerate a missing value on older peers. The first release
+  that carries the skip must not also add a synced column.
+- **An unknown table still throws** `unknown_sync_table` on desktop (skipping
+  would lose its rows for good), so a new replicated table needs peers updated
+  first. iOS skips unknown tables and its hydration-owned snapshot tables.
+- A batch of only ignored rows is a no-op that keeps the local version.
 
-Before apply, `kvDb.ts` filters inbound rows for explicitly retired
-tables (`unified_memories` and related FTS tables), for tables that
-no longer exist locally, and for tables in
-`LOCAL_ONLY_CRR_EXCLUDED_TABLES`.
-
-That last filter closes a wedge that is reachable during **every
-rollout** that moves a table local-only. A local-only table still
-exists as an ordinary table, so the "does this table exist" check
-passes — but cr-sqlite holds no schema record for it, and
-`insert into crsql_changes` throws *"could not find the schema
-information"*. Because the whole batch is one `BEGIN IMMEDIATE` and a
-batch is ordered by `db_version`, that single row rolls back the peer's
-chats, lanes, and commits alongside it. The peer then re-exports the
-identical poisoned range forever, because an outbound cursor only
-advances on an `ok` ack (see [Transactional
-boundaries](#transactional-boundaries)). Skipping instead of throwing
-turns a permanent, self-reinforcing sync freeze into dropped rows for a
-table this device does not replicate anyway.
-
-**Invariant: adding a table to `LOCAL_ONLY_CRR_EXCLUDED_TABLES` is only
-safe because of this skip.** A paired peer on an older build keeps
-replicating the table until it updates, so the skip — not the rollout
-order — is what makes the two builds interoperable. Do not remove it,
-and do not reintroduce a throw for an unrecognized-but-local table.
-
-The same wedge exists for a **column** a newer peer added to a replicated
-table: cr-sqlite rejects the `crsql_changes` insert for a column it has
-no record of with *"SQL logic error"*, and the batch rolls back exactly as
-above. Every release that adds a synced column reaches it whenever an
-older desktop peer is paired. `applyChanges` therefore does not apply a
-change whose `cid` is not a column of the local table (the `-1` row
-sentinel always applies). It keeps the change in the local-only table
-`sync_deferred_column_changes`, logs `sync.unknown_column_deferred` once per
-column per process, and applies the rest of the batch. On the first open of
-a build that has the column, `replayDeferredColumnChanges` inserts the kept
-changes into `crsql_changes` and deletes them, so cr-sqlite's clocks decide
-as for a live batch. Keeping them matters because cr-sqlite syncs per
-column: a value written once (for example, at row creation) is never sent
-again. Until the older device updates, it does not show the value, so a new
-synced column must tolerate a missing value on a peer. iOS has the same
-behaviour by construction (it writes only the columns it knows).
-
-**Invariant: the column skip only protects devices that run it.** A
-peer on a build without the skip still wedges on a new column, so the
-first release that carries the skip must not also add a synced column.
-A table this device does not have at all still throws
-`unknown_sync_table`: skipping it would drop every row of that table for
-good on the older peer, so a new replicated table still needs its
-peers updated first.
-
-iOS also ignores its hydration-owned snapshot
-tables, which are intentionally not part of the desktop CRDT schema,
-and **skips rows for any table its bundled schema does not know**
-instead of failing the batch. A thrown error there would nack the
-whole changeset, the host's cursor would never advance past the poison
-batch, and every retry would replay it — freezing all sync for the
-device until an app update ships (this happened live when desktop
-added `session_linear_issues` before the phone schema had it). Skipped
-tables' data arrives after the phone updates. These filters run before
-the SQL transaction starts; a batch containing only ignored rows
-returns `appliedCount: 0`, preserves the local database version, and
-emits no touched tables. Mixed batches remain transactional for the
-actionable rows.
-
-After apply, ADE runs post-hooks:
-
-- Emit relevant IPC events (`laneChanged`, `prsChanged`, etc.) so the
-  renderer re-queries the affected projections.
-- On iOS, post `Notification.Name.adeDatabaseDidChange` so SwiftUI
-  views re-read.
+After apply, sync change events tell renderers to re-query; iOS posts
+`adeDatabaseDidChange`.
 
 ## Transactional boundaries
 
-- The host applies each `changeset_batch` envelope as a single SQL
-  transaction. Partial application is impossible; the entire batch
-  either lands or rolls back.
-- Senders keep one batch pending and advance their durable outbound cursor
-  only after a successful `changeset_ack`. A NACK or 10-second ack timeout
-  retries the identical batch; cursor state never moves speculatively. A peer
-  that declares `changesetAckWindowV1` may have up to eight batches in flight
-  behind the pending one. An ack covers its batch and every batch before it;
-  an ack that falls short of its batch's end changes nothing, and a resend
-  always starts at the pending batch.
-  The compact mobile reseed follows the same rule: its target becomes the
-  peer's watermark only after the reseed ACK commits.
-- After six failed send attempts, host and desktop-peer senders discard the
-  encoded pending envelope but retain its `fromDbVersion`. They back off
-  (250 ms up to 4 s), re-export from that same cursor, and halve the batch
-  targets by recovery level down to 16 rows / 16 KB. A successful ack advances
-  the cursor and restores normal limits. This re-windowing lets a poisonously
-  large or transiently failing batch make bounded progress without skipping
-  CRR rows.
-- iOS persists both its last-acked per-project/site cursor and pending outbound
-  batch. It retries at 10-second acknowledgement intervals; after its retry
-  budget it rebuilds from the same cursor with progressively smaller windows
-  (64 rows / 64 KB down to one row / 4 KB) and 1–30 second backoff. Reconnect or
-  project switching reloads the persisted batch/cursor rather than claiming
-  unacknowledged phone writes were delivered.
-
-## Implementation status
-
-| Piece | Status |
-|---|---|
-| Desktop / daemon extension loading + CRR marking | Implemented on macOS, Linux, and Windows x64; Windows package smoke proves a real CRR change |
-| iOS pure-SQL emulation | Implemented, wire-compatible |
-| Dynamic CRR discovery | Implemented |
-| `ALTER TABLE ADD COLUMN` support | Implemented (wrapped) |
-| Column drop/rename on replicated tables | **Not supported** — use copy-table migration |
-| Statement caching in `node:sqlite` adapter | Deferred; prepares per call today, revisit before heavier loads |
+- Each `changeset_batch` applies as one transaction.
+- Senders advance their outbound cursor only after an `ok` `changeset_ack`; a
+  NACK or 10 s timeout resends the same batch. `changesetAckWindowV1` allows up
+  to eight batches in flight; an ack covers its batch and all before it.
+- After six failed sends, host and desktop peers re-export from the same cursor
+  with halved targets down to 16 rows / 16 KB (250 ms–4 s backoff). iOS persists
+  its cursor and pending batch and shrinks to one row / 4 KB (1–30 s backoff).
 
 ## Gotchas
 
-- **The vendored `crsqlite.xcframework` has been removed.** It was a
-  dynamic framework binary whose entrypoint could not be loaded on
-  iOS due to platform restrictions. The pure-SQL emulation replaces
-  it completely.
-- **Static-link cr-sqlite on iOS is a dead end.** The wrapper
-  approach was evaluated and abandoned; do not revive it without a
-  plan for the SQLite thunk pointer issue.
-- **A local-only table is not an unknown table.** It exists in
-  `sqlite_master`, so existence checks pass, while cr-sqlite has no
-  schema record for it and `insert into crsql_changes` throws. Inbound
-  rows for `LOCAL_ONLY_CRR_EXCLUDED_TABLES` are skipped for exactly this
-  reason; without the skip, one row from a peer still on the older build
-  rolls back that peer's entire `db_version`-ordered batch and wedges
-  its cursor permanently.
-- **Tables added by tests still register as CRRs at startup.** Test
-  suites that create scratch tables in the main DB will see them
-  replicated on the next connection. Use an in-memory DB or a
-  dedicated test DB path for scratch tables.
-- **A leftover `__ade_crr_repair_<name>` staging table wedges the sync
-  host.** The copy-table rebuild's `CREATE TABLE __ade_crr_repair_<name>` is bare,
-  so a surviving orphan makes every retrofit throw `table already exists` and
-  loops forever, silently killing changeset export. `rebuildTableInTransaction`
-  drops the staging table before its `CREATE`, and
-  `sweepOrphanedRepairStagingTables()` clears orphans at open — do not remove
-  either guard, and keep both `__ade_crr_repair_%` and `__ade_fk_repair_%`
-  prefixes covered.
-- **`ade_next_db_version()` is synchronous and unlocked.** Under
-  heavy concurrent write load on iOS (which is unlikely because the
-  phone is a controller-only device with limited write surface), the
-  version sequence could in theory race across connections. In
-  practice the iOS app uses a single serialized writer queue so this
-  is safe.
+- **iOS does not load cr-sqlite**; keep the SQL emulation wire-compatible.
+- **A local-only table is not an unknown table** (see *Apply*).
+- **Tables created by tests in the main DB become CRRs** at next open; use an
+  in-memory or dedicated DB.
+- **Keep both staging-table guards** and the `__ade_crr_repair_%` /
+  `__ade_fk_repair_%` prefixes covered.
+- Column drop/rename on replicated tables is not supported.

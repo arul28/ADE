@@ -1,6 +1,17 @@
 // The brain copy: a second copy of the app's own executable,
-// `Contents/MacOS/<CFBundleExecutable> Brain`, for the brain-executable switch
-// in `apps/ade-cli/src/serviceManager/brainExecutable.ts` (mode `brain-copy`).
+// `Contents/MacOS/DAEX Brain` (`DAEX Alpha Brain` for `ADE Alpha`), for the
+// brain-executable switch in `apps/ade-cli/src/serviceManager/brainExecutable.ts`
+// (mode `brain-copy`). macOS names the background item after this file
+// ("Background Items Added", Login Items).
+//
+// Builds before the rename called it `<CFBundleExecutable> Brain` (`ADE Brain`),
+// and a launch agent they installed still names that path until the new app
+// or CLI installs the service again (it rewrites the plist whenever its text
+// differs). The bundle also carries a copy under the old name, so such an agent
+// still starts after an update that replaced the bundle without reinstalling
+// the service (a Homebrew upgrade or a drag-and-drop install, then a restart).
+// Remove the legacy copy once no supported build writes `ADE Brain`
+// (docs/brand/desktop-packaging.md).
 //
 // The brain service, its watchdog and its PTY host run this copy as Node, so
 // the process that is the app (`CFBundleExecutable`) is gone after a quit
@@ -23,8 +34,10 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const MODE_FILE = path.resolve(__dirname, "..", "..", "ade-cli", "src", "serviceManager", "brainExecutableMode.json");
-// Keep in step with BRAIN_COPY_SUFFIX in brainExecutable.ts.
+// Keep in step with brainCopyFileName / legacyBrainCopyFileName in brainExecutable.ts.
 const BRAIN_COPY_SUFFIX = " Brain";
+const FROZEN_EXECUTABLE_PREFIX = "ADE";
+const BRAIN_COPY_PREFIX = "DAEX";
 // Restricted entitlements need a provisioning profile, which authorizes the
 // app's main executable only. The brain uses none of them.
 const RESTRICTED_ENTITLEMENT_KEYS = [
@@ -63,9 +76,24 @@ function bundleExecutableName(appPath) {
   return name;
 }
 
-function brainCopyPath(appPath) {
+/** `ADE` -> `DAEX Brain`; another executable name -> `<name> Brain`. */
+function brainCopyFileName(executableName) {
+  const branded = executableName === FROZEN_EXECUTABLE_PREFIX || executableName.startsWith(`${FROZEN_EXECUTABLE_PREFIX} `)
+    ? `${BRAIN_COPY_PREFIX}${executableName.slice(FROZEN_EXECUTABLE_PREFIX.length)}`
+    : executableName;
+  return `${branded}${BRAIN_COPY_SUFFIX}`;
+}
+
+/** The copy's path and, when it differs, the path older builds used (`ADE Brain`). */
+function brainCopyPaths(appPath) {
   const name = bundleExecutableName(appPath);
-  return path.join(appPath, "Contents", "MacOS", `${name}${BRAIN_COPY_SUFFIX}`);
+  const macosDir = path.join(appPath, "Contents", "MacOS");
+  const names = [brainCopyFileName(name), `${name}${BRAIN_COPY_SUFFIX}`];
+  return Array.from(new Set(names)).map((fileName) => path.join(macosDir, fileName));
+}
+
+function brainCopyPath(appPath) {
+  return brainCopyPaths(appPath)[0];
 }
 
 /** afterPack: copy the app's executable when the mode is `brain-copy`. Returns the copy's path or null. */
@@ -74,7 +102,7 @@ function createBrainCopy(appPath, { mode = readBrainExecutableMode() } = {}) {
     // A reused output folder must not keep a copy from an earlier build.
     // Best effort: with the mode off nothing here may fail the build.
     try {
-      fs.rmSync(brainCopyPath(appPath), { force: true });
+      for (const copy of brainCopyPaths(appPath)) fs.rmSync(copy, { force: true });
     } catch {
       // No readable Info.plist: there is no copy to remove either.
     }
@@ -82,11 +110,13 @@ function createBrainCopy(appPath, { mode = readBrainExecutableMode() } = {}) {
   }
   const name = bundleExecutableName(appPath);
   const source = path.join(appPath, "Contents", "MacOS", name);
-  const target = path.join(appPath, "Contents", "MacOS", `${name}${BRAIN_COPY_SUFFIX}`);
-  fs.copyFileSync(source, target);
-  fs.chmodSync(target, 0o755);
-  adHocSignIfUnsigned(target);
-  return target;
+  const targets = brainCopyPaths(appPath);
+  for (const target of targets) {
+    fs.copyFileSync(source, target);
+    fs.chmodSync(target, 0o755);
+    adHocSignIfUnsigned(target);
+  }
+  return targets[0];
 }
 
 /**
@@ -145,13 +175,14 @@ function brainEntitlementsFile(appPath, tempDir) {
 }
 
 /**
- * afterSign (and after a local channel build's signing): give the copy the
- * app's identifier and re-seal the app. Nothing without a copy.
+ * afterSign (and after a local channel build's signing): give the copies (the
+ * new name and the legacy one) the app's identifier and re-seal the app.
+ * Nothing without a copy.
  */
 function signBrainCopyIfPresent(appPath, { keychain = null, log = console.log } = {}) {
   if (process.platform !== "darwin") return false;
-  const copy = brainCopyPath(appPath);
-  if (!fs.existsSync(copy)) return false;
+  const copies = brainCopyPaths(appPath).filter((copy) => fs.existsSync(copy));
+  if (copies.length === 0) return false;
   // An unsigned x64 build has no signature at all (arm64 gets the linker's
   // ad-hoc one). Same case as an unsealed ad-hoc app below.
   const display = run("/usr/bin/codesign", ["-d", appPath], { allowFailure: true });
@@ -187,7 +218,7 @@ function signBrainCopyIfPresent(appPath, { keychain = null, log = console.log } 
     if (signature.hardenedRuntime) copyArgs.push("--options", "runtime");
     const entitlements = brainEntitlementsFile(appPath, tempDir);
     if (entitlements) copyArgs.push("--entitlements", entitlements);
-    run("/usr/bin/codesign", [...copyArgs, copy]);
+    for (const copy of copies) run("/usr/bin/codesign", [...copyArgs, copy]);
 
     // Re-seal the app so CodeResources holds the copy's new code hash. The
     // app keeps its own identifier, entitlements, requirements and flags.
@@ -198,22 +229,24 @@ function signBrainCopyIfPresent(appPath, { keychain = null, log = console.log } 
     ]);
     run("/usr/bin/codesign", ["--verify", "--deep", "--strict", "--verbose=2", appPath]);
 
-    const copySignature = readAppSignature(copy);
-    if (copySignature.identifier !== signature.identifier || copySignature.teamIdentifier !== signature.teamIdentifier) {
-      throw new Error(
-        `[brain-copy] ${copy} is signed as ${copySignature.identifier} (${copySignature.teamIdentifier}), `
-          + `not the app's ${signature.identifier} (${signature.teamIdentifier}).`,
-      );
+    for (const copy of copies) {
+      const copySignature = readAppSignature(copy);
+      if (copySignature.identifier !== signature.identifier || copySignature.teamIdentifier !== signature.teamIdentifier) {
+        throw new Error(
+          `[brain-copy] ${copy} is signed as ${copySignature.identifier} (${copySignature.teamIdentifier}), `
+            + `not the app's ${signature.identifier} (${signature.teamIdentifier}).`,
+        );
+      }
     }
     if (!signature.adhoc) {
       // Real identities only: an ad-hoc requirement is the app's own code hash.
       const requirement = run("/usr/bin/codesign", ["-d", "-r-", appPath]);
       const designated = /designated => (.*)$/m.exec(`${requirement.stdout || ""}${requirement.stderr || ""}`)?.[1]?.trim();
       if (!designated) throw new Error(`[brain-copy] Cannot read the designated requirement of ${appPath}.`);
-      run("/usr/bin/codesign", ["--verify", "--strict", `--test-requirement==${designated}`, copy]);
+      for (const copy of copies) run("/usr/bin/codesign", ["--verify", "--strict", `--test-requirement==${designated}`, copy]);
     }
     log(
-      `[brain-copy] Signed ${path.basename(copy)} as ${signature.identifier}`
+      `[brain-copy] Signed ${copies.map((copy) => path.basename(copy)).join(", ")} as ${signature.identifier}`
         + ` (${signature.adhoc ? "ad-hoc" : `team ${signature.teamIdentifier}`}`
         + `${signature.hardenedRuntime ? ", hardened runtime" : ""}) and re-sealed ${path.basename(appPath)}.`,
     );

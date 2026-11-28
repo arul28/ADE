@@ -41,6 +41,7 @@ import { welcomeRelativeTime } from "./ProjectWelcomeWebRows";
 import "../activity/Activity.css";
 import { humanizeProvider } from "../usage/usageProviderNames";
 import { Banner } from "../ui/notice";
+import { BRAND } from "../../../shared/brand";
 
 // ---------------------------------------------------------------------------
 // The welcome page's data: chats that are still running, usage limits and
@@ -86,7 +87,7 @@ const RUNNING_GROUPS = new Set(["needs_you", "working"]);
 
 function navigationErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message.trim();
-  return "ADE couldn’t open the exact machine and project for this chat.";
+  return `${BRAND.NAME} couldn’t open the exact machine and project for this chat.`;
 }
 
 /** Agent chats that are working or waiting on you, on every machine. */
@@ -398,7 +399,7 @@ export function desktopMachineRows(
     && connection.state !== "error"
     && !isAdeCloudComputer({ hostname: connection.target.hostname, machineKey: connection.target.pairedMachine?.machineKey ?? null }, cloud.index));
   const cloudRow = cloud.shown ? [ADE_CLOUD_ROW] : [];
-  if (connections.length === 0) return cloudRow.length ? [{ key: "this-machine", name: "This machine", dot: "online", detail: "Running ADE" }, ...cloudRow] : [];
+  if (connections.length === 0) return cloudRow.length ? [{ key: "this-machine", name: "This machine", dot: "online", detail: `Running ${BRAND.NAME}` }, ...cloudRow] : [];
   // Free disk only when the connection snapshot already carries it.
   const freeById = new Map(
     deriveLaneMachineOptions({ connections, boundTargetId: null })
@@ -418,7 +419,7 @@ export function desktopMachineRows(
     };
   });
   return [
-    { key: "this-machine", name: "This machine", dot: "online", detail: "Running ADE" },
+    { key: "this-machine", name: "This machine", dot: "online", detail: `Running ${BRAND.NAME}` },
     ...sortMachines(remotes),
     ...cloudRow,
   ];

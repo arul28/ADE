@@ -159,7 +159,7 @@ export function createCodexAppServerPool(args: {
 
     const refuseServerRequest = (line: CodexAppServerLine, threadId: string | null) => {
       if (line.id == null) return;
-      write({ id: line.id, error: { code: -32001, message: "No ADE chat owns this Codex thread." } });
+      write({ id: line.id, error: { code: -32001, message: "No DAEX chat owns this Codex thread." } });
       args.logger?.warn("agent_chat.codex_shared_unowned_server_request", { method: line.method ?? null, threadId });
     };
 

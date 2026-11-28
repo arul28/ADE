@@ -1,377 +1,121 @@
 # File Watcher and Trust Boundary
 
-Detail reference for the file services — how filesystem access is
-gated, how one watcher is shared across subscriptions, and how external
-changes propagate to open editor tabs without racing against user
-edits.
-
-The canonical file services run inside the **active ADE runtime**
-(local machine runtime for local-bound windows, SSH-attached remote runtime for
-remote-bound windows). The desktop main process also hosts the same
-services as fallback targets for the legacy IPC path; both code paths
-share the same source files and behavior. Remote-bound windows
-therefore execute every file read, atomic write, watcher subscription,
-and search index update on the remote machine.
+How filesystem access is gated, how one watcher is shared across
+subscriptions, and how external changes reach open tabs without racing user
+edits. The file services run in the window's active runtime (local or remote);
+desktop main hosts the same code only for the legacy IPC fallback. A remote
+window does every read, write, watch and index update on the remote machine.
 
 ## Trust boundary
 
-The renderer never touches `node:fs` or `node:path` directly (those
-come from the node runtime, not Electron). All filesystem operations
-go through:
+The renderer never touches `node:fs` or `node:path`. Every filesystem
+operation goes through:
 
-1. `window.ade.files.*` from the preload bridge
-   (`apps/desktop/src/preload/preload.ts`), which calls the remote
-   runtime first, then a strict local runtime route for local-bound
-   windows. It falls through to the in-process IPC handler only when no
-   runtime route is available, not when a bound runtime rejects the file
-   action. Each method also accepts an optional trailing machine pin that
-   names one machine instead of the bound one; the pinned route has no
-   local IPC fallback. `external-local:*` workspace ids are the exception:
-   those are explicit local desktop opens and are sent to local IPC even
-   when the window is bound to a remote runtime — and they drop a pin if
-   one is supplied, since their root path is meaningful only on this disk.
-2. `ade.files.*` IPC channels registered in
-   `apps/desktop/src/main/services/ipc/registerIpc.ts` (fallback
-   path for the desktop's local in-process implementation).
-3. `fileService` methods (run on the runtime host; in fallback mode
-   they run inside the desktop main process), which:
-   - resolve every path against the workspace root via
-     `resolvePathWithinRoot`
-   - refuse any path that contains `.git` at any segment
-     (`containsDotGit`)
-   - refuse null-byte injections via `hasNullByte`
-   - refuse paths that are not inside the workspace root after
-     normalization
+1. `window.ade.files.*` (`apps/desktop/src/preload/preload.ts`): the remote runtime, then the strict local-runtime route; in-process IPC only when no runtime route exists, never after a bound runtime rejects. An optional trailing machine pin names one machine and has no IPC fallback. `external-local:*` workspaces always go to local IPC and drop a pin, since their root exists only on this disk.
+2. The `ade.files.*` IPC handlers in `registerIpc.ts` (fallback only).
+3. `fileService`, which resolves every path with `resolvePathWithinRoot` and refuses `.git` segments (`containsDotGit`), null bytes (`hasNullByte`) and anything outside the root after normalization.
 
-The renderer never sees an absolute host path until the active runtime
-(or, on the fallback path, the desktop main process) has validated it.
-`FileContent.languageId` is a Monaco hint; it is derived from the
-extension by `languageIdFromPath`, not from any path metadata.
+`FileContent.languageId` is derived from the extension (`languageIdFromPath`).
 
-External local opens are registered through
-`externalFilesWorkspaceRegistry.ts`. The registry accepts only absolute
-file/folder paths the user explicitly opened through the OS or dropped into
-the renderer, canonicalizes them with `realpath`, and exposes them as
-ephemeral `external` workspaces rooted at the opened folder or the opened
-file's parent. If the path already belongs to a known project/worktree
-workspace, `fileService.openExternalPath` returns that workspace instead of
-creating an external root.
+External local opens go through `externalFilesWorkspaceRegistry.ts`: only
+absolute paths the user opened from the OS or dropped in, canonicalized with
+`realpath`, exposed as ephemeral `external` workspaces. A path inside a known
+workspace returns that workspace instead.
 
-### Path safety invariants
+### Path safety primitives
 
-`apps/desktop/src/main/services/shared/utils.ts` provides the
-primitives:
+`apps/desktop/src/main/services/shared/utils.ts`: `resolvePathWithinRoot`
+(throws `Path escapes root`; `allowMissing` for creates),
+`secureWriteAtomicWithinRoot` (temp file + rename), `secureWriteFileWithinRoot`,
+`secureRenameWithinRoot` (both paths inside), `secureMkdirWithinRoot`. These are
+the only mutation APIs `fileService` uses; new file-writing features must use
+them too.
 
-- `resolvePathWithinRoot(rootPath, candidate, { allowMissing? })` —
-  throws `Path escapes root` if the resolved path is not inside the
-  root; optionally permits missing targets (used for create flows).
-- `secureWriteTextAtomicWithinRoot(rootPath, relPath, text)` — atomic
-  write via temp file + rename, guarded by the same resolution.
-- `secureWriteFileWithinRoot(rootPath, relPath, buffer, encoding)` —
-  non-atomic variant.
-- `secureRenameWithinRoot(rootPath, oldRel, newRel)` — both old and
-  new paths must be inside the root.
-- `secureMkdirWithinRoot(rootPath, relPath)` — recursive mkdir, same
-  gating.
-
-These are the only APIs `fileService` uses for mutations. Any new
-file-writing feature should go through the same primitives.
-
-### Always-ignored paths
-
-`isAlwaysIgnoredPath` rejects reads/writes against:
-
-- `.git/` or `.git`
-- `node_modules/`
-- `.ade/`
-
-Even with `includeIgnored: true` the watcher filters volatile ADE
-subpaths so background rewrites do not spam the renderer (see below).
+`isAlwaysIgnoredPath` (`.git`, `node_modules/`, `.ade/`) marks what the
+default listing and search skip; `includeIgnored` shows them, except `.git`
+and the volatile `.ade` paths below.
 
 ## Watcher service
 
-File: `apps/desktop/src/main/services/files/fileWatcherService.ts`
+`apps/desktop/src/main/services/files/fileWatcherService.ts`. One
+subscription per `workspaceId + senderId`, with two counters:
+`defaultRefCount` (`includeIgnored: false`) and `includeIgnoredRefCount`.
+When the effective mode changes, the watcher restarts with the new ignore
+glob. At zero references an idle timer (`IDLE_WATCHER_CLOSE_MS`, 15 s) closes
+it, avoiding churn on quick view toggles.
 
-Each subscription is keyed by `workspaceId + senderId`. A subscription
-has:
+The watcher is `watchTree` (`services/shared/treeWatcher.ts`): chokidar on
+Linux, one recursive native watch per root on macOS and Windows (the event says
+where to look; the path is re-read and compared with a snapshot). On Windows a
+nameless event re-reads the whole tree and the root's parent is watched so a
+recreated root is picked up again. `scripts/perf/service/tree-watcher-parity.mts`
+compares the implementations.
 
-```ts
-type WatchSubscription = {
-  watcher: ManagedWatcher | null; // a `TreeWatcher` from `watchTree`
-  workspaceId: string;
-  senderId: number;
-  rootPath: string;
-  callback: WatchCallback;
-  includeIgnored: boolean;
-  defaultRefCount: number;
-  includeIgnoredRefCount: number;
-};
-```
+- **Window close:** `stopAllForSender(senderId)`, only when the service runs in the desktop process.
+- **Pages that vanish without cleanup:** `fileWatchLedger.ts` tracks outstanding references; the runtime bridge sends the missing stops when a page reloads, crashes or closes, and the brain does the same when a connection closes. Each is an ordinary `stopWatching`, so other clients' references are untouched.
+- **A dropped connection with the page still open:** the bridge marks the entry (`notePageRuntimeDisconnected`) and reopens every held watch on the new connection (`restorePageFileWatches`).
+- **Lane delete:** `stopAllForWorkspace(workspaceId)` runs in the `stop_watchers` step so handles close before `git worktree remove`; `countActiveForWorkspace` feeds the delete preflight.
 
-### Ref counting
+Events map to `created` / `modified` / `deleted` and are debounced per path
+for 140 ms (`EVENT_DEBOUNCE_MS`). Renames arrive as delete + create; the
+service does not correlate them.
 
-Two counters because two callers can share the watcher with different
-ignore profiles:
-
-- `defaultRefCount` — callers using `includeIgnored: false`
-- `includeIgnoredRefCount` — callers using `includeIgnored: true`
-
-`watch(args)` increments the appropriate counter. If the resulting
-effective `includeIgnored` state differs from the watcher's current
-state, the watcher is closed and restarted with the new ignore glob.
-
-`unwatch(args)` decrements. When both counters are zero, the watcher
-is not closed immediately — instead, an idle timer fires
-(`IDLE_WATCHER_CLOSE_MS = 15_000`) and closes it only if it is still
-idle. This avoids churn when the user briefly toggles views.
-
-`stopAllForSender(senderId)` fires on window close and tears down
-every subscription owned by that sender. That hook exists only when the
-file service runs in the desktop's own process. When it runs in the brain,
-a page that vanishes is covered by the watch ledger
-(`fileWatchLedger.ts`): the runtime bridge replays the stops the page did
-not send when it reloads, crashes or is destroyed, and the brain's
-connection handler does the same when a connection closes. Both call the
-ordinary `stopWatching`, once per outstanding reference, so another
-client's references on the same workspace are not touched.
-
-A connection can also close while its page stays open (a dropped link to
-a remote machine). The brain releases the watches of that connection, but
-the page still holds them and its Files view stays mounted. The bridge
-marks the ledger entry when the event stream of the page ends
-(`notePageRuntimeDisconnected`) and opens every held watch again when the
-page subscribes to events on the new connection
-(`restorePageFileWatches`).
-
-The watcher itself comes from `watchTree`
-(`services/shared/treeWatcher.ts`): chokidar off macOS, one recursive
-native watch per root on macOS. See "File watching" in the README.
-
-`stopAllForWorkspace(workspaceId)` is the lane-teardown entry point.
-The lane delete pipeline calls it during the `stop_watchers` step
-(see [`features/lanes/README.md`](../lanes/README.md)) so the watcher
-releases its file handles on the worktree before
-`git worktree remove` runs. The companion `countActiveForWorkspace`
-returns the live watcher count for the same workspace and feeds the
-preflight `LaneDeleteRisk` so the manage dialog can warn before
-the user confirms.
-
-### Event shape and debounce
-
-Chokidar emits per-file events (`add`, `change`, `unlink`, plus
-`addDir`, `unlinkDir`). `mapEventType` collapses them to:
-
-- `created` (`add`, `addDir`)
-- `modified` (`change`)
-- `deleted` (`unlink`, `unlinkDir`)
-
-Each event is keyed by relative path and debounced for `EVENT_DEBOUNCE_MS =
-140 ms` — if the same file changes again within the window, the
-pending timer is reset. When the timer fires, a single `FileChangeEvent`
-is emitted to the callback.
-
-### Volatile path filter
-
-Even in `includeIgnored` mode, these paths are always filtered to
-avoid ADE watching its own transcripts and cache:
-
-- `.ade/artifacts/`
-- `.ade/cache/`
-- `.ade/agent-configs/`
-- `.ade/secrets/`
-- `.ade/transcripts/`
-- `.ade/ade.db` (and SQLite's `-wal`/`-shm` sidecars via prefix match)
-- `.ade/ade.sock`
-
-These are defined in `VOLATILE_ADE_PREFIXES` and
-`VOLATILE_ADE_EXACT_PATHS`.
-
-### Renamed detection
-
-Chokidar does not natively emit a single `rename` event; it emits
-`unlink` followed by `add`. The file service does not try to correlate
-them — both events go through and the renderer handles reconciliation
-on its side.
+**Volatile paths** are filtered even with `includeIgnored`
+(`VOLATILE_ADE_PREFIXES`, `VOLATILE_ADE_EXACT_PATHS`): `.ade/artifacts/`,
+`cache/`, `agent-configs/`, `secrets/`, `transcripts/`, `logs/`, `tmp/`,
+`runtime/`, `worktrees/`, plus `.ade/ade.db` (and its `-wal`/`-shm`) and
+`.ade/ade.sock`.
 
 ## File search index
 
-File: `apps/desktop/src/main/services/files/fileSearchIndexService.ts`
+`fileSearchIndexService.ts` keeps relative paths per `<workspaceId>::default`
+and `::all`, built lazily and updated from watcher events (`unlinkDir` drops a
+subtree). Entries are `path`, `lowerPath`, `size`, `mtimeMs` only: the build
+stats, never reads, and decoded lines would cost hundreds of megabytes. The
+walk stops at `MAX_INDEXED_FILES` (25,000). In a git work tree the default
+index comes from one `git ls-files -z --cached --others --exclude-standard`
+(falling back to a walk for `.gitmodules`, failure or truncation);
+`includeIgnored` always walks.
 
-In-memory flat list of relative paths, keyed per workspace per mode:
+`quickOpen` results are cached per `(query, limit, mode)` and cleared on any
+watcher change. `warmQuickOpenIndex` lets the chat composer build the index on
+its first empty `@` query; the action bridge caches a chat's lane id
+(`fileSearchLaneIdBySessionId`, 200 entries) for non-identity sessions only,
+because the CTO can be moved to the main checkout.
 
-- `<workspaceId>::default` — excludes `.git/`, `node_modules/`, `.ade/`
-- `<workspaceId>::all` — includes ignored paths
-
-Built lazily on first quick-open or search call, then kept in sync
-with the watcher:
-
-- `add` / `addDir` → push
-- `unlink` → remove matching entry
-- `unlinkDir` → remove all entries under the prefix
-- Mass invalidation resets the index and triggers a full rebuild on
-  next query
-
-There is no content index. Entries are `path` / `lowerPath` / `size` /
-`mtimeMs` and nothing more: the build walk only stats paths (no file
-reads), so `quickOpen` never waits on content. Do not keep decoded lines
-here: they cost hundreds of megabytes of heap with "include ignored files"
-on. `searchText` reads,
-scans, and discards — nothing it decodes outlives the call. `quickOpen`
-results are cached per `(query, limit, mode)` per index; any watcher
-mutation clears the query cache.
-`fileService.warmQuickOpenIndex({ workspaceId })` is a
-best-effort warm hook — the chat action bridge calls it for empty
-`chat.fileSearch` queries so the composer's first `@` builds the index
-before the first real query. To turn a chat `sessionId` into the
-workspace to search, the bridge (`adeActions/registry.ts`) caches the
-session's `laneId` in `fileSearchLaneIdBySessionId` (capped at 200,
-LRU). Only non-identity sessions are cached, because their lane binding
-is immutable; primary-pinned identity sessions (the CTO) can be
-migrated to the canonical primary lane by `resumeSession`, so they
-resolve fresh each call.
-
-The index has a soft cap on entries (workspaces over the cap fall
-back to on-demand glob scanning).
-
-Quick open scoring lives in `fileService.quickOpen` via a
-`fuzzy-like` match (not an external library — a local implementation
-tuned for path segments).
-
-Content search (`fileService.searchText`) is two-tier and runs in this
-same module. Tier 1 is `git grep`, used whenever the workspace root is
-inside a git work tree (the probe answer is cached per workspace root and
-dropped with the index): streamed, stopped at the requested `limit`, 10 s
-timeout, literal (`-F`) and case-insensitive, `-z`-delimited, with
-exclusions pushed into git as pathspecs so one `node_modules` cannot
-flood the stream. Tier 2 is a streaming JS scan over the name index,
-used for non-git workspaces and for any run where git was missing,
-failed, or timed out; it reads each file, scans it, and releases it,
-skipping files over 1 MB and files containing a NUL byte.
-
-Only a `GitGrepOutcome` of `unusable` retires the fast tier for a
-workspace (spawn failure, or git refusing the invocation — `-m` needs git
-≥ 2.38 and exits 129 on older builds). Exit 1 is "no matches", a complete
-answer. A timeout or an external kill is `unfinished`: it falls through
-to tier 2 once and says nothing about future runs. The full tier
-contract, including the three deliberate divergences between the tiers
-(large files, tracked-but-gitignored files, submodules), lives in
-[README.md](./README.md#quick-open-and-content-search).
+Content search tiers and outcomes are described in
+[README.md](./README.md#quick-open-and-content-search). `-m` needs git ≥ 2.38;
+older git exits 129, which counts as `unusable`.
 
 ## External change sync
 
-The renderer's `FilesWorkbench.tsx` subscribes to `ade.files.change` and
-handles events like this:
+`FilesWorkbench.tsx` subscribes to `ade.files.change`:
 
-1. **Lookup open tabs by path.** Each open Monaco editor tracks its
-   relative path.
-2. **Dirty tabs stay dirty.** If a tab has unsaved edits, the event is
-   recorded in tab metadata but the content is not replaced. The user
-   sees a "file changed on disk" indicator.
-3. **Clean tabs reload.** The main process re-reads the file via
-   `fileService.readFile` and the Monaco model is updated. Scroll
-   position and selection are preserved when possible.
-4. **File tree refresh.** Events enqueue a scoped tree refresh for the
-   parent directory. A queue cap (`MAX_QUEUED_TREE_PARENT_REFRESHES =
-   24`) forces a full tree refresh when bulk operations exceed the
-   cap (e.g. `git checkout` touches hundreds of files at once).
+- A clean open tab re-reads the file; a dirty tab keeps its edits.
+- Tree refreshes queue per parent directory; more than 24 queued parents (`MAX_QUEUED_TREE_PARENT_REFRESHES`, e.g. a `git checkout`) forces one full refresh.
+- Remote windows start their runtime event pump with `replay: false` and resume from the cursor the runtime returns, so a new Files tab sees live changes rather than old events.
 
-Remote-bound windows start their runtime event pump with
-`replay: false`. The runtime acknowledges that subscription with its
-current cursor, and `preload.ts` uses that cursor for the next poll
-before it resumes ordinary replay. This keeps a newly opened Files tab
-on the live edge of a remote worktree, so a file created by an ADE CLI
-session on the remote machine refreshes the loaded tree instead of
-waiting behind older runtime events.
-
-Rename detection on the renderer side: because watcher events come as
-`unlink` + `add`, renames surface as a tab close + a new tab path. The
-renderer inspects the modified timestamp and file size to correlate
-them when possible.
-
-The Files page also keeps a per-project/lane in-memory session cache
-for open tabs when the user switches scopes. Clean text tabs are capped
-at 256 KB in that cache, but dirty tabs are retained regardless of
-size so unsaved edits are never silently discarded while moving between
-lanes.
+The per-project session cache keeps clean text tabs up to 256 KB and dirty
+tabs at any size, so unsaved edits survive lane switches.
 
 ## IPC surface
 
-The primary route is the ADE runtime's `file` action domain.
-`preload.ts` routes through the remote runtime first and then through
-`callLocalProjectActionStrictIfBound("file", …)` for local-bound
-windows. A bound runtime failure is returned to the caller; the
-in-process IPC handler is used only when there is no runtime route
-(for example, before a project binding exists or in tests /
-diagnostic harnesses without a runtime pool). Both paths share the
-same handler shapes; the desktop fallback handlers are registered in
-`registerIpc.ts`.
+The primary route is the runtime's `file` action domain; the pin is a
+preload-level argument, not a separate channel. Channels: `listWorkspaces`,
+`openExternalPath`, `listTree`, `listTreeChildren`, `refreshGitDecorations`,
+`readFile`, `readFileRange`, `gitBlame` (`--line-porcelain`),
+`writeTextAtomic`, `writeText`, `createFile` (throws if it exists),
+`createDirectory`, `rename`, `delete` (refuses the root), `watchChanges`,
+`stopWatching`, `onChange` (a pinned subscription listens to that machine's
+`file_change` feed and still forwards local `external-local:*` events),
+`quickOpen`, `searchText`.
 
-Every `window.ade.files.*` method except `openExternalPath` also takes an
-optional trailing machine pin, which selects the runtime for that one call
-(`callPinnedFileActionOr`). Omitting it — or passing `null` — keeps exactly the
-routing described above. Passing a binding targets that machine, skipping both
-the project-transition guard and the local IPC fallback;
-`external-local:*` workspaces drop it and stay local. The channel list itself
-is unchanged: the pin is a preload-level routing argument, not a new channel.
-
-| Channel | Handler behavior |
-|---|---|
-| `ade.files.listWorkspaces` | calls `laneService.getFilesWorkspaces`, sorts primary first, then appends locally registered external workspaces |
-| `ade.files.openExternalPath` | canonicalizes an explicit absolute local file/folder open and returns the existing or external workspace plus the path to open |
-| `ade.files.listTree` | resolves workspace, optionally lazy per `parentPath`/`depth`, returns `FileTreeNode[]` |
-| `ade.files.listTreeChildren` | paginated child listing with the same filtering/order as `listTree` |
-| `ade.files.refreshGitDecorations` | returns flat file statuses plus ancestor directory rollups without refetching tree structure |
-| `ade.files.readFile` | bounded preview read: inline text/image up to 1 MB, small unsupported binaries up to 256 KB, partial first chunk for oversized text, metadata-only `contentOmitted` for oversized images/binaries |
-| `ade.files.readFileRange` | byte-range reader; UTF-8 text ranges are trimmed to code-point boundaries, binary/image/PDF/media/document ranges are base64 |
-| `ade.files.gitBlame` | `git blame --line-porcelain` result mapped to per-line author/sha/time/summary records |
-| `ade.files.writeTextAtomic` | temp file + rename |
-| `ade.files.writeText` | plain write |
-| `ade.files.createFile` | throws if exists, otherwise writes empty or provided content |
-| `ade.files.createDirectory` | recursive mkdir |
-| `ade.files.rename` | enforces both paths in root |
-| `ade.files.delete` | recursive rm, rejects root itself |
-| `ade.files.watchChanges` | increments watcher ref count, sends events via `ade.files.change`; takes an optional trailing `OpenProjectBinding` pin so a pinned workspace watches (and hears changes from) the lane's own machine |
-| `ade.files.stopWatching` | decrements ref count |
-| `ade.files.onChange` | the `ade.files.change` subscription; takes an optional trailing pin, subscribing to the lane's machine's `file_change` feed while still forwarding this process's local `external-local:*` events |
-| `ade.files.quickOpen` | scores the workspace's file-name index |
-| `ade.files.searchText` | `git grep` in a git work tree, else a streaming JS scan over the name index |
-
-`onLaneWorktreeMutation` is an optional callback passed to
-`createFileService`. It fires when the user mutates a lane worktree
-so other services (lane manager, search index, and editor surfaces) can invalidate
-their caches.
+`createFileService`'s optional `onLaneWorktreeMutation` callback lets other
+services invalidate caches after a user edit.
 
 ## Gotchas
 
-- **Ignore caches.** The service maintains a `git check-ignore` cache
-  (`ignoreCache`, `ignoredPrefixCache`) keyed by `rootPath::relPath`.
-  It is invalidated by `clearIgnoreCacheForRoot` when the watcher
-  reports a change that might affect gitignore rules.
-- **Search index listing.** In a git work tree the quick-open index is
-  built from one `git ls-files -z --cached --others --exclude-standard`
-  instead of a directory walk with per-directory ignore checks. Nested
-  repositories (listed as `dir/`) are walked; `--cached` entries missing
-  from disk are skipped. A `.gitmodules` file, a failed command or
-  truncated output falls back to the walk. `includeIgnored` always walks.
-- **Git status cache TTL.** Tree listings reuse the porcelain status
-  for 5 seconds (`GIT_STATUS_CACHE_TTL_MS`). If you need a fresh
-  status immediately after a git op, call `invalidateGitStatusCache`.
-- **Watcher restart on mode change.** Adding a subscription with a
-  different `includeIgnored` value than the current effective mode
-  tears down the watcher. Rapid toggling will churn — the
-  renderer throttles toggle frequency.
-- **Large repositories.** The initial `git check-ignore` batch is
-  bounded by a `7_000 ms` timeout; timeouts fall back to "not
-  ignored", which can briefly surface ignored files in the tree.
-- **Cross-platform newlines.** The file service writes whatever the
-  renderer sent. It does not normalize line endings.
-
-## Cross-links
-
-- Editor surfaces and how they react to events:
-  [editor-surfaces.md](./editor-surfaces.md)
-- Lane workspace list:
-  `apps/desktop/src/main/services/lanes/laneService.ts`
-  (`getFilesWorkspaces`, `resolveWorkspaceById`)
-- Secure IPC primitives:
-  `apps/desktop/src/main/services/shared/utils.ts`
+- **Ignore cache.** `git check-ignore` answers are cached by `rootPath::relPath` and cleared by `clearIgnoreCacheForRoot` when a change may affect ignore rules. The first batch has a 7 s timeout; a timeout reads as "not ignored", so ignored files can briefly show.
+- **Git status cache** is 5 s (`GIT_STATUS_CACHE_TTL_MS`); call `invalidateGitStatusCache` after a git operation that must show at once.
+- **Mode toggles restart the watcher.**
+- **Line endings** are written exactly as the renderer sent them.

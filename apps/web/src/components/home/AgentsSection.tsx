@@ -3,6 +3,7 @@ import { useReducedMotion } from "framer-motion";
 import { ArrowRight } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { AGENTS, MODEL_SOURCES, OPENCODE_PROVIDERS, ProviderMark, ProviderTile, providerById } from "./providers";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /*
  * Every agent and model provider ADE runs, as one wall of logos in one card. Under it, one
@@ -45,7 +46,7 @@ export function AgentsSection() {
           <h3 className="text-[16px] font-semibold text-white">Agents and model providers</h3>
           <p className="text-[14px] text-white/55">Each agent runs as itself on your own plan. Plans, API keys and local models work through any of them.</p>
         </div>
-        <ul aria-label="Agents and model providers ADE runs" className="mt-7 grid grid-cols-4 gap-x-3 gap-y-5 sm:grid-cols-6 lg:grid-cols-9">
+        <ul aria-label={`Agents and model providers ${BRAND.NAME} runs`} className="mt-7 grid grid-cols-4 gap-x-3 gap-y-5 sm:grid-cols-6 lg:grid-cols-9">
           {[...AGENTS, ...SOURCES].map((provider) => (
             <li key={provider.id} className="flex min-w-0 flex-col items-center gap-2 text-center">
               <ProviderTile provider={provider} size={52} />

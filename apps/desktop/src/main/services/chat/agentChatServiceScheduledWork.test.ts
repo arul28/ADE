@@ -304,7 +304,7 @@ describe("createAgentChatService", () => {
       const updateRows = (scheduledWork.readState()?.schedules ?? [])
         .filter((row) => row.source === "update_restart");
       expect(updateRows.map((row) => row.sessionId)).toEqual([first.id]);
-      expect(updateRows[0]?.prompt).toContain("ADE restarted");
+      expect(updateRows[0]?.prompt).toContain("DAEX restarted");
 
       // A chat whose scheduled work is paused still gets its row persisted, but
       // must not be reported as resumed: it cannot fire until the user unpauses.

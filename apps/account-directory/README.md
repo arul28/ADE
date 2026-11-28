@@ -573,8 +573,8 @@ it. The daily cost report lists paid iPhone minutes and Revyl's share. Who may u
 var `CLOUD_PHONE_ACCESS`: `beta` (the default: only accounts the owner adds;
 everyone else reads `off`, and a start answers 403 `phone_not_on_account`),
 `all`, or `off`. `CLOUD_PHONES_PAUSED=1` refuses
-new phones (503 `phone_paused`) while running ones finish. The launch plan is
-`docs/plans/ade-cloud-iphone-launch.md`.
+new phones (503 `phone_paused`) while running ones finish. The feature doc is
+[`docs/features/apple-device/ade-cloud-iphone.md`](../../docs/features/apple-device/ade-cloud-iphone.md).
 
 - `GET /cloud/phone` answers `CloudPhoneState`: `access` (`on` or `off`; older
   servers sent `soon`),
@@ -1194,15 +1194,15 @@ reconcile (`scripts/analytics/reconcile-signups.mjs`,
 
 The same webhook takes `email.created` for Clerk's "Sign in from new device"
 template (`newDeviceEmail.ts`); every other email Clerk makes is acknowledged
-and left alone. With that template's "Delivered by Clerk" off, ADE sends the
-notice itself through Resend, and sends none for an ADE Cloud computer's own
+and left alone. With that template's "Delivered by Clerk" off, DAEX sends the
+notice itself through Resend, and sends none for a DAEX Cloud computer's own
 sign-in: a cloud computer's join notes the address it came from
 (`cloud_quiet_sign_ins`, migration 0072), and a sign-in from that address for
 that account in the next 15 minutes (an IPv6 address by its /64) stays quiet,
-once per join. Every other new-device sign-in gets ADE's notice: the device,
-location, address, the time in UTC, and the steps to take in ADE. A failed
+once per join. Every other new-device sign-in gets DAEX's notice: the device,
+location, address, the time in UTC, and the steps to take in DAEX. A failed
 send answers 5xx, so Clerk delivers it again, under Clerk's email id as the
-Resend idempotency key. While Clerk still delivers the template, ADE sends
+Resend idempotency key. While Clerk still delivers the template, DAEX sends
 nothing and logs whether the sign-in would have stayed quiet
 (`cloud.new_device_email`).
 

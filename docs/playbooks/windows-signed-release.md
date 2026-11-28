@@ -1,75 +1,48 @@
-# Maintainer guide: Publish signed Windows builds
+# Maintainer guide: signed Windows builds
 
-Use this guide after the Windows release changes have been merged into `main`.
+DAEX publishes Windows through the same GitHub Release pipeline as macOS and the
+standalone runtime. Windows builds fresh on every beta and stable tag, signed and
+validated in CI. Nobody builds or uploads the Windows installer by hand.
 
-ADE already publishes macOS and standalone runtime files through GitHub Releases. Windows uses that same pipeline and includes the standalone Windows payload. Windows builds fresh on the release tag, the same way macOS does.
+A normal release:
 
-After setup, a normal release is:
-
-1. `beta.yml` builds, signs, and publishes a beta (`vX.Y.Z-beta.N`) from a
-   green `main` commit, Windows included.
+1. `beta.yml` builds, signs and publishes a beta (`vX.Y.Z-beta.N`) from a green
+   `main` commit, Windows included.
 2. A maintainer picks the newest beta that passes the Sentry gate
    (`bash scripts/release-tools/betas.sh`) and pushes the stable tag at that
    beta's commit.
-3. GitHub Actions builds, signs, and validates every platform from that tag,
-   including Windows, and creates one unpublished GitHub Release.
+3. GitHub Actions builds, signs and validates every platform from that tag and
+   creates one unpublished GitHub Release.
 4. A maintainer checks it and makes it public.
 
 The release skill (`.agents/skills/release/SKILL.md`) runs these steps. This
-guide holds the Windows-specific setup, checks, and failure handling.
+guide holds the Windows-specific setup, checks and failure handling.
 
-Nobody builds or uploads the Windows installer by hand.
+Each Windows release adds `ADE-<VERSION>-win-x64.exe` (the file name keeps
+`ADE`), plus the updater's `.blockmap` and `latest.yml`, and the standalone
+`ade-win32-x64.exe`, its native archive and `install.ps1`.
 
-Each Windows release adds one file for people to download: `ADE-<VERSION>-win-x64.exe`. It also includes two small files used by ADE's automatic updater: the `.blockmap` helps download only what changed, and `latest.yml` identifies and verifies the current installer.
+## Signing setup
 
-## Start here
+Windows signing runs on
+[Azure Artifact Signing](https://learn.microsoft.com/en-us/azure/artifact-signing/overview)
+(formerly Trusted Signing). There is no certificate file: the service keeps the
+certificate and signs on behalf of a Microsoft Entra service principal.
 
-Complete these actions in order:
+**Certificates rotate.** The service
+[renews the certificate daily with a 72-hour validity](https://learn.microsoft.com/en-us/azure/artifact-signing/concept-certificate-management):
 
-1. Configure the Windows signing credentials in GitHub Actions.
-2. Build a signed Windows version in GitHub Actions with the non-publishing
-   proof run.
-3. Complete the exact-SHA proof inventory on clean Windows 10 and Windows 11
-   computers, including a signed N to N+1 private update.
-4. Validate and approve the redacted proof bundle while publication and the
-   website remain disabled.
-5. Set `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1`. That single switch makes tagged
-   releases publish Windows.
-6. Tag the approved commit. GitHub Actions builds every platform from that tag
-   and creates one unpublished release.
-7. Check the release, make it public, and only then enable the Windows website
-   link.
+- The publisher is pinned by **certificate Subject**, never thumbprint.
+  `verify`, `prepare-release.yml`, `run-electron-builder.mjs`,
+  `validate-win-artifacts.mjs` and `sign-windows-runtime.ps1` each fail while a
+  `WINDOWS_SIGNING_EXPECTED_THUMBPRINT` secret exists.
+- Every signature is RFC3161 timestamped against
+  `http://timestamp.acs.microsoft.com`, or a shipped installer would stop
+  verifying three days after it was built.
 
-The sections below provide the commands and pass conditions.
+### Azure resources
 
-## One-time setup
-
-Perform these actions once before the first public Windows release.
-
-Step 1 is required. Without the signing secrets no Windows build runs at all.
-
-Steps 2 through 4 are the clean-host proof sweep. They are strongly recommended
-before you enable Windows, and worth repeating after enablement as an ongoing
-regression check. The pipeline does not enforce them. Nothing in
-`release-core.yml` checks that a sweep happened, so a release can publish
-Windows bytes that no human ever installed on a clean machine. That is the
-accepted tradeoff for having every desktop and CLI release publish Windows
-automatically.
-
-### 1. Configure signing
-
-Windows signing runs on [Azure Artifact Signing](https://learn.microsoft.com/en-us/azure/artifact-signing/overview), the service Microsoft previously called Trusted Signing.
-
-There is no certificate file to hold. Since June 2023 the CA/Browser Forum has required code-signing private keys to live on FIPS-validated hardware, so exportable `.pfx` delivery ended for OV and EV certificates alike, and this service never releases the certificate at all: [*"All certificates are securely stored within the service and are accessible only at the time of signing."*](https://learn.microsoft.com/en-us/azure/artifact-signing/faq) The build authenticates as a Microsoft Entra service principal and the service signs on its behalf.
-
-**Certificates rotate.** Azure Artifact Signing [renews the certificate daily and issues it with a 72-hour validity](https://learn.microsoft.com/en-us/azure/artifact-signing/concept-certificate-management). Two consequences run through this whole guide:
-
-- The approved publisher is pinned by **certificate Subject**, never by thumbprint. A pinned thumbprint would stop matching within days. `WINDOWS_SIGNING_EXPECTED_THUMBPRINT` is not merely unused — every layer of the pipeline refuses to run while it is set, so the pin cannot quietly become meaningless.
-- Every signature is RFC3161 timestamped against `http://timestamp.acs.microsoft.com`. Without that countersignature a shipped installer would stop verifying three days after it was built.
-
-#### The Azure resources
-
-These already exist. Recreate them only if the account is rebuilt.
+These exist. Recreate them only if the account is rebuilt.
 
 | | |
 | --- | --- |
@@ -80,254 +53,108 @@ These already exist. Recreate them only if the account is rebuilt.
 | Certificate profile | `adePublicTrust` (Public Trust) |
 | Certificate subject | `CN=Arul Sharma, O=Arul Sharma, L=Greensboro, S=nc, C=US` |
 
-The signing service principal is `ade-signing-ci`. It holds the **Artifact Signing Certificate Profile Signer** role scoped to the signing account; without that role signing fails with HTTP 403.
+The service principal `ade-signing-ci` holds the **Artifact Signing
+Certificate Profile Signer** role on the signing account; without it signing
+fails with HTTP 403. The endpoint, account and profile are pinned in
+`apps/desktop/scripts/run-electron-builder.mjs` and
+`apps/ade-cli/scripts/sign-windows-runtime.ps1`;
+`WINDOWS_SIGNING_ENDPOINT`, `WINDOWS_SIGNING_ACCOUNT_NAME` and
+`WINDOWS_SIGNING_CERTIFICATE_PROFILE` override them for a fork.
 
-The endpoint, account name, and certificate profile are not secrets. They are pinned in `run-electron-builder.mjs` and `sign-windows-runtime.ps1` so a maintainer running a signed build locally uses the same values CI does. `WINDOWS_SIGNING_ENDPOINT`, `WINDOWS_SIGNING_ACCOUNT_NAME`, and `WINDOWS_SIGNING_CERTIFICATE_PROFILE` override them for a fork or a migrated account.
+### GitHub Actions settings
 
-#### The GitHub Actions secrets
+`release-core.yml` reads these. Every name is required unless marked optional.
 
-Add these four:
+| Repository variable | Meaning |
+| --- | --- |
+| `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED` | `1` (set) makes every tagged release build, sign, validate and attach Windows. `0` removes Windows from later releases and leaves other platforms unchanged. The only Windows gate; the website download has no flag. |
 
-- `AZURE_TENANT_ID`: the Microsoft Entra tenant (directory) ID.
-- `AZURE_CLIENT_ID`: the `ade-signing-ci` app registration's client (application) ID.
-- `AZURE_CLIENT_SECRET`: a client secret generated for that app registration.
-- `WINDOWS_SIGNING_EXPECTED_SUBJECT`: the certificate profile's complete Subject, exactly as Windows reports it — `CN=Arul Sharma, O=Arul Sharma, L=Greensboro, S=nc, C=US`.
-
-```bash
-gh secret set AZURE_TENANT_ID --repo arul28/ADE
-gh secret set AZURE_CLIENT_ID --repo arul28/ADE
-gh secret set AZURE_CLIENT_SECRET --repo arul28/ADE
-gh secret set WINDOWS_SIGNING_EXPECTED_SUBJECT --repo arul28/ADE
-```
-
-Each command asks for the secret without printing it in the command.
-
-The three `AZURE_*` names are exactly what Azure.Identity's `EnvironmentCredential` reads. On a GitHub-hosted runner that matters: `EnvironmentCredential` is first in the `DefaultAzureCredential` chain, so a complete service-principal triple is resolved before any managed-identity probe against an Azure instance-metadata endpoint the runner does not have. Microsoft's [FAQ](https://learn.microsoft.com/en-us/azure/artifact-signing/faq) gives the same guidance for non-Azure hosts and notes that when the chain does reach managed identity off-Azure it raises `Azure.Identity.CredentialUnavailableException`. An incomplete triple therefore fails slowly and confusingly rather than cleanly, which is why `verify` requires all three up front.
-
-If `WINDOWS_SIGNING_EXPECTED_SUBJECT` is missing, or if a leftover `WINDOWS_SIGNING_EXPECTED_THUMBPRINT` secret still exists, the run fails in `verify` about a minute in. Delete the thumbprint secret if it is still present:
-
-```bash
-gh secret delete WINDOWS_SIGNING_EXPECTED_THUMBPRINT --repo arul28/ADE
-```
-
-`CSC_LINK` and `CSC_KEY_PASSWORD` are the macOS Developer ID secrets. Windows signing does not read them, and the packaging wrapper strips both from the electron-builder environment so they can never be picked up as a Windows signing identity.
-
-Keep `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED` unset or `0` until Step 5.
-
-#### What actually signs
-
-`electron-builder` 26.8.1 has first-class support for this service through `win.azureSignOptions`. `run-electron-builder.mjs` supplies it on the `--require-signing` path only. That choice matters: electron-builder selects the Azure signing manager above the single chokepoint every Windows artifact passes through, so one configuration covers the packaged `ADE.exe` and its bundled DLLs, the NSIS installer, and the uninstaller. A separate post-build signing step — for example Microsoft's `Azure/artifact-signing-action` — runs after packaging, and could only sign the finished installer, leaving the `ADE.exe` already embedded inside it unsigned unless the installer were unpacked and rebuilt.
-
-Under the hood electron-builder 26 installs the `TrustedSigning` PowerShell module from PSGallery on the runner and calls `Invoke-TrustedSigning` per file. `sign-windows-runtime.ps1` signs the standalone `ade-win32-x64.exe` the same way, so both Windows artifacts share one signing path. Two things follow from that:
-
-- The runner needs outbound access to PSGallery and nuget.org on every signed build. There is no vendored copy.
-- Microsoft's successor module is `ArtifactSigning` / `Invoke-ArtifactSigning`. electron-builder pins the older `TrustedSigning` module and only moves off it in v27, which replaces the module with `signtool /dlib`. Migrate the desktop build and the runtime signer together so the two Windows artifacts never diverge.
-
-### 2. Run the signed proof build in GitHub Actions
-
-`prepare-release.yml` is the platform-neutral non-publishing dry run. Pass
-`windows_proof=true` to build and sign Windows and emit the exact-SHA proof
-bundle. Proof mode reads no repository variable; it only requires the signing
-secrets. Collect proof before Windows is enabled, and again after it is enabled
-as a regression check. Without that input the same workflow stays the ordinary
-dry run, which still builds and validates Windows whenever
-`ADE_WINDOWS_PUBLIC_RELEASE_ENABLED` is `1` and skips Windows otherwise. Neither
-mode creates a GitHub Release.
-
-Use the version and commit intended for the first Windows release:
+| Secret | Meaning |
+| --- | --- |
+| `AZURE_TENANT_ID` | Entra tenant of the signing account. |
+| `AZURE_CLIENT_ID` | Client id of `ade-signing-ci`. |
+| `AZURE_CLIENT_SECRET` | Client secret for `ade-signing-ci`. |
+| `WINDOWS_SIGNING_EXPECTED_SUBJECT` | The pinned certificate Subject, exactly as Windows reports it, and the `publisherName` the packaged updater verifies. |
+| `CSC_LINK`, `CSC_KEY_PASSWORD`, `MACOS_DEVELOPER_ID_PROFILE_B64` | macOS Developer ID material. Windows signing never reads them; the packaging wrapper strips them from electron-builder's environment. |
+| `APPLE_API_KEY_P8`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER` | App Store Connect key, used by notarization. |
+| `ADE_POSTHOG_PROJECT_TOKEN`, `ADE_POSTHOG_HOST` | Optional analytics baked into packaged builds. |
 
 ```bash
-VERSION="<VERSION>"
-RELEASE_SHA="<APPROVED_40_CHARACTER_COMMIT_SHA>"
-gh workflow run prepare-release.yml \
-  --repo arul28/ADE \
-  --ref main \
-  -f version="$VERSION" \
-  -f target_sha="$RELEASE_SHA" \
-  -f windows_proof=true
-gh run list \
-  --repo arul28/ADE \
-  --workflow prepare-release.yml \
-  --limit 5
+gh secret set AZURE_TENANT_ID --repo arul28/ADE   # prompts; never put the value in the command
 ```
 
-Open the new run or use `gh run watch <RUN_ID> --repo arul28/ADE --exit-status`.
+The three `AZURE_*` names are what Azure.Identity's `EnvironmentCredential`
+reads, first in the `DefaultAzureCredential` chain. An incomplete triple falls
+through to a managed-identity probe the GitHub runner cannot answer and fails
+slowly (`CredentialUnavailableException`), so `verify` requires all three up
+front. A missing secret stops the tagged run about a minute in, in `verify`,
+with `Windows releases require the AZURE_TENANT_ID, AZURE_CLIENT_ID and
+AZURE_CLIENT_SECRET secrets.` or `Windows releases require the
+WINDOWS_SIGNING_EXPECTED_SUBJECT secret to pin the approved publisher.`
+`prepare-release.yml` reads the four signing secrets directly when
+`windows_proof` is set and passes the rest with `secrets: inherit`.
 
-The workflow checks out `RELEASE_SHA`, confirms it is on `main`, and requires the successful `ci-pass` result for that exact commit.
+### What signs
 
-The run passes only when:
+electron-builder 26's `win.azureSignOptions`, supplied by
+`run-electron-builder.mjs` on the `--require-signing` path only. electron-builder
+routes every Windows artifact through one signing manager, so one configuration
+signs the packaged `ADE.exe` and its DLLs, the NSIS installer and the
+uninstaller. A post-build signing action could only sign the finished installer
+and would leave the embedded `ADE.exe` unsigned.
 
-- The Windows installer is signed by the approved publisher.
-- The installer and installed `ADE.exe` use the same certificate.
-- The Windows installer, blockmap, and update information match.
-- The installed-product lifecycle smoke test passes on the runner.
-- Required bundled tools and runtime files are present.
-- The macOS and standalone runtime jobs still pass.
-- No GitHub Release is created.
-- A machine-readable proof manifest is generated for the exact checked-out SHA.
+electron-builder installs the `TrustedSigning` PowerShell module from PSGallery
+on the runner and calls `Invoke-TrustedSigning` per file;
+`sign-windows-runtime.ps1` signs `ade-win32-x64.exe` the same way. So:
 
-Download the `ade-win-proof-v<VERSION>` artifact from the successful run. The
-separate `ade-win-release-v<VERSION>` artifact from the same run holds only the
-installer, its `.blockmap`, and `latest.yml`; that is the artifact a publishing
-run attaches to the draft.
+- The runner needs PSGallery and nuget.org on every signed build (nothing is
+  vendored).
+- Microsoft's successor is `ArtifactSigning` / `Invoke-ArtifactSigning`; move
+  the desktop build and the runtime signer together when electron-builder does.
 
-> **Retention window.** The proof bundle is uploaded with `retention-days: 90`.
-> That window bounds how long the clean-host evidence stays downloadable for
-> human review. It does not bound when you may tag a release. A release never
-> reuses bytes from this run, so an expired proof bundle cannot block a release.
-> It only means the evidence must be collected again if you still need it.
+Signing is machine-enforced whenever Windows builds: `build-win-release`
+requires the secrets before packaging, `run-electron-builder.mjs` runs with
+`--require-signing`, and `validate-win-artifacts.mjs --require-signed` checks a
+valid signature, a trusted RFC3161 timestamp, the pinned Subject, and that the
+installer and the `ADE.exe` it installs carry the same certificate. There is no
+unsigned publication path.
 
-Record the run id. The final proof phase in Publish step 3 checks the manifest
-against it:
+## Clean-host proof (regression check)
+
+The pipeline does not require a clean-host sweep, so a release can publish
+Windows bytes no human installed on a clean machine. Run one when the Windows
+install, service or signing paths changed:
+
+```bash
+gh workflow run prepare-release.yml --repo arul28/ADE --ref main \
+  -f version="<VERSION>" -f target_sha="<40_CHARACTER_SHA>" -f windows_proof=true
+```
+
+The run checks out the SHA, confirms it is on `main` with a successful
+`ci-pass`, builds and signs without creating a release, runs the
+installed-product lifecycle smoke, and uploads `ade-win-proof-v<VERSION>` (kept
+90 days) plus `ade-win-release-v<VERSION>` (installer, `.blockmap`,
+`latest.yml`). Record the run id. Then follow
+[windows-release-proof.md](../development/windows-release-proof.md): lay out the
+bundle, run the `build` phase validator, test on clean Windows 10 and 11 hosts
+(signature check below, install, launch, projects, lanes, agents, terminals,
+`daex doctor`, the HKCU supervisor, iPhone pairing, uninstall, reinstall, and
+every scenario in the inventory), index redacted evidence, and run the `complete`
+and `publication-readiness` phases.
 
 ```powershell
-$PROOF_RUN_ID = "<workflow-run-id>"
+Get-AuthenticodeSignature -LiteralPath ".\ADE-<VERSION>-win-x64.exe" |
+  Format-List Status,SignerCertificate,TimeStamperCertificate
 ```
 
-The bundle's manifest-indexed files must include:
-
-- `ADE-<VERSION>-win-x64.exe`
-- `ADE-<VERSION>-win-x64.exe.blockmap`
-- `latest.yml`
-- `ade-win32-x64.exe`
-- `ade-win32-x64.native.tar.gz`
-- `install.ps1`
-- `SHA256SUMS`
-- `windows-proof-manifest.json`
-
-Create the proof-bundle layout from the proof contract: leave the manifest at
-the bundle root and place all seven manifest-indexed files under its
-`artifacts/` directory before running the validator. Keep any additional
-standalone platform files from the Actions artifact unchanged alongside them.
-
-Run the build-phase validator after download. It re-hashes all seven indexed
-release files, verifies the standalone entries against `SHA256SUMS`, and
-rejects a manifest for any other commit:
-
-```powershell
-node apps/desktop/scripts/windows-proof-manifest.mjs validate `
-  --manifest <proof-root>\windows-proof-manifest.json `
-  --phase build `
-  --expected-sha $RELEASE_SHA `
-  --artifact-root <proof-root>\artifacts
-```
-
-### 3. Test the signed installer
-
-On clean Windows 10 x64 and Windows 11 x64 computers:
-
-1. Check the installer signature:
-
-   ```powershell
-   Get-AuthenticodeSignature `
-     -LiteralPath ".\ADE-<VERSION>-win-x64.exe" |
-     Format-List Status,SignerCertificate,TimeStamperCertificate
-   ```
-
-2. Install ADE and run the same check on `%LOCALAPPDATA%\Programs\ADE\ADE.exe`.
-3. Confirm both results report `Status: Valid` and the approved ADE publisher.
-4. Test installation, launch, projects, lanes, agent sessions, terminals, `ade doctor`, the HKCU startup supervisor, iPhone pairing, uninstall, and reinstall.
-5. Complete every scenario in the machine-readable inventory, including
-   Windows 10/11, PowerShell 5.1, PowerShell 7, cmd, Git Bash, every provider state, account OAuth/directory,
-   cross-machine clients, LAN/Tailscale/Relay, the private signed N to N+1
-   updater path, and regressions.
-6. Index separately redacted GUI, log, DB, process, IPC, and network evidence.
-   Record publisher/certificate identity as a digest, never raw certificate
-   material or personal/account identifiers.
-
-Use the [Windows release proof contract](../development/windows-release-proof.md)
-and its [full-system scenario inventory](../development/windows-full-system-scenarios.json)
-for the acceptance test. Installed-host recovery guidance lives in
-[Windows support](../development/windows-support.md).
-
-### 4. Approve the exact-SHA proof
-
-After every `pre-tag` result is `pass`, evidence is redacted, and the manifest
-is `proof_complete`, run the complete validator with the artifact and evidence
-roots. Leave `draft-assets-website-explicit` pending until the unpublished draft
-exists in Publish step 3. An authorized Windows release maintainer then changes the role-only
-approval fields as described in the proof contract and runs
-`--phase publication-readiness`. This validation still requires both public
-release and website flags to be false, so run it before Step 5.
-
-The supporting evidence lives in the redacted proof bundle assembled in Step 2:
-`windows-proof-manifest.json` at the bundle root, the manifest-indexed release
-files under `artifacts/`, and the redacted GUI, log, DB, process, IPC, and
-network evidence under `evidence/`. The contract for both is
-[Windows release proof](../development/windows-release-proof.md).
-
-### 5. Enable Windows releases
-
-After the recorded test results pass, set the single publication gate:
-
-```bash
-gh variable set ADE_WINDOWS_PUBLIC_RELEASE_ENABLED \
-  --repo arul28/ADE --body 1
-```
-
-`ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1` makes every tagged release build, sign,
-validate, and publish Windows alongside macOS and the standalone runtime. It is
-the only Windows repository variable. Setting it back to `0` removes Windows
-from later releases and leaves the other platforms unchanged.
-
-The gate does not publish a release by itself; the release workflow still stops
-at an unpublished draft. Website readiness is not publication approval.
-
-Signing stays mandatory and machine-enforced whenever Windows builds. The
-`build-win-release` job requires the signing secrets before it packages
-anything, `run-electron-builder.mjs` runs with `--require-signing`, and
-`validate-win-artifacts.mjs` runs `--require-signed` Authenticode verification:
-valid signature status, a trusted RFC3161 timestamp, and the pinned publisher
-Subject. It additionally requires that the installer and the `ADE.exe` it
-installs carry the same certificate, which proves both came from one signing
-operation rather than only sharing a Subject. There is no unsigned Windows
-publication path.
-
-### Required GitHub Actions settings
-
-`release-core.yml` reads exactly these repository variables and secrets. Every
-name below is required unless marked optional.
-
-| Repository variable | Required when | Meaning |
-| --- | --- | --- |
-| `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED` | Publishing Windows files | `1` makes the tagged release build, sign, validate, and attach the Windows files. Set in Step 5. |
-
-| Secret | Required when | Meaning |
-| --- | --- | --- |
-| `AZURE_TENANT_ID` | Signed Windows builds | Microsoft Entra tenant ID of the Azure Artifact Signing account. Step 1. |
-| `AZURE_CLIENT_ID` | Signed Windows builds | Client ID of the `ade-signing-ci` service principal. Step 1. |
-| `AZURE_CLIENT_SECRET` | Signed Windows builds | Client secret for that service principal. Step 1. |
-| `WINDOWS_SIGNING_EXPECTED_SUBJECT` | Signed Windows builds | Pinned certificate Subject, and the `publisherName` the packaged updater verifies. Step 1. |
-| `CSC_LINK` | Every release | Existing macOS Developer ID certificate. Not used by Windows signing. |
-| `CSC_KEY_PASSWORD` | Every release | Existing macOS certificate password. |
-| `MACOS_DEVELOPER_ID_PROFILE_B64` | Every release | Existing macOS Developer ID provisioning profile. |
-| `APPLE_API_KEY_P8` | Every release | Existing App Store Connect API key material. |
-| `APPLE_API_KEY_ID` | Every release | Existing App Store Connect key id. |
-| `APPLE_API_ISSUER` | Every release | Existing App Store Connect issuer id, used by notarization. |
-| `ADE_POSTHOG_PROJECT_TOKEN` | Optional | Analytics token baked into packaged builds. |
-| `ADE_POSTHOG_HOST` | Optional | Analytics host baked into packaged builds. |
-
-`WINDOWS_SIGNING_EXPECTED_THUMBPRINT` is not in this table because it is not
-supported. Azure Artifact Signing renews the certificate daily and expires it
-after 72 hours, so a thumbprint pin would fail every release within days.
-`verify`, `prepare-release.yml`, `run-electron-builder.mjs`,
-`validate-win-artifacts.mjs`, and `sign-windows-runtime.ps1` each fail while that
-secret exists, rather than ignoring it and leaving the release apparently pinned.
-
-`prepare-release.yml` reads the four Windows signing secrets directly when
-`windows_proof` is set, and passes everything else through with
-`secrets: inherit`.
-
-`ADE_WINDOWS_PUBLIC_RELEASE_ENABLED` is the only Windows gate. The website has
-no separate flag — the Windows download is permanently on.
+Run the same check on `%LOCALAPPDATA%\Programs\ADE\ADE.exe`; both must report
+`Status: Valid` and the approved publisher.
 
 ## Publish a release
 
-Use this process for the first Windows release and every later release.
-
 ### 1. Approve the commit and version
 
-The commit is the commit of the beta you promote. Find it:
+The commit is the commit of the beta you promote:
 
 ```bash
 bash scripts/release-tools/betas.sh                          # the recommended: line names the beta
@@ -335,216 +162,122 @@ node scripts/release-tools/beta-gate.mjs v<VERSION>-beta.<N>  # exit 0 is PASS
 RELEASE_SHA=$(git rev-list -n 1 v<VERSION>-beta.<N>)
 ```
 
-Do not promote a beta that the gate failed (exit 1) or could not check
-(exit 2).
+Do not promote a beta that the gate failed (exit 1) or could not check (exit 2).
+Confirm the commit is on `main` with a successful `ci-pass`, the tag does not
+exist, `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED` is `1`
+(`gh variable list --repo arul28/ADE | grep ADE_WINDOWS_`), and the
+`ade-signing-ci` client secret has not expired.
 
-Confirm:
-
-- The commit is on `main`.
-- The normal `ci-pass` check succeeded for that exact commit. Betas are built
-  only from such a commit.
-- The version tag does not already exist.
-- `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED` is `1`.
-- The four Windows signing secrets are still present, and the
-  `ade-signing-ci` client secret has not expired. With the gate on and a secret
-  missing, the tagged run stops about a minute in, in `verify`, with
-  `Windows releases require the AZURE_TENANT_ID, AZURE_CLIENT_ID and
-  AZURE_CLIENT_SECRET secrets.` or `Windows releases require the
-  WINDOWS_SIGNING_EXPECTED_SUBJECT secret to pin the approved publisher.` See
-  [Required GitHub Actions settings](#required-github-actions-settings).
-
-Confirm the current value before tagging:
-
-```bash
-gh variable list --repo arul28/ADE | grep ADE_WINDOWS_
-```
-
-The beta already built, signed, and validated Windows from this commit, so a
-dry run is optional. Run it when the Windows signing setup changed since that
-beta. With the gate on it builds, signs, and validates Windows too:
-
-```bash
-VERSION="<VERSION>"
-RELEASE_SHA="<APPROVED_40_CHARACTER_COMMIT_SHA>"
-gh workflow run prepare-release.yml \
-  --repo arul28/ADE \
-  --ref main \
-  -f version="$VERSION" \
-  -f target_sha="$RELEASE_SHA"
-```
-
-Add `-f windows_proof=true` when you also want a fresh clean-host proof bundle
-for this commit. That is the recommended regression check, not a requirement.
-
-If you run it, do not tag until that run succeeds for `RELEASE_SHA`.
+The beta already built, signed and validated Windows from this commit, so a dry
+run (`prepare-release.yml` without `windows_proof`) is optional; run it when the
+signing setup changed since that beta, and do not tag until it passes.
 
 ### 2. Tag the approved commit
 
-Push the tag yourself. The "Protect release tags" rule lets only an admin
-create a stable `v*` tag. Do not dispatch `release.yml` with `target_sha`
-instead: the workflow's own token cannot create the tag, and its publish step
-fails with HTTP 422. A dispatch and a push together also start two runs.
+Push the tag yourself. The "Protect release tags" rule lets only an admin create
+a stable `v*` tag. Do not dispatch `release.yml` with `target_sha` instead: the
+workflow's token cannot create the tag (HTTP 422), and a dispatch plus a push
+start two runs.
 
 ```bash
-VERSION="<VERSION>"
-RELEASE_SHA="<APPROVED_40_CHARACTER_COMMIT_SHA>"
-git tag -a "v$VERSION" "$RELEASE_SHA" -m "ADE v$VERSION"
+git tag -a "v$VERSION" "$RELEASE_SHA" -m "DAEX v$VERSION"
 git push origin "v$VERSION"
 ```
 
-The tag starts `.github/workflows/release.yml`. GitHub Actions builds, signs,
-and validates every platform from that tag, including Windows when the gate is
-on, and creates or updates an unpublished GitHub Release.
-
-While the gate is on, a failed or skipped Windows build blocks the draft exactly
-as a failed macOS build does. No draft is created.
-
-Do not rerun the release workflow after the release is public. The workflow refuses to overwrite assets on a published release.
+The tag starts `.github/workflows/release.yml`, which builds every platform and
+creates an unpublished release. While the gate is on, a failed or skipped
+Windows build blocks the draft like a failed macOS build. The workflow refuses to
+overwrite assets on a published release.
 
 ### 3. Check the unpublished release
 
 ```bash
-gh release view "v<VERSION>" \
-  --repo arul28/ADE \
-  --json tagName,isDraft,url,assets
+gh release view "v<VERSION>" --repo arul28/ADE --json tagName,isDraft,url,assets
 ```
 
 Require:
 
-- The tag points to the approved commit.
-- `isDraft` is `true`.
-- All existing macOS and standalone runtime files are present.
-- The Windows installer, its `.blockmap`, and `latest.yml` are present.
-- The downloaded Windows installer and installed `ADE.exe` have valid signatures from the approved publisher.
-- The installed app points to `arul28/ADE` for updates.
+- The tag points to the approved commit, and `isDraft` is `true`.
+- All macOS and standalone runtime files are present, plus the Windows
+  installer, `.blockmap` and `latest.yml`.
+- The downloaded installer and installed `ADE.exe` have valid signatures from
+  the approved publisher, and the installed app updates from `arul28/ADE`.
 - `SHA256SUMS` lists exactly `install.sh`, `install.ps1`, the four
   `ade-darwin-*` and four `ade-linux-*` files, and `ade-win32-x64.exe` with its
-  native archive, and every listed digest matches the uploaded asset.
+  native archive, and every digest matches the uploaded asset.
 
-Every asset in the draft comes from the tagged run. The published Windows assets
-are `ADE-<VERSION>-win-x64.exe`, its `.blockmap`, `latest.yml`, `install.ps1`,
-`ade-win32-x64.exe`, and `ade-win32-x64.native.tar.gz`. `SHA256SUMS` is
-regenerated over that merged standalone set, so it is not the same file as the
-`SHA256SUMS` inside any proof bundle.
+When a clean-host sweep runs for this release, add the draft-asset evidence, set
+`draft-assets-website-explicit` to `pass`, and run the `draft-readiness` phase
+with `--expected-tag "v$VERSION" --expected-run-id <proof run id>` (see
+windows-release-proof.md).
 
-Only when you are running the clean-host proof sweep for this release: add the
-redacted draft-asset and disabled-website evidence to the proof bundle, set
-`draft-assets-website-explicit` to `pass`, then run the final gate against the
-bundle from that sweep's proof run:
-
-```powershell
-node apps/desktop/scripts/windows-proof-manifest.mjs validate `
-  --manifest <proof-root>\windows-proof-manifest.json `
-  --phase draft-readiness `
-  --expected-sha $RELEASE_SHA `
-  --expected-tag "v$VERSION" `
-  --expected-run-id $PROOF_RUN_ID `
-  --artifact-root <proof-root>\artifacts `
-  --evidence-root <proof-root>\evidence
-```
-
-Stop if any file or check is wrong. Do not upload replacement files by hand and do not move an existing tag. Fix the source, choose a higher version, and repeat the automated process.
+Stop if anything is wrong. Never upload replacement files or move a tag: fix the
+source, choose a higher version, and repeat.
 
 ### 4. Publish
 
-This command makes every platform's release files public:
-
 ```bash
-gh release edit "v<VERSION>" \
-  --repo arul28/ADE --draft=false --latest
+gh release edit "v<VERSION>" --repo arul28/ADE --draft=false --latest
 ```
 
 Run it only with explicit maintainer approval.
 
 ### 5. Confirm the website
 
-The website download is permanently on — v1.2.52 shipped the first signed public
-Windows installer and the old `VITE_ADE_WINDOWS_DOWNLOAD_ENABLED` gate is
-retired. No setting change is needed for any release. Confirm that
-`https://ade-app.dev/download/windows` resolves to the installer you just
-published, that `https://ade-app.dev/install.ps1` serves the matching script,
-and that the macOS and iOS links are unchanged. Then download and install ADE
-from that public link on a clean Windows computer.
-
-Prove the N to N+1 updater path with two signed, non-public builds before the
-first public Windows release. Repeat it against public metadata after the next
-public signed release as an ongoing regression check.
+The website's `/download/windows` must resolve to the installer you published
+and `https://ade-app.dev/install.ps1` must serve the matching script; the macOS
+and iOS links stay unchanged. Install from the public link on a clean Windows
+computer.
 
 ## If something fails
 
-- Before publication: keep Windows and the website link disabled, fix the problem, and repeat the failed test.
-- Existing macOS or standalone runtime job fails: stop the release and fix the shared workflow.
-- Publish step fails with `Reference update failed (HTTP 422)`: the run tried
-  to create the stable tag itself. Push `v<VERSION>` at the run's commit
-  (Publish step 2), then `gh run rerun <RUN_ID> --failed`.
-- A fix to the source reaches a stable release only through a new beta: merge
-  the fix to `main`, let `beta.yml` publish the next beta, and promote that
-  beta when it passes the gate.
-- `build-win-release` fails while the gate is on: no draft is created, because
-  the publish gate in `release.yml` requires a successful Windows build. Fix the source, choose a
-  higher version, and tag again. Do not turn the gate off to force a draft out.
-- Gate is on but the draft carries no Windows assets: the draft did not come
-  from a complete run of this workflow. Leave it unpublished, delete it, and
-  rerun the release for that tag.
-- Gate is off but the draft carries Windows assets: the assets are stale or were
-  added by hand. Leave it unpublished, delete it, and rerun the release for that
-  tag with the intended gate value.
-- Problem found in an unpublished release: leave it unpublished, fix the source, choose a higher version, and rebuild.
-- Problem found after publication: hide the website link, set
-  `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=0`, fix and test a higher version, then
-  set it back to `1` before tagging that version.
-- Signing certificate changes: the certificate rotates on its own and needs no
-  action. Update `WINDOWS_SIGNING_EXPECTED_SUBJECT` and repeat the signed
-  installer tests only if the certificate profile's Subject itself changes.
+- A macOS or standalone runtime job fails: stop and fix the shared workflow.
+- Publish fails with `Reference update failed (HTTP 422)`: the run tried to
+  create the stable tag. Push `v<VERSION>` at the run's commit, then
+  `gh run rerun <RUN_ID> --failed`.
+- A source fix reaches stable only through a new beta: merge it, let `beta.yml`
+  publish the next beta, and promote that one.
+- `build-win-release` fails while the gate is on: no draft is created. Fix the
+  source, choose a higher version, tag again. Never turn the gate off to force a
+  draft out.
+- Gate on but the draft has no Windows assets, or gate off but it has some: the
+  draft did not come from a complete run. Leave it unpublished, delete it, rerun.
+- A problem after publication: set `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=0`, fix
+  and test a higher version, set it back to `1` before tagging.
 - `Windows installer and packaged executable were signed by different
-  certificates`: the build straddled the service's daily certificate rotation.
-  Nothing is wrong with the configuration. Rerun the build.
-- Signing fails with HTTP 403: the `ade-signing-ci` service principal has lost
-  the **Artifact Signing Certificate Profile Signer** role on the `arulsigning`
-  account, or its client secret expired.
-- Signing fails with `CredentialUnavailableException` or hangs before signing:
-  one of `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` is missing
-  or wrong, so the credential chain fell past `EnvironmentCredential` and tried
-  to reach an Azure instance-metadata endpoint the runner does not have.
-- The build fails installing the `TrustedSigning` module: the runner could not
-  reach PSGallery or nuget.org. The signing toolchain is downloaded per build
-  and is not vendored.
-- Release workflow is rerun after publication: the workflow stops instead of replacing public files. Publish a higher version for any correction.
+  certificates`: the build straddled the daily rotation. Rerun it.
+- HTTP 403 while signing: `ade-signing-ci` lost its role or its client secret
+  expired.
+- `CredentialUnavailableException`, or a hang before signing: one of the three
+  `AZURE_*` secrets is missing or wrong.
+- Installing the `TrustedSigning` module fails: the runner could not reach
+  PSGallery or nuget.org.
+- The certificate profile's Subject changed (rotation alone does not change it):
+  update `WINDOWS_SIGNING_EXPECTED_SUBJECT` and repeat the signature checks.
 
-Never put a certificate, private key, password, private certificate URL, or access token in the repository, logs, release notes, or test record.
-
-## Other distribution options
-
-An unsigned `.exe` can be shared for development, but Windows cannot verify who published it. The public GitHub release should use a trusted signature.
-
-WinGet, the Microsoft Store, MSIX, and enterprise deployment can be added later. They are separate distribution channels and are not required to add Windows to ADE's existing GitHub release.
+Never put a certificate, key, password, private URL or token in the repository,
+logs, release notes or a test record.
 
 ## Implementation files
 
-- [Package scripts](../../apps/desktop/package.json)
-- [Windows packaging script](../../apps/desktop/scripts/run-electron-builder.mjs)
-- [Windows release-file checker](../../apps/desktop/scripts/validate-win-artifacts.mjs)
-- [Standalone Windows runtime signer](../../apps/ade-cli/scripts/sign-windows-runtime.ps1)
-- [Windows uninstall cleanup](../../apps/desktop/scripts/windows-uninstall-cleanup.ps1)
-- [Non-publishing workflow](../../.github/workflows/prepare-release.yml)
-- [Tag-triggered release workflow](../../.github/workflows/release.yml)
-- [Shared release jobs](../../.github/workflows/release-core.yml)
-- [Publishing workflow](../../.github/workflows/release-publish.yml)
-- [Contract tests](../../apps/desktop/scripts/windows-release-contract.test.mjs)
-- [Proof manifest generator and validator](../../apps/desktop/scripts/windows-proof-manifest.mjs)
-- [Exact-SHA Windows proof](../development/windows-release-proof.md)
-- [Windows support and troubleshooting](../development/windows-support.md)
-- [Update behavior](../features/onboarding-and-settings/desktop-auto-update.md)
+- `apps/desktop/package.json` (`build.win`, `build.nsis`)
+- `apps/desktop/scripts/run-electron-builder.mjs` (packaging and signing)
+- `apps/desktop/scripts/validate-win-artifacts.mjs` (release-file checks)
+- `apps/ade-cli/scripts/sign-windows-runtime.ps1` (standalone runtime signer)
+- `apps/desktop/scripts/windows-uninstall-cleanup.ps1`
+- `.github/workflows/prepare-release.yml`, `release.yml`, `release-core.yml`,
+  `release-publish.yml`
+- `apps/desktop/scripts/windows-release-contract.test.mjs`
+  (`npm --prefix apps/desktop run test:win:release-contract`)
+- `apps/desktop/scripts/windows-proof-manifest.mjs`
+- [Windows release proof](../development/windows-release-proof.md),
+  [Windows support](../development/windows-support.md),
+  [Update behavior](../features/onboarding-and-settings/desktop-auto-update.md)
 
 ## References
 
-- [Azure Artifact Signing overview](https://learn.microsoft.com/en-us/azure/artifact-signing/overview)
-- [Azure Artifact Signing certificate management](https://learn.microsoft.com/en-us/azure/artifact-signing/concept-certificate-management)
-- [Azure Artifact Signing signing integrations](https://learn.microsoft.com/en-us/azure/artifact-signing/how-to-signing-integrations)
-- [Azure Artifact Signing role assignment](https://learn.microsoft.com/en-us/azure/artifact-signing/tutorial-assign-roles)
 - [Azure Artifact Signing FAQ](https://learn.microsoft.com/en-us/azure/artifact-signing/faq)
+- [Azure Artifact Signing role assignment](https://learn.microsoft.com/en-us/azure/artifact-signing/tutorial-assign-roles)
 - [Azure Identity credential chains](https://learn.microsoft.com/en-us/dotnet/azure/sdk/authentication/credential-chains)
 - [electron-builder Windows signing](https://www.electron.build/docs/features/code-signing/code-signing-win/)
-- [GitHub Actions secrets](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets)
-- [Microsoft code-signing options](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/code-signing-options)
 - [Microsoft SmartScreen reputation](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation)

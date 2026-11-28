@@ -1,4 +1,5 @@
 import type { AdeCardPayload } from "./adeCard";
+import { BRAND } from "./brand";
 import { namesPlanLimitWindow } from "./usageLimitResumePresentation";
 
 /** Sticky `ade_card` identity per ADE chat. Later ticks merge into this row. */
@@ -102,7 +103,7 @@ export function claudeExtraUsageQuotaSnapshot(info: Record<string, unknown>): Cl
 }
 
 export const CLAUDE_EXTRA_USAGE_STOP_NOTICE =
-  "ADE stopped this turn because Claude started to bill extra usage. The last request can be billed. To let turns continue, change Extra usage in this account's settings.";
+  `${BRAND.NAME} stopped this turn because Claude started to bill extra usage. The last request can be billed. To let turns continue, change Extra usage in this account's settings.`;
 
 export function parseClaudeSessionQuotaResetAt(
   text: string,

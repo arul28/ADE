@@ -9,6 +9,7 @@ import {
   MARKETING_CTA_POSITIONS,
   MARKETING_FEATURES,
 } from "../lib/marketingAnalytics";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 export function SiteFooter() {
   const year = new Date().getFullYear();
@@ -20,14 +21,18 @@ export function SiteFooter() {
         <div className="grid gap-10 md:grid-cols-3">
           <div>
             <div className="flex flex-col gap-2">
-              <img
-                src="/logo.png"
-                alt="ADE"
-                className="h-9 w-auto object-contain object-left sm:h-10"
-                width={200}
-                height={40}
-                decoding="async"
-              />
+              <div className="flex items-center gap-2.5">
+                <img
+                  src="/icon.png"
+                  alt=""
+                  aria-hidden
+                  className="h-8 w-8 sm:h-9 sm:w-9"
+                  width={36}
+                  height={36}
+                  decoding="async"
+                />
+                <span className="text-xl font-semibold tracking-tight text-fg sm:text-2xl">{BRAND.NAME}</span>
+              </div>
               <div className="text-xs text-muted-fg">Agentic Development Environment</div>
             </div>
             <p className="mt-4 max-w-sm text-sm leading-relaxed text-muted-fg">
@@ -57,7 +62,7 @@ export function SiteFooter() {
                 </Link>
                 <Link className="focus-ring inline-flex w-fit items-center gap-1.5 rounded-md text-muted-fg hover:text-fg" to="/#ade-cloud" data-ade-analytics-feature={MARKETING_FEATURES.VIEW_ADE_CLOUD}>
                   <CloudMark className="h-3.5" />
-                  ADE Cloud
+                  {BRAND.CLOUD_NAME}
                 </Link>
               </div>
             </div>
@@ -98,7 +103,7 @@ export function SiteFooter() {
 
         <div className="mt-10 flex flex-col items-start justify-between gap-3 border-t border-border/70 pt-6 text-xs text-muted-fg sm:flex-row sm:items-center">
           <div>
-            © {year} ADE.{" "}
+            © {year} DAEX.{" "}
             <a className="focus-ring rounded-md hover:text-fg" href={`${LINKS.github}/blob/main/LICENSE`} target="_blank" rel="noreferrer">
               AGPL-3.0 License.
             </a>

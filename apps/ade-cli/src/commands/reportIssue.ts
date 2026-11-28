@@ -39,6 +39,7 @@ import {
 } from "../services/account/sharedAccountAuthService";
 import { openExternalUrl } from "../lib/externalLinks";
 import { buildPublicIssueUrl, osFamilyOf } from "../../../desktop/src/shared/publicIssueLink";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 /**
  * Headless counterpart to the desktop "Report this error to ADE…" dialog. Reads only local
@@ -397,7 +398,7 @@ export function describeDiagnosticUpload(
   savedPath?: string | null,
 ): string {
   if (result.ok) {
-    const sent = `Sent to ADE — reference ${result.reference}`;
+    const sent = `Sent to ${BRAND.NAME} — reference ${result.reference}`;
     return savedPath ? `${sent}\nExactly what was sent is saved at ${savedPath}` : sent;
   }
   const reason = (() => {
@@ -407,16 +408,16 @@ export function describeDiagnosticUpload(
       case "too_large":
         return "Not sent: this report is too big to send.";
       case "unavailable":
-        return "Not sent: ADE can't take reports right now.";
+        return `Not sent: ${BRAND.NAME} can't take reports right now.`;
       case "rejected":
         return "Not sent: the report service refused this report.";
       default:
-        return "Not sent: ADE couldn't reach the report service.";
+        return `Not sent: ${BRAND.NAME} couldn't reach the report service.`;
     }
   })();
   return savedPath
-    ? `${reason}\nThe report is saved at ${savedPath}. Send it to the ADE team privately; do not post it on a public page.`
-    : `${reason} Send the report above to the ADE team privately; do not post it on a public page.`;
+    ? `${reason}\nThe report is saved at ${savedPath}. Send it to the ${BRAND.NAME} team privately; do not post it on a public page.`
+    : `${reason} Send the report above to the ${BRAND.NAME} team privately; do not post it on a public page.`;
 }
 
 /**

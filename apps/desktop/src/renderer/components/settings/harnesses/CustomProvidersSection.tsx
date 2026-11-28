@@ -43,6 +43,7 @@ import { routeTestKey, useHarnessReach, type HarnessReach, type HarnessRouteTest
 import { useHarnessPresets } from "./useHarnessPresets";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { modelMentionEffortLabel } from "../../../../shared/modelMentions";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * Settings › Providers › Custom.
@@ -104,7 +105,7 @@ export function CustomProvidersSection({
   // account, so a preset a launch may not resolve is never silently trusted.
   const warnUnconfirmedAccountWrite = useCallback((error: string | null) => {
     if (!error) return;
-    showToast({ tone: "warning", title: "Not on your ADE account yet", message: error });
+    showToast({ tone: "warning", title: `Not on your ${BRAND.NAME} account yet`, message: error });
   }, []);
   // The accounts read names this page's machine, This computer included.
   const readPin = useSettingsReadPin();
@@ -289,7 +290,7 @@ export function CustomProvidersSection({
             <div className="ade-cp-hero-id">
               <span className="ade-cp-hero-title">Any harness. Any model you pay for.</span>
               <span className="ade-cp-hero-copy">
-                Run Claude Code on your ChatGPT plan, or Codex on your Claude plan. ADE uses the sign-ins you
+                Run Claude Code on your ChatGPT plan, or Codex on your Claude plan. {BRAND.NAME} uses the sign-ins you
                 already have, so there is nothing new to log in to.
               </span>
               <div className="ade-cp-hero-actions">

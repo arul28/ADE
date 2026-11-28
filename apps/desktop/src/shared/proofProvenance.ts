@@ -7,6 +7,7 @@
  */
 
 import type { ComputerUseArtifactOwner } from "./types/computerUseArtifacts";
+import { BRAND } from "./brand";
 
 export type ComputerUseProofSource = "ade-recorder" | "ade-capture" | "attached";
 
@@ -116,13 +117,13 @@ export function proofSourceLine(provenance: ProofProvenance, locale?: string): s
       const idleCut = proofIdleCutLabel(provenance.idleCutMs);
       const suffix = idleCut ? ` · ${idleCut}` : "";
       if (recordedFrom && recordedTo) {
-        return `Recorded by ADE · ${formatProofClockRange(recordedFrom, recordedTo, locale)}${suffix}`;
+        return `Recorded by ${BRAND.NAME} · ${formatProofClockRange(recordedFrom, recordedTo, locale)}${suffix}`;
       }
       const single = recordedFrom ?? recordedTo;
-      return single ? `Recorded by ADE · ${formatProofClock(single, locale)}${suffix}` : `Recorded by ADE${suffix}`;
+      return single ? `Recorded by ${BRAND.NAME} · ${formatProofClock(single, locale)}${suffix}` : `Recorded by ${BRAND.NAME}${suffix}`;
     }
     case "ade-capture":
-      return "Captured by ADE";
+      return `Captured by ${BRAND.NAME}`;
     case "attached":
       return "Attached by the agent";
     default:

@@ -17,6 +17,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { OpenProjectBinding } from "../../shared/types";
 import type { PinnedProviderToolStatus } from "../../shared/types/config";
 import { usePolling } from "./usePolling";
+import { BRAND } from "../../shared/brand";
 
 /** How often a running download's progress is re-read. */
 const DOWNLOAD_POLL_MS = 1_000;
@@ -93,7 +94,7 @@ export function usePinnedToolStatus(
     if (!provider) return;
     const start = window.ade?.ai?.pinnedToolDownload;
     if (!start) {
-      setError("This ADE build cannot download agents on that machine. Update ADE there and try again.");
+      setError(`This ${BRAND.NAME} build cannot download agents on that machine. Update ${BRAND.NAME} there and try again.`);
       return;
     }
     setStarting(true);
@@ -173,7 +174,7 @@ export function pinnedToolLine(
       };
     case "missing":
       return status.fetchAllowed
-        ? { tone: "muted", text: `ADE downloads ${label} for ${where} the first time it is used.`, action: "download" }
-        : { tone: "muted", text: status.message ?? `ADE has not downloaded ${label} for ${where}.`, action: null };
+        ? { tone: "muted", text: `${BRAND.NAME} downloads ${label} for ${where} the first time it is used.`, action: "download" }
+        : { tone: "muted", text: status.message ?? `${BRAND.NAME} has not downloaded ${label} for ${where}.`, action: null };
   }
 }

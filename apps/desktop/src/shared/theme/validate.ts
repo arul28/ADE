@@ -40,6 +40,7 @@ import {
   type AdeThemeSource,
   type ThemeBaseMode,
 } from "./types";
+import { BRAND } from "../brand";
 
 const THEME_SOURCES: readonly AdeThemeSource[] = ["builtin", "custom", "imported", "vscode"];
 
@@ -292,7 +293,7 @@ export function parseAdeThemeFile(raw: unknown): ParseThemeFileResult {
   const envelope = parsed as Record<string, unknown>;
   const version = envelope.version;
   if (typeof version === "number" && version > ADE_THEME_FORMAT_VERSION) {
-    return { ok: false, error: `This theme needs a newer version of ADE (file version ${version}).` };
+    return { ok: false, error: `This theme needs a newer version of ${BRAND.NAME} (file version ${version}).` };
   }
   const candidate = envelope.theme ?? parsed;
   const theme = normalizeAdeTheme(candidate, { source: "custom" });

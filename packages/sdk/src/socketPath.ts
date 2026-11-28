@@ -2,12 +2,12 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { AdeError } from "./errors.js";
+import { DaexError } from "./errors.js";
 
 /**
  * POSIX `sun_path` is 104 bytes on macOS/BSD and 108 on Linux. A unix socket
  * path over the limit fails at `bind()` with ENAMETOOLONG, and an app that puts
- * its ADE home under a deep Application Support path hits this easily — so the
+ * its DAEX home under a deep Application Support path hits this easily — so the
  * derivation falls back to a short hashed path in the temp dir instead of
  * handing the runtime a path it cannot bind.
  */
@@ -124,10 +124,10 @@ export async function ensurePrivateSocketDirectory(
   if (typeof uid !== "number") return;
   const stat = await fs.promises.lstat(directory);
   if (stat.uid !== uid) {
-    throw new AdeError(
+    throw new DaexError(
       "connect_failed",
       `The socket directory ${directory} is owned by uid ${stat.uid}, not by this user (uid ${uid}). ` +
-        `Refusing to bind an ADE runtime socket in a directory somebody else controls.`,
+        `Refusing to bind a DAEX runtime socket in a directory somebody else controls.`,
     );
   }
   if ((stat.mode & 0o077) !== 0) {

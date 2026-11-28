@@ -3,8 +3,8 @@
  *
  * It is plain CSS against `--adechat-*` tokens — no Tailwind, no CSS modules,
  * no build-step CSS import for consumers to wire up. Hosts either render
- * `<AdeChatStyles />` (the default, and what `<AdeChat>` does for you) or call
- * `injectAdeChatStyles()` once at startup.
+ * `<DaexChatStyles />` (the default, and what `<DaexChat>` does for you) or call
+ * `injectDaexChatStyles()` once at startup.
  *
  * Class names are prefixed `adechat-` and are not a public API; theme with
  * tokens, not by overriding these rules.
@@ -14,7 +14,7 @@ import { defaultTheme, themeToCss } from "./createTheme";
 
 const ADE_CHAT_STYLE_ID = "adechat-styles";
 
-export const adeChatCss = `
+export const daexChatCss = `
 ${themeToCss(defaultTheme, ".adechat-root")}
 
 .adechat-root {
@@ -691,7 +691,7 @@ ${themeToCss(defaultTheme, ".adechat-root")}
  * Insert the stylesheet once per document. Safe to call repeatedly and in SSR
  * (it no-ops without a document).
  */
-export type InjectAdeChatStylesOptions = {
+export type InjectDaexChatStylesOptions = {
   /**
    * CSP nonce set on the injected `<style>`, so a host whose `style-src` lists
    * `'nonce-…'` instead of `'unsafe-inline'` can load the sheet. Applied only
@@ -701,7 +701,7 @@ export type InjectAdeChatStylesOptions = {
   nonce?: string;
 };
 
-export function injectAdeChatStyles(target?: Document, options: InjectAdeChatStylesOptions = {}): void {
+export function injectDaexChatStyles(target?: Document, options: InjectDaexChatStylesOptions = {}): void {
   const doc = target ?? (typeof document === "undefined" ? null : document);
   if (!doc) return;
   if (doc.getElementById(ADE_CHAT_STYLE_ID)) return;
@@ -714,6 +714,15 @@ export function injectAdeChatStyles(target?: Document, options: InjectAdeChatSty
     style.setAttribute("nonce", options.nonce);
     style.nonce = options.nonce;
   }
-  style.textContent = adeChatCss;
+  style.textContent = daexChatCss;
   doc.head.appendChild(style);
 }
+
+// Pre-DAEX names, kept as deprecated aliases so code written against the
+// `@ade-dev` packages keeps compiling. Remove them in a future major version.
+/** @deprecated Use {@link InjectDaexChatStylesOptions}. */
+export type InjectAdeChatStylesOptions = InjectDaexChatStylesOptions;
+/** @deprecated Use {@link daexChatCss}. */
+export const adeChatCss = daexChatCss;
+/** @deprecated Use {@link injectDaexChatStyles}. */
+export const injectAdeChatStyles = injectDaexChatStyles;

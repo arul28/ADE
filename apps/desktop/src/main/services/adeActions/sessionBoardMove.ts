@@ -88,9 +88,9 @@ export const BOARD_MOVE_TO_NEEDS_YOU_TEXT =
   "The user set this chat's status to Needs you. Ask them what they need before you continue.";
 /** The same two messages, typed into a tracked agent CLI session's prompt. */
 export const BOARD_MOVE_DONE_TO_WORKING_CLI_TEXT =
-  "You moved this session from Done to Working on the ADE board. Continue the work, or ask me what you need if the next step is unclear.";
+  "You moved this session from Done to Working on the DAEX board. Continue the work, or ask me what you need if the next step is unclear.";
 export const BOARD_MOVE_TO_NEEDS_YOU_CLI_TEXT =
-  "The user set this session's status to Needs you on the ADE board. Ask them what they need before you continue.";
+  "The user set this session's status to Needs you on the DAEX board. Ask them what they need before you continue.";
 
 /**
  * The message a move sends, or null when it sends none.

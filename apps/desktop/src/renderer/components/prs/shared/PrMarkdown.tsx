@@ -22,7 +22,7 @@ import {
 } from "../../chat/chatMarkdown";
 import { HighlightedCode } from "../../chat/CodeHighlighter";
 import { COLORS, fgTint } from "../../lanes/laneDesignTokens";
-import { ADE_DEEPLINK_FOOTER_LOGO_URL } from "../../../../shared/adeDeeplinkFooter";
+import { ADE_DEEPLINK_FOOTER_LEGACY_LOGO_URL, ADE_DEEPLINK_FOOTER_LOGO_URL } from "../../../../shared/adeDeeplinkFooter";
 import { linearIssueLinkTarget } from "../../../../shared/issueRefs";
 import { useCachedLinearWorkspace } from "../../issues/linearIssueStore";
 import { normalizeEscapedMarkdownNewlines } from "../../../../shared/prMarkdownText";
@@ -56,6 +56,7 @@ import { PrAddToChatButton, PrCompare, PrProofMedia, PrRemoteMedia } from "./PrP
 import { PrMediaRepoContext, useGithubMediaSrc } from "./useGithubMediaSrc";
 import { copyTextToClipboard } from "../../../lib/launchPromptClipboard";
 import { AdeWordmark } from "../../ui/AdeWordmark";
+import { BRAND } from "../../../../shared/brand";
 
 type PrMarkdownTone = "neutral" | "sky" | "amber";
 type MarkdownRoot = Parameters<typeof findAndReplace>[0];
@@ -311,11 +312,12 @@ function PrImage({
   // that still point at the removed blue mark to the bundled app logo.
   if (
     src === ADE_DEEPLINK_FOOTER_LOGO_URL
+    || src === ADE_DEEPLINK_FOOTER_LEGACY_LOGO_URL
     || (src.includes("ade-app.dev") && src.includes("ade-mark"))
   ) {
     return (
       <AdeWordmark
-        alt={alt ?? "ADE"}
+        alt={alt ?? BRAND.NAME}
         style={{ height: 18, width: "auto", display: "inline-block", verticalAlign: "middle", borderRadius: 3 }}
       />
     );
@@ -421,7 +423,7 @@ function PrCompareBlock({ figure }: { figure: PrCompareFigure }) {
   const quote = addToChat
     ? () => addToChat({
       text: [
-        ...figure.sides.map((side) => `${side.title}: ${side.url ? `![${side.label ?? side.title}](${side.url})` : side.label ?? "(not uploaded)"}${side.artifactId ? ` (ADE proof ${side.artifactId})` : ""}`),
+        ...figure.sides.map((side) => `${side.title}: ${side.url ? `![${side.label ?? side.title}](${side.url})` : side.label ?? "(not uploaded)"}${side.artifactId ? ` (${BRAND.NAME} proof ${side.artifactId})` : ""}`),
         ...(figure.caption ? [figure.caption] : []),
       ].join("\n"),
       from: `a before and after comparison in ${from}`,

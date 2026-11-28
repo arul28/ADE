@@ -1,12 +1,12 @@
-import { AdeError, readAdeErrorCode } from "./errors.js";
-import type { AdeClientEvent, AdeClientEventMap } from "./clientEvents.js";
-import type { AdeThread, EditLastOptions, HistoryPageOptions, SendOptions, SetModelOptions, SetModelResult, SteerOptions, ThreadEventChannel, ThreadInterruptOptions, ThreadModelSelection, ThreadRespondOptions, ThreadUpdate, ThreadUpdateOptions } from "./thread.js";
+import { DaexError, readAdeErrorCode } from "./errors.js";
+import type { DaexClientEvent, DaexClientEventMap } from "./clientEvents.js";
+import type { DaexThread, EditLastOptions, HistoryPageOptions, SendOptions, SetModelOptions, SetModelResult, SteerOptions, ThreadEventChannel, ThreadInterruptOptions, ThreadModelSelection, ThreadRespondOptions, ThreadUpdate, ThreadUpdateOptions } from "./thread.js";
 import type { AccountManagement, SignInStatus } from "./accounts.js";
 import type { ProviderCapabilities } from "./types.js";
 import { createPolledSignIn, type PolledSignInResult } from "./polledSignIn.js";
 import type { ApprovalDecision, ApprovalRequest } from "./approvals.js";
 import { STATUS_EVENT_TYPES, USAGE_EVENT_TYPES, type AgentChatEventEnvelope, type DoctorReport, type McpCapabilityReport, type ModelCatalogEntry, type ProviderStatus, type ThreadHistoryPage, type ThreadSummary, type Unsubscribe } from "./types.js";
-import { envelopeDedupeKey, mergeHistoryWithBuffer, type AdeIpcErrorPayload } from "./electron/protocol.js";
+import { envelopeDedupeKey, mergeHistoryWithBuffer, type DaexIpcErrorPayload } from "./electron/protocol.js";
 import type { InstructionsCapability, PermissionCapability, SettingSourcesCapability } from "./hostConfig.js";
 import type { ThreadUsage } from "./usage.js";
 
@@ -14,7 +14,7 @@ type MessageListener = (message: unknown) => void;
 type CloseListener = () => void;
 
 /** A browser WebSocket, Node ws socket, or a small adapter around either. */
-export type AdeRemoteTransport = {
+export type DaexRemoteTransport = {
   send(data: string): unknown;
   readyState?: number;
   OPEN?: number;
@@ -25,12 +25,12 @@ export type AdeRemoteTransport = {
   removeEventListener?(event: "message" | "close" | "open", listener: (event: any) => void): unknown;
 };
 
-export type AdeRemoteClientOptions = {
+export type DaexRemoteClientOptions = {
   /** Optional WebSocket constructor for runtimes without a global WebSocket. */
-  WebSocket?: new (url: string) => AdeRemoteTransport;
+  WebSocket?: new (url: string) => DaexRemoteTransport;
 };
 
-export type AdeRemoteThread = Omit<AdeThread, "usage"> & {
+export type DaexRemoteThread = Omit<DaexThread, "usage"> & {
   readonly title: string | null;
   readonly model: ThreadModelSelection | null;
   readonly mcpCapability: McpCapabilityReport | null;
@@ -38,12 +38,12 @@ export type AdeRemoteThread = Omit<AdeThread, "usage"> & {
   readonly settingSourcesCapability: SettingSourcesCapability | null;
   readonly permissionCapability: PermissionCapability | null;
   historyPage(options?: HistoryPageOptions): Promise<ThreadHistoryPage>;
-  /** Usage read across the socket; unlike a local AdeThread, this is asynchronous. */
+  /** Usage read across the socket; unlike a local DaexThread, this is asynchronous. */
   usage(): Promise<ThreadUsage>;
 };
 
-export type AdeRemoteClient = {
-  /** Request a host-defined method registered through `createAdeServer({ methods })`. */
+export type DaexRemoteClient = {
+  /** Request a host-defined method registered through `createDaexServer({ methods })`. */
   call<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T>;
   providers: {
     status(): Promise<Record<string, ProviderStatus>>;
@@ -59,7 +59,7 @@ export type AdeRemoteClient = {
   presets: AccountManagement["presets"];
   models: { list(): Promise<ModelCatalogEntry[]> };
   threads: {
-    open(key: string, options?: Record<string, unknown>): Promise<AdeRemoteThread>;
+    open(key: string, options?: Record<string, unknown>): Promise<DaexRemoteThread>;
     list(): Promise<ThreadSummary[]>;
     get(key: string): Promise<ThreadSummary | null>;
     delete(key: string): Promise<void>;
@@ -68,7 +68,7 @@ export type AdeRemoteClient = {
   };
   doctor(): Promise<DoctorReport>;
   exportThread(key: string): Promise<string>;
-  on<E extends AdeClientEvent>(event: E, listener: (payload: AdeClientEventMap[E]) => void): Unsubscribe;
+  on<E extends DaexClientEvent>(event: E, listener: (payload: DaexClientEventMap[E]) => void): Unsubscribe;
   dispose(): void;
 };
 
@@ -100,7 +100,7 @@ function parseIncoming(raw: unknown): unknown {
 }
 
 function bind(
-  transport: AdeRemoteTransport,
+  transport: DaexRemoteTransport,
   event: "message" | "close" | "open",
   listener: (...args: any[]) => void,
 ): () => void {
@@ -115,30 +115,30 @@ function bind(
       else transport.removeListener?.(event, listener);
     };
   }
-  throw new AdeError("invalid_option", "The remote transport must support message and close listeners.");
+  throw new DaexError("invalid_option", "The remote transport must support message and close listeners.");
 }
 
 function remoteError(payload: unknown): Error {
-  const value = payload && typeof payload === "object" ? (payload as Partial<AdeIpcErrorPayload>) : {};
+  const value = payload && typeof payload === "object" ? (payload as Partial<DaexIpcErrorPayload>) : {};
   const code = readAdeErrorCode(value.code) ?? "rpc_error";
-  return new AdeError(code, typeof value.message === "string" ? value.message : "The ADE server returned an error.");
+  return new DaexError(code, typeof value.message === "string" ? value.message : "The DAEX server returned an error.");
 }
 
-/** Build a browser-safe client proxy for a createAdeServer WebSocket connection. */
-export function createAdeRemoteClient(transportOrUrl: AdeRemoteTransport | string, options: AdeRemoteClientOptions = {}): AdeRemoteClient {
-  let transport: AdeRemoteTransport;
+/** Build a browser-safe client proxy for a createDaexServer WebSocket connection. */
+export function createDaexRemoteClient(transportOrUrl: DaexRemoteTransport | string, options: DaexRemoteClientOptions = {}): DaexRemoteClient {
+  let transport: DaexRemoteTransport;
   if (typeof transportOrUrl === "string") {
-    const globalWebSocket = (globalThis as typeof globalThis & { WebSocket?: AdeRemoteClientOptions["WebSocket"] }).WebSocket;
+    const globalWebSocket = (globalThis as typeof globalThis & { WebSocket?: DaexRemoteClientOptions["WebSocket"] }).WebSocket;
     const WebSocketConstructor = options.WebSocket ?? globalWebSocket;
     if (!WebSocketConstructor) {
-      throw new AdeError("invalid_option", "createAdeRemoteClient(url) needs a global WebSocket or the WebSocket option.");
+      throw new DaexError("invalid_option", "createDaexRemoteClient(url) needs a global WebSocket or the WebSocket option.");
     }
     transport = new WebSocketConstructor(transportOrUrl);
   } else {
     transport = transportOrUrl;
   }
   if (!transport || typeof transport.send !== "function") {
-    throw new AdeError("invalid_option", "createAdeRemoteClient needs a WebSocket-compatible transport.");
+    throw new DaexError("invalid_option", "createDaexRemoteClient needs a WebSocket-compatible transport.");
   }
   let nextId = 1;
   let closed = false;
@@ -152,7 +152,7 @@ export function createAdeRemoteClient(transportOrUrl: AdeRemoteTransport | strin
 
   const isOpen = () => transport.readyState === undefined || transport.readyState === (transport.OPEN ?? 1);
   const sendRaw = (payload: string) => {
-    if (closed || disposed) throw new AdeError("transport_closed", "The ADE server connection is closed.");
+    if (closed || disposed) throw new DaexError("transport_closed", "The DAEX server connection is closed.");
     if (!isOpen()) {
       queued.push(payload);
       return;
@@ -172,12 +172,12 @@ export function createAdeRemoteClient(transportOrUrl: AdeRemoteTransport | strin
   };
 
   const call = <T>(method: string, params: Record<string, unknown> = {}): Promise<T> => {
-    if (closed || disposed) return Promise.reject(new AdeError("transport_closed", "The ADE server connection is closed."));
+    if (closed || disposed) return Promise.reject(new DaexError("transport_closed", "The DAEX server connection is closed."));
     const id = nextId++;
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(id);
-        reject(new AdeError("rpc_timeout", "The ADE server did not answer " + method + " before the request timed out."));
+        reject(new DaexError("rpc_timeout", "The DAEX server did not answer " + method + " before the request timed out."));
       }, 30_000);
       pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timer });
       try {
@@ -247,7 +247,7 @@ export function createAdeRemoteClient(transportOrUrl: AdeRemoteTransport | strin
     bind(transport, "message", (...args) => handleIncoming(args[0])),
     bind(transport, "close", () => {
       closed = true;
-      rejectPending(new AdeError("transport_closed", "The ADE server closed the WebSocket connection."));
+      rejectPending(new DaexError("transport_closed", "The DAEX server closed the WebSocket connection."));
     }),
   ];
   if (transport.addEventListener || transport.on) {
@@ -255,7 +255,7 @@ export function createAdeRemoteClient(transportOrUrl: AdeRemoteTransport | strin
   }
   flush();
 
-  const openThread = async (key: string, options?: Record<string, unknown>): Promise<AdeRemoteThread> => {
+  const openThread = async (key: string, options?: Record<string, unknown>): Promise<DaexRemoteThread> => {
     const existing = threads.get(key);
     if (existing) return makeThread(existing);
     const snapshot = await call<RemoteThreadState>("threads.open", { key, options: options ?? {} });
@@ -272,7 +272,7 @@ export function createAdeRemoteClient(transportOrUrl: AdeRemoteTransport | strin
     return makeThread(state);
   };
 
-  function makeThread(state: RemoteThreadState): AdeRemoteThread {
+  function makeThread(state: RemoteThreadState): DaexRemoteThread {
     const addListener = (channel: ThreadEventChannel, listener: (envelope: AgentChatEventEnvelope) => void): Unsubscribe => {
       let listeners = state.listeners.get(channel);
       if (!listeners) state.listeners.set(channel, listeners = new Set());
@@ -373,8 +373,8 @@ export function createAdeRemoteClient(transportOrUrl: AdeRemoteTransport | strin
       refresh: () => call("accounts.refresh"),
       signIn: async (id, options) => {
         const started = await call<{ loginId: string; status: SignInStatus }>("accounts.signIn", { id, options: options ?? {} });
-        return createPolledSignIn<AdeIpcErrorPayload>(started, {
-          status: (loginId) => call<PolledSignInResult<AdeIpcErrorPayload>>("accounts.signInStatus", { loginId }),
+        return createPolledSignIn<DaexIpcErrorPayload>(started, {
+          status: (loginId) => call<PolledSignInResult<DaexIpcErrorPayload>>("accounts.signInStatus", { loginId }),
           submitCode: async (loginId, code) => { await call("accounts.signInSubmitCode", { loginId, code }); },
           cancel: async (loginId) => { await call("accounts.signInCancel", { loginId }); },
           toError: remoteError,
@@ -414,7 +414,7 @@ export function createAdeRemoteClient(transportOrUrl: AdeRemoteTransport | strin
     dispose: () => {
       if (disposed) return;
       disposed = true;
-      rejectPending(new AdeError("disposed", "The remote ADE client was disposed."));
+      rejectPending(new DaexError("disposed", "The remote DAEX client was disposed."));
       for (const remove of detach) remove();
       providerListeners.clear();
       clientListeners.clear();
@@ -423,3 +423,16 @@ export function createAdeRemoteClient(transportOrUrl: AdeRemoteTransport | strin
     },
   };
 }
+
+// Pre-DAEX names, kept as deprecated aliases so code written against the
+// `@ade-dev` packages keeps compiling. Remove them in a future major version.
+/** @deprecated Use {@link createDaexRemoteClient}. */
+export const createAdeRemoteClient = createDaexRemoteClient;
+/** @deprecated Use {@link DaexRemoteClient}. */
+export type AdeRemoteClient = DaexRemoteClient;
+/** @deprecated Use {@link DaexRemoteClientOptions}. */
+export type AdeRemoteClientOptions = DaexRemoteClientOptions;
+/** @deprecated Use {@link DaexRemoteThread}. */
+export type AdeRemoteThread = DaexRemoteThread;
+/** @deprecated Use {@link DaexRemoteTransport}. */
+export type AdeRemoteTransport = DaexRemoteTransport;

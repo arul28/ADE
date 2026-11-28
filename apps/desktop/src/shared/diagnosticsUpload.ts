@@ -3,6 +3,7 @@ import {
   resolveTrustedAccountDirectoryBaseUrl,
 } from "./accountDirectory";
 import type { DiagnosticsManualSendResult } from "./types/diagnostics";
+import { BRAND } from "./brand";
 
 /**
  * "Send to ADE": posts an already-redacted diagnostic report to the account
@@ -271,7 +272,7 @@ export function describeManualSendFailure(result: Extract<DiagnosticsManualSendR
     case "rate_limited":
       return "You've already sent several reports today. Try again tomorrow.";
     case "unavailable":
-      return "ADE isn't accepting reports right now. Try again later.";
+      return `${BRAND.NAME} isn't accepting reports right now. Try again later.`;
     case "too_large":
       // Two situations, and only one of them leaves the user something to do.
       // The local copy is written before the upload is attempted, so it usually
@@ -280,14 +281,14 @@ export function describeManualSendFailure(result: Extract<DiagnosticsManualSendR
       // sends them looking for it. The offer is made only when it is real.
       return result.reportPath
         ? "This report is too big to send. A copy is saved on this computer."
-        : "This report is too big to send, and ADE couldn't save a copy on this computer.";
+        : `This report is too big to send, and ${BRAND.NAME} couldn't save a copy on this computer.`;
     case "expired":
-      return "This report is out of date. ADE made a new one. Check it, then press Send again.";
+      return `This report is out of date. ${BRAND.NAME} made a new one. Check it, then press Send again.`;
     default:
       // `failed` covers more than the network (the bridge threw, the service
       // is absent, a send was already running), so the sentence does not
       // guess at a cause. The retry is the surface's own (a "Try again" link,
       // or Settings' send button).
-      return "ADE couldn't send the report.";
+      return `${BRAND.NAME} couldn't send the report.`;
   }
 }

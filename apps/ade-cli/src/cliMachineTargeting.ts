@@ -20,6 +20,8 @@ import {
 import { JsonRpcError } from "./jsonrpc";
 import { THIS_MACHINE_NAME } from "../../desktop/src/shared/machineIdentity";
 import { ADE_CLOUD_NAME } from "../../desktop/src/shared/adeCloudMachine";
+import { BRAND } from "../../desktop/src/shared/brand";
+import { displayLegacyDefaultName } from "../../desktop/src/shared/legacyDefaultNames";
 import { pickLiveCheckout } from "../../desktop/src/shared/crossMachineHandoff";
 import { gitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
 import { samePathOnPlatform } from "../../desktop/src/shared/pathContainment";
@@ -124,11 +126,11 @@ const SECRET_VALUE_FLAGS: ReadonlySet<string> = new Set(["--name", "--value", "-
 const MACHINE_ONLY_VERBS: Readonly<Record<string, { verbs: readonly string[]; usage: string }>> = {
   providers: {
     verbs: ["status"],
-    usage: "On another machine, ade providers only reads its sign-ins: ade providers status --machine <name>. Accounts and sign-ins are managed on that machine.",
+    usage: "On another machine, daex providers only reads its sign-ins: daex providers status --machine <name>. Accounts and sign-ins are managed on that machine.",
   },
   secrets: {
     verbs: ["list", "ls", "copy", "cp"],
-    usage: "On another machine, ade secrets lists or copies: ade secrets list --machine <name>, ade secrets copy --from <folder|owner/repo> --machine <name>. Other secret commands run on this machine.",
+    usage: "On another machine, daex secrets lists or copies: daex secrets list --machine <name>, daex secrets copy --from <folder|owner/repo> --machine <name>. Other secret commands run on this machine.",
   },
 };
 /**
@@ -222,7 +224,7 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
     const flags = flagNamesOutsideFreeText(parsed.command);
     if (!OWN_MACHINE_FLAG_PRIMARIES.has(primary) && (flags.has("--machine") || flags.has("--all-machines"))) {
       if (typed.startsWith("-")) {
-        throw new CliUsageError("Put --machine or --all-machines after the command: ade chat list --machine <name>.");
+        throw new CliUsageError("Put --machine or --all-machines after the command: daex chat list --machine <name>.");
       }
       throw new CliUsageError(
         `ade ${typed} runs on this machine only; --machine and --all-machines don't apply to it. `
@@ -251,7 +253,7 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
     if (flags.has("--machine") && flags.has("--image")) {
       throw new CliUsageError(
         "A draft made on another machine can't carry an image from this one. "
-        + "Drop --image, or run ade drafts on that machine itself with the image there.",
+        + "Drop --image, or run daex drafts on that machine itself with the image there.",
       );
     }
   }
@@ -271,11 +273,11 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
     const verb = firstStandalonePositional(parsed.command.slice(1))?.toLowerCase() ?? "";
     if ((flags.has("--machine") || flags.has("--all-machines")) && verb !== "push" && verb !== "pull") {
       throw new CliUsageError(
-        "On another machine, ade files only copies files: ade files push --machine <name> <local> <remote>, "
-        + "or ade files pull --machine <name> <remote> <local>. Other file commands run on this machine.",
+        "On another machine, daex files only copies files: daex files push --machine <name> <local> <remote>, "
+        + "or daex files pull --machine <name> <remote> <local>. Other file commands run on this machine.",
       );
     }
-    if (flags.has("--all-machines")) throw new CliUsageError("ade files push and pull copy to one machine: use --machine <name>.");
+    if (flags.has("--all-machines")) throw new CliUsageError("daex files push and pull copy to one machine: use --machine <name>.");
   }
   const kept: string[] = [];
   let machine: string | null = null;
@@ -305,7 +307,7 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
     return now && now[0] === flag ? `${typedOld} (now ${now.join(" ")})` : flag;
   };
   if (primary === "shell" && !runsCode && typedOld) {
-    throw new CliUsageError(`${typedOld} is for a command that runs your code on another machine: ade shell start --machine <name>.`);
+    throw new CliUsageError(`${typedOld} is for a command that runs your code on another machine: daex shell start --machine <name>.`);
   }
   const command = runsCode ? withCodeFlagAliases(parsed.command) : parsed.command;
   const commandFlags = flagNamesOutsideFreeText(command);
@@ -370,24 +372,24 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   if (!codeChosen && commandFlags.has("--code")) {
     throw new CliUsageError(
       machine
-        ? `${spelled("--code")} is for a command that builds or runs your code on another machine: ade shell start, ade apple launch|install|test, `
-          + "ade android install|launch|test|preview, ade app-control launch."
+        ? `${spelled("--code")} is for a command that builds or runs your code on another machine: daex shell start, daex apple launch|install|test, `
+          + "daex android install|launch|test|preview, daex app-control launch."
         : `${spelled("--code")} is for your code on another machine: add --machine <name>.`,
     );
   }
   if (!scratch && commandFlags.has("--no-code")) {
-    throw new CliUsageError(`${spelled("--no-code")} runs one command on another machine with no code: ade shell start --machine <name> --no-code [--wait] -- <command>.`);
+    throw new CliUsageError(`${spelled("--no-code")} runs one command on another machine with no code: daex shell start --machine <name> --no-code [--wait] -- <command>.`);
   }
   if (scratch) {
     if (!usesWorkCopy) throw new CliUsageError("--no-code runs in an empty folder there, not a lane: leave out --lane.");
     if (codeChosen) throw new CliUsageError(`--no-code has no code to ready: leave out ${codeChosen}.`);
     if (machineClone) throw new CliUsageError("--no-code needs no repository there: leave out --clone.");
-    if (!terminatorArgs?.length) throw new CliUsageError("--no-code runs one command: ade shell start --machine <name> --no-code [--wait] -- <command>.");
+    if (!terminatorArgs?.length) throw new CliUsageError("--no-code runs one command: daex shell start --machine <name> --no-code [--wait] -- <command>.");
   }
   if (machineProject && !machine && !allMachines) throw new CliUsageError("--machine-project needs --machine <name>.");
   const cloudLane = isCloudLaneMachineSelector(machine);
   if (cloudSize !== null && !cloudLane) {
-    throw new CliUsageError("--size picks the size of a new ADE Cloud computer: add --machine cloud.");
+    throw new CliUsageError(`--size picks the size of a new ${BRAND.CLOUD_NAME} computer: add --machine cloud.`);
   }
   const sizeId = cloudSize === null ? null : cloudSize.toLowerCase().replace(/[\s-]+/g, "");
   if (sizeId !== null && !isCloudTierId(sizeId)) {
@@ -404,7 +406,7 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   }
   if (!machine && primary === "shell") {
     if (subcommand === "clean") {
-      throw new CliUsageError("ade shell clean deletes your code on another machine: add --machine <name>.");
+      throw new CliUsageError("daex shell clean deletes your code on another machine: add --machine <name>.");
     }
     if (commandFlags.has("--wait")) {
       throw new CliUsageError("--wait is for a command on another machine: add --machine <name>. Here, run the command in your own shell.");
@@ -464,7 +466,7 @@ function machineCallScopeFor(
   const originUrl = localOriginUrl();
   if (!originUrl) {
     throw new CliUsageError(
-      "This directory has no git origin, so ADE can't tell which project to use on the other machine. Pass --project <name|path|id>.",
+      `This directory has no git origin, so ${BRAND.NAME} can't tell which project to use on the other machine. Pass --project <name|path|id>.`,
     );
   }
   return { kind: "repo", originUrl };
@@ -573,7 +575,7 @@ export async function createMachineRemoteConnection(
   machine: string,
 ): Promise<CliConnection> {
   if (options.headless) {
-    throw new CliUsageError("--machine needs this machine's ADE brain; remove --headless.");
+    throw new CliUsageError(`--machine needs this machine's ${BRAND.NAME} brain; remove --headless.`);
   }
   const roots = resolveRoots(options);
   const socketPathOverride = options.socketPath?.trim() || null;
@@ -620,7 +622,7 @@ export async function createMachineRemoteConnection(
     const laneId = isRecord(primary) ? asString(primary.id) : null;
     if (!laneId) {
       throw new CliUsageError(
-        `The project on ${machine} has no primary lane to start the chat in. Pass --lane <lane there> (see \`ade lanes list --machine ${JSON.stringify(machine)}\`).`,
+        `The project on ${machine} has no main checkout to start the chat in. Pass --lane <lane there> (see \`daex lanes list --machine ${JSON.stringify(machine)}\`).`,
       );
     }
     return laneId;
@@ -1316,7 +1318,10 @@ export function markCloudComputers(machines: unknown, cloudKeys: ReadonlySet<str
  */
 export function machineListLabel(name: string, cloud: boolean): string {
   if (!cloud) return name;
-  return name.startsWith(ADE_CLOUD_NAME) ? name : `${ADE_CLOUD_NAME} · ${name}`;
+  // A default saved before the rename reads with the new product name.
+  const shown = displayLegacyDefaultName(name);
+  if (shown.startsWith(ADE_CLOUD_NAME)) return shown;
+  return `${ADE_CLOUD_NAME} · ${shown}`;
 }
 
 async function withMachineBrain<T>(
@@ -1357,7 +1362,7 @@ async function executePlanOnAllMachines(
   ]));
   const machines = isRecord(roster) && Array.isArray(roster.machines) ? roster.machines.filter(isRecord) : [];
   if (isRecord(roster) && roster.state !== "ok") {
-    process.stderr.write(`ade: ${String(roster.message ?? "Other machines are unavailable.")} Showing this machine only.\n`);
+    process.stderr.write(`daex: ${String(roster.message ?? "Other machines are unavailable.")} Showing this machine only.\n`);
   }
   const roots = resolveRoots(options);
   const localIdentity = gitRemoteIdentity(getGitRemote(roots.projectRoot));
@@ -1488,7 +1493,7 @@ export function formatMachineFanOut(value: MachineFanOutResult): string {
   return renderTable(
     ["machine", "session", "result"],
     value.machineFanOut.map((row) => [row.machine, row.sessionId ?? "", row.error ? `failed: ${row.error}` : "started"]),
-    "ADE chats\n(no machines)",
+    `${BRAND.NAME} chats\n(no machines)`,
     { fullColumns: ["session"] },
   );
 }
@@ -1566,7 +1571,7 @@ function cloudLaunchArgsFromChatCreate(draft: CloudLaneLaunchDraft): JsonObject 
   // Going on with a launch this computer's ADE already holds: it kept the
   // prompt and every choice, so the id alone is enough.
   if (!prompt && draft.launchId) return { kind: "chat", mode: "background", launchId: draft.launchId };
-  if (!prompt) throw new CliUsageError("A chat on ADE Cloud starts with its first message: pass --prompt or --prompt-file.");
+  if (!prompt) throw new CliUsageError(`A chat on ${BRAND.CLOUD_NAME} starts with its first message: pass --prompt or --prompt-file.`);
   // The lane is the launch's; a parent on this machine can't follow a chat on another computer.
   const {
     laneId: _laneId,
@@ -1577,7 +1582,7 @@ function cloudLaunchArgsFromChatCreate(draft: CloudLaneLaunchDraft): JsonObject 
   } = draft.create;
   const provider = asString(create.provider) ?? "codex";
   if (process.env.ADE_CHAT_SESSION_ID?.trim() && (parent || spawnKind)) {
-    process.stderr.write("note: a chat on ADE Cloud starts as its own chat, so it doesn't report back to you. Read it with ade chat read --machine <its computer>.\n");
+    process.stderr.write(`note: a chat on ${BRAND.CLOUD_NAME} starts as its own chat, so it doesn't report back to you. Read it with daex chat read --machine <its computer>.\n`);
   }
   const modelId = asString(create.modelId) ?? asString(create.model);
   // A name given here is the lane's one name: the lane, its computer and the
@@ -1687,10 +1692,10 @@ export async function runCloudLaneLaunch(launchArgs: JsonObject, options: Global
   const laneConfig = isRecord(launchArgs.laneConfig) ? launchArgs.laneConfig : null;
   const start = laneConfig && isRecord(laneConfig.start) ? laneConfig.start : null;
   if (start?.on === "uncommitted") {
-    throw new CliUsageError("An ADE Cloud lane starts from the pushed copy of its branch, so it can't bring uncommitted changes.");
+    throw new CliUsageError(`A ${BRAND.NAME} Cloud lane starts from the pushed copy of its branch, so it can't bring uncommitted changes.`);
   }
   if (start?.on === "local") {
-    throw new CliUsageError("An ADE Cloud lane starts from the pushed copy of its branch, so it can't start from this computer's copy. Leave out --on.");
+    throw new CliUsageError(`A ${BRAND.NAME} Cloud lane starts from the pushed copy of its branch, so it can't start from this computer's copy. Leave out --on.`);
   }
   if (options.machineProject) {
     throw new CliUsageError("--machine cloud makes a new lane for this project on its own computer: leave out --project and --machine-project.");
@@ -1698,20 +1703,20 @@ export async function runCloudLaneLaunch(launchArgs: JsonObject, options: Global
   const roots = resolveRoots(options);
   const originUrl = getGitRemote(roots.projectRoot);
   if (!originUrl) {
-    throw new CliUsageError("--machine cloud needs a project with a GitHub origin: ADE Cloud gets the repository from there.");
+    throw new CliUsageError(`--machine cloud needs a project with a GitHub origin: ${BRAND.CLOUD_NAME} gets the repository from there.`);
   }
   const launchId = asString(launchArgs.launchId) ?? randomUUID();
   // No --size: the brain uses the size the person saved for new lanes (Small when none).
   const sizeId = options.cloudSize ?? null;
   const launch: JsonObject = { ...launchArgs, launchId, cloud: sizeId ? { sizeId } : {} };
   const say = (line: string) => {
-    if (!options.json) process.stderr.write(`ade: ${line}\n`);
+    if (!options.json) process.stderr.write(`daex: ${line}\n`);
   };
   // The launch is the brain's: an interrupt here leaves it running there, and says how to reach it.
   const onInterrupt = () => {
     process.stderr.write(
-      `\nade: the lane keeps starting on ADE Cloud. Check it: ade chat launch-status ${launchId} --machine cloud`
-      + ` · stop it and delete its computer: ade chat launch-cancel ${launchId} --machine cloud\n`,
+      `\ndaex: the lane keeps starting on ${BRAND.CLOUD_NAME}. Check it: daex chat launch-status ${launchId} --machine cloud`
+      + ` · stop it and delete its computer: daex chat launch-cancel ${launchId} --machine cloud\n`,
     );
     process.exit(130);
   };
@@ -1724,11 +1729,11 @@ export async function runCloudLaneLaunch(launchArgs: JsonObject, options: Global
       const held = Boolean(await call("lane_launch_status", { launchId }));
       // A chat launch with no message only goes on with one ADE already holds.
       if (launch.kind === "chat" && !isRecord(launch.chat) && !held) {
-        throw new CliUsageError(`This computer's ADE has no ADE Cloud lane launch ${launchId}. To start a new one, pass --prompt.`);
+        throw new CliUsageError(`This computer's ${BRAND.NAME} has no ${BRAND.CLOUD_NAME} lane launch ${launchId}. To start a new one, pass --prompt.`);
       }
       // Always, --json too (stderr), before the launch waits: the id is what follows or resumes it.
       const sizeText = held ? "the size it started with" : (sizeId ?? "your default size");
-      process.stderr.write(`ade: ${held ? "going on with" : "starting"} a lane on ADE Cloud (${sizeText}). Launch id ${launchId}.\n`);
+      process.stderr.write(`daex: ${held ? "going on with" : "starting"} a lane on ${BRAND.CLOUD_NAME} (${sizeText}). Launch id ${launchId}.\n`);
       let lastLine = "";
       const { outcome, status, answer } = await followCloudLaneLaunch({
         start: () => call("lane_launch", { launch, originUrl }),
@@ -1738,20 +1743,20 @@ export async function runCloudLaneLaunch(launchArgs: JsonObject, options: Global
           if (line !== lastLine) say(line);
           lastLine = line;
         },
-        onApprovalLink: (link) => say(`Approve the new computer joining your ADE account: open ${link} on your phone or in a browser signed in to ADE.`),
+        onApprovalLink: (link) => say(`Approve the new computer joining your ${BRAND.NAME} account: open ${link} on your phone or in a browser signed in to ${BRAND.NAME}.`),
         pollMs: CLOUD_LANE_POLL_MS,
         waitMs: CLOUD_LANE_WAIT_MS,
         sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
       });
       switch (outcome) {
         case "missing":
-          throw new CliExecutionError("This computer's ADE no longer has the ADE Cloud lane launch.", { launchId });
+          throw new CliExecutionError(`This computer's ${BRAND.NAME} no longer has the ${BRAND.CLOUD_NAME} lane launch.`, { launchId });
         case "succeeded": {
           const result = cloudLaneResult(answer as JsonObject);
           return { ...result, link: cloudLaneLaunchLink(result, await accountProjectId()) };
         }
         case "failed":
-          throw new CliExecutionError(status?.launch.error?.trim() || "The lane didn't start on ADE Cloud.", {
+          throw new CliExecutionError(status?.launch.error?.trim() || `The lane didn't start on ${BRAND.CLOUD_NAME}.`, {
             launchId,
             phase: "failed",
             nextAction: cloudLaneRetryCommand(launchId, launch, status?.launch.laneName ?? null),
@@ -1759,9 +1764,9 @@ export async function runCloudLaneLaunch(launchArgs: JsonObject, options: Global
         case "cancelled":
           throw new CliExecutionError("The lane launch was cancelled, and its computer deleted.", { launchId, phase: "cancelled" });
         case "timeout":
-          throw new CliExecutionError(`The lane is still starting on ADE Cloud after ${CLOUD_LANE_WAIT_MS / 60_000} minutes.`, {
+          throw new CliExecutionError(`The lane is still starting on ${BRAND.CLOUD_NAME} after ${CLOUD_LANE_WAIT_MS / 60_000} minutes.`, {
             launchId,
-            nextAction: `ade chat launch-status ${launchId} --machine cloud`,
+            nextAction: `daex chat launch-status ${launchId} --machine cloud`,
           });
       }
     });
@@ -1779,9 +1784,9 @@ export async function runCloudLaneLaunch(launchArgs: JsonObject, options: Global
 function cloudLaneRetryCommand(launchId: string, launch: JsonObject, laneName: string | null): string {
   if (launch.kind === "lane") {
     const name = laneName?.trim() || asString(launch.laneName) || "lane";
-    return `ade lanes create --machine cloud --launch-id ${launchId} --name ${quoteShellArg(name, { platform: process.platform })} (the lane's choices are kept) goes on from the failed step.`;
+    return `daex lanes create --machine cloud --launch-id ${launchId} --name ${quoteShellArg(name, { platform: process.platform })} (the lane's choices are kept) goes on from the failed step.`;
   }
-  return `ade chat create --machine cloud --launch-id ${launchId} (the prompt and choices are kept) goes on from the failed step.`;
+  return `daex chat create --machine cloud --launch-id ${launchId} (the prompt and choices are kept) goes on from the failed step.`;
 }
 
 /** `--machine cloud` on an execute plan: `chat create`, or a launch's status or cancel. */
@@ -1790,7 +1795,7 @@ async function executePlanOnCloudLane(plan: CliPlan & { kind: "execute" }, optio
     const { action, launchId } = plan.cloudLaneCall;
     const roots = resolveRoots(options);
     const status = await withCloudActions(options, roots.projectRoot, (call) => call(action, { launchId }));
-    if (!isRecord(status)) throw new CliExecutionError("This computer's ADE has no ADE Cloud lane launch with that id.", { launchId });
+    if (!isRecord(status)) throw new CliExecutionError(`This computer's ${BRAND.NAME} has no ${BRAND.CLOUD_NAME} lane launch with that id.`, { launchId });
     return cloudLaneResult(status);
   }
   if (plan.cloudLaunch) {
@@ -1808,7 +1813,7 @@ async function executePlanOnCloudLane(plan: CliPlan & { kind: "execute" }, optio
     return options.text ? formatChatLaunch(result) : result;
   }
   throw new CliUsageError(
-    "--machine cloud starts a new lane on ADE Cloud: use it with ade chat create, ade chat launch, or ade lanes create (the lane alone). "
+    `--machine cloud starts a new lane on ${BRAND.CLOUD_NAME}: use it with daex chat create, daex chat launch, or daex lanes create (the lane alone). `
     + "To reach a lane already there, use --machine with its computer's name.",
   );
 }
@@ -1823,10 +1828,10 @@ export async function executePlanAcrossMachines(
   options: GlobalOptions,
 ): Promise<{ value: unknown } | null> {
   if (plan.cloudLaunch?.launchId && !isCloudLaneMachineSelector(options.machine)) {
-    throw new CliUsageError("--launch-id on chat create is for a new lane on ADE Cloud: add --machine cloud.");
+    throw new CliUsageError(`--launch-id on chat create is for a new lane on ${BRAND.CLOUD_NAME}: add --machine cloud.`);
   }
   if (plan.cloudLaneCreate?.launchId && !isCloudLaneMachineSelector(options.machine)) {
-    throw new CliUsageError("--launch-id on lanes create is for a new lane on ADE Cloud: add --machine cloud.");
+    throw new CliUsageError(`--launch-id on lanes create is for a new lane on ${BRAND.CLOUD_NAME}: add --machine cloud.`);
   }
   if (isCloudLaneMachineSelector(options.machine)) return { value: await executePlanOnCloudLane(plan, options) };
   if (options.allMachines) return { value: await executePlanOnAllMachines(plan, options) };
@@ -1843,9 +1848,9 @@ export function formatMachinesRoster(value: unknown): string {
   const record = isRecord(value) ? value : {};
   const state = asString(record.state) ?? "unavailable";
   if (state === "signed_out") {
-    return "Not signed in — run `ade login` on this machine. Other machines are reachable only through your ADE account.";
+    return `Not signed in — run \`daex login\` on this machine. Other machines are reachable only through your ${BRAND.NAME} account.`;
   }
-  if (state !== "ok") return asString(record.message) ?? "The ADE account machine directory is unavailable.";
+  if (state !== "ok") return asString(record.message) ?? `The ${BRAND.NAME} account machine directory is unavailable.`;
   const machines = firstArray(record, ["machines"]);
   return renderTable(
     ["machine", "key", "status", "platform", "last seen", "projects"],
@@ -1862,7 +1867,7 @@ export function formatMachinesRoster(value: unknown): string {
           : asString(machine.note) ?? "",
       ];
     }),
-    "ADE machines\n(no machines on this account)",
+    `${BRAND.NAME} machines\n(no machines on this account)`,
     { fullColumns: ["key"] },
   );
 }

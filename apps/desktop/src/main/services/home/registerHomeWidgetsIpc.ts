@@ -14,6 +14,7 @@ import { macAppIconDataUrl } from "../apps/macAppIconFile";
 import { createBrowserMediaSessions } from "./browserMediaSessions";
 import { createNowPlayingService, type NowPlayingService } from "./nowPlayingService";
 import { readClipboardFormat, readClipboardFormatNames, readClipboardImage, readClipboardItem, writeClipboardFlavors } from "../shared/electronClipboard";
+import { BRAND } from "../../../shared/brand";
 
 let nowPlaying: NowPlayingService | null = null;
 
@@ -115,7 +116,7 @@ export function registerHomeWidgetsIpc(args: {
 
   const handle = <A extends unknown[], R>(channel: string, fn: (...a: A) => Promise<R>) => {
     ipcMain.handle(channel, async (event, ...rest) => {
-      if (!isTrustedAdeRendererSender(event)) throw new Error("Home widgets are only available to the ADE window.");
+      if (!isTrustedAdeRendererSender(event)) throw new Error(`Home widgets are only available to the ${BRAND.NAME} window.`);
       return fn(...(rest as A));
     });
   };
@@ -129,7 +130,7 @@ export function registerHomeWidgetsIpc(args: {
   // room). A window that closes or reloads lets go of its view.
   const clipboardViews = new Set<number>();
   ipcMain.handle(HOME_WIDGETS_IPC.clipboardPresence, async (event, view: unknown) => {
-    if (!isTrustedAdeRendererSender(event)) throw new Error("Home widgets are only available to the ADE window.");
+    if (!isTrustedAdeRendererSender(event)) throw new Error(`Home widgets are only available to the ${BRAND.NAME} window.`);
     const sender = event.sender;
     const id = sender.id;
     const next = view === "shown" || view === "hidden" ? view : null;
@@ -185,7 +186,7 @@ export function registerHomeWidgetsIpc(args: {
   // the page's widget.
   const watched = new Map<number, { count: number; release: () => void }>();
   ipcMain.handle(HOME_WIDGETS_IPC.nowPlayingSubscribe, async (event) => {
-    if (!isTrustedAdeRendererSender(event)) throw new Error("Home widgets are only available to the ADE window.");
+    if (!isTrustedAdeRendererSender(event)) throw new Error(`Home widgets are only available to the ${BRAND.NAME} window.`);
     const id = event.sender.id;
     const current = watched.get(id);
     if (current) {
@@ -207,7 +208,7 @@ export function registerHomeWidgetsIpc(args: {
     return playing.subscribe(id);
   });
   ipcMain.handle(HOME_WIDGETS_IPC.nowPlayingUnsubscribe, async (event) => {
-    if (!isTrustedAdeRendererSender(event)) throw new Error("Home widgets are only available to the ADE window.");
+    if (!isTrustedAdeRendererSender(event)) throw new Error(`Home widgets are only available to the ${BRAND.NAME} window.`);
     const current = watched.get(event.sender.id);
     if (!current) return;
     current.count -= 1;
@@ -250,7 +251,7 @@ export function registerHomeWidgetsIpc(args: {
     return { ok: true };
   });
   ipcMain.handle(HOME_WIDGETS_IPC.shareSaveImage, async (event, input: { pngDataUrl?: string; fileName?: string }): Promise<HomeShareResult> => {
-    if (!isTrustedAdeRendererSender(event)) throw new Error("Home widgets are only available to the ADE window.");
+    if (!isTrustedAdeRendererSender(event)) throw new Error(`Home widgets are only available to the ${BRAND.NAME} window.`);
     const bytes = decodePng(input?.pngDataUrl);
     if (!bytes) return { ok: false, error: "Not a PNG image." };
     const safeName = String(input?.fileName ?? "ade-shipped.png").replace(/[\\/:*?"<>|]+/g, "-").slice(0, 120) || "ade-shipped.png";

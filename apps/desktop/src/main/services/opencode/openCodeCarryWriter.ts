@@ -38,6 +38,7 @@ import { loadNodeSqlite } from "../projects/readOnlySqlite";
 import { credentialsChanged } from "./openCodeAccounts";
 import { readOpenCodeCredentialValue, resolveAdeOpenCodeDbPath } from "./openCodeCredentials";
 import { acquireOpenCodeServer } from "./openCodeServer";
+import { BRAND } from "../../../shared/brand";
 
 const CARRY_OWNER_ID = "provider-login-carry";
 
@@ -87,7 +88,7 @@ function deleteCredentialRow(dbPath: string, id: string): void {
 /** The shared server writes ADE's own store only: a write meant for another store is refused, never sent there. */
 function assertAdeStore(dbPath: string): void {
   if (path.resolve(dbPath) !== path.resolve(resolveAdeOpenCodeDbPath())) {
-    throw Object.assign(new Error("The sign-in names another OpenCode store than ADE's."), { code: "ESTORE" });
+    throw Object.assign(new Error(`The sign-in names another OpenCode store than ${BRAND.NAME}'s.`), { code: "ESTORE" });
   }
 }
 

@@ -1,5 +1,6 @@
 import type { AgentChatSlashCommand } from "../../../shared/types";
 import type { CopilotSdkAgentMode, CopilotSlashCommandInfo, CopilotSlashCommandResult } from "./copilotSdkProtocol";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Copilot's own slash commands that ADE already owns, or that only work in
@@ -20,11 +21,11 @@ const COPILOT_ADE_OWNED_COMMANDS: Record<string, string> = {
   autopilot: "Use /goal <objective> to run Copilot in Autopilot until the goal is done.",
   cwd: "This chat runs in its lane's folder. Start a chat in another lane to work elsewhere.",
   cd: "This chat runs in its lane's folder. Start a chat in another lane to work elsewhere.",
-  rename: "Rename the chat from its title in ADE.",
-  every: "Use ADE's scheduled work to repeat a prompt (`ade chat scheduled-work create`).",
-  loop: "Use ADE's scheduled work to repeat a prompt (`ade chat scheduled-work create`).",
-  after: "Use ADE's scheduled work or drafts to send a prompt later.",
-  remote: "Copilot remote sessions are not available in ADE. Open the chat from ADE on your phone instead.",
+  rename: `Rename the chat from its title in ${BRAND.NAME}.`,
+  every: `Use ${BRAND.NAME}'s scheduled work to repeat a prompt (\`ade chat scheduled-work create\`).`,
+  loop: `Use ${BRAND.NAME}'s scheduled work to repeat a prompt (\`ade chat scheduled-work create\`).`,
+  after: `Use ${BRAND.NAME}'s scheduled work or drafts to send a prompt later.`,
+  remote: `Copilot remote sessions are not available in ${BRAND.NAME}. Open the chat from ${BRAND.NAME} on your phone instead.`,
 };
 
 /**

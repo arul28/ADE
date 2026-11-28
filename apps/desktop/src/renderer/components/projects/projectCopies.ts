@@ -6,6 +6,7 @@ import type {
 } from "../../../shared/types";
 import { cachedGitRemoteIdentity } from "../lanes/laneMachines";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
+import { BRAND } from "../../../shared/brand";
 import { pathFlavorOf } from "../../../shared/pathCase";
 
 /**
@@ -334,7 +335,7 @@ export function describeCopyFailure(error: unknown, online: boolean): CopyFailur
     || text.includes("unknown method")
     || text.includes("method not found")
   ) {
-    return failure("unsupported", "Update ADE on this machine");
+    return failure("unsupported", `Update ${BRAND.NAME} on this machine`);
   }
   return failure("unknown", "Couldn't add the copy");
 }

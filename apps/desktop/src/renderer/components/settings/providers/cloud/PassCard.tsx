@@ -10,6 +10,7 @@ import { NoticeBadge } from "../../../ui/notice/NoticeParts";
 import { SettingsToggle } from "../../primitives";
 import { AccountCardFrame, CardOverflowMenu, accountCardLine as lineStyle } from "./accountCardParts";
 import type { PassCardModel, PassUseModel } from "./adeCloudClaudeModel";
+import { BRAND } from "../../../../../shared/brand";
 
 const toneColor = (tone: "warn" | "crit" | null) => (tone === "crit" ? COLORS.danger : tone === "warn" ? COLORS.warning : COLORS.textMuted);
 
@@ -44,7 +45,7 @@ export function PassCard({
       badge={
         /* P1 / P2: where new chats go, unless smart balance picks. */
         !pass || smartBalance ? null : !on ? (
-          <NoticeBadge tone="neutral">Off for ADE Cloud</NoticeBadge>
+          <NoticeBadge tone="neutral">Off for {BRAND.CLOUD_NAME}</NoticeBadge>
         ) : pass.newChats ? (
           <NoticeBadge tone="accent">New chats</NoticeBadge>
         ) : pass.ended ? null : (
@@ -89,14 +90,14 @@ export function PassCard({
             <Banner layout="inline" model={{ id: `pass-upload-${card.key}`, tone: "neutral", title: pass.uploadLine }} />
           ) : null}
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: "auto" }}>
-            <span style={{ flex: 1, fontSize: 12, fontFamily: SANS_FONT, color: on ? COLORS.textSecondary : COLORS.textMuted }}>On for ADE Cloud</span>
-            <SettingsToggle checked={on} disabled={busy} label={`On for ADE Cloud: ${card.title}`} onChange={onSwitch} />
+            <span style={{ flex: 1, fontSize: 12, fontFamily: SANS_FONT, color: on ? COLORS.textSecondary : COLORS.textMuted }}>On for {BRAND.CLOUD_NAME}</span>
+            <SettingsToggle checked={on} disabled={busy} label={`On for ${BRAND.CLOUD_NAME}: ${card.title}`} onChange={onSwitch} />
           </div>
         </>
       ) : (
         // Remove is the only thing to do here, so it is on the card, not only in the menu.
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <span style={{ ...lineStyle, flex: "1 1 200px" }}>ADE can't read this pass. Remove it, or approve a new one.</span>
+          <span style={{ ...lineStyle, flex: "1 1 200px" }}>{BRAND.NAME} can't read this pass. Remove it, or approve a new one.</span>
           <button
             type="button"
             disabled={busy}

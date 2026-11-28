@@ -1,5 +1,6 @@
 import type { ProjectPathInspection } from "../../../shared/types";
 import { localProjectBindingForRoot } from "../../state/appStore";
+import { BRAND } from "../../../shared/brand";
 
 function basename(input: string): string {
   const parts = input.split(/[\\/]/).filter(Boolean);
@@ -54,7 +55,7 @@ export async function openWorktreeAsLane(
     // predictably has no lane. Name it rather than reporting a generic miss.
     throw new Error(
       inspection.branchRef?.trim()
-        ? "ADE could not open this worktree as a lane. Open its owning project and check the Lanes tab."
+        ? `${BRAND.NAME} could not open this worktree as a lane. Open its owning project and check the Lanes tab.`
         : "This worktree has a detached HEAD, so it can't be opened as a lane. Check out a branch in it, or open it as a separate project.",
     );
   }

@@ -7,6 +7,7 @@ import { createRenderer } from "./liquidGlass/glassRenderer";
 import { loadLogo, logoUrl, type LogoData, BOX } from "./liquidGlass/logoTexture";
 import { LOOKS, type GlassTuning, type Look, type Settings } from "./liquidGlass/settings";
 import { OUTRO, clamp01, endOf, frameAt, hexToRgb, luminance } from "./liquidGlass/timeline";
+import { BRAND } from "../../../shared/brand";
 
 /*
  * Liquid glass logo reveal: a mark lingers big against the rim of a clear glass tile, the glass
@@ -420,10 +421,10 @@ export const ADE_LOGO_REVEAL_SECONDS = endOf(LOOKS.dark);
 /** A box on screen, in CSS pixels. */
 export type ScreenBox = { left: number; top: number; width: number; height: number };
 
-// Measured on the final frame: the letters span 0.985 of the tile. In the wordmark
-// picture they fill 87.35% of its width, centred 3.16% right and 6.49% down of its middle.
+// Measured on the final frame: the letters span 0.985 of the tile. In the mark
+// picture the glyph fills 80.49% of its width, centred on its middle.
 const LETTERS_PER_TILE = 0.985;
-const WORDMARK_LETTERS = { width: 0.8735, dx: 0.0316, dy: 0.0649 };
+const WORDMARK_LETTERS = { width: 0.8049, dx: 0, dy: 0.0006 };
 
 /**
  * Where the wordmark picture (`logo.png`, `logo-light.png`) sits when the reveal in
@@ -473,7 +474,7 @@ export function AdeLogoReveal({ backgroundVar = "--color-bg", tuning, ...props }
       {background ? (
         <GlassIconReveal
           logo={adeWordmarkSrc(look)}
-          label="ADE"
+          label={BRAND.NAME}
           look={look}
           background={background}
           plateColor={background}

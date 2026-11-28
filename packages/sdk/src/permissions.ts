@@ -1,7 +1,7 @@
 import path from "node:path";
-import { AdeError } from "./errors.js";
+import { DaexError } from "./errors.js";
 import type {
-  AdeProvider,
+  DaexProvider,
   AgentChatClaudePermissionMode,
   AgentChatCodexApprovalPolicy,
   AgentChatCodexSandbox,
@@ -101,7 +101,7 @@ export function readApprovalTimeoutMs(policy: ThreadPermissionPolicy | undefined
   const value = policy?.approvalTimeoutMs;
   if (value === undefined) return undefined;
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-    throw new AdeError(
+    throw new DaexError(
       "invalid_option",
       `permissions.approvalTimeoutMs must be a positive number of milliseconds; got ${JSON.stringify(value)}.`,
     );
@@ -122,12 +122,12 @@ function normalizeToolList(
 ): string[] | undefined {
   if (value === undefined) return undefined;
   if (!Array.isArray(value)) {
-    throw new AdeError("invalid_option", `permissions.${field} must be an array of tool names.`);
+    throw new DaexError("invalid_option", `permissions.${field} must be an array of tool names.`);
   }
   const names: string[] = [];
   for (const entry of value) {
     if (typeof entry !== "string" || !entry.trim()) {
-      throw new AdeError(
+      throw new DaexError(
         "invalid_option",
         `permissions.${field} must contain non-empty strings; got ${JSON.stringify(entry)}.`,
       );
@@ -146,10 +146,10 @@ function normalizeToolList(
  */
 export function normalizePermissionPolicy(value: ThreadPermissionPolicy): ThreadPermissionPolicy {
   if (typeof value !== "object" || value === null) {
-    throw new AdeError("invalid_option", "permissions must be a preset string or a policy object.");
+    throw new DaexError("invalid_option", "permissions must be a preset string or a policy object.");
   }
   if (value.fallback !== "ask" && value.fallback !== "deny") {
-    throw new AdeError(
+    throw new DaexError(
       "invalid_option",
       'A permission policy needs `fallback: "ask" | "deny"`. It is required so a host that renders no approval UI has to choose "deny" deliberately rather than inherit a turn that parks forever.',
     );
@@ -163,11 +163,11 @@ export function normalizePermissionPolicy(value: ThreadPermissionPolicy): Thread
   let sandboxRoot: string | undefined;
   if (value.sandboxRoot !== undefined) {
     if (typeof value.sandboxRoot !== "string" || !value.sandboxRoot.trim()) {
-      throw new AdeError("invalid_option", "permissions.sandboxRoot must be an absolute path.");
+      throw new DaexError("invalid_option", "permissions.sandboxRoot must be an absolute path.");
     }
     const trimmed = value.sandboxRoot.trim();
     if (trimmed.startsWith("~") || !path.isAbsolute(trimmed)) {
-      throw new AdeError(
+      throw new DaexError(
         "invalid_option",
         `permissions.sandboxRoot must be an absolute path; "${trimmed}" is not. \`~\` is not expanded.`,
       );
@@ -192,7 +192,7 @@ export function normalizePermissionPolicy(value: ThreadPermissionPolicy): Thread
  * `"default"` rather than like `always-allow`.
  */
 export function resolvePermissionArgs(
-  provider: AdeProvider,
+  provider: DaexProvider,
   permissions: PermissionPreset | ThreadPermissionPolicy,
 ): PermissionArgs {
   if (isPermissionPolicy(permissions)) {
@@ -202,7 +202,7 @@ export function resolvePermissionArgs(
     };
   }
   if (permissions !== "always-allow" && permissions !== "default") {
-    throw new AdeError(
+    throw new DaexError(
       "invalid_option",
       `permissions must be "always-allow", "default", or a policy object; got ${JSON.stringify(permissions)}.`,
     );
@@ -262,7 +262,7 @@ export function individualMcpToolEntries(policy: ThreadPermissionPolicy): string
 /**
  * Provider-specific create-args for a permission preset.
  *
- * "always-allow" is a single knob at the SDK boundary, but ADE has no single
+ * "always-allow" is a single knob at the SDK boundary, but DAEX has no single
  * always-allow switch: each adapter names its own full-auto state, and setting
  * only the generic `permissionMode` leaves Claude prompting and Codex sandboxed.
  * The mapping is spelled out per provider rather than inferred, so a new
@@ -271,7 +271,7 @@ export function individualMcpToolEntries(policy: ThreadPermissionPolicy): string
  * Source of truth for the unions: `apps/desktop/src/shared/types/chat.ts`.
  */
 export function permissionArgs(
-  provider: AdeProvider,
+  provider: DaexProvider,
   preset: PermissionPreset,
 ): PermissionArgs {
   if (preset === "default") return { permissionMode: "default" };
@@ -315,7 +315,7 @@ export function permissionArgs(
   }
 }
 
-export const SUPPORTED_PROVIDERS: readonly AdeProvider[] = [
+export const SUPPORTED_PROVIDERS: readonly DaexProvider[] = [
   "claude",
   "codex",
   "cursor",
@@ -333,10 +333,10 @@ export const SUPPORTED_PROVIDERS: readonly AdeProvider[] = [
 
 /**
  * Narrow a provider string (for example `ModelCatalogEntry.provider`, typed
- * open for catalog groups newer than this SDK) to `AdeProvider` without a cast.
+ * open for catalog groups newer than this SDK) to `DaexProvider` without a cast.
  * Exported from the package root since SDK 0.4.
  */
-export function isSupportedProvider(value: string): value is AdeProvider {
+export function isSupportedProvider(value: string): value is DaexProvider {
   // Membership in the providers this SDK knows by name. It is not a gate on
   // opening a thread: `threads.open` passes any provider id to the runtime,
   // which refuses one it cannot run. It is how a value that may also be a

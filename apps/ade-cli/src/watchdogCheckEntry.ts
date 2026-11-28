@@ -22,6 +22,6 @@ async function main(): Promise<void> {
 
 main().catch((error: unknown) => {
   // launchd keeps stderr in watchdog.err.log; the next run tries again.
-  process.stderr.write(`ade watchdog-check failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+  process.stderr.write(`daex watchdog-check failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
   process.exitCode = 1;
 });

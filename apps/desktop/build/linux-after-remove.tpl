@@ -25,13 +25,15 @@ if [ -f "$APPARMOR_PROFILE_DEST" ]; then
   fi
   rm -f "$APPARMOR_PROFILE_DEST"
 fi
-# Remove only the link installed by this package.
+# Remove only the links installed by this package: `ade` and `daex`.
 case '${executable}' in
-  ade-desktop-alpha) CLI_NAME=ade-alpha ;;
-  ade-desktop-beta) CLI_NAME=ade-beta ;;
-  *) CLI_NAME=ade ;;
+  ade-desktop-alpha) CLI_NAME=ade-alpha; DAEX_NAME=daex-alpha ;;
+  ade-desktop-beta) CLI_NAME=ade-beta; DAEX_NAME=daex-beta ;;
+  *) CLI_NAME=ade; DAEX_NAME=daex ;;
 esac
-ADE_CLI='/opt/${sanitizedProductName}/resources/ade-cli/bin/'"$CLI_NAME"
-if [ -L /usr/bin/"$CLI_NAME" ] && [ "$(readlink /usr/bin/"$CLI_NAME")" = "$ADE_CLI" ]; then
-  rm /usr/bin/"$CLI_NAME"
-fi
+for LINK_NAME in "$CLI_NAME" "$DAEX_NAME"; do
+  LINK_TARGET='/opt/${sanitizedProductName}/resources/ade-cli/bin/'"$LINK_NAME"
+  if [ -L /usr/bin/"$LINK_NAME" ] && [ "$(readlink /usr/bin/"$LINK_NAME")" = "$LINK_TARGET" ]; then
+    rm /usr/bin/"$LINK_NAME"
+  fi
+done

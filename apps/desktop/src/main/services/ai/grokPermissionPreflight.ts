@@ -97,6 +97,7 @@ import { grokDialect } from "../chat/acpHost/acpDialects";
 import { ACP_METHOD } from "../chat/acpHost/acpProtocolTypes";
 import type { AcpSpawnPlan } from "../chat/acpHost/acpHostTypes";
 import type { Logger } from "../logging/logger";
+import { BRAND } from "../../../shared/brand";
 
 /** Budget for the whole probe: spawn, handshake, session/new, close. */
 export const GROK_PREFLIGHT_TIMEOUT_MS = 20_000;
@@ -244,7 +245,7 @@ export function classifyGrokAttestLog(logText: string, version: string | null): 
       compatDisabledHits: 0,
       autoSeededHits: 0,
       version,
-      detail: "Grok produced no debug log, so ADE could not confirm its permission state.",
+      detail: `Grok produced no debug log, so ${BRAND.NAME} could not confirm its permission state.`,
     };
   }
   // Checked first: this is the harm itself, not a missing attestation about it.
@@ -268,7 +269,7 @@ export function classifyGrokAttestLog(logText: string, version: string | null): 
       autoSeededHits,
       version,
       detail:
-        "Grok never reported disabling its Claude settings import, so ADE could not confirm "
+        `Grok never reported disabling its Claude settings import, so ${BRAND.NAME} could not confirm `
         + "the _GROK_CLAUDE_MARKER_OVERRIDE hatch still works on this build.",
     };
   }

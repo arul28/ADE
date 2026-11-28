@@ -11,6 +11,7 @@ import { GateBackdrop } from "./GateBackdrop";
 import { prefetchOnboardingDiscovery, showFirstRunProjects } from "./firstRunActions";
 import { FirstRunStep, useFirstRunSteps } from "./FirstRunSteps";
 import "./launchGateGlass.css";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Layers opened over setup: a sheet or dialog (an agent sign-in, the phone
@@ -101,7 +102,7 @@ export function OnboardingBootstrap() {
         className="ade-gate"
         role="dialog"
         aria-modal="true"
-        aria-label="Set up ADE"
+        aria-label={`Set up ${BRAND.NAME}`}
         style={{ pointerEvents: "auto" }}
       >
         <GateBackdrop />

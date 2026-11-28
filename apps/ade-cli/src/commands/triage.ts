@@ -31,6 +31,7 @@ import {
   type TriagePlaybook,
   type TriagePlaybookSource,
 } from "./triagePlaybook";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 /**
  * `ade triage` — hand a broken install to a coding agent (ADE's pinned copy).
@@ -254,7 +255,7 @@ export async function runTriageCommand(
     // pinned-tool states, never "install it".
     const message = options.provider
       ? `${triageProviderUnavailableSentence(options.provider)} Everything an agent needs is written out — paste the prompt below into whatever agent you do have.`
-      : `ADE has no agent CLI on this machine yet (it runs only its own copies of ${TRIAGE_PROVIDERS.map((p) => p.name).join(", ")}, downloaded the first time ADE uses each). Everything an agent needs is written out — paste the prompt below into whatever agent you do have.`;
+      : `${BRAND.NAME} has no agent CLI on this machine yet (it runs only its own copies of ${TRIAGE_PROVIDERS.map((p) => p.name).join(", ")}, downloaded the first time ${BRAND.NAME} uses each). Everything an agent needs is written out — paste the prompt below into whatever agent you do have.`;
     return {
       payload: { ...base, mode: "no-provider", launched: null, message },
       exitCode: 0,

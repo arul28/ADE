@@ -1,4 +1,6 @@
 import { CLOUD_COMPUTER_MOVING_CODE } from "../../../account-directory/src/cloud/contract";
+import { PRODUCT_NAME_PATTERN } from "./brandNames";
+import { REMOTE_SERVICE_PATTERN } from "./runtimeErrors";
 
 export type ParsedCodedError = {
   code?: string;
@@ -79,6 +81,8 @@ export function encodeCodedErrorMessage(code: string, message: string, meta?: { 
   return meta?.rootPath ? `${base}${ROOT_PATH_DELIMITER}${meta.rootPath}` : base;
 }
 
+const REMOTE_SERVICE_METHOD_WRAPPER = new RegExp(String.raw`^${REMOTE_SERVICE_PATTERN} method \S+ failed(?:\s*\(code -?\d+\))?:\s*`, "i");
+
 export function stripElectronErrorWrapper(message: string): string {
   return message
     .replace(/^Error invoking remote method '[^']+':\s*/i, "")
@@ -91,7 +95,7 @@ export function stripElectronErrorWrapper(message: string): string {
     // behind that wrapper, and without stripping it no brain-side failure can
     // ever be recognised by its code — which is how a project whose data files
     // were unreadable reached the user as a raw libuv errno.
-    .replace(/^Remote ADE service method \S+ failed(?:\s*\(code -?\d+\))?:\s*/i, "")
+    .replace(REMOTE_SERVICE_METHOD_WRAPPER, "")
     .trim();
 }
 
@@ -172,8 +176,10 @@ export function isTurnInFlightError(error: unknown): boolean {
 export const ACTION_NOT_CALLABLE_CODE = "action_not_callable";
 export const ACTION_NOT_EXPOSED_CODE = "action_not_exposed";
 
-const UNSUPPORTED_ADE_ACTION_MESSAGE =
-  /^Action ['"][^'"]+['"] is (?:not callable|not exposed through ADE actions)\.?$/i;
+const UNSUPPORTED_ADE_ACTION_MESSAGE = new RegExp(
+  String.raw`^Action ['"][^'"]+['"] is (?:not callable|not exposed through ${PRODUCT_NAME_PATTERN} actions)\.?$`,
+  "i",
+);
 
 /** Mixed-version hosts still send the English sentence; current brains prefix a code. */
 export function isUnsupportedAdeActionError(error: unknown): boolean {
@@ -182,4 +188,17 @@ export function isUnsupportedAdeActionError(error: unknown): boolean {
     return true;
   }
   return UNSUPPORTED_ADE_ACTION_MESSAGE.test(parsed.message);
+}
+
+const UNKNOWN_ADE_ACTION_MESSAGE = new RegExp(String.raw`Unknown ${PRODUCT_NAME_PATTERN} action\b`, "i");
+const UNAVAILABLE_ON_CONNECTED_HOST_MESSAGE = new RegExp(String.raw`is unavailable on the connected ${PRODUCT_NAME_PATTERN} host\b`, "i");
+
+/** The brain's JSON-RPC answer for an action it does not have: "Unknown DAEX action: <name>" ("Unknown ADE action" from older brains). */
+export function isUnknownAdeActionMessage(text: string): boolean {
+  return UNKNOWN_ADE_ACTION_MESSAGE.test(text);
+}
+
+/** The web client's answer for a command its host does not offer: "… is unavailable on the connected DAEX host." */
+export function isUnavailableOnConnectedHostMessage(text: string): boolean {
+  return UNAVAILABLE_ON_CONNECTED_HOST_MESSAGE.test(text);
 }

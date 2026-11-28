@@ -16,6 +16,7 @@ import {
   readAgentSkillFile,
 } from "../services/skills/agentSkillCatalogService";
 import { adeDeprecatedAgentSkillAliases } from "../../../desktop/src/shared/adeCliGuidance";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 /** The skills a list shows: an old name still opens with `show`, but is not listed twice. */
 function listedAgentSkills(options: Parameters<typeof listAgentSkills>[0]) {
@@ -31,11 +32,11 @@ export type SkillCliResult = {
 
 const HELP_SKILL = [
   "Usage:",
-  "  ade skill list [--text|--json]        List available agent skills",
-  "  ade skill show <name> [--text|--json] Show a skill's SKILL.md",
-  "  ade skill show <name> <file> [--text] Show another file in the skill, e.g. references/usage-limits.md",
+  "  daex skill list [--text|--json]        List available agent skills",
+  "  daex skill show <name> [--text|--json] Show a skill's SKILL.md",
+  "  daex skill show <name> <file> [--text] Show another file in the skill, e.g. references/usage-limits.md",
   "",
-  "  Lists project, user, and ADE skills without a runtime daemon. JSON output",
+  `  Lists project, user, and ${BRAND.NAME} skills without a runtime daemon. JSON output`,
   "  is the default; pass --text for human-readable output.",
 ].join("\n");
 
@@ -74,7 +75,7 @@ export function runSkillCommand(rest: string[]): SkillCliResult {
       return runSkillShow(verbArgs);
     default:
       throw new CliSkillUsageError(
-        `Unknown skill subcommand: ${verb}. Try 'ade skill list' or 'ade skill show <name>'.`,
+        `Unknown skill subcommand: ${verb}. Try 'daex skill list' or 'daex skill show <name>'.`,
       );
   }
 }
@@ -82,7 +83,7 @@ export function runSkillCommand(rest: string[]): SkillCliResult {
 /** A skill folder ADE could not read is named on stderr, so a short list is not a silent one. */
 function warnUnreadable(filePath: string, error: unknown): void {
   const code = (error as NodeJS.ErrnoException | null)?.code ?? (error instanceof Error ? error.message : String(error));
-  process.stderr.write(`ade: could not read ${filePath} (${code})\n`);
+  process.stderr.write(`daex: could not read ${filePath} (${code})\n`);
 }
 
 export function runSkillList(args: string[]): SkillCliResult {
@@ -117,7 +118,7 @@ export function runSkillShow(args: string[]): SkillCliResult {
   const { format, rest } = extractFormat(args);
   const name = rest[0];
   if (!name) {
-    throw new CliSkillUsageError("ade skill show <name> [<file>] [--text|--json]");
+    throw new CliSkillUsageError("daex skill show <name> [<file>] [--text|--json]");
   }
   const includeUser = !isRemoteMcpInvocation(process.env);
   const skill = readAgentSkill(name, { cwd: process.cwd(), includeUser, env: process.env, onError: warnUnreadable });
@@ -126,7 +127,7 @@ export function runSkillShow(args: string[]): SkillCliResult {
       const personalSkill = readAgentSkill(name, { cwd: process.cwd(), includeUser: true, env: process.env });
       if (personalSkill?.entry.source === "user") {
         throw new CliSkillUsageError(
-          `${personalSkill.entry.name} is a personal skill on this computer and is not available through ADE MCP.`,
+          `${personalSkill.entry.name} is a personal skill on this computer and is not available through ${BRAND.NAME} MCP.`,
         );
       }
     }

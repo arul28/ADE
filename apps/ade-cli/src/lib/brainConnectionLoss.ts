@@ -12,6 +12,7 @@ import { brainLogPath, resolveMachineAdeLayout } from "../services/projects/mach
 import { readBrainHeartbeat } from "../services/runtime/brainHeartbeat";
 import { readFileTail } from "../sentry/brainServiceDiagnostics";
 import { isPidAlive } from "../serviceManager/common";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 /** What a relay can say about a lost brain; built when the loss happens. */
 export type DescribeBrainConnectionLoss = () => Omit<BrainConnectionLossData, "code" | "socketError">;
@@ -21,7 +22,7 @@ export function jsonRpcErrorFromReply(error: Record<string, unknown>): JsonRpcEr
   const code = typeof error.code === "number" && Number.isInteger(error.code)
     ? error.code
     : JsonRpcErrorCode.internalError;
-  const message = typeof error.message === "string" && error.message ? error.message : "ADE JSON-RPC request failed.";
+  const message = typeof error.message === "string" && error.message ? error.message : `${BRAND.NAME} JSON-RPC request failed.`;
   return markExpectedFromWire(new JsonRpcError(code, message, error.data), error.expected);
 }
 
@@ -46,7 +47,7 @@ export function brainConnectionLostError(
   }
   // Both wordings keep "runtime endpoint closed", which marks the expected end
   // of a `shutdown` however the socket went.
-  const message = `${BRAIN_CONNECTION_LOST_CODE}: ADE brain connection lost: the ADE runtime endpoint closed`
+  const message = `${BRAIN_CONNECTION_LOST_CODE}: ${BRAND.NAME} brain connection lost: the ${BRAND.NAME} runtime endpoint closed`
     + `${socketError ? ` (${socketError})` : ""} before it answered.`;
   const data: Partial<BrainConnectionLossData> = { code: BRAIN_CONNECTION_LOST_CODE, socketError, ...(loss ?? {}) };
   return new JsonRpcError(JsonRpcErrorCode.internalError, message, data);

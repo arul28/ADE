@@ -249,9 +249,9 @@ public enum ADESharedContainer {
 
         if runningAgents == 0 && focusedPr == nil
             && s.awaitingInputCount == 0 && s.idleCount == 0 {
-            return "ADE · idle"
+            return "\(Brand.name) · idle"
         }
-        var pieces: [String] = ["ADE"]
+        var pieces: [String] = [Brand.name]
         if runningAgents > 0 {
             pieces.append("\(runningAgents) running")
         } else if s.awaitingInputCount > 0 {

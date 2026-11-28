@@ -41,6 +41,7 @@ import { readRouteProbe, recordRouteProbe } from "./harnessRouteProbes";
 import { startHarnessProxy } from "./harnessLaunchPrepare";
 import { borrowFailureMessage, defaultReadProxyConnection } from "./harnessPresetProxyConnection";
 import { OPENCODE_SESSION_HEADER, resolveRouteSource } from "./harnessRouteLaunch";
+import { BRAND } from "../../../shared/brand";
 
 /** The one validator every entry point (IPC and the action bus) runs. */
 export function requireHarnessRouteSource(value: unknown): HarnessRouteSource["source"] {
@@ -298,7 +299,7 @@ export async function testHarnessRoute(
     ...ROUTE_PROTOCOLS.filter((protocol) => Boolean(endpoints[protocol]) && !served.includes(protocol)),
   ];
   const sessionHeader = resolved.needsSessionHeader ? `ade-test-${randomUUID()}` : null;
-  let lastError = "This provider has no endpoint ADE can test.";
+  let lastError = `This provider has no endpoint ${BRAND.NAME} can test.`;
   for (const protocol of order) {
     const result = await pingProtocol({
       protocol,

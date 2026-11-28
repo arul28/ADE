@@ -287,7 +287,7 @@ final class AndroidDeviceViewerModel: ObservableObject {
       return "This phone can watch this emulator, but not drive it."
     }
     if let ticket = stream.ticket, ticket.liveTouch != true {
-      return "Update ADE on the computer to control its emulator from here."
+      return "Update \(Brand.name) on the computer to control its emulator from here."
     }
     if let owner = foreignOwnerName(status?.owner) {
       return "\(owner) is driving this emulator. Control comes back when it lets go."

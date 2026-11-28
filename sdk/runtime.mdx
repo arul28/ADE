@@ -1,14 +1,14 @@
 ---
 title: "Runtime"
-description: "The embedded ADE sidecar: isolated home, --profile embedded, parent-death watchdog, pidfile reclaim, exit events and autoRestart, version compatibility, and doctor()."
+description: "The embedded DAEX sidecar: isolated home, --profile embedded, parent-death watchdog, pidfile reclaim, exit events and autoRestart, version compatibility, and doctor()."
 icon: "server"
 ---
 
-The SDK does not embed ADE as a library. It **spawns** `ade runtime run --socket <path> --profile embedded` as a child.
+The SDK does not embed DAEX as a library. It **spawns** `ade runtime run --socket <path> --profile embedded` as a child.
 
 ```
 your process
-  └─ @ade-dev/sdk
+  └─ @daex-dev/sdk
         └─ ade runtime run --socket … --profile embedded
               ADE_HOME=<your home>
               ADE_EMBEDDED_PARENT_PID=<your pid>
@@ -24,7 +24,7 @@ your process
 - **Sync is forced off.** The sidecar is not a machine peer.
 - **No machine authority.** `machine.updateAndRestart` and power transitions are withheld, not merely role-gated.
 - **Parent-death watchdog.** POSIX does not kill orphans on parent death. The runtime polls `ADE_EMBEDDED_PARENT_PID` and shuts itself down if the host is gone.
-- **Host `ADE_*` env is scrubbed** before spawn so a developer ADE install cannot leak into the guest.
+- **Host `ADE_*` env is scrubbed** before spawn so a developer DAEX install cannot leak into the guest.
 - **Provider logins can be isolated.** With `ADE_EMBEDDED_PROVIDER_LOGINS=isolated`, the runtime points each supported CLI at `<ADE_HOME>/provider-homes/<provider>/default`, overriding inherited config-home variables. The unset or `machine` mode keeps the machine login behavior. Providers without a config-home override report `isolation: "shared"`.
 
 ## Runtime wire capabilities
@@ -41,13 +41,13 @@ capabilities: {
 }
 ```
 
-The `providerAccounts.call`, `credentials.call`, and `presets.call` methods use the runtime machine's account stores. On a regular ADE runtime they require the CTO role; the embedded runtime trusts its sole host client. `credentials.call { action: "store" }` accepts a key but every response contains only credential summaries, never key values. The embedded credential backend uses macOS Keychain or Windows DPAPI; Linux keeps credential files private under the embedded `ADE_HOME`.
+The `providerAccounts.call`, `credentials.call`, and `presets.call` methods use the runtime machine's account stores. On a regular DAEX runtime they require the CTO role; the embedded runtime trusts its sole host client. `credentials.call { action: "store" }` accepts a key but every response contains only credential summaries, never key values. The embedded credential backend uses macOS Keychain or Windows DPAPI; Linux keeps credential files private under the embedded `ADE_HOME`.
 
 Each `providers.status` record includes `capabilities` for permission modes, reasoning efforts, Fast mode, account count support, sign-in, keys, presets, and MCP, plus its `isolation` state.
 
 ## Pidfile reclaim
 
-`<home>/runtime.pid` records the child. If a previous host died without unwinding, the next `createAdeChat` reclaims:
+`<home>/runtime.pid` records the child. If a previous host died without unwinding, the next `createDaexChat` reclaims:
 
 - A healthy runtime already bound to this home is **reused**.
 - A confirmed-stale child is ended, then a new one is spawned.
@@ -78,7 +78,7 @@ Each `on` returns an unsubscribe function. The listeners stay attached across an
 **Every live thread gets a synthetic status.** A runtime that stops mid-turn sends no `done` and no `error`. So the SDK sends this envelope on each live thread's `status` channel:
 
 ```ts
-{ type: "status", turnStatus: "failed", message: "The ADE runtime exited (…)", synthetic: true }
+{ type: "status", turnStatus: "failed", message: "The DAEX runtime exited (…)", synthetic: true }
 ```
 
 Show the thread as stopped when you get it. Approvals that were pending died with the provider process. Their `approvalTimeoutMs` clocks stop.
@@ -86,7 +86,7 @@ Show the thread as stopped when you get it. Approvals that were pending died wit
 ### `autoRestart`
 
 ```ts
-const ade = await createAdeChat({
+const ade = await createDaexChat({
   home,
   autoRestart: true,                       // 5 attempts, 1 s backoff that doubles
   // autoRestart: { maxAttempts: 3, backoffMs: 500 },
@@ -125,19 +125,19 @@ The SDK and the runtime release on separate cadences, and a downloaded runtime c
 | 0.4.0 | `>=1.2.82 <2.0.0` |
 | 0.3.0 | `>=1.2.81 <2.0.0` |
 
-The lower bound has **not** moved across 0.5 or 0.6, so a host on runtime 1.2.82 keeps working. Of the 0.6 MCP features, only tool filters check a capability flag: they need `capabilities.personalChats.mcpToolFilters` and are refused before they are sent otherwise. A mid-turn `updateMcpServers` is queued by a runtime that supports it and refused with `turn_in_flight` by an older one; the async `mcpHeaders` refresh uses the existing `updateMcpServers` path and needs nothing new. `@ade-dev/sdk` 0.6.0 and `@ade-dev/chat-ui` 0.6.0 are the current versions (chat-ui's source is unchanged). Patch 0.5.1 carries one tidy that landed on `main` after 0.5.0 published — the buffered-event category list no longer names `cto_voice`, a category an `agent`-role sidecar never receives — so `main` and the published packages agree again.
+The lower bound has **not** moved across 0.5 or 0.6, so a host on runtime 1.2.82 keeps working. Of the 0.6 MCP features, only tool filters check a capability flag: they need `capabilities.personalChats.mcpToolFilters` and are refused before they are sent otherwise. A mid-turn `updateMcpServers` is queued by a runtime that supports it and refused with `turn_in_flight` by an older one; the async `mcpHeaders` refresh uses the existing `updateMcpServers` path and needs nothing new. `@daex-dev/sdk` 0.6.0 and `@daex-dev/chat-ui` 0.6.0 are the current versions (chat-ui's source is unchanged). Patch 0.5.1 carries one tidy that landed on `main` after 0.5.0 published — the buffered-event category list no longer names `cto_voice`, a category an `agent`-role sidecar never receives — so `main` and the published packages agree again.
 
 An embedded runtime used to print four lines on every start — the role-ceiling sentence, its `brain.role_ceiling_below_cto` warning, and the two "could not bound runtime log" lines for `launchd` files it never has. All four are gone from runtime 1.2.83; an older runtime still prints them.
 
 ```ts
-import { SUPPORTED_RUNTIME_RANGE } from "@ade-dev/sdk";
+import { SUPPORTED_RUNTIME_RANGE } from "@daex-dev/sdk";
 ```
 
 After the handshake, the SDK compares the runtime's reported version with the range:
 
 - **Inside the range:** nothing happens.
 - **Outside the range:** the runtime still connects. The SDK logs one line, and features that the runtime lacks degrade feature by feature. For example, `thread.updateMcpServers()` throws `invalid_option`, `hydrate: false` is ignored, `thread.retry()` throws `unsupported`, and `attachmentRoots` is ignored.
-- **With `requireCompatibleRuntime: true`:** `createAdeChat` throws `AdeError("runtime_incompatible")` and stops the runtime.
+- **With `requireCompatibleRuntime: true`:** `createDaexChat` throws `DaexError("runtime_incompatible")` and stops the runtime.
 
 A pre-release suffix is ignored, so `1.2.81-alpha.3` counts as `1.2.81`. A development build (`0.0.0`, or no version) counts as supported, and `note` says so. A version that the SDK cannot parse counts as not supported.
 
@@ -158,8 +158,8 @@ Use this as the first check when an embedder chat misbehaves. `sdkVersion` is th
 | Field | What it tells you |
 |---|---|
 | `ok` | Overall health |
-| `sdkVersion` | `@ade-dev/sdk` version in *this* build |
-| `binary.path` / `binary.version` / `binary.source` | Where `ade` came from (`option`, `path`, `download`, `cache`). The 0.1.x view, kept unchanged |
+| `sdkVersion` | `@daex-dev/sdk` version in *this* build |
+| `binary.path` / `binary.version` / `binary.source` | Where the runtime binary came from (`option`, `path`, `download`, `cache`). The 0.1.x view, kept unchanged |
 | `binary.checksumVerified` | Whether *this* client checked `SHA256SUMS` (false for a pinned `binaryPath` is expected) |
 | `runtime.*` | Full runtime provenance — see the table below |
 | `socket.connected` / `socket.runtimeVersion` | Sidecar handshake |

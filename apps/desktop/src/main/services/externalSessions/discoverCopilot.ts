@@ -25,7 +25,7 @@ import {
   summarizeNeutralRecords,
   type NeutralSessionRecord,
 } from "./discoverAcpShared";
-import { ADE_AGENT_PROMPT_OPENING } from "../ai/tools/systemPrompt";
+import { ADE_AGENT_PROMPT_OPENING, LEGACY_ADE_AGENT_PROMPT_OPENING } from "../ai/tools/systemPrompt";
 
 /**
  * GitHub Copilot CLI (verified against 1.0.88) keeps each session in
@@ -106,12 +106,15 @@ export function parseFlatYaml(text: string): Record<string, string> {
 /**
  * ADE's SDK chats from before they named themselves recorded the SDK default
  * `client_name: sdk`. Their first system message opens with the coding-agent
- * prompt ADE appends (`ADE_AGENT_PROMPT_OPENING`).
+ * prompt ADE appends (`ADE_AGENT_PROMPT_OPENING`, or the pre-rename
+ * `LEGACY_ADE_AGENT_PROMPT_OPENING` that older and side-by-side installs wrote).
  */
 function isUnnamedAdeSdkSession(workspace: Record<string, string>, head: readonly Record<string, unknown>[]): boolean {
   if (workspace.client_name !== "sdk") return false;
   const system = head.find((record) => record.type === "system.message");
-  return asString(asRecord(system?.data)?.content)?.includes(ADE_AGENT_PROMPT_OPENING) ?? false;
+  const content = asString(asRecord(system?.data)?.content);
+  if (!content) return false;
+  return content.includes(ADE_AGENT_PROMPT_OPENING) || content.includes(LEGACY_ADE_AGENT_PROMPT_OPENING);
 }
 
 function copilotEventText(record: Record<string, unknown>): string | null {

@@ -1847,7 +1847,7 @@ describe("createPushPublisherService flush", () => {
     expect(payload.notifications[0]).toMatchObject({
       title: "PR #42 merged",
       body: "Ship mobile PR view",
-      deepLink: "ade://pr/arul28/ADE/42",
+      deepLink: "daex://pr/arul28/ADE/42",
       threadId: "pr:project-a:repo:arul28:ade:42",
     });
     publisher.dispose();
@@ -2254,7 +2254,7 @@ describe("createPushPublisherService flush", () => {
     expect(payload.notifications[0]).toMatchObject({
       title: "Fix auth race needs you",
       body: "Which account should the e2e test use?",
-      deepLink: "ade://session/cli-ask-1",
+      deepLink: "daex://session/cli-ask-1",
       sessionId: "cli-ask-1",
       dedupeKey: alertDedupeKey("alert:cli-ask-1:question"),
     });
@@ -2554,7 +2554,7 @@ describe("createPushPublisherService flush", () => {
       eventKind: "agent_running",
       activityTier: "ambient",
     });
-    expect(working.privacyPreview).toBe("An ADE agent is working.");
+    expect(working.privacyPreview).toBe("A DAEX agent is working.");
 
     // Draining the last background task is what finally settles the run.
     emit(backgroundTask("s-bg", "task-1", "completed"));
@@ -2562,7 +2562,7 @@ describe("createPushPublisherService flush", () => {
 
     const done = (await publisher.getMachineAttentionSnapshot()).items[0]!;
     expect(done).toMatchObject({ phase: "completed", eventKind: "agent_completed" });
-    expect(done.privacyPreview).toBe("An ADE agent is done.");
+    expect(done.privacyPreview).toBe("A DAEX agent is done.");
     publisher.dispose();
   });
 

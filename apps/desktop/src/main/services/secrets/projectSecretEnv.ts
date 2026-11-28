@@ -4,6 +4,7 @@ import path from "node:path";
 import { securePrivatePath } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
 import type { PasswordSecretsExportResult } from "../../../shared/types/passwords";
 import { AdeExpectedError } from "../../../shared/expectedError";
+import { BRAND } from "../../../shared/brand";
 
 export type ParsedProjectSecretEnvEntry = {
   name: string;
@@ -151,7 +152,7 @@ export function writeSecretsEnvFile(
   for (let suffix = 1; fs.existsSync(filePath) && suffix < 1_000; suffix += 1) {
     filePath = path.join(downloadsDir, `ade-secrets (${suffix}).env`);
   }
-  if (fs.existsSync(filePath)) throw new Error("ADE couldn't find an unused file name in Downloads.");
+  if (fs.existsSync(filePath)) throw new Error(`${BRAND.NAME} couldn't find an unused file name in Downloads.`);
   // Created empty and locked down first: Windows ignores the mode, so the
   // owner-only ACL is in place before any value is in the file.
   fs.writeFileSync(filePath, "", { encoding: "utf8", mode: 0o600, flag: "wx" });

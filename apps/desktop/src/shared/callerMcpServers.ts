@@ -96,7 +96,7 @@ export const CALLER_MCP_SUPPORT = {
     mechanism: "thread config overlay: mcp_servers.<name>.enabled = false per configured server",
     residual:
       "Codex merges the thread `config` overlay into config.toml rather than replacing it, so "
-      + "there is no 'load nothing' switch — ADE enumerates config.toml's mcp_servers table and "
+      + "there is no 'load nothing' switch — DAEX enumerates config.toml's mcp_servers table and "
       + "disables each entry. A server contributed by a Codex *plugin* never appears in that table "
       + "and cannot be enumerated, so it survives strict mode.",
     delivery: "thread config overlay: mcp_servers.<name> with enabled = true",
@@ -115,7 +115,7 @@ export const CALLER_MCP_SUPPORT = {
     mechanism: "local.settingSources with the project and plugin layers dropped",
     residual:
       "The Cursor SDK derives includeProjectMcp/includePluginMcp from settingSources, so dropping "
-      + "those layers drops their servers. The `user` layer must stay — ADE's own preToolUse "
+      + "those layers drops their servers. The `user` layer must stay — DAEX's own preToolUse "
       + "tool-gate hook is a user-layer artifact (~/.cursor/hooks.json) — so user-level MCP servers "
       + "still load.",
     delivery: "Cursor SDK inline mcpServers keyed by name",
@@ -124,16 +124,16 @@ export const CALLER_MCP_SUPPORT = {
     level: "best-effort",
     mechanism: "session-scoped toggleMcpTool over the live MCP tool list",
     residual:
-      "Droid has no config-level MCP switch, so ADE disables non-ADE MCP tools per session after "
+      "Droid has no config-level MCP switch, so DAEX disables non-DAEX MCP tools per session after "
       + "the server list is live. A server whose tools appear only after the first disable pass is "
       + "not covered until the next turn.",
     delivery: "session mcpServers list supplied at session initialization",
   },
   opencode: {
     level: "best-effort",
-    mechanism: "dedicated server with ADE-authored config + OPENCODE_DISABLE_PROJECT_CONFIG=1",
+    mechanism: "dedicated server with DAEX-authored config + OPENCODE_DISABLE_PROJECT_CONFIG=1",
     residual:
-      "The project config layer is disabled and the config is ADE-authored, but the dedicated "
+      "The project config layer is disabled and the config is DAEX-authored, but the dedicated "
       + "server still resolves the user's global OpenCode config directory for auth.",
     delivery: "dedicated server config `mcp` entries",
   },
@@ -375,7 +375,7 @@ export function callerMcpMissingHeadersNotice(
     key: missing.join("\u0000"),
     message:
       `MCP ${missing.length > 1 ? "servers" : "server"} ${missing.map((name) => `'${name}'`).join(", ")} `
-      + "restarted without the headers the host supplied, because ADE does not store header values. "
+      + "restarted without the headers the host supplied, because DAEX does not store header values. "
       + "The host must send the servers again (updateSession with mcpServers) before tools that need "
       + "those credentials will work.",
   };
@@ -433,20 +433,26 @@ export function resolveCallerMcpCapability(
   };
 }
 
+/** The MCP server DAEX injects into a CTO chat (`agentChatService.ts`). */
+export const CTO_MCP_SERVER_NAME = "daex-cto";
+/**
+ * The CTO server's name before the DAEX rename. It stays reserved: permission
+ * policies still match it as an alias of `daex-cto` (permissionPolicy.ts).
+ */
+export const LEGACY_CTO_MCP_SERVER_NAME = "ade-cto";
+
 /**
  * Server names ADE injects itself. A caller reusing one would either shadow an
  * ADE-managed server or be shadowed by it depending on the adapter's merge
  * order — silently, and differently per provider. Rejecting the collision is
  * the only outcome that behaves the same everywhere.
  *
- * Mirrors CTO_MCP_SERVER_NAME in agentChatService.ts and the `computer_use`
- * key in codexComputerUse.ts. Kept
- * here rather than imported because this module is shared and must not pull in
- * the 49k-line service.
+ * `computer_use` mirrors the key in codexComputerUse.ts.
  */
 export const ADE_RESERVED_MCP_SERVER_NAMES: readonly string[] = [
   "computer_use",
-  "ade-cto",
+  CTO_MCP_SERVER_NAME,
+  LEGACY_CTO_MCP_SERVER_NAME,
 ];
 
 // ---------------------------------------------------------------------------
@@ -768,7 +774,7 @@ function readCallerMcpServer(name: string, value: unknown): CallerMcpServerRead 
     };
   }
   if (ADE_RESERVED_MCP_SERVER_NAMES.includes(name)) {
-    return { ok: false, problem: `server name '${name}' is reserved by ADE` };
+    return { ok: false, problem: `server name '${name}' is reserved by DAEX` };
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return { ok: false, problem: `server '${name}' must be an object` };
@@ -885,7 +891,7 @@ export function parseCallerMcpServers(value: unknown): CallerMcpServers | null {
   if (!entries.length) return null;
   if (entries.length > MAX_CALLER_MCP_SERVERS) {
     throw new CallerMcpServerError(
-      `mcpServers has ${entries.length} servers, more than the ${MAX_CALLER_MCP_SERVERS} ADE will inject into one chat.`,
+      `mcpServers has ${entries.length} servers, more than the ${MAX_CALLER_MCP_SERVERS} DAEX will inject into one chat.`,
     );
   }
   const problems: string[] = [];

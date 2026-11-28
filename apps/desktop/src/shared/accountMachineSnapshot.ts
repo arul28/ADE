@@ -272,11 +272,11 @@ export function formatAccountMachineSnapshotText(
   }
 
   if (!snapshot.activityAvailable) {
-    lines.push("Recent work: unavailable (ADE Activity could not be read).");
+    lines.push("Recent work: unavailable (DAEX Activity could not be read).");
     return lines.join("\n");
   }
   if (!snapshot.projects.length && !snapshot.recentChats.length) {
-    lines.push("Recent work: none published to ADE Activity.");
+    lines.push("Recent work: none published to DAEX Activity.");
     return lines.join("\n");
   }
   if (snapshot.projects.length) {

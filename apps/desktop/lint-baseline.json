@@ -6,22 +6,13 @@
       "ade-ui/no-raw-z-index": 1
     },
     "apps/desktop/src/renderer/components/chat/BrowserLoginImportDialog.tsx": {
-      "ade-ui/no-fixed-overlay": 2,
-      "ade-ui/no-raw-z-index": 2
-    },
-    "apps/desktop/src/renderer/components/chat/ChatCommandMenu.tsx": {
-      "ade-ui/no-fixed-overlay": 1,
-      "ade-ui/no-raw-z-index": 1
+      "ade-ui/no-fixed-overlay": 2
     },
     "apps/desktop/src/renderer/components/chat/ChatSurfaceShell.tsx": {
       "ade-ui/no-raw-z-index": 1
     },
     "apps/desktop/src/renderer/components/chat/ComposerSmartLinkMenu.tsx": {
       "ade-ui/no-fixed-overlay": 1
-    },
-    "apps/desktop/src/renderer/components/chat/CursorCloudAdvancedMenu.tsx": {
-      "ade-ui/no-fixed-overlay": 1,
-      "ade-ui/no-raw-z-index": 1
     },
     "apps/desktop/src/renderer/components/files/v2/ContextMenu.tsx": {
       "ade-ui/no-fixed-overlay": 1,
@@ -35,17 +26,12 @@
       "ade-ui/no-raw-z-index": 2
     },
     "apps/desktop/src/renderer/components/projects/WorktreeOpenDialog.tsx": {
-      "ade-ui/no-fixed-overlay": 2,
-      "ade-ui/no-raw-z-index": 2
+      "ade-ui/no-fixed-overlay": 2
     },
     "apps/desktop/src/renderer/components/prs/shared/PrCommandPalettes.tsx": {
       "ade-ui/no-fixed-overlay": 2
     },
     "apps/desktop/src/renderer/components/prs/shared/PrReviewSubmitModal.tsx": {
-      "ade-ui/no-fixed-overlay": 1,
-      "ade-ui/no-raw-z-index": 1
-    },
-    "apps/desktop/src/renderer/components/terminals/ForeignLaneContextMenu.tsx": {
       "ade-ui/no-fixed-overlay": 1,
       "ade-ui/no-raw-z-index": 1
     },

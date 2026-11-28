@@ -4,6 +4,7 @@ import type { AppPackageChannel } from "../../../shared/packageChannel";
 import { updateTrackLabel, type UpdateTrack } from "../../../shared/updateTrack";
 import { packageChannelLabel, rendererPackageChannel } from "../../lib/packageChannel";
 import { rendererUpdateTrack } from "../../lib/updateTrack";
+import { BRAND } from "../../../shared/brand";
 
 export type ChannelBadgeProps = {
   /** Defaults to the synchronous preload channel. Injected in tests. */
@@ -67,8 +68,8 @@ export function ChannelBadge({
       className="ade-shell-channel-badge shrink-0"
       data-static="true"
       style={dragOptOut}
-      title={betaTrack ? "ADE Beta. Settings › About shows the version and the update track." : `${label} build`}
-      aria-label={betaTrack ? "ADE Beta" : `${label} build${shownVersion ? ` ${shownVersion}` : ""}`}
+      title={betaTrack ? `${BRAND.BETA_NAME}. Settings › About shows the version and the update track.` : `${label} build`}
+      aria-label={betaTrack ? BRAND.BETA_NAME : `${label} build${shownVersion ? ` ${shownVersion}` : ""}`}
     >
       {body}
     </span>

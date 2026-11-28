@@ -37,6 +37,7 @@ import { useHeldWrites } from "./useHeldWrites";
 import { useThisComputerPin } from "./useAdeCloudSignIns";
 import { useAdeCloudEnabled } from "../../../../state/cloudAccess";
 import { useAccountMachineNames, withMachineNames } from "./useAccountMachineNames";
+import { BRAND } from "../../../../../shared/brand";
 
 const noteStyle: React.CSSProperties = { fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.45 };
 
@@ -128,7 +129,7 @@ export function ProviderSignInsPanel({ provider, providerLabel }: { provider: Pr
     <section className="kit-card" data-testid="provider-sign-ins-panel" data-provider={provider}>
       <header className="kit-card-head">
         <UserCircle size={14} />
-        Sign-ins in your ADE account
+        Sign-ins in your {BRAND.NAME} account
         {cardCount ? <span className="kit-card-head-count">{cardCount}</span> : null}
       </header>
       <div className="kit-card-body" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -138,8 +139,8 @@ export function ProviderSignInsPanel({ provider, providerLabel }: { provider: Pr
             model={{
               id: `sign-in-unreadable-${unreadableKey}`,
               tone: "warning",
-              title: `ADE can't read this computer's ${providerLabel} sign-in in your account.`,
-              detail: "Remove it, and ADE saves this computer's sign-in again.",
+              title: `${BRAND.NAME} can't read this computer's ${providerLabel} sign-in in your account.`,
+              detail: `Remove it, and ${BRAND.NAME} saves this computer's sign-in again.`,
               actions: [{
                 label: "Remove from account",
                 busy: busy.has(`remove:${unreadableKey}`),
@@ -159,7 +160,7 @@ export function ProviderSignInsPanel({ provider, providerLabel }: { provider: Pr
           />
         ) : null}
         {cardCount === 0 ? (
-          unreadableKey ? null : <span style={noteStyle}>No {providerLabel} sign-in in your ADE account yet.</span>
+          unreadableKey ? null : <span style={noteStyle}>No {providerLabel} sign-in in your {BRAND.NAME} account yet.</span>
         ) : (
           groups.map((group) => (
             <div key={group.place} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -217,7 +218,7 @@ export function ProviderSignInsPanel({ provider, providerLabel }: { provider: Pr
           <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", borderTop: `1px solid ${COLORS.borderMuted}`, paddingTop: 12 }}>
             <span style={{ ...noteStyle, flex: "1 1 240px" }}>
               {/* Only this computer's ADE can ask its OS keyring; another computer's page says where to do it. */}
-              {isThisMachine ? keychain.message : `Allow it on ${machineName}. ADE reads a computer's OS keyring only on that computer.`}
+              {isThisMachine ? keychain.message : `Allow it on ${machineName}. ${BRAND.NAME} reads a computer's OS keyring only on that computer.`}
             </span>
             {isThisMachine && keyringIsThisComputer && keychain.canAllow ? (
               <button

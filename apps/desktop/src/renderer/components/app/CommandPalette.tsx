@@ -159,6 +159,9 @@ import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import { useTabCopyPin } from "../../state/repositoryScope";
 import { isImeComposing } from "../../lib/imeComposition";
 import { InlineErrorNotice } from "../ui/notice";
+import { BRAND } from "../../../shared/brand";
+import { laneDisplayName } from "../../../shared/laneDisplayName";
+import { brandSearchQueries } from "../../../shared/brandSearch";
 
 export type CommandPaletteIntent =
   | "default"
@@ -181,16 +184,17 @@ type ProjectActionOutcome = {
 
 /** The focused lane's PR row: open its pull request, or start one when it has none. */
 function lanePrCommand(
-  lane: { id: string; name: string },
+  lane: { id: string; name: string; laneType?: string | null },
   tag: LaneTabPrTag | null,
   navigate: (path: string) => void,
 ): Command {
+  const name = laneDisplayName(lane);
   if (tag) {
     return {
       id: `lane-open-pr-${lane.id}`,
       title: `Open PR #${tag.githubPrNumber}: ${tag.title}`,
-      hint: `Open the pull request for ${lane.name} in ADE's PRs tab`,
-      keywords: ["open pr", "open pull request", "this lane", "for this lane", lane.name],
+      hint: `Open the pull request for ${name} in ${BRAND.NAME}'s PRs tab`,
+      keywords: ["open pr", "open pull request", "this lane", "for this lane", name, lane.name],
       group: "Lanes",
       run: () => {
         const route = lanePrTagRoutePath(tag);
@@ -200,9 +204,9 @@ function lanePrCommand(
   }
   return {
     id: `lane-create-pr-${lane.id}`,
-    title: `Create a PR for ${lane.name}`,
-    hint: `Open the pull request creator for ${lane.name}`,
-    keywords: ["create pr", "create pull request", "open pr", "this lane", "for this lane", lane.name],
+    title: `Create a PR for ${name}`,
+    hint: `Open the pull request creator for ${name}`,
+    keywords: ["create pr", "create pull request", "open pr", "this lane", "for this lane", name, lane.name],
     group: "Lanes",
     // The active project binding is the selected lane's runtime. PRsPage
     // reads the source lane from that same bound project after navigation.
@@ -1002,8 +1006,8 @@ export function CommandPalette({
       },
       {
         id: "help-ade-tips",
-        title: "ADE Tips",
-        hint: "What ADE can do, one line each",
+        title: `${BRAND.NAME} Tips`,
+        hint: `What ${BRAND.NAME} can do, one line each`,
         group: "Help",
         keywords: ["help", "tips", "features", "learn"],
         run: () => openAdeTips(),
@@ -1136,7 +1140,8 @@ export function CommandPalette({
       ]
         .join(" ")
         .toLowerCase();
-      return parsedWorkQuery.terms.every((term) => searchable.includes(term));
+      // The word "ade" also matches as "daex": people still type the old name.
+      return parsedWorkQuery.terms.every((term) => brandSearchQueries(term).some((variant) => searchable.includes(variant)));
     });
   }, [commands, parsedWorkQuery.terms]);
 
@@ -2373,10 +2378,10 @@ export function CommandPalette({
                 </Dialog.Title>
                 <Dialog.Description className="sr-only">
                   {mode === "project-browse"
-                    ? "Browse folders in ADE and open a Git repository without leaving the app."
+                    ? `Browse folders in ${BRAND.NAME} and open a Git repository without leaving the app.`
                     : isAddFlow
                       ? "Open, create, clone, or connect to a project."
-                      : "Search ADE commands and jump to actions quickly."}
+                      : `Search ${BRAND.NAME} commands and jump to actions quickly.`}
                 </Dialog.Description>
 
                 {isAddFlow ? (

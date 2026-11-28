@@ -10,6 +10,8 @@ import type {
 import { githubPrListFiltersKey } from "../../../../shared/githubPrSearch";
 import { setBounded } from "../../../../shared/boundedMap";
 import { plainErrorText } from "../../../lib/plainError";
+import { BRAND } from "../../../../shared/brand";
+import { PRODUCT_NAME_PATTERN } from "../../../../shared/brandNames";
 
 /** Typing pause before the list asks GitHub. */
 export const GITHUB_PR_SEARCH_DEBOUNCE_MS = 300;
@@ -51,10 +53,12 @@ export function forgetGitHubPrSearchResults(): void {
   for (const listener of staleListeners) listener();
 }
 
+const SEARCH_UNSUPPORTED_ANSWER = new RegExp(`is not callable|not exposed through ${PRODUCT_NAME_PATTERN} actions|cannot search GitHub yet|no handler registered`, "i");
+
 /** An older host answers a new action with "not callable" / "not exposed". */
 function isMissingActionError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? "");
-  return /is not callable|not exposed through ADE actions|cannot search GitHub yet|no handler registered/i.test(message);
+  return SEARCH_UNSUPPORTED_ANSWER.test(message);
 }
 
 /**
@@ -165,7 +169,7 @@ export function useGitHubPrFilterSearch({
             items: [],
             totalCount: 0,
             nextCursor: null,
-            error: { kind: "failed", message: plainErrorText(error, "ADE couldn't search GitHub.") },
+            error: { kind: "failed", message: plainErrorText(error, `${BRAND.NAME} couldn't search GitHub.`) },
           });
         })
         .finally(() => {

@@ -21,6 +21,7 @@ import { AppleMusicApiError, createAppleMusicApi } from "./appleMusicApi";
 import { MusicTokenUnavailableError, type DeveloperTokenProvider } from "./musicDeveloperToken";
 import { MusicHostError, startMusicHost, type MusicHost, type MusicHostEvent } from "./musicHostProcess";
 import { clampVolume, createVolumeMemory, type MusicVolumeMemory } from "./musicVolume";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The Music feature in the main process.
@@ -172,7 +173,7 @@ export function createMusicService(args: {
 
   const state: MusicState = {
     availability: args.hostExecutable ? "ready" : "unsupported",
-    message: args.hostExecutable ? null : "Apple Music plays in ADE on Windows and macOS.",
+    message: args.hostExecutable ? null : `Apple Music plays in ${BRAND.NAME} on Windows and macOS.`,
     authorized: false,
     connecting: false,
     host: { status: "stopped", pid: null, unloadAt: null },
@@ -257,7 +258,7 @@ export function createMusicService(args: {
     if (!fs.existsSync(args.hostExecutable)) {
       setUnavailable(
         args.isPackaged
-          ? "ADE's music player is missing from this install. Reinstall ADE."
+          ? `${BRAND.NAME}'s music player is missing from this install. Reinstall ${BRAND.NAME}.`
           : `The music player isn't built. Run \`npm run build:music-host:${process.platform === "darwin" ? "mac" : "win"}\` in apps/desktop.`,
       );
       return;

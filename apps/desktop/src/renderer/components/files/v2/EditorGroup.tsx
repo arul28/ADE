@@ -19,6 +19,7 @@ import { DiffViewer } from "./viewers/DiffViewer";
 import type { EditorApi, EditorThemeMode } from "./viewers/types";
 import { joinDisplayPath } from "./pathDisplay";
 import { plainErrorText } from "../../../lib/plainError";
+import { BRAND } from "../../../../shared/brand";
 
 export type EditorGroupProps = {
   /** Files API bound to the machine that owns these tabs. */
@@ -133,7 +134,7 @@ export function EditorGroup(props: EditorGroupProps) {
     const api = editorApis.current.get(activeTab.id);
     if (api) {
       void api.save().catch((err) => {
-        onError(plainErrorText(err, "ADE couldn't save the file."));
+        onError(plainErrorText(err, `${BRAND.NAME} couldn't save the file.`));
       });
       return;
     }
@@ -156,7 +157,7 @@ export function EditorGroup(props: EditorGroupProps) {
         onDirtyChange(activeTab.id, false);
       })
       .catch((err) => {
-        onError(plainErrorText(err, "ADE couldn't save the file."));
+        onError(plainErrorText(err, `${BRAND.NAME} couldn't save the file.`));
       });
   }, [activeContext, activeTab, onDirtyChange, onError, props.files, registry]);
 

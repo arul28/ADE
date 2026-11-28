@@ -200,7 +200,7 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNav
             styleMask: options.show ? [.titled, .closable, .resizable, .miniaturizable] : [.borderless],
             backing: .buffered,
             defer: false)
-        playerWindow.title = "ADE Music"
+        playerWindow.title = "DAEX Music"
         playerWindow.isReleasedWhenClosed = false
         playerWindow.contentView = player
         if options.show {
@@ -400,7 +400,7 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNav
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false)
-        window.title = "Connect Apple Music - ADE"
+        window.title = "Connect Apple Music - DAEX"
         window.isReleasedWhenClosed = false
         window.contentView = popup
         window.delegate = self
@@ -451,7 +451,7 @@ func runHost() -> Never {
     // a per-profile WebKit store dev, installed and test builds would share one
     // Apple sign-in. Say so and leave; ADE shows the message.
     guard #available(macOS 14.0, *) else {
-        emit(["event": "hostError", "code": "unsupported_os", "error": "Apple Music in ADE needs macOS 14 or later."])
+        emit(["event": "hostError", "code": "unsupported_os", "error": "Apple Music in DAEX needs macOS 14 or later."])
         exit(6)
     }
     // --udf only names the profile here (the WebKit store is keyed by it); the

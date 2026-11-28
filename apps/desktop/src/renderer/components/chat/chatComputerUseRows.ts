@@ -21,6 +21,7 @@ import { readRecord } from "../../../shared/readRecord";
 import { isWindowsAbsolutePath } from "../../lib/pathUtils";
 import { isShellToolName } from "./toolPresentation";
 import type { ChatWorkLogEntry, ChatWorkLogGroupEvent, CodexImageViewRenderEvent } from "./chatTranscriptRows";
+import { BRAND } from "../../../shared/brand";
 
 /* ── Reading a work-log entry ─────────────────────────────────────────────── */
 
@@ -41,7 +42,7 @@ function textOfContent(value: unknown, depth = 0): string {
   }
   if (!parts.length) {
     const error = typeof record.error === "string" ? record.error : readRecord(record.error)?.message;
-    if (typeof error === "string") parts.push(`ade: ${error}`);
+    if (typeof error === "string") parts.push(`${BRAND.CLI}: ${error}`);
   }
   return parts.join("\n");
 }

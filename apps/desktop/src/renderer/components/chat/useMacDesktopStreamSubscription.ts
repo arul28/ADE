@@ -6,6 +6,7 @@ import {
   createMacDesktopStreamSource,
   randomMacDesktopSubscriptionId,
 } from "./macDesktopWebStream";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The lane display's live subscription on the hosted web client.
@@ -72,7 +73,7 @@ export function useMacDesktopStreamSubscription(args: {
       api,
       laneId,
       subscriptionId,
-      viewerLabel: "ADE Web",
+      viewerLabel: `${BRAND.NAME} Web`,
       runtimePin: pinRef.current,
     });
   }, [api, laneId, pinKey, subscriptionId, wanted]);

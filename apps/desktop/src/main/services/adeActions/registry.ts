@@ -374,6 +374,7 @@ import { listMcpRegistry, mcpRegistryVaultFromStore, requestMcpServer, requestMc
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { machineSecretTempFiles } from "../secrets/secretTempFiles";
 import { isClaudePromptCacheTtl } from "../../../shared/claudePromptCache";
+import { BRAND } from "../../../shared/brand";
 
 export { ADE_ACTION_DOMAIN_NAMES } from "./domains";
 export type { AdeActionDomain } from "./domains";
@@ -688,7 +689,7 @@ function toService(value: unknown): OpaqueService | null {
 }
 
 const ADE_MCP_ACCOUNT_ROWS_REFUSED =
-  "ADE MCP's own account data (its connections, account secret and computers) is managed in Settings → ADE MCP, not through actions.";
+  `${BRAND.NAME} MCP's own account data (its connections, account secret and computers) is managed in Settings → ${BRAND.NAME} MCP, not through actions.`;
 
 /**
  * The account vault without ADE MCP's rows. They hold the connections' token
@@ -761,7 +762,7 @@ function buildAccountSettingsDomainService(runtime: Partial<Pick<AdeRuntime, "ac
         // pull finds anything, the caller must rebuild its edit from that list.
         return store.sync().then((result) => {
           if (result !== "ready" || store.get(scope, key) !== undefined) {
-            throw new AdeExpectedError("Check the MCP server list again before saving. ADE needs the latest list from your account.", "user");
+            throw new AdeExpectedError(`Check the MCP server list again before saving. ${BRAND.NAME} needs the latest list from your account.`, "user");
           }
           return store.set(...args);
         });
@@ -1053,7 +1054,7 @@ function attachmentPartStoreFor(projectRoot: string): AttachmentPartStore {
 }
 
 /** The refusal for an image path outside every folder a chat image can live in. */
-const AGENT_CHAT_IMAGE_PATH_REFUSAL = "Image path is outside the folders ADE shows chat images from.";
+const AGENT_CHAT_IMAGE_PATH_REFUSAL = `Image path is outside the folders ${BRAND.NAME} shows chat images from.`;
 
 /**
  * The folders a chat image on this machine can come from: the project, each
@@ -1356,7 +1357,7 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
         ok: true,
         accepted: true,
         sessionId,
-        note: "Message accepted by the ADE chat service; provider dispatch continues asynchronously.",
+        note: `Message accepted by the ${BRAND.NAME} chat service; provider dispatch continues asynchronously.`,
       };
     },
     // The Work prompt box's new chat: `createSession`, then `sendMessage`, in
@@ -2000,7 +2001,7 @@ export function buildSendNotificationAction(
     // sign-in state from the relay's 401 below instead.
     if (runtime.accountAuthService && !runtime.accountAuthService.getStatus().signedIn) {
       throw new Error(
-        "Sign in to ADE first: run `ade login`. Notifications go to the phones on your ADE account.",
+        `Sign in to ${BRAND.NAME} first: run \`ade login\`. Notifications go to the phones on your ${BRAND.NAME} account.`,
       );
     }
     const body = typeof args?.body === "string" ? args.body.trim() : "";
@@ -2039,7 +2040,7 @@ export function buildSendNotificationAction(
         );
       }
       if (error instanceof PushRelayRequestError && error.status === 401) {
-        throw new Error("Your ADE sign-in did not work. Run `ade login`, then try again.");
+        throw new Error(`Your ${BRAND.NAME} sign-in did not work. Run \`ade login\`, then try again.`);
       }
       throw error;
     }
@@ -2058,7 +2059,7 @@ function buildAttentionDomainService(runtime: AdeRuntime): OpaqueService | null 
     const status = runtime.accountAuthService?.getStatus();
     const currentOwnerId = status?.signedIn ? status.userId?.trim() || null : null;
     if (!accountOwnerId || currentOwnerId !== accountOwnerId) {
-      throw new Error("The ADE account changed before Activity preferences could be used.");
+      throw new Error(`The ${BRAND.NAME} account changed before Activity preferences could be used.`);
     }
     return accountOwnerId;
   };
@@ -2168,7 +2169,7 @@ export function requestSessionAttentionForRuntime(
     runtime.pushPublisherService?.handleSessionAttentionRequested(runtime.projectId, {
       sessionId,
       kind: isTrackedCli || hasLivePty ? "cli" : "chat",
-      title: session?.title ?? "ADE session",
+      title: session?.title ?? `${BRAND.NAME} session`,
       message,
       laneId: session?.laneId ?? null,
       // Only asks whose headline is the ask itself set these — today that is
@@ -4770,7 +4771,7 @@ function cloudPhoneCallsFor(runtime: AdeRuntime): CloudPhoneService {
 }
 
 /** What a chat in plan mode is told when it asks the cloud iPhone to run or build anything. */
-const planModeRefusal = (): CloudPhoneError => new CloudPhoneError("This chat is in plan mode, so it doesn't use the ADE Cloud iPhone.", "declined");
+const planModeRefusal = (): CloudPhoneError => new CloudPhoneError(`This chat is in plan mode, so it doesn't use the ${BRAND.CLOUD_NAME} iPhone.`, "declined");
 
 /**
  * A build with no phone (`build`) spends no credits, so it skips the
@@ -4821,7 +4822,7 @@ function cloudPhoneAgentGuard(runtime: AccountDomainRuntime): (args: unknown) =>
     });
     if (!allowed) {
       throw new CloudPhoneError(
-        "Agents nobody watches (full-auto chats, automations, ADE MCP apps) may not use the ADE Cloud iPhone: your settings say they ask before anything that uses credits. The person can change it in Settings › Integrations › ADE Cloud › What agents may do.",
+        `Agents nobody watches (full-auto chats, automations, ${BRAND.NAME} MCP apps) may not use the ${BRAND.CLOUD_NAME} iPhone: your settings say they ask before anything that uses credits. The person can change it in Settings › Integrations › ${BRAND.CLOUD_NAME} › What agents may do.`,
         "declined",
       );
     }
@@ -4922,7 +4923,7 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
     client: () => getCloudProvider(credentials),
     whyNoClient: () => cloudNoProviderSentence(credentials),
     removeAccountMachine: async (machineKey) => {
-      if (!runtime.accountAuthService) throw new Error("This ADE isn't signed in to your account.");
+      if (!runtime.accountAuthService) throw new Error(`This ${BRAND.NAME} isn't signed in to your account.`);
       return await new AccountMachineDirectoryService(runtime.accountAuthService, {
         appVersion: process.env.ADE_CLI_VERSION?.trim() || "0.0.0",
         directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => (runtime.projectRoot ? [runtime.projectRoot] : []) }),
@@ -4939,7 +4940,7 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
     client: () => requireCloudProvider(credentials),
     laneBackups: async (machineKey) => {
       const api = accountApi();
-      if (!api) throw new Error("This ADE isn't signed in to your ADE account.");
+      if (!api) throw new Error(`This ${BRAND.NAME} isn't signed in to your ${BRAND.NAME} account.`);
       return await api.laneBackups(null, machineKey);
     },
     forgetMachineConnections: () => undefined,
@@ -5054,7 +5055,7 @@ function keptLaneRestoreActions(runtime: AccountDomainRuntime): {
     const { keptLaneRestores } = await import("../../../../../ade-cli/src/services/cloudChats/keptLaneRestore");
     const installed = keptLaneRestores();
     if (!installed) {
-      throw new AdeExpectedError("This computer can't take a kept ADE Cloud lane. Move it to one of your own computers with ADE open.", "user");
+      throw new AdeExpectedError(`This computer can't take a kept ${BRAND.CLOUD_NAME} lane. Move it to one of your own computers with ${BRAND.NAME} open.`, "user");
     }
     return installed;
   };
@@ -5152,7 +5153,7 @@ function savedChatReads(credentials: CloudAccessDeps): {
         if (page === 4) searched = false;
       }
       // Past the newest 1,000 the chat may still exist: say so, never "no such chat".
-      if (!machineKey && !searched) throw new Error(`ADE Cloud has no saved chat ${chatId} among your newest 1,000. Pass --machine-key (ade cloud chats --machine-key <key>).`);
+      if (!machineKey && !searched) throw new Error(`${BRAND.CLOUD_NAME} has no saved chat ${chatId} among your newest 1,000. Pass --machine-key (ade cloud chats --machine-key <key>).`);
       if (!machineKey) return null;
       return await server.readSavedChat({
         machineKey,

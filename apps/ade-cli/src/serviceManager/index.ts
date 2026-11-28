@@ -14,6 +14,7 @@ import {
 } from "./installWindows";
 import { pathsEqual } from "../../../desktop/src/main/services/shared/pathCompare";
 import { resolveMachineAdeDir } from "../services/projects/machineLayout";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 export type { ServiceManagerResult, ServiceManagerStatusResult } from "./common";
 
@@ -37,8 +38,8 @@ function readInstalledServiceHome(): string | null {
 
 function rerunWithHome(home: string, sub: string): string {
   return process.platform === "win32"
-    ? `$env:ADE_HOME='${home.replace(/'/g, "''")}'; ade service ${sub}`
-    : `ADE_HOME='${home.replace(/'/g, "'\\''")}' ade service ${sub}`;
+    ? `$env:ADE_HOME='${home.replace(/'/g, "''")}'; daex service ${sub}`
+    : `ADE_HOME='${home.replace(/'/g, "'\\''")}' daex service ${sub}`;
 }
 
 /**
@@ -56,7 +57,7 @@ export function serviceHomeMismatch(sub: "start" | "stop" | "restart"): ServiceM
     serviceName: ADE_RUNTIME_SERVICE_NAME,
     action: sub === "stop" ? "uninstall" : "install",
     path: null,
-    message: `This shell uses ADE home ${shellHome}, but the installed ADE service serves ${installedHome}. Nothing was changed. To manage that service, run: ${rerunWithHome(installedHome, sub)}`,
+    message: `This shell uses ${BRAND.NAME} home ${shellHome}, but the installed ${BRAND.NAME} service serves ${installedHome}. Nothing was changed. To manage that service, run: ${rerunWithHome(installedHome, sub)}`,
   };
 }
 
@@ -143,7 +144,7 @@ export async function installRuntimeService(): Promise<ServiceManagerResult> {
         serviceName: ADE_RUNTIME_SERVICE_NAME,
         action: "install",
         path: null,
-        message: `ADE service installation is not supported on ${process.platform}.`,
+        message: `${BRAND.NAME} service installation is not supported on ${process.platform}.`,
       };
   }
 }
@@ -165,7 +166,7 @@ export async function uninstallRuntimeService(): Promise<ServiceManagerResult> {
         serviceName: ADE_RUNTIME_SERVICE_NAME,
         action: "uninstall",
         path: null,
-        message: `ADE service removal is not supported on ${process.platform}.`,
+        message: `${BRAND.NAME} service removal is not supported on ${process.platform}.`,
       };
   }
 }
@@ -208,7 +209,7 @@ export function getRuntimeServiceStatus(): ServiceManagerStatusResult {
         installed: null,
         running: null,
         path: null,
-        message: `ADE service status is not supported on ${process.platform}.`,
+        message: `${BRAND.NAME} service status is not supported on ${process.platform}.`,
       };
   }
 }

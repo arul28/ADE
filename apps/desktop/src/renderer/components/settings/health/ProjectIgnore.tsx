@@ -8,6 +8,7 @@ import { pluralCount } from "../../../../shared/formatting";
 import { AnchoredMenu } from "../../ui/AnchoredMenu";
 import { showToast } from "../../app/toast/toastStore";
 import "./projectIgnore.css";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * "Ignore" for the things Settings flags.
@@ -119,7 +120,7 @@ export function useProjectIgnore(pin: OpenProjectBinding | null, onReport: (repo
         id: IGNORE_TOAST_ID,
         tone: "success",
         title: folder ? `Ignoring ${folder}` : "Hidden until it changes",
-        message: folder ? "ADE won't check this folder for packages again." : undefined,
+        message: folder ? `${BRAND.NAME} won't check this folder for packages again.` : undefined,
         actions: [{ label: "Undo", onClick: () => void unignore(key, true) }],
       });
     } catch (err) {

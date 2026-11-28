@@ -1,3 +1,4 @@
+import { BRAND } from "../../../shared/brand";
 /**
  * What a browser sees when a tunnel to another machine's port cannot connect.
  *
@@ -86,7 +87,7 @@ export function buildForwardFailureResponse(input: {
 <body>
 <main>
 <h1>${escapeHtml(title)}</h1>
-<p>ADE reached ${escapeHtml(machine)}, but no server accepted the connection on port ${input.remotePort}.
+<p>${BRAND.NAME} reached ${escapeHtml(machine)}, but no server accepted the connection on port ${input.remotePort}.
 Start the dev server there, or check that it is still running.</p>
 <p class="reason">${escapeHtml(reason)}</p>
 <p class="retry">This page tries again every ${RETRY_SECONDS} seconds.</p>

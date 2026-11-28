@@ -8,12 +8,14 @@ protocol is `apps/desktop/native/ADESimHelper/Sources/ADESimHelperCore/Protocol.
 ## Error codes
 
 `APPLE_NO_INSTALLED_SIMULATORS`, `APPLE_DEVICE_EXISTS`, `APPLE_DEVICE_ATTACHED_NOT_DELETABLE`,
-`APPLE_RECORDING_PINNED`, `APPLE_OWNED_BY_OTHER_SESSION` (reuse existing ownership error shape),
+`APPLE_RECORDING_PINNED`, `APPLE_OWNED_BY_OTHER_SESSION` (the existing ownership error shape),
 `APPLE_HELPER_UNAVAILABLE`, `APPLE_STREAM_NOT_RUNNING`.
 
 ## Settings keys
 
+`APPLE_DEVICE_SETTING_KEYS` in `apps/desktop/src/shared/appleDeviceSettings.ts`:
+
 `apple.realisticBody` (bool, default true), `apple.recordingOverlays.tapRings` (true),
 `apple.recordingOverlays.keyBadges` (true), `apple.remoteBitrateKbpsCap` (number, default 2500),
-`apple.recordingsWarnBytes` (number, default 5 GiB; warn only, never delete).
-
+`apple.recordingsWarnBytes` (number, default 5 GiB; warn only, never delete),
+`apple.autoRecordAgentInput` (bool, default true).

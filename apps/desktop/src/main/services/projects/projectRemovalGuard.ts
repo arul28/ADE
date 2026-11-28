@@ -8,6 +8,7 @@ import {
   type ProjectRemovalRefusalCode,
 } from "../../../shared/projectRemoval";
 import { isPathInside, pathKey } from "../shared/pathCompare";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The two safety decisions of removing a project with its folder, kept pure
@@ -74,18 +75,18 @@ export function decideProjectFolderDeletion(args: {
 }): FolderDeletionDecision {
   const platform = args.platform ?? process.platform;
   const target = pathKey(args.target, platform);
-  if (!target) return { ok: false, reason: "ADE doesn't know this project's folder." };
+  if (!target) return { ok: false, reason: `${BRAND.NAME} doesn't know this project's folder.` };
   const same = (other: string | null | undefined) => Boolean(other) && pathKey(other!, platform) === target;
   if (!args.registeredRoots.some(same)) {
-    return { ok: false, reason: "The folder is not a project folder ADE knows on this machine." };
+    return { ok: false, reason: `The folder is not a project folder ${BRAND.NAME} knows on this machine.` };
   }
   const api = pathApiFor(platform);
   const segments = segmentsBelowRoot(target, platform);
   if (api.parse(target).root === target || segments.length === 0) {
-    return { ok: false, reason: "ADE never deletes the top folder of a drive." };
+    return { ok: false, reason: `${BRAND.NAME} never deletes the top folder of a drive.` };
   }
   if (isMountRoot(segments, platform)) {
-    return { ok: false, reason: "ADE never deletes the top folder of a volume." };
+    return { ok: false, reason: `${BRAND.NAME} never deletes the top folder of a volume.` };
   }
   // One level below the top: `/Users`, `/home`, `/opt` on macOS and Linux.
   // Windows projects often live at `D:\repo`, so there only the system
@@ -94,20 +95,20 @@ export function decideProjectFolderDeletion(args: {
     segments.length < 2
     && (platform !== "win32" || WINDOWS_SYSTEM_FOLDERS.has(segments[0]!.toLowerCase()))
   ) {
-    return { ok: false, reason: "ADE never deletes a folder this close to the top of the drive." };
+    return { ok: false, reason: `${BRAND.NAME} never deletes a folder this close to the top of the drive.` };
   }
   if (args.homeDir && isPathInside(args.homeDir, target, platform)) {
     return { ok: false, reason: "The folder is your home folder or holds it." };
   }
   if (args.adeHome && (isPathInside(args.adeHome, target, platform) || isPathInside(target, args.adeHome, platform))) {
-    return { ok: false, reason: "The folder is part of ADE's own data." };
+    return { ok: false, reason: `The folder is part of ${BRAND.NAME}'s own data.` };
   }
   const nested = args.registeredRoots.find(
     (root) => root && !same(root) && isPathInside(root, target, platform),
   );
   if (nested) return { ok: false, reason: `The folder holds another project (${nested}).` };
   if (args.runtimePaths.some((runtimePath) => runtimePath && isPathInside(runtimePath, target, platform))) {
-    return { ok: false, reason: "ADE itself runs from this folder." };
+    return { ok: false, reason: `${BRAND.NAME} itself runs from this folder.` };
   }
   return { ok: true };
 }
@@ -172,14 +173,14 @@ export function decideRemovalRecheck(args: {
     return {
       ok: false,
       code: "unsaved_work",
-      reason: `${work.summary ?? "This copy has work that is not pushed"}. ADE kept the folder.`,
+      reason: `${work.summary ?? "This copy has work that is not pushed"}. ${BRAND.NAME} kept the folder.`,
     };
   }
   if (!args.shownToken || args.shownToken !== args.currentToken) {
     return {
       ok: false,
       code: "changed",
-      reason: "The copy changed after the dialog checked it. ADE kept the folder; check it again.",
+      reason: `The copy changed after the dialog checked it. ${BRAND.NAME} kept the folder; check it again.`,
     };
   }
   return { ok: true };

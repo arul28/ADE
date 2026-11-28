@@ -148,10 +148,10 @@ enum SSHBootstrapError: LocalizedError, Equatable {
     case .hostKeyNotConfirmed: "Compare the computer's SSH fingerprint, then confirm that it matches."
     case .hostKeyChanged(let expected, let received):
       "This computer's SSH fingerprint changed. Expected \(expected), but received \(received). Check the fingerprint on the computer before trying again."
-    case .cliUnavailable: "ADE is not installed for this user on the computer. Install ADE, then try again."
-    case .invalidResponse: "The computer returned an unexpected response. Update ADE on the computer, then try again."
-    case .responseTooLarge: "The computer returned an unexpectedly large response. Update ADE on the computer, then try again."
-    case .timedOut: "The computer took too long to finish setup. Make sure ADE is open on the computer, then try again."
+    case .cliUnavailable: "\(Brand.name) is not installed for this user on the computer. Install \(Brand.name), then try again."
+    case .invalidResponse: "The computer returned an unexpected response. Update \(Brand.name) on the computer, then try again."
+    case .responseTooLarge: "The computer returned an unexpectedly large response. Update \(Brand.name) on the computer, then try again."
+    case .timedOut: "The computer took too long to finish setup. Make sure \(Brand.name) is open on the computer, then try again."
     case .remote(_, let message): message
     }
   }

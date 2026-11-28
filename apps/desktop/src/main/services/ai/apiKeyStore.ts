@@ -34,6 +34,7 @@ import {
   captureApiCredentialAnalytics,
   type FeatureAnalytics,
 } from "../analytics/featureProductAnalytics";
+import { BRAND } from "../../../shared/brand";
 
 
 // electron.safeStorage is only available inside an Electron main process.
@@ -1812,7 +1813,7 @@ export function saveOfferedApiKey(provider: string, key: string): void {
     storeApiKey(provider, key);
     return;
   }
-  throw new Error(`The API key for '${normalizeProvider(provider) || "?"}' could not be saved in ADE's key store.`);
+  throw new Error(`The API key for '${normalizeProvider(provider) || "?"}' could not be saved in ${BRAND.NAME}'s key store.`);
 }
 
 /**

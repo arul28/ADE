@@ -41,6 +41,8 @@
  * Pure: no I/O. The table-driven test next to it is the contract.
  */
 
+import { BRAND } from "../../../shared/brand";
+
 export type ClaudeVersionRejectionSignal = "startup_min_version" | "api_min_version" | "client_data_min_version";
 
 export type ClaudeVersionRejection = {
@@ -251,8 +253,8 @@ export function copilotVersionRejectionMessage(rejection: CopilotVersionRejectio
   const required = rejection.requiredVersion
     ? `Copilot ${rejection.requiredVersion} or newer`
     : "a newer Copilot";
-  return `Your organization's GitHub Copilot policy requires ${required}. ADE runs its own tested copy`
-    + `${running ? ` (${running})` : ""} and does not update it on its own, so Copilot cannot run until ADE is updated.`;
+  return `Your organization's GitHub Copilot policy requires ${required}. ${BRAND.NAME} runs its own tested copy`
+    + `${running ? ` (${running})` : ""} and does not update it on its own, so Copilot cannot run until ${BRAND.NAME} is updated.`;
 }
 
 export type CodexVersionRejection = {

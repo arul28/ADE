@@ -94,6 +94,7 @@ import { normalizeWebhookTriggerConfig } from "../../../shared/automationWebhook
 import type { AutomationRuleAccountStore } from "../automations/automationRuleAccountStore";
 import { createAutomationRuleAccountSync, type AutomationRuleAccountSync, type CloudHomesView } from "../automations/automationRuleAccountSync";
 import { createProjectConfigAccountLayer, type ProjectConfigAccountBackend, type ProjectConfigAccountLayer } from "./projectConfigAccountLayer";
+import { BRAND } from "../../../shared/brand";
 
 const VERSION = 1;
 const AUTOMATION_TOOL_FAMILIES: AutomationToolFamily[] = [
@@ -3616,7 +3617,7 @@ export function createProjectConfigService({
     }
     if (offered.length > 0) {
       if (!storeOfferedApiKey) {
-        throw new Error("Provider API keys are not saved in .ade/local.yaml any more. Add the key in ADE Settings.");
+        throw new Error(`Provider API keys are not saved in .ade/local.yaml any more. Add the key in ${BRAND.NAME} Settings.`);
       }
       for (const [provider, value] of offered) storeOfferedApiKey(provider, value);
       logger.info("projectConfig.api_key_saved_to_store", { providers: offered.map(([provider]) => provider) });
@@ -3686,7 +3687,7 @@ export function createProjectConfigService({
     if (routing.refused.length > 0) {
       // Writing only the file would look saved, but the account's value
       // wins on the next read. Fail the save so the person can try again.
-      throw new Error(`ADE couldn't save ${routing.refused.join(", ")} to your ADE account, so nothing was saved. Try again.`);
+      throw new Error(`${BRAND.NAME} couldn't save ${routing.refused.join(", ")} to your ${BRAND.NAME} account, so nothing was saved. Try again.`);
     }
     const routed = routing.local;
     // Account rules never land in the file; a new one is filed in the account.
@@ -3770,7 +3771,7 @@ export function createProjectConfigService({
       const outcome = accountLayer && typeof args?.key === "string" ? accountLayer.resolve(args.key, choice) : "missing";
       if (outcome === "refused") {
         // The notice stays; the person can try again.
-        throw new Error("ADE couldn't save this computer's value to your ADE account. Try again.");
+        throw new Error(`${BRAND.NAME} couldn't save this computer's value to your ${BRAND.NAME} account. Try again.`);
       }
       if (outcome === "resolved") mirrorAccountSettings();
       return readSnapshotFromDisk();

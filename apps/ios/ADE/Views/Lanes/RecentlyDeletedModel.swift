@@ -58,15 +58,15 @@ func deletedChatMetaParts(_ chat: DeletedChat) -> [String] {
 }
 
 func deletedLaneDropMessage(_ lane: DeletedLaneSnapshot) -> String {
-  if lane.isFreed { return "“\(lane.laneName)” stays archived, but ADE will no longer be able to put back its uncommitted files." }
-  if lane.uncommitted { return "ADE will no longer be able to bring back “\(lane.laneName)” or its uncommitted files." }
-  return "ADE will no longer be able to bring back “\(lane.laneName)”. Commits that only it held are lost."
+  if lane.isFreed { return "“\(lane.laneName)” stays archived, but \(Brand.name) will no longer be able to put back its uncommitted files." }
+  if lane.uncommitted { return "\(Brand.name) will no longer be able to bring back “\(lane.laneName)” or its uncommitted files." }
+  return "\(Brand.name) will no longer be able to bring back “\(lane.laneName)”. Commits that only it held are lost."
 }
 
 func deletedChatRemoveMessage(_ chat: DeletedChat) -> String {
   let keeper = workExternalSessionProviderName(chat.sourceProvider)
   let copy = chat.isCli && chat.resumable != true ? "its own copy, if it made one" : "its own copy"
-  return "You won’t be able to reopen “\(deletedChatTitle(chat))” in ADE anymore. \(keeper) keeps \(copy)."
+  return "You won’t be able to reopen “\(deletedChatTitle(chat))” in \(Brand.name) anymore. \(keeper) keeps \(copy)."
 }
 
 // MARK: - Entries

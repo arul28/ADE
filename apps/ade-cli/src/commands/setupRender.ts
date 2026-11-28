@@ -12,6 +12,9 @@
  *     only when something actually needs the user
  */
 
+import { BRAND } from "../../../desktop/src/shared/brand";
+import { ADE_BANNER } from "../help/banner";
+
 export type SetupStepId =
   | "runtime"
   | "native"
@@ -66,13 +69,8 @@ const CSI = `${String.fromCharCode(27)}[`;
 /** Carriage return + erase-whole-line: what rewrites the animated line in place. */
 const CLEAR_LINE = `\r${CSI}2K`;
 
-const BANNER = String.raw`
-     _    ____  _____
-    / \  |  _ \| ____|
-   / _ \ | | | |  _|
-  / ___ \| |_| | |___
- /_/   \_\____/|_____|
-`;
+/** The same DAEX art as the top of every help page. */
+const BANNER = ADE_BANNER;
 
 export function detectTerminalCapabilities(
   stream: { isTTY?: boolean; columns?: number },
@@ -274,8 +272,8 @@ export type SetupTotals = {
  * What a stuck user needs is what the command is *for*.
  */
 const NEXT_ACTION_PURPOSE: Record<SetupStepId, string> = {
-  runtime: "reinstall the ADE runtime",
-  native: "reinstall the ADE runtime",
+  runtime: `reinstall the ${BRAND.NAME} runtime`,
+  native: `reinstall the ${BRAND.NAME} runtime`,
   tools: "fetch the agent CLIs",
   account: "link this machine to your account",
   desktop: "install the desktop app",
@@ -301,8 +299,8 @@ export function renderSummary(
   const failed = steps.filter((step) => step.state === "failed");
   const dash = caps.unicode ? "—" : "-";
   const heading = failed.length === 0
-    ? "ADE is ready"
-    : `ADE installed ${dash} ${failed.length} step${failed.length === 1 ? "" : "s"} need${failed.length === 1 ? "s" : ""} you`;
+    ? `${BRAND.NAME} is ready`
+    : `${BRAND.NAME} installed ${dash} ${failed.length} step${failed.length === 1 ? "" : "s"} need${failed.length === 1 ? "s" : ""} you`;
 
   const lines: string[] = ["", `  ${heading}`, ""];
   for (const step of steps) {

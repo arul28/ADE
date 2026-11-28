@@ -19,6 +19,7 @@ import {
   pickElement,
   type ParsedUiTree,
 } from "./androidUiTree";
+import { BRAND } from "../../../shared/brand";
 
 /*
  * The lane's UI tree: read with Google's Android CLI (`android layout`) when
@@ -115,7 +116,7 @@ export function createAndroidUiSnapshots(deps: AndroidUiSnapshotDeps) {
         ? "The screen kept changing (an animation or a video), so uiautomator could not read it. Wait for the screen to settle and try again, or use a screenshot."
         : isKilled(lastText)
           ? "uiautomator could not connect to the device's UI automation (\"Killed\"): another client holds it. "
-            + "ADE stopped the Android CLI's layout server and tried again, and the connection was still taken: "
+            + `${BRAND.NAME} stopped the Android CLI's layout server and tried again, and the connection was still taken: `
             + "an instrumentation test (`am instrument`, a Gradle connectedCheck) or another tool can hold it. "
             + "Stop that run and try again, or use a screenshot."
           : `uiautomator could not read the screen: ${lastText.slice(0, 300) || "no output"}.`,

@@ -6,7 +6,7 @@
  *   - `<ProviderCards>` in the left sidebar, under the account block. The
  *     package does not place them; putting them somewhere other than above the
  *     composer is exactly the freedom it is claiming to offer.
- *   - `<AdeChat>` on the right, which brings the model picker in the composer
+ *   - `<DaexChat>` on the right, which brings the model picker in the composer
  *     rail with it. The picker switches the OPEN thread — the bridge forwards
  *     `setModel` to the SDK — and the package disables it while a turn streams,
  *     so DataDesk never asks the SDK to end a reply in progress.
@@ -18,13 +18,13 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
-  AdeChat,
+  DaexChat,
   ProviderCards,
   adaptSdkClient,
   createTheme,
-  type AdeChatClient,
+  type DaexChatClient,
   type ActivityLabelConfig,
-} from "@ade-dev/chat-ui";
+} from "@daex-dev/chat-ui";
 
 import { createBridgeClient, type AppConfig } from "./bridgeClient";
 
@@ -95,10 +95,10 @@ export function App() {
   }, [connectionEpoch]);
 
   // The adapter is what turns the SDK's client surface — here reached over a
-  // WebSocket — into the shape `@ade-dev/chat-ui` renders. `defaults` carries the
+  // WebSocket — into the shape `@daex-dev/chat-ui` renders. `defaults` carries the
   // create-time arguments the chat components have no vocabulary for: which
   // provider, which MCP servers, which permission preset.
-  const client = useMemo<AdeChatClient | null>(() => {
+  const client = useMemo<DaexChatClient | null>(() => {
     if (!config) return null;
     return adaptSdkClient(bridge, {
       defaults: config.defaults,
@@ -179,7 +179,7 @@ export function App() {
           <h2>Ask DataDesk</h2>
           {error ? <p className="datadesk-error">{error}</p> : null}
           {client && config ? (
-            <AdeChat
+            <DaexChat
               key={connectionEpoch}
               client={client}
               threadKey={config.threadKey}

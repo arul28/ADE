@@ -26,6 +26,7 @@ import {
 } from "./deviceSettingsCards";
 import { ModernSection } from "./primitives";
 import { AndroidEmulatorsSection } from "./devices/AndroidEmulatorsSection";
+import { BRAND } from "../../../shared/brand";
 
 /** Whole GiB for the warning field, clamped to the field's range. */
 function warnGib(bytes: number): number {
@@ -88,7 +89,7 @@ export function AndroidDevicesSection() {
             id: "android-machine-preferences-unsupported",
             tone: "info",
             title: "The settings below are not available in this window",
-            detail: "Open Settings in the ADE desktop app to change Android recording and streaming.",
+            detail: `Open Settings in the ${BRAND.NAME} desktop app to change Android recording and streaming.`,
           }}
         />
       ) : machine.error && !machine.preferences ? (
@@ -175,7 +176,7 @@ export function AndroidDevicesSection() {
         group="Recordings storage"
         anchor="android-recordings-warn"
         title="Recordings storage warning"
-        hint="Diagnostics warns past this size. ADE never deletes recordings."
+        hint={`Diagnostics warns past this size. ${BRAND.NAME} never deletes recordings.`}
       >
         <StorageMeter
           usedBytes={machine.recordingsBytes}
@@ -245,7 +246,7 @@ function AndroidSdkSection() {
       group="Android devices"
       anchor="android-sdk"
       title="Android SDK"
-      hint={`What the emulator needs on ${scope.isThisMachine ? "this computer" : scope.machineName}. ADE installs it from Google's SDK repository.`}
+      hint={`What the emulator needs on ${scope.isThisMachine ? "this computer" : scope.machineName}. ${BRAND.NAME} installs it from Google's SDK repository.`}
     >
       {!api ? (
         <p className="font-sans text-xs text-muted-fg">Android devices are not available in this window.</p>

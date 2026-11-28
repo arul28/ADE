@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { StorageEnvironment } from "./storageEnvironmentProbe";
 import type { DiagnosticMachineHardware, DiagnosticMachineHealth } from "./machineHealth";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * Diagnostic-report assembly and redaction, shared by the desktop
@@ -776,7 +777,7 @@ export function buildDiagnosticReport(input: DiagnosticReportInput): string {
 
   const parts: (string | null)[] = [];
 
-  parts.push("# ADE diagnostic report");
+  parts.push(`# ${BRAND.NAME} diagnostic report`);
 
   parts.push(
     section(
@@ -795,7 +796,7 @@ export function buildDiagnosticReport(input: DiagnosticReportInput): string {
     section(
       "Install",
       lines(
-        bullet("ADE version", app.version),
+        bullet(`${BRAND.NAME} version`, app.version),
         // Always printed: a report that cannot say whether it came from a
         // release or a developer's build sent a triage after the wrong one.
         bullet("Channel", app.releaseChannel ?? app.packageChannel),

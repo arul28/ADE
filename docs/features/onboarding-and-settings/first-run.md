@@ -1,119 +1,57 @@
-# First-Run Setup
+# First-run setup
 
 Opening or creating a project goes straight to Work. There is no blocking
-project-setup dashboard. `.ade` layout and `ade.db` are created as soon as ADE
-knows the folder (create/clone scaffold, then the normal project bind).
+setup dashboard (`/onboarding` redirects to `/work`). The `.ade` layout and
+`ade.db` are created as soon as DAEX knows the folder. AI runtimes, GitHub and
+Linear live in Settings; a new local repo can stay unpublished, and the header
+Publish pill shows until `origin` exists.
 
-The create/clone scaffold (`projectScaffoldService.ts`) never makes a folder that
-already exists, so a Windows drive root (`D:\`), where Node's recursive `mkdir`
-fails with `EPERM`, is accepted as it is. A folder the account may not create or
-read (`EACCES`, `EPERM`, `EROFS`; `isFsAccessRefusal` in
-`shared/fsAccessRefusal.ts`, shared with the project registry) is an expected
-user error that names the folder: "ADE can't create a folder in <path>. Pick
-another location.", "ADE can't find <path> on this computer." for a missing
-drive, or "ADE can't read the folder <path>. Choose a folder you can open."
+The first-run flow on a computer (welcome, sign-in, agents, project import,
+tour) is in the [README](./README.md#first-run-on-a-computer).
 
-A fresh launch requires an ADE account sign-in before account-backed work is
-shown. If a phone or desktop already has a paired/local connection, its access
-gate offers the explicit recovery path while signed out; that is not a guest
-account and does not create a new account-less setup mode.
+## Source file map
 
-AI runtimes, GitHub, and Linear stay in Settings. A new local repo can stay
-unpublished; the header Publish pill appears until `origin` exists.
+- `apps/desktop/src/main/services/projects/projectScaffoldService.ts`: create
+  and clone scaffold.
+- `apps/desktop/src/shared/fsAccessRefusal.ts` (`isFsAccessRefusal`): the
+  folder-refusal check shared with the project registry.
+- `apps/desktop/src/main/services/onboarding/onboardingService.ts`: status
+  (`getStatus`, `complete`, `setDismissed`) and `detectDefaults`.
+- `onboardingSuggestedConfig.ts`: `buildSuggestedConfig`, pure.
+- `apps/desktop/src/renderer/components/projects/CreateProjectForm.tsx`: name
+  and location; Create opens Work.
 
-The canonical backend is
-`apps/desktop/src/main/services/onboarding/onboardingService.ts`
-(status and suggested config). `/onboarding` redirects to `/work`.
+## Create and clone
 
-## Surfaces
+- The scaffold never makes a folder that already exists, so a Windows drive
+  root (`D:\`, where recursive `mkdir` fails with `EPERM`) is accepted as is.
+- A folder the account may not create or read (`EACCES`, `EPERM`, `EROFS`) is
+  an expected user error that names the folder ("DAEX can't create a folder in
+  <path>. Pick another location.", or the missing-drive and unreadable-folder
+  variants).
 
-| Surface | Component | Purpose |
-|---|---|---|
-| Create project | `CreateProjectForm.tsx` | Name + first-class location; create opens Work. |
-| Work | Work tab / new chat | Default landing for new, existing, and first-open projects. |
-| Publish | header Publish pill | Optional GitHub repo creation when there is no `origin`. |
-| Settings | four scope groups; Agents/Providers, Integrations | AI runtimes, GitHub, Linear, account settings, and machine diagnostics. |
+## Detection and suggested config
 
-## Onboarding service API
+`detectDefaults()` looks for `package.json`, `Cargo.toml`, `go.mod`,
+`pyproject.toml`, `Makefile`, `docker-compose.y(a)ml` and `.github/workflows/`,
+then reads single-line `run:` steps from up to 32 workflow files (multi-line
+`run: |` blocks are skipped).
 
-`onboardingService.ts` exposes:
-
-```ts
-getStatus(): OnboardingStatus
-complete(): OnboardingStatus
-setDismissed(dismissed: boolean): OnboardingStatus
-detectDefaults(): Promise<OnboardingDetectionResult>
-applySuggestedConfig(suggestedConfig: ProjectConfigFile): Promise<void>
-```
-
-These five methods remain for suggested config and status storage. The desktop
-shell no longer redirects on `freshProject`.
-
-### Detection
-
-`detectDefaults()` scans the project root for indicators:
-
-| File | Type | Confidence |
-|---|---|---|
-| `package.json` | `node` | 0.95 |
-| `Cargo.toml` | `rust` | 0.95 |
-| `go.mod` | `go` | 0.95 |
-| `pyproject.toml` | `python` | 0.95 |
-| `Makefile` | `make` | 0.80 |
-| `docker-compose.yml` / `.yaml` | `docker` | 0.80 |
-| `.github/workflows/` | `github-actions` | 0.70 |
-
-It then parses up to 32 workflow YAML files under `.github/workflows/`,
-extracting single-line `run:` commands from each step. Multi-line scripts are
-skipped to avoid noisy imports.
-
-### Suggested config
-
-`buildSuggestedConfig` turns indicators into a partial
-`ProjectConfigFile`. Node, Make, Rust, Go, and Python projects receive
-an appropriate test suite (`unit`, `make-test`, `cargo-test`, `go-test`,
-or `pytest`). Node package-manager detection uses `pnpm-lock.yaml` or
-`yarn.lock` and otherwise defaults to npm. Docker remains a detection
-signal but does not add project configuration.
-
-CI candidates are filtered down to obvious test/lint commands using a regex
-such as `npm run test`, `cargo test`, `pytest`, or `make test`. Up to six are
-appended as `ci-N` test suites.
-
-It also seeds:
-
-- a `session-end-local` automation that runs `predict-conflicts` after every
-  session end
-- provider config for `codex` / `claude` context tools and conflict resolvers
-
-`applySuggestedConfig(suggestedConfig)` merges this partial config into the
-machine-local `.ade/local.yaml` via `projectConfigService.save`.
-
-## UX contract
-
-- Never intercept project open with a setup route. Work is the landing.
-- Do not block chatting on GitHub, Linear, or an initial commit.
-- Create shows the default location clearly; changing it is a first-class control.
+`buildSuggestedConfig` adds a test suite per stack (npm, pnpm or yarn by lock
+file; `make test`, `cargo test`, `go test`, `pytest`), up to six CI test
+commands as `ci-N` suites, a `session-end-local` automation that runs
+`predict-conflicts`, and provider config. Docker is a signal only.
+`applySuggestedConfig` merges this into `.ade/local.yaml` through
+`projectConfigService.save` with a shallow top-level merge: a second call does
+not duplicate entries but can leave stale fields.
 
 ## Gotchas
 
-- `freshProject` is still computed at `createOnboardingService` construction
-  from missing `.ade/ade.db`. Create/clone now warm that database so first open
-  is not a special UI state. Do not reintroduce a shell redirect on the flag.
-- Existing-lane import runs `git rev-list --left-right --count` per candidate
-  branch, capped at 200. Large repos can still see noticeable latency on the
-  Lanes tab, not on Work paint.
-- Workflow command parsing keeps only single-line steps; multi-line `run: |`
-  blocks are skipped. Teams with complex CI flows should curate imported
-  commands manually in `local.yaml`.
-- `applySuggestedConfig` does a shallow merge at the top level. Calling it twice
-  on the same project will not duplicate entries but can leave stale fields in
-  place.
-- The CTO first-run setup is separate and lives under
-  `apps/desktop/src/renderer/components/cto/`. It covers identity, project
-  context, and optional Linear, and finishing it does not require Linear.
-
-## Cross-links
-
-- Configuration schema:
-  [configuration-schema.md](./configuration-schema.md)
+- **`freshProject`** is computed when `createOnboardingService` is built, from a
+  missing `.ade/ade.db`. Create and clone warm that database so first open is
+  not special. Do not reintroduce a shell redirect on the flag.
+- **The account gate is not a guest mode.** A fresh launch requires sign-in; a
+  device with an existing paired or local connection gets an explicit recovery
+  path while signed out, not an account-less setup.
+- CTO first run is only the model picker
+  ([CTO › Welcome](../cto/README.md#welcome)).

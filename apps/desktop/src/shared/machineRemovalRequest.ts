@@ -1,4 +1,5 @@
 import type { PendingInputRequest } from "./types/chat";
+import { BRAND } from "./brand";
 
 /**
  * The computer removal card: an agent asks to take a computer off the
@@ -37,7 +38,7 @@ export const MACHINE_REMOVAL_CANCEL_VALUE = "cancel" as const;
 
 /** The one line every surface uses to say what removal does. */
 export const MACHINE_REMOVAL_EFFECT =
-  "It leaves your ADE account: other devices stop seeing it, and it can rejoin only when someone signs in on it again. Its folders and files stay on it.";
+  `It leaves your ${BRAND.NAME} account: other devices stop seeing it, and it can rejoin only when someone signs in on it again. Its folders and files stay on it.`;
 
 /** What the card shows. Names and facts only, from the account directory. */
 export type MachineRemovalRequestCard = {

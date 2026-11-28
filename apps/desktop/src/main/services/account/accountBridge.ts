@@ -78,6 +78,7 @@ import {
   resolveLaneShareDirectoryBase,
   sendLaneShareDirectoryRequest,
 } from "../../../../../ade-cli/src/services/sync/laneShareGrantService";
+import { BRAND } from "../../../shared/brand";
 
 type AccountBridgeOptions = {
   /** Resolves the active project root so CLERK_* project secrets win config. */
@@ -177,7 +178,7 @@ export function readMachinePairingRepairResult(
   const envelope = unwrapAccountActionResult(raw);
   if (!isRecord(envelope) || typeof envelope.repaired !== "boolean") {
     throw new Error(
-      "ADE couldn't read the result of reconnecting this computer. Check Your computers to see whether it came back.",
+      `${BRAND.NAME} couldn't read the result of reconnecting this computer. Check Your computers to see whether it came back.`,
     );
   }
   return {
@@ -219,7 +220,7 @@ export function readAccountDeviceLoginStart(raw: unknown): AdeAccountDeviceLogin
   const verificationUri = isRecord(payload) ? readNonEmpty(payload.verificationUri) : null;
   if (!isRecord(payload) || !sessionId || !userCode || !verificationUri) {
     throw new Error(
-      "ADE couldn't start a sign-in on this computer. Try again in a moment.",
+      `${BRAND.NAME} couldn't start a sign-in on this computer. Try again in a moment.`,
     );
   }
   const intervalSec = typeof payload.intervalSec === "number" && payload.intervalSec > 0
@@ -261,7 +262,7 @@ export function readAccountDeviceLoginProgress(
     // stops waiting instead of spinning against a brain that cannot answer.
     return {
       status: "error",
-      message: "ADE couldn't check the sign-in on this computer. Try again in a moment.",
+      message: `${BRAND.NAME} couldn't check the sign-in on this computer. Try again in a moment.`,
       intervalSec: null,
     };
   }
@@ -275,7 +276,7 @@ export function readAccountDeviceLoginProgress(
 }
 
 const DEVICE_LOGIN_TIMED_OUT = "Starting the sign-in timed out. Check your internet connection, then try again.";
-const DEVICE_LOGIN_FAILED = "ADE couldn't start a sign-in on this computer. Try again in a moment.";
+const DEVICE_LOGIN_FAILED = `${BRAND.NAME} couldn't start a sign-in on this computer. Try again in a moment.`;
 
 /**
  * What a failed sign-in says, first match wins, and whether it is an answer
@@ -294,7 +295,7 @@ const DEVICE_LOGIN_FAILURES: ReadonlyArray<{ test: RegExp; message: string; kind
   { test: /device service could not be reached/i, message: DEVICE_LOGIN_FAILED, kind: "network" },
   {
     test: /econnrefused|enoent|not running|socket|connection (refused|closed|reset)|service is unavailable/i,
-    message: "ADE's background service isn't running on this computer, so it can't sign in. Reopen ADE, then try again.",
+    message: `${BRAND.NAME}'s background service isn't running on this computer, so it can't sign in. Reopen ${BRAND.NAME}, then try again.`,
     kind: null,
   },
   { test: /timed out|etimedout/i, message: DEVICE_LOGIN_TIMED_OUT, kind: null },
@@ -384,14 +385,14 @@ export function describeMachinePairingRepairFailure(error: unknown): Error {
   const raw = error instanceof Error ? error.message : String(error ?? "");
   const message =
     /not publishing this machine/i.test(raw)
-      ? "ADE isn't publishing this computer to your account yet. Open a project on this computer, then try again."
+      ? `${BRAND.NAME} isn't publishing this computer to your account yet. Open a project on this computer, then try again.`
       : /econnrefused|enoent|not running|socket|connection (refused|closed|reset)|service is unavailable/i.test(raw)
-        ? "ADE's background service isn't running on this computer, so it can't reconnect to your account. Reopen ADE, then try again."
+        ? `${BRAND.NAME}'s background service isn't running on this computer, so it can't reconnect to your account. Reopen ${BRAND.NAME}, then try again.`
         : /timed out|etimedout/i.test(raw)
           ? "Reconnecting this computer timed out. Check your internet connection, then try again."
           : /\bnot signed in\b|\bsigned out\b|unauthenticated|unauthori[sz]|\b401\b/i.test(raw)
-            ? "Sign in to ADE again, then reconnect this computer."
-            : "ADE couldn't reconnect this computer to your account. Try again in a moment.";
+            ? `Sign in to ${BRAND.NAME} again, then reconnect this computer.`
+            : `${BRAND.NAME} couldn't reconnect this computer to your account. Try again in a moment.`;
   const failure = new Error(message);
   if (raw) failure.cause = error;
   return failure;
@@ -549,7 +550,7 @@ const PAIR_MACHINE_DEADLINE_MS = 25_000;
 function pairRouteLabel(kind: AccountMachineAdoptionRoute["kind"]): string {
   if (kind === "tailnet") return "Tailscale";
   if (kind === "lan") return "the local network";
-  return "ADE Relay";
+  return `${BRAND.NAME} Relay`;
 }
 
 function pairTimeoutMessage(
@@ -559,7 +560,7 @@ function pairTimeoutMessage(
   const name = machineName ?? "that computer";
   const seconds = Math.round(PAIR_MACHINE_DEADLINE_MS / 1000);
   return stalledRoute
-    ? `Couldn't reach ${name} over ${pairRouteLabel(stalledRoute)} (timed out after ${seconds}s). Make sure ADE is open on that computer, then try again.`
+    ? `Couldn't reach ${name} over ${pairRouteLabel(stalledRoute)} (timed out after ${seconds}s). Make sure ${BRAND.NAME} is open on that computer, then try again.`
     : `Couldn't reach ${name} (timed out after ${seconds}s before connecting). Check your internet connection, then try again.`;
 }
 
@@ -682,7 +683,7 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
       const code = error instanceof LaneShareGrantError && (error.code === "signed_out" || error.code === "no_directory")
         ? error.code
         : "unavailable";
-      return { ok: false, code, message: code === "signed_out" ? "Sign in to ADE to change your projects." : "ADE couldn't reach your account. Try again." };
+      return { ok: false, code, message: code === "signed_out" ? `Sign in to ${BRAND.NAME} to change your projects.` : `${BRAND.NAME} couldn't reach your account. Try again.` };
     }
     const body = answer.body && typeof answer.body === "object" ? answer.body as Record<string, unknown> : {};
     if (answer.status < 200 || answer.status >= 300) {
@@ -695,12 +696,12 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
     }
     const raw = body.project && typeof body.project === "object" ? body.project as Record<string, unknown> : null;
     const project = raw ? coerceAccountProjectView({ ...raw, removedAt: null, mergedInto: null }) : null;
-    if (!project) return { ok: false, code: "bad_answer", message: "Your account sent an answer ADE can't read." };
+    if (!project) return { ok: false, code: "bad_answer", message: `Your account sent an answer ${BRAND.NAME} can't read.` };
     return { ok: true, project, created: body.created === true, revived: body.revived === true };
   };
   const directoryService = () => new AccountMachineDirectoryService(service(), {
     directoryBaseUrl: () => resolveDirectoryBaseUrl(options.getProjectRoot()),
-    deviceName: () => `ADE Desktop on ${os.hostname()}`,
+    deviceName: () => `${BRAND.NAME} Desktop on ${os.hostname()}`,
   });
   // Machine-scoped, deliberately not the project logger. Dropping a paired
   // secret is a machine-level credential mutation, and the project logger
@@ -844,7 +845,7 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
     startDeviceLogin: async (): Promise<AdeAccountDeviceLoginStart> => {
       if (!options.callBrainAccountAction) {
         throw new Error(
-          "ADE's background service isn't running on this computer, so it can't sign in. Reopen ADE, then try again.",
+          `${BRAND.NAME}'s background service isn't running on this computer, so it can't sign in. Reopen ${BRAND.NAME}, then try again.`,
         );
       }
       const root = options.getProjectRoot();
@@ -869,7 +870,7 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
     pollDeviceLogin: async (sessionId: string): Promise<AdeAccountDeviceLoginPoll> => {
       if (!options.callBrainAccountAction) {
         throw new Error(
-          "ADE's background service isn't running on this computer, so it can't sign in. Reopen ADE, then try again.",
+          `${BRAND.NAME}'s background service isn't running on this computer, so it can't sign in. Reopen ${BRAND.NAME}, then try again.`,
         );
       }
       const progress = readAccountDeviceLoginProgress(
@@ -918,9 +919,9 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
         );
       } catch (error) {
         if (error instanceof LaneShareGrantError && error.code === "signed_out") {
-          throw new Error("Sign in to ADE to delete your account.");
+          throw new Error(`Sign in to ${BRAND.NAME} to delete your account.`);
         }
-        throw markExpected(new Error("ADE couldn't reach your account. Check your connection and try again."), "network");
+        throw markExpected(new Error(`${BRAND.NAME} couldn't reach your account. Check your connection and try again.`), "network");
       }
       const body = answer.body && typeof answer.body === "object" ? answer.body as Record<string, unknown> : {};
       if (answer.status < 200 || answer.status >= 300 || body.deleted !== true) {
@@ -1053,7 +1054,7 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
                 machineKey,
                 stage: kind,
                 label: kind === "relay"
-                  ? "Connecting through ADE relay…"
+                  ? `Connecting through ${BRAND.NAME} relay…`
                   : kind === "tailnet"
                     ? "Trying Tailscale…"
                     : "Trying local network…",
@@ -1136,7 +1137,7 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
         // is still in Activity, and only the user can decide to retry. The
         // purge is idempotent, so retrying removal is safe.
         throw new Error(
-          "The machine was removed from your ADE account, but its Activity could not be cleared. "
+          `The machine was removed from your ${BRAND.NAME} account, but its Activity could not be cleared. `
           + "Try removing it again to finish clearing it.",
         );
       }
@@ -1177,7 +1178,7 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
     startSyncHost: async (): Promise<AdeAccountSyncHostStartResult> => {
       if (!options.callBrainAccountAction) {
         throw new Error(
-          "ADE's background service isn't running on this computer, so sync can't start. Reopen ADE, then try again.",
+          `${BRAND.NAME}'s background service isn't running on this computer, so sync can't start. Reopen ${BRAND.NAME}, then try again.`,
         );
       }
       const startedAt = Date.now();
@@ -1204,7 +1205,7 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
       }
       const envelope = unwrapAccountActionResult(raw);
       if (!isRecord(envelope) || typeof envelope.ok !== "boolean") {
-        throw new Error("ADE couldn't read the result of starting sync. Check Connections to see whether it came up.");
+        throw new Error(`${BRAND.NAME} couldn't read the result of starting sync. Check Connections to see whether it came up.`);
       }
       const snapshot = isRecord(envelope.snapshot) ? envelope.snapshot : {};
       const result = {
@@ -1221,7 +1222,7 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
     repairMachinePairing: async (): Promise<AdeAccountMachinePairingRepairResult> => {
       if (!options.callBrainAccountAction) {
         throw new Error(
-          "ADE's background service isn't running on this computer, so it can't reconnect to your account. Reopen ADE, then try again.",
+          `${BRAND.NAME}'s background service isn't running on this computer, so it can't reconnect to your account. Reopen ${BRAND.NAME}, then try again.`,
         );
       }
       let raw: unknown;

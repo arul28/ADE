@@ -160,7 +160,7 @@ export function createCliChildReports(deps: {
       spawnCompletion,
       ctoPrNumber: readChildPullRequestNumber(null, summary),
       routeQuietly: trigger === "reconcile" || repeatsTurnReport,
-      wakeText: `Your ${cliChildNoun(lineage.spawnKind)} "${childTitle}" ${outcome} — ${summary}\n(Full terminal output: \`ade terminal read ${row.id}\`.)`,
+      wakeText: `Your ${cliChildNoun(lineage.spawnKind)} "${childTitle}" ${outcome} — ${summary}\n(Full terminal output: \`daex terminal read ${row.id}\`.)`,
       onParentGone: (reason) => {
         deps.logger.info("agent_chat.cli_child_completion_parent_gone", {
           childSessionId: row.id,
@@ -242,7 +242,7 @@ export function createCliChildReports(deps: {
       ctoPrNumber: readChildPullRequestNumber(null, summary),
       routeQuietly: selfReported,
       wakeText: `Your ${cliChildNoun(lineage.spawnKind)} "${childTitle}" ${resultStatus === "failed" ? "ended a turn on an error" : "finished a turn"} — ${summary}\n`
-        + `(It is still open at its prompt. Full terminal output: \`ade terminal read ${row.id}\`.)`,
+        + `(It is still open at its prompt. Full terminal output: \`daex terminal read ${row.id}\`.)`,
       onParentGone: (reason) => {
         deps.logger.info("agent_chat.cli_child_turn_report_parent_gone", {
           childSessionId: row.id,

@@ -13,6 +13,7 @@ import {
   type LocalPublishHealth,
 } from "./remoteMachineModel";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { BRAND } from "../../../shared/brand";
 
 type CardOutcome = { tone: "success" | "warning" | "danger"; message: string };
 
@@ -107,7 +108,7 @@ export function ThisComputerStatus({
   const startSync = useCallback(async () => {
     const start = isAdeAvailable(window.ade.account?.startSyncHost) ? window.ade.account.startSyncHost : undefined;
     if (!start) {
-      setOutcome({ tone: "danger", message: "This ADE build can't start sync from here. Restart ADE to start sync." });
+      setOutcome({ tone: "danger", message: `This ${BRAND.NAME} build can't start sync from here. Restart ${BRAND.NAME} to start sync.` });
       return;
     }
     setStartingSync(true);

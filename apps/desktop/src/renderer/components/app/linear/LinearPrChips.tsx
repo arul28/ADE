@@ -1,3 +1,4 @@
+import { BRAND } from "../../../../shared/brand";
 import React, { useMemo } from "react";
 import type { NormalizedLinearIssue } from "../../../../shared/types";
 import { useAppStore } from "../../../state/appStore";
@@ -140,7 +141,7 @@ function chipTitle(pr: ChipPr, projectRepo: string | null): string {
   const parts = [`${repo}#${pr.number ?? "?"}${pr.title ? ` ${pr.title}` : ""}`, STATE_LABEL[pr.state]];
   if (pr.checks && pr.checks !== "none") parts.push(CHECKS_LABEL[pr.checks]);
   if (pr.review && pr.review !== "none") parts.push(REVIEW_LABEL[pr.review]);
-  parts.push(pr.adePath ? "Opens in ADE" : "Opens on GitHub");
+  parts.push(pr.adePath ? `Opens in ${BRAND.NAME}` : "Opens on GitHub");
   return parts.join("\n");
 }
 

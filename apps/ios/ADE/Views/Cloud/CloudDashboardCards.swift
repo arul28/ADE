@@ -29,7 +29,7 @@ struct CloudDashboardScreen: View {
             .frame(maxWidth: .infinity)
             .padding(.vertical, 40)
         case .failed(let message):
-          ADESettingsNotice(message: "Couldn't read ADE Cloud. \(message)", actionTitle: "Try again") {
+          ADESettingsNotice(message: "Couldn't read \(Brand.cloudName). \(message)", actionTitle: "Try again") {
             Task { await store.reload() }
           }
         default:
@@ -73,14 +73,14 @@ struct CloudDashboardScreen: View {
     .refreshable { await store.refresh() }
     .onAppear { observePlan(store.account) }
     .onChange(of: store.account) { _, account in observePlan(account) }
-    .navigationTitle("ADE Cloud")
+    .navigationTitle(Brand.cloudName)
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {
       if let onClose {
         // As every Settings page's close: the trailing side, which the Duo's edge bar carries.
         ToolbarItem(placement: .topBarTrailing) {
           Button(role: .close) { onClose() }
-            .accessibilityLabel("Close ADE Cloud")
+            .accessibilityLabel("Close \(Brand.cloudName)")
         }
       }
     }
@@ -182,7 +182,7 @@ struct CloudHero: View {
   private func header(_ account: CloudPhoneAccount) -> some View {
     let title = HStack(spacing: 8) {
       CloudLogo(size: 18, glow: true)
-      Text("ADE Cloud")
+      Text(Brand.cloudName)
         .font(.system(size: 15, weight: .semibold))
         .foregroundStyle(CloudBrandColor.skyText)
         .fixedSize()
@@ -326,7 +326,7 @@ struct CloudHero: View {
           of: nil,
           fraction: nil,
           note: account.sponsored?.smallNeedsLook == true
-            ? "Left at this size. Opening an ADE Cloud chat in the US makes it unlimited again."
+            ? "Left at this size. Opening a \(Brand.cloudName) chat in the US makes it unlimited again."
             : account.sponsored?.smallUsesHoursWithoutCards == true ? "Left at this size. Sponsored cards make it unlimited." : "Left at this size"
         )
       }
@@ -511,7 +511,7 @@ struct CloudNotices: View {
           ADESettingsNotice(message: message, tone: .warn)
         }
         if let done = account.planCleanupDone, let sentence = cloudPlanCleanupDoneSentence(done) {
-          ADESettingsNotice(message: "ADE freed computers for your plan. \(sentence)", tone: .neutral)
+          ADESettingsNotice(message: "\(Brand.name) freed computers for your plan. \(sentence)", tone: .neutral)
         }
         if let wakes = account.timedWakesCancelled {
           ADESettingsNotice(message: cloudTimedWakesCancelledSentence(wakes, resetsAt: account.billing?.periodEnd, words: CloudBalanceWords(account)), tone: .warn)
@@ -554,14 +554,14 @@ struct CloudLanesCard: View {
         keptLanes
       } else if store.machines.isEmpty, cloudStore.lanesWithoutComputer.isEmpty, cloudStore.lanesWithoutComputerUnread {
         // The kept lanes couldn't be read: an empty list says nothing.
-        ADESettingsNotice(message: "ADE couldn't read your cloud lanes without a computer.", tone: .warn, actionTitle: "Try again") {
+        ADESettingsNotice(message: "\(Brand.name) couldn't read your cloud lanes without a computer.", tone: .warn, actionTitle: "Try again") {
           Task { await cloudStore.refreshLanesWithoutComputer(using: store.syncService, force: true) }
         }
         .padding(.horizontal, ADEKit.inset)
         .padding(.bottom, ADEKit.inset)
         keptLanes
       } else if store.machines.isEmpty, cloudStore.lanesWithoutComputer.isEmpty {
-        Text("No cloud lanes yet. Pick ADE Cloud under Run on when you send a message: ADE makes a computer for the lane, and it shows here.")
+        Text("No cloud lanes yet. Pick \(Brand.cloudName) under Run on when you send a message: \(Brand.name) makes a computer for the lane, and it shows here.")
           .font(.system(size: 13))
           .foregroundStyle(ADEColor.textSecondary)
           .fixedSize(horizontal: false, vertical: true)
@@ -778,7 +778,7 @@ struct CloudInviteCard: View {
   var body: some View {
     ADEKitCard(title: "Invite friends, get \(words.freeCloud)", symbol: "gift") {
       VStack(alignment: .leading, spacing: 12) {
-        Text("When a friend you invite runs their first chat on ADE Cloud, you both get \(reward) \(words.free). They never expire, and they're used after your plan's \(words.unit).")
+        Text("When a friend you invite runs their first chat on \(Brand.cloudName), you both get \(reward) \(words.free). They never expire, and they're used after your plan's \(words.unit).")
           .font(.system(size: 13))
           .foregroundStyle(ADEColor.textSecondary)
           .fixedSize(horizontal: false, vertical: true)
@@ -801,7 +801,7 @@ struct CloudInviteCard: View {
           }
           .buttonStyle(ADEKitButtonStyle(prominent: true))
           if let url = URL(string: referral.link) {
-            ShareLink(item: url, subject: Text("ADE"), message: Text("You both get \(reward) \(words.freeCloud).")) {
+            ShareLink(item: url, subject: Text(Brand.name), message: Text("You both get \(reward) \(words.freeCloud).")) {
               Label("Share", systemImage: "square.and.arrow.up")
             }
             .buttonStyle(ADEKitButtonStyle())
@@ -831,7 +831,7 @@ struct CloudInviteCard: View {
             ? "You were invited, and you both got \(reward) \(words.unit)."
             : referral.referredState == "refused"
               ? "You were invited, but that invite can't give \(words.unit) on this account."
-              : "You were invited. You both get \(reward) \(words.unit) when your first chat runs on ADE Cloud.")
+              : "You were invited. You both get \(reward) \(words.unit) when your first chat runs on \(Brand.cloudName).")
             .font(.system(size: 12.5))
             .foregroundStyle(ADEColor.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -924,7 +924,7 @@ struct CloudInviteCodeBox: View {
       let reward = cloudHours(outcome.referral?.rewardMilli ?? rewardMilli)
       accepted = outcome.rewarded == true
         ? "You both got \(reward) \(words.freeCloud). They never expire."
-        : "Invite added. You both get \(reward) \(words.freeCloud) when your first chat runs on ADE Cloud."
+        : "Invite added. You both get \(reward) \(words.freeCloud) when your first chat runs on \(Brand.cloudName)."
       onDone(outcome.referral)
     } else {
       ADEHaptics.error()

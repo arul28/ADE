@@ -21,6 +21,7 @@ import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { chatSettingsMachineId } from "./chatDeeplinks";
 import { CardBannerButtons, CardError, CardFieldInput, CardHeading, CardReceipt, cardEscapeHandler } from "./composerCardParts";
 import { withChatPin } from "./chatMachinePin";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The connect card.
@@ -75,7 +76,7 @@ function useLinearOAuth(onSignedIn: () => void): {
   const start = useCallback(() => {
     const cto = window.ade?.cto;
     if (!cto || !window.ade?.app?.openExternal) {
-      setError("Browser sign-in is not available in this ADE build. Use an API key.");
+      setError(`Browser sign-in is not available in this ${BRAND.NAME} build. Use an API key.`);
       return;
     }
     setError(null);
@@ -166,7 +167,7 @@ function useGithubDeviceSignIn(onSignedIn: () => void): {
   const start = useCallback(() => {
     const github = window.ade?.github;
     if (!github?.startAppUserDeviceAuth) {
-      setError("ADE app sign-in is not available here. Use a token.");
+      setError(`${BRAND.NAME} app sign-in is not available here. Use a token.`);
       return;
     }
     setError(null);
@@ -483,7 +484,7 @@ const METHOD_RECEIPT: Record<ConnectMethodId, string> = {
   api_key: "with an API key",
   token: "with an access token",
   site_token: "with an API token",
-  app: "with the ADE app",
+  app: `with the ${BRAND.NAME} app`,
 };
 
 /**

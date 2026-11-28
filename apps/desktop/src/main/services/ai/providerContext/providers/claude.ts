@@ -18,6 +18,7 @@ import {
   sumTokens,
   type ProviderItems,
 } from "../items";
+import { BRAND } from "../../../../../shared/brand";
 
 const MAX_IMPORT_DEPTH = 5;
 /** Claude loads the first 200 lines of MEMORY.md at start. */
@@ -158,7 +159,7 @@ export async function claudeItems(ctx: Ctx, preview: AdeChatContextPreview | nul
       const found = await instructionFile(ctx, path.join(dir, `${outputStyle}.md`), {
         label: `Output style: ${outputStyle}`,
         kind: "system-prompt",
-        detail: "Changes Claude Code's own prompt; ADE can override it per chat.",
+        detail: `Changes Claude Code's own prompt; ${BRAND.NAME} can override it per chat.`,
       });
       if (found) {
         items.push(found.item);

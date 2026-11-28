@@ -41,6 +41,7 @@ import { OldCopyControls } from "./oldCopyActions";
 import "../settings/primitives/settingsModern.css";
 import "./projectMove.css";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 type Stage = "setup" | "moving" | "done" | "failed";
 
@@ -146,7 +147,7 @@ export function MoveProjectDialog({
         .filter((volume) => volume.mountPath !== here?.mountPath)
         .sort((a, b) => b.freeBytes - a.freeBytes)[0] ?? here;
       if (suggestion) setParentFolder(defaultParentOn(suggestion, projectRoot, here));
-    }).catch((cause) => setError(plainErrorText(cause, "ADE couldn't read the drives.")));
+    }).catch((cause) => setError(plainErrorText(cause, `${BRAND.NAME} couldn't read the drives.`)));
     return () => {
       cancelled = true;
     };
@@ -166,7 +167,7 @@ export function MoveProjectDialog({
     void api.preflight({ projectRoot, destinationRoot }).then((result) => {
       if (request === checkRequest.current) setPreflight(result);
     }).catch((cause) => {
-      if (request === checkRequest.current) setError(plainErrorText(cause, "ADE couldn't check that move."));
+      if (request === checkRequest.current) setError(plainErrorText(cause, `${BRAND.NAME} couldn't check that move.`));
     }).finally(() => {
       if (request === checkRequest.current) setChecking(false);
     });
@@ -216,7 +217,7 @@ export function MoveProjectDialog({
         runChecks();
       }
     } catch (cause) {
-      setError(plainErrorText(cause, "ADE couldn't move the project."));
+      setError(plainErrorText(cause, `${BRAND.NAME} couldn't move the project.`));
       setStage("failed");
     }
   };
@@ -393,8 +394,8 @@ export function MoveProjectDialog({
                     <span className="ade-pm-issue-title">Copy dependencies too ({formatBytes(preflight.dependencyBytes)})</span>
                     <span className="ade-pm-muted">
                       {canCopyDependencies
-                        ? "Nothing to reinstall after the move. Off: ADE offers to reinstall them afterwards."
-                        : "Not enough room on the new drive. ADE offers to reinstall them after the move."}
+                        ? `Nothing to reinstall after the move. Off: ${BRAND.NAME} offers to reinstall them afterwards.`
+                        : `Not enough room on the new drive. ${BRAND.NAME} offers to reinstall them after the move.`}
                     </span>
                   </span>
                   <SettingsToggle
@@ -553,7 +554,7 @@ export function MoveProjectDialog({
                     ) : (
                       <div className="ade-pm-muted">
                         {record.cleanup.choice === "deleted" ? "Deleted"
-                          : record.cleanup.choice === "remind" ? `ADE will ask ${formatReminder(record.cleanup.remindAt)}`
+                          : record.cleanup.choice === "remind" ? `${BRAND.NAME} will ask ${formatReminder(record.cleanup.remindAt)}`
                             : "Kept"}
                       </div>
                     )}

@@ -14,6 +14,11 @@ export function resolveWindowsPackageIdentity(rawChannel = "") {
   return {
     packageChannel,
     productName,
+    // What a person reads on Windows: the Start menu shortcut (which also
+    // names the taskbar group and toasts through its AUMID) and the installed
+    // apps entry. productName stays "ADE": it names the exe and install folder,
+    // and installer.nsh compares PRODUCT_NAME to pick the channel.
+    displayName: channelLabel ? `DAEX ${channelLabel}` : "DAEX",
     // Release asset names must never contain a space. electron-builder writes
     // the installer with the raw product name but rewrites latest.yml's
     // url/path to a space-free "safe" name for GitHub, and the release workflow

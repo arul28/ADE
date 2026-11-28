@@ -5,6 +5,7 @@ import type { DatabaseCopyDeleteResult, DatabaseCopyInfo } from "../../../shared
 import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
 import type { Logger } from "../logging/logger";
 import { deleteDatabaseCopy, listAllDatabaseCopies, listLocalDatabases } from "./databaseCopies";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Settings › Advanced › Database copies.
@@ -22,7 +23,7 @@ export function registerDatabaseCopiesIpc(args: { logger: Pick<Logger, "info" | 
   const { logger } = args;
   const guard = (event: Electron.IpcMainInvokeEvent, channel: string): void => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, channel)) {
-      throw new Error("Database copies are only available to the ADE window.");
+      throw new Error(`Database copies are only available to the ${BRAND.NAME} window.`);
     }
   };
   const requestedPath = (payload: unknown): string => {

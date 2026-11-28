@@ -16,6 +16,7 @@ import {
   type AndroidErrorDescription,
   type AndroidPaneState,
 } from "./androidDeviceState";
+import { BRAND } from "../../../shared/brand";
 
 /** The emulator's machine: its pin, and its name when it is not this one. */
 type AndroidPaneMachine = { remote: boolean; name: string | null; pin: OpenProjectBinding };
@@ -46,7 +47,7 @@ function openAndroidLog(path: string, machine: AndroidPaneMachine, onError: (err
 function confirmAdbRestart(machineName: string | null): Promise<boolean> {
   return confirmDialog({
     title: "Restart adb?",
-    message: `ADE stops the adb server on ${machineName ?? "this machine"} and starts a new one with the current adb key. `
+    message: `${BRAND.NAME} stops the adb server on ${machineName ?? "this machine"} and starts a new one with the current adb key. `
       + "Other Android devices, and Android Studio, lose their connection for a few seconds.",
     confirmLabel: "Restart adb",
   });

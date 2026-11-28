@@ -55,6 +55,7 @@ import {
   getSharedAccountAuthService,
   getSharedAccountDirectoryBaseUrl,
 } from "./sharedAccountAuthService";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /** Opening a route, including one re-pair. */
 const CONNECT_BUDGET_MS = 25_000;
@@ -349,7 +350,7 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
     }
   };
 
-  const notSignedInMessage = `This computer's ADE is not signed in to an ADE account, so ${options.who} can't reach your other machines.`;
+  const notSignedInMessage = `This computer's ${BRAND.NAME} is not signed in to a ${BRAND.NAME} account, so ${options.who} can't reach your other machines.`;
 
   const directory = (): AccountDirectory =>
     new AccountMachineDirectoryService(account(), {
@@ -406,11 +407,11 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
       : { state: "signed_out" as const };
     if (listed.state === "signed_out" || listed.state === "auth_expired") {
       directoryCache = null;
-      throw new MachineAccountSignedOutError(`${notSignedInMessage} Sign in to ADE here, then try again.`);
+      throw new MachineAccountSignedOutError(`${notSignedInMessage} Sign in to ${BRAND.NAME} here, then try again.`);
     }
     if (listed.state !== "ok") {
       throw new Error(
-        `ADE couldn't read your account's machines${listed.message ? `: ${listed.message}` : "."}`,
+        `${BRAND.NAME} couldn't read your account's machines${listed.message ? `: ${listed.message}` : "."}`,
       );
     }
     directoryCache = { at: Date.now(), machines: listed.machines };
@@ -492,7 +493,7 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
               || (required && capabilities?.[required] !== true)
             ) {
               throw new PairedRuntimeCompatibilityError(
-                `${machineName(machine)} runs an ADE too old to take ${options.requestNoun}. Update ADE there.`,
+                `${machineName(machine)} runs a ${BRAND.NAME} too old to take ${options.requestNoun}. Update ${BRAND.NAME} there.`,
               );
             }
             await client.call("ade/initialized", {}, { timeoutMs: PROJECTS_LIST_TIMEOUT_MS }).catch(() => undefined);
@@ -716,7 +717,7 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
     if (cached) return cached;
     const known = machines.map((candidate) => `${machineName(candidate)} (${candidate.machineKey})`);
     throw new Error(
-      `No machine on your ADE account matches "${trimmed}".${known.length ? ` Machines: ${known.join(", ")}.` : ""}`,
+      `No machine on your ${BRAND.NAME} account matches "${trimmed}".${known.length ? ` Machines: ${known.join(", ")}.` : ""}`,
     );
   };
 

@@ -15,6 +15,7 @@ import {
 import { AdeExpectedError } from "../../../shared/expectedError";
 import { appleWindowOffScreen, appleWindowSlots, describeAppleWindowOffScreen, judgeAppleWindowLayout } from "./appleWindowLayout";
 import { APPLE_HELPER_UNAVAILABLE_CODE, SimHelperError, type SimHelperTransport } from "./simHelperClient";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * `ade apple window`: an iPad's front window, read and laid out the way a
@@ -407,7 +408,7 @@ export function createAppleWindowControl(deps: AppleWindowControlDeps) {
     };
     if (start.lost) {
       throw new AdeExpectedError(
-        `${APPLE_WINDOWING_UNAVAILABLE_CODE}: ${start.appName ?? "The app"} is in a window ADE cannot find: the helper could not place it, and its resize grabber and window controls did not answer (the window may hang off the screen's right or bottom edge). `
+        `${APPLE_WINDOWING_UNAVAILABLE_CODE}: ${start.appName ?? "The app"} is in a window ${BRAND.NAME} cannot find: the helper could not place it, and its resize grabber and window controls did not answer (the window may hang off the screen's right or bottom edge). `
           + "Drag it back on screen, or bring it back with ade apple relaunch, then try again.",
         "user",
       );
@@ -472,7 +473,7 @@ export function createAppleWindowControl(deps: AppleWindowControlDeps) {
       await delay(1_000);
       const unfilled = await readAppWindow(deviceUdid, screen);
       if (!unfilled.frame) {
-        throw new AdeExpectedError(`${APPLE_WINDOWING_UNAVAILABLE_CODE}: the window left Fill but ADE could not find it again. Run window status.`, "user");
+        throw new AdeExpectedError(`${APPLE_WINDOWING_UNAVAILABLE_CODE}: the window left Fill but ${BRAND.NAME} could not find it again. Run window status.`, "user");
       }
       return unfilled;
     };
@@ -516,7 +517,7 @@ export function createAppleWindowControl(deps: AppleWindowControlDeps) {
         applied,
         tolerance,
         ...(applied ? {} : {
-          reason: after ? describeMoveMiss(after, to) : "After the drag the front app has no window ADE can read.",
+          reason: after ? describeMoveMiss(after, to) : `After the drag the front app has no window ${BRAND.NAME} can read.`,
         }),
       };
     }
@@ -690,7 +691,7 @@ export function createAppleWindowControl(deps: AppleWindowControlDeps) {
           ? offAfter && verdict?.strayOffScreen
             ? `The window is ${describeFrame(after)} after "${item.label}": partly off the screen (${describeAppleWindowOffScreen(offAfter)}). The app's minimum width may not fit that slot on a ${screen.width}x${screen.height} screen.`
             : `The window is ${describeFrame(after)} after "${item.label}"; that does not look like the ${action} layout of a ${screen.width}x${screen.height} screen.`
-          : `After "${item.label}" the front app has no window ADE can read (another app may be in front now).`,
+          : `After "${item.label}" the front app has no window ${BRAND.NAME} can read (another app may be in front now).`,
       }),
     };
   };

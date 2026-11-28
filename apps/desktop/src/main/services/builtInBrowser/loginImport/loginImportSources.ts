@@ -17,6 +17,7 @@ import type {
   BrowserLoginImportEngine,
   BrowserLoginImportPlatform,
 } from "../../../../shared/types/builtInBrowserLoginImport";
+import { BRAND } from "../../../../shared/brand";
 
 export type LoginImportPathContext = {
   platform: NodeJS.Platform;
@@ -76,7 +77,7 @@ function chromiumSource(input: ChromiumSourceInput): BrowserDefinition {
     platforms,
     unsupportedOn: {
       ...(input.windowsSegments ? {} : { win32: WINDOWS_CHROMIUM_UNSUPPORTED_REASON }),
-      ...(input.linuxSegments ? {} : { linux: `${input.name} has no Linux build ADE can import from.` }),
+      ...(input.linuxSegments ? {} : { linux: `${input.name} has no Linux build ${BRAND.NAME} can import from.` }),
     },
     keychainService: input.keychainService,
     keychainAccount: input.keychainAccount,
@@ -223,7 +224,7 @@ export function describeBrowserCapability(
     engine: definition.engine,
   };
   if (toImportPlatform(platform) === "other") {
-    return { ...base, supported: false, reason: "ADE can't import logins on this platform." };
+    return { ...base, supported: false, reason: `${BRAND.NAME} can't import logins on this platform.` };
   }
   const named = definition.unsupportedOn?.[platform];
   if (named) return { ...base, supported: false, reason: named };

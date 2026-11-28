@@ -356,7 +356,7 @@ describe.skipIf(!LIVE)("cross-machine agents, live, two brains in one process", 
     console.log("[xm] parent wake text:", wakeMessage?.event?.text?.slice(0, 300));
     console.log("[xm] completion:", JSON.stringify(wakeMessage?.event?.metadata?.spawnCompletion ?? null));
     expect(wakeMessage?.event?.metadata?.spawnCompletion?.childMachineName).toBe("Machine B");
-    expect(wakeMessage?.event?.text).toContain(`ade chat read ${child.id} --machine "Machine B"`);
+    expect(wakeMessage?.event?.text).toContain(`daex chat read ${child.id} --machine "Machine B"`);
 
     // Read the child's transcript from A.
     const transcript = await callA("machines.call", {

@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * Authenticator codes (TOTP, RFC 6238) for saved logins.
@@ -67,7 +68,7 @@ export function normalizeTotpInput(input: string, label: string): string | null 
   const params = parseTotp(trimmed);
   if (!params) return null;
   const secret = trimmed.toUpperCase().replace(/[\s-]/g, "").replace(/=+$/, "");
-  return `otpauth://totp/${encodeURIComponent(label || "ADE")}?secret=${secret}`;
+  return `otpauth://totp/${encodeURIComponent(label || BRAND.NAME)}?secret=${secret}`;
 }
 
 /** The code for a moment (now by default), and how many seconds it stays valid. */

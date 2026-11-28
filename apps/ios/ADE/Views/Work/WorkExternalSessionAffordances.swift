@@ -214,7 +214,7 @@ func workPlanImport(
     )
     if canCopy { secondary = copyAction("Copy") }
   } else if canCopy {
-    primary = copyAction(surface == "chat" ? "Open as ADE chat" : awayFromHome ? "Copy here" : "Copy")
+    primary = copyAction(surface == "chat" ? "Open as \(Brand.name) chat" : awayFromHome ? "Copy here" : "Copy")
   }
 
   var note: String?
@@ -262,7 +262,7 @@ func workImportRejectionReason(
   if rule == .none {
     let what: String
     if target == "chat" {
-      what = mode == "resume" ? "continued as an ADE chat" : "opened as an ADE chat"
+      what = mode == "resume" ? "continued as a \(Brand.name) chat" : "opened as a \(Brand.name) chat"
     } else {
       what = mode == "resume" ? "continued in a terminal" : "copied in a terminal"
     }
@@ -338,7 +338,7 @@ func workImportScanProviders(hostKnowsAcpProviders: Bool) -> [String] {
 
 /// Label for a surface in the mode switch.
 func workImportSurfaceLabel(_ surface: String) -> String {
-  surface == "chat" ? "ADE chat" : "CLI"
+  surface == "chat" ? "\(Brand.name) chat" : "CLI"
 }
 
 func workNormalizedImportedSessionKind(_ kind: String) -> String? {

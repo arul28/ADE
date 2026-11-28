@@ -5,6 +5,7 @@ import { LANE_SHARING_UNAVAILABLE, LANE_SHARING_UNAVAILABLE_MESSAGE } from "../.
 import type { OpenProjectBinding } from "../../../shared/types";
 import { rootAppStoreApi } from "../../state/appStore";
 import { wallClockAsUtc } from "../../../shared/formatting";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Pure helpers for the owner's lane sharing UI: states, quick end dates,
@@ -182,10 +183,10 @@ export type LaneShareProblem = {
  * (guest) both read it.
  */
 export const LANE_SHARE_ERROR_TEXT: Readonly<Record<string, string>> = {
-  signed_out: "Sign in to your ADE account to share lanes.",
-  no_directory: "Shared lanes need your ADE account on this device. Sign in from Settings, then try again.",
+  signed_out: `Sign in to your ${BRAND.NAME} account to share lanes.`,
+  no_directory: `Shared lanes need your ${BRAND.NAME} account on this device. Sign in from Settings, then try again.`,
   [LANE_SHARING_UNAVAILABLE]: LANE_SHARING_UNAVAILABLE_MESSAGE,
-  unavailable: "The ADE account directory can't be reached right now. Try again in a moment.",
+  unavailable: `The ${BRAND.NAME} account directory can't be reached right now. Try again in a moment.`,
   rate_limited: "Too many tries. Wait a moment, then try again.",
   invite_expired: "This invite expired. Ask the owner to send it again.",
   guest_limit: "This lane already has the most guests it can have. Ask the owner.",
@@ -217,13 +218,13 @@ export function laneShareProblem(error: unknown, options: { pin?: OpenProjectBin
     const target = options.pin ?? rootAppStoreApi.getState().projectBinding ?? null;
     if (target?.kind === "remote") {
       const where = options.machineName ?? target.runtimeName ?? "That computer";
-      return { code: "old_host", message: `${where} runs an older ADE. Update it to share lanes.`, blocking: true };
+      return { code: "old_host", message: `${where} runs an older ${BRAND.NAME}. Update it to share lanes.`, blocking: true };
     }
     return { code: "sync_off", message: "Lane sharing needs sync on this computer. Turn sync on in Settings.", blocking: true };
   }
   if (isUnsupportedAdeActionError(error) || /lane_share/i.test(message) && /\b(unknown|not supported|unsupported|not available|not callable|not exposed)\b/i.test(message)) {
     const where = options.machineName ? options.machineName : "That computer";
-    return { code: "old_host", message: `${where} can't share lanes: it runs an ADE version without lane sharing, or sync is off there. Update ADE or turn on sync there.`, blocking: true };
+    return { code: "old_host", message: `${where} can't share lanes: it runs a ${BRAND.NAME} version without lane sharing, or sync is off there. Update ${BRAND.NAME} or turn on sync there.`, blocking: true };
   }
   if (options.pin?.kind === "remote" && OFFLINE_PATTERN.test(message)) {
     const where = options.machineName ?? options.pin.runtimeName ?? "The lane's computer";

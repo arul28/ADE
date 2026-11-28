@@ -777,7 +777,7 @@ describe("createAgentChatService", () => {
       expect(firstHistory.events.filter((entry) =>
         entry.event.type === "system_notice"
         && entry.event.turnId === turnId
-        && entry.event.message.includes("ADE restarted")
+        && entry.event.message.includes("DAEX restarted")
       )).toHaveLength(1);
       expect(firstHistory.events.filter((entry) =>
         entry.event.type === "status"

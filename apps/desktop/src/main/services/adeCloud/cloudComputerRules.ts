@@ -17,6 +17,7 @@
 
 import os from "node:os";
 import { AdeExpectedError } from "../../../shared/expectedError";
+import { BRAND } from "../../../shared/brand";
 
 /** Whether this ADE runs on an ADE Cloud computer (the machine template sets the variable). */
 export function isAdeCloudComputer(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -38,16 +39,16 @@ export function isAdeCloudComputer(env: NodeJS.ProcessEnv = process.env): boolea
 export function describeAdeCloudComputer(): string | null {
   if (!isAdeCloudComputer()) return null;
   const memoryGb = Math.round(os.totalmem() / 2 ** 30);
-  return `**ADE Cloud:** you run on this lane's own ADE Cloud computer (Linux, ${memoryGb} GB memory, no swap). A command that ends with "Killed" ran out of memory: ADE stopped the biggest process to save the computer. For more memory or disk, \`ade cloud resize --request --size <size> --reason "…"\` asks the user on a card. Details: **ade-cloud**.`;
+  return `**DAEX Cloud:** you run on this lane's own DAEX Cloud computer (Linux, ${memoryGb} GB memory, no swap). A command that ends with "Killed" ran out of memory: DAEX stopped the biggest process to save the computer. For more memory or disk, \`daex cloud resize --request --size <size> --reason "…"\` asks the user on a card. Details: **daex-cloud**.`;
 }
 
 /** What a person or an agent reads when a cloud computer refuses a second lane. Stable: the UI and the CLI show it as is. */
 const CLOUD_COMPUTER_ONE_LANE_MESSAGE =
-  "This ADE Cloud computer already holds a lane, and each cloud computer holds one. Start a new lane on ADE Cloud instead: it gets its own computer.";
+  `This ${BRAND.CLOUD_NAME} computer already holds a lane, and each cloud computer holds one. Start a new lane on ${BRAND.CLOUD_NAME} instead: it gets its own computer.`;
 
 /** What a person or an agent reads when two processes make a lane on one cloud computer and the check waited too long. */
 export const CLOUD_COMPUTER_LANE_CHECK_BUSY_MESSAGE =
-  "ADE couldn't check the lanes on this ADE Cloud computer, because another lane is being made here now. Try again in a moment.";
+  `${BRAND.NAME} couldn't check the lanes on this ${BRAND.CLOUD_NAME} computer, because another lane is being made here now. Try again in a moment.`;
 
 /**
  * What a person or an agent reads when the lane a cloud computer holds is
@@ -56,8 +57,8 @@ export const CLOUD_COMPUTER_LANE_CHECK_BUSY_MESSAGE =
  */
 function cloudComputerArchivedLaneMessage(laneName: string): string {
   const name = laneName.trim() || "that lane";
-  return `This ADE Cloud computer belongs to the archived lane "${name}". `
-    + "Restore that lane to use this computer again, or start a new lane on ADE Cloud: it gets its own computer.";
+  return `This ${BRAND.CLOUD_NAME} computer belongs to the archived lane "${name}". `
+    + `Restore that lane to use this computer again, or start a new lane on ${BRAND.CLOUD_NAME}: it gets its own computer.`;
 }
 
 /**

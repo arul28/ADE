@@ -6,6 +6,7 @@ import { useConfirmKeys } from "../../lib/useConfirmKeys";
 import { Dialog } from "../ui/dialog";
 import { androidLaneDeviceName } from "./androidDeviceState";
 import { useAppStore } from "../../state/appStore";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * "Shut down {device}?": the question closing the Android Development TAB
@@ -126,7 +127,7 @@ function AndroidShutdownConfirmDialog({ request }: { request: AndroidShutdownCon
 /** The dialog's sentences. A recording that runs gets one more sentence. */
 function androidShutdownDescription(question: AndroidShutdownConfirmQuestion): string {
   const keep = question.idlePowerOff
-    ? "If you keep it running, ADE powers it off after it sits idle."
+    ? `If you keep it running, ${BRAND.NAME} powers it off after it sits idle.`
     : "If you keep it running, it stays on until you stop it.";
   const recording = question.recording ? " Shutting it down also stops the recording and saves it to proof." : "";
   return `Closing this tab can power off the emulator. ${keep}${recording}`;

@@ -91,7 +91,7 @@ function conversationEntries(envelopes: readonly AgentChatEventEnvelope[]): Entr
       flushReply();
       const adeAuthored = isAdeAuthored(event);
       entries.push({
-        text: adeAuthored ? `ADE (on the user's behalf):\n${text}` : `User:\n${text}`,
+        text: adeAuthored ? `DAEX (on the user's behalf):\n${text}` : `User:\n${text}`,
         kind: "dialogue",
         fromUser: !adeAuthored,
       });

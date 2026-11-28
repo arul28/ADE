@@ -9,6 +9,7 @@ import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import { computerIsDown, useCloudComputer } from "../remoteTargets/useCloudComputer";
 import { Banner, type BannerModel } from "../ui/notice";
 import { useNativeToolFeeds } from "./NativeToolFeedsContext";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * ADE Cloud's half of a Work tool: a person opening a tool that needs the
@@ -116,7 +117,7 @@ export function CloudToolGate({
       },
       (error: unknown) => {
         setWaking(false);
-        setWakeError(error instanceof Error ? error.message : "ADE couldn't wake this computer. Try again.");
+        setWakeError(error instanceof Error ? error.message : `${BRAND.NAME} couldn't wake this computer. Try again.`);
       },
     );
   }, [instanceId, refresh]);
@@ -143,7 +144,7 @@ export function CloudToolGate({
     return restingGate({
       id: "cloud-tool-out-of-hours",
       title: "Out of credits",
-      detail: `${name} needs ADE Cloud credits to wake at its size. They come back when your credits reset${cloudSmallUsesHours(cloudCatalogOf(account)) ? "." : "; a Small computer never uses them."}`,
+      detail: `${name} needs ${BRAND.CLOUD_NAME} credits to wake at its size. They come back when your credits reset${cloudSmallUsesHours(cloudCatalogOf(account)) ? "." : "; a Small computer never uses them."}`,
       actions: [{ label: "Plans and credits", onClick: openCloudPlanSettings }],
     });
   }
@@ -161,7 +162,7 @@ export function CloudToolGate({
           actions: comingUp ? undefined : [{ label: "Wake", variant: "solid", onClick: wake }],
         }}
       />
-      {wakeError ? <Banner layout="inline" model={{ id: "cloud-tool-wake-failed", tone: "error", title: "ADE couldn't wake this computer", detail: wakeError, report: { surface: "cloud_tool_wake" } }} /> : null}
+      {wakeError ? <Banner layout="inline" model={{ id: "cloud-tool-wake-failed", tone: "error", title: `${BRAND.NAME} couldn't wake this computer`, detail: wakeError, report: { surface: "cloud_tool_wake" } }} /> : null}
     </div>
   );
 }

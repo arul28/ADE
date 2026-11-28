@@ -97,7 +97,7 @@ describe("buildComputerUseDirective", () => {
     { host: "Windows", options: { windowsDesktopAvailable: true } },
   ])("keeps the user's-screen fence and the skill pointer for a $host lane", ({ options }) => {
     const result = buildComputerUseDirective(makeBackendStatus({ localFallback: true }), options)!;
-    expect(result).toContain("**ade-computer-use**");
+    expect(result).toContain("**daex-computer-use**");
     expect(result).toMatch(/never close, quit or hide an app you did not open/);
     expect(result).toContain("`@oai/sky`");
     expect(result).toMatch(/only when asked/);
@@ -161,7 +161,7 @@ describe("buildComputerUseDirective", () => {
   it("always names the skill that carries the proof workflow instead of inlining it", () => {
     const status = makeBackendStatus({ ghostOs: true });
     const result = buildComputerUseDirective(status);
-    expect(result).toContain("**ade-computer-use**");
+    expect(result).toContain("**daex-computer-use**");
     // The proof commands, the `cite:` rule and `--real-screen` live in
     // ade-computer-use and ade-proof-artifacts; the `## ADE` image line points
     // at the proof skill on every prompt.
@@ -267,10 +267,10 @@ describe("buildLinearSessionDirective", () => {
     expect(directive).toContain("ENG-12, ENG-34");
     // Deduped — the repeated identifier appears once.
     expect(directive?.match(/ENG-12/g)).toHaveLength(1);
-    expect(directive).toContain("ade linear");
-    expect(directive).toContain("Prefer `ade linear`");
-    expect(directive).toContain("ade-linear");
-    expect(directive).toContain("ade-deeplinks");
+    expect(directive).toContain("daex linear");
+    expect(directive).toContain("Prefer `daex linear`");
+    expect(directive).toContain("daex-linear");
+    expect(directive).toContain("daex-deeplinks");
   });
 });
 
@@ -285,7 +285,7 @@ describe("restartRecoveryStopAttribution", () => {
       selfSocketPath: "/tmp/ade-secondary.sock",
     })).toEqual({
       stopSource: "foreign-brain",
-      stopReason: "another ADE brain took over this chat",
+      stopReason: "another DAEX brain took over this chat",
     });
   });
 
@@ -295,7 +295,7 @@ describe("restartRecoveryStopAttribution", () => {
       selfSocketPath: "/tmp/ade.sock",
     })).toEqual({
       stopSource: "system",
-      stopReason: "the ADE brain restarted",
+      stopReason: "the DAEX brain restarted",
     });
   });
 
@@ -308,7 +308,7 @@ describe("restartRecoveryStopAttribution", () => {
         selfSocketPath: String.raw`\\.\pipe\ade`,
       })).toEqual({
         stopSource: "system",
-        stopReason: "the ADE brain restarted",
+        stopReason: "the DAEX brain restarted",
       });
     } finally {
       Object.defineProperty(process, "platform", { value: previousPlatform, configurable: true });

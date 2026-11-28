@@ -11,6 +11,7 @@ import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
 import { CLOUD_SIGN_INS, cloudSignInVaultKey } from "../../../shared/cloudSignIns";
 import { CLOUD_VAULT_KIND } from "./cloudAccess";
 import { CLOUD_AGENT_LIMITS_VAULT_KEY } from "./cloudSleep";
+import { BRAND } from "../../../shared/brand";
 
 /** What desktop main writes itself: agent limits. */
 const DESKTOP_ITEMS: ReadonlySet<string> = new Set([
@@ -39,7 +40,7 @@ export function desktopMachineVaultService(service: Record<string, unknown> | nu
   if (!service) return null;
   const only = (action: "get" | "set" | "remove") => (...args: unknown[]): unknown => {
     if (!allows(action, args) && !isMcpRegistryItem(args[0], args[1], args[2])) {
-      throw new Error(`With no project, account_vault.${action} reaches only the ADE Cloud items Settings uses and MCP server credentials.`);
+      throw new Error(`With no project, account_vault.${action} reaches only the ${BRAND.CLOUD_NAME} items Settings uses and MCP server credentials.`);
     }
     return (service[action] as (...callArgs: unknown[]) => unknown)(...args);
   };

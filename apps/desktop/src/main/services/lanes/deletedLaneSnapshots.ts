@@ -8,6 +8,7 @@ import type { Logger } from "../logging/logger";
 import { DELETED_LANE_KEEP_DAYS } from "../../../shared/laneCleanup";
 import { laneBranchSlug } from "../../../shared/laneBranchName";
 import type { DeletedLaneSnapshot, DeletedLaneTip, RestoredLaneFiles } from "../../../shared/types/lanes";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Work a lane delete would destroy, kept as a git ref instead.
@@ -27,27 +28,41 @@ const SNAPSHOT_TIMEOUT_MS = 120_000;
 const READ_TIMEOUT_MS = 15_000;
 const RAW_DIFF_MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
 
-/** Commits are written as ADE, so a machine with no git identity can still save. */
+/** Commits are written as DAEX, so a machine with no git identity can still save. */
 const SNAPSHOT_IDENTITY_ENV: NodeJS.ProcessEnv = {
-  GIT_AUTHOR_NAME: "ADE",
+  GIT_AUTHOR_NAME: BRAND.NAME,
   GIT_AUTHOR_EMAIL: "ade@localhost",
-  GIT_COMMITTER_NAME: "ADE",
+  GIT_COMMITTER_NAME: BRAND.NAME,
   GIT_COMMITTER_EMAIL: "ade@localhost",
 };
 
+/**
+ * Trailer keys, written as `DAEX-<Key>`. Saves made before the rename carry
+ * `ADE-<Key>`; every reader below accepts either (`trailerKeyPattern`).
+ */
 const TRAILER = {
-  laneId: "ADE-Lane-Id",
-  laneName: "ADE-Lane-Name",
-  branch: "ADE-Branch",
-  uncommitted: "ADE-Uncommitted",
-  deletedAt: "ADE-Deleted-At",
-  kind: "ADE-Kind",
-  extraTip: "ADE-Extra-Tip",
-  baseCommit: "ADE-Base-Commit",
+  laneId: "Lane-Id",
+  laneName: "Lane-Name",
+  branch: "Branch",
+  uncommitted: "Uncommitted",
+  deletedAt: "Deleted-At",
+  kind: "Kind",
+  extraTip: "Extra-Tip",
+  baseCommit: "Base-Commit",
 } as const;
 
+/** The key a new save writes. */
+function trailerKey(key: string): string {
+  return `${BRAND.NAME}-${key}`;
+}
+
+/** Regex source matching the key under either product name. */
+function trailerKeyPattern(key: string): string {
+  return `(?:${BRAND.NAME}|${BRAND.FORMER_NAME})-${key}`;
+}
+
 /** Added to a refusal: a save holds the parent repository only. */
-export const NESTED_REPO_WORK_NOT_KEPT = "ADE cannot keep work inside another git repository. Commit and push it there first.";
+export const NESTED_REPO_WORK_NOT_KEPT = `${BRAND.NAME} cannot keep work inside another git repository. Commit and push it there first.`;
 
 function oneLine(value: string): string {
   return value.replace(/[\r\n]+/g, " ").trim();
@@ -242,17 +257,17 @@ export async function saveDeletedLaneSnapshot(args: {
   const kind = args.kind ?? "deleted";
   const message = [
     kind === "freed"
-      ? `ADE saved lane "${oneLine(args.laneName)}" before freeing up its space`
-      : `ADE saved lane "${oneLine(args.laneName)}" before deleting it`,
+      ? `${BRAND.NAME} saved lane "${oneLine(args.laneName)}" before freeing up its space`
+      : `${BRAND.NAME} saved lane "${oneLine(args.laneName)}" before deleting it`,
     "",
-    `${TRAILER.laneId}: ${args.laneId}`,
-    `${TRAILER.laneName}: ${oneLine(args.laneName)}`,
-    `${TRAILER.branch}: ${branchName ?? ""}`,
-    `${TRAILER.uncommitted}: ${uncommitted ? "yes" : "no"}`,
-    `${TRAILER.deletedAt}: ${deletedAt}`,
-    `${TRAILER.kind}: ${kind}`,
-    `${TRAILER.baseCommit}: ${tip ?? ""}`,
-    ...extraTips.map((entry) => `${TRAILER.extraTip}: ${entry.label} ${entry.commit}`),
+    `${trailerKey(TRAILER.laneId)}: ${args.laneId}`,
+    `${trailerKey(TRAILER.laneName)}: ${oneLine(args.laneName)}`,
+    `${trailerKey(TRAILER.branch)}: ${branchName ?? ""}`,
+    `${trailerKey(TRAILER.uncommitted)}: ${uncommitted ? "yes" : "no"}`,
+    `${trailerKey(TRAILER.deletedAt)}: ${deletedAt}`,
+    `${trailerKey(TRAILER.kind)}: ${kind}`,
+    `${trailerKey(TRAILER.baseCommit)}: ${tip ?? ""}`,
+    ...extraTips.map((entry) => `${trailerKey(TRAILER.extraTip)}: ${entry.label} ${entry.commit}`),
     "",
   ].join("\n");
   const commit = (await runGitOrThrow(
@@ -279,13 +294,13 @@ export async function saveDeletedLaneSnapshot(args: {
 }
 
 function readTrailer(body: string, key: string): string | null {
-  const match = body.match(new RegExp(`^${key}: ?(.*)$`, "m"));
+  const match = body.match(new RegExp(`^${trailerKeyPattern(key)}: ?(.*)$`, "m"));
   return match ? match[1]!.trim() : null;
 }
 
 function readExtraTips(body: string): DeletedLaneTip[] {
   const tips: DeletedLaneTip[] = [];
-  for (const match of body.matchAll(new RegExp(`^${TRAILER.extraTip}: (remote|previous) ([0-9a-f]+)$`, "gm"))) {
+  for (const match of body.matchAll(new RegExp(`^${trailerKeyPattern(TRAILER.extraTip)}: (remote|previous) ([0-9a-f]+)$`, "gm"))) {
     tips.push({ label: match[1] as DeletedLaneTip["label"], commit: match[2]! });
   }
   return tips;
@@ -354,7 +369,8 @@ export async function pruneDeletedLaneSnapshots(projectRoot: string, now: Date =
  */
 export async function rebindDeletedLaneSnapshot(projectRoot: string, snapshot: DeletedLaneSnapshot, laneId: string): Promise<void> {
   const raw = await runGitOrThrow(["cat-file", "commit", snapshot.commit], { cwd: projectRoot, timeoutMs: READ_TIMEOUT_MS });
-  const rebound = raw.replace(new RegExp(`^${TRAILER.laneId}: .*$`, "m"), `${TRAILER.laneId}: ${laneId}`);
+  // Keeps the save's own key (`ADE-Lane-Id` on a save from before the rename).
+  const rebound = raw.replace(new RegExp(`^(${trailerKeyPattern(TRAILER.laneId)}): .*$`, "m"), (_line, key: string) => `${key}: ${laneId}`);
   const commit = (await runGitOrThrow(
     ["hash-object", "-t", "commit", "-w", "--stdin"],
     { cwd: projectRoot, timeoutMs: READ_TIMEOUT_MS, stdin: rebound },

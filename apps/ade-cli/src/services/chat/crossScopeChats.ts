@@ -451,7 +451,7 @@ export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
       child.usedAt = now();
       saveChildren();
     }
-    const readHint = `ade chat read ${child.childSessionId} --machine ${JSON.stringify(child.machineName)}`;
+    const readHint = `daex chat read ${child.childSessionId} --machine ${JSON.stringify(child.machineName)}`;
     return await deliverLocally(parentChatSessionId, {
       ...wake,
       wakeText: `${wake.wakeText}\n(It ran on ${child.machineName}. Read it with: ${readHint})`,

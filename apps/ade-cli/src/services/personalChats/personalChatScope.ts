@@ -418,7 +418,7 @@ export class PersonalChatScope {
           // A `--via` route id carries its setup in itself; the launch decodes it.
           const route = isRoutePresetId(presetId) && decodeRoutePresetId(presetId) !== null;
           if (!stored && !route && snapshot?.id !== presetId) {
-            throw new Error(`Custom provider '${presetId}' is not on this machine. \`ade harness providers --text\` lists them.`);
+            throw new Error(`Custom provider '${presetId}' is not on this machine. \`daex harness providers --text\` lists them.`);
           }
         }
         if (args.reasoningEffort !== undefined && args.reasoningEffort !== null) {

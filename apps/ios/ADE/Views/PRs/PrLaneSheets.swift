@@ -288,7 +288,7 @@ struct PrLaneLinkSheet: View {
     }
     let expectedBranch = normalizedPrBranchName(item.headBranch)
     if expectedBranch.isEmpty {
-      return "This PR is missing a head branch, so ADE cannot choose a lane."
+      return "This PR is missing a head branch, so \(Brand.name) cannot choose a lane."
     }
     if availableLanes.isEmpty {
       return "Create or import a lane on \(expectedBranch), then refresh PRs."
@@ -296,7 +296,7 @@ struct PrLaneLinkSheet: View {
     if selectedLaneId.isEmpty {
       return "Choose the lane on \(expectedBranch)."
     }
-    return "Confirm this lane before linking; ADE will attach this GitHub PR to the selected lane."
+    return "Confirm this lane before linking; \(Brand.name) will attach this GitHub PR to the selected lane."
   }
 
   private var emptyLaneMessage: String {
@@ -304,7 +304,7 @@ struct PrLaneLinkSheet: View {
     guard !expectedBranch.isEmpty else {
       return "This PR does not include a head branch."
     }
-    return "No ADE lane is on \(expectedBranch)."
+    return "No \(Brand.name) lane is on \(expectedBranch)."
   }
 }
 

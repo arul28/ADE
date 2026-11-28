@@ -4,6 +4,7 @@ import { RemoteRuntimeConnectError } from "../../../shared/types/remoteRuntime";
 import { sleep } from "../shared/utils";
 import type { SshExecResult } from "./sshTransport";
 import { findInErrorCauses } from "./pairedRuntimeRoutes";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Starting a remote machine's ADE brain during a connect.
@@ -181,13 +182,13 @@ export function remoteBrainNotRunningConnectError(
   startableByUser: boolean,
 ): RemoteRuntimeConnectError {
   const message = start?.started
-    ? "ADE started its background service (the ADE brain) on this machine, but the brain did not accept "
+    ? `${BRAND.NAME} started its background service (the ${BRAND.NAME} brain) on this machine, but the brain did not accept `
       + `connections within ${Math.round(REMOTE_BRAIN_SOCKET_WAIT_MS / 1000)}s. Check \`${display.replace(/ start$/, " status")}\` there, then press Try again.`
     : start
-      ? "ADE could not start its background service (the ADE brain) on this machine"
+      ? `${BRAND.NAME} could not start its background service (the ${BRAND.NAME} brain) on this machine`
         + `${start.output ? `: ${start.output}` : "."} Start it there with \`${display}\`, then press Try again.`
-      : "ADE is installed on this machine, but its background service (the ADE brain) is not running. "
-        + `Start it there with \`${display}\` (or open the ADE app on that machine), then press Try again.`;
+      : `${BRAND.NAME} is installed on this machine, but its background service (the ${BRAND.NAME} brain) is not running. `
+        + `Start it there with \`${display}\` (or open the ${BRAND.NAME} app on that machine), then press Try again.`;
   const error = markExpected(new RemoteRuntimeConnectError({
     kind: "generic",
     message,

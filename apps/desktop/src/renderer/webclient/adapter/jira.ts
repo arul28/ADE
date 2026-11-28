@@ -15,6 +15,7 @@ import type {
 } from "../../../shared/types/jira";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
+import { BRAND } from "../../../shared/brand";
 
 /** Jira calls use the selected host's machine credential through sync commands. */
 export function createJiraNamespace(infra: AdapterInfra): AdeNamespace<"jira"> {
@@ -26,7 +27,7 @@ export function createJiraNamespace(infra: AdapterInfra): AdeNamespace<"jira"> {
   function call<T>(action: string, args: Record<string, unknown>, pin: RuntimePinArg, idempotent: boolean): Promise<T> {
     assertWebRuntimePinRoutable(`jira.${action}`, pin, infra);
     const fallback = () => {
-      throw new Error(`Jira action '${action}' is unavailable on the connected ADE host.`);
+      throw new Error(`Jira action '${action}' is unavailable on the connected ${BRAND.NAME} host.`);
     };
     return idempotent
       ? commands.call<T>(`jira.${action}`, args, { fallback })

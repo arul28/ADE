@@ -5,6 +5,7 @@
  * Node and no DOM.
  */
 
+import { BRAND } from "./brand";
 import {
   isLinearIssueGrouping,
   isLinearIssueNesting,
@@ -149,7 +150,7 @@ export function parseLinearDisplayPatch(value: unknown): LinearDisplayPatch {
   return patch;
 }
 
-export const LINEAR_NOT_CONNECTED_DISPLAY_REASON = "Linear isn't connected, so ADE kept the change here only.";
+export const LINEAR_NOT_CONNECTED_DISPLAY_REASON = `Linear isn't connected, so ${BRAND.NAME} kept the change here only.`;
 
 /**
  * What a transport answers when it has no Linear tracker to ask (no project

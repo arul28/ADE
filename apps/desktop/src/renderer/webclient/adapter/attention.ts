@@ -38,6 +38,7 @@ import {
 import type { AdapterInfra } from "./types";
 import type { AccountLaneIndexRow } from "../../../../../account-directory/src/cloud/contract";
 import { PRIMARY_LANE_DISPLAY_NAME } from "../../../shared/laneDisplayName";
+import { BRAND } from "../../../shared/brand";
 
 /** How long one read of the account lane index names the lanes of later snapshots. */
 const LANE_INDEX_REUSE_MS = 60_000;
@@ -333,7 +334,7 @@ function parseAttentionSnapshot(value: unknown): AttentionSnapshot {
     || (candidate.itemsTruncated !== undefined && typeof candidate.itemsTruncated !== "boolean")
   ) {
     throw new Error(
-      "ADE Activity returned an incompatible response. Update ADE and retry.",
+      `${BRAND.NAME} Activity returned an incompatible response. Update ${BRAND.NAME} and retry.`,
     );
   }
   return {
@@ -414,7 +415,7 @@ function parseAttentionPreferences(value: unknown): AttentionPreferences {
     || !mutedSessionIds.every((id) => typeof id === "string")
   ) {
     throw new Error(
-      "Activity preferences were incompatible. Update ADE and retry.",
+      `Activity preferences were incompatible. Update ${BRAND.NAME} and retry.`,
     );
   }
   return {
@@ -551,14 +552,14 @@ export function createAttentionNamespace(
   };
 
   const incompatibleMachineSnapshot = (): AttentionSnapshot => {
-    const hostName = infra.client.getStatus().hostName?.trim() || "Connected ADE host";
+    const hostName = infra.client.getStatus().hostName?.trim() || `Connected ${BRAND.NAME} host`;
     return {
       contractVersion: ATTENTION_CONTRACT_VERSION,
       scope: "machine",
       availability: {
         state: "incompatible",
-        title: `${hostName} needs an ADE update`,
-        message: `Update ADE on ${hostName}, then reconnect to load this machine's Activity.`,
+        title: `${hostName} needs a ${BRAND.NAME} update`,
+        message: `Update ${BRAND.NAME} on ${hostName}, then reconnect to load this machine's Activity.`,
         recovery: "update_host",
         hostName,
       },
@@ -584,13 +585,13 @@ export function createAttentionNamespace(
     // clicked something gets their attempt, and if it succeeds the pollers
     // resume immediately.
     if (!options.userInitiated && relayBackoffActive()) {
-      throw new Error("ADE Activity is temporarily unavailable; retrying shortly.");
+      throw new Error(`${BRAND.NAME} Activity is temporarily unavailable; retrying shortly.`);
     }
     if (!lease) throw new Error("Sign in to use account-wide Activity.");
     const requestOnce = async (forceRefresh: boolean): Promise<RelayResult> => {
       const accessToken = await accountClient.getAccessToken({ forceRefresh });
       if (!accountClient.isSessionLeaseCurrent(lease)) {
-        throw new Error("The ADE account changed before Activity could load.");
+        throw new Error(`The ${BRAND.NAME} account changed before Activity could load.`);
       }
       const response = await fetch(`${relayBaseUrl()}${path}`, {
         method,
@@ -646,14 +647,14 @@ export function createAttentionNamespace(
         );
         if (remoteSnapshot === null) return rememberSnapshot(incompatibleMachineSnapshot());
         const snapshot = parseAttentionSnapshot(remoteSnapshot);
-        const hostName = infra.client.getStatus().hostName?.trim() || "this ADE machine";
+        const hostName = infra.client.getStatus().hostName?.trim() || `this ${BRAND.NAME} machine`;
         return rememberSnapshot({
           ...snapshot,
           scope: "machine",
           availability: {
             state: "signed_out",
             title: `Showing ${hostName} only`,
-            message: `Activity from ${hostName} is available. Sign in to combine work across every ADE machine.`,
+            message: `Activity from ${hostName} is available. Sign in to combine work across every ${BRAND.NAME} machine.`,
             recovery: "sign_in",
             hostName,
           },
@@ -677,7 +678,7 @@ export function createAttentionNamespace(
         availability: {
           state: "ready",
           title: "Activity is live",
-          message: "Work from every signed-in ADE machine is available.",
+          message: `Work from every signed-in ${BRAND.NAME} machine is available.`,
           recovery: null,
         },
       });
@@ -690,7 +691,7 @@ export function createAttentionNamespace(
         : null;
       if (currentAccountOwnerId !== lastSnapshotAccountOwnerId) {
         throw new Error(
-          "The ADE account changed after Activity loaded. Refresh Activity, then try again.",
+          `The ${BRAND.NAME} account changed after Activity loaded. Refresh Activity, then try again.`,
         );
       }
       // Deliberately NOT fenced on "did this adapter personally see the item at
@@ -724,9 +725,9 @@ export function createAttentionNamespace(
       // shared with the Electron coordinator so the two shells cannot drift.
       if (lastSnapshotScope === "machine") {
         if (!infra.commands.hasAction("attention.acknowledgeMachine")) {
-          const hostName = infra.client.getStatus().hostName?.trim() || "the connected ADE host";
+          const hostName = infra.client.getStatus().hostName?.trim() || `the connected ${BRAND.NAME} host`;
           throw new Error(
-            `Update ADE on ${hostName}, reconnect, then try this Activity action again.`,
+            `Update ${BRAND.NAME} on ${hostName}, reconnect, then try this Activity action again.`,
           );
         }
         // The host answers per CHUNK, not per item: it applies the whole
@@ -783,7 +784,7 @@ export function createAttentionNamespace(
     async getPreferences(accountOwnerId: string) {
       const owner = accountClient.getSnapshot().userId?.trim() ?? "";
       if (!owner || owner !== accountOwnerId.trim()) {
-        throw new Error("The ADE account changed before Activity settings could load.");
+        throw new Error(`The ${BRAND.NAME} account changed before Activity settings could load.`);
       }
       const result = record(await request(
         "preferences",
@@ -810,7 +811,7 @@ export function createAttentionNamespace(
     ) {
       const owner = accountClient.getSnapshot().userId?.trim() ?? "";
       if (!owner || owner !== accountOwnerId.trim()) {
-        throw new Error("The ADE account changed before Activity settings could be saved.");
+        throw new Error(`The ${BRAND.NAME} account changed before Activity settings could be saved.`);
       }
       const {
         devices: _deviceOverrides,
@@ -842,7 +843,7 @@ export function createAttentionNamespace(
     ) {
       const owner = accountClient.getSnapshot().userId?.trim() ?? "";
       if (!owner || owner !== accountOwnerId.trim()) {
-        throw new Error("The ADE account changed before Activity settings could be saved.");
+        throw new Error(`The ${BRAND.NAME} account changed before Activity settings could be saved.`);
       }
       const key = machineKey.trim();
       if (!key) throw new Error("A machine is required to change its notifications.");
@@ -859,7 +860,7 @@ export function createAttentionNamespace(
     async listDevices(accountOwnerId: string) {
       const owner = accountClient.getSnapshot().userId?.trim() ?? "";
       if (!owner || owner !== accountOwnerId.trim()) {
-        throw new Error("The ADE account changed before your phones could load.");
+        throw new Error(`The ${BRAND.NAME} account changed before your phones could load.`);
       }
       const response = await request(
         "device list",
@@ -869,7 +870,7 @@ export function createAttentionNamespace(
         { userInitiated: true },
       );
       if (accountClient.getSnapshot().userId?.trim() !== owner) {
-        throw new Error("The ADE account changed before your phones could load.");
+        throw new Error(`The ${BRAND.NAME} account changed before your phones could load.`);
       }
       return parseAttentionAccountDevices(response);
     },
@@ -882,7 +883,7 @@ export function createAttentionNamespace(
     ) {
       const owner = accountClient.getSnapshot().userId?.trim() ?? "";
       if (!owner || owner !== accountOwnerId.trim()) {
-        throw new Error("The ADE account changed before Activity settings could be saved.");
+        throw new Error(`The ${BRAND.NAME} account changed before Activity settings could be saved.`);
       }
       const id = deviceId.trim();
       if (!id) throw new Error("A phone is required to change its notifications.");
@@ -903,7 +904,7 @@ export function createAttentionNamespace(
     ) {
       const owner = accountClient.getSnapshot().userId?.trim() ?? "";
       if (!owner || owner !== accountOwnerId.trim()) {
-        throw new Error("The ADE account changed before Activity settings could be saved.");
+        throw new Error(`The ${BRAND.NAME} account changed before Activity settings could be saved.`);
       }
       const id = projectId.trim();
       if (!id) throw new Error("A project is required to change its notifications.");
@@ -920,7 +921,7 @@ export function createAttentionNamespace(
     async setSessionMuted(accountOwnerId: string, sessionId: string, muted: boolean) {
       const owner = accountClient.getSnapshot().userId?.trim() ?? "";
       if (!owner || owner !== accountOwnerId.trim()) {
-        throw new Error("The ADE account changed before Activity settings could be saved.");
+        throw new Error(`The ${BRAND.NAME} account changed before Activity settings could be saved.`);
       }
       const id = sessionId.trim();
       if (!id) throw new Error("A chat is required to change its notifications.");
@@ -952,7 +953,7 @@ export function createAttentionNamespace(
           accountSessionLease: lease,
           isAccountSessionLeaseCurrent: (candidate) =>
             accountClient.isSessionLeaseCurrent(candidate),
-          deviceName: `ADE Web on ${
+          deviceName: `${BRAND.NAME} Web on ${
             typeof window === "undefined"
               ? "browser"
               : window.location.hostname || "browser"
@@ -966,7 +967,7 @@ export function createAttentionNamespace(
         && item.machine.deviceId !== currentHostDeviceId
       ) {
         throw new Error(
-          `${item.machine.name} owns this item but is no longer available in your ADE account.`,
+          `${item.machine.name} owns this item but is no longer available in your ${BRAND.NAME} account.`,
         );
       }
       if (

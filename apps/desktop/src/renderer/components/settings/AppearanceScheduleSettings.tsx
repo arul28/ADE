@@ -36,6 +36,7 @@ import { useUserScenes } from "../../scene/useScene";
 import { SettingsToggle } from "./primitives";
 import { Banner } from "../ui/notice";
 import { MiniChrome, SANS_FONT_LABELS, UserSceneThumb, gradientSceneBackground } from "./appearanceArt";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Appearance › Schedule. A day cut into slots, each a whole look. The bar
@@ -494,7 +495,7 @@ function SlotCard({
         </div>
         {clash ? <div className="ade-ap-sched-error" role="alert">Another look already starts then. Pick another time.</div> : null}
         <div className="ade-ap-sched-summary" title={`${themeLabel} · ${background} · ${SANS_FONT_LABELS[look.sansFont]}`}>
-          {themeMissing ? <span className="ade-ap-sched-missing">Theme removed, uses ADE</span> : <span>{themeLabel}</span>}
+          {themeMissing ? <span className="ade-ap-sched-missing">Theme removed, uses {BRAND.NAME}</span> : <span>{themeLabel}</span>}
           <span aria-hidden>·</span>
           <span>{background}</span>
           <span aria-hidden>·</span>

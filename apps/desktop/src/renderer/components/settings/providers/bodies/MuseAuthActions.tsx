@@ -24,6 +24,7 @@ import { usePolling } from "../../../../hooks/usePolling";
 import type { MuseBinaryStatus } from "../../../../../shared/museBinary";
 import { SettingsAgentCliSignIn } from "../CliSignInSheet";
 import type { ProvidersViewContext } from "../types";
+import { BRAND } from "../../../../../shared/brand";
 
 /** How often the download's progress is re-read while it runs. */
 const DOWNLOAD_POLL_MS = 1_000;
@@ -81,7 +82,7 @@ function MuseDownload({ ctx }: { ctx: ProvidersViewContext }) {
   const start = useCallback(() => action.run("download", async () => {
     const ensure = window.ade?.ai?.ensureMuseBinary;
     if (!ensure) {
-      throw new Error("This ADE build cannot download Muse on that machine. Update ADE there and try again.");
+      throw new Error(`This ${BRAND.NAME} build cannot download Muse on that machine. Update ${BRAND.NAME} there and try again.`);
     }
     const next = await ensure(pinRef.current);
     setStatus(next);
@@ -91,7 +92,7 @@ function MuseDownload({ ctx }: { ctx: ProvidersViewContext }) {
   if (status?.state === "unsupported") {
     return (
       <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-        ADE has no Muse build for this platform.
+        {BRAND.NAME} has no Muse build for this platform.
       </div>
     );
   }
@@ -102,7 +103,7 @@ function MuseDownload({ ctx }: { ctx: ProvidersViewContext }) {
       <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
         {downloading && status
           ? downloadLine(status)
-          : `ADE runs its own pinned Muse${status?.pinnedVersion ? ` ${status.pinnedVersion}` : ""} (about 350–470 MB). It does not use a copy you installed yourself.`}
+          : `${BRAND.NAME} runs its own pinned Muse${status?.pinnedVersion ? ` ${status.pinnedVersion}` : ""} (about 350–470 MB). It does not use a copy you installed yourself.`}
       </div>
       {downloading ? null : (
         <button

@@ -1,5 +1,6 @@
 import { useId } from "react";
 import { cn } from "../../lib/cn";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /** The cloud outline the mark and the hero sky share. */
 export const CLOUD_PATH =
@@ -43,7 +44,7 @@ export function CloudLockup({ className, markClassName }: { className?: string; 
   return (
     <span className={cn("inline-flex items-center gap-2 font-semibold tracking-[-0.01em]", className)}>
       <CloudMark className={markClassName} />
-      ADE Cloud
+      {BRAND.CLOUD_NAME}
     </span>
   );
 }

@@ -61,12 +61,13 @@ import {
   type VaultRow,
 } from "./providerLoginSyncShared";
 import { antigravityKeyringItemExists, invalidateAntigravityAuthCache, peekAntigravityKeyringPresent } from "../ai/antigravityAuth";
+import { BRAND } from "../../../shared/brand";
 
 /** The Allow line before the first read, per OS. */
 const KEYRING_ALLOW_HINT: Record<KeyringPlatform, string> = {
-  darwin: "The agy CLI keeps this sign-in in the Keychain. Allow ADE to copy it once; macOS asks you first.",
-  win32: "The agy CLI keeps this sign-in in Credential Manager. Allow ADE to copy it once.",
-  linux: "The agy CLI keeps this sign-in in the keyring. Allow ADE to copy it once; the keyring may ask you to unlock it.",
+  darwin: `The agy CLI keeps this sign-in in the Keychain. Allow ${BRAND.NAME} to copy it once; macOS asks you first.`,
+  win32: `The agy CLI keeps this sign-in in Credential Manager. Allow ${BRAND.NAME} to copy it once.`,
+  linux: `The agy CLI keeps this sign-in in the keyring. Allow ${BRAND.NAME} to copy it once; the keyring may ask you to unlock it.`,
 };
 
 /** What the person reads when the keyring read did not give a sign-in. */
@@ -77,17 +78,17 @@ function keyringReadMessage(platform: KeyringPlatform, reason: KeychainReadFailu
         : platform === "win32" ? "Credential Manager on this computer has no Antigravity sign-in. Sign in with the agy CLI first, then allow again."
           : "This computer's keyring has no Antigravity sign-in. Sign in with the agy CLI first, then allow again.";
     case "denied":
-      return "macOS did not let ADE read it. Allow again, and choose Allow when macOS asks.";
+      return `macOS did not let ${BRAND.NAME} read it. Allow again, and choose Allow when macOS asks.`;
     case "timeout":
       return platform === "darwin" ? "macOS asked, but there was no answer in 2 minutes. Allow again."
         : platform === "win32" ? "Credential Manager did not answer in time. Allow again."
           : "The keyring did not answer in 2 minutes. If it asked to unlock, unlock it, then allow again.";
     case "unavailable":
-      return platform === "darwin" ? "ADE couldn't open the Keychain on this computer."
-        : platform === "win32" ? "ADE couldn't open Credential Manager on this computer. Windows PowerShell may be blocked here."
-          : "ADE couldn't reach the keyring on this computer. Install secret-tool (libsecret-tools), unlock the keyring, then allow again.";
+      return platform === "darwin" ? `${BRAND.NAME} couldn't open the Keychain on this computer.`
+        : platform === "win32" ? `${BRAND.NAME} couldn't open Credential Manager on this computer. Windows PowerShell may be blocked here.`
+          : `${BRAND.NAME} couldn't reach the keyring on this computer. Install secret-tool (libsecret-tools), unlock the keyring, then allow again.`;
     default:
-      return `ADE couldn't read ${KEYRING_STORE_NAME[platform]}. Try again.`;
+      return `${BRAND.NAME} couldn't read ${KEYRING_STORE_NAME[platform]}. Try again.`;
   }
 }
 
@@ -105,7 +106,7 @@ export function createAllow(s: SyncShared) {
   async function allowKeychain(args: { provider: ProviderLoginProvider; slot?: AntigravityKeychainSlot | null }): Promise<ProviderLoginStatus> {
     if (args.provider !== "antigravity") throw new Error("Only Antigravity's sign-in is copied from the OS keyring.");
     if (deps.cloudComputer) throw new Error("A cloud computer does not copy a sign-in from a keyring. Allow it on your own computer.");
-    if (!isKeyringPlatform(platform)) throw new Error("ADE copies a sign-in from the OS keyring only on macOS, Windows and Linux.");
+    if (!isKeyringPlatform(platform)) throw new Error(`${BRAND.NAME} copies a sign-in from the OS keyring only on macOS, Windows and Linux.`);
     const keyringPlatform: KeyringPlatform = platform;
     const store = KEYRING_STORE_NAME[keyringPlatform];
     const off = await captureOffReason();
@@ -119,14 +120,14 @@ export function createAllow(s: SyncShared) {
     deps.logger.info("provider_login.keychain_read", { provider: "antigravity", platform: keyringPlatform, result: read.ok ? "ok" : read.reason });
     if (!read.ok) throw new Error(keyringReadMessage(keyringPlatform, read.reason));
     const token = decodeKeychainSecret(read.data);
-    if (!token) throw new Error(`ADE found the Antigravity item in ${store} but could not read a sign-in from it.`);
+    if (!token) throw new Error(`${BRAND.NAME} found the Antigravity item in ${store} but could not read a sign-in from it.`);
     // Behind the pass in flight, so the marks file has one writer.
     while (s.inFlight) await s.inFlight.catch(() => undefined);
     const vault = deps.vault();
     const machine = deps.machine();
     const accountUserId = deps.accountUserId();
     if (!vault || !machine || !accountUserId) throw new Error(OFF_MESSAGES.vault_unavailable);
-    if (accountUserId !== accountBeforeRead) throw new Error("You switched ADE accounts while ADE was reading the sign-in. Allow again.");
+    if (accountUserId !== accountBeforeRead) throw new Error(`You switched ${BRAND.NAME} accounts while ${BRAND.NAME} was reading the sign-in. Allow again.`);
     const offAfterRead = await captureOffReason();
     if (offAfterRead) throw new Error(OFF_MESSAGES[offAfterRead]);
     let slot: AntigravityKeychainSlot = requestedSlot ?? "personal";
@@ -141,7 +142,7 @@ export function createAllow(s: SyncShared) {
     const contents = new Map<string, Buffer>([[bundle.files[0]!.rel, token]]);
     const row = carryRow("antigravity");
     const parsed = row.parse!(bundle, contents, ctx);
-    if ("unreadable" in parsed || !parsed.logins.length) throw new Error(`ADE found the Antigravity item in ${store} but could not read a sign-in from it.`);
+    if ("unreadable" in parsed || !parsed.logins.length) throw new Error(`${BRAND.NAME} found the Antigravity item in ${store} but could not read a sign-in from it.`);
     const origin12 = originId(machine.machineKey);
     const state = loadState(accountUserId);
     const rows = new Map<string, VaultRow>();
@@ -168,7 +169,7 @@ export function createAllow(s: SyncShared) {
       // The person's own earlier choice; the sentence says what to do (ADE-DESKTOP-DT).
       throw new AdeExpectedError("You removed this sign-in from your account. Sign in with the agy CLI again on this computer, then allow again.", "user");
     }
-    if (local !== "captured" || !key) throw new Error("ADE couldn't put the sign-in in your account. Try again in a moment.");
+    if (local !== "captured" || !key) throw new Error(`${BRAND.NAME} couldn't put the sign-in in your account. Try again in a moment.`);
     state.keychain = { ...(state.keychain ?? {}), antigravity: { allowedAt: now(), slot, key } };
     // The item was just read, so an older "no item" answer is wrong now; left
     // in place, capture would count the copy as signed out and remove it.
@@ -336,7 +337,7 @@ export function createAllow(s: SyncShared) {
       canAllow: Boolean(accountUserId) && (!off || GH_ALLOW_WHILE_OFF.has(off)),
       ...(choice && read?.result === "classic_token" ? { unsupported: "classic_token" as const } : {}),
       ...(readFailed
-        ? { readFailed: true, lastError: "ADE couldn't read the GitHub CLI login file on this computer." }
+        ? { readFailed: true, lastError: `${BRAND.NAME} couldn't read the GitHub CLI login file on this computer.` }
         : choice && failed ? { lastError: GH_READ_MESSAGES[failed] } : {}),
       ...(choice && read ? { lastReadAt: new Date(read.at).toISOString() } : {}),
     };
@@ -347,12 +348,12 @@ export function createAllow(s: SyncShared) {
     if (gh.readFailed && gh.lastError) return gh.lastError;
     if (!gh.allowed) {
       return gh.present
-        ? "Off on this computer. Turn it on to copy this computer's GitHub CLI login for Copilot on ADE Cloud."
+        ? `Off on this computer. Turn it on to copy this computer's GitHub CLI login for Copilot on ${BRAND.CLOUD_NAME}.`
         : "The GitHub CLI on this computer is not signed in to github.com. Run `gh auth login`, then turn this on.";
     }
-    if (gh.unsupported === "classic_token") return "This GitHub CLI login uses a classic token (ghp_). Copilot does not take it, so ADE does not copy it.";
+    if (gh.unsupported === "classic_token") return `This GitHub CLI login uses a classic token (ghp_). Copilot does not take it, so ${BRAND.NAME} does not copy it.`;
     if (gh.lastError) return gh.lastError;
-    if (off === "all_off") return "On for this computer. Nothing leaves this computer while sign-ins for ADE Cloud are switched off.";
+    if (off === "all_off") return `On for this computer. Nothing leaves this computer while sign-ins for ${BRAND.CLOUD_NAME} are switched off.`;
     return fallback;
   }
 

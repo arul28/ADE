@@ -1,6 +1,7 @@
 import type { ThisMachineRefusal } from "../../shared/accountMachineRefusal";
 import type { ReconnectOutcome } from "../../shared/reconnectOutcome";
 import type { AccountDeviceLoginPrompt } from "./accountLogin";
+import { BRAND } from "../../shared/brand";
 
 /**
  * What ADE says when the account directory refuses THIS computer, and what the
@@ -31,7 +32,7 @@ export function formatRemovalDate(iso: string | null, now: Date = new Date()): s
   });
 }
 
-const GAVE_UP_SENTENCE = "ADE stopped trying to reconnect it on its own.";
+const GAVE_UP_SENTENCE = `${BRAND.NAME} stopped trying to reconnect it on its own.`;
 
 export function describeThisComputerRefusal(
   refusal: ThisMachineRefusal,

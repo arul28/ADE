@@ -1,7 +1,7 @@
 /**
- * The live end-to-end proof: @ade-dev/sdk -> a real ADE runtime -> a real Claude
+ * The live end-to-end proof: @daex-dev/sdk -> a real ADE runtime -> a real Claude
  * turn -> a real MCP tool call against the toy `demodata` server, and back out
- * through the event shapes `@ade-dev/chat-ui` renders.
+ * through the event shapes `@daex-dev/chat-ui` renders.
  *
  * This spends real provider tokens. It is deliberately ONE turn, on the
  * cheapest available Claude model, with a two-sentence prompt. It never retries
@@ -22,7 +22,7 @@
  */
 
 import path from "node:path";
-import { createAdeChat } from "@ade-dev/sdk";
+import { createDaexChat } from "@daex-dev/sdk";
 import { check, eventText, summarize, waitForIdle } from "./harness.mjs";
 import { makeIsolatedHome } from "../lib/isolatedHome.mjs";
 import { readMcpLog, startMcpServer } from "../lib/mcpServer.mjs";
@@ -48,11 +48,11 @@ let resumed = null;
 try {
   mcp = await startMcpServer({ logPath: mcpLogPath });
   log(`toy MCP server: ${mcp.url}`);
-  log(`isolated ADE home: ${home}\n`);
+  log(`isolated DAEX home: ${home}\n`);
 
   /* ---- boot ------------------------------------------------------------- */
 
-  client = await createAdeChat({ home, binaryPath: runtimeBinary, logger: sdkLog });
+  client = await createDaexChat({ home, binaryPath: runtimeBinary, logger: sdkLog });
 
   const doctor = await client.doctor();
   check("doctor.sane", doctor.socket.connected && doctor.events.mode !== "unavailable",
@@ -198,7 +198,7 @@ try {
   // the agent's own answer enumerates the servers it can actually reach, and it
   // is read from the same turn rather than costing another one.
   const lowerAnswer = assistantText.toLowerCase();
-  const foreignServer = ["ade-cto", "ade-orchestration", "linear", "playwright", "sentry", "github"].find(
+  const foreignServer = ["daex-cto", "ade-cto", "ade-orchestration", "linear", "playwright", "sentry", "github"].find(
     (name) => lowerAnswer.includes(name),
   );
   check(
@@ -220,7 +220,7 @@ try {
   await client.dispose();
   client = null;
 
-  resumed = await createAdeChat({ home, binaryPath: runtimeBinary, logger: sdkLog });
+  resumed = await createDaexChat({ home, binaryPath: runtimeBinary, logger: sdkLog });
   // No provider/model: reopening a durable key must not require the caller to
   // remember how the thread was created.
   const resumedThread = await resumed.threads.open("main");

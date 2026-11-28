@@ -8,6 +8,7 @@ import { Dialog } from "../../ui/dialog";
 import { REMOTE_MCP_KNOWN_APP_LABELS } from "../../../../shared/types/remoteMcp";
 import { ADE_MCP_DIALOG_VARS, McpAppLogo, OTHER_APP_HINTS, type GalleryApp } from "./adeMcpApps";
 import { CopyButton, SignInPreview, Snippet } from "./adeMcpParts";
+import { BRAND } from "../../../../shared/brand";
 
 export function AppSetupSheet({
   app,
@@ -56,7 +57,7 @@ export function AppSetupSheet({
         <div className="ade-amcp-ways" aria-label="How it connects">
           <span className="ade-amcp-way" data-on={app.signIn ? "true" : undefined}>
             <UserCircle size={13} weight="duotone" />
-            Signs in with your ADE account
+            Signs in with your {BRAND.NAME} account
           </span>
           <span className="ade-amcp-way" data-on={app.token ? "true" : undefined}>
             <Key size={13} weight="duotone" />
@@ -87,7 +88,7 @@ export function AppSetupSheet({
 
         {app.id === "other" ? (
           <section className="ade-amcp-sheet-section">
-            <span className="kit-eyebrow">Apps ADE knows</span>
+            <span className="kit-eyebrow">Apps {BRAND.NAME} knows</span>
             <div className="ade-ig-mini-rows">
               {OTHER_APP_HINTS.map((hint) => {
                 const how = hint.how(serverUrl);

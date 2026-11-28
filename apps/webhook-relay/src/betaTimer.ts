@@ -42,6 +42,17 @@ export async function runBetaTimer(env: BetaTimerEnv): Promise<void> {
     "x-github-api-version": "2022-11-28",
   };
 
+  // The owner pauses betas by disabling the workflow (`gh workflow disable
+  // beta.yml`). A dispatch to a disabled workflow is a 4xx, which would reach
+  // Sentry every tick, so read its state first and stand down quietly.
+  const workflow = await fetch(WORKFLOW_URL, { headers });
+  if (!checkResponse(workflow, "read the workflow")) return;
+  const { state } = (await workflow.json()) as { state?: string };
+  if (state !== "active") {
+    console.log("beta_timer.paused", { state: state ?? null });
+    return;
+  }
+
   // A beta that is building takes about 40 minutes. A start now would only
   // wait behind it in the workflow's concurrency group, so skip this tick.
   // Previews have their own group (beta.yml's run-name marks them), so they

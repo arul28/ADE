@@ -5,6 +5,7 @@ import { openExternalUrl } from "../../../../lib/openExternal";
 import { extractError } from "../../../../lib/format";
 import { Banner } from "../../../ui/notice";
 import { confirmDialog } from "../../../ui/dialog";
+import { BRAND } from "../../../../../shared/brand";
 
 /**
  * Settings › Providers in ADE Web for a person with no computer of their own:
@@ -62,9 +63,9 @@ export function AccountCloudProvidersPanel() {
   return (
     <div className="flex w-full max-w-[720px] flex-col gap-3">
       <div className="flex flex-col gap-1">
-        <h2 className="m-0 text-[15px] font-semibold">Providers on ADE Cloud</h2>
+        <h2 className="m-0 text-[15px] font-semibold">Providers on {BRAND.CLOUD_NAME}</h2>
         <p className="m-0 text-[12px]" style={{ color: "var(--kit-text-2)" }}>
-          What each coding agent needs before it runs a chat on ADE Cloud. Keys save to your account, so every cloud computer can use them.
+          What each coding agent needs before it runs a chat on {BRAND.CLOUD_NAME}. Keys save to your account, so every cloud computer can use them.
         </p>
       </div>
       {catalogError ? (
@@ -118,7 +119,7 @@ function signInRowCopy(
 ): { status: string; line: string } {
   switch (kind) {
     case "desktop":
-      return { status: "Sign in from ADE desktop", line: "This provider signs in only in ADE desktop. Sign in there, and cloud chats can use it." };
+      return { status: `Sign in from ${BRAND.NAME} desktop`, line: `This provider signs in only in ${BRAND.NAME} desktop. Sign in there, and cloud chats can use it.` };
     case "api_key":
       return {
         status: facts.saved ? "Key saved" : facts.vaultUnknown ? "Couldn't check" : "Needs a key",
@@ -127,7 +128,7 @@ function signInRowCopy(
     case "url_paste":
       return {
         status: facts.saved ? "Pass saved" : "Signs in at your first chat",
-        line: "The cloud computer opens a sign-in page. Paste the code it shows, and ADE keeps the pass for later computers.",
+        line: `The cloud computer opens a sign-in page. Paste the code it shows, and ${BRAND.NAME} keeps the pass for later computers.`,
       };
     default:
       return { status: "Signs in at your first chat", line: "The cloud computer shows a code. Enter it on the provider's page." };
@@ -178,7 +179,7 @@ function ProviderRow({
     if (!api || !signIn) return;
     const ok = await confirmDialog({
       title: `Remove your ${provider.label} key?`,
-      message: "ADE Cloud chats can't use this provider until you add a key again.",
+      message: `${BRAND.CLOUD_NAME} chats can't use this provider until you add a key again.`,
       confirmLabel: "Remove",
       destructive: true,
     });

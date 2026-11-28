@@ -20,6 +20,7 @@ import { CloudMark } from "../remoteTargets/cloudBrand";
 import { confirmDialog } from "../ui/dialog";
 import { CLOUD_LANE_LIFE_UNAVAILABLE, cloudLaneLifeAvailable, forgetCloudLaneWithoutComputer } from "./cloudLaneActions";
 import { dropCloudLaneWithoutComputer, useCloudLanesWithoutComputer } from "./cloudLaneStores";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * This project's ADE Cloud lanes whose computer was deleted. A deleted
@@ -244,7 +245,7 @@ export const COMPUTER_DELETED_ROW_NOTE: CloudLaneRowNote = computerDeletedRowNot
 /** "Deleting soon", with the day as its tooltip. */
 export function deletingSoonRowNote(deletesAt: number): CloudLaneRowNote {
   const on = dayOf(deletesAt);
-  return { label: "Deleting soon", title: on ? `ADE Cloud deletes this lane's computer on ${on} because it is unused.` : "ADE Cloud deletes this lane's computer soon because it is unused." };
+  return { label: "Deleting soon", title: on ? `${BRAND.CLOUD_NAME} deletes this lane's computer on ${on} because it is unused.` : `${BRAND.CLOUD_NAME} deletes this lane's computer soon because it is unused.` };
 }
 
 /**
@@ -403,8 +404,8 @@ export async function deleteCloudLaneWithoutComputer(row: CloudLaneWithoutComput
   const ok = await confirmDialog({
     title: `Delete ${row.laneName}?`,
     message: row.kept
-      ? `ADE stops listing the lane and deletes ${chats ?? "any saved chats it has"} and its saved work that isn't on GitHub. Download that work first if you need it. Its branch stays on GitHub.`
-      : `${count > 0 ? `${onlyChatsLeftSentence(count)} ` : ""}ADE deletes ${count === 1 ? "it" : count > 1 ? "them" : "its saved chats"} from ADE Cloud, and the lane leaves your lists. Work it pushed stays on GitHub.`,
+      ? `${BRAND.NAME} stops listing the lane and deletes ${chats ?? "any saved chats it has"} and its saved work that isn't on GitHub. Download that work first if you need it. Its branch stays on GitHub.`
+      : `${count > 0 ? `${onlyChatsLeftSentence(count)} ` : ""}${BRAND.NAME} deletes ${count === 1 ? "it" : count > 1 ? "them" : "its saved chats"} from ${BRAND.CLOUD_NAME}, and the lane leaves your lists. Work it pushed stays on GitHub.`,
     icon: <CloudMark size={16} brand />,
     confirmLabel: CLOUD_LANE_WITHOUT_COMPUTER_DELETE_LABEL,
     destructive: true,
@@ -428,7 +429,7 @@ export async function deleteCloudLaneWithoutComputer(row: CloudLaneWithoutComput
       showToast({
         tone: "error",
         title: row.kept ? `Deleted ${row.laneName}, not all its chats` : `Kept ${row.laneName}`,
-        message: "ADE Cloud has more chats than ADE could read at once. Delete again to remove the rest.",
+        message: `${BRAND.CLOUD_NAME} has more chats than ${BRAND.NAME} could read at once. Delete again to remove the rest.`,
         replayMask: { title: true },
       });
       return;

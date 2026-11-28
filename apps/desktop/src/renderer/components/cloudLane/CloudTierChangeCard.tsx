@@ -14,6 +14,7 @@ import { noticeTone } from "../ui/notice/noticeTones";
 import { CLOUD_LANE_LIFE_UNAVAILABLE, changeCloudLaneTier, cloudLaneChangesAvailable } from "./cloudLaneActions";
 import { tierChangeAndroidNote, tierChangeDiskChoices, tierChangeDiskLine, type TierChangeComputer } from "./cloudTierChangeFacts";
 import "./cloudLane.css";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The one tier-change card: what changes, why, the new rate, what the hours
@@ -133,7 +134,7 @@ export function CloudTierChangeCard({
       });
       onStarted?.(job);
     } catch (startError) {
-      setError(ipcErrorMessage(startError) || "ADE couldn't change the size. Try again in a moment.");
+      setError(ipcErrorMessage(startError) || `${BRAND.NAME} couldn't change the size. Try again in a moment.`);
     } finally {
       setBusy(null);
     }

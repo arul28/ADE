@@ -20,6 +20,7 @@ import {
   type ResponsivenessProbe,
   serviceHandoverSleep,
 } from "./serviceHandover";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 /**
  * A brain whose supervisor is the machine's own entrypoint: ADE's cloud
@@ -161,9 +162,9 @@ export async function restartEntrypointSupervisedBrain(deps: EntrypointSuperviso
     return result(
       false,
       entrypoint,
-      "This machine was made from an older ADE machine template, whose start script always runs the ADE it was built with, "
-        + "so an update can't take effect on it. A new lane on ADE Cloud gets a computer with the current version "
-        + "(ade lanes create --machine cloud --existing-branch <branch> --name <name>); the person can also make one in Settings › ADE Cloud. A copy keeps the old template.",
+      `This machine was made from an older ${BRAND.NAME} machine template, whose start script always runs the ${BRAND.NAME} it was built with, `
+        + `so an update can't take effect on it. A new lane on ${BRAND.CLOUD_NAME} gets a computer with the current version `
+        + `(daex lanes create --machine cloud --existing-branch <branch> --name <name>); the person can also make one in Settings › ${BRAND.CLOUD_NAME}. A copy keeps the old template.`,
       { failureStep: "entrypoint_too_old" },
     );
   }
@@ -200,7 +201,7 @@ export async function restartEntrypointSupervisedBrain(deps: EntrypointSuperviso
   }, running[0] ?? null, timeoutMs);
   const pid = handover.replacementPid;
   if (pid == null) {
-    return result(false, entrypoint, `ADE brain stopped, but the machine's start script did not start it again within ${Math.round(timeoutMs / 1000)}s.`, {
+    return result(false, entrypoint, `${BRAND.NAME} brain stopped, but the machine's start script did not start it again within ${Math.round(timeoutMs / 1000)}s.`, {
       failureStep: "replacement_pid",
     });
   }
@@ -211,15 +212,15 @@ export async function restartEntrypointSupervisedBrain(deps: EntrypointSuperviso
   })();
   const exe = readExecutable(procRoot, pid);
   if (exe && exe !== want) {
-    return result(false, entrypoint, `ADE brain restarted, but the machine's start script ran ${exe} rather than ${want}.`, {
+    return result(false, entrypoint, `${BRAND.NAME} brain restarted, but the machine's start script ran ${exe} rather than ${want}.`, {
       failureStep: "replacement_pid",
     });
   }
   if (!handover.replacementResponsive) {
-    return result(true, entrypoint, `ADE brain is starting (pid ${pid}); it had not answered on ${socketPath} after ${timeoutMs}ms.`, {
+    return result(true, entrypoint, `${BRAND.NAME} brain is starting (pid ${pid}); it had not answered on ${socketPath} after ${timeoutMs}ms.`, {
       starting: true,
       restarted: true,
     });
   }
-  return result(true, entrypoint, `ADE brain restarted (pid ${pid}) by the machine's start script.`, { restarted: true });
+  return result(true, entrypoint, `${BRAND.NAME} brain restarted (pid ${pid}) by the machine's start script.`, { restarted: true });
 }

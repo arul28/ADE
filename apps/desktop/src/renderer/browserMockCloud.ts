@@ -30,6 +30,7 @@
  * It runs after the sign-ins preview (`?mockSignIns=`), keeping its sign-in
  * calls and replacing only the account and computer reads.
  */
+import { BRAND } from "../shared/brand";
 import {
   CLOUD_MACHINE_DEFAULT_NAME,
   cloudFreeGithubSentence,
@@ -146,7 +147,7 @@ function machine(spec: LaneSpec, now: number): CloudLaneMachine {
   const rest = Math.max(0, spec.diskGb - repo - deps - caches);
   return {
     instanceId: spec.id,
-    name: spec.lane ? `ADE · ${spec.lane}` : CLOUD_MACHINE_DEFAULT_NAME,
+    name: spec.lane ? `${BRAND.NAME} · ${spec.lane}` : CLOUD_MACHINE_DEFAULT_NAME,
     status: spec.state === "running" ? "running" : spec.state === "asleep" ? "sleeping" : spec.state,
     state: spec.state,
     type: shape.type,
@@ -229,7 +230,7 @@ function mockCtoCloudHome(paid: boolean, failClone: boolean) {
           if (!job) return;
           if (id === "clone" && failClone && !job.retried) {
             row.status = "failed";
-            row.error = "The new computer can't read this repository. Check that ADE Cloud can sign in to GitHub for it, then retry.";
+            row.error = `The new computer can't read this repository. Check that ${BRAND.CLOUD_NAME} can sign in to GitHub for it, then retry.`;
             job.phase = "failed";
             job.error = row.error;
             emit();
@@ -253,7 +254,7 @@ function mockCtoCloudHome(paid: boolean, failClone: boolean) {
       console.info(`[browser mock] cloud.ctoHome ${request.method}`);
       if (request.method === "get") return copyJob();
       if (request.method === "start") {
-        if (!paid) throw new Error("ADE Cloud as the CTO's home needs a paid plan. Upgrade to use it.");
+        if (!paid) throw new Error(`${BRAND.CLOUD_NAME} as the CTO's home needs a paid plan. Upgrade to use it.`);
         if (job) return copyJob();
         job = {
           jobId: "mock-cto-job",
@@ -724,7 +725,7 @@ export function applyBrowserMockCloud(ade: any): void {
       if (!state.sponsored) return null;
       // As the server: after a no, a yes needs the second confirm.
       if (choice === "granted" && state.sponsored.confirmYes && !confirmed) {
-        throw new Error("Turning sponsored cards back on takes a second confirm. Try again, or update ADE if it doesn't ask.");
+        throw new Error(`Turning sponsored cards back on takes a second confirm. Try again, or update ${BRAND.NAME} if it doesn't ask.`);
       }
       // A notice is a yes where cards start on; the account state stops saying `startsOn` once answered.
       const consent: CloudSponsoredConsent = choice === "notice" ? "granted" : choice;
@@ -881,7 +882,7 @@ export function applyBrowserMockCloud(ade: any): void {
       const ticks = Math.floor((Date.now() - entry.startedAt) / 2_000);
       const base = { ...entry.record, updatedAt: new Date().toISOString() };
       if (entry.record.step === "release" && entry.refused && ticks >= 1) {
-        return { ...base, state: "failed", wakeInstead: true, error: "The ADE Cloud computer is awake, so its saved copy may be older than its work." };
+        return { ...base, state: "failed", wakeInstead: true, error: `The ${BRAND.CLOUD_NAME} computer is awake, so its saved copy may be older than its work.` };
       }
       const steps = entry.record.step === "release" ? ticks - 1 : ticks;
       if (steps < 0) return base;

@@ -47,6 +47,7 @@ import { noteComputerJoin } from "./sponsoredSmall";
 import { FILE_ID, handleGetFile, handlePutFile, r2KeyOf, r2PrefixOf } from "./launchFiles";
 import {
   LAUNCH_COMPUTER_DELETED,
+  LEGACY_LAUNCH_COMPUTER_DELETED,
   PENDING_TIMEOUT_MS,
   deleteComputer,
   isOutOfHoursFor,
@@ -81,8 +82,9 @@ import {
 } from "./launchMessages";
 
 /**
- * The server launcher (docs/plans/cloud-6/c6-c8-launcher-spec.md, C6): every
- * lane on a new computer of its own. An ADE app or CLI sends it and then
+ * The server launcher (docs/features/ade-cloud/README.md, "A new lane with no
+ * computer of your own"; this package's README, "Launches from the web and
+ * the phone"): every lane on a new computer of its own. An ADE app or CLI sends it and then
  * follows the computer's own launch (`cloudLaneLaunchService.ts`); a caller
  * with no computer (the web, the phone, an automation on ADE Cloud) reads
  * the record here.
@@ -183,7 +185,7 @@ const utf8 = new TextEncoder();
 /** A value's JSON size in bytes (UTF-8), the unit of `CLOUD_LAUNCH_MAX_ARGS_BYTES`; a string's length counts UTF-16 units. */
 const jsonBytes = (value: unknown): number => utf8.encode(JSON.stringify(value)).byteLength;
 
-const NOT_FOUND = "ADE Cloud has no such launch.";
+const NOT_FOUND = "DAEX Cloud has no such launch.";
 const notFound = () => fail("not_found", NOT_FOUND, 404);
 const JOIN_REFUSED = "This computer can't join with that code.";
 /** What a launch that never signed its computer in shows once its join window closed. */
@@ -191,7 +193,7 @@ const JOIN_NEVER_FINISHED = "The new computer couldn't sign in.";
 /** How often a spent join code may join again: a brain whose earlier sign-in didn't finish, never a link mint without end. */
 const MAX_REJOINS = 5;
 /** What a person's start shows when nothing was made for it (`failUnjoinedLaunches`); Retry starts it again under the same id. */
-const LAUNCH_MADE_NOTHING = "ADE Cloud couldn't make this lane's computer. Try again.";
+const LAUNCH_MADE_NOTHING = "DAEX Cloud couldn't make this lane's computer. Try again.";
 /** The computer joined before its launch's create finished: it asks again in a moment. */
 const joinNotReady = () => fail("join_not_ready", "The computer is still being set up.", 409);
 /** The stages before which a cancel still deletes the computer: nothing of the agent ran yet. */
@@ -283,10 +285,10 @@ export function parseLaunchRequest(body: Record<string, unknown>): ParsedLaunchR
   // Left out (the web, the phone): Small, ADE's default, which may move up once (`CLOUD_AUTO_SIZE`).
   const sizeOmitted = body.sizeId === undefined || body.sizeId === null;
   const sizeId = sizeOmitted ? CLOUD_AUTO_SIZE.from : body.sizeId;
-  if (!cloudSizeForTier(sizeId)) return "That size isn't one ADE Cloud offers.";
+  if (!cloudSizeForTier(sizeId)) return "That size isn't one DAEX Cloud offers.";
   const project = body.project && typeof body.project === "object" ? body.project as Record<string, unknown> : null;
   const origin = githubOriginOf(project?.origin);
-  if (!origin) return "Only GitHub repositories can start a lane on ADE Cloud.";
+  if (!origin) return "Only GitHub repositories can start a lane on DAEX Cloud.";
   const lane = body.lane && typeof body.lane === "object" ? body.lane as Record<string, unknown> : null;
   // The computer's launch reserves this id for its lane, which must be a UUID (`chatLaunchService.start`).
   // Left out (a new lane from the web or the phone): the launch id, so a retried start names the same lane.
@@ -436,7 +438,7 @@ function machineFactsOf(row: LaunchRow): CloudMachineLaunchFacts | null {
   if (!raw) return null;
   return {
     type: raw.type === "vm" ? "vm" : "default",
-    name: typeof raw.name === "string" ? raw.name : "ADE computer",
+    name: typeof raw.name === "string" ? raw.name : "DAEX computer",
     movedFrom: typeof raw.movedFrom === "string" ? raw.movedFrom : null,
   };
 }
@@ -656,7 +658,7 @@ async function accountProjectOrigin(env: CloudEnv, userId: string, raw: unknown)
 }
 
 /** The made computer's name: the lane's, as the desktop names a lane's computer. */
-const computerNameOf = (laneName: string): string => laneName.replace(/\s+/g, " ").trim().slice(0, 60) || "ADE computer";
+const computerNameOf = (laneName: string): string => laneName.replace(/\s+/g, " ").trim().slice(0, 60) || "DAEX computer";
 
 /* ---- Start ---- */
 
@@ -715,7 +717,7 @@ async function restartFailedLaunch(env: CloudEnv, userId: string, launchId: stri
   // A Retry makes a new computer: refused before the failed one is deleted.
   const refusal = await deps.refuseNewLaunch?.();
   if (refusal) return refusal;
-  if (row.instance_id && !deps.provider) return fail("unavailable", "ADE Cloud can't delete the failed computer right now. Try again soon.", 503);
+  if (row.instance_id && !deps.provider) return fail("unavailable", "DAEX Cloud can't delete the failed computer right now. Try again soon.", 503);
   // One live launch per continued chat: a newer send already started another one, and the chat's messages go there.
   const continuing = () => fail("computer_busy", "This chat already continues on another new computer. Its messages go there.", 409);
   if (row.continue_chat_id && row.lane_id) {
@@ -745,7 +747,7 @@ async function restartFailedLaunch(env: CloudEnv, userId: string, launchId: stri
         update cloud_launches set state = 'failed', error = ?, updated_at = ? where launch_id = ? and user_id = ? and state = 'retrying'
       `).bind(row.error ?? "The launch's computer failed.", deps.now, launchId, userId).run();
       reportCloudFailure("cloud.launch_retry_delete_failed", { launchId, code: error instanceof Error ? error.name : "unknown" });
-      return fail("unavailable", "ADE Cloud can't delete the failed computer right now. Try again soon.", 503);
+      return fail("unavailable", "DAEX Cloud can't delete the failed computer right now. Try again soon.", 503);
     }
   }
   // Released for the start below; a cancel that landed meanwhile keeps the launch cancelled.
@@ -792,10 +794,10 @@ export async function startServerLaunch(
     const refusal = await deps.refuseNewLaunch?.();
     if (refusal) return refusal;
   }
-  if (!deps.provider) return fail("unavailable", "ADE Cloud can't make a computer right now. Try again soon.", 503);
+  if (!deps.provider) return fail("unavailable", "DAEX Cloud can't make a computer right now. Try again soon.", 503);
   if (!env.CLOUD_LAUNCH_JOIN_KEY?.trim()) {
     reportCloudFailure("cloud.launch_join_key_missing");
-    return fail("unavailable", "ADE Cloud can't start a lane here right now. Try again soon.", 503);
+    return fail("unavailable", "DAEX Cloud can't start a lane here right now. Try again soon.", 503);
   }
 
   // A private repository with no git credential that follows the account: refused before anything is made.
@@ -863,7 +865,7 @@ export async function startServerLaunch(
     // Every claim writes the salt, so a `making` row always has one.
     if (!row.join_salt) {
       reportCloudFailure("cloud.launch_join_salt_missing", { launchId });
-      return fail("unavailable", "ADE Cloud can't start a lane here right now. Try again soon.", 500);
+      return fail("unavailable", "DAEX Cloud can't start a lane here right now. Try again soon.", 500);
     }
     salt = row.join_salt;
     joinCode = (await joinCodeOf(env, launchId, salt))!;
@@ -994,7 +996,7 @@ export async function machineLaunchMinVersion(env: CloudEnv): Promise<string | n
 
 export const MACHINE_LAUNCH_UNAVAILABLE = "machine_launch_unavailable";
 const machineLaunchUnavailable = () =>
-  fail(MACHINE_LAUNCH_UNAVAILABLE, "Making a computer from here needs the next ADE update. Try again after it ships.", 409);
+  fail(MACHINE_LAUNCH_UNAVAILABLE, "Making a computer from here needs the next DAEX update. Try again after it ships.", 409);
 
 /** A `machine` launch to start: from `POST /cloud/launches`, or a move's new computer (`moves.ts`). */
 export type MachineLaunchInput = {
@@ -1014,14 +1016,14 @@ async function handleMachineStart(env: CloudEnv, userId: string, body: Record<st
   const launchId = typeof body.launchId === "string" ? body.launchId.trim().toLowerCase() : "";
   if (!UUID.test(launchId)) return badRequest("A launch needs a launch id (a UUID).");
   const size = body.sizeId == null ? cloudSizeForTier("small") : cloudSizeForTier(body.sizeId);
-  if (!size) return badRequest("That size isn't one ADE Cloud offers.");
+  if (!size) return badRequest("That size isn't one DAEX Cloud offers.");
   const madeBy = body.madeBy && typeof body.madeBy === "object" ? body.madeBy as Record<string, unknown> : null;
-  if (madeBy && madeBy.kind !== "person") return fail("person_only", "Only you can make a new computer this way. Ask in ADE.", 403);
+  if (madeBy && madeBy.kind !== "person") return fail("person_only", "Only you can make a new computer this way. Ask in DAEX.", 403);
   if (body.name != null && !shortString(body.name, 60)) return badRequest("That name isn't valid.");
   return await startMachineLaunch(env, userId, {
     launchId,
     size,
-    name: shortString(body.name, 60) ?? "ADE computer",
+    name: shortString(body.name, 60) ?? "DAEX computer",
     channel: readUpdateChannel(body.channel),
   }, deps);
 }
@@ -1045,10 +1047,10 @@ export async function startMachineLaunch(env: CloudEnv, userId: string, input: M
     const refusal = await deps.refuseNewLaunch?.();
     if (refusal) return refusal;
   }
-  if (!deps.provider) return fail("unavailable", "ADE Cloud can't make a computer right now. Try again soon.", 503);
+  if (!deps.provider) return fail("unavailable", "DAEX Cloud can't make a computer right now. Try again soon.", 503);
   if (!env.CLOUD_LAUNCH_JOIN_KEY?.trim()) {
     reportCloudFailure("cloud.launch_join_key_missing");
-    return fail("unavailable", "ADE Cloud can't make a computer right now. Try again soon.", 503);
+    return fail("unavailable", "DAEX Cloud can't make a computer right now. Try again soon.", 503);
   }
   let salt = existing?.join_salt ?? newJoinSalt();
   if (!existing) {
@@ -1260,7 +1262,7 @@ async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now
       sign_in_json = case when ? is not null then ? else sign_in_json end,
       updated_at = ?
     where launch_id = ? and instance_id = ? and state not in ('cancelled', 'retrying') and (state <> 'done' or ? = 'done')
-      and (state <> 'failed' or coalesce(error, '') not in (?, ?, ?) or ? = 'failed')
+      and (state <> 'failed' or coalesce(error, '') not in (?, ?, ?, ?) or ? = 'failed')
   `).bind(
     state, stages ? JSON.stringify(stages) : null,
     sessionId !== undefined ? 1 : 0, sessionId ?? null,
@@ -1268,7 +1270,7 @@ async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now
     state,
     state, signInJson,
     now, row.launch_id, row.instance_id, state,
-    JOIN_NEVER_FINISHED, SIGN_IN_NEVER_FINISHED, LAUNCH_COMPUTER_DELETED, state,
+    JOIN_NEVER_FINISHED, SIGN_IN_NEVER_FINISHED, LAUNCH_COMPUTER_DELETED, LEGACY_LAUNCH_COMPUTER_DELETED, state,
   ).run();
   // Only the computer this report was checked against, and never into a Retry
   // that claimed the launch since this request read it.
@@ -1308,7 +1310,7 @@ async function deleteLaunchComputer(
 }
 
 async function handleCancel(env: CloudEnv, row: LaunchRow, deps: LaunchRouteDeps): Promise<Response> {
-  const cannotDelete = () => fail("unavailable", "ADE Cloud can't delete the computer right now. Delete it in Settings › ADE Cloud.", 503);
+  const cannotDelete = () => fail("unavailable", "DAEX Cloud can't delete the computer right now. Delete it in Settings › DAEX Cloud.", 503);
   if (row.state === "cancelled") {
     // A delete that failed last time is tried again while the computer is still on the account.
     if (row.instance_id && await ownedComputer(env, row.user_id, row.instance_id)) {
@@ -1448,10 +1450,10 @@ async function instanceIsLaunchs(provider: CloudProvider, instanceId: string, la
 /** The join's sentence when the sign-in link couldn't be minted, by the device approval's error. */
 const MINT_FAILED: Record<string, string> = {
   expired: "The computer's sign-in expired. It starts a new one.",
-  not_found: "ADE has no such sign-in. The computer starts a new one.",
+  not_found: "DAEX has no such sign-in. The computer starts a new one.",
   already_used: "That sign-in was already used. The computer starts a new one.",
 };
-const MINT_UNAVAILABLE = "ADE's account service can't approve sign-ins right now. Try again in a moment.";
+const MINT_UNAVAILABLE = "DAEX's account service can't approve sign-ins right now. Try again in a moment.";
 
 /**
  * Whether the device sign-in a launch's join named was approved: the computer
@@ -1528,9 +1530,9 @@ export async function handleLaunchJoin(request: Request, env: CloudEnv, path: st
   }
   const userCode = typeof body.userCode === "string" ? normalizeUserCode(body.userCode) : null;
   if (!userCode) return badRequest("The join needs the computer's sign-in code.");
-  if (!deps.provider) return fail("unavailable", "ADE Cloud can't check this computer right now. Try again soon.", 503);
+  if (!deps.provider) return fail("unavailable", "DAEX Cloud can't check this computer right now. Try again soon.", 503);
   const isLaunchs = await instanceIsLaunchs(deps.provider, instanceId, launchId);
-  if (isLaunchs === "unreadable") return fail("unavailable", "ADE Cloud can't check this computer right now. Try again soon.", 503);
+  if (isLaunchs === "unreadable") return fail("unavailable", "DAEX Cloud can't check this computer right now. Try again soon.", 503);
   if (!isLaunchs) {
     reportCloudFailure("cloud.launch_join_metadata_mismatch", { launchId });
     return fail("join_refused", JOIN_REFUSED, 403);
@@ -1607,7 +1609,8 @@ const SIGN_IN_WAIT_MS = 45 * 60_000;
 /** The computer's own timeout reports the same error, so both end the same way. */
 const SIGN_IN_NEVER_FINISHED = CLOUD_LAUNCH_SIGN_IN_TIMED_OUT;
 /** The server's own endings: the computer is deleted with or after them, so no report brings the launch back. */
-const serverEnded = (error: string | null): boolean => error === JOIN_NEVER_FINISHED || error === SIGN_IN_NEVER_FINISHED || error === LAUNCH_COMPUTER_DELETED;
+const serverEnded = (error: string | null): boolean => error === JOIN_NEVER_FINISHED || error === SIGN_IN_NEVER_FINISHED
+  || error === LAUNCH_COMPUTER_DELETED || error === LEGACY_LAUNCH_COMPUTER_DELETED;
 
 /**
  * Launches whose computer never signed in, past the join window and a grace:

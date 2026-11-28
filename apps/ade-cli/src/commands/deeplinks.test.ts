@@ -48,9 +48,9 @@ describe("ade link", () => {
     expect(r.output).toContain(`https://ade-app.dev/open?type=lane&id=${UUID}`);
   });
 
-  it("emits the ade:// form when --ade is set", () => {
+  it("emits the daex:// form when --ade is set", () => {
     const r = runLinkCommand(["lane", UUID, "--ade", "--no-clipboard"]);
-    expect(r.output).toContain(`ade://lane/${UUID}`);
+    expect(r.output).toContain(`daex://lane/${UUID}`);
   });
 
   it("emits the hosted web client form when --web is set", () => {
@@ -74,13 +74,13 @@ describe("ade link", () => {
 
   it("emits file, commit, and artifact links", () => {
     const file = runLinkCommand(["file", "src/index.ts", "--line", "12", "--lane", UUID, "--ade", "--no-clipboard"]);
-    expect(file.output).toContain(`ade://file/src/index.ts?line=12&lane=${UUID}`);
+    expect(file.output).toContain(`daex://file/src/index.ts?line=12&lane=${UUID}`);
 
     const commit = runLinkCommand(["commit", "abc1234", "--lane", UUID, "--ade", "--no-clipboard"]);
-    expect(commit.output).toContain(`ade://commit/abc1234?lane=${UUID}`);
+    expect(commit.output).toContain(`daex://commit/abc1234?lane=${UUID}`);
 
     const artifact = runLinkCommand(["artifact", "proof-123", "--ade", "--no-clipboard"]);
-    expect(artifact.output).toContain("ade://artifact/proof-123");
+    expect(artifact.output).toContain("daex://artifact/proof-123");
   });
 
   it("adds envelopes through the async link command", async () => {
@@ -92,7 +92,7 @@ describe("ade link", () => {
         prNumber: 42,
       }),
     });
-    expect(r.output).toContain("ade://commit/abc1234?");
+    expect(r.output).toContain("daex://commit/abc1234?");
     expect(r.output).toContain("repo=owner%2Frepo");
     expect(r.output).toContain("branch=feat");
     expect(r.output).toContain("pr=42");
@@ -105,7 +105,7 @@ describe("ade link", () => {
       { resolveEnvelope },
     );
     expect(resolveEnvelope).not.toHaveBeenCalled();
-    expect(r.output).toContain(`ade://lane/${UUID}`);
+    expect(r.output).toContain(`daex://lane/${UUID}`);
     expect(r.output).not.toContain("repo=");
   });
 
@@ -180,9 +180,9 @@ describe("ade link", () => {
     expect(r.output).toContain("branch=arul%2Fade-123-feat");
   });
 
-  it("emits ade:// form for linear-issue when --ade is set", () => {
+  it("emits daex:// form for linear-issue when --ade is set", () => {
     const r = runLinkCommand(["linear-issue", "ADE-123", "--ade", "--no-clipboard"]);
-    expect(r.output).toContain("ade://linear-issue/ADE-123");
+    expect(r.output).toContain("daex://linear-issue/ADE-123");
   });
 
   it("rejects empty linear-issue identifier", () => {
@@ -253,9 +253,9 @@ describe("runDeeplinkCommand", () => {
   it("returns help when no args", () => {
     const r = runDeeplinkCommand([]);
     expect(r.exitCode).toBe(0);
-    expect(r.output).toContain("ade open");
-    expect(r.output).toContain("ade link");
-    expect(r.output).toContain("ade linear");
+    expect(r.output).toContain("daex open");
+    expect(r.output).toContain("daex link");
+    expect(r.output).toContain("daex linear");
   });
 
   it("rejects unknown verbs", () => {

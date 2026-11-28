@@ -6,6 +6,7 @@ import { openExternalUrl } from "../../../lib/openExternal";
 import { Banner } from "../../ui/notice";
 import { ProviderLogo } from "../ProviderLogos";
 import { PickerEmptyMessage } from "./PickerEmptyMessage";
+import { BRAND } from "../../../../shared/brand";
 
 export type ProviderEmptyStateAction =
   | { kind: "open-settings" }
@@ -81,7 +82,7 @@ const PROVIDER_COPY: Partial<Record<ProviderFamily, ProviderCopy>> = {
   },
   lmstudio: {
     title: "Start LM Studio",
-    body: "Launch the LM Studio app and load a model — ADE will pick it up automatically.",
+    body: `Launch the LM Studio app and load a model — ${BRAND.NAME} will pick it up automatically.`,
     primary: { label: "Open Settings", action: { kind: "open-settings" } },
     secondary: {
       label: "Download LM Studio",
@@ -90,7 +91,7 @@ const PROVIDER_COPY: Partial<Record<ProviderFamily, ProviderCopy>> = {
   },
   ollama: {
     title: "Start Ollama",
-    body: "Run the Ollama daemon and pull a model — ADE auto-discovers local models.",
+    body: `Run the Ollama daemon and pull a model — ${BRAND.NAME} auto-discovers local models.`,
     primary: { label: "Open Settings", action: { kind: "open-settings" } },
     secondary: {
       label: "Get Ollama",
@@ -190,7 +191,7 @@ function opencodeRequiredCopy(forProvider: "opencode" | "ollama" | "lmstudio"): 
   const label = OPENCODE_REQUIRED_PROVIDER_LABELS[forProvider];
   return {
     title: "OpenCode needed",
-    body: `${label} models run through OpenCode. ADE downloads its own pinned OpenCode for this machine.`,
+    body: `${label} models run through OpenCode. ${BRAND.NAME} downloads its own pinned OpenCode for this machine.`,
     primary: { label: "Open Settings", action: { kind: "open-settings" } },
     secondary: {
       label: "OpenCode site",
@@ -204,7 +205,7 @@ function discoveryEmptyCopy(family: ProviderFamily): ProviderCopy {
   if (family === "cursor") {
     return {
       title: "No Cursor models found",
-      body: "Cursor is connected, but ADE did not receive any Cursor SDK models yet.",
+      body: `Cursor is connected, but ${BRAND.NAME} did not receive any Cursor SDK models yet.`,
       primary: { label: "Open Settings", action: { kind: "open-settings" } },
       secondary: {
         label: "Get Cursor API key",
@@ -214,7 +215,7 @@ function discoveryEmptyCopy(family: ProviderFamily): ProviderCopy {
   }
   return {
     title: `No ${label} models found`,
-    body: `${label} is connected, but ADE did not receive any models yet.`,
+    body: `${label} is connected, but ${BRAND.NAME} did not receive any models yet.`,
     primary: { label: "Open Settings", action: { kind: "open-settings" } },
   };
 }

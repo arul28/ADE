@@ -1,474 +1,207 @@
 # Agents
 
-ADE does not ship a standalone agents hub page. Agent behavior is delivered through three runtime surfaces: the CTO, regular lane-bound chat sessions, and machine-owned personal chats. This feature folder documents identity, persona overlays, capability modes, the smart-memory system, and the ADE CLI tool bridge the project surfaces share.
+DAEX has no agents hub page. Agents run on three surfaces: the CTO (one
+persistent identity per project), regular lane-bound chats, and machine-owned
+personal chats. This folder covers what they share: skill delivery, spawning
+and reporting, the CLI bridge and roles, and provider sign-in from a chat.
 
-There is one persistent identity, the CTO. Everything else is an ephemeral chat session. Regular sessions bind a visible lane; personal sessions use an internal compatibility lane that is never exposed as project context.
+The CTO's identity, memory and prompt live in [CTO](../cto/README.md).
+Personal chats live in [Personal chats](../personal-chats/README.md).
 
 ## Source file map
 
 | Path | Role |
 |---|---|
-| `apps/desktop/src/main/services/cto/ctoStateService.ts` | CTO identity, system-prompt composition, onboarding markers, the static and volatile turn context, and the live project-state block. |
-| `apps/desktop/src/main/services/cto/ctoMemoryService.ts` | The CTO's memory store: project notes (`MEMORY.md`), notes about the person (`USER.md`), the open-work list, the worker-discovery queue, and the injection sections. |
-| `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO operator tools for chat spawning, lanes/PRs/git/tests, Linear reads/writes, the `remember` / `forget` / `trackWork` / `finishWork` / `readHistory` / `readDiscoveries` / `searchMemory` / `recallNote` memory tools, and the `loadCtoTools` pack loader. |
-| `apps/desktop/src/main/services/ai/tools/ctoToolPacks.ts` | The closed list of 11 CTO tool packs and their scopes, shared by the tool factory and the prompt's capability manifest. |
-| `apps/desktop/src/main/services/chat/ctoTurnContext.ts`, `codexCtoToolDeferral.ts` | The pure turn-context helpers and the Codex pack-deferral predicate, split out of `agentChatService` so they are testable without the provider graph. |
-| `apps/desktop/src/main/services/agentTools/agentToolsService.ts` | Detects external CLI tools on PATH (`ade.agentTools.detect`). Informational only: ADE never runs what it finds; agents run from ADE's pinned copies. |
-| `apps/desktop/src/main/services/ai/piInstallation.ts` | Resolves ADE's pinned Pi (the `pi` npm-tree pin; `ADE_PI_PACKAGE_ROOT` is a dev/test override, never a user install) — CLI path (`dist/cli.js`, run with a Node >= 22.19), SDK package root/entry, agent dir, `auth.json` / models / settings paths, provider inventory, and a `blocker` when the SDK path is unusable. `sdkAvailable` and `cliAvailable` are independent signals. Provider rows are the shared `AiPiProviderStatus` shape; a provider whose `baseUrl` is a loopback host is classified `local` and carries that endpoint through, so a model server the user runs is never mistaken for an API provider on the strength of a placeholder key. |
-| `apps/desktop/src/main/services/ai/piAuthService.ts` | In-app Pi sign-in: enumerates signable providers, drives Pi's own `ModelRuntime.login` on a dedicated inventory-only worker, and relays Pi's prompts and notices to whatever surface is listening. Relays credentials, never stores or logs them. |
-| `apps/ade-cli/src/cli.ts` | Agent-focused `ade` command surface and text/JSON output formatters. `ade new chat --mode chat|cli ... [--no-report]` mirrors the desktop New Chat toggle; parented agent sessions inherit `ADE_CHAT_SESSION_ID` and report back unless `--no-report` (stored as `spawnKind: "peer"`; `--type peer` is still accepted), while `--no-parent` creates an independent top-level session. `ade chat read <session> --limit <n> --max-chars <n>` silently reads a bounded project-backed transcript window across registered projects, and `--page --cursor <offset>` walks older content. Personal chats remain on `ade chat ... --personal`. `ade chat activity` sets or clears a fixed session-card activity detail; the file also owns typed Work status, scheduled work, Linear attachment, secrets, iOS Simulator, App Control, and browser command families. |
-| `apps/ade-cli/src/services/account/accountAuthService.ts` | Required ADE account auth for humans, remote agents, and CI: loopback OAuth, account-directory device authorization, shared `account.session.v1` refresh storage, JWT-`exp`-authoritative access-token refresh, one cross-process refresh-rotation recovery attempt after `invalid_grant`, and ephemeral `ADE_ACCOUNT_TOKEN` credentials. Desktop and CLI ask the brain-owned refresh broker for access tokens. |
-| `apps/desktop/src/main/services/ai/apiKeyStore.ts`, `apps/desktop/src/main/services/cto/linearCredentialService.ts` | Encrypted provider/Linear credential storage with account/device provenance. Account-origin values hydrate from the brain-backed vault and are purged at sign-out or account switch; device-only values remain local. |
-| `apps/ade-cli/src/adeRpcServer.ts`, `apps/ade-cli/src/multiProjectRpcServer.ts`, `apps/ade-cli/src/runtimeRoles.ts` | Private ADE action RPC, caller-role boundary, and multi-project routing. `start_cli_session` requires `subagent` or `peer` whenever it records parent lineage. The RPC edge derives trusted parent→child turn provenance for `chat.messageSession`, strips spoofed provenance, keeps writes/history/lifecycle scoped, and permits bounded transcript reads from project-backed chats. The machine router locates the owning registered project for a chat id and aggregates foreign-project chat search while excluding personal chats. |
-| `apps/desktop/src/main/services/builtInBrowser/desktopBridgeServer.ts`, `builtInBrowserAgentDispatch.ts`; `apps/ade-cli/src/services/builtInBrowser/desktopBridgeClient.ts`, `desktopBridgeMethods.ts`, `remoteBrowserForwarder.ts` | Browser-automation bridge. The owner-only socket is the boundary — no bridge secret and no per-chat token. The runtime (`scopeBuiltInBrowserAdeActionArgs`) tags each call with the caller's chat and lane, the desktop trusts that scope for tab ownership and presence, and `force` is always false for agents. |
-| `apps/ade-cli/src/services/builtInBrowser/remoteBrowserForwarder.ts` | `ade browser open` on a machine with no desktop attached. A box running only `ade serve` has no `WebContentsView`, but a desktop elsewhere may hold a remote pin on this machine's lane and can already reach its loopback ports over a port-forward, so the daemon publishes a `built_in_browser_remote_request` on the runtime event stream those desktops already receive and waits briefly for an acknowledgement. Only `navigate` / `createTab` / `showPanel` forward — they mean "put this URL on a screen", which any attached desktop can satisfy. `observe` / `click` and the rest act on a specific live tab and still fail, now with an error that says where the browser actually runs. With a desktop attached, the local bridge still takes every call, and a call with `openPanel: true` is also forwarded, addressed to the desktop that sent the chat its last message, so the page opens on the screen the user is at. |
-| `apps/ade-cli/src/services/builtInBrowser/remoteBrowserTabHosts.ts`, `remoteBrowserBroadcast.ts`, `remoteBrowserReceivedFiles.ts`, `remoteBrowserOwnerNames.ts` | The forwarder's parts: which machine's browser holds each tab and browser session (so a task's commands follow its tab); broadcasts to every desktop (`listTabsForAgent` for `ade browser status`, `releaseLaneTabs` for a deleted or archived lane); writing the screenshot bytes a desktop's reply carries; chat titles and lane names for the owners `status` lists. |
-| `apps/desktop/src/main/utils/codexComputerUse.ts` | Security boundary for direct Codex Computer Use: explicit config opt-in, stable/cache candidate resolution, executable check, and strict OpenAI code-signature identity verification. |
-| `apps/desktop/resources/agent-skills/ade-cli-control-plane/SKILL.md` | Agent-facing ADE CLI control-plane guidance. |
-| `apps/desktop/resources/agent-skills/ade-harnesses/SKILL.md` | Agent-facing guidance for launching on a specific setup: `--via` routes, saved Custom providers (`--custom-provider`), accounts and stored keys; every launch names its model. |
-| `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | Provider-runtime prompt assembly, including one shared timezone-safe scheduled-work contract for Claude, Codex, Cursor, Droid, OpenCode, and Pi, plus runtime-specific native-subagent versus ADE-child routing guidance. |
-| `apps/desktop/src/main/services/cli/adeCliService.ts` | Desktop-side install / status / uninstall surface for the `ade` launcher. |
-| `apps/desktop/src/shared/adeCliGuidance.ts` | Canonical agent-prompt guidance builder for finding and using `ade`, reading Agent Skills on demand, using socket-backed live surfaces, reporting session activity when a provider has trusted session-scoped CLI access, registering proof, and cleaning up processes. Injected into Work chats, CLI launches, the CTO, and mobile-started runtime work. |
-| `apps/desktop/src/shared/agentSkillRoots.ts` | Resolves and formats Agent Skill roots injected into prompts and CLI environments. |
-| `apps/desktop/src/shared/types/cto.ts` | CTO identity, capability mode, onboarding, memory, and prompt-preview types. |
+| `apps/ade-cli/src/cli.ts` | The `daex` command (`ade` still works). `daex new chat --mode chat\|cli … [--no-report]` mirrors the New Chat toggle; `daex chat read <session> --limit --max-chars` reads a bounded transcript window across registered projects (`--page --cursor` for older content); `daex chat note\|activity\|ask`, scheduled work, secrets, Linear, iOS, App Control and browser command families. |
+| `apps/ade-cli/src/adeRpcServer.ts`, `multiProjectRpcServer.ts`, `runtimeRoles.ts` | The private action RPC, caller roles, multi-project routing. Derives trusted parent→child provenance on `chat.messageSession` / `sendMessage` / `steer` and strips spoofed markers. `resolveSessionBoundRole` keeps a bound session from inheriting CTO authority. See [Tool Registration](tool-registration.md). |
+| `apps/ade-cli/src/services/account/accountAuthService.ts` | DAEX account auth for humans, remote agents and CI: loopback OAuth, device authorization, shared `account.session.v1` refresh storage, one refresh-rotation recovery after `invalid_grant`, `ADE_ACCOUNT_TOKEN` credentials. |
+| `apps/ade-cli/src/services/agentRegistry.ts` | Provider binaries and `classifyAgentCliError` (missing copy / signed out → the `agentCli` error payload). |
+| `apps/ade-cli/src/services/skills/agentSkillCatalogService.ts` | `daex skill list\|show`: project, user and bundled skills, labelled `[project]`, `[user]`, `[bundled]`; `readAgentSkillFile` reads Markdown inside the skill's own folder only. |
+| `apps/desktop/resources/agent-skills/` | The one bundled skill tree (`daex-*` skills; packaged as `Resources/agent-skills`). Old `ade-*` names still resolve. |
+| `apps/desktop/src/shared/agentSkillRoots.ts` | Resolves skill roots for prompts and `ADE_AGENT_SKILLS_DIRS` (ancestor and home `.claude/skills`, `.agents/skills`, `.ade/skills`, `.codex/skills`, env roots, packaged resources). |
+| `apps/desktop/src/shared/adeCliGuidance.ts` | The canonical CLI guidance injected into Work chats, CLI launches, the CTO and phone-started work: finding the CLI, reading skills on demand, row reports, proof, process cleanup. |
+| `apps/desktop/src/main/services/skills/skillDelivery.ts` | `logSkillDelivery`: the one `agent_chat.skill_delivery` telemetry point and its mechanism union. |
+| `apps/desktop/src/main/services/skills/cursorAgentSkillShim.ts` | Per-lane copy of the bundled skills for Cursor's workspace discovery. |
+| `apps/desktop/src/main/services/chat/spawnMissionOwnership.ts` | Which child inputs continue a mission and still wake the parent. |
+| `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | Provider-runtime prompt assembly: the shared scheduled-work contract and native-subagent vs DAEX-child routing guidance. |
+| `apps/desktop/src/main/services/ai/piInstallation.ts`, `piAuthService.ts` | DAEX's pinned Pi (CLI path, SDK root, agent dir, provider inventory, `blocker`) and in-app Pi sign-in through Pi's own `ModelRuntime.login`. |
+| `apps/desktop/src/main/services/agentTools/agentToolsService.ts` | Detects external CLIs on PATH (informational only; DAEX runs its own pinned copies). |
+| `apps/desktop/src/main/services/ai/apiKeyStore.ts`, `services/cto/linearCredentialService.ts` | Encrypted provider and Linear credentials with account/device provenance. |
+| `apps/desktop/src/main/services/builtInBrowser/desktopBridgeServer.ts`, `builtInBrowserAgentDispatch.ts`; `apps/ade-cli/src/services/builtInBrowser/` | The browser bridge (owner-only socket, no per-chat token) and the remote forwarder for machines with no desktop attached (`remoteBrowserForwarder.ts`, `remoteBrowserTabHosts.ts`, `remoteBrowserBroadcast.ts`). |
+| `apps/desktop/src/main/utils/codexComputerUse.ts` | Gate for direct Codex Computer Use: explicit opt-in and OpenAI code-signature check. |
+| `apps/desktop/src/renderer/components/chat/ProviderSignInCard.tsx`; `apps/ios/ADE/Views/Work/WorkProviderSignIn.swift` | The sign-in card that replaces the composer when the chat's provider is signed out. |
+
+## Gotchas / fragile areas
+
+- **A bound session never inherits CTO authority.** Role resolution goes
+  through `resolveSessionBoundRole` in both RPC servers, and tracked CLI and
+  SDK chat environments are stamped `ADE_DEFAULT_ROLE=agent`. The brain may be
+  CTO-capable; the child is not.
+- **Provenance is host-authored.** `withTrustedAgentProvenance` deletes every
+  caller-supplied marker on `chat.messageSession`, `chat.sendMessage` and
+  `chat.steer`, then re-derives `spawnDispatch` or `agentRelay` from observed
+  identity. Positional calls of those actions are refused. A child cannot
+  claim ownership of itself.
+- **Never install bundled skills into provider homes** (`~/.claude/skills`,
+  `~/.agents/skills`, `~/.cursor/skills`, `~/.factory/skills`,
+  `~/.config/opencode/skills`). That leaks DAEX skills into the user's own
+  sessions. A DAEX-owned directory handed to one session is fine.
+- **Advertised skill roots must exist.** `adePromptAgentSkillRoots` checks the
+  disk first; the prompt list is capped, so a dead root costs a real one.
+- **Cursor skill shim uses real copies, per lane.** Cursor drops a skill whose
+  realpath escapes its roots (and Windows needs privileges for symlinks). One
+  root per lane, so a rebuild cannot delete files another chat holds open.
+- **Agents cannot settle.** There is no `chat settle`/`session settle` verb.
+  Only the person or `autoSettleLaneSessionsOnPrMerge` settles a row.
+- **Logins never move between machines.** Download and sign-in run on the
+  chat's machine (`useChatRuntimeScope().pin` on desktop).
 
 ## Agent surfaces
 
-### CTO
+- **CTO.** One persistent identity per project. See [CTO](../cto/README.md).
+- **Regular chats.** Ephemeral, lane-bound, no identity document; state lives
+  in the transcript and resumes across restarts. Default models come from
+  `apps/desktop/src/shared/model-manifest.json` (see
+  [Agent routing](../chat/agent-routing.md)). Claude SDK subagent snapshots
+  carry `parent_agent_id`, kept as `parentAgentId` so surfaces can nest real
+  hierarchies (absent means depth one).
+- **Personal chats.** No visible project; a neutral or assistant prompt and a
+  scratch cwd. See [Personal chats](../personal-chats/README.md).
 
-One persistent project-level identity. The CTO carries a structured `CtoIdentity` document (name, persona, nullable model preferences, fallback models, avatar look, personality, onboarding markers, optional prompt extension) plus a small memory of project notes, notes about the person and open work that survives every fresh provider context and model switch. Its voice starts from the immutable doctrine; the personality setting only warms or lightens it, never overrides its precision rules. See [CTO](../cto/README.md) and [Identity and Personas](identity-and-personas.md).
+### Row reports and schedules
 
-### Regular chat agents
+Any chat or tracked CLI agent can report into its Work row:
 
-Ephemeral sessions bound to a lane. They have no persistent identity document; the session state lives in the transcript and resumes across restarts.
-New Codex agents default to GPT-6.2 Sol, with GPT-6.2 Astra beside it.
-GPT-6.1 Terra, the other GPT-6 and GPT-5.6 models, and GPT-5.5 follow.
-The previous latest models, GPT-6.1 Sol and GPT-6 Astra, appear at the bottom.
-The `sol` and `astra` aliases select the 6.2 models; explicit older model IDs
-keep their original meaning. Both 6.2 models support text and image input, up to a
-1,050,000-token context, up to 128,000 output tokens, reasoning from Low through
-Ultra, and Fast mode when the signed-in account offers it. Provider-native web, MCP/connector, image, and
-subagent activity is normalized into compact transcript events so every client
-can show what the agent did without dumping raw SDK/app-server envelopes.
+- `daex chat note "<text>"`: the row's status line (72 chars max; empty clears).
+- `daex chat activity planning|exploring|implementing|testing|debugging|reviewing|shipping|monitoring|clear`:
+  refines the detected activity. It never changes the board phase; **Needs
+  you** wins; a new user turn clears it.
+- `daex chat ask "<question>"`: a persisted **Needs you** state plus a
+  time-sensitive push; the next user turn clears it.
+- `daex notify --title … [--body …] [--open daex://…]`: a push to the person's
+  phones, open to agents, capped at 60 an hour per account
+  (`ACCOUNT_NOTIFY_LIMIT_PER_HOUR` in `apps/push-relay`). See
+  [Custom notifications](../sync-and-multi-device/push-notifications.md#custom-notifications).
+- `daex session snooze <id> --for 1h`: quiets a row without claiming it is done.
 
-Claude SDK session-message snapshots include `parent_agent_id`. ADE preserves
-it as `parentAgentId` on subagent snapshots so desktop surfaces can build the
-real nested hierarchy; `null` or absent means a depth-one child of the main
-session. Live frames remain defensive because not every SDK start event carries
-the parent id.
+Every chat can schedule durable future work (`daex chat scheduled-work create`
+or `chat.createScheduledWork`). The schedule is DAEX-owned, so every provider
+uses the same scheduler and `messageSession(kind: "wake")` delivery. The shared
+prompt asks for relative one-shots for "in N", an explicit offset for absolute
+times, treats cron as brain-local, and asks the agent to check the returned
+next-run values.
 
-The `ade --socket browser ...` driver works for any process on this machine,
-like Mac Desktop; there is no per-chat token. The runtime tags a chat's calls
-with that chat's own id and lane (or the personal tab collection) and strips
-forged routing, so a chat owns the tabs it opens. Calls from another machine's
-brain are refused, and neither path exposes renderer-only profile diagnostics
-or permission administration.
+## Bundled skill delivery
 
-Every regular chat runtime can schedule its own durable future work through
-`ade chat scheduled-work create` or
-`ade actions run chat.createScheduledWork`. The schedule is ADE-owned rather
-than provider-owned, so Codex, Cursor, Droid, OpenCode, and Claude all use the
-same runtime scheduler and `messageSession(kind: "wake")` delivery path. Their
-shared runtime prompt and bundled CLI skill prefer a relative one-shot for
-"wake in N" intent, require an explicit offset for absolute time, identify cron
-as brain-machine-local, and tell the agent to verify the returned local and ISO
-next-run values before ending the turn.
+Each DAEX-launched session gets the bundled root through
+`ADE_AGENT_SKILLS_DIRS` and the compact catalog in the injected guidance, plus
+the provider's own channel where one exists:
 
-Regular chat and tracked CLI agents can also narrate their lifecycle directly
-into the Work list:
+| Provider | Native channel (`skill_delivery` mechanism) |
+|---|---|
+| Claude | Agent SDK local plugin via `.claude-plugin/plugin.json` (`claude-plugin`, `claude-listing`); CLI and `claude --bg` launches get `--plugin-dir`. |
+| Codex | app-server `skills/extraRoots/set` with `perCwdExtraUserRoots` (`codex-extra-roots`); a runtime too old for it is logged, not silent. |
+| OpenCode | `skills.paths` in the generated `OPENCODE_CONFIG` (`opencode-skill-paths`); personal chats get none (one shared server). |
+| Pi | `noSkills: true` plus `additionalSkillPaths` (`pi-additional-paths`), so Pi sees exactly DAEX's catalog. |
+| Qwen | `skills.directories` in a DAEX-owned system-defaults file under `.ade/cache/qwen-skill-defaults/`, named by `QWEN_CODE_SYSTEM_DEFAULTS_PATH` (`qwen-skill-directories`). Lowest tier, union merge, layered over any existing system defaults. |
+| Cursor | Per-lane shim at `<ADE_HOME>/agent-skill-shims/cursor/<lane-key>` passed as an extra `LocalAgentOptions.dirs` root (`cursor-workspace-dirs`); content-hashed; the one read-only path outside the lane the Cursor guard allows. Skipped for personal chats and orchestration leads. A failure falls back to env + catalog. |
+| Copilot | SDK session `skillDirectories` (not personal chats). |
+| Droid, Kimi, Grok, Muse, Devin, Antigravity | No session-scoped root option without writing a provider home: catalog + `daex skill list --text` / `daex skill show <name> [references/<file>] --text`. |
 
-- `ade chat note "testing desktop auth fallback"` updates the row's quiet
-  status line, trimmed to at most 72 characters (agents aim for 6 words or fewer);
-  an empty note clears it.
-- `ade chat activity planning|exploring|implementing|testing|debugging|reviewing|shipping|monitoring`
-  names the session card's activity detail; `clear` removes it. ADE detects the
-  activity of a chat turn from its tool calls on its own, so agents use this to
-  correct or refine it (for example **Debugging**, which detection cannot tell
-  from testing). The report stands until the detected activity moves somewhere
-  it does not cover. It never changes the parent board phase, **Needs you**
-  takes priority, and a new user turn clears it. Provider guidance exposes this
-  only when ADE can make a session-scoped CLI call reliably.
-- `ade notify --title "Deploy finished" [--body "…"] [--open ade://…]` pushes
-  a notification the agent wrote to the user's phones, for when the user asked
-  to be told. It is open to agents (not CTO-only), capped at 60 an hour per
-  account, and exits non-zero past the cap or when the machine is signed out.
-  See [Custom notifications](../sync-and-multi-device/push-notifications.md#custom-notifications).
-- `ade chat ask "Which account should I use?"` creates a loud, persisted
-  `Needs you` state, clears settle, and sends a time-sensitive push. The next
-  user turn clears the ask.
-- `ade session snooze <id> --for 1h` quiets a row the agent is waiting on
-  without claiming the work is done; a hand-raise wakes it early.
+The CLI path works for every provider and is the fallback for older runtimes.
+A large skill keeps rare detail in `references/<topic>.md` listed in a "Detail
+files" table.
 
-Agents deliberately **cannot settle**. `ade chat settle`, `ade chat unsettle`,
-`ade session settle`, and `ade session unsettle` do not exist:
-whether work is actually finished is a subjective judgment agents are
-unreliable at, and a chat that settles itself disappears from the user's active
-list on the agent's say-so. Two paths remain — the user settling the row in
-ADE, and the deterministic `autoSettleLaneSessionsOnPrMerge` policy. Nothing derives a
-settle either: a completed turn or a clean CLI exit leaves the row
-active/ended, never settled.
+## Spawning and reporting
 
-`buildAdeBootstrapGuidance` exposes the surviving commands in the injected
-agent prompt (`ADE_SESSION_STATUS_PROTOCOL_GUIDANCE`), including the explicit
-"you cannot settle or unsettle a session" line.
+Any chat-bound agent can run `daex new chat` (a chat or a tracked CLI
+session). The child inherits `orchestrationParentSessionId` from the caller's
+`ADE_CHAT_SESSION_ID`; both modes take `--parent`, `--no-parent` and
+`--no-report`. Plain shells record no lineage.
 
-### Bundled skill distribution
+- **Subagent** (default): reports to the parent after every turn, steering an
+  active parent or waking an idle one.
+- **`--no-report`** (stored `spawnKind: "peer"`; `--type peer` still works;
+  the UI never says "peer"): posts nothing to the parent. `none` is rejected.
+- **`--no-parent`**: an independent session; the launcher is recorded as
+  `launchedBySessionId` only for the Focus rule.
 
-ADE keeps one canonical bundled skill tree at
-`apps/desktop/resources/agent-skills` (packaged as
-`Resources/agent-skills`). It does not install those skills into
-`~/.claude/skills`, `~/.agents/skills`, `~/.cursor/skills`,
-`~/.factory/skills`, or `~/.config/opencode/skills`; doing so leaks
-ADE-specific capabilities into unrelated harness sessions. An ADE-owned private
-directory that ADE hands to one session explicitly is not an install and is
-allowed — the rule is about provider-global homes the user's own `claude`,
-`cursor`, or `opencode` would pick up on its own.
+Lineage decides only who gets reports; any agent may read, message, interrupt
+or stop any chat (`CHAT_ACTION_SCOPE` in `adeRpcServer.ts`). Unattended child
+resumption stops once the parent is settled, archived or deleted.
 
-Each ADE-launched session receives the canonical root through
-`ADE_AGENT_SKILLS_DIRS` and the compact skill catalog in
-`buildAdeBootstrapGuidance`. Provider-native integrations are session-scoped:
+`spawnMissionOwnership.ts` keeps these inputs as mission continuation (the
+child still wakes its parent at the end): `scheduledWake`, `spawnCompletion`,
+`agentRelay`, `hostContinuation` (older `continuity_recovery` still matched),
+`orchestrationOrigin` with a non-`directive` intent, and `deliveryState:
+"queued"`. A human message on a subagent does not take over the report
+channel; taking over is explicit (**Stop reports to <parent>** in the session
+menu, `daex chat demote`, `/session demote`), and **Report back to <parent>**
+or `daex chat promote` restores it. A later parent dispatch auto-promotes a
+peer child.
 
-- Codex app-server receives `skills/extraRoots/set` and uses
-  `perCwdExtraUserRoots` when listing skills. The result is logged: a runtime
-  too old for the method loses every bundled skill, and that must not look
-  like success.
-- Claude Agent SDK loads the bundled root as a local plugin through its
-  `.claude-plugin/plugin.json`; tracked Claude CLI launches and background
-  `claude --bg` launches receive the same validated root through
-  `--plugin-dir`.
-- OpenCode receives the roots through its own top-level `skills` config key,
-  which ADE sets inside the generated `OPENCODE_CONFIG` file. No file is
-  written into the user's OpenCode config home.
-- Pi has its native discovery replaced outright: ADE passes `noSkills: true`
-  plus `additionalSkillPaths`, so a Pi session sees exactly ADE's catalog.
-- Qwen Code receives the roots through its own `skills.directories` settings
-  key. ADE writes an ADE-owned system-defaults JSON under the project's
-  `.ade/cache/qwen-skill-defaults/` and names it with
-  `QWEN_CODE_SYSTEM_DEFAULTS_PATH`, so nothing is written into `~/.qwen`. That
-  tier is the lowest-precedence one and the key merges as a union, so ADE's
-  roots add to the user's rather than replacing them, and a bundled skill can
-  never displace a same-named skill the user already has. ADE layers its file
-  on top of whatever the machine's own system-defaults file held, so an
-  administrator-installed one is not hidden by the redirect.
-- Cursor SDK chats get the catalog through Cursor's own discovery. Cursor scans
-  `<workspace root>/.agents/skills/<name>/SKILL.md` for every root in
-  `LocalAgentOptions.dirs`, so ADE copies the bundled skills into an ADE-owned
-  shim keyed per lane at `<ADE_HOME>/agent-skill-shims/cursor/<lane-key>` and
-  passes only that root as an extra `dirs` entry (`cursorAgentSkillShim.ts`).
-  Real copies, not symlinks:
-  Cursor's walker follows a symlink and then drops any skill whose `realpath`
-  escapes the roots it was given, so a link into the app bundle would require
-  handing Cursor the whole resources directory as a workspace root — and
-  Windows cannot create symlinks without extra privileges anyway. The copy is
-  content-hashed against a stamp at the shim root, so an unchanged bundle does
-  not rewrite the tree. The root is keyed per lane so two concurrent chats
-  cannot rebuild a tree the other is using — a rebuild deletes and re-copies,
-  which on Windows throws against an open handle. The shim root is also the one
-  read-only exception ADE's Cursor lane path guard makes outside the lane, so a
-  model that follows a listed skill path is not denied a file ADE just
-  advertised. Personal chats and orchestration leads are skipped: a lead runs on
-  `settingSources: ["user","team","mdm"]`, which turns Cursor's project
-  extensibility off, so `dirs` skills would not load. Every outcome, including
-  every skip reason, is logged as `agent_chat.skill_delivery` — the one
-  skill-delivery telemetry point, in `skillDelivery.ts` — with mechanism
-  `cursor-workspace-dirs`; a failed materialization falls back to
-  `ADE_AGENT_SKILLS_DIRS` plus the catalog rather than failing the launch.
-- Droid and the remaining ACP providers (Kimi, Grok) have no
-  extra-skill-root option ADE can set without writing a provider config home,
-  so they use the catalog plus the provider-independent
-  `ade skill list --text` / `ade skill show <name> --text` activation path.
-  That path lists the project's skills (`.agents`, `.claude`, `.ade`,
-  `.cursor`, `.codex` from the working folder up), the person's own, and
-  ADE's, each labelled `[project]`, `[user]` or `[bundled]`
-  (`agentSkillCatalogService.ts`). A large skill keeps its common path in
-  `SKILL.md` and rarely needed detail in `references/<topic>.md` next to it,
-  listed in a "Detail files" table; `ade skill show <name> references/<file>`
-  reads one (`readAgentSkillFile`: Markdown inside the skill's own folder only,
-  after symlinks resolve, and a `..` path is refused before the disk is read).
-  Every delivery path copies or points at the whole skill folder, so native
-  skill readers reach the same files.
+A missing parent is noted once and closes the channel; a delivery failure to a
+reachable parent becomes one warning after bounded retries. For a CLI child
+the lineage lives in `resumeMetadata` and is projected onto
+`TerminalSessionSummary` (never `chatSessionId`, which means terminal
+ownership). Children get `ADE_PARENT_CHAT_SESSION_ID` and `ADE_SPAWN_KIND`.
 
-Every root ADE advertises is checked against the disk first
-(`adePromptAgentSkillRoots`). The prompt-facing list is capped, so an
-advertised root that does not exist takes a slot from one that does and sends
-the agent to a path it cannot open.
-
-The same CLI activation path is available to every provider and remains the
-compatibility fallback for older runtime versions. On startup, ADE performs a
-one-time conservative migration of the former global installation: it reads
-the ADE-owned `.ade-skills.json` manifest, removes only copies whose contents
-still match ADE's bundle, preserves modified or unverifiable copies, and then
-retires the manifest.
-
-SDK-backed Claude, Codex, Cursor, Droid, and OpenCode chats receive
-`ADE_CHAT_SESSION_ID` plus `ADE_DEFAULT_ROLE=agent`, and their persistent guidance names the concrete
-`--session` argument. Tracked provider CLIs receive the same session binding
-and an `agent` role on both first launch and resume. This keeps the lifecycle
-surface provider-neutral and prevents the host brain's CTO-capable process role
-from leaking into a child agent.
-
-On macOS, Codex agents can use the canonical `mcp__computer_use` tool when the
-user explicitly enabled the bundled Computer Use plugin or MCP server and the
-standalone OpenAI helper passes signature verification. The same path is
-installed for native Work chat and tracked Codex CLI start/resume; normal MCP
-elicitation consent still applies.
-
-### Personal chat agents
-
-Ephemeral machine-owned sessions with no user-visible project, lane, repository,
-or PR identity. They share provider/model/turn infrastructure with regular chat
-but receive a neutral general-assistant prompt and a scratch cwd. Project ADE
-guidance, project slash-command discovery, Linear metadata, and
-project workflow tools are not injected. See [Personal chats](../personal-chats/README.md).
-
-## Spawning agents and spawn types
-
-Any chat-bound agent can run `ade new chat` to spawn either another ADE chat
-or a tracked agent CLI session. Both modes inherit
-`orchestrationParentSessionId` from the spawner's `ADE_CHAT_SESSION_ID`, and
-both accept `--parent`, `--no-parent`, and `--no-report`. Plain shell
-terminals do not record this lineage. The child is a normal agent with the
-same runtime, permissions, and tools, but reporting is a coordination
-contract: a `subagent` (the default) reports back to the parent after every
-turn; a `--no-report` child (stored as `spawnKind: "peer"`, and still accepted
-as `--type peer`) posts nothing to the parent when its turns finish. The
-product never shows the word "peer". The legacy `none` value is rejected. Lineage decides
-only who gets reports: any agent may read, message, interrupt, or stop any
-chat (see `CHAT_ACTION_SCOPE` in `adeRpcServer.ts`). A `--no-parent`
-session an agent starts records the agent as `launchedBySessionId`: no
-nesting, wake or permission ceiling, only the Focus rule that keeps a finished
-helper from holding its busy launcher's lane open.
-
-Automatic subagent resumption is gated by its parent: once the parent is settled,
-archived, or deleted, the child does not resume its unattended work.
-
-Subagent chat turns return their child turn id and latest bounded assistant
-summary, steering an active parent or waking an idle parent. A subagent always
-wakes its parent; a `peer` child never does. The policy lives in
-`services/chat/spawnMissionOwnership.ts` plus the child's persisted
-`spawnKind`. These inputs continue the mission in
-flight rather than reassigning it, so a subagent that self-schedules wakeups —
-an ADE ship loop polling CI, say — still wakes its parent when the mission
-finishes:
-
-- `scheduledWake` — the child's own durable scheduler firing.
-- `spawnCompletion` — a result returning from the child's own grandchild.
-- `agentRelay` — any other bound agent messaging the child (a grandchild
-  reporting in, a sibling coordinating, the child writing to itself).
-- `hostContinuation` — ADE prompting the chat to resume or repair its own work
-  (`kind: "continuity_recovery"` is still matched for older transcripts).
-- `orchestrationOrigin` with an `intent` other than `"directive"` — status
-  reports, diff notices, questions and cancellations inside a run, so a worker
-  reporting to a lead cannot cost that lead its own parent's wakes.
-- `deliveryState: "queued"` — superseded by the delivered copy, which carries
-  the authoritative metadata (the queue path strips `scheduledWake`).
-
-A direct human message on a subagent does not steal the report channel. The
-next wake names how many human messages landed in that turn. Taking over
-(stop reports, `spawnKind: "peer"`) is an explicit user action — composer
-banner, the session menu's **Stop reports to <parent>**, `ade chat demote`, or
-`/session demote` — and posts a quiet parent note that reports stop.
-**Report back to <parent>** or `ade chat promote` restores the channel when the
-parent chat still exists. A later parent dispatch into a `peer` child
-auto-promotes it back to subagent. A `peer` child's finished turns post
-nothing to the parent.
-
-All of this provenance is host-authored. `withTrustedAgentProvenance` runs on
-`chat.messageSession`, `chat.sendMessage` and `chat.steer` before any
-role-specific branch: it deletes every caller-supplied marker, then re-derives
-`spawnDispatch` (caller is the target's persisted parent) or `agentRelay` (any
-other bound caller) from observed identity. Positional invocation of those three
-actions is rejected so metadata cannot route around the check, and the
-automation action bridge strips the same keys. A child therefore cannot
-manufacture ownership of itself, and a grandchild's status report cannot revoke
-its grandparent's. The persisted lineage/dispatch metadata makes this
-restart-safe rather than a one-shot kickoff notification. A missing parent is
-noted once in the child and closes the report channel. A delivery failure
-against a still-reachable parent becomes one visible warning after bounded
-retries.
-
-For a CLI child, the same parent/type fields are persisted in the tracked
-session's `resumeMetadata` and projected onto `TerminalSessionSummary` for
-lineage UI. They do not populate `chatSessionId`, which remains reserved for
-terminal ownership, and a later resume-command refresh preserves the lineage.
-
-Both child types receive `ADE_PARENT_CHAT_SESSION_ID` / `ADE_SPAWN_KIND` and
-type-specific self-report guidance; `chat.messageSession` remains the recovery
-path.
-
-There is no separate orchestration mode: a coordinating agent spawns its own
-helpers from any thread with
-`ade chat create --type subagent --provider <p> --model <m> [--instance <id>] [--custom-provider <name>]`,
-and reads their results back through the same spawn lineage.
-
-The runtime mechanics — provider-native mid-turn completion steering, the
-idle/fallback message and peer-notice paths, and the navigation/pill/breadcrumb
-surfacing — live in
+There is no orchestration mode: a coordinator spawns helpers with
+`daex chat create --type subagent --provider <p> --model <m> [--instance <id>] [--custom-provider <name>]`.
+To carry unmerged commits, spawn from a lane created with
+`daex lanes create --name <n> --from <branch> --on local` (`--on uncommitted`
+copies uncommitted changes too). Runtime mechanics live in
 [Chat › Spawn types and completion reporting](../chat/README.md#spawn-types-and-completion-reporting).
-When the spawned work must carry the current lane's unmerged commits, spawn
-from that branch with `ade lanes create --name <n> --from <branch> --on local`. Use `--on uncommitted` to copy uncommitted changes too.
 
-## Agent download / auth from chat
+## Agent download & auth from chat
 
-ADE runs its own pinned copy of every agent and downloads it on demand
-([agent tools cache](../onboarding-and-settings/agent-tools-cache.md)); nothing
-asks the user to install a CLI. When a chat targets a provider whose copy is not
-downloaded yet on the chat's machine, or is signed out, the error carries an
-`agentCli` payload built by `classifyAgentCliError` from
-`apps/ade-cli/src/services/agentRegistry.ts`. A missing copy gets the inline
-`AgentCliAuthCard` with Download/Retry (`ai.pinnedToolDownload`). A signed-out
-one gets the sign-in card in the composer's place (`ProviderSignInCard.tsx`,
-and `WorkProviderSignIn.swift` on the phone), which runs the provider's own
-sign-in through the host's login runners (`providerInstances.login*`,
-`ai.cliLogin*`, `ai.antigravitySignIn*`, Cursor's login) and resends the turn
-once the machine reads the login back. See
-[chat README › Inline agent download, and the sign-in card](../chat/README.md).
+DAEX runs its own pinned copy of every agent and downloads it on demand
+([agent tools cache](../onboarding-and-settings/agent-tools-cache.md)). When the
+chat's machine lacks the copy or is signed out, the error carries an `agentCli`
+payload. A missing copy shows `AgentCliAuthCard` with Download/Retry
+(`ai.pinnedToolDownload`). Signed out shows the sign-in card in the composer's
+place, which runs the provider's own login through the host's runners
+(`providerInstances.login*`, `ai.cliLogin*`, `ai.antigravitySignIn*`, Cursor's
+login) and resends the turn once the login reads back.
 
-The important invariant is runtime locality: both act on the chat's machine
-(`useChatRuntimeScope().pin` on desktop, the chat machine's connection on the
-phone), so a remote chat downloads and signs in on that remote machine, not
-locally. A login is never copied between machines.
-
-**Pi is the exception: it signs in inside ADE.** Settings → Providers drives
-Pi's own `ModelRuntime.login` through `piAuthService.ts` and renders whatever Pi
-asks for — an auth URL, a device code with a copyable user code, a text or
-secret field, or a choice list — as ADE cards. ADE relays the user's answers and
-never reads, stores, or logs a credential; Pi's own `AuthStorage` owns
-`auth.json`. ADE does not drive Pi's terminal `/login`: that path typed
-`/login` into Pi's TUI after a fixed delay, which raced Pi's startup and usually
-submitted empty lines. When the Pi SDK is unavailable (missing package, or a
-Node older than `PI_SDK_MIN_NODE`) the card states the terminal instruction
-instead of running it, and a Pi sign-in requested from anywhere else in the app
-opens Settings → Providers rather than spawning a terminal. See
+**Pi signs in inside DAEX.** Settings → Providers drives Pi's
+`ModelRuntime.login` (`piAuthService.ts`) and renders its URL, device code,
+fields or choices as cards; Pi's `AuthStorage` owns `auth.json`. DAEX never
+types `/login` into Pi's TUI. Without the Pi SDK (missing, or Node older than
+`PI_SDK_MIN_NODE`) the card states the terminal instruction. See
 [Agent Routing › Pi sign-in](../chat/agent-routing.md#pi-sign-in).
 
-### ADE account auth for agents and CI
+### DAEX account auth for agents and CI
 
-ADE account access is required for a fresh local or remote workflow. On an SSH
-or display-less runtime, `ade login` prints a device verification URL and short
-code that can be approved in any browser; browser-capable local runtimes retain
-the loopback OAuth callback. Fully non-interactive automation provisions a
-versioned, self-contained refresh credential once with `ade account token
-create`, stores it in a secret manager, and exposes it to the machine brain as
-`ADE_ACCOUNT_TOKEN`. The envelope includes the public OAuth refresh context, so
-the consuming host needs no local Clerk configuration. The token never enters
-project files or operational logs, and account actions remain CTO-only.
-`account.deleteMachine` goes further: no agent may remove a machine, the CTO
-included. An agent in a chat that runs `ade machines remove <name|key|id>`
-raises a card in that chat instead, and only the person can answer it (see
-"Removing a computer from a chat" in `docs/features/sync-and-multi-device/README.md`).
-An agent with no chat is refused, and the person removes the machine on the
-Account page or with `ade machines remove --confirm REMOVE` in their own
-terminal.
+`daex login` uses a loopback OAuth callback where a browser exists and a
+device URL plus code on SSH or headless machines. Non-interactive automation
+creates a refresh credential once with `daex account token create` and gives it
+to the brain as `ADE_ACCOUNT_TOKEN`. Account actions are CTO-only, and no
+agent may remove a machine: `daex machines remove` from a chat raises a card
+only the person can answer ("Removing a computer from a chat" in
+[sync-and-multi-device](../sync-and-multi-device/README.md)); a chat-less
+agent is refused.
 
-## Identity shape
-
-```ts
-type CtoIdentity = {
-  name: string;
-  version: number;
-  schemaVersion?: number;
-  persona: string;
-  systemPromptExtension?: string;
-  onboardingState?: CtoOnboardingState;
-  modelPreferences: CtoModelPreferences | null;
-  fallbackModels?: CtoModelPreferences[];
-  avatar?: CtoAvatarLook | null;
-  personality?: CtoPersonality | null;
-  updatedAt: string;
-};
-```
-
-## Capability modes
-
-`CtoCapabilityMode` is recorded on the chat session:
-
-- `full_tooling` — the session connected to the ADE CLI/action bridge.
-- `fallback` — the bridge was unavailable and the adapter used its own built-in tool set.
-
-## Tool access tiers
+## Tool tiers
 
 | Tier | CTO | Regular chat | Personal chat |
 |---|:-:|:-:|:-:|
-| Provider-native general tools (reasoning, web, scratch files/shell as permitted) | yes | yes | yes |
-| ADE project workflow guidance/actions | yes | yes | no |
-| CTO operator (spawnChat, lanes/PRs/git/tests, memory tools) | yes | no | no |
-| Linear tools | yes (when connected) | no | no |
+| Provider-native tools (as permitted) | yes | yes | yes |
+| DAEX workflow guidance and actions | yes | yes | no |
+| CTO operator tools (`spawnChat`, memory, lanes/PRs/git/tests) | yes | no | no |
+| Linear tools | when connected | no | no |
+| `recordDiscovery` (append-only, hands a finding to the CTO) | yes | yes | no (no project) |
 
-Standalone chat sessions connected through the ADE CLI have elevated tools hidden from tool listing and execution at the ADE CLI server boundary.
-
-## Prompt composition
-
-The project surfaces use `buildCodingAgentSystemPrompt` with different identity/context prefixes; personal chat deliberately does not:
-
-- **CTO:** the immutable CTO doctrine (role, precision rules, how it speaks, and how it helps with ADE itself), persona, the continuity model, memory guidance, environment knowledge, the injected notes and open work, the live project state, and the user-defined prompt extension.
-- **Regular chat:** lane context, workflow tool guidance, and permission-mode framing.
-- **Personal chat:** a compact general-assistant directive stating that no
-  repository/project is attached and that explicit filesystem/shell work must
-  remain inside the supplied scratch cwd.
-
-### Provider capability isolation
-
-Provider capability isolation is caller-scoped. Ordinary chats retain the
-user's provider configuration and MCP servers; only a chat whose embedder asked
-for `strictMcpConfig` receives ADE's isolated configuration and ADE-owned MCP
-lease.
-
-That is one instance of a rule every provider adapter follows: ADE's settings
-land at the highest precedence tier each SDK offers, so ADE names a config key
-only when it genuinely owns it and leaves everything else absent for the
-provider's own precedence to resolve. The isolated OpenCode server is where the
-rule needs care, because `buildIsolatedOpenCodeEnv` rebuilds the environment
-from scratch and drops every inherited `OPENCODE_*` variable — that server
-therefore sets `OPENCODE_DISABLE_AUTOUPDATE=1` itself rather than inheriting it,
-so it cannot self-update the binary ADE pinned. See
-[Provider config ownership](../chat/agent-routing.md#provider-config-ownership).
-
-## Memory and reconstruction
-
-The CTO's memory lives in files under `.ade/cto/` (`MEMORY.md`, `open-work.json`, `discoveries.md`) plus `USER.md` under the ADE home, owned by `ctoMemoryService`. Project notes (4096 bytes), notes about the person (2048 bytes) and the open-work list are injected on every turn with a byte count in each heading; nothing in the pipeline runs a model. `refreshCtoProviderThread()` gives the CTO a fresh provider thread when its context is full, after a compaction, after an overflow, on a model fallback, or when the person asks, and carries the static prompt, the notes, the open work, the live state and the last 40 messages onto it.
-
-One part of that system is not CTO-only. Every agent gets `recordDiscovery`, an append-only tool that hands one durable finding up to the project's CTO — a convention, a trap, a decision the next agent should not have to rediscover — with no matching read tool, so contributing never grants a view of the CTO's memory. Project chats do not receive the CTO's notes. Full details in [Identity and Personas](identity-and-personas.md#memory-system).
-
-## Session logs
-
-The CTO keeps no session log. The live CTO conversation and its older sessions are read straight from the chat transcripts (`readHistory`), and the `cto_session_logs` table remains in the schema only because tables are never dropped.
-
-## IPC surface
-
-Representative channels:
-
-| Channel | Purpose |
-|---|---|
-| `ade.cto.getState` | Fetch the CTO identity. |
-| `ade.cto.updateIdentity` | Patch identity fields. |
-| `ade.cto.ensureSession` | Create or fetch the CTO's persistent chat session. |
-| `ade.cto.refreshContext` | Give the CTO a fresh provider thread. |
-| `ade.cto.previewSystemPrompt` | Generate a system-prompt preview for the UI. |
-| `ade.cto.getMemory` / `updateNotes` / `updateOpenWork` | Read the memory snapshot, rewrite one notes file, change the open-work list. |
-
-## Fragile and tricky wiring
-
-- **A fresh context never runs mid-turn.** `refreshCtoProviderThread` refuses while the thread is busy and records the reason for the next settled turn; the static prompt, notes, open work and 40-message tail then carry over.
-- **A forgotten provider pointer is what makes the thread fresh.** Clearing the pointer fields is the only thing that stops Claude, Codex or Cursor resuming the old thread.
-- **The notes caps are load-bearing.** A `remember` past a notes cap is refused so the CTO merges or forgets; a silently truncated note would make the CTO look forgetful.
-- **Standalone-chat tool filtering at ADE CLI boundary.** Filtering is applied in `apps/ade-cli/src/adeRpcServer.ts` from the initialize payload's identity.
-- **A bound session never inherits CTO authority.** Keep role resolution on
-  `resolveSessionBoundRole` in both single-project and multi-project RPC
-  servers, and stamp tracked CLI / SDK chat environments with an explicit
-  agent role. A daemon may be CTO-capable, but that capability
-  is unrelated to the child session's identity.
+Ordinary chats keep the user's provider config and MCP servers; only a chat
+whose embedder asked for `strictMcpConfig` gets DAEX's isolated config. DAEX
+names a config key only when it owns it (see
+[Provider config ownership](../chat/agent-routing.md#provider-config-ownership)).
+The isolated OpenCode server rebuilds its environment and so sets
+`OPENCODE_DISABLE_AUTOUPDATE=1` itself.
 
 ## Detail docs
 
-- [Identity and Personas](identity-and-personas.md) — identity storage, reconstruction, the immutable doctrine, and the memory system.
-- [Tool Registration](tool-registration.md) — ADE CLI integration, action registration, role-based filtering, and capability fallback.
-
-## Related docs
-
-- [Personal chats](../personal-chats/README.md) — projectless agent sessions and
-  their machine-scope isolation contract.
-- [CTO](../cto/README.md) — the CTO thread and settings surface.
-- [Chat README](../chat/README.md) — session lifecycle and identity session filtering.
-- [Chat Agent Routing](../chat/agent-routing.md) — provider and model selection for agents.
-- [Chat Tool System](../chat/tool-system.md) — universal, workflow, and coordinator tool details.
+- [Tool Registration](tool-registration.md): CLI integration, action RPC, roles, filtering.
+- [CTO](../cto/README.md), [Personal chats](../personal-chats/README.md),
+  [Chat](../chat/README.md), [Agent routing](../chat/agent-routing.md),
+  [Tool system](../chat/tool-system.md).

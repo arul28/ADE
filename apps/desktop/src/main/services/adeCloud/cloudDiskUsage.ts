@@ -6,6 +6,7 @@ import { CLOUD_DISK_USAGE_MAX_ITEMS } from "../../../../../account-directory/src
 import type { CloudDiskUsage, CloudDiskUsageItem, CloudDiskUsageReport, CloudIgnoredFiles, CloudLaneWork } from "../../../shared/adeCloud";
 import { addSentryBreadcrumb } from "../../../shared/sentry/capture";
 import { resolveToolsRootLayout } from "../../../../../ade-cli/src/services/tools/paths";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * A cloud computer measures what uses its disk (repository, dependencies,
@@ -225,7 +226,7 @@ async function measureCloudDisk(input: {
     { kind: "caches", label: "Caches", gb: sum(cachesKb), clearable: true },
     // The server knows six kinds; these two go as `other` with their own names, so older servers keep them.
     { kind: "other", label: "Agent programs", gb: sum(toolsKb), clearable: false },
-    { kind: "other", label: "ADE data (chats and lanes)", gb: sum(adeKb), clearable: false },
+    { kind: "other", label: `${BRAND.NAME} data (chats and lanes)`, gb: sum(adeKb), clearable: false },
   ] satisfies CloudDiskUsageItem[] as CloudDiskUsageItem[]).filter((part) => part.gb >= MIN_PART_GB);
   const known = parts.reduce((total, part) => total + part.gb, 0);
   const other = Math.round(Math.max(0, totalGb - known) * 1000) / 1000;

@@ -86,6 +86,7 @@ import { noChatMachineError, withChatPin } from "../chat/chatMachinePin";
 import { useWorkInputFocusOnChatSwitch } from "../work/workShortcuts";
 import { sessionLaneDisplayName } from "../../../shared/laneDisplayName";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 function isRunningPtySession(
   session: TerminalSessionSummary | null | undefined,
@@ -559,7 +560,7 @@ function WorkCliContinuationComposer({
       setDraft("");
       setCommandMenuTrigger(null);
     } catch (err) {
-      setSubmitError(plainErrorText(err, "ADE couldn't send that."));
+      setSubmitError(plainErrorText(err, `${BRAND.NAME} couldn't send that.`));
     } finally {
       setSending(false);
     }
@@ -698,7 +699,7 @@ function ClosedCliSessionSurface({
     try {
       await onResume?.(session);
     } catch (err) {
-      setResumeError(plainErrorText(err, "ADE couldn't resume the session."));
+      setResumeError(plainErrorText(err, `${BRAND.NAME} couldn't resume the session.`));
     } finally {
       setResuming(false);
     }
@@ -725,7 +726,7 @@ function ClosedCliSessionSurface({
         if (!cancelled) setReplayedRows(rows);
       })
       .catch((err) => {
-        if (!cancelled) setError(plainErrorText(err, "ADE couldn't read the session history."));
+        if (!cancelled) setError(plainErrorText(err, `${BRAND.NAME} couldn't read the session history.`));
       });
     return () => {
       cancelled = true;
@@ -1226,7 +1227,7 @@ const MODE_OPTIONS: Array<{
   description: string;
   Icon: typeof Chats;
 }> = [
-  { kind: "chat", label: "Chat", description: "Compose a new ADE chat in this lane.", Icon: Chats },
+  { kind: "chat", label: "Chat", description: `Compose a new ${BRAND.NAME} chat in this lane.`, Icon: Chats },
   { kind: "cli", label: "CLI", description: "Start a tracked agent CLI session.", Icon: Code },
 ];
 

@@ -35,6 +35,7 @@ import {
   appleOrientationFamily,
   isAppleDeviceOrientation,
 } from "../../../shared/appleOrientation";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The iPhone Duo's own surface: folding and reading its pose, the panel a
@@ -628,7 +629,7 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
         reject(new Error(
           // Nothing here can draw: renders come from a desktop window's 3D
           // view, and the service never opens a window or a pane unasked.
-          "No ADE desktop window took this render. Renders are drawn by a desktop window's 3D view: open the project in ADE on a desktop (a project on another machine must be the window's front tab), then render again.",
+          `No ${BRAND.NAME} desktop window took this render. Renders are drawn by a desktop window's 3D view: open the project in ${BRAND.NAME} on a desktop (a project on another machine must be the window's front tab), then render again.`,
         ));
       }, APPLE_RENDER_ACK_TIMEOUT_MS);
       const doneTimer = setTimeout(() => {

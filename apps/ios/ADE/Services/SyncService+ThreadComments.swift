@@ -39,7 +39,7 @@ extension SyncService {
       throw NSError(
         domain: "ADE",
         code: 15,
-        userInfo: [NSLocalizedDescriptionKey: "This computer’s ADE cannot take comments from the phone. Update it to comment here."]
+        userInfo: [NSLocalizedDescriptionKey: "This computer’s \(Brand.name) cannot take comments from the phone. Update it to comment here."]
       )
     }
     let startedAt = threadCommentsWriteVersion[sessionId, default: 0]
@@ -133,7 +133,7 @@ extension SyncService {
       throw NSError(
         domain: "ADE",
         code: 15,
-        userInfo: [NSLocalizedDescriptionKey: "This computer’s ADE cannot edit comments. Update it to edit them here."]
+        userInfo: [NSLocalizedDescriptionKey: "This computer’s \(Brand.name) cannot edit comments. Update it to edit them here."]
       )
     }
     let previous = threadComments(sessionId: sessionId).first { $0.id == commentId }
@@ -181,7 +181,7 @@ extension SyncService {
       throw NSError(
         domain: "ADE",
         code: 15,
-        userInfo: [NSLocalizedDescriptionKey: "This computer’s ADE cannot delete comments. Update it to delete them here."]
+        userInfo: [NSLocalizedDescriptionKey: "This computer’s \(Brand.name) cannot delete comments. Update it to delete them here."]
       )
     }
     let before = threadComments(sessionId: sessionId)

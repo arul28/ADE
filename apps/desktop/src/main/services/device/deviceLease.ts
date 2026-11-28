@@ -1,4 +1,5 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Turns on a lane's device, for agents that share it. The Apple device
@@ -331,7 +332,7 @@ export function createDeviceLeases(options: { now?: () => number } = {}) {
       const waiting = [...queues.values()].flat();
       queues.clear();
       // Every wait gets an answer: the brain is stopping, the line goes with it.
-      for (const waiter of waiting) waiter.fail(new Error("The ADE brain is stopping; ask for the lease again once it is back."));
+      for (const waiter of waiting) waiter.fail(new Error(`The ${BRAND.NAME} brain is stopping; ask for the lease again once it is back.`));
     },
   };
 }

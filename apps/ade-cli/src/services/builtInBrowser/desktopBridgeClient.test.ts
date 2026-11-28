@@ -234,7 +234,7 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
       logger: silentLogger(),
     });
     await expect(client.getStatus()).rejects.toThrow(
-      /No ADE Desktop browser is attached to this machine/,
+      /No DAEX Desktop browser is attached to this machine/,
     );
     client.dispose();
   });
@@ -313,7 +313,7 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
     await expect(probeDesktopBridge({ socketPath: server.socketPath })).resolves.toEqual({
       attached: false,
       kind: "unreachable",
-      reason: "ADE Desktop is older than ADE's background service. Restart ADE Desktop to finish updating.",
+      reason: "DAEX Desktop is older than DAEX's background service. Restart DAEX Desktop to finish updating.",
     });
   });
 });

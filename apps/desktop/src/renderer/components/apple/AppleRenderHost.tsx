@@ -5,6 +5,7 @@ import { useAppStoreApi } from "../../state/appStore";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { isWebClientMode } from "../../lib/webClientMode";
 import type { AppleRenderJob } from "./appleRenderProof";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The job (a stream, the 3D view and three.js) is loaded with the first
@@ -110,7 +111,7 @@ export function AppleRenderHost({ binding }: { binding: OpenProjectBinding }) {
           };
           if (!alive) {
             void api.renderComplete(
-              { requestId: job.requestId, filed: 0, error: "The ADE window closed before the render started." },
+              { requestId: job.requestId, filed: 0, error: `The ${BRAND.NAME} window closed before the render started.` },
               pin,
             ).catch(logLostAnswer);
             return;
@@ -147,7 +148,7 @@ export function AppleRenderHost({ binding }: { binding: OpenProjectBinding }) {
     for (const job of jobsRef.current) {
       if (answeringRef.current.has(job.requestId)) continue;
       void api?.renderComplete(
-        { requestId: job.requestId, filed: 0, error: "The ADE window closed before the render finished." },
+        { requestId: job.requestId, filed: 0, error: `The ${BRAND.NAME} window closed before the render finished.` },
         job.pin,
       ).catch(logLostAnswer);
     }

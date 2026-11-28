@@ -44,6 +44,7 @@ import { CLOUD_CHAT_MESSAGE_ID_PATTERN, type CloudChatSendAnswer, type CloudChat
 import { isCloudTierId } from "../../../shared/cloudTiers";
 import { CloudApiError } from "../../../shared/cloudApiClient";
 import { CLOUD_CHAT_MESSAGE_MAX_CHARS, cloudChatMessageSettingsOf, isCloudRefusalCode } from "../../../../../account-directory/src/cloud/contract";
+import { BRAND } from "../../../shared/brand";
 
 /** How long a person's connect keeps dialing a cloud computer it just woke. */
 const WOKEN_CONNECT_WAIT_MS = 120_000;
@@ -714,7 +715,7 @@ export function createFederatedWebAdapter({
       // (`useAdeCloudTabFollowsCopy`).
       if (await isSleepingCloudTarget(targetId)) {
         const resting = await restingCopyAdeCloudTab(targetId, projectId, adeCloud);
-        if (!resting) throw markExpected(new Error("Your ADE Cloud computer is asleep. Send a message to one of its chats to wake it."), "user");
+        if (!resting) throw markExpected(new Error(`Your ${BRAND.CLOUD_NAME} computer is asleep. Send a message to one of its chats to wake it.`), "user");
         return openAdeCloudProject(resting.projectId, resting);
       }
       const { project } = await manager.openProject(targetId, projectId);
@@ -947,7 +948,7 @@ export function createFederatedWebAdapter({
           checks: [{ route: route.kind, endpoint: route.endpoint, ok: true }],
           diagnosis: {
             tone: "success",
-            title: `${name} is connected through ${route.kind === "relay" ? "ADE's relay" : "your local network"}.`,
+            title: `${name} is connected through ${route.kind === "relay" ? `${BRAND.NAME}'s relay` : "your local network"}.`,
           },
         };
       }
@@ -988,7 +989,7 @@ export function createFederatedWebAdapter({
     async updateAndRestart(targetId: string, targetVersion?: string | null): Promise<RemoteRuntimeUpdateAndRestartResult> {
       const client = manager.getClient(targetId);
       if (!client || !clientSupportsAction(client, MACHINE_UPDATE_AND_RESTART_ACTION)) {
-        throw new Error("That machine's ADE can't be updated from the web. Update it on the computer once.");
+        throw new Error(`That machine's ${BRAND.NAME} can't be updated from the web. Update it on the computer once.`);
       }
       const target = targetVersion?.trim() || null;
       let result: unknown;
@@ -996,7 +997,7 @@ export function createFederatedWebAdapter({
       try {
         result = await client.sendCommand(
           MACHINE_UPDATE_AND_RESTART_ACTION,
-          { targetVersion: target, requestedBy: { machineName: "ADE Web", clientKind: "web" } },
+          { targetVersion: target, requestedBy: { machineName: `${BRAND.NAME} Web`, clientKind: "web" } },
           // Downloading and installing a build can take minutes.
           { timeoutMs: MACHINE_UPDATE_TIMEOUT_MS, onAccepted: () => { accepted = true; } },
         );
@@ -1136,10 +1137,10 @@ export function createFederatedWebAdapter({
   const machinesOverrides = {
     async connect(machineKey: string, options?: MachineConnectOptions): Promise<MachineConnectResult> {
       const key = typeof machineKey === "string" ? machineKey.trim() : "";
-      if (!key) return { ok: false, reason: "invalid", machineKey: "", message: "ADE needs to know which computer to reach." };
+      if (!key) return { ok: false, reason: "invalid", machineKey: "", message: `${BRAND.NAME} needs to know which computer to reach.` };
       const listed = accountMachineFor(key);
       if (!listed) {
-        return { ok: false, reason: "not_in_account", machineKey: key, message: "That computer is no longer on your ADE account." };
+        return { ok: false, reason: "not_in_account", machineKey: key, message: `That computer is no longer on your ${BRAND.NAME} account.` };
       }
       const saved = manager.findAccountMachineEnvironment(listed);
       // A person's connect (a click, a send) while the saved connection is
@@ -1250,9 +1251,9 @@ export function createFederatedWebAdapter({
           return { ok: false, reason: error.reason === "no_room" ? "no_room" : "declined", machineKey: key, message };
         }
         if (wakeFailure) {
-          return { ok: false, reason: "unreachable", machineKey: key, message: `ADE couldn't wake ${machineDisplayName(machine)}: ${wakeFailure}` };
+          return { ok: false, reason: "unreachable", machineKey: key, message: `${BRAND.NAME} couldn't wake ${machineDisplayName(machine)}: ${wakeFailure}` };
         }
-        return { ok: false, reason: "unreachable", machineKey: key, message: `ADE couldn't reach ${machineDisplayName(machine)}: ${message}` };
+        return { ok: false, reason: "unreachable", machineKey: key, message: `${BRAND.NAME} couldn't reach ${machineDisplayName(machine)}: ${message}` };
       }
     },
     async addressFor(machineKey: string): Promise<MachineAddress | null> {
@@ -1288,7 +1289,7 @@ export function createFederatedWebAdapter({
   // except through the server's queue.
   const cloudApiOrThrow = () => {
     const api = accountClient.cloudApi();
-    if (!api) throw markExpected(new Error("Sign in to ADE to use ADE Cloud."), "user");
+    if (!api) throw markExpected(new Error(`Sign in to ${BRAND.NAME} to use ${BRAND.CLOUD_NAME}.`), "user");
     return api;
   };
   const adeCloudOverrides: AdeCloudBridge = {

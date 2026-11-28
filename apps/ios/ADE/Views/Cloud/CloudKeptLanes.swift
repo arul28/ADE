@@ -50,12 +50,12 @@ func cloudComputerFateSentence(_ fate: CloudComputerFate?, deletedAt: Double?) -
   switch fate {
   case .you?: return "You deleted its computer\(when)."
   case .freed?: return "You freed its computer\(when)."
-  case .idle?: return "ADE deleted its computer\(when) because it wasn't used."
-  case .plan?: return "ADE deleted its computer\(when) to fit your plan."
-  case .inactive?: return "ADE deleted its computer\(when) after 30 days without use."
-  case .automation?: return "Its automation finished\(when), and ADE deleted its computer."
+  case .idle?: return "\(Brand.name) deleted its computer\(when) because it wasn't used."
+  case .plan?: return "\(Brand.name) deleted its computer\(when) to fit your plan."
+  case .inactive?: return "\(Brand.name) deleted its computer\(when) after 30 days without use."
+  case .automation?: return "Its automation finished\(when), and \(Brand.name) deleted its computer."
   case .project?: return "Its project's computers were deleted\(when)."
-  case .launch?: return "Its launch didn't finish, so ADE deleted its computer\(when)."
+  case .launch?: return "Its launch didn't finish, so \(Brand.name) deleted its computer\(when)."
   case .other?, nil: return "Its computer was deleted\(when)."
   }
 }
@@ -165,11 +165,11 @@ struct CloudDeletedComputerFacts: Equatable {
   static let unknown = CloudDeletedComputerFacts(fate: cloudComputerFateSentence(nil, deletedAt: nil))
 
   var whySentence: String {
-    "ADE Cloud deletes a computer that isn't used for a while, or to fit your plan, so it doesn't use your \(words.unit) and disk. Your chats and the work that isn't on GitHub stay on your account. A new computer gets them back."
+    "\(Brand.cloudName) deletes a computer that isn't used for a while, or to fit your plan, so it doesn't use your \(words.unit) and disk. Your chats and the work that isn't on GitHub stay on your account. A new computer gets them back."
   }
 
   var title: String {
-    blocked == nil ? "This lane's ADE Cloud computer was deleted" : "ADE can't make a new computer for this lane"
+    blocked == nil ? "This lane's \(Brand.cloudName) computer was deleted" : "\(Brand.name) can't make a new computer for this lane"
   }
 
   func detail(_ context: CloudLaneLineContext) -> String {
@@ -261,9 +261,9 @@ func cloudLaneNewComputerProblem(fleetKey: String?, sync: SyncService, store: Ac
 /// Why "New computer" can't start for this lane, in one sentence; nil when it can.
 @MainActor
 func cloudKeptLaneRestartProblem(_ lane: CloudLaneWithoutComputer) -> String? {
-  if lane.branchName == nil { return "ADE never learned this lane's branch. Start a new lane on ADE Cloud instead." }
+  if lane.branchName == nil { return "\(Brand.name) never learned this lane's branch. Start a new lane on \(Brand.cloudName) instead." }
   if lane.projectOrigin.flatMap({ nonEmptyTrimmed($0) }) == nil {
-    return "ADE doesn't know this lane's repository, so it can't make a computer for it."
+    return "\(Brand.name) doesn't know this lane's repository, so it can't make a computer for it."
   }
   return AccountCloudStore.shared.doingRefusal
 }
@@ -314,7 +314,7 @@ enum KeptCloudLane {
 
   static func deleteMessage(chatCount: Int) -> String {
     let what = chatCount == 0 ? "any saved chats it has" : chatCount == 1 ? "its chat" : "its \(chatCount) chats"
-    return "ADE stops listing the lane and deletes \(what) and its saved work that isn't on GitHub. Download that work first if you need it. Its branch stays on GitHub."
+    return "\(Brand.name) stops listing the lane and deletes \(what) and its saved work that isn't on GitHub. Download that work first if you need it. Its branch stays on GitHub."
   }
 
   /// New computer: a lane launch on the same branch, at the old size.

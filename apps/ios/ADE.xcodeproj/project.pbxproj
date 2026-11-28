@@ -144,9 +144,15 @@
 		AA5200000000000000000015 /* ADEActivityHomeWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5200000000000000000005 /* ADEActivityHomeWidget.swift */; };
 		AA5200000000000000000016 /* LockScreenPriorityStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5200000000000000000006 /* LockScreenPriorityStatus.swift */; };
 		AE00000000000000000000B1 /* ADEAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE00000000000000000000A1 /* ADEAppDelegate.swift */; };
+		BE00000000000000000000B1 /* BrandRenameNotice.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE00000000000000000000A1 /* BrandRenameNotice.swift */; };
+		BE00000000000000000000B2 /* InstallHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE00000000000000000000A2 /* InstallHistory.swift */; };
 		AE00000000000000000000B2 /* PushNotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE00000000000000000000A2 /* PushNotificationService.swift */; };
 		AE00000000000000000000B3 /* LiveActivityService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE00000000000000000000A3 /* LiveActivityService.swift */; };
 		AE00000000000000000000B4 /* SettingsPushDeliverySection.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE00000000000000000000A4 /* SettingsPushDeliverySection.swift */; };
+		BD0000000000000000000011 /* Brand.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0000000000000000000001 /* Brand.swift */; };
+		BD0000000000000000000012 /* Brand.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0000000000000000000001 /* Brand.swift */; };
+		BD0000000000000000000013 /* Brand.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0000000000000000000001 /* Brand.swift */; };
+		BE00000000000000000000B3 /* LegacyDefaultNames.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE00000000000000000000A3 /* LegacyDefaultNames.swift */; };
 		AE00000000000000000000B5 /* ADEAgentActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE00000000000000000000A5 /* ADEAgentActivityAttributes.swift */; };
 		AE00000000000000000000C5 /* ADEAgentActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE00000000000000000000A5 /* ADEAgentActivityAttributes.swift */; };
 		AE00000000000000000000B6 /* ADEAgentActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE00000000000000000000A6 /* ADEAgentActivityWidget.swift */; };
@@ -761,9 +767,13 @@
 		AA5200000000000000000005 /* ADEActivityHomeWidget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEActivityHomeWidget.swift; path = ADEWidgets/ADEActivityHomeWidget.swift; sourceTree = "<group>"; };
 		AA5200000000000000000006 /* LockScreenPriorityStatus.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LockScreenPriorityStatus.swift; path = ADEWidgets/LockScreenPriorityStatus.swift; sourceTree = "<group>"; };
 		AE00000000000000000000A1 /* ADEAppDelegate.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEAppDelegate.swift; path = ADE/App/ADEAppDelegate.swift; sourceTree = "<group>"; };
+		BE00000000000000000000A1 /* BrandRenameNotice.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = BrandRenameNotice.swift; path = ADE/App/BrandRenameNotice.swift; sourceTree = "<group>"; };
+		BE00000000000000000000A2 /* InstallHistory.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = InstallHistory.swift; path = ADE/App/InstallHistory.swift; sourceTree = "<group>"; };
 		AE00000000000000000000A2 /* PushNotificationService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PushNotificationService.swift; path = ADE/Services/PushNotificationService.swift; sourceTree = "<group>"; };
 		AE00000000000000000000A3 /* LiveActivityService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LiveActivityService.swift; path = ADE/Services/LiveActivityService.swift; sourceTree = "<group>"; };
 		AE00000000000000000000A4 /* SettingsPushDeliverySection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsPushDeliverySection.swift; path = ADE/Views/Settings/SettingsPushDeliverySection.swift; sourceTree = "<group>"; };
+		BD0000000000000000000001 /* Brand.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = Brand.swift; path = ADE/Shared/Brand.swift; sourceTree = "<group>"; };
+		BE00000000000000000000A3 /* LegacyDefaultNames.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LegacyDefaultNames.swift; path = ADE/Shared/LegacyDefaultNames.swift; sourceTree = "<group>"; };
 		AE00000000000000000000A5 /* ADEAgentActivityAttributes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEAgentActivityAttributes.swift; path = ADE/Shared/ADEAgentActivityAttributes.swift; sourceTree = "<group>"; };
 		AE00000000000000000000A6 /* ADEAgentActivityWidget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEAgentActivityWidget.swift; path = ADEWidgets/ADEAgentActivityWidget.swift; sourceTree = "<group>"; };
 		AF00000000000000000000A1 /* DpopKeyService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DpopKeyService.swift; path = ADE/Services/DpopKeyService.swift; sourceTree = "<group>"; };
@@ -1896,6 +1906,8 @@
 			children = (
 				C9411193AF56B236BA32EFF5 /* ADEApp.swift */,
 				AE00000000000000000000A1 /* ADEAppDelegate.swift */,
+				BE00000000000000000000A1 /* BrandRenameNotice.swift */,
+				BE00000000000000000000A2 /* InstallHistory.swift */,
 				73B17472FAC08845853BC6B4 /* ContentView.swift */,
 				B2B52EED21B04E9700000001 /* RemoteProjectAddSheet.swift */,
 				D2000000000000000000DE0D /* RemoteProjectAddSteps.swift */,
@@ -1927,6 +1939,8 @@
 				AA1000000000000000000005 /* ActivityWidgetPresentation.swift */,
 				AA5100000000000000000004 /* AttentionActionIntents.swift */,
 				AE00000000000000000000A5 /* ADEAgentActivityAttributes.swift */,
+				BD0000000000000000000001 /* Brand.swift */,
+				BE00000000000000000000A3 /* LegacyDefaultNames.swift */,
 			);
 			name = Shared;
 			sourceTree = "<group>";
@@ -2434,6 +2448,8 @@
 				AA1100000000000000000003 /* ADESharedTheme.swift in Sources */,
 				AA1100000000000000000004 /* ActivityRowPresentation.swift in Sources */,
 				AA1100000000000000000005 /* ActivityWidgetPresentation.swift in Sources */,
+				BD0000000000000000000011 /* Brand.swift in Sources */,
+				BE00000000000000000000B3 /* LegacyDefaultNames.swift in Sources */,
 				C10000000000000000000002 /* ADECodeRenderingCache.swift in Sources */,
 				0A1E077A24A5367ED58900F9 /* ADEDesignSystem.swift in Sources */,
 				E7C4AFA1DEBFC844E11CC907 /* SpeechDictationService.swift in Sources */,
@@ -2455,6 +2471,8 @@
 				C1000000000000000000B001 /* MachineRowView.swift in Sources */,
 				F2A1C9D8456E7B3C1D2E4F90 /* FilesCodeSupport.swift in Sources */,
 				1558E44876BBE931C02D5640 /* ADEApp.swift in Sources */,
+				BE00000000000000000000B1 /* BrandRenameNotice.swift in Sources */,
+				BE00000000000000000000B2 /* InstallHistory.swift in Sources */,
 				4DC17C7C8E82D387043B01FD /* ContentView.swift in Sources */,
 				B2B52EED21B04E9700000002 /* RemoteProjectAddSheet.swift in Sources */,
 				E2000000000000000000DE0D /* RemoteProjectAddSteps.swift in Sources */,
@@ -2950,6 +2968,7 @@
 				AA1100000000000000000013 /* ADESharedTheme.swift in Sources */,
 				AA1100000000000000000014 /* ActivityRowPresentation.swift in Sources */,
 				AA1100000000000000000015 /* ActivityWidgetPresentation.swift in Sources */,
+				BD0000000000000000000012 /* Brand.swift in Sources */,
 				AA5200000000000000000011 /* ADEWidgetBundle.swift in Sources */,
 				AA5200000000000000000014 /* ADELockScreenWidget.swift in Sources */,
 				AA5200000000000000000015 /* ADEActivityHomeWidget.swift in Sources */,
@@ -2969,6 +2988,7 @@
 				AC1100000000000000000003 /* ClipHandoff.swift in Sources */,
 				AC1100000000000000000004 /* ClipPairingView.swift in Sources */,
 				AC1100000000000000000005 /* PairingQrPayload.swift in Sources */,
+				BD0000000000000000000013 /* Brand.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -3068,8 +3088,9 @@
 		4D1F82E3A56C0E19BB85CF13 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ADE_APP_DISPLAY_NAME = ADE;
+				ADE_APP_DISPLAY_NAME = DAEX;
 				ADE_URL_SCHEME = ade;
+				DAEX_URL_SCHEME = daex;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ADE_POSTHOG_HOST = "";
@@ -3211,8 +3232,9 @@
 		6B022E2FBBEEACDE98A6318A /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ADE_APP_DISPLAY_NAME = ADE;
+				ADE_APP_DISPLAY_NAME = DAEX;
 				ADE_URL_SCHEME = ade;
+				DAEX_URL_SCHEME = daex;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ADE_POSTHOG_HOST = "";
@@ -3241,8 +3263,9 @@
 		F0EA61DF1CB04655FF33C0BA /* Beta */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ADE_APP_DISPLAY_NAME = "ADE Beta";
+				ADE_APP_DISPLAY_NAME = "DAEX Beta";
 				ADE_URL_SCHEME = ade-beta;
+				DAEX_URL_SCHEME = daex-beta;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIconBeta;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ADE_POSTHOG_HOST = "";
@@ -3384,7 +3407,7 @@
 				DEVELOPMENT_TEAM = VQ372F39G6;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = ADEWidgets/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "ADE Widgets";
+				INFOPLIST_KEY_CFBundleDisplayName = "DAEX Widgets";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -3514,7 +3537,7 @@
 				DEVELOPMENT_TEAM = VQ372F39G6;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = ADEWidgets/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "ADE Widgets";
+				INFOPLIST_KEY_CFBundleDisplayName = "DAEX Widgets";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -3544,7 +3567,7 @@
 				DEVELOPMENT_TEAM = VQ372F39G6;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = ADEWidgets/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "ADE Widgets";
+				INFOPLIST_KEY_CFBundleDisplayName = "DAEX Widgets";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (

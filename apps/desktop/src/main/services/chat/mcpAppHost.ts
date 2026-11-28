@@ -30,6 +30,7 @@ import type { AgentChatEvent } from "../../../shared/types";
 import type { RequestChatInputArgs } from "./agentChatService";
 import type { McpAppGrantStore } from "./mcpAppGrants";
 import type { McpAppStore } from "./mcpAppStore";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The brain's half of MCP Apps: notice a tool call that has an app, read the
@@ -334,7 +335,7 @@ export function createMcpAppHost(deps: McpAppHostDeps) {
       title,
       subtitle: server,
       // What a surface that cannot run an app shows instead.
-      fallbackText: `${server} showed an app for ${title}. Apps from MCP servers run in the ADE desktop app and the iPhone app, in Claude and Codex chats. They do not run in the web client.`,
+      fallbackText: `${server} showed an app for ${title}. Apps from MCP servers run in the ${BRAND.NAME} desktop app and the iPhone app, in Claude and Codex chats. They do not run in the web client.`,
       ...(call.turnId ? { turnId: call.turnId } : {}),
     });
   };
@@ -459,7 +460,7 @@ export function createMcpAppHost(deps: McpAppHostDeps) {
     try {
       tools = await catalog(app.sessionId, link, CATALOG_MAX_AGE_MS);
     } catch (error) {
-      return failure(error, `ADE could not read the tools of ${app.server}`);
+      return failure(error, `${BRAND.NAME} could not read the tools of ${app.server}`);
     }
     // The server comes from the stored record, so this is the app's own server or nothing.
     const tool = tools.find((entry) => entry.server === app.server && entry.name === name);
@@ -485,7 +486,7 @@ export function createMcpAppHost(deps: McpAppHostDeps) {
             state.asking.delete(app.itemId);
           }
           deps.log("info", "agent_chat.mcp_app_tool_call_decided", { sessionId: app.sessionId, server: app.server, tool: name, outcome });
-          if (outcome === "unasked") return mcpAppRefusal("ADE could not ask you about this call, so it did not run.");
+          if (outcome === "unasked") return mcpAppRefusal(`${BRAND.NAME} could not ask you about this call, so it did not run.`);
           if (outcome === "deny") return mcpAppRefusal("You did not allow this call.");
           if (outcome === "always") deps.grants.add(app.server, name, fingerprint);
           // The answer can take minutes. The session that was live then may be gone now.
@@ -531,10 +532,10 @@ export function createMcpAppHost(deps: McpAppHostDeps) {
     const sessionId = typeof args?.sessionId === "string" ? args.sessionId.trim() : "";
     const itemId = typeof args?.itemId === "string" ? args.itemId.trim() : "";
     const app = sessionId && itemId ? deps.store.readRecord(sessionId, itemId) : null;
-    if (!app) return mcpAppRefusal("ADE does not know this app.");
+    if (!app) return mcpAppRefusal(`${BRAND.NAME} does not know this app.`);
     const params = asRecord(args.params) ?? {};
     if (args.method !== "tools/call" && args.method !== "resources/read") {
-      return mcpAppRefusal("ADE does not pass this request on to the server.", MCP_APP_ERROR_METHOD_NOT_FOUND);
+      return mcpAppRefusal(`${BRAND.NAME} does not pass this request on to the server.`, MCP_APP_ERROR_METHOD_NOT_FOUND);
     }
     const link = deps.linkFor(sessionId);
     if (!link) return mcpAppRefusal(MCP_APP_SESSION_NOT_RUNNING);

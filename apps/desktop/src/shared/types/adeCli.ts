@@ -1,5 +1,10 @@
 export type AdeCliStatus = {
+  /** The installed `ade` name (`ade`, `ade-alpha`, `ade-dev`): the permanent alias. */
   command: string;
+  /** The primary `daex` name installed beside it (`daex`, `daex-alpha`, `daex-dev`), when there is one. */
+  aliasCommand?: string | null;
+  /** Where `aliasCommand` resolves on the user's PATH, or null when it does not. */
+  terminalAliasCommandPath?: string | null;
   platform: NodeJS.Platform;
   isPackaged: boolean;
   bundledAvailable: boolean;

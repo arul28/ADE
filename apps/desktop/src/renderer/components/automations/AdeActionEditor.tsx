@@ -20,6 +20,7 @@ import {
   type AdeActionParam,
   type AdeActionSchema,
 } from "./adeActionSchemas";
+import { BRAND } from "../../../shared/brand";
 
 export type AdeActionRegistryEntry = {
   domain: string;
@@ -202,7 +203,7 @@ function ActionPicker({
   ) : (
     <span className="flex items-center gap-2 text-[12px] text-muted-fg/70">
       <MagnifyingGlass size={12} weight="bold" />
-      Search ADE actions…
+      Search {BRAND.NAME} actions…
     </span>
   );
 

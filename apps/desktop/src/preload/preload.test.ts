@@ -3778,8 +3778,8 @@ describe("preload Apple device input routing", () => {
     const appInstallationStatus = {
       repo: { owner: "acme", name: "repo" },
       appName: "ADE",
-      appSlug: "ade-for-github",
-      installUrl: "https://github.com/apps/ade-for-github/installations/new",
+      appSlug: "daex-for-github",
+      installUrl: "https://github.com/apps/daex-for-github/installations/new",
       manageUrl: "https://github.com/settings/installations",
       relayConfigured: true,
       installed: true,

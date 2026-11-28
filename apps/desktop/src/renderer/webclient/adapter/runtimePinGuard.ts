@@ -2,6 +2,7 @@ import { markExpected } from "../../../shared/expectedError";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { AdeSyncClient } from "../sync";
 import type { AdapterProjectState } from "./infra/projectState";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Adapter-wide runtime-pin boundary guard.
@@ -91,7 +92,7 @@ export function assertWebRuntimePinRoutable(
   // targetId, so the remote comparison below could only report it as an
   // unroutable binding. Say what actually happened instead.
   if (pin.kind === "local") {
-    throw new WebRuntimePinUnroutableError("This chat runs on a machine ADE Web can't reach directly.");
+    throw new WebRuntimePinUnroutableError(`This chat runs on a machine ${BRAND.NAME} Web can't reach directly.`);
   }
   if (pinTargetsThisMachine(pin, scope.client) && pin.projectId === scope.state.getProjectId()) {
     return;
@@ -101,7 +102,7 @@ export function assertWebRuntimePinRoutable(
   // the fields directly rather than splitting the key, which would break on any
   // id containing a colon.
   throw new WebRuntimePinUnroutableError(
-    `ADE Web sent ${operation} for ${pin.key || "an unknown binding"} to another machine's connection;`
+    `${BRAND.NAME} Web sent ${operation} for ${pin.key || "an unknown binding"} to another machine's connection;`
     + " it was not run.",
   );
 }

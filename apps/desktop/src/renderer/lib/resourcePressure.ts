@@ -1,4 +1,5 @@
 import type { AppResourceRoleUsage, AppResourceUsageSnapshot } from "../../shared/types";
+import { BRAND } from "../../shared/brand";
 
 export type ResourcePressureLevel = 0 | 1 | 2 | 3 | 4;
 
@@ -151,7 +152,7 @@ function roleUsageDetails(usage: AppResourceUsageSnapshot): string[] | null {
   const agents = sumRoleGroup(roleUsage, ["provider-agent"]);
   const other = sumRoleGroup(roleUsage, ["shell", "unknown"]);
   const details = [
-    roleGroupDetail("ADE app", adeInfra),
+    roleGroupDetail(`${BRAND.NAME} app`, adeInfra),
     agents.processCount > 0
       ? roleGroupDetail(`${agents.processCount} agent process${agents.processCount === 1 ? "" : "es"}`, agents)
       : null,
@@ -176,5 +177,5 @@ export function resourcePressureDescription(usage: AppResourceUsageSnapshot | nu
   const staleNote = usage?.processSample?.status === "unavailable"
     ? " Terminal process metrics are temporarily unavailable."
     : "";
-  return `ADE is under load${detailText}.${staleNote} Background live refreshes are slowed; selected chats and terminals stay full speed.`;
+  return `${BRAND.NAME} is under load${detailText}.${staleNote} Background live refreshes are slowed; selected chats and terminals stay full speed.`;
 }

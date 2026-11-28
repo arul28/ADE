@@ -100,7 +100,7 @@ terminal success state is `done-clean` only after merge confirmation.
 
 **Follow `docs/playbooks/ship-lane.md`** — all phase logic, the state schema,
 commands, decision rules, and bot-ping rules live there. This skill is the
-runtime-neutral entrypoint and the ADE-specific deltas below. If re-invoked by a
+runtime-neutral entrypoint and the DAEX-specific deltas below. If re-invoked by a
 scheduled wake, read the state file first; if `status == running`, skip Phase 0
 and go to Phase 1. If `status == ready-stacked`, revalidate the complete binding
 first: when it holds, print the persisted coordinator handoff and exit without
@@ -167,7 +167,7 @@ only user-visible output is the per-iteration status line and the final summary.
 
 ---
 
-## Repo facts (ADE)
+## Repo facts (DAEX)
 
 - **Package manager:** `npm`; desktop, ade-cli, web and each package under
   `packages/` have their own `node_modules` + `package-lock.json`. The five
@@ -175,10 +175,10 @@ only user-visible output is the per-iteration status line and the final summary.
   one root `package-lock.json`, installed by `npm ci` at the repo root. Node 24
   (`.nvmrc`).
 - **CI:** `.github/workflows/ci.yml` — desktop tests shard **8-way**
-  (`npx vitest run --shard=<n>/8`) plus `test-ade-cli` (2 shards); a `ci-pass`/`ci-status`
+  (`npx vitest run --shard=<n>/8`) plus `test-ade-cli` (2 shards); a `ci-pass`
   gate aggregates required jobs. Discover the required-check list live via
-  `gh pr checks` / the `ade-pr-workflows` skill — do not hardcode.
-- **PR creation:** prefer the `ade` CLI (registers the PR in ADE's tracking — lane
+  `gh pr checks` / the `daex-pr-workflows` skill — do not hardcode.
+- **PR creation:** prefer the `daex` CLI (registers the PR in DAEX's tracking — lane
   ↔ PR link, check/comment inventory). `gh pr create --base main --head <branch>
   --fill` is the ordinary fallback; stack mode substitutes the persisted direct
   parent for `main`. See the playbook's discovery protocol.
@@ -226,7 +226,7 @@ to a named higher layer in `deferredProofScenarios`.
 demo? A new feature or a visible improvement someone would want to see in
 action does. A small bug fix, a refactor or an internal change does not. If
 it does, the PR must carry at least one clean showcase image or video of it,
-posted with `ade proof publish`: before/after for a visible fix, a demo video
+posted with `daex proof publish`: before/after for a visible fix, a demo video
 or images for a new feature, as many as the change has things worth showing.
 The bar is "could be posted to Twitter as is". If it is missing or is scratch
 quality (banners, junk, a tiny subject, cut-off captions), record it properly,
@@ -235,7 +235,7 @@ is there.
 
 ---
 
-## ADE deltas to the playbook
+## DAEX deltas to the playbook
 
 **Poll with one command, every time, and read all of it.** The poll is
 `node scripts/ship-poll.mjs --pr <n>` (add `--text` for a readable summary).
@@ -282,7 +282,7 @@ cadence means Greptile never actually lands a re-review. Consequences:
 there is positive evidence that it started for the current head: a
 queued/pending/in-progress check, a review, a trigger acknowledgement, or a
 current-head comment. After one full 12-minute post-push grace window, if every
-available ADE and GitHub surface shows no check, review, acknowledgement, or
+available DAEX and GitHub surface shows no check, review, acknowledgement, or
 comment for that bot, classify it as `inactive` / `not-triggered`, treat that as
 terminal-neutral, and continue. Record it under `inactiveReviewBots`, never
 `pendingReviewBots`. Do not schedule a second wait for a bot with zero evidence.
@@ -351,22 +351,22 @@ scheduler re-invokes `/ship $ARGUMENTS` later. Use it at the end of each
 iteration with the playbook cadence (270s just-pushed / 720s CI or bots running /
 1800s waiting on human review).
 
-**ADE Work chat (Claude Agent SDK):** Work confidently inside the current turn,
+**DAEX Work chat (Claude Agent SDK):** Work confidently inside the current turn,
 but treat `ScheduleWakeup` as unavailable in this harness. It does not start a
 later turn by itself, and `run_in_background` notifications are not a reliable
 self-resume signal. Poll synchronously inside the current turn (one bounded
 foreground `until ... ; do sleep N; done`), then fix/merge/exit. If the turn
-must end while CI or review is still in flight, arm `ade chat scheduled-work
+must end while CI or review is still in flight, arm `daex chat scheduled-work
 create` as in the next section before ending. Asking the user to re-ping is
-only for a harness that is not an ADE Work chat and has no scheduler.
+only for a harness that is not a DAEX Work chat and has no scheduler.
 
 **No native wake in this harness:** Claude Code has `ScheduleWakeup`. Codex in
-a terminal can `sleep`. Any other ADE Work chat has no scheduler of its own
+a terminal can `sleep`. Any other DAEX Work chat has no scheduler of its own
 that starts a later turn. Before ending the turn while CI or review is still
-in flight, arm ADE's scheduler:
+in flight, arm DAEX's scheduler:
 
 ```
-ade chat scheduled-work create --in 12m --prompt "/ship"
+daex chat scheduled-work create --in 12m --prompt "/ship"
 ```
 
 Use `--in 4m` just after a push, `--in 12m` while CI or review is running, and
@@ -381,7 +381,7 @@ sleep, leaves the lane idle.
 - **Phase 0 (first run):** with state `prepping`, adopt the early PR (0.6) and
   go to Phase 1. Otherwise: safety rails (clean tree, GitHub origin, refuse
   `main`) → checkpoint → canonical commit-bound quality revalidation (delta
-  since `qualityReviewedSha`) → push → open PR (`ade`, gh fallback) → verify the
+  since `qualityReviewedSha`) → push → open PR (`daex`, gh fallback) → verify the
   provisional binding → write state → schedule first wake.
 - **Phase 1 — Poll:** run `node scripts/ship-poll.mjs --pr <n>`. Wait while it
   reports CI or a review bot running. After one 12-minute grace window, classify

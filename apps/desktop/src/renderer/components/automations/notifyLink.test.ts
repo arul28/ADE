@@ -11,18 +11,18 @@ import { buildNotifyLink, checkNotifyLink, readNotifyLink, type NotifyLink } fro
 describe("notification step link picker", () => {
   it.each<[string, NotifyLink, string]>([
     ["just ADE", { kind: "none", fields: {} }, ""],
-    ["Activity on a column", { kind: "activity", fields: { column: "waiting" } }, "ade://activity?state=waiting"],
-    ["the trigger's chat", { kind: "chat", fields: { sessionId: "{{trigger.session.sessionId}}" } }, "ade://session/{{trigger.session.sessionId}}"],
-    ["a pull request number with a #", { kind: "pr", fields: { prNumber: "#1515" } }, "ade://pr/1515"],
-    ["the trigger's PR in a repo", { kind: "pr", fields: { prNumber: "{{trigger.pr.number}}", repo: "arul28/ADE" } }, "ade://pr/arul28/ADE/{{trigger.pr.number}}"],
-    ["a Linear issue typed in lower case", { kind: "linear", fields: { linearIssue: "ade-123" } }, "ade://linear-issue/ADE-123"],
-    ["a Linear issue built from a variable", { kind: "linear", fields: { linearIssue: "ade-{{trigger.issue.number}}" } }, "ade://linear-issue/ADE-{{trigger.issue.number}}"],
-    ["the run's lane", { kind: "lane", fields: { laneId: "{{trigger.lane.id}}" } }, "ade://lane/{{trigger.lane.id}}"],
-    ["a file line in a lane", { kind: "file", fields: { path: "apps/desktop/src/main.ts", line: "40", laneId: "ce3acd58-0736-4316-af65-1dd2dcaf2bba" } }, "ade://file/apps/desktop/src/main.ts?line=40&lane=ce3acd58-0736-4316-af65-1dd2dcaf2bba"],
-    ["a commit", { kind: "commit", fields: { sha: "708b303ee" } }, "ade://commit/708b303ee"],
-    ["a branch with a slash and a space", { kind: "branch", fields: { repo: "arul28/ADE", branch: "ade/feature x" } }, "ade://repo/arul28/ADE/branch/ade/feature%20x"],
-    ["this run's history", { kind: "run", fields: {} }, "ade://automation-run/{{run.automationId}}/{{run.id}}?session={{run.chatSessionId}}"],
-    ["proof", { kind: "proof", fields: { artifactId: "34b93299-f559-4318-8142-6c31e2b847b3" } }, "ade://artifact/34b93299-f559-4318-8142-6c31e2b847b3"],
+    ["Activity on a column", { kind: "activity", fields: { column: "waiting" } }, "daex://activity?state=waiting"],
+    ["the trigger's chat", { kind: "chat", fields: { sessionId: "{{trigger.session.sessionId}}" } }, "daex://session/{{trigger.session.sessionId}}"],
+    ["a pull request number with a #", { kind: "pr", fields: { prNumber: "#1515" } }, "daex://pr/1515"],
+    ["the trigger's PR in a repo", { kind: "pr", fields: { prNumber: "{{trigger.pr.number}}", repo: "arul28/ADE" } }, "daex://pr/arul28/ADE/{{trigger.pr.number}}"],
+    ["a Linear issue typed in lower case", { kind: "linear", fields: { linearIssue: "ade-123" } }, "daex://linear-issue/ADE-123"],
+    ["a Linear issue built from a variable", { kind: "linear", fields: { linearIssue: "ade-{{trigger.issue.number}}" } }, "daex://linear-issue/ADE-{{trigger.issue.number}}"],
+    ["the run's lane", { kind: "lane", fields: { laneId: "{{trigger.lane.id}}" } }, "daex://lane/{{trigger.lane.id}}"],
+    ["a file line in a lane", { kind: "file", fields: { path: "apps/desktop/src/main.ts", line: "40", laneId: "ce3acd58-0736-4316-af65-1dd2dcaf2bba" } }, "daex://file/apps/desktop/src/main.ts?line=40&lane=ce3acd58-0736-4316-af65-1dd2dcaf2bba"],
+    ["a commit", { kind: "commit", fields: { sha: "708b303ee" } }, "daex://commit/708b303ee"],
+    ["a branch with a slash and a space", { kind: "branch", fields: { repo: "arul28/ADE", branch: "ade/feature x" } }, "daex://repo/arul28/ADE/branch/ade/feature%20x"],
+    ["this run's history", { kind: "run", fields: {} }, "daex://automation-run/{{run.automationId}}/{{run.id}}?session={{run.chatSessionId}}"],
+    ["proof", { kind: "proof", fields: { artifactId: "34b93299-f559-4318-8142-6c31e2b847b3" } }, "daex://artifact/34b93299-f559-4318-8142-6c31e2b847b3"],
   ])("builds %s, which opens and reads back unchanged", (_name, link, built) => {
     expect(buildNotifyLink(link)).toBe(built);
     const reread = readNotifyLink(built);

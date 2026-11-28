@@ -36,6 +36,7 @@ import {
   MAC_DESKTOP_MACOS_ONLY_MESSAGE,
   type MacDesktopDriverHealth,
 } from "../../../shared/types/macDesktop";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Every op name the service is allowed to send.
@@ -374,8 +375,8 @@ export const MAC_DESKTOP_DRIVER_RETIRED_REASON = "retired";
 function missingDriverMessage(binary: string | null, recovery: string | null): string {
   return [
     binary
-      ? `The native desktop driver is missing from this ADE installation (expected at ${binary}).`
-      : "The native desktop driver is missing from this ADE installation.",
+      ? `The native desktop driver is missing from this ${BRAND.NAME} installation (expected at ${binary}).`
+      : `The native desktop driver is missing from this ${BRAND.NAME} installation.`,
     describeNativeHelperSearch(binary),
     recovery,
   ].filter(Boolean).join(" ");
@@ -444,7 +445,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
       return {
         state: "missing",
         title: `${driverLabel} needs reinstalling`,
-        message: missingDriverMessage(binary, "Reinstall or update ADE, then restart it."),
+        message: missingDriverMessage(binary, `Reinstall or update ${BRAND.NAME}, then restart it.`),
         recovery: "reinstall_or_update",
         version: null,
       };
@@ -453,7 +454,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
       return {
         state: "protocol_error",
         title: `${driverLabel} needs an update`,
-        message: "The native desktop driver is incompatible with this ADE build. Update ADE, then restart it.",
+        message: `The native desktop driver is incompatible with this ${BRAND.NAME} build. Update ${BRAND.NAME}, then restart it.`,
         recovery: "reinstall_or_update",
         version,
       };
@@ -476,7 +477,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
       return {
         state: "crash_loop",
         title: `${driverLabel} stopped`,
-        message: "The native desktop driver repeatedly exited. ADE retries when a screen is next needed; if it does not recover, restart ADE, then reinstall or update the app.",
+        message: `The native desktop driver repeatedly exited. ${BRAND.NAME} retries when a screen is next needed; if it does not recover, restart ${BRAND.NAME}, then reinstall or update the app.`,
         recovery: "reinstall_or_update",
         version,
       };
@@ -484,7 +485,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
     return {
       state: "starting",
       title: `${driverLabel} is starting`,
-      message: "ADE is preparing the native desktop driver.",
+      message: `${BRAND.NAME} is preparing the native desktop driver.`,
       recovery: "retry",
       version,
     };

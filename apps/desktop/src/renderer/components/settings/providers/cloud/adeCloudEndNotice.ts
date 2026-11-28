@@ -10,6 +10,7 @@
 import type { CloudKeyEnd, CloudSignInEnd } from "../../../../../shared/cloudSignIns";
 import { providerGroupLabel, type ProviderGroupKey } from "../../../../../shared/modelCatalog";
 import { endsInDaysText, shortDate } from "./adeCloudTime";
+import { BRAND } from "../../../../../shared/brand";
 
 export type AdeCloudEndNoticeWords = { title: string; detail: string; action: string };
 
@@ -20,7 +21,7 @@ export function adeCloudEndProviderName(end: CloudKeyEnd): string {
 
 /** What stops working when this provider's saved sign-in ends: said the same for a pass and a key. */
 function whatStops(name: string): string {
-  return `${name} chats and automations on your ADE Cloud computers`;
+  return `${name} chats and automations on your ${BRAND.CLOUD_NAME} computers`;
 }
 
 const capitalized = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);
@@ -37,10 +38,10 @@ function keyWords(end: CloudKeyEnd, now: number): AdeCloudEndNoticeWords {
   const more = moreText(end);
   // The key came from the provider's own sign-in: a new sign-in makes a new key.
   const where = end.madeOnLabel ? ` on ${end.madeOnLabel}` : "";
-  const fix = `ADE can't renew a key on its own: sign in to ${name} again${where}, or add a new key.`;
+  const fix = `${BRAND.NAME} can't renew a key on its own: sign in to ${name} again${where}, or add a new key.`;
   if (end.state === "ended") {
     return {
-      title: `Your ${name} key for ADE Cloud${whose} has ended`,
+      title: `Your ${name} key for ${BRAND.CLOUD_NAME}${whose} has ended`,
       detail: `${capitalized(whatStops(name))} stopped working on ${shortDate(end.expiresAt, now)}, the end date ${name} set. ${fix}${more}`,
       action: "Replace",
     };
@@ -48,8 +49,8 @@ function keyWords(end: CloudKeyEnd, now: number): AdeCloudEndNoticeWords {
   const days = Math.max(0, end.endsInDays);
   return {
     title: days === 0
-      ? `Your ${name} key for ADE Cloud${whose} ends today`
-      : `Your ${name} key for ADE Cloud${whose} ends in ${endsInDaysText(days)}`,
+      ? `Your ${name} key for ${BRAND.CLOUD_NAME}${whose} ends today`
+      : `Your ${name} key for ${BRAND.CLOUD_NAME}${whose} ends in ${endsInDaysText(days)}`,
     detail: `${name} set this end date. When it passes, ${whatStops(name)} stop working. ${fix}${more}`,
     action: "Replace",
   };
@@ -63,15 +64,15 @@ export function adeCloudEndNoticeWords(end: CloudSignInEnd, now: number): AdeClo
   switch (end.state) {
     case "ended":
       return {
-        title: `Claude ended your pass for ADE Cloud${whose}`,
+        title: `Claude ended your pass for ${BRAND.CLOUD_NAME}${whose}`,
         detail: (end.endedAt != null
-          ? `${capitalized(stops)} stopped working on ${shortDate(end.endedAt, now)}. ADE can't renew a pass on its own: renew it so they work again.`
-          : `${capitalized(stops)} stopped working. ADE can't renew a pass on its own: renew it so they work again.`) + more,
+          ? `${capitalized(stops)} stopped working on ${shortDate(end.endedAt, now)}. ${BRAND.NAME} can't renew a pass on its own: renew it so they work again.`
+          : `${capitalized(stops)} stopped working. ${BRAND.NAME} can't renew a pass on its own: renew it so they work again.`) + more,
         action: "Renew",
       };
     case "estimate_passed":
       return {
-        title: `Your Claude pass for ADE Cloud${whose} may have ended`,
+        title: `Your Claude pass for ${BRAND.CLOUD_NAME}${whose} may have ended`,
         detail: `Its expected end date has passed. If it ended, ${stops} stop working. Renew it to be sure.${more}`,
         action: "Renew",
       };
@@ -79,9 +80,9 @@ export function adeCloudEndNoticeWords(end: CloudSignInEnd, now: number): AdeClo
       const days = Math.max(0, end.endsInDays);
       return {
         title: days === 0
-          ? `Your Claude pass for ADE Cloud${whose} ends today`
-          : `Your Claude pass for ADE Cloud${whose} ends in ${endsInDaysText(days)}`,
-        detail: `When it ends, ${stops} stop working. ADE can't renew a pass on its own: renew it to keep them working.${more}`,
+          ? `Your Claude pass for ${BRAND.CLOUD_NAME}${whose} ends today`
+          : `Your Claude pass for ${BRAND.CLOUD_NAME}${whose} ends in ${endsInDaysText(days)}`,
+        detail: `When it ends, ${stops} stop working. ${BRAND.NAME} can't renew a pass on its own: renew it to keep them working.${more}`,
         action: "Renew",
       };
     }

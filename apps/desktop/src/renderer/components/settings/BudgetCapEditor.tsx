@@ -12,6 +12,7 @@ import { ModernRow, ModernRows, ModernSection, SettingsNumber, SettingsSelect, S
 import { useSettingsProjectPin, withProjectSettingsBound } from "./ProjectCopyScope";
 import { useSettingsMachineScope, type SettingsMachineScope } from "./SettingsMachineScope";
 import { InlineErrorNotice } from "../ui/notice";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The spend cap editor. Mounted in settings and in the top-bar usage popup, so
@@ -380,7 +381,7 @@ export function BudgetCapSettings() {
       })
       .catch((error: unknown) => {
         if (cancelled) return;
-        setSaveError(error instanceof Error ? error.message : "ADE could not load the spend cap.");
+        setSaveError(error instanceof Error ? error.message : `${BRAND.NAME} could not load the spend cap.`);
         setStatus("failed");
       });
     return () => { cancelled = true; };
@@ -403,7 +404,7 @@ export function BudgetCapSettings() {
         scope.isThisMachine,
       ));
     } catch (error) {
-      setSaveError(error instanceof Error ? error.message : "ADE could not save the spend cap.");
+      setSaveError(error instanceof Error ? error.message : `${BRAND.NAME} could not save the spend cap.`);
     } finally {
       setSaving(false);
     }
@@ -416,7 +417,7 @@ export function BudgetCapSettings() {
       <BudgetSection hint="Couldn't load the spend cap.">
         <InlineErrorNotice
           id="settings-budget-cap-load"
-          message={saveError ?? "ADE could not load the spend cap."}
+          message={saveError ?? `${BRAND.NAME} could not load the spend cap.`}
         />
         <button type="button" className="ade-modern-btn" onClick={() => setReloadNonce((value) => value + 1)}>
           Try again

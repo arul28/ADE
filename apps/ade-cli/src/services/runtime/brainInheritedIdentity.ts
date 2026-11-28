@@ -22,6 +22,7 @@
  */
 
 import type { AdeRuntimeRole } from "../../runtimeRoles";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /** Who-is-calling keys an agent shell carries, which a brain must never adopt. */
 export const BRAIN_INHERITED_CALLER_ENV_KEYS = [
@@ -113,5 +114,5 @@ export function describeBrainRoleCeiling(
 ): string | null {
   if (role === "cto") return null;
   if (opts.embedded) return null;
-  return `This brain serves at role ${role}, so ADE desktop, phone and web clients (role cto) will be refused. Start it as \`ade --role cto serve\` to serve them.`;
+  return `This brain serves at role ${role}, so ${BRAND.NAME} desktop, phone and web clients (role cto) will be refused. Start it as \`daex --role cto serve\` to serve them.`;
 }

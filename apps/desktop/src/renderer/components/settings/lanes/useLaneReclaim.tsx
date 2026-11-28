@@ -6,6 +6,7 @@ import { useStorageBytes } from "../storage/useStorageBytes";
 import { ipcErrorMessage } from "../../../lib/format";
 import { captureLaneSetupAnalytics } from "../../../lib/laneSetupAnalytics";
 import { requirePin } from "../../../state/repositoryScope";
+import { BRAND } from "../../../../shared/brand";
 
 const RECLAIM_TOAST_ID = "settings-lane-reclaim";
 
@@ -62,7 +63,7 @@ export function useLaneReclaim(
             id: RECLAIM_TOAST_ID,
             tone: "info",
             title: alreadyArchived ? `Kept ${risk.laneName}'s folder for now` : `Archived ${risk.laneName}`,
-            message: "Some files in its folder are still in use, so ADE kept the folder and will remove it on its own later.",
+            message: `Some files in its folder are still in use, so ${BRAND.NAME} kept the folder and will remove it on its own later.`,
           }
         : {
             id: RECLAIM_TOAST_ID,

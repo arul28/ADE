@@ -249,7 +249,7 @@ function deepLinkForItem(item: ParsedAttentionItem): string | null {
     if (itemId) query.set("item", itemId);
     if (eventId) query.set("event", eventId);
     if (accountMachineKey) query.set("accountMachineKey", accountMachineKey);
-    return `ade://session/${encodeURIComponent(sessionId)}${query.size ? `?${query}` : ""}`;
+    return `daex://session/${encodeURIComponent(sessionId)}${query.size ? `?${query}` : ""}`;
   }
   if (destination.kind === "pull_request") {
     const number = Number(destination.number);
@@ -262,8 +262,8 @@ function deepLinkForItem(item: ParsedAttentionItem): string | null {
     if (accountMachineKey) query.set("accountMachineKey", accountMachineKey);
     const suffix = query.size ? `?${query}` : "";
     return owner && repo
-      ? `ade://pr/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${number}${suffix}`
-      : `ade://pr/${number}${suffix}`;
+      ? `daex://pr/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${number}${suffix}`
+      : `daex://pr/${number}${suffix}`;
   }
   return null;
 }
@@ -1565,7 +1565,7 @@ function attentionAlertCopy(
   if (item.kind === "message") {
     // The agent wrote this because the user asked to be told, so the push
     // carries its words. Hide previews keeps the title only, like `ade notify`.
-    const title = alertLine(item.title) ?? "ADE";
+    const title = alertLine(item.title) ?? "DAEX";
     const body = alertLine(item.preview, CUSTOM_NOTIFICATION_BODY_MAX);
     return { title, body: hideDetails || !body || body === title ? null : body };
   }
@@ -1590,7 +1590,7 @@ function attentionAlertCopy(
     };
   }
   return {
-    title: alertLine(item.title) ?? "ADE agent",
+    title: alertLine(item.title) ?? "DAEX agent",
     body: alertLine([state, project, machine].filter(Boolean).join(" · ")),
   };
 }
@@ -1638,7 +1638,7 @@ export function assertDirectoryProvenance(
         ok: false,
         error: "directory authentication unavailable",
         code: "directory_auth_unavailable",
-        recovery: "DIRECTORY_AUTH_SECRET must be configured on the relay by the ADE service owner.",
+        recovery: "DIRECTORY_AUTH_SECRET must be configured on the relay by the DAEX service owner.",
       }, { status: 503 }),
     };
   }
@@ -1649,7 +1649,7 @@ export function assertDirectoryProvenance(
         ok: false,
         error: "directory provenance required",
         code: "directory_auth_required",
-        recovery: "Pair this machine from ADE's account settings; a machine cannot restore its own pairing.",
+        recovery: "Pair this machine from DAEX's account settings; a machine cannot restore its own pairing.",
       }, { status: 403 }),
     };
   }
@@ -1668,7 +1668,7 @@ async function authorizedUser(
           ok: false,
           error: "account authentication unavailable",
           code: "account_auth_unavailable",
-          recovery: "Relay authentication must be configured by the ADE service owner.",
+          recovery: "Relay authentication must be configured by the DAEX service owner.",
         },
         { status: 503 },
       ),
@@ -1685,7 +1685,7 @@ async function authorizedUser(
             ok: false,
             error: "account authentication unavailable",
             code: "account_auth_unavailable",
-            recovery: "ADE's account verifier is temporarily unreachable. Retry shortly.",
+            recovery: "DAEX's account verifier is temporarily unreachable. Retry shortly.",
           },
           { status: 503 },
         ),
@@ -1701,7 +1701,7 @@ async function authorizedUser(
             ok: false,
             error: "account token rejected",
             code: "account_token_rejected",
-            recovery: "Refresh the ADE account session and try again.",
+            recovery: "Refresh the DAEX account session and try again.",
           },
           { status: 401 },
         ),
@@ -2880,7 +2880,7 @@ export async function handleAttentionMachinePublish(
       error: "machine removed from account",
       code: "machine_revoked",
       revokedAt,
-      recovery: "This machine was removed from the ADE account. Pair it again to publish activity.",
+      recovery: "This machine was removed from the DAEX account. Pair it again to publish activity.",
     }, { status: 403 });
   }
   if (body.byteLength > MAX_BODY_BYTES) {
@@ -2893,7 +2893,7 @@ export async function handleAttentionMachinePublish(
     return json({ ok: false, error: "invalid json" }, { status: 400 });
   }
   if (!isRecord(payload)) return json({ ok: false, error: "invalid payload" }, { status: 400 });
-  const machineName = boundedText(payload.machineName, 120) ?? "ADE machine";
+  const machineName = boundedText(payload.machineName, 120) ?? "DAEX machine";
   const mode = payload.mode === "delta"
     || payload.mode === "reconcile"
     || payload.mode === "presence"
@@ -3247,7 +3247,7 @@ async function handleSnapshot(
     generatedAt: new Date(now).toISOString(),
     machines: links.results.map((row) => ({
       machineKey: row.machine_key,
-      name: row.machine_name?.trim() || "ADE machine",
+      name: row.machine_name?.trim() || "DAEX machine",
       online: now - Date.parse(row.last_seen_at) <= ACCOUNT_MACHINE_ONLINE_WINDOW_MS,
       lastSeenAt: row.last_seen_at,
     })),
@@ -3812,8 +3812,10 @@ function parseCustomNotification(
     } catch {
       parsed = null;
     }
-    if (!parsed || parsed.protocol !== "ade:" || raw.length > CUSTOM_NOTIFICATION_LINK_MAX) {
-      return { error: "deepLink must be an ade:// link" };
+    // `ade://` (accepted forever) and `daex://`; the desktop's `ADE_DEEPLINK_SCHEMES`,
+    // inlined because a Worker cannot import desktop code.
+    if (!parsed || (parsed.protocol !== "ade:" && parsed.protocol !== "daex:") || raw.length > CUSTOM_NOTIFICATION_LINK_MAX) {
+      return { error: "deepLink must be an ade:// or daex:// link" };
     }
     deepLink = raw;
   }

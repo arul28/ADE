@@ -37,6 +37,7 @@ import { selectChatPrs } from "../lanes/lanePageModel";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import { PrWatchPill } from "./PrWatchPill";
 import { withChatPin } from "./chatMachinePin";
+import { BRAND } from "../../../shared/brand";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -665,10 +666,10 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
           type="button"
           className={cn(btnBase, "gap-1")}
           onClick={handleOpenInAde}
-          title="Open PR in ADE"
+          title={`Open PR in ${BRAND.NAME}`}
         >
           <GitPullRequest size={10} weight="bold" />
-          <span>ADE</span>
+          <span>{BRAND.NAME}</span>
         </button>
         <button
           type="button"

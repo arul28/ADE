@@ -3,8 +3,8 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveRuntimeTarget } from "./download.js";
-import { AdeError } from "./errors.js";
-import { isDirectory, isFile } from "./fsProbe.js";
+import { DaexError } from "./errors.js";
+import { isDirectory, runtimeBinaryIn } from "./fsProbe.js";
 
 /**
  * Resolution of a runtime shipped as an npm platform package.
@@ -21,7 +21,8 @@ import { isDirectory, isFile } from "./fsProbe.js";
  *
  *   @ade-dev/runtime-<target>/
  *     package.json          { os: [...], cpu: [...], version: <ade release> }
- *     bin/ade[.exe]         the runtime binary, mode 0755
+ *     bin/daex[.exe]        the runtime binary, mode 0755 (bin/ade[.exe] before
+ *                           the DAEX rename; still accepted)
  *     native/               the extracted contents of <binary>.native.tar.gz
  *       node_modules/       the modules the binary dlopens
  *       vendor/crsqlite/... the cr-sqlite extension
@@ -32,7 +33,7 @@ import { isDirectory, isFile } from "./fsProbe.js";
  * at; `nodeModulesPath` is `<pkg>/native/node_modules`, which is
  * `ADE_RUNTIME_NODE_MODULES`. The two are reported separately rather than
  * derived at the call site because an embedder is free to relocate either half
- * inside their bundle, and `createAdeChat` accepts both.
+ * inside their bundle, and `createDaexChat` accepts both.
  */
 
 export type BundledRuntime = {
@@ -44,7 +45,7 @@ export type BundledRuntime = {
   nodeModulesPath: string;
   /** e.g. `@ade-dev/runtime-darwin-arm64`. */
   packageName: string;
-  /** The ADE release version the package was cut from. */
+  /** The DAEX release version the package was cut from. */
   version: string;
 };
 
@@ -52,7 +53,7 @@ export type ResolveBundledRuntimeOptions = {
   /**
    * Directory or file to resolve the package from. Defaults to this module's
    * own location, which is what an embedder wants: the runtime package sits
-   * beside `@ade-dev/sdk` in the same `node_modules` tree.
+   * beside `@daex-dev/sdk` in the same `node_modules` tree.
    */
   resolveFrom?: string;
   platform?: NodeJS.Platform;
@@ -146,20 +147,21 @@ export function resolveBundledRuntime(
   }
 
   const packageRoot = path.dirname(manifestPath);
-  const binaryName = platform === "win32" ? "ade.exe" : "ade";
-  const binaryPath = path.join(packageRoot, "bin", binaryName);
+  // `bin/daex` when the package carries it, else `bin/ade` (every package
+  // published before the DAEX rename).
+  const { binaryPath, found } = runtimeBinaryIn(path.join(packageRoot, "bin"), platform);
   const runtimeRoot = path.join(packageRoot, "native");
   const nodeModulesPath = path.join(runtimeRoot, "node_modules");
 
-  if (!isFile(binaryPath)) {
-    throw new AdeError(
+  if (!found) {
+    throw new DaexError(
       "binary_not_found",
       `${packageName} is installed at ${packageRoot} but carries no runtime binary at ${binaryPath}. ` +
         `Reinstall the package, or pass binaryPath explicitly.`,
     );
   }
   if (!isDirectory(nodeModulesPath)) {
-    throw new AdeError(
+    throw new DaexError(
       "binary_not_found",
       `${packageName} is installed at ${packageRoot} but carries no native modules at ${nodeModulesPath}. ` +
         `The binary dlopens them, so it cannot start without that directory.`,

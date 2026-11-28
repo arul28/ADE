@@ -8,6 +8,7 @@ import type {
 } from "../../../shared/types";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * `window.ade.chatLaunch` for the hosted web client: brain-owned new-lane
@@ -27,7 +28,7 @@ export function createChatLaunchNamespace(infra: AdapterInfra): AdeNamespace<"ch
 
   function call<T>(action: string, args: unknown, idempotent: boolean): Promise<T> {
     const unavailable = () => {
-      throw new Error(`New-lane launch action '${action}' is unavailable on the connected ADE host.`);
+      throw new Error(`New-lane launch action '${action}' is unavailable on the connected ${BRAND.NAME} host.`);
     };
     return idempotent
       ? commands.call<T>(action, asRecord(args), { fallback: unavailable })
@@ -39,7 +40,7 @@ export function createChatLaunchNamespace(infra: AdapterInfra): AdeNamespace<"ch
       guardPin("start", pin);
       // A new ADE Cloud computer is made by the desktop app (or a brain's `cloud.lane_launch` for an agent);
       // `chat.startLaunch` ignores `cloud` and would make the lane on the connected machine instead.
-      if (args.cloud) throw new Error("Start lanes on ADE Cloud from the ADE desktop app.");
+      if (args.cloud) throw new Error(`Start lanes on ${BRAND.CLOUD_NAME} from the ${BRAND.NAME} desktop app.`);
       // A write: never served from the read cache, and an older host that
       // lacks the action rejects (the composer then falls back to its own
       // create-lane chain) instead of resolving a fallback.

@@ -307,7 +307,7 @@ struct LaneManageSheet: View {
     if let cloudDelete {
       cloudDeleteCard(cloudDelete)
     } else if restsOnCloud {
-      ADESettingsNotice(message: "ADE can't find this lane's computer on your account right now. Pull down on Lanes to refresh, then try again.", tone: .warn)
+      ADESettingsNotice(message: "\(Brand.name) can't find this lane's computer on your account right now. Pull down on Lanes to refresh, then try again.", tone: .warn)
     } else {
       hostDeleteTab
     }
@@ -319,7 +319,7 @@ struct LaneManageSheet: View {
     VStack(alignment: .leading, spacing: 12) {
       Text(restsOnCloud
         ? "This lane's computer is asleep. You can delete the lane or manage its computer without waking it."
-        : "This lane has its own ADE Cloud computer. Deleting the lane deletes the computer and the lane's chats too.")
+        : "This lane has its own \(Brand.cloudName) computer. Deleting the lane deletes the computer and the lane's chats too.")
         .font(.system(size: 12.5))
         .foregroundStyle(ADEColor.textSecondary)
         .fixedSize(horizontal: false, vertical: true)
@@ -398,7 +398,7 @@ struct LaneManageSheet: View {
       VStack(spacing: 0) {
         deleteChecklistRow(
           title: "Worktree",
-          subtitle: "Removes the working folder and ADE registration.",
+          subtitle: "Removes the working folder and \(Brand.name) registration.",
           symbol: "shippingbox",
           isSelected: deleteSelection.worktree
         ) {
@@ -535,7 +535,7 @@ struct LaneManageSheet: View {
           .font(.system(size: 16, weight: .medium))
           .foregroundStyle(ADEColor.textSecondary)
         VStack(alignment: .leading, spacing: 3) {
-          Text("Hide this lane from ADE")
+          Text("Hide this lane from \(Brand.name)")
             .font(.system(size: 14.5, weight: .semibold))
             .foregroundStyle(ADEColor.textPrimary)
           Text("Files stay on disk until you delete them.")

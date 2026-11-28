@@ -18,6 +18,7 @@ import { family, type AdeThemeFamily } from "./family";
 import { CLASSIC_FAMILIES } from "./libraryClassics";
 import { ORIGINAL_FAMILIES } from "./libraryOriginals";
 import type { AdeTheme, ThemeBaseMode } from "./types";
+import { BRAND } from "../brand";
 
 export { THEME_COLLECTIONS, type AdeThemeFamily, type ThemeCollection } from "./family";
 
@@ -27,7 +28,7 @@ export const FALLBACK_THEME_ID = "dark";
 const ADE_CORE_FAMILIES: readonly AdeThemeFamily[] = [
   family(
     "ade",
-    "ADE",
+    `${BRAND.NAME}`,
     {
       id: "dark",
       description: "Violet on deep ink. The default.",

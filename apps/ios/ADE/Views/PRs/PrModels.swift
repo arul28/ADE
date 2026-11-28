@@ -132,7 +132,7 @@ enum PrGitHubScopeFilter: String, CaseIterable, Identifiable {
   var title: String {
     switch self {
     case .all: return "All"
-    case .ade: return "ADE"
+    case .ade: return Brand.name
     case .external: return "External"
     }
   }

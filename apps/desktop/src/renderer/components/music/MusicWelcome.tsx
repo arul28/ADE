@@ -17,6 +17,7 @@ import { useMusicArtworkStill } from "./MusicPlayer";
 import { MusicProviderBadge, useMusicProvider, useMusicProviderName } from "./musicProvider";
 import { SpotifySetup } from "./MusicProviderControls";
 import { musicActions, useMusicState } from "./musicStore";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * What the Music tab shows before Apple Music is connected: a hero over a
@@ -147,8 +148,8 @@ export function ConnectHero({ showcase, compact = false }: { showcase?: Showcase
       <ArtMosaic items={data?.albums ?? []} />
       <div className="ade-music-welcome-body">
         <span className="ade-music-connect-glyph"><MusicNotes size={32} weight="fill" /></span>
-        <h1>Your music, inside ADE</h1>
-        <p>{provider === "spotify" ? "Connect Spotify to play your library, playlists and the whole catalog inside ADE while you work. Needs Spotify Premium." : "Connect Apple Music to play full songs, your library and playlists while you work. Until then, browse the catalog and play 30-second previews."}</p>
+        <h1>Your music, inside {BRAND.NAME}</h1>
+        <p>{provider === "spotify" ? `Connect Spotify to play your library, playlists and the whole catalog inside ${BRAND.NAME} while you work. Needs Spotify Premium.` : "Connect Apple Music to play full songs, your library and playlists while you work. Until then, browse the catalog and play 30-second previews."}</p>
         <div className="ade-music-welcome-cta">
           <ConnectButton />
         </div>
@@ -173,7 +174,7 @@ export function ConnectHero({ showcase, compact = false }: { showcase?: Showcase
         </ul> : null}
         <p className="ade-music-welcome-privacy">
           <LockSimple size={12} weight="fill" />
-          {provider === "spotify" ? "You sign in on Spotify’s own page. ADE never sees your password; access tokens stay encrypted on this computer." : "You sign in on Apple’s own page. ADE never sees your password; the access it gets stays encrypted on this computer. Needs an Apple Music subscription."}
+          {provider === "spotify" ? `You sign in on Spotify’s own page. ${BRAND.NAME} never sees your password; access tokens stay encrypted on this computer.` : `You sign in on Apple’s own page. ${BRAND.NAME} never sees your password; the access it gets stays encrypted on this computer. Needs an Apple Music subscription.`}
         </p>
         <MusicProviderBadge height={30} className="ade-music-welcome-badge" />
       </div>

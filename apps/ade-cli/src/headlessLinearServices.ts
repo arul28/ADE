@@ -167,6 +167,7 @@ import {
 import { listGithubAutolinksOrExplain } from "../../desktop/src/shared/githubAutolinks";
 import { createGithubPatAccountSync } from "../../desktop/src/main/services/github/githubPatAccountSync";
 import { createGithubGhAccountSync, readGithubAccountCredentialState } from "../../desktop/src/main/services/github/githubGhAccountSync";
+import { BRAND } from "../../desktop/src/shared/brand";
 
 type HeadlessGitHubStatus = GitHubStatus;
 export type HeadlessGitHubService = GithubService;
@@ -2795,7 +2796,7 @@ export function createHeadlessGitHubService(
         method: "POST",
         path: "/gists",
         body: {
-          description: args.description?.trim() || "ADE PR chat transcript",
+          description: args.description?.trim() || `${BRAND.NAME} PR chat transcript`,
           public: false,
           files,
         },
@@ -3089,8 +3090,8 @@ function createHeadlessAgentChatService(
 
   const defaultSummary = (identityKey?: string): string =>
     identityKey
-      ? `Headless ADE session for ${identityKey}. Automatic agent execution is not available in this runtime.`
-      : "Headless ADE chat session. Automatic agent execution is not available in this runtime.";
+      ? `Headless ${BRAND.NAME} session for ${identityKey}. Automatic agent execution is not available in this runtime.`
+      : `Headless ${BRAND.NAME} chat session. Automatic agent execution is not available in this runtime.`;
 
   const resolveHeadlessModel = (
     modelId?: string | null,

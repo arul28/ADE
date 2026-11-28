@@ -1,4 +1,5 @@
 import type { AgentChatSessionSummary, AgentChatTranscriptEntry } from "../../../shared/types";
+import { BRAND } from "../../../shared/brand";
 
 export const MAX_PR_TRANSCRIPT_GIST_SESSIONS = 20;
 export const MAX_PR_TRANSCRIPT_GIST_CHARS = 240_000;
@@ -57,7 +58,7 @@ export function transcriptGistDescription(context: {
   session: Pick<AgentChatSessionSummary, "title" | "sessionId">;
 }): string {
   const title = inlineText(context.session.title) || context.session.sessionId;
-  return `ADE chat transcript for ${context.repoOwner}/${context.repoName}#${context.prNumber}: ${title}`;
+  return `${BRAND.NAME} chat transcript for ${context.repoOwner}/${context.repoName}#${context.prNumber}: ${title}`;
 }
 
 export function transcriptGistLinkTitle(session: Pick<AgentChatSessionSummary, "title" | "provider" | "sessionId">): string {
@@ -68,7 +69,7 @@ export function transcriptGistLinkTitle(session: Pick<AgentChatSessionSummary, "
 
 function defaultSessionTitle(session: Pick<AgentChatSessionSummary, "provider" | "sessionId">): string {
   const provider = inlineText(session.provider);
-  return provider ? `${provider} chat ${session.sessionId.slice(0, 8)}` : `ADE chat ${session.sessionId.slice(0, 8)}`;
+  return provider ? `${provider} chat ${session.sessionId.slice(0, 8)}` : `${BRAND.NAME} chat ${session.sessionId.slice(0, 8)}`;
 }
 
 function inlineText(value: unknown): string {
@@ -76,10 +77,10 @@ function inlineText(value: unknown): string {
 }
 
 function escapeHeading(value: string): string {
-  return value.replace(/^#+\s*/g, "").trim() || "ADE chat transcript";
+  return value.replace(/^#+\s*/g, "").trim() || `${BRAND.NAME} chat transcript`;
 }
 
 function truncateMarkdown(value: string): string {
   if (value.length <= MAX_PR_TRANSCRIPT_GIST_CHARS) return value;
-  return `${value.slice(0, MAX_PR_TRANSCRIPT_GIST_CHARS - 96).trimEnd()}\n\n_Transcript truncated by ADE before gist publication._\n`;
+  return `${value.slice(0, MAX_PR_TRANSCRIPT_GIST_CHARS - 96).trimEnd()}\n\n_Transcript truncated by ${BRAND.NAME} before gist publication._\n`;
 }

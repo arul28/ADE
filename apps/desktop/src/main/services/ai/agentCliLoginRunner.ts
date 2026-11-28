@@ -41,6 +41,7 @@ import {
   readLoginOutput,
   writeLoginCode,
 } from "../shared/cliLoginPty";
+import { BRAND } from "../../../shared/brand";
 
 /** How often the saved login is read while the CLI runs. */
 const VERIFY_POLL_MS = 2_000;
@@ -340,7 +341,7 @@ export function createAgentCliLoginRunner(deps: AgentCliLoginRunnerDeps) {
       if (exitCode === 0 && saved.inKeyring) {
         finish(record, {
           state: "failed",
-          message: `${label} saved this login in the system keyring. ADE reads only login files, so it cannot see or check this login.`,
+          message: `${label} saved this login in the system keyring. ${BRAND.NAME} reads only login files, so it cannot see or check this login.`,
         });
         return;
       }

@@ -8,6 +8,7 @@ import type {
 import { safeJsonParse, writeTextAtomic } from "../../../../desktop/src/main/services/shared/utils";
 import { createFileExclusive } from "../../../../desktop/src/main/services/state/durableFile";
 import { createRepeatedFailureGate } from "../../../../desktop/src/main/services/logging/repeatedFailure";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /** A device registration plus the machine-side metadata we persist for it. */
 export type StoredPushDevice = PushDeviceRegistration & {
@@ -243,7 +244,7 @@ function salvageMachineKeys(parsed: unknown): string[] {
 /** The registration file is there and could not be read; the store never mints over it. */
 class PushRegistrationUnreadableError extends Error {
   constructor(detail: string) {
-    super(`ADE could not read this machine's push registration file: ${detail}`);
+    super(`${BRAND.NAME} could not read this machine's push registration file: ${detail}`);
     this.name = "PushRegistrationUnreadableError";
   }
 }

@@ -9,6 +9,7 @@ import {
   type CSSProperties,
 } from "react";
 import { createPortal } from "react-dom";
+import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 import { AnimatePresence, motion } from "motion/react";
 import {
   ChatCircleDots,
@@ -58,6 +59,7 @@ import { ModelRowLogo, ProviderLogo } from "../shared/ProviderLogos";
 import type { PrChecksStatus, PrSummary } from "../../../shared/types";
 import { fixedFrameOf, fixedPoint, fixedRect, fixedViewport } from "../../lib/webZoom";
 import { ipcErrorMessage } from "../../lib/format";
+import { BRAND } from "../../../shared/brand";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -257,7 +259,7 @@ function useDebouncedSuggestions<T>(
         setState({ search, query, results: results.slice(0, max), error: null });
       } catch (error) {
         if (seqRef.current === seq && !cached) {
-          setState({ search, query, results: [], error: ipcErrorMessage(error) || "ADE couldn't search right now. Try again." });
+          setState({ search, query, results: [], error: ipcErrorMessage(error) || `${BRAND.NAME} couldn't search right now. Try again.` });
         }
       } finally {
         if (seqRef.current === seq) setLoading(false);
@@ -780,7 +782,7 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 8 }}
             transition={{ duration: 0.12, ease: "easeOut" }}
-            className="ade-chat-drawer-glass ade-chat-drawer-solid fixed z-[1000] flex flex-col overflow-hidden"
+            className="ade-chat-drawer-glass ade-chat-drawer-solid pointer-events-auto absolute flex flex-col overflow-hidden"
             style={menuStyle}
           >
             {/* Header hint */}
@@ -1097,7 +1099,9 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
       </AnimatePresence>
     );
 
-    return typeof document === "undefined" ? menu : createPortal(menu, document.body);
+    return typeof document === "undefined"
+      ? menu
+      : createPortal(<ViewportOverlayHost layer="composerMenu">{menu}</ViewportOverlayHost>, document.body);
   },
 );
 

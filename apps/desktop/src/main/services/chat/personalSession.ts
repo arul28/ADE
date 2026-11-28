@@ -1,7 +1,7 @@
 import path from "node:path";
 
 import { adeBundledAgentSkills } from "../../../shared/adeCliGuidance";
-import { adeWithheldAgentSkills } from "../../../shared/agentSkillRoots";
+import { adeWithheldAgentSkills, isAgentSkillNamed } from "../../../shared/agentSkillRoots";
 import { formatAdeAgentSkillRootsForPrompt } from "../../../shared/agentSkillRoots";
 import type { AgentChatPersonalProfile, AgentChatSession } from "../../../shared/types/chat";
 
@@ -59,7 +59,7 @@ export function isEmbeddedPersonalSession(
  * Skills an `assistant` chat does not get: they act on a lane's worktree,
  * branch or pull request, and a personal chat has none of those.
  */
-export const PERSONAL_LANE_ONLY_AGENT_SKILLS = ["ade-lanes-git", "ade-pr-workflows"] as const;
+export const PERSONAL_LANE_ONLY_AGENT_SKILLS = ["daex-lanes-git", "daex-pr-workflows"] as const;
 
 /**
  * Which ADE skill catalog one chat's provider is handed — the one answer every
@@ -84,9 +84,7 @@ export function adeSkillCatalogFor(
 
 /** A `/` entry naming a lane-only skill (`/ade-lanes-git`, or plugin-namespaced `/ade:ade-lanes-git`). */
 export function isPersonalLaneOnlySkillCommand(name: string): boolean {
-  const bare = name.replace(/^\//, "");
-  const unscoped = bare.slice(bare.indexOf(":") + 1);
-  return (PERSONAL_LANE_ONLY_AGENT_SKILLS as readonly string[]).some((skill) => skill === bare || skill === unscoped);
+  return isAgentSkillNamed(name, PERSONAL_LANE_ONLY_AGENT_SKILLS);
 }
 
 /**
@@ -118,7 +116,7 @@ export function resolvePersonalHostCwd(
 }
 
 export const PERSONAL_CHAT_SYSTEM_PROMPT = [
-  "You are a general-purpose AI assistant in an ADE personal chat.",
+  "You are a general-purpose AI assistant in a DAEX personal chat.",
   "This conversation is not attached to a software project, repository, branch, lane, or pull request.",
   "Answer the user's request directly. Do not assume they want coding work or inspect files unless they explicitly ask.",
   "If filesystem or shell work is explicitly requested, keep it inside the scratch working directory provided by the runtime.",
@@ -174,20 +172,20 @@ export function buildPersonalAssistantSystemPrompt(args: {
   const withheld = new Set<string>([...PERSONAL_LANE_ONLY_AGENT_SKILLS, ...adeWithheldAgentSkills()]);
   const skills = adeBundledAgentSkills.filter((name) => !withheld.has(name));
   return [
-    "You are the user's assistant inside ADE, running on their own computer.",
+    "You are the user's assistant inside DAEX, running on their own computer.",
     "This chat is not attached to a project, repository, branch, lane, or pull request. Not every request is about code: answer questions directly, and when the user wants something done, do it.",
-    "You can run shell commands, read and write files wherever the user points you, open and drive web pages in ADE's browser, use computer use and App Control, and use the `ade` CLI.",
+    "You can run shell commands, read and write files wherever the user points you, open and drive web pages in DAEX's browser, use computer use and App Control, and use the `daex` CLI (`ade` is the same command and still works).",
     `Your working directory is ${args.cwd}. It is not this chat's alone: the user's other chats without a project can work there too. Put files you create there unless the user names another place, and ask before you delete or overwrite files you did not create.`,
-    "With the `ade` CLI you can list, read, start and message chats in any project on this machine (`--project-root <path>`), and on the account's other machines (`--machine`).",
+    "With the `daex` CLI you can list, read, start and message chats in any project on this machine (`--project-root <path>`), and on the account's other machines (`--machine`).",
     "",
-    "## ADE",
-    `ADE capabilities ship as Agent Skills; for ADE tasks read the matching \`ade-*\` skill first: ${skills.map((name) => `\`${name}\``).join(", ")}.`,
+    "## DAEX",
+    `DAEX capabilities ship as Agent Skills; for DAEX tasks read the matching \`daex-*\` skill first: ${skills.map((name) => `\`${name}\``).join(", ")}.`,
     formatAdeAgentSkillRootsForPrompt(args.skillRoots),
-    "No native skills? `ade skill list --text`, then `ade skill show <name> --text`.",
-    "Web pages go in ADE's browser (`ade browser`, the `ade-browser` skill), which shares the user's sign-ins; do not use a headless or external browser.",
-    "For computer use, read `ade-computer-use` first. The user's own screen, apps and windows are not yours to change: act on their real screen only when they ask, and never close or quit an app you did not open.",
-    "Visuals: when there is an obvious thing to show and a picture beats prose (status across many items, a comparison, a trend), or when asked, add one ```scene block; its buttons can offer choices. Run `ade scene guide` first; check with `ade scene preview`.",
-    "CLI ground truth: `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Read only requested `ade secrets`, never print them, and clean up processes you start.",
+    "No native skills? `daex skill list --text`, then `daex skill show <name> --text`.",
+    "Web pages go in DAEX's browser (`daex browser`, the `daex-browser` skill), which shares the user's sign-ins; do not use a headless or external browser.",
+    "For computer use, read `daex-computer-use` first. The user's own screen, apps and windows are not yours to change: act on their real screen only when they ask, and never close or quit an app you did not open.",
+    "Visuals: when there is an obvious thing to show and a picture beats prose (status across many items, a comparison, a trend), or when asked, add one ```scene block; its buttons can offer choices. Run `daex scene guide` first; check with `daex scene preview`.",
+    "CLI ground truth: `daex help <command>` and `daex actions list --text`; prefer typed commands with `--text`. Read only requested `daex secrets`, never print them, and clean up processes you start.",
     ...(args.activityGuidance?.trim()
       ? [
         "",

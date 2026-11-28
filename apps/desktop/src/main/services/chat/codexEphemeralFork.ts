@@ -28,6 +28,7 @@ import { resolveCliSpawnInvocation } from "../shared/processExecution";
 import { terminateChildProcessTree } from "../shared/utils";
 import type { Logger } from "../logging/logger";
 import { codexDisableConfiguredMcpArgs } from "../mcp/codexMcpOff";
+import { BRAND } from "../../../shared/brand";
 
 /** How long a clean exit (stdin closed) may take before the process is killed. */
 const EXIT_GRACE_MS = 5_000;
@@ -117,7 +118,7 @@ export async function forkCodexThreadInEphemeralAppServer(args: {
 
   const fork = (async () => {
     await request("initialize", {
-      clientInfo: { name: "ade_desktop_fork", title: "ADE Desktop", version: "1" },
+      clientInfo: { name: "ade_desktop_fork", title: `${BRAND.NAME} Desktop`, version: "1" },
       capabilities: { experimentalApi: true },
     });
     write({ method: "initialized", params: {} });

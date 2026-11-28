@@ -1,4 +1,5 @@
 import { lazy, type ComponentType, type LazyExoticComponent } from "react";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The "What's new" catalogue: one entry per feature page. Add an entry when a
@@ -55,9 +56,15 @@ function lazyPage(importPage: () => Promise<PageModule>): Pick<AnnouncementPageD
 
 export const ANNOUNCEMENT_PAGES: readonly AnnouncementPageDef[] = [
   {
+    id: "daex-rename",
+    added: "2026-11-27",
+    title: `${BRAND.FORMER_NAME} is now ${BRAND.NAME}`,
+    ...lazyPage(() => import("./pages/DaexRenameAnnouncement")),
+  },
+  {
     id: "ade-cloud",
     added: "2026-11-18",
-    title: "ADE Cloud",
+    title: BRAND.CLOUD_NAME,
     ...lazyPage(() => import("./pages/AdeCloudAnnouncement")),
   },
   {
@@ -99,7 +106,7 @@ export const ANNOUNCEMENT_PAGES: readonly AnnouncementPageDef[] = [
   {
     id: "ade-beta",
     added: "2026-11-04",
-    title: "ADE Beta",
+    title: BRAND.BETA_NAME,
     ...lazyPage(() => import("./pages/BetaAnnouncement")),
   },
   {

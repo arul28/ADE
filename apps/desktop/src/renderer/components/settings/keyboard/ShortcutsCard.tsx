@@ -24,6 +24,7 @@ import { confirmDialog } from "../../ui/dialog";
 import { IntegrationCard } from "../integrations/IntegrationChrome";
 import { BindingCaps, KeyCaps } from "./keyboardParts";
 import { plainErrorText } from "../../../lib/plainError";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * Settings › Keyboard › Shortcuts: rebind any action in `shared/keybindings.ts`.
@@ -121,7 +122,7 @@ export function ShortcutsCard({
       showToast({
         tone: "error",
         title: "Could not save the shortcut",
-        message: plainErrorText(error, "ADE couldn't save the shortcut."),
+        message: plainErrorText(error, `${BRAND.NAME} couldn't save the shortcut.`),
       });
     }
   }, []);

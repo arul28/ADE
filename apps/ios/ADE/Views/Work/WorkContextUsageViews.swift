@@ -203,7 +203,7 @@ struct WorkContextUsagePopover: View {
       return "The runtime is compacting this chat. The previous exact reading is temporarily hidden."
     }
     if usage.state == .recalculating {
-      return "Compaction finished. ADE is waiting for the next authoritative usage snapshot."
+      return "Compaction finished. \(Brand.name) is waiting for the next authoritative usage snapshot."
     }
     if usage.state == .unknown {
       return "The runtime did not return an authoritative context reading."
@@ -453,7 +453,7 @@ struct WorkProviderCompactionSettings: View {
         } else if provider == "opencode" || provider == "pi" {
           Text("Compacts when the chat gets full. Its buffer sizes are in desktop Settings.")
         } else {
-          Text("This provider compacts by itself. ADE cannot change when.")
+          Text("This provider compacts by itself. \(Brand.name) cannot change when.")
         }
         Text("Provider default. Account overrides still apply. Changes apply at the next query start.").font(.caption).foregroundStyle(ADEColor.textSecondary)
         if let errorMessage { Text(errorMessage).foregroundStyle(ADEColor.warning) }

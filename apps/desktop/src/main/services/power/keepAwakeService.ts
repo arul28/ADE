@@ -39,6 +39,7 @@ import {
   readSystemSleepConfig,
   type SystemSleepDeps,
 } from "./systemSleepConfig";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * How often the turn poll runs.
@@ -221,7 +222,7 @@ export function createKeepAwakeService(
       blockerError = null;
     } catch {
       blockerId = null;
-      blockerError = "This machine wouldn't let ADE stay awake.";
+      blockerError = `This machine wouldn't let ${BRAND.NAME} stay awake.`;
     }
   };
 

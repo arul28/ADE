@@ -1,6 +1,6 @@
-# ADE SDK Electron example
+# DAEX SDK Electron example
 
-A minimal hardened Electron app on `@ade-dev/sdk/electron`. Three files, one per
+A minimal hardened Electron app on `@daex-dev/sdk/electron`. Three files, one per
 process, and a vanilla-JavaScript transcript so nothing here is React or build
 tooling.
 
@@ -12,7 +12,7 @@ configuration a hardened product ships and the one an untested bridge breaks on.
 
 Install a provider CLI first and sign in to it. The example opens the cheapest
 available model in the catalog. With no provider installed it shows
-"ADE knows no models" and sends nothing.
+"DAEX knows no models" and sends nothing.
 
 ```
 npm install -g @anthropic-ai/claude-code   # or another supported provider
@@ -32,16 +32,16 @@ npm install
 npm start
 ```
 
-`npm install` links `@ade-dev/sdk` from `file:../..`, so the example runs against
+`npm install` links `@daex-dev/sdk` from `file:../..`, so the example runs against
 the package you just built.
 
 ## The three files
 
 | file | process | what it does |
 | --- | --- | --- |
-| `main.mjs` | main | creates the SDK client and calls `registerAdeIpc` |
+| `main.mjs` | main | creates the SDK client and calls `registerDaexIpc` |
 | `preload.cjs` | preload | exposes two functions on `window.ade` |
-| `renderer/app.js` | renderer | calls `createAdeIpcClient(window.ade)` |
+| `renderer/app.js` | renderer | calls `createDaexIpcClient(window.ade)` |
 
 ## Two ways to load the preload
 
@@ -52,15 +52,15 @@ is bundled.
 By default `main.mjs` points at the SDK's self-running preload:
 
 ```js
-preload: require.resolve("@ade-dev/sdk/electron/preload-auto")
+preload: require.resolve("@daex-dev/sdk/electron/preload-auto")
 ```
 
-Do not point it at `@ade-dev/sdk/electron/preload`. That file exports
-`exposeAdeBridge` and does not call it, so `window.ade` stays undefined.
+Do not point it at `@daex-dev/sdk/electron/preload`. That file exports
+`exposeDaexBridge` and does not call it, so `window.ade` stays undefined.
 
 Set `ADE_EXAMPLE_PRELOAD=local` to load `preload.cjs` next to `main.mjs`
 instead. That file is hand-written, imports nothing, and is the shape to copy
-when your app wants its own channels alongside ADE's.
+when your app wants its own channels alongside DAEX's.
 
 ```
 ADE_EXAMPLE_PRELOAD=local npm start
@@ -72,18 +72,18 @@ ADE_EXAMPLE_PRELOAD=local npm start
 dialog in the main process and send the path back. The bridge does not upload
 buffers.
 
-## Using `@ade-dev/chat-ui` instead
+## Using `@daex-dev/chat-ui` instead
 
-`createAdeIpcClient` returns the shape `adaptSdkClient` expects, with no cast:
+`createDaexIpcClient` returns the shape `adaptSdkClient` expects, with no cast:
 
 ```tsx
-import { createAdeIpcClient } from "@ade-dev/sdk/electron/renderer";
-import { adaptSdkClient, AdeChat } from "@ade-dev/chat-ui";
+import { createDaexIpcClient } from "@daex-dev/sdk/electron/renderer";
+import { adaptSdkClient, DaexChat } from "@daex-dev/chat-ui";
 
-const client = adaptSdkClient(createAdeIpcClient(window.ade));
+const client = adaptSdkClient(createDaexIpcClient(window.ade));
 
 export function App() {
-  return <AdeChat client={client} threadKey="main" />;
+  return <DaexChat client={client} threadKey="main" />;
 }
 ```
 

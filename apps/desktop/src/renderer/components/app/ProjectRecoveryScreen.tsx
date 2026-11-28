@@ -32,6 +32,7 @@ import { ReportIssueFooter } from "./ReportIssueFooter";
 import { ResetAdeButton } from "./ResetAdeDialog";
 import { canRestartAde, clearRestartStamp, restartAde, restartedAdeRecently } from "./restartAde";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { BRAND } from "../../../shared/brand";
 
 /** Steps arrive as a finished array; reveal them one-by-one so it reads live. */
 const STEP_REVEAL_MS = 150;
@@ -136,7 +137,7 @@ function DataRecoveryChoices({
       {watching ? (
         <p className="mt-4 flex items-center gap-2 text-[12px] text-(color:--kit-text-3)">
           {SPINNER}
-          ADE opens the project as soon as the folder is back.
+          {BRAND.NAME} opens the project as soon as the folder is back.
         </p>
       ) : null}
     </>
@@ -154,11 +155,11 @@ type Phase = "diagnosing" | "idle" | "repairing" | "success" | "failure";
  * word is "quit and reopen ADE": Fix it → Restart ADE → Reset ADE → Report.
  */
 const RUNG_HINT = {
-  fix: "Restarts ADE's background service and checks this project.",
+  fix: `Restarts ${BRAND.NAME}'s background service and checks this project.`,
   settings: "Opens Login Items in System Settings.",
   retry: "Opens the project again.",
-  restart: "Quits and reopens ADE.",
-  reset: "Removes everything ADE put on this computer. Your code stays.",
+  restart: `Quits and reopens ${BRAND.NAME}.`,
+  reset: `Removes everything ${BRAND.NAME} put on this computer. Your code stays.`,
 } as const;
 
 /**
@@ -167,13 +168,13 @@ const RUNG_HINT = {
  */
 const FAILED_STEP_HEADLINE: Record<RepairStepId, string> = {
   check_space: "There still isn't enough free space",
-  stop_service: "Another copy of ADE is in the way",
-  validate_database: "This project's ADE data is damaged",
-  resolve_migrations: "ADE couldn't finish an interrupted save",
-  restart_service: "ADE's background service still won't start",
-  verify_endpoint: "ADE's background service isn't answering",
-  verify_project_rpc: "ADE started, but this project didn't open",
-  reconcile_chats: "ADE started, but couldn't check the chats",
+  stop_service: `Another copy of ${BRAND.NAME} is in the way`,
+  validate_database: `This project's ${BRAND.NAME} data is damaged`,
+  resolve_migrations: `${BRAND.NAME} couldn't finish an interrupted save`,
+  restart_service: `${BRAND.NAME}'s background service still won't start`,
+  verify_endpoint: `${BRAND.NAME}'s background service isn't answering`,
+  verify_project_rpc: `${BRAND.NAME} started, but this project didn't open`,
+  reconcile_chats: `${BRAND.NAME} started, but couldn't check the chats`,
 };
 
 /**
@@ -191,7 +192,7 @@ function pluralize(count: number, noun: string): string {
 }
 
 function projectLabel(rootPath: string | null): string {
-  if (!rootPath) return "ADE";
+  if (!rootPath) return BRAND.NAME;
   const segments = rootPath.split(/[\\/]/).filter(Boolean);
   return segments[segments.length - 1] ?? rootPath;
 }
@@ -522,7 +523,7 @@ export function ProjectRecoveryScreen() {
       .catch((error: unknown) => {
         showToast({
           tone: "error",
-          title: "ADE couldn't remove this project",
+          title: `${BRAND.NAME} couldn't remove this project`,
           message: error instanceof Error ? error.message : String(error),
         });
       });
@@ -542,7 +543,7 @@ export function ProjectRecoveryScreen() {
   const reopenWithCurrentData = useCallback(() => {
     const start = window.ade?.recovery?.startFresh;
     if (!rootPath || !isAdeAvailable(start)) return;
-    void runDataAction("Opening the project with new ADE data", async () => {
+    void runDataAction(`Opening the project with new ${BRAND.NAME} data`, async () => {
       await start(rootPath);
       // Starting fresh closes the project, which can take this screen down
       // with it; reopen from here rather than from the success card, and only
@@ -553,7 +554,7 @@ export function ProjectRecoveryScreen() {
         await switchProjectToPath(rootPath);
       } catch {
         reopenStartedRef.current = false;
-        return { ok: false, reason: "ADE set up new data, but the project didn't open. Open it again from the project list." };
+        return { ok: false, reason: `${BRAND.NAME} set up new data, but the project didn't open. Open it again from the project list.` };
       }
       return { ok: true };
     });
@@ -645,7 +646,7 @@ export function ProjectRecoveryScreen() {
   const heroBody = isFailure
     ? (report?.nextAction
       ?? (dataState ? dataFailureReason : null)
-      ?? "ADE tried, but the problem is still there. Nothing was removed.")
+      ?? `${BRAND.NAME} tried, but the problem is still there. Nothing was removed.`)
     : copy.body;
 
   // Which rung leads, i.e. gets the one filled button. A failed fix climbs to
@@ -749,7 +750,7 @@ export function ProjectRecoveryScreen() {
                 {starting ? (
                   // Someone else is doing the work: say who, so nobody hunts for a button.
                   <Rung
-                    control={<span className="flex h-[30px] items-center gap-2 text-[12.5px] font-medium">{SPINNER}Waiting for ADE…</span>}
+                    control={<span className="flex h-[30px] items-center gap-2 text-[12.5px] font-medium">{SPINNER}Waiting for {BRAND.NAME}…</span>}
                     hint="You can leave this screen; nothing needs fixing yet."
                   />
                 ) : null}
@@ -787,22 +788,22 @@ export function ProjectRecoveryScreen() {
                         See what uses space
                       </button>
                     )}
-                    hint="Opens ADE's storage settings."
+                    hint={`Opens ${BRAND.NAME}'s storage settings.`}
                   />
                 ) : null}
                 {restartAvailable ? (
                   <Rung
                     control={(
                       <button type="button" onClick={onRestart} className={restartLeads ? ERROR_PRIMARY_BUTTON : ERROR_SECONDARY_BUTTON}>
-                        Restart ADE
+                        Restart {BRAND.NAME}
                       </button>
                     )}
-                    hint={restartFailed ? "ADE couldn't restart itself. Quit it from the menu, then open it again." : RUNG_HINT.restart}
+                    hint={restartFailed ? `${BRAND.NAME} couldn't restart itself. Quit it from the menu, then open it again.` : RUNG_HINT.restart}
                     failed={isFailure && restartedRecently}
                   />
                 ) : null}
                 <Rung
-                  control={<ResetAdeButton label="Reset ADE…" className={resetLeads ? ERROR_PRIMARY_BUTTON : ERROR_SECONDARY_BUTTON} />}
+                  control={<ResetAdeButton label={`Reset ${BRAND.NAME}…`} className={resetLeads ? ERROR_PRIMARY_BUTTON : ERROR_SECONDARY_BUTTON} />}
                   hint={RUNG_HINT.reset}
                 />
               </ul>
@@ -810,7 +811,7 @@ export function ProjectRecoveryScreen() {
               {backgroundBlocked ? (
                 <p className="mt-4 flex items-center gap-2 text-[12px] text-(color:--kit-text-3)">
                   {SPINNER}
-                  Watching for the change. ADE continues as soon as your Mac allows it.
+                  Watching for the change. {BRAND.NAME} continues as soon as your Mac allows it.
                 </p>
               ) : null}
 
@@ -850,7 +851,7 @@ function SuccessCard({
     <>
       <h1 className={ERROR_HEADLINE}>Fixed. Opening the project…</h1>
       <ul className={ERROR_BODY + " mt-2 flex flex-col gap-1"}>
-        {report?.dbHealthy === false ? <li>This project&apos;s ADE data was repaired.</li> : null}
+        {report?.dbHealthy === false ? <li>This project&apos;s {BRAND.NAME} data was repaired.</li> : null}
         {resumedNormally != null && total ? (
           <li>{pluralize(resumedNormally, "chat")} picked up where {resumedNormally === 1 ? "it" : "they"} left off.</li>
         ) : null}

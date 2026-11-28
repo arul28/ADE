@@ -17,6 +17,7 @@ import type {
 import { WORK_TOOL_PRIMARY_BUTTON } from "../terminals/workToolChrome";
 import { cn } from "../ui/cn";
 import { MAC_DESKTOP_SECONDARY_BUTTON } from "./MacDesktopStateCard";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * What macOS still has to allow before Mac Desktop works, one row per grant.
@@ -50,7 +51,7 @@ type PermissionCopy = {
 export const MAC_DESKTOP_PERMISSION_COPY: Record<MacDesktopPermissionKind, PermissionCopy> = {
   screenRecording: {
     name: "Screen & System Audio Recording",
-    purpose: "Shows this lane's screen in ADE.",
+    purpose: `Shows this lane's screen in ${BRAND.NAME}.`,
     pathTail: "Screen & System Audio Recording",
     icon: Monitor,
   },

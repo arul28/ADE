@@ -10,6 +10,7 @@ import {
 } from "../../lib/releaseAssets";
 import { ToolError } from "./errors";
 import { toolsLoggerInstalled, warnTools } from "./toolsLog";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * The tools cache is only ever populated for a target the ADE runtime itself
@@ -49,7 +50,7 @@ export function detectToolTarget(
   const detected = detectRuntimeTargetResult(platform, arch);
   if (!detected.ok) {
     throw new ToolError(
-      `ADE agent tools are published for macOS/Linux arm64/x64 and Windows x64; got ${platform}/${arch}.`,
+      `${BRAND.NAME} agent tools are published for macOS/Linux arm64/x64 and Windows x64; got ${platform}/${arch}.`,
       { kind: "unsupported-target", target: `${platform}-${arch}` },
     );
   }

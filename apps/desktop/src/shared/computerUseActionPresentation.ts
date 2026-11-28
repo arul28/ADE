@@ -12,6 +12,7 @@ import {
   type ComputerUseActionPlace,
   type ComputerUseActionSummary,
 } from "./computerUseActionSummary";
+import { BRAND } from "./brand";
 
 export type ComputerUseSurfaceGlyph = "screen" | "app" | "globe" | "user" | "apple" | "android" | "proof";
 
@@ -137,7 +138,7 @@ export function computerUseSurfaceLabel(summary: ComputerUseActionSummary): {
     case "app_control":
       return { label: "App Control", glyph: "app", warning: false };
     case "ade_browser":
-      return { label: "ADE browser", glyph: "globe", warning: false };
+      return { label: `${BRAND.NAME} browser`, glyph: "globe", warning: false };
     case "user_browser": {
       const browser = `your ${summary.browserName ?? "browser"}`;
       return {
@@ -151,7 +152,7 @@ export function computerUseSurfaceLabel(summary: ComputerUseActionSummary): {
     case "android_device":
       return { label: summary.device?.name || "the emulator", glyph: "android", warning: false };
     case "proof":
-      return { label: "ADE proof", glyph: "proof", warning: false };
+      return { label: `${BRAND.NAME} proof`, glyph: "proof", warning: false };
   }
 }
 

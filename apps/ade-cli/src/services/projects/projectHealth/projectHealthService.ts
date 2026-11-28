@@ -36,6 +36,7 @@ import { rewriteAdeJsonFiles, rewriteSimulatorMarkers } from "../projectMove/pro
 import { filesMentioningPath, installCommandFor, lockfileKind, timeMachineBacksUp } from "../projectMove/projectMovePreflight";
 import { pathKey } from "../../../../../desktop/src/main/services/shared/pathCompare";
 import { readMoveVolume } from "../projectMove/moveVolumes";
+import { BRAND } from "../../../../../desktop/src/shared/brand";
 
 /**
  * Project health: everything ADE knows can go wrong with a project, checked in
@@ -204,7 +205,7 @@ function parseIgnored(raw: string | null | undefined, logger: Pick<Logger, "warn
   } catch (error) {
     logger.warn("project_health.ignored_parse_failed", { error: error instanceof Error ? error.message : String(error) });
     // A change must not write over a list it could not read.
-    if (strict) throw new Error("ADE couldn't read this project's ignored list, so nothing was changed.");
+    if (strict) throw new Error(`${BRAND.NAME} couldn't read this project's ignored list, so nothing was changed.`);
     return [];
   }
   if (!Array.isArray(parsed)) return [];
@@ -872,7 +873,7 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
       deps.logger.warn("project_health.lanes_failed", { error: error instanceof Error ? error.message : String(error) });
       const detail = error instanceof Error ? error.message : String(error);
       checks.push({ id: "lanes", label: "Lanes", ok: false });
-      issues.push({ id: "lanes-failed", area: "git", severity: "warning", title: "ADE couldn't check lanes", detail });
+      issues.push({ id: "lanes-failed", area: "git", severity: "warning", title: `${BRAND.NAME} couldn't check lanes`, detail });
       return null;
     });
     const run = async (id: string, label: string, check: () => Promise<ProjectHealthIssue[]> | ProjectHealthIssue[]) => {
@@ -883,14 +884,14 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
       } catch (error) {
         deps.logger.warn("project_health.check_failed", { check: id, error: error instanceof Error ? error.message : String(error) });
         checks.push({ id, label, ok: false });
-        issues.push({ id: `${id}-failed`, area: "location", severity: "warning", title: `ADE couldn't check: ${label}`, detail: error instanceof Error ? error.message : String(error) });
+        issues.push({ id: `${id}-failed`, area: "location", severity: "warning", title: `${BRAND.NAME} couldn't check: ${label}`, detail: error instanceof Error ? error.message : String(error) });
       }
     };
     const moved = ctx.previousRoots.length > 0;
     const oldRoot = ctx.previousRoots[0] ?? "";
 
     await Promise.all([
-      run("stale-paths", "ADE's data points inside the project", () => {
+      run("stale-paths", `${BRAND.NAME}'s data points inside the project`, () => {
         if (!moved) return [];
         const counts = countPathsNaming(rewriteDb(deps.db), ctx.previousSpellings);
         const total = Object.values(counts).reduce((sum, n) => sum + n, 0);
@@ -900,7 +901,7 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
           area: "location",
           severity: "problem",
           title: `${plural(total, "saved path")} still name${total === 1 ? "s" : ""} the old folder`,
-          detail: `ADE looks for these at ${oldRoot}, which is gone or no longer this project: proof files can't be recovered and lanes can look missing.`,
+          detail: `${BRAND.NAME} looks for these at ${oldRoot}, which is gone or no longer this project: proof files can't be recovered and lanes can look missing.`,
           items: Object.entries(counts).map(([where, n]) => `${where}: ${n}`),
           fix: { id: "update-paths", label: "Update paths", description: `Points every saved path at ${projectRoot}. Synced to your other devices like any edit.`, kind: "change" },
         }];
@@ -1071,7 +1072,7 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
           area: "apple",
           severity: "warning",
           title: `${plural(stale, "lane simulator")} still name${stale === 1 ? "s" : ""} the old folder`,
-          detail: "ADE treats them as left over from a deleted project and may offer to remove them.",
+          detail: `${BRAND.NAME} treats them as left over from a deleted project and may offer to remove them.`,
           fix: { id: "repoint-simulators", label: "Update simulators", description: "Records the new folder in each lane simulator.", kind: "change" },
         }];
       }),
@@ -1084,7 +1085,7 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
           area: "location",
           severity: "info",
           title: `${plural(files.length, "file")} name${files.length === 1 ? "s" : ""} the old folder`,
-          detail: "Scripts and settings with the old path run in the wrong place or fail. ADE doesn't edit your files; an agent can go through them with you.",
+          detail: `Scripts and settings with the old path run in the wrong place or fail. ${BRAND.NAME} doesn't edit your files; an agent can go through them with you.`,
           items: files,
         }];
       }),
@@ -1111,10 +1112,10 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
           area: "drive" as const,
           severity: "warning" as const,
           title: share === "wsl" ? "This project is on a WSL share" : "This project is on a network share",
-          detail: "ADE can stop with \"database is locked\" here — keep projects on this computer's own drive.",
+          detail: `${BRAND.NAME} can stop with \"database is locked\" here — keep projects on this computer's own drive.`,
         }];
       }),
-      run("drive", "The drive is the one ADE expects", async () => {
+      run("drive", `The drive is the one ${BRAND.NAME} expects`, async () => {
         const volume = await readMoveVolume(projectRoot);
         if (!volume || volume.internal) return [];
         const found: ProjectHealthIssue[] = [];
@@ -1134,7 +1135,7 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
             area: "drive",
             severity: "info",
             title: `Time Machine doesn't back up ${volume.name}`,
-            detail: "Pushed branches are safe on your git host, but unpushed work, ADE's chats and proof on this drive have no backup.",
+            detail: `Pushed branches are safe on your git host, but unpushed work, ${BRAND.NAME}'s chats and proof on this drive have no backup.`,
           });
         }
         return found;
@@ -1283,7 +1284,7 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
     const done: string[] = [];
     const problems: string[] = [];
     const needsMove = () => {
-      if (!ctx.previousSpellings.length) throw new Error("ADE has no record of where this project lived before, so it can't tell which paths are stale.");
+      if (!ctx.previousSpellings.length) throw new Error(`${BRAND.NAME} has no record of where this project lived before, so it can't tell which paths are stale.`);
     };
     try {
       switch (args.fixId) {
@@ -1306,7 +1307,7 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
           needsMove();
           const links = rewriteWorktreeLinksInCopy({ copyRoot: projectRoot, finalRoot: projectRoot, oldSpellings: ctx.previousSpellings });
           done.push(`Relinked ${plural(links.inside.length, "lane")}.`);
-          problems.push(...links.outside.map((lane) => `${lane.name} is outside the project folder, so ADE left its link alone.`));
+          problems.push(...links.outside.map((lane) => `${lane.name} is outside the project folder, so ${BRAND.NAME} left its link alone.`));
           problems.push(...links.missing.map((lane) => `${lane.name}'s folder is missing.`));
           break;
         }

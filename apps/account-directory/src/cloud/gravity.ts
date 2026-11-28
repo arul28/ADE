@@ -55,11 +55,13 @@ import {
   type AccountRow,
   type CloudEnv,
 } from "./store";
+import { PRODUCT_NAME_PATTERN } from "../../../desktop/src/shared/brandNames";
 
 /**
  * Gravity (trygravity.com): sponsored cards under finished replies, and the
  * Index's service picks for agents, in the Free plan's ADE Cloud chats
- * (`docs/plans/pricing-v2-and-gravity.md`). Account-wide, so it lives here:
+ * (`docs/features/ade-cloud/README.md`, "Sponsored cards and the Index").
+ * Account-wide, so it lives here:
  * this Worker holds the key, decides who sees a card, records the consent and
  * counts the requests. Desktop, web and phone only ask and draw.
  *
@@ -359,16 +361,19 @@ function readDevice(value: unknown): CloudSponsoredDevice | null {
   return { type, os, osVersion: shortString(raw.osVersion, 64), ua: shortString(raw.ua, 512), tracking };
 }
 
+const IOS_APP_USER_AGENT = new RegExp(String.raw`^${PRODUCT_NAME_PATTERN}-iOS\/`);
+
 /**
  * The account's hashed email for Gravity, when this device may send it. The
- * ADE iPhone and iPad app (its own `ADE-iOS/` user agent) sends it only once
- * the person allowed tracking in Apple's prompt (App Tracking Transparency);
+ * DAEX iPhone and iPad app (its own `DAEX-iOS/` user agent, `ADE-iOS/` before
+ * the rename) sends it only once the person allowed tracking in Apple's
+ * prompt (App Tracking Transparency);
  * any other answer, or none from an older app, leaves it out. Desktop and the
  * web, a browser on an iPhone included, have no such prompt and send it.
  */
 function hashedEmailFor(device: { os: string; ua?: string | null; tracking?: string | null } | null, emailHash: string | null): string | null {
   if (!emailHash) return null;
-  const iosApp = device?.os === "ios" && /^ADE-iOS\//.test(device.ua ?? "");
+  const iosApp = device?.os === "ios" && IOS_APP_USER_AGENT.test(device.ua ?? "");
   if (iosApp && device?.tracking !== "authorized") return null;
   return emailHash;
 }
@@ -408,7 +413,7 @@ export async function routeSponsored(request: Request, path: string, env: Gravit
   return null;
 }
 
-const notFound = () => fail("not_found", "That ADE Cloud route doesn't exist.", 404);
+const notFound = () => fail("not_found", "That DAEX Cloud route doesn't exist.", 404);
 
 /**
  * The account's answer, on every machine. A yes keeps the SHA-256 of the
@@ -439,11 +444,11 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
   if (choice === "granted") {
     before = await honorGpc(env, account, await readConsent(env, userId), who, now);
     if (body.confirmed !== true && yesNeedsConfirm(before, await shownAnswer(env, before, who, now), who)) {
-      return fail("sponsored_confirm", "Turning sponsored cards back on takes a second confirm. Try again, or update ADE if it doesn't ask.", 409);
+      return fail("sponsored_confirm", "Turning sponsored cards back on takes a second confirm. Try again, or update DAEX if it doesn't ask.", 409);
     }
   }
   if (choice === "notice") {
-    if (!startsOnFor(env, who)) return fail("unavailable", "Sponsored cards don't start on where you are, so ADE asks first.", 409);
+    if (!startsOnFor(env, who)) return fail("unavailable", "Sponsored cards don't start on where you are, so DAEX asks first.", 409);
     before = await readConsent(env, userId);
     // An answer that holds, or any no (even one run out), stands: the person is asked, never told.
     if (!startsOnNow(env, before, await shownAnswer(env, before, who, now), who)) return answered();

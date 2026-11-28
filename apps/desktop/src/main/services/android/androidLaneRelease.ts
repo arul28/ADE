@@ -18,6 +18,7 @@ import {
 } from "./androidLaneDeviceStore";
 import { androidDiscoveryDirs, readAndroidDiscoveryFiles } from "./androidEmulatorProcess";
 import { androidAvdHome, type AndroidEnv } from "./androidSdk";
+import { BRAND } from "../../../shared/brand";
 
 /*
  * A lane giving up its AVD on disk: delete the AVD ADE made for it; the
@@ -132,7 +133,7 @@ async function endAndroidLaneDeviceOnDisk(
     if (!avd.adeCreated) {
       // A tool rewrote its `config.ini` and dropped ADE's marker: it reads as
       // the user's now, and the user's AVDs are never deleted.
-      return { ended: true, deletedAvd: null, reason: `${device.avdName} no longer carries ADE's marker, so it was kept.` };
+      return { ended: true, deletedAvd: null, reason: `${device.avdName} no longer carries ${BRAND.NAME}'s marker, so it was kept.` };
     }
     if (options.anotherLaneHolds()) {
       return { ended: true, deletedAvd: null, reason: `Another lane holds ${device.avdName}, so it was kept.` };

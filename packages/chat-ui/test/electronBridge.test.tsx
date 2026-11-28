@@ -2,8 +2,8 @@
  * `<AdeChat>` over the real Electron bridge, end to end, without Electron.
  *
  * WHY THIS EXISTS. Three packages have to agree for an Electron embedder to see
- * a single word of streamed text: `@ade-dev/sdk/electron` on the main side,
- * `@ade-dev/sdk/electron/renderer` on the other, and `adaptSdkClient` on top of
+ * a single word of streamed text: `@daex-dev/sdk/electron` on the main side,
+ * `@daex-dev/sdk/electron/renderer` on the other, and `adaptSdkClient` on top of
  * that. Each is unit-tested against its own fakes, and each passed while the
  * seam between them was broken — a capability field typed `unknown` on the
  * proxy is enough to stop the whole chain compiling, and a channel demux on the
@@ -18,10 +18,10 @@
 
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { registerAdeIpc } from "@ade-dev/sdk/electron";
-import type { AdeChatClient as SdkChatClient } from "@ade-dev/sdk";
-import { createAdeIpcClient } from "@ade-dev/sdk/electron/renderer";
-import type { AdeBridge } from "@ade-dev/sdk/electron/renderer";
+import { registerAdeIpc } from "@daex-dev/sdk/electron";
+import type { AdeChatClient as SdkChatClient } from "@daex-dev/sdk";
+import { createAdeIpcClient } from "@daex-dev/sdk/electron/renderer";
+import type { AdeBridge } from "@daex-dev/sdk/electron/renderer";
 
 import { AdeChat } from "../src/AdeChat";
 import { adaptSdkClient, type SdkLikeChatClient } from "../src/adapters/sdkClient";

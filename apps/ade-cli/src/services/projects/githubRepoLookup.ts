@@ -73,7 +73,7 @@ export function createGithubRepoLookup(options: {
     try {
       const response = await fetchImpl(
         `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`,
-        { headers: { accept: "application/vnd.github+json", "user-agent": "ADE" }, signal: controller.signal },
+        { headers: { accept: "application/vnd.github+json", "user-agent": "DAEX" }, signal: controller.signal },
       );
       if (response.status === 404) {
         await response.body?.cancel().catch(() => {});

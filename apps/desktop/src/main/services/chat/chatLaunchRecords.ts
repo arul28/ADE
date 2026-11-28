@@ -6,6 +6,7 @@ import { isChatLaunchTerminal } from "../../../shared/chatLaunch";
 import { normalizeChatLaunchLaneMode } from "./chatLaunchArgs";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * On-disk records for the chat-launch service (`.ade/cache/chat-launches/`),
@@ -85,10 +86,10 @@ export function chatLaunchRoomVerdict(record: ChatLaunchRecord, nowMs: number): 
 }
 
 function roomRefused(kind: "cap" | "age", mark: ChatLaunchRoomMark): { stage: string; launch: string } {
-  const after = mark.kind === "memory" ? "after ADE moved the computer to a bigger size" : "after the disk grew";
+  const after = mark.kind === "memory" ? `after ${BRAND.NAME} moved the computer to a bigger size` : "after the disk grew";
   return kind === "cap"
     ? {
-      stage: `Interrupted: ADE restarted ${CHAT_LAUNCH_ROOM_MAX_RESUMES + 1} times while setup ran again ${after}.`,
+      stage: `Interrupted: ${BRAND.NAME} restarted ${CHAT_LAUNCH_ROOM_MAX_RESUMES + 1} times while setup ran again ${after}.`,
       launch: `Setup kept being interrupted by restarts ${after}. Retry to set up again.`,
     }
     : {
@@ -126,10 +127,10 @@ function reviveChatLaunchRecord(record: ChatLaunchRecord, nowIso: string): ChatL
     if (running) {
       running.status = "failed";
       running.endedAt = nowIso;
-      running.error = refused?.stage ?? "Interrupted when ADE restarted.";
+      running.error = refused?.stage ?? `Interrupted when ${BRAND.NAME} restarted.`;
     }
     snapshot.phase = "failed";
-    snapshot.error = refused?.launch ?? "Setup was interrupted when ADE restarted.";
+    snapshot.error = refused?.launch ?? `Setup was interrupted when ${BRAND.NAME} restarted.`;
     snapshot.updatedAt = nowIso;
   }
   snapshot.sequence += RELOAD_SEQUENCE_JUMP;

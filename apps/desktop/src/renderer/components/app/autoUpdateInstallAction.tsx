@@ -28,6 +28,7 @@ import { readThisComputerColorKey } from "../settings/machines/machineFacts";
 import { captureUpdatePromptDecision } from "./captureUpdatePromptDecision";
 import { dismissToast, showToast } from "./toast/toastStore";
 import { updateRestartAction, type UpdateRestartAction } from "./updateRestartAction";
+import { BRAND } from "../../../shared/brand";
 
 const UPDATING_MACHINES_TOAST_ID = "ade-update-other-machines";
 /** One "Update" box per other machine, keyed by its id. */
@@ -117,7 +118,7 @@ async function runInstallFlow(snapshot: AutoUpdateSnapshot, onAccepted?: () => v
     title: action.switchTo
       ? `${action.label}?`
       : `${action.label} to ${snapshot.version?.trim().replace(/^v/i, "") || "the latest version"}?`,
-    message: "ADE quits and reopens on its own. Unsaved edits may be lost.",
+    message: `${BRAND.NAME} quits and reopens on its own. Unsaved edits may be lost.`,
     icon: <ArrowsClockwise size={16} weight="bold" />,
     tone: "accent",
     size: "md",

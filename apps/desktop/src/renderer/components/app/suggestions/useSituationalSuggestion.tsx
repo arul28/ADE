@@ -18,6 +18,7 @@ import {
   neverSuggestScope,
   useSuggestionRulesVersion,
 } from "../../../onboarding/situationalSuggestions";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * One situational suggestion, end to end: the card in the bottom-right corner
@@ -134,7 +135,7 @@ export function useSituationalSuggestion({
             {
               label: "Not now",
               variant: "secondary",
-              title: "Hide it. It stays in ADE Tips.",
+              title: `Hide it. It stays in ${BRAND.NAME} Tips.`,
               onClick: () => {
                 answerSuggestion(id, signalKey, "not-now");
                 postponeSuggestion({ id, scopeKey, context });

@@ -235,7 +235,7 @@ struct HubQuickConnectSection: View {
         onConnectSuccess()
       } else {
         ADEHaptics.error()
-        errorText = syncService.lastError ?? "ADE could not connect to that computer. Try again."
+        errorText = syncService.lastError ?? "\(Brand.name) could not connect to that computer. Try again."
       }
     }
   }
@@ -252,7 +252,7 @@ struct HubQuickConnectSection: View {
         onConnectSuccess()
       } else {
         ADEHaptics.error()
-        errorText = syncService.lastError ?? "ADE could not reconnect to \(host.hostName)."
+        errorText = syncService.lastError ?? "\(Brand.name) could not reconnect to \(host.hostName)."
       }
     }
   }

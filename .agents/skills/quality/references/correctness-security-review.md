@@ -2,7 +2,7 @@
 
 Comprehensive correctness and security audit of a checked-out lane. This is the
 correctness half of the thermo dual-review — its companion is the maintainability
-rubric in `thermo-nuclear-review.md`, and its ADE-specific rules are in
+rubric in `thermo-nuclear-review.md`, and its DAEX-specific rules are in
 `ade-review-rules.md`.
 
 You are a security-minded reviewer performing a thorough review of a checked-out
@@ -29,10 +29,10 @@ git diff "$QUALITY_REVIEW_BASE" --name-only
 
 ## 1. Breaking Functionality
 
-ADE is a multi-surface system with tight coupling across process and app
+DAEX is a multi-surface system with tight coupling across process and app
 boundaries: `apps/desktop` main process ↔ `src/preload` ↔ `src/renderer` ↔
 `src/shared` (IPC + types), and `apps/desktop` ↔ `apps/ade-cli` (shared core
-services, the `ade actions` registry) ↔ `apps/ios` (sync payloads).
+services, the `daex actions` registry) ↔ `apps/ios` (sync payloads).
 A simple change in one place has subtle interactions that break functionality
 elsewhere. Trace side effects end-to-end:
 
@@ -48,7 +48,7 @@ elsewhere. Trace side effects end-to-end:
   constraints (see `ade-review-rules.md` on cr-sqlite).
 - A renderer change that depends on a service only present in one runtime mode
   (in-process dev vs runtime-backed/daemon production) can crash in the mode it
-  wasn't tested in. This is ADE's most common production-only bug class — see
+  wasn't tested in. This is DAEX's most common production-only bug class — see
   `ade-review-rules.md` §1–2.
 - **The Windows build is one of those surfaces.** Parity is a default
   requirement for all new code, so trace every change through Windows the same
@@ -79,7 +79,7 @@ It is easy to break the ability to run/build/test locally. Catch:
 
 ## 3. Security & Safety Surface
 
-ADE runs agents and computer-use against the user's machine and stores
+DAEX runs agents and computer-use against the user's machine and stores
 credentials. Treat these as the highest-risk class:
 
 - **Computer-use policy & artifact ownership** — policy enforcement and artifact
@@ -89,7 +89,7 @@ credentials. Treat these as the highest-risk class:
 - **Secrets at rest** — do not store secrets in plaintext project files when an
   encrypted store already exists (`.ade/secrets`). Flag any new plaintext write
   of a token/key/PIN.
-- **Runtime action surface** — new `ade actions` / runtime-action domains must
+- **Runtime action surface** — new `daex actions` / runtime-action domains must
   enforce the same authorization and scoping as the desktop path they mirror;
   a headless route that skips a check the desktop UI enforces is a leak.
 - **Sync / pairing integrity** — changes to sync, pairing PINs, or CRR
@@ -139,7 +139,7 @@ These severities drive the synthesis step's dedupe/rank and `/ship`'s merge gate
   any PR discussion.
 - **Then reconcile with PR comments.** If a PR exists and you have
   medium-or-higher findings, read the PR discussion and review-bot comments
-  (`gh pr view --comments`, or the `ade-pr-workflows` skill). ADE's bots are
+  (`gh pr view --comments`, or the `daex-pr-workflows` skill). DAEX's bots are
   `@copilot` (first push) and `@codex` (later iterations). Never trust a bot
   finding as fact: validate each against the real code before folding it in, and
   attribute anything you adopt.

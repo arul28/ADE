@@ -41,6 +41,7 @@ import {
   whenCopyJobReady,
   type CopyJob,
 } from "./projectCopyJobs";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Opens a copy in this window. Its repository tab shows that copy; nothing
@@ -118,8 +119,8 @@ function addOutcomeLine(state: {
   if (state.localNeedsFolder) return "Choose a folder on this computer for the copy.";
   if (state.opensProjectTab) {
     return state.tickedNames.length > 0
-      ? `Opens now. ADE clones it on ${listNames(state.tickedNames)} in the background.`
-      : "Opens now with no copy. When you start work on a computer, ADE clones it there.";
+      ? `Opens now. ${BRAND.NAME} clones it on ${listNames(state.tickedNames)} in the background.`
+      : `Opens now with no copy. When you start work on a computer, ${BRAND.NAME} clones it there.`;
   }
   if (state.tickedNames.length === 0) return "Pick a computer to put a copy on.";
   return `Opens on ${state.tickedNames[0]} when its copy is ready.`;
@@ -434,7 +435,7 @@ export function AddProjectForm({
         // No computer connected (or none at all): the project goes on the
         // account, and ADE Cloud makes its copy at the first chat.
         <p style={{ margin: 0, fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-          ADE Cloud makes a copy when you send the first chat.
+          {BRAND.CLOUD_NAME} makes a copy when you send the first chat.
         </p>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>

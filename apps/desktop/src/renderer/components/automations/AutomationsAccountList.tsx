@@ -10,6 +10,7 @@ import { cn } from "../ui/cn";
 import { cardCls } from "./designTokens";
 import { cronSentence } from "./cronDescribe";
 import { eventLabel } from "./triggerCatalog";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Automations with no computer of the person's own online: the tab is bound
@@ -50,7 +51,7 @@ function useRepositorySettings(scope: string | null, attempt: number): SettingsR
         else setRead({ status: "refused", message: answer.message });
       },
       (error: unknown) => {
-        if (!cancelled) setRead({ status: "failed", message: error instanceof Error ? error.message : "ADE couldn't read your account settings." });
+        if (!cancelled) setRead({ status: "failed", message: error instanceof Error ? error.message : `${BRAND.NAME} couldn't read your account settings.` });
       },
     );
     return () => {
@@ -177,14 +178,14 @@ export function AutomationsAccountList({ origin, active }: { origin: string | nu
             code={cloud.status === "failed" ? cloud.code : "unavailable"}
             message={cloud.status === "failed"
               ? cloud.message
-              : settingsFailed ? settings.message : "Your ADE account didn't answer. Try again."}
+              : settingsFailed ? settings.message : `Your ${BRAND.NAME} account didn't answer. Try again.`}
             onRetry={retry}
           />
         ) : null}
         {partialFailure ? (
           <AccountReadFailed
             id="automations-account-part"
-            what={cloud.status === "failed" ? "the runs on ADE Cloud" : "every rule"}
+            what={cloud.status === "failed" ? `the runs on ${BRAND.CLOUD_NAME}` : "every rule"}
             code={cloud.status === "failed" ? cloud.code : "unavailable"}
             message={cloud.status === "failed" ? cloud.message : settingsFailed ? settings.message : ""}
             onRetry={retry}

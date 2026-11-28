@@ -117,6 +117,7 @@ import {
   createRuntimeEventSubscriptionRegistry,
   type RuntimeEventWindowSubscription,
 } from "./runtimeEventSubscriptionRegistry";
+import { BRAND } from "../../../shared/brand";
 
 type RuntimeBridgeArgs = {
   productAnalyticsService?: Pick<ProductAnalyticsService, "capture">;
@@ -526,7 +527,7 @@ export class RemoteProjectNotFoundError extends Error {
  */
 export class CloudComputerAsleepError extends AdeExpectedError {
   constructor() {
-    super("Your ADE Cloud computer is asleep. Its project reads from ADE Cloud, and a message to one of its chats wakes it.", "network");
+    super(`Your ${BRAND.CLOUD_NAME} computer is asleep. Its project reads from ${BRAND.CLOUD_NAME}, and a message to one of its chats wakes it.`, "network");
     this.name = "CloudComputerAsleepError";
   }
 }
@@ -1295,7 +1296,7 @@ export function registerRuntimeBridge({
         );
       }
       if (!localRuntimeConnectionPool) {
-        throw new Error("The local ADE brain is unavailable for personal chats.");
+        throw new Error(`The local ${BRAND.NAME} brain is unavailable for personal chats.`);
       }
       return await localRuntimeConnectionPool.callSync<PersonalChatCallResponse>(
         "personalChats.call",
@@ -1331,7 +1332,7 @@ export function registerRuntimeBridge({
         );
       }
       if (!localRuntimeConnectionPool) {
-        throw new Error("The local ADE brain is unavailable for personal chats.");
+        throw new Error(`The local ${BRAND.NAME} brain is unavailable for personal chats.`);
       }
       return await boundedPersonalChatEventPoll(
         localRuntimeConnectionPool.callSync<PersonalChatStreamEventsResult>(
@@ -1422,7 +1423,7 @@ export function registerRuntimeBridge({
     IPC.remoteRuntimeGetLocalPairingInfo,
     async (): Promise<RemoteRuntimeLocalPairingInfo> => {
       if (!localRuntimeConnectionPool) {
-        throw new Error("Local ADE runtime connection is not available.");
+        throw new Error(`Local ${BRAND.NAME} runtime connection is not available.`);
       }
       const info = await localRuntimeConnectionPool.callSync<SyncWebPairingInfo>(
         "sync.getDesktopPairingInfo",
@@ -1432,7 +1433,7 @@ export function registerRuntimeBridge({
         ? info.machineName.trim()
         : "";
       if (!url || !machineName) {
-        throw new Error("Local ADE runtime did not return pairing information.");
+        throw new Error(`Local ${BRAND.NAME} runtime did not return pairing information.`);
       }
       return {
         url,
@@ -1483,7 +1484,7 @@ export function registerRuntimeBridge({
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (/method not found|-32601/i.test(message)) {
-          throw new Error("That machine runs an older ADE that can't check itself. Update it, then check again.");
+          throw new Error(`That machine runs an older ${BRAND.NAME} that can't check itself. Update it, then check again.`);
         }
         throw error;
       }
@@ -2134,7 +2135,7 @@ export function registerRuntimeBridge({
         const message = error instanceof Error ? error.message : String(error);
         if (!isPeerMissingMethodMessage(message)) throw error;
         return failedCheckResult(
-          `Update ADE on ${target.name} first: its version can't switch tracks from another computer.`,
+          `Update ${BRAND.NAME} on ${target.name} first: its version can't switch tracks from another computer.`,
           { currentVersion: status?.version ?? null, route: "standalone" },
         );
       }
@@ -2184,7 +2185,7 @@ export function registerRuntimeBridge({
       arg: { rootPath?: string | null } = {},
     ): Promise<AdeActionRegistryEntry[]> => {
       if (!localRuntimeConnectionPool) {
-        throw new Error("Local ADE runtime connection is not available for this window.");
+        throw new Error(`Local ${BRAND.NAME} runtime connection is not available for this window.`);
       }
       const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
       const session = getWindowSession ? getWindowSession(windowId) : null;
@@ -2209,7 +2210,7 @@ export function registerRuntimeBridge({
       arg: { rootPath?: string | null; request: RemoteRuntimeActionRequest },
     ): Promise<RemoteRuntimeActionResult> => {
       if (!localRuntimeConnectionPool) {
-        throw new Error("Local ADE runtime connection is not available for this window.");
+        throw new Error(`Local ${BRAND.NAME} runtime connection is not available for this window.`);
       }
       const request =
         arg?.request &&
@@ -2258,7 +2259,7 @@ export function registerRuntimeBridge({
       arg: { rootPath?: string | null; method: string; params?: Record<string, unknown> },
     ): Promise<unknown> => {
       if (!localRuntimeConnectionPool) {
-        throw new Error("Local ADE runtime connection is not available for this window.");
+        throw new Error(`Local ${BRAND.NAME} runtime connection is not available for this window.`);
       }
       const method = typeof arg?.method === "string" ? arg.method.trim() : "";
       const params = isObjectRecord(arg?.params) ? arg.params : {};
@@ -2292,7 +2293,7 @@ export function registerRuntimeBridge({
       arg: { rootPath?: string | null; request?: RemoteRuntimeStreamEventsRequest },
     ): Promise<RemoteRuntimeStreamEventsResult> => {
       if (!localRuntimeConnectionPool) {
-        throw new Error("Local ADE runtime connection is not available for this window.");
+        throw new Error(`Local ${BRAND.NAME} runtime connection is not available for this window.`);
       }
 
       const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;

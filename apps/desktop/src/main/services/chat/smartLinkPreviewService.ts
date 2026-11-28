@@ -7,6 +7,7 @@ import {
   deriveSmartLinkPreview,
   type SmartLinkPreview,
 } from "../../../shared/smartLinks";
+import { BRAND } from "../../../shared/brand";
 
 type GithubIssueLookup = {
   getIssue(owner: string, repo: string, number: number): Promise<{ title?: string | null } | null>;
@@ -149,7 +150,7 @@ async function requestBounded(url: URL, maxBytes: number, accept: string): Promi
         headers: {
           accept,
           "accept-encoding": "identity",
-          "user-agent": "ADE-LinkPreview/1.0",
+          "user-agent": `${BRAND.NAME}-LinkPreview/1.0`,
         },
         signal,
         lookup: pinnedLookup(target.address, target.family),

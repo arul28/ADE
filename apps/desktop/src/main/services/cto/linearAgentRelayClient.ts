@@ -1,5 +1,6 @@
 import type { LinearAgentStatus } from "../../../shared/types";
 import { ACCOUNT_RELAY_TOKEN_HEADER } from "../github/githubRelayConfig";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The desktop side of the relay's Linear agent routes. The relay holds the
@@ -47,7 +48,7 @@ export function createLinearAgentRelayClient(deps: LinearAgentRelayClientDeps) {
   }): Promise<T> => {
     const accountToken = (await deps.getAccountAccessToken())?.trim() ?? "";
     if (!accountToken) {
-      throw new LinearAgentRelayError("Sign in to ADE to use the Linear agent.", 401, "account_required");
+      throw new LinearAgentRelayError(`Sign in to ${BRAND.NAME} to use the Linear agent.`, 401, "account_required");
     }
     const headers: Record<string, string> = { [ACCOUNT_RELAY_TOKEN_HEADER]: accountToken };
     if (args.withLinear) {

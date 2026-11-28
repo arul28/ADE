@@ -1,27 +1,31 @@
-# @ade-dev/chat-ui
+# @daex-dev/chat-ui
 
-Embeddable React chat components over `@ade-dev/sdk`.
+Embeddable React chat components over `@daex-dev/sdk`.
 
-**Docs:** [Chat UI](https://ade-app.dev/docs/sdk/chat-ui) · [ADE SDK](https://ade-app.dev/docs/sdk/overview)
+Formerly `@ade-dev/chat-ui`. To move, change your imports to `@daex-dev/chat-ui`;
+the `Ade*` names (`AdeChat`, `useAdeThread`, ...) still work as deprecated
+aliases of the `DAEX*` names.
 
-This package renders an agent conversation for **your** users, not for ADE
+**Docs:** [Chat UI](https://ade-app.dev/docs/sdk/chat-ui) · [DAEX SDK](https://ade-app.dev/docs/sdk/overview)
+
+This package renders an agent conversation for **your** users, not for DAEX
 developers. There are no lanes, projects, repos, or worktrees in any prop or
 any string it can display. Tool activity is renamed through a label map, so a
 customer sees "Searching your invoices…" where the agent ran `server.tool`.
 
-- Zero runtime dependencies. React and React DOM are peers; `@ade-dev/sdk` is an
+- Zero runtime dependencies. React and React DOM are peers; `@daex-dev/sdk` is an
   optional peer used for types only.
 - Theming is CSS custom properties only — no Tailwind, no class overrides.
-- Every component is importable standalone; `<AdeChat>` is one assembly of them.
+- Every component is importable standalone; `<DaexChat>` is one assembly of them.
 
 ```bash
-npm install @ade-dev/chat-ui
+npm install @daex-dev/chat-ui
 ```
 
 ```tsx
-import { AdeChat, createTheme } from "@ade-dev/chat-ui";
+import { DaexChat, createTheme } from "@daex-dev/chat-ui";
 
-<AdeChat
+<DaexChat
   client={client}
   threadKey="support-42"
   labels={{ map: { "server.*": "Looking that up…" } }}
@@ -36,7 +40,7 @@ packages/chat-ui/
   src/
     index.ts                     public surface
     sdkTypes.ts                  copied SDK contract (see below)
-    AdeChat.tsx                  composed default
+    DaexChat.tsx                  composed default
     composer/
       Composer.tsx
       composerState.ts           pure send/steer/key decisions
@@ -46,7 +50,7 @@ packages/chat-ui/
       ApprovalCard.tsx           inline approval card
       transcriptRows.ts          ported row collapsing/grouping
       markdown.tsx               dependency-free markdown renderer
-      links.tsx                  AdeLink + onLinkClick context (every link chat-ui draws)
+      links.tsx                  DaexLink + onLinkClick context (every link chat-ui draws)
     models/
       ModelPicker.tsx            rail + search + grouped list
       ProviderCard.tsx           ProviderCard, ProviderCards
@@ -55,37 +59,37 @@ packages/chat-ui/
     theme/
       createTheme.ts             token generator
       styles.ts                  the stylesheet
-      AdeChatStyles.tsx
-    context/AdeChatContext.tsx   provider + useAdeProviders + useAdeThread
+      DaexChatStyles.tsx
+    context/AdeChatContext.tsx   provider + useDaexProviders + useDaexThread
   examples/
     fakeClient.ts                typed in-memory client
     basic.tsx                    full assembly, both shapes
   test/                          225 tests
 ```
 
-Ported files carry a provenance header naming their ADE desktop source and what
+Ported files carry a provenance header naming their DAEX desktop source and what
 was trimmed. `transcriptRows.ts` and `modelSearch.ts` are ports;
 `Composer.tsx` and the model picker components are fresh implementations that
 follow the desktop interaction/visual structure without inheriting its props.
 
 ## Components
 
-### `<AdeChat>`
+### `<DaexChat>`
 
 Transcript above, composer with the model rail below. No header bar.
 
 | Prop | Type | Default | |
 |---|---|---|---|
-| `client` | `AdeChatClient` | — | required |
+| `client` | `DaexChatClient` | — | required |
 | `threadKey` | `string` | — | changing it opens a different conversation |
 | `defaultModelId` / `modelId` | `string` | — | uncontrolled / controlled selection |
 | `onModelChange` | `(model: ModelDescriptor) => void` | — | |
 | `labels` | `ActivityLabelConfig` | — | |
-| `theme` | `Partial<AdeChatTheme>` | — | usually `createTheme(...)` |
+| `theme` | `Partial<DaexChatTheme>` | — | usually `createTheme(...)` |
 | `disableStyles` | `boolean` | `false` | skip the injected stylesheet |
 | `placeholder`, `sendOnEnter`, `onRequestAttachment` | | | forwarded to `<Composer>` |
 | `value` / `onValueChange` | | — | controlled draft, forwarded to `<Composer>` (0.4) |
-| `onSend` | `(input, thread) => AdeChatSendResult \| Promise<…>` | — | runs before a new message is sent; `false` cancels and keeps the draft, `"handled"` means you sent it yourself (0.4) |
+| `onSend` | `(input, thread) => DaexChatSendResult \| Promise<…>` | — | runs before a new message is sent; `false` cancels and keeps the draft, `"handled"` means you sent it yourself (0.4) |
 | `children` | `(thread: ThreadState) => ReactNode` | — | drawn between transcript and composer (0.4) |
 | `threadRef` | `{ current: ThreadState \| null }` | — | the live thread state for code outside the tree (0.4) |
 | `onLinkClick` | `(href, { source, text }) => void` | — | handle links yourself; pass it in Electron (0.4) |
@@ -144,7 +148,7 @@ it.
 
 | Prop | Type | Default | |
 |---|---|---|---|
-| `rows` | `readonly TranscriptRow[]` | — | from `buildTranscriptRows()` or `useAdeThread()` |
+| `rows` | `readonly TranscriptRow[]` | — | from `buildTranscriptRows()` or `useDaexThread()` |
 | `status` | `"idle" \| "running" \| "error"` | `"idle"` | drives the live indicator |
 | `labels` | `ActivityLabelConfig` | — | |
 | `hideToolCalls` | `boolean` | `false` | hides chips entirely |
@@ -207,7 +211,7 @@ offers an action the client cannot perform.
 
 ## Questions, queue and account surfaces
 
-`<AdeChat>` renders question and plan cards in the transcript, a queue strip
+`<DaexChat>` renders question and plan cards in the transcript, a queue strip
 when `thread.queue.list()` exists, and a usage-limit notice when the thread
 reports resume controls. A client may omit any of these optional methods; the
 corresponding controls are hidden or read-only. Failed queue and account reads
@@ -229,7 +233,7 @@ successful save and does not include service error details that might echo it.
 | `value` | `string \| null` | — | selected model id |
 | `onChange` | `(model: ModelDescriptor) => void` | — | required |
 | `models` / `providers` | arrays | — | supply data directly; omit to read from the client |
-| `client` | `AdeChatClient` | context | used only when data is not supplied |
+| `client` | `DaexChatClient` | context | used only when data is not supplied |
 | `searchable` | `boolean` | `true` | |
 | `renderProviderNotice` | `(status, providerId) => ReactNode` | — | drawn under an unusable provider group |
 | `className` | `string` | — | |
@@ -325,8 +329,8 @@ it to `theme`, or set the tokens yourself on any ancestor.
 
 `--adechat-root-bg` is the chat root's background: `transparent` for
 `createTheme({ background: "transparent" })`, else `var(--adechat-bg)`. Pass
-`scheme` with a transparent background. `injectAdeChatStyles(target?, { nonce })`
-and `<AdeChatStyles nonce>` set a CSP nonce on the injected `<style>`.
+`scheme` with a transparent background. `injectDaexChatStyles(target?, { nonce })`
+and `<DaexChatStyles nonce>` set a CSP nonce on the injected `<style>`.
 
 Light/dark is inferred from the background's luminance (override with
 `scheme`). Non-hex colors (`var(--brand)`, `color-mix(...)`) pass straight
@@ -336,8 +340,8 @@ through; derived tints are only computed for hex inputs.
 
 `src/sdkTypes.ts` is the *view* contract this package renders against — a copy,
 not an import, so the package is standalone and any client shape can satisfy it.
-`src/adapters/sdkClient.ts` bridges a real `@ade-dev/sdk` client onto it and does
-import that package's types (type-only, and `@ade-dev/sdk` is an optional peer, so
+`src/adapters/sdkClient.ts` bridges a real `@daex-dev/sdk` client onto it and does
+import that package's types (type-only, and `@daex-dev/sdk` is an optional peer, so
 nothing reaches the bundle).
 
 The list below is the adapter's **output** contract: what every component here
@@ -345,9 +349,9 @@ may assume about the client it is handed. Write your own client — a WebSocket
 proxy, an Electron IPC bridge, a fake — and these are the rules to meet.
 
 One such client is checked here rather than described: `test/electronBridge.test.tsx`
-assigns `createAdeIpcClient()` from `@ade-dev/sdk/electron/renderer` to
+assigns `createDaexIpcClient()` from `@daex-dev/sdk/electron/renderer` to
 `SdkLikeChatClient` with no cast, then drives a full turn through
-`registerAdeIpc` and `<AdeChat>`. A drift between that bridge and this contract
+`registerDaexIpc` and `<DaexChat>`. A drift between that bridge and this contract
 is a typecheck failure, not a runtime surprise.
 
 1. **`client.providers.status()`** resolves `ProviderStatus[]` with `installed`
@@ -370,7 +374,7 @@ is a typecheck failure, not a runtime surprise.
    `"event"` subscriber — the hook de-duplicates the overlap on
    `sessionId:sequence:timestamp:type` and then re-sorts, so a live envelope
    that beat the page still renders in its own place. The canonical definition
-   of that key is `envelopeDedupeKey` in `@ade-dev/sdk`
+   of that key is `envelopeDedupeKey` in `@daex-dev/sdk`
    (`src/electron/protocol.ts`); this package mirrors it because the SDK is an
    optional peer.
 6. **Streaming text** may be sent either as growing snapshots or as deltas; both
@@ -396,7 +400,7 @@ is a typecheck failure, not a runtime surprise.
     throw. `pendingApprovals()` is read once on open, so a reload restores the
     cards a lost live stream would otherwise have taken with it.
 
-## What `@ade-dev/sdk` actually returns
+## What `@daex-dev/sdk` actually returns
 
 The adapter exists because the two shapes do not meet. The differences that
 catch people writing their own proxy:
@@ -431,4 +435,4 @@ From the repo root: `npm run test:chat-ui`, `npm run build:chat-ui`.
 
 ## License
 
-MIT. See [LICENSE](./LICENSE). ADE itself remains AGPL-3.0-only; see the [ADE Runtime Embedding Exception](https://github.com/arul28/ADE/blob/main/RUNTIME-EMBEDDING-EXCEPTION.md) for shipping the runtime binary in your app.
+MIT. See [LICENSE](./LICENSE). DAEX (formerly ADE) itself remains AGPL-3.0-only; see the [DAEX Runtime Embedding Exception](https://github.com/arul28/ADE/blob/main/RUNTIME-EMBEDDING-EXCEPTION.md) for shipping the runtime binary in your app.

@@ -43,6 +43,7 @@ import { ProjectSettingsNotice } from "./ProjectSettingsNotice";
 import { isStandaloneSettings } from "./settingsManifest";
 import { ModernRow, ModernRows, ModernSection, SettingsColumn, SettingsToggle } from "./primitives";
 import "./ChatSection.css";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Chat settings: how the transcript reads and what the composer does.
@@ -110,7 +111,7 @@ export function ChatSection() {
                   icon={<TextAa size={15} weight="bold" />}
                   tone="violet"
                   title="Text size"
-                  hint="The transcript and the composer. The rest of ADE keeps its size."
+                  hint={`The transcript and the composer. The rest of ${BRAND.NAME} keeps its size.`}
                 >
                   <FontSizeControl value={chatFontSizePx} onChange={setChatFontSizePx} />
                 </ModernRow>

@@ -1,253 +1,70 @@
 # Conflict detection
 
-The conflict prediction engine runs inside the **active ADE runtime**
-(local machine runtime or SSH-attached remote runtime) using the implementation
-in `apps/desktop/src/main/services/conflicts/conflictService.ts` (the
-desktop fallback target also points at the same source). It runs
-`git merge-tree` on the host that owns the worktrees to predict
-whether a merge or rebase would produce conflicts — without actually
-performing the merge. Results are cached in `conflict_predictions`
-and surfaced as lane status badges, overlap chips, and rebase needs.
-The risk matrix is available through the conflicts tools and actions. For remote-bound windows the entire prediction loop
-runs on the remote host; the desktop renderer subscribes to events
-through preload's runtime event pump and never spawns git itself.
+The prediction engine (`apps/desktop/src/main/services/conflicts/conflictService.ts`)
+runs in the active runtime and uses `git merge-tree` on the machine that owns
+the worktrees to predict whether a merge or rebase would conflict, without
+touching any working tree. Results are cached in `conflict_predictions` and
+feed lane status badges, overlap chips and rebase needs. A remote window
+receives events through preload and never spawns git itself.
 
-## `git merge-tree` primer
+## `git merge-tree`
 
-`git merge-tree` (3-way form) takes a merge-base SHA and two branch
-SHAs and produces a merge tree without creating a commit or touching
-the working directory. Exit codes:
+`runGitMergeTree({ cwd, mergeBase, branchA, branchB, timeoutMs })` (`git/git.ts`)
+returns `{ exitCode, stdout, stderr, treeOid, conflicts[] }`. Exit `0` is clean,
+another non-zero (not 128) means conflicts, `128` is a fatal git error.
 
-- `0` — clean merge
-- non-zero (but not 128) — conflicts found; stdout contains the
-  tree OID and per-file conflict entries
-- `128` — fatal git error (corrupt ref, missing object)
+One `git merge-tree -h` probe per process decides whether `--write-tree`
+(git 2.38+) and `--merge-base` (2.40+) exist. Older git runs the legacy
+trivial-merge form: markers, a delete against a change, and a binary changed on
+both sides count as conflicts; `treeOid` is null. Calls use a 60 s timeout; a
+hung git holds that pair's lock until then (look for
+`conflicts.predict_pair_failed` with `AbortError`).
 
-ADE wraps this via `runGitMergeTree({ cwd, mergeBase, branchA,
-branchB, timeoutMs })`. One `git merge-tree -h` probe per process (kept only
-when it printed git's usage) says whether `--write-tree` (git 2.38+) and
-`--merge-base` (2.40+) exist; a real call that answers with the legacy usage
-corrects it. A git older than 2.38 runs the legacy trivial-merge form instead:
-conflict markers, a delete on one side of a changed file, and a binary file
-changed on both sides (`git diff --numstat` shows `-`) are conflicts, the exit
-code is set to match `--write-tree`, and `treeOid` is null. A failed legacy run
-returns git's own error; only a merge with no merge base says to update git.
-It parses stdout and returns:
+## What is predicted
 
-```ts
-{
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-  treeOid: string | null;
-  conflicts: Array<{ path: string; conflictType: string; markerPreview: string }>;
-}
-```
+- **Lane-to-base** (`lane_b_id IS NULL`): the lane's head against its rebase target.
+- **Pairwise**: two lane heads at their merge base, keyed by `pairKey(a, b)` (order-independent).
 
-## Prediction sources
+`runPrediction({ laneId?, laneIds? })`:
 
-Two kinds of predictions are stored:
+- With `laneId`: strategy `full-target`, the lane against base and against every other lane.
+- With `laneIds`: those lanes only.
+- Otherwise all active lanes: `full` (every pair) up to `FULL_MATRIX_MAX_LANES` (15), else `prefilter-overlap`.
+- Each base and pair runs through `runSerializedPairTask` (a call for a running pair awaits it), emits `prediction-progress`, and the batch ends with `prediction-complete` carrying chip deltas, then `writeConflictPacks`.
 
-1. **Lane-to-base** — `lane_b_id IS NULL`. Compares the lane's head
-   against its base ref (resolved through
-   `shouldLaneTrackParent` / `base_ref` fallback).
-2. **Pairwise** — `lane_a_id`, `lane_b_id` both set. Compares two
-   lane heads at their merge base.
+**Prefilter** (`buildPrefilterPairs`): read each lane's files touched since
+base (≤ `PREFILTER_MAX_TOUCHED_FILES` = 800), keep
+each lane's top `PREFILTER_MAX_PEERS_PER_LANE` (6) peers by overlap, cap at
+`PREFILTER_MAX_GLOBAL_PAIRS` (800). The assessment records `truncated`,
+`pairwisePairsComputed` and `pairwisePairsTotal`. Pairs left out have no row and
+read as `unknown`, never `clean`. Passing `laneId` forces a full matrix for one
+lane.
 
-Per-pair deduplication uses `pairKey(a, b) = a < b ? a::b : b::a`
-so `(A, B)` and `(B, A)` map to the same key.
+## Staleness, chips and files
 
-## Periodic prediction (`runPrediction`)
+- A prediction older than `STALE_MS` (5 min) is stale but still returned with its timestamp. `isStalePrediction` treats a missing or bad timestamp as stale.
+- `buildChips(before, after)` emits `new-overlap` (a pair left `none`) and `high-risk` (a pair reached `high`), deduped per `laneId:peer:kind` keeping the larger `overlapCount`.
+- `buildConflictFiles` lists merge-tree conflicts first, then overlap-only paths as `content`, deduped and sorted by path.
 
-Default path when no arguments are supplied:
+## Rebase target
 
-```
-1. Build a batch assessment snapshot (pre).
-2. If a target laneId was supplied:
-   - strategy = "full-target"
-   - comparisonLanes = all active lanes
-   - basePredictionLanes = [targetLane]
-   - pairwiseComparisons = every other lane paired with the target
-3. Otherwise, if laneIds[] was supplied:
-   - comparisonLanes = selected lanes
-   - basePredictionLanes = selected lanes
-4. Otherwise:
-   - comparisonLanes = all active lanes
-   - basePredictionLanes = all active lanes
-5. If |comparisonLanes| <= FULL_MATRIX_MAX_LANES (15):
-   - strategy = "full"
-   - pairwiseComparisons = every unordered pair
-6. Else:
-   - strategy = "prefilter-overlap"
-   - Run buildPrefilterPairs(comparisonLanes)
-   - truncated = pairwiseComparisons.length < pairwisePairsTotal
-7. Run base predictions via runSerializedPairTask("base:<laneId>").
-8. Run pairwise predictions via runSerializedPairTask("pair:<key>").
-9. emitProgress per pair; emit "prediction-complete" at end with
-   chip deltas computed from before/after matrices.
-10. Write conflict packs via writeConflictPacks(after).
-```
+`resolveLaneRebaseTarget(lane)` is the lane's compare base (open PR base, else
+the default branch), read as `origin/<base>` with the local branch as fallback.
+`scanRebaseNeeds`, `getRebaseNeed` and `rebaseLane` all use it, so prediction
+and rebase agree. For a lane built on a recently merged PR, prediction replays
+only the commits after that PR's head, matching the rebase's `--onto`. Any
+code that decides "is this lane behind" must use this resolver. Rebase needs
+are computed per scan and never stored; changes emit `rebase-needs-updated`.
 
-Per-pair serialization prevents duplicated work: if the UI triggers
-a prediction for `(A, B)` while another is running for that pair,
-the later call awaits the running one (and short-circuits if queued
-work is redundant).
+## Table
 
-## Prefilter heuristic
-
-Over 15 lanes, the service switches to a prefilter that computes a
-cheap overlap heuristic before running merge-tree.
-
-`buildPrefilterPairs(lanes)`:
-
-1. For each lane, read "files touched since base" with
-   `readTouchedFilesSinceBase(lane)`. This is capped at
-   `PREFILTER_MAX_TOUCHED_FILES = 800` per lane (truncated
-   alphabetically) so pathological lanes don't dominate.
-2. For each lane, rank peers by touched-file overlap count.
-3. Keep the top `PREFILTER_MAX_PEERS_PER_LANE = 6` peers per lane.
-4. Deduplicate across the global pair set, capped at
-   `PREFILTER_MAX_GLOBAL_PAIRS = 800`.
-5. Return the prefiltered pair list.
-
-The resulting `pairwiseComparisons` is typically far smaller than
-the full `N*(N-1)/2`. Assessment metadata records:
-
-- `truncated: true`
-- `strategy: "prefilter-overlap"`
-- `pairwisePairsComputed` (actual)
-- `pairwisePairsTotal` (theoretical full matrix size)
-
-Users can still force a full matrix for a specific lane by passing
-`laneId` (→ strategy `"full-target"`) or `laneIds[]`.
-
-## Realtime prediction
-
-When a lane's dirty state changes, a lightweight overlap pass
-kicks off:
-
-1. Identify files touched in the current dirty state.
-2. Compare against each peer's touched-file set (fast, in-memory).
-3. For lanes with overlap, enqueue targeted merge-tree jobs.
-4. Update lane statuses and emit `prediction-updated` for the UI.
-
-This is the path that drives "new overlap" chips on lane rows as
-users edit files.
-
-## Stale prediction handling
-
-A prediction is considered stale when `predicted_at` is older than
-`STALE_MS = 5 * 60_000` (5 minutes).
-
-Stale predictions are still returned by `getBatchAssessment` and
-`getLaneStatus` with their original `lastPredictedAt` timestamp.
-The UI decorates them rather than refetching:
-
-- Stale predictions stay in the assessment payload with their original timestamp.
-- Hover tooltip shows "Last computed N min ago. Click to refresh."
-- Clicking triggers `runPrediction` for the specific pair.
-
-`isStalePrediction(predictedAt)` returns `true` for missing or
-unparseable timestamps, ensuring "no data" renders as stale rather
-than fresh-but-empty.
-
-## Chip generation
-
-`buildChips(before, after)` diffs two risk matrices and produces
-`ConflictChip[]` transitions:
-
-- `new overlap` — a pair transitioned from `none` → any
-  non-`none` risk level.
-- `high risk` — a pair transitioned to `high` (multiple overlapping
-  files or marker conflicts detected).
-
-Chips are deduplicated via `dedupeChips` keyed by
-`${laneId}:${peerId ?? "base"}:${kind}`, keeping the entry with the
-higher `overlapCount`.
-
-## Conflict file assembly
-
-`buildConflictFiles(conflicting, overlapFiles)` merges the two
-inputs into a stable list:
-
-1. First, every entry from `conflicting` (conflict-typed entries
-   from merge-tree) in insertion order.
-2. Then every path from `overlapFiles` that wasn't already present,
-   with `conflictType: "content"` and empty marker preview.
-3. Sorted by path at the end.
-
-This ensures the UI always sees a deterministic, deduplicated list
-even when the prediction run recorded overlaps separately from the
-merge-tree conflict output.
-
-## Lane comparison ref
-
-`resolveLaneRebaseTarget({ lane, lanesById })` picks
-the comparison ref for rebase predictions:
-
-1. If parent is non-primary and
-   `shouldLaneTrackParent({ lane, parent })`: use the parent's
-   branch ref, with `origin/<parent-branch>` as a fallback.
-2. Else if `lane.baseRef` present: use `origin/<baseRef>` with
-   local `<baseRef>` as fallback.
-3. Else: use `lane.baseRef` directly and display it.
-
-This resolver is used by both `scanRebaseNeeds` (batch) and
-`getRebaseNeed` (single). `rebaseLane` (AI-assisted) applies the
-same logic so the prediction and the actual rebase target stay in
-sync. For a lane built on a known recently merged PR, prediction replays only
-the commits after that PR’s head, matching the `rebase --onto` operation.
-
-## Tables
-
-```sql
--- Prediction records
-conflict_predictions (
-  id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL,
-  lane_a_id TEXT NOT NULL,
-  lane_b_id TEXT,                  -- NULL = lane vs base
-  status TEXT NOT NULL,            -- 'clean' | 'conflict' | 'unknown'
-  conflicting_files_json TEXT,
-  overlap_files_json TEXT,
-  lane_a_sha TEXT,
-  lane_b_sha TEXT,
-  predicted_at TEXT NOT NULL,
-  expires_at TEXT
-)
-```
-
-Rebase needs are computed on each scan and never stored.
+`conflict_predictions`: `lane_a_id`, `lane_b_id` (null for base), `status`
+(`clean` / `conflict` / `unknown`), `conflicting_files_json`,
+`overlap_files_json`, `lane_a_sha`, `lane_b_sha`, `predicted_at`, `expires_at`.
 
 ## Events
 
-`ConflictEventPayload` kinds emitted during detection:
-
-- `prediction-progress` — per-pair with `{ completedPairs,
-  totalPairs, pair: { laneAId, laneBId } }`.
-- `prediction-complete` — end-of-batch with chip deltas and
-  affected `laneIds[]`.
-- `prediction-updated` — single-row update (targeted re-prediction
-  or realtime pass).
-
-The renderer subscribes via `ade.conflicts.event` and uses progress
-events to drive the `RiskMatrix` animated progress bar.
-
-## Gotchas
-
-- **Prefilter does NOT guarantee freshness.** A pair below the
-  "likely conflict" threshold is not re-predicted in prefilter
-  mode. The UI treats those as `unknown` status for pairs that lack
-  a row, not `clean`.
-- **`EXTERNAL_DIFF_MAX_OUTPUT_BYTES = 32 MB`** is the hard cap on
-  external diff capture. A pathological diff will truncate rather
-  than OOM the process.
-- **Parent tracking is a shared rule.** Any consumer that recomputes
-  "is this lane behind its base" outside of
-  `resolveLaneRebaseTarget` will produce wrong results for lanes
-  parented to the primary lane. Always use the resolver.
-- **`git merge-tree` timeouts** default to 30 s in `simulateMerge`
-  and 60 s elsewhere. Long timeouts protect against giant branches
-  but mean a stuck git process can block the pair lock for that
-  long. If you see `conflicts.predict_pair_failed` warnings with
-  AbortError, check for a hung git.
+`ade.conflicts.event` carries `prediction-progress` (`completedPairs`,
+`totalPairs`, `pair`), `prediction-complete` (`chips`, `laneIds`),
+`rebase-started`, `rebase-completed` and `rebase-needs-updated`. No renderer
+view draws the matrix or its progress.

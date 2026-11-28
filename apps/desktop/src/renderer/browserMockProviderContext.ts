@@ -2,6 +2,7 @@
  * Demo data for a provider page's "Initial context window" card in the browser
  * preview. The Claude numbers are from a real measurement of a new ADE chat.
  */
+import { BRAND } from "../shared/brand";
 import type {
   GetProviderContextInventoryArgs,
   ProviderContextInventory,
@@ -19,13 +20,13 @@ const skill = (name: string, tokens: number): ProviderContextItem => ({
 });
 
 const ADE_ITEMS: ProviderContextItem[] = [
-  { id: "ade-prompt", owner: "ade", kind: "system-prompt", label: "ADE system prompt (the rest)", detail: "Added after Claude Code's own prompt for every request.", tokens: 1110, sizeKind: "exact", timing: "every-request" },
-  { id: "ade-cli-guidance", owner: "ade", kind: "instructions", label: "ADE CLI guidance", tokens: 1190, sizeKind: "exact", timing: "every-request" },
+  { id: "ade-prompt", owner: "ade", kind: "system-prompt", label: `${BRAND.NAME} system prompt (the rest)`, detail: "Added after Claude Code's own prompt for every request.", tokens: 1110, sizeKind: "exact", timing: "every-request" },
+  { id: "ade-cli-guidance", owner: "ade", kind: "instructions", label: `${BRAND.NAME} CLI guidance`, tokens: 1190, sizeKind: "exact", timing: "every-request" },
   {
     id: "ade-skill-listing",
     owner: "ade",
     kind: "skills",
-    label: "ADE skill listing",
+    label: `${BRAND.NAME} skill listing`,
     detail: "Skills and commands the provider cannot find by itself, with their files.",
     tokens: 1400,
     sizeKind: "exact",
@@ -34,7 +35,7 @@ const ADE_ITEMS: ProviderContextItem[] = [
       id: `ade-skill-listing-${name}`, owner: "ade", kind: "skill", label: name, tokens: 280, sizeKind: "exact", timing: "every-request",
     } satisfies ProviderContextItem)),
   },
-  { id: "ade-computer-use", owner: "ade", kind: "instructions", label: "ADE computer-use rules", detail: "Screen, browser and proof rules, on the first message.", tokens: 980, sizeKind: "exact", timing: "chat-start" },
+  { id: "ade-computer-use", owner: "ade", kind: "instructions", label: `${BRAND.NAME} computer-use rules`, detail: "Screen, browser and proof rules, on the first message.", tokens: 980, sizeKind: "exact", timing: "chat-start" },
 ];
 
 const CLAUDE_USER: ProviderContextItem[] = [
@@ -52,7 +53,7 @@ const CLAUDE_USER: ProviderContextItem[] = [
   },
   { id: "claude:mcp:rea", owner: "user", kind: "mcp-server", label: "MCP server: rea", setIn: "~/.claude.json", path: "/Users/ada/.claude.json", settingsEntry: "mcp.found", tokens: 2400, sizeKind: "estimated", timing: "every-request" },
   { id: "claude:mcp:ghost", owner: "user", kind: "mcp-server", label: "MCP server: ghost-os", setIn: "~/.claude.json", path: "/Users/ada/.claude.json", settingsEntry: "mcp.found", detail: "Its instructions are sent with every request.", tokens: 2800, sizeKind: "estimated", timing: "every-request" },
-  { id: "claude:mcp:xcode", owner: "user", kind: "mcp-server", label: "MCP server: XcodeBuildMCP", setIn: "ADE Settings › Integrations › MCP servers", settingsEntry: "mcp.servers", tokens: 1300, sizeKind: "estimated", timing: "every-request" },
+  { id: "claude:mcp:xcode", owner: "user", kind: "mcp-server", label: "MCP server: XcodeBuildMCP", setIn: `${BRAND.NAME} Settings › Integrations › MCP servers`, settingsEntry: "mcp.servers", tokens: 1300, sizeKind: "estimated", timing: "every-request" },
   { id: "claude:agents", owner: "user", kind: "agent", label: "Agent types", source: "plugins", tokens: 1800, sizeKind: "estimated", timing: "every-request" },
   { id: "claude:global-md", owner: "user", kind: "instructions", label: "Your CLAUDE.md", source: "~/.claude/CLAUDE.md", path: "/Users/ada/.claude/CLAUDE.md", tokens: 900, sizeKind: "estimated", timing: "every-request" },
 ];
@@ -90,8 +91,8 @@ export function browserMockProviderContextInventory(args: GetProviderContextInve
     laneId: null,
     coverage: basic ? "basic" : "good",
     coverageNote: basic
-      ? "This provider does not document which of your files it reads, so only ADE's part is listed."
-      : "ADE's part is exact; your files are estimated from their text.",
+      ? `This provider does not document which of your files it reads, so only ${BRAND.NAME}'s part is listed.`
+      : `${BRAND.NAME}'s part is exact; your files are estimated from their text.`,
     items,
     measured: claude ? { firstTurnTokens: 58500, sampleCount: 123, since: new Date(Date.now() - 30 * 86_400_000).toISOString(), scope: "project" } : null,
   };

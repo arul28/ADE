@@ -9,7 +9,9 @@
 
 import { readAccountRefusalCode } from "../../../shared/accountMachineRefusal";
 import { parseCodedErrorMessage } from "../../../shared/codedError";
+import { PRODUCT_NAME_PATTERN } from "../../../shared/brandNames";
 import { readBrainFrames } from "../../../shared/runtimeActionReplyError";
+import { REMOTE_SERVICE_PATTERN } from "../../../shared/runtimeErrors";
 import type { SyncRoleSnapshot } from "../../../shared/types";
 import { JsonRpcErrorCode } from "../../../../../ade-cli/src/jsonrpc";
 
@@ -70,13 +72,19 @@ const JSON_RPC_CODE_NAMES: Readonly<Record<number, string>> = {
  * code, and reporting all of them as `unknown` made an incident's spike
  * unattributable.
  */
+const RPC_TIMEOUT = new RegExp(String.raw`^${REMOTE_SERVICE_PATTERN} timed out\b`);
+const RPC_CONNECTION_LOST = new RegExp(String.raw`^${REMOTE_SERVICE_PATTERN} connection (?:closed|failed)\b`);
+const RPC_BAD_RESPONSE = new RegExp(String.raw`^Failed to parse remote ${PRODUCT_NAME_PATTERN} service response\b`);
+const RPC_RESPONSE_TOO_LARGE = new RegExp(String.raw`^${REMOTE_SERVICE_PATTERN} response for method \S+ exceeded\b`);
+const RPC_METHOD_FAILED = new RegExp(String.raw`^${REMOTE_SERVICE_PATTERN} method \S+ failed \(code (-?\d+)\):\s*(.*)$`, "s");
+
 function uncodedErrorClass(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error ?? "");
-  if (/^Remote ADE service timed out\b/.test(message)) return "rpc_timeout";
-  if (/^Remote ADE service connection (?:closed|failed)\b/.test(message)) return "rpc_connection_lost";
-  if (/^Failed to parse remote ADE service response\b/.test(message)) return "rpc_bad_response";
-  if (/^Remote ADE service response for method \S+ exceeded\b/.test(message)) return "rpc_response_too_large";
-  const rpc = message.match(/^Remote ADE service method \S+ failed \(code (-?\d+)\):\s*(.*)$/s);
+  if (RPC_TIMEOUT.test(message)) return "rpc_timeout";
+  if (RPC_CONNECTION_LOST.test(message)) return "rpc_connection_lost";
+  if (RPC_BAD_RESPONSE.test(message)) return "rpc_bad_response";
+  if (RPC_RESPONSE_TOO_LARGE.test(message)) return "rpc_response_too_large";
+  const rpc = message.match(RPC_METHOD_FAILED);
   if (rpc) {
     const named = JSON_RPC_CODE_NAMES[Number(rpc[1])];
     if (named) return named;

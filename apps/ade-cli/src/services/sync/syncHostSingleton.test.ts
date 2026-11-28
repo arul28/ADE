@@ -96,7 +96,7 @@ describe("sync host singleton", () => {
       },
     });
     expect(formatSyncHostSingletonConflictMessage(conflict!)).toContain(
-      "Another ADE brain is already hosting mobile sync on port 8801.",
+      "Another DAEX brain is already hosting mobile sync on port 8801.",
     );
     expect(formatSyncHostSingletonConflictMessage(conflict!)).toContain(
       "/Applications/ADE.app/Contents/Resources/ade-cli/bin/ade' brain stop --text",
@@ -482,6 +482,7 @@ describe("Windows sync-host listener scan", () => {
     expect(looksLikeAdeWindowsSyncHostProcess(
       String.raw`"C:\Program Files\ADE Beta\ADE Beta.exe" "C:\x\cli.cjs" "serve" "--socket" "\\.\pipe\ade-runtime-beta-1"`,
     )).toBe(true);
+    expect(looksLikeAdeWindowsSyncHostProcess(String.raw`"C:\Users\me\.ade\bin\daex.exe" "serve"`)).toBe(true);
     expect(looksLikeAdeWindowsSyncHostProcess(String.raw`"C:\Windows\explorer.exe"`)).toBe(false);
     expect(looksLikeAdeWindowsSyncHostProcess(String.raw`"C:\node.exe" "C:\x\cli.cjs" "doctor"`)).toBe(false);
   });
@@ -556,8 +557,9 @@ describe("Windows sync-host listener scan", () => {
 });
 
 // macOS reads listeners from `lsof`, whose COMMAND column holds the process
-// name. The brain runs as `ADE Brain` (`brainExecutable.ts`, mode `brain-copy`):
-// a name with a space, which a `(\S+)` token split drops.
+// name. The brain runs as `DAEX Brain` (`brainExecutable.ts`, mode `brain-copy`;
+// `ADE Brain` before the rename, still running on a Mac mid-update): a name with
+// a space, which a `(\S+)` token split drops.
 describe("macOS sync-host listener scan", () => {
   const beforeEachEnv = process.env.ADE_SYNC_HOST_LEGACY_SCAN;
 
@@ -570,14 +572,14 @@ describe("macOS sync-host listener scan", () => {
     else process.env.ADE_SYNC_HOST_LEGACY_SCAN = beforeEachEnv;
   });
 
-  it("finds the brain running as its own signed program", async () => {
+  it.each(["DAEX Brain", "ADE Brain"])("finds the brain running as its own signed program (%s)", async (brainName) => {
     const conflict = await detectSyncHostSingletonConflictAsync(
       { platform: "darwin", lockPath: tempLockPath(), pidAlive: () => true },
       {
         runProbe: async (command) => ({
           stdout: command === "lsof"
-            ? "ADE Brain 4242 me   23u  IPv4 0x1      0t0  TCP *:8787 (LISTEN)"
-            : "4242 /Applications/ADE.app/Contents/MacOS/ADE Brain /Applications/ADE.app/Contents/Resources/ade-cli/cli.cjs serve",
+            ? `${brainName} 4242 me   23u  IPv4 0x1      0t0  TCP *:8787 (LISTEN)`
+            : `4242 /Applications/ADE.app/Contents/MacOS/${brainName} /Applications/ADE.app/Contents/Resources/ade-cli/cli.cjs serve`,
           failed: false,
         }),
       },

@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { AdeError } from "./errors.js";
+import { DaexError } from "./errors.js";
 import type { ThreadOpenOptions } from "./clientOptions.js";
-import type { AdeThread } from "./thread.js";
-import type { AdeProvider, AgentChatEventEnvelope } from "./types.js";
+import type { DaexThread } from "./thread.js";
+import type { DaexProvider, AgentChatEventEnvelope } from "./types.js";
 import type { ThreadBudget } from "./usage.js";
 
 export type JsonSchema = {
@@ -21,7 +21,7 @@ export type JsonSchema = {
 };
 
 export type RunOptions = Omit<ThreadOpenOptions, "provider" | "model"> & {
-  provider: AdeProvider;
+  provider: DaexProvider;
   model: string;
   schema?: JsonSchema;
   budget?: ThreadBudget;
@@ -37,7 +37,7 @@ const DEFAULT_RUN_TIMEOUT_MS = 10 * 60_000;
 /** Event types that park a turn until someone answers, which `run()` cannot. */
 const WAITS_FOR_AN_ANSWER = new Set(["approval_request", "structured_question"]);
 
-export class InvalidOutputError extends AdeError {
+export class InvalidOutputError extends DaexError {
   readonly rawText: string;
 
   constructor(rawText: string, reason: string) {
@@ -64,25 +64,25 @@ function canonicalJson(value: unknown): string {
 }
 
 function validateSchemaShape(schema: JsonSchema, path = "$schema"): void {
-  if (!isRecord(schema)) throw new AdeError("invalid_option", `${path} must be an object.`);
+  if (!isRecord(schema)) throw new DaexError("invalid_option", `${path} must be an object.`);
   for (const key of Object.keys(schema)) {
     if (!SUPPORTED_SCHEMA_KEYS.has(key)) {
-      throw new AdeError("invalid_option", `${path}.${key} is outside the SDK's supported JSON Schema subset.`);
+      throw new DaexError("invalid_option", `${path}.${key} is outside the SDK's supported JSON Schema subset.`);
     }
   }
   if (schema.type !== undefined && !["object", "array", "string", "number", "integer", "boolean", "null"].includes(schema.type)) {
-    throw new AdeError("invalid_option", `${path}.type is not supported.`);
+    throw new DaexError("invalid_option", `${path}.type is not supported.`);
   }
   if (schema.properties !== undefined) {
-    if (!isRecord(schema.properties)) throw new AdeError("invalid_option", `${path}.properties must be an object.`);
+    if (!isRecord(schema.properties)) throw new DaexError("invalid_option", `${path}.properties must be an object.`);
     for (const [key, child] of Object.entries(schema.properties)) validateSchemaShape(child, `${path}.properties.${key}`);
   }
   if (schema.required !== undefined && (!Array.isArray(schema.required) || schema.required.some((key) => typeof key !== "string"))) {
-    throw new AdeError("invalid_option", `${path}.required must be an array of property names.`);
+    throw new DaexError("invalid_option", `${path}.required must be an array of property names.`);
   }
   if (schema.items !== undefined) validateSchemaShape(schema.items, `${path}.items`);
   if (schema.enum !== undefined && !Array.isArray(schema.enum)) {
-    throw new AdeError("invalid_option", `${path}.enum must be an array.`);
+    throw new DaexError("invalid_option", `${path}.enum must be an array.`);
   }
   if (schema.additionalProperties !== undefined && typeof schema.additionalProperties !== "boolean") {
     validateSchemaShape(schema.additionalProperties, `${path}.additionalProperties`);
@@ -127,7 +127,7 @@ export function validateJsonSchema(value: unknown, schema: JsonSchema, path = "$
 
 type RunClient = {
   threads: {
-    open(key: string, options: ThreadOpenOptions): Promise<AdeThread>;
+    open(key: string, options: ThreadOpenOptions): Promise<DaexThread>;
     delete(key: string): Promise<void>;
   };
 };
@@ -153,7 +153,7 @@ function appendSchemaInstructions(options: RunOptions): ThreadOpenOptions {
   };
 }
 
-async function runTurn(thread: AdeThread, prompt: string, timeoutMs: number): Promise<string> {
+async function runTurn(thread: DaexThread, prompt: string, timeoutMs: number): Promise<string> {
   return await new Promise<string>((resolve, reject) => {
     let output = "";
     let errorMessage: string | null = null;
@@ -167,7 +167,7 @@ async function runTurn(thread: AdeThread, prompt: string, timeoutMs: number): Pr
       void thread.interrupt().catch(() => {});
     };
     const timer = setTimeout(() => {
-      abandon(new AdeError("rpc_timeout", `client.run() gave up after ${timeoutMs} ms; pass a larger timeoutMs for long tasks.`));
+      abandon(new DaexError("rpc_timeout", `client.run() gave up after ${timeoutMs} ms; pass a larger timeoutMs for long tasks.`));
     }, timeoutMs);
     const finish = (error?: Error) => {
       if (settled) return;
@@ -180,7 +180,7 @@ async function runTurn(thread: AdeThread, prompt: string, timeoutMs: number): Pr
     stop = thread.on("event", (envelope: AgentChatEventEnvelope) => {
       const event = envelope.event;
       if (WAITS_FOR_AN_ANSWER.has(event.type)) {
-        abandon(new AdeError(
+        abandon(new DaexError(
           "unsupported",
           "client.run() cannot answer approvals or questions. Give it permissions that need none " +
             "(for example permissions: \"always-allow\" with a sandboxed cwd), or use a thread.",
@@ -190,10 +190,10 @@ async function runTurn(thread: AdeThread, prompt: string, timeoutMs: number): Pr
       if (event.type === "text" && typeof event.text === "string") output += event.text;
       if (event.type === "error" && typeof event.message === "string") errorMessage = event.message;
       if (event.type === "done") {
-        if (errorMessage) finish(new AdeError("rpc_error", errorMessage));
+        if (errorMessage) finish(new DaexError("rpc_error", errorMessage));
         else finish();
       } else if (event.type === "status" && event.synthetic === true && event.turnStatus === "failed") {
-        finish(new AdeError("runtime_unavailable", typeof event.message === "string" ? event.message : "The runtime stopped during client.run()."));
+        finish(new DaexError("runtime_unavailable", typeof event.message === "string" ? event.message : "The runtime stopped during client.run()."));
       }
     });
     void thread.send(prompt).catch((error: unknown) => finish(error instanceof Error ? error : new Error(String(error))));
@@ -202,13 +202,13 @@ async function runTurn(thread: AdeThread, prompt: string, timeoutMs: number): Pr
 
 /** Run one temporary thread, retrying once when structured output is invalid. */
 export async function runOnce<T = unknown>(client: RunClient, prompt: string, options: RunOptions): Promise<T | string> {
-  if (typeof prompt !== "string" || !prompt.trim()) throw new AdeError("invalid_option", "client.run() needs a non-empty prompt.");
-  if (typeof options.model !== "string" || !options.model.trim()) throw new AdeError("invalid_option", "client.run() needs a model id.");
+  if (typeof prompt !== "string" || !prompt.trim()) throw new DaexError("invalid_option", "client.run() needs a non-empty prompt.");
+  if (typeof options.model !== "string" || !options.model.trim()) throw new DaexError("invalid_option", "client.run() needs a model id.");
   if (options.schema) validateSchemaShape(options.schema);
 
   const timeoutMs = options.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-    throw new AdeError("invalid_option", "client.run() timeoutMs must be a positive number of milliseconds.");
+    throw new DaexError("invalid_option", "client.run() timeoutMs must be a positive number of milliseconds.");
   }
   const key = `__ade_run_${randomUUID()}`;
   const thread = await client.threads.open(key, appendSchemaInstructions(options));

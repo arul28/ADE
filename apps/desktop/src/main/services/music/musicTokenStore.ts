@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { safeStorage } from "electron";
 import { isSecureStorageAvailable, isSecureStorageCheckPending } from "../shared/secureStorage";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Where a music provider's sign-in lives: one small file per provider in this
@@ -51,7 +52,7 @@ export function createMusicTokenStore(args: {
 
   const save = () => {
     if (!isSecureStorageAvailable(safeStorage)) {
-      throw new Error(`This computer's secure storage is unavailable, so ADE can't remember your ${args.serviceName ?? "Apple Music"} sign-in.`);
+      throw new Error(`This computer's secure storage is unavailable, so ${BRAND.NAME} can't remember your ${args.serviceName ?? "Apple Music"} sign-in.`);
     }
     fs.mkdirSync(args.dir, { recursive: true });
     const tmp = `${file}.tmp`;
@@ -71,7 +72,7 @@ export function createMusicTokenStore(args: {
    * the next call.
    */
   const refuseUntilLoaded = (): never => {
-    throw new Error(`This computer's secure storage is not ready yet, so ADE can't remember your ${args.serviceName ?? "Apple Music"} sign-in. Try again in a moment.`);
+    throw new Error(`This computer's secure storage is not ready yet, so ${BRAND.NAME} can't remember your ${args.serviceName ?? "Apple Music"} sign-in. Try again in a moment.`);
   };
 
   return {

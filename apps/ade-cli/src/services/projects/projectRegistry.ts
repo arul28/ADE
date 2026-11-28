@@ -31,6 +31,7 @@ import {
   type DroppedProjectRecord,
 } from "./projectRegistryJournal";
 import { assertDevTestMachineMayOpenProject } from "../sync/devTestMachine";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 export type ProjectId = string;
 
@@ -179,7 +180,7 @@ function ensureProjectAdeDir(rootPath: string): void {
     // media): the machine's setup, not a defect, and the user can fix it.
     throw markExpected(
       new Error(
-        `ADE can't create its .ade folder in ${rootPath}: this account can't write there (${code}). Give your user write access to the project folder, or open a copy of the project you own.`,
+        `${BRAND.NAME} can't create its .ade folder in ${rootPath}: this account can't write there (${code}). Give your user write access to the project folder, or open a copy of the project you own.`,
         { cause: error },
       ),
       "environment",
@@ -365,7 +366,7 @@ export class ProjectRegistry {
     const normalized = normalizeRoot(rootPath);
     if (isDisallowedProjectRoot(normalized)) {
       throw new Error(
-        "Refusing to register the user home directory or filesystem root as an ADE project. Choose a project folder.",
+        `Refusing to register the user home directory or filesystem root as a ${BRAND.NAME} project. Choose a project folder.`,
       );
     }
     assertDevTestMachineMayOpenProject(normalized, this.layout.adeDir);
@@ -724,11 +725,11 @@ export class ProjectRegistry {
   projectDataMissingMessage(record: ProjectRecord, options: { commandHints: boolean }): string {
     const adeDir = path.join(record.rootPath, ".ade");
     if (!fs.existsSync(record.rootPath)) {
-      return `The project folder ${record.rootPath} isn't there. Plug its drive in or move it back; ADE has not created a replacement.`;
+      return `The project folder ${record.rootPath} isn't there. Plug its drive in or move it back; ${BRAND.NAME} has not created a replacement.`;
     }
-    const restore = `ADE's data for this project is missing from ${adeDir}. Open the project in the ADE app to restore it or start fresh`;
+    const restore = `${BRAND.NAME}'s data for this project is missing from ${adeDir}. Open the project in the ${BRAND.NAME} app to restore it or start fresh`;
     return options.commandHints
-      ? `${restore}, or put the .ade folder back from the Trash. To start fresh from the command line instead, run \`ade projects remove ${record.projectId}\` and then \`ade projects add ${JSON.stringify(record.rootPath)}\`. ADE has not created a replacement.`
+      ? `${restore}, or put the .ade folder back from the Trash. To start fresh from the command line instead, run \`daex projects remove ${record.projectId}\` and then \`daex projects add ${JSON.stringify(record.rootPath)}\`. ${BRAND.NAME} has not created a replacement.`
       : `${restore}.`;
   }
 
@@ -929,7 +930,7 @@ export class ProjectRegistry {
         } finally {
           heldRegistryLocks.delete(lockPath);
         }
-      }, { waitMs: REGISTRY_LOCK_WAIT_MS, staleAfterMs: REGISTRY_LOCK_STALE_MS, label: "the ADE project list" });
+      }, { waitMs: REGISTRY_LOCK_WAIT_MS, staleAfterMs: REGISTRY_LOCK_STALE_MS, label: `the ${BRAND.NAME} project list` });
     } catch (error) {
       if (!(error instanceof ExclusiveFileLockTimeoutError)) throw error;
       // A holder that never lets go must not stop ADE from opening projects:
@@ -1023,7 +1024,7 @@ export function assertProjectNotMovedAway(projectRoot: string): void {
   const { movedTo } = marker;
   throw codedError(
     movedTo
-      ? `This is the old copy of a project that moved to ${movedTo}. Open it there. ADE keeps this copy only until you delete it.`
+      ? `This is the old copy of a project that moved to ${movedTo}. Open it there. ${BRAND.NAME} keeps this copy only until you delete it.`
       : "This is the old copy of a project that was moved. Open the project at its new location.",
     "project_moved",
   );

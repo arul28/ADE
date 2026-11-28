@@ -632,7 +632,7 @@ describe("ProjectRecoveryService.restartBrain", () => {
     );
 
     expect(rejection.message).toBe(
-      "A newer version of ADE is already running. Restart ADE to switch to it.",
+      "A newer version of DAEX is already running. Restart DAEX to switch to it.",
     );
     expect(connectionPool.callSync).not.toHaveBeenCalled();
   });

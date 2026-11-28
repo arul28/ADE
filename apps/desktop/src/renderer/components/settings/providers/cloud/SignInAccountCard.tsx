@@ -19,6 +19,7 @@ import { NoticeBadge } from "../../../ui/notice/NoticeParts";
 import { SettingsToggle } from "../../primitives";
 import { AccountCardFrame, CardOverflowMenu, accountCardLine as line } from "./accountCardParts";
 import type { SignInCardModel } from "./adeCloudPageModel";
+import { BRAND } from "../../../../../shared/brand";
 
 export type SignInCardPlace =
   | { kind: "ade-cloud" }
@@ -64,19 +65,19 @@ export function SignInAccountCard({
           <NoticeBadge tone="accent">In use here</NoticeBadge>
         ) : where.kind === "own-computer" ? null : card.inUse ? (
           // On a cloud computer's page the line below says it; the badge is for the place in front.
-          where.kind === "ade-cloud" ? <NoticeBadge tone="accent">In use on ADE Cloud</NoticeBadge> : null
+          where.kind === "ade-cloud" ? <NoticeBadge tone="accent">In use on {BRAND.CLOUD_NAME}</NoticeBadge> : null
         ) : !card.on ? (
-          <NoticeBadge tone="neutral">Off for ADE Cloud</NoticeBadge>
+          <NoticeBadge tone="neutral">Off for {BRAND.CLOUD_NAME}</NoticeBadge>
         ) : !onUse ? null : (
           <button
             type="button"
             disabled={busy}
             aria-busy={busy || undefined}
             onClick={onUse}
-            aria-label={`Use ${card.title} on ADE Cloud`}
+            aria-label={`Use ${card.title} on ${BRAND.CLOUD_NAME}`}
             style={outlineButton({ height: 26, padding: "0 10px", fontSize: 12, flexShrink: 0 })}
           >
-            Use on ADE Cloud
+            Use on {BRAND.CLOUD_NAME}
           </button>
         )
       }
@@ -90,15 +91,15 @@ export function SignInAccountCard({
         {where.kind === "own-computer" && !inUseHere ? (
           <span style={{ ...line, color: COLORS.textSecondary }}>To use it here, sign in on {where.machineWords}.</span>
         ) : null}
-        {onComputer && card.inUse && cloudOn ? <span style={line}>In use on ADE Cloud</span> : null}
+        {onComputer && card.inUse && cloudOn ? <span style={line}>In use on {BRAND.CLOUD_NAME}</span> : null}
       </div>
 
       {onSwitch ? (
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: "auto" }}>
           <span style={{ flex: 1, fontSize: 12, fontFamily: SANS_FONT, color: card.on ? COLORS.textSecondary : COLORS.textMuted }}>
-            On for ADE Cloud
+            On for {BRAND.CLOUD_NAME}
           </span>
-          <SettingsToggle checked={card.on} disabled={busy} label={`On for ADE Cloud: ${card.title}`} onChange={onSwitch} />
+          <SettingsToggle checked={card.on} disabled={busy} label={`On for ${BRAND.CLOUD_NAME}: ${card.title}`} onChange={onSwitch} />
         </div>
       ) : null}
     </AccountCardFrame>

@@ -54,6 +54,7 @@ import { createFileSearchIndexService } from "./fileSearchIndexService";
 import { nonAsarFs } from "../shared/nonAsarFs";
 import { removeTreeOffProcess } from "../shared/removeTreeOffProcess";
 import { AdeExpectedError, markExpected } from "../../../shared/expectedError";
+import { BRAND } from "../../../shared/brand";
 export { createExternalFilesWorkspaceRegistry, type ExternalFilesWorkspaceRegistry } from "./externalFilesWorkspaceRegistry";
 
 export type FileServiceLaneAdapter = Pick<
@@ -473,7 +474,7 @@ function ensureSafePath(
   const normalizedRel = normalizeRelative(relPath);
   const joinedPath = path.normalize(path.join(rootPath, normalizedRel));
   if (isVolatileAdeRuntimePath(normalizedRel) || resolvesIntoVolatileAdePath(rootPath, joinedPath)) {
-    throw new Error("Refusing to access ADE runtime paths");
+    throw new Error(`Refusing to access ${BRAND.NAME} runtime paths`);
   }
   let absPath: string;
   try {
@@ -528,7 +529,7 @@ function assertMutablePathAllowed(rootPath: string, relPath: string): string {
   const normalizedRel = normalizeRelative(relPath);
   const candidatePath = path.join(rootPath, normalizedRel);
   if (isVolatileAdeRuntimePath(normalizedRel) || resolvesIntoVolatileAdePath(rootPath, path.normalize(candidatePath))) {
-    throw new Error("Refusing to mutate ADE runtime paths");
+    throw new Error(`Refusing to mutate ${BRAND.NAME} runtime paths`);
   }
   if (containsDotGit(candidatePath)) {
     throw new Error("Refusing to access .git internals");

@@ -13,6 +13,7 @@ import {
 } from "../../../../desktop/src/main/services/lanes/laneFolderRemoval";
 import type { ProjectId, ProjectRecord, ProjectRegistry } from "./projectRegistry";
 import type { ProjectScopeRegistry } from "./projectScope";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * Removing a project from this machine, with its folder when the person asks
@@ -112,7 +113,7 @@ async function deleteFolderPermanently(folderPath: string): Promise<PermanentDel
         reason: "Some files in the folder are in use by another program. Close it and try again.",
       };
     }
-    return { kind: "untouched", code: "delete_failed", reason: `ADE couldn't delete the folder: ${errorText(error)}` };
+    return { kind: "untouched", code: "delete_failed", reason: `${BRAND.NAME} couldn't delete the folder: ${errorText(error)}` };
   }
   try {
     await removeWorktreeDirectoryWithRecovery(movedTo);
@@ -121,7 +122,7 @@ async function deleteFolderPermanently(folderPath: string): Promise<PermanentDel
     return {
       kind: "partial",
       remainingPath: movedTo,
-      reason: `ADE removed the project but couldn't delete every file: ${errorText(error)}`,
+      reason: `${BRAND.NAME} removed the project but couldn't delete every file: ${errorText(error)}`,
     };
   }
 }
@@ -175,7 +176,7 @@ export function createProjectCopyRemoval(deps: ProjectCopyRemovalDeps) {
           return {
             status: "refused",
             code: "work_running",
-            reason: "The project is still starting on this machine. ADE kept the folder; try again in a moment.",
+            reason: `The project is still starting on this machine. ${BRAND.NAME} kept the folder; try again in a moment.`,
           };
         }
         const recheck = await recheckCopy(record.rootPath, sessions, request);

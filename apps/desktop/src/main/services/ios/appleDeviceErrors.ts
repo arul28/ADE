@@ -9,6 +9,7 @@ import {
   APPLE_NO_INSTALLED_SIMULATORS_CODE,
   APPLE_RUNTIME_NOT_INSTALLED_CODE,
 } from "../../../shared/types/iosSimulator";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The typed refusals of the lane-device code. Each message names its code and the next step.
@@ -20,7 +21,7 @@ export class AppleNoInstalledSimulatorsError extends Error {
   readonly adeExpected = "environment" as const;
 
   constructor() {
-    super(`${APPLE_NO_INSTALLED_SIMULATORS_CODE}: no iOS Simulator runtime is installed, and ADE never downloads one. Install one from Xcode ▸ Settings ▸ Components, then ask again.`);
+    super(`${APPLE_NO_INSTALLED_SIMULATORS_CODE}: no iOS Simulator runtime is installed, and ${BRAND.NAME} never downloads one. Install one from Xcode ▸ Settings ▸ Components, then ask again.`);
     this.name = "AppleNoInstalledSimulatorsError";
   }
 }
@@ -31,7 +32,7 @@ export class AppleRuntimeNotInstalledError extends Error {
 
   constructor(what: string, installed: string[]) {
     super(
-      `${APPLE_RUNTIME_NOT_INSTALLED_CODE}: ${what} is not installed on this Mac, and ADE never downloads one. `
+      `${APPLE_RUNTIME_NOT_INSTALLED_CODE}: ${what} is not installed on this Mac, and ${BRAND.NAME} never downloads one. `
         + (installed.length ? `Installed: ${installed.join(", ")}.` : "Install one from Xcode ▸ Settings ▸ Components."),
     );
     this.name = "AppleRuntimeNotInstalledError";
@@ -53,7 +54,7 @@ export class AppleDeviceAttachedNotDeletableError extends Error {
   readonly adeExpected = "user" as const;
 
   constructor(readonly device: AppleLaneDevice) {
-    super(`${APPLE_DEVICE_ATTACHED_NOT_DELETABLE_CODE}: ${device.name} was attached, not created by ADE, so ADE will not delete it. Pass force to detach it from lane ${device.laneId} instead.`);
+    super(`${APPLE_DEVICE_ATTACHED_NOT_DELETABLE_CODE}: ${device.name} was attached, not created by ${BRAND.NAME}, so ${BRAND.NAME} will not delete it. Pass force to detach it from lane ${device.laneId} instead.`);
     this.name = "AppleDeviceAttachedNotDeletableError";
   }
 }
@@ -97,8 +98,8 @@ export class AppleDeviceNotLaneOwnedError extends Error {
       + `otherwise use this lane's own device (\`ade apple device-create\` makes one).${EXTRA}`;
     const explain: Record<AppleDeviceNotLaneOwnedReason["kind"], [string, string]> = {
       "other-lane": [`belongs to lane ${reason.kind === "other-lane" ? reason.laneLabel : ""}`, OWN_DEVICE],
-      "other-project": ["is an ADE device that a lane of another ADE project is using", OWN_DEVICE],
-      "other-project-unknown": ["is an ADE device of another project, and ADE could not check whether that project still uses it", OWN_DEVICE],
+      "other-project": [`is a ${BRAND.NAME} device that a lane of another ${BRAND.NAME} project is using`, OWN_DEVICE],
+      "other-project-unknown": [`is a ${BRAND.NAME} device of another project, and ${BRAND.NAME} could not check whether that project still uses it`, OWN_DEVICE],
       running: ["is not this lane's device and it is already running; another lane, a test run or the user may be using it", ATTACH_FIRST],
       "not-created": ["is not this lane's device", ATTACH_FIRST],
     };
@@ -125,7 +126,7 @@ export class AppleLaneDeviceReleasedError extends Error {
     const who = release.by === "agent" ? "by an agent (`ade apple device-detach`)" : "from the Apple Development pane or the tools card";
     super(
       `${APPLE_LANE_DEVICE_RELEASED_CODE}: this lane gave up its device ${release.name} (${release.udid}) ${when}, ${who}, `
-        + "and it is still installed. ADE does not make a new device in its place. "
+        + `and it is still installed. ${BRAND.NAME} does not make a new device in its place. `
         + `Run \`ade apple device-attach --simulator ${release.udid}\` to take it back, `
         + "or `ade apple device-create` for a new, empty device.",
     );

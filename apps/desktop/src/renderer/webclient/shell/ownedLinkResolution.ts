@@ -22,6 +22,7 @@ import {
 export { ownershipOfTarget } from "../../../shared/deeplinks";
 import type { SyncMobileProjectSummary } from "../../../shared/types/sync";
 import type { WebMachineEntry } from "../workspace/webWorkspaceModel";
+import { BRAND } from "../../../shared/brand";
 
 /** The GitHub repo a target names, when it names one. */
 function targetRepo(target: DeeplinkTarget): { owner: string; name: string } | null {
@@ -208,7 +209,7 @@ export async function resolveOwnedLink(
         ok: false,
         failure: {
           kind: "directory-unavailable",
-          title: "ADE couldn't load your computers to open this link.",
+          title: `${BRAND.NAME} couldn't load your computers to open this link.`,
           retryable: true,
           offerComputers: false,
         },
@@ -218,8 +219,8 @@ export async function resolveOwnedLink(
       ok: false,
       failure: {
         kind: "machine-unknown",
-        title: "This link is from a computer that isn't in your ADE account.",
-        detail: "Sign in with the ADE account that computer uses to open it.",
+        title: `This link is from a computer that isn't in your ${BRAND.NAME} account.`,
+        detail: `Sign in with the ${BRAND.NAME} account that computer uses to open it.`,
         retryable: true,
         offerComputers: true,
       },
@@ -231,7 +232,7 @@ export async function resolveOwnedLink(
     ok: false as const,
     failure: {
       kind: "machine-offline" as const,
-      title: `${machineName} is offline. Start ADE there, then try again.`,
+      title: `${machineName} is offline. Start ${BRAND.NAME} there, then try again.`,
       retryable: true,
       offerComputers: true,
     },
@@ -264,7 +265,7 @@ export async function resolveOwnedLink(
       ok: false,
       failure: {
         kind: "host-outdated",
-        title: `Update ADE on ${machineName} to open links from the web.`,
+        title: `Update ${BRAND.NAME} on ${machineName} to open links from the web.`,
         retryable: true,
         offerComputers: false,
       },
@@ -275,8 +276,8 @@ export async function resolveOwnedLink(
       ok: false,
       failure: {
         kind: "project-missing",
-        title: repo?.name ? `The ${repo.name} project isn't in ADE on ${machineName}.` : `That project isn't in ADE on ${machineName}.`,
-        detail: "Add the project in ADE on that computer, then try again.",
+        title: repo?.name ? `The ${repo.name} project isn't in ${BRAND.NAME} on ${machineName}.` : `That project isn't in ${BRAND.NAME} on ${machineName}.`,
+        detail: `Add the project in ${BRAND.NAME} on that computer, then try again.`,
         retryable: true,
         offerComputers: false,
       },

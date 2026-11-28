@@ -33,6 +33,7 @@ import {
   type LaneShareGuestPeer,
   type LaneShareRedeemedGuest,
 } from "./laneShareGuestTypes";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /** What the owner's machine list calls a guest. Host-made: never the name the guest sent. */
 function laneShareGuestLabel(userId: string): string {
@@ -142,7 +143,7 @@ export function createLaneShareGuestHello(deps: LaneShareGuestHelloDeps) {
       logReason: string,
     ): void => refuseLaneShareGuest(peer, requestId, hello, code, message, logReason);
     if (peer.transportOrigin !== "relay-bridge") {
-      refuse("lane_share_refused", "A shared lane is reachable only through ADE Relay.", "not_relay");
+      refuse("lane_share_refused", `A shared lane is reachable only through ${BRAND.NAME} Relay.`, "not_relay");
       return;
     }
     if (auth.deviceId !== hello.peer.deviceId) {

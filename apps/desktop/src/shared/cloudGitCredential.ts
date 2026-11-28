@@ -1,3 +1,4 @@
+import { BRAND } from "./brand";
 /**
  * Contract C4: does this ADE account have a credential git can use on a new
  * cloud computer? A cloud computer has no GitHub sign-in of its own; it
@@ -37,4 +38,4 @@ export type CloudGitPreflight =
   | { ok: false; reason: "none"; message: string };
 
 /** The way out a refusal names. */
-export const CONNECT_GITHUB_HINT = "Connect GitHub in Settings › GitHub so your sign-in follows your ADE account, then send again.";
+export const CONNECT_GITHUB_HINT = `Connect GitHub in Settings › GitHub so your sign-in follows your ${BRAND.NAME} account, then send again.`;

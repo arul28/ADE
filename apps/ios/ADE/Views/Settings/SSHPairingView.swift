@@ -136,7 +136,7 @@ struct SSHPairingView: View {
       }
       Toggle("Save key on this iPhone", isOn: $retainCredential)
       Text(retainCredential
-        ? "Face ID or Touch ID is required before ADE can use it again."
+        ? "Face ID or Touch ID is required before \(Brand.name) can use it again."
         : "The key is used only for this setup, then removed.")
         .font(.footnote)
         .foregroundStyle(.secondary)
@@ -150,7 +150,7 @@ struct SSHPairingView: View {
   @ViewBuilder
   private var generatedKeySection: some View {
     Section("No private key?") {
-      Button("Create a key for ADE", systemImage: "key") {
+      Button("Create a key for \(Brand.name)", systemImage: "key") {
         let generated = model.generateKey()
         privateKey = generated.privateKey
         passphrase = ""
@@ -171,7 +171,7 @@ struct SSHPairingView: View {
 
   private var securitySection: some View {
     Section {
-      Label("You compare the computer's fingerprint before ADE trusts it. SSH is only used for setup.", systemImage: "checkmark.shield")
+      Label("You compare the computer's fingerprint before \(Brand.name) trusts it. SSH is only used for setup.", systemImage: "checkmark.shield")
         .font(.footnote)
         .foregroundStyle(ADEColor.textSecondary)
     }
@@ -183,7 +183,7 @@ struct SSHPairingView: View {
     case .checkingHost:
       Section { ProgressView("Checking the computer…") }
     case .pairing:
-      Section { ProgressView("Connecting to ADE…") }
+      Section { ProgressView("Connecting to \(Brand.name)…") }
     case .paired(let machine, let warning):
       Section {
         Label("Paired with \(machine)", systemImage: "checkmark.circle.fill").foregroundStyle(ADEColor.success)
@@ -226,14 +226,14 @@ struct SSHPairingView: View {
     do {
       guard let url = try result.get().first else { return }
       guard url.startAccessingSecurityScopedResource() else {
-        importError = "ADE could not open that key file. Choose it again, or paste the key instead."
+        importError = "\(Brand.name) could not open that key file. Choose it again, or paste the key instead."
         return
       }
       defer { url.stopAccessingSecurityScopedResource() }
       privateKey = try String(contentsOf: url, encoding: .utf8)
       importError = nil
     } catch {
-      importError = "ADE could not read that key file. Choose a text key file, or paste the key instead."
+      importError = "\(Brand.name) could not read that key file. Choose a text key file, or paste the key instead."
     }
   }
 }

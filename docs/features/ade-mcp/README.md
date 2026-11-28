@@ -1,921 +1,390 @@
-# ADE MCP
+# DAEX MCP
 
-Lets AI apps the person picks (claude.ai, ChatGPT, Cursor, VS Code, Claude
-Code, Grok through its API, scripts) run the `ade` command on any of their
-computers. The ADE account has one MCP server, reached through ADE Relay
-(`apps/tunnel-relay`): any included computer that is online answers its URL,
-and a call for another computer is sent on to it (see
-[Account server](#account-server)). Off until the person turns it on for the
-account.
+Lets AI apps the person picks (claude.ai, ChatGPT, Cursor, VS Code, Claude Code,
+Grok, scripts) run the DAEX CLI on any of their computers. The account has one
+MCP server, reached through DAEX Relay (`apps/tunnel-relay`): any included
+computer that is online answers its URL, and a call for another computer is sent
+on to it ([Account server](#account-server)). Off until the person turns it on.
 
-The server's main tool is **`ade`**: the words after `ade`, run as the real
-CLI on that computer. Everything the CLI can do is available with no
-per-command MCP work, and new CLI commands appear on their own.
+The main tool is **`daex`**: the words after `daex`, run as the real CLI on that
+computer (a call to the old name `ade` still runs, but only `daex` is listed).
+Every CLI command is available with no per-command MCP work. Beside it,
+[typed tools](#typed-tools) take named inputs, and tools with a view return an
+[MCP App](#mcp-apps).
 
-Next to it, **typed tools** take named inputs a client can check before
-calling. See [Typed tools](#typed-tools). Tools with a view come back as an
-**MCP App** in hosts that show them; see [MCP Apps](#mcp-apps).
-
-In Settings › ADE MCP, the **Computers** card shows which computers answer.
-If a computer still hasn't received its key after ten minutes, the card
-refreshes and explains the wait. Use **Check again** to read the current
-status at any time.
+Settings › You › DAEX MCP shows the account's state; its **Computers** card shows
+which computers answer (with **Check again**).
 
 ## Source file map
 
+All under `apps/ade-cli/src/services/remoteMcp/` unless noted.
+
 | Path | Role |
 |---|---|
-| `apps/ade-cli/src/services/remoteMcp/remoteMcpService.ts` | The server: HTTP router (stateless Streamable HTTP, JSON responses), token checks, OAuth endpoints, Settings actions. |
-| `apps/ade-cli/src/services/remoteMcp/remoteMcpProtocol.ts` | MCP JSON-RPC for a signed-in connection: tools (`ade` and the typed tools), the `ade://commands` resource, prompts, run limits. |
-| `apps/ade-cli/src/services/remoteMcp/remoteMcpOAuth.ts` | Stateless client registration, redirect URI rules, authorize request parsing, PKCE, pending sign-ins and authorization codes, the sign-in and allow pages. |
-| `apps/ade-cli/src/services/remoteMcp/remoteMcpKnownApps.ts` | Which app a sign-in is, from the redirect URI it used (and, for local and app-scheme addresses only, its registered name). |
-| `apps/ade-cli/src/services/remoteMcp/remoteMcpHttp.ts` | The HTTP shapes, plus brain→relay requests: when a request may be tried again, the call id, plain network-error sentences, and the replay guard that answers a repeated call once. |
-| `apps/ade-cli/src/services/remoteMcp/remoteMcpTools.ts` | The typed tools: inputs, the argv each builds, how its JSON is trimmed, its `next` hint, and its result shape; `printsAgentOutput` (which output gets secrets masked) and `explicitTargetRefusal`. |
-| `apps/ade-cli/src/services/remoteMcp/remoteMcpEventHub.ts` | MCP Events, one machine: the newest 1,000 chat and PR events in memory, fed by each project runtime (`bootstrap.ts`), and the readers for a chat's title and final reply. |
-| `apps/ade-cli/src/services/remoteMcp/remoteMcpEvents.ts` | MCP Events over the account address: the `events/*` methods, `events/poll` across the machines, and the `events_poll` tool call. |
-| `apps/ade-cli/src/services/remoteMcp/remoteMcpEventCatalog.ts` | MCP Events types (`events/list`), argument checks, the account cursor, and the `events_poll` tool's schema and text. |
-| `apps/ade-cli/src/services/remoteMcp/remoteMcpEventWebhooks.ts` | MCP Events webhooks: subscriptions in the account vault, the endpoint check, and each machine's signed delivery. |
-| `apps/ade-cli/src/services/remoteMcp/remoteMcpProjects.ts` | Which project a call means (id, path, name, account project), and what to say when its folder is gone. |
-| `apps/desktop/src/main/services/net/publicHttpsPost.ts` | A POST to an outside URL that can't reach this computer or a private network: public https only, DNS pinned, no redirects, one deadline for the whole request. Chat webhooks and MCP Events webhooks use it. |
-| `apps/ade-cli/src/services/remoteMcp/remoteMcpChatRouting.ts` | A chat id finds its chat: rerun in its project here, or forward to its computer, remembered per connection; deleted and not-found answers. |
-| `apps/desktop/resources/agent-skills/ade-mcp-client/SKILL.md` | The walkthrough for an outside bot, served as an MCP prompt and left out of in-ADE agents' skill line (`adeOutsideClientAgentSkills`). |
-| `apps/ade-cli/src/services/remoteMcp/remoteMcpContextBudget.test.ts`, `.json` | The context-size ratchet. |
-| `apps/ade-cli/src/cliChatInbox.ts` | `ade chat inbox`, the command behind the `inbox` tool. |
-| `evals/ade-mcp/` | The eval of how models use these tools. |
-| `apps/ade-cli/src/services/remoteMcp/remoteMcpCommandPolicy.ts` | Which commands run at each access level; the read-only allowlist; argv splitting; log redaction. |
-| `apps/ade-cli/src/services/remoteMcp/remoteMcpRunner.ts` | Runs the CLI as a child of the brain: no shell, `--socket`, role by access level, timeout, output cap, process-tree kill. |
-| `apps/ade-cli/src/services/remoteMcp/remoteMcpStore.ts` | The account's connections in the account vault (token hashes only); reading the per-computer `remote-mcp.json` from before accounts, for the migration. |
-| `apps/ade-cli/src/services/remoteMcp/remoteMcpAccount.ts` | The account secret and account key, and the account settings keys (`ade_mcp.enabled`, each computer's entry, last used). |
-| `apps/ade-cli/src/services/remoteMcp/remoteMcpForward.ts` | The account's computers (settings entries + account directory), and sending a tool call on to another one. |
-| `apps/ade-cli/src/services/remoteMcp/remoteMcpActivityLog.ts` | `<ade home>/remote-mcp/activity.jsonl`, capped at 512 KB with one rolled file. |
-| `apps/ade-cli/src/services/remoteMcp/remoteMcpShared.ts` | The machine's one service instance, built on the machine's shared account vault and settings stores. |
-| `apps/ade-cli/src/services/sync/syncTunnelClientService.ts` | Control-socket messages `http` → `http_res`, and `mcp_state` (on/off) to the relay. |
-| `apps/ade-cli/src/services/sync/machineRelayTunnel.ts` | Attaches the service to the machine's relay tunnel. |
-| `apps/ade-cli/src/multiProjectRpcServer.ts` | `remoteMcp.call`, the machine method behind `ade mcp` (operator only; never a chat-bound agent). |
-| `apps/ade-cli/src/cliRemoteMcp.ts` | `ade mcp` commands and their `--text` output. |
-| `apps/tunnel-relay/src/relay.ts`, `tunnelDo.ts` | `/m/<endpointKey>/…` and OAuth discovery routes; endpoint-key → machine mapping; forwarding over the control socket; limits; CORS. |
-| `apps/desktop/src/main/services/adeActions/registry.ts` | `remote_mcp` action domain (Settings). |
-| `apps/desktop/src/main/services/adeActions/actionPolicy.ts`, `apps/desktop/src/shared/adeActionAccess.ts` | `remote_mcp` is CTO-only; its writes are user-only (desktop clients); `createToken` is secret-bearing. |
-| `apps/desktop/src/shared/types/remoteMcp.ts` | Wire types shared by the brain, preload and Settings. |
-| `apps/desktop/src/renderer/components/settings/AdeMcpPage.tsx` | Settings → You → ADE MCP, the account's page. It calls this desktop's own brain with no pin: everything on it is the account's except Activity, which is this computer's. |
-| `apps/ade-cli/src/services/remoteMcp/remoteMcpApps.ts`, `remoteMcpApp/` | The MCP App: one self-contained HTML view (`ui://ade/app-<hash>.html`) and the `_meta.ui` the tools carry. Its source is the TypeScript modules and `app.css` in `remoteMcpApp/` (entry `app.ts`); `npm run mcp-app:build` (`scripts/generate-remote-mcp-app.mjs`, an esbuild bundle) writes `app.generated.ts`, and `mcp-app:check` (run by `pretest`) fails when it is stale. |
+| `remoteMcpService.ts` | The server: HTTP router (stateless Streamable HTTP, JSON answers), token checks (`authenticate`), OAuth endpoints, Settings actions. |
+| `remoteMcpProtocol.ts` | MCP JSON-RPC: tools, the `daex://commands` resource, prompts, run limits. |
+| `remoteMcpOAuth.ts`, `remoteMcpOAuthRoutes.ts`, `remoteMcpKnownApps.ts` | Stateless registration, redirect rules, PKCE, pending sign-ins and codes, the pages; which app a sign-in is. |
+| `remoteMcpTools.ts` | Typed tools: inputs, argv, JSON trimming, `next` hints, result shapes, `printsAgentOutput`. |
+| `remoteMcpCommandPolicy.ts` | Which commands each access level runs; argv splitting; log redaction. |
+| `remoteMcpRunner.ts` | Runs the CLI as a child of the brain: no shell, role by access, timeout, output cap, tree kill. |
+| `remoteMcpStore.ts`, `remoteMcpAccount.ts`, `remoteMcpShared.ts` | Connections in the account vault (hashes only) and the legacy-file migration; the account secret and settings keys; the machine's one service instance. |
+| `remoteMcpForward.ts`, `remoteMcpHttp.ts`, `remoteMcpChatRouting.ts`, `remoteMcpProjects.ts` | The account's computers and forwarding; brain→relay requests, retry rules and the replay guard; chat-id routing; project resolution. |
+| `remoteMcpEventHub.ts`, `remoteMcpEvents.ts`, `remoteMcpEventCatalog.ts`, `remoteMcpEventWebhooks.ts` | MCP Events: the in-memory hub, `events/*` and `events_poll`, types and cursor, webhooks. |
+| `remoteMcpActivityLog.ts` | `<ade home>/remote-mcp/activity.jsonl` (512 KB, one rolled file). |
+| `remoteMcpApps.ts`, `remoteMcpApp/` | The MCP App HTML (`npm run mcp-app:build` writes `app.generated.ts`; `mcp-app:check` fails when stale). |
+| `remoteMcpContextBudget.test.ts`, `.json` | The context-size ratchet. |
+| `apps/ade-cli/src/cliRemoteMcp.ts`, `cliChatInbox.ts` | `daex mcp` commands; `daex chat inbox`. |
+| `apps/ade-cli/src/multiProjectRpcServer.ts` | `remoteMcp.call` behind `daex mcp` (operator only). |
+| `apps/ade-cli/src/services/sync/syncTunnelClientService.ts`, `machineRelayTunnel.ts` | Control-socket `http` / `http_res` and `mcp_state`; attaching to the relay tunnel. |
+| `apps/tunnel-relay/src/relay.ts`, `tunnelDo.ts`, `mcpAccountObject.ts`, `mcpMachineForwarding.ts`, `relayShared.ts` | Relay routes, account and endpoint objects, per-machine limits, replay-safe body check. |
+| `apps/desktop/src/main/services/net/publicHttpsPost.ts` | Public-https-only POST (DNS pinned, no redirects) for chat and Events webhooks. |
+| `apps/desktop/src/main/services/adeActions/actionPolicy.ts`, `apps/desktop/src/shared/adeActionAccess.ts` | `remote_mcp` is CTO-only, writes user-only, `createToken` secret-bearing. |
+| `apps/desktop/src/shared/types/remoteMcp.ts` | Shared wire types. |
+| `apps/desktop/src/renderer/components/settings/AdeMcpPage.tsx` | The Settings page (calls this desktop's brain with no pin; only Activity is per-computer). |
+| `apps/desktop/resources/agent-skills/daex-mcp-client/SKILL.md` | The outside-bot walkthrough, served as an MCP prompt. |
+| `evals/ade-mcp/` | Eval of how models use the tools; run it when tool text changes. |
+
+## Gotchas / fragile areas
+
+- **Never run `wrangler dev` on port 8787** on a machine with DAEX: the brain's
+  sync listener uses it, and the phone loses relay.
+- Cloudflare's bot check answers `error code: 1010` to some default user agents
+  (Python `urllib`); test scripts must send one.
+- **Deploy order:** push relay (accepts vault kind `ade_mcp`), then the tunnel
+  relay, then DAEX. The vault uploads `ade_mcp` rows in their own batch
+  (`NEWER_VAULT_KINDS`) so an older push relay holds back only those.
+- Pending sign-ins and codes are in memory on one computer; an account-URL
+  sign-in relies on the relay keeping the same front computer.
+- Forwarding assumes all computers use the same relay URL; one on a custom
+  `ADE_TUNNEL_RELAY_URL` answers only its own calls.
+- The relay must pass `x-ade-mcp-call-id` through, or the target cannot tell a
+  retry from a new call.
+- Connections imported from a per-computer DAEX MCP, or made on a per-machine
+  URL, reach only that computer (`onlyMachine`).
+- The `ade_mcp` vault kind and `ade_mcp.*` settings are written only by the
+  service in process; the `account_vault` / `account_settings` actions refuse
+  them for every caller.
+- **New CLI commands are off until classified.** A top-level command in neither
+  `FULL_ACCESS_COMMANDS` nor `BLOCKED_COMMANDS` is refused;
+  `remoteMcpCommandPolicy.test.ts` fails for an unclassified command.
 
 ## Account server
 
-ADE MCP is one server per ADE account. The person turns it on once (Settings →
-ADE MCP, or `ade mcp on`) and gives an app one URL,
-`https://<relay>/a/<accountKey>/mcp`. Any computer of the account that is
-serving can answer that URL, and a call can name the computer it runs on.
-
-What makes it one server lives in the account stores, never in the relay:
+The person turns it on once (Settings, or `daex mcp on`) and gives an app
+`https://<relay>/a/<accountKey>/mcp`. State lives in the account stores, never
+the relay:
 
 | Where | Key | What |
 |---|---|---|
-| Vault (scope `all`, kind `ade_mcp`) | `account-secret` | 32 random bytes, base64url. Made only where the person turns ADE MCP on (Settings or `ade mcp on`, or the legacy migration), never by a computer that merely sees `ade_mcp.enabled` arrive. See [The account secret](#the-account-secret). |
-| Vault | `connection:<id>` | One connection: `{id, kind, label, scope, tokenHash, tokenHint, createdAt, redirectHost, app, clientKey?}`. Never the token. |
-| Settings (scope `all`) | `ade_mcp.enabled` | On or off for the whole account. |
-| Settings | `ade_mcp.machine.<machineKey>` | `{name, endpointKey, included, version, updatedAt, serving, notServingReason, reportedAt}`. Each computer that runs this code writes its own while ADE MCP is on, only when one of them changed (after a pull, keeping `included`): its name, per-machine endpoint key, version, and whether it serves and why not. Any computer may set another's `included` from Settings; the owner reads it. |
-| Settings | `ade_mcp.lastUsed.<id>` | When a connection was last used, written at most every 10 minutes per connection per computer. Settings shows the newest. |
+| Vault (`ade_mcp`) | `account-secret` | 32 random bytes. See [The account secret](#the-account-secret). |
+| Vault | `connection:<id>` | `{id, kind, label, scope, tokenHash, tokenHint, createdAt, redirectHost, app, clientKey?}`; never the token. |
+| Settings | `ade_mcp.enabled` | On/off for the account. |
+| Settings | `ade_mcp.machine.<machineKey>` | `{name, endpointKey, included, version, serving, notServingReason, reportedAt, …}`, written by each computer for itself (any computer may set `included`). |
+| Settings | `ade_mcp.lastUsed.<id>` | Last use, written at most every 10 minutes. |
 
-`accountKey = hex(HMAC-SHA256(key = utf8(secret), msg = "ade-mcp-account")).slice(0, 40)`
-(`deriveRemoteMcpAccountKey`). The brain sends the secret, not the key, in
-`mcp_state.account`; the relay derives the key itself, so a brain can join
-only an account whose secret it holds.
+`accountKey = hex(HMAC-SHA256(secret, "ade-mcp-account")).slice(0, 40)`
+(`deriveRemoteMcpAccountKey`). The brain sends the secret in `mcp_state` and the
+relay derives the key, so a brain joins only an account whose secret it holds.
 
-A computer **serves** (answers both URLs) when it is signed in, ADE MCP is on
-for the account, it is not left out, the vault holds the secret, and it has a
-relay identity. Otherwise it tells the relay it is off and the relay answers
-404 for it. A signed-out computer never serves: ADE MCP always needed the
-account for sign-in.
-
-**Honest state.** Each computer works out why it does not serve
+A computer **serves** when it is signed in, DAEX MCP is on, it is included, it
+has the secret, and it has a relay identity (`servingBlocker`). Otherwise it tells
+the relay it is off. It reports why it does not serve
 (`RemoteMcpNotServingReason`: `off_for_account`, `left_out`, `signed_out`,
-`relay_disconnected` after 45 s down, `account_vault_unreachable`,
-`waiting_for_account_secret`) and writes it, with `serving` and
-`reportedAt`, into its own entry. The write happens only when the state
-changes, at most once a minute, except that starting to serve goes out at
-once (the others refuse calls for it until they see it). Every computer's
-Settings, `machines_list` and `ade mcp status` show another computer's
-reported state; rules that hold now win over it (account off, left out,
-`older_ade` for an entry with no endpoint key, and `offline` from the
-directory). An entry from an ADE that never reported is shown as "serving
-unknown" and calls are still tried. This computer's own state is live.
-One rule decides serving (`servingBlocker`); the reported reason adds only
-the relay connection being down for 45 s, which the request gate leaves out
-(a request that arrived came over the relay). The service notes when the
-connection went down on its 30 s refresh, so reading the state never changes
-it.
-`getStatus` also carries `vault` (`RemoteMcpVaultHealth`): this computer's
-account vault sync, from the vault store's `health()`.
+`relay_disconnected` after 45 s, `account_vault_unreachable`,
+`waiting_for_account_secret`) into its own entry when the state changes (at most
+once a minute; starting to serve goes out at once). Other computers show that
+report, overridden by rules that hold now (`older_ade`, `offline`). An entry that
+never reported is "serving unknown" and calls are still tried.
 
 ### The account secret
 
-The account URL is derived from the secret, so it must not change under an
-app. Rules:
+The account URL is derived from the secret, so it must never change under an app.
 
-- Only `setEnabled(true)` (Settings, `ade mcp on`) and the legacy migration
-  may make one. They pull first and adopt the account's secret when there is
-  one, so off-then-on, or on from a second computer, keeps the URL.
-- `setEnabled(true)` succeeds only once the secret is in the account: the
-  sync answered and the secret key is no longer waiting to upload
-  (`pendingKeys`). Otherwise it fails with a sentence (vault unreachable, or
-  the upload did not land, e.g. an older push relay) and leaves
-  `ade_mcp.enabled` as it was, so no computer starts waiting for a secret
-  that never comes.
-- `maintain()` on any other computer never mints. It pulls (every minute
-  while waiting, else every five) and reports
-  `waiting_for_account_secret`, or `account_vault_unreachable` while its
-  vault can't sync. Before this rule a second computer could see
-  `ade_mcp.enabled` (account settings) before the first one's secret reached
-  its vault (a separate store), mint its own, and the vault then kept one of
-  the two, killing the URL already handed to an app.
-- Two computers turning it on at the same moment can still both mint; the
-  vault keeps the later upload, and the other adopts it on the pull that
-  follows its own upload, before either URL reaches an app.
+- Only `setEnabled(true)` and the legacy migration may mint one, and they pull
+  first and adopt an existing secret.
+- `setEnabled(true)` succeeds only once the secret has uploaded; otherwise it
+  fails with a sentence and leaves `ade_mcp.enabled` alone.
+- `maintain()` on other computers never mints; it pulls (every minute while
+  waiting) and reports `waiting_for_account_secret`. (Minting there once let two
+  secrets race and killed a URL already handed out.)
 
-**Tokens across computers.** Each computer checks a bearer against its own
-copy of the vault (`remoteMcpService.authenticate`):
+**Tokens across computers.** Each computer checks a bearer against its own vault
+copy. A miss forces a shared pull (at most one per 15 s; only for `ade_mcp_`
+bearers). A hit on a copy older than 60 s starts a background pull. Revocation is
+immediate where it happened and within about a minute elsewhere. Signing out
+purges the copy.
 
-- A miss pulls the vault and looks again. The pull is forced (a token made on
-  another computer seconds after this one's last pull would otherwise stay
-  unseen), shared by concurrent misses, and at most one per 15 s whatever the
-  tokens. A bearer without the `ade_mcp_` prefix never pulls.
-- A hit starts a background pull when this computer's copy is older than 60 s.
-  **Revocation bound:** revoking on one computer refuses the token there at
-  once; another computer refuses it within about a minute of its last pull,
-  plus the one request that starts the pull. While ADE MCP is on, an idle
-  computer still pulls at least every 5 minutes.
-- Signing out purges the vault copy (a project runtime does it), so its
-  tokens stop at once on that computer.
+**Migration.** A legacy `<secrets>/remote-mcp.json` is copied into the vault (same
+ids and hashes) once signed in, then emptied. Old per-machine URLs keep working.
 
-**Migration.** A computer with a `<secrets>/remote-mcp.json` from before
-accounts copies its connections into the vault on start once it is signed in
-and the vault answers, with the same ids and hashes, so their tokens keep
-working. It turns `ade_mcp.enabled` on if it was on locally and the account
-has no value yet, then empties the file and marks it migrated. Old app configs
-with the per-machine URL keep working: that URL is still served, and it is the
-forwarding target.
+### Another computer
 
-**Another computer.** Every tool takes an optional `machine` (a name or key
-from `machines_list`; a name matches as the CLI's `--machine` does, with case,
-accents and apostrophes folded and, for two words or more, whole words inside
-a name, and only a unique match counts). With none, or this computer, the call runs here; on the
-account URL the result still starts with `[machine: <name>]`, because any
-computer may have answered. Another computer gets the same `tools/call`
-(with `machine` removed) at `https://<relay>/m/<its endpointKey>/mcp`, with the
-app's own bearer, `content-type` and `accept: application/json`,
-`mcp-protocol-version`, a real `user-agent`, and `x-ade-mcp-via: <this
-computer's name>` (URL-encoded). The target checks the token against its own
-vault copy and runs the call under its own policy: no new trust between
-brains, the token is the account's. Its answer comes back as it is, with a
-first text line `[machine: <name>]` and `structuredContent.machine = {key, name}`.
+Every tool takes an optional `machine` (name or key from `machines_list`; unique
+match only). On the account URL every result starts `[machine: <name>]`. A call
+for another computer is resent to `https://<relay>/m/<endpointKey>/mcp` with the
+app's own bearer and `x-ade-mcp-via`; the target checks the token and runs the
+call under its own policy. No new trust between brains.
 
-- One hop: a request with `x-ade-mcp-via` never forwards again; naming a third
-  computer there is refused with a sentence that says so.
-- Before forwarding, the sender refuses a computer that does not serve with
-  the sentence for its reason (`notServingSentence`): older ADE, left out,
-  offline, signed out, not connected to the relay, vault can't sync, still
-  waiting for the key. A target that answers 401 (an older ADE whose own
-  store does not know account tokens, or a token it has not pulled yet) gets
-  "update ADE there; if it was just set up, try again in a minute". The
-  relay's 404 `ade_mcp_off` (with the reason the target last reported, when
-  there is one), 429 and 503 have their own sentences.
-- **Retries.** A brain→relay request (a forwarded call, a forwarded token
-  exchange) that fails before any HTTP response is tried once more, inside
-  the same deadline, only when that cannot run it twice:
-  - always, when the failure proves nothing was sent (`ECONNREFUSED`,
-    `ENOTFOUND`, `EAI_AGAIN`, `ENETUNREACH`, `EHOSTUNREACH`,
-    `UND_ERR_CONNECT_TIMEOUT`);
-  - after any other failure (a reset or "other side closed": Cloudflare
-    closes idle keep-alive connections, and the request may already have
-    been written) only for a read-only typed tool. A write, the `ade` tool
-    and a token exchange (the code is single use) fail with the sentence
-    instead, and the app can try again;
-  - never after a timeout.
-
-  Every try carries an `x-ade-mcp-call-id`, and the receiving brain answers a
-  `tools/call` with the same (connection, call id) once for two minutes after
-  it finishes (a duplicate in flight waits for the first); a forwarded token
-  exchange the same way, keyed with its body. That guard is why a repeat is
-  harmless when both sides know it, but a target on an older ADE or a relay
-  that drops the header would run it again, so it is not a reason to retry. A
-  failure says what happened in a sentence with the cause code (`ECONNRESET`,
-  `UND_ERR_SOCKET`, `ENOTFOUND`), never a bare "fetch failed".
-- Budget: the tool's own timeout + 30 s, at most 10 minutes.
-- `machine: "all"` on `projects_list`, `chat_list`, `inbox`, `usage_limits` and
-  `lanes_list` runs on every included computer, six at a time with 60 s each,
-  and returns `{machines: [{machine, ok, result | error}]}`; one failing
-  computer is one row.
-- Online state comes from the account directory, read at most every 15 s
-  (5 s after a failure); when it cannot be read, computers show online
-  "unknown" and calls are still tried.
-- Activity: the sender logs `forwardedTo`, the target logs `via`.
-
-`machines_list` returns the account's computers, online first: name, key,
-online, included, serving (null when unknown), `notServingReason`,
-`reportedAt`, `lastSeenAt`, supported (runs this code) and which one is
-answering. Who is on the account comes from the account directory: an
-`ade_mcp.machine.*` entry outlives its machine, so entries count only when the
-directory can't be read. Another computer's `serving` is a guess
-(unknown) when its ADE never reported, or its last report no longer holds; its
-`reportedAt` is null then, which is how Settings and `ade mcp status` tell
-(`servingStateKnown`). Lists word each reason from one table
-(`NOT_SERVING_WORDS`).
+- One hop: a request with `x-ade-mcp-via` never forwards again.
+- The run tool goes out under its old name `ade`, with a leading `daex` word
+  sent as `ade` (`forwardedCall`), because released brains answer only `ade`.
+  Typed tools go out as they came. Keep this until the `ade` alias is dropped.
+- A computer that does not serve is refused with the sentence for its reason
+  (`notServingSentence`); 401, 404 `ade_mcp_off`, 429 and 503 each have a
+  sentence.
+- **Retries** (once, inside the same deadline): always when nothing was sent
+  (`ECONNREFUSED`, `ENOTFOUND`, …); after a reset only for read-only typed tools;
+  never after a timeout. Every try carries `x-ade-mcp-call-id`, and the receiver
+  answers a repeated (connection, call id) once for two minutes.
+- Budget: the tool's timeout + 30 s, at most 10 minutes.
+- `machine: "all"` on `projects_list`, `chat_list`, `inbox`, `usage_limits`,
+  `lanes_list` runs on every included computer (six at a time, 60 s each) and
+  returns one row per computer.
+- Online state comes from the account directory (cached 15 s).
 
 ## Typed tools
 
 Reads: `projects_list`, `lanes_list`, `lanes_show`, `files_tree`, `files_read`,
 `files_search`, `diff_changes`, `diff_patch`, `git_status`, `prs_list`,
-`prs_show`, `prs_checks`, `chat_list`, `chat_read`, `chat_status`,
-`chat_wait`, `proof_review`, `usage_limits`, `machines_list`, and `inbox`,
-the attention loop. Without `project`, `inbox` reads each project opened on the computer in
-the last 30 days (at most six, two at a time, in one run slot) and tags every
-item with its project. `chat_start` requires `model`: ADE never picks one for
-an outside app, and the refusal names `ade chat models` and `ade harness
-routes`, which a read-only connection can also run. A model
-is named in full (`claude-opus-5-5`, `anthropic/claude-opus-5-5`); a short
-name like `opus` or a retired id is refused with the full names it could mean.
+`prs_show`, `prs_checks`, `chat_list`, `chat_read`, `chat_status`, `chat_wait`,
+`chat_events`, `proof_review`, `usage_limits`, `machines_list`, `inbox`,
+`events_poll`. Writes (full access only): `chat_respond`, `chat_send`,
+`chat_start`, `chat_update`, `chat_interrupt`, `lanes_create`, `files_write`,
+`projects_clone`.
 
-Writes, which are listed only for full-access connections: `chat_respond`
-answers a question or approval, `chat_send` messages or steers a chat,
-`chat_start` starts a chat (on a new lane, or an existing one with `lane`),
-`chat_update` changes a chat's model, effort or permissions in place,
-`chat_interrupt` stops a turn, `lanes_create` runs `ade lanes create`,
-`files_write` writes a file, and `projects_clone` clones a GitHub repository
-(URL or `owner/name`) with that computer's own GitHub sign-in and registers it
-as a project (`ade projects clone`). A read-only connection that calls one
-anyway is refused with the reason, before anything runs.
-
-**Outside clients.** The bundled `ade-mcp-client` skill, also an MCP prompt, is
-the walkthrough for a bot. What it relies on:
-
-- **Knowing a chat finished.** `chat_events` (`ade chat events`,
-  `chat.getChatEvents`) answers at once with what happened since a cursor, so a
-  client that only makes calls never misses a change. `chat_wait` defaults to
-  25 s, under most clients' request limit. `chat_start`'s `notify_url` and
-  `notify_token` (`--notify-url`, `--notify-token`, `ade chat notify`,
-  `chat.armWebhook`) POST to a public https URL each time the chat goes idle,
-  needs input or fails, retrying a failed POST for about 13 minutes. The
-  registry (`chatWebhookRegistry.ts`) lives in the project's
-  `.ade/secrets/chat-webhooks.json` (owner-only, by ACL on Windows), because
-  the project database syncs and the bearer key must not. The key travels on
-  stdin (`--notify-token-stdin`), never in a process list. Only the brain that
-  runs a chat checks and posts its webhook, so two brains on one project never
-  both POST; a chat event checks only that chat's webhooks, and a 15 s
-  backstop checks all of them. It lasts 7 days and runs a timer only while a
-  webhook exists. `ade chat notify` arms only a chat its project has (a miss
-  looks on the other machines), and a `chat create` whose webhook can't be
-  armed still sends its prompt and answers `notify: {armed: false}`.
-  `chat.listWebhooks` is a write action: a webhook URL can carry a secret. There is no MCP stream: the
-  server answers POST only, and a chat's computer can be the one that is asleep.
-- **Naming where things go.** `chat_start` and `lanes_create` refuse to run
-  without `project`, and without `machine` on the account address, because the
-  default project changes as the person works.
-- **Settings.** `chat_start` sends `full-auto` unless told otherwise, and its
-  result and `chat_status` carry the chat's real model, effort, permission
-  mode, account and lane, and the `link`.
-- **Files.** `files_write` sends its text on stdin, never in an argument. It
-  takes 256 KB a call; `offset` appends a chunk and must equal the file's size,
-  so a repeated chunk is refused. Every write answers `{path, bytes, sha256}`.
-- **Proof.** `proof_review` of a tall picture returns one page (1.5 widths
-  high) under `.ade/cache/proof-review`, cut with pngjs (ffmpeg for other
-  formats); `page`,
-  `y_from` and `y_to` choose it (`ade proof review --page`, `--y-from`, `--y-to`).
-- **Secrets.** What a shell or an agent wrote is masked with
-  `redactOutgoingChatText` on its way out: every chat transcript action
-  (`readTranscript`, `readTranscriptPage`, `getMainTranscript`,
-  `getSubagentTranscript`), and over MCP the output of `chat
-  read|list|status|wait|inbox|events`, `terminal read|tail|scrollback` and
-  `files search`, typed tool or raw `ade` alike (`printsAgentOutput`). What is
-  stored stays as it was. A read-only connection can't read `.env` files,
-  through `files read` (also `--path=.env`) or `actions run file.readFile`;
-  the file service already refuses `.ade/secrets` and the chat logs.
-- **Webhook addresses.** The URL must be https and public by name; before each
-  POST its name is resolved, every address must be public, and the request
-  goes to that checked address, so DNS can't point it inward. The file is
-  merged on write, so two brains on one project keep each other's webhooks.
-- **Gone chats.** `ade chat locate` reports a chat in Recently deleted: a
-  running project checks whether it can be reopened, and any other project's
-  database is read on disk (`reopenable: null`), without booting it or waiting
-  on a busy one. A miss is remembered for a minute, so polling a chat that is
-  still being set up does not reopen every database. The routing itself is
-  `remoteMcpChatRouting.ts`. MCP answers `state: "deleted"` with `deletedAt` and
-  `reopenable`, or `state: "not_found"`, never a bare null.
-
-- `proof_review` is how an app sees what an agent made: `session` (a chat
-  id) reviews that chat's newest video, else its newest picture; `proof`
-  one proof (ids in `otherProof`). It runs `ade proof review --json`
-  (`--from`/`--to` for a closer look) and returns the frames with each one's
-  time, why it is there and the caption showing, plus `link`, the chat in
-  ADE, where the person watches the video itself (the desktop app, or the web
-  client at `app.ade-app.dev`, which previews proof videos up to 10 MB). The
-  contact sheet, or the picture, rides beside the text as an MCP `image`
-  block: the one typed tool that returns one (`TypedTool.image`,
-  `readToolImage`). That file is read only when the call resolved an open
-  project and the file is a PNG, JPEG, WebP or GIF under that project's
-  `.ade/cache` or `.ade/artifacts` after links are resolved, at most 2.5 MB
-  (the relay's 4 MB answer once base64 grows it); otherwise the text says why
-  no picture came. The model judges the video from the sheet and asks for
-  changes with `chat_send`, naming moments by time. No video bytes cross
-  MCP: no model reads them, and no MCP content type carries them.
-- `projects_list` hides projects whose folder is gone (deleted temp
-  projects, an unplugged drive) and says how many in `next`;
-  `include_missing` lists them. Its result is `{projects, hiddenMissing}`.
-- `chat_start`'s `phase` is the chat's: `running` (the agent started and
-  works on the prompt), `setting_up` (its lane is still being made),
-  `failed` or `cancelled`. It used to pass the launch's own phase, whose
-  `completed` means "the agent started", and apps read a working chat as
-  finished.
-
-- **One command each.** A typed tool only builds the words of one `ade`
-  command. The service runs it through the same policy check and runner as
-  the `ade` tool, so a typed tool can never do more than the connection's
-  scope. Every typed tool is a CLI command too: `inbox` is `ade chat inbox`,
-  `chat_respond` is `ade chat respond`, `chat_send` is `ade chat send`, and
-  `chat_start` is `ade chat launch --wait`. Free text goes as one
-  `--flag=<text>` word, so text that looks like a flag stays text.
-- **Results.** Each tool asks the CLI for JSON and returns `structuredContent`
-  as `{ project, result, next? }`. `result` is trimmed (the CLI's `prs list`
-  and `chat list` run past a megabyte), and its shape per tool is noted in
-  `remoteMcpTools.ts`, because the ADE MCP app renders it. Chat results carry
-  a `link` that opens the chat in ADE. It names this computer's account machine
-  key and the project's canonical id (`TypedShapeContext`, passed to `shape`),
-  so it opens that chat on that computer and project from the desktop app, the
-  web client or the phone.
-- **Guidance lives in results.** `next` is the next step, written where the
-  model decides it (T3 Code's lesson, pingdotgg/t3code#24782). A running
-  `chat_status` says "chat_wait returns when it is done". A `chat_wait` that
-  timed out says to call it again. An empty `inbox` says nothing waits. A
-  `chat_respond` names what it approved or answered. A `chat_wait` that ends
-  without the state (timed out, waiting on the person, no such chat yet) is
+- **One command each.** A typed tool builds the argv of one CLI command and runs
+  it through the same policy and runner as `daex`, so it can never exceed the
+  connection's scope (`inbox` is `daex chat inbox`, `chat_start` is
+  `daex chat launch --wait`). Free text goes as one `--flag=<text>` word.
+- **Results** are `structuredContent` `{ project, result, next? }`, trimmed;
+  chat results carry a `link` naming this computer and project. `next` is the
+  next step, written where the model decides it. A `chat_wait` that times out is
   an answer, not an error.
-- **A chat id finds its computer.** `chat_read`, `chat_status`,
-  `chat_wait`, `chat_events`, `chat_send`, `chat_respond`, `chat_interrupt`,
-  `chat_update` and `proof_review` of a chat without `machine` run here
-  first. When the answer says this project has no such chat, the service runs
-  `ade chat locate` (every online computer is asked, read-only), reruns the
-  call in the chat's own project here or forwards it to the computer that has
-  it with the app's own token, and remembers that computer and project for the
-  chat, so the next call goes straight there. A call that was
-  itself forwarded is answered where it landed (one hop). An `onlyMachine`
-  connection, or a computer left out, gets a refusal that names where the
-  chat is.
-- **Text is short.** Each rule is stated once, where the model reads it when it
-  decides. The project rule lives in the instructions and in the `project`
-  input. `projects_list` and `usage_limits` answer for the whole computer and
-  take no `project`. Hints the MCP spec already defaults are left out.
+- **Naming where things go.** `chat_start` requires `model` (full name; DAEX never
+  picks one for an outside app) and, like `lanes_create`, `project` (and
+  `machine` on the account URL). `chat_start` sends `full-auto` unless told
+  otherwise and reports the chat's real settings; its `phase` is the chat's
+  (`running`, `setting_up`, `failed`, `cancelled`).
+- **A chat id finds its computer.** Chat tools without `machine` run here first;
+  if the project has no such chat, `daex chat locate` asks every online computer,
+  and the call reruns in the right project or forwards there, remembered per
+  connection. Gone chats answer `state: "deleted"` (with `reopenable`) or
+  `"not_found"`.
+- **Knowing a chat finished.** `chat_events` answers what happened since a cursor;
+  `chat_wait` defaults to 25 s. `chat_start`'s `notify_url` / `notify_token` arm a
+  webhook (`chatWebhookRegistry.ts`, stored in `.ade/secrets/chat-webhooks.json`
+  because the project database syncs) that POSTs on idle, needs-input or failure,
+  retried about 13 minutes, for 7 days. The token travels on stdin. Only the brain
+  running the chat posts.
+- **Files.** `files_write` sends text on stdin, 256 KB per call; `offset` must
+  equal the file size (appends cannot repeat). Answers `{path, bytes, sha256}`.
+- **Proof.** `proof_review` runs `daex proof review --json` and returns frames
+  plus a contact sheet or picture as an MCP `image` block (PNG/JPEG/WebP/GIF under
+  the project's `.ade/cache` or `.ade/artifacts`, at most 2.5 MB). No video bytes
+  cross MCP.
+- **Secrets.** Agent- and shell-written output (chat transcripts, `terminal read`,
+  `files search`, …) is masked with `redactOutgoingChatText` on the way out
+  (`printsAgentOutput`). Read-only connections cannot read `.env` files.
+- `projects_list` hides projects whose folder is gone (`include_missing` lists
+  them).
 
-**Full control.** The jobs an outside agent is asked to do on a named
-computer all run at full access, on any computer through `machine`: open
-(`ade projects add`) or clone (`projects_clone`) a project, create a lane
-(`ade lanes create`), start a chat with a model (`chat_start`), message or
-steer it (`chat_send`), answer its approvals and secret cards (`inbox`,
-`chat_respond`; screen-control consent stays with the person), wait
-(`chat_wait`), read results (`chat_read`, `diff_*`, `files_read`), run a shell
-command (`ade shell start -- <command>`: without `--lane` it runs in the
-project's primary lane, then `ade terminal read`), look at PRs and CI
-(`prs_*`), check usage (`usage_limits`). The refusals below stay.
+`daex chat inbox` lists every chat and live agent CLI session in a project that
+waits on the person, each item with its options and `requestId` (or an `ask`,
+answered with `chat send`). `--all-machines` merges machines.
 
-`ade chat inbox [--json|--text]` lists every chat and live agent CLI session
-in the project that waits on the person. A CLI item has kind `terminal`, the
-CLI's own words (a permission or question it reported), and is answered in its
-terminal (`ade terminal write --terminal <id> --data …` or `ade chat send`). It composes `session.list` (the Work rows, with their needs-you
-signals) with `chat.listPendingInputs` for up to 12 chats. An item is one
-question, approval or plan, with its options inline and the `requestId` that
-`chat respond --item` takes, or an `ask` (from `ade chat ask`), which has no
-card and is answered with `chat send`. `--all-machines` merges every
-machine's inbox. The inbox covers one project; `attention.*` is CTO-only, so a
-read-only connection cannot read across projects.
-
-### Context budget
-
-`remoteMcpContextBudget.test.ts` measures what an app pays before it does
-anything: the `initialize` instructions and the `tools/list` JSON, in bytes,
-for each scope, with the machine router in place, as a signed-in brain serves
-them. It compares them with `remoteMcpContextBudget.json`. A bigger number
-fails. A smaller one also fails and asks you to lower the baseline, so cuts
-stay cut. Growth on purpose means editing the JSON in the same change, where
-review sees it. After this change, write scope went from 14,130 bytes (18
-tools) to the number in the JSON, now with 23 tools, the machine input and
-the MCP Apps `_meta`. `projects_clone` and `projects_list`'s
-`include_missing` added 695 bytes to write (15,753 → 16,448) and 88 to read
-(13,024 → 13,112). The outside-client tools (`chat_events`, `chat_update`,
-`chat_interrupt`, `lanes_create`, `files_write` and the new `chat_start`
-inputs) first took write to 23,361; stating the `machine` and `project`
-defaults once in the instructions, instead of on every tool, brought it to
-19,994, and read to 13,308 (below its 13,897 before them), with the eval
-unchanged.
-`events_poll` (MCP Events for clients without them, with its `machine`
-input and the event names as an enum) added 839 bytes to each scope's tools
-(read 13,746 → 14,585, write 20,735 → 21,574).
-
-### Eval
-
-`evals/ade-mcp/` replays realistic outside-agent requests against the real
-tool text over a fake stdio server, drives `claude -p`, and grades the tool
-calls. Its README says how to run it, what it costs, and when to add a case.
-Run it when you change tool text.
+**Context budget.** `remoteMcpContextBudget.test.ts` measures `initialize`
+instructions plus `tools/list` bytes per scope against
+`remoteMcpContextBudget.json`; bigger or smaller both fail, so growth is a
+reviewed JSON edit. Each rule is stated once, where the model reads it.
 
 ## Request path
 
 ```
-AI app ──HTTPS──► ade-tunnel-relay Worker ──► TunnelDurableObject(machineKey)
-                   /m/<endpointKey>/mcp        │  {t:"http", rid, method, path, headers, body, mount?}
-                   /a/<accountKey>/mcp         ▼  over the brain's existing control socket
-                     (account object picks     brain: remoteMcpService.handleHttp
-                      a member machine)        │  {t:"http_res", rid, status, headers, body}
-AI app ◄──────────────────────────────────────┘
+AI app ──HTTPS──► tunnel-relay Worker ──► TunnelDurableObject(machineKey)
+                   /m/<endpointKey>/mcp      │  {t:"http", rid, method, path, headers, body, mount?}
+                   /a/<accountKey>/mcp       ▼  over the brain's existing control socket
+                   (account object picks     brain: remoteMcpService.handleHttp
+                    a member machine)        │  {t:"http_res", rid, status, headers, body}
+AI app ◄────────────────────────────────────┘
 ```
 
-- The relay holds no key and runs no ADE logic. It answers early only when the
-  machine is offline (503), has the feature off (404 `ade_mcp_off`, from
-  the control socket's `mcp` flag, so a disabled machine is never woken), or is
-  over its limits (16 requests in flight, 300 a minute: 429). On the account
-  address the 404 also carries a `reason`: `off` (ADE MCP is off for the
-  account) or `unknown_address` (nothing serves this address: often an old
-  one left behind by a new account secret). The code stays `ade_mcp_off`
-  for clients that read only that. It forwards a
-  short list of request headers (including `x-ade-mcp-via`) and returns a
-  short list of response headers.
-- The account route reads the account object (`mcp-account:<accountKey>`:
-  member machines and the one that last answered), tries that one first and
-  the others newest first, and moves on only when a machine is offline or off
-  before the request reached its brain. It marks the message with
-  `mount: {kind: "account", key}`.
-- A request a machine's control socket took with it when it closed (a laptop
-  that slept with its link open) may have reached the brain. The machine
-  object answers it 503 with the relay-only header `x-ade-mcp-lost`
-  (`failMcpForControl`), and the account route moves on only when every
-  message in the body changes nothing (`isReplaySafeMcpBody` in
-  `relayShared.ts`: `initialize`, `ping`, the `*/list` and `*/read`/`get`
-  reads). A `tools/call`, or a batch with one, keeps that 503: it may have
-  run there. The machine that lost it is not made the front, and the header
-  never reaches a client.
-- The brain answers an account mount only when the key is its own derived
-  account key and it is serving; otherwise 404 `ade_mcp_off`, which the relay
-  reads as that computer being off and moves on (its own 404, with `reason`
-  `off` or `unknown_address`, comes only when no computer answers). A malformed
-  `mount` gets 400. No `mount` is the per-machine URL.
-- The control socket is the one the brain already keeps for phones, so an idle
-  machine costs nothing extra. There is no session object and no second socket.
-- A brain sends `mcp_state` on every control open and whenever serving or the
-  account secret changes: `{t: "mcp_state", enabled, endpointKey, account?:
-  {secret}}`. `account` is present only while serving; leaving it out takes
-  the machine off the account. An older relay ignores `account` (an older one
-  still, the whole message); an older brain never sends it.
-- **Deploy order:** push-relay first (it must accept the vault kind `ade_mcp`,
-  or the account secret and connections never leave the computer that made
-  them), then the tunnel relay (account routes), then the app.
+- The relay holds no key and runs no DAEX logic. It answers early only when the
+  machine is offline (503), off (404 `ade_mcp_off`, with `reason` `off` or
+  `unknown_address` on the account route), or over limits (16 in flight, 300 a
+  minute: 429, `mcpMachineForwarding.ts`).
+- The account route tries the machine that answered last, then others newest
+  first, moving on only when a machine was offline or off before the request
+  reached it. A request lost with a closed control socket gets 503
+  `x-ade-mcp-lost`, and the route retries elsewhere only for replay-safe bodies
+  (`isReplaySafeMcpBody`: `initialize`, `ping`, lists and reads).
+- The brain answers an account mount only for its own derived key while serving.
+- A brain sends `mcp_state` (`{enabled, endpointKey, account?: {secret}}`) on
+  every control open and on change; `account` is present only while serving.
+- **URLs never contain the relay key.** The per-machine endpoint key is derived
+  from the relay secret (`mcpEndpointKeyFor`), so an MCP URL cannot open `/connect`
+  tunnels.
 
-**The URLs never contain the relay key.** The per-machine one uses an endpoint
-key the brain derives from its relay secret (`mcpEndpointKeyFor`) and registers
-with each `mcp_state` over its signed control socket; the relay's
-`mcp-endpoint:<key>` object maps it to the machine (first writer wins). The
-account one uses the account key. Handing either URL to an AI app therefore
-cannot open `/connect` tunnels or use up a machine's phone slots.
-
-URLs, with `<base>` = `https://ade-tunnel-relay.arulsharma1028.workers.dev/a/<accountKey>`
-(the account) or `…/m/<endpointKey>` (one computer). Every route below answers
-on both; OAuth metadata names the base the request came on.
-
-| URL | What |
-|---|---|
-| `<base>/mcp` | MCP endpoint. POST only (stateless; GET/DELETE → 405). |
-| `/.well-known/oauth-protected-resource/a/<accountKey>/mcp` | RFC 9728 metadata (also `<base>/.well-known/oauth-protected-resource`, and the `/m/<endpointKey>` forms). |
-| `/.well-known/oauth-authorization-server/a/<accountKey>` | RFC 8414 metadata; issuer is `<base>`. `openid-configuration` answers the same. |
-| `<base>/oauth/register` | Dynamic client registration. |
-| `<base>/oauth/authorize` | Start page; Continue with ADE. |
-| `https://<relay>/oauth/callback` | ADE sign-in returns here; routed to `/m/<endpointKey>/oauth/account-callback` of the computer that started it. |
-| `/m/<endpointKey>/oauth/consent` | The allow page posts here, on the computer holding the sign-in. |
-| `<base>/oauth/token` | Code → token. |
+Routes (on both `<base>` = `https://<relay>/a/<accountKey>` and
+`…/m/<endpointKey>`): `<base>/mcp` (POST only), RFC 9728 and RFC 8414 metadata
+under `/.well-known/`, `<base>/oauth/register`, `<base>/oauth/authorize`,
+`<base>/oauth/token`, the fixed `https://<relay>/oauth/callback` (routed to the
+computer that started the sign-in), and `/m/<endpointKey>/oauth/consent`.
 
 ## Signing in
 
-Two ways, both ending in a **connection** of the account: a label, an access
-level and a token whose SHA-256 is stored in the account vault. The token
-works on every included computer. Revoking deletes the record; the token
-fails at once on the computer that revoked it and within about a minute on
-the others (see **Account server**).
+Both ways end in a **connection**: label, access level, and a token whose SHA-256
+is in the vault. Tokens do not expire; revoke in Settings or `daex mcp remove`.
+At most 50 connections per account; signing in again from the same registration
+and return address replaces the old connection.
 
-1. **Web sign-in** (claude.ai, ChatGPT, Cursor, VS Code, Claude Code): the app
-   registers itself (dynamic registration) and opens `<base>/oauth/authorize`,
-   normally on the account URL.
-   - **Which app.** `recogniseRemoteMcpApp` names the app from the redirect URI
-     used at authorize, then from its registered name for loopback and app
-     schemes only: Cursor's one published client (client name "Cursor") serves
-     Cursor, its cloud agents (`www.cursor.com/agents/…`), Grok Bot
-     (`www.cursor.com/bot/…`) and grok.com (`grok.com/connectors-oauth-exchange-code/`).
-     The pages say "Connect Grok Bot", the connection is labelled so, and its
-     record keeps `app` (`RemoteMcpKnownApp`, named from
-     `REMOTE_MCP_KNOWN_APP_LABELS`; older records infer it from the host and
-     label the same way, and `www.cursor.com` stays unknown). Any website can
-     register any name, so an HTTPS address ADE does not list is never a known
-     app: a page on `evil.example` that registers as "Claude helper" is shown
-     as "Claude helper (evil.example)", with no logo, on the pages and in
-     Settings.
-   - **What it gets.** On the account URL the start and allow pages say the
-     app wants to use your ADE account, on every computer you include, and
-     name them (from the account entries). On a per-machine URL they name
-     that computer, and the grant matches: the connection reaches only that
-     computer (`onlyMachine`), on whichever address the app later calls. The
-     allow page is served by the computer holding the sign-in, which
-     remembers which address it began on and so which grant it gives. Signing
-     in again replaces the earlier connection from the same app and return
-     address on the same kind of address (the account, or that computer), so
-     an app that holds both keeps both tokens.
-   - **Continue with ADE** sends the person to ADE's own sign-in (Clerk, the
-     public "ADE CLI" client, PKCE). Clerk returns to the relay's one fixed
-     callback, `https://<relay>/oauth/callback`; the relay routes it to the
-     machine named before the dot in `state`. That is always the computer
-     that answered the authorize request (its per-machine endpoint key), the
-     one holding the pending sign-in, even when it began on the account URL.
-   - The brain redeems the code itself, with a PKCE verifier only it holds, and
-     checks the token with `verifyClerkAccountAttestation`: the subject must be
-     the account this computer is signed in to (the check phone hellos use).
-   - Then the person picks **Read & write** (default) or **Read only** and
-     presses **Allow** (the page posts to the per-machine URL). The app gets a
-     code, and `iss` is the issuer it started with (the account base when it
-     began there; the brain remembers it per sign-in). The app exchanges the
-     code at its token endpoint; the token is minted then and written to the
-     vault, so the other computers find it on their next pull.
-2. **Token** (Grok and OpenAI APIs, scripts): Settings → ADE MCP → New token,
-   or `ade mcp token create --read-only|--full-access` (the access is required;
-   there is no default). Shown once. Sent as `Authorization: Bearer …`.
+1. **Web sign-in.** The app registers (stateless: the client id is `ade1.` +
+   base64url of its redirect URIs and name) and opens `<base>/oauth/authorize`.
+   `recogniseRemoteMcpApp` names known apps from the redirect URI (and from the
+   registered name only for loopback and app schemes); an unknown HTTPS app shows
+   with its host and no logo. **Continue with DAEX** runs Clerk sign-in (public
+   "DAEX CLI" client `Az7TbviBocyXjZk1`, PKCE) back to the relay's fixed callback.
+   The brain redeems the code with a verifier only it holds and checks the
+   subject is this computer's account (`verifyClerkAccountAttestation`). The
+   person picks **Read & write** or **Read only** and allows; the token is minted
+   at the code exchange. A per-machine URL grants `onlyMachine`.
+2. **Token**: Settings › New token, or
+   `daex mcp token create --read-only|--full-access` (access required). Shown once.
 
-Why the relay cannot mint access: it never holds the PKCE verifier for ADE's
-sign-in, never issues tokens, and a code it sees in flight is useless without
-the verifier. A compromised Worker learns the tokens it carries and the
-account secret brains send it (which only names the account address), but
-cannot create a connection.
-
-- The callback address is registered on the Clerk OAuth application "ADE CLI"
-  (`Az7TbviBocyXjZk1`). A new relay origin needs its own callback added there.
-- Registration is stateless: the client id is `ade1.` + base64url of the
-  registered redirect URIs and name. Nothing to store, fill or lose on restart.
-  Open registration grants nothing; every client is public and still needs an
-  ADE sign-in.
-- Redirect URIs: HTTPS anywhere, HTTP only on loopback, or an app scheme
-  (`cursor://`). Never `javascript:`, `data:`, `file:` and similar, never a
-  fragment. An unregistered redirect gets our error page, not a redirect.
-- Sign-ins: 10 minutes, at most 20 waiting; the accept form carries a CSRF
-  value and is single use. Authorization codes: 2 minutes, single use, spent
-  even when the exchange fails, and held in memory on the computer that issued
-  them: the token exchange on the account URL reaches it because the relay
-  keeps answering from the machine that answered last. The token is minted at
-  exchange, so an abandoned sign-in leaves none.
-- Signing in as a different ADE account than the computer's is refused.
-- Tokens do not expire. Revoke them in Settings or with `ade mcp remove`.
-- At most 50 connections per account.
+The relay cannot mint access: it never holds the PKCE verifier and never issues
+tokens. Redirect URIs: HTTPS, loopback HTTP, or an app scheme; never
+`javascript:`/`data:`/`file:` or fragments. Sign-ins last 10 minutes (20
+waiting); codes 2 minutes, single use. Signing in as a different DAEX account is
+refused.
 
 ## Access levels
 
 | Level | Runs | CLI role |
 |---|---|---|
-| Read & write (default) | Any command in `FULL_ACCESS_COMMANDS`, minus the refusals below. | `cto` (a person's terminal) |
-| Read only | An allowlist of reading commands (`describeReadOnlyCommands()`), plus `ade actions run` for actions `adeActionAccess` declares `read` and that return no secret. | `agent` |
+| Read & write (default) | `FULL_ACCESS_COMMANDS`, minus the refusals below | `cto` |
+| Read only | `describeReadOnlyCommands()` plus `daex actions run` for actions declared `read` that return no secret | `agent` |
 
-Refused at every level, because they would outlive or get around the switch
-that grants access, or cut the connection:
+Refused at every level (they would outlive or bypass the grant, or cut the
+connection):
 
-- the commands `mcp`, `account`, `login`, `logout`, `connect`, `setup`,
-  `reset`, `brain`, `serve`, `runtime`, `rpc`, `code` and `desktop`, and every
-  `machines` (or `machine`) subcommand except `list`/`show` (renaming,
-  removing or re-pairing account machines);
-- signing this computer in or out of a connected service:
-  `github app-auth login|clear` (and their aliases, and `gh`),
-  `jira connect|disconnect`, `integrations connect` and
-  `providers opencode accounts remove`;
-- through `ade actions` (or its alias `action`): any `remote_mcp.*` action, any
-  `account.*` action except `status` (tokens, sign-out), the GitHub, Linear and
-  Jira credential actions (`github.setToken|clearToken|*AppUser*Auth`,
-  `linear_credentials.*`, `linear_oauth.*`, `linear_agent.startInstall|uninstall`,
-  `jira.connect|disconnect`, `integration_connect.request`,
-  `mcp_registry.request|remove`, and the AI provider sign-in and API-key actions in
-  `ai`), in both the
-  `<domain.action>` and `<domain> <action>` spellings, and the raw tool doors
-  `actions call|direct|tool`;
-- restarting a computer's adb server: `ade android start --restart-adb`, and
-  `android_emulator.start` through `ade actions` with `restartAdb: true`. A
-  restart cuts every other device and tool on that server, so only the person
-  decides it, in the Android pane or in a terminal on that computer;
-- opening Simulator.app on a Mac: `--window`, `--foreground` and
-  `--open-simulator` on `ade apple`, `ios-sim` and `ios`, and through
-  `ade actions` `ios_simulator.openDevice` with `openWindow: true` or
-  `ios_simulator.launch` with `keepSimulatorInBackground: false` (any
-  spelling: `--arg`, `--input-json`, an escaped JSON key). Once Simulator.app
-  runs, every booted simulator on that Mac gets a window; an app's device
-  work stays inside ADE, in its stream;
-- a first word that is not a plain command word, so `--socket`, `--headless`,
-  `--role` and a socket path cannot move a call to another brain or role;
-- `--machine`, `--all-machines` and `--machine-project`: a call reaches
-  another computer through the tools' own `machine` input, which goes through
-  that computer's own token check and policy, never through the CLI's agent
-  bridge. `--to` on `chat handoff|move` (a chat moved to another machine) is
-  refused the same way;
-- `ade devices use`: it keeps a device choice for a chat, and a connected app
-  has no chat there. `ade devices` (the computer's devices) and `ade devices
-  current` are reads at both levels; the subcommand is read by the same parse
-  as the CLI (`devicesSubcommand` in `shared/types/deviceSources.ts`), and an
-  unknown one is refused.
+- commands `mcp`, `account`, `login`, `logout`, `connect`, `setup`, `reset`,
+  `brain`, `serve`, `runtime`, `rpc`, `code`, `desktop`, and `machines`
+  subcommands other than `list`/`show`;
+- signing services in or out (`github app-auth login|clear`, `jira
+  connect|disconnect`, `integrations connect`, provider account removal) and the
+  matching credential actions through `daex actions`, plus `remote_mcp.*`, most
+  `account.*`, and `actions call|direct|tool`;
+- `daex android start --restart-adb` (and `restartAdb: true`);
+- opening Simulator.app (`--window`, `--foreground`, `--open-simulator`, and the
+  matching `ios_simulator` action flags);
+- a first word that is not a plain command word (`--socket`, `--role`, …);
+- `--machine`, `--all-machines`, `--machine-project`, and `--to` on chat
+  handoff/move (use the tools' `machine` input), with one exception: exactly
+  `--machine cloud` (and `--size`) on `chat create`, `lanes create` and
+  `chat launch-status` (`isCloudLaneMachineUse`);
+- `daex devices use`.
 
-Both levels fail closed: a top-level command in neither
-`FULL_ACCESS_COMMANDS` nor `BLOCKED_COMMANDS` is refused, so a new `ade`
-command is off for ADE MCP until someone classifies it. When you add a
-command, put it in one of those lists (and in `READ_ONLY_COMMANDS` if it only
-reads). `remoteMcpCommandPolicy.test.ts` fails for any command with help text
-that is in neither, and `/quality` checks it (review rule 12).
+Read only also refuses `search --rebuild` and `chat wait --async|--background|--cancel`,
+and allows `--help` only as the last word after plain words. A read-only
+connection can only list lane shares; a full-access one can make Watch shares
+only (at most 5 an hour; [lane sharing](../lanes/lane-sharing.md#shares-made-by-an-agent)).
 
-Read only also refuses `search --rebuild`, and `chat wait --async`,
-`--background` and `--cancel` (they arm, hold or cancel a wait; a plain
-`chat wait` only watches). `<command> [<sub>…] --help` is allowed at read only,
-in exactly that shape (plain words, then `--help` last): after a flag that takes
-a value, the CLI reads `--help` as the value and runs the command
-(`chat send <id> --project-root --help`). The user-only action gate keeps
-every `remote_mcp` action (reads included) away from any client but the
-desktop, whatever its role.
-
-Lane shares: a read-only connection can only list a lane's shares (`lanes
-share --lane <lane>`, `actions run lane_share.list`). The command policy
-passes `lanes share` only in its list form, so any other flag or word and
-every `lane_share` write is refused, and the runtime refuses
-`lane_share.create` and `revoke` for a read-only connection's session too. A
-full-access connection can list, make a share and stop one, but its CLI is
-an agent to the lane's machine, so the host makes only a Watch share (it
-sees, it cannot act), at most 5 an hour, and refuses every other share
-change (see [lane sharing](../lanes/lane-sharing.md#shares-made-by-an-agent)).
-
-The blocklist stops the obvious routes, not a determined app: full access is
-real, and an app can start shells and agents, so it can do what the person
-can. Revoking stops new calls; it does not undo anything already done.
-
-An app that signs in again with the same registration and return address
-replaces its earlier connection (and that token stops working), so
-re-authorizing never piles up rows or fills the 50-connection cap. The
-return address is part of the key because one registration can serve
-several apps (Cursor's); a record from before keeps a registration-only key
-and is replaced by a sign-in from the same host.
+The blocklist stops obvious routes, not a determined app: full access is real.
+Revoking stops new calls, not what already ran.
 
 ## Running a command
 
 - The brain spawns its own CLI entry with `process.execPath` (or the native
-  binary), never a shell or a `.cmd` wrapper, with `--socket` first and
-  `ADE_DEFAULT_ROLE` set from the access level. The entry is the first that
-  exists of: the standalone runtime's executable, the agent environment's
-  entry, its shim, the brain's own script, `<ade home>/bin/ade`; a script
-  wrapper (`.cmd`, `.bat`, `.ps1`: Windows' shim) is skipped, so the search
-  goes on to the next. The child does not inherit the brain's own lane,
-  project or caller (`ADE_LANE_ID`, `ADE_PROJECT_ROOT`, `ADE_WORKSPACE_ROOT`,
-  `ADE_CHAT_SESSION_ID`…, the lists in `brainInheritedIdentity.ts`): a brain
-  started from a lane's terminal would otherwise put `shell start` without
-  `--lane` in that lane. The cached
-  launch is dropped when its file disappears (an update replaced it). When
-  none exists the call fails with the paths it looked at.
-- A run past 20 s (other than tools that wait on purpose) or past its limit
-  logs `remote_mcp.slow_run` with its duration and how much of it finding the
-  CLI took.
-- `cwd` is the `project` argument (name, id or path from the brain's project
-  registry) or the most recently opened project whose folder exists.
-  Projects whose folder is gone never win a name or the default (a deleted
-  temp project used to become the default and fail every call with
-  "spawn … ENOENT"); naming one gets a sentence saying its folder is gone.
-  The folders are checked with async stats under a 250 ms budget, shared with
-  `projects list` (`projectFolderPresence.ts`): a folder on a hung network
-  mount or an unplugged drive is unknown, and unknown counts as there.
-  Two projects with one name are refused with each one's id and path. That default changes when the
-  person opens another project, so **every result starts with the project it
-  ran in** (`[project: <name> · <id> · <path>]`; typed tools also put it in
-  `structuredContent.project`), and the activity log records it. With no
-  project registered at all, commands run in the home folder and say so.
-- The child gets `ADE_REMOTE_MCP_CONNECTION_ID`, `ADE_REMOTE_MCP_CONNECTION_LABEL`
-  and `ADE_REMOTE_MCP_SCOPE`. The CLI uses them to drop the help banner and
-  list only this scope's commands, to hide personal skills, and to label chat
-  turns the app sends ("via <label>").
-- stdin is closed unless the call passes `stdin` (256 KB at most). A command
-  that reads stdin (`--stdin`, `--json-stdin`, `--token-stdin`, or `-` after a
-  `--…-file` or `--prompt` flag) is refused without it, because with stdin
-  closed `files write --stdin` would write an empty file.
-- 120 s default, clamped to 5–600 s, then SIGTERM and SIGKILL of the process
-  group (`taskkill /T /F` on Windows). 200 KB per stream (typed tools that trim
-  their JSON allow more). At most 4 commands at once per machine and 3 per
-  connection, so one app's long `chat_wait` cannot shut the others out. A
-  JSON-RPC batch runs its messages one after another. `stopAllRemoteRuns()`
-  runs on brain shutdown.
-- A non-zero exit, a timeout or a refusal comes back as a tool result with
-  `isError: true` and a sentence the model can act on. Typed tools know their
-  command's answers: `chat_status` exits 1 for idle and 2 for blocked, which
-  are results, not errors.
+  binary), never a shell or a `.cmd` / `.ps1` shim, `--socket` first and
+  `ADE_DEFAULT_ROLE` from the access level. The child does not inherit the
+  brain's own lane or chat identity (`brainInheritedIdentity.ts`).
+- `cwd` is the `project` argument or the most recently opened project whose
+  folder exists (`projectFolderPresence.ts`, 250 ms budget). Every result starts
+  `[project: <name> · <id> · <path>]`. Ambiguous names are refused.
+- The child gets `ADE_REMOTE_MCP_CONNECTION_ID`, `…_LABEL` and `…_SCOPE` (named
+  `ADE_*` for historical reasons): the CLI trims its help to the scope, hides
+  personal skills, and labels chat turns "via <label>".
+- stdin is closed unless the call passes `stdin` (256 KB max); stdin-reading
+  commands are refused without it.
+- 120 s default (5–600 s), then a process-group kill; 200 KB per stream; at most
+  4 runs per machine and 3 per connection. Runs past 20 s log
+  `remote_mcp.slow_run`.
+- Failures come back as `isError: true` results with an actionable sentence;
+  typed tools know their commands' non-error exit codes.
 
-## Resources
+## Resources and prompts
 
-`ade://commands` is `ade help --json` as the connection's scope sees it: every
-command it can run, with a summary, usage lines and, at read only, the allowed
-subcommands. The brain reads it once per scope and keeps it five minutes. The
-tool description points here instead of listing the read-only allowlist inline.
+`daex://commands` (`ade://commands` still reads) is `daex help --json` for the
+connection's scope, cached five minutes.
+
+The project's skills are MCP prompts (`prompts/list` for the default project,
+`prompts/get` with `project`), from `agentSkillCatalogService`. **Personal skills
+in the home folder never reach a connected app** (compared by real path).
+
+DAEX Cloud guidance arrives through the `daex-cloud` prompt (only for accounts
+with DAEX Cloud). An app counts as an unattended agent: held to agent limits, and
+on the Free plan the server refuses its create, start, resize, copy, move and
+message with 403 `outside_agent_free_plan`. See
+[Guidance for agents](../ade-cloud/README.md#guidance-for-agents).
 
 ## MCP Apps
 
 Hosts that support [MCP Apps](https://github.com/modelcontextprotocol/ext-apps)
-(Claude, ChatGPT, VS Code, Goose) show a tool's result as a small ADE view in
-the conversation instead of JSON. Hosts that don't get the same text and
-`structuredContent` as before.
+show a tool result as a small DAEX view; others get the same text and
+`structuredContent`.
 
-- One self-contained HTML app serves every view: `ui://ade/app-<hash>.html`,
-  `text/html;profile=mcp-app`, no network, no CDN, about 44 KB. The hash
-  changes with the HTML, so a host that caches resources gets the new view;
-  `resources/read` answers any `ui://ade/app*.html` with today's HTML.
-- Tools with a view carry `_meta.ui.resourceUri` (and the older flat
-  `ui/resourceUri`): `inbox`, `chat_list`, `chat_read`, `chat_respond`,
-  `chat_send`, `chat_start`, `prs_list`, `prs_show`, `prs_checks`,
-  `lanes_list`, `diff_changes`, `diff_patch`, `usage_limits`, `machines_list`.
-  The view picks itself from the host's tool name, else from
-  `structuredContent.view`; anything unknown is a key/value card, never a
-  blank frame. Provider colours come from `PROVIDER_COLOR_TABLE`.
-- The inbox view answers in place: its option, Approve and Deny buttons call
-  `chat_respond` (or `chat_send` for an `ask`) through the host, with the
-  card's own `project` and `machine`, and show the answered state. Read-only
-  connections see the buttons disabled.
-- Everything is drawn with `textContent`; links open only `https:`, `http:`
-  and `ade:` through `ui/open-link`; messages are accepted only from the host
-  frame. Colours are the host's style variables when it gives them and ADE's
-  tokens otherwise, light and dark.
-
-## Prompts
-
-The project's skills are MCP prompts, so an app can start from "context" the
-way an ADE chat would. `prompts/list` lists the default project's skills (prompt
-names must be unique, so one project's); `prompts/get` takes a `project`
-argument for another one and returns the SKILL.md body. Discovery runs in the
-brain through `agentSkillCatalogService`, the same catalog `ade skill list`
-uses: project skills (`.agents`, `.claude`, `.ade`, `.cursor`, `.codex` from the
-project up), then ADE's bundled skills. **Personal skills in the home folder
-never reach a connected app**: prompts leave them out, and `ade skill list|show`
-hide them whenever `ADE_REMOTE_MCP_CONNECTION_ID` is set. The check compares
-real paths, so a project folder linked to `~/.agents/skills` stays hidden too.
-
-ADE Cloud guidance reaches an app this way: the instructions say "Before an
-ADE Cloud lane, run `cloud status` and follow the `ade-cloud` prompt", and the
-`ade-cloud` prompt is the bundled skill an ADE chat's agent reads, word for
-word (shown only to an account with ADE Cloud access). `cloud status` is a
-read, so a read-only connection can see why a lane can't start. `--machine`
-on the command line is refused for ADE MCP, with one reviewed exception:
-exactly `--machine cloud` (and `--size`) on `chat create`, `lanes create` and
-`chat launch-status` (`remoteMcpCommandPolicy.ts`, `isCloudLaneMachineUse`).
-It asks this computer's own brain to make a new computer for a new lane and
-reaches no computer that exists. Another value, a list, `--all-machines`,
-`--machine-project`, or `chat launch-cancel` is refused. A start needs full
-access; a read-only connection can follow a launch. An app is an unattended
-agent there: held to the agent limits, and a size change, a delete and a
-cancel are declined. A disk grow on the computer the brain runs on
-(`cloud.grow_disk`, `ade cloud resize --free`) needs no yes inside its size's
-disk maximum. On the Free plan the server refuses an app's create, start,
-resize, copy, move and message with 403 `outside_agent_free_plan` and a
-sentence the app passes on ("move to a paid plan"); reads stay open. See
-[Guidance for agents](../ade-cloud/README.md#guidance-for-agents).
+- One self-contained HTML app (`ui://ade/app-<hash>.html`, no network); any
+  `ui://ade/app*.html` read returns today's HTML.
+- Tools with a view carry `_meta.ui.resourceUri`: `inbox`, `chat_list`,
+  `chat_read`, `chat_respond`, `chat_send`, `chat_start`, `prs_*`, `lanes_list`,
+  `diff_*`, `usage_limits`, `machines_list`. Unknown results render as a
+  key/value card.
+- The inbox view answers in place through `chat_respond` / `chat_send`; read-only
+  connections see disabled buttons.
+- Everything uses `textContent`; links open only `https:`, `http:` and `ade:`;
+  messages are accepted only from the host frame.
 
 ## Events (SEP-3415)
 
-ADE MCP offers the `io.modelcontextprotocol/events` extension. `initialize`
-advertises it under `capabilities.extensions`, and also as a top-level
-`capabilities.events`, which clients built on the draft before the SEP read
-(ChatGPT, the AI SDK).
+`initialize` advertises `io.modelcontextprotocol/events` (and a top-level
+`capabilities.events` for pre-SEP clients).
 
-| Event | When | Arguments |
-|---|---|---|
-| `chat.turn_ended` | A turn completed, failed or was interrupted. Carries the final reply (at most 4,000 characters, secrets removed, written between the turn's start and its end; the turn's own reply when the provider tags replies with turns) and the error of a failed turn; a turn the provider refused also carries `httpStatus` (429 is a rate or plan limit). | `project`, `machine`, `session`, `include_subagents`, `include_reply` |
-| `chat.needs_input` | A chat waits on an approval, a question or a secret (`secret: true`). | `project`, `machine`, `session`, `include_subagents` |
-| `chat.input_resolved` | That question was answered, declined or cancelled. | the same |
-| `chat.deleted` | A chat or a tracked provider CLI was deleted. | the same |
-| `pr.changed` | A PR was opened, closed, merged or reopened, or its checks or reviews changed. `kind` is the PR notification's kind (`pr-notification`); a change the poller sends no notification for (a draft's checks passing, say) comes once as `checks_changed`, `review_changed` or `state_changed`, with `previous…` fields (`notePrChangesForMcp`). | `project`, `machine` |
+| Event | When |
+|---|---|
+| `chat.turn_ended` | A turn completed, failed or was interrupted; carries the final reply (≤ 4,000 chars, secrets removed) and errors (`httpStatus` for provider refusals). |
+| `chat.needs_input` / `chat.input_resolved` | A chat waits on an approval, question or secret / that was settled. |
+| `chat.deleted` | A chat or tracked provider CLI was deleted. |
+| `pr.changed` | A PR opened, closed, merged, reopened, or its checks or reviews changed. |
 
-- **Source.** Each project runtime in the brain calls the hub from its chat
-  `onEvent`, `onChatDeleted`, `emitPrEvent` and the PR poller's
-  `onPullRequestsChanged`, and from its terminals' `onTrackedCliTurnEnded` (a
-  provider's own CLI: no reply, no turn id; its parent chat comes from the
-  terminal row, `trackedCliIdentity`). The
-  hub keeps only these events, stamped when it records them, and reads a
-  chat's title, lane, parent and final reply only when an app reads the event.
-  The reply lookup reads the chat's newest 40 entries, and reads again from the
-  turn's start when the turn is older than those (`findTurnFinalReply`), so an
-  app that catches up on a backlog still gets older turns' replies.
-  A turn reported twice (by status, then by done) counts once. A deleted
-  chat's title, lane and parent are read before its files go, so its earlier
-  events still read right. A chat that another chat started is left out
-  unless `include_subagents` is true.
-- **Poll.** `events/poll` asks every machine the connection reaches: this one
-  directly, the others with one forwarded `ade_events_here` call each (never
-  listed). The cursor (`ade1_…`) holds one position per machine and the time
-  it began, so a machine with no position yet gives its events since then,
-  and an offline one keeps its position until it is back. A null cursor starts
-  now and asks no machine. A `machine` left out of ADE MCP is refused, not
-  read as every machine. `nextPollMs` is 15 s. Machines that gave no answer
-  (offline, asleep, or on an ADE without Events) are named in
-  `_meta["dev.ade/unreadMachines"]`.
-- **Gaps.** The hub is in memory. A brain restart, or more than 1,000 events
-  since the cursor (or since a cursor began, for a machine with no position
-  yet), gives `truncated: true` once, then the fresh cursor. A webhook gets
-  one `gap` envelope for the same reasons.
-- **Webhooks.** `events/subscribe` checks the URL (https, public) and the
-  `whsec_` secret, then sends a signed `verification` challenge, once per
-  connection and URL. The subscription goes to the account vault, so every
-  machine has it within one sync (about 30 s), and each machine POSTs its own
-  events, signed per Standard Webhooks, from its own network. A failed check
-  is remembered for a minute, and checks of one URL at the same time are
-  merged. A turn's webhook waits until 600 ms after the turn, so its reply is
-  in the transcript file. Each machine
-  resolves the URL at delivery time and connects to the checked public
-  address, with no redirects. One event is in flight per subscription, and a
-  machine sends to at most 4 subscriptions at once, each POST bounded to
-  10 s in all, so a slow endpoint holds only its own. A failure is tried
-  again after 30 s, 1, 2 and 4 minutes, and 410 or 413 is not retried.
-  Settings → ADE MCP activity lists each subscribe and unsubscribe with the
-  URL's host. TTLs are 1 minute to 1 day (1 hour by default; no expiry is not
-  granted). The machine that took the subscribe removes it once it expires
-  (any machine does, a day later), and sends `terminated` when the app's
-  connection is removed. A new secret
-  on refresh is signed beside the old one for 5 minutes.
-- **The draft bridge.** Older clients require a delivery's `webhook-id` to
-  equal the body's `eventId`. So a webhook body's `eventId` is per
-  subscription (`evt_` and a 22-character digest of the subscription and the
-  event), and `webhook-id` is that id, as t3code's bridge does. The SEP asks
-  for a random id per message, not derived from `eventId`; change this once
-  those clients follow the SEP (t3code tracks the same in its PR #41186).
-- **Protocol version.** ADE MCP answers `2025-11-25` and older. SEP-3415 is
-  defined for `2026-07-28`, and SDKs built on the final SEP (the TypeScript
-  SDK's Events PR) use Events only on a `2026-07-28` session, so they see no
-  Events here until ADE MCP speaks that version. The `Mcp-Name` routing header
-  is a `2026-07-28` rule and is not checked.
-- **Checked against the conformance suite.** The SEP's server scenarios
-  (modelcontextprotocol/conformance #521 and #541) pass on a `2025-11-25`
-  session, two real brain processes and a relay stand-in, except checks that
-  need `2026-07-28` or a fixture ADE does not have, and the draft bridge's
-  `webhook-id`.
-- **No push.** `events/stream` answers `Unsupported`: the relay holds no open
-  stream.
-- **`events_poll`.** The same poll as a tool, for an app whose MCP client has
-  no Events support (Grok Bot): every event type unless `names` picks some,
-  one cursor for all of them. It takes every event type's arguments,
-  `machine` included.
-- **Cost.** A webhook is a POST from the person's own machine: nothing goes
-  through ADE's servers. A poll is one Worker request and one Durable Object
-  request per machine asked. A machine with no subscriptions does no webhook
-  work per event; the delivery check rides the service's 30 s refresh.
+Arguments: `project`, `machine`, and for chat events `session`,
+`include_subagents` (`include_reply` on `turn_ended`).
+
+- **Source**: each project runtime feeds `remoteMcpEventHub.ts` (newest 1,000
+  events, in memory); titles and replies are read when an app reads the event.
+- **Poll**: `events/poll` asks every reachable machine (others via a hidden
+  forwarded call); the cursor holds one position per machine. `nextPollMs` is
+  15 s; machines that did not answer are listed in
+  `_meta["dev.ade/unreadMachines"]`. `events_poll` is the same as a tool for
+  clients without Events.
+- **Gaps**: a restart or more than 1,000 events gives `truncated: true` once (a
+  webhook gets a `gap` envelope).
+- **Webhooks**: `events/subscribe` checks the URL (public https) and `whsec_`
+  secret, sends a signed verification, and stores the subscription in the
+  account vault; each machine POSTs its own events (Standard Webhooks signing,
+  DNS-pinned, 10 s per POST, retries at 30 s, 1, 2, 4 minutes). TTL 1 minute to
+  1 day (default 1 hour). A webhook body's `eventId` equals `webhook-id` for
+  draft-era clients.
+- DAEX MCP speaks protocol `2025-11-25`, so SDKs built on the final SEP
+  (`2026-07-28`) see no Events yet. `events/stream` answers `Unsupported`.
 
 ## Chat turns from an app
 
-A message an app sends with `ade chat send|message|steer` or `chat create
---prompt` carries `metadata.remoteMcp = { connectionId, label }`, and the chat
-shows "via <label>" under it, so the person and their agents can tell it from
-the person's own messages. It is still a person-side message (it is not in the
-host-authored key lists): it clears attention like any message the person sends.
-This is provenance, not a boundary: a full-access app can already pass its own
-metadata. `chat send --after` carries the label too: the brain strips a
-caller's own provenance from a delayed send, except this one key from an
-unbound CLI (`armWaitArgsWithoutCallerProvenance` in `adeRpcServer.ts`).
-
-`serverInfo.version` is ADE's version, so a client can tell which tools a
-machine's server has.
-
-## Gotchas
-
-- **Never run `wrangler dev` on port 8787 on a machine with ADE installed.**
-  The brain's sync listener uses 8787; a local Worker there makes the brain's
-  relay bridge check fail and the phone loses relay. Use another port.
-- Cloudflare's bot check answers `error code: 1010` to some default HTTP
-  library user agents (Python `urllib`). Real MCP clients are fine; test
-  scripts must send a user agent.
-- The installed brain only serves this once it runs this code. The relay part
-  is independent: deploying it first is safe (old brains never send
-  `mcp_state`, so their relay answers 404).
-- Pending sign-ins and authorization codes are in memory: one service per
-  machine (`remoteMcpShared.ts`). A sign-in on the account URL relies on the
-  relay keeping the same front computer for its few requests; if that computer
-  goes offline mid-sign-in, the app starts it again. A second brain on the
-  same home (a dev brain) has its own sign-ins, but shares the account vault.
-- Forwarding assumes every computer uses the same relay URL (production
-  does); a computer on a custom `ADE_TUNNEL_RELAY_URL` can answer its own
-  calls but not be forwarded to from the others.
-- The relay must pass `x-ade-mcp-call-id` through (its forwarded header
-  list). Without it the target can't tell a repeated read from a new one; the
-  sender sends a write or a token exchange again only when the first try
-  never left, so nothing runs twice either way.
-- Deploy order: push relay (`ade_mcp` vault kind) first, then the tunnel relay,
-  then ADE. An older push relay refuses a whole batch for a kind it does not
-  know, so the vault uploads `ade_mcp` rows in their own batch
-  (`NEWER_VAULT_KINDS`): against an older Worker only those rows wait (and the
-  connections stay on the computer that made them); every other credential
-  keeps syncing.
-- Connections imported from a computer's own ADE MCP (before it covered the
-  account), and apps that sign in on one computer's own address, reach only
-  that computer (`onlyMachine`); connecting the app with the account address
-  makes an account-wide one.
-- The `ade_mcp` vault kind and the `ade_mcp.*` account settings are written
-  only by the ADE MCP service, in process. The `account_vault` and
-  `account_settings` actions refuse them for every caller, so no agent or
-  connected app can mint a token, read the account secret, or point a
-  computer's entry somewhere else.
+A message an app sends carries `metadata.remoteMcp = { connectionId, label }` and
+shows "via <label>". It is still a person-side message (it clears attention).
+This is provenance, not a boundary. `serverInfo.name` is `daex` and
+`serverInfo.version` is DAEX's version.
 
 ## Cost
 
-Per call: one Worker request, one Durable Object request, and Durable Object
-time only while the command runs. An idle machine adds nothing; the control
-socket hibernates as before.
+Per call: one Worker request, one Durable Object request, and Durable Object time
+while the command runs. An idle machine adds nothing; the control socket
+hibernates.

@@ -11,6 +11,7 @@ import setupApisUrl from "./assets/spotify-setup-apis.jpg";
 import setupRedirectUrl from "./assets/spotify-setup-redirect.jpg";
 import setupTermsUrl from "./assets/spotify-setup-terms.jpg";
 import { extractError } from "../../lib/format";
+import { BRAND } from "../../../shared/brand";
 
 const SPOTIFY_DASHBOARD_URL = "https://developer.spotify.com/dashboard";
 const isSpotifyClientId = (value: string) => /^[a-f\d]{32}$/i.test(value.trim());
@@ -61,8 +62,8 @@ export function SpotifyOnboarding() {
         <header className="ade-spotify-setup-head">
           <SpotifyBrand />
           <h1>Connect Spotify</h1>
-          <p>Search, your library and playlists, and playback, inside ADE.</p>
-          <p>Spotify only lets apps like ADE in through a free developer app that you own. ADE shows you how. It takes about two minutes, once.</p>
+          <p>Search, your library and playlists, and playback, inside {BRAND.NAME}.</p>
+          <p>Spotify only lets apps like {BRAND.NAME} in through a free developer app that you own. {BRAND.NAME} shows you how. It takes about two minutes, once.</p>
           <span className="kit-tag">Needs Spotify Premium</span>
         </header>
         <div className="ade-spotify-intro-actions">
@@ -71,7 +72,7 @@ export function SpotifyOnboarding() {
         </div>
         <details className="ade-spotify-why">
           <summary>Why does Spotify need this?</summary>
-          <p>Spotify gives full access only to businesses with 250,000+ monthly users. Everyone else uses a developer app, which works for its owner and up to five people they add. ADE never sees your password, and its access stays encrypted on this computer.</p>
+          <p>Spotify gives full access only to businesses with 250,000+ monthly users. Everyone else uses a developer app, which works for its owner and up to five people they add. {BRAND.NAME} never sees your password, and its access stays encrypted on this computer.</p>
         </details>
       </section>
     );
@@ -111,8 +112,8 @@ export function SpotifyOnboarding() {
           <>
             <h2>Fill in the form</h2>
             <p>Copy each value into its field. Leave <b>Website</b> empty.</p>
-            <CopyValue label="App name" value="ADE" />
-            <CopyValue label="Description" value="Spotify in ADE" />
+            <CopyValue label="App name" value={BRAND.NAME} />
+            <CopyValue label="Description" value={`Spotify in ${BRAND.NAME}`} />
             <CopyValue label="Redirect URI" value={redirectUri} />
             <p>After pasting the redirect URI, click <b>Add</b> next to it.</p>
             <SetupShot src={setupRedirectUrl} alt="The Redirect URIs field with its Add button" />
@@ -148,8 +149,8 @@ export function SpotifyOnboarding() {
         return (
           <>
             <h2>Connect</h2>
-            <p>Spotify opens in your browser and asks to let ADE in. Click <b>Agree</b>, then come back here.</p>
-            <SetupShot src={setupConsentUrl} alt="Spotify's consent page listing what ADE may do, with the Agree button" />
+            <p>Spotify opens in your browser and asks to let {BRAND.NAME} in. Click <b>Agree</b>, then come back here.</p>
+            <SetupShot src={setupConsentUrl} alt={`Spotify's consent page listing what ${BRAND.NAME} may do, with the Agree button`} />
             {lastError ? (
               <Banner
                 layout="inline"
@@ -264,7 +265,7 @@ export function SpotifyDevices() {
             }, () => setError("Couldn't switch devices. Try again.")).finally(() => setBusy(false));
           }}
         >
-          <option value={MUSIC_SPOTIFY_ADE_DEVICE}>This computer (ADE)</option>
+          <option value={MUSIC_SPOTIFY_ADE_DEVICE}>This computer ({BRAND.NAME})</option>
           {active && !isAdeSpotifyDevice(active) && !others.some((device) => device.id === active.id) ? <option value={active.id}>{active.name}</option> : null}
           {others.map((device) => <option key={device.id} value={device.id} disabled={device.isRestricted}>{device.name}{device.isRestricted ? " (restricted)" : ""}</option>)}
         </select>

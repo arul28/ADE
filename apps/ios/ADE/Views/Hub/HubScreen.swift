@@ -38,6 +38,10 @@ struct HubScreen: View {
   @State private var locationTarget: HubAccountHomeTarget?
   /// The Hub notice waiting for a covering pane to close.
   @State private var heldHubNoticeId: UUID?
+  /// "ADE is now DAEX", shown on the Hub until it is closed, once per install,
+  /// and only to an install that ran before the rename: `BrandRenameNotice`
+  /// writes `false` for those at launch. Unset (not decided yet) hides it.
+  @AppStorage(BrandRenameNotice.seenKey) private var renameNoticeSeen = true
   // Set when a hub chat row is tapped — drives the chat cover (wired in
   // HubScreen+ChatNavigation).
   @State var openChatTarget: HubChatTarget?
@@ -618,6 +622,14 @@ struct HubScreen: View {
         onReconnect: { Task { await syncService.reconnectIfPossible(userInitiated: true) } },
         onConnectComputer: { syncService.presentSettings(.machines) },
         onOpenSettings: { syncService.settingsPresented = true }
+      )
+    }
+    if !renameNoticeSeen && !selecting {
+      // The product's new name, once: only the name changed.
+      ADESettingsNotice(
+        message: BrandRenameNotice.message,
+        tone: .neutral,
+        dismiss: { renameNoticeSeen = true }
       )
     }
     // While selecting, the header stays so Done can end select mode, also

@@ -131,7 +131,7 @@ describe("buildTriageContext", () => {
     expect(failIndex).toBeLessThan(warnIndex);
     expect(warnIndex).toBeLessThan(okIndex);
     expect(context).toContain("1 failing row(s), listed first");
-    expect(context).toContain("ADE CLI version: 1.2.68");
+    expect(context).toContain("DAEX CLI version: 1.2.68");
     expect(context).toContain("platform: darwin arm64");
     expect(context).toContain("node: 22.13.0");
     expect(context).toContain("responding: no");
@@ -199,7 +199,7 @@ describe("buildTriageContext", () => {
       layoutError: "EACCES reading the home directory",
     }));
 
-    expect(context).toContain("ADE home: unknown");
+    expect(context).toContain("DAEX home: unknown");
     expect(context).toContain("could not be resolved: EACCES reading the home directory");
   });
 });
@@ -379,16 +379,16 @@ describe("resolveTriagePlaybook", () => {
     });
 
     expect(playbook.source).toBe("local");
-    expect(playbook.origin).toBe("built into this ADE CLI");
+    expect(playbook.origin).toBe("built into this DAEX CLI");
     // The reduced copy is still a playbook: the safety rules survive.
     expect(playbook.text).toContain("Never kill processes by name or pattern");
-    expect(playbook.text).toContain("ade doctor --text");
+    expect(playbook.text).toContain("daex doctor --text");
   });
 
   it("finds the copy committed in this repository", () => {
     const playbook = readLocalTriagePlaybook({ env: {} });
     expect(playbook.origin.endsWith(path.join("docs", "triage", "PLAYBOOK.md"))).toBe(true);
-    expect(playbook.text).toContain("ADE triage playbook");
+    expect(playbook.text).toMatch(/(?:DAEX|ADE) triage playbook/);
   });
 
   it("ranks the packaged copy above whatever repository the shell is sitting in", () => {
@@ -444,7 +444,7 @@ describe("resolveTriagePlaybook", () => {
       resourcesPath,
     });
 
-    expect(playbook.origin).toBe("built into this ADE CLI");
+    expect(playbook.origin).toBe("built into this DAEX CLI");
   });
 
   it("ranks the copy in the install this CLI runs from above the shell's working directory", () => {
@@ -512,7 +512,7 @@ describe("resolveTriagePlaybook", () => {
     });
 
     expect(playbook.text).not.toContain("planted playbook");
-    expect(playbook.origin).toBe("built into this ADE CLI");
+    expect(playbook.origin).toBe("built into this DAEX CLI");
   });
 
   it("finds the packaged copy beside the unpacked CLI in an installed app", () => {
@@ -678,7 +678,7 @@ describe("runTriageCommand", () => {
 
     expect(path.basename(payload.contextPath)).toBe("context.md");
     expect(path.basename(path.dirname(payload.contextPath)).startsWith("ade-triage-")).toBe(true);
-    expect(fs.readFileSync(payload.contextPath, "utf8")).toContain("# ADE triage context");
+    expect(fs.readFileSync(payload.contextPath, "utf8")).toContain("# DAEX triage context");
     expect(fs.readFileSync(payload.playbookPath, "utf8")).toContain("# playbook");
 
     // The JSON body is what an already-running agent consumes; it must survive
@@ -704,10 +704,10 @@ describe("runTriageCommand", () => {
 
     expect(exitCode).toBe(0);
     expect(payload.playbookSource).toBe("local");
-    expect(payload.playbookOrigin).toBe("built into this ADE CLI");
-    expect(fs.readFileSync(payload.playbookPath, "utf8")).toContain("ADE triage playbook");
+    expect(payload.playbookOrigin).toBe("built into this DAEX CLI");
+    expect(fs.readFileSync(payload.playbookPath, "utf8")).toContain("DAEX triage playbook");
     // The rest of the handoff still has to be there — that is the whole point.
-    expect(fs.readFileSync(payload.contextPath, "utf8")).toContain("# ADE triage context");
+    expect(fs.readFileSync(payload.contextPath, "utf8")).toContain("# DAEX triage context");
   });
 
   it("keeps the handoff (and exit 0) when no agent CLI is installed", async () => {
@@ -721,7 +721,7 @@ describe("runTriageCommand", () => {
     expect(spawnAgent).not.toHaveBeenCalled();
     expect(exitCode).toBe(0);
     expect(payload.mode).toBe("no-provider");
-    expect(payload.message).toContain("ADE has no agent CLI on this machine");
+    expect(payload.message).toContain("DAEX has no agent CLI on this machine");
     expect(fs.existsSync(payload.contextPath)).toBe(true);
   });
 

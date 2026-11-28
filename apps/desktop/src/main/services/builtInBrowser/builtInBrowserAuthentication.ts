@@ -7,6 +7,7 @@ import type {
   WebContents,
 } from "electron";
 import type { Logger } from "../logging/logger";
+import { BRAND } from "../../../shared/brand";
 
 type AgentIdentity = {
   laneId?: string | null;
@@ -123,7 +124,7 @@ async function showHttpAuthPrompt(input: {
   const detail = [
     realm ? `Realm: ${realm}` : null,
     secure ? null : "Warning: this connection is not encrypted.",
-    "ADE passes these credentials directly to Chromium and does not store or log them.",
+    `${BRAND.NAME} passes these credentials directly to Chromium and does not store or log them.`,
   ].filter(Boolean).join("\n");
   const promptWindow = new BrowserWindow(httpAuthWindowOptions(input.parent));
   hardenPromptWindow(promptWindow);

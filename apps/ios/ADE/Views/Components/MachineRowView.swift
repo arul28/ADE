@@ -154,7 +154,7 @@ func machineDeviceSymbol(deviceType: String?, platform: String?) -> String {
 /// (a laptop for a name like one, a desktop otherwise).
 @MainActor
 func machineSymbol(machineKey: String?, name: String) -> String {
-  if name == ADECloudMachine.name { return ADECloudMachine.symbol }
+  if name == ADECloudMachine.name || name == "\(Brand.formerName) Cloud" { return ADECloudMachine.symbol }
   if let identity = machineKey.flatMap(HiddenMachineStore.identity(fromFleetKey:)),
      let machine = AccountService.shared.machines.first(where: {
        $0.deviceId?.caseInsensitiveCompare(identity) == .orderedSame

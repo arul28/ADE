@@ -1,5 +1,5 @@
 import type { AccountInfo, SignInHandle, SignInStatus } from "./accounts.js";
-import { AdeError } from "./errors.js";
+import { DaexError } from "./errors.js";
 import type { Unsubscribe } from "./types.js";
 
 const TERMINAL_STATES = new Set(["succeeded", "failed", "cancelled", "expired"]);
@@ -41,7 +41,7 @@ export function createSignInRegistry<O, E>(serializeError: (error: unknown) => E
       if (!status.loginId) {
         stop();
         await handle.cancel().catch(() => {});
-        throw new AdeError("protocol_error", "The sign-in did not provide its initial status.");
+        throw new DaexError("protocol_error", "The sign-in did not provide its initial status.");
       }
       entries.set(status.loginId, {
         owner,
@@ -56,7 +56,7 @@ export function createSignInRegistry<O, E>(serializeError: (error: unknown) => E
     /** The latest status; once it is terminal, also the outcome, and the entry is released. */
     async status(owner: O, loginId: string): Promise<{ status: SignInStatus; account?: AccountInfo; error?: E }> {
       const entry = owned(loginId, owner);
-      if (!entry) throw new AdeError("invalid_option", `Sign-in "${loginId}" was not found.`);
+      if (!entry) throw new DaexError("invalid_option", `Sign-in "${loginId}" was not found.`);
       if (!TERMINAL_STATES.has(entry.status.state)) return { status: entry.status };
       const result = await entry.result;
       forget(loginId, entry);
@@ -65,7 +65,7 @@ export function createSignInRegistry<O, E>(serializeError: (error: unknown) => E
 
     async submitCode(owner: O, loginId: string, code: string): Promise<void> {
       const entry = owned(loginId, owner);
-      if (!entry) throw new AdeError("invalid_option", "This sign-in is no longer active.");
+      if (!entry) throw new DaexError("invalid_option", "This sign-in is no longer active.");
       await entry.handle.submitCode(code);
     },
 

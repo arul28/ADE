@@ -140,6 +140,7 @@ import {
 import { writeClientLayout } from "../ui/clientLayoutStore";
 import { requireChatPin, withChatPin } from "../chat/chatMachinePin";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 const BULK_SESSION_DELETE_CONCURRENCY = 4;
 
@@ -908,8 +909,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       const confirmed = await confirmDialog({
         title: `Delete "${label}"?`,
         message: agentCli
-          ? "A CLI session can come back from Recently deleted, resuming its conversation when ADE knows it."
-          : "This permanently removes the saved terminal session from ADE.",
+          ? `A CLI session can come back from Recently deleted, resuming its conversation when ${BRAND.NAME} knows it.`
+          : `This permanently removes the saved terminal session from ${BRAND.NAME}.`,
         confirmLabel: "Delete",
         destructive: true,
       });
@@ -956,8 +957,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         const confirmed = await confirmDialog({
           title: "Stop and delete session",
           message: agentCli
-            ? `Stop "${label}" and delete it?\n\nIt can come back from Recently deleted, resuming its conversation when ADE knows it.`
-            : `Stop the runtime for "${label}" and permanently delete it?\n\nThis terminates the running process and removes the saved session from ADE.`,
+            ? `Stop "${label}" and delete it?\n\nIt can come back from Recently deleted, resuming its conversation when ${BRAND.NAME} knows it.`
+            : `Stop the runtime for "${label}" and permanently delete it?\n\nThis terminates the running process and removes the saved session from ${BRAND.NAME}.`,
           confirmLabel: "Stop & delete",
           destructive: true,
         });
@@ -1042,7 +1043,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     if (!running.length) return;
     const confirmed = await confirmDialog({
       title: `Stop ${running.length} running runtime${running.length === 1 ? "" : "s"}?`,
-      message: "This terminates the underlying CLI or shell process for each selected running session. Saved transcripts stay in ADE.",
+      message: `This terminates the underlying CLI or shell process for each selected running session. Saved transcripts stay in ${BRAND.NAME}.`,
       confirmLabel: "Stop",
       destructive: true,
     });
@@ -1160,7 +1161,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       const runningCount = targets.filter(canBulkStopSession).length;
       const confirmed = await confirmDialog({
         title: "Stop and delete sessions",
-        message: `Stop ${runningCount} running runtime${runningCount === 1 ? "" : "s"} and permanently delete ${targets.length} selected session${targets.length === 1 ? "" : "s"}?\n\nThis terminates running CLI and shell processes, then removes every selected session from ADE.`,
+        message: `Stop ${runningCount} running runtime${runningCount === 1 ? "" : "s"} and permanently delete ${targets.length} selected session${targets.length === 1 ? "" : "s"}?\n\nThis terminates running CLI and shell processes, then removes every selected session from ${BRAND.NAME}.`,
         confirmLabel: "Stop & delete",
         destructive: true,
       });

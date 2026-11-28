@@ -107,14 +107,14 @@ struct SettingsPairingScannerSheet: View {
   private var instructions: some View {
     VStack(spacing: 8) {
       if showUnrecognized {
-        Text("Not an ADE pairing code")
+        Text("Not a \(Brand.name) pairing code")
           .font(.subheadline.weight(.semibold))
           .foregroundStyle(.white)
           .padding(.horizontal, 14)
           .padding(.vertical, 8)
           .background(Capsule().fill(ADEColor.danger.opacity(0.85)))
       } else {
-        Text("Point at the pairing code in ADE on your computer")
+        Text("Point at the pairing code in \(Brand.name) on your computer")
           .font(.subheadline.weight(.medium))
           .foregroundStyle(.white)
           .multilineTextAlignment(.center)

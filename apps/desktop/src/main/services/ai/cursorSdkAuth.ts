@@ -33,10 +33,11 @@ import type {
   CursorSdkAuthStatus,
   CursorSdkLoginResult,
 } from "../../../shared/types/config";
+import { BRAND } from "../../../shared/brand";
 
 export type { CursorSdkAuthEvent, CursorSdkAuthStatus, CursorSdkLoginResult };
 
-const CURSOR_LOGIN_API_KEY_NAME = "ADE";
+const CURSOR_LOGIN_API_KEY_NAME = BRAND.NAME;
 
 export type CursorSdkAuthSnapshot = {
   storeUnavailable: boolean;
@@ -396,7 +397,7 @@ export async function logoutCursorSdk(): Promise<{ ok: true } | { ok: false; err
     try {
       hooks.deleteKey("cursor");
     } catch (error) {
-      const message = errorMessage(error) || "Could not remove the Cursor API key from ADE.";
+      const message = errorMessage(error) || `Could not remove the Cursor API key from ${BRAND.NAME}.`;
       emit({ providerId: "cursor", state: "error", error: message });
       return { ok: false, error: message };
     }

@@ -3,6 +3,7 @@ import type { LocalRuntimeStatus } from "../../../shared/types";
 import { APP_BANNER_PRIORITY, useAppBanner, type NoticeAction } from "../ui/notice";
 import { showToast } from "./toast/toastStore";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { BRAND } from "../../../shared/brand";
 
 /** A degraded but usable desktop while its background service cannot start. */
 export function AppFallbackBanner(): null {
@@ -54,8 +55,8 @@ export function AppFallbackBanner(): null {
             tone: "warning",
             title: "Phone sync is still off",
             message: blocked
-              ? "Turn on ADE under Allow in the Background, then choose Fix it again."
-              : "ADE's background service still won't start. Try again, or restart ADE.",
+              ? `Turn on ${BRAND.NAME} under Allow in the Background, then choose Fix it again.`
+              : `${BRAND.NAME}'s background service still won't start. Try again, or restart ${BRAND.NAME}.`,
           });
         });
       },
@@ -68,8 +69,8 @@ export function AppFallbackBanner(): null {
       tone: "warning",
       title: "Phone sync is off",
       detail: blocked
-        ? "macOS is blocking ADE's background service, so ADE is running it itself. Turn on ADE under Allow in the Background to reconnect your phone."
-        : "ADE's background service couldn't start, so ADE is running it itself. Your phone can't connect until it's fixed.",
+        ? `macOS is blocking ${BRAND.NAME}'s background service, so ${BRAND.NAME} is running it itself. Turn on ${BRAND.NAME} under Allow in the Background to reconnect your phone.`
+        : `${BRAND.NAME}'s background service couldn't start, so ${BRAND.NAME} is running it itself. Your phone can't connect until it's fixed.`,
       actions,
       dismiss: { key: "app-fallback", fingerprint: `${fallback.reason}:${fallback.since}` },
     },

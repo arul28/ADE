@@ -35,6 +35,7 @@ import { showToast } from "../../../app/toast/toastStore";
 import { copyTextToClipboard } from "../../../../lib/launchPromptClipboard";
 import "./openCodeAccounts.css";
 import { plainErrorText } from "../../../../lib/plainError";
+import { BRAND } from "../../../../../shared/brand";
 
 /** Labels OpenCode gives a login when nobody named it; they say nothing about which login it is. */
 const GENERIC_LABELS = new Set(["oauth", "api key", "manually enter api key", "credential"]);
@@ -104,7 +105,7 @@ export function useOpenCodeAccounts(providerId: string, pin: OpenProjectBinding 
       setError(null);
     } catch (err) {
       if (request !== requestRef.current) return;
-      setError(plainErrorText(err, "ADE couldn't read the OpenCode accounts."));
+      setError(plainErrorText(err, `${BRAND.NAME} couldn't read the OpenCode accounts.`));
     } finally {
       if (request === requestRef.current) setLoading(false);
     }
@@ -424,7 +425,7 @@ function CloudLoginForm({
       }
       onAdded(result);
     } catch (err) {
-      setError(plainErrorText(err, "ADE couldn't add that login."));
+      setError(plainErrorText(err, `${BRAND.NAME} couldn't add that login.`));
     } finally {
       setBusy(false);
     }
@@ -494,7 +495,7 @@ function CloudLoginForm({
       </label>
       <div className="ade-oc-cloud-note">
         <CloudCheck size={13} aria-hidden />
-        Saved to your ADE account. Each of your computers uses its own {cloudMethodName(method.methodId ?? "")}.
+        Saved to your {BRAND.NAME} account. Each of your computers uses its own {cloudMethodName(method.methodId ?? "")}.
       </div>
       <div className="ade-oc-cloud-actions">
         {onBack ? (

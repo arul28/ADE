@@ -26,6 +26,7 @@ import { markExpected } from "../../../../desktop/src/shared/expectedError";
 import { isFetchTransportFailure } from "../../../../desktop/src/shared/fetchTransportFailure";
 import { createRotationJournal } from "./accountSessionRotationJournal";
 import { type DeviceLoginStartOptions, readDeviceStartRetryMs, requestDeviceCodeWithRetry } from "./deviceLoginStart";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 export const ACCOUNT_SESSION_CREDENTIAL_KEY = "account.session.v1";
 /**
@@ -96,12 +97,12 @@ const SUCCESS_HTML = `<!doctype html>
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Signed in to ADE</title>
+    <title>Signed in to ${BRAND.NAME}</title>
   </head>
   <body>
     <main>
-      <h1>Signed in to ADE</h1>
-      <p>You can close this tab — signed in to ADE.</p>
+      <h1>Signed in to ${BRAND.NAME}</h1>
+      <p>You can close this tab — signed in to ${BRAND.NAME}.</p>
     </main>
   </body>
 </html>`;
@@ -110,12 +111,12 @@ const FAILURE_HTML = `<!doctype html>
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>ADE sign-in failed</title>
+    <title>${BRAND.NAME} sign-in failed</title>
   </head>
   <body>
     <main>
-      <h1>ADE sign-in failed</h1>
-      <p>Return to ADE and try signing in again.</p>
+      <h1>${BRAND.NAME} sign-in failed</h1>
+      <p>Return to ${BRAND.NAME} and try signing in again.</p>
     </main>
   </body>
 </html>`;
@@ -125,12 +126,12 @@ const EXPIRED_HTML = `<!doctype html>
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>ADE sign-in timed out</title>
+    <title>${BRAND.NAME} sign-in timed out</title>
   </head>
   <body>
     <main>
-      <h1>This ADE sign-in timed out</h1>
-      <p>Return to ADE and choose Sign in again. Your account is ready in this browser, so the next sign-in finishes at once.</p>
+      <h1>This ${BRAND.NAME} sign-in timed out</h1>
+      <p>Return to ${BRAND.NAME} and choose Sign in again. Your account is ready in this browser, so the next sign-in finishes at once.</p>
     </main>
   </body>
 </html>`;
@@ -619,7 +620,7 @@ function normalizeOAuthConfig(config: AccountOAuthConfig): AccountOAuthConfig {
   const clientId = config.clientId.trim();
   if (!issuer || !clientId) {
     throw new Error(
-      "ADE account login is not configured. Set CLERK_ISSUER and CLERK_OAUTH_CLIENT_ID in ADE project secrets or the daemon environment.",
+      `${BRAND.NAME} account login is not configured. Set CLERK_ISSUER and CLERK_OAUTH_CLIENT_ID in ${BRAND.NAME} project secrets or the daemon environment.`,
     );
   }
   let parsed: URL;
@@ -666,7 +667,7 @@ function normalizeOptionalOAuthConfig(args: {
   const issuer = readNonEmptyString(args.issuer);
   const clientId = readNonEmptyString(args.clientId);
   if (!issuer || !clientId) {
-    throw new Error("ADE account OAuth context was incomplete.");
+    throw new Error(`${BRAND.NAME} account OAuth context was incomplete.`);
   }
   return normalizeOAuthConfig({ issuer, clientId });
 }
@@ -675,7 +676,7 @@ function normalizeDeviceBridgeUrl(rawUrl: string): string {
   const normalized = rawUrl.trim().replace(/\/+$/, "");
   if (!normalized) {
     throw new Error(
-      "ADE account device login is not configured. Set ADE_ACCOUNT_DIRECTORY_URL in ADE project secrets or the daemon environment.",
+      `${BRAND.NAME} account device login is not configured. Set ADE_ACCOUNT_DIRECTORY_URL in ${BRAND.NAME} project secrets or the daemon environment.`,
     );
   }
   let parsed: URL;
@@ -902,13 +903,13 @@ async function postTokenForm(args: {
     const oauthErrorCode = readNonEmptyString(payload.error);
     const message = readNonEmptyString(payload.error_description)
       ?? oauthErrorCode
-      ?? `ADE account token request failed (${response.status}).`;
+      ?? `${BRAND.NAME} account token request failed (${response.status}).`;
     throw new AccountTokenRequestError(message, oauthErrorCode, response.status);
   }
   const accessToken = readNonEmptyString(payload.access_token);
   const expiresInSec = readPositiveNumber(payload.expires_in);
   if (!accessToken || expiresInSec == null) {
-    throw new Error("ADE account token response was missing required fields.");
+    throw new Error(`${BRAND.NAME} account token response was missing required fields.`);
   }
   return {
     accessToken,
@@ -1837,7 +1838,7 @@ export function createAccountAuthService(args: {
   const expirePendingSession = (session: PendingLoginSession): void => {
     if (session.phase !== "pending" && session.phase !== "exchanging") return;
     session.phase = "expired";
-    session.message = "ADE account sign-in timed out. Choose Sign in again.";
+    session.message = `${BRAND.NAME} account sign-in timed out. Choose Sign in again.`;
     clearTimeout(session.expiryTimer);
     // The browser may still come back to this port (a sign-up that took
     // longer): answer it with the expired page for a while, then close. The
@@ -1942,7 +1943,7 @@ export function createAccountAuthService(args: {
     })) {
       warnDevelopmentClerkIgnored();
       throw new Error(
-        "ADE rejected development Clerk session material in this packaged build. Sign in again to use ADE production.",
+        `${BRAND.NAME} rejected development Clerk session material in this packaged build. Sign in again to use ${BRAND.NAME} production.`,
       );
     }
     const obtainedAtMs = options.obtainedAtMs ?? now();
@@ -1953,7 +1954,7 @@ export function createAccountAuthService(args: {
       && claims.userId
       && previous.userId !== claims.userId
     ) {
-      throw new Error("ADE account refresh returned a different account identity. Sign in again.");
+      throw new Error(`${BRAND.NAME} account refresh returned a different account identity. Sign in again.`);
     }
     const userinfo = options.fetchUserinfo === false
       ? null
@@ -1965,11 +1966,11 @@ export function createAccountAuthService(args: {
         || (claims.userId && claims.userId !== userinfo.userId)
       )
     ) {
-      throw new Error("ADE account userinfo returned a different account identity. Sign in again.");
+      throw new Error(`${BRAND.NAME} account userinfo returned a different account identity. Sign in again.`);
     }
     const userId = previous?.userId ?? claims.userId ?? userinfo?.userId ?? null;
     if (!userId) {
-      throw new Error("ADE account sign-in did not return a stable user identity. Sign in again.");
+      throw new Error(`${BRAND.NAME} account sign-in did not return a stable user identity. Sign in again.`);
     }
     return {
       accessToken: token.accessToken,
@@ -2037,7 +2038,7 @@ export function createAccountAuthService(args: {
     const oauthError = requestUrl.searchParams.get("error");
     const code = readNonEmptyString(requestUrl.searchParams.get("code"));
     if (oauthError || !code) {
-      finishPendingSession(session, "error", "ADE account sign-in was not completed.");
+      finishPendingSession(session, "error", `${BRAND.NAME} account sign-in was not completed.`);
       respondHtml(response, 400, FAILURE_HTML);
       return;
     }
@@ -2059,7 +2060,7 @@ export function createAccountAuthService(args: {
         // type: the compiler still believes "exchanging".)
         const closedAsDone = (session.phase as PendingLoginSession["phase"]) === "signed_in";
         if (!closedAsDone) {
-          finishPendingSession(session, "error", "ADE account sign-in was cancelled.");
+          finishPendingSession(session, "error", `${BRAND.NAME} account sign-in was cancelled.`);
         }
         respondHtml(response, 409, closedAsDone ? SUCCESS_HTML : FAILURE_HTML);
         return;
@@ -2091,7 +2092,7 @@ export function createAccountAuthService(args: {
       if (!oldestId) break;
       const oldest = pendingSessions.get(oldestId);
       if (oldest) {
-        finishPendingSession(oldest, "error", "ADE account sign-in was replaced by a newer attempt.");
+        finishPendingSession(oldest, "error", `${BRAND.NAME} account sign-in was replaced by a newer attempt.`);
       }
       pendingSessions.delete(oldestId);
     }
@@ -2127,7 +2128,7 @@ export function createAccountAuthService(args: {
     const address = server.address();
     if (!address || typeof address === "string") {
       closeServer(server);
-      throw new Error("ADE account loopback listener did not provide a TCP port.");
+      throw new Error(`${BRAND.NAME} account loopback listener did not provide a TCP port.`);
     }
     const redirectUri = `http://${LOOPBACK_HOST}:${address.port}/callback`;
     const expiryTimer = setTimeout(() => {
@@ -2166,7 +2167,7 @@ export function createAccountAuthService(args: {
     if (!normalizedSessionId) {
       return {
         status: "error",
-        message: "ADE account sign-in session id is required.",
+        message: `${BRAND.NAME} account sign-in session id is required.`,
         authStatus: currentStatus(readSession()),
       };
     }
@@ -2174,7 +2175,7 @@ export function createAccountAuthService(args: {
     if (!session) {
       return {
         status: "error",
-        message: "ADE account sign-in session was not found.",
+        message: `${BRAND.NAME} account sign-in session was not found.`,
         authStatus: currentStatus(readSession()),
       };
     }
@@ -2267,7 +2268,7 @@ export function createAccountAuthService(args: {
       throw new Error(
         readNonEmptyString(payload.error_description)
           ?? readNonEmptyString(payload.error)
-          ?? `ADE account device login failed to start (${response.status}).`,
+          ?? `${BRAND.NAME} account device login failed to start (${response.status}).`,
       );
     }
     const deviceCode = readNonEmptyString(payload.device_code);
@@ -2276,7 +2277,7 @@ export function createAccountAuthService(args: {
     const expiresInSec = readPositiveNumber(payload.expires_in);
     const intervalSec = readPositiveNumber(payload.interval) ?? 5;
     if (!deviceCode || !userCode || !verificationUri || expiresInSec == null) {
-      throw new Error("ADE account device login response was missing required fields.");
+      throw new Error(`${BRAND.NAME} account device login response was missing required fields.`);
     }
     const sessionId = randomUUID();
     const expiresAtMs = now() + Math.trunc(expiresInSec * 1000);
@@ -2318,7 +2319,7 @@ export function createAccountAuthService(args: {
       if (pendingDeviceSessions.get(normalizedSessionId) !== session) {
         return {
           status: "error",
-          message: "ADE account device sign-in was cancelled.",
+          message: `${BRAND.NAME} account device sign-in was cancelled.`,
           intervalSec: null,
           authStatus: currentStatus(readSession()),
         };
@@ -2327,7 +2328,7 @@ export function createAccountAuthService(args: {
         pendingDeviceSessions.delete(normalizedSessionId);
         return {
           status: "expired",
-          message: "ADE account device sign-in expired.",
+          message: `${BRAND.NAME} account device sign-in expired.`,
           intervalSec: null,
           authStatus: currentStatus(readSession()),
         };
@@ -2346,7 +2347,7 @@ export function createAccountAuthService(args: {
       if (pendingDeviceSessions.get(normalizedSessionId) !== session) {
         return {
           status: "error",
-          message: "ADE account device sign-in was cancelled.",
+          message: `${BRAND.NAME} account device sign-in was cancelled.`,
           intervalSec: null,
           authStatus: currentStatus(readSession()),
         };
@@ -2364,7 +2365,7 @@ export function createAccountAuthService(args: {
     ) {
       return {
         status: "error",
-        message: "ADE account device sign-in was cancelled.",
+        message: `${BRAND.NAME} account device sign-in was cancelled.`,
         intervalSec: null,
         authStatus: currentStatus(readSession()),
       };
@@ -2387,7 +2388,7 @@ export function createAccountAuthService(args: {
       if (errorCode === "expired" || errorCode === "expired_token") {
         return {
           status: "expired",
-          message: "ADE account device sign-in expired.",
+          message: `${BRAND.NAME} account device sign-in expired.`,
           intervalSec: null,
           authStatus: currentStatus(readSession()),
         };
@@ -2396,8 +2397,8 @@ export function createAccountAuthService(args: {
         status: "error",
         message: readNonEmptyString(payload.error_description)
           ?? (errorCode === "invalid_grant"
-            ? "ADE account device sign-in could not be redeemed."
-            : errorCode ?? `ADE account device token request failed (${response.status}).`),
+            ? `${BRAND.NAME} account device sign-in could not be redeemed.`
+            : errorCode ?? `${BRAND.NAME} account device token request failed (${response.status}).`),
         intervalSec: null,
         authStatus: currentStatus(readSession()),
       };
@@ -2409,7 +2410,7 @@ export function createAccountAuthService(args: {
       pendingDeviceSessions.delete(normalizedSessionId);
       return {
         status: "error",
-        message: "ADE account device token response was missing required fields.",
+        message: `${BRAND.NAME} account device token response was missing required fields.`,
         intervalSec: null,
         authStatus: currentStatus(readSession()),
       };
@@ -2426,7 +2427,7 @@ export function createAccountAuthService(args: {
       pendingDeviceSessions.delete(normalizedSessionId);
       return {
         status: "error",
-        message: "ADE account device token response included invalid OAuth context.",
+        message: `${BRAND.NAME} account device token response included invalid OAuth context.`,
         intervalSec: null,
         authStatus: currentStatus(readSession()),
       };
@@ -2445,7 +2446,7 @@ export function createAccountAuthService(args: {
       pendingDeviceSessions.delete(normalizedSessionId);
       return {
         status: "error",
-        message: "ADE account device sign-in was cancelled.",
+        message: `${BRAND.NAME} account device sign-in was cancelled.`,
         intervalSec: null,
         authStatus: currentStatus(readSession()),
       };
@@ -2464,7 +2465,7 @@ export function createAccountAuthService(args: {
       pendingDeviceSessions.delete(normalizedSessionId);
       return {
         status: "error",
-        message: error instanceof Error ? error.message : "ADE account device token could not be accepted.",
+        message: error instanceof Error ? error.message : `${BRAND.NAME} account device token could not be accepted.`,
         intervalSec: null,
         authStatus: currentStatus(readSession()),
       };
@@ -2501,7 +2502,7 @@ export function createAccountAuthService(args: {
     if (!normalizedSessionId) {
       return {
         status: "error",
-        message: "ADE account device sign-in session id is required.",
+        message: `${BRAND.NAME} account device sign-in session id is required.`,
         intervalSec: null,
         authStatus: currentStatus(readSession()),
       };
@@ -2513,7 +2514,7 @@ export function createAccountAuthService(args: {
     if (!session) {
       return {
         status: "error",
-        message: "ADE account device sign-in session was not found.",
+        message: `${BRAND.NAME} account device sign-in session was not found.`,
         intervalSec: null,
         authStatus: currentStatus(readSession()),
       };
@@ -2522,7 +2523,7 @@ export function createAccountAuthService(args: {
       pendingDeviceSessions.delete(normalizedSessionId);
       return {
         status: "expired",
-        message: "ADE account device sign-in expired.",
+        message: `${BRAND.NAME} account device sign-in expired.`,
         intervalSec: null,
         authStatus: currentStatus(readSession()),
       };
@@ -2558,7 +2559,7 @@ export function createAccountAuthService(args: {
       const { credential: envCredential, inspected } = acceptedEnvCredential;
       if (inspected.kind === "invalid") {
         throw new Error(
-          "ADE_ACCOUNT_TOKEN is not a valid provisioned account token. Recreate it with `ade account token create`.",
+          "ADE_ACCOUNT_TOKEN is not a valid provisioned account token. Recreate it with `daex account token create`.",
         );
       }
       const directExpiresAt = inspected.kind === "access_token"
@@ -2612,7 +2613,7 @@ export function createAccountAuthService(args: {
               config = await resolveOAuthConfig();
             } catch {
               throw new Error(
-                "Legacy ADE_ACCOUNT_TOKEN refresh tokens require local CLERK_ISSUER and CLERK_OAUTH_CLIENT_ID. Recreate the token with `ade account token create` to make it self-contained.",
+                "Legacy ADE_ACCOUNT_TOKEN refresh tokens require local CLERK_ISSUER and CLERK_OAUTH_CLIENT_ID. Recreate the token with `daex account token create` to make it self-contained.",
               );
             }
           }
@@ -2640,12 +2641,12 @@ export function createAccountAuthService(args: {
               && !(error instanceof AccountTokenRequestError && error.oauthErrorCode === "invalid_grant")
             ) {
               throw new AccountRefreshUnavailableError(
-                "ADE could not reach the account service to refresh ADE_ACCOUNT_TOKEN.",
+                `${BRAND.NAME} could not reach the account service to refresh ADE_ACCOUNT_TOKEN.`,
                 { cause: error },
               );
             }
             throw new Error(
-              "ADE_ACCOUNT_TOKEN refresh failed. Replace it with a newly provisioned token from `ade account token create`.",
+              "ADE_ACCOUNT_TOKEN refresh failed. Replace it with a newly provisioned token from `daex account token create`.",
             );
           }
           if (
@@ -2695,8 +2696,8 @@ export function createAccountAuthService(args: {
       // decide whether the user looks for a bug or just signs in again.
       throw new Error(
         storedSessionRejected
-          ? "ADE account session expired. Run `ade login` again."
-          : "ADE is not signed in. Run `ade login` to sign in.",
+          ? `${BRAND.NAME} account session expired. Run \`daex login\` again.`
+          : `${BRAND.NAME} is not signed in. Run \`daex login\` to sign in.`,
       );
     }
     const claimedExpiresAt = accessTokenExpiresAt(record.accessToken);
@@ -2726,7 +2727,7 @@ export function createAccountAuthService(args: {
         // Never fall through to a local exchange after a reachable brain
         // failed. That is exactly when a second refresher does the most damage.
         throw new AccountRefreshUnavailableError(
-          "ADE could not reach this machine's brain to refresh the account token.",
+          `${BRAND.NAME} could not reach this machine's brain to refresh the account token.`,
           { cause: error },
         );
       }
@@ -2734,7 +2735,7 @@ export function createAccountAuthService(args: {
         const token = brokered.trim();
         if (!token) {
           throw new AccountRefreshUnavailableError(
-            "The ADE brain returned an empty account token.",
+            `The ${BRAND.NAME} brain returned an empty account token.`,
           );
         }
         return token;
@@ -2744,7 +2745,7 @@ export function createAccountAuthService(args: {
     }
 
     if (!record.refreshToken) {
-      throw new Error("ADE account session expired. Run `ade login` again.");
+      throw new Error(`${BRAND.NAME} account session expired. Run \`daex login\` again.`);
     }
 
     const epochAtJoin = authEpoch;
@@ -2794,7 +2795,7 @@ export function createAccountAuthService(args: {
             if (rotation.kind === "rotated") return rotation.snapshot.session;
             if (rotation.kind !== "unchanged") return null;
             throw new AccountRefreshUnavailableError(
-              "ADE is refreshing your account sign-in in another process. Retry in a moment.",
+              `${BRAND.NAME} is refreshing your account sign-in in another process. Retry in a moment.`,
             );
           }
           const interruptedRotation = begin.takeover;
@@ -2818,7 +2819,7 @@ export function createAccountAuthService(args: {
             if (isFetchTransportFailure(error)) {
               throw markExpected(
                 new AccountRefreshUnavailableError(
-                  "ADE could not reach the account service to refresh your sign-in. Try again in a moment.",
+                  `${BRAND.NAME} could not reach the account service to refresh your sign-in. Try again in a moment.`,
                   { cause: error },
                 ),
                 "network",
@@ -2885,7 +2886,7 @@ export function createAccountAuthService(args: {
           }
         }
         if (!token || !config) {
-          throw new Error("ADE account session expired. Run `ade login` again.");
+          throw new Error(`${BRAND.NAME} account session expired. Run \`daex login\` again.`);
         }
         if (authEpoch !== epochAtJoin) return null;
         const obtainedAtMs = now();
@@ -3032,11 +3033,11 @@ export function createAccountAuthService(args: {
     const record = readSession();
     if (readAcceptedEnvCredential() && !record?.suppressEnvCredential) {
       throw new Error(
-        "ADE is using ADE_ACCOUNT_TOKEN. Unset it and sign in interactively before creating a new durable account token.",
+        `${BRAND.NAME} is using ADE_ACCOUNT_TOKEN. Unset it and sign in interactively before creating a new durable account token.`,
       );
     }
     if (!record?.refreshToken) {
-      throw new Error("The current ADE account session has no refresh token. Run `ade login` again, then retry.");
+      throw new Error(`The current ${BRAND.NAME} account session has no refresh token. Run \`daex login\` again, then retry.`);
     }
     const oauthConfig = record.oauthConfig
       ? normalizeOAuthConfig(record.oauthConfig)
@@ -3064,7 +3065,7 @@ export function createAccountAuthService(args: {
     if (!normalizedSessionId) return;
     const session = pendingSessions.get(normalizedSessionId);
     if (session) {
-      finishPendingSession(session, "error", "ADE account sign-in was cancelled.");
+      finishPendingSession(session, "error", `${BRAND.NAME} account sign-in was cancelled.`);
       pendingSessions.delete(normalizedSessionId);
       logger.info("account.login_cancelled");
       return;
@@ -3103,7 +3104,7 @@ export function createAccountAuthService(args: {
     pairingGrant = null;
     persistSession(null, "user_signed_out", "sign_out");
     for (const session of pendingSessions.values()) {
-      finishPendingSession(session, "error", "ADE account sign-in was cancelled.");
+      finishPendingSession(session, "error", `${BRAND.NAME} account sign-in was cancelled.`);
     }
     pendingSessions.clear();
     pendingDeviceSessions.clear();

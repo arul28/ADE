@@ -32,6 +32,7 @@ import {
   readTextCapped,
   type Ctx,
 } from "./fsScan";
+import { BRAND } from "../../../../shared/brand";
 
 const MAX_RULE_FILES = 200;
 const MAX_RULE_DEPTH = 4;
@@ -448,11 +449,11 @@ export function adeMcpItems(ctx: Ctx, servers: AdeChatContextPreview["mcpServers
       owner: "user",
       kind: "mcp-server",
       label: `MCP server: ${server.name}`,
-      setIn: "ADE Settings › Integrations › MCP servers",
+      setIn: `${BRAND.NAME} Settings › Integrations › MCP servers`,
       settingsEntry: "mcp.servers",
       tokens: null,
       timing: "every-request",
-      detail: `${server.type} server ADE starts for this chat. Its tools arrive when it connects, so their size is not known here.`,
+      detail: `${server.type} server ${BRAND.NAME} starts for this chat. Its tools arrive when it connects, so their size is not known here.`,
     }));
   }
   return items;

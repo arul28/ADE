@@ -24,6 +24,8 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { BRAND } from "../../../../desktop/src/shared/brand";
+import { ADE_CLI_COMMAND_NAMES } from "../../../../desktop/src/shared/cliCommandNames";
 
 export const ADE_GIT_CREDENTIAL_HELPER_KEY = "credential.https://github.com.helper";
 
@@ -40,7 +42,7 @@ export function cloudAdeLauncherPath(
   isExecutable: (file: string) => boolean = isExecutableFile,
   runningExecutable: string = process.execPath,
 ): string | null {
-  const running = path.posix.basename(runningExecutable) === "ade" ? runningExecutable : null;
+  const running = (ADE_CLI_COMMAND_NAMES as readonly string[]).includes(path.posix.basename(runningExecutable)) ? runningExecutable : null;
   for (const candidate of [running, path.posix.join(adeHome, "bin", "ade"), "/usr/local/bin/ade"]) {
     if (candidate && isExecutable(candidate)) return candidate;
   }
@@ -104,7 +106,7 @@ function writeAndFlush(stream: NodeJS.WritableStream, text: string): Promise<voi
 function failureLine(error: unknown): string {
   const code = (error as NodeJS.ErrnoException | null)?.code;
   const why = typeof code === "string" && /^[A-Z0-9_]{1,40}$/.test(code) ? ` (${code})` : "";
-  return `ade git credential: ADE has no GitHub sign-in it can use on this computer${why}. Connect GitHub in ADE's Settings › GitHub.\n`;
+  return `daex git credential: ${BRAND.NAME} has no GitHub sign-in it can use on this computer${why}. Connect GitHub in ${BRAND.NAME}'s Settings › GitHub.\n`;
 }
 
 export async function runGitCredentialHelper(

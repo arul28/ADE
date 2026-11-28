@@ -20,6 +20,7 @@ import {
   resolveFfmpegTools,
 } from "./ffmpegDemoEngine";
 import { createSwiftDemoEngine } from "./swiftDemoEngine";
+import { BRAND } from "../../../shared/brand";
 
 export type DemoEngineSet = {
   engines(): DemoEngine[];
@@ -77,8 +78,8 @@ export function createDemoEngineSet(args: {
       if (ffmpegEngine()) return null;
       const why = args.getChromiumUnavailableReason?.()?.trim();
       return why
-        ? `the ADE desktop app was not connected to make the demo (${why})`
-        : "the ADE desktop app was not connected to make the demo";
+        ? `the ${BRAND.NAME} desktop app was not connected to make the demo (${why})`
+        : `the ${BRAND.NAME} desktop app was not connected to make the demo`;
     },
   };
 }

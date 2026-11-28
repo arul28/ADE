@@ -284,7 +284,7 @@ describe("createAdeCliService", () => {
     expect(service.resolved.commandPath).toBe(packagedCommandPath);
     expect(status.command).toBe("ade-alpha");
     expect(status.installTargetPath).toBe(path.join(home, ".local", "bin", "ade-alpha"));
-    expect(status.nextAction).toBe("Install the ade-alpha command for Terminal access.");
+    expect(status.nextAction).toBe("Install the daex-alpha command for Terminal access.");
   });
 
   it("uses packaged Windows cmd wrappers and Path casing", async () => {
@@ -384,7 +384,7 @@ describe("createAdeCliService", () => {
       expect(status.agentPathReady).toBe(true);
       expect(status.terminalInstalled).toBe(false);
       expect(status.terminalCommandPath).toBeNull();
-      expect(status.nextAction).toBe("Install the ade command for Terminal access.");
+      expect(status.nextAction).toBe("Install the daex command for Terminal access.");
     } finally {
       process.env.PATH = previousPath;
     }
@@ -415,7 +415,7 @@ describe("createAdeCliService", () => {
       expect(process.env.PATH).toBe("/usr/bin:/bin");
       expect(status.agentPathReady).toBe(true);
       expect(status.terminalInstalled).toBe(false);
-      expect(status.nextAction).toBe("Install the ade command for Terminal access.");
+      expect(status.nextAction).toBe("Install the daex command for Terminal access.");
       expect(service.agentEnv({ PATH: "/usr/bin:/bin" }).PATH?.split(path.delimiter)[0]).toBe(packagedBinDir);
     } finally {
       process.env.PATH = previousPath;
@@ -559,7 +559,7 @@ describe("createAdeCliService", () => {
     const profilePath = path.join(home, ".zshrc");
 
     expect(result.ok).toBe(true);
-    expect(result.message).toBe("Installed ade for Terminal access.");
+    expect(result.message).toBe("Installed daex (and its ade alias) for Terminal access.");
     expect(fs.existsSync(profilePath)).toBe(false);
   });
 

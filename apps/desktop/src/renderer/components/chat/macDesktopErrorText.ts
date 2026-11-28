@@ -22,6 +22,7 @@
  */
 
 import type { WindowsDesktopOperationKind } from "../../../shared/types/macDesktop";
+import { BRAND } from "../../../shared/brand";
 
 /** `MAC_DESKTOP_NO_DISPLAY: `, and the driver's lowercase `window_not_ready: `. */
 const CODE_PREFIX = /^(?:(?:MAC|WINDOWS)_DESKTOP_[A-Z0-9_]+|[a-z][a-z0-9_]*(?:_[a-z0-9_]+)+):\s*/;
@@ -69,8 +70,8 @@ function macDesktopMissingDomainText(options?: MacDesktopErrorTextOptions): stri
   // false the first time a person hit this. The version, when known, is the
   // fact worth printing; the remedy stays the same either way.
   return version
-    ? `${machine} runs ADE ${version}, which has no Mac Desktop. Update ADE there.`
-    : `${machine} runs an ADE without Mac Desktop. Update ADE there.`;
+    ? `${machine} runs ${BRAND.NAME} ${version}, which has no Mac Desktop. Update ${BRAND.NAME} there.`
+    : `${machine} runs a ${BRAND.NAME} without Mac Desktop. Update ${BRAND.NAME} there.`;
 }
 
 /**
@@ -118,8 +119,8 @@ export function macDesktopErrorText(
   if (MAC_DESKTOP_MISSING_DOMAIN.test(text)) return macDesktopMissingDomainText(options);
   // The driver client's own sentences name an op and a millisecond count,
   // which mean nothing in a pane. Said as what happened to the helper.
-  if (DRIVER_TIMEOUT.test(text)) return "The desktop helper stopped responding, so ADE restarted it.";
-  if (DRIVER_STOPPED.test(text)) return "The desktop helper stopped unexpectedly. ADE is restarting it.";
+  if (DRIVER_TIMEOUT.test(text)) return `The desktop helper stopped responding, so ${BRAND.NAME} restarted it.`;
+  if (DRIVER_STOPPED.test(text)) return `The desktop helper stopped unexpectedly. ${BRAND.NAME} is restarting it.`;
   if (options?.laneId) text = stripMacDesktopLaneId(text, options.laneId, options.laneName);
   return text.length ? text : null;
 }
@@ -169,7 +170,7 @@ export function windowsDesktopOperationFailureText(
       detail = savingPassword
         ? "Windows didn't accept that password. Nothing was saved. Use your Windows account password, not your PIN."
         : options?.passwordSaved === false
-          ? "Windows didn't accept the saved password, so ADE forgot it. Save your current Windows password again."
+          ? `Windows didn't accept the saved password, so ${BRAND.NAME} forgot it. Save your current Windows password again.`
           : "Windows didn't accept the password. Use your Windows account password, not your PIN.";
       break;
     case "WINDOWS_DESKTOP_CANCELLED":

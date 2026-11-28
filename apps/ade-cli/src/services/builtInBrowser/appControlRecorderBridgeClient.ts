@@ -5,6 +5,7 @@ import type {
   AppControlScreencastRecorderBackend,
 } from "../../../../desktop/src/main/services/appControl/appControlRecording";
 import { createDesktopBridgeConnection } from "./desktopBridgeConnection";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * The App Control screencast recorder (Windows and Linux) as the runtime
@@ -39,7 +40,7 @@ export function createAppControlRecorderBridgeClient(args: {
   logger: Logger;
 }): AppControlScreencastRecorderBackend & { dispose(): void } {
   const { logger } = args;
-  const NO_DESKTOP = "App Control recording needs the ADE desktop app on this machine, and none is attached.";
+  const NO_DESKTOP = `App Control recording needs the ${BRAND.NAME} desktop app on this machine, and none is attached.`;
   const DISPOSED = "The App Control recorder bridge was disposed.";
   const connection = createDesktopBridgeConnection({
     socketPath: args.socketPath,

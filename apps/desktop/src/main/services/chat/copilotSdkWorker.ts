@@ -9,6 +9,7 @@ import type {
 } from "./copilotSdkProtocol";
 import { COPILOT_SDK_WAITERS } from "./copilotSdkProtocol";
 import { loadCopilotSdk } from "../ai/copilotSdkLoader";
+import { BRAND } from "../../../shared/brand";
 
 type Client = InstanceType<typeof CopilotSdk.CopilotClient>;
 type Session = Awaited<ReturnType<Client["createSession"]>>;
@@ -99,7 +100,7 @@ function forkBoundaryAfterTurn(events: readonly unknown[], target: ForkTarget): 
   const selected = target.throughEventId
     ? roots.find((root) => root.id === target.throughEventId)
     : wanted ? roots.filter((root) => root.text.endsWith(wanted))[target.throughMessageOrdinal ?? 0] : undefined;
-  if (!selected) throw new Error("Could not map the selected ADE turn to a Copilot user event; fork the full chat instead.");
+  if (!selected) throw new Error(`Could not map the selected ${BRAND.NAME} turn to a Copilot user event; fork the full chat instead.`);
   return roots.find((root) => root.index > selected.index)?.id;
 }
 
@@ -225,7 +226,7 @@ async function initialize(payload: CopilotSdkWorkerInit): Promise<unknown> {
     // ADE's pinned runtime matches its SDK; only a COPILOT_EXECUTABLE override
     // can speak another protocol, and the SDK's own message does not say so.
     const message = error instanceof Error ? error.message : String(error);
-    if (/protocol version mismatch/i.test(message)) throw new Error(`${message} COPILOT_EXECUTABLE names a Copilot that does not match ADE's Copilot SDK.`);
+    if (/protocol version mismatch/i.test(message)) throw new Error(`${message} COPILOT_EXECUTABLE names a Copilot that does not match ${BRAND.NAME}'s Copilot SDK.`);
     throw error;
   }
   const status = await client.getStatus();

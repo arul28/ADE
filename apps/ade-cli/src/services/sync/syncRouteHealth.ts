@@ -5,6 +5,7 @@ import {
   RELAY_TURNED_OFF_MESSAGE,
   type SyncTunnelClientStatus,
 } from "./syncTunnelClientService";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * How a machine describes its own inbound routes.
@@ -89,13 +90,13 @@ function resolveListenerReason(args: {
 }): string | null {
   if (!args.bound) return args.notBoundReason;
   if (args.loopbackAdeValidated) return null;
-  const detail = args.rawValidation.reason ?? `127.0.0.1:${args.listenerPort} did not answer as ADE.`;
+  const detail = args.rawValidation.reason ?? `127.0.0.1:${args.listenerPort} did not answer as ${BRAND.NAME}.`;
   const holder = args.rawValidation.port === args.listenerPort ? args.rawValidation.shadowedBy ?? null : null;
   if (!holder) return detail;
   // Named for the person reading Settings or `ade doctor`: which program, what
   // it costs, and that ADE is already doing something about it.
-  return `Another program (${holder}) is using 127.0.0.1:${args.listenerPort}, ADE's sync port. `
-    + "ADE keeps checking and moves if it has to; Wi-Fi and ADE Relay connections keep working. "
+  return `Another program (${holder}) is using 127.0.0.1:${args.listenerPort}, ${BRAND.NAME}'s sync port. `
+    + `${BRAND.NAME} keeps checking and moves if it has to; Wi-Fi and ${BRAND.NAME} Relay connections keep working. `
     + detail;
 }
 
@@ -137,13 +138,13 @@ function resolveRelaySkipReason(args: BuildRelayRouteHealthArgs & {
   relayBridgeValidated: boolean;
 }): string | null {
   if (args.relayConfigured && args.relayTurnedOff) return RELAY_TURNED_OFF_MESSAGE;
-  if (args.relayConfigured && !args.relayAccountSignedIn) return "Sign in to ADE to use ADE Relay.";
+  if (args.relayConfigured && !args.relayAccountSignedIn) return `Sign in to ${BRAND.NAME} to use ${BRAND.NAME} Relay.`;
   if (!args.relayEnabled) return null;
   // Relay does not go through 127.0.0.1:<port>: the tunnel hands each pipe to
   // the listener in process. A legacy loopback bridge still validates loopback
   // itself, and that verdict arrives as relayBridgeValidated below.
   const status = args.tunnelStatus;
-  if (!status) return "Relay tunnel status is unavailable in this ADE process.";
+  if (!status) return `Relay tunnel status is unavailable in this ${BRAND.NAME} process.`;
   if (!args.relayControlConnected) {
     // A 4505 eviction is a machine-local ownership conflict, not a network
     // fault, and its reason is the only one that tells the user what to
@@ -161,7 +162,7 @@ function resolveRelaySkipReason(args: BuildRelayRouteHealthArgs & {
   }
   if (!args.relayBridgeValidated) {
     return status.lastError
-      ?? "Relay bridge to the ADE sync listener has not been validated yet.";
+      ?? `Relay bridge to the ${BRAND.NAME} sync listener has not been validated yet.`;
   }
   return status.bridgeOpenFailure ?? null;
 }

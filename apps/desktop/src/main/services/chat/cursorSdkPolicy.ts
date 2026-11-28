@@ -3,6 +3,7 @@ import path from "node:path";
 import type { AgentChatSession } from "../../../shared/types";
 import { projectAttachmentsDir } from "../../../shared/chatAttachmentStagingFs";
 import { cursorProjectSlug } from "../../../shared/cursorProjectSlug";
+import { isAdeCliCommandWord } from "../../../shared/cliCommandNames";
 import { pathComparisonKey } from "../shared/pathCompare";
 import { shellCommandIsReadOnlyOnPlatform } from "./readOnlyShellCommand";
 import type {
@@ -431,7 +432,7 @@ function adeSlashCommandPromptIndexes(words: string[]): Set<number> {
   for (let index = 0; index < words.length - 2; index += 1) {
     const command = words[index]?.toLowerCase() ?? "";
     if (!isAdeCommandBoundary(words, index)) continue;
-    if (command !== "ade" && !command.endsWith("/ade") && command !== "ade.exe") continue;
+    if (!isAdeCliCommandWord(command)) continue;
     if (words[index + 1] !== "chat") continue;
     const sub = words[index + 2];
     if (sub === "note") {
@@ -742,7 +743,7 @@ function pathGuardReason(args: {
       || normalizedRel.startsWith(".ade/secrets/")
       || isSecretReal
     ) {
-      return `Path is protected by ADE: ${candidate}`;
+      return `Path is protected by DAEX: ${candidate}`;
     }
   }
   return null;

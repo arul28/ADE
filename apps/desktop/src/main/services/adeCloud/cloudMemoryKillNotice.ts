@@ -1,4 +1,5 @@
 import { scrubString } from "../../../shared/sentry/scrub";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * What a chat is told when ADE Cloud's memory guard stopped a process
@@ -63,15 +64,15 @@ const totalText = (totalMb: number) => `${Math.max(1, Math.round(totalMb / 1024)
 
 /** The chat notice: what was stopped, why, and how to get more memory. */
 export function formatCloudMemoryKillNotice(kill: CloudMemoryKillReport): string {
-  return `This ADE Cloud computer ran out of memory (${totalText(kill.totalMb)}, no swap), so ADE stopped its biggest process, "${cloudMemoryKillCommandLabel(kill.command)}" (${memoryText(kill.rssMb)}), before the computer had to restart. `
+  return `This ${BRAND.CLOUD_NAME} computer ran out of memory (${totalText(kill.totalMb)}, no swap), so ${BRAND.NAME} stopped its biggest process, "${cloudMemoryKillCommandLabel(kill.command)}" (${memoryText(kill.rssMb)}), before the computer had to restart. `
     + "For more memory, move the lane to a bigger size: the agent can ask you for one.";
 }
 
 /** The agent's one-time note ahead of its next turn. */
 export function buildCloudMemoryKillNote(kill: CloudMemoryKillReport): string {
   return [
-    `This ADE Cloud computer (${totalText(kill.totalMb)} memory, no swap) ran out of memory, so ADE's memory guard killed its biggest process, "${cloudMemoryKillCommandLabel(kill.command)}" (pid ${kill.pid}, ${memoryText(kill.rssMb)}).`,
+    `This ${BRAND.CLOUD_NAME} computer (${totalText(kill.totalMb)} memory, no swap) ran out of memory, so ${BRAND.NAME}'s memory guard killed its biggest process, "${cloudMemoryKillCommandLabel(kill.command)}" (pid ${kill.pid}, ${memoryText(kill.rssMb)}).`,
     kill.sessionId ? "It was started from this chat; a command that ended with \"Killed\" was stopped this way." : "A command of yours that ended with \"Killed\" was stopped this way.",
-    "Use less memory (fewer parallel jobs, a smaller build), or ask the user for a bigger size: `ade cloud resize --request --size <size> --reason \"…\"`.",
+    `Use less memory (fewer parallel jobs, a smaller build), or ask the user for a bigger size: \`${BRAND.CLI} cloud resize --request --size <size> --reason "…"\`.`,
   ].join(" ");
 }

@@ -55,6 +55,7 @@ import type { HealthData } from "./useHealthData";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { decodeSettingsHash } from "../settingsHash";
 import { requirePin } from "../../../state/repositoryScope";
+import { BRAND } from "../../../../shared/brand";
 
 /** One storage result at a time: a new outcome replaces the last in place. */
 const STORAGE_TOAST_ID = "settings-storage-result";
@@ -137,8 +138,8 @@ export function HealthSpace({ data }: { data: HealthData }) {
             onMaintenanceFailed: ({ stillRunning }) => {
               notify(
                 stillRunning
-                  ? "ADE's tidy-up is taking a while; it may still finish in the background"
-                  : "ADE's tidy-up didn't finish; it runs again on its own every day",
+                  ? `${BRAND.NAME}'s tidy-up is taking a while; it may still finish in the background`
+                  : `${BRAND.NAME}'s tidy-up didn't finish; it runs again on its own every day`,
                 "warning",
               );
               refreshAfterChange();
@@ -215,8 +216,8 @@ export function HealthSpace({ data }: { data: HealthData }) {
         anchor="storage"
         title="Storage"
         hint={snapshot
-          ? `ADE keeps ${storageMeasured(snapshot.totalAdeBytes, snapshot.truncated)} for this project and its own temporary files. ${measuredLine(snapshot.generatedAt, snapshot.truncated, lanes, laneSizing)}`
-          : "What ADE keeps for this project, and what you can clear."}
+          ? `${BRAND.NAME} keeps ${storageMeasured(snapshot.totalAdeBytes, snapshot.truncated)} for this project and its own temporary files. ${measuredLine(snapshot.generatedAt, snapshot.truncated, lanes, laneSizing)}`
+          : `What ${BRAND.NAME} keeps for this project, and what you can clear.`}
         actions={snapshot ? (
           <>
             <button
@@ -252,7 +253,7 @@ export function HealthSpace({ data }: { data: HealthData }) {
       >
         {loading && !snapshot ? (
           <div className="ade-modern-stats" aria-busy="true">
-            {["Free on disk", "ADE data", "Database"].map((label) => (
+            {["Free on disk", `${BRAND.NAME} data`, "Database"].map((label) => (
               <div key={label} className="ade-modern-stat">
                 <span className="kit-eyebrow">{label}</span>
                 <span className="ade-st-shimmer" />
@@ -265,7 +266,7 @@ export function HealthSpace({ data }: { data: HealthData }) {
             model={{
               id: "health-storage-error",
               tone: "error",
-              title: "ADE couldn't measure storage right now.",
+              title: `${BRAND.NAME} couldn't measure storage right now.`,
               actions: [{ label: "Try again", icon: <ArrowClockwise size={12} />, onClick: () => void loadStorage({ force: true }) }],
               detail: error,
               report: { surface: "health_storage", technicalDetail: error },
@@ -289,7 +290,7 @@ export function HealthSpace({ data }: { data: HealthData }) {
                   {snapshot.volume.totalBytes > 0
                     ? `${Math.round((snapshot.volume.freeBytes / snapshot.volume.totalBytes) * 100)}% of ${storageBytes(snapshot.volume.totalBytes)} free`
                     : "Disk size unknown"}
-                  {pressureState === "critical" || pressureState === "exhausted" ? " · ADE is pausing heavy work" : ""}
+                  {pressureState === "critical" || pressureState === "exhausted" ? ` · ${BRAND.NAME} is pausing heavy work` : ""}
                 </span>
                 {purgeable > 0 ? (
                   <span
@@ -301,11 +302,11 @@ export function HealthSpace({ data }: { data: HealthData }) {
                 ) : null}
               </div>
               <div className="ade-modern-stat">
-                <span className="kit-eyebrow">ADE data</span>
+                <span className="kit-eyebrow">{BRAND.NAME} data</span>
                 <span className="ade-modern-stat-value">
                   <span className="kit-stat kit-num">{storageMeasured(snapshot.totalAdeBytes, snapshot.truncated)}</span>
                 </span>
-                <span className="ade-modern-stat-sub" title="This project's lanes, chats, proof, caches and database, plus ADE's temporary files on this machine">Lanes, chats, proof, caches and database.</span>
+                <span className="ade-modern-stat-sub" title={`This project's lanes, chats, proof, caches and database, plus ${BRAND.NAME}'s temporary files on this machine`}>Lanes, chats, proof, caches and database.</span>
               </div>
               <div className="ade-modern-stat">
                 <span className="kit-eyebrow">Database</span>
@@ -330,10 +331,10 @@ export function HealthSpace({ data }: { data: HealthData }) {
               </div>
             </div>
 
-            <StackedBreakdown series={series} ariaLabel="What ADE keeps, by category" />
+            <StackedBreakdown series={series} ariaLabel={`What ${BRAND.NAME} keeps, by category`} />
 
             {volumes.length > 1 ? (
-              <div className="ade-st-items" aria-label="Drives ADE keeps data on">
+              <div className="ade-st-items" aria-label={`Drives ${BRAND.NAME} keeps data on`}>
                 {volumes.map((volume) => (
                   <ItemRow
                     key={volume.roots.map((root) => root.path).join("|")}
@@ -354,7 +355,7 @@ export function HealthSpace({ data }: { data: HealthData }) {
               <p className="ade-modern-muted">
                 Some folders were too big to measure in one pass. Sizes marked ≥ are at least that much.
                 {lanes?.partial && !measuringLanes && laneSizing
-                  ? " ADE measures lane folders in full in the background; Check again starts that now."
+                  ? ` ${BRAND.NAME} measures lane folders in full in the background; Check again starts that now.`
                   : ""}
               </p>
             ) : null}
@@ -366,7 +367,7 @@ export function HealthSpace({ data }: { data: HealthData }) {
         <ModernSection
           group="Disk"
           title="What Clean up safely does"
-          hint="ADE checks every path again before it removes anything, and shows you the list first."
+          hint={`${BRAND.NAME} checks every path again before it removes anything, and shows you the list first.`}
         >
           <div className="ade-modern-rows ade-health-plan">
             {plan.rows.length > 0 ? plan.rows.map((row) => (
@@ -456,7 +457,7 @@ export function HealthSpace({ data }: { data: HealthData }) {
         <StorageCleanupDialog
           open={safeOpen}
           title="Clean up safely"
-          intro="ADE removes files it can rebuild or no longer needs, then tidies its own data."
+          intro={`${BRAND.NAME} removes files it can rebuild or no longer needs, then tidies its own data.`}
           targets={plan.fsTargets}
           plan={safeConfig}
           onClose={() => setSafeOpen(false)}
@@ -499,7 +500,7 @@ function measuredLine(
 
 const VOLUME_ROOT_LABEL: Record<StorageVolumeRootKind, string> = {
   project: "This project and its lanes",
-  ade_home: "ADE's own folder",
+  ade_home: `${BRAND.NAME}'s own folder`,
   temp: "Temporary files",
 };
 
@@ -638,14 +639,14 @@ function LaneDetails({
             label={<>{item.label} <span className="kit-tag" data-tone="warn">Left over</span></>}
             path={item.path}
             size={storageMeasured(item.bytes, item.partial)}
-            detail="Left over from a deleted lane. ADE checks it for uncommitted work before removing it."
+            detail={`Left over from a deleted lane. ${BRAND.NAME} checks it for uncommitted work before removing it.`}
             action={target && (item.bytes > 0 || item.partial) ? (
               <ActionButton
                 label="Remove files…"
                 icon={<FolderDashed size={13} />}
                 onClick={() => onRequestCleanup({
                   title: "Remove leftover lane files",
-                  intro: "These files were left behind by a lane that no longer exists. ADE checks the path again, and keeps the folder if it holds uncommitted changes or commits no branch has.",
+                  intro: `These files were left behind by a lane that no longer exists. ${BRAND.NAME} checks the path again, and keeps the folder if it holds uncommitted changes or commits no branch has.`,
                   targets: [target],
                 })}
               />
@@ -740,7 +741,7 @@ function LeftoverDetails({
                 icon={<Broom size={13} />}
                 onClick={() => onRequestCleanup({
                   title: "Clear caches",
-                  intro: "These are rebuildable files ADE recreates when it needs them. Removing them is safe.",
+                  intro: `These are rebuildable files ${BRAND.NAME} recreates when it needs them. Removing them is safe.`,
                   targets: cacheCleanable.map((entry) => entry.target),
                 })}
               />
@@ -791,7 +792,7 @@ function LeftoverDetails({
                   icon={<Archive size={13} />}
                   onClick={() => onRequestCleanup({
                     title: "Remove recovery backup",
-                    intro: "ADE saved this snapshot before a risky change. Remove it once you're confident you no longer need to roll back.",
+                    intro: `${BRAND.NAME} saved this snapshot before a risky change. Remove it once you're confident you no longer need to roll back.`,
                     targets: [{ kind: "recovery_backup", path: item.path }],
                   })}
                 />
@@ -845,7 +846,7 @@ function HistoryDetails({
                 icon={<Archive size={13} />}
                 onClick={() => onRequestCleanup({
                   title: "Remove chats from deleted lanes",
-                  intro: `These chats belonged to lanes that were deleted. ADE no longer tracks or shows them, but their transcripts are still on this machine in ${item.path}, and you can open those .jsonl files yourself if you want them. Removing deletes them for good, together with any Claude and Codex session files ADE started for them. Chats in existing or archived lanes are not affected.`,
+                  intro: `These chats belonged to lanes that were deleted. ${BRAND.NAME} no longer tracks or shows them, but their transcripts are still on this machine in ${item.path}, and you can open those .jsonl files yourself if you want them. Removing deletes them for good, together with any Claude and Codex session files ${BRAND.NAME} started for them. Chats in existing or archived lanes are not affected.`,
                   targets: [target],
                 })}
               />
@@ -859,7 +860,7 @@ function HistoryDetails({
           label="Chats from deleted lanes"
           size="None"
           muted
-          detail="When you delete a lane, its chats stay on disk but ADE stops showing them. They are listed here so you can remove them."
+          detail={`When you delete a lane, its chats stay on disk but ${BRAND.NAME} stops showing them. They are listed here so you can remove them.`}
         />
       ) : null}
       {compressible > 0 && onCompress ? (
@@ -901,7 +902,7 @@ function ProviderHistoryDetails({
     <DetailBlock
       id="storage-provider-history"
       title="Provider history on this machine"
-      hint="Every agent CLI keeps its own copy of its sessions in its own folder, for all projects. These belong to the provider, not to ADE."
+      hint={`Every agent CLI keeps its own copy of its sessions in its own folder, for all projects. These belong to the provider, not to ${BRAND.NAME}.`}
     >
       {entries.map((entry) => (
         <ItemRow
@@ -916,14 +917,14 @@ function ProviderHistoryDetails({
         <ItemRow
           label="Copies of chats from deleted lanes"
           size={storageBytes(copies.bytes)}
-          detail={`Claude and Codex session files ADE started for ${copies.chatCount} ${copies.chatCount === 1 ? "chat" : "chats"} it no longer has. Sessions you imported from your own CLI are never included.`}
+          detail={`Claude and Codex session files ${BRAND.NAME} started for ${copies.chatCount} ${copies.chatCount === 1 ? "chat" : "chats"} it no longer has. Sessions you imported from your own CLI are never included.`}
           action={(
             <ActionButton
               label="Remove…"
               icon={<Archive size={13} />}
               onClick={() => onRequestCleanup({
                 title: "Remove provider copies of deleted chats",
-                intro: "These are the Claude and Codex session files ADE created for chats whose lane was deleted. ADE no longer has those chats, so it cannot resume them. Removing them deletes only those files from the providers' folders; your own CLI sessions and every chat ADE still has stay.",
+                intro: `These are the Claude and Codex session files ${BRAND.NAME} created for chats whose lane was deleted. ${BRAND.NAME} no longer has those chats, so it cannot resume them. Removing them deletes only those files from the providers' folders; your own CLI sessions and every chat ${BRAND.NAME} still has stay.`,
                 targets: [{ kind: "deleted_lane_provider_sessions", path: copies.chatSessionsDir }],
               })}
             />
@@ -952,7 +953,7 @@ function DatabaseDetails({
       {rows.length === 0 ? (
         <div className="ade-st-item-detail" style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <ShieldCheck size={14} style={{ color: "var(--kit-ok)" }} />
-          This is your project&apos;s live data. ADE protects it automatically.
+          This is your project&apos;s live data. {BRAND.NAME} protects it automatically.
         </div>
       ) : rows.map((row) => (
         <div key={row.table} className="ade-st-item">

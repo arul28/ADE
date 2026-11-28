@@ -136,7 +136,7 @@ struct ClipPairingView: View {
       ProgressView()
         .padding(.top, 4)
     case .invalidInvocation:
-      Text("Open ADE on your computer and scan the pairing code it shows in Settings.")
+      Text("Open \(Brand.name) on your computer and scan the pairing code it shows in Settings.")
         .font(.footnote)
         .foregroundStyle(.secondary)
         .multilineTextAlignment(.center)
@@ -183,12 +183,12 @@ struct ClipPairingView: View {
         .disabled(model.phase == .pairing || !model.pinIsComplete)
       }
     case .paired:
-      Text("Get the ADE app to start working with your agents.")
+      Text("Get the \(Brand.name) app to start working with your agents.")
         .font(.footnote)
         .foregroundStyle(.secondary)
         .multilineTextAlignment(.center)
     case .storeFailed:
-      Text("Paired, but the handoff couldn't be saved. Install the ADE app and pair again from Settings.")
+      Text("Paired, but the handoff couldn't be saved. Install the \(Brand.name) app and pair again from Settings.")
         .font(.footnote)
         .foregroundStyle(.secondary)
         .multilineTextAlignment(.center)
@@ -210,7 +210,7 @@ struct ClipPairingView: View {
   private var title: String {
     switch model.phase {
     case .waitingForInvocation: return "Opening pairing code…"
-    case .invalidInvocation: return "Scan an ADE pairing code"
+    case .invalidInvocation: return "Scan a \(Brand.name) pairing code"
     case .enterPin, .pairing: return "Pair with \(model.hostName)"
     case .paired: return "Paired with \(model.hostName)"
     case .storeFailed: return "Almost there"
@@ -220,11 +220,11 @@ struct ClipPairingView: View {
   private var subtitle: String {
     switch model.phase {
     case .enterPin, .pairing:
-      return "Enter the PIN shown in ADE on your computer."
+      return "Enter the PIN shown in \(Brand.name) on your computer."
     case .paired:
-      return "Your iPhone is trusted. ADE picks this pairing up automatically."
+      return "Your iPhone is trusted. \(Brand.name) picks this pairing up automatically."
     default:
-      return "ADE pairs your iPhone with your computer to control agents from anywhere."
+      return "\(Brand.name) pairs your iPhone with your computer to control agents from anywhere."
     }
   }
 }

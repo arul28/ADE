@@ -102,7 +102,7 @@ export async function workspaceOf(env: CloudEnv, userId: string, now: number): P
   const known = await env.DB.prepare("select user_id, external_id, app_id from cloud_phone_revyl where user_id = ?").bind(userId).first<WorkspaceRow>();
   if (known) return known;
   const externalId = externalIdFor(userId);
-  if (!externalId) return fail("phone_unavailable", "The ADE Cloud iPhone can't be used with this account.", 400);
+  if (!externalId) return fail("phone_unavailable", "The DAEX Cloud iPhone can't be used with this account.", 400);
   const hash = (await sha256Hex(`ade-revyl:${userId}`)).slice(0, 16);
   const answer = await partner(env, "POST", "/partner/connections", {
     external_account_id: externalId,
@@ -114,7 +114,7 @@ export async function workspaceOf(env: CloudEnv, userId: string, now: number): P
   const code = revylErrorOf(answer).code;
   if (answer.status !== 201 && !(answer.status === 409 && code === "already_connected")) {
     reportCloudFailure(`cloud.phone_revyl_connect_failed.${code.replace(/[^A-Za-z0-9_]/g, "").slice(0, 40)}`, { userId, status: answer.status, code }, "cloud-phone");
-    return fail("phone_unavailable", "The ADE Cloud iPhone can't start right now. ADE has been told.", 503);
+    return fail("phone_unavailable", "The DAEX Cloud iPhone can't start right now. DAEX has been told.", 503);
   }
   // Kept only for an account that still exists: one deleted meanwhile has its connection taken back at once.
   const kept = await env.DB.prepare(`
@@ -125,7 +125,7 @@ export async function workspaceOf(env: CloudEnv, userId: string, now: number): P
   if ((kept.meta?.changes ?? 0) === 0 && !(await env.DB.prepare("select 1 from cloud_phone_revyl where user_id = ?").bind(userId).first())) {
     const undone = await partner(env, "DELETE", `/partner/connections/${encodeURIComponent(externalId)}`);
     if (undone.status >= 400 && undone.status !== 404) reportCloudFailure("cloud.phone_revyl_orphan_disconnect_failed", { userId, status: undone.status, code: revylErrorOf(undone).code }, "cloud-phone");
-    return fail("phone_unavailable", "The ADE Cloud iPhone can't be used with this account.", 400);
+    return fail("phone_unavailable", "The DAEX Cloud iPhone can't be used with this account.", 400);
   }
   logCloud("cloud.phone_revyl_workspace", { userId, created: answer.status === 201 });
   return { user_id: userId, external_id: externalId, app_id: null };

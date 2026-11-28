@@ -15,6 +15,9 @@ import { DEFAULT_SYNC_HOST_PORT, SYNC_HOST_MAX_PORT } from "./syncProtocol";
 import { adeHomeForChannel, liveChannelFromEnv } from "../projects/machineLayout";
 import { commandLineIsDevTestMachine, isDevTestMachineProcess } from "./devTestMachine";
 import { markExpected } from "../../../../desktop/src/shared/expectedError";
+import { BRAND } from "../../../../desktop/src/shared/brand";
+import { ADE_CLI_COMMAND_NAMES, ADE_CLI_NAME_SOURCE } from "../../../../desktop/src/shared/cliCommandNames";
+import { PRODUCT_NAME_PATTERN } from "../../../../desktop/src/shared/brandNames";
 const LOCK_VERSION = 1;
 
 export type SyncHostSingletonOwner = {
@@ -457,8 +460,8 @@ function normalizedChannel(value: string | null | undefined): string | null {
  * command stops its own service, not Stable's.
  */
 const COMMAND_LINE_CHANNELS = [
-  { channel: "beta", pattern: /ADE Beta\.app|ade-beta|\bADE Beta\b/i, appName: "ADE Beta", adeHome: () => path.join(os.homedir(), ".ade-beta") },
-  { channel: "alpha", pattern: /ADE Alpha\.app|ade-alpha|\bADE Alpha\b/i, appName: "ADE Alpha", adeHome: () => adeHomeForChannel("alpha") },
+  { channel: "beta", pattern: /ADE Beta\.app|ade-beta|\bADE Beta\b/i, appName: BRAND.BETA_NAME, adeHome: () => path.join(os.homedir(), ".ade-beta") },
+  { channel: "alpha", pattern: /ADE Alpha\.app|ade-alpha|\bADE Alpha\b/i, appName: `${BRAND.NAME} Alpha`, adeHome: () => adeHomeForChannel("alpha") },
 ] as const;
 
 function commandLineChannel(commandLine: string | null | undefined): (typeof COMMAND_LINE_CHANNELS)[number] | null {
@@ -469,7 +472,7 @@ function commandLineChannel(commandLine: string | null | undefined): (typeof COM
 function defaultAppName(channel: string | null): string {
   const known = COMMAND_LINE_CHANNELS.find((entry) => entry.channel === channel);
   if (known) return known.appName;
-  return "ADE";
+  return BRAND.NAME;
 }
 
 function commandLineText(): string {
@@ -562,7 +565,7 @@ function currentOwner(
 function parseLsofListeners(output: string): Array<{ pid: number; port: number; processName: string }> {
   const listeners: Array<{ pid: number; port: number; processName: string }> = [];
   for (const line of output.split(/\r?\n/)) {
-    // lsof's COMMAND column can hold a space: the brain runs as `ADE Brain`
+    // lsof's COMMAND column can hold a space: the brain runs as `DAEX Brain`
     // (`brainExecutable.ts`), so the name is everything before the PID.
     const match = line.match(/^(.+?)\s+(\d+)\s+.*\bTCP\s+\S+:(\d+)\s+\(LISTEN\)/);
     if (!match) continue;
@@ -610,20 +613,39 @@ function psCommandLines(pids: number[]): Map<number, string> {
   }
 }
 
+const MAC_APP_BINARY_PATH = new RegExp(String.raw`ADE(?: Beta| Alpha)?\.app\/Contents\/MacOS\/${PRODUCT_NAME_PATTERN}`, "i");
+
 function looksLikeAdeSyncHostProcess(commandLine: string): boolean {
   // A dev test machine is another machine with its own lease; never a conflict.
   if (commandLineIsDevTestMachine(commandLine)) return false;
-  return /ADE(?: Beta| Alpha)?\.app\/Contents\/MacOS\/ADE/i.test(commandLine)
+  // The app's executable and its brain copy (`ADE`, `DAEX Brain`, older `ADE Brain`).
+  return MAC_APP_BINARY_PATH.test(commandLine)
     || /ade-cli\/cli\.cjs\s+serve\b/i.test(commandLine)
-    || /\bade(?:-beta|-alpha)?\b.*\bserve\b/i.test(commandLine);
+    || CLI_SERVE_COMMAND.test(commandLine);
 }
 
+/** The CLI serving, by either name (`daex`, alias `ade`), any channel. */
+const CLI_SERVE_COMMAND = new RegExp(String.raw`\b${ADE_CLI_NAME_SOURCE}(?:-beta|-alpha)?\b.*\bserve\b`, "i");
+
+/**
+ * Every name the app's processes run under, any channel: the app (`ADE`), the
+ * brain copy (`DAEX Brain`, `DAEX Alpha Brain`; `ADE Brain` before the rename,
+ * `brainExecutable.ts` mode `brain-copy`), the helper (`ADE Helper`, mode
+ * `helper`) and the CLI. Without them the lockless scan cannot see the service
+ * that holds the sync port.
+ */
+const ADE_PROCESS_NAMES = ["ADE", "DAEX"].flatMap((product) => ["", " Beta", " Alpha"].flatMap((channel) => (
+  ["", " Brain", " Helper"].map((role) => `${product}${channel}${role}`.toLowerCase())
+))).concat(ADE_CLI_COMMAND_NAMES.flatMap((cli) => ["", "-beta", "-alpha"].map((channel) => `${cli}${channel}`.toLowerCase())));
+/** lsof prints at most this many characters of a process name, with a space as `\x20`. */
+const LSOF_COMMAND_WIDTH = 9;
+
 function looksLikeAdeProcessName(processName: string): boolean {
-  // `ADE Brain` is the copy the brain service runs as (`brainExecutable.ts`,
-  // mode `brain-copy`); `ADE Helper` is the `helper` mode. Without them the
-  // lockless scan cannot see the service that holds the sync port.
-  return /^ADE(?:\s+Beta|\s+Alpha)?(?:\s+(?:Brain|Helper))?$/i.test(processName)
-    || /^ade(?:-beta|-alpha)?$/i.test(processName);
+  const name = processName.replace(/\\x20/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+  if (!name) return false;
+  if (ADE_PROCESS_NAMES.includes(name)) return true;
+  // A cut-off name: `DAEX Brai` (or `DAEX\x20Br`) is `DAEX Brain`.
+  return processName.length === LSOF_COMMAND_WIDTH && ADE_PROCESS_NAMES.some((known) => known.startsWith(name));
 }
 
 function legacyOwner(
@@ -638,7 +660,7 @@ function legacyOwner(
 ): SyncHostSingletonOwner {
   const known = commandLineChannel(commandLine);
   const channel = known?.channel ?? null;
-  const appName = known?.appName ?? "ADE";
+  const appName = known?.appName ?? BRAND.NAME;
   const adeHome = known ? known.adeHome() : adeHomeForChannel(null);
   const now = new Date().toISOString();
   return {
@@ -673,7 +695,7 @@ export function looksLikeAdeWindowsSyncHostProcess(commandLine: string): boolean
   // A bare `serve` verb somewhere in the arguments...
   if (!/(?:^|[\s\\])serve(?:\s|$)/i.test(normalized)) return false;
   // ...launched by something that is recognisably an ADE entry point.
-  return /[\\\s](?:cli\.cjs|ade\.exe|ade-beta\.exe|ade-alpha\.exe|ADE Beta\.exe|ADE Alpha\.exe)(?=\s)/i
+  return /[\\\s](?:cli\.cjs|(?:daex|ade)(?:-beta|-alpha)?\.exe|ADE Beta\.exe|ADE Alpha\.exe)(?=\s)/i
     .test(normalized);
 }
 
@@ -1198,13 +1220,13 @@ export function formatSyncHostSingletonConflictMessage(
   conflict: SyncHostSingletonConflict,
 ): string {
   const owner = conflict.owner;
-  const name = owner.appName ?? "ADE";
+  const name = owner.appName ?? BRAND.NAME;
   const portText = owner.port != null ? ` on port ${owner.port}` : "";
   const pidText = Number.isFinite(owner.pid) && owner.pid > 0 ? `pid ${owner.pid}` : "unknown pid";
   return [
-    `Another ADE brain is already hosting mobile sync${portText}.`,
+    `Another ${BRAND.NAME} brain is already hosting mobile sync${portText}.`,
     `Running instance: ${name} (${pidText}).`,
-    "Quit that brain before starting this ADE brain:",
+    `Quit that brain before starting this ${BRAND.NAME} brain:`,
     `  ${owner.quitCommand}`,
   ].join("\n");
 }

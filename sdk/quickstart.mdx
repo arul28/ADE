@@ -1,13 +1,13 @@
 ---
 title: "Quickstart"
-description: "Ten lines to an ADE chat sidecar: createAdeChat, open a durable thread, send, listen, dispose."
+description: "Ten lines to a DAEX chat sidecar: createDaexChat, open a durable thread, send, listen, dispose."
 icon: "rocket"
 ---
 
 ```ts
-import { createAdeChat } from "@ade-dev/sdk";
+import { createDaexChat } from "@daex-dev/sdk";
 
-const ade = await createAdeChat({ home: "./.ade-embed" });
+const ade = await createDaexChat({ home: "./.ade-embed" });
 const thread = await ade.threads.open("support", {
   provider: "claude",
   model: "claude-sonnet-4-5",
@@ -45,7 +45,7 @@ const thread = await ade.threads.open("ops", {
 
 `"always-allow"` maps to each provider's full-auto create args — `bypassPermissions` on Claude, `danger-full-access` on Codex.
 
-`"default"` leaves each provider's own handling in place, and that is not one behavior: on Claude, ADE installs no gate at all and the Agent SDK decides non-interactively; on Codex, an approval request **parks the turn until something answers it**.
+`"default"` leaves each provider's own handling in place, and that is not one behavior: on Claude, DAEX installs no gate at all and the Agent SDK decides non-interactively; on Codex, an approval request **parks the turn until something answers it**.
 
 For anything in between, pass a policy instead of a preset:
 
@@ -68,9 +68,9 @@ Read [Permissions and approvals](/sdk/permissions) before shipping a policy or e
 ## React UI
 
 ```tsx
-import { AdeChat, createTheme, adaptSdkClient } from "@ade-dev/chat-ui";
+import { DaexChat, createTheme, adaptSdkClient } from "@daex-dev/chat-ui";
 
-<AdeChat
+<DaexChat
   client={adaptSdkClient(ade)}
   threadKey="support"
   theme={createTheme({ accent: "#7c5cff", background: "#0e0f13" })}

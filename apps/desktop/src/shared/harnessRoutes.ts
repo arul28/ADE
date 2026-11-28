@@ -27,6 +27,7 @@ import {
   type HarnessPresetSource,
   isHarnessPresetSubscriptionProvider,
 } from "./harnessPresets";
+import { BRAND } from "./brand";
 
 export const ROUTE_PROTOCOLS = ["anthropic", "openai-chat", "openai-responses"] as const;
 export type RouteProtocol = (typeof ROUTE_PROTOCOLS)[number];
@@ -391,8 +392,8 @@ export function resolveHarnessRoute(args: {
     return {
       kind: "impossible",
       reason: Object.keys(endpoints).length === 0
-        ? "ADE does not know an endpoint for this provider. Add the key with its endpoint URL."
-        : "This model did not answer on any protocol ADE can route.",
+        ? `${BRAND.NAME} does not know an endpoint for this provider. Add the key with its endpoint URL.`
+        : `This model did not answer on any protocol ${BRAND.NAME} can route.`,
     };
   }
   for (const protocol of HARNESS_ROUTE_PROTOCOLS[harness]) {

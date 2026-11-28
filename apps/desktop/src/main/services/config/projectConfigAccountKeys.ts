@@ -1,6 +1,7 @@
 import path from "node:path";
 import { credentialKeyNames } from "../../../shared/credentialKeys";
 import type { ProjectConfigFile } from "../../../shared/types";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Which settings of `.ade/local.yaml` follow the ADE account, and how each
@@ -92,7 +93,7 @@ function setIn<T>(value: T, path: readonly string[], next: unknown): T {
 }
 
 const PR_AND_TRACKER_KEYS: readonly MovedKeySpec[] = [
-  { row: "prs.pollIntervalSeconds", label: "How often ADE checks pull requests", path: ["github", "prPollingIntervalSeconds"], validate: true },
+  { row: "prs.pollIntervalSeconds", label: `How often ${BRAND.NAME} checks pull requests`, path: ["github", "prPollingIntervalSeconds"], validate: true },
   { row: "prs.transcriptGists", label: "PR chat transcripts", path: ["github", "prTranscriptGists", "enabled"] },
   { row: "prs.autoMapByBranch", label: "Link pull requests to lanes by branch", path: ["github", "autoMapByBranch"] },
   { row: "jira.projectKeys", label: "Jira projects", path: ["issueTrackers", "jira", "projectKeys"], union: true },
@@ -108,7 +109,7 @@ const PR_AND_TRACKER_KEYS: readonly MovedKeySpec[] = [
 const AI_KEYS: readonly MovedKeySpec[] = [
   { row: "ai.mode", label: "AI mode", path: ["ai", "mode"] },
   { row: "ai.defaultProvider", label: "Default AI provider", path: ["ai", "defaultProvider"] },
-  { row: "ai.taskRouting", label: "Models for ADE's own tasks", path: ["ai", "taskRouting"] },
+  { row: "ai.taskRouting", label: `Models for ${BRAND.NAME}'s own tasks`, path: ["ai", "taskRouting"] },
   { row: "ai.features", label: "AI features", path: ["ai", "features"] },
   { row: "ai.budgets", label: "AI budgets", path: ["ai", "budgets"] },
   {

@@ -7,6 +7,7 @@ import type { AutoUpdateSnapshot, TrackSwitchCheckResult, UpdateTrackSwitchResul
 import { compareUpdateVersions, isWindowsSelfInstallBlocked } from "../../../shared/updateVersions";
 import { updateTrackLabel, updateTrackOfVersion, type UpdateTrack } from "../../../shared/updateTrack";
 import type { Logger } from "../logging/logger";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * This app's half of "Update & restart" pressed on ANOTHER machine.
@@ -256,7 +257,7 @@ export function createRemoteUpdateInstaller(args: {
         "unsupported",
         service?.getSnapshot() ?? null,
         null,
-        "This ADE app is a development or channel build and does not update itself.",
+        `This ${BRAND.NAME} app is a development or channel build and does not update itself.`,
       );
     }
     try {
@@ -273,17 +274,17 @@ export function createRemoteUpdateInstaller(args: {
         return result("failed", snapshot, null, "A track switch is already running on this computer. Try again after it finishes.");
       }
       if (!track && targetVersion && compareUpdateVersions(snapshot.currentVersion, targetVersion) >= 0) {
-        return result("already_current", snapshot, snapshot.currentVersion, `ADE is already on ${snapshot.currentVersion}.`);
+        return result("already_current", snapshot, snapshot.currentVersion, `${BRAND.NAME} is already on ${snapshot.currentVersion}.`);
       }
       if (snapshot.status === "installing") {
-        return result("installing", snapshot, snapshot.version, `ADE ${snapshot.version ?? "update"} is already installing.`);
+        return result("installing", snapshot, snapshot.version, `${BRAND.NAME} ${snapshot.version ?? "update"} is already installing.`);
       }
       if (!(snapshot.status === "ready" && covers(snapshot.version, targetVersion, track))
         && !(snapshot.status === "downloading" && covers(snapshot.version, targetVersion, track))) {
         snapshot = await awaitCheck(service, targetVersion, track);
       }
       if (snapshot.status === "installing") {
-        return result("installing", snapshot, snapshot.version, `ADE ${snapshot.version ?? "update"} is already installing.`);
+        return result("installing", snapshot, snapshot.version, `${BRAND.NAME} ${snapshot.version ?? "update"} is already installing.`);
       }
       if (snapshot.status === "ready" && snapshot.version) {
         if (!covers(snapshot.version, targetVersion, track)) {
@@ -292,16 +293,16 @@ export function createRemoteUpdateInstaller(args: {
             snapshot,
             snapshot.version,
             track
-              ? `The ADE app could not find a ${updateTrackLabel(track)} build to install.`
-              : `The ADE app on that machine only found ${snapshot.version}, not ${targetVersion}.`,
+              ? `The ${BRAND.NAME} app could not find a ${updateTrackLabel(track)} build to install.`
+              : `The ${BRAND.NAME} app on that machine only found ${snapshot.version}, not ${targetVersion}.`,
           );
         }
         const blocked = await preflight();
         if (blocked) {
-          return result("failed", snapshot, snapshot.version, `ADE ${snapshot.version} is downloaded but can't install: ${blocked}`);
+          return result("failed", snapshot, snapshot.version, `${BRAND.NAME} ${snapshot.version} is downloaded but can't install: ${blocked}`);
         }
         scheduleInstall(service, snapshot.version, track);
-        return result("installing", snapshot, snapshot.version, `Installing ADE ${snapshot.version}.`);
+        return result("installing", snapshot, snapshot.version, `Installing ${BRAND.NAME} ${snapshot.version}.`);
       }
       if (snapshot.status === "downloading" && (!track || covers(snapshot.version, targetVersion, track))) {
         installWhenDownloaded(service, targetVersion, track);
@@ -309,7 +310,7 @@ export function createRemoteUpdateInstaller(args: {
           "downloading",
           snapshot,
           snapshot.version ?? targetVersion,
-          `Downloading ADE ${snapshot.version ?? targetVersion ?? "update"}; it installs when the download finishes.`,
+          `Downloading ${BRAND.NAME} ${snapshot.version ?? targetVersion ?? "update"}; it installs when the download finishes.`,
         );
       }
       if (snapshot.status === "error") {
@@ -322,7 +323,7 @@ export function createRemoteUpdateInstaller(args: {
         "no_update",
         snapshot,
         null,
-        `The ADE app on that machine found no newer version than ${snapshot.currentVersion}.`,
+        `The ${BRAND.NAME} app on that machine found no newer version than ${snapshot.currentVersion}.`,
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -342,7 +343,7 @@ export function createRemoteUpdateInstaller(args: {
           "unsupported",
           service?.getSnapshot() ?? null,
           null,
-          "This ADE app is a development or channel build and can't switch tracks.",
+          `This ${BRAND.NAME} app is a development or channel build and can't switch tracks.`,
         );
       }
       const snapshot = service.getSnapshot();
@@ -363,7 +364,7 @@ export function createRemoteUpdateInstaller(args: {
         if (!check.allowed) return result("failed", snapshot, null, check.reason);
         approvedVersion = check.targetVersion ?? undefined;
         if (target !== runningTrack && !approvedVersion) {
-          return result("failed", snapshot, null, `ADE couldn't verify the ${label} build that would install. Try again when ${label} release details are available.`);
+          return result("failed", snapshot, null, `${BRAND.NAME} couldn't verify the ${label} build that would install. Try again when ${label} release details are available.`);
         }
         const started = service.startTrackSwitch(target, approvedVersion);
         if (!started.ok) return result("failed", snapshot, null, started.reason);

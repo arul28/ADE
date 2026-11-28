@@ -31,6 +31,7 @@ import {
   rememberRuntimeCatalogScopeParse,
   runtimeCatalogScopeDescriptors,
 } from "./runtimeCatalogCache";
+import { BRAND } from "../../../../shared/brand";
 
 export { PERSONAL_CHAT_CATALOG_SCOPE, personalChatCatalogScopeKey, isPersonalChatCatalogScopeKey } from "./runtimeCatalogCache";
 
@@ -95,14 +96,14 @@ export async function requestModelCatalog(
   if (isPersonalChatCatalogScopeKey(options.catalogScopeKey)) {
     const bridge = window.ade?.personalChats?.call;
     if (typeof bridge !== "function") {
-      throw new Error("Personal chats are not available in this ADE runtime.");
+      throw new Error(`Personal chats are not available in this ${BRAND.NAME} runtime.`);
     }
     const response = await bridge({ action: "modelCatalog", args: args ?? {} });
     return adoptCatalogModelManifest(unwrapPersonalChatResult<AgentChatModelCatalog>(response));
   }
   const bridge = window.ade?.agentChat?.modelCatalog;
   if (typeof bridge !== "function") {
-    throw new Error("Agent chat model catalog is not available in this ADE runtime.");
+    throw new Error(`Agent chat model catalog is not available in this ${BRAND.NAME} runtime.`);
   }
   const pin = options.pin ?? null;
   if (pin) {

@@ -4,6 +4,7 @@ import { SAVED_CHATS_MACHINE_PREFIX } from "../../../shared/cloudSavedChats";
 import { useCloudMachineWakeInFlight, wakeRestingCloudMachine } from "../../lib/cloudMachineWake";
 import { showToast } from "../app/toast/toastStore";
 import { laneOfflineSentence, type LaneMention } from "./state/accountLaneMentions";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * A lane a pull request (or another row) mentions: its name and its machine.
@@ -28,7 +29,7 @@ export function LaneMentionChip({ mention }: { mention: LaneMention }): JSX.Elem
     if (mention.resting) {
       if (waking) return;
       wakeRestingCloudMachine(
-        { machineId: `${SAVED_CHATS_MACHINE_PREFIX}${mention.machineKey}`, machineName: "your ADE Cloud computer", hostname: null },
+        { machineId: `${SAVED_CHATS_MACHINE_PREFIX}${mention.machineKey}`, machineName: `your ${BRAND.CLOUD_NAME} computer`, hostname: null },
         openLane,
       );
       return;
@@ -43,7 +44,7 @@ export function LaneMentionChip({ mention }: { mention: LaneMention }): JSX.Elem
       title={!mention.online
         ? laneOfflineSentence(mention)
         : mention.resting
-          ? `Wake ADE Cloud and open lane ${mention.laneName}`
+          ? `Wake ${BRAND.CLOUD_NAME} and open lane ${mention.laneName}`
           : `Open lane ${label}`}
       aria-busy={waking || undefined}
       aria-label={mention.online ? `Open lane ${label}` : `${label}, offline`}

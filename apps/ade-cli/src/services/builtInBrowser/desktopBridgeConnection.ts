@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { JsonRpcClient, JsonRpcResponseError } from "../../lib/jsonRpcClient";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * One lazily opened connection from the runtime daemon to the desktop bridge
@@ -54,7 +55,7 @@ export function createDesktopBridgeConnection(args: {
           const next = await Promise.race([
             JsonRpcClient.connect(socketPath),
             new Promise<never>((_, reject) => {
-              timer = setTimeout(() => reject(new Error("Timed out connecting to the ADE desktop app.")), CONNECT_TIMEOUT_MS);
+              timer = setTimeout(() => reject(new Error(`Timed out connecting to the ${BRAND.NAME} desktop app.`)), CONNECT_TIMEOUT_MS);
             }),
           ]);
           next.onClose(() => {

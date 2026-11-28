@@ -87,6 +87,7 @@ import {
 import { CLOUD_COMPUTER_LIMIT_CODE } from "../../../../shared/adeCloud";
 import { openCloudComputerLimitCard } from "../../cloudLane/CloudComputerLimitCard";
 import { CloudSignInCodeField } from "./CloudSignInCodeField";
+import { BRAND } from "../../../../shared/brand";
 
 /** A launch's own error text without Electron's wrapper; the raw text when the wrapper was all there was. */
 function launchErrorText(raw: string): string {
@@ -467,9 +468,9 @@ export function LaneSetupCard({
       title: name === "cancel" || cloudLaunch ? "Cancel this launch?" : "Delete this launch?",
       message: cloudLaunch
         // An ADE Cloud lane's computer was made for it alone: it goes too.
-        ? "ADE stops the setup and deletes the ADE Cloud computer it made for this lane. Your prompt goes back into the composer."
+        ? `${BRAND.NAME} stops the setup and deletes the ${BRAND.CLOUD_NAME} computer it made for this lane. Your prompt goes back into the composer.`
         : laneExists
-          ? `ADE deletes the lane it created for this ${subject} — its worktree and its local and remote branch — and the ${subject} itself. Your prompt goes back into the composer.`
+          ? `${BRAND.NAME} deletes the lane it created for this ${subject} — its worktree and its local and remote branch — and the ${subject} itself. Your prompt goes back into the composer.`
           : "Setup stops before a lane is created. Your prompt goes back into the composer.",
       confirmLabel: cloudLaunch ? "Stop and delete computer" : laneExists ? `Delete lane and ${subject}` : "Stop setup",
       destructive: true,
@@ -559,7 +560,7 @@ export function LaneSetupCard({
 
       {refused ? (
         <div data-testid="lane-setup-refusal" className="mt-2">
-          <StageErrorCallout error={snapshot.error?.trim() || "ADE couldn't start this launch."} className={metaSize} />
+          <StageErrorCallout error={snapshot.error?.trim() || `${BRAND.NAME} couldn't start this launch.`} className={metaSize} />
         </div>
       ) : (
         <ul className="divide-y divide-fg/[0.045]" aria-label="Lane setup stages">

@@ -1,17 +1,17 @@
-# @ade-dev/demo — DataDesk
+# @daex-dev/demo — DataDesk
 
-A reference third-party app built on `@ade-dev/sdk` + `@ade-dev/chat-ui`, and the live
-end-to-end proof that both work against a real ADE runtime.
+A reference third-party app built on `@daex-dev/sdk` + `@daex-dev/chat-ui`, and the live
+end-to-end proof that both work against a real DAEX runtime.
 
 Nothing here touches the developer's `~/.ade`. Every script boots a throwaway
-ADE home under the OS temp dir and kills every process it started on exit.
+DAEX home under the OS temp dir and kills every process it started on exit.
 
 ```
 mcp-server.mjs      the toy "demodata" MCP server (streamable HTTP, fake data)
 lib/                shared by the app and the tests — the app never imports e2e/
   paths.mjs         demo/repo roots and the runtime binary
   processes.mjs     spawn ownership and kill-by-captured-pid teardown
-  isolatedHome.mjs  throwaway ADE home under the OS temp dir
+  isolatedHome.mjs  throwaway DAEX home under the OS temp dir
   mcpServer.mjs     starts the toy MCP server; reads its call log
   pickModel.mjs     cheapest-usable-model heuristic
 e2e/
@@ -19,7 +19,7 @@ e2e/
   preflight.mjs     boots the SDK and reports readiness — spends no turn
   live.mjs          the live end-to-end proof — spends ONE turn
 app/
-  host.mjs          Node host: @ade-dev/sdk + a WebSocket bridge
+  host.mjs          Node host: @daex-dev/sdk + a WebSocket bridge
   start.mjs         starts MCP server + host + Vite together
   src/bridgeClient  the renderer's SDK-shaped proxy over that bridge
   src/App.tsx       the DataDesk UI
@@ -61,12 +61,12 @@ down together.
 
 ## The three seams this app exercises
 
-1. **The SDK is Node-only.** It spawns and owns an ADE runtime, so it lives in
-   `app/host.mjs`, not the renderer. `@ade-dev/sdk/server` supplies the shared
+1. **The SDK is Node-only.** It spawns and owns a DAEX runtime, so it lives in
+   `app/host.mjs`, not the renderer. `@daex-dev/sdk/server` supplies the shared
    WebSocket RPC protocol; the host owns the listener, access rules and app config.
 2. **The renderer's proxy satisfies the same interface.** `bridgeClient.ts`
-   wraps `createAdeRemoteClient()` from the SDK package, and `adaptSdkClient()`
-   from `@ade-dev/chat-ui` accepts it unchanged — the client surface survives a
+   wraps `createDaexRemoteClient()` from the SDK package, and `adaptSdkClient()`
+   from `@daex-dev/chat-ui` accepts it unchanged — the client surface survives a
    process boundary with no app-specific remote mode.
 3. **The host owns placement and vocabulary.** Provider cards sit in the
    sidebar; the label map renames `mcp__demodata__get_invoices` to "Searching

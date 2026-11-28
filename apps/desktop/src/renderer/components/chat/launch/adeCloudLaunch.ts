@@ -13,6 +13,7 @@ import { ipcErrorMessage } from "../../../lib/format";
 import { isAccountAnsweredPin } from "../../../../shared/adeCloud/binding";
 import { confirmDialog } from "../../ui/dialog/confirm";
 import { startChatLaunch, type StartChatLaunchOutcome } from "./chatLaunchActions";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * Every renderer place that makes a lane on ADE Cloud (the composer, the new
@@ -112,7 +113,7 @@ export async function adeCloudStartBranchReady(
       : `${check.branch} is only on this computer.`;
     const push = await confirmDialog({
       title: "Push this branch?",
-      message: `${why} ADE Cloud starts from GitHub, so ADE pushes it first, then starts the lane.`,
+      message: `${why} ${BRAND.CLOUD_NAME} starts from GitHub, so ${BRAND.NAME} pushes it first, then starts the lane.`,
       confirmLabel: "Push and start",
     });
     if (!push) return { go: false, error: null };
@@ -121,7 +122,7 @@ export async function adeCloudStartBranchReady(
       ? { go: false, error: `${check.branch} still isn't on GitHub. Push it, then send again.` }
       : { go: true };
   } catch (error) {
-    return { go: false, error: ipcErrorMessage(error) || "ADE couldn't check the branch on GitHub. Try again." };
+    return { go: false, error: ipcErrorMessage(error) || `${BRAND.NAME} couldn't check the branch on GitHub. Try again.` };
   }
 }
 

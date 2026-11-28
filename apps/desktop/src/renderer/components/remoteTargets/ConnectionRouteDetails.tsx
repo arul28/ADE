@@ -1,10 +1,11 @@
 import type { RemoteRuntimeConnectionAttempt } from "../../../shared/types";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { BRAND } from "../../../shared/brand";
 
 export const ROUTE_LABELS: Record<RemoteRuntimeConnectionAttempt["kind"], string> = {
   lan: "Local network",
   tailnet: "Tailscale",
-  relay: "ADE relay",
+  relay: `${BRAND.NAME} relay`,
   ssh: "SSH",
 };
 

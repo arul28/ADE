@@ -217,7 +217,7 @@ struct WorkCloudLaunchRow: View {
       }
     }
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(workCloudLaunchTitle(entry)), ADE Cloud, \(laneName), \(statusLine)")
+    .accessibilityLabel("\(workCloudLaunchTitle(entry)), \(Brand.cloudName), \(laneName), \(statusLine)")
     .accessibilityHint("Opens the chat's setup")
     .adeInspectable("Work.CloudLaunch.Row", metadata: ["launchId": entry.launchId])
   }
@@ -269,7 +269,7 @@ struct WorkCloudLaunchPendingScreen: View {
     .workSessionNavigationChrome(
       mode: navigationChrome,
       title: entry.map(workCloudLaunchTitle) ?? "New chat",
-      subtitle: "ADE Cloud",
+      subtitle: "\(Brand.cloudName)",
       onBack: onBack,
       trailingControls: { EmptyView() }
     )
@@ -310,7 +310,7 @@ struct WorkCloudLaunchPendingScreen: View {
               id: message.messageId,
               text: message.text,
               createdAt: workCloudLaunchIso(ms: message.createdAt) ?? workCloudLaunchStartedAt(entry),
-              deliveryError: message.state == "failed" ? (message.error ?? "ADE Cloud couldn't send it.") : nil
+              deliveryError: message.state == "failed" ? (message.error ?? "\(Brand.cloudName) couldn't send it.") : nil
             ), retries: false)
             .transition(.opacity.combined(with: .move(edge: .bottom)))
           }
@@ -331,7 +331,7 @@ struct WorkCloudLaunchPendingScreen: View {
           }
           .id("cloud-launch-card")
           if openFailed {
-            Text("The chat runs on ADE Cloud, but this phone can't reach its computer yet. Tap Open chat to try again.")
+            Text("The chat runs on \(Brand.cloudName), but this phone can't reach its computer yet. Tap Open chat to try again.")
               .font(.caption)
               .foregroundStyle(ADEColor.warning)
               .fixedSize(horizontal: false, vertical: true)
@@ -541,8 +541,8 @@ struct WorkCloudLaunchSetupCard: View {
       Button("Keep", role: .cancel) {}
     } message: {
       Text(entry.isLane
-        ? "ADE Cloud deletes the new computer. The lane stays."
-        : "ADE Cloud deletes the new computer. Your messages are not sent.")
+        ? "\(Brand.cloudName) deletes the new computer. The lane stays."
+        : "\(Brand.cloudName) deletes the new computer. Your messages are not sent.")
     }
     .accessibilityElement(children: .contain)
   }
@@ -553,11 +553,11 @@ struct WorkCloudLaunchSetupCard: View {
     if entry.cancelled {
       return entry.isLane ? "Making this computer was stopped." : "This chat was cancelled. Its messages were not sent."
     }
-    if entry.failed { return entry.startError ?? record?.error ?? "ADE Cloud didn't say why." }
+    if entry.failed { return entry.startError ?? record?.error ?? "\(Brand.cloudName) didn't say why." }
     guard entry.isLane else { return nil }
     return running
       ? "It lists with your lanes again, on the same branch."
-      : "You can close the app. ADE Cloud finishes the computer on its own."
+      : "You can close the app. \(Brand.cloudName) finishes the computer on its own."
   }
 
   // MARK: Header
@@ -581,7 +581,7 @@ struct WorkCloudLaunchSetupCard: View {
     if record?.sessionId != nil { return "Opening the chat" }
     if record?.state == "needs_approval" { return "Confirm the computer" }
     if record?.state == "waiting_for_sign_in" { return "Sign in to \(providerLabel) to go on" }
-    return "Setting up ADE Cloud"
+    return "Setting up \(Brand.cloudName)"
   }
 
   private var headerSymbol: String {
@@ -622,7 +622,7 @@ struct WorkCloudLaunchSetupCard: View {
             Image(systemName: "cloud")
               .font(.system(size: 8, weight: .semibold))
               .foregroundStyle(ADEColor.textMuted)
-            Text("ADE Cloud")
+            Text(Brand.cloudName)
               .lineLimit(1)
           }
         }

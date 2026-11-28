@@ -128,7 +128,8 @@ export const AGENT_CLI_PROCESS_NAMES: ReadonlySet<string> = new Set(["claude", "
  */
 function isAdeDiskGrowCommand(args: readonly string[] | null | undefined): boolean {
   if (!args?.length) return false;
-  const at = args.findIndex((arg) => /(?:^|[\\/])(?:ade|cli\.c?js)$/.test(arg));
+  // Either name: `daex` is the command, `ade` its permanent alias.
+  const at = args.findIndex((arg) => /(?:^|[\\/])(?:daex|ade|cli\.c?js)$/.test(arg));
   if (at < 0) return false;
   const rest = args.slice(at + 1);
   const has = (domain: string, verb: string) => rest.some((arg, index) => arg === domain && rest[index + 1] === verb);

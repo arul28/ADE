@@ -10,6 +10,7 @@ import type {
   MusicAccount,
 } from "../../../shared/types/music";
 import { MUSIC_MAX_COLLECTION_TRACKS } from "../../../shared/types/music";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The Apple Music API, called from the main process.
@@ -151,11 +152,11 @@ export function createAppleMusicApi(args: {
       // 401 = the token is dead. 403 can mean no subscription; keep the token then.
       if (user && response.status === 401) args.onUserTokenRejected?.();
       throw new AppleMusicApiError(
-        user ? "Apple Music needs you to connect again." : "Apple Music refused ADE's developer token.",
+        user ? "Apple Music needs you to connect again." : `Apple Music refused ${BRAND.NAME}'s developer token.`,
         response.status,
       );
     }
-    if (response.status === 429) throw new AppleMusicApiError("Apple Music is rate limiting ADE. Try again in a minute.", 429);
+    if (response.status === 429) throw new AppleMusicApiError(`Apple Music is rate limiting ${BRAND.NAME}. Try again in a minute.`, 429);
     if (response.status === 204 || (method !== "GET" && response.status < 300 && response.headers.get("content-length") === "0")) {
       cache.clear();
       return undefined as T;

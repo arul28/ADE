@@ -260,7 +260,7 @@ func accountProjectCopyMachines(_ project: AccountProject, machines: [AccountMac
 func hubAccountProjectNote(_ project: AccountProject, machines: [AccountMachine], hasOwnComputer: Bool = true) -> String {
   let held = accountProjectCopyMachines(project, machines: machines)
   // With no computer of their own, a chat starts a computer on ADE Cloud.
-  guard !held.isEmpty else { return hasOwnComputer ? "Not on a computer yet" : "Chats run on ADE Cloud" }
+  guard !held.isEmpty else { return hasOwnComputer ? "Not on a computer yet" : "Chats run on \(Brand.cloudName)" }
   let online = held.filter { $0.machine?.online == true }
   // The computer list did not load (offline): say how many hold a copy, not
   // that none is online.
@@ -460,19 +460,19 @@ struct HubAccountStatusCard: View {
   private var message: String {
     switch notice {
     case .savedProjects:
-      return "ADE could not reach your account. The list may be out of date."
+      return "\(Brand.name) could not reach your account. The list may be out of date."
     case .connecting:
       return ""
     case .noComputerOnline(_, let lastSeen, let failed, let byUser, let cloud):
       // An ADE Cloud computer sleeps and wakes on its own: nobody starts ADE on it.
       if cloud {
-        if failed { return "ADE Cloud didn't answer. Check that this phone is online, then reconnect." }
+        if failed { return "\(Brand.cloudName) didn't answer. Check that this phone is online, then reconnect." }
         return "Its computer is asleep or restarting. Reconnect, or send a message: it wakes in about 20 seconds."
       }
-      if failed { return "Check that ADE is running on it and that both are online." }
+      if failed { return "Check that \(Brand.name) is running on it and that both are online." }
       if byUser { return "Reconnect to run agents. Your projects stay here." }
-      if let lastSeen { return "Last seen \(lastSeen). Start ADE on it to run agents." }
-      return "Start ADE on it to run agents. Your projects stay here."
+      if let lastSeen { return "Last seen \(lastSeen). Start \(Brand.name) on it to run agents." }
+      return "Start \(Brand.name) on it to run agents. Your projects stay here."
     case .noComputer:
       return "Connect one of your computers to run agents on these projects."
     }
@@ -537,7 +537,7 @@ struct HubAccountEmptyCard: View {
         title: "No projects yet",
         message: hasComputer
           ? "Add a project on one of your computers. It shows here, on every device."
-          : "Add a repository from GitHub. Your first chat starts a computer on ADE Cloud for it."
+          : "Add a repository from GitHub. Your first chat starts a computer on \(Brand.cloudName) for it."
       ) {
         if canAddProject {
           Button("Add project", action: onAddProject)

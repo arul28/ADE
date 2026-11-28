@@ -1,6 +1,6 @@
-# ADE visual language
+# DAEX visual language
 
-This is how ADE looks, and how new UI should look. Read it before you build or
+This is how DAEX looks, and how new UI should look. Read it before you build or
 restyle any renderer surface: a page, a card, a settings section, a chart, a
 picker. `theming.md` is the colour engine underneath it. `notices.md` is the one
 source for banners, toasts, dialogs and z-index. This doc covers everything in
@@ -56,12 +56,12 @@ wall of utilities.
 | `.kit-card-head` | 40px header: icon, label, `.kit-card-head-count`, then `.kit-card-head-action` on the right. `data-compact="true"` makes it a 28px row for a one-line card that sits on another surface. |
 | `.kit-card-body` | Body padding. `data-flush="true"` for edge-to-edge lists. |
 | `.kit-eyebrow` | 10px mono uppercase label with wide tracking. Section kickers, column labels. |
-| `.kit-num` | Mono, tabular figures. Every number that can change. |
+| `.kit-num` | Mono, tabular figures, for every number that can change. `data-face="ui"` keeps the UI face (still tabular) for a big figure that should read as a number, not code. |
 | `.kit-stat` | One big figure with its eyebrow. |
 | `.kit-row` | A hover-highlighted list row. |
 | `.kit-meter` | A thin bar with a `<span>` fill. `data-level="warn"` / `"crit"` recolours it. |
 | `.kit-dot` | A 6px status dot. `data-state="ok"`, `"warn"`, `"crit"`, `"accent"`. |
-| `.kit-tag` | A small tinted pill. `data-tone="ok"`, `"warn"`, `"crit"`, or `"accent"` (the surface's accent; a surface with its own brand sets `--kit-tag-accent`, as ADE Cloud's dashboard does). |
+| `.kit-tag` | A small tinted pill. `data-tone="ok"`, `"warn"`, `"crit"`, or `"accent"` (the surface's accent; a surface with its own brand sets `--kit-tag-accent`, as DAEX Cloud's dashboard does). |
 | `.kit-seg` | A segmented control. Buttons use `aria-pressed`, `aria-selected` or `aria-checked`. `data-case="sentence"` for non-mono labels. |
 | `.kit-kbd` | A key or chord as the OS prints it (`⌘K`, `Ctrl+Shift+E`): one chip per chord. `data-size="sm"` inside a line of text, such as the Quick slots panel. |
 | `.kit-keys` | A chord as separate keycaps, one `<kbd>` per key, for a page about keys (Settings › Keyboard). `data-size="lg"` for a hero. |
@@ -69,7 +69,6 @@ wall of utilities.
 | `.kit-icon-btn` | A borderless square icon button. |
 | `.kit-find-bar` | On a `.kit-card`: the floating ⌘F bar, one 36px row with 24px icon buttons (`shared/FindBar.tsx`). |
 | `.kit-btn` | A 30px text button for card surfaces (recovery and error screens). `.kit-btn-primary` is the one filled button per card, in the theme's ink; `.kit-btn-ghost` is borderless. `data-size="sm"` is the 26px row size; `data-size="xs"` is an 18px inline action inside a line of text; `data-tone="crit"` colours a destructive choice's text. |
-| `.kit-num` | Tabular mono figures. `data-face="ui"` keeps the UI face (still tabular) for a big figure that should read as a number, not code. |
 | `.kit-panel` | A quiet grouped panel inside a card or popover (the usage popover's per-provider panels): hairline `--kit-panel-edge`, `--kit-panel-bg`, `--radius-lg`, no blur. |
 | `.kit-input` | A text field or select for card surfaces, the height of a `.kit-btn`. `data-size="sm"` matches a `.kit-btn` of that size; a `textarea.kit-input` grows with its rows. `aria-invalid="true"` tints the border. |
 | `.kit-rule` | A 1px divider. |
@@ -109,9 +108,7 @@ Code: `apps/desktop/src/renderer/scene/`, styles in `styles/scene.css`.
   client defaults to `plain`, chosen at read time and never persisted.
   Bumping `SCENE_DEFAULTS_REVISION` in `scenePreferences.ts` puts every user
   back on the default once, whatever they had picked; use it only for a
-  deliberate product reset. Revision 2 (the sharp, per-screen pictures) is
-  one: every desktop user starts on the shuffle of the pictures that fit
-  their screen, and their choices stand from there.
+  deliberate product reset.
 - **Fine textures need a 2x screen.** The Halftone texture (0.75px dots on a
   3px grid) draws only at `min-resolution: 2dppx`. Below that a dot cannot be
   drawn: it snaps to a hard 1px grid at 1x and to moiré bands at 125% and 150%,
@@ -119,12 +116,14 @@ Code: `apps/desktop/src/renderer/scene/`, styles in `styles/scene.css`.
   Halftone is picked on such a screen. The Phosphor theme's scanlines layer,
   drawn over the UI, is off at fractional scales (1.01–1.99 dppx) for the same
   reason. Any new repeating pattern finer than a few pixels needs the same gate.
-- **Pictures.** Bundled pictures are `public/scenes/*.jpg`: 5120×1440 for
-  ultrawide screens and 3840×2400 for the rest, nothing smaller. Each has a
-  480×300 copy in `public/scenes/thumbs/` for Settings tiles and for the
-  palette sample, and each 3840×2400 picture a 2560×1600 copy in
-  `public/scenes/2560/` that a screen it covers (1080p, 1440p) draws instead
-  (`sceneSrcForScreen`): a decoded picture costs memory for every pixel. They
+- **Pictures.** Bundled pictures are `src/renderer/public/scenes/*.jpg`:
+  5120×1440 for ultrawide screens and 3840×2400 for the rest, nothing smaller.
+  Each has a 480×300 copy in `scenes/thumbs/` for Settings tiles and the
+  palette sample, and each 3840×2400 picture has 1920×1200, 2560×1600 and
+  3200×2000 copies (`scenes/1920/`, `2560/`, `3200/`) that a screen they cover
+  draws instead (`sceneSrcForScreen`): a decoded picture costs memory for
+  every pixel. `scenes/signin/` holds a light copy for the web client's
+  signed-out page. They
   are listed in `sceneLibrary.ts` with their pixel size; a stored pick of a
   picture no longer shipped reads as no pick. Users add their own; they are
   re-encoded to at most 5120px JPEG and stored in IndexedDB (`userScenes.ts`),
@@ -151,7 +150,7 @@ Code: `apps/desktop/src/renderer/scene/`, styles in `styles/scene.css`.
 - **The veil.** The theme background lies over the picture at the user's `dim`
   strength, with a soft scrim behind the title bar so tab labels stay readable.
 - **The document.** `html[data-scene="image"]` is set while a picture shows.
-  Surfaces that must change over a picture (the kit cards go frosted; the ADE
+  Surfaces that must change over a picture (the kit cards go frosted; the
   wordmark hides) key off that attribute, not off React state.
 - **Right-click.** Empty background on the new chat page and the project picker
   opens a menu with **Change background**, which goes to Settings → Appearance
@@ -160,7 +159,7 @@ Code: `apps/desktop/src/renderer/scene/`, styles in `styles/scene.css`.
 
 Choosing pictures to bundle: 3840×2400 for ordinary screens and 5120×1440 for
 32:9 ultrawides (record the size in `sceneLibrary.ts`), JPEG around quality 84,
-plus a 480×300 thumbnail. A calm area where the cards will sit, no text or watermarks, and the right orientation in the
+plus a 480×300 thumbnail and the per-screen copies. A calm area where the cards will sit, no text or watermarks, and the right orientation in the
 pixels themselves (check with `sips -g pixelWidth -g pixelHeight`; EXIF rotation
 is not honoured everywhere).
 
@@ -182,7 +181,7 @@ is not honoured everywhere).
   widget with its own remove). Nothing scrolls: lists show the rows that
   fit and a "N more" line. Each widget is a size container, so a card hides
   its least important part when a layout makes it short.
-- **Settings.** `ModernPage` spaces sections 44px apart. `ModernSection` is a
+- **Settings.** `ModernPage` spaces sections 36px apart. `ModernSection` is a
   title, a one-line hint and optional actions. `ModernRows` groups
   `ModernRow`s in one panel with hairline dividers. Choice cards (theme mode,
   backdrop mode) use `.ade-ap-grid3` and `.ade-ap-choice` with
@@ -193,12 +192,12 @@ is not honoured everywhere).
 
 ```tsx
 <ModernPage>
-  <ModernSection group="Notifications" anchor="notifications.desktop" title="On this computer" hint="How ADE gets your attention here.">
+  <ModernSection group="Notifications" anchor="notifications.desktop" title="On this computer" hint={`How ${BRAND.NAME} gets your attention here.`}>
     <ModernRows>
       <ModernRow
-        title="Stay quiet while ADE is focused"
+        title={`Stay quiet while ${BRAND.NAME} is focused`}
         hint="Your phone still gets the alert."
-        control={<SettingsToggle label="Stay quiet while ADE is focused" checked={quiet} onChange={setQuiet} />}
+        control={<SettingsToggle label={`Stay quiet while ${BRAND.NAME} is focused`} checked={quiet} onChange={setQuiet} />}
       />
     </ModernRows>
   </ModernSection>
@@ -230,12 +229,12 @@ row with a setting behind it needs an entry in `settingsManifest.ts`.
 - **Light themes.** Everything above must read on light themes. Tint with
   `--color-fg`, not white, and follow the light-mode rules in `theming.md`.
 
-### Exception: ADE Cloud's dusk sky
+### Exception: DAEX Cloud's dusk sky
 
-Settings › ADE Cloud opens on a dusk sky, the website's art direction
+Settings › DAEX Cloud opens on a dusk sky, the website's art direction
 (`.adecd-hero` and `CloudSky.tsx` in `settings/cloudDashboard/`): an opaque,
 self-coloured card with its own radius and border, stars, a gold moon, slow
-clouds drawn with the ADE Cloud logo's outline, a violet and rose glow on the
+clouds drawn with the DAEX Cloud logo's outline, a violet and rose glow on the
 horizon, and a city of the account's lanes in indigo with lamp-gold lit
 windows. The plan's name is a serif italic in gold. It stays a night sky in
 the light theme too (a brighter dusk with white text), so the card reads as
@@ -244,12 +243,12 @@ the same place in both.
 The palette is the `--adec-*` tokens in `remoteTargets/cloudBrand.css`
 (violet `--adec-500`, rose `--adec-rose`, gold `--adec-lamp`), and the logo is
 `CloudLogo` (a violet-to-rose cloud with one lit gold window; `CloudMark
-brand` draws it). ADE Cloud's main button is `.adecd-cta`: violet to rose,
+brand` draws it). DAEX Cloud's main button is `.adecd-cta`: violet to rose,
 white text, a slow gold and pink light running round its border; never the
 theme's cream ink.
 
 It breaks principle 1 (cards are translucent planes) and principle 3 (colour
-is for meaning) on purpose: the owner picked it as ADE Cloud's look. The
+is for meaning) on purpose: the owner picked it as DAEX Cloud's look. The
 exception covers the hero, the current plan's card (its own small patch of
 the same sky with a gold edge), the "You're on Plus" glow on a plan that just
 landed, and the "look inside" city, nothing else. Everything else on the page
@@ -269,14 +268,14 @@ shuffle options (when it changes, which pictures are in), and App colours
 
 ## Sign-in
 
-The launch gate is a glass card over the ADE gradient
-(`onboarding/GlassSignInCard.tsx`, `launchGateGlass.css`): the mark without a
+The launch gate is a glass card over the DAEX gradient
+(`components/onboarding/GlassSignInCard.tsx`, `launchGateGlass.css`): the mark without a
 box around it, one heading, the sign-in buttons. No extra labels, dividers or
 "opens in your browser" copy.
 
 ## Performance
 
-Visual polish must not cost CPU or GPU while ADE is idle.
+Visual polish must not cost CPU or GPU while DAEX is idle.
 
 - An always-visible animation runs in steps or on the compositor. The top-bar
   activity pulse uses a 4-step, 3s, `step-end` animation; a smooth infinite
@@ -342,7 +341,7 @@ glows, gradients or shadows), so it is cheap inside scrolling lists.
 | `adeKitField()` | a text field's well: the kit track, no glass |
 | `prStateColor`, `PrStateIcon`, `PrStatePill` (`PRs/PrRowCard.swift`) | `--pr-open/merged/closed`, `.ade-home-pr-icon`, `.ade-home-pr-pill` |
 | `ADESettingsPage`, `ADESettingsSection`, `ADESettingsRows`, `ADESettingsRow` (+ `ValueRow`, `Link`, `ActionRow`, `Notice`) | `ModernPage`, `ModernSection`, `ModernRows`, `ModernRow` |
-| `adeSettingsList()`, `adeSettingsListRow()`, `ADESettingsListHeader` | the same panels in a `List`, for swipe actions; both headers draw through `ADESettingsHeader` |
+| `adeSettingsList()`, `adeSettingsListRow()` (`ADEKitSettings.swift`) | the same panels in a `List`, for swipe actions; headers draw through `ADESettingsHeader` |
 
 `ADEKitButtonStyle(prominent: true, brand:)` fills a provider's own primary
 button (Linear sign-in) with its brand colour; every other primary button is
@@ -357,7 +356,7 @@ The usage headroom rule is `ADEUsagePressure` in `ADEUsageDesign.swift`
 | Area | Files |
 |---|---|
 | Kit | `renderer/styles/surfaceKit.css` |
-| Scenes | `renderer/scene/*`, `renderer/styles/scene.css`, `public/scenes/` |
+| Scenes | `renderer/scene/*`, `renderer/styles/scene.css`, `renderer/public/scenes/` |
 | Home | `components/projects/ProjectWelcomePage.tsx`, `ProjectWelcomeHome.tsx`, `ProjectWelcomeSidePanels.tsx`, `ProjectWelcomePage.css`, `components/home/*` |
 | Settings | `components/settings/primitives/SettingsModern.tsx`, `settingsModern.css`, `AppearanceSection.tsx`, `ThemeGallery.tsx` |
 | Usage | `components/usage/usageDesign.ts`, `UsageLimitGauges.tsx`, `UsageSparks.tsx`, `UsageWeekCompare.tsx`, `usageProviderNames.ts`, `usageSurfaces.css` |

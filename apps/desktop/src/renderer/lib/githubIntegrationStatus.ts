@@ -15,6 +15,7 @@ import {
   type GitHubServiceHealth,
 } from "../../shared/githubServiceHealth";
 import { stripElectronErrorWrapper } from "../../shared/codedError";
+import { BRAND } from "../../shared/brand";
 
 export type GithubCredentialPresentation = {
   tokenTypeLabel: string;
@@ -77,8 +78,8 @@ export function describeGithubOutage(
     title: severe ? "GitHub is down" : "GitHub is having problems",
     // Names the affected parts (so the user knows which of their work is
     // blocked) and then says the only thing they need to do, which is nothing.
-    detail: `GitHub reports problems with ${affected}. This isn't your setup — ADE will reconnect on its own.`,
-    settingsDetail: `GitHub reports problems with ${affected}. Nothing here needs changing — ADE keeps retrying and reconnects when GitHub is back.`,
+    detail: `GitHub reports problems with ${affected}. This isn't your setup — ${BRAND.NAME} will reconnect on its own.`,
+    settingsDetail: `GitHub reports problems with ${affected}. Nothing here needs changing — ${BRAND.NAME} keeps retrying and reconnects when GitHub is back.`,
     action: "GitHub status",
     actionUrl: health.incidentUrl ?? GITHUB_STATUS_PAGE_URL,
     // Incident identity + the affected surfaces, sorted. Severity is
@@ -392,14 +393,14 @@ export function githubAccountIssueCopy(
   if (account === "needs_reauth") {
     return {
       title: "GitHub App authorization expired",
-      detail: "Re-authorize ADE so it can keep pull request status up to date.",
+      detail: `Re-authorize ${BRAND.NAME} so it can keep pull request status up to date.`,
       action: "Re-authorize",
     };
   }
   return {
     title: "GitHub App not authorized",
-    detail: "Authorize ADE with GitHub to turn on real-time pull request updates.",
-    action: "Set up ADE GitHub App",
+    detail: `Authorize ${BRAND.NAME} with GitHub to turn on real-time pull request updates.`,
+    action: `Set up ${BRAND.NAME} GitHub App`,
   };
 }
 
@@ -496,15 +497,15 @@ export function githubRefreshPauseCopy(
   kind: NonNullable<GitHubAppUserAuthStatus["lastRefreshError"]>["kind"] | null,
 ): string {
   if (kind === "rate_limited") {
-    return "GitHub is limiting authorization requests for this account. ADE retries automatically — reconnecting won't speed this up.";
+    return `GitHub is limiting authorization requests for this account. ${BRAND.NAME} retries automatically — reconnecting won't speed this up.`;
   }
   if (kind === "outage") {
-    return "GitHub isn't answering authorization requests right now. ADE retries automatically — nothing here needs changing.";
+    return `GitHub isn't answering authorization requests right now. ${BRAND.NAME} retries automatically — nothing here needs changing.`;
   }
   if (kind === "network") {
-    return "ADE couldn't reach GitHub to renew this authorization. It retries automatically once the connection is back.";
+    return `${BRAND.NAME} couldn't reach GitHub to renew this authorization. It retries automatically once the connection is back.`;
   }
-  return "ADE couldn't renew this authorization just now. It retries automatically — reconnecting won't speed this up.";
+  return `${BRAND.NAME} couldn't renew this authorization just now. It retries automatically — reconnecting won't speed this up.`;
 }
 
 /**
@@ -554,7 +555,7 @@ export function isGithubAuthorizationPausedMessage(message: string | null | unde
 
 /** What replaces GitHub's transport error when the sign-in host is throttling. */
 export const GITHUB_AUTHORIZATION_PAUSED_COPY =
-  "GitHub is limiting authorization requests for this account right now. ADE keeps trying on its own — try again in a few minutes.";
+  `GitHub is limiting authorization requests for this account right now. ${BRAND.NAME} keeps trying on its own — try again in a few minutes.`;
 
 /**
  * undici's text for a request that never reached GitHub, as it crosses IPC or
@@ -570,7 +571,7 @@ export function deviceAuthMessageCopy(message: string | null): string | null {
   const fetchFailed = SIGN_IN_FETCH_FAILED.exec(message);
   if (fetchFailed) {
     const reason = fetchFailed[1]?.trim();
-    return `ADE couldn't reach GitHub${reason ? ` (${reason})` : ""}. Check your connection, then try again.`;
+    return `${BRAND.NAME} couldn't reach GitHub${reason ? ` (${reason})` : ""}. Check your connection, then try again.`;
   }
   return message;
 }
@@ -596,27 +597,27 @@ export function githubRepoIssueCopy(
     return {
       title: `Waiting on GitHub authorization for ${label}`,
       detail: account === "missing"
-        ? "Authorize ADE with GitHub above, then this repo's app status appears here."
-        : "ADE can't check this repo until the GitHub authorization above is working again.",
+        ? `Authorize ${BRAND.NAME} with GitHub above, then this repo's app status appears here.`
+        : `${BRAND.NAME} can't check this repo until the GitHub authorization above is working again.`,
       action: "Recheck",
     };
   }
   if (repo === "access_pending") {
     return {
       title: `Finishing GitHub setup for ${label}`,
-      detail: "GitHub is still granting the ADE app access to this repo — this usually clears in a moment.",
+      detail: `GitHub is still granting the ${BRAND.NAME} app access to this repo — this usually clears in a moment.`,
       action: "Recheck",
     };
   }
   if (repo === "webhook_off") {
     return {
       title: `Real-time PR updates are off for ${label}`,
-      detail: "The ADE GitHub App is installed but its webhook isn't active — reconnect it to restore live PR status.",
+      detail: `The ${BRAND.NAME} GitHub App is installed but its webhook isn't active — reconnect it to restore live PR status.`,
       action: "Manage",
     };
   }
   return {
-    title: `${label} isn't connected to the ADE GitHub App`,
+    title: `${label} isn't connected to the ${BRAND.NAME} GitHub App`,
     detail: "Install the app on this repo so PR status updates in real time, even when the project isn't focused.",
     action: "Install",
   };
@@ -670,14 +671,14 @@ export function describeGithubPatVerification(result: GitHubSetTokenResult): {
   if (failure?.kind === "rate_limited") {
     return {
       verified: false,
-      message: "Token saved, but GitHub temporarily paused verification. ADE will try it again when needed.",
+      message: `Token saved, but GitHub temporarily paused verification. ${BRAND.NAME} will try it again when needed.`,
     };
   }
   if (failure?.kind === "permission_denied") {
     const repoLabel = result.repo ? `${result.repo.owner}/${result.repo.name}` : "this repository";
     return {
       verified: false,
-      message: `Token saved, but ADE cannot use it for write actions on ${repoLabel}. Check the token's repository access and write permissions.`,
+      message: `Token saved, but ${BRAND.NAME} cannot use it for write actions on ${repoLabel}. Check the token's repository access and write permissions.`,
     };
   }
   // GitHub itself failed, so the token is unverified rather than bad. This is
@@ -686,18 +687,18 @@ export function describeGithubPatVerification(result: GitHubSetTokenResult): {
   if (failure?.kind === "service_unavailable") {
     return {
       verified: false,
-      message: "Token saved, but GitHub returned an error instead of verifying it. Nothing to change here — ADE will verify it once GitHub recovers.",
+      message: `Token saved, but GitHub returned an error instead of verifying it. Nothing to change here — ${BRAND.NAME} will verify it once GitHub recovers.`,
     };
   }
   if (failure?.kind === "network") {
     return {
       verified: false,
-      message: "Token saved, but ADE could not reach GitHub to verify it. Try again.",
+      message: `Token saved, but ${BRAND.NAME} could not reach GitHub to verify it. Try again.`,
     };
   }
   return {
     verified: false,
-    message: "Token saved, but ADE could not verify it for GitHub write actions. Check the token and its repository permissions.",
+    message: `Token saved, but ${BRAND.NAME} could not verify it for GitHub write actions. Check the token and its repository permissions.`,
   };
 }
 
@@ -725,10 +726,10 @@ export function describeGitTransportFailure(status: GitHubStatus | null): {
   return {
     title: "Git can't sign in to GitHub",
     detail: transport.adeCredentialTried
-      ? `GitHub refused both this computer's git sign-in and ADE's token for ${repoLabel}. Pushes, pulls and new pull requests fail until one of them can write to it.`
-      : "Pushes, pulls and new pull requests from ADE fail until git can sign in. Sign in with GitHub CLI, or add a personal access token.",
+      ? `GitHub refused both this computer's git sign-in and ${BRAND.NAME}'s token for ${repoLabel}. Pushes, pulls and new pull requests fail until one of them can write to it.`
+      : `Pushes, pulls and new pull requests from ${BRAND.NAME} fail until git can sign in. Sign in with GitHub CLI, or add a personal access token.`,
     settingsDetail: transport.adeCredentialTried
-      ? `GitHub refused both this computer's git sign-in and ADE's token for ${repoLabel}. Use a token that can write to it, then check again.`
+      ? `GitHub refused both this computer's git sign-in and ${BRAND.NAME}'s token for ${repoLabel}. Use a token that can write to it, then check again.`
       : "Run this in a terminal on the computer this project is on, or add a personal access token, then check again.",
     signInFixes: !transport.adeCredentialTried,
     fingerprint: transport.adeCredentialTried ? "refused" : "no-credential",
@@ -772,7 +773,7 @@ export function describeGithubCliBanner(status: GitHubStatus, cliOnly = false): 
       title: cliOnly ? "GitHub CLI is signed out" : "GitHub CLI or token not connected",
       detail: cliOnly
         ? "Run gh auth login on the computer with this project, then check again."
-        : "Connect the GitHub CLI (gh auth login) or add a personal access token so ADE can run git and PR operations.",
+        : `Connect the GitHub CLI (gh auth login) or add a personal access token so ${BRAND.NAME} can run git and PR operations.`,
       action: "Connect GitHub",
       target: "github-settings",
     };
@@ -799,7 +800,7 @@ export function describeGithubCliBanner(status: GitHubStatus, cliOnly = false): 
       title: "GitHub write access isn't connected",
       detail: cliOnly
         ? "Give your GitHub CLI sign-in permission to change this repository, then check again."
-        : "The ADE GitHub App can keep pull request data fresh, but GitHub CLI or a personal access token is needed for create, update, and merge actions.",
+        : `The ${BRAND.NAME} GitHub App can keep pull request data fresh, but GitHub CLI or a personal access token is needed for create, update, and merge actions.`,
       action: "Connect GitHub",
       target: "github-settings",
     };
@@ -823,7 +824,7 @@ export function describeGithubCliBanner(status: GitHubStatus, cliOnly = false): 
   return {
     subState: "missing-perms",
     title: "GitHub token is missing permissions",
-    detail: "Your GitHub token lacks the scopes ADE needs. Reconnect it with repo and workflow access.",
+    detail: `Your GitHub token lacks the scopes ${BRAND.NAME} needs. Reconnect it with repo and workflow access.`,
     action: "Fix GitHub auth",
     target: "github-settings",
   };
@@ -851,8 +852,8 @@ export function describeGithubAuthFailure(
       subState: "renewing",
       statusLabel: "Renewing",
       title: "Renewing GitHub authorization",
-      detail: "ADE is renewing this authorization — this takes a moment.",
-      settingsDetail: "ADE is renewing this authorization — this takes a moment. Nothing here needs changing.",
+      detail: `${BRAND.NAME} is renewing this authorization — this takes a moment.`,
+      settingsDetail: `${BRAND.NAME} is renewing this authorization — this takes a moment. Nothing here needs changing.`,
       action: "Open GitHub settings",
     };
   }
@@ -863,11 +864,11 @@ export function describeGithubAuthFailure(
       statusLabel: "GitHub paused",
       title: "GitHub requests are temporarily paused",
       detail: retryAt
-        ? `ADE stopped background checks and will resume automatically at ${retryAt}. GitHub App, CLI, and personal tokens for the same account may share this pause.`
-        : "ADE stopped background checks and will resume automatically. GitHub App, CLI, and personal tokens for the same account may share this pause.",
+        ? `${BRAND.NAME} stopped background checks and will resume automatically at ${retryAt}. GitHub App, CLI, and personal tokens for the same account may share this pause.`
+        : `${BRAND.NAME} stopped background checks and will resume automatically. GitHub App, CLI, and personal tokens for the same account may share this pause.`,
       settingsDetail: retryAt
-        ? `GitHub paused requests for this account until ${retryAt}. ADE has stopped background checks and will resume automatically; reconnecting will not make it recover sooner.`
-        : "GitHub paused requests for this account. ADE has stopped background checks and will resume automatically; reconnecting is not needed.",
+        ? `GitHub paused requests for this account until ${retryAt}. ${BRAND.NAME} has stopped background checks and will resume automatically; reconnecting will not make it recover sooner.`
+        : `GitHub paused requests for this account. ${BRAND.NAME} has stopped background checks and will resume automatically; reconnecting is not needed.`,
       action: "View GitHub status",
     };
   }
@@ -888,8 +889,8 @@ export function describeGithubAuthFailure(
       subState: "service-unavailable",
       statusLabel: "GitHub error",
       title: "GitHub isn't responding",
-      detail: "This isn't your setup — ADE will keep retrying.",
-      settingsDetail: `GitHub returned an error instead of an answer, so ADE couldn't finish the check. This is not a problem with your credential, and reconnecting won't help. GitHub said: ${status.authFailure.message}`,
+      detail: `This isn't your setup — ${BRAND.NAME} will keep retrying.`,
+      settingsDetail: `GitHub returned an error instead of an answer, so ${BRAND.NAME} couldn't finish the check. This is not a problem with your credential, and reconnecting won't help. GitHub said: ${status.authFailure.message}`,
       // Matches the rate-limited/network siblings: the banner wires this to
       // ADE Settings, so it must not read as a link to githubstatus.com. Only
       // the corroborated-outage presentation carries a real external URL.
@@ -901,7 +902,7 @@ export function describeGithubAuthFailure(
       subState: "network",
       statusLabel: "Check failed",
       title: "GitHub status is unavailable",
-      detail: "ADE found your credential but could not reach GitHub to verify it. Check the connection and retry.",
+      detail: `${BRAND.NAME} found your credential but could not reach GitHub to verify it. Check the connection and retry.`,
       settingsDetail: status.authFailure.message,
       action: "View GitHub status",
     };
@@ -911,7 +912,7 @@ export function describeGithubAuthFailure(
       subState: "permission-denied",
       statusLabel: "Access needed",
       title: "GitHub access was not granted",
-      detail: "ADE tried every available GitHub connection, but none can access this operation.",
+      detail: `${BRAND.NAME} tried every available GitHub connection, but none can access this operation.`,
       settingsDetail: status.authFailure.message,
       action: "Fix GitHub auth",
     };
@@ -921,7 +922,7 @@ export function describeGithubAuthFailure(
       subState: "validation-failed",
       statusLabel: "Check failed",
       title: "GitHub authentication check failed",
-      detail: "ADE found your credential, but GitHub did not complete the validation request. Open Settings for the exact error.",
+      detail: `${BRAND.NAME} found your credential, but GitHub did not complete the validation request. Open Settings for the exact error.`,
       settingsDetail: status.authFailure.message,
       action: "View GitHub status",
     };

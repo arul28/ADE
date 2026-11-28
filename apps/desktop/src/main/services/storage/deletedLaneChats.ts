@@ -9,6 +9,7 @@ import { liveChatProviderRefsFromPersistedState } from "../externalSessions/live
 import { openHistoryReadStream } from "./historyCompression";
 import { legacyChatTranscriptPaths } from "./legacyChatTranscripts";
 import { listProviderCopiesOfChats, type ProviderCopy, type ProviderSessionRef } from "./providerHistory";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Deleting a lane deletes its chats' session rows (`laneService` removes
@@ -274,7 +275,7 @@ export function createDeletedLaneStorage(deps: {
       fileCount: chats.reduce((sum, chat) => sum + chat.files.length, 0),
       lastModifiedAt: new Date(Math.max(...chats.map((chat) => chat.lastModifiedMs))).toISOString(),
       safety: "review_first",
-      detail: `${plural(chats.length)} whose lane was deleted. ADE no longer tracks or shows them, but their files are still on this machine, in this folder:`,
+      detail: `${plural(chats.length)} whose lane was deleted. ${BRAND.NAME} no longer tracks or shows them, but their files are still on this machine, in this folder:`,
     };
   };
 

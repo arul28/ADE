@@ -20,6 +20,7 @@ import { Dialog } from "../../ui/dialog";
 import { branchNameFromRef } from "./githubPrBranch";
 import { prRouteCoordinatesEqual, prRouteCoordinatesKey } from "../prsRouteState";
 import { isImeComposing } from "../../../lib/imeComposition";
+import { BRAND } from "../../../../shared/brand";
 
 type CreateLaneFromPrBranchApi = {
   preflightCreateLaneFromPrBranch: (
@@ -258,7 +259,7 @@ export function CreateLaneFromPrBranchDialog({
       onOpenChange={(open) => { if (!open) onCancel(); }}
       title="Create lane from PR branch"
       description={onAdeCloud
-        ? "Check this pull request's branch out into a new lane on its own ADE Cloud computer. Give the lane a name you'll recognize in the Lanes tab."
+        ? `Check this pull request's branch out into a new lane on its own ${BRAND.CLOUD_NAME} computer. Give the lane a name you'll recognize in the Lanes tab.`
         : "Check this pull request's branch out into a local lane. Give the lane a name you'll recognize in the Lanes tab."}
       size="md"
       // Only point the primitive's open-time autofocus at the field once it is
@@ -270,7 +271,7 @@ export function CreateLaneFromPrBranchDialog({
       actions={[
         { label: "Cancel", variant: "secondary", onClick: onCancel },
         {
-          label: onAdeCloud ? "Create lane on ADE Cloud" : "Create lane",
+          label: onAdeCloud ? `Create lane on ${BRAND.CLOUD_NAME}` : "Create lane",
           variant: "solid",
           icon: <GitBranch size={14} />,
           disabled: !canConfirm,

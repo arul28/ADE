@@ -172,7 +172,7 @@ struct WorkChatToolsMenuItems: View {
           ADEHaptics.light()
           onOpenCloudIphone()
         } label: {
-          Label("ADE Cloud iPhone", systemImage: "iphone.gen3")
+          Label("\(Brand.cloudName) iPhone", systemImage: "iphone.gen3")
           Text("Watch or use the cloud iPhone")
         }
       }
@@ -931,7 +931,7 @@ func workOpenChipURL(_ url: URL) -> OpenURLAction.Result {
   // A skill chip on a surface without the instructions sheet: nothing to
   // open, and the system must never be handed the app-internal scheme.
   if workSkillName(from: url) != nil { return .handled }
-  guard url.scheme?.lowercased() == "ade" else { return .systemAction }
+  guard ADEDeepLinkURLParsing.isADELinkScheme(url.scheme) else { return .systemAction }
   if url.host?.lowercased() == "lane",
      let laneId = url.pathComponents.first(where: { $0 != "/" })?.removingPercentEncoding,
      UUID(uuidString: laneId) != nil,
@@ -1138,7 +1138,7 @@ struct WorkChipMessageText: View {
         skillInstructions?.present(name: name)
         return .handled
       }
-      if url.scheme?.lowercased() == "ade", url.host?.lowercased() == "machine",
+      if ADEDeepLinkURLParsing.isADELinkScheme(url.scheme), url.host?.lowercased() == "machine",
          let key = url.pathComponents.dropFirst().first?.removingPercentEncoding,
          let machine = AccountService.shared.machines.first(where: { workMachineMentionId($0) == key })
            ?? AccountService.shared.machines.first(where: { $0.machineKey == key })
@@ -1184,7 +1184,7 @@ private struct WorkMachineChipFactsSheet: View {
       if let endpoint = machine.preferredEndpoint {
         Text("\(endpoint.host):\(endpoint.port)").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
       } else {
-        Text("via ADE relay").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+        Text("via \(Brand.name) relay").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
       }
       Spacer(minLength: 0)
     }
@@ -1215,7 +1215,7 @@ private func workChatMentionIdIsValid(_ id: String) -> Bool {
 @MainActor
 private var workChipOpenURLAction: OpenURLAction {
   OpenURLAction { url in
-    guard url.scheme?.lowercased() == "ade" else { return .systemAction }
+    guard ADEDeepLinkURLParsing.isADELinkScheme(url.scheme) else { return .systemAction }
     DeepLinkRouter.shared.handle(url)
     return .handled
   }
@@ -1643,7 +1643,7 @@ struct WorkRootFullAccessNoticeView: View {
       }
       Button("Keep Accept edits", role: .cancel) {}
     } message: {
-      Text("ADE runs as root on this computer. Allowing Full access covers every chat on it, and agents there can then change anything on it without asking.")
+      Text("\(Brand.name) runs as root on this computer. Allowing Full access covers every chat on it, and agents there can then change anything on it without asking.")
     }
   }
 
@@ -2610,7 +2610,7 @@ func workAdeMessageReasonLabel(_ reason: String) -> String {
   switch reason {
   case "interrupted_turn_recovery": return "Resuming your last request after a restart"
   case "stall_nudge": return "Asked for a status check"
-  case "continuity_recovery": return "Rebuilt this chat's thread from ADE history"
+  case "continuity_recovery": return "Rebuilt this chat's thread from \(Brand.name) history"
   case "plan_followup": return "Sent your plan decision"
   case "background_work_ended": return "A background job it was waiting on finished"
   case "background_work_lost": return "Background work it was waiting on was lost"
@@ -2648,7 +2648,7 @@ struct WorkAdeMessageRow: View {
           Image(systemName: "info.circle")
             .font(.caption2.weight(.semibold))
             .foregroundStyle(ADEColor.textMuted)
-          Text("ADE")
+          Text(Brand.name)
             .font(.caption.weight(.semibold))
             .foregroundStyle(ADEColor.textSecondary)
           Text(label)
@@ -2665,7 +2665,7 @@ struct WorkAdeMessageRow: View {
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      .accessibilityLabel("Message ADE sent: \(label)")
+      .accessibilityLabel("Message \(Brand.name) sent: \(label)")
       .accessibilityHint(isExpanded ? "Hides what the agent was told." : "Shows what the agent was told.")
       if isExpanded {
         Text(text)

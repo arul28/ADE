@@ -42,6 +42,7 @@ import { captureLaneSetupAnalytics } from "../../lib/laneSetupAnalytics";
 import type { LaneMenuShareArgs } from "../laneShare/useLaneShareMenu";
 import { requirePin } from "../../state/repositoryScope";
 import { machineErrorText } from "../../lib/machineErrorText";
+import { BRAND } from "../../../shared/brand";
 
 export function LaneMenuGlyph({ icon: Icon }: { icon: Icon }) {
   return (
@@ -273,7 +274,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
     copy.push({
       kind: "action",
       key: "copy-lane-link",
-      label: "Copy ADE lane link",
+      label: `Copy ${BRAND.NAME} lane link`,
       icon: Link,
       onSelect: () => {
         onClose();

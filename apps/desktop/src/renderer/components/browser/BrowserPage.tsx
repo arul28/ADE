@@ -33,6 +33,7 @@ import {
   type OpenBuiltInBrowserDetail,
 } from "../../lib/openExternal";
 import { useAppStore } from "../../state/appStore";
+import { BRAND } from "../../../shared/brand";
 
 /** Every call this page makes is on the personal collection, the one project-less chats see. */
 const PERSONAL_SCOPE = { tabCollection: "personal" } as const;
@@ -290,7 +291,7 @@ export function BrowserPage() {
       event.preventDefault();
       navigateUrlInAdeBrowser(event.detail.url, { newTab: true, ...PERSONAL_SCOPE }, {
         fallbackToExternal: false,
-        onFailure: () => setError("ADE Browser couldn't open that link. Try again."),
+        onFailure: () => setError(`${BRAND.NAME} Browser couldn't open that link. Try again.`),
       });
     };
     window.addEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openHere);
@@ -430,7 +431,7 @@ export function BrowserPage() {
                   presentation={{
                     mode: "standard",
                     title: dockSession ? sessionTitle(dockSession) : "New chat",
-                    assistantLabel: dockSession ? sessionTitle(dockSession) : "ADE",
+                    assistantLabel: dockSession ? sessionTitle(dockSession) : BRAND.NAME,
                     messagePlaceholder: "Ask about this page, or have the agent do something on it…",
                   }}
                 />

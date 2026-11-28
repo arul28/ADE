@@ -140,7 +140,7 @@ struct SettingsPinSheet: View {
     .accessibilityLabel("Pairing PIN")
     .accessibilityValue(pin.isEmpty ? "No digits entered" : "\(pin.count) of 6 digits entered")
 
-    Text("Enter the pairing code shown in ADE on that computer.")
+    Text("Enter the pairing code shown in \(Brand.name) on that computer.")
       .font(.system(size: 13))
       .foregroundStyle(ADEColor.textSecondary)
 
@@ -155,7 +155,7 @@ struct SettingsPinSheet: View {
   // MARK: - No pairing code message (M10)
 
   private var noPairingCodeCard: some View {
-    ADESettingsNotice(message: "That computer has no pairing code set. Set one in ADE on that computer.", tone: .warn)
+    ADESettingsNotice(message: "That computer has no pairing code set. Set one in \(Brand.name) on that computer.", tone: .warn)
   }
 
   // MARK: - Footer
@@ -273,7 +273,7 @@ struct SettingsPinSheet: View {
         // Wrong code: shake the boxes and say where the real one lives.
         ADEHaptics.error()
         isSubmitting = false
-        localError = "That code didn't match — it's shown in ADE on that computer."
+        localError = "That code didn't match — it's shown in \(Brand.name) on that computer."
         pin = ""
         withAnimation(.default) { shakeTrigger += 1 }
       } else {
@@ -362,8 +362,8 @@ struct SettingsPinSetupSheet: View {
 
           stepCard(
             number: 2,
-            title: "Or use the ADE app",
-            detail: "Open ADE on \(route.machineDisplayName), open Connections, choose Mobile, then create a six-digit pairing code."
+            title: "Or use the \(Brand.name) app",
+            detail: "Open \(Brand.name) on \(route.machineDisplayName), open Connections, choose Mobile, then create a six-digit pairing code."
           ) { EmptyView() }
 
           Spacer(minLength: 8)

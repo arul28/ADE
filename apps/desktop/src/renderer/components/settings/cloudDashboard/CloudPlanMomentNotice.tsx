@@ -4,6 +4,7 @@ import { READABLE_TOAST_DURATION_MS, showToast } from "../../app/toast/toastStor
 import { CloudLogo } from "../../remoteTargets/cloudBrand";
 import { useCloudAccount } from "../../../state/cloudAccountStore";
 import { CLOUD_PLAN_MOMENT_TOAST_ID, cloudPlanMomentWords, cloudPlanReplacedSentence, useCloudPlanMoment, type CloudPlanMoment } from "./cloudPlanMoment";
+import { BRAND } from "../../../../shared/brand";
 
 /** The three facts of the new plan, as the toast's body. */
 export function CloudPlanMomentFacts({ moment }: { moment: CloudPlanMoment }) {
@@ -35,10 +36,10 @@ function showMoment(moment: CloudPlanMoment): void {
     tone: "success",
     icon: <CloudLogo size={14} glow />,
     title: cloudPlanMomentWords(moment).title,
-    message: cloudPlanReplacedSentence(moment) ?? "Thanks for backing ADE. Your agents have room to work.",
+    message: cloudPlanReplacedSentence(moment) ?? `Thanks for backing ${BRAND.NAME}. Your agents have room to work.`,
     content: <CloudPlanMomentFacts moment={moment} />,
     durationMs: READABLE_TOAST_DURATION_MS,
-    actions: [{ label: "Open ADE Cloud", onClick: () => navigateToAppTarget({ kind: "settings", tab: "ade-cloud" }) }],
+    actions: [{ label: `Open ${BRAND.CLOUD_NAME}`, onClick: () => navigateToAppTarget({ kind: "settings", tab: "ade-cloud" }) }],
   });
   captureMoment();
 }

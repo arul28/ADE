@@ -3,6 +3,7 @@ import { WORK_BOARD_COLUMN_LABEL, type WorkBoardMoveTarget } from "../../../shar
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { withChatPin } from "../chat/chatMachinePin";
 import { machineErrorText } from "../../lib/machineErrorText";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Apply a board move and own its whole user-visible result: the toast, the
@@ -92,7 +93,7 @@ export function moveSessionOnBoard(args: {
                       // The host restarted inside the undo window: the columns
                       // are written, the message was never sent, and it no
                       // longer knows what to put back.
-                      ? "ADE no longer has this move staged. The card stays where you put it."
+                      ? `${BRAND.NAME} no longer has this move staged. The card stays where you put it.`
                       : undone.reason === "session_advanced"
                         // The chat moved on inside the window — a new hand, a
                         // settle, a snooze. Putting the old state back would

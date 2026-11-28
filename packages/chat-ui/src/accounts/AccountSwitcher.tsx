@@ -1,12 +1,12 @@
 import { useState } from "react";
 import { requireAccepted } from "../actionResult";
 
-import type { AccountInfo, AdeThread } from "../sdkTypes";
+import type { AccountInfo, DaexThread } from "../sdkTypes";
 
 export type AccountSwitcherProps = {
   accounts: readonly AccountInfo[];
   currentAccountId?: string | null;
-  thread?: Pick<AdeThread, "switchAccount"> | null;
+  thread?: Pick<DaexThread, "switchAccount"> | null;
   onSwitch?: (instanceId: string) => void | Promise<void>;
   className?: string;
 };

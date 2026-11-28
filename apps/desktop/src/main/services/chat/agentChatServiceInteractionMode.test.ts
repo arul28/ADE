@@ -120,7 +120,7 @@ describe("createAgentChatService", () => {
 
       // And the per-turn prefix must NOT carry a second copy. It used to, so
       // every Droid turn paid for the ADE block twice.
-      expect(first.split("ade chat note").length - 1).toBeLessThanOrEqual(1);
+      expect(first.split("daex chat note").length - 1).toBeLessThanOrEqual(1);
       expect(first).not.toContain("Work board is derived");
       expect(first).not.toContain("Work-board column is derived");
     });
@@ -141,8 +141,8 @@ describe("createAgentChatService", () => {
       await service.sendMessage({ sessionId: session.id, text: "first" }, { awaitDispatch: true });
       await vi.waitFor(() => { expect(mockState.cursorSdkSendCalls.length).toBeGreaterThan(0); });
       const first = JSON.stringify(mockState.cursorSdkSendCalls[0]);
-      expect(first).toContain("ade chat note");
-      expect(first).toContain("ade chat ask");
+      expect(first).toContain("daex chat note");
+      expect(first).toContain("daex chat ask");
     });
 
     it("keeps a durable marker for a plan card the user already answered", async () => {

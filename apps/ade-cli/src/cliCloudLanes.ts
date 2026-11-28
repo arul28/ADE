@@ -13,6 +13,7 @@ import { parseAgentChatTranscript } from "../../desktop/src/shared/chatTranscrip
 import { PRIMARY_LANE_DISPLAY_NAME } from "../../desktop/src/shared/laneDisplayName";
 import { formatCloudHoursRate } from "../../desktop/src/shared/adeCloud";
 import { isRecord } from "./cli";
+import { BRAND } from "../../desktop/src/shared/brand";
 
 type Row = Record<string, unknown>;
 
@@ -75,9 +76,9 @@ export function formatCloudLanes(value: unknown): string {
   const unread = isRecord(raw) && Array.isArray(raw.unread) ? raw.unread.filter((line): line is string => typeof line === "string") : [];
   const lines: string[] = [];
   if (!lanes.length && isRecord(raw) && raw.filtered === true) {
-    lines.push("No ADE Cloud lane matches. ade cloud lanes lists them all.");
+    lines.push(`No ${BRAND.CLOUD_NAME} lane matches. daex cloud lanes lists them all.`);
   } else if (!lanes.length) {
-    lines.push("No lanes on ADE Cloud. Start one: ade chat create --machine cloud --provider <p> --model <id> --prompt \"…\".");
+    lines.push(`No lanes on ${BRAND.CLOUD_NAME}. Start one: daex chat create --machine cloud --provider <p> --model <id> --prompt \"…\".`);
   } else {
     // By project, in the order the action gives (awake first, or the biggest disk first for --stale).
     const byProject = new Map<string, Row[]>();
@@ -93,7 +94,7 @@ export function formatCloudLanes(value: unknown): string {
     const gone = lanes.filter((lane) => lane.state === "computer_deleted").length;
     if (gone) lines.push(`${plural(gone, "lane")} with a deleted computer: the lane and its chats stay, and its next message makes a new computer for it.`);
     lines.push(
-      "Next: ade cloud lanes show <lane> · delete <lane> · free <lane> (keep it for later, no computer) · start <lane> · keep <lane> (stop a cleanup)",
+      "Next: daex cloud lanes show <lane> · delete <lane> · free <lane> (keep it for later, no computer) · start <lane> · keep <lane> (stop a cleanup)",
     );
   }
   for (const line of unread) lines.push(`Not read: ${line}`);
@@ -116,7 +117,7 @@ export function formatCloudLane(value: unknown): string {
   if (computer) {
     facts.push(["Computer", `${str(computer.name) || str(computer.instanceId)} · ${str(computer.sizeLabel)}${typeof computer.hoursRate === "number" ? ` · ${formatCloudHoursRate(computer.hoursRate)}` : ""}`]);
     if (str(computer.lastUsedAt)) facts.push(["Last used", day(computer.lastUsedAt)]);
-    if (str(computer.deletesAt)) facts.push(["Cleanup", `ADE deletes the computer ${day(computer.deletesAt)} unless it is used or kept (ade cloud lanes keep <lane>)`]);
+    if (str(computer.deletesAt)) facts.push(["Cleanup", `${BRAND.NAME} deletes the computer ${day(computer.deletesAt)} unless it is used or kept (daex cloud lanes keep <lane>)`]);
   }
   if (deleted) facts.push(["Computer", `${str(deleted.sentence)} Its next message makes a new computer for it${str(lane.branch) ? ` on ${str(lane.branch)}` : ""}.`]);
   const backup = backupText(lane.backup);
@@ -125,7 +126,7 @@ export function formatCloudLane(value: unknown): string {
   const width = Math.max(...facts.map(([label]) => label.length));
   const lines = facts.map(([label, text]) => `${label.padEnd(width)}  ${text}`);
   const chats = rows(isRecord(raw) ? raw.chats : null);
-  lines.push("", chats.length ? `Saved chats (ade cloud chats read <id>)` : "No saved chats.");
+  lines.push("", chats.length ? `Saved chats (daex cloud chats read <id>)` : "No saved chats.");
   lines.push(...(chats.length ? table(chats.map((chat) => [str(chat.title) || "Untitled", str(chat.provider), day(chat.updatedAt), str(chat.chatId)])) : []));
   return lines.join("\n");
 }
@@ -134,7 +135,7 @@ export function formatCloudLane(value: unknown): string {
 export function formatCloudChats(value: unknown): string {
   const raw = resultOf(value);
   const chats = rows(isRecord(raw) ? raw.chats : null);
-  if (!chats.length) return "No saved chats on ADE Cloud.";
+  if (!chats.length) return `No saved chats on ${BRAND.CLOUD_NAME}.`;
   const lines = table(chats.map((chat) => {
     const computer = isRecord(chat.computer) ? chat.computer : null;
     return [
@@ -146,14 +147,14 @@ export function formatCloudChats(value: unknown): string {
       str(chat.chatId),
     ];
   }));
-  if (isRecord(raw) && typeof raw.nextCursor === "string") lines.push(`More: ade cloud chats --cursor ${raw.nextCursor}`);
+  if (isRecord(raw) && typeof raw.nextCursor === "string") lines.push(`More: daex cloud chats --cursor ${raw.nextCursor}`);
   return lines.join("\n");
 }
 
 /** `ade cloud chats read <id>`: the saved chat's messages, oldest first. */
 export function formatCloudChatRead(value: unknown): string {
   const raw = resultOf(value);
-  if (!isRecord(raw) || !isRecord(raw.chat)) return "ADE Cloud has no such saved chat.";
+  if (!isRecord(raw) || !isRecord(raw.chat)) return `${BRAND.CLOUD_NAME} has no such saved chat.`;
   const chat = raw.chat;
   const parts = rows(raw.parts);
   // A part may end without a line break: each one starts a new line, so two events never share one.
@@ -175,7 +176,7 @@ export function formatCloudChatRead(value: unknown): string {
     }
   }
   flush();
-  if (raw.hasMore === true && typeof raw.nextBefore === "number") lines.push(`Older: ade cloud chats read ${str(chat.chatId)} --before ${raw.nextBefore}`);
+  if (raw.hasMore === true && typeof raw.nextBefore === "number") lines.push(`Older: daex cloud chats read ${str(chat.chatId)} --before ${raw.nextBefore}`);
   return lines.join("\n").trimEnd();
 }
 
@@ -186,7 +187,7 @@ export function formatCloudSessions(value: unknown): string {
     return `${str(raw.session.title) || str(raw.session.toolType) || "Terminal"} · ${str(raw.session.laneName)}\n\n${raw.text}`;
   }
   const sessions = rows(isRecord(raw) ? raw.sessions : null);
-  if (!sessions.length) return "No saved CLI or shell copies on ADE Cloud.";
+  if (!sessions.length) return `No saved CLI or shell copies on ${BRAND.CLOUD_NAME}.`;
   const lines = table(sessions.map((session) => [
     str(session.title) || str(session.toolType) || (session.kind === "shell" ? "Shell" : "CLI"),
     str(session.laneName),
@@ -194,7 +195,7 @@ export function formatCloudSessions(value: unknown): string {
     day(session.updatedAt),
     str(session.sessionId),
   ]));
-  if (isRecord(raw) && typeof raw.nextCursor === "string") lines.push(`More: ade cloud sessions --cursor ${raw.nextCursor}`);
+  if (isRecord(raw) && typeof raw.nextCursor === "string") lines.push(`More: daex cloud sessions --cursor ${raw.nextCursor}`);
   return lines.join("\n");
 }
 
@@ -202,7 +203,7 @@ export function formatCloudSessions(value: unknown): string {
 export function formatCloudBackups(value: unknown): string {
   const raw = resultOf(value);
   const backups = rows(isRecord(raw) ? raw.backups : null);
-  if (!backups.length) return "ADE Cloud keeps no saved work: every lane's work is on GitHub or on its computer.";
+  if (!backups.length) return `${BRAND.CLOUD_NAME} keeps no saved work: every lane's work is on GitHub or on its computer.`;
   return [
     ...table(backups.map((backup) => [
       // A computer's main checkout is stored as "Primary"; every screen calls it the main checkout.
@@ -212,7 +213,7 @@ export function formatCloudBackups(value: unknown): string {
       backup.restoredAt != null ? `restored ${day(backup.restoredAt)}` : "",
       str(backup.laneId),
     ])),
-    "Delete one for good: ade cloud backups forget <lane id>",
+    "Delete one for good: daex cloud backups forget <lane id>",
   ].join("\n");
 }
 
@@ -225,7 +226,7 @@ export function formatCloudJobs(value: unknown): string {
     ...rows(record.moves).map((job) => ["move", str(job.sourceName), str(job.state), day(job.createdAt), str(job.moveId)]),
     ...rows(record.copies).map((job) => ["copy", str(job.sourceName), str(job.state), day(job.createdAt), str(job.copyId)]),
   ];
-  const lines = cells.length ? [...table(cells), "Cancel one: ade cloud jobs cancel <id>"] : ["ADE's server runs no launch, move or copy for you now."];
+  const lines = cells.length ? [...table(cells), "Cancel one: daex cloud jobs cancel <id>"] : [`${BRAND.NAME}'s server runs no launch, move or copy for you now.`];
   for (const line of Array.isArray(record.unread) ? record.unread : []) lines.push(`Not read: ${String(line)}`);
   return lines.join("\n");
 }

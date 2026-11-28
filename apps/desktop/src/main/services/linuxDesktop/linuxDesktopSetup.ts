@@ -17,6 +17,7 @@ import {
   LINUX_DESKTOP_ENCODER_REQUIREMENT,
   type LinuxDesktopSetupResult,
 } from "../../../shared/types/macDesktop";
+import { BRAND } from "../../../shared/brand";
 
 /** The helper's names for what it needs, in the order they are installed. */
 export const LINUX_DESKTOP_REQUIREMENTS = ["xvfb", "openbox", "dbus", "at-spi2-core", "ffmpeg"] as const;
@@ -178,7 +179,7 @@ export async function installLinuxDesktopPackages(missing: readonly string[]): P
       alreadyInstalled: false,
       command: plan.command,
       needsUser: true,
-      message: `ADE cannot run the install itself here (not root, and sudo is not on ADE's own PATH). Run as root: ${argv.join(" ")}, or in your shell: ${plan.command}`,
+      message: `${BRAND.NAME} cannot run the install itself here (not root, and sudo is not on ${BRAND.NAME}'s own PATH). Run as root: ${argv.join(" ")}, or in your shell: ${plan.command}`,
     };
   }
   const env = { ...process.env, DEBIAN_FRONTEND: "noninteractive" };
@@ -222,7 +223,7 @@ export async function installLinuxDesktopPackages(missing: readonly string[]): P
     command: plan.command,
     needsUser: needsPassword,
     message: needsPassword
-      ? `sudo needs a password on this machine, so ADE cannot install the packages itself. Run on that machine: ${plan.command}`
+      ? `sudo needs a password on this machine, so ${BRAND.NAME} cannot install the packages itself. Run on that machine: ${plan.command}`
       : `The install failed (exit ${code}): ${output.trim().split("\n").slice(-3).join(" ")}`,
   };
 }

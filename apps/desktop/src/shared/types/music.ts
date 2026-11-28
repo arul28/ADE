@@ -1,3 +1,4 @@
+import { BRAND } from "../brand";
 /**
  * The Music feature's contract between the main process and the renderer.
  *
@@ -75,14 +76,14 @@ export type MusicSpotifyState = {
 export const MUSIC_SPOTIFY_ADE_DEVICE = "ade";
 
 /** The name ADE's own Spotify player has in Spotify's device list. */
-export const MUSIC_SPOTIFY_ADE_DEVICE_NAME = "ADE";
+export const MUSIC_SPOTIFY_ADE_DEVICE_NAME = `${BRAND.NAME}`;
 
 /** The volume ADE's own Spotify player starts at until the slider has ever been set. */
 export const MUSIC_SPOTIFY_DEFAULT_VOLUME = 0.8;
 
-/** Whether a Spotify device is ADE's own player. */
+/** Whether a Spotify device is ADE's own player. Older copies still name theirs "ADE". */
 export function isAdeSpotifyDevice(device: Pick<MusicDevice, "name" | "type"> | null | undefined): boolean {
-  return device?.name === MUSIC_SPOTIFY_ADE_DEVICE_NAME && device.type === "Computer";
+  return (device?.name === MUSIC_SPOTIFY_ADE_DEVICE_NAME || device?.name === BRAND.FORMER_NAME) && device.type === "Computer";
 }
 
 /**

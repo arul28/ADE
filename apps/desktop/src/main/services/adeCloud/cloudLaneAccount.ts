@@ -22,6 +22,7 @@ import {
 import type { CloudFreeRecord, CloudLaneBackup } from "../../../../../account-directory/src/cloud/contract";
 import { CLOUD_MACHINE_KEY_METADATA, formerMachineKeysOf, type createCloudMachines } from "./cloudMachines";
 import { CloudProviderError, type CloudInstance, type CloudLogger, type CloudProvider } from "./cloudProvider";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The account side of an ADE Cloud lane's life: read its work, delete it,
@@ -153,14 +154,14 @@ export function createCloudLaneAccount(deps: CloudLaneAccountDeps) {
     const saved = await workFromBackups(instance);
     if (saved) return saved;
     const ran = await deps.machines.runPushWork(args.instanceId, { check: true });
-    if (!ran.tally) return { unpushed: null, unpushedLanes: [], message: ran.error ?? "ADE couldn't read this computer's work." };
+    if (!ran.tally) return { unpushed: null, unpushedLanes: [], message: ran.error ?? `${BRAND.NAME} couldn't read this computer's work.` };
     // An older computer answers counts without the lane list: it can't say, so the caller warns.
-    if (!ran.tally.lanes) return { unpushed: null, unpushedLanes: [], message: "This computer's ADE is too old to say what isn't pushed." };
+    if (!ran.tally.lanes) return { unpushed: null, unpushedLanes: [], message: `This computer's ${BRAND.NAME} is too old to say what isn't pushed.` };
     const unpushedLanes = cloudWorkLanesAtRisk(ran.tally.lanes);
     const github = pushWorkGithubProblem(unpushedLanes);
     if (github) return { unpushed: null, unpushedLanes, message: pushWorkGithubMessage(github, "unknown") };
     // A project it couldn't open listed no lanes: its work is unknown, not saved.
-    if (ran.tally.failed > 0) return { unpushed: null, unpushedLanes, message: "ADE couldn't read every project on this computer." };
+    if (ran.tally.failed > 0) return { unpushed: null, unpushedLanes, message: `${BRAND.NAME} couldn't read every project on this computer.` };
     return { unpushed: unpushedLanes.length > 0, unpushedLanes, message: null, checkedBy: "computer" };
   };
 
@@ -294,8 +295,8 @@ export function createCloudLaneAccount(deps: CloudLaneAccountDeps) {
     }
     const deadline = now() + FREE_FOLLOW_MAX_MS;
     while (free.state !== "done" && free.state !== "failed" && free.state !== "cancelled") {
-      if (disposed()) return { ok: false, message: "ADE quit while the computer was being freed. ADE Cloud finishes it on its own.", lane: null };
-      if (now() > deadline) return { ok: false, message: "Freeing the computer is taking a while. ADE Cloud goes on with it; check again in a few minutes.", lane: null };
+      if (disposed()) return { ok: false, message: `${BRAND.NAME} quit while the computer was being freed. ${BRAND.CLOUD_NAME} finishes it on its own.`, lane: null };
+      if (now() > deadline) return { ok: false, message: `Freeing the computer is taking a while. ${BRAND.CLOUD_NAME} goes on with it; check again in a few minutes.`, lane: null };
       await sleep(FREE_POLL_MS);
       const last = free;
       free = await client.readFree(last.freeId).catch((error: unknown) => {
@@ -321,7 +322,7 @@ export function createCloudLaneAccount(deps: CloudLaneAccountDeps) {
     const fail = (message: string): CloudLaneFreeResult => ({ ok: false, message, lane: null });
     if (busy(args.instanceId)) return fail("This lane is changing size. Wait for it to finish, then try again.");
     const instance = await readInstance(args.instanceId);
-    if (!instance) return fail("ADE Cloud has no such computer.");
+    if (!instance) return fail(`${BRAND.CLOUD_NAME} has no such computer.`);
     const lane = cloudMachineLaneFactsOf(instance.metadata);
     if (!lane) return fail("This computer wasn't made for one lane, so there is no lane to keep. Delete it, or keep it.");
     const onServer = await freeOnServer(args.instanceId, lane.laneId, instance.metadata[CLOUD_MACHINE_KEY_METADATA] ?? null);
@@ -331,30 +332,30 @@ export function createCloudLaneAccount(deps: CloudLaneAccountDeps) {
     const work = await agentWork(args.instanceId);
     if (work === "setup") return fail("This lane is still being set up. Finish signing in, or cancel the setup, then free the computer.");
     if (work === "busy") return fail("The agent is still working. Stop it or wait, then free the computer.");
-    if (work === "unknown") return fail("ADE couldn't tell whether the agent is still working, so the computer stays. Try again in a moment.");
+    if (work === "unknown") return fail(`${BRAND.NAME} couldn't tell whether the agent is still working, so the computer stays. Try again in a moment.`);
     // Archived lanes too: their work goes with the computer.
     const ran = await deps.machines.runPushWork(args.instanceId, { check: false });
-    if (!ran.tally) return fail(`ADE couldn't push this lane's work, so the computer stays: ${(ran.error ?? "no answer").replace(/\.$/, "")}.`);
+    if (!ran.tally) return fail(`${BRAND.NAME} couldn't push this lane's work, so the computer stays: ${(ran.error ?? "no answer").replace(/\.$/, "")}.`);
     const left = cloudWorkLanesAtRisk(ran.tally.lanes);
     if (ran.tally.failed > 0 || left.length > 0 || (!ran.tally.lanes && ran.tally.skipped > 0)) {
       const github = pushWorkGithubProblem(left);
       if (github) return fail(pushWorkGithubMessage(github, "kept"));
       const names = left.map(cloudWorkLaneName).filter(Boolean);
-      return fail(`ADE couldn't push all work on this computer${names.length ? ` (${names.join(", ")})` : ""}, so it stays. Open the lane to see why, then try again.`);
+      return fail(`${BRAND.NAME} couldn't push all work on this computer${names.length ? ` (${names.join(", ")})` : ""}, so it stays. Open the lane to see why, then try again.`);
     }
     // Read once more after the push, on the computer itself: anything new or unknown keeps the computer.
     const after = await workState({ instanceId: args.instanceId, instance: null });
     if (after.unpushed !== false) {
       const names = after.unpushedLanes.map(cloudWorkLaneName).filter(Boolean);
       return fail(after.unpushed
-        ? `Work changed on this computer while ADE pushed it${names.length ? ` (${names.join(", ")})` : ""}, so it stays. Try again.`
-        : `ADE couldn't confirm all work is on GitHub, so the computer stays: ${(after.message ?? "no answer").replace(/\.$/, "")}.`);
+        ? `Work changed on this computer while ${BRAND.NAME} pushed it${names.length ? ` (${names.join(", ")})` : ""}, so it stays. Try again.`
+        : `${BRAND.NAME} couldn't confirm all work is on GitHub, so the computer stays: ${(after.message ?? "no answer").replace(/\.$/, "")}.`);
     }
     const ownLane = ran.tally.lanes?.find((entry) => entry.laneId === lane.laneId)
       ?? (ran.tally.lanes ?? []).filter((entry) => !entry.primary).at(0)
       ?? null;
     const branchRef = ownLane?.branchRef || instance.metadata[CLOUD_LANE_BRANCH_METADATA] || null;
-    if (!branchRef) return fail(ran.tally.lanes && !ownLane ? LANE_NOT_ON_COMPUTER_MESSAGE : "ADE couldn't tell which branch this lane is on, so the computer stays.");
+    if (!branchRef) return fail(ran.tally.lanes && !ownLane ? LANE_NOT_ON_COMPUTER_MESSAGE : `${BRAND.NAME} couldn't tell which branch this lane is on, so the computer stays.`);
     const machineKey = instance.metadata[CLOUD_MACHINE_KEY_METADATA] ?? null;
     // A refusal (the server couldn't read the lane, or knows none) deleted
     // nothing: its sentence is shown as it is, and the lane is not freed.
@@ -428,7 +429,7 @@ export function createCloudLaneAccount(deps: CloudLaneAccountDeps) {
   /** Keeps a computer the idle cleanup warned about: no wake, no hours; the idle clock starts again. */
   const keepComputer = async (args: { instanceId: string }): Promise<void> => {
     const client = await deps.client();
-    if (!client.keepIdleComputer) throw new Error("Update ADE to keep this computer from here.");
+    if (!client.keepIdleComputer) throw new Error(`Update ${BRAND.NAME} to keep this computer from here.`);
     await client.keepIdleComputer(args.instanceId);
     deps.changed();
   };

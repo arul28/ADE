@@ -36,6 +36,7 @@ import {
   resolveWindowsTaskName,
   windowsPowerShellCommand,
 } from "../../serviceManager/installWindows";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * Everything a diagnostic report reads off this machine.
@@ -815,11 +816,11 @@ export function collectMachineDiagnosticSources(
     logs.push(
       readLogTail("Desktop main (project)", path.join(logsDir, "main.jsonl"), PROJECT_LOG_LIMITS),
     );
-    logs.push(readLogTail("ADE CLI", path.join(logsDir, "ade-cli.jsonl"), PROJECT_LOG_LIMITS));
+    logs.push(readLogTail(`${BRAND.NAME} CLI`, path.join(logsDir, "ade-cli.jsonl"), PROJECT_LOG_LIMITS));
   }
 
   const storage = [
-    readVolume("ADE home", layout.adeDir),
+    readVolume(`${BRAND.NAME} home`, layout.adeDir),
     projectRoot ? readVolume("Project", projectRoot) : null,
   ].filter((entry): entry is DiagnosticVolumeSpace => entry != null);
 
@@ -829,7 +830,7 @@ export function collectMachineDiagnosticSources(
   // all. `EDEADLK` is what the second one exists for.
   const storageEnvironment = collectStorageEnvironment(
     [
-      { label: "ADE home", path: layout.adeDir },
+      { label: `${BRAND.NAME} home`, path: layout.adeDir },
       ...(projectRoot ? [{ label: "Project", path: projectRoot }] : []),
     ],
     {

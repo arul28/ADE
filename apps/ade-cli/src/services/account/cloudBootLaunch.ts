@@ -1,6 +1,6 @@
 /**
- * A server launch, run by the new computer itself (C6, docs/plans/cloud-6/
- * c6-c8-launcher-spec.md). ADE's server made this computer for a caller with
+ * A server launch, run by the new computer itself (docs/features/ade-cloud/
+ * README.md, "A new lane with no computer of your own"). ADE's server made this computer for a caller with
  * no computer (the web, the phone, an automation) and put two values in its
  * env: the launch id and its join code. At brain start, with no account
  * session yet, this:
@@ -75,6 +75,7 @@ import type { AccountAuthService, AccountAuthStatus } from "./accountAuthService
 import type { HeadlessApprovalResult } from "./cloudHeadlessApproval";
 import { deliverQueuedMessagesWithRetry, isFinalRefusal } from "./cloudLaunchMessages";
 import { SIGN_IN_STAGE, SIGN_IN_WAIT_MS, waitForProviderSignIn, type ProviderReady } from "./cloudLaunchSignInWait";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 type Logger = {
   info: (event: string, meta?: Record<string, unknown>) => void;
@@ -632,8 +633,8 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
     } catch (error) {
       const raw = errorText(error);
       const sentence = /repository not found|authentication failed|could not read username|permission denied|access denied|returned error: 40[34]/i.test(raw)
-        ? "The new computer can't read this repository. Check that ADE Cloud can sign in to GitHub for it, then start again."
-        : "ADE couldn't clone the repository on the new computer.";
+        ? `The new computer can't read this repository. Check that ${BRAND.CLOUD_NAME} can sign in to GitHub for it, then start again.`
+        : `${BRAND.NAME} couldn't clone the repository on the new computer.`;
       logger.warn("cloud_boot_launch.clone_failed", { launchId, error: raw });
       const update: CloudLaunchStagesUpdate = { state: "failed", stages: [computerStage, joinStage, { id: "clone", status: "failed", error: sentence }], error: sentence };
       const landed = await reportFinal(report, update, sleep);
@@ -705,7 +706,7 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
       const raw = errorText(error);
       logger.warn("cloud_boot_launch.start_failed", { launchId, error: raw });
       // No `agent` row: nothing of the agent ran, so a cancel still deletes the computer.
-      const sentence = `ADE couldn't start the lane on the new computer: ${raw}`.slice(0, 400);
+      const sentence = `${BRAND.NAME} couldn't start the lane on the new computer: ${raw}`.slice(0, 400);
       const update: CloudLaunchStagesUpdate = { state: "failed", stages: [computerStage, joinStage, cloneStage], error: sentence };
       const landed = await reportFinal(report, update, sleep);
       if (!landed) logger.warn("cloud_boot_launch.final_report_unsent", { launchId, phase: "start_failed" });
@@ -980,7 +981,7 @@ async function follow(
    * Null when done; else the sentence the launch fails with.
    */
   const continueNow = async (snapshot: ChatLaunchSnapshot, pending: PendingContinue): Promise<string | null> => {
-    if (!deps.continueChat) return "This computer's ADE can't continue a saved chat.";
+    if (!deps.continueChat) return `This computer's ${BRAND.NAME} can't continue a saved chat.`;
     try {
       const restored = await deps.continueChat(projectId, {
         fromMachineKey: pending.fromMachineKey,
@@ -1016,7 +1017,7 @@ async function follow(
     } catch (error) {
       const raw = errorText(error);
       logger.warn("cloud_boot_launch.continue_failed", { launchId, error: raw });
-      return `ADE couldn't continue the chat on the new computer: ${raw}`.slice(0, 400);
+      return `${BRAND.NAME} couldn't continue the chat on the new computer: ${raw}`.slice(0, 400);
     }
   };
   let delivery: Promise<void> | null = null;
@@ -1305,7 +1306,7 @@ export function startCloudBootLaunch(launchEnv: { launchId: string; joinCode: st
       },
       launches: async (projectId) => {
         const service = await host.chatLaunchService(projectId);
-        if (!service) throw new Error("This ADE runtime can't run a lane launch.");
+        if (!service) throw new Error(`This ${BRAND.NAME} runtime can't run a lane launch.`);
         return {
           start: (args) => service.start(args),
           get: async (launchId) => service.get({ launchId }),

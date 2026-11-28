@@ -9,6 +9,7 @@ import { cn } from "../ui/cn";
 import { CtoAvatar } from "./avatar/CtoAvatar";
 import { ctoHomeCandidates, STILL_IDENTIFYING_THIS_COMPUTER } from "./ctoHomeMachine";
 import type { CtoCloudHomeOption } from "./useCtoCloudHome";
+import { BRAND } from "../../../shared/brand";
 
 /** The ADE Cloud row's id in the radio group. */
 const CLOUD_OPTION_ID = "__ade_cloud__";
@@ -146,7 +147,7 @@ export function CtoHomeChooser({
   const confirmLabel = saving
     ? "Saving…"
     : cloudSelected && cloud
-      ? (cloud.busy ? "Starting…" : cloud.paid ? "Use ADE Cloud" : "Upgrade to use ADE Cloud")
+      ? (cloud.busy ? "Starting…" : cloud.paid ? `Use ${BRAND.CLOUD_NAME}` : `Upgrade to use ${BRAND.CLOUD_NAME}`)
       : selected
         ? selected.isThisMachine
           ? (changing ? "Move here" : "Use this computer")
@@ -158,13 +159,13 @@ export function CtoHomeChooser({
       <div className="flex w-full min-w-0 max-w-[400px] flex-col items-center">
         <CtoAvatar look={look} state={job ? "thinking" : changing ? "idle" : "asleep"} size={64} motion="lazy" />
         <h1 className="m-0 mt-3 max-w-full truncate text-[17px] font-semibold tracking-[-0.01em] text-fg">
-          {job ? `Setting up ${name} on ADE Cloud` : changing ? `Move ${name}` : `Where should ${name} live?`}
+          {job ? `Setting up ${name} on ${BRAND.CLOUD_NAME}` : changing ? `Move ${name}` : `Where should ${name} live?`}
         </h1>
         {job ? (
           <p className="m-0 mt-1.5 max-w-full truncate text-[12.5px] text-[var(--kit-text-2)]">
             {job.phase === "failed"
               ? "Stopped partway. Try again, or cancel to delete the computer."
-              : job.reused ? "Using its ADE Cloud computer again" : "A few minutes. You can leave this page."}
+              : job.reused ? `Using its ${BRAND.CLOUD_NAME} computer again` : "A few minutes. You can leave this page."}
           </p>
         ) : changing ? (
           <p
@@ -174,8 +175,8 @@ export function CtoHomeChooser({
             )}
             data-testid="cto-home-change-note"
             title={copyFollows
-              ? "ADE keeps a copy in your account after each turn. Work already running on the old machine stays there."
-              : "This computer can't reach your ADE account, so the new machine starts with its own notes and chat."}
+              ? `${BRAND.NAME} keeps a copy in your account after each turn. Work already running on the old machine stays there.`
+              : `This computer can't reach your ${BRAND.NAME} account, so the new machine starts with its own notes and chat.`}
           >
             <Info size={13} className="shrink-0" aria-hidden />
             <span className="truncate">
@@ -203,7 +204,7 @@ export function CtoHomeChooser({
             </ul>
             {job.phase === "ready" && cloud.linkStalled ? (
               <p className="m-0 mt-2 w-full text-[11.5px] text-muted-fg/70" data-testid="cto-cloud-link-stalled">
-                It's ready, but hasn't connected to this computer yet. ADE keeps trying; you can leave this page.
+                It's ready, but hasn't connected to this computer yet. {BRAND.NAME} keeps trying; you can leave this page.
               </p>
             ) : null}
             {job.warning && job.phase !== "ready" ? (
@@ -237,7 +238,7 @@ export function CtoHomeChooser({
                 disabled={cloud.busy || (cloud.linking && !cloud.linkStalled)}
                 onClick={() => void cloud.cancel()}
                 className="kit-btn kit-btn-ghost"
-                title={job.reused || cloud.linking ? "Stops here. The computer stays." : "Stops and deletes the computer ADE made."}
+                title={job.reused || cloud.linking ? "Stops here. The computer stays." : `Stops and deletes the computer ${BRAND.NAME} made.`}
               >
                 Cancel
               </button>
@@ -270,7 +271,7 @@ export function CtoHomeChooser({
                 <OptionRow
                   testId="cto-home-option-cloud"
                   icon={<Cloud size={15} className="shrink-0 text-muted-fg/70" />}
-                  title="ADE Cloud"
+                  title={BRAND.CLOUD_NAME}
                   current={false}
                   detail={cloudPick.detail}
                   selected={selectedId === CLOUD_OPTION_ID}

@@ -22,6 +22,7 @@ import {
   type CaptureHelperInput,
   type CaptureHelperOutput,
 } from "./captureGestureState";
+import { BRAND } from "../../../shared/brand";
 
 export { resolveCaptureHelperExecutablePath };
 
@@ -623,7 +624,7 @@ export class CaptureHelper {
       this.options.onFailure({
         reason: "capture-failed",
         source: this.pendingSource,
-        message: "ADE couldn’t read the captured image.",
+        message: `${BRAND.NAME} couldn’t read the captured image.`,
       });
       return;
     } finally {

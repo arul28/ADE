@@ -12,10 +12,11 @@ import { accountPassUse, adeCloudTile, cloudSignInsOn } from "../providers/cloud
 import { useAdeCloudSignIns } from "../providers/cloud/useAdeCloudSignIns";
 import { SettingsToggle } from "../primitives/SettingsControls";
 import { adeCloudSettingsSearch } from "../SettingsMachineScope";
+import { BRAND } from "../../../../shared/brand";
 
 /** Claude's row: how Claude gets on ADE Cloud, then what its pass needs (none yet, ended, off). */
 function claudePassLine(tile: { row: string; facts: readonly { text: string }[] }): string {
-  const lead = "Uses a Claude pass on ADE Cloud, not a sign-in.";
+  const lead = `Uses a Claude pass on ${BRAND.CLOUD_NAME}, not a sign-in.`;
   // C1: no pass yet. The tile's own words ("Approve a Claude pass…") would say "Claude pass" twice.
   const next = tile.row === "C1" ? "Approve one to use Claude there." : tile.facts[0]?.text ? `${tile.facts[0].text}.` : "";
   return next ? `${lead} ${next}` : lead;
@@ -68,7 +69,7 @@ export function CloudSignIns() {
       const status = await window.ade?.providerLogins?.setCloudAll?.({ on: next }, pinRef.current);
       if (status) signIns.applyAccountStatus(status);
     } catch (error) {
-      showToast({ tone: "error", title: "ADE couldn't change that", message: ipcErrorMessage(error) || "Try again." });
+      showToast({ tone: "error", title: `${BRAND.NAME} couldn't change that`, message: ipcErrorMessage(error) || "Try again." });
     } finally {
       setPending(null);
     }
@@ -77,10 +78,10 @@ export function CloudSignIns() {
   const loading = account.state === "loading";
   const failed = account.state === "failed";
   return (
-    <section id="cloud-sign-ins" className="kit-card adecd-card" aria-label="Sign-ins on ADE Cloud">
+    <section id="cloud-sign-ins" className="kit-card adecd-card" aria-label={`Sign-ins on ${BRAND.CLOUD_NAME}`}>
       <header className="kit-card-head">
         <Key size={14} />
-        Sign-ins on ADE Cloud
+        Sign-ins on {BRAND.CLOUD_NAME}
         {ready.length ? <span className="kit-card-head-count">{ready.length}</span> : null}
         <button type="button" className="kit-card-head-action" onClick={() => open()}>
           Manage <CaretRight size={10} />
@@ -94,7 +95,7 @@ export function CloudSignIns() {
             model={{
               id: "cloud-sign-ins-read-failed",
               tone: "error",
-              title: "ADE couldn't read your sign-ins",
+              title: `${BRAND.NAME} couldn't read your sign-ins`,
               detail: "Try again. Your cloud computers keep the sign-ins they have.",
               actions: [{ label: "Try again", onClick: signIns.refreshAccount }],
               report: { surface: "cloud_dashboard_sign_ins", code: "cloud_sign_ins_read_failed" },
@@ -103,13 +104,13 @@ export function CloudSignIns() {
         ) : loading ? (
           <p className="adecd-empty">Reading your sign-ins…</p>
         ) : !on ? (
-          <p className="adecd-empty">Your sign-ins aren't shared with ADE Cloud. Each cloud computer asks you to sign in on it.</p>
+          <p className="adecd-empty">Your sign-ins aren't shared with {BRAND.CLOUD_NAME}. Each cloud computer asks you to sign in on it.</p>
         ) : (
           <>
             <p className="adecd-lead">
               {ready.length
                 ? "Your cloud computers sign in with these accounts. A sign-in on any of your computers reaches them in about a minute."
-                : "No sign-in reaches ADE Cloud yet. Sign in to a provider on any of your computers and it reaches your cloud computers."}
+                : `No sign-in reaches ${BRAND.CLOUD_NAME} yet. Sign in to a provider on any of your computers and it reaches your cloud computers.`}
             </p>
             {ready.length || pass ? (
               <ul className="kit-panel adecd-signin-list">
@@ -160,13 +161,13 @@ export function CloudSignIns() {
         )}
         <div className="adecd-signin-switch">
           <div>
-            <b>Share my sign-ins with ADE Cloud</b>
+            <b>Share my sign-ins with {BRAND.CLOUD_NAME}</b>
             <small>{on ? "Cloud computers use the accounts you're signed in to on your computers." : "Off: you sign in on each cloud computer yourself."}</small>
           </div>
           <SettingsToggle
             checked={pending ?? on}
             disabled={loading || failed || pending !== null}
-            label="Share my sign-ins with ADE Cloud"
+            label={`Share my sign-ins with ${BRAND.CLOUD_NAME}`}
             onChange={(next) => void setAll(next)}
           />
         </div>

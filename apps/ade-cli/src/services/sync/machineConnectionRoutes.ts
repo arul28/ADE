@@ -11,6 +11,7 @@ import {
 } from "./syncCloudRelayStore";
 import type { SyncTunnelClientService } from "./syncTunnelClientService";
 import { readTailscaleLocalStatus } from "./tailscaleLocalStatus";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * This computer's connection routes, in one place.
@@ -109,7 +110,7 @@ export function readRelayEnabledArg(value: unknown): boolean {
   return value;
 }
 
-const NO_TAILNET_HOST_ERROR = "This ADE process doesn't publish Tailscale routes.";
+const NO_TAILNET_HOST_ERROR = `This ${BRAND.NAME} process doesn't publish Tailscale routes.`;
 
 export async function readMachineConnectionRoutes(args: {
   /** Ask Tailscale again instead of reusing the last minute's answer. */

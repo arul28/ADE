@@ -3,6 +3,7 @@ import type { TerminalShellOption, TerminalShellSettings } from "../../../shared
 import { Banner } from "../ui/notice";
 import { ModernRow, ModernRows, ModernSection, SettingsSelect } from "./primitives";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
+import { BRAND } from "../../../shared/brand";
 
 const AUTOMATIC = "__automatic__";
 
@@ -41,8 +42,8 @@ function shellOptionLabels(shells: TerminalShellOption[]): Map<string, string> {
  */
 function shellHintLead(selectedPath: string | null, automaticShell: string | null): string {
   if (selectedPath) return `New shells open ${selectedPath}.`;
-  if (automaticShell) return `Automatic opens ${automaticShell}, as ADE always has.`;
-  return "Automatic picks the shell ADE always has.";
+  if (automaticShell) return `Automatic opens ${automaticShell}, as ${BRAND.NAME} always has.`;
+  return `Automatic picks the shell ${BRAND.NAME} always has.`;
 }
 
 export function TerminalShellSection() {
@@ -87,7 +88,7 @@ export function TerminalShellSection() {
       const next = await window.ade.pty.setDefaultShell({ shellId }, pinRef.current);
       if (request === loadRequest.current) setSettings(next);
     } catch {
-      if (request === loadRequest.current) setError("ADE couldn't save that shell. Pick it again, or reload the list.");
+      if (request === loadRequest.current) setError(`${BRAND.NAME} couldn't save that shell. Pick it again, or reload the list.`);
     } finally {
       setSaving(false);
     }

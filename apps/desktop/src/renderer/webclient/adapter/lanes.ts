@@ -12,6 +12,7 @@ import {
 import type { NewLaneDefaults } from "../../../shared/laneStart";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
+import { BRAND } from "../../../shared/brand";
 
 export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes"> {
   const { commands, events } = infra;
@@ -171,7 +172,7 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
     // An older host without these answers "not stopped", which the UI shows.
     cancelDelete: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("cancelDelete", pin);
-      return await call("lanes.cancelDelete", args, { cancelled: false, reason: "This ADE host cannot stop a delete." }, false);
+      return await call("lanes.cancelDelete", args, { cancelled: false, reason: `This ${BRAND.NAME} host cannot stop a delete.` }, false);
     },
     cancelGitWrite: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("cancelGitWrite", pin);
@@ -277,7 +278,7 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
       return await commands.call<NewLaneDefaultsSnapshot>("lanes.getNewLaneDefaults", {}, {
         authoritative: true,
         fallback: () => {
-          throw new Error("New-lane defaults are unavailable on the connected ADE host.");
+          throw new Error(`New-lane defaults are unavailable on the connected ${BRAND.NAME} host.`);
         },
       });
     },

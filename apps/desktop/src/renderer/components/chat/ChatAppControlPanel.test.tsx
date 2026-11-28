@@ -341,13 +341,13 @@ describe("ChatAppControlPanel", () => {
     expect(screen.getByLabelText("CDP port")).toBeTruthy();
     // One line and one action. The CLI hint under the button was a third thing
     // to read on a page whose whole job is the button.
-    expect(screen.queryByText(/ade app-control launch/)).toBeNull();
+    expect(screen.queryByText(/daex app-control launch/)).toBeNull();
     // …and the phrase is not repeated in the footer either.
     expect(screen.queryAllByText(/no app/iu)).toHaveLength(1);
 
     fireEvent.click(screen.getByText("Help wire CDP"));
 
-    expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("Set up this Electron app for ADE App Control."));
+    expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("Set up this Electron app for DAEX App Control."));
   });
 
   it("launches from the Off card and remembers the command as a recent", async () => {

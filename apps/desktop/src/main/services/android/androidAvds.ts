@@ -6,6 +6,7 @@ import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
 import { androidHardwareConfig, type AndroidDeviceDefinition } from "./androidHardwareProfiles";
 import { readAndroidIniFile } from "./androidSdk";
 import { REMOTE_WORK_LANE_PREFIX } from "../remoteWork/remoteWorkCopyService";
+import { BRAND } from "../../../shared/brand";
 
 /*
  * The AVDs on this machine: list them, make one for a lane, delete one ADE
@@ -262,7 +263,7 @@ export function createAndroidAvd(input: CreateAndroidAvdInput): AndroidAvd {
   if (!AVD_NAME_PATTERN.test(name)) throw new Error(`Bad AVD name ${name}`);
   const folder = path.join(input.avdHome, `${name}.avd`);
   if (fs.existsSync(folder)) {
-    throw new Error(`An AVD folder named ${name}.avd already exists without its .ini; ADE will not reuse it.`);
+    throw new Error(`An AVD folder named ${name}.avd already exists without its .ini; ${BRAND.NAME} will not reuse it.`);
   }
   const target = imageTarget(input.image);
   const tag = input.image.tag;
@@ -335,7 +336,7 @@ export function deleteAdeAndroidAvd(
   const avd = readAndroidAvd(avdHome, name);
   if (!avd) throw new AndroidEmulatorFailure("ANDROID_AVD_NOT_FOUND", `No AVD named ${name} is on this machine.`);
   if (!avd.adeCreated) {
-    throw new Error(`${name} was not created by ADE, so ADE will not delete it.`);
+    throw new Error(`${name} was not created by ${BRAND.NAME}, so ${BRAND.NAME} will not delete it.`);
   }
   if (running.some((emulator) => emulator.avdName === name)) {
     throw new Error(`${name} is running. Stop it before deleting it.`);
@@ -344,7 +345,7 @@ export function deleteAdeAndroidAvd(
   const home = path.resolve(avdHome);
   const same = (a: string, b: string) => (process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b);
   if (!same(path.dirname(folder), home) || !same(path.basename(folder), `${name}.avd`)) {
-    throw new Error(`${name} lives at ${folder}, outside ${home}; ADE will not delete it.`);
+    throw new Error(`${name} lives at ${folder}, outside ${home}; ${BRAND.NAME} will not delete it.`);
   }
   // Rename the folder first. On Windows a running emulator holds it open, so
   // the rename fails and nothing has changed yet. Then the `.ini` (the

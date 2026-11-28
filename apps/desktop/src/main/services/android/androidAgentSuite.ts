@@ -46,6 +46,7 @@ import type { AndroidStreamHub } from "./androidStream";
 import { createAndroidUiSnapshots, elementActionResult, readElementQuery } from "./androidUiSnapshot";
 import { describeElementQuery, pickElement } from "./androidUiTree";
 import { androidAvdDisplayName } from "../../../shared/androidDevicePresentation";
+import { BRAND } from "../../../shared/brand";
 
 /*
  * The P1 agent suite: `ade android` at the level of `ade apple`. Apps, the
@@ -274,7 +275,7 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
     const packageName = named ? assertPackageName(named) : install?.packageName ?? null;
     if (!packageName) {
       throw new Error(install
-        ? "The build installed, but ADE could not read its package name. Pass --package <name> to launch it."
+        ? `The build installed, but ${BRAND.NAME} could not read its package name. Pass --package <name> to launch it.`
         : "launch needs --package <name>, or --apk / --gradle to install and launch.");
     }
     const started = await on.start(laneId, packageName, args.activity ?? null, launchWords);
@@ -513,7 +514,7 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
         ...(label ? { label } : {}), atMs: typed.atMs, ...(typed.seconds ? { seconds: typed.seconds } : {}), source: args.source,
       });
       ui.invalidate(laneId);
-      if (element.password) return elementActionResult("fill", picked, { typed: "unknown", typedDetail: "A password field does not show its text, so ADE cannot check it." });
+      if (element.password) return elementActionResult("fill", picked, { typed: "unknown", typedDetail: `A password field does not show its text, so ${BRAND.NAME} cannot check it.` });
       // Read the field back: a keyboard that dropped characters reads as not-seen.
       try {
         const isTextField = (candidate: { className?: string | null; role?: string | null }) =>
@@ -674,7 +675,7 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
       if (args.outDir?.trim()) {
         chosenRoot = deps.laneRoot(laneId);
         if (!chosenRoot) {
-          throw new AndroidEmulatorFailure("ANDROID_PATH_OUTSIDE_LANE", "ADE cannot find this lane's folder, so it will not write a bundle to a chosen path. Leave --out out.");
+          throw new AndroidEmulatorFailure("ANDROID_PATH_OUTSIDE_LANE", `${BRAND.NAME} cannot find this lane's folder, so it will not write a bundle to a chosen path. Leave --out out.`);
         }
         dir = containAndroidOutPath(args.outDir.trim(), chosenRoot, platform);
       } else {

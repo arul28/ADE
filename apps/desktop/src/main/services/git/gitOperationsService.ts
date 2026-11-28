@@ -56,6 +56,7 @@ import { assertLaneIdArg } from "../lanes/laneIdArg";
 import type { createOperationService } from "../history/operationService";
 import { isRecord, parseDiffNameOnly, parseDiffNameOnlySorted, safeJsonParse } from "../shared/utils";
 import { AdeExpectedError } from "../../../shared/expectedError";
+import { BRAND } from "../../../shared/brand";
 
 type LaneInfo = {
   baseRef: string;
@@ -423,14 +424,14 @@ export function createGitOperationsService({
   async function resolveCurrentBranchStashRef(lane: LaneInfo, stash: BranchStashSummary): Promise<string> {
     const current = (await listBranchStashes(lane)).find((entry) => entry.oid === stash.oid);
     if (!current) {
-      throw new Error(`Stash ${stash.ref} changed before ADE could clear it. Refresh stashes and try again.`);
+      throw new Error(`Stash ${stash.ref} changed before ${BRAND.NAME} could clear it. Refresh stashes and try again.`);
     }
     const resolved = await runGitOrThrow(["rev-parse", "--verify", current.ref], {
       cwd: lane.worktreePath,
       timeoutMs: 8_000,
     });
     if (resolved.trim() !== stash.oid) {
-      throw new Error(`Stash ${current.ref} changed before ADE could clear it. Refresh stashes and try again.`);
+      throw new Error(`Stash ${current.ref} changed before ${BRAND.NAME} could clear it. Refresh stashes and try again.`);
     }
     return current.ref;
   }

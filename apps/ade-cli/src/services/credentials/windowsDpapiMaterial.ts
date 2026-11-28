@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 const WINDOWS_DPAPI_KEY_FILE = ".credential-key.dpapi";
 const WINDOWS_DPAPI_KEY_MAGIC = "ADE_WINDOWS_DPAPI_KEY_V1";
@@ -71,11 +72,11 @@ function ensureDirectory(dirPath: string): void {
 function parseProtectedKeyFile(raw: string): Buffer {
   const [magic, encoded, ...rest] = raw.trim().split(/\r?\n/);
   if (magic !== WINDOWS_DPAPI_KEY_MAGIC || !encoded || rest.length > 0) {
-    throw new Error("ADE Windows credential key has an unsupported format.");
+    throw new Error(`${BRAND.NAME} Windows credential key has an unsupported format.`);
   }
   const protectedKey = Buffer.from(encoded, "base64");
   if (protectedKey.length === 0) {
-    throw new Error("ADE Windows credential key is invalid.");
+    throw new Error(`${BRAND.NAME} Windows credential key is invalid.`);
   }
   return protectedKey;
 }
@@ -258,7 +259,7 @@ function unprotectKey(keyPath: string): Buffer {
     "unprotect",
     parseProtectedKeyFile(fs.readFileSync(keyPath, "utf8")),
   );
-  if (material.length !== 32) throw new Error("ADE Windows credential key is invalid.");
+  if (material.length !== 32) throw new Error(`${BRAND.NAME} Windows credential key is invalid.`);
   return material;
 }
 
@@ -267,7 +268,7 @@ async function unprotectKeyAsync(keyPath: string): Promise<Buffer> {
     "unprotect",
     parseProtectedKeyFile(await fs.promises.readFile(keyPath, "utf8")),
   );
-  if (material.length !== 32) throw new Error("ADE Windows credential key is invalid.");
+  if (material.length !== 32) throw new Error(`${BRAND.NAME} Windows credential key is invalid.`);
   return material;
 }
 

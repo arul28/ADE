@@ -24,6 +24,7 @@ import {
   type LaneShareMoveOutgoingBundle,
 } from "../../../../desktop/src/main/services/chat/laneShareMoveTransfer";
 import type { LaneShareRightsStore } from "../../../../desktop/src/main/services/lanes/laneShareRightsStore";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * Moves a chat, with its lane's work, between the two people of a lane share
@@ -683,7 +684,7 @@ export function createLaneShareMoveService(options: {
       const repoKey = options.getRepoKey();
       if (!repoKey) throw new LaneShareMoveError("no_repo_key", "This project can't be moved: it needs a Git remote.");
       const shareBackEmail = options.getAccountEmail();
-      if (!shareBackEmail) throw new LaneShareMoveError("signed_out", "Sign in to ADE on this computer to move a chat.");
+      if (!shareBackEmail) throw new LaneShareMoveError("signed_out", `Sign in to ${BRAND.NAME} on this computer to move a chat.`);
       const moveId = newLaneShareMoveId();
       const offered = hostConsents.offer({ moveId, grantId, laneId: grant.laneId, direction: "to_guest" });
       if (!offered.ok) throw new LaneShareMoveError(offered.code, offered.message);

@@ -295,7 +295,7 @@ struct CloudLaneAtRestScreen: View {
           ADEKitChip(symbol: "arrow.triangle.branch", text: branch, mono: true)
         }
       }
-      Text("You're reading what ADE Cloud keeps for this lane. Nothing here wakes its computer.")
+      Text("You're reading what \(Brand.cloudName) keeps for this lane. Nothing here wakes its computer.")
         .font(.caption)
         .foregroundStyle(ADEColor.textMuted)
         .fixedSize(horizontal: false, vertical: true)
@@ -384,7 +384,7 @@ struct CloudLaneAtRestScreen: View {
               }
             }
           case .missing?:
-            Text("\(branch ?? "This branch") isn't on GitHub yet, so the Git state above is all ADE has. Wake the lane's computer to push it.")
+            Text("\(branch ?? "This branch") isn't on GitHub yet, so the Git state above is all \(Brand.name) has. Wake the lane's computer to push it.")
               .font(.subheadline)
               .foregroundStyle(ADEColor.textSecondary)
               .fixedSize(horizontal: false, vertical: true)
@@ -506,7 +506,7 @@ struct CloudGitSummaryView: View {
           }
         }
         if summary.truncated {
-          Text("More files changed than ADE Cloud keeps. Wake the lane's computer for the full list.")
+          Text("More files changed than \(Brand.cloudName) keeps. Wake the lane's computer for the full list.")
             .font(.caption)
             .foregroundStyle(ADEColor.textMuted)
             .fixedSize(horizontal: false, vertical: true)
@@ -636,13 +636,13 @@ func cloudGitHubReadCopy(_ error: GitHubDirectError, repo: GitHubDirectRepoRef?)
     let time = error.retryAt.map { $0.formatted(date: .omitted, time: .shortened) }
     return GitHubDirectStateCopy(
       title: "GitHub rate limit reached",
-      body: time.map { "GitHub asks ADE to wait. Files and commits load again at \($0)." } ?? "GitHub asks ADE to wait. Try again in a few minutes."
+      body: time.map { "GitHub asks \(Brand.name) to wait. Files and commits load again at \($0)." } ?? "GitHub asks \(Brand.name) to wait. Try again in a few minutes."
     )
   }
   guard githubDirectIsPersonState(error.kind),
         let copy = githubDirectStateCopy(error, owner: repo?.owner, name: repo?.name) else { return nil }
   return GitHubDirectStateCopy(
-    title: "ADE can't read this repository on GitHub",
+    title: "\(Brand.name) can't read this repository on GitHub",
     body: copy.body,
     primary: copy.primary ?? .connect("Connect GitHub"),
     secondary: copy.primary == nil ? nil : copy.secondary

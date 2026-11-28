@@ -52,6 +52,7 @@ import {
 } from "./machineBridge";
 import { SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES } from "../sync/syncProtocol";
 import { remoteActionResult } from "./agentRemoteRpc";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 const AGENT_PAIRED_STORE_FILE = "agent-paired-machines.json";
 /** Checkout picks one process remembers (`preferCheckoutWithCopy`): one per machine, repository and chat. */
@@ -215,7 +216,7 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
   const pool = createMachineConnectionPool({
     poolId: "agent",
     pairedStoreFile: AGENT_PAIRED_STORE_FILE,
-    deviceName: () => `ADE agents on ${os.hostname()}`,
+    deviceName: () => `${BRAND.NAME} agents on ${os.hostname()}`,
     initializeParams: agentCallerInitializeParams,
     appVersion: options.appVersion,
     projectRoots: options.projectRoots,
@@ -247,13 +248,13 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
         : null;
       const match = sameRepo ?? pickLiveCheckout(records);
       if (match) return match;
-      throw new Error(`${machineName(machine)} has no project open in ADE, so it can't answer this. Open any project there once.`);
+      throw new Error(`${machineName(machine)} has no project open in ${BRAND.NAME}, so it can't answer this. Open any project there once.`);
     }
     if (scope.kind === "repo") {
       const origin = peerGitRemoteIdentity(scope.originUrl);
       if (!origin) {
         throw new Error(
-          "This project has no git origin remote, so ADE can't find it on another machine. Pass --project <name|path|id>.",
+          `This project has no git origin remote, so ${BRAND.NAME} can't find it on another machine. Pass --project <name|path|id>.`,
         );
       }
       // Several checkouts of one repository: the same pick as the desktop's.
@@ -283,7 +284,7 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
         ?? (listedProject ? pickLiveCheckout(records.filter((record) => recordMatchesAccountProject(record, listedProject))) : null);
       if (copy) return copy;
       if (account.kind === "id") {
-        throw new Error(`${machineName(machine)} has no copy of ${selector}. \`ade projects list --account\` shows where its copies are.`);
+        throw new Error(`${machineName(machine)} has no copy of ${selector}. \`daex projects list --account\` shows where its copies are.`);
       }
     }
     const platform = targetPathPlatform(machine.platform ?? null);
@@ -668,7 +669,7 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
   ): Promise<unknown> => {
     const machines = await pool.listAccountMachines();
     const machine = machines.find((candidate) => candidate.machineKey === machineKey);
-    if (!machine) throw new Error("This computer is no longer on your ADE account.");
+    if (!machine) throw new Error(`This computer is no longer on your ${BRAND.NAME} account.`);
     if (pool.isThisMachine(machine)) throw new MachineIsLocalError(machineName(machine));
     if (!machine.online) throw new MachineOfflineError(machineName(machine), lastSeen(machine));
     // A spend is a user's click, not background work, so it may open the

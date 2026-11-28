@@ -47,6 +47,7 @@ import {
 } from "./cli";
 import { recordingStopLeftNoFile } from "./cliMacDesktopFormat";
 import { localRuntimeActionTimeoutMs } from "../../desktop/src/main/services/localRuntime/localRuntimeTimeoutPolicy";
+import { BRAND } from "../../desktop/src/shared/brand";
 
 /* ──────────────────────────────────────────────────────────────────────────
    MAC DESKTOP — `ade desktop`.
@@ -153,7 +154,7 @@ export function requireMacDesktopBrainCapability(
   const capabilities = macDesktopStatusOf(statusValue).capabilities;
   if (Array.isArray(capabilities) && capabilities.includes(capability)) return;
   throw new CliToolError(
-    `The ADE brain this command reached is older than this ade and does not support ${flag}; it would ignore it, so ${consequence}. Update ADE (or run \`ade brain update\` for a standalone brain), or leave out ${flag}.`,
+    `The ${BRAND.NAME} brain this command reached is older than this daex and does not support ${flag}; it would ignore it, so ${consequence}. Update ${BRAND.NAME} (or run \`daex brain update\` for a standalone brain), or leave out ${flag}.`,
     { capability, flag },
   );
 }
@@ -178,7 +179,7 @@ export function globalizeMacDesktopLocalPoints(payload: JsonObject, statusValue:
   const oy = typeof origin?.y === "number" ? origin.y : null;
   if (ox == null || oy == null) {
     throw new CliToolError(
-      "--local needs the lane display's position, and this lane has no display (or the brain did not report one). Start it first (ade screen start --text), or pass global points without --local.",
+      "--local needs the lane display's position, and this lane has no display (or the brain did not report one). Start it first (daex screen start --text), or pass global points without --local.",
       { flag: "--local" },
     );
   }
@@ -412,7 +413,7 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
     const positional = explicit == null ? Number(positionals(args)[0]) : explicit;
     if (!Number.isFinite(positional)) {
       throw new CliUsageError(
-        "screen claim requires --window <id>. Window ids come from `ade screen windows` and die with their process.",
+        "screen claim requires --window <id>. Window ids come from `daex screen windows` and die with their process.",
       );
     }
     return desktopAction("screen claim", "claimWindow", {
@@ -432,7 +433,7 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
     const id = explicit == null ? Number(positionals(args)[0]) : explicit;
     if (!Number.isFinite(id)) {
       throw new CliUsageError(
-        `screen ${sub} requires --window <id>. Window ids come from \`ade screen windows --text\`.`,
+        `screen ${sub} requires --window <id>. Window ids come from \`daex screen windows --text\`.`,
       );
     }
     const method = sub === "close" ? "closeWindow" : sub === "focus" || sub === "raise" ? "focusWindow" : "minimizeWindow";
@@ -739,7 +740,7 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
     const caption = readValue(args, ["--caption", "--description", "--desc"]);
     if (!caption) {
       throw new CliUsageError(
-        "screen proof requires --caption \"<what this shows>\". Use `ade screen screenshot` for a capture you are not filing.",
+        "screen proof requires --caption \"<what this shows>\". Use `daex screen screenshot` for a capture you are not filing.",
       );
     }
     const title = readValue(args, ["--title", "--name"]) ?? caption;
@@ -809,6 +810,6 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
     };
   }
   throw new CliUsageError(
-    `Unknown screen subcommand '${sub}'. Run 'ade screen --help'.`,
+    `Unknown screen subcommand '${sub}'. Run 'daex screen --help'.`,
   );
 }

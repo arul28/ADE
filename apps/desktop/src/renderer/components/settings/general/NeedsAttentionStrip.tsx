@@ -14,6 +14,7 @@ import { attentionAgentPrompt, attentionHideId, attentionLines, canHideAttention
 import "../health/health.css";
 import "../overview/overview.css";
 import { plainErrorText } from "../../../lib/plainError";
+import { BRAND } from "../../../../shared/brand";
 
 // The notice tones' glyphs (`defaultNoticeIcon`); a note stays outlined and quiet.
 const SEVERITY_ICON: Record<AttentionItem["severity"], React.ReactNode> = {
@@ -183,7 +184,7 @@ export function NeedsAttentionStrip({
       showToast({ tone: "success", title: `${fix.label}: done` });
       void attention.reload();
     } catch (err) {
-      showToast({ tone: "error", title: `Couldn't ${fix.label.toLowerCase()}`, message: plainErrorText(err, "ADE couldn't finish that fix.") });
+      showToast({ tone: "error", title: `Couldn't ${fix.label.toLowerCase()}`, message: plainErrorText(err, `${BRAND.NAME} couldn't finish that fix.`) });
     } finally {
       setFixingId(null);
     }

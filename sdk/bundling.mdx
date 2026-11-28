@@ -1,6 +1,6 @@
 ---
 title: "Bundling"
-description: "Ship the ADE runtime inside your signed app: npm platform packages, the exact codesign lines, hardened-runtime entitlements, Authenticode, and an electron-builder fragment."
+description: "Ship the DAEX runtime inside your signed app: npm platform packages, the exact codesign lines, hardened-runtime entitlements, Authenticode, and an electron-builder fragment."
 icon: "box"
 ---
 
@@ -27,13 +27,13 @@ npm install @ade-dev/runtime
 Install a specific platform package directly when you cross-build: `npm install @ade-dev/runtime-darwin-arm64 --force` on a Linux CI runner, for instance.
 
 <Note>
-Install with a version that matches the ADE release you tested against. The npm version of a runtime package is the ADE release version.
+Install with a version that matches the DAEX release you tested against. The npm version of a runtime package is the DAEX release version.
 </Note>
 
 These packages use the runtime's `embedded` profile. They omit UI-only packages, `@linear/sdk`, and cr-sqlite, which the embedded profile
-does not load. The full ADE CLI runtime archive keeps those pieces for
+does not load. The full DAEX CLI runtime archive keeps those pieces for
 Linear and sync. Both retain `node-pty` for personal-chat terminal
-mentions and tracked CLI sessions. Provider CLIs are resolved from ADE's pinned
+mentions and tracked CLI sessions. Provider CLIs are resolved from DAEX's pinned
 tools cache; the runtime archive does not carry a duplicate OpenCode executable.
 The Droid SDK is bundled into the CLI, so its package directory is omitted while
 its license notice remains.
@@ -48,7 +48,8 @@ native tree measured 191,403,602 B (191.404 MB).
 ```
 @ade-dev/runtime-darwin-arm64/
   package.json          { "os": ["darwin"], "cpu": ["arm64"] }
-  bin/ade               the runtime binary (ade.exe on Windows), mode 0755
+  bin/ade               the runtime binary (ade.exe on Windows), mode 0755;
+                        the SDK prefers a bin/daex here when the package has one
   native/               ADE_RUNTIME_ROOT
     node_modules/       ADE_RUNTIME_NODE_MODULES — the modules the binary dlopens
     third-party-notices/ bundled package license notices
@@ -65,9 +66,9 @@ native tree measured 191,403,602 B (191.404 MB).
 With the package installed, the SDK finds it on its own. `resolveBundledRuntime()` is step 2 of the resolution order and sits above the cache, `PATH`, and any download.
 
 ```ts
-import { createAdeChat } from "@ade-dev/sdk";
+import { createDaexChat } from "@daex-dev/sdk";
 
-const ade = await createAdeChat({
+const ade = await createDaexChat({
   home: path.join(app.getPath("userData"), "ade"),
   allowDownload: false,
 });
@@ -80,11 +81,11 @@ const ade = await createAdeChat({
 Inside a packaged app the runtime is no longer under `node_modules`. `resolvePackagedRuntime` finds the copy under your resources directory, so the layout (`bin/ade`, `native/`, `native/node_modules`) is not hardcoded in your app:
 
 ```ts
-import { createAdeChat, resolvePackagedRuntime } from "@ade-dev/sdk";
+import { createDaexChat, resolvePackagedRuntime } from "@daex-dev/sdk";
 
 const packaged = app.isPackaged ? resolvePackagedRuntime(process.resourcesPath) : null;
 
-const ade = await createAdeChat({
+const ade = await createDaexChat({
   home: path.join(app.getPath("userData"), "ade"),
   ...(packaged ?? {}),
   allowDownload: false,
@@ -98,7 +99,7 @@ You can still pass the three paths by hand:
 ```ts
 const runtime = path.join(process.resourcesPath, "ade-runtime");
 
-const ade = await createAdeChat({
+const ade = await createDaexChat({
   home: path.join(app.getPath("userData"), "ade"),
   binaryPath: path.join(runtime, "bin", "ade"),
   runtimeNodeModules: path.join(runtime, "native", "node_modules"),
@@ -106,7 +107,7 @@ const ade = await createAdeChat({
 });
 ```
 
-That form reports `source: "explicit"`. `runtimeRoot` defaults to the parent of `runtimeNodeModules`, so you only pass it when you split the two halves. Both directories are validated at `createAdeChat`, not at spawn: a wrong path fails with `binary_not_found` naming the path, rather than with a dlopen error from inside a child process.
+That form reports `source: "explicit"`. `runtimeRoot` defaults to the parent of `runtimeNodeModules`, so you only pass it when you split the two halves. Both directories are validated at `createDaexChat`, not at spawn: a wrong path fails with `binary_not_found` naming the path, rather than with a dlopen error from inside a child process.
 
 **Paths with spaces are safe.** `/Applications/My App.app/Contents/Resources/…` needs no quoting anywhere: every path is composed with `path.join`, every spawn is argv-based, and no shell string is ever built.
 
@@ -116,7 +117,7 @@ The `binaryPath` and bundled-package routes deliberately skip `SHA256SUMS`. That
 
 ## macOS: signing
 
-Sign the runtime with **your own** Developer ID, as part of your own bundle. The packages ship the released binaries, which carry ADE's signature; a binary signed by ADE inside your app invites a Team ID mismatch and forces `disable-library-validation` on your host app.
+Sign the runtime with **your own** Developer ID, as part of your own bundle. The packages ship the released binaries, which carry DAEX's signature; a binary signed by DAEX inside your app invites a Team ID mismatch and forces `disable-library-validation` on your host app.
 
 The binary is a Node single-executable build, so it needs the JIT entitlement:
 
@@ -146,18 +147,18 @@ Then sign every Mach-O file under `native/` **individually and with no entitleme
 codesign --force --options runtime --timestamp --sign "$IDENTITY" "$file"
 ```
 
-Find those files by magic number rather than by extension. ADE's own notarizer sniffs `feedface`, `feedfacf`, `cefaedfe`, `cffaedfe`, `cafebabe`, `bebafeca`, `cafebabf`, `bfbafeca`; the `.node` addons, `node-pty`'s `spawn-helper`, and the cr-sqlite `.dylib` are all in that set.
+Find those files by magic number rather than by extension. DAEX's own notarizer sniffs `feedface`, `feedfacf`, `cefaedfe`, `cffaedfe`, `cafebabe`, `bebafeca`, `cafebabf`, `bfbafeca`; the `.node` addons, `node-pty`'s `spawn-helper`, and the cr-sqlite `.dylib` are all in that set.
 
 Verify with `codesign --verify --strict --verbose=4`.
 
 ## macOS: entitlements, precisely
 
-The question every embedder asks, answered against ADE's own build:
+The question every embedder asks, answered against DAEX's own build:
 
 | Entitlement | Needed? | Why |
 |---|---|---|
-| `com.apple.security.cs.allow-jit` | **Required** on the runtime binary | It is the one key in ADE's own runtime entitlements, and ADE's notarizer asserts its presence. |
-| `com.apple.security.cs.allow-unsigned-executable-memory` | **Not required, and do not add it** | ADE's notarizer keeps it on a forbidden list and fails the build if `codesign --display --entitlements -` reports it. `allow-jit` is sufficient. |
+| `com.apple.security.cs.allow-jit` | **Required** on the runtime binary | It is the one key in DAEX's own runtime entitlements, and DAEX's notarizer asserts its presence. |
+| `com.apple.security.cs.allow-unsigned-executable-memory` | **Not required, and do not add it** | DAEX's notarizer keeps it on a forbidden list and fails the build if `codesign --display --entitlements -` reports it. `allow-jit` is sufficient. |
 | `com.apple.security.cs.allow-dyld-environment-variables` | **Not needed** | The SDK sets exactly `ADE_HOME`, `ADE_EMBEDDED_PARENT_PID`, `ADE_DEFAULT_ROLE`, `ADE_RUNTIME_ROOT`, `ADE_RUNTIME_NODE_MODULES` and `NODE_PATH`. No `DYLD_*` variable is set on any path. |
 | `com.apple.security.cs.disable-library-validation` | **Required on the HOST app only when the `.node` modules carry a different Team ID than the host.** Avoidable. | If you sign the binary and every Mach-O under `native/` with your own identity, as above, every loaded library shares your Team ID and library validation passes. This is worth doing: the entitlement is a meaningfully weaker posture, and re-signing is the way to avoid needing it. |
 | `com.apple.security.inherit` | On your **helper** entitlements, if you already use inherited entitlements for child processes | The runtime is spawned as an ordinary child. Whatever your app already does for helpers applies. |
@@ -167,14 +168,14 @@ The question every embedder asks, answered against ADE's own build:
 The embedded runtime is covered by **your** app's notarization submission. It is inside the bundle you submit, so it is scanned and ticketed with everything else. You do not notarize it separately.
 
 <Warning>
-Do not plan on stapling a ticket to the bare runtime binary. `xcrun stapler` rejects non-bundle executables, and ADE's own release treats stapling the standalone binary as best-effort for exactly that reason. Offline Gatekeeper validation rides on your app bundle's own stapled ticket, which is another reason to embed rather than to ship the binary loose.
+Do not plan on stapling a ticket to the bare runtime binary. `xcrun stapler` rejects non-bundle executables, and DAEX's own release treats stapling the standalone binary as best-effort for exactly that reason. Offline Gatekeeper validation rides on your app bundle's own stapled ticket, which is another reason to embed rather than to ship the binary loose.
 </Warning>
 
 ## Windows: Authenticode
 
 Sign the runtime as part of your normal signing step, the same way you sign your own `.exe` and DLLs. Under electron-builder, `azureSignOptions` (or your `signtoolOptions` equivalent) sits above electron-builder's single signing chokepoint, so files under `extraResources` are covered without a separate pass.
 
-**You do not need `signtool remove`.** ADE's build strips the vendor Node signature before injecting the SEA blob, because signing a postject-modified binary that still carries the original signature fails with `0x800700C1` (`ERROR_BAD_EXE_FORMAT`). The binary you install from npm is already stripped and re-signed, so it signs cleanly as-is.
+**You do not need `signtool remove`.** DAEX's build strips the vendor Node signature before injecting the SEA blob, because signing a postject-modified binary that still carries the original signature fails with `0x800700C1` (`ERROR_BAD_EXE_FORMAT`). The binary you install from npm is already stripped and re-signed, so it signs cleanly as-is.
 
 Timestamp the signature. An expired certificate invalidates every signature it made unless they were timestamped.
 
@@ -222,7 +223,7 @@ From runtime 1.2.81, each macOS platform package carries a `signing/` directory:
 
 | File | Contents |
 |---|---|
-| `signing/entitlements.runtime.plist` | The entitlements ADE signs its own runtime with: `com.apple.security.cs.allow-jit` and nothing else. |
+| `signing/entitlements.runtime.plist` | The entitlements DAEX signs its own runtime with: `com.apple.security.cs.allow-jit` and nothing else. |
 | `signing/manifest.json` | `{ schemaVersion: 1, entitlements, sign: [{ path, entitlements }] }`. Every Mach-O file under `native/` with `entitlements: false`, then `bin/ade` with `entitlements: true`, in the order to sign them. Paths are relative to the package root. |
 
 The hook reads the manifest, and walks the tree itself for an older package. For that fallback, save the one-key plist from [macOS: signing](#macos-signing) as `build/entitlements.runtime.plist` in your project.
@@ -277,7 +278,7 @@ function signingPlan(runtimeDir, packageDir) {
   };
 }
 
-exports.default = async function signAdeRuntime(context) {
+exports.default = async function signDaexRuntime(context) {
   if (context.electronPlatformName !== "darwin") return;
   // The full identity name, for example "Developer ID Application: Example Inc (TEAMID)".
   const identity = process.env.ADE_RUNTIME_SIGN_IDENTITY;
@@ -290,7 +291,7 @@ exports.default = async function signAdeRuntime(context) {
   // electron-builder's Arch enum: 1 = x64, 3 = arm64. Copy the matching
   // package in `extraResources` for each architecture you build.
   const archName = { 1: "x64", 3: "arm64" }[context.arch];
-  if (!archName) throw new Error(`No ADE runtime package for arch ${context.arch}.`);
+  if (!archName) throw new Error(`No DAEX runtime package for arch ${context.arch}.`);
   const packageDir = path.dirname(require.resolve(`@ade-dev/runtime-darwin-${archName}/package.json`, {
     paths: [context.packager.projectDir],
   }));
@@ -320,7 +321,7 @@ Then point the client at the copied tree with `resolvePackagedRuntime`, as in [I
 
 ### Intel Macs
 
-Each platform package carries one architecture. An app that ships one runtime (for example `darwin-arm64` only) must refuse to start chat on the other architecture, or ship a second build. A universal app needs both packages: copy `@ade-dev/runtime-darwin-arm64` and `@ade-dev/runtime-darwin-x64` to two directories and choose one at run time from `process.arch`. There is no universal runtime binary. On an Intel Mac, `resolvePackagedRuntime` returns `null` when only an arm64 tree is present, so `createAdeChat` fails at start with `runtime_unavailable` instead of at spawn.
+Each platform package carries one architecture. An app that ships one runtime (for example `darwin-arm64` only) must refuse to start chat on the other architecture, or ship a second build. A universal app needs both packages: copy `@ade-dev/runtime-darwin-arm64` and `@ade-dev/runtime-darwin-x64` to two directories and choose one at run time from `process.arch`. There is no universal runtime binary. On an Intel Mac, `resolvePackagedRuntime` returns `null` when only an arm64 tree is present, so `createDaexChat` fails at start with `runtime_unavailable` instead of at spawn.
 
 ## Confirm what shipped
 
@@ -345,7 +346,7 @@ A packaged build that reports `source: "downloaded"` is a packaging bug. `allowD
 
 ## Before you redistribute it
 
-The runtime binary is AGPL-3.0-only, and putting it inside your bundle is redistribution. The ADE Runtime Embedding Exception permits it when the binary is unmodified and your application consumes it through the documented `@ade-dev/sdk` interface. Re-signing it with your own identity, as this page instructs, does not count as modifying it. Read the exact conditions before you redistribute.
+The runtime binary is AGPL-3.0-only, and putting it inside your bundle is redistribution. The DAEX Runtime Embedding Exception permits it when the binary is unmodified and your application consumes it through the documented `@daex-dev/sdk` interface. Re-signing it with your own identity, as this page instructs, does not count as modifying it. Read the exact conditions before you redistribute.
 
 <Card title="License" href="/sdk/license" icon="scale-balanced" horizontal>
   What each artifact is licensed under, and the conditions the embedding exception sets.

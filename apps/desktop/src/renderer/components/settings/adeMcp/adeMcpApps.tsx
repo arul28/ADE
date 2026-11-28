@@ -27,6 +27,7 @@ import type { IntegrationHeroBrand } from "../integrations/integrationBrand";
 import { CodexAvatarMark, DroidLogo } from "../../shared/ProviderLogos";
 import vscodeLogoSrc from "../../../assets/editor-logos/vscode.svg";
 import zedLogoSrc from "../../../assets/editor-logos/zed.svg";
+import { BRAND } from "../../../../shared/brand";
 
 /** ADE MCP wears ADE's violet, the way an integration page wears its maker's colour. */
 export const ADE_MCP_ACCENT = "#8B7CF6";
@@ -36,8 +37,8 @@ export const ADE_MCP_DIALOG_VARS: CSSProperties = { ["--ig-accent" as string]: A
 
 /** The ADE MCP banner, drawn by the integration pages' hero. */
 export const ADE_MCP_BRAND: IntegrationHeroBrand = {
-  label: "ADE MCP",
-  tagline: "One address for your ADE account. An AI app that signs in with it can use ADE on every computer you include.",
+  label: `${BRAND.NAME} MCP`,
+  tagline: `One address for your ${BRAND.NAME} account. An AI app that signs in with it can use ${BRAND.NAME} on every computer you include.`,
   accent: ADE_MCP_ACCENT,
   banner: {
     background: [
@@ -205,7 +206,7 @@ const GALLERY: Record<GalleryAppId, GalleryApp> = {
         detail: <>In claude.ai, go to <Path parts={["Customize", "Connectors"]} />, then <Path parts={["+ Add", "Add custom connector"]} />.</>,
       },
       {
-        title: "Name it ADE and paste the server URL",
+        title: `Name it ${BRAND.NAME} and paste the server URL`,
         snippet: { code: url, copyLabel: "Copy server URL" },
       },
       { title: "Choose Add, then Connect", signIn: {} },
@@ -227,7 +228,7 @@ const GALLERY: Record<GalleryAppId, GalleryApp> = {
         detail: <>Go to <Path parts={["Settings", "Apps"]} /> (Plugins on some plans) and choose <b>Add custom MCP server</b>. ChatGPT may ask you to turn on developer mode first.</>,
       },
       {
-        title: "Name it ADE and paste the server URL",
+        title: `Name it ${BRAND.NAME} and paste the server URL`,
         detail: "If it asks how to sign in, pick OAuth.",
         snippet: { code: url, copyLabel: "Copy server URL" },
       },
@@ -246,12 +247,12 @@ const GALLERY: Record<GalleryAppId, GalleryApp> = {
     tokenSnippet: "claude-code",
     steps: (url) => [
       {
-        title: "Add ADE in a terminal",
-        snippet: { code: `claude mcp add --transport http ade ${url}`, copyLabel: "Copy Claude Code command" },
+        title: `Add ${BRAND.NAME} in a terminal`,
+        snippet: { code: `claude mcp add --transport http daex ${url}`, copyLabel: "Copy Claude Code command" },
       },
       {
         title: "Sign in from Claude Code",
-        detail: <>Run <code>/mcp</code>, pick <b>ade</b> and choose <b>Authenticate</b>. Your browser opens.</>,
+        detail: <>Run <code>/mcp</code>, pick <b>daex</b> and choose <b>Authenticate</b>. Your browser opens.</>,
         signIn: {},
       },
     ],
@@ -265,12 +266,12 @@ const GALLERY: Record<GalleryAppId, GalleryApp> = {
     tokenSnippet: "codex",
     steps: (url) => [
       {
-        title: "Add ADE in a terminal",
-        snippet: { code: `codex mcp add ade --url ${url}`, copyLabel: "Copy Codex command" },
+        title: `Add ${BRAND.NAME} in a terminal`,
+        snippet: { code: `codex mcp add daex --url ${url}`, copyLabel: "Copy Codex command" },
       },
       {
         title: "Sign in",
-        snippet: { code: "codex mcp login ade", copyLabel: "Copy Codex sign-in command" },
+        snippet: { code: "codex mcp login daex", copyLabel: "Copy Codex sign-in command" },
         signIn: {},
       },
     ],
@@ -307,14 +308,14 @@ const GALLERY: Record<GalleryAppId, GalleryApp> = {
     token: false,
     steps: (url) => [
       {
-        title: "Ask Grok Bot to add ADE",
+        title: `Ask Grok Bot to add ${BRAND.NAME}`,
         detail: <>Send it this message, or use <Path parts={["Plugins", "Add"]} />.</>,
         snippet: { code: `Add a custom MCP server: ${url}`, copyLabel: "Copy message for Grok Bot" },
       },
       { title: "Open the sign-in link it sends", signIn: { pageTitle: "Connect Grok Bot" } },
     ],
     notes: [
-      "Grok Bot reaches ADE over the internet, so give it this exact address. A localhost or home-network address won't work.",
+      `Grok Bot reaches ${BRAND.NAME} over the internet, so give it this exact address. A localhost or home-network address won't work.`,
     ],
   },
   cursor: {
@@ -326,13 +327,13 @@ const GALLERY: Record<GalleryAppId, GalleryApp> = {
     tokenSnippet: "cursor",
     steps: (url) => [
       {
-        title: "Add ADE to Cursor's MCP file",
+        title: `Add ${BRAND.NAME} to Cursor's MCP file`,
         detail: <>Put this in <code>~/.cursor/mcp.json</code> (merge it with any servers already there).</>,
-        snippet: { code: json({ mcpServers: { ade: { url } } }), copyLabel: "Copy Cursor config" },
+        snippet: { code: json({ mcpServers: { daex: { url } } }), copyLabel: "Copy Cursor config" },
       },
       {
         title: "Sign in",
-        detail: <>Cursor shows ADE under <Path parts={["Cursor Settings", "MCP"]} />. Choose its sign-in button.</>,
+        detail: <>Cursor shows {BRAND.NAME} under <Path parts={["Cursor Settings", "MCP"]} />. Choose its sign-in button.</>,
         signIn: {},
       },
     ],
@@ -346,9 +347,9 @@ const GALLERY: Record<GalleryAppId, GalleryApp> = {
     tokenSnippet: "vscode",
     steps: (url) => [
       {
-        title: "Add ADE",
+        title: `Add ${BRAND.NAME}`,
         detail: <>Run this in a terminal, or use <Path parts={["Command Palette", "MCP: Add Server", "HTTP"]} /> and paste the server URL.</>,
-        snippet: { code: `code --add-mcp '${JSON.stringify({ name: "ade", type: "http", url })}'`, copyLabel: "Copy VS Code command" },
+        snippet: { code: `code --add-mcp '${JSON.stringify({ name: "daex", type: "http", url })}'`, copyLabel: "Copy VS Code command" },
       },
       { title: "Allow VS Code to sign in", signIn: {} },
     ],
@@ -362,13 +363,13 @@ const GALLERY: Record<GalleryAppId, GalleryApp> = {
     tokenSnippet: "gemini-cli",
     steps: (url) => [
       {
-        title: "Add ADE to Gemini's settings",
+        title: `Add ${BRAND.NAME} to Gemini's settings`,
         detail: <>Put this in <code>~/.gemini/settings.json</code> (merge it with what's there).</>,
-        snippet: { code: json({ mcpServers: { ade: { httpUrl: url } } }), copyLabel: "Copy Gemini CLI settings" },
+        snippet: { code: json({ mcpServers: { daex: { httpUrl: url } } }), copyLabel: "Copy Gemini CLI settings" },
       },
       {
         title: "Sign in from Gemini CLI",
-        snippet: { code: "/mcp auth ade", copyLabel: "Copy Gemini CLI sign-in command" },
+        snippet: { code: "/mcp auth daex", copyLabel: "Copy Gemini CLI sign-in command" },
         signIn: {},
       },
     ],
@@ -436,12 +437,12 @@ export function galleryIdForKnownApp(app: RemoteMcpKnownApp | null): GalleryAppI
 /** One line each for the other apps ADE recognises, for the "Any other app" view. */
 export const OTHER_APP_HINTS: readonly { app: RemoteMcpKnownApp; how: (url: string) => { text: ReactNode; copy?: string } }[] = [
   { app: "le-chat", how: () => ({ text: <>Le Chat: <Path parts={["Connectors", "+ Add Connector", "Custom MCP Connector"]} /> (a workspace admin adds it).</> }) },
-  { app: "windsurf", how: (url) => ({ text: <>Windsurf: in Cascade's MCP config, set <code>serverUrl</code>.</>, copy: json({ mcpServers: { ade: { serverUrl: url } } }) }) },
+  { app: "windsurf", how: (url) => ({ text: <>Windsurf: in Cascade's MCP config, set <code>serverUrl</code>.</>, copy: json({ mcpServers: { daex: { serverUrl: url } } }) }) },
   { app: "zed", how: () => ({ text: <>Zed: <Path parts={["Settings", "AI", "MCP Servers", "Add Remote Server"]} />.</> }) },
   { app: "goose", how: () => ({ text: <>Goose: <Path parts={["Extensions", "Add custom extension", "Remote"]} />.</> }) },
-  { app: "opencode", how: () => ({ text: <>OpenCode: add it as a remote server, then run <code>opencode mcp auth ade</code>.</>, copy: "opencode mcp auth ade" }) },
-  { app: "amp", how: (url) => ({ text: <>Amp: <code>amp mcp add ade</code> with the URL.</>, copy: `amp mcp add ade ${url}` }) },
-  { app: "factory", how: (url) => ({ text: <>Factory: <code>droid mcp add</code> with the URL.</>, copy: `droid mcp add ade ${url} --type http` }) },
+  { app: "opencode", how: () => ({ text: <>OpenCode: add it as a remote server, then run <code>opencode mcp auth daex</code>.</>, copy: "opencode mcp auth daex" }) },
+  { app: "amp", how: (url) => ({ text: <>Amp: <code>amp mcp add daex</code> with the URL.</>, copy: `amp mcp add daex ${url}` }) },
+  { app: "factory", how: (url) => ({ text: <>Factory: <code>droid mcp add</code> with the URL.</>, copy: `droid mcp add daex ${url} --type http` }) },
   { app: "raycast", how: () => ({ text: <>Raycast: run its <b>Install MCP Server</b> command.</> }) },
 ];
 
@@ -478,21 +479,21 @@ export const TOKEN_SNIPPETS: readonly TokenSnippet[] = [
     label: "xAI API",
     logo: "grok",
     where: <>Add to <code>tools</code> in a Responses request.</>,
-    build: (url, token) => json({ type: "mcp", server_label: "ade", server_url: url, authorization: `Bearer ${token}` }),
+    build: (url, token) => json({ type: "mcp", server_label: "daex", server_url: url, authorization: `Bearer ${token}` }),
   },
   {
     id: "openai",
     label: "OpenAI API",
     logo: "chatgpt",
     where: <>Add to <code>tools</code> in a Responses request or the Agents SDK.</>,
-    build: (url, token) => json({ type: "mcp", server_label: "ade", server_url: url, authorization: token }),
+    build: (url, token) => json({ type: "mcp", server_label: "daex", server_url: url, authorization: token }),
   },
   {
     id: "claude-code",
     label: "Claude Code",
     logo: "claude-code",
     where: "Run in a terminal.",
-    build: (url, token) => `claude mcp add --transport http ade ${url} --header "Authorization: Bearer ${token}"`,
+    build: (url, token) => `claude mcp add --transport http daex ${url} --header "Authorization: Bearer ${token}"`,
   },
   {
     id: "codex",
@@ -501,7 +502,7 @@ export const TOKEN_SNIPPETS: readonly TokenSnippet[] = [
     where: <>Add to <code>~/.codex/config.toml</code>, and set the variable in your shell.</>,
     build: (url, token) => [
       "# ~/.codex/config.toml",
-      "[mcp_servers.ade]",
+      "[mcp_servers.daex]",
       `url = "${url}"`,
       'bearer_token_env_var = "ADE_MCP_TOKEN"',
       "",
@@ -514,21 +515,21 @@ export const TOKEN_SNIPPETS: readonly TokenSnippet[] = [
     label: "Cursor",
     logo: "cursor",
     where: <>Put in <code>~/.cursor/mcp.json</code>.</>,
-    build: (url, token) => json({ mcpServers: { ade: { url, headers: { Authorization: `Bearer ${token}` } } } }),
+    build: (url, token) => json({ mcpServers: { daex: { url, headers: { Authorization: `Bearer ${token}` } } } }),
   },
   {
     id: "vscode",
     label: "VS Code",
     logo: "vscode",
     where: <>Put in <code>.vscode/mcp.json</code> or your user MCP file.</>,
-    build: (url, token) => json({ servers: { ade: { type: "http", url, headers: { Authorization: `Bearer ${token}` } } } }),
+    build: (url, token) => json({ servers: { daex: { type: "http", url, headers: { Authorization: `Bearer ${token}` } } } }),
   },
   {
     id: "gemini-cli",
     label: "Gemini CLI",
     logo: "gemini-cli",
     where: <>Put in <code>~/.gemini/settings.json</code>.</>,
-    build: (url, token) => json({ mcpServers: { ade: { httpUrl: url, headers: { Authorization: `Bearer ${token}` } } } }),
+    build: (url, token) => json({ mcpServers: { daex: { httpUrl: url, headers: { Authorization: `Bearer ${token}` } } } }),
   },
   {
     id: "curl",

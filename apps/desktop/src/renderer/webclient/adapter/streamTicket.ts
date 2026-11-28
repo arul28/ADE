@@ -1,3 +1,4 @@
+import { BRAND } from "../../../shared/brand";
 /*
  * What both device adapters (`appleDevice.ts`, `androidDevice.ts`) share: the
  * relay ticket, the stream URL for this tab's route, and the error fallback
@@ -42,14 +43,14 @@ export function resolveAppleStreamUrl(
     return {
       url: null,
       forwarded: false,
-      error: "The live view needs a connection to the ADE machine that owns the device.",
+      error: `The live view needs a connection to the ${BRAND.NAME} machine that owns the device.`,
     };
   }
   let base: URL;
   try {
     base = new URL(endpoint);
   } catch {
-    return { url: null, forwarded: false, error: "The ADE connection has no usable address." };
+    return { url: null, forwarded: false, error: `The ${BRAND.NAME} connection has no usable address.` };
   }
   // A relay endpoint pairs this tab with a brain-side pipe socket; the pipe,
   // not the tab, decides which local path to dial, so the path rides as a

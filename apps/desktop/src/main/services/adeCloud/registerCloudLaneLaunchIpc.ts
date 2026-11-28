@@ -28,6 +28,7 @@ import { createCtoCloudHomeService } from "./ctoCloudHomeService";
 import type { CtoCloudHomeCallRequest } from "../../../shared/ctoCloudHome";
 import { cloudLaneLaunchOutcomes, type CloudLaneAnalyticsCapture } from "./cloudLaneAnalytics";
 import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
+import { BRAND } from "../../../shared/brand";
 
 /** The launch id of an id-based call, or null when the args carry none. */
 function launchIdOf(args: unknown): string | null {
@@ -184,7 +185,7 @@ export function registerCloudLaneLaunchIpc(args: {
 
   ipcMain.handle(IPC.cloudLaneLaunchCall, async (event, raw: unknown): Promise<CloudLaneLaunchCallResult> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudLaneLaunchCall)) {
-      throw new Error("ADE can't do that from here.");
+      throw new Error(`${BRAND.NAME} can't do that from here.`);
     }
     const request = (isRecord(raw) ? raw : {}) as Partial<CloudLaneLaunchCallRequest>;
     switch (request.method) {
@@ -239,7 +240,7 @@ export function registerCloudLaneLaunchIpc(args: {
         return { owned: false };
       }
       default:
-        throw new Error("Unknown ADE Cloud launch call.");
+        throw new Error(`Unknown ${BRAND.CLOUD_NAME} launch call.`);
     }
   });
 
@@ -266,7 +267,7 @@ export function registerCloudLaneLaunchIpc(args: {
   });
   ipcMain.handle(IPC.ctoCloudHomeCall, async (event, raw: unknown) => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.ctoCloudHomeCall)) {
-      throw new Error("ADE can't do that from here.");
+      throw new Error(`${BRAND.NAME} can't do that from here.`);
     }
     const request = (isRecord(raw) ? raw : {}) as Partial<CtoCloudHomeCallRequest>;
     const callArgs: Record<string, unknown> = isRecord(request.args) ? request.args : {};

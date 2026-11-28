@@ -1,6 +1,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 import type { CloudAccountState, CloudMachinesResult, CloudSponsoredChoice, CloudSponsoredState } from "../../shared/adeCloud";
 import { useAdeCloudEnabled } from "./cloudAccess";
+import { BRAND } from "../../shared/brand";
 
 /**
  * The ADE Cloud account (plan, hours, disk, referral) for the always-on
@@ -84,7 +85,7 @@ export function refreshCloudAccount(): void {
 
 export async function setCloudSponsoredConsent(consent: CloudSponsoredChoice, confirmed = false, since = generation): Promise<void> {
   const set = window.ade?.cloud?.setSponsoredConsent;
-  if (!set) throw new Error("ADE can't save that here.");
+  if (!set) throw new Error(`${BRAND.NAME} can't save that here.`);
   // Asked of an account signed out since (a confirm stayed open meanwhile): not this account's answer.
   if (since !== generation) return;
   const current = generation;
@@ -97,7 +98,7 @@ export async function setCloudSponsoredConsent(consent: CloudSponsoredChoice, co
     if (current === generation) refreshCloudAccount();
     throw error;
   }
-  if (!next) throw new Error("ADE couldn't reach your account. Try again in a moment.");
+  if (!next) throw new Error(`${BRAND.NAME} couldn't reach your account. Try again in a moment.`);
   // Another account signed in meanwhile: this answer was the old account's.
   if (current !== generation) return;
   noteCloudSponsoredState(next);

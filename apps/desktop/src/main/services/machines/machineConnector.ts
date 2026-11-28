@@ -29,6 +29,7 @@ import {
   type MachineConnectOptions,
   type MachineConnectResult,
 } from "../../../shared/machineAddress";
+import { BRAND } from "../../../shared/brand";
 
 export type MachineConnectorTarget = { id: string; name: string };
 
@@ -87,7 +88,7 @@ function displayName(...names: Array<string | null | undefined>): string {
     const trimmed = name?.trim();
     if (trimmed && !isCloudInstanceId(trimmed)) return trimmed;
   }
-  return names.some((name) => name?.trim()) ? "your ADE Cloud computer" : FALLBACK_NAME;
+  return names.some((name) => name?.trim()) ? `your ${BRAND.CLOUD_NAME} computer` : FALLBACK_NAME;
 }
 
 /** A cloud computer just woken takes this long at most for its ADE to answer a pairing. */
@@ -132,15 +133,15 @@ export function createMachineConnector(deps: MachineConnectorDeps): MachineConne
    */
   const pairThroughAccount = async (key: string, wantConnected: boolean, background: boolean): Promise<MachineConnectResult> => {
     if (!deps.signedIn()) {
-      return failure(key, "signed_out", "Sign in to your ADE account on this computer to reach your other computers.");
+      return failure(key, "signed_out", `Sign in to your ${BRAND.NAME} account on this computer to reach your other computers.`);
     }
     let row: { name: string | null } | null;
     try {
       row = await deps.accountMachine(key);
     } catch (error) {
-      return failure(key, "unreachable", `ADE couldn't read your account's computers: ${reasonText(error)}.`);
+      return failure(key, "unreachable", `${BRAND.NAME} couldn't read your account's computers: ${reasonText(error)}.`);
     }
-    if (!row) return failure(key, "not_in_account", "That computer is no longer on your ADE account.");
+    if (!row) return failure(key, "not_in_account", `That computer is no longer on your ${BRAND.NAME} account.`);
     const name = displayName(row.name);
     let woken = false;
     // A background connect never wakes a sleeping cloud computer: that is the
@@ -152,7 +153,7 @@ export function createMachineConnector(deps: MachineConnectorDeps): MachineConne
         woken = wake.state === "woken";
         deps.logger?.info?.("machines.connect_wake", { state: wake.state });
       } catch (error) {
-        return failure(key, "unreachable", `ADE couldn't wake ${name}: ${reasonText(error)}.`);
+        return failure(key, "unreachable", `${BRAND.NAME} couldn't wake ${name}: ${reasonText(error)}.`);
       }
     }
     // A computer that is still starting answers within a minute or two.
@@ -169,7 +170,7 @@ export function createMachineConnector(deps: MachineConnectorDeps): MachineConne
       }
     } while (now() < deadline);
     deps.logger?.warn?.("machines.connect_pair_failed", { error: getErrorMessage(lastError), woken });
-    return failure(key, "unreachable", `ADE couldn't reach ${name}: ${reasonText(lastError)}.`);
+    return failure(key, "unreachable", `${BRAND.NAME} couldn't reach ${name}: ${reasonText(lastError)}.`);
   };
 
   /** `onPaired` hears the address (or the failure) as soon as it is known, before any connect. */
@@ -201,7 +202,7 @@ export function createMachineConnector(deps: MachineConnectorDeps): MachineConne
         return failure(key, "declined", `${address.name} stays disconnected until you connect it.`);
       }
       deps.logger?.warn?.("machines.connect_failed", { targetId: address.targetId, error: getErrorMessage(error) });
-      return failure(key, "unreachable", `ADE couldn't reach ${address.name}: ${reasonText(error)}.`);
+      return failure(key, "unreachable", `${BRAND.NAME} couldn't reach ${address.name}: ${reasonText(error)}.`);
     }
     return { ok: true, address };
   };
@@ -210,7 +211,7 @@ export function createMachineConnector(deps: MachineConnectorDeps): MachineConne
     addressFor,
     connect(machineKey, options) {
       const key = machineKey?.trim() ?? "";
-      if (!key) return Promise.resolve(failure("", "invalid", "ADE needs to know which computer to reach."));
+      if (!key) return Promise.resolve(failure("", "invalid", `${BRAND.NAME} needs to know which computer to reach.`));
       const wantConnected = options?.connect !== false;
       const background = options?.background === true;
       const flightKey = key.toLowerCase();
@@ -236,7 +237,7 @@ export function createMachineConnector(deps: MachineConnectorDeps): MachineConne
         } catch (error) {
           // A dependency that throws (the account's status, a saved target read) is a failed reach, never a throw.
           deps.logger?.warn?.("machines.connect_threw", { error: getErrorMessage(error) });
-          return failure(key, "unreachable", `ADE couldn't reach that computer: ${reasonText(error)}.`);
+          return failure(key, "unreachable", `${BRAND.NAME} couldn't reach that computer: ${reasonText(error)}.`);
         }
       })().then((result) => {
         // A flight that ended before an address (a failure, this computer) settles its pairing with the same answer.

@@ -5,6 +5,7 @@ import { COLORS, SANS_FONT, outlineButton, primaryButton } from "../../lanes/lan
 import { Banner } from "../../ui/notice";
 import { StorageDialogFrame } from "./StorageCleanupDialog";
 import { useStorageBytes } from "./useStorageBytes";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * Archive & reclaim one lane: keeps the lane, branch and chats, removes its
@@ -86,7 +87,7 @@ export function ReclaimConfirmDialog({
               onChange={(event) => onDiscardDirtyChange(event.target.checked)}
               style={{ marginTop: 2 }}
             />
-            <span>Discard uncommitted changes in this lane. ADE keeps a copy for {DELETED_LANE_KEEP_DAYS} days in Recently deleted.</span>
+            <span>Discard uncommitted changes in this lane. {BRAND.NAME} keeps a copy for {DELETED_LANE_KEEP_DAYS} days in Recently deleted.</span>
           </label>
         ) : null}
         <label style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 14 }}>

@@ -40,6 +40,7 @@ import {
 import { SignInAccountCard } from "./SignInAccountCard";
 import type { AdeCloudSignInsState } from "./useAdeCloudSignIns";
 import type { HeldWrites } from "./useHeldWrites";
+import { BRAND } from "../../../../../shared/brand";
 
 export type { RunWrite };
 
@@ -176,19 +177,19 @@ export function AdeCloudProviderPage({
         <section className="kit-card">
           <header className="kit-card-head">
             <UserCircle size={14} />
-            Sign-ins in your ADE account
+            Sign-ins in your {BRAND.NAME} account
             {cardCount ? <span className="kit-card-head-count">{cardCount}</span> : null}
           </header>
           <div className="kit-card-body" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             {account.state === "loading" ? (
-              <span style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textDim }}>Reading your ADE account…</span>
+              <span style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textDim }}>Reading your {BRAND.NAME} account…</span>
             ) : cardCount === 0 ? (
               <NoSignInRow
                 text={accountUnreadable(account)
-                  ? "ADE couldn't read your ADE account."
+                  ? `${BRAND.NAME} couldn't read your ${BRAND.NAME} account.`
                   : provider === "copilot"
-                    ? "No GitHub CLI login in your ADE account yet. Turn one on from a computer's Copilot page."
-                    : "No sign-in in your ADE account yet."}
+                    ? `No GitHub CLI login in your ${BRAND.NAME} account yet. Turn one on from a computer's Copilot page.`
+                    : `No sign-in in your ${BRAND.NAME} account yet.`}
                 action={accountUnreadable(account) ? null : tileAction}
               />
             ) : (
@@ -230,7 +231,7 @@ export function AdeCloudProviderPage({
             <span style={{ ...noteStyle, flex: "1 1 240px" }}>
               {cloudSignedIn && reporting
                 ? `Signed in on ${reporting.machineName}. Each cloud computer keeps its own sign-in.`
-                : `ADE can't bring this sign-in from your computers. Each cloud computer signs in to ${descriptor.label} on its own.`}
+                : `${BRAND.NAME} can't bring this sign-in from your computers. Each cloud computer signs in to ${descriptor.label} on its own.`}
             </span>
             {reporting && cloudSignInKind && !cloudSignedIn ? (
               <button
@@ -256,14 +257,14 @@ export function AdeCloudProviderPage({
           onRemove={() => {
             hold({
               id: `key:${keyRow.spec.id}`,
-              title: `Removed the ${keyRow.spec.keyName} from ADE Cloud.`,
+              title: `Removed the ${keyRow.spec.keyName} from ${BRAND.CLOUD_NAME}.`,
               write: () => {
                 // The key store is the account's, through this computer's brain (no pin to pass).
                 void window.ade?.cloud?.cloudSignInRemove?.(keyRow.spec.id).then(
                   (status) => signIns.applySaved(status),
                   (error: unknown) => {
                     console.warn("[providers] removing the ADE Cloud key failed", error);
-                    showToast({ tone: "error", title: `ADE couldn't remove the ${keyRow.spec.keyName}. It is back on the page.` });
+                    showToast({ tone: "error", title: `${BRAND.NAME} couldn't remove the ${keyRow.spec.keyName}. It is back on the page.` });
                   },
                 );
               },
@@ -379,7 +380,7 @@ function SavedKeyRow({
       setDraft("");
       setEditing(false);
     } catch (saveError) {
-      setError(ipcErrorMessage(saveError) || "ADE couldn't save the key. Try again.");
+      setError(ipcErrorMessage(saveError) || `${BRAND.NAME} couldn't save the key. Try again.`);
     } finally {
       setSaving(false);
     }
@@ -389,7 +390,7 @@ function SavedKeyRow({
     <section className="kit-card" data-testid={`ade-cloud-key-${spec.id}`}>
       <header className="kit-card-head">
         <Key size={14} />
-        Saved key for ADE Cloud
+        Saved key for {BRAND.CLOUD_NAME}
       </header>
       <div className="kit-card-body" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -397,11 +398,11 @@ function SavedKeyRow({
           <span style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
             {row.saved === null && !held ? "· Checking…" : saved ? "· Saved" : "· Not saved"}
           </span>
-          {saved && row.inUse ? <NoticeBadge tone="accent">In use on ADE Cloud</NoticeBadge> : null}
+          {saved && row.inUse ? <NoticeBadge tone="accent">In use on {BRAND.CLOUD_NAME}</NoticeBadge> : null}
           <span style={{ flex: 1 }} />
           {saved && row.canUse ? (
             <button type="button" disabled={busy} aria-busy={busy || undefined} onClick={onUse} style={outlineButton({ height: 26, padding: "0 10px", fontSize: 12 })}>
-              Use on ADE Cloud
+              Use on {BRAND.CLOUD_NAME}
             </button>
           ) : null}
           <button

@@ -2,6 +2,7 @@ import { machineLabelForBinding } from "../../state/adeCloudLaneIndex";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { showToast } from "../app/toast/toastStore";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Path actions that only this computer can do: open a file in Finder or in an
@@ -15,7 +16,7 @@ import { plainErrorText } from "../../lib/plainError";
 /** The refusal for a path on another computer, or null when the path is here. */
 export function pathElsewhereMessage(pin: OpenProjectBinding, what = "This file"): string | null {
   if (pin.kind !== "remote") return null;
-  return `${what} is on ${machineLabelForBinding(pin)}. Open it from ADE on that computer.`;
+  return `${what} is on ${machineLabelForBinding(pin)}. Open it from ${BRAND.NAME} on that computer.`;
 }
 
 /**
@@ -36,7 +37,7 @@ export function runPathActionHere(
     showToast({
       tone: "error",
       title: options.failTitle,
-      message: plainErrorText(error, "ADE couldn't do that."),
+      message: plainErrorText(error, `${BRAND.NAME} couldn't do that.`),
     });
   });
 }

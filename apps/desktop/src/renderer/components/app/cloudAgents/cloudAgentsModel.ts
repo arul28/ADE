@@ -8,6 +8,7 @@ import type {
   CursorCloudFleetEvent,
 } from "../../../../shared/types";
 import { DevinMark } from "../../shared/ProviderLogos";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * What the cloud-agents panel shows, decided in one place: filters, sections,
@@ -159,7 +160,7 @@ export function sectionAgents(agents: CloudAgent[]): CloudAgentSection[] {
   return ([
     { id: "needs_you", label: "Needs you", agents: needs },
     { id: "working", label: "Working", agents: working },
-    { id: "in_ade", label: "In ADE", agents: inAde },
+    { id: "in_ade", label: `In ${BRAND.NAME}`, agents: inAde },
     { id: "recent", label: "Recent", agents: recent },
   ] as CloudAgentSection[]).filter((section) => section.agents.length > 0);
 }

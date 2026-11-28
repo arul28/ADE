@@ -1,9 +1,13 @@
-# @ade-dev/sdk
+# @daex-dev/sdk
 
-Typed Node / Electron-main client that spawns a slim ADE runtime as a sidecar
+Typed Node / Electron-main client that spawns a slim DAEX runtime as a sidecar
 and exposes chat as durable named threads.
 
-**Docs:** [ADE SDK](https://ade-app.dev/docs/sdk/overview) — install, threads, MCP honesty table, chat UI, runtime, and API reference.
+Formerly `@ade-dev/sdk`. To move, change your imports to `@daex-dev/sdk`; the
+`Ade*` names (`createAdeChat`, `AdeError`, ...) still work as deprecated aliases
+of the `DAEX*` names.
+
+**Docs:** [DAEX SDK](https://ade-app.dev/docs/sdk/overview) — install, threads, MCP honesty table, chat UI, runtime, and API reference.
 
 | Page | What it covers |
 |---|---|
@@ -12,7 +16,7 @@ and exposes chat as durable named threads.
 | [MCP servers](https://ade-app.dev/docs/sdk/mcp) | Injected tools, credentials that change, resource links, and the strict-mode honesty table |
 | [Permissions](https://ade-app.dev/docs/sdk/permissions) | The policy object, per-provider enforcement, answering approvals |
 | [Accounts](https://ade-app.dev/docs/sdk/accounts) | Isolated sign-in, provider accounts, stored credentials, presets and usage limits |
-| [Chat UI](https://ade-app.dev/docs/sdk/chat-ui) | `@ade-dev/chat-ui`, theming, approval cards, provider cards |
+| [Chat UI](https://ade-app.dev/docs/sdk/chat-ui) | `@daex-dev/chat-ui`, theming, approval cards, provider cards |
 | [Electron](https://ade-app.dev/docs/sdk/electron) | The main / preload / renderer bridge under `sandbox: true` |
 | [WebSocket server](https://ade-app.dev/docs/sdk/server) | Authorized server bridge and browser remote client |
 | [Testing](https://ade-app.dev/docs/sdk/testing) | Mock clients and transcript replay without a runtime or provider tokens |
@@ -22,7 +26,7 @@ and exposes chat as durable named threads.
 | [License](https://ade-app.dev/docs/sdk/license) | What each artifact is licensed under |
 
 ```bash
-npm install @ade-dev/sdk
+npm install @daex-dev/sdk
 ```
 
 Requires Node 22.13 or newer. The sidecar is a guest: isolated `home`, sync off, no
@@ -41,10 +45,10 @@ connects, logs one warning, and degrades feature by feature. Pass
 ## Quickstart
 
 ```ts
-import { createAdeChat } from "@ade-dev/sdk";
+import { createDaexChat } from "@daex-dev/sdk";
 
-const ade = await createAdeChat({ home: "./.ade-embed" });
-const thread = await ade.threads.open("support", {
+const daex = await createDaexChat({ home: "./.ade-embed" });
+const thread = await daex.threads.open("support", {
   provider: "claude",
   model: "claude-sonnet-4-5",
 });
@@ -57,46 +61,46 @@ console.log(thread.usage());
 Pass `budget: { maxTokens, maxCostUsd }` when creating a thread to interrupt it
 when a reported limit is reached. Budgets persist with the thread key.
 
-Use `ade.run(prompt, { provider, model, schema })` for a temporary one-shot
+Use `daex.run(prompt, { provider, model, schema })` for a temporary one-shot
 thread. A schema response is parsed and checked locally, retried once when it
 does not match, then rejected with `InvalidOutputError` carrying `rawText`.
 
 Reopening `"support"` after a restart resumes the same conversation. Call
-`ade.dispose()` when the host shuts down.
+`daex.dispose()` when the host shuts down.
 
 ## Provider auth
 
 The sidecar reuses the provider CLIs and logins already on the machine
-(`claude`, `codex`, `cursor`, …). ADE state under `home` is isolated; Claude /
+(`claude`, `codex`, `cursor`, …). DAEX state under `home` is isolated; Claude /
 Codex / Cursor credentials still live in those tools' own config homes
 (`~/.claude`, `~/.codex`, `~/.cursor`). If the host user can already run that
 provider in a terminal, the sidecar can too. SDK 0.7 defaults to isolated
 provider logins. **BREAKING from SDK 0.6:** pass
 `useMachineLogin: true` to keep relying on the host machine's Claude or Codex
-login, or sign the user in through `ade.accounts.signIn()` (see
+login, or sign the user in through `daex.accounts.signIn()` (see
 [Accounts](https://ade-app.dev/docs/sdk/accounts)).
 
-`ade.providers.status()` reports, per provider, whether a binary was found, at
+`daex.providers.status()` reports, per provider, whether a binary was found, at
 which path and version, and whether credentials are present. Read `source`
 first: `"probed"` means the runtime looked at the filesystem, `"derived"` means
-it is an older runtime inferring from the model catalog. `ade.providers.refresh()`
+it is an older runtime inferring from the model catalog. `daex.providers.refresh()`
 bypasses the runtime's 60-second probe cache.
 
-`ade.doctor()` is the structured health check: binary path and provenance,
+`daex.doctor()` is the structured health check: binary path and provenance,
 socket, event transport, providers, and known threads.
 
 ```ts
-const report = await ade.doctor();
+const report = await daex.doctor();
 if (!report.ok) console.error(report);
 ```
 
-Pin a specific ADE build with `binaryPath`, or let the client download a
+Pin a specific DAEX build with `binaryPath`, or let the client download a
 release. Downloads are fail-closed against that release's `SHA256SUMS`.
 
 ## Threads
 
 ```ts
-const thread = await ade.threads.open("support", {
+const thread = await daex.threads.open("support", {
   provider: "claude",
   model: "claude-sonnet-4-5",
   permissions: "always-allow",
@@ -110,8 +114,8 @@ await thread.setModel("claude-opus-4");      // see setModel below
 await thread.update({ title: "Outage review" });
 
 const page = await thread.historyPage({ limit: 200 });   // newest page
-const rows = await ade.threads.list();                   // title, archived, updatedAt, modelSelection
-await ade.threads.archive("support");                    // or unarchive / delete
+const rows = await daex.threads.list();                   // title, archived, updatedAt, modelSelection
+await daex.threads.archive("support");                    // or unarchive / delete
 ```
 
 `threads.open(key)` is open-or-resume by key stored under `home`. Keys survive
@@ -179,7 +183,7 @@ transcript is durable either way.
 ## MCP servers and strict mode
 
 ```ts
-const thread = await ade.threads.open("ops", {
+const thread = await daex.threads.open("ops", {
   provider: "claude",
   model: "claude-sonnet-4-5",
   mcpServers: {
@@ -196,7 +200,7 @@ if (thread.mcpCapability?.strictRequested && thread.mcpCapability.level !== "enf
 
 Supplying `mcpServers` turns on strict mode unless you set
 `loadUserMcpServers: true`. **False is not a uniform guarantee.** Only Claude
-can enforce it. Everywhere else ADE applies the strongest mechanism that
+can enforce it. Everywhere else DAEX applies the strongest mechanism that
 provider exposes, and Pi has no MCP surface at all (injected servers are
 refused rather than opening a tool-less thread):
 
@@ -204,15 +208,15 @@ refused rather than opening a tool-less thread):
 |---|---|---|
 | claude | enforced | nothing MCP-wise (user rules/commands/output styles still load — they are not MCP) |
 | codex | best-effort | servers contributed by a Codex *plugin* |
-| cursor | best-effort | user-layer servers (`~/.cursor`; ADE's own preToolUse hook lives there) |
+| cursor | best-effort | user-layer servers (`~/.cursor`; DAEX's own preToolUse hook lives there) |
 | droid | best-effort | tools that appear only after the first disable pass |
 | opencode | best-effort | the global OpenCode config directory (for auth) |
 | pi | unsupported | n/a — create refuses injected servers |
 
 The server shape is checked against the selected provider before launch. Codex
 does not support `sse`, so a Codex request containing an SSE entry is rejected.
-Server names `computer_use` and `ade-cto` are reserved, and a request may
-contain at most 32 servers.
+Server names `computer_use` and `daex-cto` are reserved (so is `ade-cto`, its
+name before the DAEX rename), and a request may contain at most 32 servers.
 
 Read `thread.mcpCapability` after open. `strictRequested` first, then `level`.
 `"enforced"` is the only value that means "nothing but the servers I supplied".
@@ -225,11 +229,11 @@ names only, and a pre-0.3 store is migrated on first read. The runtime does the
 same. So supply current values in one of three ways:
 
 ```ts
-const ade = await createAdeChat({
+const daex = await createDaexChat({
   home,
   mcpHeaders: (key, server) => (server === "app" ? { Authorization: `Bearer ${token()}` } : undefined),
 });
-await ade.threads.open("support", { refresh: { mcpServers: { app: { type: "http", url, headers } } } });
+await daex.threads.open("support", { refresh: { mcpServers: { app: { type: "http", url, headers } } } });
 await thread.updateMcpServers({ app: { type: "http", url: newUrl, headers: newHeaders } });
 ```
 
@@ -260,7 +264,7 @@ optional, each persists on the thread record, and omitting all four reproduces
 0.1.x behavior exactly.
 
 ```ts
-const thread = await ade.threads.open("assistant", {
+const thread = await daex.threads.open("assistant", {
   provider: "claude",
   model: "claude-sonnet-4-5",
   instructions: { mode: "replace", text: "You are Ada, MyApp's assistant." },
@@ -301,6 +305,11 @@ On Codex, every MCP tool call raises an approval, and the policy judges it as
 for the session only. On Codex, `sandboxRoot` still decides command and file
 escapes, and the tool fields do not.
 
+The CTO's own tool server is `daex-cto`. `ade-cto`, its name before the DAEX
+rename, is a deprecated alias: `mcp:ade-cto:*` (or `ade-cto` in
+`autoApproveMcpServers`) still matches the server, in allow and deny rules
+alike. Write `daex-cto` in new policies.
+
 On Claude (Agent SDK 0.3.280), `canUseTool` fires for MCP tools and for
 commands that change things, not for commands Claude Code classifies as
 read-only. `fallback: "ask"` stays `best-effort` for that reason.
@@ -319,27 +328,27 @@ Run this from the main process, not the renderer. Spawn owns a child process
 and a socket / named pipe.
 
 ```ts
-const ade = await createAdeChat({
+const daex = await createDaexChat({
   home: path.join(app.getPath("userData"), "ade"),
 });
 ```
 
-Do not write the bridge yourself. `@ade-dev/sdk/electron`,
-`@ade-dev/sdk/electron/preload` and `@ade-dev/sdk/electron/renderer` ship one
+Do not write the bridge yourself. `@daex-dev/sdk/electron`,
+`@daex-dev/sdk/electron/preload` and `@daex-dev/sdk/electron/renderer` ship one
 function per process, with listener teardown on reload and the history-and-live
 ordering rule already in code. None of the three depends on `electron`.
-`@ade-dev/sdk/electron/global` types `window.ade`. For a `sandbox: true`
+`@daex-dev/sdk/electron/global` types `window.ade`. For a `sandbox: true`
 preload, point `webPreferences.preload` at
-`require.resolve("@ade-dev/sdk/electron/preload-auto")` (default key and
-prefix), copy the ten-line preload from the docs, or bundle `exposeAdeBridge`
-into one file. `@ade-dev/sdk/electron/preload` alone only exports the function
+`require.resolve("@daex-dev/sdk/electron/preload-auto")` (default key and
+prefix), copy the ten-line preload from the docs, or bundle `exposeDaexBridge`
+into one file. `@daex-dev/sdk/electron/preload` alone only exports the function
 and exposes nothing. See
 [Electron](https://ade-app.dev/docs/sdk/electron).
 
 The renderer does not configure threads. Pass `openOptions: (key, rendererOptions) => ThreadOpenOptions`
-to `registerAdeIpc` and main decides; without it, only `provider`, `model`,
+to `registerDaexIpc` and main decides; without it, only `provider`, `model`,
 `title` and `reasoningEffort` cross (breaking in 0.3). `allowModel` gates model
-choice. `registerAdeIpc` also accepts `() => client`, for a host that replaces
+choice. `registerDaexIpc` also accepts `() => client`, for a host that replaces
 its client per account.
 
 `onThreadRemoved(key, kind)` (0.5) fires for every delete and archive the served
@@ -358,10 +367,10 @@ To ship the runtime inside a signed app instead of downloading it, install
 ## Runtime exits
 
 ```ts
-const ade = await createAdeChat({ home, autoRestart: true });
-ade.on("exit", ({ code, signal, error }) => {});
-ade.on("transport", ({ state }) => {});          // "closed" | "reconnected"
-ade.on("restart", ({ attempt, ok }) => {});
+const daex = await createDaexChat({ home, autoRestart: true });
+daex.on("exit", ({ code, signal, error }) => {});
+daex.on("transport", ({ state }) => {});          // "closed" | "reconnected"
+daex.on("restart", ({ attempt, ok }) => {});
 ```
 
 When the runtime exits, each live thread gets a synthetic
@@ -374,7 +383,7 @@ the same. A turn in flight is not resumed. See
 ## The live seam test
 
 `npm test` runs against an in-process fake runtime, so it can only prove the SDK
-agrees with itself. `test/live.integration.test.ts` boots a real ADE runtime and
+agrees with itself. `test/live.integration.test.ts` boots a real DAEX runtime and
 checks that both sides agree on the wire. It is opt-in and skips itself when the
 binary is not named.
 
@@ -405,4 +414,4 @@ fact instead of proving the round trip.
 
 ## License
 
-MIT. See [LICENSE](./LICENSE). ADE itself remains AGPL-3.0-only; see the [ADE Runtime Embedding Exception](https://github.com/arul28/ADE/blob/main/RUNTIME-EMBEDDING-EXCEPTION.md) for shipping the runtime binary in your app.
+MIT. See [LICENSE](./LICENSE). DAEX (formerly ADE) itself remains AGPL-3.0-only; see the [DAEX Runtime Embedding Exception](https://github.com/arul28/ADE/blob/main/RUNTIME-EMBEDDING-EXCEPTION.md) for shipping the runtime binary in your app.

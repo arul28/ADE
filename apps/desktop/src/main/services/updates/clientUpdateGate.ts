@@ -13,6 +13,7 @@ import { compareUpdateVersions, isWindowsSelfInstallBlocked } from "../../../sha
 import { updateTrackOfVersion } from "../../../shared/updateTrack";
 import type { AutoUpdateSnapshot } from "../../../shared/types";
 import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * This computer's build against the owner's minimum (`GET /client/minimum`).
@@ -226,13 +227,13 @@ export function createClientUpdateGateService(args: {
 export function registerClientUpdateGateIpc(service: ClientUpdateGateService, logger: GateLogger): () => void {
   ipcMain.handle(IPC.clientUpdateGateGetState, (event) => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.clientUpdateGateGetState)) {
-      throw new Error("Only the ADE window can read this.");
+      throw new Error(`Only the ${BRAND.NAME} window can read this.`);
     }
     return service.getState();
   });
   ipcMain.handle(IPC.clientUpdateGateRefresh, async (event) => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.clientUpdateGateRefresh)) {
-      throw new Error("Only the ADE window can read this.");
+      throw new Error(`Only the ${BRAND.NAME} window can read this.`);
     }
     return await service.refresh();
   });

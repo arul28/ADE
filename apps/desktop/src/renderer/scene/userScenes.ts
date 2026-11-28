@@ -16,6 +16,7 @@
 
 import { readScreenPixels, screenCopySize, type ScreenPixels } from "./sceneLibrary";
 import type { SceneCopyRequest, SceneCopyResponse } from "./sceneCopy.worker";
+import { BRAND } from "../../shared/brand";
 
 const DB_NAME = "ade-scenes";
 const STORE = "images";
@@ -245,7 +246,7 @@ function loadImage(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const image = new Image();
     image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error("That file is not a picture ADE can read"));
+    image.onerror = () => reject(new Error(`That file is not a picture ${BRAND.NAME} can read`));
     image.src = url;
   });
 }

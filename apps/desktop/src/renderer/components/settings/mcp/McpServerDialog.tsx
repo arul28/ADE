@@ -17,6 +17,7 @@ import { Banner, noticeKindModel, type NoticeKind } from "../../ui/notice";
 import { SettingsSegmented } from "../primitives/SettingsControls";
 import { McpSecretWarnings } from "./McpSecretWarnings";
 import type { McpSecretValue } from "./useMcpRegistry";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * Add or edit one MCP server.
@@ -123,7 +124,7 @@ export function McpServerDialog({
   const problem = useMemo((): string | null => {
     if (!name) return "Give it a name.";
     if (!isValidMcpRegistryName(name)) return "The name can use letters, numbers, - and _.";
-    if (ADE_RESERVED_MCP_SERVER_NAMES.includes(name)) return "ADE uses that name itself. Pick another.";
+    if (ADE_RESERVED_MCP_SERVER_NAMES.includes(name)) return `${BRAND.NAME} uses that name itself. Pick another.`;
     if (!editing && existingNames.includes(name)) return `You already have a server named ${name}.`;
     if (isCommand && !form.command.trim()) return "Enter the command that starts it.";
     if (!isCommand && !/^https?:\/\/\S+$/i.test(form.url.trim())) return "Enter a URL that starts with http:// or https://.";
@@ -164,7 +165,7 @@ export function McpServerDialog({
       enabled: editing?.enabled ?? true,
     });
     if (!server) {
-      setError({ message: "ADE can't save that server. Check its name and its command or URL.", kind: "hint" });
+      setError({ message: `${BRAND.NAME} can't save that server. Check its name and its command or URL.`, kind: "hint" });
       return;
     }
     setSaving(true);
@@ -253,10 +254,10 @@ export function McpServerDialog({
         </div>
 
         <div className="ade-ap-field">
-          <span className="ade-mcp-label">How ADE reaches it</span>
+          <span className="ade-mcp-label">How {BRAND.NAME} reaches it</span>
           <div>
             <SettingsSegmented
-              ariaLabel="How ADE reaches it"
+              ariaLabel={`How ${BRAND.NAME} reaches it`}
               value={form.transport}
               options={TRANSPORTS}
               onChange={(transport) => {
@@ -314,7 +315,7 @@ export function McpServerDialog({
               onChange={(event) => patch({ url: event.target.value })}
             />
             <p className="ade-modern-muted">
-              If it asks you to sign in with a browser, save it, then press Sign in on its row. ADE signs in once for every agent.
+              If it asks you to sign in with a browser, save it, then press Sign in on its row. {BRAND.NAME} signs in once for every agent.
             </p>
             <McpSecretWarnings server={{ transport: form.transport, url: form.url }} where="url" />
           </div>

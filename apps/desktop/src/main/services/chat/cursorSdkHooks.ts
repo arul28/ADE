@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { getErrorMessage } from "../shared/utils";
 import { isEmbeddedAdeRuntime } from "../shared/processExecution";
+import { BRAND } from "../../../shared/brand";
 
 const ADE_HOOK_SCRIPT_NAME = "ade-tool-gate.cjs";
 const ADE_HOOK_SHELL_COMMAND_NAME = "ade-tool-gate.sh";
@@ -115,7 +116,7 @@ export const CURSOR_HOOK_SCRIPT_NAMES: readonly string[] = [ADE_HOOK_SCRIPT_NAME
  */
 export async function runCursorHookScript(scriptPath: string | undefined): Promise<void> {
   if (!scriptPath || !path.isAbsolute(scriptPath) || !CURSOR_HOOK_SCRIPT_NAMES.includes(path.basename(scriptPath))) {
-    process.stderr.write(`ade: ${CURSOR_HOOK_RUNNER_COMMAND} runs only ADE's Cursor hook scripts.\n`);
+    process.stderr.write(`${BRAND.CLI}: ${CURSOR_HOOK_RUNNER_COMMAND} runs only ${BRAND.NAME}'s Cursor hook scripts.\n`);
     process.exitCode = 2;
     return;
   }
@@ -133,7 +134,7 @@ export async function runCursorHookScript(scriptPath: string | undefined): Promi
   try {
     createRequire(scriptPath)(scriptPath);
   } catch (error) {
-    process.stderr.write(`ade: could not run ${scriptPath}: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.stderr.write(`${BRAND.CLI}: could not run ${scriptPath}: ${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
     return;
   }
@@ -180,22 +181,22 @@ function readHooksFile(filePath: string): CursorHooksConfig {
     parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
   } catch (error) {
     throw new Error(
-      `Cannot install ADE Cursor hook because ${filePath} is not valid JSON: ${getErrorMessage(error)}`,
+      `Cannot install ${BRAND.NAME} Cursor hook because ${filePath} is not valid JSON: ${getErrorMessage(error)}`,
     );
   }
   const config = readObject(parsed);
   if (!config) {
-    throw new Error(`Cannot install ADE Cursor hook because ${filePath} must contain a JSON object.`);
+    throw new Error(`Cannot install ${BRAND.NAME} Cursor hook because ${filePath} must contain a JSON object.`);
   }
   if (config.hooks !== undefined && !readObject(config.hooks)) {
-    throw new Error(`Cannot install ADE Cursor hook because ${filePath}.hooks must be a JSON object.`);
+    throw new Error(`Cannot install ${BRAND.NAME} Cursor hook because ${filePath}.hooks must be a JSON object.`);
   }
   const hooks = readObject(config.hooks) ?? {};
   // `preToolUse` is the permission gate, so a shape ADE cannot extend is fatal.
   // `preCompact` is telemetry only: `ensureCursorSdkUserHook` leaves an
   // unexpected value alone and skips ADE's entry instead.
   if (hooks.preToolUse !== undefined && !Array.isArray(hooks.preToolUse)) {
-    throw new Error(`Cannot install ADE Cursor hook because ${filePath}.hooks.preToolUse must be an array.`);
+    throw new Error(`Cannot install ${BRAND.NAME} Cursor hook because ${filePath}.hooks.preToolUse must be an array.`);
   }
   return config;
 }
@@ -280,7 +281,7 @@ function connectWithTimeout(socketPath) {
     const client = net.createConnection(socketPath);
     const timeout = setTimeout(() => {
       client.destroy();
-      reject(new Error("Timed out connecting to ADE Cursor policy gate."));
+      reject(new Error("Timed out connecting to DAEX Cursor policy gate."));
     }, 2000);
     client.once("connect", () => {
       clearTimeout(timeout);
@@ -297,7 +298,7 @@ async function main() {
   const socketPath = parseArg("--socket") || process.env.ADE_CURSOR_SDK_SOCKET || "";
   const adeSession = process.env.ADE_CURSOR_SDK_SESSION_ID || process.env.ADE_CURSOR_SDK_LANE_ROOT;
   if (!socketPath) {
-    if (adeSession) deny("ADE Cursor policy gate is unavailable.");
+    if (adeSession) deny("DAEX Cursor policy gate is unavailable.");
     else allow();
     return;
   }
@@ -329,7 +330,7 @@ async function main() {
       const waited = minutes < 120
         ? minutes + " minute" + (minutes === 1 ? "" : "s")
         : Math.round(minutes / 60) + " hours";
-      reject(new Error("No answer to ADE's approval request for this tool call within " + waited + ", so it was not run."));
+      reject(new Error("No answer to DAEX's approval request for this tool call within " + waited + ", so it was not run."));
     }, responseTimeoutMs);
     function settle(fn, value) {
       if (settled) return;
@@ -347,7 +348,7 @@ async function main() {
         try {
           settle(resolve, JSON.parse(line));
         } catch (error) {
-          settle(reject, new Error("ADE could not parse the Cursor hook decision."));
+          settle(reject, new Error("DAEX could not parse the Cursor hook decision."));
         } finally {
           client.end();
         }
@@ -355,7 +356,7 @@ async function main() {
     });
     client.once("error", (error) => settle(reject, error));
     client.once("close", () => {
-      if (!responseText.includes("\\n")) settle(reject, new Error("ADE Cursor policy gate closed without a decision."));
+      if (!responseText.includes("\\n")) settle(reject, new Error("DAEX Cursor policy gate closed without a decision."));
     });
   });
   writeDecision(decision);
@@ -464,7 +465,7 @@ type HookWrapperRules = Pick<
   "guardEnv" | "requiredEnv" | "unsetAnswer" | "noRunnerAnswer"
 >;
 
-const GATE_NO_NODE_MESSAGE = "ADE Cursor policy gate requires Node.js for ADE-managed Cursor sessions.";
+const GATE_NO_NODE_MESSAGE = `${BRAND.NAME} Cursor policy gate requires Node.js for ${BRAND.NAME}-managed Cursor sessions.`;
 
 /** The tool gate lets non-ADE Cursor sessions through and fails closed for ADE's own. */
 const GATE_WRAPPER: HookWrapperRules = {

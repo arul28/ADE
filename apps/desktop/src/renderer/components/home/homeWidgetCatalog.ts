@@ -17,6 +17,7 @@ import {
 } from "@phosphor-icons/react";
 import type { HomeWidgetType } from "./homeLayout";
 import type { HomeSizeClass, Span, WidgetShape } from "./homeGridPack";
+import { BRAND } from "../../../shared/brand";
 
 export type HomeWidgetCategory = "work" | "insights" | "everyday" | "system";
 
@@ -213,8 +214,8 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
   },
   tips: {
     category: "everyday",
-    title: "ADE Tips",
-    description: "One ADE tip a day, to try.",
+    title: `${BRAND.NAME} Tips`,
+    description: `One ${BRAND.NAME} tip a day, to try.`,
     icon: Lightbulb,
     classes: { compact: { w: 1, h: 1 }, regular: { w: 2, h: 1 } },
     defaultClass: "compact",

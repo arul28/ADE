@@ -89,7 +89,7 @@ describe("bundled agent skill rosters", () => {
     // ADE MCP prompts) are not either, and neither are the skills the host
     // cannot run: `ade apple` works only on a Mac.
     const hostWithheld = new Set(adeHostWithheldAgentSkills(platform));
-    expect(hostWithheld.has("ade-apple")).toBe(platform !== "darwin");
+    expect(hostWithheld.has("daex-apple")).toBe(platform !== "darwin");
     setAdeCloudSkillVisible(true);
     const bootstrap = onPlatform(platform, () => buildAdeBootstrapGuidance([]));
     setAdeCloudSkillVisible(false);

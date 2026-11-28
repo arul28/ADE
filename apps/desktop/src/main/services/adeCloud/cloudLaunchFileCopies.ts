@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import type { AgentChatFileRef } from "../../../shared/types";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * An ADE Cloud launch runs in this app's main process, but the composer saves
@@ -31,7 +32,7 @@ export async function copyLaunchFilesFromSource(input: {
     if (file.type !== "image") {
       if (await isFileHere(file.path)) continue;
       throw new AdeExpectedError(
-        `${name} is on the machine this project is open on, and ADE Cloud starts from this computer. Remove it, or attach it again from this computer.`,
+        `${name} is on the machine this project is open on, and ${BRAND.CLOUD_NAME} starts from this computer. Remove it, or attach it again from this computer.`,
         "user",
       );
     }
@@ -43,7 +44,7 @@ export async function copyLaunchFilesFromSource(input: {
       // An image attached from this computer: the source machine doesn't have it.
       if (await isFileHere(file.path)) continue;
       const why = error instanceof Error ? error.message : String(error);
-      throw new AdeExpectedError(`ADE couldn't get ${name} from the machine it was attached on: ${why.replace(/\.$/, "")}. Send again.`, "user");
+      throw new AdeExpectedError(`${BRAND.NAME} couldn't get ${name} from the machine it was attached on: ${why.replace(/\.$/, "")}. Send again.`, "user");
     }
     await fs.mkdir(input.dir, { recursive: true });
     // A unique prefix: two files, or two messages of one launch, can share a name.
@@ -99,7 +100,7 @@ function decodeDataUrl(dataUrl: string): { bytes: Buffer; ext: string | null } {
   const comma = dataUrl.indexOf(",");
   const head = comma < 0 ? "" : dataUrl.slice(0, comma);
   if (!head.startsWith("data:") || !head.endsWith(";base64")) {
-    throw new Error("the image came back in a form ADE can't read");
+    throw new Error(`the image came back in a form ${BRAND.NAME} can't read`);
   }
   const mime = head.slice("data:".length, -";base64".length).toLowerCase();
   return { bytes: Buffer.from(dataUrl.slice(comma + 1), "base64"), ext: IMAGE_EXTS[mime] ?? null };

@@ -4,6 +4,7 @@ import type { AppBundleOwnershipStatus } from "../../../shared/types/appBundleOw
 import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
 import { createAppBundleOwnershipService } from "./appBundleOwnership";
 import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
+import { BRAND } from "../../../shared/brand";
 
 type Logger = { info(event: string, data?: Record<string, unknown>): void; warn(event: string, data?: Record<string, unknown>): void };
 
@@ -49,7 +50,7 @@ export function registerAppBundleOwnershipIpc(
 
   ipcMain.handle(IPC.appBundleOwnershipGetStatus, async (event, options: unknown) => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.appBundleOwnershipGetStatus)) {
-      throw new Error("This check is only available to the ADE window.");
+      throw new Error(`This check is only available to the ${BRAND.NAME} window.`);
     }
     const refresh = Boolean(options && typeof options === "object" && (options as { refresh?: unknown }).refresh === true);
     const status = await service.getStatus({ refresh });
@@ -59,7 +60,7 @@ export function registerAppBundleOwnershipIpc(
 
   ipcMain.handle(IPC.appBundleOwnershipFix, async (event) => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.appBundleOwnershipFix)) {
-      throw new Error("This fix is only available to the ADE window.");
+      throw new Error(`This fix is only available to the ${BRAND.NAME} window.`);
     }
     const result = await service.fix();
     const meta = {

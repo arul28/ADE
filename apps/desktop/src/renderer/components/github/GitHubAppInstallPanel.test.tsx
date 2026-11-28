@@ -12,8 +12,8 @@ function installedStatus(): GitHubAppInstallationStatus {
   return {
     repo: { owner: "arul28", name: "ADE" },
     appName: "ADE",
-    appSlug: "ade-for-github",
-    installUrl: "https://github.com/apps/ade-for-github/installations/new",
+    appSlug: "daex-for-github",
+    installUrl: "https://github.com/apps/daex-for-github/installations/new",
     manageUrl: "https://github.com/settings/installations",
     relayConfigured: true,
     installed: true,
@@ -46,8 +46,8 @@ describe("GitHubAppInstallPanel", () => {
     const rateLimitedStatus: GitHubAppInstallationStatus = {
       repo: { owner: "arul28", name: "ADE" },
       appName: "ADE",
-      appSlug: "ade-for-github",
-      installUrl: "https://github.com/apps/ade-for-github/installations/new",
+      appSlug: "daex-for-github",
+      installUrl: "https://github.com/apps/daex-for-github/installations/new",
       manageUrl: "https://github.com/settings/installations",
       relayConfigured: true,
       installed: false,

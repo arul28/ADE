@@ -7,6 +7,7 @@ import {
   buildPairedEndpointCandidates,
   syncEndpointForHost,
 } from "./pairedRuntimeRoutes";
+import { BRAND } from "../../../shared/brand";
 
 export function parseRemoteRuntimePairingInput(
   text: string,
@@ -14,7 +15,7 @@ export function parseRemoteRuntimePairingInput(
   const payload = parsePairingQrText(text);
   if (!payload) {
     // A pasted link or code that is not one: the person checks it and tries again.
-    throw new AdeExpectedError("Invalid ADE pairing link or code.", "user");
+    throw new AdeExpectedError(`Invalid ${BRAND.NAME} pairing link or code.`, "user");
   }
 
   const directEndpoints = payload.addressCandidates.flatMap((candidate) => {
@@ -29,7 +30,7 @@ export function parseRemoteRuntimePairingInput(
     relayUrl: payload.relayUrl,
   });
   if (ordered.length === 0) {
-    throw new Error("The ADE pairing link does not contain a reachable endpoint.");
+    throw new Error(`The ${BRAND.NAME} pairing link does not contain a reachable endpoint.`);
   }
   const relayUrl = ordered.find((candidate) => candidate.kind === "relay")?.endpoint;
 

@@ -22,7 +22,7 @@ export function normalizeMcpCapability(value: unknown): McpCapabilityReport | nu
     // Null whenever strict mode was not requested: `residual` names what strict
     // mode could not exclude, and a delivery-only thread excluded nothing by
     // design. A runtime that volunteered one anyway would be describing an
-    // isolation ADE was never asked to perform.
+    // isolation DAEX was never asked to perform.
     residual: strictRequested && typeof source.residual === "string" ? source.residual : null,
     delivered: source.delivered === true,
     // Absent on a runtime that predates the field. False is the conservative

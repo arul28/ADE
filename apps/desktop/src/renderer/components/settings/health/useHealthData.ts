@@ -11,6 +11,7 @@ import { baseName } from "../storage/storageView";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { saveProjectLocalConfig } from "../../../lib/projectLocalConfig";
 import { plainErrorText } from "../../../lib/plainError";
+import { BRAND } from "../../../../shared/brand";
 
 export type StorageData = {
   snapshot: StorageSnapshot | null;
@@ -146,7 +147,7 @@ export function useHealthData(
         ...current,
         loading: false,
         refreshing: false,
-        error: plainErrorText(err, "ADE couldn't read storage use."),
+        error: plainErrorText(err, `${BRAND.NAME} couldn't read storage use.`),
       }));
     }
   }, [isThisMachine, pin, wantStorage]);
@@ -216,7 +217,7 @@ export function useHealthData(
         ...current,
         loading: false,
         checking: false,
-        error: plainErrorText(err, "ADE couldn't check the project."),
+        error: plainErrorText(err, `${BRAND.NAME} couldn't check the project.`),
       }));
     }
   }, [pin, reportAvailable, wantReport]);

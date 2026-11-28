@@ -273,7 +273,7 @@ func projectHostIneligibleGuidance(_ snapshot: SyncHostReadinessSnapshot?) -> St
   case .unauthorized:
     return "This iPhone can't stop the other runtime — retry, or stop it on that computer."
   case .unidentified:
-    return "ADE can't safely stop the other runtime from here, so stop it on that computer."
+    return "\(Brand.name) can't safely stop the other runtime from here, so stop it on that computer."
   case nil:
     return nil
   }

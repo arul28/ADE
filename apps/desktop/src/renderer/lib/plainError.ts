@@ -20,6 +20,8 @@
 import { isUnsupportedAdeActionError } from "../../shared/codedError";
 import { isConnectionTroubleText } from "./format";
 import { machineErrorText } from "./machineErrorText";
+import { BRAND } from "../../shared/brand";
+import { PRODUCT_NAME_PATTERN } from "../../shared/brandNames";
 
 /**
  * What the person can do about it:
@@ -35,7 +37,7 @@ export type PlainError = { text: string; next: PlainErrorNext };
 const METHOD_NOT_FOUND_TEXT = /\bMethod not found\b|is unavailable in this runtime/i;
 
 /** A service already said "Update ADE on that computer …" in plain words. */
-const UPDATE_ADE_SENTENCE = /\bUpdate ADE on\b/i;
+const UPDATE_ADE_SENTENCE = new RegExp(String.raw`\bUpdate ${PRODUCT_NAME_PATTERN} on\b`, "i");
 
 /** Text written for logs and developers, never for a person. */
 const INTERNAL_TEXT = /^\s*(?:\[?-?32\d{3}\]?|code\s*-?32\d{3})|\brequires params\.\w+|^Domain '[^']+'|^Action '[^']+'|\bat \S+:\d+:\d+\)?$|^[A-Z][A-Za-z]+Error: /;
@@ -53,8 +55,8 @@ export function plainError(error: unknown, options: { fallback: string; machine?
     const where = options.machine?.trim();
     return {
       text: where
-        ? `${where} runs an older ADE that can't do this. Update ADE on ${where}, then try again.`
-        : "That computer runs an older ADE that can't do this. Update ADE on it, then try again.",
+        ? `${where} runs an older ${BRAND.NAME} that can't do this. Update ${BRAND.NAME} on ${where}, then try again.`
+        : `That computer runs an older ${BRAND.NAME} that can't do this. Update ${BRAND.NAME} on it, then try again.`,
       next: "update",
     };
   }

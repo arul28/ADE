@@ -12,6 +12,7 @@ import { RuleSentence } from "./RuleSentence";
 import { MachineChip } from "../../shared/MachineChip";
 import type { MachineChipModel } from "../../../state/laneMachineRouting";
 import { followsAccount, ruleSyncLine } from "../ruleSync";
+import { BRAND } from "../../../../shared/brand";
 
 /** Rules written before `origin` existed read as the user's own. */
 export function ruleOrigin(rule: Pick<AutomationRule, "origin">): AutomationRule["origin"] {
@@ -182,13 +183,13 @@ export function RuleRow({
         ) : null}
         {rule.needsNewerAde ? (
           <SmartTooltip
-            content={{ label: "Made with a newer ADE", description: "This ADE can't read all of it, so it's view-only here. Update ADE to edit or run it." }}
+            content={{ label: `Made with a newer ${BRAND.NAME}`, description: `This ${BRAND.NAME} can't read all of it, so it's view-only here. Update ${BRAND.NAME} to edit or run it.` }}
             wrapperClassName="shrink-0"
           >
             <span
               data-testid="rule-needs-newer-ade"
               tabIndex={0}
-              aria-label="Made with a newer ADE"
+              aria-label={`Made with a newer ${BRAND.NAME}`}
               className="shrink-0 text-amber-300"
             >
               <CloudArrowDown size={12} weight="bold" aria-hidden />

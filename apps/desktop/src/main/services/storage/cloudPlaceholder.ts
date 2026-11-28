@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Detecting a project (or `~/.ade`) that lives inside a file-syncing cloud
@@ -131,5 +132,5 @@ export function storageUnreadableMessage(
   targetPath: string,
   provider?: CloudStorageProvider | null,
 ): string {
-  return `ADE couldn't read this project's data at ${targetPath}. ${storageUnreadableRemedy(provider)}`;
+  return `${BRAND.NAME} couldn't read this project's data at ${targetPath}. ${storageUnreadableRemedy(provider)}`;
 }

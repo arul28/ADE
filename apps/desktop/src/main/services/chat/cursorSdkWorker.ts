@@ -73,6 +73,7 @@ import {
   processIsAlive,
   startParentDeathWatchdog,
 } from "../../../../../ade-cli/src/services/runtime/parentDeathWatchdog";
+import { BRAND } from "../../../shared/brand";
 
 ensureCursorSdkWorkerCommandsAreWindowless();
 
@@ -138,7 +139,7 @@ function installCursorUserHook(init: CursorSdkWorkerInit): ReturnType<typeof ens
     post({
       type: "log",
       level: "warn",
-      message: "ADE could not write the Cursor preCompact hook scripts. The tool gate is installed; ADE records no Cursor compactions.",
+      message: `${BRAND.NAME} could not write the Cursor preCompact hook scripts. The tool gate is installed; ${BRAND.NAME} records no Cursor compactions.`,
       detail: { hookPath: hook.hooksPath, error: hook.preCompactError },
     });
   }
@@ -519,7 +520,7 @@ async function handleHookSocketLine(init: CursorSdkWorkerInit, socket: net.Socke
     return;
   }
   if (localDecision === "deny") {
-    socket.end(`${JSON.stringify(denyCursorHook(request.reason ?? "ADE denied this Cursor tool call."))}\n`);
+    socket.end(`${JSON.stringify(denyCursorHook(request.reason ?? `${BRAND.NAME} denied this Cursor tool call.`))}\n`);
     return;
   }
 
@@ -573,7 +574,7 @@ function requestHookDecision(request: CursorSdkHookRequest, socket: net.Socket):
       if (hookWaiters.get(request.id) !== waiter) return;
       hookWaiters.delete(request.id);
       post({ type: "hook_abandoned", requestId: request.id });
-      resolve(denyCursorHook("The Cursor tool hook stopped waiting for ADE's approval."));
+      resolve(denyCursorHook(`The Cursor tool hook stopped waiting for ${BRAND.NAME}'s approval.`));
     };
     hookWaiters.set(request.id, waiter);
     socket.once("close", onClose);
@@ -689,7 +690,7 @@ async function initWorker(init: CursorSdkWorkerInit): Promise<{ agentId: string;
     post({
       type: "log",
       level: "warn",
-      message: "Cursor hooks.json has a preCompact value that is not an array; ADE left it alone and records no Cursor compactions.",
+      message: `Cursor hooks.json has a preCompact value that is not an array; ${BRAND.NAME} left it alone and records no Cursor compactions.`,
       detail: { hookPath: hook.hooksPath },
     });
   }
@@ -760,7 +761,7 @@ async function sendPrompt(payload: CursorSdkSendPrompt): Promise<unknown> {
     post({
       type: "log",
       level: "warn",
-      message: "Cursor SDK local permission options could not be reapplied; continuing with ADE hooks.",
+      message: `Cursor SDK local permission options could not be reapplied; continuing with ${BRAND.NAME} hooks.`,
       detail: { error: errorMessage(error) },
     });
   }

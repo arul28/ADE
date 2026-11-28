@@ -15,6 +15,7 @@ import type { createCloudMachines } from "./cloudMachines";
 import type { CloudProvider } from "./cloudProvider";
 import type { MachineConnector } from "../machines/machineConnector";
 import type { CloudLaneBackup } from "../../../../../account-directory/src/cloud/contract";
+import { BRAND } from "../../../shared/brand";
 
 function textArg(args: Record<string, unknown>, key: string): string {
   const value = args[key];
@@ -64,7 +65,7 @@ export function registerCloudLaneLifeIpc(args: {
     chatCalls: {
       callAction: async (pin, request) => {
         if (pin.kind === "remote") return await remote.callAction(pin, request);
-        if (!args.callLocalAction) throw new Error("This ADE has no local runtime to tell the chat.");
+        if (!args.callLocalAction) throw new Error(`This ${BRAND.NAME} has no local runtime to tell the chat.`);
         return await args.callLocalAction(pin.rootPath, request);
       },
       machineKeyOf: (targetId) => remote.machineKeyOf(targetId),
@@ -79,7 +80,7 @@ export function registerCloudLaneLifeIpc(args: {
   life.load();
 
   ipcMain.handle(IPC.cloudLaneLifeCall, async (event, raw: unknown): Promise<unknown> => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudLaneLifeCall)) throw new Error("ADE can't do that from here.");
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudLaneLifeCall)) throw new Error(`${BRAND.NAME} can't do that from here.`);
     const request = (isRecord(raw) ? raw : {}) as Partial<CloudLaneLifeCallRequest>;
     const callArgs = isRecord(request.args) ? request.args : {};
     switch (request.method) {
@@ -121,7 +122,7 @@ export function registerCloudLaneLifeIpc(args: {
       case "dismissJob":
         return await life.dismissJob({ jobId: textArg(callArgs, "jobId") });
       default:
-        throw new Error("Unknown ADE Cloud lane call.");
+        throw new Error(`Unknown ${BRAND.CLOUD_NAME} lane call.`);
     }
   });
 

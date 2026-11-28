@@ -1208,11 +1208,11 @@ function claudeLaunches(): ClaudeLaunchOptions[] {
 function expectAssistantLaunch(opts: ClaudeLaunchOptions): void {
   expect(opts.systemPrompt).toMatchObject({ type: "preset", preset: "claude_code" });
   const append = (opts.systemPrompt as { append?: string }).append ?? "";
-  expect(append).toContain("You are the user's assistant inside ADE");
+  expect(append).toContain("You are the user's assistant inside DAEX");
   // The lane-only skills are withheld from the prompt and from every plugin root.
-  expect(append).not.toMatch(/ade-lanes-git|ade-pr-workflows/);
+  expect(append).not.toMatch(/(?:ade|daex)-lanes-git|(?:ade|daex)-pr-workflows/);
   for (const plugin of opts.plugins ?? []) {
-    expect(fs.existsSync(path.join(plugin.path, "ade-lanes-git"))).toBe(false);
+    expect(fs.existsSync(path.join(plugin.path, "daex-lanes-git"))).toBe(false);
   }
 }
 

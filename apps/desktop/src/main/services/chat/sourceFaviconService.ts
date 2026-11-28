@@ -34,6 +34,7 @@ import net from "node:net";
 import path from "node:path";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { isLocalHostname, isPublicFaviconAddress, pinnedLookup } from "../net/publicHostGuard";
+import { BRAND } from "../../../shared/brand";
 
 export const SOURCE_FAVICON_LIMITS = {
   timeoutMs: 3_000,
@@ -113,7 +114,7 @@ type CacheFile = { v: 1; host: string; fetchedAt: number; dataUrl: string | null
 
 const ICON_ACCEPT = "image/avif,image/webp,image/png,image/svg+xml,image/x-icon,image/*;q=0.8";
 const HTML_ACCEPT = "text/html,application/xhtml+xml";
-const USER_AGENT = "Mozilla/5.0 (compatible; ADE-Favicon/1.0)";
+const USER_AGENT = `Mozilla/5.0 (compatible; ${BRAND.NAME}-Favicon/1.0)`;
 
 // ── Host and URL policy ───────────────────────────────────────────────────
 

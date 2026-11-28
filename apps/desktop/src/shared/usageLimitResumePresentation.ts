@@ -20,6 +20,7 @@ import type {
   AgentChatUsageLimitResumeState,
 } from "./types/chat";
 import { PROVIDER_DISPLAY_NAME } from "./providers";
+import { BRAND } from "./brand";
 
 const VALID_USAGE_LIMIT_RESUME_STATES: ReadonlySet<string> = new Set<AgentChatUsageLimitResumeState>([
   "armed",
@@ -214,18 +215,18 @@ export function usageLimitChip(resume: AgentChatUsageLimitResume, nowMs: number)
 
   switch (resume.state) {
     case "resuming":
-      return { detail: "resuming…", tooltip: withDetail('ADE is sending "continue" now.'), toggle: null, refreshMs: null };
+      return { detail: "resuming…", tooltip: withDetail(`${BRAND.NAME} is sending "continue" now.`), toggle: null, refreshMs: null };
     case "paused":
       return {
         detail: `paused after ${usageLimitResumeAttemptsLabel(resume.attempts)}`,
-        tooltip: withDetail("The limit did not lift at the published reset, so ADE stopped trying."),
+        tooltip: withDetail(`The limit did not lift at the published reset, so ${BRAND.NAME} stopped trying.`),
         toggle: { label: "Try again", enable: true },
         refreshMs: null,
       };
     case "opted_out":
       return {
         detail: "auto-resume off",
-        tooltip: withDetail(clock ? `${provider} resets at ${clock}. ADE won't continue this chat on its own.` : "ADE won't continue this chat on its own."),
+        tooltip: withDetail(clock ? `${provider} resets at ${clock}. ${BRAND.NAME} won't continue this chat on its own.` : `${BRAND.NAME} won't continue this chat on its own.`),
         toggle: { label: countdown ? `Resume in ${countdown}` : "Auto-resume", enable: true },
         refreshMs,
       };
@@ -239,11 +240,11 @@ export function usageLimitChip(resume: AgentChatUsageLimitResume, nowMs: number)
     case "armed":
     default:
       if (remainingMs != null && !future) {
-        return { detail: "resuming…", tooltip: withDetail('ADE sends "continue" on the next turn boundary.'), toggle: null, refreshMs: null };
+        return { detail: "resuming…", tooltip: withDetail(`${BRAND.NAME} sends "continue" on the next turn boundary.`), toggle: null, refreshMs: null };
       }
       return {
         detail: countdown ? `resumes in ${countdown}` : "resumes when it lifts",
-        tooltip: withDetail(clock ? `ADE sends "continue" at ${clock}. Nothing is lost.` : 'ADE sends "continue" as soon as the limit lifts.'),
+        tooltip: withDetail(clock ? `${BRAND.NAME} sends "continue" at ${clock}. Nothing is lost.` : `${BRAND.NAME} sends "continue" as soon as the limit lifts.`),
         toggle: { label: "Cancel", enable: false, title: "Don't auto-resume this chat" },
         refreshMs,
       };

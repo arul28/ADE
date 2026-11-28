@@ -1,9 +1,9 @@
 ---
 name: release
-description: 'ADE release conductor: detect whether desktop, iOS, and/or the Cloudflare web tier actually changed, bump desktop patch versions, keep iOS marketing versions fixed while bumping build numbers, ship desktop through the GitHub Actions release workflow, distribute TestFlight builds to all beta users, and reconcile every Cloudflare surface (Pages web client, the four Workers, D1 migrations, R2 buckets and lifecycle rules, Durable Object migration tags, cron triggers, vars and secrets) against what actually exists in the Cloudflare account.'
+description: 'DAEX release conductor: detect whether desktop, iOS, and/or the Cloudflare web tier actually changed, bump desktop patch versions, keep iOS marketing versions fixed while bumping build numbers, ship desktop through the GitHub Actions release workflow, distribute TestFlight builds to all beta users, and reconcile every Cloudflare surface (Pages web client, the five Workers, D1 migrations, R2 buckets and lifecycle rules, Durable Object migration tags, cron triggers, vars and secrets) against what actually exists in the Cloudflare account.'
 ---
 
-# ADE Release
+# DAEX Release
 
 ## Linux desktop release evidence
 
@@ -14,9 +14,9 @@ proof, and do not treat an extracted AppImage container smoke as FUSE, sandbox,
 Wayland or installed-package proof. The deb update path offers a download.
 
 
-ADE ships three independent tiers: **desktop** (GitHub Actions, macOS, Windows and Linux),
+DAEX ships three independent tiers: **desktop** (GitHub Actions, macOS, Windows and Linux),
 **iOS** (TestFlight, built on this Mac), and **Cloudflare** (the web client and
-four Workers, deployed by `deploy-web.yml` on every push to `main`).
+five Workers, deployed by `deploy-web.yml` on every push to `main`).
 
 The mechanical steps are scripts. **Run them; do not retype their commands.**
 Every hand-typed step in past releases is where the mistakes came from.
@@ -27,8 +27,8 @@ Every hand-typed step in past releases is where the mistakes came from.
 | `bash scripts/release-tools/betas.sh` | The newest betas: age, commit, PRs, the Sentry gate's answer, and the recommended one to promote |
 | `node scripts/release-tools/beta-gate.mjs <beta tag>` | The Sentry gate for one beta: it ran, Sentry was receiving errors, and it brought no new ones. Exit 0 pass, 1 fail, 2 could not check |
 | `bash scripts/release-tools/verify-desktop-draft.sh <version>` | Checks the desktop draft; prints `DRAFT OK` or each problem |
-| `bash scripts/release-tools/ios-testflight.sh <mv> <build> <sha>` | Archive → export → inspect → validate → upload → dSYMs to Sentry → wait → groups → tag. Resumable; retries every App Store Connect call. The dSYM upload needs an `ade-app` Sentry token (`SENTRY_AUTH_TOKEN` env or ADE secret); a `WARNING: Sentry dSYM upload FAILED` line means iOS reports for that build stay unsymbolicated, so rerun. The archive needs the public PostHog token (`ADE_POSTHOG_PROJECT_TOKEN` env or ADE secret) and stops without it; the IPA check refuses an app with no `phc_` token |
-| `ios-testflight.yml` (CI, `scripts/release-tools/ios-testflight-ci.sh`) | Runs by itself after each beta that changed iOS: builds the separate **ADE Beta** app (`com.ade.ios.beta`, `Beta` configuration) on a GitHub Mac, gives it to that app's Internal Testers and, after Apple's beta review, its Public Beta link, tags `ios-beta-v<mv>-build<n>`. It never touches the normal app. A failure opens the "iOS TestFlight failed" issue and never blocks the desktop beta. `gh workflow run ios-testflight.yml -f dry_run=true` archives and exports without uploading |
+| `bash scripts/release-tools/ios-testflight.sh <mv> <build> <sha>` | Archive → export → inspect → validate → upload → dSYMs to Sentry → wait → groups → tag. Resumable; retries every App Store Connect call. The dSYM upload needs an `ade-app` Sentry token (`SENTRY_AUTH_TOKEN` env or DAEX secret); a `WARNING: Sentry dSYM upload FAILED` line means iOS reports for that build stay unsymbolicated, so rerun. The archive needs the public PostHog token (`ADE_POSTHOG_PROJECT_TOKEN` env or DAEX secret) and stops without it; the IPA check refuses an app with no `phc_` token |
+| `ios-testflight.yml` (CI, `scripts/release-tools/ios-testflight-ci.sh`) | Runs by itself after each beta that changed iOS: builds the separate **DAEX Beta** app (`com.ade.ios.beta`, `Beta` configuration) on a GitHub Mac, gives it to that app's Internal Testers and, after Apple's beta review, its Public Beta link, tags `ios-beta-v<mv>-build<n>`. It never touches the normal app. A failure opens the "iOS TestFlight failed" issue and never blocks the desktop beta. `gh workflow run ios-testflight.yml -f dry_run=true` archives and exports without uploading |
 
 `reference.md` in this folder is the long form: incident history, the full
 Cloudflare account checklist, and recovery detail. Read the section named below
@@ -56,7 +56,7 @@ only when a step goes off the happy path.
 - **The iPhone minimum never passes the normal app.** Machines refuse iPhone
   builds older than `MIN_SUPPORTED_MOBILE_APP_VERSION` /
   `MIN_SUPPORTED_MOBILE_APP_BUILD` (`apps/desktop/src/shared/syncMobileCompatibility.ts`).
-  A raise reaches Beta machines first, but the normal ADE app only gets builds
+  A raise reaches Beta machines first, but the normal DAEX app only gets builds
   here. A minimum above its newest build locks it out of every machine running
   that code until its next build. Step 1 checks it.
 - **A blocked tier is reported as blocked**, with the failing check and the
@@ -74,7 +74,7 @@ bash scripts/release-tools/scope.sh
 - desktop `changed_files > 0` → desktop is in scope; the next tag is printed.
 - ios `changed_files > 0` → iOS is in scope. The build number is the higher
   of `asc builds next-build-number --app <id> --version <mv> --platform IOS`
-  for ADE (`6762759870`) and ADE Beta (`6829373114`): both apps share one
+  for DAEX (`6762759870`) and DAEX Beta (`6829373114`): both apps share one
   sequence, so the minimum check below works for both. The marketing version
   is the current one (`MARKETING_VERSION` in the Xcode project).
 - **iPhone minimum check.** Read `MIN_SUPPORTED_MOBILE_APP_VERSION` and
@@ -101,7 +101,7 @@ bash scripts/release-tools/betas.sh
 
 It runs the Sentry gate (`beta-gate.mjs`) on each beta that could still be
 promoted, newest first, and recommends the first one that passes. The gate
-needs an `ade-app` Sentry token (`SENTRY_AUTH_TOKEN` env or ADE secret); it
+needs an `ade-app` Sentry token (`SENTRY_AUTH_TOKEN` env or DAEX secret); it
 never passes without one.
 
 Show the owner each beta's version, age, commit, PRs and gate result.
@@ -184,7 +184,7 @@ refused (HTTP 422) at the publish step, and dispatching as well as pushing
 starts two runs.
 
 Right after (or right away on an iOS-only release), start iOS in the
-background. It does not need the desktop draft. Betas go to the separate ADE
+background. It does not need the desktop draft. Betas go to the separate DAEX
 Beta app from CI (`ios-testflight.yml`, `ios-beta-v*` tags). The normal app
 (`com.ade.ios`) gets builds only here, from a stable release, and this script
 gives the build to every group (Internal Testers, Friends, Public Beta).
@@ -218,7 +218,7 @@ bash scripts/release-tools/verify-desktop-draft.sh <V>                 # must pr
 gh release edit v<V> --repo arul28/ADE --draft=false --latest
 ```
 
-Undraft also starts `cloud-template.yml`, which builds the ADE Cloud computer template from this tag; it changes nothing else and a failure there blocks nothing. Undraft starts `publish-runtime-packages.yml` and `update-brew-tap.yml`. Both
+Undraft also starts `cloud-template.yml`, which builds the DAEX Cloud computer template from this tag; it changes nothing else and a failure there blocks nothing. Undraft starts `publish-runtime-packages.yml` and `update-brew-tap.yml`. Both
 must succeed. npm can take ~10 minutes to show new versions after a successful
 publish; the run log's `+ @ade-dev/runtime@<V>` lines are the proof. Done when
 `npm view @ade-dev/runtime@<V> version` answers `<V>`.
@@ -269,10 +269,10 @@ One short block:
 | npm publish run fails | Rerun `publish-runtime-packages.yml` for the same tag; it skips what already landed. |
 | `ios-testflight.sh` fails or is killed | Rerun the same command. It reuses the IPA and skips the upload if App Store Connect has the build. |
 | "iOS TestFlight failed" issue open | Read the run's step log; it names the stage. Signing errors: "reached the maximum number of certificates" means `IOS_SIGNING_P12_BASE64` is missing, so runners made "Created via API" development certificates until the team's limit filled; revoke those and restore the secret. "has no Apple Development identity" or a p12 import error means the stored p12 or `IOS_SIGNING_P12_PASSWORD` is wrong or the CI certificate expired: renew it and set both secrets. The export's cloud-managed distribution certificate needs an Admin-role API key. See docs/plans/beta-track.md, "iOS TestFlight from CI". Rerun with `gh workflow run ios-testflight.yml -f git_ref=<beta sha> -f force=true`. It never blocks a desktop release. |
-| Signing fails with "Authentication failed" and no profiles for a new bundle ID, while the normal app signs | Cloud signing cannot register a new App Group. The owner creates it on developer.apple.com (Identifiers → App Groups) and ticks it on every app ID that uses it, then rerun. ADE Beta needed this for `group.com.ade.ios.beta`. |
+| Signing fails with "Authentication failed" and no profiles for a new bundle ID, while the normal app signs | Cloud signing cannot register a new App Group. The owner creates it on developer.apple.com (Identifiers → App Groups) and ticks it on every app ID that uses it, then rerun. DAEX Beta needed this for `group.com.ade.ios.beta`. |
 | App Clip / signing error in the archive | Fix the signing; never drop a target. reference.md → Phase 5. |
 | A Worker misbehaves after deploy | reference.md → Phase 5.5, Step 7 (rollback). |
 
 Credentials: `gh` is signed in; App Store Connect keys are in `~/.asc/config.json`;
-Cloudflare uses `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` from ADE secrets.
+Cloudflare uses `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` from DAEX secrets.
 Never print their values.

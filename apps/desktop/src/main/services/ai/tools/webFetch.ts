@@ -4,6 +4,7 @@ import https from "node:https";
 import net from "node:net";
 import { executableTool as tool } from "./executableTool";
 import { z } from "zod";
+import { BRAND } from "../../../../shared/brand";
 
 const MAX_REDIRECTS = 5;
 
@@ -148,7 +149,7 @@ function requestPinnedTarget(target: SafeWebFetchTarget, signal: AbortSignal): P
     method: "GET",
     headers: {
       Host: target.hostHeader,
-      "User-Agent": "ADE-Agent/1.0",
+      "User-Agent": `${BRAND.NAME}-Agent/1.0`,
     },
     signal,
   };

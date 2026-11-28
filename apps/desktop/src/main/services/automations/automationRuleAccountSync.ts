@@ -19,6 +19,7 @@ import {
   stableJson,
   type AutomationRuleAccountStore,
 } from "./automationRuleAccountStore";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * How rules that follow the account meet `.ade/local.yaml`.
@@ -547,7 +548,7 @@ export function createAutomationRuleAccountSync(args: {
     ): { handled: true } | { handled: false; keepHome?: AutomationRuleHome } {
       const existing = accountRule(saved.id);
       if (existing?.needsNewerAde) {
-        throw new Error(`'${existing.rule.name ?? saved.id}' was made with a newer ADE. Update ADE on this computer to change it.`);
+        throw new Error(`'${existing.rule.name ?? saved.id}' was made with a newer ${BRAND.NAME}. Update ${BRAND.NAME} on this computer to change it.`);
       }
       // ADE Cloud as the home (asked for now, or kept): the rule must be one its server can run.
       const toCloud = options.home === "ade-cloud" || (typeof options.home === "object" && isAdeCloudHome(options.home));
@@ -555,23 +556,23 @@ export function createAutomationRuleAccountSync(args: {
       let rule = saved;
       if (toCloud || staysOnCloud) {
         if (isChatScopedAutomationRule(saved)) {
-          throw new Error("This rule belongs to one chat, which lives on its computer, so it can't run on ADE Cloud.");
+          throw new Error(`This rule belongs to one chat, which lives on its computer, so it can't run on ${BRAND.CLOUD_NAME}.`);
         }
-        if (!store.scope()) throw new Error("Only a rule in a repository with a GitHub remote can run on ADE Cloud.");
+        if (!store.scope()) throw new Error(`Only a rule in a repository with a GitHub remote can run on ${BRAND.CLOUD_NAME}.`);
         rule = forCloudHome(saved);
         const problem = automationCloudHomeProblem(rule);
         if (problem) throw new Error(problem);
-        if (!store.signedIn()) throw new Error("Sign in to ADE to run this automation on ADE Cloud.");
+        if (!store.signedIn()) throw new Error(`Sign in to ${BRAND.NAME} to run this automation on ${BRAND.CLOUD_NAME}.`);
       }
       if (isChatScopedAutomationRule(rule) || !store.scope()) return { handled: false };
       const fileCopy = args.readFileRules().find((entry) => entry.id === rule.id);
       if (belongsToAnotherAccount(rule.id)) {
         // Saved for another account: it stays here until that account is back.
-        if (options.home) throw new Error("This automation belongs to another ADE account. Sign in to that account to change which computer runs it.");
+        if (options.home) throw new Error(`This automation belongs to another ${BRAND.NAME} account. Sign in to that account to change which computer runs it.`);
         return { handled: false, keepHome: fileCopy?.home };
       }
       // A rule bound for ADE Cloud is never kept in the file: there it would run on this computer.
-      const cloudRefused = new Error("ADE couldn't save this automation to your ADE account yet, so it can't move to ADE Cloud. Try again in a moment.");
+      const cloudRefused = new Error(`${BRAND.NAME} couldn't save this automation to your ${BRAND.NAME} account yet, so it can't move to ${BRAND.CLOUD_NAME}. Try again in a moment.`);
       if (!existing) {
         if (toCloud && (!canFollow(rule) || !store.hasSynced())) throw cloudRefused;
         // A new rule, or one still waiting in the file: filed in the account
@@ -595,13 +596,13 @@ export function createAutomationRuleAccountSync(args: {
       }
       if (!fitsInAccount(content(rule))) {
         const size = Math.ceil((JSON.stringify(content(rule)) ?? "").length / 1000);
-        throw new Error(`This automation is too large to follow your ADE account (${size} KB; the limit is 16 KB). Shorten its prompt or steps.`);
+        throw new Error(`This automation is too large to follow your ${BRAND.NAME} account (${size} KB; the limit is 16 KB). Shorten its prompt or steps.`);
       }
       const currentHome = existing.rule.home;
       const requestedHome = options.home ? resolveHome(options.home, currentHome) : null;
       if (!store.signedIn()) {
         if (requestedHome && requestedHome.deviceId !== currentHome?.deviceId) {
-          throw new Error("Sign in to ADE to change which computer runs this automation.");
+          throw new Error(`Sign in to ${BRAND.NAME} to change which computer runs this automation.`);
         }
         // Kept here with its home until sign-in; the home keeps running the
         // last synced version meanwhile.
@@ -644,7 +645,7 @@ export function createAutomationRuleAccountSync(args: {
       });
       if (!inAccount) return undefined;
       if (!store.remove(ruleId)) {
-        throw new Error("This automation follows your ADE account. Sign in to ADE to delete it.");
+        throw new Error(`This automation follows your ${BRAND.NAME} account. Sign in to ${BRAND.NAME} to delete it.`);
       }
       store.dropPending([ruleId]);
       store.clearOfflineSave([ruleId]);

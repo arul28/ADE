@@ -52,11 +52,11 @@ function Format-AdeBytes([double]$Bytes) {
 
 function Write-AdeBanner {
   Write-Host ""
-  Write-Host "     _    ____  _____"
-  Write-Host "    / \  |  _ \| ____|"
-  Write-Host "   / _ \ | | | |  _|"
-  Write-Host "  / ___ \| |_| | |___"
-  Write-Host " /_/   \_\____/|_____|"
+  Write-Host '  ____'
+  Write-Host ' |  _ \  __ _   ___ __  __'
+  Write-Host ' | | | |/ _` | / _ \\ \/ /'
+  Write-Host ' | |_| | (_| ||  __/ >  <'
+  Write-Host ' |____/ \__,_| \___|/_/\_\'
   Write-Host ""
 }
 
@@ -136,7 +136,7 @@ function Download-Asset(
     try {
       if (-not $response.IsSuccessStatusCode) {
         if ([int]$response.StatusCode -eq 404 -and $Version -ne "latest") {
-          Fail "could not download ADE $Version. Check that it is a published release: https://github.com/$Repo/releases"
+          Fail "could not download DAEX $Version. Check that it is a published release: https://github.com/$Repo/releases"
         }
         Fail "download failed for $Name (HTTP $([int]$response.StatusCode))"
       }
@@ -236,7 +236,7 @@ function Stop-ServiceProcessPreservingRegistration([string]$HomePath) {
   })) {
     & taskkill.exe /PID ([string]$process.ProcessId) /T /F | Out-Null
     if ($LASTEXITCODE -ne 0) {
-      Fail "could not restore the previous stopped ADE brain state"
+      Fail "could not restore the previous stopped DAEX brain state"
     }
   }
 }
@@ -298,7 +298,7 @@ namespace Ade.RuntimeInstaller {
     [void][Ade.RuntimeInstaller.EnvironmentBroadcast]::SendMessageTimeout(
       [IntPtr]0xffff, 0x1a, [UIntPtr]::Zero, "Environment", 2, 5000, [ref]$result)
   } catch {
-    Write-Warning "ADE was added to PATH, but running shells may need to be restarted."
+    Write-Warning "DAEX was added to PATH, but running shells may need to be restarted."
   }
 }
 
@@ -390,18 +390,18 @@ function Write-AdeInstallStateNote(
   Clear-AdeActiveLine
   if ($Stage -eq "staged") {
     if (Test-Path -LiteralPath $BinaryPath -PathType Leaf) {
-      [Console]::Error.WriteLine("ade install: your existing ADE at $BinaryPath was not touched.")
+      [Console]::Error.WriteLine("ade install: your existing DAEX at $BinaryPath was not touched.")
     } else {
       [Console]::Error.WriteLine("ade install: nothing was left installed at $BinaryPath.")
     }
   } elseif ($RestoredPreviousBinary) {
-    [Console]::Error.WriteLine("ade install: the ADE you already had was put back, so nothing is broken.")
+    [Console]::Error.WriteLine("ade install: the DAEX you already had was put back, so nothing is broken.")
   } elseif (Test-Path -LiteralPath $BinaryPath -PathType Leaf) {
     # The rollback is best effort, so the disk is the only thing worth
     # believing here: if it could not remove the binary that just failed, the
     # broken one is still what runs, and saying "nothing was left installed"
     # sends the user looking in the wrong place.
-    [Console]::Error.WriteLine("ade install: the ADE at $BinaryPath is the one that just failed to start.")
+    [Console]::Error.WriteLine("ade install: the DAEX at $BinaryPath is the one that just failed to start.")
   } else {
     [Console]::Error.WriteLine("ade install: nothing was left installed at $BinaryPath.")
   }
@@ -437,9 +437,9 @@ try {
   }
   New-Item -ItemType Directory -Force -Path $stagedRuntime | Out-Null
   Write-AdeBanner
-  Write-Host "  Installing ADE to $AdeHome"
+  Write-Host "  Installing DAEX to $AdeHome"
   Write-Host ""
-  Download-Asset $binaryAsset $downloadedBinary "ADE runtime"
+  Download-Asset $binaryAsset $downloadedBinary "DAEX runtime"
   Download-Asset $nativeAsset $stagedArchive "Native dependencies"
   Download-Asset "SHA256SUMS" $checksumManifest
   Verify-Checksum $checksumManifest $binaryAsset $downloadedBinary
@@ -462,27 +462,27 @@ try {
   # still working.
   Set-ProcessRuntimeEnvironment $AdeHome $stagedRuntime
   & $pendingBinary --version | Out-Null
-  if ($LASTEXITCODE -ne 0) { Fail "downloaded ADE runtime failed its version check" }
+  if ($LASTEXITCODE -ne 0) { Fail "downloaded DAEX runtime failed its version check" }
 
   if ((Test-Path -LiteralPath $destinationBinary -PathType Leaf) -and -not $NoService) {
     Set-ProcessRuntimeEnvironment $AdeHome $runtimeDir
     $serviceStatusJson = (& $destinationBinary serve --service-status --json 2>$null | Out-String)
-    if ($LASTEXITCODE -ne 0) { Fail "existing ADE brain service state could not be read before update" }
+    if ($LASTEXITCODE -ne 0) { Fail "existing DAEX brain service state could not be read before update" }
     try {
       $serviceStatus = $serviceStatusJson | ConvertFrom-Json -ErrorAction Stop
     } catch {
-      Fail "existing ADE brain service returned invalid status before update"
+      Fail "existing DAEX brain service returned invalid status before update"
     }
     if ($serviceStatus.installed -isnot [bool]) {
-      Fail "existing ADE brain service returned incomplete status before update"
+      Fail "existing DAEX brain service returned incomplete status before update"
     }
     if ($serviceStatus.running -isnot [bool]) {
-      Fail "existing ADE brain service returned incomplete running state before update"
+      Fail "existing DAEX brain service returned incomplete running state before update"
     }
     if ($serviceStatus.installed) {
       $previousServiceWasRunning = $serviceStatus.running
       & $destinationBinary serve --uninstall-service | Out-Null
-      if ($LASTEXITCODE -ne 0) { Fail "existing ADE brain service could not be stopped for update" }
+      if ($LASTEXITCODE -ne 0) { Fail "existing DAEX brain service could not be stopped for update" }
       $previousServiceWasStopped = $true
     }
   }
@@ -507,7 +507,7 @@ try {
 
   Set-ProcessRuntimeEnvironment $AdeHome $runtimeDir
   & $destinationBinary --version | Out-Null
-  if ($LASTEXITCODE -ne 0) { Fail "installed ADE runtime failed its version check" }
+  if ($LASTEXITCODE -ne 0) { Fail "installed DAEX runtime failed its version check" }
   # The new binary has now proved it runs, so the cleanup below must stop
   # treating ade.exe as unverified and rolling the backup back over it.
   $binaryVerified = $true
@@ -520,11 +520,33 @@ try {
     # `brain start` pins `cto` internally, matching what the desktop app spawns
     # and what it refuses to attach to anything else.
     & $destinationBinary brain start | Out-Null
-    if ($LASTEXITCODE -ne 0) { Fail "ADE installed, but its per-user brain service could not be registered" }
+    if ($LASTEXITCODE -ne 0) { Fail "DAEX installed, but its per-user brain service could not be registered" }
+  }
+  # `daex` is the command's name and `ade` its permanent alias. The binary
+  # stays ade.exe (released `ade brain update`s replace it by that name), and
+  # two tiny commands beside it run it as `daex`: daex.cmd for cmd and
+  # PowerShell, and an extensionless `daex` for Git Bash, which never tries
+  # .cmd and keeps a multi-line argument whole. Both name ade.exe by their own
+  # folder, so every later update of ade.exe is also daex's. A daex.cmd that is
+  # someone else's (it does not name ade.exe) is left alone. Best effort:
+  # `ade` already works.
+  try {
+    $daexCmd = Join-Path $InstallDir "daex.cmd"
+    $daexCmdOwned = -not (Test-Path -LiteralPath $daexCmd) -or ((Get-Content -LiteralPath $daexCmd -Raw -ErrorAction Stop) -match 'ade\.exe')
+    if ($daexCmdOwned) {
+      $daexCmdBody = "@echo off`r`nsetlocal`r`nrem cmd.exe ends a command at its first line feed; the CLI reads this marker to warn.`r`nset `"ADE_CLI_VIA_CMD=1`"`r`n`"%~dp0ade.exe`" %*`r`nexit /b %ERRORLEVEL%`r`n"
+      [IO.File]::WriteAllText($daexCmd, $daexCmdBody, [Text.UTF8Encoding]::new($false))
+    }
+    $daexSh = Join-Path $InstallDir "daex"
+    if (-not (Test-Path -LiteralPath $daexSh) -or ((Get-Content -LiteralPath $daexSh -Raw -ErrorAction Stop) -match 'ade\.exe')) {
+      [IO.File]::WriteAllText($daexSh, "#!/bin/sh`nexec `"`$(dirname -- `"`$0`")/ade.exe`" `"`$@`"`n", [Text.UTF8Encoding]::new($false))
+    }
+  } catch {
+    Write-Warning "Could not add the daex command beside $destinationBinary ($($_.Exception.Message)); ade still works."
   }
   if (-not $NoPath) { Install-UserPath $InstallDir }
 
-  Write-AdeStep "+" "ADE runtime" $destinationBinary
+  Write-AdeStep "+" "DAEX runtime" $destinationBinary
   Write-AdeStep "+" "Native dependencies" $runtimeDir
   $installSucceeded = $true
 } catch {
@@ -569,7 +591,7 @@ try {
   if ($rollbackErrors.Count -gt 0) {
     $preserveTempForRecovery = $true
     Write-AdeInstallStateNote $installStage $restoredPreviousBinary $destinationBinary
-    throw "ADE runtime install failed ($($installError.Exception.Message)); rollback also failed: $($rollbackErrors -join '; '). Recovery files were retained at $tempRoot, $backupBinary and $backupRuntime"
+    throw "DAEX runtime install failed ($($installError.Exception.Message)); rollback also failed: $($rollbackErrors -join '; '). Recovery files were retained at $tempRoot, $backupBinary and $backupRuntime"
   }
   Write-AdeInstallStateNote $installStage $restoredPreviousBinary $destinationBinary
   throw $installError
@@ -684,7 +706,7 @@ if ($installSucceeded) {
     # the summary are meant for this console.
     & $destinationBinary @setupArgs
   } catch {
-    Write-Warning "Setup did not finish ($($_.Exception.Message)). Run 'ade setup' to try again."
+    Write-Warning "Setup did not finish ($($_.Exception.Message)). Run 'daex setup' to try again."
   } finally {
     foreach ($name in $onboardingPreviousEnvironment.Keys) {
       [Environment]::SetEnvironmentVariable($name, $onboardingPreviousEnvironment[$name], "Process")
@@ -698,7 +720,7 @@ if ($installSucceeded) {
     Write-Host ""
     # Single-quoted: a backtick inside a double-quoted PowerShell string is an
     # escape character, so "`ade`" would emit a BEL instead of the word.
-    Write-Host '  ade is on your PATH in new terminals. This one still needs a restart.'
+    Write-Host '  daex (and ade) are on your PATH in new terminals. This one still needs a restart.'
   }
 
   # `ade setup`'s exit code is deliberately not propagated. Reaching here means

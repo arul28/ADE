@@ -20,27 +20,27 @@ import {
 import { Composer, type ComposerProps } from "./composer/Composer";
 import { QueueStrip } from "./composer/QueueStrip";
 import {
-  AdeChatProvider,
-  useAdeProviders,
-  useAdeThread,
+  DaexChatProvider,
+  useDaexProviders,
+  useDaexThread,
   type ThreadState,
 } from "./context/AdeChatContext";
 import { ModelPicker, type ModelPickerProps } from "./models/ModelPicker";
 import { isModelSelectable } from "./models/modelSearch";
 import type { ActivityLabelConfig } from "./activity/labels";
-import type { AdeChatClient, ModelDescriptor, SendInput } from "./sdkTypes";
-import { AdeChatStyles } from "./theme/AdeChatStyles";
-import type { AdeChatTheme } from "./theme/createTheme";
+import type { DaexChatClient, ModelDescriptor, SendInput } from "./sdkTypes";
+import { DaexChatStyles } from "./theme/AdeChatStyles";
+import type { DaexChatTheme } from "./theme/createTheme";
 import { Transcript, type TranscriptProps } from "./transcript/Transcript";
 import { UsageLimitNotice } from "./UsageLimitNotice";
 import { requireAccepted } from "./actionResult";
 import type { UsageLimitEvent } from "./sdkTypes";
 
-/** What `AdeChatProps.onSend` may return. See `onSend`. */
-export type AdeChatSendResult = void | boolean | "handled";
+/** What `DaexChatProps.onSend` may return. See `onSend`. */
+export type DaexChatSendResult = void | boolean | "handled";
 
-export type AdeChatProps = {
-  client: AdeChatClient;
+export type DaexChatProps = {
+  client: DaexChatClient;
   /** Thread key. Changing it opens a different conversation. */
   threadKey: string;
 
@@ -51,7 +51,7 @@ export type AdeChatProps = {
 
   labels?: ActivityLabelConfig;
   /** Token overrides, typically from `createTheme()`. */
-  theme?: Partial<AdeChatTheme>;
+  theme?: Partial<DaexChatTheme>;
   /** Skip the injected stylesheet if the host bundles its own copy. */
   disableStyles?: boolean;
 
@@ -81,7 +81,7 @@ export type AdeChatProps = {
   onSend?: (
     input: SendInput,
     thread: ThreadState,
-  ) => AdeChatSendResult | Promise<AdeChatSendResult>;
+  ) => DaexChatSendResult | Promise<DaexChatSendResult>;
   /**
    * Render prop drawn between the transcript and the composer, with the live
    * thread state: rows, status, `send`, `update`, the resolved model. Use it
@@ -124,7 +124,7 @@ export type AdeChatProps = {
   /**
    * Called when the person picks an effort in the built-in picker. The effort
    * control is drawn only when this is set. Applying it to the thread (for
-   * example `thread.update({ reasoningEffort })` on `@ade-dev/sdk` >= 0.3) is the
+   * example `thread.update({ reasoningEffort })` on `@daex-dev/sdk` >= 0.3) is the
    * host's job; this component does not call the runtime for it.
    */
   onReasoningEffortChange?: ModelPickerProps["onReasoningEffortChange"];
@@ -150,7 +150,7 @@ export type AdeChatProps = {
   toolChipActions?: TranscriptProps["toolChipActions"];
   /**
    * Envelopes per history page on a client with `historyPage`; older pages load
-   * when the reader scrolls to the top. See `useAdeThread`.
+   * when the reader scrolls to the top. See `useDaexThread`.
    */
   historyPageSize?: number;
   /**
@@ -172,11 +172,11 @@ export type AdeChatProps = {
  */
 const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
-export function AdeChat(props: AdeChatProps) {
+export function DaexChat(props: DaexChatProps) {
   return (
-    <AdeChatProvider client={props.client} {...(props.labels ? { labels: props.labels } : {})}>
+    <DaexChatProvider client={props.client} {...(props.labels ? { labels: props.labels } : {})}>
       <AdeChatInner {...props} />
-    </AdeChatProvider>
+    </DaexChatProvider>
   );
 }
 
@@ -215,7 +215,7 @@ function AdeChatInner({
   emptyState,
   hideModelPicker = false,
   className,
-}: AdeChatProps) {
+}: DaexChatProps) {
   const [internalModelId, setInternalModelId] = useState<string | null>(defaultModelId ?? null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [selectedLabel, setSelectedLabel] = useState<string | null>(null);
@@ -225,7 +225,7 @@ function AdeChatInner({
   // and the user would meet that error before typing a word. So the catalog's
   // own first selectable model is the fallback, and the thread stays closed
   // until the catalog has been read at least once.
-  const { models, statuses, loading: catalogLoading } = useAdeProviders(client);
+  const { models, statuses, loading: catalogLoading } = useDaexProviders(client);
   const fallbackModel = useMemo(
     () =>
       models.find((model) =>
@@ -239,7 +239,7 @@ function AdeChatInner({
     [models, activeModelId],
   );
 
-  const thread = useAdeThread(threadKey, {
+  const thread = useDaexThread(threadKey, {
     client,
     enabled: Boolean(activeModelId) || !catalogLoading,
     ...(activeModelId ? { modelId: activeModelId } : {}),
@@ -300,7 +300,7 @@ function AdeChatInner({
    * then the update) and the runtime lands on the same selection. That is what
    * makes it safe to run from an effect — it is idempotent, not free. A local
    * short-circuit is deliberately not done in the SDK, because the runtime
-   * session is shared: another client (ADE desktop on the same runtime) can
+   * session is shared: another client (DAEX desktop on the same runtime) can
    * change the model out from under a cached value, and a stale cache would
    * then swallow a real switch.
    */
@@ -429,7 +429,7 @@ function AdeChatInner({
 
   return (
     <div className={["adechat-root", className].filter(Boolean).join(" ")} style={style}>
-      {disableStyles ? null : <AdeChatStyles {...(styleNonce ? { nonce: styleNonce } : {})} />}
+      {disableStyles ? null : <DaexChatStyles {...(styleNonce ? { nonce: styleNonce } : {})} />}
       <Transcript
         rows={thread.rows}
         status={thread.status.state}
@@ -489,3 +489,12 @@ function AdeChatInner({
     </div>
   );
 }
+
+// Pre-DAEX names, kept as deprecated aliases so code written against the
+// `@ade-dev` packages keeps compiling. Remove them in a future major version.
+/** @deprecated Use {@link DaexChat}. */
+export const AdeChat = DaexChat;
+/** @deprecated Use {@link DaexChatProps}. */
+export type AdeChatProps = DaexChatProps;
+/** @deprecated Use {@link DaexChatSendResult}. */
+export type AdeChatSendResult = DaexChatSendResult;

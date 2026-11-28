@@ -458,7 +458,7 @@ export async function pushFileToWorkCopy(
   } catch {
     throw new CliUsageError(`${localPath} does not exist here.`);
   }
-  if (!stat.isFile()) throw new CliUsageError(`${localPath} is not a file. ade files push copies one file; pack a folder first (tar or zip).`);
+  if (!stat.isFile()) throw new CliUsageError(`${localPath} is not a file. daex files push copies one file; pack a folder first (tar or zip).`);
   if (stat.size > REMOTE_WORK_FILE_MAX_BYTES) throw fileTooLarge(localPath, stat.size);
   const sha256 = await fileSha256(localPath);
   const begun = answerRecord(await call({

@@ -5,6 +5,7 @@ import { isWebClientMode } from "../../lib/webClientMode";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { useRemoteRuntimeContext } from "./RemoteContextBadge";
 import { sectionWebScope, type SettingWebScope } from "./settingsManifest";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * On the desktop, "where does this setting go" has one answer: this computer.
@@ -33,7 +34,7 @@ const SCOPE_COPY: Record<Exclude<SettingWebScope, "hidden">, ScopeCopy> = {
   },
   account: {
     icon: Cloud,
-    text: () => <>Saved to your ADE account — applies on every machine</>,
+    text: () => <>Saved to your {BRAND.NAME} account — applies on every machine</>,
   },
   browser: {
     icon: Browser,

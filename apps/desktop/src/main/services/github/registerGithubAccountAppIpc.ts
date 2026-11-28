@@ -13,6 +13,7 @@ import { updateCredentialKeySync, type UpdatableCredentialStore } from "../../..
 import { isTrustedAdeRendererSender } from "../ipc/trustedRendererSender";
 import { openExternalUrl } from "../shared/externalLinks";
 import { captureGithubAppConnectionAnalytics, type FeatureAnalytics } from "../analytics/featureProductAnalytics";
+import { BRAND } from "../../../shared/brand";
 
 function connectOutcome(signIn: { status: string; resultCode: string | null }): "completed" | "cancelled" | "failed" {
   if (signIn.status === "done" && signIn.resultCode === "ok") return "completed";
@@ -72,7 +73,7 @@ export function registerGithubAccountAppIpc(args: {
 
   const handle = <A extends unknown[], R>(channel: string, fn: (...a: A) => Promise<R>) => {
     ipcMain.handle(channel, async (event, ...rest) => {
-      if (!isTrustedAdeRendererSender(event)) throw new Error("GitHub sign-in is only available to the ADE window.");
+      if (!isTrustedAdeRendererSender(event)) throw new Error(`GitHub sign-in is only available to the ${BRAND.NAME} window.`);
       return await fn(...(rest as A));
     });
   };

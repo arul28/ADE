@@ -49,7 +49,7 @@ export function createCliChildSessionAccess(options: CliChildSessionAccessOption
     return { row, lineage: cliChildLineageFromRow(row) };
   };
 
-  const cliReadHint = (terminalId: string): string => `ade terminal read ${terminalId}`;
+  const cliReadHint = (terminalId: string): string => `daex terminal read ${terminalId}`;
   const cliSessionStatusFields = (row: TrackedCliRow, lineage: CliChildLineage | null): CliSessionFacts => ({
     toolType: row.toolType ?? null,
     provider: lineage?.provider ?? row.resumeMetadata?.provider ?? null,

@@ -99,6 +99,7 @@ import { compareUpdateVersions } from "../../../shared/updateVersions";
 import { isPeerVersionGapMessage } from "../../../shared/sentry/expectedFailure";
 import type { RemoteEventSetupPhase } from "./remoteEventSetup";
 import { isBrainStartableByUserError, type RemoteConnectInitiator, type RemoteConnectIntent } from "./remoteBrainStart";
+import { BRAND } from "../../../shared/brand";
 
 type PoolEntryBase = {
   client: RuntimeRpcClient;
@@ -616,8 +617,8 @@ function assertMachineProjectCapability(entry: PoolEntry, method: string): void 
   if (entry.result.capabilities?.machineProjects?.[capability] === true) return;
   const version = entry.result.version ? ` ${entry.result.version}` : "";
   throw new Error(
-    `Remote ADE service${version} does not support ${MACHINE_PROJECT_CAPABILITY_LABEL[capability]}. ` +
-      "Update ADE on that machine, or connect with a runtime that advertises this project capability.",
+    `Remote ${BRAND.NAME} service${version} does not support ${MACHINE_PROJECT_CAPABILITY_LABEL[capability]}. ` +
+      `Update ${BRAND.NAME} on that machine, or connect with a runtime that advertises this project capability.`,
   );
 }
 
@@ -938,7 +939,7 @@ export class RemoteConnectionPool {
             paired.portForwardClient.dispose(false);
             paired.client.close();
             throw new PairedRuntimeRelayAuthRequiredError(
-              "Your ADE account changed before the Relay connection finished.",
+              `Your ${BRAND.NAME} account changed before the Relay connection finished.`,
             );
           }
         }
@@ -1564,7 +1565,7 @@ export class RemoteConnectionPool {
             : {};
         const message = typeof error.message === "string"
           ? error.message
-          : "Remote ADE service action failed.";
+          : `Remote ${BRAND.NAME} service action failed.`;
         if (optionalFallback && optionalFallbackKey && isRemoteActionNotCallableMessage(message)) {
           this.unsupportedOptionalActionKeys.add(optionalFallbackKey);
           return optionalFallback;
@@ -1641,7 +1642,7 @@ export class RemoteConnectionPool {
         throw new Error(
           typeof error.message === "string"
             ? error.message
-            : "Remote ADE service event stream failed.",
+            : `Remote ${BRAND.NAME} service event stream failed.`,
         );
       }
 
@@ -1984,7 +1985,7 @@ export class RemoteConnectionPool {
     const evict = (
       closeClient: boolean,
       notify = true,
-      error = new Error("Remote ADE service connection was interrupted."),
+      error = new Error(`Remote ${BRAND.NAME} service connection was interrupted.`),
     ) => {
       if (this.entries.get(targetId) === entryPromise) {
         this.entries.delete(targetId);
@@ -2159,7 +2160,7 @@ function normalizeBufferedEvent(
 
 function normalizeAdeActionRegistry(value: unknown): AdeActionRegistryEntry[] {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("Remote ADE service did not return an action registry.");
+    throw new Error(`Remote ${BRAND.NAME} service did not return an action registry.`);
   }
   const record = value as Record<string, unknown>;
   if (record.ok === false) {
@@ -2172,12 +2173,12 @@ function normalizeAdeActionRegistry(value: unknown): AdeActionRegistryEntry[] {
     throw new Error(
       typeof error.message === "string"
         ? error.message
-        : "Remote ADE service action registry lookup failed.",
+        : `Remote ${BRAND.NAME} service action registry lookup failed.`,
     );
   }
   const rawActions = Array.isArray(record.actions) ? record.actions : null;
   if (!rawActions) {
-    throw new Error("Remote ADE service did not return an action registry.");
+    throw new Error(`Remote ${BRAND.NAME} service did not return an action registry.`);
   }
 
   const grouped = new Map<string, Map<string, { name: string; description?: string }>>();
@@ -2391,13 +2392,13 @@ function normalizeRuntimeEventsSubscribeResult(
 function readSubscriptionId(value: unknown): string {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(
-      "ADE service event subscription did not return a subscription id.",
+      `${BRAND.NAME} service event subscription did not return a subscription id.`,
     );
   }
   const id = (value as Record<string, unknown>).subscriptionId;
   if (typeof id !== "string" || !id.trim()) {
     throw new Error(
-      "ADE service event subscription did not return a subscription id.",
+      `${BRAND.NAME} service event subscription did not return a subscription id.`,
     );
   }
   return id.trim();

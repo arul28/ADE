@@ -110,9 +110,9 @@ enum AccountMachineInstallChannel: String, Codable, Equatable, Hashable, Sendabl
   /// "ADE", "ADE Beta" or "ADE Alpha", as `appPackageChannelDisplayName`.
   var displayName: String {
     switch self {
-    case .stable: return "ADE"
-    case .beta: return "ADE Beta"
-    case .alpha: return "ADE Alpha"
+    case .stable: return Brand.name
+    case .beta: return Brand.betaName
+    case .alpha: return "\(Brand.name) Alpha"
     }
   }
 
@@ -207,12 +207,12 @@ struct AccountMachine: Codable, Equatable, Identifiable, Hashable {
       return trimmed
     }
     if let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty {
-      return trimmed
+      return displayLegacyDefaultName(trimmed)
     }
     if let platform, !platform.isEmpty {
       return platform.capitalized
     }
-    return "ADE machine"
+    return "\(Brand.name) machine"
   }
 
   /// Which ADE install the row is, as "ADE Alpha", or the ADE home when the
@@ -249,7 +249,7 @@ struct AccountMachine: Codable, Equatable, Identifiable, Hashable {
   /// its channel suffix (" (Beta)"). Empty when neither is known.
   private var baseComputerName: String {
     if let custom = customName?.trimmingCharacters(in: .whitespacesAndNewlines), !custom.isEmpty { return custom }
-    let reported = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let reported = displayLegacyDefaultName(name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
     let suffix = channel?.nameSuffix ?? ""
     return !suffix.isEmpty && reported.hasSuffix(suffix)
       ? String(reported.dropLast(suffix.count))

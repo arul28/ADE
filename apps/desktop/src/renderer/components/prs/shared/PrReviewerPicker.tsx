@@ -4,6 +4,7 @@ import { isImeComposing } from "../../../lib/imeComposition";
 import { COLORS, MONO_FONT } from "../../lanes/laneDesignTokens";
 import { PrWritingScopeContext } from "./prMarkdownContext";
 import { plainErrorText } from "../../../lib/plainError";
+import { BRAND } from "../../../../shared/brand";
 
 const REVIEWER_SEARCH_DEBOUNCE_MS = 200;
 
@@ -52,7 +53,7 @@ export function PrReviewerPicker({
         .catch((err: unknown) => {
           if (cancelled) return;
           setResults(null);
-          setError(plainErrorText(err, "ADE couldn't search for reviewers."));
+          setError(plainErrorText(err, `${BRAND.NAME} couldn't search for reviewers.`));
         });
     }, REVIEWER_SEARCH_DEBOUNCE_MS);
     return () => {

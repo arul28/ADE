@@ -7,7 +7,13 @@ import { adePromptAgentSkillRoots } from "../../skills/agentSkillRuntimeService"
  * reads it to recognise ADE's own Copilot chats that predate their
  * `client_name` (`externalSessions/discoverCopilot.ts`), so keep it stable.
  */
-export const ADE_AGENT_PROMPT_OPENING = "You are ADE's software engineering agent working in";
+export const ADE_AGENT_PROMPT_OPENING = "You are DAEX's software engineering agent working in";
+
+/**
+ * The opening older builds wrote (before the rename to DAEX). Copilot session
+ * files on disk keep it, so session import must accept both openings.
+ */
+export const LEGACY_ADE_AGENT_PROMPT_OPENING = "You are ADE's software engineering agent working in";
 
 type HarnessMode = "chat" | "coding" | "planning";
 type HarnessPermissionMode = "plan" | "edit" | "full-auto";
@@ -35,11 +41,11 @@ export type AdeRuntimeKind =
  * MCP-server lines live in the shared `## ADE` block, which every one of these
  * prompts carries.
  */
-const adeScheduledWorkGuidance = "**Scheduled work:** to wake yourself later, run `ade chat scheduled-work create --in 12m --prompt \"<task>\" --text`. Details: **ade-cli-control-plane**.";
+const adeScheduledWorkGuidance = "**Scheduled work:** to wake yourself later, run `daex chat scheduled-work create --in 12m --prompt \"<task>\" --text`. Details: **daex-cli-control-plane**.";
 
-const openCodeBackgroundWorkGuidance = "**Background work:** `shell` with `background: true` and background subagents are fine: ADE shows each job, keeps the session open, and wakes you when it ends. They stop if ADE restarts, so for a wait that must survive a restart use `ade chat scheduled-work create`.";
+const openCodeBackgroundWorkGuidance = "**Background work:** `shell` with `background: true` and background subagents are fine: DAEX shows each job, keeps the session open, and wakes you when it ends. They stop if DAEX restarts, so for a wait that must survive a restart use `daex chat scheduled-work create`.";
 
-const adeProviderSubagentGuidance = "Another provider's model: `ade new chat --mode chat --provider <p> --model <m> --prompt \"<task>\"` (it reports back).";
+const adeProviderSubagentGuidance = "Another provider's model: `daex new chat --mode chat --provider <p> --model <m> --prompt \"<task>\"` (it reports back).";
 
 type NativeSubagentFamily = "claude" | "codex" | "cursor" | "droid" | "copilot" | "opencode" | "pi";
 
@@ -60,9 +66,9 @@ const nativeSubagentGuidanceByFamily: Record<NativeSubagentFamily, string> = {
   codex: "Prefer your native subagent tool.",
   cursor: "Prefer Cursor's native task tool.",
   droid: "Prefer Droid's native subagent tool.",
-  copilot: "Copilot has no native subagent tool here. Delegate with an ADE subagent chat.",
+  copilot: "Copilot has no native subagent tool here. Delegate with a DAEX subagent chat.",
   opencode: "Prefer OpenCode's native `subagent` tool.",
-  pi: "Pi has no native subagent tool here. Delegate with `ade new chat --mode chat --provider <p> --model <m> --prompt \"<task>\"`: it runs as your subagent and reports back. Give it a self-contained brief.",
+  pi: "Pi has no native subagent tool here. Delegate with `daex new chat --mode chat --provider <p> --model <m> --prompt \"<task>\"`: it runs as your subagent and reports back. Give it a self-contained brief.",
 };
 
 export function buildNativeSubagentRoutingGuidance(runtime: AdeRuntimeKind): string {
@@ -79,55 +85,55 @@ function describeRuntime(runtime: AdeRuntimeKind): string[] {
   switch (runtime) {
     case "claude-agent-sdk-query":
       return [
-        "**Runtime:** ADE Work chat on the Claude Agent SDK.",
+        "**Runtime:** DAEX Work chat on the Claude Agent SDK.",
         describeSubagentRouting(runtime),
-        "**Wake-ups:** `ScheduleWakeup`, `CronCreate` and `/loop` use ADE's durable scheduler. Details: **ade-cli-control-plane**.",
+        "**Wake-ups:** `ScheduleWakeup`, `CronCreate` and `/loop` use DAEX's durable scheduler. Details: **daex-cli-control-plane**.",
       ];
     case "claude-code-cli":
       return [
-        "**Runtime:** ADE Work chat running Claude Code CLI as a subprocess; ADE owns the lane, transcript and follow-ups.",
+        "**Runtime:** DAEX Work chat running Claude Code CLI as a subprocess; DAEX owns the lane, transcript and follow-ups.",
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
       ];
     case "codex-cli":
       return [
-        "**Runtime:** ADE Work chat running the Codex CLI; ADE hosts slash commands, attachments and the lane.",
+        "**Runtime:** DAEX Work chat running the Codex CLI; DAEX hosts slash commands, attachments and the lane.",
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
       ];
     case "codex-app-server":
       return [
-        "**Runtime:** ADE Work chat on the Codex app-server; ADE hosts slash commands, attachments and the lane.",
+        "**Runtime:** DAEX Work chat on the Codex app-server; DAEX hosts slash commands, attachments and the lane.",
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
       ];
     case "cursor-sdk":
       return [
-        "**Runtime:** ADE Work chat on the Cursor SDK.",
+        "**Runtime:** DAEX Work chat on the Cursor SDK.",
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
       ];
     case "droid-sdk":
       return [
-        "**Runtime:** ADE Work chat on the Factory Droid SDK (local Droid CLI).",
+        "**Runtime:** DAEX Work chat on the Factory Droid SDK (local Droid CLI).",
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
       ];
     case "copilot-sdk":
       return [
-        "**Runtime:** ADE Work chat on the GitHub Copilot SDK (installed Copilot CLI).",
+        "**Runtime:** DAEX Work chat on the GitHub Copilot SDK (installed Copilot CLI).",
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
       ];
     case "pi-sdk":
       return [
-        "**Runtime:** ADE Work chat on the user's Pi SDK; ADE owns the transcript and lane, Pi its session file and credentials.",
+        "**Runtime:** DAEX Work chat on the user's Pi SDK; DAEX owns the transcript and lane, Pi its session file and credentials.",
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
       ];
     case "opencode":
       return [
-        "**Runtime:** ADE Work chat wrapping an OpenCode session.",
+        "**Runtime:** DAEX Work chat wrapping an OpenCode session.",
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
         openCodeBackgroundWorkGuidance,
@@ -136,7 +142,7 @@ function describeRuntime(runtime: AdeRuntimeKind): string[] {
 }
 
 /** Plan mode still reads: a model told "no bash" would not even read its issue. */
-const PLAN_MODE_READ_COMMANDS = "Commands that only read are fine in plan mode: `git log`, `git diff`, `rg`, and ADE reads such as `ade linear issue <id> --text`, `ade prs show <n>` or `ade help`.";
+const PLAN_MODE_READ_COMMANDS = "Commands that only read are fine in plan mode: `git log`, `git diff`, `rg`, and DAEX reads such as `daex linear issue <id> --text`, `daex prs show <n>` or `daex help`.";
 
 function describePermissionMode(mode: HarnessPermissionMode): string {
   switch (mode) {
@@ -230,7 +236,7 @@ export function buildCodingAgentSystemPrompt(args: {
               : "Native Codex Plan Mode controls planning and approval. Preserve that built-in flow: stay read-only, make the safest reasonable assumptions when clarification would otherwise be needed, and publish the final plan through Codex's proposed-plan mechanism.",
             "Do not use TodoWrite, update_plan, or exitPlanMode as the plan-approval path in native Codex Plan Mode.",
             PLAN_MODE_READ_COMMANDS,
-            "If an `ade` command cannot reach ADE from the sandbox (EPERM, or it cannot open the project data store), rerun it with escalated permissions; ADE approves commands that only read.",
+            "If a `daex` command cannot reach DAEX from the sandbox (EPERM, or it cannot open the project data store), rerun it with escalated permissions; DAEX approves commands that only read.",
           ]
         : [
             "Plan mode is read-only. Do not edit or write files, and do not run commands that change anything.",
@@ -252,7 +258,7 @@ export function buildCodingAgentSystemPrompt(args: {
 
   return [
     `${ADE_AGENT_PROMPT_OPENING} ${args.cwd}.`,
-    "Edit files and run mutating commands only inside this worktree, unless ADE relaunches you in another lane. Reading outside it is fine.",
+    "Edit files and run mutating commands only inside this worktree, unless DAEX relaunches you in another lane. Reading outside it is fine.",
     ...(runtime
       ? [
           "",
@@ -271,7 +277,7 @@ export function buildCodingAgentSystemPrompt(args: {
     // No generic coding advice here (inspect first, keep edits narrow, verify,
     // narrate briefly): every harness ADE hosts already gives its own, and a
     // second copy only dilutes the lines below, which are ADE's own.
-    "## Working in ADE",
+    "## Working in DAEX",
     "A status question or a timeout is a checkpoint: answer it, then continue. New instructions replace old ones; stop only when told. Put answers and your summary in your visible reply.",
     ...(toolUseRules.length ? ["", "## Tool Use Rules", ...toolUseRules] : []),
     "",
@@ -295,7 +301,7 @@ export function buildCodingAgentSystemPrompt(args: {
             ? ["- **createPrFromLane**: Open a GitHub pull request from a lane once its changes are committed and pushed. Open it as a draft only when the user asks or the work is unfinished."]
             : []),
           "",
-          "**Workflow:** make the changes, verify with tests and the surface's own `proof` command (`ade browser proof`, `ade app-control proof`, `ade apple proof`), then create the PR and stop. Merge it only when the user says to land it.",
+          "**Workflow:** make the changes, verify with tests and the surface's own `proof` command (`daex browser proof`, `daex app-control proof`, `daex apple proof`), then create the PR and stop. Merge it only when the user says to land it.",
           "**Do not** create infrastructure (CI configs, deployment scripts) or modify settings outside your lane without explicit user approval.",
         ]
       : []),
@@ -305,7 +311,7 @@ export function buildCodingAgentSystemPrompt(args: {
           "## Pull Request Tools",
           `Key PR tools in this session: ${prIssueToolNames.join(", ")}.`,
           "Use these tools first when the task is to address PR comments, review threads, or CI failures.",
-          "ADE PR tools are runtime tool calls, not shell commands. Do not probe them with `which`, `command -v`, or local settings files.",
+          "DAEX PR tools are runtime tool calls, not shell commands. Do not probe them with `which`, `command -v`, or local settings files.",
           "Use the exact identifier shown in the live tool list.",
           "If a required PR tool is missing, report the misconfiguration immediately instead of spelunking through local bootstrap code.",
         ]

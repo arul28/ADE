@@ -22,6 +22,8 @@ import {
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
 import { deriveLaneName, openWorktreeAsLane } from "./worktreeLaneFlow";
 import { Banner } from "../ui/notice";
+import { BRAND } from "../../../shared/brand";
+import { Z_LAYERS } from "../ui/zLayers";
 
 const DOCS_URL = "https://ade-app.dev/docs/lanes/repos-and-worktrees";
 
@@ -112,7 +114,8 @@ export function WorktreeOpenDialog() {
           <Dialog.Portal forceMount>
             <Dialog.Overlay asChild>
               <motion.div
-                className="fixed inset-0 z-[120] bg-black/70 backdrop-blur-2xl"
+                className="fixed inset-0 bg-black/70 backdrop-blur-2xl"
+                style={{ zIndex: Z_LAYERS.dialog }}
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
@@ -124,8 +127,10 @@ export function WorktreeOpenDialog() {
               onOpenAutoFocus={(event) => event.preventDefault()}
             >
               <motion.div
-                className="fixed left-1/2 top-[14%] z-[130] -translate-x-1/2 w-[520px] max-w-[96vw] overflow-hidden rounded-2xl flex flex-col focus:outline-none"
+                className="fixed left-1/2 top-[14%] -translate-x-1/2 w-[520px] max-w-[96vw] overflow-hidden rounded-2xl flex flex-col focus:outline-none"
                 style={{
+                  // The scrim's layer too: the panel comes after it, so it draws on top.
+                  zIndex: Z_LAYERS.dialog,
                   background:
                     "radial-gradient(120% 120% at 0% 0%, rgba(167,139,250,0.10), transparent 55%), " +
                     "radial-gradient(100% 100% at 100% 100%, rgba(82,56,175,0.10), transparent 60%), " +
@@ -217,7 +222,7 @@ export function WorktreeOpenDialog() {
                     >
                       {existingLane
                         ? "This folder is the lane below — no need to add it again."
-                        : "In ADE, a repo is one project and each worktree is a lane inside it."}
+                        : `In ${BRAND.NAME}, a repo is one project and each worktree is a lane inside it.`}
                     </p>
                   </div>
 
@@ -258,7 +263,7 @@ export function WorktreeOpenDialog() {
                       subtitle={
                         parent.isKnownAdeProject
                           ? `Jumps to this worktree's lane, "${derivedLaneName}"`
-                          : `Opens ${parent.displayName} in ADE, where this worktree is a lane`
+                          : `Opens ${parent.displayName} in ${BRAND.NAME}, where this worktree is a lane`
                       }
                       busy={laneBusy}
                       disabled={Boolean(busy)}
@@ -331,7 +336,7 @@ export function WorktreeOpenDialog() {
                         cursor: "pointer",
                       }}
                     >
-                      How ADE thinks about repos &amp; worktrees
+                      How {BRAND.NAME} thinks about repos &amp; worktrees
                       <ArrowSquareOut size={12} weight="regular" />
                     </button>
                     <button

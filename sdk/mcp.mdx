@@ -24,8 +24,8 @@ Supported shapes:
 
 The server shape is checked against the selected provider before launch. Codex
 does not support `sse`, so a Codex request containing an SSE entry is rejected.
-Server names `computer_use` and `ade-cto` are reserved, and a request may
-contain at most 32 servers.
+Server names `computer_use` and `daex-cto` are reserved (so is `ade-cto`, its
+name before the DAEX rename), and a request may contain at most 32 servers.
 
 Supplying `mcpServers` turns on **strict mode** unless you set `loadUserMcpServers: true`. Strict means: withhold the user's and project's own MCP config, and try to load only the servers you supplied.
 
@@ -43,7 +43,7 @@ Strict mode is **enforced only on Claude**. Codex, Cursor, Droid, and OpenCode a
 |---|---|---|
 | claude | enforced | nothing MCP-wise (user rules/commands/output styles still load — they are not MCP) |
 | codex | best-effort | servers contributed by a Codex *plugin* |
-| cursor | best-effort | user-layer servers (`~/.cursor`; ADE's own preToolUse hook lives there) |
+| cursor | best-effort | user-layer servers (`~/.cursor`; DAEX's own preToolUse hook lives there) |
 | droid | best-effort | tools that appear only after the first disable pass |
 | opencode | best-effort | the global OpenCode config directory (for auth) |
 | pi | unsupported | n/a — create refuses injected servers |
@@ -146,7 +146,7 @@ These values are still stored in plain text: the `url` with its query string (th
 ### `mcpHeaders`
 
 ```ts
-const ade = await createAdeChat({
+const ade = await createDaexChat({
   home,
   mcpHeaders: (key, serverName) =>
     serverName === "app" ? { Authorization: `Bearer ${currentToken()}` } : undefined,
@@ -162,7 +162,7 @@ On a resume, the SDK pushes the resolved servers to the runtime when the stored 
 A remote server with a short-lived access token (OAuth, one hour) would start returning 401 partway through a long chat. With `mcpHeaders`, it does not: before each turn the SDK asks the callback again, and when the values differ from the ones it last sent, it pushes them. The runtime restarts the provider between turns and resumes the same conversation, so the next turn runs on the new token. Unchanged values send nothing, so return a cached token until it is close to expiry.
 
 ```ts
-const ade = await createAdeChat({
+const ade = await createDaexChat({
   home,
   mcpHeaders: async (key, serverName) =>
     serverName === "app" ? { Authorization: `Bearer ${await oauth.validAccessToken()}` } : undefined,
@@ -248,7 +248,7 @@ thread.on("event", ({ event }) => {
 | claude | Yes, for MCP tools (`mcp__…`) only |
 | cursor, droid, opencode, pi | No. The field is absent |
 
-The field is absent when the result has no links. `@ade-dev/chat-ui` shows them on tool chips as `row.resourceLinks`. See [Chat UI](/sdk/chat-ui#tool-results).
+The field is absent when the result has no links. `@daex-dev/chat-ui` shows them on tool chips as `row.resourceLinks`. See [Chat UI](/sdk/chat-ui#tool-results).
 
 ## Approvals for MCP tools
 

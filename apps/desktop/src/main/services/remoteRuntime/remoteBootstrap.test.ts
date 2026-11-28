@@ -107,7 +107,7 @@ describe("normalizeRemoteArch", () => {
         }),
       }),
     );
-    expect(() => normalizeRemoteArch("Linux riscv64")).toThrow(/unsupported remote ade service platform/i);
+    expect(() => normalizeRemoteArch("Linux riscv64")).toThrow(/unsupported remote daex service platform/i);
   });
 });
 
@@ -115,7 +115,7 @@ describe("formatOpenSshSpawnError", () => {
   it("turns a missing Windows OpenSSH client into an actionable prerequisite diagnostic", () => {
     const error = Object.assign(new Error("spawn ssh ENOENT"), { code: "ENOENT" });
     expect(formatOpenSshSpawnError(error, "win32")).toMatch(
-      /Windows OpenSSH Client is unavailable.*Optional Features.*Add-WindowsCapability.*restart ADE/i,
+      /Windows OpenSSH Client is unavailable.*Optional Features.*Add-WindowsCapability.*restart DAEX/i,
     );
   });
 
@@ -193,6 +193,7 @@ describe("normalizeRuntimeVersion", () => {
   it("normalizes plain and prefixed ADE version output", () => {
     expect(normalizeRuntimeVersion("1.0.0-beta.1\n")).toBe("1.0.0-beta.1");
     expect(normalizeRuntimeVersion("ade 1.0.0-beta.1\n")).toBe("1.0.0-beta.1");
+    expect(normalizeRuntimeVersion("daex 1.0.0-beta.1\n")).toBe("1.0.0-beta.1");
   });
 
   it("returns null for empty version output", () => {
@@ -1383,7 +1384,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       const { connected } = await connectToMac({ driverReady: false, failVerify: true });
 
       expect((connected.result.compatibilityWarnings ?? []).join("\n")).toMatch(
-        /Mac Desktop is not available on this machine: ADE could not install its driver/,
+        /Mac Desktop is not available on this machine: DAEX could not install its driver/,
       );
     });
   });
@@ -1766,7 +1767,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       resourcesPath: resources.resourcesPath,
       appVersion: APP_VERSION,
       connect: USER_CONNECT,
-    })).rejects.toThrow(/uploaded ade service version mismatch/i);
+    })).rejects.toThrow(/uploaded daex service version mismatch/i);
 
     expect(fakeSsh.sftp).toHaveBeenCalledTimes(1);
     expect(fakeSsh.sftpWrapper.fastPut).toHaveBeenCalledWith(
@@ -2061,7 +2062,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     expect(connected.result).toMatchObject({
       version: "1.9.0-alpha.4",
       compatibilityWarnings: [
-        "This machine is using another installed ADE version. Some features may behave differently.",
+        "This machine is using another installed DAEX version. Some features may behave differently.",
       ],
     });
   });
@@ -2121,7 +2122,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     );
     expect(connected.result.version).toBe("1.2.27");
     expect(connected.result.compatibilityWarnings).toEqual(expect.arrayContaining([
-      "This machine is using another installed ADE version. Some features may behave differently.",
+      "This machine is using another installed DAEX version. Some features may behave differently.",
     ]));
   });
 
@@ -2281,7 +2282,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       pairedMachine: { hostIdentity: "mac-studio-device" },
     });
     expect(connected.result.compatibilityWarnings).toEqual(expect.arrayContaining([
-      "This machine is using another installed ADE version. Some features may behave differently.",
+      "This machine is using another installed DAEX version. Some features may behave differently.",
     ]));
   });
 
@@ -2371,7 +2372,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     })).rejects.toMatchObject({
       info: {
         kind: "generic",
-        message: "ADE couldn't connect to this machine. Check that ADE is open there, then press Try again.",
+        message: "DAEX couldn't connect to this machine. Check that DAEX is open there, then press Try again.",
         detail: expect.stringMatching(/\.ade \[capability_negotiation\].*multi-project/is),
       },
     });

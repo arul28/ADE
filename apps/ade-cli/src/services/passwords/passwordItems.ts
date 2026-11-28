@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import type { PasswordItemSecret, PasswordItemSummary, PasswordLoginSecret } from "../../../../desktop/src/shared/types/passwords";
 import { normalizeLoginOrigin } from "./passwordMatching";
 import { normalizeTotpInput } from "./passwordTotp";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /** Random bytes in a new item id, account or this-computer-only. */
 export const ITEM_ID_BYTES = 12;
@@ -16,7 +17,7 @@ export function newPasswordItemId(): string {
 export function totpOrThrow(value: string | null, label: string): string | null {
   if (value === null || !value.trim()) return null;
   const normalized = normalizeTotpInput(value, label);
-  if (!normalized) throw new Error("That authenticator key isn't one ADE can read. Paste the otpauth:// link or the key the site shows.");
+  if (!normalized) throw new Error(`That authenticator key isn't one ${BRAND.NAME} can read. Paste the otpauth:// link or the key the site shows.`);
   return normalized;
 }
 

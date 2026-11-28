@@ -26,6 +26,7 @@ import {
 } from "./laneShareModel";
 import { LANE_SHARE_MODE_TITLES, LANE_SHARE_REASONING_TITLES } from "./laneShareUi";
 import "./laneShare.css";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The rights of one person. The everyday choices (how long, what of the
@@ -50,7 +51,7 @@ const TOOL_TITLES: Record<LaneShareToolDomain, string> = {
 
 /** Why the lane's machine cannot offer "Type into CLI sessions", as the owner reads it. */
 const CLI_TYPING_UNAVAILABLE_HINTS: Record<LaneShareCliTypingUnavailableReason, string> = {
-  windows_host: "Not on a Windows computer: ADE cannot tell a CLI from the shell behind it there.",
+  windows_host: `Not on a Windows computer: ${BRAND.NAME} cannot tell a CLI from the shell behind it there.`,
 };
 
 /** The reasoning levels ADE's providers name. A saved level outside this list still shows. */

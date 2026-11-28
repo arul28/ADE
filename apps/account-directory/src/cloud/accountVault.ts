@@ -1,5 +1,5 @@
 import { trustedHttpsOrigin } from "../trustedOrigin";
-import { ADE_GITHUB_APP_INSTALL_URL } from "../../../desktop/src/shared/github/githubDirectStateCopy";
+import { GITHUB_APP_INSTALL_URL } from "../../../desktop/src/shared/github/githubAppIdentity";
 import { githubAppRuntime, serveToken, type GithubAppEnv } from "../githubApp/grants";
 import { sendCloudEmail } from "./email";
 import { logCloud, reportCloudFailure, type CloudEnv } from "./store";
@@ -298,7 +298,7 @@ export async function githubRepoVisibility(origin: string): Promise<RepoVisibili
   if (!owner || !repo) return "unknown";
   try {
     const response = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, {
-      headers: { accept: "application/vnd.github+json", "user-agent": "ADE" },
+      headers: { accept: "application/vnd.github+json", "user-agent": "DAEX" },
       signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
     });
     if (response.status === 404) return "private";
@@ -314,13 +314,13 @@ export async function githubRepoVisibility(origin: string): Promise<RepoVisibili
 /** The plain sentence a refused launch gives (the desktop's `cloudGitPreflight`). */
 export function connectGitHubSentence(origin: string): string {
   const name = origin.replace(/^github\.com\//, "");
-  return `${name} isn't public on GitHub, and your ADE account has no GitHub sign-in a cloud computer can clone it with. Connect GitHub in Settings › GitHub so your sign-in follows your ADE account, then send again.`;
+  return `${name} isn't public on GitHub, and your DAEX account has no GitHub sign-in a cloud computer can clone it with. Connect GitHub in Settings › GitHub so your sign-in follows your DAEX account, then send again.`;
 }
 
 /** The plain sentence a launch refused for a missing App installation gives. */
 export function giveAdeAccessSentence(origin: string): string {
   const [, owner = "", repo = ""] = origin.split("/");
-  return `Give ADE access to ${owner}: install the ADE GitHub App on ${owner} with ${repo} selected, then send again.`;
+  return `Give DAEX access to ${owner}: install the DAEX GitHub App on ${owner} with ${repo} selected, then send again.`;
 }
 
 export type ServerGitCheck = { ok: true } | { ok: false; code: "git_credential_missing" | "github_app_not_installed"; message: string; installUrl?: string };
@@ -344,7 +344,7 @@ async function githubAppRepoAccess(env: GithubAppEnv, userId: string, origin: st
     if (outcome.kind === "not_connected" || outcome.kind === "needs_reauth") return "not_connected";
     if (outcome.kind !== "token") return "unknown";
     const response = await fetch(`${rt.config.apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, {
-      headers: { accept: "application/vnd.github+json", authorization: `Bearer ${outcome.token.accessToken}`, "user-agent": "ADE" },
+      headers: { accept: "application/vnd.github+json", authorization: `Bearer ${outcome.token.accessToken}`, "user-agent": "DAEX" },
       signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
     });
     await response.body?.cancel().catch(() => {});
@@ -375,7 +375,7 @@ export async function serverGitCheck(env: RelayEnv & GithubAppEnv, authorization
   if (app === "not_installed" && facts.git === "none") {
     const visibility = await githubRepoVisibility(origin);
     if (visibility !== "public") {
-      return { ok: false, code: "github_app_not_installed", message: giveAdeAccessSentence(origin), installUrl: ADE_GITHUB_APP_INSTALL_URL };
+      return { ok: false, code: "github_app_not_installed", message: giveAdeAccessSentence(origin), installUrl: GITHUB_APP_INSTALL_URL };
     }
     // A public repository clones without the App; only a push would need it.
     logCloud("cloud.git_check_app_not_installed_public", {});

@@ -1,304 +1,209 @@
 # OpenCode integration
 
-How ADE drives OpenCode 2.0: which server a chat uses, which data home it
-writes, how a turn maps to an OpenCode execution, how steering and the queue
-work, and how subagents, permissions, and questions reach ADE. Read this before
-changing `apps/desktop/src/main/services/opencode/**`, the OpenCode branch of
+How DAEX drives OpenCode 2.0 in chat: servers, data home, turns, steering,
+permissions, subagents and background shells. Read before changing
+`apps/desktop/src/main/services/opencode/**`, the OpenCode block of
 `agentChatService.ts`, or `openCodeEventMapper.ts`.
 
-ADE pins OpenCode **2.0.29** exactly (`@opencode/cli`, `@opencode/client`;
-the tools manifest in `apps/ade-cli` follows it). There is no 1.x code path.
-Behavior noted below as verified against 2.0.18 was checked again on 2.0.29
-where this doc says so.
+DAEX pins `@opencode/cli` and `@opencode/client` at **2.0.29** exactly
+(`apps/desktop/package.json`, `apps/ade-cli/package.json`). There is no 1.x
+path.
 
 ## Source file map
 
 | Path | Role |
 |---|---|
-| `apps/desktop/src/main/services/opencode/openCodeServer.ts` | The `opencode serve` processes: one per profile, password auth, the owned data home, the hot-reloaded config file, the shared event stream with reconnect, idle shutdown, orphan recovery (including the Windows process listing and the on-disk registry), and launch diagnostics. |
-| `apps/desktop/src/main/services/opencode/openCodeConfig.ts` | ADE's generated config in the native 2.0 shape: providers (ADE API keys, local providers, custom providers, preset providers), the `ade-plan` / `ade-edit` / `ade-full-auto` / `ade-helper` agents with ordered `permissions`, MCP servers, skills; and the profile a config belongs on. |
-| `apps/desktop/src/main/services/opencode/openCodeSession.ts` | Create or resume a chat session, attach ADE's instruction entry and shell environment, prompt files, the personal-store guard, and the one-shot helper prompt. |
-| `apps/desktop/src/main/services/chat/openCodeEventMapper.ts` | Pure mapping of one execution's content events (text, reasoning, tools, steps, usage, compaction, retries, tool images) to ADE chat events, and of stored messages to subagent transcript rows. |
-| `apps/desktop/src/main/services/chat/agentChatService.ts` (OpenCode 2.0 runtime block, `startOpenCodeSessionRuntime`) | The chat runtime: the persistent session listener, turn start and finish, inbox rows (steer/queue), permission asks, question forms, child sessions, reconnect reconciliation, server exit. |
-| `apps/desktop/src/main/services/chat/openCodeTurnUsage.ts` | Turn usage and cost from step tokens, and the account that paid. |
-| `apps/desktop/src/main/services/opencode/openCodeAuthService.ts`, `openCodeInventory.ts` | Provider login through 2.0 integrations/credentials; the model list with a long-lived disk cache. |
-| `apps/desktop/src/main/services/opencode/openCodeAccounts.ts`, `openCodeCloudLoginSync.ts`, `openCodeCloudReadiness.ts` | Several logins per provider (list, switch, rename, sign out), cloud logins and their account-wide sync, and whether a machine has the gcloud/AWS login a cloud login points at. |
-| `apps/desktop/src/renderer/components/settings/providers/opencode/OpenCodeAccounts.tsx` | The Accounts list and Add account dialog inside a provider's Settings dialog. |
+| `apps/desktop/src/main/services/opencode/openCodeServer.ts` | `opencode serve` per profile: password auth, owned data home, config file, shared event stream and reconnect, idle shutdown, launch diagnostics. |
+| `apps/desktop/src/main/services/opencode/openCodeServerOrphans.ts` | Orphan recovery (process listing incl. Windows, on-disk registry, stale config files). |
+| `apps/desktop/src/main/services/opencode/openCodeConfig.ts` | Generated 2.0 config: providers, the `ade-plan` / `ade-edit` / `ade-full-auto` / `ade-helper` agents, MCP servers, skills, lane guard rules; profile selection (`sharedOpenCodeProfileFor`, `PERSONAL_OPENCODE_PROFILE`). |
+| `apps/desktop/src/main/services/opencode/openCodeSession.ts` | Create/resume a session, instruction entry and shell env, personal-store guard, one-shot helper prompt. |
+| `apps/desktop/src/main/services/chat/openCodeEventMapper.ts` | Pure mapping of execution events and stored messages to DAEX chat events. |
+| `apps/desktop/src/main/services/chat/agentChatService.ts` (`startOpenCodeSessionRuntime`) | Chat runtime: session listener, turns, inbox rows, permission asks, forms, child sessions, reconnect reconciliation, server exit. |
+| `apps/desktop/src/main/services/chat/openCodeBackgroundShells.ts` | Background shell tracker, one per runtime. |
+| `apps/desktop/src/main/services/chat/openCodeTurnUsage.ts` | Turn usage and cost from step tokens. |
+| `apps/desktop/src/main/services/opencode/openCodeAuthService.ts`, `openCodeInventory.ts` | Provider login via 2.0 integrations; model list with a disk cache. |
+| `apps/desktop/src/main/services/opencode/openCodeAccounts.ts`, `openCodeCloudLoginSync.ts`, `openCodeCloudReadiness.ts` | Several logins per provider, cloud logins and their account sync, machine readiness for them. |
+| `apps/desktop/src/renderer/components/settings/providers/opencode/OpenCodeAccounts.tsx` | Accounts list in a provider's Settings dialog. |
+
+## Gotchas
+
+- A model change starts a fresh OpenCode session with DAEX's reconstruction
+  context.
+- `session.wait`, instruction entries, export/import and `generate` are
+  experimental upstream; DAEX relies on events, not `wait`.
+- Upstream issue [#49765](https://github.com/anomalyco/opencode/issues/49765):
+  a subagent ignores its agent's configured model.
+- An attached terminal TUI gets `OPENCODE_SERVER_PASSWORD` in its PTY env, and a
+  wrapping shell keeps it after the TUI exits. Accepted: the server listens on
+  127.0.0.1 only.
+- The host advertises `openCodeInboxSteer` in `hello_ok.features`; iOS offers
+  "send during turn" only when present. The desktop renderer does not check it;
+  an older remote brain rejects inline and queue still works.
 
 ## Servers and profiles
 
-- A **profile** is a set of chats that can share one config. Every ordinary
-  lane chat, the model inventory, auth, and one-shot tasks use the shared
-  profile for their project's OpenCode settings (`sharedOpenCodeProfileFor`:
-  `ai.apiKeys`, `localProviders`, `customProviders`, `customModelSlugs`).
-  Projects with the same settings share one server; a brain serving projects
-  with different settings runs one per set, so they never overwrite each
-  other's config. Personal chats use `shared:personal` (they get no ADE skills). A
-  chat whose config must differ — its own MCP servers (CTO tools), a harness
-  preset provider, a strict MCP surface — gets a profile keyed by that content.
-- One `opencode serve --hostname=127.0.0.1 --port=<p>` runs per profile. The
-  shared server stays up for 10 minutes after its last lease; a per-chat
-  profile for 1 minute. There is no pool of per-chat servers and no model-list
-  server churn. The idle timer dies with its process, so both the Electron main
-  process and the brain (`ade serve` disposal) stop every server on exit.
-- Every server is password-protected: `OPENCODE_SERVER_PASSWORD` is random per
-  start, and the client sends Basic auth (user `opencode`). ADE never uses the
-  CLI's shared background service (`serve --service`,
-  `~/.local/state/opencode/service.json`).
-- Config reaches the server as a file named by `OPENCODE_CONFIG`
-  (`<runtime root>/config-ade/<profile hash>.<pid>.<id>.json`, one per server
-  start), written atomically and private to the user. It holds provider keys,
-  so it lives only as long as its server: close, exit, a failed launch, and
-  orphan recovery (through the registry record) delete it. OpenCode
-  watches and hot-reloads it, so a new API key or local model applies to a
-  running server. It layers over the user's global config
-  (`XDG_CONFIG_HOME/opencode`), so the user's own providers, agents, skills,
-  and MCP servers still load. An isolated profile points `XDG_CONFIG_HOME` at an
-  empty ADE directory and sets `OPENCODE_DISABLE_PROJECT_CONFIG=1`.
-- One `/api/event` subscription per server receives every session's events
-  (all directories) and fans them out. 2.0 streams do not replay or reconnect,
-  so the server loop resubscribes with backoff and tells listeners about the
-  gap; a chat then reconciles against `session.active` and `session.get`. A
-  45-second silence watchdog reconnects a stalled stream; keepalives count as
-  activity.
+- A **profile** is a set of chats that can share one config. Ordinary lane
+  chats, inventory, auth and one-shot tasks use the shared profile for the
+  project's OpenCode settings (`sharedOpenCodeProfileFor`). Projects with equal
+  settings share a server. Personal chats use `shared:personal` (no DAEX
+  skills). A chat that needs its own config (own MCP servers, harness preset
+  provider, strict MCP) gets a profile keyed by that content.
+- One `opencode serve --hostname=127.0.0.1` per profile. Idle shutdown: shared
+  10 min, per-chat 1 min (`SHARED_SERVER_IDLE_MS`, `PROFILE_SERVER_IDLE_MS`).
+  Electron main and `daex serve` stop every server on exit.
+- `OPENCODE_SERVER_PASSWORD` is random per start; the client sends Basic auth
+  (user `opencode`). DAEX never uses `serve --service`.
+- Config is a file named by `OPENCODE_CONFIG`
+  (`<runtime root>/config-ade/<profile>.<pid>.<uuid>.json`), atomic, user-only.
+  It holds provider keys, so it is deleted with its server (close, exit, failed
+  launch, orphan recovery). OpenCode hot-reloads it. It layers over the user's
+  global config; an isolated profile points `XDG_CONFIG_HOME` at an empty dir and
+  sets `OPENCODE_DISABLE_PROJECT_CONFIG=1`.
+- One `/api/event` subscription per server fans out to every session. 2.0
+  streams do not replay, so the loop resubscribes with backoff and tells
+  listeners about the gap; a chat reconciles with `session.active` /
+  `session.get`. A 45 s silence watchdog reconnects a stalled stream.
 
-## Data home
+## Data home and credentials
 
-Servers write ADE's owned data home (`XDG_DATA_HOME/STATE/CACHE` under
-`<ADE_HOME>/opencode-runtime/xdg-v1`). OpenCode 2.0 uses the same default
-database path as 1.x and **migrates any v1 store it opens in place**, so ADE
-never starts OpenCode on the user's personal store. ADE's own earlier sessions
-in the owned store are migrated at the first 2.0 start and keep their ids.
-
-A chat whose persisted session exists only in the user's personal store (from
-before ADE owned a data home) stays readable from ADE's transcript but cannot
-take new turns (`OpenCodeSessionInPersonalStoreError`).
-
-2.0 stores no event log (the 1.x `event` table held 98% of a 16 GB store), so
-ADE runs no retention or pruning.
-
-Credentials: API keys ADE manages are passed in the generated config. OAuth
-providers are connected through the 2.0 integration flow into the owned store.
-2.0.18 does not import OAuth tokens from a 1.x `auth.json`; users sign in once.
-Every OAuth method 2.0.18 offers (OpenAI browser and headless, GitHub Copilot,
-xAI SuperGrok, OpenCode Console account, GitLab, Poe, DigitalOcean, Snowflake)
-starts in `auto` mode: a browser page or a device code ADE shows, with no code
-pasted back. `startOAuth` reads the provider from `integration.list`, which
-waits for the location's catalog; `integration.get` just after a server start
-reports real providers as missing. OpenCode Go has no OAuth method of its own:
-its models come with the opencode.ai account sign-in on the `opencode` provider
-(what `opencode auth login opencode` does; verified 2026-09-27, 33 Go models and
-a completed Go turn). The Go dialog signs in through that provider; a Go key
-stays an optional second method.
-
-ADE names OpenCode's own services for users: the `opencode` provider (2.0 calls
-it "OpenCode Console") is **OpenCode Zen**, and `opencode-go` is **OpenCode Go**.
-Settings pins both above the provider catalog. Zen serves free models with no
-sign-in, so the inventory's `connected` is true for it before any login;
-`signedIn` (the integration has a connection) is what "Connected" means for a
-provider that offers a sign-in.
+- Servers use DAEX's owned data home under `<ADE_HOME>/opencode-runtime/xdg-v1`.
+  OpenCode 2.0 migrates any v1 store it opens in place, so DAEX never starts it
+  on the user's personal store. A chat whose session exists only in the
+  personal store is readable but cannot take turns
+  (`OpenCodeSessionInPersonalStoreError`).
+- 2.0 keeps no event log, so DAEX runs no pruning.
+- DAEX API keys go in the generated config. OAuth goes through the 2.0
+  integration flow in `auto` mode (browser page or device code). `startOAuth`
+  reads providers from `integration.list`, which waits for the catalog
+  (`integration.get` just after start reports providers missing).
+- UI names: the `opencode` provider is **OpenCode Zen** (free models, no sign-in,
+  so inventory `connected` is true before login; `signedIn` means "Connected");
+  `opencode-go` is **OpenCode Go**, whose models come with the `opencode`
+  account sign-in. Both are pinned above the catalog in Settings.
 
 ## Accounts and cloud logins
 
-- OpenCode keeps every login it is given in its `credential` table and uses
-  one per provider for every chat on the machine. A new login becomes the one
-  in use; `credential.activate` switches, and the next request of every
-  running chat uses it. With no login marked active (logins from before 2.0),
-  the newest is used, and Settings shows that one as in use. While a provider
-  has any OpenCode login, ADE's own API key for it is not used; it applies
-  again once every login is signed out (all verified against 2.0.29).
-- Settings → a provider → **Accounts** lists them for the machine the page
-  shows (`ai.opencodeAccounts`, `opencodeAccountActivate`, `…Rename`,
-  `…Remove`, all pinned). A machine whose ADE predates these actions keeps the
-  plain sign-in. No secret leaves SQLite: only type, label, method and a cloud
-  login's answers are read.
-- **Cloud logins** are OpenCode's `external` methods: `google-adc` (Vertex
-  through gcloud application-default credentials) and `aws-profile` (Bedrock
-  through an AWS profile); Azure's appears when the Azure CLI is installed.
-  They store which machine login to use, never a token, and OpenCode checks
-  nothing when one is added. `ai.opencodeCloudConnect` adds one and saves it to
-  the ADE account setting `opencodeCloudLogins` (scope `all`). Every machine
-  signed in to the account brings its store in line when its accounts are
-  listed: missing logins are added without taking over the login in use, and
-  logins removed elsewhere are removed (`cloud-logins-applied.json` in the
-  runtime root records which ones came from the account). Disconnecting a
-  provider removes its cloud logins from the account too. Each row shows
-  whether that machine has the login behind it (the ADC file, or the AWS
-  profile in `~/.aws`) and the command that fixes it.
-- `integration.connect.*` sent to a server that just started reports a real
-  provider as missing; ADE lists integrations first, which waits for the
-  catalog.
+- OpenCode keeps every login in its `credential` table and uses one per provider
+  machine-wide. A new login becomes active; `credential.activate` switches for
+  every running chat's next request. While any OpenCode login exists for a
+  provider, DAEX's own API key for it is not used.
+- Settings → provider → **Accounts** (`ai.opencodeAccounts`,
+  `opencodeAccountActivate`, `…Rename`, `…Remove`; all pinned to the page's
+  machine). No secret leaves SQLite.
+- **Cloud logins** are OpenCode `external` methods (`google-adc`,
+  `aws-profile`, Azure when its CLI is installed). They name a machine login,
+  never a token. `ai.opencodeCloudConnect` saves them to the account setting
+  `opencodeCloudLogins` (scope `all`); each machine reconciles its store when
+  accounts are listed (`cloud-logins-applied.json` records which came from the
+  account). Rows show whether this machine has the ADC file or AWS profile.
 
 ## Lane guard
 
-OpenCode 2.0.27 added Code Mode tools that create, list and remove git
-worktrees and move a session to another directory. ADE owns worktrees (lanes),
-so `OPENCODE_LANE_GUARD_RULES` go last on every ADE agent and on every session,
-including `config-toml` sessions: denying `opencode_worktree_create`,
-`opencode_worktree_list` and `opencode_session_move` removes them from the Code
-Mode catalog (a tool whose permission name is denied outright is not offered),
-and denying `edit` on `.` stops `worktree_remove` from removing the chat's own
-lane without touching file edits. `worktree_remove` itself stays listed, since
-it asks for `edit`; another lane's worktree is as reachable as it is through
-`git worktree remove` in the shell.
+DAEX owns worktrees, so `OPENCODE_LANE_GUARD_RULES` go last on every DAEX agent
+and every session (including `config-toml`): deny `opencode_worktree_create`,
+`opencode_worktree_list`, `opencode_session_move` (removes them from the Code
+Mode catalog) and `edit` on `.` (stops `worktree_remove` removing the chat's own
+lane).
 
 ## Custom providers
 
-A custom provider can turn on request compression (`settings.encoding`:
-gzip or zstd) and the prompt-cache marker style its endpoint accepts
-(`compatibility.cacheFormat`: anthropic or alibaba). Both are off by default:
-an endpoint that cannot read them rejects every request. ChatGPT sign-ins use
-zstd on their own.
+Optional request compression (`settings.encoding`: gzip/zstd) and cache marker
+style (`compatibility.cacheFormat`: anthropic/alibaba). Both off by default; an
+endpoint that cannot read them rejects every request.
 
 ## Turns
 
-- A chat runtime listens to its session for its whole life. **One OpenCode
-  execution is one ADE turn.** `session.execution.started` opens it (ADE opens
-  its own turns before sending, so the prompt cannot race the event);
-  `session.execution.succeeded | failed | interrupted` settles it.
-- An execution ADE did not start — a background subagent finished and woke the
-  parent — becomes a turn with no user message, exactly like Claude and Codex.
-- Before a prompt, the runtime switches the session's agent (permissions) and
-  model (with the effort/Fast variant) only when they changed, and updates the
-  instruction entry when ADE's context changed.
-- A prompt OpenCode admitted but never ran is checked after 20 s against the
-  server rather than left on "Working".
-- If the server process exits, the open turn fails with a clear message and
-  the runtime is torn down with its session pointer kept; the next send starts a
-  new server and reopens the session.
+- The runtime listens to its session for its whole life. **One OpenCode
+  execution is one DAEX turn**: `session.execution.started` opens it (DAEX opens
+  its own turn before sending), `succeeded | failed | interrupted` settles it.
+- An execution DAEX did not start (a background child woke the parent) becomes a
+  turn with no user message.
+- Before a prompt, the runtime switches agent and model (with effort/Fast
+  variant) only when changed, and updates the instruction entry when context
+  changed.
+- A prompt admitted but not started within 20 s
+  (`OPENCODE_EXECUTION_START_TIMEOUT_MS`) is checked against the server.
+- Server exit fails the open turn and tears the runtime down, keeping the
+  session pointer; the next send starts a server and reopens it.
+- A failed tool call is a failed tool row only; the turn continues, no chat
+  `error` card.
 
 ## Steering and the queue
 
-`ACTIVE_TURN_DISPATCH_MODES.opencode = ["inline", "queue"]` (iOS mirrors it).
+`ACTIVE_TURN_DISPATCH_MODES.opencode = ["inline", "queue"]`.
 
-- A message sent while a turn runs is admitted to OpenCode's session inbox:
-  "inline" with `delivery: "steer"` (delivered at the next step boundary),
-  "queue" with `delivery: "queue"` (delivered after the current reply). Both are
-  delivered **inside the running execution**.
-- OpenCode's inbox is the single source of truth. ADE's rows mirror it: a row
-  reads "Steering…" or queued until `session.inbox.delivered` (then "Steered")
-  or `session.inbox.cancelled`. An outcome that arrives before the prompt
-  request returns its inbox id is held and applied when the id arrives.
-- Cancel is `inbox.cancel`; "send now" is `inbox.update(delivery: "steer")`.
-- Stop (`stop_and_clear`) cancels the inbox rows, then interrupts. `stop_only`
-  keeps them, and OpenCode continues with them after the interrupt.
-- A steer reaches the model only at a step boundary. While a foreground
-  subagent runs, the parent is inside one step, so a steer waits for the child.
+- A send during a turn goes to OpenCode's session inbox: inline =
+  `delivery: "steer"` (next step boundary), queue = `delivery: "queue"` (after
+  the current reply). Both land inside the running execution.
+- The inbox is the source of truth; DAEX rows mirror it until
+  `session.inbox.delivered` or `session.inbox.cancelled`. An outcome that
+  arrives before the inbox id is held until the id arrives.
+- Cancel = `inbox.cancel`; "send now" = `inbox.update(delivery: "steer")`.
+  `stop_and_clear` cancels inbox rows then interrupts; `stop_only` keeps them.
+- While a foreground subagent runs, the parent is inside one step, so a steer
+  waits for the child.
 
 ## System prompt and environment
 
-- The agent's `system` text is the first block of the real system prompt. ADE's
-  per-chat context (worktree, lineage, activity guidance) is the session
-  instruction entry `ade`, which OpenCode puts in the system prompt as
-  `<context key="ade">`; a later change reaches the model as a context message
-  at the next step, which keeps the prompt cache stable.
-- 2.0 has no OpenCode base prompt; `AGENTS.md` and skills are included. It reads
-  only `AGENTS.md` (no `CLAUDE.md` fallback) and runs no LSP.
-- `session.environment` sets the shell environment of the session's commands
-  to ADE's agent environment, so `ade` resolves and knows the chat, lane, and
-  workspace.
+- The agent's `system` text leads the system prompt. DAEX's per-chat context is
+  the session instruction entry `ade` (`<context key="ade">`); later changes
+  arrive as context messages, keeping the prompt cache stable.
+- OpenCode 2.0 reads `AGENTS.md` (not `CLAUDE.md`) and skills; no base prompt,
+  no LSP.
+- `session.environment` sets DAEX's agent env so `daex`/`ade` resolve to the
+  chat, lane and workspace.
 
 ## Permissions and questions
 
-- Rules are ordered and the last match wins, after OpenCode's base policy
-  (`* allow`, asks for external directories and `.env` reads). `ade-full-auto`
-  is `* allow`; `ade-plan` denies edits and asks for shell, and the chat
-  service answers a shell ask `once` when every parsed command only reads
-  (`shellCommandIsReadOnlyOnPlatform`); `ade-edit` asks for edits and shell; `ade-helper` denies all
-  side effects.
-- Agent rules stop at the agent: a child runs under its own agent (`general`
-  allows edits). So ADE also puts the mode's rules on the session itself
-  (`session.create` / `session.update` `permissions`, `openCodeSessionRulesFor`),
-  and a child session inherits those. `config-toml` clears them.
-- `permission.asked` (parent or child) becomes an ADE approval card, attributed
-  to the subagent for a child ask, with the child marked blocked. The pending
-  entry is keyed by the card's item id (the tool call id), which is what an
-  answer carries back. The reply goes to `permission.reply` with the asking
-  session's id and the request id. "Allow always" saves a
-  project-scoped allow rule in OpenCode, as OpenCode does.
-- The `question` tool arrives as `form.created`. Its fields map to ADE's
-  structured question card (string with options → single choice, multiselect →
-  multiple choice, `custom` → free text, boolean → yes/no); the answer goes to
-  `session.form.reply` keyed by field `key`. A form answered elsewhere cancels
-  only its own card.
+- Rules are ordered, last match wins, after OpenCode's base policy.
+  `ade-full-auto` = `* allow`; `ade-plan` denies edits and asks for shell, and the
+  chat service answers a shell ask `once` when every parsed command only reads
+  (`shellCommandIsReadOnlyOnPlatform`); `ade-edit` asks for edits and shell; `ade-helper` denies
+  all side effects.
+- Agent rules do not reach children (a child runs under its own agent), so the
+  mode's rules are also set on the session (`openCodeSessionRulesFor`) and
+  children inherit them. `config-toml` clears them.
+- `permission.asked` (parent or child) becomes an approval card keyed by the
+  tool call id; a child ask is attributed to the subagent and marks it blocked.
+  The reply goes to `permission.reply` with the asking session and request id.
+  "Allow always" saves a project-scoped OpenCode rule.
+- The `question` tool arrives as `form.created` and maps to the structured
+  question card (options → single choice, multiselect → multiple, `custom` →
+  free text, boolean → yes/no); the answer goes to `session.form.reply` by
+  field `key`.
 
 ## Subagents
 
-- The `subagent` tool starts a child session; its `session.created` carries
-  `parentID` (nested children are tracked too). The child card links to the
-  tool call that started it and carries the call's description.
-- Children report usage from their steps and settle on their own execution
-  events. A parent turn's cost includes what its children spent since the
-  last turn (`takeUnbilledOpenCodeChildCost`), so a background child that
-  finishes later bills the turn it wakes; failed and stopped turns report what
-  they spent too. A background child keeps running after the parent's turn ends; its
-  completion starts a new parent turn.
-- Drill-in reads the child's stored messages (`message.list`) and maps each
-  part to a formed chat event.
+- `session.created` with `parentID` starts a child (nested too); the card links
+  to the starting tool call.
+- A parent turn's cost includes children's spend since the last turn
+  (`takeUnbilledOpenCodeChildCost`). A background child outlives the parent's
+  turn; its completion starts a new parent turn.
+- Drill-in reads `message.list` and maps each part.
 
 ## Background shells
 
-- `shell` with `background: true` returns at once with
-  `metadata: { status: "running", shellID }`; the command keeps running inside
-  the OpenCode server. The runtime tracks it in `backgroundShells` from that
-  `session.tool.success` (`openCodeBackgroundShellStarted`) and projects it onto
-  the same `scheduled_work_update {kind: "background_task"}` rows Claude's
-  background commands use: a live job line with a timer and Stop in the thread,
-  the Background popover, and **Background work** on the Work row.
-- The end comes from the server-wide `shell.exited` (or `shell.deleted`) event,
-  which carries only the shell id (`openCodeBackgroundShellEnded`). OpenCode
-  then wakes the session itself, and that execution becomes a turn with no user
-  message. `session.synthetic` with `metadata.source: "shell"` is also accepted,
-  though 2.0.18 does not publish it on the event bus. An `exited` shell with no
-  exit code died from a signal and reads as stopped.
-- A live shell or child counts as background workload, so the idle sweep and
-  the runtime budget leave the chat connected (and its hold on the shared
-  server in place) until it ends. The three-hour stale-work backstop applies.
-- The tracker lives in `openCodeBackgroundShells.ts`, one per runtime.
-- Stop on a job row (`agentChat.stopTask`) and the interrupt modes that stop
-  background work kill the shell's process tree (`killOpenCodeShellProcessTree`;
-  `taskkill /T` on Windows) and settle the row only once the process is gone
-  (up to 3 s); a shell that survives stays visible as running and Stop reports
-  why. OpenCode then tells the agent the command was killed. Deleting the shell
-  record instead made the agent read a stopped command as one that never
-  started. `stopTask` with a running child's session id interrupts that child.
-- A teardown that stops listening (close, delete, model switch, provider
-  switch, shutdown) cannot wait, so it settles every live shell and child as
-  stopped at once, kills in the background, and posts a notice naming the
-  cause, because no one would hear their wake-up. A kill it cannot confirm logs
-  `agent_chat.opencode_stop_shell_unconfirmed`; the shared server's own
-  shutdown then ends that process.
-  `agent_chat.opencode_runtime_teardown` logs each teardown with its reason and
-  counts; `opencode.server_released` pairs with `opencode.server_acquired`.
-- After a stream gap, `shell.list` settles shells that ended unseen. OpenCode
-  drops a shell once its result is read, so a missing shell has ended.
-
-## Tool failures
-
-- A failed tool call is a failed tool row only (red, with the error sentence on
-  the row). It does not end the turn — the model reads the error and continues —
-  so it raises no chat-level `error` card.
+- `shell` with `background: true` returns `metadata: { status: "running",
+  shellID }`. The runtime tracks it (`openCodeBackgroundShellStarted`) and
+  projects it onto the same `scheduled_work_update {kind: "background_task"}`
+  rows as Claude's background commands.
+- The end is the server-wide `shell.exited` / `shell.deleted`
+  (`openCodeBackgroundShellEnded`); OpenCode then wakes the session. No exit
+  code means a signal: reads as stopped. After a stream gap, `shell.list`
+  settles shells that ended unseen.
+- Live shells and children count as background workload, so the idle sweep and
+  runtime budget keep the chat connected.
+- Stop (`agentChat.stopTask`) kills the process tree
+  (`killOpenCodeShellProcessTree`, `taskkill /T` on Windows) and settles the row
+  only once the process is gone (up to 3 s). `stopTask` with a child's session
+  id interrupts that child.
+- A teardown (close, delete, model/provider switch, shutdown) settles live
+  shells and children as stopped at once, kills in the background, and posts a
+  notice. Logs: `agent_chat.opencode_runtime_teardown`,
+  `agent_chat.opencode_stop_shell_unconfirmed`.
 
 ## Fork and handoff
 
 - Local fork: `session.fork`.
-- Cross-machine fork: `session.export` (sanitized) on the source; on the
-  destination `session.import`, then `session.fork` and `session.move` to the
-  destination lane, then the runtime opens on the fork.
-
-## Known boundaries
-
-- A model change still starts a fresh OpenCode session with ADE's
-  reconstruction context, as before.
-- `session.wait`, instruction entries, export/import, and `generate` are marked
-  experimental in 2.0.18; ADE depends on events more than on `wait`.
-- OpenCode issue [#49765](https://github.com/anomalyco/opencode/issues/49765):
-  a subagent ignores its agent's configured model in 2.0.8+.
-- An attached terminal TUI gets `OPENCODE_SERVER_PASSWORD` in its PTY env. When
-  the TUI runs through the user's shell, that shell keeps the variable after
-  the TUI exits. The owner accepted this (2026-09-28): only programs the user
-  starts in that tab can read it, and the server listens on 127.0.0.1 only.
-- The host advertises `openCodeInboxSteer` in `hello_ok.features`; iOS offers
-  OpenCode's "send during turn" only when it is present. The desktop renderer
-  does not check it for a remote brain; an older remote brain rejects the
-  inline send and queue still works (owner decision, 2026-09-28).
+- Cross-machine: `session.export` on the source; `session.import`, then
+  `session.fork` and `session.move` to the destination lane.

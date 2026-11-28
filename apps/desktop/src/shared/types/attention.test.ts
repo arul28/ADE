@@ -78,14 +78,14 @@ describe("attention contract helpers", () => {
       kind: "session",
       sessionId: "session one",
       itemId: "approval-1",
-    })).toBe("ade://session/session%20one?item=approval-1");
+    })).toBe("daex://session/session%20one?item=approval-1");
     expect(attentionDestinationDeepLink({
       kind: "pull_request",
       repoOwner: "open ai",
       repoName: "ade",
       number: 42,
       tab: "checks",
-    })).toBe("ade://pr/open%20ai/ade/42?tab=checks");
+    })).toBe("daex://pr/open%20ai/ade/42?tab=checks");
     expect(attentionDestinationDeepLink(
       {
         kind: "session",
@@ -102,7 +102,7 @@ describe("attention contract helpers", () => {
         project: { projectId: "remote-project", name: "ADE" },
       }),
     )).toBe(
-      "ade://session/remote-session?accountMachineKey=account-machine-key&projectId=remote-project",
+      "daex://session/remote-session?accountMachineKey=account-machine-key&projectId=remote-project",
     );
   });
 

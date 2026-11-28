@@ -1,5 +1,6 @@
 import path from "node:path";
 import { markExpected } from "../../../shared/expectedError";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Folders that are not answering right now, and the error a file call under
@@ -54,7 +55,7 @@ export class StorageNotAnsweringError extends Error {
   readonly code = "storage_read_failed";
   readonly path: string;
   constructor(target: string, root: string) {
-    super(`ADE can't read ${root} on this computer right now: it is not answering. ${notAnsweringHint()}`);
+    super(`${BRAND.NAME} can't read ${root} on this computer right now: it is not answering. ${notAnsweringHint()}`);
     this.path = target;
     // The machine's drive, not a defect in ADE: never a Sentry issue.
     markExpected(this, "environment");
@@ -64,7 +65,7 @@ export class StorageNotAnsweringError extends Error {
 /** What to check, in the words of the platform the folder is on. */
 function notAnsweringHint(): string {
   if (process.platform === "darwin") {
-    return "If macOS is asking on this computer's screen whether ADE may use this drive or folder, allow it; if the drive is not responding, reconnect it.";
+    return `If macOS is asking on this computer's screen whether ${BRAND.NAME} may use this drive or folder, allow it; if the drive is not responding, reconnect it.`;
   }
   if (process.platform === "win32") {
     return "If it is on a network, USB or cloud drive, open it in File Explorer to check that it is connected and signed in; if the drive is not responding, reconnect it.";

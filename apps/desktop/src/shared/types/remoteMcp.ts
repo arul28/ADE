@@ -200,7 +200,7 @@ export type RemoteMcpActivityEntry = {
   detail?: string;
   /** The project the command ran in, by name; absent when it ran in none. */
   project?: string;
-  /** The typed tool that ran the command, when it was not the `ade` tool. */
+  /** The typed tool that ran the command, when it was not the `daex` tool. */
   tool?: string;
   /** The computer that took the call from the app, when it was another one. */
   via?: string;

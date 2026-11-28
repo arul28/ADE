@@ -63,7 +63,7 @@ exactly the case described — never as a general stop at the first failure.
 | --- | --- | --- | --- |
 | `stack-coordinator-sync-required` | `blocked` | The resolved direct parent is no longer an ancestor of HEAD, the parent head moved, a lower layer changed, or the PR base is not the resolved direct parent. The layer needs a restack or a base retarget. | `gh stack sync --remote origin`, `gh stack rebase --upstack --remote origin`, then `gh stack submit --auto --remote origin`; retarget the base when it drifted. |
 | `stack-coordinator-fix-required` | `blocked` | A verified finding whose fix must land in a *lower* layer or outside this lane's diff, or the lane spent its full iteration budget and its own layer is still red. Report the exact check names, comment ids, and evidence. | Reassign the fix to the owning layer, or take the layer over. |
-| `stack-coordinator-pr-required` | `blocked` | The lane could not open or update its own PR: the parent branch does not exist on `origin`, `ade`/`gh` auth failed, or GitHub refuses the base ref. | Push the parent layer or restore auth, then re-run this lane. |
+| `stack-coordinator-pr-required` | `blocked` | The lane could not open or update its own PR: the parent branch does not exist on `origin`, `daex`/`gh` auth failed, or GitHub refuses the base ref. | Push the parent layer or restore auth, then re-run this lane. |
 | `stack-coordinator-merged` | `blocked` | The PR was already merged externally. Not a failure — the lane has nothing left to do and deliberately skips merge confirmation and branch deletion, which belong to the coordinator's atomic merge. | None; reconcile the stack. |
 
 `stack-coordinator-fix-required` is not a synonym for "CI is red." When the
@@ -88,7 +88,7 @@ until it is merged or genuinely blocked.
 - **Rebase budget rebate.** A rebase, merge-from-main, or conflict-resolution pass moves the current iteration count down by 2 before the next cap check, with a floor of 0. Example: if the lane is on iteration 4 and must rebase because `main` moved, record the rebase and continue as iteration 2. Stack mode never rebases, so it earns the rebate only when the coordinator restacks the layer and the lane resumes on the new head — the lane did not spend that iteration on its own work.
 - **Scoped checks.** Never run the full test suite between iterations. For CI, fix and rerun only the failing test file(s) or failing check target. For review-only changes, rerun only directly affected existing tests, plus the narrow package typecheck/lint when the touched surface needs it.
 - **One push per iteration. Wait for BOTH signals before fixing anything.** Never push a CI-only fix while review bots are still running, and never push a review-only fix while CI is still running. Both signals must be **terminal** before the iteration commits — that is, every required check has a final conclusion AND every review bot with current-head start evidence has posted or settled. This is not just an efficiency rule: **review-comment fixes routinely introduce new CI failures**, so applying them on a partial signal means the next push fails and you've thrown away the prior CI cycle. Wait for both, then dispatch ci-fix-agent and review-fix-agent in parallel with full knowledge of both, and combine their edits into one commit. If only one signal has landed when you wake, do not iterate — reschedule and sleep.
-- **Absence is not a running review.** A review bot is pending only when the current head has positive start evidence: a queued/pending/in-progress check, review, trigger acknowledgement, or bot comment. Give bots one full 12-minute post-push grace window to appear. After that window, if every available ADE and GitHub surface has zero evidence for a bot, classify it as `inactive` / `not-triggered`, treat it as terminal-neutral, and continue. Put it in `inactiveReviewBots`, not `pendingReviewBots`; never schedule a second wait solely for an unobserved bot. A branch-protection rule that requires the absent check is handled later as merge policy, not invented as bot activity.
+- **Absence is not a running review.** A review bot is pending only when the current head has positive start evidence: a queued/pending/in-progress check, review, trigger acknowledgement, or bot comment. Give bots one full 12-minute post-push grace window to appear. After that window, if every available DAEX and GitHub surface has zero evidence for a bot, classify it as `inactive` / `not-triggered`, treat it as terminal-neutral, and continue. Put it in `inactiveReviewBots`, not `pendingReviewBots`; never schedule a second wait solely for an unobserved bot. A branch-protection rule that requires the absent check is handled later as merge policy, not invented as bot activity.
 - **Default wait is 12 minutes.** After any push, schedule the next poll ~720s out (unless CI hasn't started at all — then 270s to stay in cache). 12 minutes is the **floor** that lets both CI shards and the slower review bots (especially Greptile) finish. Re-entering before that almost always shows a partial state and produces the wrong decision. Only schedule shorter (270s) in Phase 0 immediately post-push to observe CI has kicked off.
 - **Token-idle waits.** Waiting is done by the agent's native scheduler/resume primitive, or by a shell `sleep` followed by one-shot checks. Between wake-ups, agents should be asleep, not consuming model context or tokens.
 - **Idempotent resume.** All state lives in `.ade/shipLane/<branch>.json`. A re-invocation reads that file and picks up where it left off.
@@ -468,7 +468,7 @@ The timeline for an ordinary lane:
    uncommitted changes do not belong to this lane, skip the early PR and say
    so; the lane still gets its PR in `/ship` Phase 0.
 2. `git push -u origin "$CURRENT_BRANCH"`.
-3. If no PR exists, open one with the **Discovery protocol** (ADE CLI first,
+3. If no PR exists, open one with the **Discovery protocol** (DAEX CLI first,
    `gh` fallback) against `main`, or against the resolved direct parent in stack
    mode. Open it **ready for review, not as a draft** — review bots can skip
    drafts, and a skipped round 1 defeats the purpose. Write the PR text as a
@@ -505,7 +505,7 @@ Harvest fixes stay local until every signal on the remote head is terminal.
   finished job is final for that head.
 - **Posted bot reviews and comments** are final for that head. A bot still in
   flight is recorded under `pendingReviewBots` and read at the next harvest.
-  Read them from the open review threads (Phase 1.2's `ade prs comments`
+  Read them from the open review threads (Phase 1.2's `daex prs comments`
   query), not only from comments newer than the last push, and do not carry a
   bot's "rate limited" status over to a later harvest (failure mode 8).
 - **Drop what the phase already fixed.** For each comment, check the current
@@ -564,8 +564,8 @@ so the first ship push carries them together with any new fixes.
 ### Visual proof on the PR
 
 When the lane changes something a person can see, the PR carries the proof
-before it merges: `ade proof publish --pr <n> <artifact-id>...` with the items
-the final answer cites (see the **ade-pr-workflows** skill). Post it once, near
+before it merges: `daex proof publish --pr <n> <artifact-id>...` with the items
+the final answer cites (see the **daex-pr-workflows** skill). Post it once, near
 the end; a later push does not need a new post unless the UI changed again.
 
 ---
@@ -675,9 +675,9 @@ git push -u origin "$CURRENT_BRANCH"
 If anything changes after the clean pass, discard all three binding values and
 revalidate again.
 
-**PR creation: prefer the ADE CLI.** Opening the PR via `ade` registers it in ADE's PR tracking (lane ↔ PR link, check/comment inventory, review-thread state). `gh pr create` is the fallback, not the default. Falling back too eagerly defeats the purpose — do it only after you've genuinely confirmed the ADE path is broken.
+**PR creation: prefer the DAEX CLI.** Opening the PR via `daex` registers it in DAEX's PR tracking (lane ↔ PR link, check/comment inventory, review-thread state). `gh pr create` is the fallback, not the default. Falling back too eagerly defeats the purpose — do it only after you've genuinely confirmed the DAEX path is broken.
 
-**PR text (both creation paths — never rely on `--fill` alone).** Write the text as a Brief, per the AGENTS.md "Pull requests" section and the **ade-pr-workflows** skill:
+**PR text (both creation paths — never rely on `--fill` alone).** Write the text as a Brief, per the AGENTS.md "Pull requests" section and the **daex-pr-workflows** skill:
 
 1. **Why** — the problem, one or two plain sentences.
 2. **What changed** — what is different for the person who uses it, and what deliberately did not move.
@@ -686,31 +686,30 @@ revalidate again.
 5. **Choices I made** — only when you settled a trade-off alone.
 6. Final line — the model and harness that did the work (e.g. `Authored with <model> via <harness>.`).
 
-Cite proof in the text (`![caption](ade-proof://<id>)`, or a `proof-compare` block for before and after); `ade prs create` and `ade prs body` upload it into the text. Never commit evidence to the repo.
+Cite proof in the text (`![caption](ade-proof://<id>)`, or a `proof-compare` block for before and after); `daex prs create` and `daex prs body` upload it into the text. Never commit evidence to the repo.
 
-The Evidence part must be true when a person reads it. The early PR opens before `/quality` and `/test` finish, so it says so; **the phase that finishes a check replaces that line** with the result (`ade prs body <pr> --body-file <file>`). A PR never merges with a placeholder in its text.
+The Evidence part must be true when a person reads it. The early PR opens before `/quality` and `/test` finish, so it says so; **the phase that finishes a check replaces that line** with the result (`daex prs body <pr> --body-file <file>`). A PR never merges with a placeholder in its text.
 
 ### Discovery protocol (for the agent — not a script)
 
-The `ade` surface evolves. Don't assume flag names or output shapes from this playbook; discover them live.
+The `daex` surface evolves (`ade` is the same CLI under its old name). Don't assume flag names or output shapes from this playbook; discover them live.
 
-1. **Find an `ade` binary.** Try in order, and stop at the first hit:
-   1. `command -v ade` (PATH).
-   2. `<repo-root>/apps/ade-cli/bin/ade` (project-local launcher, when committed).
-   3. `node <repo-root>/apps/ade-cli/dist/cli.cjs` (project-local build output — present after `apps/ade-cli && npm run build`; build it yourself if absent, since ship no longer runs `/finalize` in-loop).
-   If none exist, skip to the `gh` fallback at the bottom of this section. Whichever one wins, use it everywhere this playbook says `ade` for the remainder of the run, and record the resolved path under `adeBin` in the state file.
-2. **Confirm the PR subcommand exists.** `ade --help` (or `ade -h`). Look for `prs` (or whatever the current noun is — the help text is authoritative, this playbook is not).
-3. **Read the exact create invocation.** `ade prs --help` then `ade prs create --help`. Note the actual required flags — expect something like `--lane <id>`, `--base <branch>`, and an output format flag (`--json`, `--text`, or global `--json`). Do not trust any specific invocation this playbook gives you; trust the help output.
+1. **Find the CLI.** Try in order, and stop at the first hit:
+   1. `command -v daex`, then `command -v ade` (PATH).
+   2. `node <repo-root>/apps/ade-cli/dist/cli.cjs` (project-local build output — present after `apps/ade-cli && npm run build`; build it yourself if absent, since ship no longer runs `/finalize` in-loop).
+   If none exist, skip to the `gh` fallback at the bottom of this section. Whichever one wins, use it everywhere this playbook says `daex` for the remainder of the run, and record the resolved path under `adeBin` in the state file.
+2. **Confirm the PR subcommand exists.** `daex --help` (or `daex -h`). Look for `prs` (or whatever the current noun is — the help text is authoritative, this playbook is not).
+3. **Read the exact create invocation.** `daex prs --help` then `daex prs create --help`. Note the actual required flags — expect something like `--lane <id>`, `--base <branch>`, and an output format flag (`--json`, `--text`, or global `--json`). Do not trust any specific invocation this playbook gives you; trust the help output.
 4. **Resolve current branch → lane id.**
-   - `ade lanes list --json` (or whatever the help shows) and filter by the field that holds the branch name (commonly `branchRef` or `branch`).
-   - If the branch isn't a registered lane, open it with `ade lanes create --name <name> --existing-branch <branch>`, then re-list.
+   - `daex lanes list --json` (or whatever the help shows) and filter by the field that holds the branch name (commonly `branchRef` or `branch`).
+   - If the branch isn't a registered lane, open it with `daex lanes create --name <name> --existing-branch <branch>`, then re-list.
    - If import's flag names differ from what you expect, re-read the help. Don't guess.
 5. **Create the PR** with the exact invocation the help documented. Read any error carefully — they mean different things:
    - **Usage error** (unknown flag, missing arg) → re-read `--help`, fix, retry. Do not fall back yet.
-   - **"PR already exists for lane"** → recover the existing PR number via `ade prs list --lane <id>` (or equivalent) and skip to Phase 0.4.
+   - **"PR already exists for lane"** → recover the existing PR number via `daex prs list --lane <id>` (or equivalent) and skip to Phase 0.4.
    - **Auth error** (token expired, permission denied) → exit with `status: blocked`, `exitReason: "ade-auth-failed"`. Do NOT silently fall back; surface to the user.
    - **Genuine internal error, reproducible after retry** → only now fall back.
-6. **Capture the PR number and links.** `ade prs create --text` prints separate GitHub URL and ADE URL rows when available; JSON output carries the same data as `githubUrl` and `adeUrl`. If the create output is missing the ADE URL but you have the repo and PR number, run `ade link pr <owner/repo> <number> --no-clipboard` to mint it. If you can't extract the PR number reliably, run `ade prs list --lane <id> --json` as a cross-check. If ADE's output is opaque after reasonable effort, `gh pr view --json number -q .number` is a safe cross-check since the PR now exists on GitHub.
+6. **Capture the PR number and links.** `daex prs create --text` prints separate GitHub URL and DAEX URL rows when available; JSON output carries the same data as `githubUrl` and `adeUrl`. If the create output is missing the DAEX URL but you have the repo and PR number, run `daex link pr <owner/repo> <number> --no-clipboard` to mint it. If you can't extract the PR number reliably, run `daex prs list --lane <id> --json` as a cross-check. If the CLI's output is opaque after reasonable effort, `gh pr view --json number -q .number` is a safe cross-check since the PR now exists on GitHub.
 
 Only after steps 1–6 have been genuinely attempted should the fallback run:
 
@@ -719,7 +718,7 @@ gh pr create --base "$SHIP_BASE_BRANCH" --head "$CURRENT_BRANCH" --fill
 PR_NUMBER=$(gh pr view --json number -q .number)
 ```
 
-Record in the state file which path was used (`prCreatedVia: "ade" | "gh"`). If the `gh` path fired, mention it in the final summary so the user can run `ade prs link --lane <lane> --number <PR_NUMBER>` to point the lane at it.
+Record in the state file which path was used (`prCreatedVia: "ade" | "gh"`). If the `gh` path fired, mention it in the final summary so the user can run `daex prs link --lane <lane> --number <PR_NUMBER>` to point the lane at it.
 
 ### 0.4 Post initial bot pings
 
@@ -813,7 +812,7 @@ This is a one-shot poll. Do not use `gh pr checks --watch`, shell `while` loops,
   when there is positive current-head evidence: a queued/pending/in-progress
   check, a review, a trigger acknowledgement, or a bot comment. Give expected
   bots one full 12-minute post-push grace window to produce that evidence. After
-  the grace window, zero evidence across the available ADE and GitHub surfaces
+  the grace window, zero evidence across the available DAEX and GitHub surfaces
   means `inactive` / `not-triggered`, which is terminal-neutral and must not
   block the loop. Expected integrations for this repo include **Greptile** and
   **CodeRabbit**, but configuration can disable or skip either one. GitHub
@@ -867,7 +866,7 @@ the next push (a docs fix, a rebase), so the next poll's `SINCE` drops it as
 old — and nothing answers it. Every poll also lists the unresolved threads:
 
 ```bash
-ade prs comments "$PR_NUMBER" --text      # "open" rows are unresolved threads
+daex prs comments "$PR_NUMBER" --text      # "open" rows are unresolved threads
 # gh fallback:
 gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){nodes{id isResolved isOutdated comments(first:1){nodes{databaseId author{login} path body}}}}}}}' \
   -F o="$OWNER" -F r="$REPO" -F n="$PR_NUMBER" \
@@ -1083,7 +1082,7 @@ Before dispatching review fixes:
 
 - Group comments by normalized finding: same file, nearby line, same author, and materially same body. Treat repeats as one issue.
 - Drop stale comments whose line no longer exists or whose requested change is already present in the current diff.
-- If a review thread can be resolved with the available GitHub/ADE tooling, resolve it as soon as the fix is present or the comment is stale/duplicate.
+- If a review thread can be resolved with the available GitHub/DAEX tooling, resolve it as soon as the fix is present or the comment is stale/duplicate.
 - Add every handled, stale, or duplicate comment id to `addressedCommentIds` so future iterations do not keep revisiting it.
 
 Do not linger on repeated bot feedback. Fix the underlying issue once, mark old copies handled/resolved when possible, and move on.
@@ -1414,9 +1413,9 @@ On a diff of 250 files or fewer, Phase 4 posts nothing and falls straight throug
 Agent-CLI-agnostic guidance. Pick the right primitive for the harness:
 
 - **Claude Code CLI** maps this to `ScheduleWakeup` (CLI scheduler re-invokes the command later).
-- **Claude Agent SDK in ADE Work chats** runs through the SDK `query()` stream and advances when ADE feeds a fresh user turn into its async input pump. Background task notifications are surfaced in the stream, but they are still not a durable scheduler by themselves. In an SDK chat, either poll synchronously inside the current turn (foreground bash with one bounded `until ... ; do sleep N; done`) or stop with `status: running` written to the state file and ask the user or an external runner to re-invoke the playbook.
+- **Claude Agent SDK in DAEX Work chats** runs through the SDK `query()` stream and advances when DAEX feeds a fresh user turn into its async input pump. Background task notifications are surfaced in the stream, but they are still not a durable scheduler by themselves. In an SDK chat, either poll synchronously inside the current turn (foreground bash with one bounded `until ... ; do sleep N; done`) or stop with `status: running` written to the state file and ask the user or an external runner to re-invoke the playbook.
 - **Codex in a terminal** should usually use shell `sleep ... && <one-shot checks>`.
-- **Any other ADE Work chat** has no scheduler of its own that starts a later turn. Before ending the turn while CI or review is still in flight, arm ADE's scheduler: `ade chat scheduled-work create --in 12m --prompt "/ship"` (4m just after a push, 12m while CI or review is running, 30m when only a person is left). Pass the same `/ship` arguments this run was given. Ending the turn without that command, or without an in-turn sleep, leaves the lane idle.
+- **Any other DAEX Work chat** has no scheduler of its own that starts a later turn. Before ending the turn while CI or review is still in flight, arm DAEX's scheduler: `daex chat scheduled-work create --in 12m --prompt "/ship"` (4m just after a push, 12m while CI or review is running, 30m when only a person is left). Pass the same `/ship` arguments this run was given. Ending the turn without that command, or without an in-turn sleep, leaves the lane idle.
 
 Cadence (applies once you've picked a primitive):
 
@@ -1427,7 +1426,7 @@ Cadence (applies once you've picked a primitive):
 
 **Do not re-wake at 270s after the initial push-settled poll.** 270s is only useful to confirm CI started; after that, bump to 720s so review bots can post. Re-entering every 270s before Greptile finishes is exactly how you end up pushing a CI-only fix and wasting the next review cycle.
 
-The cadence is a hint, not a live polling budget. Prefer longer sleeps over frequent checks. Each model or CLI may expose a different way to sleep, checkpoint, or resume; use the native one when it exists. If no native scheduler exists but shell commands can run, start a shell sleep followed by one bounded poll command, then let the shell wait without model activity. If the harness has no native scheduler and is not an ADE Work chat, write the updated state file and stop with a summary that names the next intended wake time; an external runner or human can re-invoke the playbook later. An ADE Work chat uses `ade chat scheduled-work` instead of stopping. Do not emulate scheduling with an active model loop.
+The cadence is a hint, not a live polling budget. Prefer longer sleeps over frequent checks. Each model or CLI may expose a different way to sleep, checkpoint, or resume; use the native one when it exists. If no native scheduler exists but shell commands can run, start a shell sleep followed by one bounded poll command, then let the shell wait without model activity. If the harness has no native scheduler and is not a DAEX Work chat, write the updated state file and stop with a summary that names the next intended wake time; an external runner or human can re-invoke the playbook later. A DAEX Work chat uses `daex chat scheduled-work` instead of stopping. Do not emulate scheduling with an active model loop.
 
 ---
 
@@ -1468,4 +1467,4 @@ The cadence is a hint, not a live polling budget. Prefer longer sleeps over freq
 - Replace `TeamCreate` with your native team/task spawning primitive. If none exists, run phases serially and compact aggressively between phases.
 - Replace `ScheduleWakeup` with your native resume mechanism (cron, setTimeout-equivalent, agent checkpoint). If you are operating like Codex in a terminal and have no native scheduler, use shell sleep plus one-shot checks, for example `sleep 720 && gh pr checks <PR> && gh run list --branch <branch> --limit 5`.
 - Everything else — `gh`, `git`, `npx vitest`, `eslint`, `tsc` — is shell, and should work identically.
-- This repo's shard count is **8** (`.github/workflows/ci.yml`). Always mirror that locally.
+- CI runs the desktop tests in **8** shards and the ade-cli tests in 2 (`.github/workflows/ci.yml`). Never run them all locally inside the loop (Fix discipline §2).

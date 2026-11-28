@@ -70,6 +70,7 @@ import {
 import { trackBrainLoopWatchdogCommand } from "../runtime/brainLoopWatchdog";
 import { createEpisodeAnalytics } from "./episodeAnalytics";
 import { readAccountHardwareId } from "./hardwareAnchor";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 export const ACCOUNT_MACHINE_HEARTBEAT_MS = 60_000;
 /**
@@ -303,7 +304,7 @@ export async function readMachineInventorySummary(
  * disconnected from your account.", and `ade doctor` prints it alone.
  */
 export const PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE =
-  "Sign in to your ADE account again on this computer to reconnect it.";
+  `Sign in to your ${BRAND.NAME} account again on this computer to reconnect it.`;
 
 /**
  * The directory's machine-readable answer for a refused pairing publish, taken
@@ -1218,7 +1219,7 @@ export function createAccountMachinePublisherService(options: {
     ): void => {
       outcome("token_unreadable", {
         attemptAt,
-        skipReason: "Sign in to ADE again — this machine stays paired.",
+        skipReason: `Sign in to ${BRAND.NAME} again — this machine stays paired.`,
         directoryOrigin,
         reachableEndpointCount,
         cause: sessionNeedsSignInCause(status),
@@ -1464,7 +1465,7 @@ export function createAccountMachinePublisherService(options: {
       observeSessionReadFailure("read_error");
       outcome("token_unreadable", {
         attemptAt,
-        skipReason: "The ADE brain could not read account status.",
+        skipReason: `The ${BRAND.NAME} brain could not read account status.`,
         directoryOrigin,
         reachableEndpointCount: observedReachableEndpointCount,
         cause: "status_read_error",
@@ -1482,7 +1483,7 @@ export function createAccountMachinePublisherService(options: {
       clearRetainedRelayState();
       outcome("account_signed_out", {
         attemptAt,
-        skipReason: "The ADE brain is signed out of the ADE account.",
+        skipReason: `The ${BRAND.NAME} brain is signed out of the ${BRAND.NAME} account.`,
         directoryOrigin,
         reachableEndpointCount: observedReachableEndpointCount,
       });
@@ -1580,7 +1581,7 @@ export function createAccountMachinePublisherService(options: {
         recordTransientFailure();
         outcome("token_timeout", {
           attemptAt,
-          skipReason: "The ADE account token refresh timed out.",
+          skipReason: `The ${BRAND.NAME} account token refresh timed out.`,
           directoryOrigin,
           reachableEndpointCount,
         });
@@ -1608,7 +1609,7 @@ export function createAccountMachinePublisherService(options: {
         clearRetainedRelayState();
         outcome("account_signed_out", {
           attemptAt,
-          skipReason: "The ADE brain is signed out of the ADE account.",
+          skipReason: `The ${BRAND.NAME} brain is signed out of the ${BRAND.NAME} account.`,
           directoryOrigin,
           reachableEndpointCount,
         });
@@ -1618,7 +1619,7 @@ export function createAccountMachinePublisherService(options: {
         recordTransientFailure();
         outcome("transport_error", {
           attemptAt,
-          skipReason: "The ADE account token refresh failed; retrying.",
+          skipReason: `The ${BRAND.NAME} account token refresh failed; retrying.`,
           directoryOrigin,
           reachableEndpointCount,
           leg: "token",
@@ -1636,7 +1637,7 @@ export function createAccountMachinePublisherService(options: {
     if (!accessToken) {
       outcome("token_unreadable", {
         attemptAt,
-        skipReason: "The ADE brain could not read or refresh the account token.",
+        skipReason: `The ${BRAND.NAME} brain could not read or refresh the account token.`,
         directoryOrigin,
         reachableEndpointCount,
         cause: "no_access_token",
@@ -1659,7 +1660,7 @@ export function createAccountMachinePublisherService(options: {
             recordTransientFailure();
             outcome("token_timeout", {
               attemptAt,
-              skipReason: "The ADE account token refresh after HTTP 401 timed out.",
+              skipReason: `The ${BRAND.NAME} account token refresh after HTTP 401 timed out.`,
               directoryOrigin,
               lastHttpStatus: 401,
               lastHttpReason: firstUnauthorizedReason,
@@ -1698,7 +1699,7 @@ export function createAccountMachinePublisherService(options: {
             attemptAt,
             skipReason: revocation.code === "pairing_authentication_required"
               ? PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE
-              : "This machine was removed from your ADE account. Pair it again to reconnect.",
+              : `This machine was removed from your ${BRAND.NAME} account. Pair it again to reconnect.`,
             directoryOrigin,
             lastHttpStatus: response.status,
             lastHttpReason: revocation.code,

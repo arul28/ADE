@@ -456,7 +456,7 @@ test("the Windows installer stages, preflights and promotes under the ADE home, 
   assert.match(installer, /\$installStage = "staged"/);
   assert.match(installer, /\$installStage = "installed"/);
   assert.match(installer, /was not touched\./);
-  assert.match(installer, /the ADE you already had was put back, so nothing is broken\./);
+  assert.match(installer, /the DAEX you already had was put back, so nothing is broken\./);
   assert.match(installer, /nothing was left installed at \$BinaryPath\./);
 });
 

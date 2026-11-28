@@ -393,7 +393,7 @@ struct ConnectionSettingsView: View {
           HStack(spacing: 12) {
             ADESettingsIconTile(symbol: "person.crop.circle.badge.plus", tint: .accent, size: 40)
             VStack(alignment: .leading, spacing: 2) {
-              Text("Sign in to ADE")
+              Text("Sign in to \(Brand.name)")
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(ADEColor.accent)
               Text("Your machines and settings, on every device.")
@@ -744,7 +744,7 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
     // A full wss:// relay URL carries an opaque `/connect/<machineKey>` path and
     // its own port — showing it raw is noise. Name the route instead.
     if syncIsFullWebSocketRoute(address) {
-      return "ADE relay"
+      return "\(Brand.name) relay"
     }
     let prefix = syncIsTailscaleRoute(address) ? "Tailscale " : ""
     if let port {

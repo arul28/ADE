@@ -914,7 +914,7 @@ describe("ADE Cloud account", () => {
     },
   );
 
-  // Money: extra disk, plan changes and the owner's limit (docs/plans/ade-cloud-plans-and-disk.md).
+  // Money: extra disk, plan changes and the owner's limit (docs/features/ade-cloud/README.md, "Plans, credits and sizes").
   const MONEY_ENV = { STRIPE_PRO_PRICE_ID: "price_pro" };
   /** Each plan's own extra-hours price (Cloud 7); `price_extra` stays the first, graduated one older subscriptions hold. */
   const EXTRA_PRICES = { STRIPE_MAX_PRICE_ID: "price_max", STRIPE_EXTRA_HOURS_PLUS_PRICE_ID: "price_extra_plus", STRIPE_EXTRA_HOURS_PRO_PRICE_ID: "price_extra_pro", STRIPE_EXTRA_HOURS_MAX_PRICE_ID: "price_extra_max" };
@@ -1102,14 +1102,14 @@ describe("ADE Cloud account", () => {
     ["the cap counts free use only: paid use past it sends the step email and no cap email", async () => {
       harness.insert("cloud_settings", { key: "owner_cost_limit_usd", value: "100", updated_at: NOW });
       await costChecks([[120, 1]]);
-      expect(stepEmails()).toEqual(["ADE Cloud passed $100 this month"]);
+      expect(stepEmails()).toEqual(["DAEX Cloud passed $100 this month"]);
     }],
     ["free use past 50% of the cap emails once; a cap email that fails is sent again by the next check", async () => {
       harness.insert("cloud_settings", { key: "owner_cost_limit_usd", value: "60", updated_at: NOW });
       harness.net.once.push({ match: /POST https:\/\/api\.resend\.com\/emails$/, reply: harness.net.reply({ message: "busy" }, 503) });
       setMonthCost(40, 40);
       await costChecks([[null, 1], [null, 2], [null, 2]]);
-      expect(stepEmails()).toEqual(["ADE Cloud free use passed 50% of your cap", "ADE Cloud free use passed 50% of your cap"]);
+      expect(stepEmails()).toEqual(["DAEX Cloud free use passed 50% of your cap", "DAEX Cloud free use passed 50% of your cap"]);
     }],
     ["Plus to Pro moves extra hours to Pro's own price at once, uncharged; a move down keeps it until the renewal", async () => {
       Object.assign(harness.env, EXTRA_PRICES);
@@ -2016,7 +2016,7 @@ describe("ADE Cloud earned hours, referrals and the free plan per computer", () 
     expect(providerCalls(harness, /POST .*\/payment_methods\/pm_2\/detach$/).length).toBeGreaterThan(0);
     expect(harness.rows("select card_fingerprint, user_id from cloud_free_card_claims")).toEqual([{ card_fingerprint: "fp_card_1", user_id: OWNER }]);
     expect(providerCalls(harness, /POST https:\/\/api\.resend\.com\/emails$/).map((call) => String(call.body?.subject)).filter((subject) => /used again/.test(subject)))
-      .toEqual(["ADE Cloud: a card was used again for free credits"]);
+      .toEqual(["DAEX Cloud: a card was used again for free credits"]);
   });
 
   it("the owner's block: only the owner token reaches it; it cuts off, stops and cancels the account, and puts its GitHub account and saved card on the block list until unblocked", async () => {
@@ -2177,7 +2177,7 @@ describe("ADE Cloud plan cleanup", () => {
     ["asleep, its last save failed: kept, never woken", () => {
       harness.exec("update cloud_computers set status = 'sleeping', awake_since = null, backup_report_id = ?, backup_report_state = 'failed' where instance_id = ?", REPORT, INSTANCE);
       harness.net.instances.get(INSTANCE)!.status = "sleeping";
-      return "ADE couldn't save this lane's work.";
+      return "DAEX couldn't save this lane's work.";
     }, false, false],
     ["asleep, it rested before its ADE saved lane work: kept, never woken, and told it isn't a failure", () => {
       harness.exec("update cloud_computers set status = 'sleeping', awake_since = null where instance_id = ?", INSTANCE);
@@ -2370,8 +2370,8 @@ describe("ADE Cloud idle cleanup", () => {
     expect([harness.net.instances.get(INSTANCE)?.status, computer(harness).status]).toEqual(["sleeping", "sleeping"]);
     if (!held) expect(emails()).toEqual([]);
     if (held) {
-      expect(String(computer(harness).idle_held_reason)).toContain("ADE couldn't save this lane's work.");
-      expect(emails().map((email) => email.subject)).toEqual(["ADE Cloud didn't delete pricing-page: its work couldn't be saved"]);
+      expect(String(computer(harness).idle_held_reason)).toContain("DAEX couldn't save this lane's work.");
+      expect(emails().map((email) => email.subject)).toEqual(["DAEX Cloud didn't delete pricing-page: its work couldn't be saved"]);
       // A day later it reads again, and still deletes and wakes nothing.
       clock = NOW + DAY;
       await run();
@@ -5281,7 +5281,7 @@ describe("ADE Cloud server moves", () => {
 
     expect(await record()).toEqual(expect.objectContaining({
       state: "failed",
-      error: `ADE couldn't move Widgets: ${why} Widgets is as it was, and the new computer was deleted.`,
+      error: `DAEX couldn't move Widgets: ${why} Widgets is as it was, and the new computer was deleted.`,
       sourceDeleted: null,
     }));
     expect(harness.net.instances.has(TARGET)).toBe(false);
@@ -5645,10 +5645,10 @@ describe("ADE Cloud server copies", () => {
       harness.net.after.push({ match: /\/fork$/, run: () => { harness.net.instances.get(TARGET)!.status = "creating"; } });
       await drive("boot");
       clock += 16 * 60_000;
-    }, "ADE Cloud didn't finish making the copy in time."],
+    }, "DAEX Cloud didn't finish making the copy in time."],
     ["the fork fails", async () => {
       harness.net.after.push({ match: /\/fork$/, run: () => { harness.net.instances.get(TARGET)!.status = "failed"; } });
-    }, "ADE Cloud couldn't make the copy."],
+    }, "DAEX Cloud couldn't make the copy."],
     ["the fork never takes its sign-in", async () => {
       shell.hand = "";
     }, "the copy didn't take its sign-in."],
@@ -5667,7 +5667,7 @@ describe("ADE Cloud server copies", () => {
     await drive("end");
 
     expect(await record()).toEqual(expect.objectContaining({
-      state: "failed", error: `ADE couldn't copy Widgets: ${why} Widgets is as it was, and the copy was deleted.`,
+      state: "failed", error: `DAEX couldn't copy Widgets: ${why} Widgets is as it was, and the copy was deleted.`,
     }));
     expect(harness.net.instances.has(TARGET)).toBe(false);
     expect(computer(harness, TARGET).deleted_at).not.toBeNull();
@@ -5750,7 +5750,7 @@ describe("ADE Cloud server copies", () => {
       // Signed in with no machine key on its row yet, and ADE Cloud can't read the copy to find it.
       expect((await harness.send(OWNER, "PUT", `/cloud/launches/${job().target_launch_id as string}/stages`, { state: "done" })).status).toBe(200);
       for (let attempt = 0; attempt < 5; attempt += 1) harness.net.once.push({ match: /GET .*\/instances\/copied123456$/, reply: new Error("the provider is down") });
-    }, { state: "failed", error: "ADE couldn't finish copying Widgets: could not reach ADE Cloud. Try again. Widgets copy had already signed in, so ADE kept it. Widgets is as it was." }],
+    }, { state: "failed", error: "DAEX couldn't finish copying Widgets: could not reach DAEX Cloud. Try again. Widgets copy had already signed in, so DAEX kept it. Widgets is as it was." }],
   ])("%s: the copy is kept, never deleted", async (_label, act, expected) => {
     expect((await start()).status).toBe(201);
     await drive("join");
@@ -5963,16 +5963,16 @@ describe("ADE Cloud server frees (the computer deleted, its lane kept)", () => {
     }, "The agent is still working. Stop it or wait, then free the computer."],
     ["what is running can't be read", () => {
       shell.keepAwake = "";
-    }, "ADE couldn't tell whether the agent is still working, so the computer stays. Try again in a moment."],
+    }, "DAEX couldn't tell whether the agent is still working, so the computer stays. Try again in a moment."],
     ["a lane's work couldn't be pushed", () => {
       shell.push = JSON.stringify({ pushed: 0, failed: 1, skipped: 0, lanes: [lane("failed", { dirty: true, ahead: 0 })] });
-    }, "ADE couldn't push the work in (Fix login) to GitHub, so the computer stays. Open it, push or discard that work, then try again."],
+    }, "DAEX couldn't push the work in (Fix login) to GitHub, so the computer stays. Open it, push or discard that work, then try again."],
     ["the main checkout couldn't be read in time (a cold git status on a big repository)", () => {
       shell.push = JSON.stringify({ pushed: 0, failed: 1, skipped: 0, lanes: [
         lane("clean", { dirty: false, ahead: 0 }),
         lane("failed", { laneId: "main", laneName: "Primary", branchRef: "main", primary: true, dirty: false, ahead: 0 }),
       ] });
-    }, "ADE couldn't read the work in (main checkout), so nothing was deleted. Try again in a minute; if it fails again, open that lane to see why."],
+    }, "DAEX couldn't read the work in (main checkout), so nothing was deleted. Try again in a minute; if it fails again, open that lane to see why."],
     ["GitHub refused the computer's fetch (the repository moved, or GitHub access can't reach it)", () => {
       shell.push = JSON.stringify({ pushed: 0, failed: 2, skipped: 0, lanes: [
         lane("failed", { dirty: false, ahead: 0, reason: "github_refused" }),
@@ -5981,7 +5981,7 @@ describe("ADE Cloud server frees (the computer deleted, its lane kept)", () => {
     }, "GitHub refused this computer access to the lane's repository, so nothing was deleted. The repository may have moved, or your GitHub connection (Settings › GitHub) can't reach it. Fix that, then try again."],
     ["the computer found what looks like a secret in what it would push", () => {
       shell.push = JSON.stringify({ pushed: 0, failed: 1, skipped: 0, lanes: [lane("failed", { dirty: true, ahead: 0, reason: "secret_found", secretFiles: ["config.ts", ".env.local"] })] });
-    }, "ADE found what looks like a key or a password in config.ts, .env.local (Fix login), so it didn't push that work and the computer stays. Open the lane, take it out (from its commits too, if one has it), then try again."],
+    }, "DAEX found what looks like a key or a password in config.ts, .env.local (Fix login), so it didn't push that work and the computer stays. Open the lane, take it out (from its commits too, if one has it), then try again."],
     ["GitHub didn't answer the check after the push", () => {
       shell.check = JSON.stringify({ pushed: 0, failed: 1, skipped: 0, lanes: [lane("failed", { dirty: false, ahead: 0, reason: "github_unreachable" })] });
     }, "This computer couldn't reach GitHub to check the lane's work, so nothing was deleted. Try again in a minute."],
@@ -5990,13 +5990,13 @@ describe("ADE Cloud server frees (the computer deleted, its lane kept)", () => {
     }, "This lane isn't on the computer (its setup didn't finish, or it was removed there), so there is no lane to keep. Delete the computer instead."],
     ["an older ADE's push names no lanes", () => {
       shell.push = JSON.stringify({ pushed: 0, failed: 1, skipped: 0 });
-    }, "ADE couldn't push all work on this computer, so it stays. Open the lane to see why, then try again."],
+    }, "DAEX couldn't push all work on this computer, so it stays. Open the lane to see why, then try again."],
     ["work changed while it pushed", () => {
       shell.check = JSON.stringify({ pushed: 0, failed: 0, skipped: 0, lanes: [lane("unpushed")] });
-    }, "Work changed on this computer while ADE pushed it (Fix login), so it stays. Try again."],
+    }, "Work changed on this computer while DAEX pushed it (Fix login), so it stays. Try again."],
     ["the check after the push can't say", () => {
       shell.check = JSON.stringify({ pushed: 0, failed: 0, skipped: 0 });
-    }, "ADE couldn't confirm all work is on GitHub, so the computer stays. Try again."],
+    }, "DAEX couldn't confirm all work is on GitHub, so the computer stays. Try again."],
   ])("%s: nothing is deleted and no lane is kept", async (_label, arrange, why) => {
     arrange();
     expect((await start()).status).toBe(201);

@@ -27,6 +27,7 @@ import { ensureMuseBinary, museBinaryBlocker, resolveMuseExecutable } from "../a
 import { pinnedToolBlocker, resolvePinnedCursorAgentCli } from "../ai/pinnedProviderTools";
 import { isExecutableFile } from "../ai/cliExecutableResolver";
 import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
+import { BRAND } from "../../../shared/brand";
 
 export type PinnedCliProvider =
   | "claude"
@@ -290,13 +291,13 @@ function startDownloads(provider: PinnedCliProvider): Promise<void> | null {
 /** The one sentence for a CLI that cannot run here. */
 function blockerSentence(provider: PinnedCliProvider): string {
   if (provider === "muse") {
-    return museBinaryBlocker(resolveMuseExecutable()) ?? "ADE could not start its Muse Code build on this machine.";
+    return museBinaryBlocker(resolveMuseExecutable()) ?? `${BRAND.NAME} could not start its Muse Code build on this machine.`;
   }
   for (const { tool, label } of PROVIDER_CLIS[provider].tools) {
     const sentence = pinnedToolBlocker(label, getPinnedToolStatus(tool));
     if (sentence) return sentence;
   }
-  return `ADE could not start its copy of ${PROVIDER_CLIS[provider].label} on this machine.`;
+  return `${BRAND.NAME} could not start its copy of ${PROVIDER_CLIS[provider].label} on this machine.`;
 }
 
 /**
@@ -313,7 +314,7 @@ export function pinnedProviderCliStateSentence(provider: PinnedCliProvider): str
     if (status.state === "ready") continue;
     // Whether this process may download is beside the point here: another
     // ADE process (the app, the brain) downloads it on first use.
-    if (status.state === "missing") return `ADE has not downloaded ${label} for this machine yet.`;
+    if (status.state === "missing") return `${BRAND.NAME} has not downloaded ${label} for this machine yet.`;
     return pinnedToolBlocker(label, status);
   }
   return blockerSentence(provider);
@@ -354,7 +355,7 @@ export async function requirePinnedProviderCli(
 
 /** The line a terminal shows while a CLI downloads. */
 export function pinnedCliDownloadingLine(label: string): string {
-  return `ADE is downloading ${label} for this machine. It starts here when the download finishes.`;
+  return `${BRAND.NAME} is downloading ${label} for this machine. It starts here when the download finishes.`;
 }
 
 /** What a sign-in runs on: ADE's copy, or the download's line and the copy once it lands, or why not. */

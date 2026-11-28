@@ -2,9 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { createAccountManagement, type AccountManagement, type AccountActionCall } from "./accounts.js";
 import { readBinaryVersion } from "./binary.js";
-import { isAdeClientEvent, type AdeClientEvent, type AdeClientEventMap } from "./clientEvents.js";
+import { isAdeClientEvent, type DaexClientEvent, type DaexClientEventMap } from "./clientEvents.js";
 import { buildDoctorReport } from "./doctorReport.js";
-import { AdeError, errorMessage } from "./errors.js";
+import { DaexError, errorMessage } from "./errors.js";
 import { ChatEventHub } from "./eventStream.js";
 import { modelSelectionOf } from "./modelSelection.js";
 import { PersonalChatsApi, summaryTurnActive } from "./personalChats.js";
@@ -14,7 +14,7 @@ import { createProviderStatusPublisher } from "./providerStatusPublisher.js";
 import { readRestartPolicy, resolveRuntimeBinary, RuntimeSupervisor } from "./runtimeSupervisor.js";
 import { runOnce, type RunOptions } from "./run.js";
 import { resolveRuntimeSocketPath } from "./socketPath.js";
-import { Thread, type AdeThread } from "./thread.js";
+import { Thread, type DaexThread } from "./thread.js";
 import { createThreadOpener, isAbsentSessionError } from "./threadOpener.js";
 import { ThreadStore } from "./threadStore.js";
 import type {
@@ -31,22 +31,22 @@ import type {
   Unsubscribe,
 } from "./types.js";
 import type {
-  CreateAdeChatOptions,
+  CreateDaexChatOptions,
   InternalAdeChatOptions,
   ThreadOpenOptions,
   ThreadResumeOptions,
 } from "./clientOptions.js";
 
-// Re-exported from here because `@ade-dev/sdk` has always published them from
+// Re-exported from here because `@daex-dev/sdk` has always published them from
 // this module; the split is internal and must not move a public name.
 export type {
-  CreateAdeChatOptions,
+  CreateDaexChatOptions,
   InternalAdeChatOptions,
   ThreadOpenOptions,
   ThreadRefreshOptions,
   ThreadResumeOptions,
 } from "./clientOptions.js";
-export { ADE_CLIENT_EVENTS, type AdeClientEvent, type AdeClientEventMap } from "./clientEvents.js";
+export { DAEX_CLIENT_EVENTS, type DaexClientEvent, type DaexClientEventMap } from "./clientEvents.js";
 
 const MAX_RECENT_ERRORS = 20;
 
@@ -70,7 +70,7 @@ const MAX_RECENT_ERRORS = 20;
  * What is not acceptable is the third option: destroying the turn quietly and
  * letting the consumer discover it as a response that stopped mid-sentence.
  */
-export interface AdeChatClient {
+export interface DaexChatClient {
   accounts: AccountManagement["accounts"];
   credentials: AccountManagement["credentials"];
   presets: AccountManagement["presets"];
@@ -114,13 +114,13 @@ export interface AdeChatClient {
   };
   threads: {
     /** Open a thread, creating it when the key is new to this home. */
-    open(key: string, opts: ThreadOpenOptions): Promise<AdeThread>;
+    open(key: string, opts: ThreadOpenOptions): Promise<DaexThread>;
     /**
      * Reopen a key this home already stores. The provider and model come from
      * the stored record, so an app that reopens `"support"` after a restart
      * does not have to remember how it was created.
      */
-    open(key: string, opts?: ThreadResumeOptions): Promise<AdeThread>;
+    open(key: string, opts?: ThreadResumeOptions): Promise<DaexThread>;
     /**
      * Every chat in this home, archived ones included, newest activity first
      * is NOT guaranteed — sort on `updatedAt` yourself.
@@ -139,7 +139,7 @@ export interface AdeChatClient {
      * A running turn is interrupted FIRST, so subscribers receive the turn's
      * `done` before the session goes away rather than a stream that simply
      * stops. Then the runtime deletes the session, the key is removed from the
-     * thread store, and a live `AdeThread` for the key is released — it throws
+     * thread store, and a live `DaexThread` for the key is released — it throws
      * `disposed`-style errors from the runtime afterwards, so drop it.
      *
      * A key whose session the runtime already lost is still removed. A key the
@@ -166,11 +166,11 @@ export interface AdeChatClient {
   run<T = unknown>(prompt: string, options: RunOptions): Promise<T | string>;
   /**
    * Listen for runtime lifecycle events: `"exit"`, `"transport"`, `"restart"`.
-   * See {@link AdeClientEventMap} for the payloads. Returns the unsubscribe.
+   * See {@link DaexClientEventMap} for the payloads. Returns the unsubscribe.
    *
    * Listeners survive an `autoRestart`, because the client object does.
    */
-  on<E extends AdeClientEvent>(event: E, cb: (payload: AdeClientEventMap[E]) => void): Unsubscribe;
+  on<E extends DaexClientEvent>(event: E, cb: (payload: DaexClientEventMap[E]) => void): Unsubscribe;
   /**
    * Stop the runtime and release this client. Idempotent.
    *
@@ -186,7 +186,7 @@ export interface AdeChatClient {
 }
 
 /**
- * Boots an isolated ADE runtime and returns a chat client that owns it.
+ * Boots an isolated DAEX runtime and returns a chat client that owns it.
  *
  * The returned client owns the child process: `dispose()` stops it, and the
  * process exit hooks stop it if the host dies first. Two clients on one `home`
@@ -200,14 +200,14 @@ export interface AdeChatClient {
  * `.level === "enforced"` before telling your users that only their tools are
  * loaded — on a delivery-only thread the level says nothing about isolation.
  */
-export async function createAdeChat(
-  options: CreateAdeChatOptions | InternalAdeChatOptions,
-): Promise<AdeChatClient> {
+export async function createDaexChat(
+  options: CreateDaexChatOptions | InternalAdeChatOptions,
+): Promise<DaexChatClient> {
   const internal = options as InternalAdeChatOptions;
   const logger = options.logger ?? (() => {});
   const home = path.resolve(options.home);
   if (!home || home === path.parse(home).root) {
-    throw new AdeError("invalid_option", "`home` must be a real directory path.");
+    throw new DaexError("invalid_option", "`home` must be a real directory path.");
   }
   await fs.promises.mkdir(home, { recursive: true, mode: 0o700 });
 
@@ -223,27 +223,27 @@ export async function createAdeChat(
 
   let disposed = false;
   const assertUsable = (): void => {
-    if (disposed) throw new AdeError("disposed", "This ADE chat client was disposed.");
+    if (disposed) throw new DaexError("disposed", "This DAEX chat client was disposed.");
   };
 
   // ---- client events -------------------------------------------------------
 
-  const clientListeners = new Map<AdeClientEvent, Set<(payload: never) => void>>();
-  const emitClient = <E extends AdeClientEvent>(event: E, payload: AdeClientEventMap[E]): void => {
+  const clientListeners = new Map<DaexClientEvent, Set<(payload: never) => void>>();
+  const emitClient = <E extends DaexClientEvent>(event: E, payload: DaexClientEventMap[E]): void => {
     for (const listener of [...(clientListeners.get(event) ?? [])]) {
       try {
-        (listener as (value: AdeClientEventMap[E]) => void)(payload);
+        (listener as (value: DaexClientEventMap[E]) => void)(payload);
       } catch (error) {
         logger(`ade sdk: a "${event}" listener threw: ${errorMessage(error)}`);
       }
     }
   };
-  const onClient = <E extends AdeClientEvent>(
+  const onClient = <E extends DaexClientEvent>(
     event: E,
-    cb: (payload: AdeClientEventMap[E]) => void,
+    cb: (payload: DaexClientEventMap[E]) => void,
   ): Unsubscribe => {
     if (!isAdeClientEvent(event)) {
-      throw new AdeError("invalid_option", `Unknown client event "${String(event)}".`);
+      throw new DaexError("invalid_option", `Unknown client event "${String(event)}".`);
     }
     let set = clientListeners.get(event);
     if (!set) {
@@ -332,10 +332,10 @@ export async function createAdeChat(
     assertUsable();
     const capabilities = runtime.initialize.capabilities?.[domain] as { actions?: unknown } | undefined;
     if (!Array.isArray(capabilities?.actions) || !capabilities.actions.includes(action)) {
-      throw new AdeError("unsupported", `This ADE runtime does not advertise ${domain}.${action}.`);
+      throw new DaexError("unsupported", `This DAEX runtime does not advertise ${domain}.${action}.`);
     }
     if (!runtime.managesAccounts) {
-      throw new AdeError(
+      throw new DaexError(
         "unsupported",
         "Account, credential and preset management needs a runtime this client started. It is attached to " +
           "one another process started (attach mode, or a runtime left running by an earlier host); dispose " +
@@ -355,12 +355,12 @@ export async function createAdeChat(
   const providerCapabilities = async (provider: string): Promise<ProviderCapabilities> => {
     assertUsable();
     if (runtime.initialize.capabilities?.providers?.capabilities !== true) {
-      throw new AdeError("unsupported", "This ADE runtime does not advertise provider capabilities.");
+      throw new DaexError("unsupported", "This DAEX runtime does not advertise provider capabilities.");
     }
     const statuses = await publishProviderStatus();
     const capabilities = statuses[provider]?.capabilities;
     if (!capabilities) {
-      throw new AdeError("unsupported", `The ADE runtime has no capability record for provider "${provider}".`);
+      throw new DaexError("unsupported", `The DAEX runtime has no capability record for provider "${provider}".`);
     }
     return capabilities;
   };
@@ -461,13 +461,13 @@ export async function createAdeChat(
    * changed model id) does exactly that, so it is the normal case, not a race
    * a caller can be asked to avoid.
    */
-  const openInFlight = new Map<string, Promise<AdeThread>>();
+  const openInFlight = new Map<string, Promise<DaexThread>>();
 
-  const openThread = (key: string, opts: ThreadResumeOptions = {}): Promise<AdeThread> => {
+  const openThread = (key: string, opts: ThreadResumeOptions = {}): Promise<DaexThread> => {
     assertUsable();
     const trimmedKey = key.trim();
     if (!trimmedKey) {
-      return Promise.reject(new AdeError("invalid_option", "A thread key must be a non-empty string."));
+      return Promise.reject(new DaexError("invalid_option", "A thread key must be a non-empty string."));
     }
 
     // A thread this client already opened is returned as-is, before any option
@@ -613,7 +613,7 @@ export async function createAdeChat(
   const getThread = async (key: string): Promise<ThreadSummary | null> => {
     assertUsable();
     const trimmedKey = typeof key === "string" ? key.trim() : "";
-    if (!trimmedKey) throw new AdeError("invalid_option", "A thread key must be a non-empty string.");
+    if (!trimmedKey) throw new DaexError("invalid_option", "A thread key must be a non-empty string.");
     await openInFlight.get(trimmedKey)?.catch(() => {});
     const record = await store.get(trimmedKey);
     const sessionId = liveSessions.get(trimmedKey)?.id ?? record?.sessionId;
@@ -637,7 +637,7 @@ export async function createAdeChat(
     key: string,
   ): Promise<{ trimmedKey: string; sessionId: string; live: Thread | undefined }> => {
     const trimmedKey = typeof key === "string" ? key.trim() : "";
-    if (!trimmedKey) throw new AdeError("invalid_option", "A thread key must be a non-empty string.");
+    if (!trimmedKey) throw new DaexError("invalid_option", "A thread key must be a non-empty string.");
     // An open still resolving can recreate the session under a new id. Read
     // the mapping only after it settles, or a delete or archive acts on the
     // old id and leaves the new session alive without its key.
@@ -646,7 +646,7 @@ export async function createAdeChat(
     const record = await store.get(trimmedKey);
     const sessionId = live?.id ?? record?.sessionId;
     if (!sessionId) {
-      throw new AdeError("thread_not_found", `No thread is registered under the key "${trimmedKey}".`);
+      throw new DaexError("thread_not_found", `No thread is registered under the key "${trimmedKey}".`);
     }
     return { trimmedKey, sessionId, live };
   };
@@ -654,7 +654,7 @@ export async function createAdeChat(
   /**
    * Interrupt a running turn before a lifecycle action ends it.
    *
-   * The destructive-while-streaming rule on `AdeChatClient`: a delete or
+   * The destructive-while-streaming rule on `DaexChatClient`: a delete or
    * archive that tore a turn down quietly would leave subscribers with a reply
    * that just stops. An interrupt ends it with `done`. A session the runtime
    * no longer has has no turn to end.
@@ -672,9 +672,9 @@ export async function createAdeChat(
 
   const requireAction = (action: string, what: string): void => {
     if (!runtime.actionAvailable(action)) {
-      throw new AdeError(
+      throw new DaexError(
         "invalid_option",
-        `This ADE runtime cannot ${what} a chat (no "${action}" action). Upgrade the runtime.`,
+        `This DAEX runtime cannot ${what} a chat (no "${action}" action). Upgrade the runtime.`,
       );
     }
   };
@@ -715,7 +715,7 @@ export async function createAdeChat(
 
   // ---- client --------------------------------------------------------------
 
-  const client: AdeChatClient = {
+  const client: DaexChatClient = {
     accounts: accountManagement.accounts,
     credentials: accountManagement.credentials,
     presets: accountManagement.presets,
@@ -802,7 +802,7 @@ export async function createAdeChat(
       assertUsable();
       const { sessionId } = await sessionForKey(key);
       const snapshot = await chats.getEventHistory({ sessionId });
-      // JSONL: one envelope per line, in transcript order. The same shape ADE
+      // JSONL: one envelope per line, in transcript order. The same shape DAEX
       // writes to its own durable transcripts, so the output drops straight
       // into any tool that already reads those.
       return (snapshot?.events ?? []).map((envelope) => JSON.stringify(envelope)).join("\n");
@@ -829,3 +829,10 @@ export async function createAdeChat(
 
   return client;
 }
+
+// Pre-DAEX names, kept as deprecated aliases so code written against the
+// `@ade-dev` packages keeps compiling. Remove them in a future major version.
+/** @deprecated Use {@link DaexChatClient}. */
+export type AdeChatClient = DaexChatClient;
+/** @deprecated Use {@link createDaexChat}. */
+export const createAdeChat = createDaexChat;

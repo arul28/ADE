@@ -47,7 +47,7 @@ struct MachineUpdateConfirmationSheet: View {
     NavigationStack {
       ScrollView {
         VStack(alignment: .leading, spacing: 14) {
-          Text("ADE restarts there.")
+          Text("\(Brand.name) restarts there.")
             .font(.system(size: 14))
             .foregroundStyle(ADEColor.textSecondary)
           VStack(alignment: .leading, spacing: 0) {
@@ -201,7 +201,7 @@ struct SettingsMachineUpdateSection: View {
     let target = store.target(for: machine)
     let status = store.status(for: machine)
     let attempt = store.attempt(for: machine)
-    ADESettingsSection("ADE", hint: hint(target: target), symbol: "arrow.triangle.2.circlepath", tint: .violet) {
+    ADESettingsSection("\(Brand.name)", hint: hint(target: target), symbol: "arrow.triangle.2.circlepath", tint: .violet) {
       VStack(alignment: .leading, spacing: 0) {
         ADESettingsValueRow(title: "Version", value: machine.appVersion.map(adeVersionValue) ?? "Unknown", mono: true)
         if let target {
@@ -254,7 +254,7 @@ struct SettingsMachineUpdateSection: View {
   private func hint(target: MachineUpdateTarget?) -> String? {
     if target != nil { return "A newer build is out on this machine’s track." }
     if store.needsUpdateOnMachine(machine) {
-      return "This computer’s ADE is too old to update from the phone. Update it there once; after that, it updates from here."
+      return "This computer’s \(Brand.name) is too old to update from the phone. Update it there once; after that, it updates from here."
     }
     return nil
   }

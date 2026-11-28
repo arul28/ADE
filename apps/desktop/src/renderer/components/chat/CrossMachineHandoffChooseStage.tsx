@@ -7,6 +7,7 @@ import type { HandoffMode } from "./crossMachineHandoffPresentation";
 import { CloudMark } from "../remoteTargets/cloudBrand";
 import { ADE_CLOUD_NAME } from "../../../shared/adeCloudMachine";
 import { ADE_CLOUD_MOVE_UNAVAILABLE_SENTENCE } from "./crossMachineMoveTargets";
+import { BRAND } from "../../../shared/brand";
 
 export function machineAvailable(machine: AgentChatCrossMachineHandoffMachineOption): boolean {
   return machine.online && !machine.unavailableReason;
@@ -144,7 +145,7 @@ export function CrossMachineHandoffChooseStage({
         {optionsLoaded && machines.length === 0 ? (
           <div className="flex h-9 items-center gap-2 rounded-lg border border-dashed border-fg/[0.1] px-3 text-[11px] text-fg/50">
             <Desktop size={14} className="shrink-0 text-fg/35" />
-            <span className="whitespace-nowrap">No other ADE machines on this account yet</span>
+            <span className="whitespace-nowrap">No other {BRAND.NAME} machines on this account yet</span>
           </div>
         ) : (
           <div aria-label="Machine" className="overflow-hidden rounded-lg border border-fg/[0.07] bg-fg/[0.02]">

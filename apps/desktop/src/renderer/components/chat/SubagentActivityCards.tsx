@@ -22,6 +22,12 @@ import {
 } from "./chatCardPrimitives";
 import { deriveSubagentCardName, formatSubagentModelLabel, subagentSummaryPlainText } from "../../../shared/chatSubagents";
 import { modelMentionEffortLabel } from "../../../shared/modelMentions";
+import {
+  CHAT_STOP_REASON_BRAIN_RESTARTED,
+  CHAT_STOP_REASON_FOREIGN_BRAIN,
+  LEGACY_CHAT_STOP_REASON_BRAIN_RESTARTED,
+  LEGACY_CHAT_STOP_REASON_FOREIGN_BRAIN,
+} from "../../../shared/types";
 import { formatContextTokens } from "./usage/contextUsageModel";
 import {
   subagentCardGridSpan,
@@ -32,6 +38,19 @@ import {
   type SubagentStoppedGroupItem,
   meaningfulStoppedSummary,
 } from "./chatTranscriptRows";
+
+// Transcripts from before the rename store the stop reasons with the old
+// product name; the card shows the current one.
+const STOP_REASON_DISPLAY: Readonly<Record<string, string>> = {
+  [LEGACY_CHAT_STOP_REASON_BRAIN_RESTARTED]: CHAT_STOP_REASON_BRAIN_RESTARTED,
+  [LEGACY_CHAT_STOP_REASON_FOREIGN_BRAIN]: CHAT_STOP_REASON_FOREIGN_BRAIN,
+};
+
+function displayStopReason(reason: string | null | undefined): string | null {
+  const trimmed = reason?.trim();
+  if (!trimmed) return null;
+  return STOP_REASON_DISPLAY[trimmed] ?? trimmed;
+}
 
 // Re-exported for existing importers that reach it through this module.
 export { navigateToSpawnedChat };
@@ -476,7 +495,7 @@ export function SubagentResultCard({
     firstMeaningfulSummary(isStopped ? meaningfulStoppedSummary(event) : event.summaryPreview),
   );
   const stopCause = isStopped
-    ? (event.stopSource === "user" ? "you interrupted" : (event.stopReason?.trim() || null))
+    ? (event.stopSource === "user" ? "you interrupted" : displayStopReason(event.stopReason))
     : null;
   // Without a report of its own, a stopped card says what the agent was doing,
   // WHO stopped it and whether the work survived — a stopped card that only
@@ -737,7 +756,7 @@ type StoppedAttributionEvent = Pick<SubagentStoppedGroupEvent, "stopSource" | "s
 
 function stoppedAttributionSuffix(event: StoppedAttributionEvent): string {
   if (event.stopSource === "user") return " when you interrupted";
-  const reason = event.stopReason?.trim();
+  const reason = displayStopReason(event.stopReason);
   return reason ? `: ${reason}` : "";
 }
 

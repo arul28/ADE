@@ -6,3 +6,6 @@ src/generated/*.ts
 !build/icons/*.png
 # The Linux lane screen's wallpaper mark, compiled into the helper (include_bytes!).
 !native/ADEDesktopDriverLinux/assets/*.png
+
+# Icon Composer icon layers (macOS 26 app icon).
+!build/*.icon/Assets/*.png

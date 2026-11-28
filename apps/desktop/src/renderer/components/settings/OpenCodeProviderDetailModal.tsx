@@ -15,6 +15,7 @@ import {
 } from "./providers/opencode/OpenCodeAccounts";
 import { isImeComposing } from "../../lib/imeComposition";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 export type OpenCodeProviderDetail = {
   id: string;
@@ -183,7 +184,7 @@ export function OpenCodeProviderDetailModal({
       setEditing(false);
       setKeyValue("");
     } catch (err) {
-      setError(plainErrorText(err, "ADE couldn't save that key."));
+      setError(plainErrorText(err, `${BRAND.NAME} couldn't save that key.`));
     } finally {
       setBusy(false);
     }
@@ -195,7 +196,7 @@ export function OpenCodeProviderDetailModal({
     try {
       await onDeleteKey();
     } catch (err) {
-      setError(plainErrorText(err, "ADE couldn't remove that key."));
+      setError(plainErrorText(err, `${BRAND.NAME} couldn't remove that key.`));
     } finally {
       setBusy(false);
     }
@@ -286,7 +287,7 @@ export function OpenCodeProviderDetailModal({
                     <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
                       {canDisconnect
                         ? "Connected in OpenCode. Sign-in methods could not be listed — you can still disconnect."
-                        : "Connected by a credential managed outside ADE. Clear that env/config value to disconnect."}
+                        : `Connected by a credential managed outside ${BRAND.NAME}. Clear that env/config value to disconnect.`}
                     </div>
                   ) : null}
                   {provider.connected && !signedIn ? (
@@ -443,7 +444,7 @@ export function OpenCodeProviderDetailModal({
                             </>
                           ) : keySource === "env" || keySource === "config" ? (
                             <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
-                              Managed outside ADE — clear the env/config value to remove.
+                              Managed outside {BRAND.NAME} — clear the env/config value to remove.
                             </span>
                           ) : null}
                         </>

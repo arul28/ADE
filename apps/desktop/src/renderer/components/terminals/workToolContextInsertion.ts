@@ -20,6 +20,7 @@ import {
   normalizeBuiltInBrowserContextItem,
 } from "../../lib/visualContextFormatting";
 import { buildChatContextAttachmentPrompt } from "../../../shared/chatContextAttachments";
+import { BRAND } from "../../../shared/brand";
 import {
   dispatchWorkPtyContextInserted,
   type WorkPtyContextInsertKind,
@@ -58,7 +59,7 @@ export function bracketedPaste(text: string): string {
 
 export function formatAttachmentForPty(attachment: AgentChatFileRef): string {
   return [
-    "ADE visual attachment saved by the Work sidebar.",
+    `${BRAND.NAME} visual attachment saved by the Work sidebar.`,
     `Path: ${attachment.path}`,
     `Type: ${attachment.type}`,
     "",

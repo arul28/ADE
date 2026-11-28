@@ -5,6 +5,7 @@ import { APP_BANNER_PRIORITY, useAppBanner } from "../ui/notice";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { dismissClaudeModsOffer, isClaudeModsOfferDismissed } from "./claudeModUiPrefs";
 import type { OpenProjectBinding } from "../../../shared/types";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Whether a chat has a mod installed. The plugin list is the chat's own (its
@@ -70,7 +71,7 @@ export function useClaudeModsPrompt(sessionId: string | null, pin: OpenProjectBi
       id: "claude-mods-offer",
       tone: "info",
       icon: <PuzzlePiece />,
-      title: "ADE can show your Claude mods in chats",
+      title: `${BRAND.NAME} can show your Claude mods in chats`,
       actions: [{
         label: "Turn on in Settings",
         onClick: () => {

@@ -2,6 +2,7 @@ import type { TerminalSessionSummary } from "../../../shared/types";
 import { isTrackedAgentCliToolType } from "../../../shared/types/sessions";
 import type { createPtyService } from "../pty/ptyService";
 import type { createSessionService } from "./sessionService";
+import { BRAND } from "../../../shared/brand";
 
 function isTerminalChatToolType(toolType: string | null | undefined): boolean {
   if (!toolType) return false;
@@ -14,7 +15,7 @@ function normalizedPtyId(session: Pick<TerminalSessionSummary, "ptyId">): string
 }
 
 function peerOwnedSessionMessage(sessionId: string): string {
-  return `Session '${sessionId}' is still owned by another ADE runtime. Stop it from that runtime before deleting it.`;
+  return `Session '${sessionId}' is still owned by another ${BRAND.NAME} runtime. Stop it from that runtime before deleting it.`;
 }
 
 export function deleteTerminalSessionWithRuntimeCleanup({

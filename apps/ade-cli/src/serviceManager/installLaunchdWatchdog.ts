@@ -11,6 +11,7 @@ import {
   MATERIALIZE_DATALESS_FILES_KEY,
   type ServiceManagerSpawnSync,
 } from "./common";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 /**
  * A second, tiny launch agent whose only job is to notice a wedged brain.
@@ -237,13 +238,13 @@ export function installLaunchdWatchdogAgent(deps: {
       return {
         installed: false,
         path: servicePath,
-        message: `The ADE watchdog agent could not be loaded. ${load.detail}`,
+        message: `The ${BRAND.NAME} watchdog agent could not be loaded. ${load.detail}`,
       };
     }
     return {
       installed: true,
       path: servicePath,
-      message: "ADE watchdog agent installed.",
+      message: `${BRAND.NAME} watchdog agent installed.`,
     };
   } catch (error) {
     return {
@@ -275,6 +276,6 @@ export function uninstallLaunchdWatchdogAgent(deps: {
   return {
     installed: false,
     path: servicePath,
-    message: "ADE watchdog agent removed.",
+    message: `${BRAND.NAME} watchdog agent removed.`,
   };
 }

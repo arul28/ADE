@@ -1,461 +1,201 @@
 # Cross-machine agents
 
-Agents and the `ade` CLI can find, start, message and wait on chats on the
-account's other machines, drive their devices, and hear back when a child they
-started there finishes. The person's surfaces (the cross-machine Work list,
-drafts on another machine, handoff) are described elsewhere; this is the agent
-half. The words and commands agents see (machine, device, "your code there",
-`ade devices`, `--device`, `--code`, `--to`) are specified in
-[devices and machines](./devices-and-machines.md); this page is how they work.
+Agents and the `daex` CLI (`ade` still works) can find, start, message and wait
+on chats on the account's other machines, run commands and drive devices there,
+and hear back when a child they started finishes. The words agents see
+(machine, device, "your code there", `--code`, `--to`) are specified in
+[devices and machines](devices-and-machines.md); this page is how it works.
+
+## Source file map
+
+- `apps/ade-cli/src/cliMachineTargeting.ts`, `cliChatLocate.ts`,
+  `cliRemoteWork.ts` — CLI targeting, chat location, work-copy sends.
+- `apps/ade-cli/src/services/account/machineBridge.ts`,
+  `agentMachineBridge.ts` — brain-to-brain pools and `machines.call`.
+- `apps/desktop/src/main/services/remoteWork/` — `remoteWorkCopyService.ts`
+  (work copies), `remoteWorkFiles.ts` (file push/pull), `remoteWorkScratch.ts`
+  (`--no-code` folders); limits in `apps/desktop/src/shared/types/remoteWork.ts`.
+- `apps/desktop/src/main/services/chat/crossScopeChats.ts` — wake routing to a
+  parent in another scope or on another machine.
+- `apps/desktop/src/main/services/machineStats/machineStatsService.ts` — load
+  stats; `renderer/components/lanes/laneMachines.ts` (`autoLaneMachine`).
+- `apps/desktop/src/shared/rpcLiveness.ts` — dead-link detection.
 
 ## What an agent can do
 
 ```bash
-ade machines list --text                          # roster: name, online, platform, projects
-ade machines list --projects --text               # …with each machine's projects
-ade chat list --machine "Mac mini" --text         # that machine's checkout of this repo
-ade chat list --all-machines --text               # every machine, one table with a MACHINE column
-ade lanes list --machine "Mac mini" --project Versic --text
-ade chat read <id> --machine "Mac mini" --text
-ade chat create --machine "Mac mini" --lane <lane there> --type subagent \
-  --provider claude --model anthropic/claude-opus-5 --prompt "build and test the iOS app"
-                                                  # no --lane: the project's primary lane there
-ade chat create --machine "Mac mini" --clone …    # set the repo up there first (GitHub only)
-ade chat create --machine "Mac mini,Linux box" …  # one child per machine
-ade chat launch "fix the flaky test" --machine "Mac mini"   # new lane there
-ade chat wait <id> --machine "Mac mini" --for idle --timeout-ms 900000
-ade chat message <id> --machine "Mac mini" --kind auto --text "also run the UI tests"
-ade apple screenshot --machine "Mac mini" --lane <lane there>
-ade apple proof --machine "Mac mini" --lane <lane there> --caption "Login works"
-ade usage limits --machine "Mac mini" --text      # that machine's accounts and what is left
-ade usage limits --all-machines --text            # every machine's accounts in one table
+daex machines list --projects --text
+daex chat list --all-machines --text
+daex chat create --machine "Mac mini" --lane <lane there> --type subagent \
+  --provider claude --model anthropic/claude-opus-5 --prompt "build and test"
+daex chat launch "fix the flaky test" --machine "Mac mini"     # new lane there
+daex chat wait <id> --machine "Mac mini" --for idle --timeout-ms 900000
+daex apple proof --machine "Mac mini" --lane <lane there> --caption "Login works"
+daex usage limits --all-machines --text
 ```
 
-`--machine` takes a machine key or an unambiguous display name. A name that
-matches no machine exactly is tried again with case, accents and apostrophes
-folded ("Arul's Mac Studio" finds "Arul’s Mac Studio"), then, for two words or
-more, as whole words inside a name ("mac studio"); only a unique match counts,
-and an exact name on a fresh directory read wins over a loose one on the
-cache (`selectAccountMachine`, `machineBridge.selectMachine`). A target flag
-quoted into one word with its value (`"--machine X --lane Y"`, built in one
-shell variable) is refused before anything runs, since it would otherwise be
-ignored and the command would run here. On the other
-machine the project is, in order: `--project <name|path|id>` (`--machine-project`
-for commands that already use `--project`, such as `ade apple`), else the
-checkout of this repository matched by normalized git origin. `--personal`
-commands target that machine's projectless chats. This shell's lane is never
-sent: name a lane there with `--lane` (from `ade lanes list --machine …`), or let
-`chat launch` create one.
-
-An offline machine fails at once with when it was last seen; nothing is queued.
-`--all-machines` never fails for one machine: an offline or refusing machine is
-one row saying so.
-
-Provider quota belongs to the machine, not a project, so `usage limits` and
-`usage snapshot` run in this repository's checkout there when it has one and
-otherwise in the project that machine opened most recently (the `anyProject`
-scope). A machine with no project open in ADE says so. A host older than
-`usage.getUsageLimits` answers with its full snapshot, and the CLI cuts it down
-to the same report.
-
-`--machine` and `--all-machines` work only on the commands above (`chat`,
-`lanes`, `projects`, `usage`, `apple`, `mac-desktop`, `app-control`, and their
-aliases). Any other command refuses them rather than quietly answering for this
-machine; `drafts` and `machines` keep their own `--machine` flag.
+- `--machine` takes a machine key or an unambiguous name (then folded case and
+  punctuation, then whole words; only a unique match counts;
+  `selectAccountMachine`). A flag quoted together with its value is refused.
+- The project there is `--project` (`--machine-project` where `--project` is
+  taken), else this repo's checkout by normalized origin. `--personal` targets
+  projectless chats. This shell's lane is never sent.
+- An offline machine fails at once with its last-seen time; nothing queues.
+  `--all-machines` reports each failing machine as a row.
+- `--machine` works only on `chat`, `lanes`, `projects`, `usage`, `apple`,
+  `mac-desktop`, `app-control` (and aliases); other commands refuse it.
+- `usage limits` runs in this repo's checkout there, else the project that
+  machine opened last (`anyProject`).
 
 ### A chat id without `--machine`
 
-A chat id is unique across the account, so a chat command does not need
-`--machine` to find it. Before `chat read|show|status|wait|send|message|steer|
-interrupt|stop|respond|pending|resume|subagents` runs here, the CLI
-(`cliChatLocate.ts`) asks this machine's brain `chats.locate`: booted scopes,
-then each project's transcripts on disk, never a boot. If the chat is not here,
-every online machine is asked the same at once (five seconds each; offline
-machines are not asked). Exactly one match: the command runs there with the
-chat's project (or `--personal`), and the CLI prints `· on <machine>` to
-stderr. No match: the command runs here and fails as before, naming the
-machines that were offline or did not answer. Two matches fail and list both.
-
-The match is kept in `<ADE_HOME>/cache/chat-machines.json` (24 hours, 200
-entries), so the next command asks only that machine. `ade chat locate <id>`
-prints the answer. `chats.locate` is read-only and reachable by other
-machines' agents; it names only the project, which `projects.list` already
-shows them. A machine older than it answers "isn't available", reported as
-"no answer". Through ADE MCP the CLI does not look anywhere else; ADE MCP
-finds the computer and forwards the call itself (docs/features/ade-mcp).
+Chat ids are unique across the account. Chat commands first ask this brain
+`chats.locate` (booted scopes, then transcripts on disk, never a boot), then
+every online machine (5 s each). One match runs there and prints
+`· on <machine>`; two matches fail. Matches are cached in
+`<ADE_HOME>/cache/chat-machines.json` (24 h, 200). `daex chat locate <id>` prints
+it. Through DAEX MCP the server does the lookup itself
+([DAEX MCP](../ade-mcp/README.md)).
 
 ## Running a command in a work copy there
 
-`ade shell start --machine <name> [--wait] -- <command>` runs one command on
-another machine for this chat, without a lane or a chat there. The other
-machine keeps a **work copy** for the chat
-(`apps/desktop/src/main/services/remoteWork/remoteWorkCopyService.ts`): a plain
-git worktree under `<project>/.ade/remote-work/`, detached at the chat's commit,
-with the chat's uncommitted changes applied as one binary patch. It is created
-on the first command; nothing is installed in advance, and ignored files
-(installed deps, build output) survive between runs. A first command waits at
-most 20 s for a new copy (`prepareWithin`); a copy still being made answers
-`work_copy_preparing` ("run the command again in a minute") and goes on in the
-background, and the next call joins it. A make that failed is that next call's
-error only when it is for the same commit.
+`daex shell start --machine <name> [--wait] -- <command>` runs one command on
+another machine for this chat, with no lane or chat there. That machine keeps a
+**work copy** per chat (`remoteWorkCopyService.ts`): a git worktree under
+`<project>/.ade/remote-work/`, detached at the chat's commit, with the chat's
+uncommitted changes applied as one binary patch; ignored files (deps, builds)
+survive between runs. A new copy waits up to 20 s, else answers
+`work_copy_preparing`.
 
-- **Background work.** The shell is archived as soon as `pty.create` returns
-  (`adeRpcServer.ts`, the `remoteWork` branch of `pty.create`), so no list on
-  that machine shows it: not the Work tab, the lane counts, or iOS. It still
-  runs, and its owner chat still reads, lists (`terminal.list` adds the
-  caller's own archived shells) and closes it. The Work tab also never shows a
-  shell owned by a `remote:` chat at the top level (`buildWorkNesting`). Agents
-  are told to put all their steps in one call: each call is a new shell and a
-  new sync.
-- **Git moves code.** The CLI (`cliRemoteWork.ts`, `readLocalWorkSource`)
-  reads the checkout the command runs from (a lane worktree wins over the
-  project root the environment names, `resolveRoots` in `cli.ts`) and sends the commit, the remote branch that holds it, and the patch as bytes
-  (base64, 16 MiB at most), made with fixed diff options so the user's diff
-  settings cannot break it. A commit that is not on origin is refused here:
-  "Push it first". `--code as-is` and `--code fresh` (old names `--no-sync`
-  and `--discard`, still accepted) are read only for a command that runs your
-  code with `--machine` and no `--lane`: a shell start, an Apple build, an
-  Android install, launch, test or preview, and an App Control launch
-  (`cliMachineTargeting.ts`).
-- **Never lose work there.** Before a sync the copy is compared with what the
-  last sync wrote and with its checked-out commit. Unpushed commits, or files
-  changed there and not committed, refuse the sync and name the files.
-  `--code as-is` runs in the copy as it is (to commit and push from there);
-  `--code fresh` resets anyway.
-- **Files made there stay.** A file that is untracked, not ignored, and not
-  written by the last sync (a `.xcodeproj` from `xcodegen generate`, a file
-  `ade files push` put there) does not refuse a sync: it is kept in place
-  (`filesMadeHere` in the copy service; left out of `git clean` with an
-  anchored `-e` pattern each, and out of the tree recorded as synced, so the
-  next sync keeps it again). The answer lists them (`workCopy.keptFiles`). A
-  sync whose commit or patch would write a file of the same name (or a folder
-  in its way; case-folded on macOS and Windows) is refused before anything
-  changes. More than 200 such files counts as work made there, as before.
-  The week-unused and low-disk cleanups still count them as unpushed work.
-- **One command at a time.** A copy is busy from its sync until the command
-  it was readied for has started (an Apple build: until the call returns), and
-  while a shell runs in it. A synced command is refused while it is busy;
-  `--code as-is` runs beside it. Another chat on the machine cannot read, type
-  into or stop such a shell, and lane-wide terminal lists leave it out.
-- **Limits.** Submodules are not initialised in a copy. Untracked files that
-  are not ignored travel in the patch, so a large one must be committed or
-  ignored. The copy follows the chat's commit, not a branch: commit and push
-  from there with `git push origin HEAD:<branch>`. A file the patch creates
-  that the host's git ignores (global excludes, `.git/info/exclude`) is left
-  by `git clean -fd`, so the sync deletes the patch's new paths inside the copy
-  before it applies.
-- **Files.** `ade files push --machine <name> <local> <remote>` and
-  `ade files pull --machine <name> <remote> <local>` move one file to or from
-  the chat's work copy there (`remoteWorkFiles.ts`, hidden tool
-  `work_copy_file`; limits in `shared/types/remoteWork.ts`): 4 MiB chunks,
-  256 MiB per file, checked by size and sha256, written to a temp file beside
-  the target and renamed into place. The remote path is relative to the copy;
-  absolute paths, drive letters, `..`, `:`, a first segment `.git`, a segment
-  ending in a dot or a space, Windows device names, and links that lead out of
-  the copy are refused on every OS. Only a caller from another machine
-  (`remote:<device>:<chat>`) can use it, and only on its own copy. A pushed
-  file that git does not track stays through the next sync (see above); one
-  that replaces a file the repository tracks is a change made there and
-  refuses it.
-- **The run.** The command runs once in that machine's shell, started clean
-  and not interactive (`remoteRunOnceShellLaunch` in `ptyService.ts`: the
-  saved terminal shell or Automatic, `-c` on macOS and Linux; on Windows
-  PowerShell with `-EncodedCommand` and this run's execution policy bypassed,
-  or Git Bash when that is the saved shell, never cmd.exe). The CLI sends the
-  command's argv (what follows `--`), and the receiving machine renders it for
-  its shell, leading `NAME=value` words included; a `-c "<line>"` command goes
-  to the shell as written. The shell ends with the command's exit code. `--wait` streams the output
-  and exits with that code. The shell is owned by the caller's foreign id, so
-  only that chat reads, writes or stops it (`ade terminal … --machine`). On
-  Windows a command whose command line would pass 32,767 characters (the
-  `-EncodedCommand` form more than doubles a script) is refused before the
-  copy syncs (`command_too_long`); put the script in a file in the copy.
-- **Its environment.** A shell a caller from another machine starts in a work
-  copy gets `ADE_LANE_ID=remote-work-<hash>` and `ADE_WORKSPACE_ROOT=<copy>`,
-  no lane ports or host name, and none of the host's orchestration ids;
-  `ADE_CHAT_SESSION_ID` stays the caller's `remote:` id so `ade` calls from it
-  act as that chat. Lane commands there without `--lane` say the shell has no
-  ADE lane (`envLaneIdForLaneCommand`). A terminal whose terminal host process
-  dies prints why, and each stop of such a shell logs
-  `pty.remote_work_shell_disposed`.
-- **No repository.** `ade shell start --machine <name> --no-code [--wait] --
-  <cmd>` (old name `--scratch`) runs a command that needs no code
-  (`nvidia-smi`, a disk check) in an empty folder under `<ADE_HOME>/remote-work/scratch/` there: no work copy,
-  no git, no commit to push. It runs in any project open in ADE there (the
-  `anyProject` scope; this repository's checkout when there is one). The
-  folder goes when the shell ends; the hourly sweep removes any older than a
-  week. While it runs it counts as a shell of this chat there, so a synced
-  command waits for it as for any other.
-- **Cleanup.** `ade shell clean --machine <name>`; a week unused; the source
-  chat deleted or archived on its own machine; a low disk deletes other idle
-  copies, oldest first, before a new copy is refused. The brain sweeps every
-  project in `<ADE_HOME>/remote-work/projects.json` a minute after it starts
-  and then hourly (`sweepMachineRemoteWork`), asking the chat's machine with
-  `chats.locate` (which says `archived` when the project is running there);
-  silence never deletes. The week-unused, low-disk and archived-chat cleanups
-  keep a copy that holds work nobody pushed (an archived chat can come back);
-  a deleted chat's copy goes with it. A copy in use is never deleted, and the
-  week-unused and low-disk cleanups also keep a copy whose simulator or
-  emulator is in use (`registerRemoteWorkDeviceCheck`); a gone or archived
-  chat still releases it under the rules above. An unreadable
-  `copies.json` stops every change rather than being read as empty.
-- **The simulator.** `ade apple … --machine <name>` with no `--lane` uses the
-  work copy as its lane there: the lane id is `remote-work-<hash>`
-  (`remoteWorkLaneIdFor`), its build root is the copy, and the device registry
-  treats it as live while the copy exists. Its first device is one of the
-  user's own simulators on that machine that no lane holds (shut-down ones
-  first; never an ADE device, which a lane's end would delete), attached so
-  ADE never deletes it; only when none is free does ADE make one (`start` and
-  `launch` both go through `ensure`). A device ADE made for a copy is held
-  while the copy exists, for this project's cleanup pass and for every other
-  project's on that machine (`appleMarkerProjectHolds` reads the copy list,
-  since a work copy has no `lanes` row); a copy list that cannot be read
-  counts as held. `launch`, `installApp` and `runTests`
-  sync the copy first; other verbs use it as it is. When the copy goes, the
-  cleanup pass gives the device back.
-- **Where it shows.** The chat's own brain records each shell and each
-  simulator call as it forwards it (`noteRemoteWork`, in memory only, so a
-  restart of that brain forgets it). The other machine returns its work
-  copy's lane id with each answer (`workCopy.laneId`); an older machine does
-  not, and then only the shells show. The chat header and session card show
-  that machine's logo while the current turn uses it, with the commands and
-  Stop. The terminal tool adds those commands, each with the machine's logo,
-  read and stopped through that machine's pin. The iOS tool offers
-  "Simulator · <machine>" beside "This lane" and stays visible on a host that
-  cannot run a simulator; it never starts a device there, and says so when
-  there is none. Settings › Machines reads `remote_work.list` (every project on that
-  machine, from `<ADE_HOME>/remote-work/projects.json`) and deletes with
-  `remote_work.delete` (desktop only).
+- **Background.** The shell is archived as soon as it starts, so no list there
+  shows it; its owner chat still reads and stops it. Put all steps in one call.
+- **Git moves code.** The CLI sends the commit, its remote branch and the patch
+  (≤16 MiB). A commit not on origin is refused ("Push it first").
+- **Never lose work there.** Unpushed commits or uncommitted edits made in the
+  copy refuse a sync and name the files. `--code as-is` runs in the copy as it
+  is; `--code fresh` resets anyway (old names `--no-sync`, `--discard`).
+- **Files made there stay**: untracked, non-ignored files the last sync did not
+  write are kept (`filesMadeHere`, listed as `workCopy.keptFiles`) unless the
+  sync would overwrite one.
+- **One synced command at a time** per copy; `--code as-is` runs beside it.
+  Other chats on that machine cannot touch the shell.
+- **Files.** `daex files push|pull --machine <name> <a> <b>` moves one file to or
+  from the copy (4 MiB chunks, 256 MiB, sha256-checked, atomic rename). Remote
+  paths are copy-relative; escapes, `.git`, device names and outward links are
+  refused on every OS.
+- **The run.** Once, in that machine's clean non-interactive shell
+  (`remoteRunOnceShellLaunch` in `ptyService.ts`: `-c` on macOS/Linux,
+  PowerShell `-EncodedCommand` on Windows, never cmd.exe). The CLI sends argv and
+  the receiver renders it for its shell. `--wait` streams output and exits with
+  the command's code. A Windows command line past 32,767 characters is refused
+  (`command_too_long`).
+- **Environment.** `ADE_LANE_ID=remote-work-<hash>`, `ADE_WORKSPACE_ROOT=<copy>`,
+  and `ADE_CHAT_SESSION_ID` stays the caller's `remote:` id.
+- **`--no-code`** (old `--scratch`) runs in an empty folder under
+  `<ADE_HOME>/remote-work/scratch/`, removed when the shell ends.
+- **Limits.** No submodules; large untracked files must be committed or ignored;
+  push from the copy with `git push origin HEAD:<branch>`.
+- **Cleanup.** `daex shell clean --machine <name>`; a week unused; the chat
+  deleted or archived; low disk (oldest idle first). The brain sweeps
+  `<ADE_HOME>/remote-work/projects.json` hourly (`sweepMachineRemoteWork`) and
+  asks the chat's machine; silence never deletes. Copies holding unpushed work
+  survive the soft cleanups; copies in use or whose device is in use are kept.
+  An unreadable `copies.json` stops every change.
+- **The simulator.** `daex apple … --machine <name>` with no `--lane` uses the
+  copy as its lane (`remoteWorkLaneIdFor`), preferring one of the user's own free
+  simulators; a device DAEX made is held while the copy exists.
+- **Where it shows.** The chat's brain records each forwarded shell and
+  simulator call in memory (`noteRemoteWork`); the chat header shows that
+  machine's logo with the commands and Stop. Settings › Machines lists copies
+  (`remote_work.list`, `remote_work.delete`).
 
 ## Choosing a machine for new work
 
-All your machines act as one pool, but nothing moves by itself: "Least loaded"
-picks a machine only when a person (or an agent offering a choice the person
-approves) starts new work. Running work stays where it is.
+Nothing moves by itself; "Least loaded" picks only when someone starts new work.
 
-- **Each machine reads itself.** `machine_stats.get` (domain `machine_stats`,
-  read, open to agents; `main/services/machineStats/machineStatsService.ts`)
-  answers from that machine's own brain through its pin: whole-host CPU over a
-  200 ms sample (`os.cpus()` deltas, the same on Windows), memory available
-  (`vm_stat` on a Mac, where `os.freemem()` counts only free pages), disk,
-  build tools running (`ps` / `tasklist`), battery and keep-awake, and in the
-  background at most every 3 minutes: the CLIs signed in there (yes or no from
-  their config files, never a token), Xcode and simulators, the OS name and
-  the work copies it keeps. One reader per brain, answers cached 5 s; nothing
-  runs unless someone asks. Preload: `window.ade.machineStats.get(pin)`; CLI:
-  `ade actions run machine_stats.get [--machine <name>]`.
-- **Each machine has a preference.** Prefer, Normal, Less often or Manual only,
-  set on its page in Settings › Machines. It lives in the account settings
-  store (scope `all`, key `machine.placement.<machineKey>`, one key per machine
-  so two devices never overwrite each other), with this computer's
-  localStorage first so a signed-out machine or an SSH target (no account key)
-  keeps its own. No setting reads as Normal.
-- **"Least loaded"** (`autoLaneMachine` in `renderer/components/lanes/laneMachines.ts`)
-  scores each machine's headroom from its stats (idle CPU, free memory, a
-  little for more cores, less per running build, much less on battery or for
-  a laptop ADE does not keep awake), scales it by the preference (×1.5, ×1,
-  ×0.5) and picks the best; low disk still loses first, and close scores fall
-  back to running lanes and then the machine the tab is on. A machine with no
-  stats counts as moderately busy. **Manual only is never picked
-  automatically**, with or without stats. The new-lane machine menu, the
-  batch launch and the new-chat machine picker offer it; they read stats only
-  while open, and only when two or more machines can host the repo.
+- `machine_stats.get` (domain `machine_stats`, agent-readable, through the
+  machine's pin) reports CPU over a 200 ms sample, available memory (`vm_stat` on
+  macOS), disk, running builds, battery, keep-awake, and (every 3 minutes at
+  most) signed-in CLIs, Xcode and work copies. Cached 5 s; nothing runs unless
+  asked.
+- Each machine has a preference (Prefer, Normal, Less often, Manual only) in the
+  account settings store (`machine.placement.<machineKey>`), with localStorage
+  first for signed-out or SSH machines.
+- `autoLaneMachine` scores headroom × preference (1.5 / 1 / 0.5); low disk loses
+  first; **Manual only is never picked automatically**. Menus read stats only
+  while open and only with two or more eligible machines.
 
 ## Moving a chat to another machine
 
-`ade chat handoff <session> --to <name>` moves a chat FROM this machine TO
-that one: `--to` names the destination (`--machine` is a hidden alias), and the
-command runs on this machine's brain. The move form is never forwarded, so you
-cannot move a chat that lives on another machine from here; and `--to` with `--cancel`,
-`--retry` or `--options` is an error, because those act on this machine's own
-move. It is the same move
-the desktop modal, the session menu and the phone start; see
-[cross-machine session handoff](./cross-machine-session-handoff.md).
+`daex chat handoff <session> --to <name>` moves a chat **from** this machine; it
+is never forwarded, and `--to` with `--cancel`, `--retry` or `--options` is an
+error. Same move as the desktop and phone; see
+[cross-machine session handoff](cross-machine-session-handoff.md).
 
 ```bash
-ade chat handoff <session> --options --json        # machines, blockers with fixes, what would travel
-ade chat handoff <session> --to "Mac mini" --model anthropic/claude-opus-5 \
-  --prompt "run the UI tests next"                 # brief (default); --fork carries full history
-ade chat handoff <session> --to "Mac mini" --model … --include-changes        # bring uncommitted/unpushed work
-ade chat handoff <session> --to "Mac mini" --model … --clone                  # set the repo up there first
-ade chat handoff <session> --to "Mac mini" --model … --when-turn-ends         # queue it from inside a turn
-ade chat handoff <session> --cancel                # keep a queued or awaiting move here, or dismiss an unknown one
-ade chat handoff <session> --retry                 # retry a failed or unknown move with the same choices
+daex chat handoff <session> --options --json      # machines, blockers with fixes
+daex chat handoff <session> --to "Mac mini" --model … [--fork] [--include-changes] [--clone] [--when-turn-ends]
+daex chat handoff <session> --cancel | --retry
 ```
 
-- The call returns the move record at once; the move continues in the brain
-  and the chat's banner shows it. Read the record later with
-  `ade chat handoff <session> --options --json` (`current`).
-- An agent moving its own chat mid-turn needs `--when-turn-ends`. Any newer
-  message from the person cancels a queued move (a scheduled wake or another
-  agent's message does not).
-- A chat-bound agent can move its own chat or a descendant it started. The
-  brain checks the persisted parent chain up to 32 links and stops on cycles.
-  Starting a move for an unrelated chat asks the person for approval even if
-  that chat is full-auto; its approval card names both chats. Cancel, retry,
-  acknowledge and preview stay within the caller's own chat and descendants.
-- An agent's move runs at the chat's own permission level: permission flags
-  (`--permissions`, `--sandbox`, …) are dropped, and the destination chat gets
-  the source chat's level in the target model's provider (a provider that
-  can't express it steps down, never up).
-- An `unknown` move (the answer was lost) blocks a new one until it is retried
-  or dismissed with `--cancel`. A retry whose chat changed since the move was
-  sent is refused for `unknown` (it may have landed) and prepared afresh for
-  `failed`.
-- An agent may move its own chat and descendants it started without approval,
-  at each chat's existing permission level. An unrelated chat always waits
-  for the person's approval, regardless of its permission level. An `ade` shell
-  with no chat identity counts as an agent.
-  Approval request limits and the two-minute deny cooldown are scoped to the
-  target chat.
-- Once a move reaches `continued`, the source brain refuses agent, CLI and
-  remote turn requests with the destination machine and chat id. Automatic
-  work stays pending until the person chooses **Work here instead**. Desktop
-  sends still route to the destination; the person's explicit work-here choice
-  unlocks the source.
-- Blockers come back as one line each with a fix ("run `ade git push --lane …`,
-  or pass --include-changes"); nothing is sent while any remain.
+The call returns the move record at once. An agent moving its own chat mid-turn
+needs `--when-turn-ends`. Agents may move their own chat and descendants without
+approval at each chat's own permission level (permission flags are dropped); an
+unrelated chat waits for the person. Blockers come back one line each with a
+fix.
 
 ## Policy
 
-An agent on another machine is an **agent** there: the target clamps it to
-`agent`, applies its own action policy, and refuses CTO-only, user-only and
-secret-bearing actions. Settling, interrupting another chat, and anything
-machine-wide (sync, account, updates, project registry writes) stay refused,
-exactly as for a local agent. There is no extra switch; the account pairing is
-the trust boundary, as it is for the person's own desktop.
+An agent on another machine is an **agent** there: clamped to `agent`, subject
+to that machine's action policy, refused CTO-only, user-only and secret-bearing
+actions and anything machine-wide. The account pairing is the trust boundary.
 
 ## How it works
 
-- **Transport.** The CLI talks only to this machine's brain, wrapping each
-  request in `machines.call`. The brain forwards it unchanged over the agents'
-  own paired connection (`services/account/agentMachineBridge.ts` on top of the
-  pool in `machineBridge.ts`), separate from the CTO's (a host keeps one
-  connection per paired device, and the identity a connection initializes with
-  is the identity of every call on it). One hop only: a request that came from
-  another machine is never relayed to a third.
-- **Dead links redial.** A relay drop can leave a pooled connection half open:
-  no close ever arrives, and every call on it used to time out until the brain
-  restarted. The pool pings a quiet connection every 20 s, and a call that
-  times out checks it once (`probeRpcLiveness` in `shared/rpcLiveness.ts`, the
-  same check the desktop's pool uses: recent traffic, else one `ping` with a
-  15 s deadline; any reply counts). A connection that does not answer is
-  dropped and logged as `<prefix>.connection_dead`, so the next call dials
-  again; a busy host that answers keeps its connection. A connection unused
-  for 90 s still closes.
-- **Identity.** Each request carries a claim `remoteCaller` (calling chat,
-  machine key and name, permission level). The target binds it to the paired
-  device it authenticated: the caller becomes `remote:<device>:<chat>`
-  (`foreignCallerSessionId`), with its own project handler, so PTY, device and
-  proof ownership see a distinct, non-local chat. A local process naming itself
-  `ade-agent-remote` without a paired peer is refused. A foreign caller never
-  inherits the brain's environment identity.
-- **Children and wakes.** A child started from another machine (or from another
-  project, or a personal chat) records its parent's id as usual — the foreign id
-  for a remote parent. A remote caller may parent a child only to itself; naming
-  any other chat as the parent is refused. The brain's `externalChats` registry
-  remembers where that parent lives and its permission level, so the child is
-  clamped to the real level rather than `ask`, and is not mistaken for an
-  orphan. When the child's turn ends, its chat service hands the completion to
-  the brain's router (`services/chat/crossScopeChats.ts`). Only a parent the
-  brain recorded is routed; any other missing parent was deleted, and the child
-  says so at once, as before. A durable outbox delivers it into another scope on
-  this machine (booting at most that one scope), or over the bridge
-  (`machines.deliverWake`) to the parent's machine, retrying from 30 s to 5 min,
-  skipping a dark machine for the rest of a pass, and giving up after 24 h with
-  a notice on the child.
-- **Who may wake a parent.** When an agent starts a child on another machine,
-  its brain issues a random wake token with the request. The target stores it
-  with the child and returns it with every report; the parent's machine accepts
-  a report only for a child it started there, carrying that token. Knowing the
-  ids (any machine on the account can list them) is not enough to inject a turn.
-  A refused report is not retried. The parent transcript dedupes a repeat by the
-  child's turn id. The parent sees the usual completion row with
-  "· on <machine>", and its wake text names the `ade chat read … --machine`
-  command.
-- **Devices and proof.** `ade apple`, `ade mac-desktop` and `ade app-control`
-  run on the other machine under the foreign owner, so the existing single-owner
-  checks arbitrate between agents. Paths that name this machine's checkout are
-  stripped before sending. A proof command's capture runs there; its bytes are
-  read back (`read_remote_caller_capture`: only that caller's own captures, only
-  for 15 minutes) and filed in THIS chat's proof drawer. The Apple
-  verbs that file proof where they run (`screenshot`, `proof-bundle`,
-  `record-stop`, `app-store-shots`) are sent with `proof: false` and their
-  files are filed here the same way (`fileRemoteAppleProofHere` in
-  `cliMachineTargeting.ts`), so each `cite:` names this machine's proof; a
-  screen unchanged since the last shot cites that earlier proof. A
-  `proof-bundle` sent this way does not pin a recording on that machine. That machine's Apple
-  device pane says "An agent on <machine> is driving this device", with
-  **Free device** (confirmed first; it ends that agent's session only if the
-  same agent still holds the device, and the agent may take it again), and the
-  phone's ownership ribbon names the same "an agent on <machine>".
-- **Clone.** `--clone` asks the target to set the repository up
-  (`machines.cloneForAgent`): GitHub only, the default projects folder, the
-  handoff storage preflight, the target's own Git credentials. It works with
-  `chat`, `shell`, `apple`, `android` and `files` (any call that needs the
-  project there); the commit must still be on origin.
-- **Long calls.** A call waits at most three minutes, except the verbs that
-  run long on their own machine too (`remoteMachineLongCallBudgetMs`: every
-  action in `localRuntimeTimeoutPolicy`'s long-running table, such as an iOS
-  build and launch, a test run, a Gradle install or an emulator boot): those
-  get that verb's own budget there plus a minute, and the CLI waits a minute
-  more and prints `· still running <verb> on <machine>… 2m30s` to stderr every
-  30 s. The pool's heartbeat keeps pinging the connection during the wait; a
-  connection that stops answering is dropped and the call fails as "dropped,
-  may or may not have run there". A timeout still says it may have run there.
-  `shell --wait` was never bound by this: it polls the terminal in short calls.
-- **End of turn.** When a chat's turn ends, its brain sends
-  `release_remote_work_devices` (a hidden tool, only for a `remote:` caller,
-  only its own claims) to each machine and project whose simulator, emulator,
-  screen or App Control session it used this turn (`onRemoteWorkTurnSettled`
-  in the chat service). That machine lets go as for a local chat that ended,
-  without powering anything off: iOS leases, automatic recordings and device
-  session, and its claim on the app session, which keeps running with its
-  live view, unowned, for the next turn or another chat to take
-  (`releaseIfOwnedBy(…, { keepRunning: true })`); Android leases and
-  automatic recordings (one the agent started itself keeps going); the
-  desktop input lease. App Control sessions are left running (a stop would
-  quit the app). The release carries the ended turn's id, and every call
-  carries the caller's current turn (`RemoteCallerClaim.turnId`), so a
-  release that lands after the chat's next turn already called there is
-  skipped. A machine that is offline or asleep is skipped, never woken;
-  device leases there still expire by themselves (10 minutes).
-- **Which callers get it.** The end-of-turn release covers chats: every
-  provider on the chat surface (Claude, Codex, Cursor, Droid, OpenCode, Pi,
-  Muse, Qwen, Kimi, Grok, Copilot, Devin, Antigravity), since the chat
-  service sees their turns end. A provider's CLI in an ADE terminal using
-  `--machine` gets no release: it relies on the device lease timeouts, the
-  20-minute Android idle stop, the screen's idle stop and the work-copy
-  sweep.
+- **Transport.** The CLI talks only to its own brain, wrapping requests in
+  `machines.call`; the brain forwards over the agents' own paired connection
+  (`agentMachineBridge.ts`), separate from the CTO's. One hop only.
+- **Dead links redial.** The pool pings quiet connections every 20 s and checks a
+  timed-out call once (`probeRpcLiveness`); a silent connection is dropped
+  (`<prefix>.connection_dead`). Idle connections close after 90 s.
+- **Identity.** Each request carries a `remoteCaller` claim; the target binds it
+  to the authenticated paired device as `remote:<device>:<chat>`
+  (`foreignCallerSessionId`). A local process claiming `ade-agent-remote` without
+  a paired peer is refused.
+- **Children and wakes.** A remote caller may parent a child only to itself. The
+  brain's `externalChats` registry remembers the parent's machine and level.
+  Completions go through `crossScopeChats.ts` and a durable outbox, over
+  `machines.deliverWake` (retry 30 s → 5 min, give up after 24 h). Each remote
+  child gets a random wake token; only a report carrying it for a child started
+  there is accepted.
+- **Devices and proof.** Device commands run there under the foreign owner. A
+  proof capture's bytes are read back (`read_remote_caller_capture`, own
+  captures, 15 minutes) and filed in this chat's drawer
+  (`fileRemoteAppleProofHere`). The device pane there says "An agent on
+  <machine> is driving this device" with **Free device**.
+- **Clone.** `--clone` asks the target to set up the repo
+  (`machines.cloneForAgent`; GitHub only, handoff storage preflight, its own
+  credentials).
+- **Long calls.** Three minutes by default; long verbs get their own budget plus
+  a minute (`remoteMachineLongCallBudgetMs`), with `· still running …` progress
+  every 30 s.
+- **End of turn.** The chat service sends `release_remote_work_devices` to each
+  machine whose devices the turn used (`onRemoteWorkTurnSettled`): leases and
+  automatic recordings end, sessions stay running unowned. Every call carries the
+  current `turnId`, so a late release is skipped. Offline machines are skipped;
+  leases there expire in 10 minutes. This covers every chat provider; a
+  provider's CLI using `--machine` relies on lease timeouts.
 
 ## Limits
 
-- `ade machines list` from an agent's shell shows the agent-safe roster (name,
-  key, status, platform, last seen, projects with `--projects`), not the
-  account directory a person's terminal gets.
-- A person's terminal on another machine (no chat) starts children there at
-  the cautious `ask` level: there is no chat whose level to inherit.
-- `--personal` children on another machine do not report back; personal chats
-  take no parent.
-- If a remote `chat create` loses its answer (a timeout after the target
-  created the child), this machine never learned the child, so that child's
-  reports are refused and it says it could not reach its parent.
-- A child that has not reported for a month is forgotten on both machines; a
-  later report is refused the same way.
-
-- Both machines need this ADE version; an older target is reported as
-  "update ADE there" (capability `agentRemoteCallers`).
-- A recording started with `--machine` and stopped with a caption (`record
-  stop`) is read back and filed here, like stills (`proof`). One that stops by
-  itself there (its cap, idle, the app closed) is filed on that machine.
-- An App Control session started from another machine is not stopped when the
-  calling turn ends; the agent stops it, or the work copy's removal does.
-- Builds run where the lane is. To build an iOS app from a Linux box, start a
-  subagent on the Mac (`ade chat create --machine …`) and let it build and drive.
-
-## Windows
-
-All of it is Node over the existing transports: no new sockets or pipes. Paths
-on the other machine compare by that machine's platform rules. Apple and Mac
-Desktop hosts remain macOS-only by capability; a Windows or Linux caller drives a
-Mac host like any other.
+- An agent's `daex machines list` is the agent-safe roster.
+- A person's terminal with no chat starts remote children at `ask`.
+- `--personal` children on another machine do not report back.
+- A remote `chat create` that lost its answer leaves a child whose reports are
+  refused.
+- Children silent for a month are forgotten.
+- Both machines need a DAEX with `agentRemoteCallers`.
+- An App Control session started from another machine is not stopped at turn
+  end.
+- Builds run where the lane is (start a subagent on the Mac to build iOS).
+- Windows: no new transports; paths compare by the target's platform rules.

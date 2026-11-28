@@ -1,6 +1,6 @@
 ---
 title: "Types"
-description: "Every type and interface exported by @ade-dev/sdk — generated from the published TypeScript declarations."
+description: "Every type and interface exported by @daex-dev/sdk — generated from the published TypeScript declarations."
 icon: "shapes"
 ---
 
@@ -47,6 +47,557 @@ export type AccountUsage = {
 
 ### `AdeChatClient`
 
+@deprecated Use DaexChatClient.
+
+````ts
+export type AdeChatClient = DaexChatClient;
+````
+
+### `AdeClientEvent`
+
+@deprecated Use DaexClientEvent.
+
+````ts
+export type AdeClientEvent = DaexClientEvent;
+````
+
+### `AdeClientEventMap`
+
+@deprecated Use DaexClientEventMap.
+
+````ts
+export type AdeClientEventMap = DaexClientEventMap;
+````
+
+### `AdeErrorCode`
+
+@deprecated Use DaexErrorCode.
+
+````ts
+export type AdeErrorCode = DaexErrorCode;
+````
+
+### `AdeProvider`
+
+@deprecated Use DaexProvider.
+
+````ts
+export type AdeProvider = DaexProvider;
+````
+
+### `AdeThread`
+
+@deprecated Use DaexThread.
+
+````ts
+export type AdeThread = DaexThread;
+````
+
+### `AgentChatCodexCollaborationMode`
+
+Collaboration mode accepted by the Codex app-server for an active turn/start.
+
+````ts
+export type AgentChatCodexCollaborationMode = "default" | "plan";
+````
+
+### `AgentChatEvent`
+
+One transcript event. The `type` field is the discriminant; the remaining
+fields are provider- and type-specific and are preserved verbatim.
+
+````ts
+export type AgentChatEvent = {
+  type: string;
+  [key: string]: unknown;
+};
+````
+
+### `AgentChatEventEnvelope`
+
+````ts
+export type AgentChatEventEnvelope = {
+  sessionId: string;
+  timestamp: string;
+  event: AgentChatEvent;
+  sequence?: number;
+  /**
+   * Mirrors `AgentChatEventEnvelope["provenance"]` in DAEX's `shared/types/chat.ts`,
+   * NARROWED on purpose: only the keys an SDK consumer can act on are named.
+   *
+   * DAEX stamps more than this — orchestration routing (`targetKind`,
+   * `sourceSessionId`, `attemptId`, `stepKey`, `laneId`, `runId`), fork shape
+   * (`replayFork`), and other DAEX-only metadata. These describe surfaces this
+   * package does not have: a sidecar drives its own thread with the `agent`
+   * role, so it is never the orchestrator reading routing keys or DAEX metadata.
+   * Naming them here would advertise surfaces that do not exist.
+   *
+   * The index signature is what makes that narrowing safe rather than lossy:
+   * the runtime is downloaded and can be newer than the SDK, so every key DAEX
+   * stamps still arrives and still reads, typed `unknown`. Add a key to the
+   * named set only when this package grows a use for it.
+   */
+  provenance?: {
+    messageId?: string;
+    providerMessageId?: string;
+    threadId?: string | null;
+    role?: "user" | "orchestrator" | "worker" | "agent" | null;
+    [key: string]: unknown;
+  };
+};
+````
+
+### `AgentChatFileRef`
+
+File attachment reference accepted by `send` and `steer`.
+
+Only the path crosses the wire; bytes never do. The runtime reads the file
+itself, on the host machine, when the provider needs its contents.
+
+WHERE THE PATH MAY LIVE. The runtime resolves an attachment against the
+thread's working directory and refuses an absolute path it cannot place, so
+a send whose attachment names a file outside what the runtime accepts throws
+rather than dropping the file quietly. Pass paths the host obtained from its
+own file dialog or drop handler, not strings a model produced.
+
+````ts
+export type AgentChatFileRef = {
+  path: string;
+  name?: string;
+  mimeType?: string;
+  bytes?: number;
+  /**
+   * How the provider receives the file.
+   *
+   * `"image"` sends the bytes as an image the model can see (Claude and Codex
+   * both take image input). `"file"` sends a path hint the model can open with
+   * its own tools. When absent, the SDK fills it in before sending with the
+   * runtime's own rule, exported as `inferAttachmentType(path, mimeType)`: any
+   * `image/*` `mimeType` is an image; otherwise the extension of `path`
+   * decides (`.bmp .gif .heic .heif .ico .jpeg .jpg .png .svg .tif .tiff
+   * .webp` are images), and everything else is `"file"`. Before 0.3 the field
+   * did not exist and every image arrived as a path hint.
+   */
+  type?: "file" | "image";
+  /**
+   * Whether the runtime may read the file's bytes. Defaults to true.
+   *
+   * `false` is REFERENCE-ONLY: the runtime never opens the file, never copies
+   * it to a staging directory, and hands the model the path alone — even for an
+   * image. Use it for files that must not be downloaded as a side effect, such
+   * as a macOS File Provider placeholder, where reading the bytes hydrates the
+   * whole file from the cloud.
+   *
+   * An older runtime ignores the field and reads the bytes as before; the SDK
+   * cannot detect that from here, so treat reference-only as a request until
+   * your runtime is at least the SDK's supported minimum
+   * (`SUPPORTED_RUNTIME_RANGE`).
+   */
+  hydrate?: boolean;
+};
+````
+
+### `AgentChatHostConfigLevel`
+
+How completely a provider honoured a host configuration request.
+
+The same three-value vocabulary the MCP report uses, for the same reason:
+four of the six providers cannot do the thing exactly, and a report that said
+only "applied" would be a lie for most embedders.
+
+  - `"applied"` — the provider received the value through a first-class
+    channel of its own.
+  - `"best-effort"` — DAEX reached the same outcome through a mechanism it
+    already owns (a prompt prefix, a containment root), and `detail` names
+    what that costs.
+  - `"ignored"` — the provider has no switch for it and the value did not
+    reach the model. `detail` says so.
+
+````ts
+export type AgentChatHostConfigLevel = "applied" | "best-effort" | "ignored";
+````
+
+### `AgentChatInstructions`
+
+Host instructions for one thread, in the normalized wire form.
+
+````ts
+export type AgentChatInstructions = {
+  mode: "append" | "replace";
+  text: string;
+};
+````
+
+### `AgentChatSessionStatus`
+
+````ts
+export type AgentChatSessionStatus = "active" | "idle" | "ended";
+````
+
+### `AgentChatSessionSummary`
+
+````ts
+export type AgentChatSessionSummary = {
+  sessionId: string;
+  laneId: string;
+  provider: string;
+  model: string;
+  title?: string | null;
+  reasoningEffort?: string | null;
+  permissionMode?: AgentChatPermissionMode;
+  /** Accepted Codex app-server collaboration mode, when a live runtime reports one. */
+  codexEffectiveCollaborationMode?: AgentChatCodexCollaborationMode;
+  /** True when a live Codex runtime confirms there is no accepted turn mode. */
+  codexEffectiveCollaborationModeWasCleared?: boolean;
+  status: AgentChatSessionStatus;
+  startedAt: string;
+  endedAt: string | null;
+  archivedAt?: string | null;
+  lastActivityAt: string;
+  lastOutputPreview: string | null;
+  summary: string | null;
+  awaitingInput?: boolean;
+  /**
+   * The working directory the runtime actually bound the session to, echoed
+   * back in its own spelling. Present only when one was requested.
+   *
+   * This is the canonical answer: the engine resolves the path before it
+   * stores it, so a symlinked or differently-cased spelling of one directory
+   * comes back as one string. A client that records the caller's spelling
+   * instead reports a resume mismatch on a `cwd` that never changed.
+   */
+  requestedCwd?: string | null;
+  /** Catalog model id the session is bound to, when the runtime reports one. */
+  modelId?: string;
+  /** Present only when the chat was created with an MCP request. */
+  mcpCapability?: McpCapabilityReport;
+  /**
+   * True while MCP servers sent mid-turn wait for that turn to end.
+   * `mcpCapability` still describes the servers the running turn has.
+   */
+  mcpServersPending?: boolean;
+  /**
+   * Present only when the chat was created with `instructions`. Absent means
+   * nothing was requested — NOT that the request was dropped.
+   */
+  instructionsCapability?: {
+    level: AgentChatHostConfigLevel;
+    mode: "append" | "replace";
+    mechanism: string;
+    detail: string | null;
+  } | null;
+  /** Present only when the chat was created with `settingSources`. */
+  settingSourcesCapability?: {
+    level: AgentChatHostConfigLevel;
+    value: AgentChatSettingSources;
+    mechanism: string;
+    detail: string | null;
+  } | null;
+  /** Present only when the chat was created with a permission policy. */
+  permissionCapability?: {
+    level: "enforced" | "best-effort" | "unsupported";
+    mechanism: string;
+    residual: string | null;
+  } | null;
+  [key: string]: unknown;
+};
+````
+
+### `AgentChatSettingSources`
+
+Which on-disk configuration layers a provider loads for a thread.
+
+`"none"` is the default for SDK threads and is what every 0.1.x thread got.
+The four values are sent verbatim; the engine decides what each one means per
+provider, and reports the answer on AgentChatSessionSummary.
+
+````ts
+export type AgentChatSettingSources = "none" | "project" | "user" | "all";
+````
+
+### `ApiCredentialInfo`
+
+````ts
+export type ApiCredentialInfo = {
+  provider: string;
+  credentialId: string;
+  label: string;
+  envVar?: string;
+  baseUrl?: string;
+  protocol?: "openai-compatible" | "openai-responses" | "anthropic";
+  models?: string[];
+  source: "store" | "env" | "config";
+  createdAt: string;
+  updatedAt: string;
+  maskedTail?: string;
+};
+````
+
+### `ApprovalDecision`
+
+What a host can say about a pending approval.
+
+````ts
+export type ApprovalDecision = "accept" | "accept_always" | "reject";
+````
+
+### `ApprovalRequest`
+
+One request a host has to answer before its turn can continue.
+
+````ts
+export type ApprovalRequest = {
+  /** The id to pass to `approve()`. */
+  itemId: string;
+  /** Groups retries of one logical action, when the provider reports one. */
+  logicalItemId?: string;
+  /** The shape of the thing being confirmed. */
+  kind: "command" | "file_change" | "tool_call";
+  /**
+   * The finer-grained kind.
+   *
+   * `"approval"` and `"permissions"` are answerable with `approve()`. Use
+   * `respond()` for `"question"` and `"structured_question"` requests, with
+   * answers keyed by question id, and for `"plan_approval"` with an explicit
+   * decision. A runtime may leave other request kinds read-only.
+   */
+  requestKind?: PendingInputKind;
+  /** Human-readable and provider-supplied. Safe to render. */
+  description: string;
+  turnId?: string;
+  /** Provider payload: the command string, the patch, the tool input. */
+  detail?: unknown;
+  /** Which provider raised it. */
+  provider: DaexProvider;
+  /** The original prompts for requests answered through `respond()`. */
+  questions?: PendingInputRequest["questions"];
+  /** False when the runtime cannot answer this request through the SDK. */
+  answerable?: boolean;
+};
+````
+
+### `AttachmentRootCheck`
+
+What checkAttachmentRoot answers: the canonical root, or the refusal.
+
+````ts
+export type AttachmentRootCheck = { ok: true; root: string } | { ok: false; reason: string };
+````
+
+### `AttachmentRootFilterResult`
+
+The result of filterAttachmentRoots: the roots to send, and the ones dropped.
+
+````ts
+export type AttachmentRootFilterResult = {
+  /** Valid roots, canonicalized, de-duplicated, capped. Pass these to `threads.open`. */
+  roots: string[];
+  /** One entry per refused or over-the-limit input, with the reason it was refused. */
+  dropped: Array<{ root: string; reason: string }>;
+};
+````
+
+### `BundledRuntime`
+
+Resolution of a runtime shipped as an npm platform package.
+
+A downloaded runtime cannot live inside a signed and notarized application:
+the bundle is one signed artifact, and a Mach-O executable that appears in
+`userData` after the fact is outside it. So the runtime is also published the
+way esbuild and swc publish theirs — one package per target, each carrying
+`os` and `cpu`, listed as `optionalDependencies` of `@ade-dev/runtime` so npm
+installs exactly one. The embedder copies that directory into their bundle
+and signs it with their own identity.
+
+Layout, which this module both expects and documents:
+
+  @ade-dev/runtime-&lt;target&gt;/
+    package.json          &#123; os: [...], cpu: [...], version: &lt;ade release&gt; &#125;
+    bin/daex[.exe]        the runtime binary, mode 0755 (bin/ade[.exe] before
+                          the DAEX rename; still accepted)
+    native/               the extracted contents of &lt;binary&gt;.native.tar.gz
+      node_modules/       the modules the binary dlopens
+      vendor/crsqlite/... the cr-sqlite extension
+    LICENSE
+    README.md
+
+`runtimeRoot` is `<pkg>/native`, which is what `ADE_RUNTIME_ROOT` must point
+at; `nodeModulesPath` is `<pkg>/native/node_modules`, which is
+`ADE_RUNTIME_NODE_MODULES`. The two are reported separately rather than
+derived at the call site because an embedder is free to relocate either half
+inside their bundle, and `createDaexChat` accepts both.
+
+````ts
+export type BundledRuntime = {
+  /** Absolute path of the runtime binary inside the platform package. */
+  binaryPath: string;
+  /** Absolute path that `ADE_RUNTIME_ROOT` must name. */
+  runtimeRoot: string;
+  /** Absolute path that `ADE_RUNTIME_NODE_MODULES` must name. */
+  nodeModulesPath: string;
+  /** e.g. `@ade-dev/runtime-darwin-arm64`. */
+  packageName: string;
+  /** The DAEX release version the package was cut from. */
+  version: string;
+};
+````
+
+### `CapabilitiesChangedEvent`
+
+Emitted on a thread's `status` channel after `setModel` replaced its
+capability reports.
+
+A switch across providers can move a policy from `"enforced"` to
+`"best-effort"`, and a host that read the reports once at open would keep
+showing the old guarantee. Synthesized by the SDK, never by the runtime.
+
+````ts
+export type CapabilitiesChangedEvent = {
+  type: "capabilities_changed";
+  synthetic: true;
+} & ThreadCapabilities;
+````
+
+### `CreateAdeChatOptions`
+
+@deprecated Use CreateDaexChatOptions.
+
+````ts
+export type CreateAdeChatOptions = CreateDaexChatOptions;
+````
+
+### `CreateDaexChatOptions`
+
+````ts
+export type CreateDaexChatOptions = {
+  /** Isolated per-app DAEX state root. Created if missing. */
+  home: string;
+  /** Pin a specific `ade` build. Skips PATH discovery and the downloader. */
+  binaryPath?: string;
+  /**
+   * Where the native modules the runtime dlopens live. Maps to
+   * `ADE_RUNTIME_NODE_MODULES`. Required alongside `binaryPath` when the
+   * modules are not beside the binary, which is the normal case for an app
+   * bundle: the binary lands in `Contents/Resources/ade-runtime/bin` and the
+   * modules in `Contents/Resources/ade-runtime/native/node_modules`.
+   */
+  runtimeNodeModules?: string;
+  /** Maps to `ADE_RUNTIME_ROOT`. Defaults to the parent of `runtimeNodeModules`. */
+  runtimeRoot?: string;
+  /**
+   * Never reach the network. Throws `runtime_unavailable` instead of
+   * downloading. Defaults to true, which preserves 0.1.x behavior.
+   *
+   * A shipping app wants false: a packaging mistake then fails loudly in QA,
+   * rather than working on the developer's machine through a silent download
+   * and failing on a locked-down user's.
+   */
+  allowDownload?: boolean;
+  /** Release channel for the downloader: `latest` (default) or a tag. */
+  channel?: string;
+  logger?: (line: string) => void;
+  /**
+   * Default instructions for every thread this client opens.
+   *
+   * A per-thread `instructions` wins outright — it is not merged with this one,
+   * because two texts silently concatenated is nobody's intent. Use this for
+   * the persona your whole app shares and the per-thread field for a narrower
+   * one.
+   */
+  instructions?: ThreadInstructions;
+  /**
+   * Supplies MCP header values — usually a bearer token — per thread and
+   * server, at the moment they are needed.
+   *
+   * The SDK never writes header values to disk: the thread store keeps header
+   * NAMES only. So a resume, a recreate after the runtime lost a session, and
+   * an `autoRestart` all need the values again, and this is where they come
+   * from when the caller did not pass them (`refresh.mcpServers` on
+   * `threads.open` wins over it; headers passed explicitly on a create win over
+   * it too). May return a Promise, so the host can refresh an OAuth token
+   * first; return undefined for a server that needs no headers.
+   *
+   * Also called before every `send`, `retry` and `editLast` of a thread with
+   * remote servers, and by `thread.refreshMcpHeaders()`: when the values
+   * changed (a token rotated), the SDK pushes them and the runtime restarts
+   * the provider between turns on the same provider thread, so a long chat
+   * never runs on an expired token. Unchanged values push nothing, so keep
+   * the callback cheap — return a cached token until it nears expiry.
+   *
+   * On a resume the SDK pushes the resolved servers to the runtime with
+   * `updateSession`, so a rotated token takes effect on the next turn. That
+   * needs a runtime advertising `capabilities.personalChats.updateMcpServers`;
+   * an older one keeps whatever it had and the SDK logs a warning. Two cases
+   * push nothing: when this callback supplies no value for any server that
+   * needs one (re-sending would replace the session's live credentials with
+   * none; logged), and when the resolved servers, values included, are the
+   * ones this client already sent for the thread.
+   */
+  mcpHeaders?: McpHeadersResolver;
+  /**
+   * Respawn the runtime when it exits unexpectedly. Off by default.
+   *
+   * `true` uses 5 attempts with a 1 s backoff that doubles per attempt;
+   * the object form overrides either. Each attempt emits
+   * `client.on("restart")`. On success the client re-handshakes, rebinds its
+   * event stream, and re-opens every thread it had open from the stored
+   * record — header values resolved again through `mcpHeaders` — so the
+   * thread objects a host holds, and a bridge built on this client, keep
+   * working. The client object itself never changes.
+   *
+   * A turn in flight when the runtime died is NOT resumed: each live thread
+   * already received a synthetic `status` / `turnStatus: "failed"` envelope,
+   * and the transcript keeps everything that was persisted.
+   *
+   * Not attempted after `dispose()`, and not in attach mode for a runtime the
+   * SDK did not start — there the client only reconnects to the same socket.
+   */
+  autoRestart?: boolean | { maxAttempts?: number; backoffMs?: number };
+  /**
+   * Refuse a runtime whose version is outside `SUPPORTED_RUNTIME_RANGE`,
+   * throwing `DaexError("runtime_incompatible")` from `createDaexChat` (and
+   * failing an `autoRestart` attempt the same way).
+   *
+   * Off by default: an unsupported runtime connects, logs one warning, and
+   * degrades feature by feature. `doctor().runtime.compatibility` reports the
+   * verdict either way. Dev builds (`0.0.0`, or no version) always pass.
+   */
+  requireCompatibleRuntime?: boolean;
+  /**
+   * Where `binaryPath` came from. Set by `resolvePackagedRuntime()`, which
+   * returns `source: "packaged"` so that spreading its result into these
+   * options makes `doctor().runtime.source` report `"packaged"` rather than
+   * `"explicit"`. Ignored without `binaryPath`.
+   */
+  source?: "packaged";
+  /**
+   * Reuse the runtime host's provider logins. Defaults to false (isolated
+   * per-app logins). SDK 0.7 changes the default from machine logins; pass
+   * true to keep relying on the host machine's Claude/Codex login.
+   */
+  useMachineLogin?: boolean;
+  /**
+   * The environment the runtime starts with. Defaults to this process's
+   * environment. `useMachineLogin: false` isolates the providers' sign-in
+   * folders, not variables: an `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or
+   * `CURSOR_API_KEY` here is visible to the runtime, so leave them out when end
+   * users must run only on their own logins and keys. The host's own `ADE_*`
+   * variables are always removed.
+   */
+  env?: NodeJS.ProcessEnv;
+  /**
+   * Resolve a host-vault credential id to a secret for one thread session.
+   * The value is pushed to the runtime for the live session and never saved
+   * in the SDK thread record.
+   */
+  resolveSecret?: (provider: DaexProvider, credentialId: string) => string | undefined | Promise<string | undefined>;
+  /** Usage-limit behavior for new threads. Defaults to `wait`. */
+  onUsageLimit?: "failover" | "wait" | "ask";
+};
+````
+
+### `DaexChatClient`
+
 RULE FOR ANYTHING ADDED TO THIS SURFACE — destructive while streaming.
 
 An SDK caller has no ambient signal that a turn is live. `send()` resolves as
@@ -67,7 +618,7 @@ What is not acceptable is the third option: destroying the turn quietly and
 letting the consumer discover it as a response that stopped mid-sentence.
 
 ````ts
-export interface AdeChatClient {
+export interface DaexChatClient {
   accounts: AccountManagement["accounts"];
   credentials: AccountManagement["credentials"];
   presets: AccountManagement["presets"];
@@ -111,13 +662,13 @@ export interface AdeChatClient {
   };
   threads: {
     /** Open a thread, creating it when the key is new to this home. */
-    open(key: string, opts: ThreadOpenOptions): Promise<AdeThread>;
+    open(key: string, opts: ThreadOpenOptions): Promise<DaexThread>;
     /**
      * Reopen a key this home already stores. The provider and model come from
      * the stored record, so an app that reopens `"support"` after a restart
      * does not have to remember how it was created.
      */
-    open(key: string, opts?: ThreadResumeOptions): Promise<AdeThread>;
+    open(key: string, opts?: ThreadResumeOptions): Promise<DaexThread>;
     /**
      * Every chat in this home, archived ones included, newest activity first
      * is NOT guaranteed — sort on `updatedAt` yourself.
@@ -136,7 +687,7 @@ export interface AdeChatClient {
      * A running turn is interrupted FIRST, so subscribers receive the turn's
      * `done` before the session goes away rather than a stream that simply
      * stops. Then the runtime deletes the session, the key is removed from the
-     * thread store, and a live `AdeThread` for the key is released — it throws
+     * thread store, and a live `DaexThread` for the key is released — it throws
      * `disposed`-style errors from the runtime afterwards, so drop it.
      *
      * A key whose session the runtime already lost is still removed. A key the
@@ -163,11 +714,11 @@ export interface AdeChatClient {
   run<T = unknown>(prompt: string, options: RunOptions): Promise<T | string>;
   /**
    * Listen for runtime lifecycle events: `"exit"`, `"transport"`, `"restart"`.
-   * See {@link AdeClientEventMap} for the payloads. Returns the unsubscribe.
+   * See {@link DaexClientEventMap} for the payloads. Returns the unsubscribe.
    *
    * Listeners survive an `autoRestart`, because the client object does.
    */
-  on<E extends AdeClientEvent>(event: E, cb: (payload: AdeClientEventMap[E]) => void): Unsubscribe;
+  on<E extends DaexClientEvent>(event: E, cb: (payload: DaexClientEventMap[E]) => void): Unsubscribe;
   /**
    * Stop the runtime and release this client. Idempotent.
    *
@@ -183,15 +734,15 @@ export interface AdeChatClient {
 }
 ````
 
-### `AdeClientEvent`
+### `DaexClientEvent`
 
-The client-level event names. See AdeClientEventMap.
+The client-level event names. See DaexClientEventMap.
 
 ````ts
-export type AdeClientEvent = (typeof ADE_CLIENT_EVENTS)[number];
+export type DaexClientEvent = (typeof DAEX_CLIENT_EVENTS)[number];
 ````
 
-### `AdeClientEventMap`
+### `DaexClientEventMap`
 
 Payloads of the client-level events, by name.
 
@@ -200,7 +751,7 @@ its runtime died from the synthetic `status` envelope on its own `status`
 channel; a host learns it here, once.
 
 ````ts
-export type AdeClientEventMap = {
+export type DaexClientEventMap = {
   /**
    * The runtime process this client spawned exited without `dispose()`.
    * `error` is the tail of its stderr, when it wrote any. Not emitted in attach
@@ -226,7 +777,7 @@ export type AdeClientEventMap = {
    * or `threads.unarchive` (`"unarchived"`). Emitted after the action
    * succeeds, whoever called it: host code in the main process, or a renderer
    * over the Electron bridge. A change made by another client of the same
-   * runtime (ADE desktop) is not reported. SDK >= 0.4.
+   * runtime (DAEX desktop) is not reported. SDK >= 0.4.
    */
   threadLifecycle: { key: string; change: "deleted" | "archived" | "unarchived" };
   /** A provider turn stopped because its current account reached a usage limit. */
@@ -234,7 +785,7 @@ export type AdeClientEventMap = {
 };
 ````
 
-### `AdeErrorCode`
+### `DaexErrorCode`
 
 Every error this package throws carries a stable machine-readable code.
 
@@ -242,7 +793,7 @@ Kept as its own union rather than derived from ADE_ERROR_CODES so
 each member can carry its own doc comment; a test asserts the two agree.
 
 ````ts
-export type AdeErrorCode =
+export type DaexErrorCode =
   | "binary_not_found"
   | "download_failed"
   | "checksum_mismatch"
@@ -271,13 +822,13 @@ export type AdeErrorCode =
   | "approval_not_found"
   /**
    * A bridge refused the call before it reached the SDK — the host's
-   * `authorize` hook said no. Used by `@ade-dev/sdk/electron`.
+   * `authorize` hook said no. Used by `@daex-dev/sdk/electron`.
    */
   | "unauthorized"
   | "disposed"
   /**
    * The runtime's version is outside `SUPPORTED_RUNTIME_RANGE` and the host
-   * asked `createAdeChat` to refuse it (`requireCompatibleRuntime: true`).
+   * asked `createDaexChat` to refuse it (`requireCompatibleRuntime: true`).
    * Without that option an unsupported runtime connects with a logged warning.
    */
   | "runtime_incompatible"
@@ -304,12 +855,12 @@ export type AdeErrorCode =
   | "sign_in_failed";
 ````
 
-### `AdeProvider`
+### `DaexProvider`
 
 Known provider ids for autocomplete; provider strings remain open for newer runtimes.
 
 ````ts
-export type AdeProvider =
+export type DaexProvider =
   | "claude"
   | "codex"
   | "cursor"
@@ -326,10 +877,10 @@ export type AdeProvider =
   | (string & {});
 ````
 
-### `AdeThread`
+### `DaexThread`
 
 ````ts
-export interface AdeThread {
+export interface DaexThread {
   /**
    * The runtime session id. Stable for the life of the thread, EXCEPT across a
    * recreate: if an `autoRestart` finds the runtime lost the session, the key
@@ -379,7 +930,7 @@ export interface AdeThread {
    *
    * `level` is `"applied"` on Claude, Codex, OpenCode and Pi, which all take
    * instructions through a channel of their own; `"best-effort"` on Cursor and
-   * Droid, where ADE merges the text into a prompt it already prefixes.
+   * Droid, where DAEX merges the text into a prompt it already prefixes.
    */
   readonly instructionsCapability: InstructionsCapability | null;
   /**
@@ -429,7 +980,7 @@ export interface AdeThread {
    * Rename the thread, or change its reasoning effort or fast mode.
    *
    * A title-only update is allowed at any time. `reasoningEffort` and
-   * `fastMode` are refused while a turn is in flight (`AdeError` code
+   * `fastMode` are refused while a turn is in flight (`DaexError` code
    * `turn_in_flight`, SDK >= 0.4) unless `{ force: true }`:
    * on Codex a settings change the provider rejects tears the provider down,
    * which ends the turn without `error` or `done` — the silent truncation the
@@ -633,500 +1184,6 @@ export interface AdeThread {
 }
 ````
 
-### `AgentChatCodexCollaborationMode`
-
-Collaboration mode accepted by the Codex app-server for an active turn/start.
-
-````ts
-export type AgentChatCodexCollaborationMode = "default" | "plan";
-````
-
-### `AgentChatEvent`
-
-One transcript event. The `type` field is the discriminant; the remaining
-fields are provider- and type-specific and are preserved verbatim.
-
-````ts
-export type AgentChatEvent = {
-  type: string;
-  [key: string]: unknown;
-};
-````
-
-### `AgentChatEventEnvelope`
-
-````ts
-export type AgentChatEventEnvelope = {
-  sessionId: string;
-  timestamp: string;
-  event: AgentChatEvent;
-  sequence?: number;
-  /**
-   * Mirrors `AgentChatEventEnvelope["provenance"]` in ADE's `shared/types/chat.ts`,
-   * NARROWED on purpose: only the keys an SDK consumer can act on are named.
-   *
-   * ADE stamps more than this — orchestration routing (`targetKind`,
-   * `sourceSessionId`, `attemptId`, `stepKey`, `laneId`, `runId`), fork shape
-   * (`replayFork`), and other ADE-only metadata. These describe surfaces this
-   * package does not have: a sidecar drives its own thread with the `agent`
-   * role, so it is never the orchestrator reading routing keys or ADE metadata.
-   * Naming them here would advertise surfaces that do not exist.
-   *
-   * The index signature is what makes that narrowing safe rather than lossy:
-   * the runtime is downloaded and can be newer than the SDK, so every key ADE
-   * stamps still arrives and still reads, typed `unknown`. Add a key to the
-   * named set only when this package grows a use for it.
-   */
-  provenance?: {
-    messageId?: string;
-    providerMessageId?: string;
-    threadId?: string | null;
-    role?: "user" | "orchestrator" | "worker" | "agent" | null;
-    [key: string]: unknown;
-  };
-};
-````
-
-### `AgentChatFileRef`
-
-File attachment reference accepted by `send` and `steer`.
-
-Only the path crosses the wire; bytes never do. The runtime reads the file
-itself, on the host machine, when the provider needs its contents.
-
-WHERE THE PATH MAY LIVE. The runtime resolves an attachment against the
-thread's working directory and refuses an absolute path it cannot place, so
-a send whose attachment names a file outside what the runtime accepts throws
-rather than dropping the file quietly. Pass paths the host obtained from its
-own file dialog or drop handler, not strings a model produced.
-
-````ts
-export type AgentChatFileRef = {
-  path: string;
-  name?: string;
-  mimeType?: string;
-  bytes?: number;
-  /**
-   * How the provider receives the file.
-   *
-   * `"image"` sends the bytes as an image the model can see (Claude and Codex
-   * both take image input). `"file"` sends a path hint the model can open with
-   * its own tools. When absent, the SDK fills it in before sending with the
-   * runtime's own rule, exported as `inferAttachmentType(path, mimeType)`: any
-   * `image/*` `mimeType` is an image; otherwise the extension of `path`
-   * decides (`.bmp .gif .heic .heif .ico .jpeg .jpg .png .svg .tif .tiff
-   * .webp` are images), and everything else is `"file"`. Before 0.3 the field
-   * did not exist and every image arrived as a path hint.
-   */
-  type?: "file" | "image";
-  /**
-   * Whether the runtime may read the file's bytes. Defaults to true.
-   *
-   * `false` is REFERENCE-ONLY: the runtime never opens the file, never copies
-   * it to a staging directory, and hands the model the path alone — even for an
-   * image. Use it for files that must not be downloaded as a side effect, such
-   * as a macOS File Provider placeholder, where reading the bytes hydrates the
-   * whole file from the cloud.
-   *
-   * An older runtime ignores the field and reads the bytes as before; the SDK
-   * cannot detect that from here, so treat reference-only as a request until
-   * your runtime is at least the SDK's supported minimum
-   * (`SUPPORTED_RUNTIME_RANGE`).
-   */
-  hydrate?: boolean;
-};
-````
-
-### `AgentChatHostConfigLevel`
-
-How completely a provider honoured a host configuration request.
-
-The same three-value vocabulary the MCP report uses, for the same reason:
-four of the six providers cannot do the thing exactly, and a report that said
-only "applied" would be a lie for most embedders.
-
-  - `"applied"` — the provider received the value through a first-class
-    channel of its own.
-  - `"best-effort"` — ADE reached the same outcome through a mechanism it
-    already owns (a prompt prefix, a containment root), and `detail` names
-    what that costs.
-  - `"ignored"` — the provider has no switch for it and the value did not
-    reach the model. `detail` says so.
-
-````ts
-export type AgentChatHostConfigLevel = "applied" | "best-effort" | "ignored";
-````
-
-### `AgentChatInstructions`
-
-Host instructions for one thread, in the normalized wire form.
-
-````ts
-export type AgentChatInstructions = {
-  mode: "append" | "replace";
-  text: string;
-};
-````
-
-### `AgentChatSessionStatus`
-
-````ts
-export type AgentChatSessionStatus = "active" | "idle" | "ended";
-````
-
-### `AgentChatSessionSummary`
-
-````ts
-export type AgentChatSessionSummary = {
-  sessionId: string;
-  laneId: string;
-  provider: string;
-  model: string;
-  title?: string | null;
-  reasoningEffort?: string | null;
-  permissionMode?: AgentChatPermissionMode;
-  /** Accepted Codex app-server collaboration mode, when a live runtime reports one. */
-  codexEffectiveCollaborationMode?: AgentChatCodexCollaborationMode;
-  /** True when a live Codex runtime confirms there is no accepted turn mode. */
-  codexEffectiveCollaborationModeWasCleared?: boolean;
-  status: AgentChatSessionStatus;
-  startedAt: string;
-  endedAt: string | null;
-  archivedAt?: string | null;
-  lastActivityAt: string;
-  lastOutputPreview: string | null;
-  summary: string | null;
-  awaitingInput?: boolean;
-  /**
-   * The working directory the runtime actually bound the session to, echoed
-   * back in its own spelling. Present only when one was requested.
-   *
-   * This is the canonical answer: the engine resolves the path before it
-   * stores it, so a symlinked or differently-cased spelling of one directory
-   * comes back as one string. A client that records the caller's spelling
-   * instead reports a resume mismatch on a `cwd` that never changed.
-   */
-  requestedCwd?: string | null;
-  /** Catalog model id the session is bound to, when the runtime reports one. */
-  modelId?: string;
-  /** Present only when the chat was created with an MCP request. */
-  mcpCapability?: McpCapabilityReport;
-  /**
-   * True while MCP servers sent mid-turn wait for that turn to end.
-   * `mcpCapability` still describes the servers the running turn has.
-   */
-  mcpServersPending?: boolean;
-  /**
-   * Present only when the chat was created with `instructions`. Absent means
-   * nothing was requested — NOT that the request was dropped.
-   */
-  instructionsCapability?: {
-    level: AgentChatHostConfigLevel;
-    mode: "append" | "replace";
-    mechanism: string;
-    detail: string | null;
-  } | null;
-  /** Present only when the chat was created with `settingSources`. */
-  settingSourcesCapability?: {
-    level: AgentChatHostConfigLevel;
-    value: AgentChatSettingSources;
-    mechanism: string;
-    detail: string | null;
-  } | null;
-  /** Present only when the chat was created with a permission policy. */
-  permissionCapability?: {
-    level: "enforced" | "best-effort" | "unsupported";
-    mechanism: string;
-    residual: string | null;
-  } | null;
-  [key: string]: unknown;
-};
-````
-
-### `AgentChatSettingSources`
-
-Which on-disk configuration layers a provider loads for a thread.
-
-`"none"` is the default for SDK threads and is what every 0.1.x thread got.
-The four values are sent verbatim; the engine decides what each one means per
-provider, and reports the answer on AgentChatSessionSummary.
-
-````ts
-export type AgentChatSettingSources = "none" | "project" | "user" | "all";
-````
-
-### `ApiCredentialInfo`
-
-````ts
-export type ApiCredentialInfo = {
-  provider: string;
-  credentialId: string;
-  label: string;
-  envVar?: string;
-  baseUrl?: string;
-  protocol?: "openai-compatible" | "openai-responses" | "anthropic";
-  models?: string[];
-  source: "store" | "env" | "config";
-  createdAt: string;
-  updatedAt: string;
-  maskedTail?: string;
-};
-````
-
-### `ApprovalDecision`
-
-What a host can say about a pending approval.
-
-````ts
-export type ApprovalDecision = "accept" | "accept_always" | "reject";
-````
-
-### `ApprovalRequest`
-
-One request a host has to answer before its turn can continue.
-
-````ts
-export type ApprovalRequest = {
-  /** The id to pass to `approve()`. */
-  itemId: string;
-  /** Groups retries of one logical action, when the provider reports one. */
-  logicalItemId?: string;
-  /** The shape of the thing being confirmed. */
-  kind: "command" | "file_change" | "tool_call";
-  /**
-   * The finer-grained kind.
-   *
-   * `"approval"` and `"permissions"` are answerable with `approve()`. Use
-   * `respond()` for `"question"` and `"structured_question"` requests, with
-   * answers keyed by question id, and for `"plan_approval"` with an explicit
-   * decision. A runtime may leave other request kinds read-only.
-   */
-  requestKind?: PendingInputKind;
-  /** Human-readable and provider-supplied. Safe to render. */
-  description: string;
-  turnId?: string;
-  /** Provider payload: the command string, the patch, the tool input. */
-  detail?: unknown;
-  /** Which provider raised it. */
-  provider: AdeProvider;
-  /** The original prompts for requests answered through `respond()`. */
-  questions?: PendingInputRequest["questions"];
-  /** False when the runtime cannot answer this request through the SDK. */
-  answerable?: boolean;
-};
-````
-
-### `AttachmentRootCheck`
-
-What checkAttachmentRoot answers: the canonical root, or the refusal.
-
-````ts
-export type AttachmentRootCheck = { ok: true; root: string } | { ok: false; reason: string };
-````
-
-### `AttachmentRootFilterResult`
-
-The result of filterAttachmentRoots: the roots to send, and the ones dropped.
-
-````ts
-export type AttachmentRootFilterResult = {
-  /** Valid roots, canonicalized, de-duplicated, capped. Pass these to `threads.open`. */
-  roots: string[];
-  /** One entry per refused or over-the-limit input, with the reason it was refused. */
-  dropped: Array<{ root: string; reason: string }>;
-};
-````
-
-### `BundledRuntime`
-
-Resolution of a runtime shipped as an npm platform package.
-
-A downloaded runtime cannot live inside a signed and notarized application:
-the bundle is one signed artifact, and a Mach-O executable that appears in
-`userData` after the fact is outside it. So the runtime is also published the
-way esbuild and swc publish theirs — one package per target, each carrying
-`os` and `cpu`, listed as `optionalDependencies` of `@ade-dev/runtime` so npm
-installs exactly one. The embedder copies that directory into their bundle
-and signs it with their own identity.
-
-Layout, which this module both expects and documents:
-
-  @ade-dev/runtime-&lt;target&gt;/
-    package.json          &#123; os: [...], cpu: [...], version: &lt;ade release&gt; &#125;
-    bin/ade[.exe]         the runtime binary, mode 0755
-    native/               the extracted contents of &lt;binary&gt;.native.tar.gz
-      node_modules/       the modules the binary dlopens
-      vendor/crsqlite/... the cr-sqlite extension
-    LICENSE
-    README.md
-
-`runtimeRoot` is `<pkg>/native`, which is what `ADE_RUNTIME_ROOT` must point
-at; `nodeModulesPath` is `<pkg>/native/node_modules`, which is
-`ADE_RUNTIME_NODE_MODULES`. The two are reported separately rather than
-derived at the call site because an embedder is free to relocate either half
-inside their bundle, and `createAdeChat` accepts both.
-
-````ts
-export type BundledRuntime = {
-  /** Absolute path of the runtime binary inside the platform package. */
-  binaryPath: string;
-  /** Absolute path that `ADE_RUNTIME_ROOT` must name. */
-  runtimeRoot: string;
-  /** Absolute path that `ADE_RUNTIME_NODE_MODULES` must name. */
-  nodeModulesPath: string;
-  /** e.g. `@ade-dev/runtime-darwin-arm64`. */
-  packageName: string;
-  /** The ADE release version the package was cut from. */
-  version: string;
-};
-````
-
-### `CapabilitiesChangedEvent`
-
-Emitted on a thread's `status` channel after `setModel` replaced its
-capability reports.
-
-A switch across providers can move a policy from `"enforced"` to
-`"best-effort"`, and a host that read the reports once at open would keep
-showing the old guarantee. Synthesized by the SDK, never by the runtime.
-
-````ts
-export type CapabilitiesChangedEvent = {
-  type: "capabilities_changed";
-  synthetic: true;
-} & ThreadCapabilities;
-````
-
-### `CreateAdeChatOptions`
-
-````ts
-export type CreateAdeChatOptions = {
-  /** Isolated per-app ADE state root. Created if missing. */
-  home: string;
-  /** Pin a specific `ade` build. Skips PATH discovery and the downloader. */
-  binaryPath?: string;
-  /**
-   * Where the native modules the runtime dlopens live. Maps to
-   * `ADE_RUNTIME_NODE_MODULES`. Required alongside `binaryPath` when the
-   * modules are not beside the binary, which is the normal case for an app
-   * bundle: the binary lands in `Contents/Resources/ade-runtime/bin` and the
-   * modules in `Contents/Resources/ade-runtime/native/node_modules`.
-   */
-  runtimeNodeModules?: string;
-  /** Maps to `ADE_RUNTIME_ROOT`. Defaults to the parent of `runtimeNodeModules`. */
-  runtimeRoot?: string;
-  /**
-   * Never reach the network. Throws `runtime_unavailable` instead of
-   * downloading. Defaults to true, which preserves 0.1.x behavior.
-   *
-   * A shipping app wants false: a packaging mistake then fails loudly in QA,
-   * rather than working on the developer's machine through a silent download
-   * and failing on a locked-down user's.
-   */
-  allowDownload?: boolean;
-  /** Release channel for the downloader: `latest` (default) or a tag. */
-  channel?: string;
-  logger?: (line: string) => void;
-  /**
-   * Default instructions for every thread this client opens.
-   *
-   * A per-thread `instructions` wins outright — it is not merged with this one,
-   * because two texts silently concatenated is nobody's intent. Use this for
-   * the persona your whole app shares and the per-thread field for a narrower
-   * one.
-   */
-  instructions?: ThreadInstructions;
-  /**
-   * Supplies MCP header values — usually a bearer token — per thread and
-   * server, at the moment they are needed.
-   *
-   * The SDK never writes header values to disk: the thread store keeps header
-   * NAMES only. So a resume, a recreate after the runtime lost a session, and
-   * an `autoRestart` all need the values again, and this is where they come
-   * from when the caller did not pass them (`refresh.mcpServers` on
-   * `threads.open` wins over it; headers passed explicitly on a create win over
-   * it too). May return a Promise, so the host can refresh an OAuth token
-   * first; return undefined for a server that needs no headers.
-   *
-   * Also called before every `send`, `retry` and `editLast` of a thread with
-   * remote servers, and by `thread.refreshMcpHeaders()`: when the values
-   * changed (a token rotated), the SDK pushes them and the runtime restarts
-   * the provider between turns on the same provider thread, so a long chat
-   * never runs on an expired token. Unchanged values push nothing, so keep
-   * the callback cheap — return a cached token until it nears expiry.
-   *
-   * On a resume the SDK pushes the resolved servers to the runtime with
-   * `updateSession`, so a rotated token takes effect on the next turn. That
-   * needs a runtime advertising `capabilities.personalChats.updateMcpServers`;
-   * an older one keeps whatever it had and the SDK logs a warning. Two cases
-   * push nothing: when this callback supplies no value for any server that
-   * needs one (re-sending would replace the session's live credentials with
-   * none; logged), and when the resolved servers, values included, are the
-   * ones this client already sent for the thread.
-   */
-  mcpHeaders?: McpHeadersResolver;
-  /**
-   * Respawn the runtime when it exits unexpectedly. Off by default.
-   *
-   * `true` uses 5 attempts with a 1 s backoff that doubles per attempt;
-   * the object form overrides either. Each attempt emits
-   * `client.on("restart")`. On success the client re-handshakes, rebinds its
-   * event stream, and re-opens every thread it had open from the stored
-   * record — header values resolved again through `mcpHeaders` — so the
-   * thread objects a host holds, and a bridge built on this client, keep
-   * working. The client object itself never changes.
-   *
-   * A turn in flight when the runtime died is NOT resumed: each live thread
-   * already received a synthetic `status` / `turnStatus: "failed"` envelope,
-   * and the transcript keeps everything that was persisted.
-   *
-   * Not attempted after `dispose()`, and not in attach mode for a runtime the
-   * SDK did not start — there the client only reconnects to the same socket.
-   */
-  autoRestart?: boolean | { maxAttempts?: number; backoffMs?: number };
-  /**
-   * Refuse a runtime whose version is outside `SUPPORTED_RUNTIME_RANGE`,
-   * throwing `AdeError("runtime_incompatible")` from `createAdeChat` (and
-   * failing an `autoRestart` attempt the same way).
-   *
-   * Off by default: an unsupported runtime connects, logs one warning, and
-   * degrades feature by feature. `doctor().runtime.compatibility` reports the
-   * verdict either way. Dev builds (`0.0.0`, or no version) always pass.
-   */
-  requireCompatibleRuntime?: boolean;
-  /**
-   * Where `binaryPath` came from. Set by `resolvePackagedRuntime()`, which
-   * returns `source: "packaged"` so that spreading its result into these
-   * options makes `doctor().runtime.source` report `"packaged"` rather than
-   * `"explicit"`. Ignored without `binaryPath`.
-   */
-  source?: "packaged";
-  /**
-   * Reuse the runtime host's provider logins. Defaults to false (isolated
-   * per-app logins). SDK 0.7 changes the default from machine logins; pass
-   * true to keep relying on the host machine's Claude/Codex login.
-   */
-  useMachineLogin?: boolean;
-  /**
-   * The environment the runtime starts with. Defaults to this process's
-   * environment. `useMachineLogin: false` isolates the providers' sign-in
-   * folders, not variables: an `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or
-   * `CURSOR_API_KEY` here is visible to the runtime, so leave them out when end
-   * users must run only on their own logins and keys. The host's own `ADE_*`
-   * variables are always removed.
-   */
-  env?: NodeJS.ProcessEnv;
-  /**
-   * Resolve a host-vault credential id to a secret for one thread session.
-   * The value is pushed to the runtime for the live session and never saved
-   * in the SDK thread record.
-   */
-  resolveSecret?: (provider: AdeProvider, credentialId: string) => string | undefined | Promise<string | undefined>;
-  /** Usage-limit behavior for new threads. Defaults to `wait`. */
-  onUsageLimit?: "failover" | "wait" | "ask";
-};
-````
-
 ### `DefaultModelOptions`
 
 Options for `pickDefaultModel` and `client.models.defaultModel`.
@@ -1243,7 +1300,7 @@ export type DoctorReport = {
      *
      * An unsupported runtime still connects: features it lacks are detected
      * and degrade with a logged line. Pass `requireCompatibleRuntime: true` to
-     * `createAdeChat` to refuse it instead. A dev build (`0.0.0`, or no version
+     * `createDaexChat` to refuse it instead. A dev build (`0.0.0`, or no version
      * at all) counts as supported and says so in `note`.
      */
     compatibility: RuntimeCompatibility;
@@ -1482,7 +1539,7 @@ export type KnownAgentChatEvent =
 
 What the provider could actually do with a caller's MCP request.
 
-Mirrors `AgentChatMcpCapability` in chat.ts. Only ADE's Claude adapter can
+Mirrors `AgentChatMcpCapability` in chat.ts. Only DAEX's Claude adapter can
 enforce strict mode outright; the rest are best-effort with a named residual,
 and Pi has no MCP surface at all (a thread that asks for `mcpServers` on Pi
 is refused by the runtime rather than silently opened without them).
@@ -1525,7 +1582,7 @@ export type McpCapabilityReport = {
    */
   residual: string | null;
   /**
-   * Whether this thread asked ADE to withhold the user's and project's own MCP
+   * Whether this thread asked DAEX to withhold the user's and project's own MCP
    * config — i.e. `loadUserMcpServers: false`, explicitly or by supplying
    * `mcpServers` without opting back in.
    *
@@ -1625,24 +1682,24 @@ Flattened, SDK-facing model row.
 
 ````ts
 export type ModelCatalogEntry = {
-  /** Canonical ADE registry id — this is what `ThreadOpenOptions.model` takes. */
+  /** Canonical DAEX registry id — this is what `ThreadOpenOptions.model` takes. */
   id: string;
   displayName: string;
   /**
    * The provider group this model belongs to. One of the six
-   * {@link AdeProvider} values for every model this SDK can open a thread on;
+   * {@link DaexProvider} values for every model this SDK can open a thread on;
    * typed open because the runtime's catalog is downloaded and can list a
    * provider group newer than this SDK.
    *
-   * Because it is open, `ThreadOpenOptions.provider` (typed `AdeProvider`) will
+   * Because it is open, `ThreadOpenOptions.provider` (typed `DaexProvider`) will
    * not take it without narrowing. Narrow it with `isSupportedProvider` — an
    * SDK export since 0.4 — rather than a cast:
    *
    *   if (!isSupportedProvider(entry.provider)) return;
-   *   ade.threads.open(key, { provider: entry.provider, model: entry.id });
+   *   daex.threads.open(key, { provider: entry.provider, model: entry.id });
    */
-  provider: AdeProvider | (string & {});
-  /** Provider-native model ref ADE sends under the hood. */
+  provider: DaexProvider | (string & {});
+  /** Provider-native model ref DAEX sends under the hood. */
   runtimeModelId: string;
   isDefault: boolean;
   isAvailable: boolean;
@@ -1656,17 +1713,17 @@ export type ModelCatalogEntry = {
 
 ### `PackagedRuntime`
 
-Spread straight into `createAdeChat`:
+Spread straight into `createDaexChat`:
 
-  createAdeChat(&#123; ...resolvePackagedRuntime(process.resourcesPath), home, allowDownload: false &#125;)
+  createDaexChat(&#123; ...resolvePackagedRuntime(process.resourcesPath), home, allowDownload: false &#125;)
 
-The field names ARE the `createAdeChat` option names, which is the point:
+The field names ARE the `createDaexChat` option names, which is the point:
 no host-side mapping to get wrong. `source: "packaged"` makes
 `doctor().runtime.source` report `"packaged"`.
 
 ````ts
 export type PackagedRuntime = {
-  /** Absolute path of `bin/ade` (`bin/ade.exe` on Windows). */
+  /** Absolute path of `bin/daex`, or `bin/ade` in an older bundle (`.exe` on Windows). */
   binaryPath: string;
   /** Absolute path of `native/`, which becomes `ADE_RUNTIME_ROOT`. */
   runtimeRoot: string;
@@ -1761,7 +1818,7 @@ export type PendingInputSource =
 What the provider could actually enforce of a permission policy.
 
 `"enforced"` means the provider itself gates every tool call against the
-policy. `"best-effort"` means ADE approximated it with the containment and
+policy. `"best-effort"` means DAEX approximated it with the containment and
 approval knobs the provider does expose, and `residual` names what the policy
 therefore does not cover. `"unsupported"` means the provider has no gate at
 all and only the coarse preset applies.
@@ -1830,7 +1887,7 @@ export type ProviderStatus = {
    * A usable binary or package was found.
    *
    * On a derived record this is `modelCount > 0`, which answers a different
-   * question — "does ADE know models for this provider" — so do not present it
+   * question — "does DAEX know models for this provider" — so do not present it
    * as a filesystem fact unless `source` is `"probed"`.
    */
   installed: boolean;
@@ -1848,7 +1905,7 @@ export type ProviderStatus = {
   authenticated: boolean;
   /** How, when the probe could tell: subscription, api-key, oauth, unknown. */
   authMethod?: string | null;
-  /** Remediation ADE supplies. Null on a derived record. */
+  /** Remediation DAEX supplies. Null on a derived record. */
   installCommand: string | null;
   loginCommand: string | null;
   docsUrl: string | null;
@@ -1931,7 +1988,7 @@ export type ResolveBundledRuntimeOptions = {
   /**
    * Directory or file to resolve the package from. Defaults to this module's
    * own location, which is what an embedder wants: the runtime package sits
-   * beside `@ade-dev/sdk` in the same `node_modules` tree.
+   * beside `@daex-dev/sdk` in the same `node_modules` tree.
    */
   resolveFrom?: string;
   platform?: NodeJS.Platform;
@@ -1978,7 +2035,7 @@ export type ResolvePackagedRuntimeOptions = {
 
 ````ts
 export type RunOptions = Omit<ThreadOpenOptions, "provider" | "model"> & {
-  provider: AdeProvider;
+  provider: DaexProvider;
   model: string;
   schema?: JsonSchema;
   budget?: ThreadBudget;
@@ -2008,7 +2065,7 @@ export type RuntimeCompatibility = {
 
 ### `RuntimeDownloader`
 
-Injectable so tests never touch the network. `createAdeChat` accepts one via
+Injectable so tests never touch the network. `createDaexChat` accepts one via
 the internal options bag; the default is `downloadRuntime`.
 
 ````ts
@@ -2208,7 +2265,7 @@ export type ThreadBudget = {
 The four capability reports a thread carries, as one object.
 
 Returned by `setModel` and carried by `capabilities_changed`. Each report
-keeps its own null rule — see the matching field on `AdeThread`.
+keeps its own null rule — see the matching field on `DaexThread`.
 
 ````ts
 export type ThreadCapabilities = {
@@ -2229,7 +2286,7 @@ export type ThreadEventChannel = "event" | "usage" | "status";
 
 One page of a thread's durable transcript, newest page first.
 
-Returned by `AdeThread.historyPage`. `events` are in transcript order
+Returned by `DaexThread.historyPage`. `events` are in transcript order
 (oldest first) within the page.
 
 ````ts
@@ -2262,7 +2319,7 @@ export type ThreadInstructions =
 export type ThreadInterruptOptions = {
   /** Keep queued messages, or remove them along with the active turn. */
   queue?: "keep" | "drop";
-  /** Full ADE stop semantics. When set, this takes precedence over `queue`. */
+  /** Full DAEX stop semantics. When set, this takes precedence over `queue`. */
   mode?: AgentChatStopMode;
 };
 ````
@@ -2296,7 +2353,7 @@ export type ThreadModelSelection = {
 ````ts
 export type ThreadOpenOptions = {
   /** A provider id present in this runtime's model catalog. */
-  provider: AdeProvider | (string & {});
+  provider: DaexProvider | (string & {});
   model: string;
   /** Stop a turn when cumulative reported usage reaches either limit. */
   budget?: ThreadBudget;
@@ -2316,7 +2373,7 @@ export type ThreadOpenOptions = {
    * MCP servers to attach to this thread.
    *
    * Refused outright by providers with no MCP surface (Pi), so a thread never
-   * opens silently tool-less. Read {@link AdeThread.mcpCapability} afterwards
+   * opens silently tool-less. Read {@link DaexThread.mcpCapability} afterwards
    * for what the provider actually delivered.
    *
    * Supplying servers also turns on strict mode unless you set
@@ -2343,7 +2400,7 @@ export type ThreadOpenOptions = {
    *
    * IMPORTANT — false is NOT a uniform guarantee. Only Claude can enforce it.
    * Every other provider is best-effort because the gap is in the provider's
-   * own SDK, not in ADE:
+   * own SDK, not in DAEX:
    *
    * | provider | strict mode | what still loads anyway                        |
    * |----------|-------------|------------------------------------------------|
@@ -2354,7 +2411,7 @@ export type ThreadOpenOptions = {
    * | opencode | best-effort | the global OpenCode config dir (for auth)      |
    * | pi       | unsupported | n/a — no MCP surface at all                    |
    *
-   * That table is a summary of ADE's own `CALLER_MCP_SUPPORT` table in
+   * That table is a summary of DAEX's own `CALLER_MCP_SUPPORT` table in
    * `apps/desktop/src/shared/callerMcpServers.ts`, which is where each level,
    * mechanism and residual is decided; this doc comment restates it and must be
    * updated when a row there changes.
@@ -2364,7 +2421,7 @@ export type ThreadOpenOptions = {
    * and are not what strict mode excludes.
    *
    * Do not present this to your users as "only your tools are loaded" without
-   * checking {@link AdeThread.mcpCapability}: it names the exact residual for
+   * checking {@link DaexThread.mcpCapability}: it names the exact residual for
    * the thread you actually got, and it is authoritative where this table is
    * only a summary.
    *
@@ -2384,7 +2441,7 @@ export type ThreadOpenOptions = {
    * How tool use is gated on this thread. Three accepted forms.
    *
    * `"default"` leaves each provider's own behavior in place, and what that
-   * means differs enough per provider to be worth stating: on Claude, ADE
+   * means differs enough per provider to be worth stating: on Claude, DAEX
    * installs no gate at all and the Agent SDK decides non-interactively; on
    * Codex, an approval request PARKS THE TURN until something answers it.
    *
@@ -2396,9 +2453,9 @@ export type ThreadOpenOptions = {
    * that may not, and what happens to everything else. `fallback: "deny"`
    * guarantees a turn never parks, which is what a host with no approval UI
    * wants. `fallback: "ask"` emits `approval_request` and needs
-   * {@link AdeThread.approve} wired to a card.
+   * {@link DaexThread.approve} wired to a card.
    *
-   * Read {@link AdeThread.permissionCapability} afterwards: only Claude gates
+   * Read {@link DaexThread.permissionCapability} afterwards: only Claude gates
    * every tool call against the policy.
    *
    * IGNORED ON RESUME: a key this home already knows re-applies the value it
@@ -2410,14 +2467,14 @@ export type ThreadOpenOptions = {
    * Host instructions for this thread.
    *
    * A bare string is shorthand for `{ mode: "append", text }`, which keeps
-   * ADE's own personal-chat framing and adds yours after it. `"replace"` uses
+   * DAEX's own personal-chat framing and adds yours after it. `"replace"` uses
    * your text alone — for a chat branded as your assistant, which must not
-   * mention ADE.
+   * mention DAEX.
    *
    * This does NOT put the text in the transcript: `exportThread` returns no
    * user message carrying it, which is the whole difference from the
    * hidden-first-message workaround it replaces. Falls back to the client-level
-   * `instructions` when omitted; check {@link AdeThread.instructionsCapability}
+   * `instructions` when omitted; check {@link DaexThread.instructionsCapability}
    * for what the provider did with it.
    *
    * IGNORED ON RESUME: a key this home already knows re-applies the value it
@@ -2483,7 +2540,7 @@ export type ThreadOpenOptions = {
    * `"project"` is usually the right choice for an embedder. Loading a user's
    * personal `~/.claude` into an app-branded assistant is a surprise, and it
    * should take an explicit `"user"` or `"all"` to get it. Only Claude has a
-   * real switch — see {@link AdeThread.settingSourcesCapability}.
+   * real switch — see {@link DaexThread.settingSourcesCapability}.
    *
    * IGNORED ON RESUME: a key this home already knows re-applies the value it
    * was created with, and the SDK logs one line when the value passed here
@@ -2821,7 +2878,7 @@ export type UsageLimitEvent = {
   /** Thread key; empty when the session is not one this client opened by key. */
   key: string;
   sessionId: string;
-  provider: AdeProvider;
+  provider: DaexProvider;
   /** The current state, or null when the limit cleared. */
   status: UsageLimitResume | null;
 };
@@ -2837,7 +2894,7 @@ every transition and sends null when the limit clears.
 ````ts
 export type UsageLimitResume = {
   state: "armed" | "resuming" | "paused" | "opted_out" | "no_reset" | (string & {});
-  provider: AdeProvider;
+  provider: DaexProvider;
   /** When the resume prompt is sent (reset + buffer). Null when unknown. */
   fireAt: string | null;
   /** The reset the provider published. Null when unknown. */

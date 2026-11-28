@@ -1,119 +1,94 @@
 # Project health
 
-Project health checks appear in Settings → General (Needs attention) and Settings → Project →
-Location, and `ade health --text` prints the same report. Checks only read; a
-fix runs when the person presses it. The `project_health.fix` action is
-CTO-only at the action bridge, so agents can read the report and offer fixes
-but cannot apply them. `ade health --fix <id>` returns a non-zero exit code
-when the requested fix fails.
+Project health checks show in Settings → General (Needs attention) and Settings
+→ Project → Location; `daex health --text` prints the same report. Checks only
+read; a fix runs when the person presses it. `project_health.fix` is CTO-only at
+the action bridge, so agents can read the report and offer fixes but not apply
+them. `daex health --fix <id>` exits non-zero when the fix fails.
 
-Most checks matter after a project moves (see
-[`project-move.md`](./project-move.md)); the rest hold for any project.
+Most checks matter after a project moves ([project-move.md](./project-move.md)).
 
 ## Source file map
 
-| Path | Role |
-|---|---|
-| `apps/ade-cli/src/services/projects/projectHealth/projectHealthService.ts` | `getReport` (all checks, cached 30 s) and `fix`. Runs in the brain that owns the project. |
-| `apps/desktop/src/shared/types/projectHealth.ts` | Report, issue, fix and fix-result types. |
-| `apps/ade-cli/src/services/projects/projectMove/movePreviousRoots.ts` | `previousProjectRoots`: follows this project's move chain in time order and retains each recorded spelling of every prior root. |
-| `apps/ade-cli/src/services/projects/projectMove/moveDatabase.ts` | `countPathsNaming` / `rewritePathsInDatabase`: the same path rewrite the move runs, on any connection. |
-| `apps/desktop/src/main/services/adeActions/registry.ts` | `project_health` action domain (`getReport`, `fix`, `ignore`, `unignore`). |
-| `apps/desktop/src/preload/preload.ts` | `window.ade.projectHealth.{getReport,fix,ignore,unignore}`, routed with the Settings machine pin. |
-| `apps/desktop/src/main/services/adeActions/actionPolicy.ts` | Restricts `project_health.fix` to the CTO role, and `ignore` / `unignore` to the person (`ADE_ACTION_USER_ONLY`), at the action bridge. |
-| `apps/desktop/src/renderer/components/settings/health/ProjectIgnore.tsx` | The eye-slash Ignore button and menu, the folded "N ignored items" list with Show again, and `useProjectIgnore` (the calls and their toasts). Used by General, Location and Lanes. |
-| `apps/ade-cli/src/cli.ts` | `ade health [--refresh] [--fix <id>]`; the report lists what the person ignored. `--ignore` / `--unignore` point to Settings: the runtime cannot tell a terminal from an agent. |
+- `apps/ade-cli/src/services/projects/projectHealth/projectHealthService.ts`:
+  `getReport` (all checks, cached 30 s), `fix`, ignores. Runs in the brain that
+  owns the project.
+- `apps/desktop/src/shared/types/projectHealth.ts`: report, issue and fix types.
+- `apps/ade-cli/src/services/projects/projectMove/movePreviousRoots.ts`
+  (`previousProjectRoots`, the move chain) and `moveDatabase.ts` (the path
+  rewrite the move runs).
+- `apps/desktop/src/main/services/adeActions/actionPolicy.ts`: `fix` is
+  CTO-only; `ignore` / `unignore` are user-only.
+- `apps/desktop/src/preload/preload.ts`: `window.ade.projectHealth.*`, routed
+  with the Settings machine pin.
+- `apps/desktop/src/renderer/components/settings/health/ProjectIgnore.tsx`: the
+  ignore button, the folded "N ignored items" list, `useProjectIgnore`.
+- `apps/ade-cli/src/cli.ts`: `daex health [--refresh] [--fix <id>]`.
+  `--ignore` / `--unignore` point to Settings, since the runtime cannot tell a
+  terminal from an agent.
 
 ## Checks
 
-| Check | Problem it finds | Fix |
+| Check | Finds | Fix |
 |---|---|---|
-| `stale-paths` | Saved paths (lanes, proof metadata, layout keys, kv path fields) still name a folder the project was moved out of | `update-paths`: the move's rewrite in one database transaction, through the brain's own connection so it syncs. Layout kv rows already saved at the new root are preserved; when a move itself collides, the moved row wins. |
-| `Lanes` check failure | ADE could not read lane state | The report includes a failed `Lanes` check and a `lanes-failed` issue. It does not report an empty lane list as success. |
-| `lane-folders` | Active lanes whose folder is gone | none (restore or archive) |
-| `git-links` | A lane's `.git` points at another repository or a missing folder, or the repository doesn't link back | `relink-lanes` (after a move): relative links, as the move writes them |
-| `symlinks` | Absolute links still pointing at the old folder | `relink-symlinks` |
-| `dependencies` | A checkout's install is missing or empty, or a lane's link to the main checkout's install is broken | ADE skips well-formed scripts-only manifests, but unreadable manifests and workspace roots count as install units; pnpm workspaces use their shared root install. The row names the folders missing packages ("packages/demo has no packages installed") and says the rest of the project is fine only when nothing else is broken. `install-dependencies` opens one terminal per folder with that folder as its working directory, running `<pm> install` (no `cd`/`&&` chain, which Windows PowerShell 5.1 cannot run); when the checkout root itself has nothing installed, only the root install (its `setup` script, else `<pm> install`) runs, because it usually installs the folders under it, and the re-check names anything it skipped. Lanes linked to the main checkout are fixed by installing the main checkout, never reinstalled one by one |
-| `virtualenvs` | A Python venv whose scripts name another folder | none (recreate) |
-| `agent-trust` | Claude Code, Codex or Copilot trusted the old folder but not this one | `carry-trust`: copies `~/.claude.json` `projects[...]`, Codex `config.toml` trust and Copilot `trustedFolders` (append only) |
-| `agent-history` | Other tools' history still filed under the old path | `move-history`: renames folders, never overwrites |
-| `simulators` | Lane simulators that record the old folder | `repoint-simulators` |
-| `mentions` | Files that name the old folder (git grep + common untracked config) | none; an agent goes through them with the person |
+| `stale-paths` | Saved paths still naming a folder the project moved out of | `update-paths`: the move's rewrite in one transaction on the brain's connection, so it syncs |
+| `lanes-failed` | Lane state could not be read (never reported as an empty list) | — |
+| `lane-folders` | Active lanes whose folder is gone | — (restore or archive) |
+| `git-links` | A lane's `.git` points elsewhere, or the repository doesn't link back | `relink-lanes` (reports untouched lanes too) |
+| `symlinks` | Absolute links into the old folder | `relink-symlinks` |
+| `dependencies` | A checkout's install is missing, or a lane's link to the main checkout's install is broken | `install-dependencies`: one terminal per folder running `<pm> install` in that folder (no `cd && …`, which PowerShell 5.1 cannot run); when the root has nothing installed, only the root install runs. Linked lanes are fixed by installing the main checkout |
+| `virtualenvs` | A Python venv naming another folder | — (recreate) |
+| `agent-trust` | Claude Code, Codex or Copilot trusted the old folder only | `carry-trust` (append only) |
+| `agent-history` | Other tools' history filed under the old path | `move-history` (renames, never overwrites) |
+| `simulators` | Lane simulators recording the old folder | `repoint-simulators` |
+| `mentions` | Files naming the old folder | — (go through them with an agent) |
 | `old-copy` | The parked original still on disk | delete from Settings → Location |
-| `drive` | A different drive mounted under the project's drive name; no Time Machine backup | none |
-| `network-share` | On Windows, a project root on a WSL share (`\\wsl.localhost\…`, `\\wsl$\…`) or another network share (`\\server\share`, or a mapped drive that resolves to one). SQLite there can stop with "database is locked". A mapped drive's real path has a 2 s limit, so a stalled share does not hold the report | none; the warning says to keep projects on this computer's own drive. It names no way to get there: a copied folder's lanes still point at the original repository (`moveGitLinks.ts`), and project move is macOS-only |
-| `stale-lanes` | Lanes whose PR is merged or closed, or with no activity for 14 days (no open PR) | archive from Settings → Project → Lanes, one by one or in bulk (only lanes that are safe) |
-| `stuck-sessions` | Chats or terminals marked running whose owning process is gone | none; open each and stop or resume it |
-| `git-leftovers` | Lock files older than 10 minutes, a rebase/merge/cherry-pick stopped halfway | none; finish or abort it, remove the lock |
+| `drive` | A different drive under the project's drive name; no Time Machine backup | — |
+| `network-share` | Windows project on a WSL or network share, where SQLite can lock | — (keep projects on a local drive) |
+| `stale-lanes` | Lanes with a merged/closed PR, or 14 days idle with no open PR | archive from Settings → Project → Lanes |
+| `stuck-sessions` | Chats or terminals marked running whose process is gone | — |
+| `git-leftovers` | Lock files older than 10 minutes; a stopped rebase, merge or cherry-pick | — |
 
 ## Ignoring a check
 
-A person can stop seeing a line in two ways, with the eye-slash on the row:
+Two ways, from the eye-slash on a row:
 
-- **Ignore a folder.** A line that names folders lists them in
-  `ignorablePaths` (today only `dependencies`, for a folder of the main
-  checkout other than its root: a demo or sample package nobody installs).
-  The check then skips that folder entirely, so Install leaves it alone and
-  "the rest of the project has its packages" stays true. It lasts until the
-  person shows it again.
-- **Hide until it changes.** Any line but a problem or a check that couldn't
-  run (`*-failed`). The client sends the line as the person saw it, and the
-  brain refuses when it reads differently now. The stored fingerprint (id,
-  title, items) hides the line while it reads the same; once it changes it
-  shows again, so something new is never hidden. Reading the report never
-  writes: the next ignore drops stale entries, and a line that is absent keeps
-  its entry (its check may only have failed).
+- **Ignore a folder**: a line that lists `ignorablePaths` (today only
+  `dependencies`, for a main-checkout folder other than the root) skips that
+  folder entirely until the person shows it again.
+- **Hide until it changes**: any line except a problem or a failed check. The
+  client sends the line as seen; the brain refuses if it reads differently now.
+  The fingerprint (id, title, items) hides it only while it reads the same.
+  Reading the report never writes.
 
-Both live in the project database, one `kv` row per ignore
-(`project_health.ignored:<key>`, folders relative to the project, at most 200).
-`kv` syncs, so every copy and client sees them, and a row each means two
-computers changing different ignores at once never write over each other. A
-line hide also records the copy it was made on; only that copy reads it or
-retires it when the line changes. The report's `ignored` lists the entries that still
-apply, and each page shows them folded under its rows with Show again.
-Agents cannot ignore or unignore: hiding a warning is the person's call.
+Both are `kv` rows in the project database (`project_health.ignored:<key>`, at
+most 200), so they sync to every copy and two computers never overwrite each
+other. A line hide records its copy; only that copy reads or retires it. Agents
+cannot ignore or unignore.
 
-Rows on General that are not the project's (providers, other machines, MCP)
-hide on this computer only, in the renderer's local storage, with the same
-"until it changes" rule; a problem row and a "couldn't check" row cannot be
-hidden.
+General rows that are not the project's (providers, machines, MCP) hide on this
+computer only, in local storage, with the same "until it changes" rule.
 
 ## Lanes
 
-The report carries `lanes`: every active lane with its PR (newest for the
-lane), last activity (latest chat/terminal output, creation or branch tip), git
-state (`git status` and `rev-list HEAD --not --remotes`, read without locks)
-and `stale`. `safeToArchive` means archiving loses nothing: no uncommitted
-files and no commits that exist only in the lane. A squash-merged PR's branch is
-usually deleted from the remote, so commits up to the PR's recorded head count
-as saved. `safeToArchive` is about git only. The lane archive stops running
-chats and terminals after confirmation. Bulk archive re-reads each lane's git
-state before applying the merged-PR exception, then checks reclaim risk; it
-skips and names dirty, active, or unpushed lanes (and any lane requiring
-confirmation) before calling the ordinary pinned `lanes.archiveAndReclaim`
-for eligible lanes.
+The report carries `lanes`: each active lane with its newest PR, last activity,
+git state and `stale`. `safeToArchive` means archiving loses nothing in git (no
+uncommitted files, no lane-only commits; commits up to a squash-merged PR's head
+count as saved). Bulk archive re-reads git state, skips dirty, active or
+unpushed lanes, and archives the rest through the pinned
+`lanes.archiveAndReclaim`.
 
 ## Gotchas
 
-- **No move record, no stale-path fixes.** Fixes that rewrite paths need to know
-  the old folder; they follow this project's ordered move chain in
-  `<ADE_HOME>/project-moves/*.json`, which survives deleting the old copy. A
-  project moved by hand (Finder) has none.
-- **Dependencies in lanes.** ADE lanes usually link `node_modules` to the main
-  checkout's. A lane is only expected to have its own top-level install; a
-  missing `apps/*` install in a lane is normal.
-- **Malformed manifests.** A `package.json` that cannot be parsed or is not an
-  object remains an install unit so one half-edited lane manifest does not hide
-  the dependency check; ADE logs read failures locally.
-- **`~/.claude.json` is always included,** even when `CLAUDE_CONFIG_DIR` points
-  at an ADE Claude home (as it does inside ADE's own agent processes).
-- **Failed reads stay visible as failures.** A failed lane read becomes a
-  failed `Lanes` check and `lanes-failed` issue, not a successful empty list;
-  Overview likewise shows a "couldn't check" row if a source read fails.
-- **Install containment uses real paths.** Health resolves filesystem paths
-  before deciding whether an install target belongs inside the project, so a
-  string-prefix sibling or a link cannot be mistaken for a contained target.
-- **Relinking reports untouched lanes.** `relink-lanes` describes lanes it
-  leaves alone as well as those it changes.
-- **Remote:** every call carries the Settings machine pin; the checks run on
-  the machine that owns the project.
+- **No move record, no path fixes.** Rewrites follow the move chain in
+  `<ADE_HOME>/project-moves/*.json`. A project moved by hand has none.
+- **Lanes usually link `node_modules`** to the main checkout; a missing
+  `apps/*` install in a lane is normal.
+- **A malformed `package.json` stays an install unit**, so one half-edited
+  manifest does not hide the check.
+- **`~/.claude.json` is always included**, even when `CLAUDE_CONFIG_DIR` points
+  at a DAEX Claude home.
+- **Install containment uses real paths**, so a prefix sibling or a link is not
+  mistaken for a contained target.
+- **Remote**: every call carries the Settings machine pin; checks run on the
+  project's machine.

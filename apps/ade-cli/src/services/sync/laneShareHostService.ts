@@ -40,6 +40,7 @@ import {
 } from "./laneShareGrantService";
 import type { LaneShareCloseResult } from "./syncHostService";
 import { carryExpected, markExpected } from "../../../../desktop/src/shared/expectedError";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * The owner's side of lane sharing on the machine that holds the lane: make
@@ -94,7 +95,7 @@ export function createLaneShareAgentRate(now: () => number = Date.now): LaneShar
       if (made.length >= AGENT_SHARES_PER_HOUR) {
         throw new LaneShareHostError(
           "rate_limited",
-          `An agent or the CLI can make at most ${AGENT_SHARES_PER_HOUR} lane shares an hour on this computer. Try again later, or share from the ADE app.`,
+          `An agent or the CLI can make at most ${AGENT_SHARES_PER_HOUR} lane shares an hour on this computer. Try again later, or share from the ${BRAND.NAME} app.`,
         );
       }
       made.push(at);
@@ -355,7 +356,7 @@ export function createLaneShareHostService(options: {
    * create of the same pair in that gap is refused, not merged.
    */
   const creatingPairs = new Set<string>();
-  const AGENT_SHARE_EXISTS_MESSAGE = "This person already has a share of this lane. Change it in the ADE app.";
+  const AGENT_SHARE_EXISTS_MESSAGE = `This person already has a share of this lane. Change it in the ${BRAND.NAME} app.`;
 
   /**
    * An agent never changes a share that exists: the directory would reuse its
@@ -434,16 +435,16 @@ export function createLaneShareHostService(options: {
         throw new LaneShareHostError("invalid_args", "This lane is archived. Unarchive it to share it.");
       }
       if (laneState !== "active") {
-        throw new LaneShareHostError("invalid_args", "No lane with that id on this computer. Use the lane id from `ade lanes list`.");
+        throw new LaneShareHostError("invalid_args", "No lane with that id on this computer. Use the lane id from `daex lanes list`.");
       }
       if (options.isCloudComputer?.()) {
-        throw new LaneShareHostError("invalid_args", "Lanes on ADE Cloud can't be shared yet.");
+        throw new LaneShareHostError("invalid_args", `Lanes on ${BRAND.CLOUD_NAME} can't be shared yet.`);
       }
       // An active lane whose row cannot be read is refused: the main-checkout check must not pass by default.
       const laneInfo = options.store.laneInfo(laneId);
       if (!laneInfo) {
         options.logger?.warn("lane_share.host_lane_unreadable", { laneId });
-        throw new LaneShareHostError("unavailable", "ADE couldn't read this lane right now. Try again.");
+        throw new LaneShareHostError("unavailable", `${BRAND.NAME} couldn't read this lane right now. Try again.`);
       }
       if (laneInfo.type === "primary") {
         throw new LaneShareHostError("invalid_args", "The main checkout can't be shared. Share a lane instead.");

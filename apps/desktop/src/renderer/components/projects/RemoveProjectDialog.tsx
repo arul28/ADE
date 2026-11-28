@@ -15,6 +15,7 @@ import { noteAccountProjectChange } from "../../state/accountProjectListClient";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
 import type { CopyMachine } from "./projectCopies";
 import { useCopyJobs, watchCopyJobs } from "./projectCopyJobs";
+import { BRAND } from "../../../shared/brand";
 
 /** One machine's copy, as the tab knows it. */
 export type RemovalCopy = {
@@ -97,13 +98,13 @@ async function removeCopy(copy: RemovalCopy, request: ProjectRemovalRequest): Pr
   if (copy.machine.isLocal) {
     const remove = window.ade?.project?.removeCopy;
     if (typeof remove === "function") return await remove(copy.rootPath, request);
-    if (request.deleteFolder) throw new Error("This ADE can't delete folders.");
+    if (request.deleteFolder) throw new Error(`This ${BRAND.NAME} can't delete folders.`);
     await window.ade.project.forgetRecent(copy.rootPath);
     return { status: "removed", folder: "kept", outsideLaneFolders: [] };
   }
   const remove = window.ade?.remoteRuntime?.removeProjectCopy;
   if (typeof remove !== "function" || !copy.machine.targetId || !copy.projectId) {
-    throw new Error(`Update ADE on this computer to remove a project from ${copy.machine.name}.`);
+    throw new Error(`Update ${BRAND.NAME} on this computer to remove a project from ${copy.machine.name}.`);
   }
   return await remove(copy.machine.targetId, copy.projectId, request);
 }
@@ -321,7 +322,7 @@ export function RemoveProjectDialog({
     ? "Only this list changes. Every computer keeps its copy, and your account keeps the project."
     : deleteFolders && deleting.length > 0
       ? "Folders that are not ticked stay on disk."
-      : "ADE keeps the folders. Each copy stays on disk where it is.";
+      : `${BRAND.NAME} keeps the folders. Each copy stays on disk where it is.`;
   const accountOnly = scope === "account" && actionable.length === 0;
 
   return (
@@ -641,14 +642,14 @@ function CopyRow({
     glyph = <CircleNotch size={13} weight="bold" className="animate-spin" aria-hidden />;
     if (deleteFolders) lines.push({ text: "Checking the copy…" });
   } else if (report.kind === "unsupported") {
-    lines.push({ text: `Update ADE on ${machine.name} to delete its folder from here. ADE can still take it off the list.`, tone: "muted" });
+    lines.push({ text: `Update ${BRAND.NAME} on ${machine.name} to delete its folder from here. ${BRAND.NAME} can still take it off the list.`, tone: "muted" });
   } else if (report.kind === "failed") {
     lines.push({ text: `Couldn't check the copy: ${report.message}`, tone: "warning" });
   } else if (ready) {
     const running = summarizeLiveSessions(ready.state);
     const work = summarizeCopyWork(ready.state);
     if (ready.state.folder === "missing") {
-      lines.push({ text: "The folder isn't there (moved, deleted, or on a disk that isn't connected). ADE only takes it off the list." });
+      lines.push({ text: `The folder isn't there (moved, deleted, or on a disk that isn't connected). ${BRAND.NAME} only takes it off the list.` });
     } else if (running) {
       glyph = <Warning size={14} weight="fill" color={COLORS.warning} aria-hidden />;
       lines.push({
@@ -657,7 +658,7 @@ function CopyRow({
       });
     } else if (deleteFolders) {
       if (ready.deleteRefusal) {
-        lines.push({ text: `ADE won't delete this folder. ${ready.deleteRefusal}`, tone: "muted" });
+        lines.push({ text: `${BRAND.NAME} won't delete this folder. ${ready.deleteRefusal}`, tone: "muted" });
       } else if (work.summary) {
         lines.push({ text: work.summary, tone: "warning" });
       } else {

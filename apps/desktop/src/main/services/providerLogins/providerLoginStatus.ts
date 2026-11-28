@@ -16,6 +16,7 @@ import { PROVIDER_LOGIN_CARRY } from "./providerLoginCarry";
 import { readProviderLoginStatusParts } from "./providerLoginHooks";
 import { originId } from "./providerLoginPayload";
 import { APPLY_MESSAGES, LOCAL_MESSAGES, LOCAL_STATE_RANK, OFF_MESSAGES, type SyncShared } from "./providerLoginSyncShared";
+import { BRAND } from "../../../shared/brand";
 
 export function createStatus(s: SyncShared) {
   const { deps, ctx, localStates, applyStates, ownerOff, jobs } = s;
@@ -44,7 +45,7 @@ export function createStatus(s: SyncShared) {
         }
         let message = row.carry === "carried" && best.state !== "not_checked" ? LOCAL_MESSAGES[best.state] : row.message;
         const back = best.state === "written_back" && best.key ? writtenBack[best.key] ?? null : null;
-        if (back) message = `Renewed by ${back.renewedBy}. ADE wrote the newer copy into the login file here.`;
+        if (back) message = `Renewed by ${back.renewedBy}. ${BRAND.NAME} wrote the newer copy into the login file here.`;
         const keychain = jobs.keychainStatus(row.provider, off, vault);
         if (keychain?.key && !off) {
           best = { state: "captured", key: keychain.key };

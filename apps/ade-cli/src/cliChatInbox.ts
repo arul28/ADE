@@ -15,6 +15,7 @@ import {
   type InvocationStep,
   type JsonObject,
 } from "./cli";
+import { BRAND } from "../../desktop/src/shared/brand";
 
 /**
  * `ade chat inbox`: every chat in the project that waits on the person, each
@@ -149,7 +150,7 @@ function questionsOf(request: PendingInputRequest): ChatInboxQuestion[] {
 }
 
 function respondCommands(sessionId: string, itemId: string, kind: ChatInboxKind, questions: ChatInboxQuestion[]): string[] {
-  const base = `ade chat respond ${sessionId} --item ${itemId}`;
+  const base = `daex chat respond ${sessionId} --item ${itemId}`;
   if (kind !== "question") {
     return [`${base} --approve`, `${base} --approve-session`, `${base} --deny --text "<why>"`];
   }
@@ -216,9 +217,9 @@ function chatInboxFromValues(values: JsonObject): { items: ChatInboxItem[] } {
         text: message ? clip(message) : "The CLI session is waiting for you.",
         since,
         respond: [
-          `ade terminal read ${sessionId} --text`,
-          `ade terminal write --terminal ${sessionId} --data "<keys, e.g. 1 or y>"`,
-          `ade chat send ${sessionId} --text "<answer>"`,
+          `daex terminal read ${sessionId} --text`,
+          `daex terminal write --terminal ${sessionId} --data "<keys, e.g. 1 or y>"`,
+          `daex chat send ${sessionId} --text "<answer>"`,
         ],
         link,
       });
@@ -240,7 +241,7 @@ function chatInboxFromValues(values: JsonObject): { items: ChatInboxItem[] } {
           kind,
           requestId,
           text: `Sign in to ${signIn.site}`,
-          detail: `${signIn.reason} The person answers this in ADE; the login is saved to Passwords and never passes through chat.`,
+          detail: `${signIn.reason} The person answers this in ${BRAND.NAME}; the login is saved to Passwords and never passes through chat.`,
           since,
           respond: [],
           signIn: { site: signIn.site, origin: signIn.origin },
@@ -273,9 +274,9 @@ function chatInboxFromValues(values: JsonObject): { items: ChatInboxItem[] } {
         ...chat,
         kind: "question",
         requestId: itemId,
-        text: message ? clip(message) : `Waiting on an answer. See it with: ade chat pending ${sessionId} --text`,
+        text: message ? clip(message) : `Waiting on an answer. See it with: daex chat pending ${sessionId} --text`,
         since,
-        respond: [`ade chat respond ${sessionId} --item ${itemId} --text "<answer>"`],
+        respond: [`daex chat respond ${sessionId} --item ${itemId} --text "<answer>"`],
         link,
       });
       continue;
@@ -286,7 +287,7 @@ function chatInboxFromValues(values: JsonObject): { items: ChatInboxItem[] } {
       requestId: null,
       text: message ? clip(message) : "The chat asked for you.",
       since,
-      respond: [`ade chat send ${sessionId} --text "<answer>"`],
+      respond: [`daex chat send ${sessionId} --text "<answer>"`],
       link,
     });
   }
@@ -360,7 +361,7 @@ function formatChatInbox(value: unknown): string {
       if ((item.questions?.length ?? 0) > 1 || question.question !== item.text) {
         lines.push(`  ${index + 1}. ${question.header ? `[${question.header}] ` : ""}${question.question}`);
       }
-      if (question.secret) lines.push("     (secret: the person answers it, in ADE or through an app with full ADE MCP access)");
+      if (question.secret) lines.push(`     (secret: the person answers it, in ${BRAND.NAME} or through an app with full ${BRAND.NAME} MCP access)`);
       question.options?.forEach((option, optionIndex) => {
         lines.push(`     ${optionIndex + 1}) ${option.label}${option.recommended ? " (recommended)" : ""}${option.description ? ` — ${option.description}` : ""}`);
       });

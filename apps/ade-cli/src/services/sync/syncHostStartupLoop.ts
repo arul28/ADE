@@ -15,6 +15,7 @@ import {
   classifyStorageFault,
   type StorageFault,
 } from "../../../../desktop/src/main/services/storage/storageErrnoClassifier";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 export type SyncHostStartupLoopDeps = {
   startSyncHost: () => Promise<unknown>;
@@ -134,22 +135,22 @@ export function describeScopeNotHostingSync(
   nowMs: number = Date.now(),
 ): string {
   if (status?.crdtSyncAvailable === false) {
-    return `ADE brain is not hosting phone sync: the CRDT database extension did not load for project "${projectName}", so phone sync is unavailable on this computer.`;
+    return `${BRAND.NAME} brain is not hosting phone sync: the CRDT database extension did not load for project "${projectName}", so phone sync is unavailable on this computer.`;
   }
   if (status?.role === "viewer") {
-    const brainName = status.currentBrain?.name?.trim() || "another ADE";
+    const brainName = status.currentBrain?.name?.trim() || `another ${BRAND.NAME}`;
     const lastSeenMs = status.currentBrain?.lastSeenAt ? Date.parse(status.currentBrain.lastSeenAt) : Number.NaN;
     const seen = Number.isFinite(lastSeenMs)
       ? ` (last seen ${Math.max(0, Math.round((nowMs - lastSeenMs) / 1000))}s ago)`
       : "";
-    return `ADE brain is not hosting phone sync: project "${projectName}" still follows ${brainName}${seen} as its sync host. Retrying; this brain takes over once that host has been gone for a few minutes.`;
+    return `${BRAND.NAME} brain is not hosting phone sync: project "${projectName}" still follows ${brainName}${seen} as its sync host. Retrying; this brain takes over once that host has been gone for a few minutes.`;
   }
-  return `ADE brain is not hosting phone sync: project "${projectName}" is active but its sync host did not start. Retrying.`;
+  return `${BRAND.NAME} brain is not hosting phone sync: project "${projectName}" is active but its sync host did not start. Retrying.`;
 }
 
 export class SyncHostStartTimeoutError extends Error {
   constructor(readonly waitedMs: number) {
-    super(`ADE brain sync host start has not finished after ${Math.round(waitedMs / 1000)}s; still waiting on it.`);
+    super(`${BRAND.NAME} brain sync host start has not finished after ${Math.round(waitedMs / 1000)}s; still waiting on it.`);
     this.name = "SyncHostStartTimeoutError";
   }
 }
@@ -190,13 +191,13 @@ export function watchSyncHostAuthorityForRehost(deps: SyncHostRehostWatchDeps): 
       await sleep(deps.graceMs);
       if (stopped || deps.isDone() || deps.holds() || rehosting) return;
       rehosting = true;
-      deps.log("ADE brain lost the mobile sync host lease; trying to host again.");
+      deps.log(`${BRAND.NAME} brain lost the mobile sync host lease; trying to host again.`);
       deps.logEvent?.("sync.host_rehost_started", {});
       try {
         await deps.rehost();
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
-        deps.log(`ADE brain could not re-host mobile sync: ${message}`);
+        deps.log(`${BRAND.NAME} brain could not re-host mobile sync: ${message}`);
         deps.logEvent?.("sync.host_rehost_failed", { error: message });
       } finally {
         rehosting = false;
@@ -342,7 +343,7 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
     }
     if (at - lastConflictLoggedAt < conflictSummaryIntervalMs) return;
     lastConflictLoggedAt = at;
-    const line = `ADE brain sync host still blocked by ${owner.appName ?? "another ADE app"} (pid ${owner.pid}); ${conflictOccurrences} occurrences.`;
+    const line = `${BRAND.NAME} brain sync host still blocked by ${owner.appName ?? `another ${BRAND.NAME} app`} (pid ${owner.pid}); ${conflictOccurrences} occurrences.`;
     deps.log(line);
     logEvent("sync.host_start_failed", {
       signature: "SyncHostSingletonConflictError",
@@ -408,7 +409,7 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
       conflictOccurrences = 0;
       lastConflictLoggedAt = 0;
       if (attempt > 0) {
-        deps.log("ADE brain mobile sync host recovered.");
+        deps.log(`${BRAND.NAME} brain mobile sync host recovered.`);
         logEvent("sync.host_start_recovered", { attempts: attempt, lastFailureSignature });
       } else {
         // Log a first-attempt success too: without it, a brain whose sync host
@@ -456,8 +457,8 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
         failureLogs.note(
           signature,
           storageFault
-            ? `ADE brain sync host failed: ${storageFault.message}`
-            : `ADE brain sync host failed: ${message}`,
+            ? `${BRAND.NAME} brain sync host failed: ${storageFault.message}`
+            : `${BRAND.NAME} brain sync host failed: ${message}`,
           {
             signature,
             attempt,
@@ -512,7 +513,7 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
           && sameChannelOwner
         ) {
           deps.log(
-            `ADE brain taking over mobile sync from stale ${owner.appName ?? "ADE"} brain (pid ${owner.pid}).`,
+            `${BRAND.NAME} brain taking over mobile sync from stale ${owner.appName ?? BRAND.NAME} brain (pid ${owner.pid}).`,
           );
           logEvent("sync.host_takeover_stale_owner", {
             attempt,
@@ -531,7 +532,7 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
             // The stale owner is still running and was not proven to be the brain
             // recorded in the lock. Do not claim the takeover: the held failure
             // still describes a live owner, so keep it and wait like any failure.
-            deps.log(`ADE brain could not verify the stale ${owner.appName ?? "ADE"} brain (pid ${owner.pid}); it was left running.`);
+            deps.log(`${BRAND.NAME} brain could not verify the stale ${owner.appName ?? BRAND.NAME} brain (pid ${owner.pid}); it was left running.`);
             logEvent("sync.host_takeover_unverified", { attempt, ownerPid: owner.pid });
           } else {
             tookOverPid = owner.pid;

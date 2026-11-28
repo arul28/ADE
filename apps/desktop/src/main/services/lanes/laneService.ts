@@ -199,6 +199,7 @@ import {
   settleMergedAndroidDevice,
   sqlAndroidLaneDeviceRepo,
 } from "../android/androidLaneRelease";
+import { BRAND } from "../../../shared/brand";
 
 /** `simctl` for the Apple-device half of a lane delete. Nothing else shells out here. */
 const execFileAsync = promisify(execFileCallback);
@@ -442,7 +443,7 @@ function lanePackDirectory(projectRoot: string, laneId: string): {
   const lanesDir = normAbs(path.join(layout.packsDir, "lanes"));
   const lanePackDir = normAbs(path.join(lanesDir, laneId));
   if (path.dirname(lanePackDir) !== lanesDir) {
-    throw new Error("The generated lane data path is outside ADE's managed storage.");
+    throw new Error(`The generated lane data path is outside ${BRAND.NAME}'s managed storage.`);
   }
   return { adeDir: layout.adeDir, lanePackDir };
 }
@@ -543,7 +544,7 @@ const CHECKOUT_LEFTOVER_HINT = "The lane folder may hold files from both branche
  * nothing.
  */
 const UNSAVED_WORK_GIT_TIMEOUT_MS = 45_000;
-const CHECKOUT_TIMEOUT_MESSAGE = `Git stopped making progress, or did not finish within ${GIT_TREE_WRITE_TIMEOUT_MS / 60_000} minutes, so ADE stopped the checkout. ${CHECKOUT_LEFTOVER_HINT}`;
+const CHECKOUT_TIMEOUT_MESSAGE = `Git stopped making progress, or did not finish within ${GIT_TREE_WRITE_TIMEOUT_MS / 60_000} minutes, so ${BRAND.NAME} stopped the checkout. ${CHECKOUT_LEFTOVER_HINT}`;
 const CHECKOUT_CANCEL_MESSAGE = `You stopped the checkout. ${CHECKOUT_LEFTOVER_HINT}`;
 const LANE_CREATE_CANCEL_MESSAGE = "Lane creation was cancelled.";
 const LANE_DELETE_CANCEL_MESSAGE = "You stopped the delete. The lane is still here, and part of its folder may already be gone. Delete the lane again to finish.";
@@ -5677,7 +5678,7 @@ export function createLaneService({
     // A folder the user placed elsewhere (another drive, a path from another
     // machine) is not ADE's to rebuild; it may only be unmounted.
     if (!isDirectlyInsideManagedWorktreesDir(targetPath)) {
-      return { recreated: false, reason: "The worktree lives outside ADE's worktrees folder." };
+      return { recreated: false, reason: `The worktree lives outside ${BRAND.NAME}'s worktrees folder.` };
     }
     if (await hasSymlinkInManagedPath(path.dirname(targetPath), targetPath)) {
       return { recreated: false, reason: "The worktree path goes through a symbolic link." };
@@ -5963,7 +5964,7 @@ export function createLaneService({
       }
       const { adeDir: packAdeDir, lanePackDir } = lanePackDirectory(projectRoot, laneId);
       if (await hasSymlinkInManagedPath(packAdeDir, lanePackDir)) {
-        throw new Error("ADE will not delete generated lane data through a symbolic link.");
+        throw new Error(`${BRAND.NAME} will not delete generated lane data through a symbolic link.`);
       }
       if (hasWorktree) {
         await runStep("git_status", async () => {
@@ -6145,7 +6146,7 @@ export function createLaneService({
             // (a file Windows reserves, `NUL`) is marked so, and the log bridge
             // and the action's capture both read that mark.
             logger.error("lane.delete.save_work_failed", { laneId, error });
-            throw carryExpected(error, new Error(`ADE could not save this lane's unsaved work, so it did not delete it: ${message}`));
+            throw carryExpected(error, new Error(`${BRAND.NAME} could not save this lane's unsaved work, so it did not delete it: ${message}`));
           }
           if (progress.savedWork) {
             logger.info("lane.delete.work_saved", {
@@ -6175,7 +6176,7 @@ export function createLaneService({
           // never through a symlink, and never a directory that is not the
           // root of a Git worktree.
           if (protectedRootPaths.has(targetPath) || protectedRootPaths.has(canonicalPath(targetPath))) {
-            throw new Error("ADE will not remove the project's own folder.");
+            throw new Error(`${BRAND.NAME} will not remove the project's own folder.`);
           }
           const managedWorktreePath = residualWorktreeCleanup.isDirectManagedWorktreePath(targetPath);
           if (managedWorktreePath) {
@@ -6184,7 +6185,7 @@ export function createLaneService({
             // what keeps a symlinked project root from reading as a redirect
             // planted inside the folder.
             if (await hasSymlinkInManagedPath(path.dirname(targetPath), targetPath)) {
-              throw new Error("ADE will not remove a lane folder through a symbolic link.");
+              throw new Error(`${BRAND.NAME} will not remove a lane folder through a symbolic link.`);
             }
           } else {
             const symlink = await isSymbolicLinkPath(targetPath);
@@ -6214,7 +6215,7 @@ export function createLaneService({
                 };
               }
               if (symlink) {
-                throw new Error("ADE will not remove a lane folder through a symbolic link.");
+                throw new Error(`${BRAND.NAME} will not remove a lane folder through a symbolic link.`);
               }
             }
           }
@@ -6389,7 +6390,7 @@ export function createLaneService({
                 });
                 if (repairRes.exitCode === 0 && fs.existsSync(path.join(row.worktree_path, ".git"))) {
                   throw new AdeExpectedError(
-                    "This lane's folder had lost its link to Git, so ADE could not check it for unsaved work. The link is restored; delete the lane again.",
+                    `This lane's folder had lost its link to Git, so ${BRAND.NAME} could not check it for unsaved work. The link is restored; delete the lane again.`,
                     "user",
                   );
                 }
@@ -6499,7 +6500,7 @@ export function createLaneService({
             },
             logger,
           });
-          throw new Error(`${message} ADE will try again in the background.`);
+          throw new Error(`${message} ${BRAND.NAME} will try again in the background.`);
         }
       }, { fatal: requireRemoteBranchDelete });
 
@@ -6507,7 +6508,7 @@ export function createLaneService({
 
       await runStep("pack_dir_remove", async () => {
         if (await hasSymlinkInManagedPath(packAdeDir, lanePackDir)) {
-          throw new Error("ADE will not delete generated lane data through a symbolic link.");
+          throw new Error(`${BRAND.NAME} will not delete generated lane data through a symbolic link.`);
         }
         try {
           await fs.promises.rm(lanePackDir, { recursive: true, force: true });
@@ -8758,7 +8759,7 @@ export function createLaneService({
       if (row.lane_type !== "primary" && !managedPath) {
         blockedReasons.push({
           code: "worktree_outside_managed_root",
-          message: "The saved folder is outside ADE's managed worktree folder.",
+          message: `The saved folder is outside ${BRAND.NAME}'s managed worktree folder.`,
           disposition: "blocked",
         });
       }
@@ -8842,10 +8843,10 @@ export function createLaneService({
       if (!isDirectlyInsideManagedWorktreesDir(normalizedWorktree)) {
         // A lane made from a folder ADE does not manage (ADE-BRAIN-8T): reclaim
         // only removes folders ADE made, and says so.
-        throw new AdeExpectedError("The lane folder is outside ADE's managed worktree folder.", "user");
+        throw new AdeExpectedError(`The lane folder is outside ${BRAND.NAME}'s managed worktree folder.`, "user");
       }
       if (await hasSymlinkInManagedPath(normalizedRoot, normalizedWorktree)) {
-        throw new AdeExpectedError("ADE will not reclaim a folder through a symbolic link.", "user");
+        throw new AdeExpectedError(`${BRAND.NAME} will not reclaim a folder through a symbolic link.`, "user");
       }
 
       const risk = await laneServiceApi.getReclaimRisk({ laneId: args.laneId });
@@ -8872,7 +8873,7 @@ export function createLaneService({
       try {
         const { adeDir: packAdeDir, lanePackDir } = lanePackDirectory(projectRoot, args.laneId);
         if (await hasSymlinkInManagedPath(packAdeDir, lanePackDir)) {
-          throw new Error("ADE will not reclaim generated data through a symbolic link.");
+          throw new Error(`${BRAND.NAME} will not reclaim generated data through a symbolic link.`);
         }
         // `teardownEnv` below already runs the environment cleanup for this
         // path, so this goes straight to the core and never fires the archive
@@ -8909,7 +8910,7 @@ export function createLaneService({
           }
           await runGitWorktreeMutation(async () => {
             if (await hasSymlinkInManagedPath(normalizedRoot, normalizedWorktree)) {
-              throw new Error("ADE will not reclaim a folder through a symbolic link.");
+              throw new Error(`${BRAND.NAME} will not reclaim a folder through a symbolic link.`);
             }
             // Proven again under the mutation queue. A leftover (git dropped
             // its record in an earlier, interrupted removal) must still be one:
@@ -8927,7 +8928,7 @@ export function createLaneService({
               || beforeRemove.dev !== initialStat.dev
               || beforeRemove.ino !== initialStat.ino
             ) {
-              throw new Error("The lane worktree changed while ADE was preparing cleanup.");
+              throw new Error(`The lane worktree changed while ${BRAND.NAME} was preparing cleanup.`);
             }
             // A leftover has no git metadata left to ask, and git run inside it
             // would answer for the main checkout instead.
@@ -8965,7 +8966,7 @@ export function createLaneService({
                   const message = error instanceof Error ? error.message : String(error);
                   // As lane.delete.save_work_failed: the error, so its expected mark survives.
                   logger.error("lane.reclaim.save_work_failed", { laneId: args.laneId, error });
-                  throw carryExpected(error, new Error(`ADE could not save this lane's uncommitted files, so it kept the folder: ${message}`));
+                  throw carryExpected(error, new Error(`${BRAND.NAME} could not save this lane's uncommitted files, so it kept the folder: ${message}`));
                 }
               }
             }
@@ -9031,7 +9032,7 @@ export function createLaneService({
                     || residualStat.dev !== initialStat.dev
                     || residualStat.ino !== initialStat.ino
                   ) {
-                    throw new Error("The lane worktree changed during cleanup; ADE left the folder in place.");
+                    throw new Error(`The lane worktree changed during cleanup; ${BRAND.NAME} left the folder in place.`);
                   }
                   try {
                     await removeWorktreeDirectoryWithRecovery(normalizedWorktree);
@@ -9057,7 +9058,7 @@ export function createLaneService({
         if (!worktreeRemoved) throw new Error("The managed worktree folder could not be removed.");
 
         if (await hasSymlinkInManagedPath(packAdeDir, lanePackDir)) {
-          throw new Error("ADE will not reclaim generated data through a symbolic link.");
+          throw new Error(`${BRAND.NAME} will not reclaim generated data through a symbolic link.`);
         }
         try {
           await fs.promises.rm(lanePackDir, { recursive: true, force: true });
@@ -9271,7 +9272,7 @@ export function createLaneService({
         // under the configured folder or a managed saved path under whichever
         // spelling the row holds, and only the folder's own children matter.
         if (await hasSymlinkInManagedPath(path.dirname(targetPath), targetPath)) {
-          throw new Error("ADE will not restore a lane through a symbolic link.");
+          throw new Error(`${BRAND.NAME} will not restore a lane through a symbolic link.`);
         }
         if (fs.existsSync(targetPath)) {
           throw new Error("The restore folder already exists but is not this lane's Git worktree.");
@@ -9562,7 +9563,7 @@ export function createLaneService({
         { cwd: projectRoot, timeoutMs: 15_000 },
       );
       if (remote.exitCode !== 0) {
-        throw new AdeExpectedError(`ADE couldn't ask GitHub about ${branch}: ${(remote.stderr || remote.stdout).trim().split("\n").pop() ?? "no answer"}`, "user");
+        throw new AdeExpectedError(`${BRAND.NAME} couldn't ask GitHub about ${branch}: ${(remote.stderr || remote.stdout).trim().split("\n").pop() ?? "no answer"}`, "user");
       }
       const onRemote = remote.stdout.trim().length > 0;
       const ahead = await runGit(["rev-list", "--count", `refs/heads/${branch}`, "--not", "--remotes"], { cwd: projectRoot, timeoutMs: 8_000 });
@@ -9580,7 +9581,7 @@ export function createLaneService({
         { cwd: projectRoot, timeoutMs: 120_000 },
       );
       if (pushed.exitCode !== 0) {
-        throw new AdeExpectedError(`ADE couldn't push ${before.branch}: ${(pushed.stderr || pushed.stdout).trim().split("\n").pop() ?? "no answer"}`, "user");
+        throw new AdeExpectedError(`${BRAND.NAME} couldn't push ${before.branch}: ${(pushed.stderr || pushed.stdout).trim().split("\n").pop() ?? "no answer"}`, "user");
       }
       logger.info("lane.cloud_start_branch_pushed", { commits: before.unpushedCommits, wasOnRemote: before.onRemote });
       return await laneServiceApi.cloudStartBranch(args);
@@ -9667,7 +9668,7 @@ export function createLaneService({
       if (!row) throw new Error(`Lane not found: ${laneId}`);
       const hasFolder = Boolean(row.worktree_path) && fs.existsSync(row.worktree_path);
       if (hasFolder && !(await isExpectedGitWorktreeRoot(row.worktree_path))) {
-        throw new Error("The lane's folder is not the git worktree ADE expects.");
+        throw new Error(`The lane's folder is not the git worktree ${BRAND.NAME} expects.`);
       }
       const notOnRemotes = async (ref: string, cwd: string): Promise<number> => {
         const result = await runGit(["rev-list", "--count", ref, "--not", "--remotes"], { cwd, timeoutMs: UNSAVED_WORK_GIT_TIMEOUT_MS });
@@ -9678,7 +9679,7 @@ export function createLaneService({
           if (exists.exitCode === 1) return 0;
         }
         const reason = result.timedOut ? "timed out" : result.stderr.trim().split(/\r?\n/, 1)[0] || `exit ${result.exitCode}`;
-        throw new Error(`ADE couldn't count the commits on ${ref} that GitHub doesn't have (${reason}).`);
+        throw new Error(`${BRAND.NAME} couldn't count the commits on ${ref} that GitHub doesn't have (${reason}).`);
       };
       // The remote's base branch, where a merged lane's changes landed.
       const baseOnRemote = async (cwd: string): Promise<string | null> => {
@@ -9851,14 +9852,14 @@ export function createLaneService({
       const leftover = leftoverWorktreeByLaneId.get(laneId);
       if (!leftover) throw new Error("That folder is no longer waiting to be deleted.");
       if (!leftover.canDelete) {
-        throw new Error("ADE will not remove a lane folder through a symbolic link.");
+        throw new Error(`${BRAND.NAME} will not remove a lane folder through a symbolic link.`);
       }
       const targetPath = normAbs(leftover.path);
       if (protectedRootPaths.has(targetPath) || protectedRootPaths.has(canonicalPath(targetPath))) {
-        throw new Error("ADE will not remove the project's own folder.");
+        throw new Error(`${BRAND.NAME} will not remove the project's own folder.`);
       }
       if (await isSymbolicLinkPath(targetPath)) {
-        throw new Error("ADE will not remove a lane folder through a symbolic link.");
+        throw new Error(`${BRAND.NAME} will not remove a lane folder through a symbolic link.`);
       }
       if (await isExpectedGitWorktreeRoot(targetPath)) {
         throw new Error("That folder is a Git worktree again. Remove it from the lane that owns it.");

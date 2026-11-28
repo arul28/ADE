@@ -179,7 +179,7 @@ extension MachineConnection: TerminalStreamTransport {
   func typeIntoCli(sessionId: String, text: String, clientMessageId: String) async throws -> WorkCliTypeOutcome {
     guard supportsAction("chat.typeIntoCli") else {
       throw NSError(domain: "ADE", code: 15, userInfo: [
-        NSLocalizedDescriptionKey: "Update ADE on that computer to send messages to its CLI sessions.",
+        NSLocalizedDescriptionKey: "Update \(Brand.name) on that computer to send messages to its CLI sessions.",
       ])
     }
     let scope = try terminalScopeOrThrow(sessionId)

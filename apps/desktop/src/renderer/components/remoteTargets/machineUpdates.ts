@@ -25,6 +25,7 @@ import {
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { adeCloudEnabled } from "../../state/cloudAccess";
 import { selfUpdatingCloudMachineKeys } from "../../../shared/adeCloud";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * "Update & restart" for other machines, as one store.
@@ -227,7 +228,7 @@ async function runMachineCall(
     attempt = {
       ok: false,
       // Without Electron's "Error invoking remote method" wrapper: the row shows this.
-      message: ipcErrorMessage(error) || `ADE couldn't reach ${machine.name}. Try again.`,
+      message: ipcErrorMessage(error) || `${BRAND.NAME} couldn't reach ${machine.name}. Try again.`,
       pendingVersion: null,
       downloading: false,
       startedAtMs: Date.now(),

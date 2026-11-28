@@ -12,6 +12,7 @@ import { Dialog } from "../../ui/dialog/Dialog";
 import { Banner, InlineErrorNotice } from "../../ui/notice";
 import { ToolLogo } from "../../terminals/ToolLogos";
 import { COLORS, SANS_FONT } from "../laneDesignTokens";
+import { BRAND } from "../../../../shared/brand";
 
 /** What one open session in the lane is doing, for the dialog. */
 export type LaneActiveWorkRow = {
@@ -228,10 +229,10 @@ export function LaneActiveWorkDialog({
           if (result?.processTreeExited === true) {
             errors.delete(id);
           } else {
-            errors.set(id, "ADE couldn’t confirm that the terminal exited.");
+            errors.set(id, `${BRAND.NAME} couldn’t confirm that the terminal exited.`);
           }
         } else {
-          errors.set(id, "ADE couldn’t find the running terminal.");
+          errors.set(id, `${BRAND.NAME} couldn’t find the running terminal.`);
         }
       } catch (error) {
         errors.set(id, extractError(error));
@@ -280,11 +281,11 @@ export function LaneActiveWorkDialog({
   // never says "nothing is running" while one is open.
   const openTerminals = rows?.filter((row) => row.kind !== "chat" && row.state !== "running").length ?? 0;
   const terminalCaveat = openTerminals > 0
-    ? ` ADE can't tell whether a command in ${openTerminals === 1 ? "the open terminal" : "an open terminal"} is still running.`
+    ? ` ${BRAND.NAME} can't tell whether a command in ${openTerminals === 1 ? "the open terminal" : "an open terminal"} is still running.`
     : "";
   const where = machineName ? ` on ${machineName}` : "";
   const description = loadError
-    ? `ADE could not read what is open in this lane${where}. You can still switch; open chats and terminals stay attached.`
+    ? `${BRAND.NAME} could not read what is open in this lane${where}. You can still switch; open chats and terminals stay attached.`
     : rows == null
     ? "Checking what is running…"
     : running.length > 0
@@ -352,7 +353,7 @@ export function LaneActiveWorkDialog({
           model={{
             id: "lane-active-work-stop",
             tone: "error",
-            title: "ADE couldn’t verify that all work stopped",
+            title: `${BRAND.NAME} couldn’t verify that all work stopped`,
             detail: "Check the affected sessions before switching.",
             report: {
               surface: "lane_active_work",

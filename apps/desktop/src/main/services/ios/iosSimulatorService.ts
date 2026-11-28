@@ -223,6 +223,7 @@ import { createSimulatorPower } from "./simulatorPower";
 import type { AppleRemoteViewerProbe } from "./appleStreamRelayForService";
 import { SIMCTL_MISSING } from "../../../shared/xcodeToolchain";
 import { AdeExpectedError, carryExpected, markExpected } from "../../../shared/expectedError";
+import { BRAND } from "../../../shared/brand";
 
 const execFile = promisify(execFileCallback);
 
@@ -249,7 +250,7 @@ const DEFAULT_SWIPE_DURATION_MS = 180;
  */
 const DRAG_STEP_MS = 16;
 const INSTALL_HINT_XCODE = "Install Xcode from the App Store, then run xcode-select --install.";
-const INSTALL_HINT_SIM_HELPER = "Install or update ADE.app on this Mac (or run `ade brain update`), then restart the ADE brain. In a source checkout: run `npm run build:sim-helper` in apps/desktop.";
+const INSTALL_HINT_SIM_HELPER = `Install or update ADE.app on this Mac (or run \`${BRAND.CLI} brain update\`), then restart the ${BRAND.NAME} brain. In a source checkout: run \`npm run build:sim-helper\` in apps/desktop.`;
 const INSTALL_HINT_XCODE_CLI = "Run xcode-select --install to install the Xcode command line tools.";
 const XCODE_MCP_SESSION_ID = "906026e2-d248-4770-8654-032d0e1fbb54";
 const XCODE_MCP_APPROVAL_TIMEOUT_MS = 90_000;
@@ -723,7 +724,7 @@ function formatXcodeBuildFailure(error: unknown, context: { projectPath: string;
   const resultBundle = /Writing error result bundle to\s+([^\n]+\.xcresult)/i.exec(output)?.[1]?.trim() ?? null;
   const schemeMissing = /does not contain a scheme named/i.test(output);
   const nextAction = schemeMissing
-    ? "ADE could not find that scheme in the project. Refresh the iOS simulator drawer and choose one of the listed schemes; if Xcode only has a user-local scheme, share it from Xcode so command-line builds can see it."
+    ? `${BRAND.NAME} could not find that scheme in the project. Refresh the iOS simulator drawer and choose one of the listed schemes; if Xcode only has a user-local scheme, share it from Xcode so command-line builds can see it.`
     : "Open the project in Xcode or rerun the shown xcodebuild command to see the full compiler output, then fix the build error and launch again.";
   return new Error([
     `Could not build ${context.scheme} for ${context.deviceName}.`,
@@ -2097,7 +2098,7 @@ function applySwiftUITabBarSource(projectRoot: string | null | undefined, elemen
         sourceLine: tab.sourceLine,
         metadata: {
           synthetic: true,
-          inferred: "The Tab Bar exposed no tab items, so ADE placed this tab at an equal slice of the bar, in source order. Its frame is a guess.",
+          inferred: `The Tab Bar exposed no tab items, so ${BRAND.NAME} placed this tab at an equal slice of the bar, in source order. Its frame is a guess.`,
           generatedFrom: "SwiftUI tab labels in source and the accessibility Tab Bar frame",
           tabBarElementId: tabBar.id,
           sourceSnippet: tab.snippet,
@@ -2416,8 +2417,8 @@ function deviceStartNote(device: AppleLaneDevice, action: AppleDeviceStartDevice
     return `Made a new simulator for this lane: ${device.name} (${device.udid}), booted. It is deleted with the lane.`;
   }
   if (action === "attached") {
-    return `Attached one of this Mac's installed simulators to this lane: ${device.name} (${device.udid}), booted. ADE did not make it and never deletes it, `
-      + "and someone at this Mac may use it outside ADE too. For a new one of this lane's own instead: ade apple device-detach, then ade apple device-create.";
+    return `Attached one of this Mac's installed simulators to this lane: ${device.name} (${device.udid}), booted. ${BRAND.NAME} did not make it and never deletes it, `
+      + `and someone at this Mac may use it outside ${BRAND.NAME} too. For a new one of this lane's own instead: ${BRAND.CLI} apple device-detach, then ${BRAND.CLI} apple device-create.`;
   }
   return `This lane's simulator ${device.name} (${device.udid}) is booted.`;
 }
@@ -4471,7 +4472,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     if (!xcodeVersion) setupSteps.push("Install Xcode 26.3 or newer.");
     if (!mcpbridgeAvailable) setupSteps.push("Install or select an Xcode that provides `xcrun mcpbridge`.");
     if (!xcodeRunning) setupSteps.push("Open apps/ios/ADE.xcodeproj in Xcode before rendering previews.");
-    if (error) setupSteps.push("If Xcode shows an \"Allow\" prompt for ADE Preview Lab, click Allow and keep ADE open until the retry finishes.");
+    if (error) setupSteps.push("If Xcode shows an \"Allow\" prompt for ADE Preview Lab, click Allow and keep DAEX open until the retry finishes.");
     if (error) setupSteps.push("If no prompt appears, open Xcode > Settings > Intelligence and enable \"Allow external agents to use Xcode tools\" under Model Context Protocol.");
     if (xcodeRunning && !error && !selectedWindow) setupSteps.push("Bring the Xcode window for apps/ios/ADE.xcodeproj forward, then retry.");
     return {
@@ -4598,7 +4599,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         status: "no-context",
         target: null,
         confidence: "none",
-        reason: "Select a source-backed simulator element first (`ade --socket ios-sim select --x <x> --y <y> --text`) or pass `--source <swift-file> --line <n>` before opening the screen in Preview Lab.",
+        reason: "Select a source-backed simulator element first (`daex --socket ios-sim select --x <x> --y <y> --text`) or pass `--source <swift-file> --line <n>` before opening the screen in Preview Lab.",
         selectedSourceFile: null,
         selectedSourceLine,
         ...suggestion,
@@ -4609,7 +4610,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         status: "missing-source",
         target: null,
         confidence: "none",
-        reason: `ADE could not resolve the selected Swift source file: ${rawSourceFile}.`,
+        reason: `${BRAND.NAME} could not resolve the selected Swift source file: ${rawSourceFile}.`,
         selectedSourceFile,
         selectedSourceLine,
         ...suggestion,
@@ -4744,7 +4745,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     }
     const resolvedSourceFile = resolveSwiftSourceFile(projectRoot, rawSourceFilePath);
     if (!resolvedSourceFile) {
-      throw new Error(`Swift source file was not found: ${rawSourceFilePath}. Run \`ade --socket ios-sim snapshot --text\` to confirm the current simulator screen, then \`ade --socket ios-sim previews --source <swift-file> --text\` with a real Swift file before running \`ade --socket ios-sim preview-render --source <swift-file> --text\`.`);
+      throw new Error(`Swift source file was not found: ${rawSourceFilePath}. Run \`daex --socket ios-sim snapshot --text\` to confirm the current simulator screen, then \`daex --socket ios-sim previews --source <swift-file> --text\` with a real Swift file before running \`daex --socket ios-sim preview-render --source <swift-file> --text\`.`);
     }
     const sourceFilePath = sourceFilePathForXcode(projectRoot, resolvedSourceFile);
     const capability = renderArgs.manageXcode === false
@@ -5317,7 +5318,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         spawnProcess("open", ["-a", "Simulator"], { detached: true, stdio: "ignore" }).unref();
         emitLaunchProgress(launchId, "open-simulator", "complete", "Simulator.app is visible.", null, { deviceUdid: device.udid });
       } else {
-        emitLaunchProgress(launchId, "open-simulator", "skipped", "Simulator.app was not opened: the device runs inside ADE.", null, { deviceUdid: device.udid });
+        emitLaunchProgress(launchId, "open-simulator", "skipped", `Simulator.app was not opened: the device runs inside ${BRAND.NAME}.`, null, { deviceUdid: device.udid });
       }
 
       currentStep = "resolve-target";
@@ -6044,7 +6045,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         role: element.role,
         elementType: element.elementType,
         sourceSnippet,
-        selectionExplanation: "The user selected this UI element from the ADE iOS Simulator inspector. The screenshot or crop attachment is visual evidence for this packet; frames are in screenshot pixels.",
+        selectionExplanation: "The user selected this UI element from the DAEX iOS Simulator inspector. The screenshot or crop attachment is visual evidence for this packet; frames are in screenshot pixels.",
       },
       accessibilityIdentifier: element.identifier,
       screenshotDataUrl: screenshotDataUrl ?? undefined,
@@ -6853,7 +6854,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const rawName = typeof buttonArgs.name === "string" ? buttonArgs.name.trim() : "";
     if (!isAppleHardwareButtonName(rawName)) {
       throw new Error(
-        `${APPLE_BUTTON_UNSUPPORTED_CODE}: '${buttonArgs.name}' is not a hardware button ADE can press. Valid names: ${APPLE_HARDWARE_BUTTONS.join(", ")}.`,
+        `${APPLE_BUTTON_UNSUPPORTED_CODE}: '${buttonArgs.name}' is not a hardware button ${BRAND.NAME} can press. Valid names: ${APPLE_HARDWARE_BUTTONS.join(", ")}.`,
       );
     }
     const runtime = resolveRuntime(buttonArgs);
@@ -6889,7 +6890,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
           );
         default: {
           const unexpected: never = rawName;
-          throw new Error(`${APPLE_BUTTON_UNSUPPORTED_CODE}: '${unexpected}' is not a hardware button ADE can press.`);
+          throw new Error(`${APPLE_BUTTON_UNSUPPORTED_CODE}: '${unexpected}' is not a hardware button ${BRAND.NAME} can press.`);
         }
       }
     });
@@ -7702,7 +7703,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         ? `${laneDevice.name} is ${poweredOff ? "powered off" : "off"} and stays registered on the Mac as this lane's device: the next ade apple start boots it again. `
           + (isAdeOwnedLaneDevice(laneDevice.origin)
             ? "It is deleted with the lane (or now: ade apple device-delete)."
-            : "It is an installed simulator ADE did not make, so the lane releases it when it ends; it is never deleted.")
+            : `It is an installed simulator ${BRAND.NAME} did not make, so the lane releases it when it ends; it is never deleted.`)
         : null,
     };
   };
@@ -7958,7 +7959,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const runtime = requireLaneScope(testArgs);
     if (testRunInFlight) {
       throw new Error(
-        `${APPLE_TEST_RUN_BUSY_CODE}: a test run is already going in this ADE runtime (${testRunInFlight.label}). `
+        `${APPLE_TEST_RUN_BUSY_CODE}: a test run is already going in this ${BRAND.NAME} runtime (${testRunInFlight.label}). `
           + "xcodebuild test runs one at a time; wait for it to finish, then run again.",
       );
     }

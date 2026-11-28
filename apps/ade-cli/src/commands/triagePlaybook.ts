@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { DIAGNOSTIC_ISSUE_REPO } from "../services/diagnostics/diagnosticReport";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 /**
  * Where `ade triage` gets the playbook it hands to a coding agent.
@@ -41,39 +42,39 @@ export type TriagePlaybook = {
  * — a stale duplicate would be worse than a short one — it is the safety rules
  * plus where to read the real thing.
  */
-const EMBEDDED_TRIAGE_PLAYBOOK = `# ADE triage playbook (built-in minimum)
+const EMBEDDED_TRIAGE_PLAYBOOK = `# ${BRAND.NAME} triage playbook (built-in minimum)
 
 The full playbook could not be read from this machine or fetched from GitHub, so
-this is the reduced copy compiled into the ADE CLI. Read the full one at
+this is the reduced copy compiled into the ${BRAND.NAME} CLI. Read the full one at
 ${TRIAGE_PLAYBOOK_REMOTE_URL} when you have a network.
 
 ## Safety rules
 
-1. Diagnose read-only first. \`ade doctor --text\`, \`ade brain status --text\`,
-   \`ade runtime service-status --text\`, \`ade sync status --text\`,
-   \`ade auth status --text\` and \`ade tools status --text\` all change nothing.
+1. Diagnose read-only first. \`daex doctor --text\`, \`daex brain status --text\`,
+   \`daex runtime service-status --text\`, \`daex sync status --text\`,
+   \`daex auth status --text\` and \`daex tools status --text\` all change nothing.
 2. Propose every mutation before running it, and say how to undo it.
 3. Never delete anything under \`~/.ade\` / \`$ADE_HOME\` or under a project's
    \`.ade/\` — databases, secrets, artifacts, transcripts. Never delete
    \`ade.db\`, \`ade.db-wal\` or \`ade.db-shm\`.
-4. Never kill processes by name or pattern. Use \`ade brain stop\` /
-   \`ade brain restart\`, or an exact PID whose command line you verified.
-5. Prefer the ADE command over the OS command: \`ade brain restart\` over
-   \`launchctl\`, \`ade runtime install-service\` over editing a plist,
-   \`ade brain repair-credentials\` over touching the keychain.
+4. Never kill processes by name or pattern. Use \`daex brain stop\` /
+   \`daex brain restart\`, or an exact PID whose command line you verified.
+5. Prefer the ${BRAND.NAME} command over the OS command: \`daex brain restart\` over
+   \`launchctl\`, \`daex runtime install-service\` over editing a plist,
+   \`daex brain repair-credentials\` over touching the keychain.
 6. Never print secrets. Report whether a file is readable, never its contents.
-7. One change at a time, then re-run \`ade doctor --text\` and report what moved.
+7. One change at a time, then re-run \`daex doctor --text\` and report what moved.
 
 ## First moves
 
 \`\`\`bash
-ade doctor --text            # one ok/warn/fail row per check
-ade brain status --text      # endpoint, service, sync, last failure
-ade runtime status --text    # reports \`starting: true\` while the brain boots
+daex doctor --text            # one ok/warn/fail row per check
+daex brain status --text      # endpoint, service, sync, last failure
+daex runtime status --text    # reports \`starting: true\` while the brain boots
 \`\`\`
 
 A brain reported as \`starting\` is coming up, not broken: wait, do not restart.
-If a row still fails and nothing explains it, \`ade report-issue --open\` files a
+If a row still fails and nothing explains it, \`daex report-issue --open\` files a
 redacted report.
 `;
 
@@ -235,7 +236,7 @@ function triagePlaybookLocalCandidates(options: TriagePlaybookLookupOptions = {}
  * resolver rejects, rather than shipping a bundle with no playbook at all.
  */
 export function embeddedTriagePlaybook(): TriagePlaybook {
-  return { text: EMBEDDED_TRIAGE_PLAYBOOK, source: "local", origin: "built into this ADE CLI" };
+  return { text: EMBEDDED_TRIAGE_PLAYBOOK, source: "local", origin: `built into this ${BRAND.NAME} CLI` };
 }
 
 export function readLocalTriagePlaybook(

@@ -15,6 +15,7 @@ import { IgnoredList, useProjectIgnore } from "../health/ProjectIgnore";
 import { useHealthData } from "../health/useHealthData";
 import "../health/health.css";
 import "./location.css";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * Settings → Project → Location: where the project lives (drive, path, free
@@ -85,8 +86,8 @@ export function LocationPage() {
         hint={report
           ? `Checked ${relativeWhen(report.checkedAt)}.`
           : available
-            ? "What is wrong with this project, and a fix for what ADE can fix."
-            : "Project checks need a newer ADE on this machine."}
+            ? `What is wrong with this project, and a fix for what ${BRAND.NAME} can fix.`
+            : `Project checks need a newer ${BRAND.NAME} on this machine.`}
         actions={available ? (
           <>
             <button
@@ -114,7 +115,7 @@ export function LocationPage() {
             model={{
               id: "location-report-error",
               tone: "error",
-              title: "ADE couldn't check this project",
+              title: `${BRAND.NAME} couldn't check this project`,
               detail: error,
               actions: [{ label: "Try again", onClick: () => void data.loadReport({ force: true }) }],
             }}

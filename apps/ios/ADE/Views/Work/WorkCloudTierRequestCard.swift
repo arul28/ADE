@@ -100,7 +100,7 @@ final class WorkCloudTierRequestRuns: ObservableObject {
       ADEHaptics.success()
     } catch {
       tierRequestLog.notice("tier_request answer=dismiss failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
-      runs[facts.requestId] = .failed("ADE couldn't tell the agent: \(cloudWithoutStop(error.localizedDescription)).")
+      runs[facts.requestId] = .failed("\(Brand.name) couldn't tell the agent: \(cloudWithoutStop(error.localizedDescription)).")
       ADEHaptics.error()
     }
   }
@@ -127,7 +127,7 @@ final class WorkCloudTierRequestRuns: ObservableObject {
       ADEHaptics.error()
     }
 
-    guard let client = await sync.cloudServerClient() else { return refuse("Sign in to ADE, then try again.") }
+    guard let client = await sync.cloudServerClient() else { return refuse("Sign in to \(Brand.name), then try again.") }
     let account: CloudPhoneAccount?
     if let known = AccountCloudStore.shared.account {
       account = known
@@ -135,13 +135,13 @@ final class WorkCloudTierRequestRuns: ObservableObject {
       account = try? await client.account()
     }
     guard let tier = cloudPhoneTiers(account?.catalog).first(where: { $0.id == facts.toSizeId }) else {
-      return refuse("ADE Cloud doesn't offer that size now.")
+      return refuse("\(Brand.cloudName) doesn't offer that size now.")
     }
     let box: CloudServerInstance
     do {
       box = try await client.instance(facts.instanceId)
     } catch {
-      return refuse(cloudPhoneWords(cloudServerFailureMessage(error)) ?? "ADE Cloud couldn't read this computer.")
+      return refuse(cloudPhoneWords(cloudServerFailureMessage(error)) ?? "\(Brand.cloudName) couldn't read this computer.")
     }
     // A disk can't shrink (a move keeps it too): refused before anything stops.
     if let disk = box.resources?.disk, let max = tier.diskMaxGb, disk > max {
@@ -179,7 +179,7 @@ final class WorkCloudTierRequestRuns: ObservableObject {
       runs[facts.requestId] = .done("The change was cancelled. \(facts.computerName) kept its size.")
     case "running":
       // Still going on the server: nothing to tell yet; whoever follows it there tells the chat.
-      runs[facts.requestId] = .done(outcome.error ?? "The move is still running. Follow it on the ADE Cloud page.")
+      runs[facts.requestId] = .done(outcome.error ?? "The move is still running. Follow it on the \(Brand.cloudName) page.")
       return
     default:
       runs[facts.requestId] = .failed("The change to \(tier.label) stopped\(outcome.error.map { ": \(cloudWithoutStop($0))" } ?? "").")
@@ -199,7 +199,7 @@ final class WorkCloudTierRequestRuns: ObservableObject {
       }
       try? await Task.sleep(nanoseconds: pollSeconds * 1_000_000_000)
     }
-    return ("failed", "It isn't back on \(tier.label) after 10 minutes. Check it on the ADE Cloud page")
+    return ("failed", "It isn't back on \(tier.label) after 10 minutes. Check it on the \(Brand.cloudName) page")
   }
 
   /// The server's move to the other kind, followed until it ends. A move that
@@ -213,16 +213,16 @@ final class WorkCloudTierRequestRuns: ObservableObject {
     } catch CloudServerClient.Failure.noAccess {
       return ("failed", cloudPhoneKindChangeReason(to: tier))
     } catch {
-      return ("failed", cloudPhoneWords(cloudServerFailureMessage(error)) ?? "ADE Cloud couldn't start the move")
+      return ("failed", cloudPhoneWords(cloudServerFailureMessage(error)) ?? "\(Brand.cloudName) couldn't start the move")
     }
     // The server answers a move already running for this computer instead: not this request's.
     guard record.moveId.lowercased() == moveId else {
-      return ("failed", "Another change of this computer is already running. Follow it on the ADE Cloud page")
+      return ("failed", "Another change of this computer is already running. Follow it on the \(Brand.cloudName) page")
     }
     let since = Date()
     while !record.isFinished, Date().timeIntervalSince(since) < moveWaitMaxSeconds {
       if record.approval != nil {
-        runs[facts.requestId] = .working("The move waits for you. Finish it on the ADE Cloud page.")
+        runs[facts.requestId] = .working("The move waits for you. Finish it on the \(Brand.cloudName) page.")
       }
       try? await Task.sleep(nanoseconds: pollSeconds * 1_000_000_000)
       if let fresh = try? await client.move(record.moveId) { record = fresh }
@@ -231,7 +231,7 @@ final class WorkCloudTierRequestRuns: ObservableObject {
     case "done": return ("online", nil)
     case "cancelled": return ("cancelled", nil)
     case "failed": return ("failed", record.error ?? cloudPhoneWords(record.message))
-    default: return ("running", "The move is still running. Follow it on the ADE Cloud page.")
+    default: return ("running", "The move is still running. Follow it on the \(Brand.cloudName) page.")
     }
   }
 
@@ -394,7 +394,7 @@ struct WorkCloudTierRequestCard: View {
           .fixedSize(horizontal: false, vertical: true)
       case nil:
         Text(isMove(facts)
-          ? "ADE moves it to a new computer in a few minutes: files and chats come along, the running turn stops."
+          ? "\(Brand.name) moves it to a new computer in a few minutes: files and chats come along, the running turn stops."
           : "It restarts on the new size in about 2 minutes: files and chats stay, the running turn stops.")
           .font(.system(size: 11.5))
           .foregroundStyle(ADEColor.textMuted)

@@ -18,6 +18,7 @@ import {
   inspectSyncListenerPort,
   type SyncListenerPortDiagnosis,
 } from "./syncListenerPortInspect";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * Where this brain's sync listener answers: which port it holds, the local-only
@@ -562,7 +563,7 @@ export function createSyncListenerPortController(
     const candidates = sideDoorPortsAbove(mainPort);
     let lastError: unknown = new Error(candidates.length === 0
       ? `No port above ${mainPort} is available for a side door.`
-      : `No port above ${mainPort} answered as ADE.`);
+      : `No port above ${mainPort} answered as ${BRAND.NAME}.`);
     for (const candidate of candidates) {
       if (closed) return null;
       const pair = createServerPair();
@@ -829,14 +830,14 @@ export function createSyncListenerPortController(
         if (closed || currentPort() === port) {
           throw new LoopbackShadowedError(
             port,
-            loopbackValidationStatus.reason ?? `127.0.0.1:${port} did not answer as ADE.`,
+            loopbackValidationStatus.reason ?? `127.0.0.1:${port} did not answer as ${BRAND.NAME}.`,
             loopbackValidationStatus.lastFailureAt ?? undefined,
           );
         }
       }
       throw new LoopbackShadowedError(
         currentPort() ?? 0,
-        "The ADE sync listener moved twice while it was being checked.",
+        `The ${BRAND.NAME} sync listener moved twice while it was being checked.`,
       );
     },
 

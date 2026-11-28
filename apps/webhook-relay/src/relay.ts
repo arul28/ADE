@@ -663,7 +663,7 @@ async function rememberGitHubRateLimit(
 function rateLimitedRepoAccessResponse(cooldownUntil: number): Response {
   const retryAfterSeconds = Math.max(1, Math.ceil((cooldownUntil - Date.now()) / 1_000));
   return json(
-    { ok: false, error: "GitHub is rate limiting ADE's repository access checks. Try again shortly." },
+    { ok: false, error: "GitHub is rate limiting DAEX's repository access checks. Try again shortly." },
     { status: 403, headers: { "retry-after": String(retryAfterSeconds) } },
   );
 }
@@ -838,7 +838,7 @@ async function fetchGitHubApiJson(apiBaseUrl: string, path: string, token: strin
     headers: {
       accept: "application/vnd.github+json",
       authorization: `Bearer ${token}`,
-      "user-agent": "ADE GitHub Webhook Relay",
+      "user-agent": "DAEX GitHub Webhook Relay",
       "x-github-api-version": GITHUB_REST_API_VERSION,
     },
   });
@@ -883,8 +883,8 @@ function unverifiedRepoAccessResponse(): Response {
 
 function insufficientRepoPermissionResponse(level: GitHubRepoAccessLevel): Response {
   const error = level === "admin"
-    ? "GitHub token must have admin access to manage the ADE webhook for this repository."
-    : "GitHub token must have push/write, maintain, or admin access to read ADE webhook deliveries for this repository.";
+    ? "GitHub token must have admin access to manage the DAEX webhook for this repository."
+    : "GitHub token must have push/write, maintain, or admin access to read DAEX webhook deliveries for this repository.";
   return json({ ok: false, error }, { status: 403 });
 }
 
@@ -1188,7 +1188,7 @@ async function fetchGitHubAppApiStatus(
     headers: {
       accept: "application/vnd.github+json",
       authorization: `Bearer ${jwt}`,
-      "user-agent": "ADE GitHub Webhook Relay",
+      "user-agent": "DAEX GitHub Webhook Relay",
       "x-github-api-version": GITHUB_REST_API_VERSION,
     },
   });
@@ -1793,7 +1793,7 @@ async function handleWebhookHeal(request: Request, env: RelayEnv, repo: { owner:
   if (!appStatus.configured || !appStatus.installed) {
     const error = appStatus.configured && !appStatus.installed && appStatus.error
       ? appStatus.error
-      : "The ADE GitHub App is not installed on this repository.";
+      : "The DAEX GitHub App is not installed on this repository.";
     return json({ ok: false, error }, { status: 409 });
   }
 
@@ -1803,7 +1803,7 @@ async function handleWebhookHeal(request: Request, env: RelayEnv, repo: { owner:
       accept: "application/vnd.github+json",
       authorization: `Bearer ${appAuth.jwt}`,
       "content-type": "application/json",
-      "user-agent": "ADE GitHub Webhook Relay",
+      "user-agent": "DAEX GitHub Webhook Relay",
       "x-github-api-version": GITHUB_REST_API_VERSION,
     },
     body: JSON.stringify({ secret: webhookSecret }),
@@ -1844,7 +1844,7 @@ async function handleWebhookDeliveries(request: Request, env: RelayEnv, repo: { 
     headers: {
       accept: "application/vnd.github+json",
       authorization: `Bearer ${appAuth.jwt}`,
-      "user-agent": "ADE GitHub Webhook Relay",
+      "user-agent": "DAEX GitHub Webhook Relay",
       "x-github-api-version": GITHUB_REST_API_VERSION,
     },
   });

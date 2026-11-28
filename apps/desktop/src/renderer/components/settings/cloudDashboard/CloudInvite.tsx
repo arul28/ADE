@@ -13,6 +13,7 @@ import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { showToast } from "../../app/toast/toastStore";
 import "./cloudDashboard.css";
 import { cloudUnitWords } from "../../../../shared/cloudUnitWords";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * "Paste an invite link or code": the friend's side of an invite. Used on the
@@ -49,7 +50,7 @@ export function InviteCodeBox({
         showToast({
           tone: "success",
           title: outcome.rewarded ? `You both got ${reward} free cloud ${noun}` : "Invite added",
-          message: outcome.rewarded ? "They never expire." : `You both get ${reward} free cloud ${noun} when your first chat runs on ADE Cloud.`,
+          message: outcome.rewarded ? "They never expire." : `You both get ${reward} free cloud ${noun} when your first chat runs on ${BRAND.CLOUD_NAME}.`,
         });
         onDone?.(outcome.referral);
       } else {
@@ -58,7 +59,7 @@ export function InviteCodeBox({
       }
     } catch {
       captureInviteAnalytics({ action: "invite_code_entered", outcome: "refused_unavailable" });
-      setError("ADE couldn't check that code. Try again in a moment.");
+      setError(`${BRAND.NAME} couldn't check that code. Try again in a moment.`);
     } finally {
       setBusy(false);
     }
@@ -119,7 +120,7 @@ export function CloudInviteCard({ account, onChanged }: { account: CloudAccountS
       <div className="kit-card-body adecd-invite-body">
         <div className="adecd-invite-main">
           <p className="adecd-lead">
-            When a friend you invite runs their first chat on ADE Cloud, you both get {reward} free {noun}. They never expire, and they're used after your plan's {noun}.
+            When a friend you invite runs their first chat on {BRAND.CLOUD_NAME}, you both get {reward} free {noun}. They never expire, and they're used after your plan's {noun}.
           </p>
           <div className="adecd-invite-link">
             <span className="kit-num" title={referral.link}>{referral.link}</span>
@@ -145,7 +146,7 @@ export function CloudInviteCard({ account, onChanged }: { account: CloudAccountS
               ? `You were invited, and you both got ${reward} ${noun}.`
               : referral.referredState === "refused"
                 ? `You were invited, but that invite can't give ${noun} on this account.`
-                : `You were invited. You both get ${reward} ${noun} when your first chat runs on ADE Cloud.`}
+                : `You were invited. You both get ${reward} ${noun} when your first chat runs on ${BRAND.CLOUD_NAME}.`}
           </p>
         ) : null}
       </div>

@@ -1,24 +1,24 @@
-import { ADE_CLIENT_EVENTS, type AdeClientEvent } from "./clientEvents.js";
-import type { AdeChatClient } from "./client.js";
+import { DAEX_CLIENT_EVENTS, type DaexClientEvent } from "./clientEvents.js";
+import type { DaexChatClient } from "./client.js";
 import type { ThreadOpenOptions, ThreadResumeOptions } from "./clientOptions.js";
-import type { AdeThread, EditLastOptions, HistoryPageOptions, SendOptions, SetModelOptions, SteerOptions, ThreadRespondOptions, ThreadUpdate, ThreadUpdateOptions } from "./thread.js";
+import type { DaexThread, EditLastOptions, HistoryPageOptions, SendOptions, SetModelOptions, SteerOptions, ThreadRespondOptions, ThreadUpdate, ThreadUpdateOptions } from "./thread.js";
 import { createSignInRegistry } from "./signInRegistry.js";
-import { AdeError } from "./errors.js";
+import { DaexError } from "./errors.js";
 import type { ApprovalDecision } from "./approvals.js";
 import { serializeAdeError } from "./electron/protocol.js";
 import type { McpServerConfig, ProviderStatus, ThreadSummary, Unsubscribe } from "./types.js";
 import { validateThreadBudget, type ThreadBudget } from "./usage.js";
-import { createAdeRemoteClient, type AdeRemoteClient, type AdeRemoteClientOptions, type AdeRemoteTransport, type AdeRemoteThread } from "./remoteClient.js";
+import { createDaexRemoteClient, type DaexRemoteClient, type DaexRemoteClientOptions, type DaexRemoteTransport, type DaexRemoteThread } from "./remoteClient.js";
 
-export type AdeServerSocket = AdeRemoteTransport;
-export type AdeServerContext = { socket: AdeServerSocket };
+export type DaexServerSocket = DaexRemoteTransport;
+export type DaexServerContext = { socket: DaexServerSocket };
 
-export type CreateAdeServerOptions = {
-  client: AdeChatClient;
+export type CreateDaexServerOptions = {
+  client: DaexChatClient;
   /** Called before every RPC, including custom and unknown methods. */
-  authorize?: (socket: AdeServerSocket, method: string, params: Record<string, unknown>) => boolean | Promise<boolean>;
+  authorize?: (socket: DaexServerSocket, method: string, params: Record<string, unknown>) => boolean | Promise<boolean>;
   /** Restrict thread keys at every keyed call and filter list results. */
-  allowThreadKey?: (key: string, method: string, params: Record<string, unknown>, socket: AdeServerSocket) => boolean | Promise<boolean>;
+  allowThreadKey?: (key: string, method: string, params: Record<string, unknown>, socket: DaexServerSocket) => boolean | Promise<boolean>;
   /** Resolve create/resume settings in the trusted host process. */
   openOptions?: (
     key: string,
@@ -30,20 +30,20 @@ export type CreateAdeServerOptions = {
    * unless the host opts in: a browser that can sign accounts in or store keys
    * acts as the end user. A callback decides per socket and method.
    */
-  allowAccountManagement?: boolean | ((socket: AdeServerSocket, method: string, params: Record<string, unknown>) => boolean | Promise<boolean>);
+  allowAccountManagement?: boolean | ((socket: DaexServerSocket, method: string, params: Record<string, unknown>) => boolean | Promise<boolean>);
   /** Extra host-owned RPC methods. They share the same authorization gate. */
-  methods?: Record<string, (params: Record<string, unknown>, context: AdeServerContext) => unknown | Promise<unknown>>;
+  methods?: Record<string, (params: Record<string, unknown>, context: DaexServerContext) => unknown | Promise<unknown>>;
   logger?: (line: string) => void;
 };
 
-export type AdeServer = {
+export type DaexServer = {
   /** Attach a host-accepted WebSocket to the bridge. No WebSocket package is loaded by the SDK. */
-  handleConnection(socket: AdeServerSocket): Unsubscribe;
+  handleConnection(socket: DaexServerSocket): Unsubscribe;
   /** Release every listener and connection; the host retains ownership of its client and sockets. */
   close(): void;
 };
 
-type SocketThread = { thread: AdeThread; stop: Unsubscribe };
+type SocketThread = { thread: DaexThread; stop: Unsubscribe };
 
 
 const KEYED_METHODS = new Set([
@@ -62,7 +62,7 @@ function isAccountMethod(method: string): boolean {
 }
 
 function requireText(value: unknown, label: string): string {
-  if (typeof value !== "string" || !value.trim()) throw new AdeError("invalid_option", label + " must be a non-empty string.");
+  if (typeof value !== "string" || !value.trim()) throw new DaexError("invalid_option", label + " must be a non-empty string.");
   return value;
 }
 
@@ -78,11 +78,11 @@ function stringify(value: unknown): string {
   try { return JSON.stringify(value); } catch { return "null"; }
 }
 
-function safeSend(socket: AdeServerSocket, value: unknown): void {
+function safeSend(socket: DaexServerSocket, value: unknown): void {
   try { socket.send(stringify(value)); } catch { /* A close event owns cleanup. */ }
 }
 
-function listen(socket: AdeServerSocket, event: "message" | "close", listener: (...args: any[]) => void): Unsubscribe {
+function listen(socket: DaexServerSocket, event: "message" | "close", listener: (...args: any[]) => void): Unsubscribe {
   if (typeof socket.addEventListener === "function") {
     socket.addEventListener(event, listener);
     return () => socket.removeEventListener?.(event, listener);
@@ -94,7 +94,7 @@ function listen(socket: AdeServerSocket, event: "message" | "close", listener: (
       else socket.removeListener?.(event, listener);
     };
   }
-  throw new AdeError("invalid_option", "createAdeServer needs a WebSocket-compatible socket.");
+  throw new DaexError("invalid_option", "createDaexServer needs a WebSocket-compatible socket.");
 }
 
 function parseMessage(raw: unknown): unknown {
@@ -116,20 +116,20 @@ function rendererOpenOptions(options: Record<string, unknown> | undefined, exist
 }
 
 /** Serve the SDK chat client over a host-supplied ws-compatible transport. */
-export function createAdeServer(options: CreateAdeServerOptions): AdeServer {
+export function createDaexServer(options: CreateDaexServerOptions): DaexServer {
   const { client } = options;
-  const sockets = new Set<AdeServerSocket>();
-  const cleanups = new Map<AdeServerSocket, Unsubscribe>();
+  const sockets = new Set<DaexServerSocket>();
+  const cleanups = new Map<DaexServerSocket, Unsubscribe>();
   let closed = false;
 
-  const attach = (socket: AdeServerSocket): Unsubscribe => {
-    if (closed) throw new AdeError("disposed", "This ADE server bridge has been closed.");
+  const attach = (socket: DaexServerSocket): Unsubscribe => {
+    if (closed) throw new DaexError("disposed", "This DAEX server bridge has been closed.");
     const threads = new Map<string, SocketThread>();
-    const opening = new Map<string, Promise<AdeThread>>();
+    const opening = new Map<string, Promise<DaexThread>>();
     const requestIds = new Set<string | number>();
     // Sign-ins this connection started. A browser that goes away cannot finish
     // one, so its sign-ins are cancelled with it rather than left running.
-    const signIns = createSignInRegistry<AdeServerSocket, ReturnType<typeof serializeAdeError>>(serializeAdeError);
+    const signIns = createSignInRegistry<DaexServerSocket, ReturnType<typeof serializeAdeError>>(serializeAdeError);
     let disconnected = false;
     const send = (message: unknown) => { if (!disconnected) safeSend(socket, message); };
     const cleanup = () => {
@@ -148,11 +148,11 @@ export function createAdeServer(options: CreateAdeServerOptions): AdeServer {
     };
 
     const stopProvider = client.providers.onChange((statuses) => send({ push: "providers", statuses }));
-    const stopClientEvents: Unsubscribe[] = ADE_CLIENT_EVENTS.map((event) =>
+    const stopClientEvents: Unsubscribe[] = DAEX_CLIENT_EVENTS.map((event) =>
       client.on(event, (payload) => send({ push: "client", event, payload })),
     );
 
-    const ensureThread = async (key: string, rendererOptions?: Record<string, unknown>): Promise<AdeThread> => {
+    const ensureThread = async (key: string, rendererOptions?: Record<string, unknown>): Promise<DaexThread> => {
       const existing = threads.get(key)?.thread;
       if (existing) return existing;
       const pending = opening.get(key);
@@ -172,9 +172,9 @@ export function createAdeServer(options: CreateAdeServerOptions): AdeServer {
       return started;
     };
 
-    const requireThread = (key: unknown): AdeThread => {
+    const requireThread = (key: unknown): DaexThread => {
       if (typeof key !== "string" || !threads.has(key)) {
-        throw new AdeError("thread_not_found", "Open the thread through this connection before calling it.");
+        throw new DaexError("thread_not_found", "Open the thread through this connection before calling it.");
       }
       return threads.get(key)!.thread;
     };
@@ -185,7 +185,7 @@ export function createAdeServer(options: CreateAdeServerOptions): AdeServer {
       "models.list": () => client.models.list(),
       "doctor": () => client.doctor(),
       "threads.open": async ({ key, options: rendererOptions }) => {
-        if (typeof key !== "string" || !key.trim()) throw new AdeError("invalid_option", "threads.open needs a non-empty key.");
+        if (typeof key !== "string" || !key.trim()) throw new DaexError("invalid_option", "threads.open needs a non-empty key.");
         const thread = await ensureThread(key, asParams(rendererOptions));
         return {
           id: thread.id,
@@ -218,7 +218,7 @@ export function createAdeServer(options: CreateAdeServerOptions): AdeServer {
         await requireThread(key).interrupt({
           ...(raw.queue === "keep" || raw.queue === "drop" ? { queue: raw.queue } : {}),
           ...(typeof raw.mode === "string" ? { mode: raw.mode } : {}),
-        } as Parameters<AdeThread["interrupt"]>[0]);
+        } as Parameters<DaexThread["interrupt"]>[0]);
         return null;
       },
       "thread.setModel": async ({ key, modelId, options: modelOptions }) => await requireThread(key).setModel(String(modelId ?? ""), asParams(modelOptions) as SetModelOptions),
@@ -242,7 +242,7 @@ export function createAdeServer(options: CreateAdeServerOptions): AdeServer {
       "thread.queue.cancel": async ({ key, id }) => { await requireThread(key).queue.cancel(requireText(id, "id")); return null; },
       "thread.queue.edit": async ({ key, id, text }) => { await requireThread(key).queue.edit(requireText(id, "id"), String(text ?? "")); return null; },
       "thread.queue.move": async ({ key, id, index }) => {
-        if (typeof index !== "number" || !Number.isInteger(index)) throw new AdeError("invalid_option", "index must be an integer.");
+        if (typeof index !== "number" || !Number.isInteger(index)) throw new DaexError("invalid_option", "index must be an integer.");
         await requireThread(key).queue.move(requireText(id, "id"), index);
         return null;
       },
@@ -252,9 +252,9 @@ export function createAdeServer(options: CreateAdeServerOptions): AdeServer {
       "thread.stopTask": async ({ key, taskId }) => { await requireThread(key).stopTask(requireText(taskId, "taskId")); return null; },
       "thread.slashCommands": async ({ key }) => await requireThread(key).slashCommands(),
       "thread.recover": async ({ key, options: recoverOptions }) =>
-        await requireThread(key).recover(asParams(recoverOptions) as Parameters<AdeThread["recover"]>[0]),
+        await requireThread(key).recover(asParams(recoverOptions) as Parameters<DaexThread["recover"]>[0]),
       "thread.resolveUnprocessed": async ({ key, args }) =>
-        await requireThread(key).resolveUnprocessed(asParams(args) as Parameters<AdeThread["resolveUnprocessed"]>[0]),
+        await requireThread(key).resolveUnprocessed(asParams(args) as Parameters<DaexThread["resolveUnprocessed"]>[0]),
       "thread.usageLimit.resumeNow": async ({ key }) => await requireThread(key).usageLimit.resumeNow(),
       "thread.usageLimit.continueOnAlternate": async ({ key }) => await requireThread(key).usageLimit.continueOnAlternate(),
       "thread.switchAccount": async ({ key, instanceId }) => await requireThread(key).switchAccount(requireText(instanceId, "instanceId")),
@@ -282,14 +282,14 @@ export function createAdeServer(options: CreateAdeServerOptions): AdeServer {
       },
       "credentials.list": async ({ provider }) => await client.credentials.list(typeof provider === "string" ? provider : undefined),
       "credentials.add": async ({ credential }) =>
-        await client.credentials.add(asParams(credential) as Parameters<AdeChatClient["credentials"]["add"]>[0]),
+        await client.credentials.add(asParams(credential) as Parameters<DaexChatClient["credentials"]["add"]>[0]),
       "credentials.remove": async ({ id, provider }) =>
         await client.credentials.remove(requireText(id, "id"), typeof provider === "string" ? provider : undefined),
       "credentials.verify": async ({ provider }) => await client.credentials.verify(requireText(provider, "provider")),
       "presets.list": async () => await client.presets.list(),
-      "presets.add": async ({ preset }) => await client.presets.add(asParams(preset) as Parameters<AdeChatClient["presets"]["add"]>[0]),
+      "presets.add": async ({ preset }) => await client.presets.add(asParams(preset) as Parameters<DaexChatClient["presets"]["add"]>[0]),
       "presets.update": async ({ id, patch }) =>
-        await client.presets.update(requireText(id, "id"), asParams(patch) as Parameters<AdeChatClient["presets"]["update"]>[1]),
+        await client.presets.update(requireText(id, "id"), asParams(patch) as Parameters<DaexChatClient["presets"]["update"]>[1]),
       "presets.remove": async ({ id }) => await client.presets.remove(requireText(id, "id")),
     };
 
@@ -299,32 +299,32 @@ export function createAdeServer(options: CreateAdeServerOptions): AdeServer {
       if (!request || (typeof request.id !== "string" && typeof request.id !== "number") || typeof request.method !== "string") return;
       const id = request.id as string | number;
       if (requestIds.has(id)) {
-        send({ id, ok: false, error: serializeAdeError(new AdeError("protocol_error", "Duplicate request id.")) });
+        send({ id, ok: false, error: serializeAdeError(new DaexError("protocol_error", "Duplicate request id.")) });
         return;
       }
       requestIds.add(id);
       const params = asParams(request.params);
       try {
         if (options.authorize && !(await options.authorize(socket, request.method, params))) {
-          throw new AdeError("unauthorized", "The host refused " + request.method + ".");
+          throw new DaexError("unauthorized", "The host refused " + request.method + ".");
         }
         if (isAccountMethod(request.method)) {
           const gate = options.allowAccountManagement;
           const allowed = typeof gate === "function" ? await gate(socket, request.method, params) : gate === true;
-          if (!allowed) throw new AdeError("unauthorized", "The host has not enabled account management over this bridge.");
+          if (!allowed) throw new DaexError("unauthorized", "The host has not enabled account management over this bridge.");
         }
         if (KEYED_METHODS.has(request.method)) {
           const key = params.key;
-          if (typeof key !== "string") throw new AdeError("invalid_option", request.method + " needs a thread key.");
+          if (typeof key !== "string") throw new DaexError("invalid_option", request.method + " needs a thread key.");
           if (options.allowThreadKey && !(await options.allowThreadKey(key, request.method, params, socket))) {
-            throw new AdeError("unauthorized", "The host refused thread key " + key + ".");
+            throw new DaexError("unauthorized", "The host refused thread key " + key + ".");
           }
         }
         const customHandler = options.methods?.[request.method];
         const handler = handlers[request.method] ?? (customHandler
           ? (value: Record<string, unknown>) => customHandler(value, { socket })
           : undefined);
-        if (!handler) throw new AdeError("unsupported", "The ADE server does not expose " + request.method + ".");
+        if (!handler) throw new DaexError("unsupported", "The DAEX server does not expose " + request.method + ".");
         const result = await handler(params);
         send({ id, ok: true, result: result === undefined ? null : result });
       } catch (error) {
@@ -355,4 +355,22 @@ export function createAdeServer(options: CreateAdeServerOptions): AdeServer {
   };
 }
 
-export { createAdeRemoteClient, type AdeRemoteClient, type AdeRemoteClientOptions, type AdeRemoteThread, type AdeRemoteTransport };
+export { createDaexRemoteClient, type DaexRemoteClient, type DaexRemoteClientOptions, type DaexRemoteThread, type DaexRemoteTransport };
+
+// Pre-DAEX names, kept as deprecated aliases so code written against the
+// `@ade-dev` packages keeps compiling. Remove them in a future major version.
+/** @deprecated Use {@link CreateDaexServerOptions}. */
+export type CreateAdeServerOptions = CreateDaexServerOptions;
+/** @deprecated Use {@link createDaexServer}. */
+export const createAdeServer = createDaexServer;
+/** @deprecated Use {@link DaexServer}. */
+export type AdeServer = DaexServer;
+/** @deprecated Use {@link DaexServerContext}. */
+export type AdeServerContext = DaexServerContext;
+/** @deprecated Use {@link DaexServerSocket}. */
+export type AdeServerSocket = DaexServerSocket;
+
+// Pre-DAEX names: deprecated aliases of the DAEX* exports above, kept so code
+// written against the `@ade-dev` packages keeps compiling.
+export { createAdeRemoteClient } from "./remoteClient.js";
+export type { AdeRemoteClient, AdeRemoteClientOptions, AdeRemoteThread, AdeRemoteTransport } from "./remoteClient.js";

@@ -5,6 +5,7 @@ import type { LinearConnectionStatus } from "../../../shared/types/linearSync";
 import type { IntegrationCredentialStorage } from "../../../shared/types/integrationCredentialStorage";
 import { jiraErrorMessage, parseJiraError } from "../../../shared/jiraErrors";
 import type { IntegrationConnectAdapter } from "./integrationConnectRequest";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The status/save pair for each integration the connect card knows, over the
@@ -113,7 +114,7 @@ function githubAdapter(services: IntegrationConnectServices, fetcher: FetchLike)
         headers: {
           Accept: "application/vnd.github+json",
           Authorization: `Bearer ${token}`,
-          "User-Agent": "ADE",
+          "User-Agent": BRAND.NAME,
           "X-GitHub-Api-Version": "2022-11-28",
         },
       });
@@ -173,7 +174,7 @@ function jiraConnectErrorText(error: unknown, siteUrl: string): string {
   const site = siteUrl.replace(/^https?:\/\//, "").replace(/\/$/, "") || "that address";
   switch (parsed?.reason) {
     case "not-found":
-      return `ADE could not find a Jira site at ${site}. Check the site address.`;
+      return `${BRAND.NAME} could not find a Jira site at ${site}. Check the site address.`;
     case "unauthenticated":
       return "Jira did not accept this email and API token. Check both.";
     case "forbidden":

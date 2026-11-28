@@ -43,6 +43,7 @@
  * The Grok sign-in from MacBook was last renewed by cloud-a, which renews it
  * while MacBook is off (the takeover).
  */
+import { BRAND } from "../shared/brand";
 import type { ClaudePassUseView, CloudClaudeSignInState, CloudSignInEnd, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type {
   ProviderLoginApplied,
@@ -408,7 +409,7 @@ function providerRows(state: MockState, own = true): ProviderLoginProviderStatus
           allowedAt: state.antigravityAllowedAt,
           message: state.antigravityAllowedAt
             ? "Copied from this computer. Allow again to update."
-            : "The agy CLI keeps this sign-in in the Keychain. Allow ADE to copy it once; macOS asks you first.",
+            : `The agy CLI keeps this sign-in in the Keychain. Allow ${BRAND.NAME} to copy it once; macOS asks you first.`,
         },
       }
       : {}),
@@ -490,7 +491,7 @@ function accountPasses(state: MockState): NonNullable<CloudSignInStatus["passes"
 function accountStatus(state: MockState): ProviderLoginStatus {
   if (state.scenario === "unreadable") {
     return {
-      thisComputer: { capture: "off", reason: "vault_unavailable", message: "ADE couldn't read your ADE account.", label: "Mac Studio", cloudComputer: false, lastPassAt: null },
+      thisComputer: { capture: "off", reason: "vault_unavailable", message: `${BRAND.NAME} couldn't read your ${BRAND.NAME} account.`, label: "Mac Studio", cloudComputer: false, lastPassAt: null },
       cloud: { enabled: true, inUse: {}, claude: { smartBalance: false } },
       signIns: [],
       providers: providerRows(state),
@@ -679,7 +680,7 @@ export function applyBrowserMockProviderLogins(ade: any): void {
     allowGitHubCli: async (args: { on: boolean }, pin?: unknown) => {
       console.info(`[browser mock] providerLogins.allowGitHubCli ${args.on ? "on" : "off"}`);
       if (args.on && cloudTargetOf(pin)) {
-        throw new Error("Turn this on at that computer. The GitHub CLI can ask there to unlock its keychain, so ADE reads it only on the computer you are using.");
+        throw new Error(`Turn this on at that computer. The GitHub CLI can ask there to unlock its keychain, so ${BRAND.NAME} reads it only on the computer you are using.`);
       }
       const dropSignIn = () => {
         state.signIns = state.signIns.filter((entry) => entry.key !== GH_KEY);
@@ -832,7 +833,7 @@ export function applyBrowserMockProviderLogins(ade: any): void {
         return;
       case "saved_here": {
         const key = savePass(forEmail, "match", "pending");
-        setClaude({ state: "saved_here", foundEmail: forEmail, check: "match", savedKey: key, upload: "pending", message: "ADE couldn't reach your account yet. The pass is kept on this computer, and ADE sends it on its own." });
+        setClaude({ state: "saved_here", foundEmail: forEmail, check: "match", savedKey: key, upload: "pending", message: `${BRAND.NAME} couldn't reach your account yet. The pass is kept on this computer, and ${BRAND.NAME} sends it on its own.` });
         changed();
         return;
       }

@@ -1,3 +1,4 @@
+import { BRAND } from "../shared/brand";
 import { createBrowserMockMusic } from "./browserMockMusic";
 import { browserMockProviderContextInventory } from "./browserMockProviderContext";
 import type { GetProviderContextInventoryArgs } from "../shared/types/providerContext";
@@ -464,7 +465,7 @@ const LOGIN_IMPORT_UNAVAILABLE = {
   ok: false as const,
   sourceId: "",
   status: "unsupported" as const,
-  reason: "Login import needs the ADE desktop app on the machine holding the browser.",
+  reason: `Login import needs the ${BRAND.NAME} desktop app on the machine holding the browser.`,
   settingsPaneId: null,
 };
 const resolvedArg2 =
@@ -508,7 +509,7 @@ function createMockStorageSnapshot(now: string) {
       items: [
         item("chats_history:transcripts", "Chat and terminal history", `${root}/.ade/transcripts`, 640 * MB, "compressible"),
         item("chats_history:deleted_lane_chats", "Chats from deleted lanes", `${root}/.ade/transcripts/chat`, 412 * MB, "review_first", {
-          detail: "813 chats whose lane was deleted. ADE no longer tracks or shows them, but their files are still on this machine, in this folder:",
+          detail: `813 chats whose lane was deleted. ${BRAND.NAME} no longer tracks or shows them, but their files are still on this machine, in this folder:`,
         }),
       ],
       safety: "compressible" as const,
@@ -687,7 +688,7 @@ function createMockProjectHealthReport(now: string) {
         area: "drive" as const,
         severity: "info" as const,
         title: "Time Machine doesn't back up this drive",
-        detail: "Pushed branches are safe on your git host, but unpushed work, ADE's chats and proof on this drive have no backup.",
+        detail: `Pushed branches are safe on your git host, but unpushed work, ${BRAND.NAME}'s chats and proof on this drive have no backup.`,
       },
       {
         id: "stale-lanes",
@@ -927,7 +928,7 @@ function mockAppControlSvg(): string {
   <rect width="1280" height="800" fill="#0f1115"/>
   <rect width="1280" height="44" fill="#171a21"/>
   <circle cx="24" cy="22" r="6" fill="#ff5f57"/><circle cx="44" cy="22" r="6" fill="#febc2e"/><circle cx="64" cy="22" r="6" fill="#28c840"/>
-  <text x="640" y="27" fill="#9aa3b2" font-family="-apple-system,Segoe UI,sans-serif" font-size="14" text-anchor="middle">ADE Playground</text>
+  <text x="640" y="27" fill="#9aa3b2" font-family="-apple-system,Segoe UI,sans-serif" font-size="14" text-anchor="middle">${BRAND.NAME} Playground</text>
   <rect x="0" y="44" width="240" height="756" fill="#13161c"/>
   <g font-family="-apple-system,Segoe UI,sans-serif" font-size="14" fill="#c9d1dc">
     <rect x="12" y="64" width="216" height="32" rx="6" fill="#232838"/>
@@ -964,7 +965,7 @@ function createMockAppControl() {
   const session = (): AppControlSession => ({
     id: "mock-app-control-session",
     appKind: "electron",
-    label: "ADE Playground",
+    label: `${BRAND.NAME} Playground`,
     projectRoot: MOCK_PROJECT.rootPath,
     laneId,
     cwd: MOCK_PROJECT.rootPath,
@@ -993,9 +994,9 @@ function createMockAppControl() {
     startedAt: state === "recording" ? recordingStartedAt : null,
     filePath: null,
     durationMs: null,
-    caption: state === "recording" ? "App Control recording of ADE Playground" : null,
+    caption: state === "recording" ? `App Control recording of ${BRAND.NAME} Playground` : null,
     engine: "window-capture",
-    lastError: state === "permission" ? "Screen Recording is off for ADE." : null,
+    lastError: state === "permission" ? `Screen Recording is off for ${BRAND.NAME}.` : null,
     permissions: state === "permission" ? permissionsDenied : null,
   });
   const emit = (event: AppControlEventPayload) => {
@@ -1114,7 +1115,7 @@ function createMockAppControl() {
         hitElement: null,
         providers: [{ provider: "cdp" as const, available: true, elementCount: 0 }],
         url: "http://localhost:5173/sign-in",
-        title: "ADE Playground",
+        title: `${BRAND.NAME} Playground`,
       };
     },
     inspectPoint: resolvedArg({} as any),
@@ -1124,7 +1125,7 @@ function createMockAppControl() {
     scroll: resolvedArg({ ok: true as const }),
     dispatchKey: resolvedArg({ ok: true as const }),
     listTargets: async () => (state === "off" ? [] : [
-      { id: "mock-target", title: "ADE Playground", url: "http://localhost:5173/sign-in", type: "page", active: true },
+      { id: "mock-target", title: `${BRAND.NAME} Playground`, url: "http://localhost:5173/sign-in", type: "page", active: true },
     ]),
     attachToTarget: async () => session(),
     listDrivers: async () => ({
@@ -1176,7 +1177,7 @@ function createMockAppControl() {
         wallDurationMs: durationMs,
         idleCutMs: 0,
         bytes: 3_400_000,
-        caption: "App Control recording of ADE Playground",
+        caption: `App Control recording of ${BRAND.NAME} Playground`,
         proofArtifactId: "mock-app-control-proof",
         chatSessionId: args?.chatSessionId ?? null,
       };
@@ -1190,7 +1191,7 @@ function createMockAppControl() {
         filePath: `${MOCK_PROJECT.rootPath}/.ade/cache/app-control-observations/mock/obs-mock.png`,
         width: 1280,
         height: 800,
-        caption: args?.caption ?? "App Control screenshot · ADE Playground",
+        caption: args?.caption ?? `App Control screenshot · ${BRAND.NAME} Playground`,
         laneId: laneId ?? "",
         chatSessionId: args?.chatSessionId ?? null,
         artifacts: [],
@@ -1664,7 +1665,7 @@ function browserMockHeldElsewhereConnection(): any[] {
     route: null,
     capabilities: null,
     projects: [],
-    lastError: "Another ADE app on this computer (for example ADE Beta or a dev build) is using the link to MacBook Pro (97). Use it here instead?",
+    lastError: `Another ${BRAND.NAME} app on this computer (for example ${BRAND.BETA_NAME} or a dev build) is using the link to MacBook Pro (97). Use it here instead?`,
     lastAttemptedAt: Date.now() - 30_000,
     connectedAt: null,
     reconnectBlocked: "disconnected",
@@ -1705,7 +1706,7 @@ function browserMockOfflineMacTarget(mac: (typeof BROWSER_MOCK_OFFLINE_MACS)[num
 function browserMockOfflineMacConnections(): any[] {
   if (!browserMockFlag("mockOfflineMacs")) return [];
   return BROWSER_MOCK_OFFLINE_MACS.filter((mac) => mac.saved).map((mac) => {
-    const message = `Can't reach ${mac.name} — it may be asleep or ADE may be stopped there.`;
+    const message = `Can't reach ${mac.name} — it may be asleep or ${BRAND.NAME} may be stopped there.`;
     return {
       target: browserMockOfflineMacTarget(mac),
       state: "error",
@@ -1758,7 +1759,7 @@ function withOfflineMacsConnect(connect: (id: string) => Promise<any>): (id: str
       : undefined;
     if (!mac) return connect(id);
     await new Promise((resolve) => window.setTimeout(resolve, 1_200));
-    throw new Error(`Can't reach ${mac.name} — it may be asleep or ADE may be stopped there.`);
+    throw new Error(`Can't reach ${mac.name} — it may be asleep or ${BRAND.NAME} may be stopped there.`);
   };
 }
 
@@ -1934,14 +1935,14 @@ const browserMockRemoteMcp = (() => {
     connections: status.connections.map((connection) => ({ ...connection })),
   });
   return async (action: RemoteMcpAction, args: Record<string, unknown> = {}): Promise<unknown> => {
-    if (mode === "error") throw new Error("ADE couldn't reach its background service.");
+    if (mode === "error") throw new Error(`${BRAND.NAME} couldn't reach its background service.`);
     switch (action) {
       case "getStatus":
         return snapshot();
       case "listActivity":
         return activity.slice(0, typeof args.limit === "number" ? args.limit : 50);
       case "setEnabled":
-        if (!status.signedIn) throw new Error("Sign in to your ADE account first.");
+        if (!status.signedIn) throw new Error(`Sign in to your ${BRAND.NAME} account first.`);
         status.enabled = args.enabled === true;
         status.serverUrl = status.enabled ? serverUrl : status.serverUrl;
         for (const machine of status.machines) settle(machine);
@@ -2805,7 +2806,7 @@ function mockLinearUpdatePrefs(
   };
   mockLinearPrefsStore.set(mockLinearPrefsKey(args), next);
   return refused
-    ? { preferences: next, savedToLinear: false, reason: "Linear did not accept the change. It is kept in ADE until you reload." }
+    ? { preferences: next, savedToLinear: false, reason: `Linear did not accept the change. It is kept in ${BRAND.NAME} until you reload.` }
     : { preferences: next, savedToLinear: true, reason: null };
 }
 
@@ -3326,7 +3327,7 @@ function mockCommitsForLane(lane: any, count: number): any[] {
       sha,
       shortSha: sha.slice(0, 7),
       parents: [],
-      authorName: String(source.author?.name ?? "ADE"),
+      authorName: String(source.author?.name ?? BRAND.NAME),
       authoredAt: new Date(end - index * step).toISOString(),
       subject,
       pushed: index > 0,
@@ -3978,7 +3979,7 @@ function mockCloudLaneTargets(): any[] {
   // One computer under an instance-derived name, one under a prompt-derived name (the lanes' computers of `?mockCloud=plus`).
   return [
     target("mock-cloud-lane", "ade-cloud-0t1p52vfqe", "k3j9x0a1"),
-    target("mock-cloud-lane-2", "Live Test ADE Cloud Keep", "m2q8w1b2"),
+    target("mock-cloud-lane-2", `Live Test ${BRAND.CLOUD_NAME} Keep`, "m2q8w1b2"),
   ];
 }
 
@@ -5325,7 +5326,7 @@ const BUILTIN_MOCK_GITHUB_SNAPSHOT: any = {
       repoName: "ade",
       githubPrNumber: 191,
       githubUrl: "https://github.com/acme/ade/pull/191",
-      title: "Hotfix from GitHub UI with no ADE lane",
+      title: `Hotfix from GitHub UI with no ${BRAND.NAME} lane`,
       state: "open",
       isDraft: false,
       baseBranch: "main",
@@ -6703,11 +6704,11 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         // Device sign-in runs inside a real ADE brain; the mock has none, so it
         // reports the same refusal the hosted web adapter does.
         startDeviceLogin: async () => {
-          throw new Error("Open ADE on the computer you want to reconnect, then try again there.");
+          throw new Error(`Open ${BRAND.NAME} on the computer you want to reconnect, then try again there.`);
         },
         pollDeviceLogin: async () => ({
           status: "error" as const,
-          message: "Open ADE on the computer you want to reconnect, then try again there.",
+          message: `Open ${BRAND.NAME} on the computer you want to reconnect, then try again there.`,
           intervalSec: null,
           authStatus: status(),
         }),
@@ -7523,7 +7524,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           tone: "success" as const,
           title: "Your other devices can reach Studio Mac.",
           checks: [
-            { id: "listener" as const, label: "ADE", state: "ok" as const, detail: "Accepting connections on port 8787." },
+            { id: "listener" as const, label: BRAND.NAME, state: "ok" as const, detail: "Accepting connections on port 8787." },
             { id: "relay" as const, label: "Relay", state: "ok" as const, detail: "Connected, and a test connection through it came back." },
             { id: "tailnet" as const, label: "Tailscale", state: "ok" as const, detail: "Devices on your tailnet can reach Studio Mac." },
           ],
@@ -7537,8 +7538,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             ],
             diagnosis: {
               tone: "danger",
-              title: "windows isn't connected to ADE's relay.",
-              fix: "Make sure windows is awake, online, and ADE is open there. If it is, open Connections on windows and press Check to see what's blocking it.",
+              title: `windows isn't connected to ${BRAND.NAME}'s relay.`,
+              fix: `Make sure windows is awake, online, and ${BRAND.NAME} is open there. If it is, open Connections on windows and press Check to see what's blocking it.`,
             },
           }
         : {
@@ -7889,13 +7890,13 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           tone: "warning" as const,
           title: "Devices on your network or tailnet can reach this computer. Others can't.",
           checks: [
-            { id: "listener" as const, label: "ADE", state: "ok" as const, detail: "Accepting connections on port 8787." },
+            { id: "listener" as const, label: BRAND.NAME, state: "ok" as const, detail: "Accepting connections on port 8787." },
             {
               id: "relay" as const,
               label: "Relay",
               state: "failed" as const,
-              detail: "This computer is not connected to ADE's relay.",
-              fix: "This computer sends its traffic through the Tailscale exit node \"mullvad-se\". Turn the exit node off, or allow ADE's relay through it.",
+              detail: `This computer is not connected to ${BRAND.NAME}'s relay.`,
+              fix: `This computer sends its traffic through the Tailscale exit node "mullvad-se". Turn the exit node off, or allow ${BRAND.NAME}'s relay through it.`,
             },
             { id: "tailnet" as const, label: "Tailscale", state: "ok" as const, detail: "Devices on your tailnet can reach this computer." },
             
@@ -8075,7 +8076,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         id: "browser-proof-recovered",
         kind: "screenshot",
         backendStyle: "local_fallback",
-        backendName: "ADE browser preview",
+        backendName: `${BRAND.NAME} browser preview`,
         sourceToolName: "recover",
         originalType: "image",
         title: "Recovered proof",
@@ -10412,13 +10413,13 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         recentSessions: [],
       }),
       previewSystemPrompt: resolvedArg({
-        prompt: "You are the CTO for this project inside ADE.",
+        prompt: `You are the CTO for this project inside ${BRAND.NAME}.`,
         tokenEstimate: 10,
         sections: [
           {
             id: "doctrine",
-            title: "Immutable ADE doctrine",
-            content: "You are the CTO for this project inside ADE.",
+            title: `Immutable ${BRAND.NAME} doctrine`,
+            content: `You are the CTO for this project inside ${BRAND.NAME}.`,
           },
           {
             id: "continuity",
@@ -10428,7 +10429,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           {
             id: "capabilities",
             title: "Capability manifest",
-            content: "ADE capabilities are exposed through registered tools.",
+            content: `${BRAND.NAME} capabilities are exposed through registered tools.`,
           },
         ],
       }),
@@ -10705,7 +10706,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       signIn: async () => ({
         status: "error" as const,
-        error: "Subscription sign-in needs the ADE desktop app.",
+        error: `Subscription sign-in needs the ${BRAND.NAME} desktop app.`,
       }),
       signOut: async () => ({ ok: true as const }),
       setDisabled: async () => ({ ok: true as const }),
@@ -10993,7 +10994,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             sha: "abcdef1234567890",
             shortSha: "abcdef1",
             parents: [],
-            authorName: "ADE Browser Mock",
+            authorName: `${BRAND.NAME} Browser Mock`,
             authoredAt: now,
             subject: "Browser mock HEAD commit",
             pushed: true,
@@ -11226,9 +11227,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       detectRepo: resolved({ owner: "acme-labs", name: "acme-shop" }),
       getAppInstallationStatus: resolved({
         repo: { owner: "acme-labs", name: "acme-shop" },
-        appName: "ADE",
-        appSlug: "ade-for-github",
-        installUrl: "https://github.com/apps/ade-for-github/installations/new",
+        appName: BRAND.NAME,
+        appSlug: "daex-for-github",
+        installUrl: "https://github.com/apps/daex-for-github/installations/new",
         manageUrl: "https://github.com/settings/installations",
         relayConfigured: true,
         installed: true,
@@ -11723,6 +11724,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     adeCli: {
       getStatus: resolved({
         command: "ade",
+        aliasCommand: "daex",
         platform: "darwin",
         isPackaged: false,
         bundledAvailable: true,
@@ -11736,14 +11738,15 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         installTargetPath: "~/.local/bin/ade",
         installTargetDirOnPath: false,
         message:
-          "ADE-launched agents can use ade. Terminal access is not installed yet.",
+          "DAEX-launched agents can use daex. Terminal access is not installed yet.",
         nextAction: "Run npm link in apps/ade-cli for local development.",
       }),
       installForUser: resolved({
         ok: false,
-        message: "Terminal install is available from packaged ADE builds.",
+        message: "Terminal install is available from packaged DAEX builds.",
         status: {
           command: "ade",
+          aliasCommand: "daex",
           platform: "darwin",
           isPackaged: false,
           bundledAvailable: true,
@@ -11757,7 +11760,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           installTargetPath: "~/.local/bin/ade",
           installTargetDirOnPath: false,
           message:
-            "ADE-launched agents can use ade. Terminal access is not installed yet.",
+            "DAEX-launched agents can use daex. Terminal access is not installed yet.",
           nextAction: "Run npm link in apps/ade-cli for local development.",
         },
       }),

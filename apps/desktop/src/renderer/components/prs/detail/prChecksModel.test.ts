@@ -329,7 +329,7 @@ describe("prChecksModel — job detail plan", () => {
 });
 
 describe("prChecksModel — copy excerpt", () => {
-  it("writes job, step, elapsed, a fenced excerpt and an ADE deeplink", () => {
+  it("writes job, step, elapsed, a fenced excerpt and a DAEX deeplink", () => {
     const markdown = buildLogExcerptMarkdown({
       excerpt: {
         jobId: 42,
@@ -350,7 +350,7 @@ describe("prChecksModel — copy excerpt", () => {
     expect(markdown).toContain("- Step: Run vitest shard 2 (step 6/9)");
     expect(markdown).toContain("- Elapsed: 1m 23s");
     expect(markdown).toContain("```\n✗ updateService.test.ts\nAssertionError\n… (truncated)\n```");
-    expect(markdown).toContain("ade://pr/ade-dev/ade/910");
+    expect(markdown).toContain("daex://pr/ade-dev/ade/910");
     expect(markdown).toContain("https://github.com/o/r/actions/runs/1/job/42");
   });
 
@@ -427,7 +427,7 @@ describe("prChecksModel — copy excerpt", () => {
       pr: { repoOwner: "ade-dev", repoName: "ade", githubPrNumber: 910 },
     });
     expect(markdown).toContain("**CI failure — build**");
-    expect(markdown).toContain("_ADE couldn't read this job's log: ADE couldn't download");
+    expect(markdown).toContain("_DAEX couldn't read this job's log: ADE couldn't download");
   });
 });
 

@@ -7,6 +7,7 @@ import { Banner } from "../ui/notice";
 import { MachineNeedsUpdate } from "../remoteTargets/MachineNeedsUpdate";
 import { isMachineNeedsUpdateError } from "../../../shared/codedError";
 import { ipcErrorMessage } from "../../lib/format";
+import { BRAND } from "../../../shared/brand";
 
 export type MachineRoutesState =
   | { status: "loading"; routes: MachineConnectionRoutes | null }
@@ -95,7 +96,7 @@ function useMachineRoutesState() {
 
   const setRelayEnabled = useCallback(async (machineKey: string | null, enabled: boolean) => {
     const setRelay = accountApi()?.setRelayEnabled;
-    if (!setRelay) throw new Error("This ADE can't change ADE Relay.");
+    if (!setRelay) throw new Error(`This ${BRAND.NAME} can't change ${BRAND.NAME} Relay.`);
     const key = machineKey ?? LOCAL_ROUTES_KEY;
     const attempt = begin(key);
     try {
@@ -215,7 +216,7 @@ export function useMachineRoutesControl(args: {
     } catch (error) {
       setRelayError({
         key: row.key,
-        message: ipcErrorMessage(error) || "Couldn't change ADE Relay.",
+        message: ipcErrorMessage(error) || `Couldn't change ${BRAND.NAME} Relay.`,
       });
     } finally {
       setBusyKey(null);
@@ -245,7 +246,7 @@ export function useMachineRoutesControl(args: {
         : routes
           ? null
           : state?.status === "error"
-            ? state.needsUpdate ? `Update ADE on ${row.name} to change this here.` : state.message
+            ? state.needsUpdate ? `Update ${BRAND.NAME} on ${row.name} to change this here.` : state.message
             : "Checking this computer…",
       busy: busyKey === row.key,
       onChange: (on) => {

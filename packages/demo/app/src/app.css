@@ -1,4 +1,4 @@
-/* DataDesk's own chrome. `@ade-dev/chat-ui` injects its own stylesheet and reads
+/* DataDesk's own chrome. `@daex-dev/chat-ui` injects its own stylesheet and reads
    only CSS custom properties, so nothing here reaches inside the components. */
 
 :root {

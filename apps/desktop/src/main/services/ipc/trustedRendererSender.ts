@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain, type IpcMainInvokeEvent } from "electron";
 import { AdeExpectedError } from "../../../shared/expectedError";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Whether a URL is ADE's own renderer: the dev server's origin when
@@ -126,7 +127,7 @@ export function createTrustedIpcHandle(
     ipcMain.handle(channel, (event, ...args) => {
       const state = adeRendererSenderState(event);
       if (state === "trusted") return listener(event, ...args);
-      const refusal = `${channel} is only available to the ADE window.`;
+      const refusal = `${channel} is only available to the ${BRAND.NAME} window.`;
       if (state === "gone") throw new AdeExpectedError(refusal, "user");
       logger.warn("ipc.untrusted_sender", { channel, senderUrl: readSenderUrl(event) });
       throw new Error(refusal);

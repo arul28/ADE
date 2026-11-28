@@ -19,6 +19,7 @@ import {
 import type { AndroidDrawerContext } from "./androidDrawerState";
 import { AndroidInstrumentationTestsRow } from "./AndroidInstrumentationTestsRow";
 import { AndroidWindowsRow } from "./AndroidWindowsRow";
+import { BRAND } from "../../../../shared/brand";
 
 /*
  * The **App** group: the app in front and what you do to it, in the order you
@@ -86,8 +87,8 @@ export function AndroidAppSection({ ctx }: { ctx: AndroidDrawerContext }) {
   const launchOptions = (apps ?? []).map((app) => ({
     value: app.packageName,
     label: app.packageName,
-    group: app.adeInstalled ? "Installed by ADE" : "Other apps",
-  })).sort((left, right) => (left.group === right.group ? 0 : left.group === "Installed by ADE" ? -1 : 1));
+    group: app.adeInstalled ? `Installed by ${BRAND.NAME}` : "Other apps",
+  })).sort((left, right) => (left.group === right.group ? 0 : left.group === `Installed by ${BRAND.NAME}` ? -1 : 1));
 
   return (
     <>

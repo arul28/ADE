@@ -32,6 +32,7 @@ import {
 import { createLinearIssueSearch } from "./linearIssueSearch";
 import { createLinearQuickView } from "./linearQuickView";
 import { createLinearInbox } from "./linearInbox";
+import { BRAND } from "../../../shared/brand";
 import { createLinearViewData } from "./linearViewData";
 
 const LINEAR_GRAPHQL_URL = "https://api.linear.app/graphql";
@@ -1278,7 +1279,7 @@ export function createLinearClient(args: LinearClientArgs) {
       variables: {
         url: params.url,
         secret: params.secret,
-        label: params.label?.trim() || "ADE workflow ingress",
+        label: params.label?.trim() || `${BRAND.NAME} workflow ingress`,
         resourceTypes: params.resourceTypes?.length ? params.resourceTypes : ["Issue", "IssueLabel"],
         allPublicTeams: params.allPublicTeams !== false,
       },

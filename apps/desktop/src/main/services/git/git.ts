@@ -43,6 +43,7 @@ import {
   type GitOwnershipProblem,
 } from "../../../../../ade-cli/src/services/projects/gitOwnership";
 import { redactGitOutput } from "../../utils/redaction";
+import { BRAND } from "../../../shared/brand";
 
 export { gitOwnershipReason, gitSafeDirectorySpec, parseGitOwnershipError, type GitOwnershipProblem };
 
@@ -424,7 +425,7 @@ function gitSubcommandLabel(args: string[]): string {
 function describeStall(args: string[], stderr: string, idleTimeoutMs: number): string {
   const label = gitSubcommandLabel(args);
   const lastLine = stderr.split(/[\r\n]/).map((line) => line.trim()).filter(Boolean).pop()?.slice(0, 160) ?? "";
-  return `Git${label ? ` ${label}` : ""} made no progress for ${describeIdleLimit(idleTimeoutMs)}, so ADE stopped it.`
+  return `Git${label ? ` ${label}` : ""} made no progress for ${describeIdleLimit(idleTimeoutMs)}, so ${BRAND.NAME} stopped it.`
     + (lastLine ? ` Its last output was: ${lastLine}` : "");
 }
 
@@ -1141,7 +1142,7 @@ const GIT_REMOTE_SIGN_IN_FAILED =
   /terminal prompts disabled|could not read (?:username|password)|authentication failed for|permission denied \(publickey|host key verification failed/i;
 
 const GIT_REMOTE_SIGN_IN_HINT =
-  "Git could not sign in to the remote, and ADE cannot answer a Git sign-in prompt. Sign in on the computer this lane is on. For GitHub over HTTPS, run `gh auth login` and then `gh auth setup-git` in a terminal there, or add a personal access token in Settings → GitHub, which ADE then lends to Git. For SSH, add your key to ssh-agent there and connect once with `ssh -T git@<host>` to accept the host key. Then try again.";
+  `Git could not sign in to the remote, and ${BRAND.NAME} cannot answer a Git sign-in prompt. Sign in on the computer this lane is on. For GitHub over HTTPS, run \`gh auth login\` and then \`gh auth setup-git\` in a terminal there, or add a personal access token in Settings → GitHub, which ${BRAND.NAME} then lends to Git. For SSH, add your key to ssh-agent there and connect once with \`ssh -T git@<host>\` to accept the host key. Then try again.`;
 
 export function formatGitExecutionError(raw: string): string {
   const ownership = describeGitOwnershipProblem(raw);
@@ -1157,7 +1158,7 @@ export function formatGitExecutionError(raw: string): string {
   // Git repeats a remote URL, query and all; a token in it must not reach the message.
   if (GIT_REMOTE_SIGN_IN_FAILED.test(raw)) return `${redactGitOutput(raw)}\n\n${GIT_REMOTE_SIGN_IN_HINT}`;
   if (!XCODE_LICENSE_NOT_AGREED.test(raw)) return redactGitOutput(raw);
-  return "ADE needs Git to open and manage this project. macOS blocked Apple's Git because the Xcode license has not been accepted. This is a Git requirement, not an ADE iOS Simulator or code-signing requirement. In Terminal, run `sudo xcodebuild -license`, or install Git separately (for example with Homebrew) and restart ADE.";
+  return `${BRAND.NAME} needs Git to open and manage this project. macOS blocked Apple's Git because the Xcode license has not been accepted. This is a Git requirement, not a ${BRAND.NAME} iOS Simulator or code-signing requirement. In Terminal, run \`sudo xcodebuild -license\`, or install Git separately (for example with Homebrew) and restart ${BRAND.NAME}.`;
 }
 
 /**
@@ -1205,12 +1206,12 @@ export function describeGitOwnershipProblem(raw: string): GitOwnershipProblem | 
  */
 export async function trustGitSafeDirectory(repoPath: string): Promise<{ spec: string; added: boolean }> {
   const spec = gitSafeDirectorySpec(repoPath);
-  if (!spec || spec === "*") throw new Error("ADE only trusts a specific folder.");
+  if (!spec || spec === "*") throw new Error(`${BRAND.NAME} only trusts a specific folder.`);
   const opts: GitRunOptions = { cwd: os.homedir(), timeoutMs: 10_000 };
   const listed = await runGit(["config", "--global", "--get-all", "safe.directory"], opts);
   // Exit 1 means the key is not set at all, which is fine.
   if (listed.exitCode !== 0 && listed.exitCode !== 1) {
-    throw new Error(`ADE could not read your Git settings: ${listed.stderr.trim() || `exit ${listed.exitCode}`}`);
+    throw new Error(`${BRAND.NAME} could not read your Git settings: ${listed.stderr.trim() || `exit ${listed.exitCode}`}`);
   }
   const existing = listed.stdout.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean);
   if (existing.some((entry) => gitSafeDirectorySpecsEqual(entry, spec))) {
@@ -1218,7 +1219,7 @@ export async function trustGitSafeDirectory(repoPath: string): Promise<{ spec: s
   }
   const added = await runGit(["config", "--global", "--add", "safe.directory", spec], opts);
   if (added.exitCode !== 0) {
-    throw new Error(`ADE could not update your Git settings: ${added.stderr.trim() || `exit ${added.exitCode}`}`);
+    throw new Error(`${BRAND.NAME} could not update your Git settings: ${added.stderr.trim() || `exit ${added.exitCode}`}`);
   }
   return { spec, added: true };
 }
@@ -1467,7 +1468,7 @@ async function runLegacyGitMergeTree(args: {
       ...base,
       exitCode: legacy.exitCode === 0 ? 128 : legacy.exitCode,
       stderr: legacy.stdoutTruncated
-        ? "git merge-tree printed more than ADE reads for a conflict check."
+        ? `git merge-tree printed more than ${BRAND.NAME} reads for a conflict check.`
         : legacy.stderr,
       conflicts: [],
     };
@@ -1479,7 +1480,7 @@ async function runLegacyGitMergeTree(args: {
     exitCode: 128,
     stdout: "",
     stderr:
-      `This machine's git${versionText ? ` (${versionText})` : ""} is too old for ADE's conflict check, ` +
+      `This machine's git${versionText ? ` (${versionText})` : ""} is too old for ${BRAND.NAME}'s conflict check, ` +
       "which needs git merge-tree --write-tree. Update git to 2.38 or newer.",
     ...base,
     conflicts: [],

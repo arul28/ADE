@@ -309,7 +309,7 @@ extension SyncService {
     let message: String
     if syncChatLaunchErrorIsUnsupportedCommand(error) {
       chatLaunchKnownUnsupported = true
-      message = "This machine's ADE can't set up lanes for new chats yet. Delete this and send the message again, or update ADE on the machine."
+      message = "This machine's \(Brand.name) can't set up lanes for new chats yet. Delete this and send the message again, or update \(Brand.name) on the machine."
     } else if isSyncRequestTimeoutError(error) {
       message = "The machine didn't answer. Retry to try again."
     } else {
@@ -333,7 +333,7 @@ extension SyncService {
         throw NSError(domain: "ADE", code: 44, userInfo: [NSLocalizedDescriptionKey: "This launch can't be retried from here. Delete it and send the message again."])
       }
       guard !chatLaunchKnownUnsupported else {
-        throw NSError(domain: "ADE", code: 44, userInfo: [NSLocalizedDescriptionKey: "Update ADE on the machine to set up lanes for new chats."])
+        throw NSError(domain: "ADE", code: 44, userInfo: [NSLocalizedDescriptionKey: "Update \(Brand.name) on the machine to set up lanes for new chats."])
       }
       chatLaunchStore.update(launchId: launchId) { snapshot in
         snapshot.phase = .running

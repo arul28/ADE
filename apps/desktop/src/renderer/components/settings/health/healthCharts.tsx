@@ -15,6 +15,7 @@ import { formatBytes } from "../../../lib/format";
 import { formatShare, type ChartSeries, type LaneBar } from "../storage/storageView";
 import { useStorageBytes } from "../storage/useStorageBytes";
 import "../../usage/usageSurfaces.css";
+import { BRAND } from "../../../../shared/brand";
 
 type Theme = "dark" | "light";
 
@@ -274,7 +275,7 @@ export function MemoryBar({
   const used = freeBytes != null ? Math.max(serviceBytes, totalBytes - freeBytes) : null;
   const other = used != null ? Math.max(0, used - serviceBytes) : null;
   const parts = [
-    { id: "service", label: "ADE service", bytes: serviceBytes, color: SPLIT_COLORS.input[theme] },
+    { id: "service", label: `${BRAND.NAME} service`, bytes: serviceBytes, color: SPLIT_COLORS.input[theme] },
     ...(other != null ? [{ id: "other", label: "Everything else", bytes: other, color: SPLIT_COLORS.neutral[theme] }] : []),
     ...(freeBytes != null ? [{ id: "free", label: "Free", bytes: Math.max(0, freeBytes), color: "var(--kit-track)" }] : []),
   ];

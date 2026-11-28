@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
-import { AdeError, errorMessage } from "./errors.js";
+import { DaexError, errorMessage } from "./errors.js";
 import { resolveTrustedWindowsTool } from "./windowsSystemTools.js";
 
 const execFileAsync = promisify(execFile);
@@ -58,7 +58,7 @@ export type DownloadResult = {
 };
 
 /**
- * Injectable so tests never touch the network. `createAdeChat` accepts one via
+ * Injectable so tests never touch the network. `createDaexChat` accepts one via
  * the internal options bag; the default is `downloadRuntime`.
  */
 export type RuntimeDownloader = (request: DownloadRequest) => Promise<DownloadResult>;
@@ -76,14 +76,14 @@ export function resolveRuntimeTarget(
           ? "win32"
           : null;
   if (!os) {
-    throw new AdeError("binary_not_found", `ADE has no runtime build for ${platform}.`);
+    throw new DaexError("binary_not_found", `DAEX has no runtime build for ${platform}.`);
   }
   const cpu = arch === "arm64" ? "arm64" : arch === "x64" ? "x64" : null;
   if (!cpu) {
-    throw new AdeError("binary_not_found", `ADE has no runtime build for ${arch}.`);
+    throw new DaexError("binary_not_found", `DAEX has no runtime build for ${arch}.`);
   }
   if (os === "win32" && cpu !== "x64") {
-    throw new AdeError("binary_not_found", "ADE only publishes a Windows x64 runtime.");
+    throw new DaexError("binary_not_found", "DAEX only publishes a Windows x64 runtime.");
   }
   const target = `${os}-${cpu}`;
   const binaryAsset = os === "win32" ? `ade-${target}.exe` : `ade-${target}`;
@@ -119,12 +119,12 @@ export function parseChecksums(body: string): Map<string, string> {
 }
 
 /**
- * Environment a spawned ADE runtime binary needs so it can load the native
+ * Environment a spawned DAEX runtime binary needs so it can load the native
  * modules that ship in the archive rather than whatever happens to be on the
  * host's NODE_PATH. Mirrors `set_runtime_env` in install-runtime.sh.
  *
  * `nodeModulesPath` defaults to `<runtimeRoot>/node_modules`, which is the
- * layout every ADE installer produces. An embedder who relocated the two halves
+ * layout every DAEX installer produces. An embedder who relocated the two halves
  * inside their bundle passes it explicitly, and it is then used verbatim: the
  * binary resolves `ADE_RUNTIME_NODE_MODULES` on its own, so silently deriving
  * the path would point a signed app at a directory that is not there.
@@ -146,7 +146,7 @@ export function runtimeSpawnEnv(
   };
 }
 
-/** Layout of a cached download inside the caller's ADE home. */
+/** Layout of a cached download inside the caller's DAEX home. */
 export function runtimePaths(
   home: string,
   target: RuntimeTarget,
@@ -202,9 +202,9 @@ export const downloadRuntime: RuntimeDownloader = async (request) => {
       verifyChecksum(target.archiveAsset, archiveBytes, checksums);
       checksumVerified = true;
     } else if (requireChecksum) {
-      throw new AdeError(
+      throw new DaexError(
         "checksum_mismatch",
-        `The ${channel} channel published no SHA256SUMS, so the ADE runtime download could not be verified. ` +
+        `The ${channel} channel published no SHA256SUMS, so the DAEX runtime download could not be verified. ` +
           `Pass requireChecksum: false to install it unverified.`,
       );
     } else {
@@ -227,9 +227,9 @@ export const downloadRuntime: RuntimeDownloader = async (request) => {
     await fs.promises.mkdir(stagedRuntime, { recursive: true });
     await extractTarGz(stagedArchive, stagedRuntime);
     if (!fs.existsSync(path.join(stagedRuntime, "node_modules"))) {
-      throw new AdeError(
+      throw new DaexError(
         "download_failed",
-        "The ADE native dependency archive is missing node_modules.",
+        "The DAEX native dependency archive is missing node_modules.",
       );
     }
 
@@ -262,12 +262,12 @@ async function fetchAsset(url: string, signal?: AbortSignal): Promise<Buffer> {
   try {
     response = await fetch(url, { redirect: "follow", ...(signal ? { signal } : {}) });
   } catch (error) {
-    throw new AdeError("download_failed", `Could not reach ${url}: ${errorMessage(error)}`, {
+    throw new DaexError("download_failed", `Could not reach ${url}: ${errorMessage(error)}`, {
       cause: error,
     });
   }
   if (!response.ok) {
-    throw new AdeError(
+    throw new DaexError(
       "download_failed",
       `Downloading ${url} failed with HTTP ${response.status}.`,
     );
@@ -296,11 +296,11 @@ function verifyChecksum(
 ): void {
   const expected = checksums.get(asset);
   if (!expected) {
-    throw new AdeError("checksum_mismatch", `SHA256SUMS has no entry for ${asset}.`);
+    throw new DaexError("checksum_mismatch", `SHA256SUMS has no entry for ${asset}.`);
   }
   const actual = createHash("sha256").update(bytes).digest("hex");
   if (actual !== expected) {
-    throw new AdeError(
+    throw new DaexError(
       "checksum_mismatch",
       `Checksum mismatch for ${asset}: expected ${expected}, got ${actual}.`,
     );
@@ -312,9 +312,9 @@ const MIN_PLAUSIBLE_ASSET_BYTES = 1024 * 1024;
 
 function assertPlausibleSize(asset: string, bytes: Buffer): void {
   if (bytes.byteLength >= MIN_PLAUSIBLE_ASSET_BYTES) return;
-  throw new AdeError(
+  throw new DaexError(
     "download_failed",
-    `${asset} downloaded only ${bytes.byteLength} bytes, which cannot be the ADE runtime.`,
+    `${asset} downloaded only ${bytes.byteLength} bytes, which cannot be the DAEX runtime.`,
   );
 }
 
@@ -332,9 +332,9 @@ async function extractTarGz(archivePath: string, destination: string): Promise<v
       windowsHide: true,
     });
   } catch (error) {
-    throw new AdeError(
+    throw new DaexError(
       "download_failed",
-      `Could not extract the ADE native dependency archive: ${errorMessage(error)}`,
+      `Could not extract the DAEX native dependency archive: ${errorMessage(error)}`,
       { cause: error },
     );
   }
@@ -380,7 +380,7 @@ async function removeWithRetry(
       return;
     } catch (error) {
       if (attempt >= attempts || !isTransientRemoveError(error)) {
-        throw new AdeError(
+        throw new DaexError(
           "download_failed",
           `Could not replace ${target}: ${errorMessage(error)}`,
           { cause: error },

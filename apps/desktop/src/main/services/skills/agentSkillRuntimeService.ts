@@ -9,6 +9,7 @@ import {
   joinAdeAgentSkillRoots,
   setAgentSkillRootFilter,
   splitAdeAgentSkillRoots,
+  withLegacyAgentSkillNames,
 } from "../../../shared/agentSkillRoots";
 import { adeHomeDir } from "./cursorAgentSkillShim";
 
@@ -104,7 +105,9 @@ export function withoutAgentSkills(
   mirrorParent: string = filteredAgentSkillMirrorParent(),
 ): string[] {
   if (!withheld.length) return [...roots];
-  const withheldSet = new Set(withheld);
+  // Both names of each bundled skill (`daex-cloud`, `ade-cloud`): a root from
+  // an older build still carries the old folder, and a caller may name either.
+  const withheldSet = new Set(withLegacyAgentSkillNames(withheld));
   const withheldKey = [...withheldSet].sort().join(",");
   return roots.map((root) => {
     let staging: string | null = null;
@@ -165,7 +168,7 @@ export function withoutAgentSkillsEnv(
 }
 
 /**
- * The roots minus the skills held back from every agent right now (`ade-cloud`
+ * The roots minus the skills held back from every agent right now (`daex-cloud`
  * for an account not on the access list). Installed here because the shared
  * root helpers are bundled into the renderer and cannot touch the disk.
  */

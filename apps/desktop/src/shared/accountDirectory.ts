@@ -10,7 +10,9 @@ import { fromMachinePowerRecord } from "./types/power";
 import type { MachinePower, MachineSleepState } from "./types/power";
 import type { MachineInventorySummary } from "./types/machineInventory";
 import { isTailnetHostname } from "./tailnet";
+import { displayLegacyDefaultName } from "./legacyDefaultNames";
 import { appPackageChannelDisplayName, packageChannelNameSuffix } from "./packageChannel";
+import { BRAND } from "./brand";
 
 const DEFAULT_TIMEOUT_MS = 8_000;
 const MAX_MACHINES = 500;
@@ -318,8 +320,13 @@ function parseMachinePower(value: Record<string, unknown>): {
   };
 }
 
+/**
+ * The name a machine shows: the person's custom name as typed, else the
+ * reported name, with an old default ("ADE Cloud computer", "ADE CLI on
+ * <host>") read as DAEX. Lookups by name also try the raw stored name.
+ */
 export function accountMachineDisplayName(machine: AdeAccountMachine): string | null {
-  return machine.customName?.trim() || machine.name?.trim() || null;
+  return machine.customName?.trim() || displayLegacyDefaultName(machine.name?.trim()) || null;
 }
 
 /**
@@ -355,7 +362,7 @@ export function accountMachineRowLabel(machine: AdeAccountMachine): string | nul
 export function accountMachineRowName(machine: AdeAccountMachine): string | null {
   const custom = machine.customName?.trim();
   if (custom) return custom;
-  const reported = machine.name?.trim();
+  const reported = displayLegacyDefaultName(machine.name?.trim());
   const suffix = machine.channel ? packageChannelNameSuffix(machine.channel) : "";
   return (reported && suffix && reported.endsWith(suffix) ? reported.slice(0, -suffix.length) : reported) || null;
 }
@@ -400,7 +407,7 @@ export function accountMachineRemovalConfirmBody(
   return [
     accountMachineRecentActivityWarning(machine, nowMs),
     home ? `This install uses ${home}.` : null,
-    "It will no longer connect through your account. To add it back, open ADE on that computer and choose Reconnect this computer.",
+    `It will no longer connect through your account. To add it back, open ${BRAND.NAME} on that computer and choose Reconnect this computer.`,
   ].filter(Boolean).join("\n\n");
 }
 
@@ -623,8 +630,8 @@ export async function fetchAccountMachines(args: {
         state: "auth_expired",
         machines: [],
         message: reason
-          ? `The machine directory rejected your ADE account session. Sign in again. Reason: ${reason}`
-          : "Your ADE account session expired. Sign in again.",
+          ? `The machine directory rejected your ${BRAND.NAME} account session. Sign in again. Reason: ${reason}`
+          : `Your ${BRAND.NAME} account session expired. Sign in again.`,
       };
     }
     if (!response.ok) {

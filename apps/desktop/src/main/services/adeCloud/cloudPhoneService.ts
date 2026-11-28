@@ -85,6 +85,7 @@ import {
 } from "./cloudPhoneDriver";
 import { createNomacDriver } from "./cloudPhoneNomacDriver";
 import { createRevylDriver } from "./cloudPhoneRevylDriver";
+import { BRAND } from "../../../shared/brand";
 
 export { CloudPhoneError, type CloudPhoneToolAnswer };
 
@@ -131,7 +132,7 @@ const START_BUSY_WAIT_MS = 5 * 60_000;
 
 /** Xcode 26 and later ship the Metal compiler as a separate download; a build host without it fails on any `.metal` file. */
 const MISSING_METAL = /missing Metal Toolchain/i;
-const METAL_SENTENCE = "The cloud iPhone's Xcode doesn't have Apple's Metal Toolchain, and this project compiles Metal shaders (a .metal file in the app or in one of its Swift packages), so it can't be built there yet. Build it on a Mac and send the app with ade apple install --app <path to the Simulator .app>.";
+const METAL_SENTENCE = `The cloud iPhone's Xcode doesn't have Apple's Metal Toolchain, and this project compiles Metal shaders (a .metal file in the app or in one of its Swift packages), so it can't be built there yet. Build it on a Mac and send the app with ${BRAND.CLI} apple install --app <path to the Simulator .app>.`;
 
 /** The line a build that moved to another phone for its Metal shaders starts with. */
 const METAL_MOVED = "Moved to another cloud iPhone: the first one's Xcode has no Metal Toolchain, which this project's Metal shaders need.";
@@ -154,7 +155,7 @@ const LAST_BUILDS_LIMIT = 50;
 const CHAT_PHONES_LIMIT = 200;
 
 /** Said for a build-only check where this account's builds run on the phone itself. */
-const BUILD_NEEDS_PHONE = "This account's cloud iPhone builds on the phone itself, so a build-only check would start the phone (one credit a minute). Run ade apple launch to build and run it there, or build on a Mac.";
+const BUILD_NEEDS_PHONE = `This account's cloud iPhone builds on the phone itself, so a build-only check would start the phone (one credit a minute). Run ${BRAND.CLI} apple launch to build and run it there, or build on a Mac.`;
 
 /** One line for a failed build that cost no phone. */
 const NO_PHONE_SPENT = "No cloud iPhone was started for this build, so it used no phone minutes.";
@@ -200,7 +201,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
 
   async function provider(): Promise<CloudProvider> {
     const client = await deps.provider();
-    if (!client?.phoneState) throw new CloudPhoneError(await deps.whyNoProvider() ?? "Sign in to ADE to use the ADE Cloud iPhone.", "no_account");
+    if (!client?.phoneState) throw new CloudPhoneError(await deps.whyNoProvider() ?? `Sign in to ${BRAND.NAME} to use the ${BRAND.CLOUD_NAME} iPhone.`, "no_account");
     return client;
   }
 
@@ -338,7 +339,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     /** The command asking: a phone this start makes is marked its own (`CloudPhoneRun.origin`). */
     origin?: object | null;
   } = {}): Promise<Held> {
-    const switched = (): CloudPhoneError => new CloudPhoneError("The ADE account changed while the cloud iPhone was in use. Try again.", "no_account");
+    const switched = (): CloudPhoneError => new CloudPhoneError(`The ${BRAND.NAME} account changed while the cloud iPhone was in use. Try again.`, "no_account");
     const account = await currentAccount();
     if (began !== undefined && account !== began) throw switched();
     // The running phone can't do what is needed: said before any call (the server says the same of one started elsewhere).
@@ -373,7 +374,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       const starter = (async () => {
         const client = await provider();
         // Signed out or switched while this waited: the start is never sent under another account.
-        if (accountOf(client) !== account) throw new CloudPhoneError("The ADE account changed while the cloud iPhone started. Try again.", "no_account");
+        if (accountOf(client) !== account) throw new CloudPhoneError(`The ${BRAND.NAME} account changed while the cloud iPhone started. Try again.`, "no_account");
         // Another machine's start for this account is in flight: asked again until it holds the live phone.
         const startOnce = async (): Promise<CloudPhoneStart> => {
           const by = Date.now() + START_BUSY_WAIT_MS;
@@ -411,7 +412,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     }
     const phone = await starting.phone;
     // Signed out or switched while it started: never hand this phone to another account.
-    if (phone.account !== (await currentAccount())) throw new CloudPhoneError("The ADE account changed while the cloud iPhone started. Try again.", "no_account");
+    if (phone.account !== (await currentAccount())) throw new CloudPhoneError(`The ${BRAND.NAME} account changed while the cloud iPhone started. Try again.`, "no_account");
     if (began !== undefined && phone.account !== began) throw switched();
     // Another caller's start (no needs) may have made this one: the server checked only that caller's needs.
     return able(phone);
@@ -698,7 +699,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     async getStatus(args?: unknown): Promise<CloudPhoneStatusView> {
       const client = await deps.provider();
       if (!client?.phoneState) {
-        return { access: "off", minutes: null, phone: null, capabilities: [], supported: false, reason: await deps.whyNoProvider() ?? "Sign in to ADE to use the ADE Cloud iPhone." };
+        return { access: "off", minutes: null, phone: null, capabilities: [], supported: false, reason: await deps.whyNoProvider() ?? `Sign in to ${BRAND.NAME} to use the ${BRAND.CLOUD_NAME} iPhone.` };
       }
       const askedAt = Date.now();
       const state = await client.phoneState();
@@ -714,7 +715,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
         else await settleEnd(tracked, Boolean(state.phone));
       }
       // Access is on or off (an older server's `soon` reads as off).
-      const reason = state.access === "on" ? null : "The ADE Cloud iPhone isn't available right now.";
+      const reason = state.access === "on" ? null : `The ${BRAND.CLOUD_NAME} iPhone isn't available right now.`;
       const lastActivityAt = liveRun && state.phone?.id === liveRun.phoneId && state.phone.state !== "ended" ? liveRun.lastActivityAt : null;
       // What the phone can do: the server says, for the live phone or the next one (an
       // older server: the live phone's provider, or with none running, NoMac's).
@@ -783,7 +784,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
         const words = first.reused
           ? `It builds: the source hasn't changed since build ${first.built.job}, which worked.`
           : `Built in ${first.built.seconds} s with no cloud iPhone started (build ${first.built.job}).`;
-        return { ...textAnswer(`${words} ade apple launch installs this build on the phone without building again while the source stays the same.`), ...sized, job: first.built.job };
+        return { ...textAnswer(`${words} ${BRAND.CLI} apple launch installs this build on the phone without building again while the source stays the same.`), ...sized, job: first.built.job };
       } finally {
         fs.rmSync(packed.file, { force: true });
       }
@@ -909,7 +910,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       }
       // Checked again after the phone's seconds: a link planted meanwhile is refused, and the write never follows one.
       writeOutput(target, requested, projectRoot, bytes);
-      const caption = textArg(args?.caption, "caption", 300) ?? "ADE Cloud iPhone screenshot";
+      const caption = textArg(args?.caption, "caption", 300) ?? `${BRAND.CLOUD_NAME} iPhone screenshot`;
       const artifactId = args?.noProof === true ? null : fileProof(proof, args ?? {}, { kind: "screenshot", path: target, mimeType: "image/png", title: caption });
       return { path: target, link, bytes: bytes.length, artifactId };
     },
@@ -1016,7 +1017,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
           if (args?.launch === false || installed.answer.failed) return { ...installed.answer, bundleId };
           // Launched only by name: unnamed, NoMac launches the app launched LAST, which may be an earlier build's.
           if (!bundleId) {
-            return { ...joinAnswers([installed.answer, textAnswer("Installed, but not launched: ADE could not tell the app's bundle id. Launch it with ade apple relaunch --bundle-id <id>.")]), bundleId };
+            return { ...joinAnswers([installed.answer, textAnswer(`Installed, but not launched: ${BRAND.NAME} could not tell the app's bundle id. Launch it with ${BRAND.CLI} apple relaunch --bundle-id <id>.`)]), bundleId };
           }
           // The install is done: a phone gone at the launch is told, never answered by installing all over again.
           const launched = await driver.control(phone, { action: "launch", app: bundleId }).catch((error: unknown) => {
@@ -1085,7 +1086,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       if (!video || answer.failed) return { ...answer, path: null, artifactId: null };
       const target = path.join(os.tmpdir(), `ade-cloud-iphone-${Date.now()}.${video.extension}`);
       fs.writeFileSync(target, video.bytes);
-      const caption = textArg(args?.caption, "caption", 300) ?? "ADE Cloud iPhone recording";
+      const caption = textArg(args?.caption, "caption", 300) ?? `${BRAND.CLOUD_NAME} iPhone recording`;
       const artifactId = args?.noProof === true ? null : fileProof(proof, args ?? {}, { kind: "video_recording", path: target, mimeType: video.extension === "mov" ? "video/quicktime" : "video/mp4", title: caption });
       return { ...answer, path: target, artifactId };
     },

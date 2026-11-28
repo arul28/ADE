@@ -68,7 +68,7 @@ struct WorkSmartLink: Equatable {
         return typed
       }
       let target = ([components.host].compactMap { $0 } + parts).joined(separator: "/")
-      return target.isEmpty ? "ADE link" : "ADE · \(target)"
+      return target.isEmpty ? "\(Brand.name) link" : "\(Brand.name) · \(target)"
     case .web:
       return url
     }
@@ -340,8 +340,13 @@ struct WorkSmartLink: Equatable {
 }
 
 enum WorkSmartLinkDetector {
+  // Every scheme the app registers (`Brand.linkSchemes`, the Beta ones too), longest first.
+  private static let schemeAlternation = Brand.linkSchemes
+    .sorted { $0.count != $1.count ? $0.count > $1.count : $0 < $1 }
+    .map { NSRegularExpression.escapedPattern(for: $0) }
+    .joined(separator: "|")
   private static let regex = try! NSRegularExpression(
-    pattern: "(?:https?://|ade://)[^\\s<>\\\"'`]+",
+    pattern: "(?:https?://|(?:\(schemeAlternation))://)[^\\s<>\\\"'`]+",
     options: [.caseInsensitive]
   )
   private static let trailingPunctuation = CharacterSet(charactersIn: ".,;:!?")
@@ -375,11 +380,11 @@ enum WorkSmartLinkDetector {
       let url = text.substring(with: range)
       guard let components = URLComponents(string: url),
             let scheme = components.scheme?.lowercased(),
-            scheme == "ade" || ((scheme == "http" || scheme == "https") && components.host?.isEmpty == false)
+            ADEDeepLinkURLParsing.isADELinkScheme(scheme) || ((scheme == "http" || scheme == "https") && components.host?.isEmpty == false)
       else { return nil }
       let host = components.host?.lowercased()
       let provider: WorkSmartLink.Provider
-      if scheme == "ade" {
+      if ADEDeepLinkURLParsing.isADELinkScheme(scheme) {
         provider = .ade
       } else if host == "github.com" {
         provider = .github

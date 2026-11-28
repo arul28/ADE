@@ -14,6 +14,7 @@ import { confirmDialog } from "../../../ui/dialog/confirm";
 import { showToast } from "../../../app/toast/toastStore";
 import { COPILOT_REPO_LINE } from "./adeCloudSignInModel";
 import type { HeldWrites } from "./useHeldWrites";
+import { BRAND } from "../../../../../shared/brand";
 
 /** One write: a busy id (a second press waits), the call, and the error toast's words. True when it went through. */
 export type RunWrite = (id: string, write: () => Promise<ProviderLoginStatus | undefined> | undefined, failure: string) => Promise<boolean>;
@@ -88,7 +89,7 @@ export async function confirmUseOnCloud(args: {
   const { provider, key, slot, name, current, previous, pin, runWrite } = args;
   const repo = provider === "copilot" ? ` ${COPILOT_REPO_LINE}` : "";
   const ok = await confirmDialog({
-    title: `Use ${name} on ADE Cloud?`,
+    title: `Use ${name} on ${BRAND.CLOUD_NAME}?`,
     message: current && current.key !== key
       ? `A turn that runs now finishes on ${current.name}. The next message in each cloud chat uses ${name}.${repo}`
       : `The next message in each cloud chat uses ${name}.${repo}`,
@@ -98,20 +99,20 @@ export async function confirmUseOnCloud(args: {
   const done = await runWrite(
     args.busyId,
     () => window.ade?.providerLogins?.use?.({ provider, key, slot }, pin),
-    "ADE couldn't change the sign-in for ADE Cloud. Try again.",
+    `${BRAND.NAME} couldn't change the sign-in for ${BRAND.CLOUD_NAME}. Try again.`,
   );
   if (!done) return;
   showToast({
     id: `ade-cloud-use-${args.place}`,
     tone: "success",
-    title: `ADE Cloud now uses ${name}`,
+    title: `${BRAND.CLOUD_NAME} now uses ${name}`,
     actions: previous === key ? [] : [{
       label: "Undo",
       onClick: () => {
         void runWrite(
           `${args.busyId}:undo`,
           () => window.ade?.providerLogins?.use?.({ provider, key: previous, slot }, pin),
-          "ADE couldn't change it back. Try again.",
+          `${BRAND.NAME} couldn't change it back. Try again.`,
         );
       },
     }],
@@ -148,17 +149,17 @@ export async function confirmRemoveSignIn(args: {
     : args.originIsThisComputer ? "This computer keeps its own sign-in." : `${args.origin} keeps its own sign-in.`;
   const what = several && args.name ? `${providerLabel} sign-in for ${args.name}` : `${providerLabel} sign-in`;
   const ok = await confirmDialog({
-    title: `Remove the ${what} from ${several ? "your ADE account" : from}?`,
+    title: `Remove the ${what} from ${several ? `your ${BRAND.NAME} account` : from}?`,
     message: several
-      ? `ADE removes its copies from all ${keys.length} computers. ADE Cloud stops using it, and each cloud computer drops it. ${keeps}`
-      : `ADE Cloud stops using it, and each cloud computer drops it. ${keeps}`,
+      ? `${BRAND.NAME} removes its copies from all ${keys.length} computers. ${BRAND.CLOUD_NAME} stops using it, and each cloud computer drops it. ${keeps}`
+      : `${BRAND.CLOUD_NAME} stops using it, and each cloud computer drops it. ${keeps}`,
     confirmLabel: "Remove",
     destructive: true,
   });
   if (!ok) return;
   args.hold({
     id: key,
-    title: `Removed the ${what} from ${several ? "your ADE account" : from}.`,
+    title: `Removed the ${what} from ${several ? `your ${BRAND.NAME} account` : from}.`,
     write: () => {
       void runWrite(
         `remove:${key}`,
@@ -182,13 +183,13 @@ export async function confirmRemoveSignIn(args: {
             console.warn("[providers] removing a sign-in's copies failed for some", lastError);
             showToast({
               tone: "warning",
-              title: `ADE removed ${keys.length - left} of ${keys.length} copies of the ${what}.`,
-              message: `${left === 1 ? "One copy is" : `${left} copies are`} still in your ADE account and back on the page. Remove it again to take ${left === 1 ? "it" : "them"} out.`,
+              title: `${BRAND.NAME} removed ${keys.length - left} of ${keys.length} copies of the ${what}.`,
+              message: `${left === 1 ? "One copy is" : `${left} copies are`} still in your ${BRAND.NAME} account and back on the page. Remove it again to take ${left === 1 ? "it" : "them"} out.`,
             });
           }
           return status;
         },
-        `ADE couldn't remove the ${providerLabel} sign-in. It is back on the page.`,
+        `${BRAND.NAME} couldn't remove the ${providerLabel} sign-in. It is back on the page.`,
       );
     },
   });

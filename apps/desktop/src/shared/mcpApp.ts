@@ -26,6 +26,7 @@
  */
 
 import type { SceneTheme } from "./chatScene";
+import { BRAND } from "./brand";
 
 export const MCP_APP_PROTOCOL_VERSION = "2026-01-26";
 export const MCP_APP_RESOURCE_MIME_TYPE = "text/html;profile=mcp-app";
@@ -261,7 +262,7 @@ export function buildMcpAppContentSecurityPolicy(declared: unknown, options: { s
 }
 
 /** What a phone is told when an app is over {@link MCP_APP_LIMITS.maxRemoteDocumentBytes}. */
-export const MCP_APP_TOO_LARGE_FOR_REMOTE = "This app is too large to show here. Open the chat in ADE on desktop.";
+export const MCP_APP_TOO_LARGE_FOR_REMOTE = `This app is too large to show here. Open the chat in ${BRAND.NAME} on desktop.`;
 
 /* ── The stored app ── */
 

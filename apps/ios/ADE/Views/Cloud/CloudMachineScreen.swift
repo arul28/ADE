@@ -103,7 +103,7 @@ struct CloudMoveCard: View {
   }
 
   private var sentence: String {
-    cloudPhoneWords(move.message) ?? (move.isFinished ? "The move ended." : "ADE Cloud is moving this computer.")
+    cloudPhoneWords(move.message) ?? (move.isFinished ? "The move ended." : "\(Brand.cloudName) is moving this computer.")
   }
 
   var body: some View {
@@ -117,7 +117,7 @@ struct CloudMoveCard: View {
             .fixedSize(horizontal: false, vertical: true)
         }
         if failed {
-          ADESettingsNotice(message: cloudPhoneWords(move.error) ?? "ADE Cloud couldn't finish the move. The computer stays as it was.", tone: .crit, dismiss: {
+          ADESettingsNotice(message: cloudPhoneWords(move.error) ?? "\(Brand.cloudName) couldn't finish the move. The computer stays as it was.", tone: .crit, dismiss: {
             store.dismissMove(move.moveId)
           })
         }
@@ -312,7 +312,7 @@ struct CloudDiskParts: View {
         Button("Clear caches") { Task { await store.clearCaches(machine) } }
         Button("Cancel", role: .cancel) {}
       } message: {
-        Text("\(machine.isAwake ? "ADE deletes" : "ADE wakes the computer, then deletes") package and build caches. Repositories, dependencies, images and emulators stay. It measures its disk again when it's next idle.")
+        Text("\(machine.isAwake ? "\(Brand.name) deletes" : "\(Brand.name) wakes the computer, then deletes") package and build caches. Repositories, dependencies, images and emulators stay. It measures its disk again when it's next idle.")
       }
     }
   }
@@ -367,7 +367,7 @@ struct CloudMachineSizeCard: View {
         if tier.type == current.type {
           Text("It restarts on the new size, so running chats and terminals stop. Their chats are saved first. \(rates(current: current, tier: tier))")
         } else {
-          Text("ADE copies its files to a new computer and deletes this one. Its lane and chats come along. It takes a few minutes and uses \(store.words.unit) on both while it copies. \(rates(current: current, tier: tier))")
+          Text("\(Brand.name) copies its files to a new computer and deletes this one. Its lane and chats come along. It takes a few minutes and uses \(store.words.unit) on both while it copies. \(rates(current: current, tier: tier))")
         }
       }
     }
@@ -434,7 +434,7 @@ struct CloudMachineSizeCard: View {
       isCurrent ? "Its size now."
         : sameKind ? "\(tier.hoursLine(leftMilli: store.hoursLeftMilli, words: store.words)). It restarts on the new size."
         : store.movesUnsupported ? cloudPhoneKindChangeReason(to: tier)
-        : "\(tier.hoursLine(leftMilli: store.hoursLeftMilli, words: store.words)). ADE moves it to a new computer."
+        : "\(tier.hoursLine(leftMilli: store.hoursLeftMilli, words: store.words)). \(Brand.name) moves it to a new computer."
     )
   }
 }
@@ -536,7 +536,7 @@ struct CloudMachineControls: View {
       if working {
         HStack(spacing: 8) {
           ProgressView().controlSize(.small)
-          Text("ADE Cloud is on it. This can take a few minutes.")
+          Text("\(Brand.cloudName) is on it. This can take a few minutes.")
             .font(.system(size: 12))
             .foregroundStyle(ADEColor.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -567,7 +567,7 @@ struct CloudMachineControls: View {
       Button("Free the computer") { Task { await store.freeComputer(machine) } }
       Button("Cancel", role: .cancel) {}
     } message: {
-      Text("ADE pushes its work to GitHub, then removes the computer. The lane and its chats stay. Your next message makes a new computer.")
+      Text("\(Brand.name) pushes its work to GitHub, then removes the computer. The lane and its chats stay. Your next message makes a new computer.")
     }
   }
 }
@@ -676,7 +676,7 @@ struct CloudSavedWorkDownload: View {
 
   private func download() async {
     guard let client = await syncService.cloudServerClient() else {
-      failure = "Sign in to ADE to download this lane's work."
+      failure = "Sign in to \(Brand.name) to download this lane's work."
       return
     }
     loading = true
@@ -685,7 +685,7 @@ struct CloudSavedWorkDownload: View {
       file = try await client.laneBackupPatchFile(backup)
       failure = nil
     } catch {
-      failure = "ADE couldn't download this lane's work. Try again in a moment."
+      failure = "\(Brand.name) couldn't download this lane's work. Try again in a moment."
     }
   }
 }
@@ -763,7 +763,7 @@ struct CloudSavedLaneWorkCard: View {
       Button("Delete saved work", role: .destructive) { Task { await forget(backup) } }
       Button("Cancel", role: .cancel) {}
     } message: { _ in
-      Text("ADE Cloud's copy of this work is gone for good. Download it first if you need it.")
+      Text("\(Brand.cloudName)'s copy of this work is gone for good. Download it first if you need it.")
     }
   }
 
@@ -786,7 +786,7 @@ struct CloudSavedLaneWorkCard: View {
   private func forget(_ backup: CloudLaneBackupRow) async {
     let laneName = name(backup)
     guard let client = await store.syncService.cloudServerClient() else {
-      CloudLaneActions.shared.toast = ADEToastMessage(text: "Couldn't delete the saved work", kind: .failure, detail: "Sign in to ADE, then try again.")
+      CloudLaneActions.shared.toast = ADEToastMessage(text: "Couldn't delete the saved work", kind: .failure, detail: "Sign in to \(Brand.name), then try again.")
       return
     }
     forgetting = backup.id
@@ -1024,7 +1024,7 @@ enum CloudLaneComputerDelete {
     do {
       // Waits until ADE Cloud confirms the computer is gone.
       guard try await client.deleteInstanceConfirmed(instanceId) else {
-        return Outcome(failure: "ADE Cloud took the delete but the computer is still there. Check again in a minute; if it stays, delete it again.", chatsLeft: true)
+        return Outcome(failure: "\(Brand.cloudName) took the delete but the computer is still there. Check again in a minute; if it stays, delete it again.", chatsLeft: true)
       }
     } catch {
       return Outcome(failure: cloudServerFailureMessage(error), chatsLeft: true)
@@ -1092,15 +1092,15 @@ struct CloudLaneDeleteSheet: View {
           if let failure {
             ADESettingsNotice(message: failure, tone: .crit, dismiss: { self.failure = nil })
           }
-          Text("ADE deletes the lane, its computer and its chats.")
+          Text("\(Brand.name) deletes the lane, its computer and its chats.")
             .font(.subheadline)
             .foregroundStyle(ADEColor.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
           if target.unpushed != false {
             ADESettingsNotice(
               message: target.unpushed == true
-                ? "This lane has work that isn't on GitHub. Deleting the lane deletes ADE Cloud's saved copy too."
-                : "ADE can't tell whether all of this lane's work is on GitHub. Deleting the lane deletes ADE Cloud's saved copy too.",
+                ? "This lane has work that isn't on GitHub. Deleting the lane deletes \(Brand.cloudName)'s saved copy too."
+                : "\(Brand.name) can't tell whether all of this lane's work is on GitHub. Deleting the lane deletes \(Brand.cloudName)'s saved copy too.",
               tone: .warn
             )
             CloudSavedWorkRow(syncService: syncService, laneId: target.laneId, machineKey: target.accountMachineKey)
@@ -1148,7 +1148,7 @@ struct CloudLaneDeleteSheet: View {
     let actions = CloudLaneActions.shared
     guard let client = await syncService.cloudServerClient() else {
       ADEHaptics.error()
-      actions.toast = ADEToastMessage(text: "Couldn't delete \(target.laneName)", kind: .failure, detail: "Sign in to ADE, then try again.")
+      actions.toast = ADEToastMessage(text: "Couldn't delete \(target.laneName)", kind: .failure, detail: "Sign in to \(Brand.name), then try again.")
       return
     }
     func fail(_ why: String) {
@@ -1163,7 +1163,7 @@ struct CloudLaneDeleteSheet: View {
       _ = try await client.instance(target.instanceId)
     } catch CloudServerClient.Failure.noAccess {
       if (try? await client.instances())?.contains(where: { $0.id == target.instanceId && !$0.isGone }) != true {
-        fail("This computer isn't on the ADE account this phone is signed in to, so ADE can't delete it from here. Sign in with the account that owns it, then try again.")
+        fail("This computer isn't on the \(Brand.name) account this phone is signed in to, so \(Brand.name) can't delete it from here. Sign in with the account that owns it, then try again.")
         return
       }
     } catch {
@@ -1187,7 +1187,7 @@ struct CloudLaneDeleteSheet: View {
       text: "Deleted \(target.laneName)",
       kind: chatsLeft ? .info : .success,
       detail: chatsLeft
-        ? "The lane and its computer are gone. ADE couldn't delete all its chats; remove the rest in Work."
+        ? "The lane and its computer are gone. \(Brand.name) couldn't delete all its chats; remove the rest in Work."
         : "The lane, its computer and its chats are gone."
     )
     await syncService.refreshCloudServerInstances()

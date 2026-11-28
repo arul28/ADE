@@ -1,3 +1,4 @@
+import { BRAND } from "../../../desktop/src/shared/brand";
 export const REMOTE_RPC_TIMEOUT_MS = 20_000;
 export const REMOTE_CONNECT_TOTAL_TIMEOUT_MS = 45_000;
 
@@ -17,7 +18,7 @@ export class RemoteLaunchTimeoutError extends Error {
 function cancellationError(signal: AbortSignal): Error {
   return signal.reason instanceof Error
     ? signal.reason
-    : new Error("Remote ADE connection cancelled.");
+    : new Error(`Remote ${BRAND.NAME} connection cancelled.`);
 }
 
 export function withTimeout<T>(

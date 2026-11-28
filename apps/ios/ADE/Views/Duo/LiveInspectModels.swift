@@ -265,7 +265,7 @@ extension SyncService {
   func fetchLiveInspectSimulatorSnapshot(laneId: String) async throws -> LiveInspectIosSnapshot {
     let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard supportsAppleDeviceControl(laneId: trimmed) else {
-      throw liveInspectUnsupported("Update ADE on your Mac to inspect its simulator from here.")
+      throw liveInspectUnsupported("Update \(Brand.name) on your Mac to inspect its simulator from here.")
     }
     return try decode(
       try await sendCommand(
@@ -289,7 +289,7 @@ extension SyncService {
   func fetchLiveInspectAndroidSnapshot(laneId: String) async throws -> LiveInspectIosSnapshot {
     let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard supportsAndroidLiveInspect(laneId: trimmed) else {
-      throw liveInspectUnsupported("Update ADE on the computer to inspect its emulator from here.")
+      throw liveInspectUnsupported("Update \(Brand.name) on the computer to inspect its emulator from here.")
     }
     return try decode(
       try await sendCommand(
@@ -307,7 +307,7 @@ extension SyncService {
   func appControlInspectPoint(laneId: String, x: Double, y: Double) async throws -> LiveInspectAppControlReply {
     let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard supportsViewerRemoteAction("appControl.inspectPoint") else {
-      throw liveInspectUnsupported("Update ADE on your Mac to inspect its app from here.")
+      throw liveInspectUnsupported("Update \(Brand.name) on your Mac to inspect its app from here.")
     }
     return try decode(
       try await sendCommand(
@@ -331,7 +331,7 @@ extension SyncService {
   func macDesktopObserve(laneId: String, limit: Int = 200) async throws -> LiveInspectMacDesktopReply {
     let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard supportsViewerRemoteAction("macDesktop.observe") else {
-      throw liveInspectUnsupported("Update ADE on your Mac to inspect its desktop from here.")
+      throw liveInspectUnsupported("Update \(Brand.name) on your Mac to inspect its desktop from here.")
     }
     return try decode(
       try await sendCommand(

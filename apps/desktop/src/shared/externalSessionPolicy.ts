@@ -5,6 +5,7 @@ import {
   type ExternalSessionProvider,
   type ExternalSessionSummary,
 } from "./types/externalSessions";
+import { BRAND } from "./brand";
 
 /**
  * Which lanes an import action may target.
@@ -239,7 +240,7 @@ export function planImport(
     primary = continueAction;
     if (canCopy) secondary = copyAction("Copy");
   } else if (canCopy) {
-    primary = copyAction(surface === "chat" ? "Open as ADE chat" : awayFromHome ? "Copy here" : "Copy");
+    primary = copyAction(surface === "chat" ? `Open as ${BRAND.NAME} chat` : awayFromHome ? "Copy here" : "Copy");
   }
 
   let note: string | null = null;
@@ -290,7 +291,7 @@ export function importRejectionReason(
   const label = importProviderLabel(summary.provider);
   if (rule === "none") {
     const what = request.target === "chat"
-      ? request.mode === "resume" ? "continued as an ADE chat" : "opened as an ADE chat"
+      ? request.mode === "resume" ? `continued as a ${BRAND.NAME} chat` : `opened as a ${BRAND.NAME} chat`
       : request.mode === "resume" ? "continued in a terminal" : "copied in a terminal";
     return `This ${label} session can't be ${what}.`;
   }

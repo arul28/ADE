@@ -5,6 +5,7 @@ import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { ipcErrorMessage } from "../../../lib/format";
 import { showToast } from "../../app/toast/toastStore";
 import { SettingsSelect } from "../primitives/SettingsControls";
+import { BRAND } from "../../../../shared/brand";
 
 const CHOICES: readonly { value: CloudPhoneProviderChoice; label: string }[] = [
   { value: "auto", label: "Auto" },
@@ -55,7 +56,7 @@ export function CloudPhoneProviderPick({ choice, onChanged }: { choice: CloudPho
       <small className="adecd-addon-state">
         {available
           ? "Auto starts phones in the usual order. Only testers see this."
-          : "This version of ADE can't change it here. Use ade cloud phone-provider."}
+          : `This version of ${BRAND.NAME} can't change it here. Use ade cloud phone-provider.`}
       </small>
     </div>
   );

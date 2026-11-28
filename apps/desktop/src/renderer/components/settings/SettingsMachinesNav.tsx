@@ -13,6 +13,7 @@ import type { ProjectMachine } from "../../state/projectMachines";
 import { useStableBinding } from "../../state/laneMachineRouting";
 import { Banner } from "../ui/notice";
 import { settingsMachineScope, type SettingsMachineScope, type SettingsMachineTarget } from "./SettingsMachineScope";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The Machines group of Settings: one section per machine, each page scoped to
@@ -209,11 +210,11 @@ export function MachineUnavailableNotice({
   } else if (machine.machineRouteOutdated || needsUpdate) {
     message = machine.isThisMachine ? THIS_COMPUTER_MACHINE_SCOPE_UPDATE_MESSAGE : machineScopeUpdateMessage(machine.machineName);
   } else if (!machine.isThisMachine && !machine.isActiveBinding && !machine.hasRepo) {
-    message = `ADE reaches ${machine.machineName}'s settings through its copy of this repository. Open this repository on ${machine.machineName} to manage it from here.`;
+    message = `${BRAND.NAME} reaches ${machine.machineName}'s settings through its copy of this repository. Open this repository on ${machine.machineName} to manage it from here.`;
   } else if (machine.isThisMachine) {
     message = `${list} can't be reached on ${THIS_MACHINE_NAME} from this project tab yet.`;
   } else {
-    message = `Open ADE on ${machine.machineName} to change these.`;
+    message = `Open ${BRAND.NAME} on ${machine.machineName} to change these.`;
     detail = `${list} ${titles.length === 1 ? "is" : "are"} managed on that computer for now.`;
   }
   return (

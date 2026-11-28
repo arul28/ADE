@@ -58,6 +58,7 @@ import {
   type HistoryLaneActionId,
 } from "./historyLaneActions";
 import { extractError } from "../../lib/format";
+import { BRAND } from "../../../shared/brand";
 
 /* ── Constants ──────────────────────────────────────────────── */
 
@@ -97,7 +98,7 @@ const SCOPE_OPTIONS: { value: ScopeLevel; label: string; tip: string }[] = [
 
 const SURFACE_OPTIONS: { value: HistorySurface; label: string; Icon: React.ElementType; tip: string }[] = [
   { value: "commits", label: "Commits", Icon: GitCommit, tip: "The git graph of your lanes" },
-  { value: "activity", label: "Activity", Icon: Clock, tip: "What ADE and your agents did, over time" },
+  { value: "activity", label: "Activity", Icon: Clock, tip: `What ${BRAND.NAME} and your agents did, over time` },
 ];
 
 function isHistoryExportResult(value: unknown): value is ExportHistoryResult {

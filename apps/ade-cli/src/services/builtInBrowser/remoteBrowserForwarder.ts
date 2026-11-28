@@ -37,6 +37,7 @@ import {
   type BuiltInBrowserDesktopBridgeClient,
   type BuiltInBrowserLocalFileMethod,
 } from "./desktopBridgeMethods";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * The browser an agent's `ade browser` command runs in.
@@ -85,11 +86,11 @@ const RELEASE_BROADCAST_WAIT_MS = 10_000;
 
 /** The CLI words for the commands that stay on this machine, for a message an agent can act on. */
 const LOCAL_FILE_COMMAND_WORDS: Record<BuiltInBrowserLocalFileMethod, string> = {
-  uploadFile: "`ade browser upload`",
-  dropFiles: "`ade browser drop`",
-  exportHar: "`ade browser har`",
-  startRecording: "`ade browser record start`",
-  stopRecording: "`ade browser record stop`",
+  uploadFile: "`daex browser upload`",
+  dropFiles: "`daex browser drop`",
+  exportHar: "`daex browser har`",
+  startRecording: "`daex browser record start`",
+  stopRecording: "`daex browser record stop`",
 };
 
 /** What a desktop that names no machine is called in a message to the agent. */
@@ -578,7 +579,7 @@ export function createRemoteBrowserForwarder(args: {
         ...broadcaster.answeringDesktops().filter((id) => id !== ctx.remoteTargetId).map((id) => desktopLabels.get(id) ?? "another desktop"),
       ].filter(Boolean);
       throw new Error(
-        `Browser tab not found: ${tabId}. No ADE browser that this machine can reach holds it (asked: ${asked.join(", ")}). It was closed, or it was an agent's tab that ADE did not bring back after a restart. Run \`ade browser status\` for the tabs that exist.`,
+        `Browser tab not found: ${tabId}. No ${BRAND.NAME} browser that this machine can reach holds it (asked: ${asked.join(", ")}). It was closed, or it was an agent's tab that ${BRAND.NAME} did not bring back after a restart. Run \`daex browser status\` for the tabs that exist.`,
       );
     }
   }
@@ -606,7 +607,7 @@ export function createRemoteBrowserForwarder(args: {
       ?? "This tab";
     const label = hostLabel(host);
     return new Error(
-      `${target} is in the ADE browser on ${label}, which did not answer within ${Math.round(callTakenTimeoutMs / 1000)}s (ADE closed, or the computer is asleep). The command did not run anywhere. Try again when ${label} is back, or work in a tab on another machine.`,
+      `${target} is in the ${BRAND.NAME} browser on ${label}, which did not answer within ${Math.round(callTakenTimeoutMs / 1000)}s (${BRAND.NAME} closed, or the computer is asleep). The command did not run anywhere. Try again when ${label} is back, or work in a tab on another machine.`,
     );
   }
 
@@ -707,12 +708,12 @@ export function createRemoteBrowserForwarder(args: {
       if (!(error instanceof DesktopBridgeUnavailableError)) throw onMachine(error, HERE, ctx);
       if (isolated) {
         throw new Error(
-          "An isolated tab (--isolated or --profile) opens in the ADE browser of the computer the user sits at, or on this machine. Neither took it: the user's computer did not answer (or its ADE is too old to keep an isolated sign-in for a localhost page), and ADE Desktop is not open here. It was not sent anywhere else, because another desktop would open it in the user's own sign-in.",
+          `An isolated tab (--isolated or --profile) opens in the ${BRAND.NAME} browser of the computer the user sits at, or on this machine. Neither took it: the user's computer did not answer (or its ${BRAND.NAME} is too old to keep an isolated sign-in for a localhost page), and ${BRAND.NAME} Desktop is not open here. It was not sent anywhere else, because another desktop would open it in the user's own sign-in.`,
         );
       }
       if (here) {
         throw new Error(
-          "--here asks for the browser on this machine, but ADE Desktop is not open here. Run the command without --here to use the browser on the user's computer, or open ADE Desktop on this machine.",
+          `--here asks for the browser on this machine, but ${BRAND.NAME} Desktop is not open here. Run the command without --here to use the browser on the user's computer, or open ${BRAND.NAME} Desktop on this machine.`,
         );
       }
       return forwarded ?? await forwardToUser(requestInput, remoteTargetId);
@@ -759,7 +760,7 @@ export function createRemoteBrowserForwarder(args: {
       browser: machineOf(browser, ctx),
       reason,
       isolatedTabs: ctx.remoteTargetId
-        ? `${userLabel}, beside the user's tabs (an older ADE there opens an isolated localhost page on this machine instead, and says so)`
+        ? `${userLabel}, beside the user's tabs (an older ${BRAND.NAME} there opens an isolated localhost page on this machine instead, and says so)`
         : "this machine's browser",
       tabCommands: "a command with --tab or --browser-session goes to the machine whose browser holds that tab (the machine column); --here forces this machine",
       fallback: ctx.desktopSilentUntilMs
@@ -908,7 +909,7 @@ export function createRemoteBrowserForwarder(args: {
       return {
         ok: settle(requestId, {
           requestId,
-          desktopLabel: desktopLabelFrom(record.desktopLabel) ?? "ADE Desktop",
+          desktopLabel: desktopLabelFrom(record.desktopLabel) ?? `${BRAND.NAME} Desktop`,
           accepted: record.accepted !== false,
           ...(record.awaitingApproval === true ? { awaitingApproval: true } : {}),
           reason: stringOrNull(record.reason),

@@ -2,6 +2,7 @@ import type { Icon } from "@phosphor-icons/react";
 import { ArrowsLeftRight, ChatCircle, CloudArrowUp, CloudCheck, CloudSlash } from "@phosphor-icons/react";
 import type { AutomationRuleSummary } from "../../../shared/types";
 import { AUTOMATION_HOME_LEASE_MINUTES, isAdeCloudHome } from "../../../shared/automationHome";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Where a rule lives and who runs it, in one short line, for the rule row's
@@ -41,8 +42,8 @@ export function ruleSyncLine(rule: SyncFields, now = Date.now()): RuleSyncLine |
   if (followsAccount(rule) && rule.runsHere && rule.homeOutOfTouch) {
     return {
       icon: CloudSlash,
-      label: "Paused here · can't reach your ADE account",
-      detail: `Synced automations start on their own only while this computer has reached your ADE account in the last ${AUTOMATION_HOME_LEASE_MINUTES} minutes, so another computer can't run them at the same time. Sign in or reconnect to resume. Run now still works.`,
+      label: `Paused here · can't reach your ${BRAND.NAME} account`,
+      detail: `Synced automations start on their own only while this computer has reached your ${BRAND.NAME} account in the last ${AUTOMATION_HOME_LEASE_MINUTES} minutes, so another computer can't run them at the same time. Sign in or reconnect to resume. Run now still works.`,
       tone: "notice",
     };
   }
@@ -59,7 +60,7 @@ export function ruleSyncLine(rule: SyncFields, now = Date.now()): RuleSyncLine |
     return {
       icon: CloudCheck,
       label: `Synced · runs only on ${home}`,
-      detail: `Saved in your ADE account, so every computer with this repository shows it. Only ${home} runs it.${rule.runsHere ? "" : " Change \"Runs on\" to move it."}`,
+      detail: `Saved in your ${BRAND.NAME} account, so every computer with this repository shows it. Only ${home} runs it.${rule.runsHere ? "" : " Change \"Runs on\" to move it."}`,
       tone: "quiet",
     };
   }
@@ -93,20 +94,20 @@ function localLine(reason: NonNullable<AutomationRuleSummary["localReason"]>): R
       return {
         icon: CloudArrowUp,
         label: "Saved here · syncs when you sign in",
-        detail: "Changed while signed out of ADE. It goes to your account when you sign in.",
+        detail: `Changed while signed out of ${BRAND.NAME}. It goes to your account when you sign in.`,
         tone: "notice",
       };
     case "other-account":
       return {
         icon: CloudArrowUp,
-        label: "Saved for another ADE account",
+        label: `Saved for another ${BRAND.NAME} account`,
         detail: "Changed while another account was signed in. It syncs when that account signs in again.",
         tone: "notice",
       };
     case "pending":
       return {
         icon: CloudArrowUp,
-        label: "Syncing to your ADE account…",
+        label: `Syncing to your ${BRAND.NAME} account…`,
         detail: "It shows on your other computers once this one has synced.",
         tone: "quiet",
       };
@@ -120,7 +121,7 @@ function localLine(reason: NonNullable<AutomationRuleSummary["localReason"]>): R
  * History lives on the computer that runs the rule.
  */
 export function ruleElsewhereReason(rule: Pick<AutomationRuleSummary, "runsHere" | "home" | "needsNewerAde" | "source">): string | null {
-  if (rule.needsNewerAde) return "Made with a newer ADE. Update ADE on this computer to run it here.";
+  if (rule.needsNewerAde) return `Made with a newer ${BRAND.NAME}. Update ${BRAND.NAME} on this computer to run it here.`;
   // ADE Cloud's server runs it; Run now asks the server from any window.
   if (isAdeCloudHome(rule.home)) return null;
   if (followsAccount(rule) && rule.runsHere === false) {

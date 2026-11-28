@@ -2,6 +2,7 @@ import path from "node:path";
 import type { LaneLinearIssue, LaneSummary, NormalizedLinearIssue } from "../../../shared/types";
 import type { IssueTracker, IssueTrackerIssueAttachmentInput } from "./issueTracker";
 import { buildDeeplink, type DeeplinkOwnership } from "../../../shared/deeplinks";
+import { BRAND } from "../../../shared/brand";
 
 function truncate(value: string, maxLength: number): string {
   const trimmed = value.trim();
@@ -109,11 +110,11 @@ export function buildLinearLaneCardAttachment(args: {
 
   return {
     issueId: args.issue.id,
-    title: hasDeeplink ? `Open in ADE: ${truncate(args.lane.name, 56)}` : `ADE lane: ${truncate(args.lane.name, 64)}`,
+    title: hasDeeplink ? `Open in ${BRAND.NAME}: ${truncate(args.lane.name, 56)}` : `${BRAND.NAME} lane: ${truncate(args.lane.name, 64)}`,
     subtitle: `${truncate(branch, 56)} - linked {linkedAt__since}`,
     url: cardUrl,
     metadata: {
-      title: `ADE lane linked to ${args.issue.identifier}`,
+      title: `${BRAND.NAME} lane linked to ${args.issue.identifier}`,
       laneId: args.lane.id,
       laneName: args.lane.name,
       branch,
@@ -125,7 +126,7 @@ export function buildLinearLaneCardAttachment(args: {
         { name: "Lane", value: args.lane.name },
         { name: "Branch", value: branch },
         { name: "Base", value: args.lane.baseRef },
-        { name: "ADE project", value: projectName },
+        { name: `${BRAND.NAME} project`, value: projectName },
         { name: "Linear team", value: teamName },
         { name: "Linear project", value: projectLabel },
         { name: "Issue state at link", value: args.issue.stateName },
@@ -136,8 +137,8 @@ export function buildLinearLaneCardAttachment(args: {
       ],
       messages: [
         {
-          subject: "What ADE linked",
-          body: `This Linear issue is linked to the ADE lane "${args.lane.name}" on branch "${branch}". ADE uses this lane link for branch naming, commit references, PR text, and chat context.`,
+          subject: `What ${BRAND.NAME} linked`,
+          body: `This Linear issue is linked to the ${BRAND.NAME} lane "${args.lane.name}" on branch "${branch}". ${BRAND.NAME} uses this lane link for branch naming, commit references, PR text, and chat context.`,
           timestamp: linkedAt,
         },
       ],
@@ -167,7 +168,7 @@ export function buildLinearLaneInitialComment(args: {
     },
     { form: "https" },
   );
-  return `ADE lane available for this issue — [Open in ADE](${url}) (branch \`${branch}\`).`;
+  return `${BRAND.NAME} lane available for this issue — [Open in ${BRAND.NAME}](${url}) (branch \`${branch}\`).`;
 }
 
 export function buildLinearIssueQuickViewAttachment(args: {
@@ -188,11 +189,11 @@ export function buildLinearIssueQuickViewAttachment(args: {
 
   return {
     issueId: args.issue.id,
-    title: `Open in ADE: ${truncate(args.issue.identifier, 54)}`,
+    title: `Open in ${BRAND.NAME}: ${truncate(args.issue.identifier, 54)}`,
     subtitle: `${truncate(args.issue.title, 56)} - linked {linkedAt__since}`,
     url,
     metadata: {
-      title: `ADE Linear pane link for ${args.issue.identifier}`,
+      title: `${BRAND.NAME} Linear pane link for ${args.issue.identifier}`,
       issueIdentifier: args.issue.identifier,
       branch,
       adeUrl: url,
@@ -200,12 +201,12 @@ export function buildLinearIssueQuickViewAttachment(args: {
       attributes: [
         ...linearIssueCardAttributes(args.issue, linkedAt),
         ...(branch ? [{ name: "Suggested branch", value: branch }] : []),
-        { name: "ADE view", value: "Linear pane" },
+        { name: `${BRAND.NAME} view`, value: "Linear pane" },
       ],
       messages: [
         {
-          subject: "ADE issue link added",
-          body: `Open ${args.issue.identifier} in ADE's Linear pane to create lanes, start chats, or run issue actions.`,
+          subject: `${BRAND.NAME} issue link added`,
+          body: `Open ${args.issue.identifier} in ${BRAND.NAME}'s Linear pane to create lanes, start chats, or run issue actions.`,
           timestamp: linkedAt,
         },
       ],
@@ -250,11 +251,11 @@ export function buildLinearChatSessionAttachment(args: {
 
   return {
     issueId: args.issue.id,
-    title: `Open ADE chat: ${truncate(args.issue.identifier, 48)}`,
+    title: `Open ${BRAND.NAME} chat: ${truncate(args.issue.identifier, 48)}`,
     subtitle: `${truncate(sessionLabel, 56)} - linked {linkedAt__since}`,
     url,
     metadata: {
-      title: `ADE chat linked to ${args.issue.identifier}`,
+      title: `${BRAND.NAME} chat linked to ${args.issue.identifier}`,
       issueIdentifier: args.issue.identifier,
       laneId: args.laneId,
       sessionId: args.sessionId,
@@ -265,12 +266,12 @@ export function buildLinearChatSessionAttachment(args: {
         ...linearIssueCardAttributes(args.issue, linkedAt),
         { name: "Lane ID", value: args.laneId },
         { name: "Chat session", value: args.sessionId },
-        { name: "ADE view", value: "Work chat" },
+        { name: `${BRAND.NAME} view`, value: "Work chat" },
       ],
       messages: [
         {
-          subject: "ADE chat linked",
-          body: `ADE linked a Work chat to ${args.issue.identifier}. Open it to continue the conversation with this Linear issue in context.`,
+          subject: `${BRAND.NAME} chat linked`,
+          body: `${BRAND.NAME} linked a Work chat to ${args.issue.identifier}. Open it to continue the conversation with this Linear issue in context.`,
           timestamp: linkedAt,
         },
       ],
@@ -312,11 +313,11 @@ export function buildLinearPrCardAttachment(args: {
 
   return {
     issueId: args.issue.id,
-    title: `Open in ADE PR #${args.prNumber}: ${truncate(args.issue.identifier, 40)}`,
+    title: `Open in ${BRAND.NAME} PR #${args.prNumber}: ${truncate(args.issue.identifier, 40)}`,
     subtitle: `${truncate(repo, 42)}#${args.prNumber} - linked {linkedAt__since}`,
     url: adePrUrl,
     metadata: {
-      title: `ADE PR linked to ${args.issue.identifier}`,
+      title: `${BRAND.NAME} PR linked to ${args.issue.identifier}`,
       laneId: args.lane.id,
       laneName: args.lane.name,
       branch,
@@ -332,14 +333,14 @@ export function buildLinearPrCardAttachment(args: {
         { name: "Branch", value: branch },
         { name: "GitHub PR", value: `${repo}#${args.prNumber}` },
         { name: "GitHub URL", value: args.githubUrl },
-        { name: "ADE PR", value: adePrUrl },
-        { name: "ADE lane", value: adeLaneUrl },
+        { name: `${BRAND.NAME} PR`, value: adePrUrl },
+        { name: `${BRAND.NAME} lane`, value: adeLaneUrl },
         { name: "Linked at", value: dateLabel(linkedAt) },
       ],
       messages: [
         {
-          subject: "ADE PR linked",
-          body: `ADE linked [GitHub PR ${repo}#${args.prNumber}](${args.githubUrl}) and [ADE PR #${args.prNumber}](${adePrUrl}) to this Linear issue from lane "${args.lane.name}".`,
+          subject: `${BRAND.NAME} PR linked`,
+          body: `${BRAND.NAME} linked [GitHub PR ${repo}#${args.prNumber}](${args.githubUrl}) and [${BRAND.NAME} PR #${args.prNumber}](${adePrUrl}) to this Linear issue from lane "${args.lane.name}".`,
           timestamp: linkedAt,
         },
       ],

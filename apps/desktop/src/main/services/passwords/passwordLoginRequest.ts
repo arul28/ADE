@@ -9,6 +9,7 @@ import {
   type PasswordLoginRequestResult,
 } from "../../../shared/passwordLoginRequest";
 import { cardTimeoutMs, cardWasDeclined, joinInFlight, readCardArgs, type CardRequestChatInput } from "../chat/chatCardRequest";
+import { BRAND } from "../../../shared/brand";
 
 export type PasswordLoginRequestDeps = {
   requestChatInput: CardRequestChatInput;
@@ -38,7 +39,7 @@ export async function requestPasswordLoginFromUser(
   const args = readCardArgs(rawArgs);
   const chatSessionId = typeof args.chatSessionId === "string" ? args.chatSessionId.trim() : "";
   if (!chatSessionId) {
-    throw new Error("Asking for a login needs a chat to ask in. Run `ade browser signin` from inside an ADE chat.");
+    throw new Error("Asking for a login needs a chat to ask in. Run `daex browser signin` from inside a DAEX chat.");
   }
   const pageUrl = typeof args.pageUrl === "string" ? args.pageUrl.trim() : "";
   const target = deps.passwords.siteForPage(pageUrl);
@@ -74,7 +75,7 @@ async function askLogin(
     } catch (error) {
       // The service's own messages never carry a value.
       const detail = error instanceof Error ? error.message : "unknown error";
-      throw new Error(`ADE could not save the login for ${site}: ${detail}`);
+      throw new Error(`DAEX could not save the login for ${site}: ${detail}`);
     }
   };
 
@@ -95,7 +96,7 @@ async function askLogin(
         allowsFreeform: false,
         options: [
           { label: "Save & sign in", value: "save", description: PASSWORD_LOGIN_WHERE_IT_GOES(site), recommended: true },
-          { label: "Enter it myself in the browser", value: "self", description: "Type it into the page yourself; ADE offers to save it after." },
+          { label: "Enter it myself in the browser", value: "self", description: `Type it into the page yourself; ${BRAND.NAME} offers to save it after.` },
         ],
       },
       { id: PASSWORD_LOGIN_USERNAME_QUESTION_ID, header: site, question: "Username or email", allowsFreeform: true, isSecret: true },

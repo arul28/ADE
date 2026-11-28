@@ -14,6 +14,7 @@ const {
   formatRuntimeArtifactDiff,
 } = require("./runtime-resource-targets.cjs");
 const { createBrainCopy } = require("./mac-brain-copy.cjs");
+const { applyMacIconComposerIcon } = require("./mac-icon-composer.cjs");
 
 const appDir = path.resolve(__dirname, "..");
 
@@ -154,6 +155,72 @@ function materializeChannelCliWrapper(resourcesRoot, channel, platform = "darwin
   fs.chmodSync(targetPath, 0o755);
   fs.writeFileSync(path.join(cliRoot, "channel"), `${channel}\n`);
   return targetPath;
+}
+
+/**
+ * `daex` is the CLI's name and `ade` stays as a permanent alias, so every
+ * packaged wrapper (`ade`, `ade.cmd`, `ade-<channel>`, `ade-<channel>.cmd`)
+ * gets a `daex` twin beside it: the same file, so it reads the same channel
+ * file and runs the same cli.cjs. Agents get this bin directory on PATH
+ * (adeCliService.ts), so they can type either name. Returns the twins written.
+ */
+function materializeDaexCliAliases(resourcesRoot) {
+  const binRoot = path.join(resourcesRoot, "ade-cli", "bin");
+  const written = [];
+  for (const name of fs.readdirSync(binRoot)) {
+    const match = /^ade((?:-[a-z0-9]+)?(?:\.cmd)?)$/i.exec(name);
+    if (!match) continue;
+    const sourcePath = path.join(binRoot, name);
+    if (!fs.statSync(sourcePath).isFile()) continue;
+    const targetPath = path.join(binRoot, `daex${match[1]}`);
+    fs.copyFileSync(sourcePath, targetPath);
+    fs.chmodSync(targetPath, 0o755);
+    written.push(targetPath);
+  }
+  return written;
+}
+
+// The product's shown name; twin of BRAND.NAME in src/shared/brand.ts (a
+// CommonJS hook cannot import TypeScript). The installed name it replaces stays.
+const DISPLAY_NAME = "DAEX";
+const LEGACY_DISPLAY_NAME = "ADE";
+
+/**
+ * The name macOS shows for the app ("ADE" -> "DAEX", "ADE Alpha" -> "DAEX
+ * Alpha"), or null when the product name is already what should show.
+ */
+function macDisplayNameFor(productName) {
+  const name = String(productName || "");
+  if (name !== LEGACY_DISPLAY_NAME && !name.startsWith(`${LEGACY_DISPLAY_NAME} `)) return null;
+  return `${DISPLAY_NAME}${name.slice(LEGACY_DISPLAY_NAME.length)}`;
+}
+
+/**
+ * Shows the app as DAEX on macOS (menu bar, Finder, Dock, Launchpad, About,
+ * permission prompts) while the bundle keeps everything that identifies it:
+ * the file name `ADE.app`, `Contents/MacOS/ADE`, the helpers and the
+ * Info.plist CFBundleName. Existing installs and the updater stay where they
+ * are (docs/brand/desktop-packaging.md).
+ *
+ * macOS takes a shown name other than the Info.plist one only from
+ * InfoPlist.strings, and Finder uses it only when the Info.plist
+ * CFBundleDisplayName equals the file name and LSHasLocalizedDisplayName is set
+ * (package.json `build.mac.extendInfo`). Electron finds its helper apps by the
+ * Info.plist CFBundleName read through `infoDictionary`, which ignores
+ * InfoPlist.strings, so the localized name cannot break launch.
+ */
+function writeMacLocalizedDisplayName(appBundlePath, displayName) {
+  const resourcesDir = path.join(appBundlePath, "Contents", "Resources");
+  const escaped = displayName.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  const strings = `"CFBundleName" = "${escaped}";\n"CFBundleDisplayName" = "${escaped}";\n`;
+  const localeDirs = fs.readdirSync(resourcesDir).filter((entry) => entry.endsWith(".lproj"));
+  if (localeDirs.length === 0) {
+    throw new Error(`[afterPack] No .lproj folders to localize the app name in: ${resourcesDir}`);
+  }
+  for (const entry of localeDirs) {
+    fs.writeFileSync(path.join(resourcesDir, entry, "InfoPlist.strings"), strings);
+  }
+  return localeDirs.length;
 }
 
 function removeIfPresent(rootPath, relativePath) {
@@ -498,6 +565,11 @@ module.exports = async function afterPack(context) {
     requireFile(path.join(resourcesRoot, "ade-cli", "bin", "ade.cmd"), "bundled ADE CLI Windows wrapper");
     requireFile(path.join(resourcesRoot, "ade-cli", "install-path.cmd"), "bundled ADE CLI Windows PATH installer");
   }
+  const daexAliases = materializeDaexCliAliases(resourcesRoot);
+  if (!daexAliases.some((aliasPath) => /^daex(?:\.cmd)?$/i.test(path.basename(aliasPath)))) {
+    throw new Error(`[afterPack] No daex CLI wrapper was written in ${path.join(resourcesRoot, "ade-cli", "bin")}`);
+  }
+  console.log(`[afterPack] Added daex CLI wrappers: ${daexAliases.map((aliasPath) => path.basename(aliasPath)).join(", ")}`);
 
   pruneUnneededRuntimePayload(runtimeRoot, platform, runtimeFetchedToolPackageNames);
   pruneForeignDarwinArchPackages(runtimeRoot, context, platform);
@@ -506,6 +578,19 @@ module.exports = async function afterPack(context) {
     replaceCpuFeaturesNativeAddon(runtimeRoot, context);
   }
   pruneOpenCodeInstallShim(runtimeRoot);
+  if (platform === "darwin" && appBundlePath) {
+    const displayName = macDisplayNameFor(context.packager.appInfo.productName);
+    if (displayName) {
+      const count = writeMacLocalizedDisplayName(appBundlePath, displayName);
+      console.log(`[afterPack] Shown app name "${displayName}" in ${count} locales`);
+    }
+    // The macOS 26 icon (Assets.car + CFBundleIconName) from the `.icon`
+    // beside the configured `.icns`; the `.icns` stays for older macOS.
+    applyMacIconComposerIcon(appBundlePath, {
+      configuredIcon: context.packager.platformSpecificBuildOptions?.icon,
+      searchDirs: [context.packager.info?.buildResourcesDir, context.packager.info?.projectDir, appDir].filter(Boolean),
+    });
+  }
   if (platform === "darwin" && appBundlePath) {
     // The brain-executable switch (`brainExecutableMode.json`, mode
     // `brain-copy`). Signed later, after electron-builder's own pass

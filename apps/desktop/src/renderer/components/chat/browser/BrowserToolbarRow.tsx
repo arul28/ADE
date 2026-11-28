@@ -44,6 +44,7 @@ import {
   TOOLBAR_MOTION,
   type BrowserChromeShared,
 } from "./browserChrome";
+import { BRAND } from "../../../../shared/brand";
 
 /** How the load bar behaves, decided by the panel and drawn here. */
 export type BrowserProgressPhase = "idle" | "loading" | "finishing";
@@ -260,7 +261,7 @@ export function BrowserToolbarRow({
             onKeyDown={urlField.onKeyDown}
             onBlur={urlField.onEndEdit}
             placeholder="Search or enter URL"
-            aria-label="ADE browser URL"
+            aria-label={`${BRAND.NAME} browser URL`}
             // Always `flex: 1 1 0` with no intrinsic floor: the field is the
             // one control on this row that is allowed to take what is left,
             // and the row above has already made sure that is enough.
@@ -359,8 +360,8 @@ export function BrowserToolbarRow({
             TOOLBAR_MOTION,
             TOOLBAR_FOCUS,
           )}
-          title={inspecting ? "Stop selecting elements" : "Select an element in the ADE browser"}
-          aria-label={inspecting ? "Stop selecting elements" : "Select an element in the ADE browser"}
+          title={inspecting ? "Stop selecting elements" : `Select an element in the ${BRAND.NAME} browser`}
+          aria-label={inspecting ? "Stop selecting elements" : `Select an element in the ${BRAND.NAME} browser`}
         >
           <CursorClick size={CHROME_ICON_SIZE} />
         </button>

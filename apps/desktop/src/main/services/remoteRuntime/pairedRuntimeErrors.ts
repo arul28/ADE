@@ -6,6 +6,7 @@ import type {
 import type { SyncHelloErrorPayload } from "../../../shared/types/sync";
 import { describeLinkHeldByOtherAdeApp } from "../../../shared/connectionDiagnosis";
 import { carryExpected, markExpected } from "../../../shared/expectedError";
+import { BRAND } from "../../../shared/brand";
 import { REMOTE_CONNECT_STOPPED_NOTICE } from "../../../shared/runtimeErrors";
 
 export type PairedRuntimeRouteDiagnostic = {
@@ -145,15 +146,15 @@ export async function resolveAccountRelayProof(
   try {
     proof = await getAccountRelayProof?.() ?? null;
   } catch (error) {
-    throw new PairedRuntimeRelayAuthRequiredError("Sign in to ADE to connect through ADE Relay.", error);
+    throw new PairedRuntimeRelayAuthRequiredError(`Sign in to ${BRAND.NAME} to connect through ${BRAND.NAME} Relay.`, error);
   }
   if (!proof?.userId.trim() || !proof.token.trim()) {
-    throw new PairedRuntimeRelayAuthRequiredError("Sign in to ADE to connect through ADE Relay.");
+    throw new PairedRuntimeRelayAuthRequiredError(`Sign in to ${BRAND.NAME} to connect through ${BRAND.NAME} Relay.`);
   }
   const expectedOwnerUserId = credentials.accountOwnerUserId?.trim() ?? "";
   if (expectedOwnerUserId && proof.userId.trim() !== expectedOwnerUserId) {
     throw new PairedRuntimeRelayAuthRequiredError(
-      "Sign in with the same ADE account as this machine to connect through ADE Relay.",
+      `Sign in with the same ${BRAND.NAME} account as this machine to connect through ${BRAND.NAME} Relay.`,
     );
   }
   return { userId: proof.userId.trim(), token: proof.token.trim() };
@@ -173,7 +174,7 @@ export class PairedRuntimeRelayAuthRequiredError extends Error {
   readonly code = "PAIRED_RUNTIME_RELAY_AUTH_REQUIRED" as const;
 
   constructor(
-    message = "Sign in to ADE to connect through ADE Relay.",
+    message = `Sign in to ${BRAND.NAME} to connect through ${BRAND.NAME} Relay.`,
     cause?: unknown,
     readonly diagnostic?: PairedRuntimeRouteDiagnostic,
   ) {
@@ -200,7 +201,7 @@ export class PairedRuntimeSshTrustRequiredError extends Error {
     super(
       trustStatus.state === "changed"
         ? "The SSH host key changed after the paired connection failed."
-        : "The SSH host key must be trusted before ADE can fall back from the paired connection.",
+        : `The SSH host key must be trusted before ${BRAND.NAME} can fall back from the paired connection.`,
     );
     this.name = "PairedRuntimeSshTrustRequiredError";
   }
@@ -217,7 +218,7 @@ export class RemoteConnectBackoffError extends Error {
     const tail = retryAtMs == null
       ? REMOTE_CONNECT_STOPPED_NOTICE
       : `Retrying in ${Math.max(1, Math.ceil((retryAtMs - Date.now()) / 1000))}s.`;
-    super(`Remote ADE service connection failed recently (${failureMessage}). ${tail}`);
+    super(`Remote ${BRAND.NAME} service connection failed recently (${failureMessage}). ${tail}`);
     this.name = "RemoteConnectBackoffError";
   }
 }
@@ -234,12 +235,12 @@ export class RemoteActionOutcomeUnknownError extends Error {
 
   constructor(readonly reconnected: boolean | null) {
     super(
-      "Remote ADE service connection was interrupted before ADE could confirm the action result. " +
+      `Remote ${BRAND.NAME} service connection was interrupted before ${BRAND.NAME} could confirm the action result. ` +
         (reconnected === null
           ? "Check whether it finished on that machine before retrying it."
           : reconnected
-          ? "ADE reconnected to the machine; retry the action if it is still needed."
-          : "ADE could not reconnect to the machine; check the destination before retrying the action."),
+          ? `${BRAND.NAME} reconnected to the machine; retry the action if it is still needed.`
+          : `${BRAND.NAME} could not reconnect to the machine; check the destination before retrying the action.`),
     );
     this.name = "RemoteActionOutcomeUnknownError";
   }

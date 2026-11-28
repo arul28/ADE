@@ -45,6 +45,7 @@ import type { AccountVaultBridge } from "../account/accountVaultBridge";
 import { readAccountVaultItem, safeVault } from "../account/accountVaultRead";
 import { describeVaultFailure } from "../account/vaultWrite";
 import { ACCOUNT_GITHUB_VAULT_KIND, GITHUB_CLI_VAULT_KEY } from "./accountGithubTokenItem";
+import { BRAND } from "../../../shared/brand";
 
 /** The account's copy of a `gh` login, adopted on this machine. Holds nothing else. */
 export const GITHUB_GH_ACCOUNT_TOKEN_KEY = "github.ghAccountToken.v1";
@@ -56,8 +57,8 @@ export const GITHUB_GH_VAULT_KIND = ACCOUNT_GITHUB_VAULT_KIND;
 export const GITHUB_GH_VAULT_KEY = GITHUB_CLI_VAULT_KEY;
 
 const VAULT_UNAVAILABLE_MESSAGE =
-  "ADE's background service isn't running on this computer, so the account can't be changed right now.";
-const ACCOUNT_CHANGED_MESSAGE = "Your ADE account changed while ADE was saving. Try again.";
+  `${BRAND.NAME}'s background service isn't running on this computer, so the account can't be changed right now.`;
+const ACCOUNT_CHANGED_MESSAGE = `Your ${BRAND.NAME} account changed while ${BRAND.NAME} was saving. Try again.`;
 const VAULT_WRITE_FAILED_MESSAGE = "The account could not be changed. Try again.";
 
 /** Variables `gh auth token` prints in place of the stored login. */
@@ -530,7 +531,7 @@ export function createGithubGhAccountSync(args: GithubGhAccountSyncArgs) {
     /** Take the `gh` login off the account; every machine drops its copy and none shares one until asked. */
     async removeFromAccount(): Promise<void> {
       const userId = accountUserId();
-      if (!userId) throw new Error("Sign in to your ADE account to change what it holds.");
+      if (!userId) throw new Error(`Sign in to your ${BRAND.NAME} account to change what it holds.`);
       const vault = resolveVault();
       if (!vault) throw new Error(VAULT_UNAVAILABLE_MESSAGE);
       await exclusive(async () => {
@@ -552,7 +553,7 @@ export function createGithubGhAccountSync(args: GithubGhAccountSyncArgs) {
     /** Share this machine's `gh` login with the account again (after a removal). */
     async shareWithAccount(): Promise<void> {
       const userId = accountUserId();
-      if (!userId) throw new Error("Sign in to your ADE account to share your GitHub CLI sign-in.");
+      if (!userId) throw new Error(`Sign in to your ${BRAND.NAME} account to share your GitHub CLI sign-in.`);
       const vault = resolveVault();
       if (!vault) throw new Error(VAULT_UNAVAILABLE_MESSAGE);
       await exclusive(async () => {
@@ -561,7 +562,7 @@ export function createGithubGhAccountSync(args: GithubGhAccountSyncArgs) {
         if (!local.token) {
           throw new Error(local.known
             ? "This computer has no GitHub CLI sign-in for github.com. Run `gh auth login`, then try again."
-            : "ADE can't read this computer's GitHub CLI sign-in. Run `gh auth status` to check it, and unset GH_TOKEN, GITHUB_TOKEN or GH_HOST if one is set.");
+            : `${BRAND.NAME} can't read this computer's GitHub CLI sign-in. Run \`gh auth status\` to check it, and unset GH_TOKEN, GITHUB_TOKEN or GH_HOST if one is set.`);
         }
         const result = await vault.set(vaultRef.scope, vaultRef.kind, vaultRef.key, JSON.stringify({ v: 1, token: local.token }), {
           expectedAccountUserId: userId,

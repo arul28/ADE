@@ -1,6 +1,7 @@
 import { CaretRight, Copy } from "@phosphor-icons/react";
 import type { ReactNode } from "react";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * One visual language for ADE's failure surfaces (project recovery, the page
@@ -71,7 +72,7 @@ const TONE_TAG: Record<ErrorSurfaceTone, "ok" | "warn" | "crit" | undefined> = {
 export function ErrorSurfaceCard({
   tone = "warning",
   icon,
-  label = "ADE",
+  label = BRAND.NAME,
   status,
   action,
   headline,
@@ -98,7 +99,7 @@ export function ErrorSurfaceCard({
           masked, as do the children. */}
       <header className="kit-card-head" data-ph-unmask="">
         {icon}
-        <span className="min-w-0 truncate" data-ph-mask={label === "ADE" ? undefined : ""}>{label}</span>
+        <span className="min-w-0 truncate" data-ph-mask={label === BRAND.NAME ? undefined : ""}>{label}</span>
         {status ? (
           <span className="kit-tag shrink-0" data-tone={TONE_TAG[tone]}>
             {status}

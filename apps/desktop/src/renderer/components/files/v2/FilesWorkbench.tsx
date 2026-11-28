@@ -88,6 +88,7 @@ import { cn } from "../../ui/cn";
 import { confirmDialog } from "../../ui/dialog/confirm";
 import { ProjectSidebarSlot, useHasProjectSidebar } from "../../app/projectSidebar/ProjectSidebarSlot";
 import { isAccountAnsweredPin, isAdeCloudBinding } from "../../../../shared/adeCloud/binding";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * Below this pane width the embedded workbench shows ONE surface at a time.
@@ -214,7 +215,7 @@ function FilesNoComputerState() {
       style={{ color: COLORS.textMuted, background: "color-mix(in srgb, var(--color-card) 76%, var(--color-accent) 18%)" }}
     >
       <span style={{ color: COLORS.textSecondary }}>No computer with this project is online.</span>
-      <span className="text-xs">Open ADE on a computer that has it to see its files.</span>
+      <span className="text-xs">Open {BRAND.NAME} on a computer that has it to see its files.</span>
     </div>
   );
 }

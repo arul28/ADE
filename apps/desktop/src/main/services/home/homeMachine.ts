@@ -14,6 +14,8 @@ import type {
   HomeMachineProcessGroup,
 } from "../../../shared/types/homeWidgets";
 import { execFileOffThread, offThreadSpawnEnabled } from "../shared/offThreadSpawn";
+import { BRAND } from "../../../shared/brand";
+import { ADE_CLI_NAME_SOURCE } from "../../../shared/cliCommandNames";
 
 /**
  * Machine health and listening ports for the home page's Machine widget.
@@ -44,8 +46,8 @@ const DEV_PROCESS_NAMES = new Set([
   "wrangler", "workerd", "air", "uv", "ngrok", "cloudflared", "jekyll", "flask", "rustc",
 ]);
 
-/** ADE's own executables, any channel: "ADE", "ADE Beta", "ADE Helper (GPU)", "ade-music-host", "ade-now-playing". */
-const ADE_PROCESS_NAME = /^ade(?:\s|-|$)/i;
+/** ADE's own executables, any channel: "ADE", "ADE Beta", "ADE Helper (GPU)", "ade-music-host", "ade-now-playing", the `daex` CLI. */
+const ADE_PROCESS_NAME = new RegExp(String.raw`^${ADE_CLI_NAME_SOURCE}(?:\s|-|$)`, "i");
 
 function processBaseName(name: string | null): string {
   return (name ?? "").toLowerCase().replace(/\.exe$/, "");
@@ -550,7 +552,7 @@ export function createMachineMonitor(deps: {
   };
 
   const kill = async (pid: number): Promise<HomeKillResult> => {
-    if (!Number.isInteger(pid) || pid <= 4) return { ok: false, error: "Not a process ADE can stop." };
+    if (!Number.isInteger(pid) || pid <= 4) return { ok: false, error: `Not a process ${BRAND.NAME} can stop.` };
     // Only a process a fresh scan lists: the widget cannot be used to stop
     // arbitrary pids. Forget the cached names too, so a recycled pid is named
     // (and flagged system or not) for the process that holds it now.
@@ -559,7 +561,7 @@ export function createMachineMonitor(deps: {
     const current = await listeners();
     const target = current.ok ? current.processes.find((entry) => entry.pid === pid) : null;
     if (!target) return { ok: false, error: "That process is no longer listening." };
-    if (target.protected) return { ok: false, error: "That is one of ADE's own processes." };
+    if (target.protected) return { ok: false, error: `That is one of ${BRAND.NAME}'s own processes.` };
     if (target.system) return { ok: false, error: "That is a system process." };
     if (platform !== "win32") {
       try {

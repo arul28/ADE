@@ -1,160 +1,63 @@
 # Capture gesture
 
-Press **both ⌘ keys** on macOS, or **both Ctrl keys** on Windows, anywhere on the OS — in ADE, in a browser, in Xcode, over a video call — and the window in front is captured and handed to the CTO. It is staged on the CTO composer and ADE comes forward with it already attached.
+Press **both ⌘ keys** on macOS, or **both Ctrl keys** on Windows, anywhere on the OS. The window in front is captured, DAEX comes forward on `/cto`, and the shot is staged on the CTO composer. The command palette entry **"Ask the CTO about this screen"** does the same without the chord (`source: "command"`).
 
-The whole feature is one sentence of user intent — *ask the CTO about what I am looking at* — and everything below is what that sentence costs to implement. On macOS 26 and earlier it asks for no key-monitoring permission; on macOS 27 the public modifier poll stopped carrying the left/right bits, so the chord now uses a listen-only event tap that macOS gates behind Input Monitoring. The chord itself, its copy, and the Windows helper are unchanged.
+Desktop GUI only: there is no `daex` CLI or iPhone equivalent. Linux ships nothing (X11 and Wayland need different grabs, and Wayland refuses foreign-window capture without a portal), so the gesture is hidden there.
 
 ## Source file map
 
-### Shared
+Shared
+- `apps/desktop/src/shared/types/captureGesture.ts`: wire types. `CaptureGestureShot` carries the PNG inline as base64 (not a path) because the renderer stages it with `agentChat.saveTempAttachment`, which can land on another machine for a remote-bound chat. Also `appName`, `windowTitle`, `bounds`, `source` (`chord` / `command`), `isAdeWindow`, plus settings, health and failure types.
+- `apps/desktop/src/shared/captureGesturePlatformSupport.ts`: the one availability predicate `isCaptureGestureSupported(platform, arch)` (true on `darwin` and `win32`), `captureGestureUnavailableReason`, `captureGestureChordLabel`. Main, preload and renderer all use it; do not hand-roll a platform check.
 
-- `apps/desktop/src/shared/types/captureGesture.ts` — the wire types three processes read. `CaptureGestureShot` carries the PNG **inline as base64** rather than as a path, because the renderer hands it straight to `agentChat.saveTempAttachment`, which stages attachments into the chat's own directory — and, for a remote-bound chat, onto the other machine. A path would only be meaningful on the capturing machine. It also carries `appName`, `windowTitle`, `bounds` (for the fly-in), `source` (`chord` or `command`), and `isAdeWindow`. Also `CaptureGestureSettings`, `CaptureGestureHealth` + `CaptureGestureHealthState`, and `CaptureGestureFailure`.
-- `apps/desktop/src/shared/captureGesturePlatformSupport.ts` — the single availability predicate: `isCaptureGestureSupported(platform, arch)` (true on `darwin` and `win32`), `captureGestureUnavailableReason`, `CAPTURE_GESTURE_UNSUPPORTED_BLOCKER`, and `captureGestureChordLabel` ("both ⌘ keys" / "both Ctrl keys"). It is deliberately **not** a `process.platform === "darwin"` check copied into main, preload, and the renderer: there was no "macOS and Windows but not Linux" predicate in the codebase before this, and three hand-rolled copies would drift the moment a fourth target appears. `arch` is accepted and ignored — both helpers cover their platform's packaging target today — but it stays in the signature so a future arch-specific gap cannot change the function's shape out from under its callers.
+Main (`apps/desktop/src/main/services/capture/`)
+- `captureGestureState.ts`: pure decisions. Helper path (`<resourcesPath>/native/…` packaged, `<appPath>/resources/native/…` dev), chord admission `evaluateCaptureChord`, protocol decoder `parseCaptureHelperOutput`, user copy `captureFailureFor` / `captureGestureHealth`, and the macOS remedy sentences shared by the refusal and the Settings health card.
+- `captureShotFit.ts`: `fitCaptureShotToAttachmentLimit`, up to four width halvings to fit the attachment limit.
+- `captureGestureTarget.ts`: `pickCaptureGestureWindow` (focused → last-focused DAEX window → any live window).
+- `captureHelper.ts`: the NDJSON child supervisor. Line cap 64 KB, 3 restarts, 500 ms graceful shutdown, `captureNow()`, 8 s capture timeout, 48 MB read-back cap, `isAdeWindow` (helper `ownerPid` equals DAEX's pid). One boolean `captureInFlight` is the request latch; `settleCapture()` is the only place it is cleared.
+- `apps/desktop/src/main/services/analytics/captureGestureProductAnalytics.ts`: `reportCaptureGesture` (`delivered` / `failed` / `too_large`), deduped per outcome per minute. See [logging.md](../../logging.md#product-analytics-posthog).
+- `apps/desktop/src/main/main.ts`: wires the helper, picks the window, focuses DAEX for a shot (not for a failure), and owns the temp dir.
 
-### Main process (`apps/desktop/src/main/services/capture/`)
+Native helpers
+- `apps/desktop/native/ADECaptureHelper/` (SwiftPM). `ADECaptureHelperCore` holds the pure pieces (`CommandKeyChordDetector.swift`, `ChordDetector.swift`, `Protocol.swift`) tested by `Tests/ADECaptureHelperCoreTests/ChordDetectorTests.swift` (`npm run test:capture-helper`). `Sources/ADECaptureHelper/main.swift` has the run loop, event tap and capture. Built by `npm run build:capture-helper` (part of `build:mac-native`).
+- `apps/desktop/native/ADECaptureHelperWin/src/main.cpp`: Windows helper, same protocol. Built by `npm run build:capture-helper:win` (part of `dist:win*`; MSVC `cl.exe`, else `clang++`/`g++` for mingw-w64).
 
-- `captureGestureState.ts` — everything about the gesture that is a decision rather than an effect, split out so the decisions are testable without a process. Owns `captureHelperExecutableName` and `resolveCaptureHelperExecutablePath` (packaged: `<resourcesPath>/native/…`; dev: `<appPath>/resources/native/…`), the chord admission rule `evaluateCaptureChord`, the protocol decoder `parseCaptureHelperOutput`, the user-facing `captureFailureFor` and `captureGestureHealth`, `captureAttachmentFilename`, `UNAVAILABLE_CAPTURE_GESTURE_HEALTH`, `MAC_OS_SCREEN_RECORDING_REMEDY`, and `MAC_OS_INPUT_MONITORING_REMEDY` — one sentence per macOS remedy, shared by the refusal a capture returns and the health card in Settings, because two wordings of one remedy read as two different problems. `captureGestureHealth` takes `inputMonitoringRequired` and answers it before the Screen Recording refusal, because a missing Input Monitoring grant means the chord itself can never fire. None of it needs a process to test.
-- `captureShotFit.ts` — `fitCaptureShotToAttachmentLimit`, the four-halvings downscale, with the two Electron image operations injected so the arithmetic is testable without a browser process. Lived in `main.ts`.
-- `captureGestureTarget.ts` — `pickCaptureGestureWindow`, the focused → last-focused → any-live order, pure and generic over the window type; main keeps only the liveness filter, which is the part only Electron can answer.
-- `captureHelper.ts` — the supervisor. Its policy — line cap (`MAX_HELPER_LINE_BYTES`, 64 KB), restart budget (`MAX_RESTART_ATTEMPTS`, 3), graceful-shutdown window, `windowsHide` — because the failure modes of a supervised NDJSON child are identical and a second, subtly different supervision policy in the same app is how one of them rots. It also owns `captureNow()`, the capture timeout (`CAPTURE_TIMEOUT_MS`, 8 s), the read-back cap (`MAX_CAPTURE_BYTES`, 48 MB), and the `isAdeWindow` determination. One boolean, `captureInFlight`, is the whole request latch — there is no generation counter — and `settleCapture()` is the single place it is cleared: it returns whether anything was actually in flight, so a `captured` line that arrives after its own timeout already reported a failure is dropped rather than delivered as a shot the user has been told did not happen, and its orphaned PNG is deleted rather than left for the dispose-time purge. Failures do not go through that gate at all: the Windows helper emits `permission-denied` at startup, before any capture was asked for, and that is the one signal saying why the gesture will never fire.
-- `apps/desktop/src/main/services/analytics/captureGestureProductAnalytics.ts` — `reportCaptureGesture(service, outcome)`, the one coarse product fact a press produces (`delivered` / `failed` / `too_large`). It lives beside the other analytics producers rather than inside the capture service so the privacy contract is reviewable in one folder, and it dedupes per outcome on a one-minute interval: the product question is whether the gesture works for an installation, and a user who fires it four times while something is broken is one fact, not four. See [logging.md › The capture gesture](../../logging.md#the-capture-gesture).
+Renderer
+- `apps/desktop/src/renderer/components/capture/GlobalCaptureGestureHost.tsx`: mounted once in `AppShell.tsx`. Subscribes to `captureGesture.onShot` / `onFailure`, calls `cto.ensureSession()`, navigates to `/cto` before staging, stages via `saveTempAttachment`, and dispatches `ade:agent-chat:add-attachment` (the same event `WorkSidebar` uses). Renders the fly-in and the failure notice (bottom-centre `role="status"`, clears after 6 s).
+- `captureGestureDelivery.ts`: `planCaptureAttachments`, what to stage for one shot.
+- `currentViewState.ts`: `composeCurrentViewState` / `formatCurrentViewState`. Over a DAEX window the shot gets a second attachment `<name>-context.md` (tab, route, project, lane name and id, open Work session, PR, focused editor file). Over another app's window nothing extra is attached.
+- `captureGestureLocalSettings.ts`: machine-local switch, localStorage `ade:capture-gesture:enabled` (default on).
+- `CaptureFlyIn.tsx`: thumbnail animation, `pointer-events: none`, skipped under `prefers-reduced-motion`.
+- `apps/desktop/src/renderer/components/settings/CaptureGestureSection.tsx`: the settings card ([Onboarding and settings](../onboarding-and-settings/README.md#capturing-a-window-with-a-key-gesture)).
+- `apps/desktop/src/renderer/lib/platform.ts`: renderer wrappers `supportsCaptureGesturePlatform()`, `captureGestureBlocker()`, `captureGestureChord()`.
+- `apps/desktop/src/renderer/components/app/CommandPalette.tsx`: the palette entry, shown only when `supportsCaptureGesturePlatform() && !isWebClientMode()`.
 
-### Native helpers
+## Gotchas / fragile areas
 
-- `apps/desktop/native/ADECaptureHelper/` — the macOS helper (SwiftPM). `Package.swift` splits it into an `ADECaptureHelperCore` library and a thin `ADECaptureHelper` executable precisely so the pure pieces have a test target: `Sources/ADECaptureHelperCore/CommandKeyChordDetector.swift` is the key-code rising-edge detector used by the event tap, `ChordDetector.swift` is the legacy device-bit detector used by the polling fallback, and `Protocol.swift` the NDJSON codec, all covered by `Tests/ADECaptureHelperCoreTests/ChordDetectorTests.swift` (`swift test` in that directory), while `Sources/ADECaptureHelper/main.swift` keeps the run loop, event tap, and window capture — the half that needs a Mac with a screen. Built by `npm run build:capture-helper`.
-- `apps/desktop/native/ADECaptureHelperWin/src/main.cpp` — the Windows helper, same NDJSON contract. Built by `npm run build:capture-helper:win`.
+- **macOS 27 changed chord detection.** The static `NSEvent.modifierFlags` poll no longer carries the left/right Command device bits (`NX_DEVICELCMDKEYMASK` 0x8, `NX_DEVICERCMDKEYMASK` 0x10). The helper now uses a listen-only `CGEventTap` for `.flagsChanged` and reads key codes (55 left, 54 right) through `CommandKeyChordDetector`. That tap needs **Input Monitoring**. `CGPreflightListenEventAccess()` runs first; without the grant the helper sends `input-monitoring-required`, and if the tap still fails it sends `chord-unavailable`. It never sends `chord-ready` without a working monitor. `retry` re-attempts in place, and the Settings card polls health while its button is busy. macOS 26 and earlier keep the permission-free poll (`ChordDetector`).
+- **Screen Recording** is needed for pixels on every macOS version. The helper shells out to `/usr/sbin/screencapture -l<windowID>` (the CG window-image call is deprecated).
+- **Windows hook thread must keep pumping.** `WH_KEYBOARD_LL` is removed silently if its thread stalls (~300 ms). The callback only flips atomics and posts a message; `PrintWindow` (`PW_RENDERFULLCONTENT`) runs on a detached worker, one at a time. Left/right Ctrl come from the hook's `vkCode`; `GetAsyncKeyState` collapses them.
+- **Windows key seeding.** Both Ctrl flags are re-seeded from `GetAsyncKeyState` at startup and on every `settings` command (re-seed, never clear), or a held key sticks up or down.
+- **Windows GDI flush.** The bitmap is unselected from the memory DC before GDI+ encodes it, or the PNG can be torn or blank. Shutdown drains the worker for up to 500 ms before `GdiplusShutdown`, or the helper crashes on exit.
+- **Shutdown is a message.** The supervisor writes `{"type":"quit"}` and closes stdin; both helpers also exit on stdin EOF, so an orphan cannot outlive DAEX. The kill backstop uses `terminateChildProcessTree` (the macOS helper has `screencapture` children); on POSIX the child is spawned `detached` so the group kill works.
+- **Late shots are dropped.** A `captured` line after its own timeout is discarded and its PNG deleted, because the user was already told it failed.
+- **Chord admission** refuses for `disabled`, `in-flight` (people hold modifiers, so one press would burst), and `cooldown` (1,200 ms; re-pressing one of two held keys re-fires).
+- **Temp PNG.** The helper writes to `<temp>/ade-capture-<channel>` (one dir per release channel, `ade-capture-dev` unpackaged). The supervisor reads it to base64 and deletes it in a `finally`; dispose and `windows-uninstall-cleanup.ps1` sweep the dir.
+- **Size limit.** `saveTempAttachment` rejects over `LEGACY_MAX_CHAT_ATTACHMENT_BYTES` (10 MB), so large shots are halved; after four halvings it fails with "That screen is too large to attach, even scaled down."
+- **Packaging.** The binaries are gitignored and built per platform. They ship through the top-level `build.extraResources` filtered to `ade-capture-helper` and `ade-capture-helper.exe` (not `mac.extraResources`).
 
-### Renderer (`apps/desktop/src/renderer/components/capture/`)
+## Protocol
 
-- `GlobalCaptureGestureHost.tsx` — mounted once in `AppShell.tsx`, inside the router and above every tab. It subscribes to `captureGesture.onShot` / `onFailure`, resolves the delivery target, stages attachments, navigates to `/cto`, and renders the fly-in and the failure notice.
-- `captureGestureDelivery.ts` — `planCaptureAttachments`, the pure decision of what to stage for one shot. (Base64 lives in `renderer/lib/base64.ts`, shared with chat attachments.)
-- `currentViewState.ts` — `CurrentViewState`, `composeCurrentViewState`, and `formatCurrentViewState`: "what is ADE showing right now", as a thing you can attach to a message.
-- `captureGestureLocalSettings.ts` — the machine-local on/off switch (`ade:capture-gesture:enabled`, default on) and `captureGestureBridgeAvailable()`.
-- `CaptureFlyIn.tsx` — the captured thumbnail flying into the composer. Two frames and a CSS transition, no animation library; `pointer-events: none` throughout, because a 420 ms overlay that eats a click is worse than no animation.
-- `apps/desktop/src/renderer/components/settings/CaptureGestureSection.tsx` — the settings card. See [Onboarding and settings › Capturing a window with a key gesture](../onboarding-and-settings/README.md#capturing-a-window-with-a-key-gesture).
-- `apps/desktop/src/renderer/lib/platform.ts` — `supportsCaptureGesturePlatform()`, `captureGestureBlocker()`, `captureGestureChord()`, the renderer wrappers over the shared predicate.
-
-## Why a modifier-only chord
-
-Any global shortcut with a letter in it is a key-event tap, and on macOS a key-event tap is gated behind Accessibility — a permission dialog that takes the user out of ADE, into System Settings, and that a fair number of people will simply decline. A gesture nobody grants permission for is a gesture nobody has.
-
-Both modifier keys held at once avoids that entirely, and it is also a chord that no application binds, needs no chooser UI, and is the same physical motion on both platforms. The cost is that it is not configurable; that is the trade the feature is built on.
-
-### The macOS consequence: key codes from an event tap
-
-Until macOS 27 the helper detected the chord by **polling `NSEvent.modifierFlags`** on a timer. That was not a style choice: the static property is a hardware-state read, not an event delivery, so it needed no Accessibility or Input Monitoring grant. The device-dependent masks from `IOKit/hidsystem/IOLLEvent.h` rode along in the same raw value:
-
-| Mask | Value |
-|---|---|
-| `NX_DEVICELCMDKEYMASK` (`ModifierMask.leftCommand`) | `0x0000_0008` |
-| `NX_DEVICERCMDKEYMASK` (`ModifierMask.rightCommand`) | `0x0000_0010` |
-
-**macOS 27 stopped putting those two bits in the static poll.** Both keys now read as the generic `0x0010_0000` Command bit, so the old detector can never fire. The device bits still ride on `NSEvent` *event objects*, but a background helper only sees its own events.
-
-So `main.swift` now installs a **listen-only `CGEventTap` for `.flagsChanged`** and reads the key code the event names: **55 is left Command, 54 is right Command**. `CommandKeyChordDetector.consume(keyCode:commandDown:)` is the pure rising-edge detector over those key codes; each event is one transition of that key, so the state toggles, and the generic `commandDown` sample resets both states when no Command key is left. `reset()` drops the latch without reporting a chord, so switching the gesture off while the keys happen to be down does not fire the moment it is switched back on.
-
-The tap is a key-event tap, so macOS gates it behind **Input Monitoring**. That is a real change from the original "no permission" design, and it is surfaced rather than hidden:
-
-- `CGPreflightListenEventAccess()` is consulted before the tap is attempted. Without a grant the helper answers `input-monitoring-required`, health says *"ADE can't watch the Command keys"* with the System Settings path, and the card offers **Try again**.
-- If the grant is present but the tap still cannot be created or restored, the helper answers `chord-unavailable` and health says *"The capture gesture couldn't start"* with the same retry. It never reports `chord-ready` for a monitor that is not actually installed.
-- `retry` re-attempts the tap in place, so granting the permission does not require restarting ADE. The settings card polls health for a bounded window while the button is busy, so a grant made in System Settings clears the warning without reopening Settings.
-- On **macOS 26 and earlier** the helper keeps the old `NSEvent.modifierFlags` poll as the fallback, which is still permission-free there. `ChordDetector` remains for that path and is covered by the Swift tests.
-- The Windows helper is unaffected; its low-level hook already reads `VK_LCONTROL` and `VK_RCONTROL` separately.
-
-The host keeps the same protocol latching either way: `chord-ready` means a working monitor is installed, `input-monitoring-required` means the tap could not be created.
-
-The pixels come from `/usr/sbin/screencapture -l<windowID>`, not `CGWindowListCreateImage`: the CG call was deprecated in macOS 14 in favour of ScreenCaptureKit, whose window capture is async and pulls in a much larger surface, while `screencapture` is a supported, stable tool that does exactly one window. It does require the **Screen Recording** grant, which is why the app declares `NSScreenCaptureUsageDescription`. That grant is the one permission this feature asks for, and it is asked for by the capture rather than by the keyboard.
-
-### The Windows consequence: a low-level hook, read per-key
-
-`main.cpp` installs `WH_KEYBOARD_LL` and reads `VK_LCONTROL` and `VK_RCONTROL` **separately out of the hook struct's `vkCode`**. `GetAsyncKeyState` cannot do this job at all: it collapses both keys into `VK_CONTROL`, so "both Ctrl keys" is not expressible there.
-
-The hook comes with a hard constraint that shapes the whole process: `WH_KEYBOARD_LL` calls back on the thread that installed it, and Windows *silently removes* a hook whose thread stops pumping messages (`LowLevelHooksTimeout`, 300 ms by default). So the callback does nothing but flip two atomics and `PostMessage` — no capture, no file I/O, no allocation. The same latch as the macOS `ChordDetector` (`g_chord_engaged`) lives beside them, for the same reason.
-
-Both key flags are **seeded from `GetAsyncKeyState(VK_LCONTROL/VK_RCONTROL)`** in two places: at startup, and again on every `settings` command. The hook only ever learns a key is up from an event, so a Ctrl already held when the helper starts — and ADE starts it while the user is typing — leaves that side stuck `false` until the user releases and presses it again, and a Ctrl held across a disable/enable leaves it stuck `true` so the next press of the *other* Ctrl fires a capture nobody chorded. The `settings` handler **re-seeds rather than clears**: storing `false` there is the same stuck-key bug in the other direction, because a Ctrl the user is holding right now would read up and its next press would never complete a chord. `g_chord_engaged` is recomputed from the two freshly seeded flags in both places.
-
-Pixels come from `PrintWindow` with `PW_RENDERFULLCONTENT`, which is defined locally if the SDK is older, because it is the only capture path that works for Chromium and DirectComposition windows.
-
-The bitmap is **unselected from the memory DC before GDI+ encodes it**. GDI batches drawing per thread, and `Gdiplus::Bitmap(HBITMAP, …)` reads the bits directly without flushing — so an HBITMAP still selected into a DC can have writes outstanding that the encoder never sees, which is a torn or blank PNG on a machine fast enough to reach the encode before the batch drains. `SelectObject(memory_dc, previous)` flushes the DC and hands the bitmap back, which is the supported way to read it.
-
-The same constraint puts the capture itself on a **worker thread**. `PrintWindow` on a large window is tens of milliseconds and the message loop is the hook's own thread, so running it inline would stall the pump and get the hook silently uninstalled. The loop therefore posts `kMsgCapture` to itself and spawns a detached `std::thread`; `g_capture_in_flight` keeps it to one at a time, and joining would be the very stall this avoids. Shutdown has to wait for that worker anyway — a detached thread still holding GDI+ objects when `GdiplusShutdown` runs crashes on the way out, which the supervisor reads as a helper that died — so the loop drains for up to `kShutdownDrainMs` (500 ms) before tearing GDI+ down. That bound is the supervisor's own `GRACEFUL_SHUTDOWN_MS`: waiting longer buys nothing, because the supervisor kills the process at that mark regardless.
-
-The command parser matches `"type"` followed by a colon and the value, skipping whitespace — not a bare substring search anywhere after the key. A search matched `{"type":"settings","note":"\"quit\""}` as a quit, so one chatty or crafted field ended the helper.
-
-### Shutdown is a message, not a signal
-
-**Windows has no deliverable SIGTERM.** Node's `child.kill("SIGTERM")` becomes `TerminateProcess`, which gives a process mid-BitBlt no chance to release its DCs and bitmaps. So shutdown is the in-band `{"type":"quit"}` line on stdin: the supervisor writes it, the helper posts `WM_QUIT` to its own message loop, and the forced kill only fires as a backstop when the child has not exited inside `GRACEFUL_SHUTDOWN_MS` (500 ms). That backstop goes through `terminateChildProcessTree` and never a bare `child.kill()`, because the thing that has to die is a **tree**: the helper shells out to `/usr/sbin/screencapture` per shot, and the backstop only runs when the child is wedged — exactly when it is most likely to be mid-capture. One helper, two mechanisms: `taskkill /PID <pid> /T /F` on Windows, where `child.kill()` is a `TerminateProcess` on the leader alone; `process.kill(-pid, …)` on POSIX, which is why the child is spawned **`detached`** there — `process.kill` only accepts a negative pid when that pid is a process **group** id, so without `detached: true` the group kill fails and the `screencapture` is orphaned. Windows stays attached: it has no process groups, and `detached` there means a new console. Passing the live child object rather than a `{ pid }` snapshot is what lets the helper's PID-reuse guard run, and the signal escalates SIGTERM → SIGKILL across the same 500 ms window.
-
-A detached child cannot outlive ADE, and that guarantee does **not** rest on the kill timer (which is unref'd, so a fast quit skips it). Shutdown closes stdin as well as writing `quit`, and both helpers exit on EOF — `NSApp.terminate` on the macOS reader thread, `WM_QUIT` on the Windows loop — including when ADE is killed outright and the pipe closes underneath them. The signal is the fast way out, not the only one. The Windows loop **also** exits when stdin closes, so an orphaned helper cannot survive its parent.
-
-The macOS helper speaks the same protocol, so one supervisor covers both.
-
-## The protocol
-
-NDJSON both ways, one message per line.
+NDJSON both ways. Unknown messages are dropped on both sides so versions can drift.
 
 | Direction | Messages |
 |---|---|
-| ADE → helper | `{"type":"capture"}`, `{"type":"settings","enabled":bool}`, `{"type":"retry"}`, `{"type":"quit"}` |
-| helper → ADE | `{"type":"ready"}`, `{"type":"chord-ready"}`, `{"type":"input-monitoring-required"}`, `{"type":"chord-unavailable"}`, `{"type":"chord"}`, `{"type":"captured", path, appName, windowTitle, ownerPid, bounds}`, `{"type":"permission-denied"}`, `{"type":"no-window"}`, `{"type":"capture-failed", message}` |
+| DAEX → helper | `capture`, `settings {enabled}`, `retry`, `quit` |
+| helper → DAEX | `ready`, `chord-ready`, `input-monitoring-required`, `chord-unavailable`, `chord`, `captured {path, appName, windowTitle, ownerPid, bounds}`, `permission-denied`, `no-window`, `capture-failed {message}` |
 
-Both sides drop what they cannot interpret rather than failing. `HelperCommand.parse` returns nil for an unknown command so a newer ADE can add one without wedging an older helper; `parseCaptureHelperOutput` returns null for both malformed JSON and a well-formed message this build has never heard of — the caller logs them differently, because only the first is a protocol violation worth showing in health.
-
-### Chord admission
-
-`evaluateCaptureChord` refuses a chord for three reasons that are **not** interchangeable:
-
-- `disabled` — the setting is off. The helper should not be running, but a chord already in flight when the user flipped the switch must not land.
-- `in-flight` — a capture is already running. `screencapture` takes 100–300 ms and the chord is *modifier keys*, which people hold; without this one deliberate press produces a burst of identical attachments.
-- `cooldown` — a shot landed inside `DEFAULT_CHORD_COOLDOWN_MS` (1,200 ms). Releasing and re-pressing one of two held ⌘ keys re-fires the chord, so the in-flight guard alone does not cover a natural press-and-wiggle.
-
-### The PNG is a millisecond-long handoff
-
-The helper writes the capture to a file under the OS temp root and names the path in its `captured` message. The supervisor stats it (non-empty, under `MAX_CAPTURE_BYTES`), reads it to base64, and **deletes it in a `finally`**, with a dispose-time purge of the whole directory as the backstop and `windows-uninstall-cleanup.ps1` sweeping it for the case where ADE was killed in between. Nothing durable is written; the file exists only because two processes cannot pass a bitmap any other way. The directory is `<temp>/ade-capture-<channel>`, one per release channel, so Stable, Beta, Alpha and dev never share one. An unpackaged build uses `ade-capture-dev`.
-
-## The target is always the CTO
-
-There is no "capture to clipboard" and no destination chooser. Every shot goes to `deliverToComposer`: `cto.ensureSession()` resolves the thread, ADE navigates to `/cto` **before** the chips appear — so an attachment is never staged onto a composer nobody is looking at — and each file is staged through `agentChat.saveTempAttachment` and announced with the `ade:agent-chat:add-attachment` event, the same one `WorkSidebar` dispatches.
-
-### Over ADE's own window, the image travels with view state
-
-A screenshot of ADE tells the CTO what the pixels look like and nothing about what they mean. It cannot read the lane id behind a truncated chip, the PR number behind a scrolled header, or which of four editor tabs is focused. So when `isAdeWindow` is true — `ownerPid` equals ADE's own pid — `planCaptureAttachments` stages a second attachment: `<name>-context.md`, built by `formatCurrentViewState` from a `CurrentViewState` (tab, full route, project, lane name and id, the Work tab's open session, the PR number/repo/detail tab, and the focused editor file).
-
-No single accessor answered that question before. The pieces already existed and were scattered across `selectActiveProjectStateKey` and `selectWorkViewState` in `appStore`, `readStoredProjectRoute`, `parsePrsRouteState`, and `editorGroupsStore`; `currentViewState.ts` is the one place that assembles them, as a pure function over an injected snapshot rather than a hook, so the formatting is testable without mounting the app.
-
-Over another application's window ADE knows nothing worth attaching, and the note is omitted rather than guessed at.
-
-## Focus, feedback, and failure
-
-- **A shot steals focus; a failure does not.** `main.ts` brings ADE forward *before* sending the shot event, because the fly-in animation is pointless behind another app's window and the gesture means "take me to the CTO with this". A failure is sent without activating: the user pressed a chord over someone else's window, and yanking them into ADE to read "there was no window in front" is worse than the failure itself.
-- **The shot goes to the window the user was last in.** The gesture's whole point is firing over ANOTHER app's window, so `BrowserWindow.getFocusedWindow()` is null exactly when a capture happens, and `getAllWindows()[0]` is creation order — an arbitrary project, usually not the one the user was working in. `pickCaptureGestureWindow` therefore falls back to `lastFocusedAdeWindowId` before it falls back to the first live window, and both the shot and the failure notice go to the same place. With no live window at all nothing is sent: a gesture that can fire while ADE is in the background must not conjure a window the user did not ask for.
-- The fly-in is skipped entirely under `prefers-reduced-motion`, which `GlobalCaptureGestureHost` decides so `CaptureFlyIn` is free to assume motion is wanted.
-- Failures render as a bottom-centre `role="status"` notice that clears after 6 s. `captureFailureFor` writes the words, including the Screen Recording instruction, so no caller restates a permission path and gets it subtly wrong.
-
-## Without the chord
-
-The command palette carries **"Ask the CTO about this screen"**, which calls `captureGesture.captureNow()` and produces a shot with `source: "command"`. `captureNow()` returns `false` rather than leaving the user waiting when the request is refused — unsupported platform, gesture switched off, helper not up yet, capture already in flight — and each refusal has its own sentence.
-
-The entry is present only where a helper exists (`supportsCaptureGesturePlatform() && !isWebClientMode()`). The palette must not offer a command that resolves to "not available here"; the settings card is where that sentence belongs.
-
-## Packaging
-
-The helpers stage like `transcribe-cli`, not like the macOS-only `ade-desktop-driver`, which sits in the **`mac.extraResources`** block. The capture helpers ship through the **top-level `build.extraResources`** entry, copying `resources/native` filtered to exactly `ade-capture-helper` and `ade-capture-helper.exe`. One entry covers both platforms, and because each build script only produces its own platform's binary, the Mac package contains only the Mach-O and the Windows package only the `.exe` — with no per-platform configuration to keep in sync.
-
-Neither helper can be cross-compiled, so each build script **skips cleanly off its platform** and each is wired into its own platform's dist script: `build:capture-helper` into `dist:mac*`, `build:capture-helper:win` into `dist:win*`. The Windows script accepts MSVC `cl.exe` first and falls back to `clang++`/`g++` targeting mingw-w64.
-
-The generated binaries are gitignored; `apps/desktop/resources/native/README.md` documents both commands.
-
-## Limits
-
-- **A big display's shot is downscaled, not dropped.** The helper accepts up to `MAX_CAPTURE_BYTES` (48 MB), but `saveTempAttachment` moves bytes as base64 in a command payload and rejects anything over `LEGACY_MAX_CHAT_ATTACHMENT_BYTES` (10 MB). `fitCaptureShotToAttachmentLimit` (`services/capture/captureShotFit.ts`) halves the PNG (via `nativeImage.resize`, width only, so the aspect ratio is kept) until it fits, and only fails — with "That screen is too large to attach, even scaled down." — if four halvings are not enough. Before this the oversized capture reached the composer and then failed to stage, so the gesture silently did nothing.
-- **Input Monitoring on macOS 27.** The event tap that reads the left/right Command key codes is gated by macOS, so the helper asks for Input Monitoring there. On macOS 26 and earlier the static modifier poll is still used and no key-monitoring grant is needed. Screen Recording is required for the pixels on every macOS version. The settings card reports either refusal instead of leaving a switch that looks on and does nothing.
-- **Desktop GUI only, deliberately.** The gesture is an OS-level key hook plus a native window grab, so there is no `ade` CLI or ADE Mobile equivalent — nothing to mirror, and the shot has to reach a composer on the machine that took it.
-- **Linux ships nothing.** X11 and Wayland need different grabs, Wayland refuses foreign-window pixel capture outright without a portal handshake. The gesture is hidden there rather than shipped as a permanently dead switch.
-- **Both helper binaries are built, not committed.** `resources/native` is gitignored, so a checkout carries the helper sources only. `npm run build:capture-helper` produces the macOS binary locally, and each platform builds its own helper at package time.
+The Windows command parser matches `"type":` then the value; a bare substring search once read a `"quit"` in another field as quit.
 
 ## Cross-links
 
-- [CTO](../cto/README.md) — the thread every capture lands on.
-- [Onboarding and settings](../onboarding-and-settings/README.md#capturing-a-window-with-a-key-gesture) — the switch, the health card, and where the preference is stored.
-- [Chat](../chat/README.md) — `saveTempAttachment` and the composer attachment path a staged capture uses.
+- [CTO](../cto/README.md): where every capture lands.
+- [Chat](../chat/README.md): `saveTempAttachment` and composer attachments.

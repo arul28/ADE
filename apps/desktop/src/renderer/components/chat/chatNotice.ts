@@ -1,5 +1,7 @@
 import type { NoticeKind } from "../ui/notice";
 import { SAVED_CHAT_COMPUTER_GONE_MESSAGE } from "../../state/cloudSavedChats";
+import { BRAND } from "../../../shared/brand";
+import { isRemoteServiceConnectionLost } from "../../../shared/runtimeErrors";
 
 /**
  * The one line a chat pane shows above its composer. Its kind (see
@@ -58,14 +60,6 @@ export function chatNoticeReducer(current: ChatNotice | null, action: ChatNotice
   return action;
 }
 
-/**
- * The remote runtime client's words for a lost connection: "Error invoking
- * remote method 'ade.remoteRuntime.callAction': Error: Remote ADE service
- * connection closed." The local brain's socket raises them too, which is why
- * the pane asks only for a chat on another machine.
- */
-const MACHINE_CONNECTION_DROPPED = /remote (?:runtime|ADE service) connection (?:(?:was )?interrupted|closed|failed)/i;
-
 /** The paired transport's words for a machine it cannot reach: "Can't reach <name> — it may be asleep…". */
 const MACHINE_UNREACHABLE = /^Can't reach (.+?)\s*[—-]+\s*it may be asleep/i;
 
@@ -73,7 +67,7 @@ const MACHINE_UNREACHABLE = /^Can't reach (.+?)\s*[—-]+\s*it may be asleep/i;
 const CLOUD_INSTANCE_ID = /^[a-z0-9]{8,12}$/;
 
 const CHAT_MACHINE_CONNECTION_DROPPED_NOTICE =
-  "The connection to this chat's machine dropped for a moment. The chat keeps running there, and ADE reconnects by itself. If something you just did is missing, do it again.";
+  `The connection to this chat's machine dropped for a moment. The chat keeps running there, and ${BRAND.NAME} reconnects by itself. If something you just did is missing, do it again.`;
 
 /**
  * The notice as the pane for the chat it is about shows it.
@@ -106,6 +100,9 @@ export function shownChatNotice(
   /** The chat's ADE Cloud lane name, only when its machine is an ADE Cloud lane computer: it is called by its lane, never by its raw id. */
   laneName: string | null = null,
 ): ChatNotice | null {
+  // A lost connection reads the same from the local brain's socket
+  // (`isRemoteServiceConnectionLost`), which is why only a chat on another
+  // machine gets the status wording.
   if (!notice || !chatOnAnotherMachine || notice.kind !== "failure") return notice;
   const unreachable = MACHINE_UNREACHABLE.exec(notice.message);
   if (unreachable && laneName?.trim() && !computerGone && CLOUD_INSTANCE_ID.test(unreachable[1] ?? "")) {
@@ -113,12 +110,12 @@ export function shownChatNotice(
   }
   // A call to a deleted computer fails as a dropped or unreachable link; the
   // truth is one sentence, not "ADE reconnects by itself".
-  if (computerGone && (MACHINE_CONNECTION_DROPPED.test(notice.message) || MACHINE_UNREACHABLE.test(notice.message))) {
+  if (computerGone && (isRemoteServiceConnectionLost(notice.message) || MACHINE_UNREACHABLE.test(notice.message))) {
     // The note keeps its chat and its unsent words: it must not show on
     // another chat, and it still clears if the message turns up after all.
     return { ...notice, message: SAVED_CHAT_COMPUTER_GONE_MESSAGE, kind: "failure" };
   }
-  return MACHINE_CONNECTION_DROPPED.test(notice.message)
+  return isRemoteServiceConnectionLost(notice.message)
     ? { message: CHAT_MACHINE_CONNECTION_DROPPED_NOTICE, kind: "status" }
     : notice;
 }

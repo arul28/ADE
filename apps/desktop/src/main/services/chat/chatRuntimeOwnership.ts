@@ -2,6 +2,7 @@ import { markExpected } from "../../../shared/expectedError";
 import os from "node:os";
 import path from "node:path";
 import { pathsEqual } from "../shared/pathCompare";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Which brain instance owns a chat's provider runtime.
@@ -219,8 +220,8 @@ export class ChatRuntimeBusyElsewhereError extends ChatRuntimeOwnedElsewhereErro
 
 export function describeChatRuntimeBusyElsewhere(owner: Pick<ChatRuntimeOwner, "pid" | "socketPath">): string {
   return [
-    `This chat is still working in another copy of ADE on this computer (${describeChatRuntimeOwner(owner)}), usually a test copy started from a lane.`,
-    "Send again when it finishes and ADE takes the chat back, or close that copy.",
+    `This chat is still working in another copy of ${BRAND.NAME} on this computer (${describeChatRuntimeOwner(owner)}), usually a test copy started from a lane.`,
+    `Send again when it finishes and ${BRAND.NAME} takes the chat back, or close that copy.`,
   ].join(" ");
 }
 
@@ -234,7 +235,7 @@ export function describeChatRuntimeOwnedElsewhere(args: {
     ? `Run the command against the owner instead: ade --socket "${args.owner.socketPath}" …`
     : "Run the command through the ade CLI of the brain that owns it.";
   return [
-    `Chat ${args.sessionId} is running under another ADE brain (${describeChatRuntimeOwner(args.owner)}).`,
+    `Chat ${args.sessionId} is running under another ${BRAND.NAME} brain (${describeChatRuntimeOwner(args.owner)}).`,
     `This brain (${describeChatRuntimeOwner(args.self)}) will not ${args.action} it: only the brain running a chat may drive it, and a second one starts a duplicate agent process.`,
     route,
   ].join(" ");

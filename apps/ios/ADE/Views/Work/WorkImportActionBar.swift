@@ -126,7 +126,7 @@ struct WorkImportActionBar: View {
   @ViewBuilder
   private var configuration: some View {
     if importedRef != nil {
-      Label("Already in ADE", systemImage: "checkmark.circle.fill")
+      Label("Already in \(Brand.name)", systemImage: "checkmark.circle.fill")
         .font(.subheadline.weight(.semibold))
         .foregroundStyle(ADEColor.success)
         .lineLimit(1)
@@ -184,7 +184,7 @@ struct WorkImportActionBar: View {
         if let copy = actions.primary {
           secondaryButton(copy, fill: fill)
         }
-        mainButton(label: "Open in ADE", warning: false, fill: fill) {
+        mainButton(label: "Open in \(Brand.name)", warning: false, fill: fill) {
           onOpenExisting(importedRef)
         }
       }
@@ -233,7 +233,7 @@ struct WorkImportActionBar: View {
     // The phone sends no model: for a chat copy (`needsModel`) the machine
     // picks the session's own model family, else that provider's default.
     .accessibilityHint(action.needsModel
-      ? "Makes a new ADE chat with this history. The machine picks the model."
+      ? "Makes a new \(Brand.name) chat with this history. The machine picks the model."
       : "Makes a copy in a new terminal.")
   }
 

@@ -19,6 +19,7 @@ import { listedProjectLanesNow, requestCloudSavedChatsRead } from "../../state/c
 import { CloudLaneSavedWork } from "./CloudLaneSavedWork";
 import { keptLaneFateSentence, noteKeptLaneDeleted } from "./cloudLanesWithoutComputer";
 import "./cloudLane.css";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * A lane kept without a computer, in Settings › ADE Cloud: its computer was
@@ -49,10 +50,10 @@ export function cloudLaneRestartBranchRef(branchRef: string): string {
 /** Why a new computer for this lane (its card's button, or a send in its chat) can't start from this window, or null. */
 export function cloudLaneRestartProblem(lane: CloudLaneWithoutComputer, binding: OpenProjectBinding | null, originUrl: string | null): string | null {
   if (!cloudLaneLifeAvailable()) return CLOUD_LANE_LIFE_UNAVAILABLE;
-  if (!lane.branchRef) return "ADE never learned this lane's branch. Start a new lane on ADE Cloud instead.";
-  if (!binding) return "Open the lane's project in ADE to start it.";
+  if (!lane.branchRef) return `${BRAND.NAME} never learned this lane's branch. Start a new lane on ${BRAND.CLOUD_NAME} instead.`;
+  if (!binding) return `Open the lane's project in ${BRAND.NAME} to start it.`;
   const here = normalizeGitRemoteIdentity(originUrl);
-  if (lane.projectOrigin && here !== lane.projectOrigin) return `Open ${lane.projectOrigin} in ADE to start it there.`;
+  if (lane.projectOrigin && here !== lane.projectOrigin) return `Open ${lane.projectOrigin} in ${BRAND.NAME} to start it there.`;
   return null;
 }
 
@@ -88,7 +89,7 @@ export function useStartLaneOnNewComputer(lane: CloudLaneWithoutComputer | null,
     });
     // A failed start shows on its own launch card (Launches), with Retry.
     if (outcome === "unsupported") {
-      showToast({ tone: "error", title: `Couldn't start ${lane.laneName}`, message: "This ADE can't start ADE Cloud lanes. Update ADE, then try again." });
+      showToast({ tone: "error", title: `Couldn't start ${lane.laneName}`, message: `This ${BRAND.NAME} can't start ${BRAND.CLOUD_NAME} lanes. Update ${BRAND.NAME}, then try again.` });
       return false;
     }
     if (outcome === "failed") return false;
@@ -126,7 +127,7 @@ export function CloudLaneWithoutComputerNotice({
   const onForget = async () => {
     const ok = await confirmDialog({
       title: `Forget ${lane.laneName}?`,
-      message: "ADE stops listing this lane and deletes its saved chats and its saved work that isn't on GitHub. Download that work first if you need it. Its branch stays on GitHub.",
+      message: `${BRAND.NAME} stops listing this lane and deletes its saved chats and its saved work that isn't on GitHub. Download that work first if you need it. Its branch stays on GitHub.`,
       confirmLabel: "Forget lane",
     });
     if (!ok) return;

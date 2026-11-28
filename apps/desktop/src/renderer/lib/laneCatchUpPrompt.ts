@@ -1,4 +1,5 @@
 import type { AgentChatSessionSummary } from "../../shared/types";
+import { BRAND } from "../../shared/brand";
 
 /**
  * The prompt the lane's "Catch up → Ask an agent" writes into a chat. It is
@@ -43,7 +44,7 @@ export function buildLaneCatchUpPrompt(input: LaneCatchUpPromptInput): string {
   const lane = `lane "${input.laneName}" (branch ${input.branch})`;
   const facts = [pushedLine(input.pushed), conflictLine(input.conflictingFiles)].filter(Boolean).join(" ");
   const failure = input.failure
-    ? `ADE tried to ${input.failure.action === "rebase" ? `rebase onto ${remoteBase}` : `merge ${remoteBase} in`} and stopped, leaving the lane as it was:\n${input.failure.error.trim()}`
+    ? `${BRAND.NAME} tried to ${input.failure.action === "rebase" ? `rebase onto ${remoteBase}` : `merge ${remoteBase} in`} and stopped, leaving the lane as it was:\n${input.failure.error.trim()}`
     : null;
 
   if (input.kind === "built_on_merged") {

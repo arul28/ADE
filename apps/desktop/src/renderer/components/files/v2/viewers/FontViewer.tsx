@@ -16,6 +16,7 @@ import {
 import type { ViewerProps } from "./types";
 import { runPathActionHere } from "../../pathOnThisComputer";
 import { plainErrorText } from "../../../../lib/plainError";
+import { BRAND } from "../../../../../shared/brand";
 
 const MAX_FONT_BYTES = 10 * 1024 * 1024;
 const WATERFALL_SIZES = [12, 16, 20, 24, 32, 48, 64, 96];
@@ -329,7 +330,7 @@ function GlyphButton({ codepoint, family }: { codepoint: number; family: string 
       onClick={() => void copy().catch((error: unknown) => showToast({
         tone: "error",
         title: "Couldn't copy character",
-        message: plainErrorText(error, "ADE couldn't copy that."),
+        message: plainErrorText(error, `${BRAND.NAME} couldn't copy that.`),
       }))}
       title={`${codepointLabel(codepoint)} · click to copy`}
       aria-label={copied ? `${codepointLabel(codepoint)} copied` : `Copy ${codepointLabel(codepoint)}`}
@@ -401,7 +402,7 @@ function CharacterSet({
         <>
           {containerOnly ? (
             <p className="mb-2 text-[11px]" style={{ color: COLORS.textDim }}>
-              WOFF2 coverage isn't read in ADE; these render with the browser's fallback if missing.
+              WOFF2 coverage isn't read in {BRAND.NAME}; these render with the browser's fallback if missing.
             </p>
           ) : null}
           {groups.length ? (
@@ -531,7 +532,7 @@ export function FontViewer({ files, workspaceId, rootPath, pathPin, tab, content
 
     // Reject by declared size before allocating the streamed buffer.
     if (content.size > MAX_FONT_BYTES) {
-      setError(`This font is ${formatBytes(content.size)}. ADE previews fonts up to 10 MB.`);
+      setError(`This font is ${formatBytes(content.size)}. ${BRAND.NAME} previews fonts up to 10 MB.`);
       setLoading(false);
       return;
     }
@@ -558,7 +559,7 @@ export function FontViewer({ files, workspaceId, rootPath, pathPin, tab, content
         setFaceReady(true);
         setAxisValues(Object.fromEntries(parsed.axes.map((axis) => [axis.tag, axis.default])));
       } catch (reason) {
-        if (!cancelled) setError(plainErrorText(reason, "ADE couldn't read the font."));
+        if (!cancelled) setError(plainErrorText(reason, `${BRAND.NAME} couldn't read the font.`));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -609,7 +610,7 @@ export function FontViewer({ files, workspaceId, rootPath, pathPin, tab, content
         rootPath={rootPath}
         pathPin={pathPin}
         relativePath={tab.path}
-        title="ADE couldn't load this font"
+        title={`${BRAND.NAME} couldn't load this font`}
         mimeType={content.mimeType ?? null}
         size={content.size}
         notice={error ?? "Font metadata is unavailable."}

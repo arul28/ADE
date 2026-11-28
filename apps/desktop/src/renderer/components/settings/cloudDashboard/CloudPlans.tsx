@@ -43,12 +43,13 @@ import { CloudFreeGithubNotice } from "./CloudFreeGithubNotice";
 import { useStillWhenHidden } from "./CloudSky";
 import { checkoutCloudPlanUp, confirmCloudPlanMoveUp } from "./cloudPlanMoveUp";
 import "./cloudPlans.css";
+import { BRAND } from "../../../../shared/brand";
 
 /** What sponsored cards do, as the chat's question and notice say it: "Free ADE Cloud chats …" when on, "When on, free …" when off. */
-const SPONSORED_SETTINGS_DO = "ADE Cloud chats can show one card under a finished reply, and an agent may suggest a sponsored tool.";
+const SPONSORED_SETTINGS_DO = `${BRAND.CLOUD_NAME} chats can show one card under a finished reply, and an agent may suggest a sponsored tool.`;
 /** What Gravity gets, in the row's small print. */
 const SPONSORED_SETTINGS_SENDS =
-  "To pick them, ADE sends Gravity, our ad partner, your last message and the reply (or the agent's search), your IP address, your device type and a hashed copy of your account email. For people 18 or older.";
+  `To pick them, ${BRAND.NAME} sends Gravity, our ad partner, your last message and the reply (or the agent's search), your IP address, your device type and a hashed copy of your account email. For people 18 or older.`;
 
 /**
  * What Free's Small computers cost this person with this answer, from the
@@ -59,7 +60,7 @@ function sponsoredSmallNote(sponsored: NonNullable<CloudAccountState["sponsored"
   if (sponsored.smallOutsideUS) return { free: false, text: `Small computers use your ${noun} outside the US: sponsored cards keep them free only in the US.` };
   if (!sponsored.smallNeedsCards) return null;
   if (!on) return { free: false, text: `Small computers use your ${noun} while sponsored cards are off.` };
-  if (sponsored.smallNeedsLook) return { free: false, text: `Small computers use your ${noun} until you open an ADE Cloud chat in the US: none was opened there in the last 7 days.` };
+  if (sponsored.smallNeedsLook) return { free: false, text: `Small computers use your ${noun} until you open a ${BRAND.CLOUD_NAME} chat in the US: none was opened there in the last 7 days.` };
   return sponsored.ads ? { free: true, text: "Your Small computers are free while sponsored cards are on." } : null;
 }
 
@@ -178,7 +179,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
       await work();
       onChanged();
     } catch (workError) {
-      setError(ipcErrorMessage(workError) || "ADE Cloud couldn't do that. Try again in a moment.");
+      setError(ipcErrorMessage(workError) || `${BRAND.CLOUD_NAME} couldn't do that. Try again in a moment.`);
     } finally {
       setBusy(false);
     }
@@ -200,7 +201,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
   const stay = (plan: CloudPaidPlanId) => run(async () => {
     const label = CLOUD_PLAN_LABELS[plan];
     const result = await bridge?.openCheckout?.(plan);
-    if (result?.change !== "now") throw new Error(`ADE Cloud didn't keep you on ${label}. Try again in a moment, or use Manage billing.`);
+    if (result?.change !== "now") throw new Error(`${BRAND.CLOUD_NAME} didn't keep you on ${label}. Try again in a moment, or use Manage billing.`);
     showToast({ title: `You stay on ${label}.`, tone: "success" });
   });
 
@@ -247,14 +248,14 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
   // The dialog shows a refusal itself; only a move that went through reaches the toast.
   const moveDownWith = async (plan: CloudPaidPlanId, pick: CloudPlanCleanupPick) => {
     const result = await bridge?.openCheckout?.(plan, pick);
-    if (result?.change !== "next_period") throw new Error("ADE Cloud didn't change your plan. Nothing changed. Try again in a moment.");
+    if (result?.change !== "next_period") throw new Error(`${BRAND.CLOUD_NAME} didn't change your plan. Nothing changed. Try again in a moment.`);
     const freeing = result.freeing?.length ?? 0;
     if (pick.instanceIds.length > 0 && freeing === 0) {
       // The plan changed but the pick wasn't queued (another pick was running): say so, never a quiet success.
       showToast({
         tone: "warning",
         title: `You move to ${CLOUD_PLAN_LABELS[plan]} on ${formatCloudDate(billing.periodEnd)}.`,
-        message: "ADE didn't start freeing the computers you picked. Choose them again from the notice on this page.",
+        message: `${BRAND.NAME} didn't start freeing the computers you picked. Choose them again from the notice on this page.`,
       });
       onChanged();
       return;
@@ -295,7 +296,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
   // The account's own notes (a cancel's what-if, old terms, the free plan's rule): said once, in the "how it works" panel.
   const notes: string[] = [];
   if (paid && !billing.cancelAtPeriodEnd && account.downgradePreviews?.free) {
-    notes.push(`If you cancel: ${account.downgradePreviews.free.sentence} ADE deletes nothing on its own; once Free starts, new computers wait until you clean up or pick what ADE frees here.`);
+    notes.push(`If you cancel: ${account.downgradePreviews.free.sentence} ${BRAND.NAME} deletes nothing on its own; once Free starts, new computers wait until you clean up or pick what ${BRAND.NAME} frees here.`);
   }
   if (keepsOldTerms && afterFacts && oldTerms?.hoursMilli != null) {
     notes.push(`${CLOUD_PLAN_LABELS[current]} keeps your old ${formatCloudHours(oldTerms.hoursMilli)} ${noun} until ${until}. From then ${afterId === current ? "it has" : `you're on ${CLOUD_PLAN_LABELS[afterId]}, with`} ${formatCloudHours(afterFacts.includedMilli)} ${noun}, as on its card.`);
@@ -361,7 +362,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                 </div>
                 <ul className="adecd-plancard-facts">
                   <li title="Cloud computers your account may have, asleep or not: one per lane"><Desktop size={13} /><span><b className="kit-num" data-face="ui">{computers}</b> cloud {computers === 1 ? "computer" : "computers"} <span className="adecd-nowrap">(asleep or not)</span></span></li>
-                  <li title={column.id === "free" && freeSmallNeedsCards ? `In the US, Small computers use no ${noun} while sponsored cards are on and you open an ADE Cloud chat there at least once a week. Elsewhere, with them off, or after a week without one, they use half a credit for each hour awake.` : CLOUD_SMALL_UNLIMITED_SENTENCE}><Sparkle size={13} /><span><b>Unlimited</b> Small computers{column.id === "free" && freeSmallNeedsCards ? " with sponsored cards" : ""}</span></li>
+                  <li title={column.id === "free" && freeSmallNeedsCards ? `In the US, Small computers use no ${noun} while sponsored cards are on and you open a ${BRAND.CLOUD_NAME} chat there at least once a week. Elsewhere, with them off, or after a week without one, they use half a credit for each hour awake.` : CLOUD_SMALL_UNLIMITED_SENTENCE}><Sparkle size={13} /><span><b>Unlimited</b> Small computers{column.id === "free" && freeSmallNeedsCards ? " with sponsored cards" : ""}</span></li>
                   {isCurrent && oldTerms?.hoursMilli != null ? (
                     <li title={`${formatCloudHours(column.facts.includedMilli)} ${noun} from ${until}`}><Clock size={13} /><span><b className="kit-num" data-face="ui">{formatCloudHours(oldTerms.hoursMilli)}</b> credits until {until}</span></li>
                   ) : (
@@ -373,9 +374,9 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                     <li title={`Only if you turn ${words.extra.toLowerCase()} on`}><Lightning size={13} /><span><b className="kit-num" data-face="ui">{formatCloudCentsPerHour(cents)}</b> an extra {words.one}</span></li>
                   )}
                   {column.facts.outsideAgents === false ? (
-                    <li data-quiet="true" title="Outside agents (through ADE MCP) can't start ADE Cloud work on this plan"><Robot size={13} /><span>No outside agents</span></li>
+                    <li data-quiet="true" title={`Outside agents (through ${BRAND.NAME} MCP) can't start ${BRAND.CLOUD_NAME} work on this plan`}><Robot size={13} /><span>No outside agents</span></li>
                   ) : column.facts.outsideAgents === true ? (
-                    <li title="Outside agents (through ADE MCP) may start ADE Cloud work"><Robot size={13} /><span>Outside agents may use ADE Cloud</span></li>
+                    <li title={`Outside agents (through ${BRAND.NAME} MCP) may start ${BRAND.CLOUD_NAME} work`}><Robot size={13} /><span>Outside agents may use {BRAND.CLOUD_NAME}</span></li>
                   ) : null}
                 </ul>
                 <footer className="adecd-plancard-foot">
@@ -403,7 +404,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
           <div className="adecd-howto-items">
             <div className="adecd-howto-item">
               <span className="adecd-howto-icon"><Sparkle size={14} /></span>
-              <p><b>{freeSmallNeedsCards ? "Unlimited Small computers on paid plans, and on Free in the US with sponsored cards on and an ADE Cloud chat opened there each week." : CLOUD_SMALL_UNLIMITED_SENTENCE}</b> Each plan has a number of cloud computers, asleep or not: one per lane.</p>
+              <p><b>{freeSmallNeedsCards ? `Unlimited Small computers on paid plans, and on Free in the US with sponsored cards on and a ${BRAND.CLOUD_NAME} chat opened there each week.` : CLOUD_SMALL_UNLIMITED_SENTENCE}</b> Each plan has a number of cloud computers, asleep or not: one per lane.</p>
             </div>
             <div className="adecd-howto-item adecd-howto-rates">
               <span className="adecd-howto-icon"><Clock size={14} /></span>
@@ -418,7 +419,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                       </tr>
                     ))}
                     {phoneOn ? (
-                      <tr><th scope="row">ADE Cloud iPhone</th><td className="kit-num">{`${words.count(words.phoneMilliPerMinute / 1000)} a minute`}</td></tr>
+                      <tr><th scope="row">{BRAND.CLOUD_NAME} iPhone</th><td className="kit-num">{`${words.count(words.phoneMilliPerMinute / 1000)} a minute`}</td></tr>
                     ) : null}
                     {extraHours.available && currentExtraCents != null ? (
                       <tr><th scope="row">Extra credits</th><td className="kit-num">{`${formatCloudCentsPerHour(currentExtraCents)} a credit`}</td></tr>
@@ -459,7 +460,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                     ? `Off. When on, free ${SPONSORED_SETTINGS_DO}`
                     : sponsoredToggle.ads
                       ? `On.${sponsoredStartsOn || toldHere ? " They start on where you are; you can turn them off here." : ""} Free ${SPONSORED_SETTINGS_DO}`
-                      : "On, but none show for you now: sponsored cards run only in Free ADE Cloud chats, in the countries Gravity serves."}
+                      : `On, but none show for you now: sponsored cards run only in Free ${BRAND.CLOUD_NAME} chats, in the countries Gravity serves.`}
                 </small>
                 {!sponsoredOn && sponsoredToggle.gpcOff ? (
                   <small className="adecd-addon-state">{SPONSORED_GPC_OFF}</small>
@@ -506,7 +507,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
         ) : null}
 
         {error ? (
-          <Banner layout="inline" model={{ id: "cloud-plan-error", tone: "error", title: "ADE Cloud couldn't change your plan", detail: error, dismiss: { onDismiss: () => setError(null) } }} />
+          <Banner layout="inline" model={{ id: "cloud-plan-error", tone: "error", title: `${BRAND.CLOUD_NAME} couldn't change your plan`, detail: error, dismiss: { onDismiss: () => setError(null) } }} />
         ) : null}
       </div>
       {asking && previewFor(asking) ? (

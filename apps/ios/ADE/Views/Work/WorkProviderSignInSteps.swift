@@ -62,13 +62,13 @@ struct ProviderSignInStepList: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: compact ? 8 : 12) {
-      step(0, "ADE started the sign-in", detail: nil)
+      step(0, "\(Brand.name) started the sign-in", detail: nil)
       step(1, "Approve in your browser", detail: linkHost.map { "on \($0)" })
       if states[1] == .active {
         approveControls
           .padding(.leading, 30)
       }
-      step(2, "ADE checks the sign-in", detail: nil)
+      step(2, "\(Brand.name) checks the sign-in", detail: nil)
     }
     .onChange(of: controller.awaitingCode) { _, awaiting in
       if awaiting { codeFocused = true }

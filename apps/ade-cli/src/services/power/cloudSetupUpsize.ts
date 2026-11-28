@@ -35,6 +35,7 @@ import type {
   ChatLaunchEnvironmentRoom,
 } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import { cloudDiskGrowStatePath } from "./cloudDiskGuard";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /** A computer with at most this much memory is a Small (4 GB reads as ~3.8 GB). */
 const SMALL_MAX_MEMORY_MB = 6 * 1024;
@@ -204,10 +205,10 @@ export function createCloudSetupUpsizer(deps: {
             if (!small) return keep(cloudAutoSizeRefusalSentence("moved"));
             const account = await client.getAccount().catch(() => null);
             const to = cloudTier(cloudCatalogOf(account), CLOUD_AUTO_SIZE.to);
-            if (!to) return keep(`ADE Cloud doesn't offer ${CLOUD_AUTO_SIZE.toLabel} right now.`);
+            if (!to) return keep(`${BRAND.CLOUD_NAME} doesn't offer ${CLOUD_AUTO_SIZE.toLabel} right now.`);
             // A move restarts the computer, and work may have started during those reads.
             if (!(await stillIdle())) {
-              return keep(`ADE can't move it to ${CLOUD_AUTO_SIZE.toLabel} while something else runs there (a move restarts the computer). Retry once that's done.`);
+              return keep(`${BRAND.NAME} can't move it to ${CLOUD_AUTO_SIZE.toLabel} while something else runs there (a move restarts the computer). Retry once that's done.`);
             }
             if (signal.aborted) {
               takeBack(launchId);
@@ -232,7 +233,7 @@ export function createCloudSetupUpsizer(deps: {
             const message = caught instanceof Error ? caught.message : String(caught);
             if (!moveAsked) {
               deps.logger?.warn("cloud.setup_upsize_failed", { launchId, error: message });
-              return keep(`ADE couldn't move it to ${CLOUD_AUTO_SIZE.toLabel} right now (${trimEnd(message)}). Retry to try again.`);
+              return keep(`${BRAND.NAME} couldn't move it to ${CLOUD_AUTO_SIZE.toLabel} right now (${trimEnd(message)}). Retry to try again.`);
             }
             if (caught instanceof CloudProviderError && caught.code === "size_kept") {
               deps.logger?.info("cloud.setup_upsize_kept", { launchId, reason: caught.detail.reason });
@@ -249,7 +250,7 @@ export function createCloudSetupUpsizer(deps: {
             }
             // Out of hours, the wake rules, the size's disk: the server's own sentence.
             deps.logger?.info("cloud.setup_upsize_refused", { launchId, code: caught.code });
-            return keep(`ADE couldn't move it to ${CLOUD_AUTO_SIZE.toLabel}: ${trimEnd(message)}.`);
+            return keep(`${BRAND.NAME} couldn't move it to ${CLOUD_AUTO_SIZE.toLabel}: ${trimEnd(message)}.`);
           }
         },
       };

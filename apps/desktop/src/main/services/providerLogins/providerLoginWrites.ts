@@ -19,6 +19,7 @@ import {
   type ProviderLoginVault,
   type SyncShared,
 } from "./providerLoginSyncShared";
+import { BRAND } from "../../../shared/brand";
 
 export function createWrites(s: SyncShared) {
   const { deps, jobs } = s;
@@ -51,7 +52,7 @@ export function createWrites(s: SyncShared) {
     const unknownFields = isRecord(raw) ? raw : {};
     const fields = { ...unknownFields, v: 1, enabled: next.enabled, inUse, off, ...(claude ? { claude } : {}) };
     if (!settings.set(ACCOUNT_SCOPE_ALL, PROVIDER_LOGINS_CLOUD_SETTING, fields)) {
-      throw new Error("ADE couldn't save that to your account. Try again in a moment.");
+      throw new Error(`${BRAND.NAME} couldn't save that to your account. Try again in a moment.`);
     }
     return await afterWrite();
   }
@@ -110,7 +111,7 @@ export function createWrites(s: SyncShared) {
         setting.inUse[found.place] = args.key;
         setting.off = setting.off.filter((key) => key !== args.key);
       } else if (args.key === "key") {
-        if (args.provider === "pi" || args.provider === "claude") throw new Error(`${args.provider === "pi" ? "Pi" : "Claude"} has no saved ADE Cloud key.`);
+        if (args.provider === "pi" || args.provider === "claude") throw new Error(`${args.provider === "pi" ? "Pi" : "Claude"} has no saved ${BRAND.CLOUD_NAME} key.`);
         setting.inUse[args.provider] = "key";
       } else {
         delete setting.inUse[args.provider === "claude" ? "claude" : cloudChoiceKey(args.provider, args.slot ?? "base")];
@@ -140,7 +141,7 @@ export function createWrites(s: SyncShared) {
      * P6's reconcile reads it.
      */
     async setCloudBalance(args: { provider: "claude"; on: boolean }): Promise<ProviderLoginStatus> {
-      if (args.provider !== "claude") throw new Error("Only Claude has a smart balance on ADE Cloud.");
+      if (args.provider !== "claude") throw new Error(`Only Claude has a smart balance on ${BRAND.CLOUD_NAME}.`);
       const { settings } = await writableStores();
       const raw = settings.get(ACCOUNT_SCOPE_ALL, PROVIDER_LOGINS_CLOUD_SETTING);
       const claude = isRecord(raw) && isRecord(raw.claude) ? raw.claude : {};
@@ -153,7 +154,7 @@ export function createWrites(s: SyncShared) {
       // A copy this computer cannot read goes so that this computer's own copy replaces it.
       if (!found.pass && unreadableOwnCopy(vault, args.key)) await forgetUploadMark(args.key);
       if (!vault.remove(ACCOUNT_SCOPE_ALL, PROVIDER_LOGIN_VAULT_KIND, args.key)) {
-        throw new Error("ADE couldn't remove that sign-in from your account. Try again in a moment.");
+        throw new Error(`${BRAND.NAME} couldn't remove that sign-in from your account. Try again in a moment.`);
       }
       deps.logger.info("provider_login.removed", { provider: found.provider, slot: found.slot ?? "pass", reason: "removed_by_person" });
       return await saveSetting(cloudSetting(), args.key);

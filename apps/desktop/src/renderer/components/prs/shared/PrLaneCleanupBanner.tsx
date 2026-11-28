@@ -8,6 +8,7 @@ import { COLORS, MONO_FONT, SANS_FONT, outlineButton, primaryButton, dangerButto
 import { branchNameFromRef } from "./laneBranchTargets";
 import { requirePin } from "../../../state/repositoryScope";
 import { plainErrorText } from "../../../lib/plainError";
+import { BRAND } from "../../../../shared/brand";
 
 type PrLaneCleanupBannerProps = {
   pr: { id?: string | null; state: PrSummary["state"]; headBranch?: string | null; baseBranch?: string | null } | null;
@@ -51,7 +52,7 @@ export function PrLaneCleanupBanner({
       await window.ade.lanes.archive({ laneId: lane.id }, requirePin(runtimePin));
       setDone("Lane archived successfully");
     } catch (err: unknown) {
-      setError(plainErrorText(err, "ADE couldn't archive the lane."));
+      setError(plainErrorText(err, `${BRAND.NAME} couldn't archive the lane.`));
     } finally {
       setBusy(false);
     }
@@ -78,7 +79,7 @@ export function PrLaneCleanupBanner({
         setDone(parts.length ? parts.join(" + ") : "No matching branch found to delete");
       }
     } catch (err: unknown) {
-      setError(plainErrorText(err, "ADE couldn't delete the branch."));
+      setError(plainErrorText(err, `${BRAND.NAME} couldn't delete the branch.`));
     } finally {
       setBusy(false);
     }
@@ -107,7 +108,7 @@ export function PrLaneCleanupBanner({
           tone: "warning",
           icon: <Warning size={14} weight="fill" />,
           title: "PR is linked to Primary, but its branch is separate",
-          detail: "ADE will not delete the main checkout. You can clean up the PR branch instead.",
+          detail: `${BRAND.NAME} will not delete the main checkout. You can clean up the PR branch instead.`,
           busy,
           error: error ?? undefined,
           extra: (
@@ -203,7 +204,7 @@ export function PrLaneCleanupBanner({
               <div>
                 <div style={{ fontFamily: SANS_FONT, fontSize: compact ? 12 : 13, fontWeight: 600, color: COLORS.textPrimary }}>Archive</div>
                 <div style={{ fontFamily: SANS_FONT, fontSize: textSize, color: COLORS.textMuted, marginTop: 2 }}>
-                  Hide from ADE without deleting worktree or branches
+                  Hide from {BRAND.NAME} without deleting worktree or branches
                 </div>
               </div>
               <button type="button" disabled={isDisabled} onClick={() => void handleArchive()} style={outlineButton({ height: compact ? 30 : 32, padding: "0 16px", color: COLORS.accent, borderColor: "color-mix(in srgb, var(--color-accent) 40%, transparent)" })}>

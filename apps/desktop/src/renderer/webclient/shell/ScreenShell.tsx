@@ -1,6 +1,7 @@
 import React from "react";
 import { COLORS, SANS_FONT, cardStyle } from "./shellTokens";
 import { AdeWordmark } from "../../components/ui/AdeWordmark";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Full-viewport surface for the pre-app screens (sign-in, machine +
@@ -34,7 +35,7 @@ export function ScreenShell({
     >
       {/* Page logo, pinned top-left. */}
       <AdeWordmark
-        alt="ADE"
+        alt={BRAND.NAME}
         draggable={false}
         style={{ position: "fixed", top: 24, left: 28, height: 38, width: "auto", objectFit: "contain", pointerEvents: "none" }}
       />

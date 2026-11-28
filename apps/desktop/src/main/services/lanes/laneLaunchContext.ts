@@ -3,6 +3,7 @@ import path from "node:path";
 import type { createLaneService } from "./laneService";
 import { isPathEscapeError, resolvePathWithinRoot } from "../shared/utils";
 import { AdeExpectedError } from "../../../shared/expectedError";
+import { BRAND } from "../../../shared/brand";
 
 export type LaneLaunchExecStrategy = "local";
 
@@ -67,7 +68,7 @@ export function resolveLaneLaunchContext(args: {
   const { worktreePath } = lane;
   const configuredRoot = typeof worktreePath === "string" ? worktreePath.trim() : "";
   if (!configuredRoot.length) {
-    throw new Error(`Lane '${laneId}' has no worktree configured. ADE cannot ${purpose} outside the selected lane.`);
+    throw new Error(`Lane '${laneId}' has no worktree configured. ${BRAND.NAME} cannot ${purpose} outside the selected lane.`);
   }
 
   const unavailableMessage =
@@ -104,7 +105,7 @@ export function resolveLaneLaunchContext(args: {
   } catch (error) {
     if (isPathEscapeError(error)) {
       throw new Error(
-        `Requested cwd '${requestedCwd}' escapes lane '${laneId}'. ADE only launches work inside the selected lane worktree '${laneRoot}'.`,
+        `Requested cwd '${requestedCwd}' escapes lane '${laneId}'. ${BRAND.NAME} only launches work inside the selected lane worktree '${laneRoot}'.`,
       );
     }
     throw error;

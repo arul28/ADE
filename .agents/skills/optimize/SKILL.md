@@ -1,11 +1,11 @@
 ---
 name: optimize
-description: Profile a large ADE feature end-to-end, add temporary or permanent telemetry, run the Electron app, find real CPU/memory/IPC/render hot paths, fix them, and verify with stress tests.
+description: Profile a large DAEX feature end-to-end, add temporary or permanent telemetry, run the Electron app, find real CPU/memory/IPC/render hot paths, fix them, and verify with stress tests.
 ---
 
 # /optimize — Performance Steward
 
-You are the performance steward for ADE. Use this after a large feature lands, when the app works but might be too heavy for normal laptops.
+You are the performance steward for DAEX. Use this after a large feature lands, when the app works but might be too heavy for normal laptops.
 
 **Argument:** `$ARGUMENTS` — optional feature or surface hint, for example `/optimize Work and Lanes`, `/optimize iOS simulator drawer`, or `/optimize graph route`.
 
@@ -35,7 +35,7 @@ Do not make speculative cleanup the main result. If you cannot reproduce a suspe
 
 1. Read the relevant docs before editing:
    - `AGENTS.md` or the prompt-provided project instructions.
-   - `docs/perf/macos-baseline.md`: the table and its ceilings, **Patterns that bloat ADE**, and the measuring scripts under `scripts/perf/`.
+   - `docs/perf/macos-baseline.md`: the table and its ceilings, **Patterns that bloat DAEX**, and the measuring scripts under `scripts/perf/`.
    - `docs/ARCHITECTURE.md` if the change crosses app/service boundaries.
    - Feature docs under `docs/features/**` that match `$ARGUMENTS`.
    - Existing playbooks if the surface involves PRs, lanes, computer use, sync, or release.
@@ -89,13 +89,19 @@ Before making performance edits, make sure the app can tell you what is happenin
 
 Use the local desktop app as the source of truth.
 
-1. Start the dev app from `apps/desktop`:
+1. Start the dev app the one supported way: `npm run dev:desktop` from the
+   lane worktree, detached, on its own socket (rules in
+   `docs/development/local-development.md`):
 
 ```bash
-npm run dev
+node scripts/dev-detached.mjs /tmp/ade-dev-<lane>.log \
+  npm run dev:desktop -- --socket /tmp/ade-runtime-<lane>.sock
 ```
 
-2. Keep the dev terminal visible. Watch for:
+   Electron's CDP port is 9222 unless `ADE_ELECTRON_REMOTE_DEBUGGING_PORT`
+   says otherwise.
+
+2. Follow the log. Watch for:
    - `dev launcher using http://localhost:5173`
    - `DevTools listening on ws://127.0.0.1:9222`
    - `window.loading_url`
@@ -106,13 +112,13 @@ npm run dev
 3. Attach to Electron, not Safari:
    - Prefer the `Electron` app entry when using computer-use.
    - Confirm the window URL contains `localhost:5173`.
-   - If DevTools is the focused target, switch to the ADE page before evaluating DOM or interacting.
+   - If DevTools is the focused target, switch to the DAEX page before evaluating DOM or interacting.
 
-4. If using CDP/agent-browser, target the ADE tab:
+4. If using CDP/agent-browser, target the DAEX tab:
 
 ```bash
 agent-browser --cdp 9222 tab
-agent-browser --cdp 9222 tab <ADE-tab-index>
+agent-browser --cdp 9222 tab <DAEX-tab-index>
 ```
 
 5. Collect baseline process data:
@@ -194,7 +200,7 @@ JSON.stringify({
 
 ## Phase 4: Stress the real workflow
 
-For ADE, always stress Work and Lanes unless the feature is completely unrelated. Most users live there.
+For DAEX, always stress Work and Lanes unless the feature is completely unrelated. Most users live there.
 
 1. Work tab stress:
    - Open or reuse a lane.
@@ -239,7 +245,7 @@ node -e 'let i=0; const t=setInterval(()=>{process.stdout.write("ade-stress "+(+
 
 Prefer fixes in this order:
 
-1. Remove runaway work (first check the diff against **Patterns that bloat ADE** in `docs/perf/macos-baseline.md`):
+1. Remove runaway work (first check the diff against **Patterns that bloat DAEX** in `docs/perf/macos-baseline.md`):
    - Stop polling when hidden, closed, or unfocused.
    - Deduplicate identical in-flight calls.
    - Debounce or throttle high-frequency refresh.

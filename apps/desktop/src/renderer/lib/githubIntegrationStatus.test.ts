@@ -45,8 +45,8 @@ function makeStatus(overrides: Partial<GitHubAppInstallationStatus> = {}): GitHu
   return {
     repo: { owner: "arul28", name: "ADE" },
     appName: "ADE",
-    appSlug: "ade-for-github",
-    installUrl: "https://github.com/apps/ade-for-github/installations/new",
+    appSlug: "daex-for-github",
+    installUrl: "https://github.com/apps/daex-for-github/installations/new",
     manageUrl: "https://github.com/settings/installations",
     relayConfigured: true,
     installed: false,
@@ -358,7 +358,7 @@ describe("deriveGithubRepoConnectionState", () => {
     const copy = githubRepoIssueCopy("waiting_on_account", "arul28/ADE", "blocked");
     expect(copy.title).toContain("Waiting on GitHub authorization");
     expect(copy.detail).not.toMatch(/auth token/i);
-    expect(githubRepoIssueCopy("waiting_on_account", null, "missing").detail).toContain("Authorize ADE");
+    expect(githubRepoIssueCopy("waiting_on_account", null, "missing").detail).toContain("Authorize DAEX");
   });
 });
 
@@ -498,7 +498,7 @@ describe("describeGithubCliBanner", () => {
 
     expect(copy?.subState).toBe("renewing");
     expect(copy?.title).toBe("Renewing GitHub authorization");
-    expect(copy?.detail).toBe("ADE is renewing this authorization — this takes a moment.");
+    expect(copy?.detail).toBe("DAEX is renewing this authorization — this takes a moment.");
     expect(copy?.action).not.toMatch(/reconnect/i);
   });
 
@@ -652,7 +652,7 @@ describe("deviceAuthErrorCopy", () => {
     [
       "the old undici wording",
       wrapped("fetch failed (UND_ERR_CONNECT_TIMEOUT)"),
-      "ADE couldn't reach GitHub (UND_ERR_CONNECT_TIMEOUT). Check your connection, then try again.",
+      "DAEX couldn't reach GitHub (UND_ERR_CONNECT_TIMEOUT). Check your connection, then try again.",
     ],
     [
       "the brain's own unreachable sentence",

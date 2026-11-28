@@ -48,6 +48,7 @@ import { SettingsColumn } from "./primitives";
 import "../usage/usageSurfaces.css";
 import { Banner } from "../ui/notice";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { BRAND } from "../../../shared/brand";
 
 const SCOPE_STORAGE_KEY = "ade.stats.scope.v1";
 const RANGE_STORAGE_KEY = "ade.stats.range.v1";
@@ -155,11 +156,11 @@ function describeRatesSource(
   const listAge = pricingUpdatedAt ? formatUpdatedAge(pricingUpdatedAt, Date.now()) : null;
   const fromList = listAge ? `priced from the public rate list, ${listAge}` : "priced from the public rate list";
   if (sources.has("mixed") || sources.size > 1) {
-    return `Rates: ${fromList}, except a few models only ADE's built-in list knows.`;
+    return `Rates: ${fromList}, except a few models only ${BRAND.NAME}'s built-in list knows.`;
   }
   return sources.has("list")
     ? `Rates: ${fromList}.`
-    : "Rates: priced from ADE's built-in fallback list — the public rate list couldn't be reached.";
+    : `Rates: priced from ${BRAND.NAME}'s built-in fallback list — the public rate list couldn't be reached.`;
 }
 
 const MS_PER_DAY = 86_400_000;
@@ -395,9 +396,9 @@ function CostComposition({
           <hr className="kit-rule" />
           <div
             className="flex flex-col gap-2"
-            title="From ADE's per-turn ledger: chats ADE ran on this machine. Billed is what API keys and routed accounts were charged; plan value is what subscription turns would have cost at list prices."
+            title={`From ${BRAND.NAME}'s per-turn ledger: chats ${BRAND.NAME} ran on this machine. Billed is what API keys and routed accounts were charged; plan value is what subscription turns would have cost at list prices.`}
           >
-            <span className="kit-eyebrow">ADE chats</span>
+            <span className="kit-eyebrow">{BRAND.NAME} chats</span>
             <div className="usage-split-legend">
               <span className="usage-split-legend-item">Billed to API keys<b>{formatSpend(billing.billedUsd)}</b></span>
               <span className="usage-split-legend-item">Plan value<b>{formatSpend(billing.planValueUsd)}</b></span>

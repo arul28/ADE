@@ -10,6 +10,7 @@ import {
   type ReportDraft,
 } from "../app/reportDraft";
 import { ModernRow, ModernRows, ModernSection } from "./primitives";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The one place a person can send ADE a report on purpose.
@@ -28,8 +29,8 @@ export function DiagnosticsSharingSection() {
     <ModernSection
       group="Send a report"
       anchor="diagnostics-sharing"
-      title="Send a report to ADE"
-      hint="Send ADE a report about how it is behaving, so it can be looked at."
+      title={`Send a report to ${BRAND.NAME}`}
+      hint={`Send ${BRAND.NAME} a report about how it is behaving, so it can be looked at.`}
     >
       <ModernRows>
         <ManualDiagnosticsSend />
@@ -111,7 +112,7 @@ function ManualDiagnosticsSend() {
   return (
     <ModernRow
       title="Send a report now"
-      hint="Sends the same report as an error screen's report: versions, recent ADE logs and the failure code. Paths, names, emails and keys are removed; never your code or chats. You see it before it goes."
+      hint={`Sends the same report as an error screen's report: versions, recent ${BRAND.NAME} logs and the failure code. Paths, names, emails and keys are removed; never your code or chats. You see it before it goes.`}
       control={(
         <button
           type="button"
@@ -123,7 +124,7 @@ function ManualDiagnosticsSend() {
             ? "Sending…"
             : reviewing
               ? phase === "send_failed" ? "Try again" : "Send"
-              : "Send a report to ADE…"}
+              : `Send a report to ${BRAND.NAME}…`}
         </button>
       )}
     >
@@ -153,10 +154,10 @@ function ManualDiagnosticsSend() {
         <>
           <ReportPreview state={state} onRetry={() => void draft.prepare()} />
           {state.rebuilt && phase === "ready" ? (
-            <p role="status" className="ade-modern-warn">That report was out of date, so ADE made a new one. Check it, then press Send again.</p>
+            <p role="status" className="ade-modern-warn">That report was out of date, so {BRAND.NAME} made a new one. Check it, then press Send again.</p>
           ) : null}
           <p className="ade-modern-muted" style={{ color: "var(--kit-text-2)" }}>
-            It goes to the ADE team, privately. Nothing is sent until you press Send.{" "}
+            It goes to the {BRAND.NAME} team, privately. Nothing is sent until you press Send.{" "}
             <button type="button" className="ade-modern-btn" data-variant="link" disabled={phase === "sending"} onClick={() => draft.discard()}>
               Cancel
             </button>
@@ -166,7 +167,7 @@ function ManualDiagnosticsSend() {
       {sent || failure ? (
         <p role="status" className={sent ? "ade-modern-muted" : "ade-modern-warn"} style={sent ? { color: "var(--kit-text-2)" } : undefined}>
           {sent
-            ? `Sent. Reference ${sent.reference}. The ADE team reads it; quote the reference if you contact support.`
+            ? `Sent. Reference ${sent.reference}. The ${BRAND.NAME} team reads it; quote the reference if you contact support.`
             : describeManualSendFailure(failure!)}
           {sent ? (
             <>

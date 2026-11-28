@@ -6,6 +6,7 @@ import { PROVIDER_TOOL_TYPE, type ExternalSessionProvider, type ExternalSessionS
 import { sessionKey, type ProviderFilter, type SessionPlace } from "./importBrowserModel";
 import { LiveBadge, MetaSeparator, PlaceLabel } from "./ImportSessionParts";
 import { formatPromptCount, formatUpdatedAtCompact, sessionHeading } from "./sessionPresentation";
+import { BRAND } from "../../../../shared/brand";
 
 export type SessionGroup = { label: string; rows: ExternalSessionSummary[] };
 
@@ -94,7 +95,7 @@ const ImportSessionRow = memo(function ImportSessionRow({
           {when ? <>{showPlace ? <MetaSeparator /> : null}<span className="kit-num shrink-0">{when}</span></> : null}
           {prompts ? <><MetaSeparator /><span className="shrink-0 truncate">{prompts}</span></> : null}
           {summary.alreadyImported ? (
-            <span className="ml-auto shrink-0">In ADE</span>
+            <span className="ml-auto shrink-0">In {BRAND.NAME}</span>
           ) : summary.importedBefore ? (
             <span className="ml-auto shrink-0">Copied before</span>
           ) : null}

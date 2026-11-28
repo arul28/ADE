@@ -362,7 +362,7 @@ describe("parseDeeplink — https://ade-app.dev/open", () => {
 describe("buildDeeplink", () => {
   it("round-trips lane (ade)", () => {
     const url = buildDeeplink({ kind: "lane", laneId: UUID }, { form: "ade" });
-    expect(url).toBe(`ade://lane/${UUID}`);
+    expect(url).toBe(`daex://lane/${UUID}`);
     expect(expectOk(parseDeeplink(url))).toEqual({ kind: "lane", laneId: UUID });
   });
 
@@ -432,7 +432,7 @@ describe("buildDeeplink", () => {
     } as const;
     const url = buildDeeplink(target, { form: "ade" });
     expect(url).toBe(
-      "ade://pr/42?accountMachineKey=machine-b&projectId=project-b",
+      "daex://pr/42?accountMachineKey=machine-b&projectId=project-b",
     );
     expect(expectOk(parseDeeplink(url))).toEqual(target);
     expect(parseDeeplink("ade://pr/42").ok).toBe(false);
@@ -460,7 +460,7 @@ describe("buildDeeplink", () => {
   it("round-trips branch (ade) with slash branches", () => {
     const target = { kind: "branch", repoOwner: "a", repoName: "b", branch: "users/me/x" } as const;
     const url = buildDeeplink(target, { form: "ade" });
-    expect(url).toBe("ade://repo/a/b/branch/users/me/x");
+    expect(url).toBe("daex://repo/a/b/branch/users/me/x");
     expect(expectOk(parseDeeplink(url))).toEqual(target);
   });
 
@@ -473,7 +473,7 @@ describe("buildDeeplink", () => {
   it("round-trips pr (ade)", () => {
     const target = { kind: "pr", repoOwner: "a", repoName: "b", prNumber: 100 } as const;
     const url = buildDeeplink(target, { form: "ade" });
-    expect(url).toBe("ade://pr/a/b/100");
+    expect(url).toBe("daex://pr/a/b/100");
     expect(expectOk(parseDeeplink(url))).toEqual(target);
   });
 
@@ -491,7 +491,7 @@ describe("buildDeeplink", () => {
       prNumber: 100,
       detailTab: "checks",
     } as const;
-    expect(buildDeeplink(target, { form: "ade" })).toBe("ade://pr/a/b/100?tab=checks");
+    expect(buildDeeplink(target, { form: "ade" })).toBe("daex://pr/a/b/100?tab=checks");
     expect(expectOk(parseDeeplink(buildDeeplink(target, { form: "ade" })))).toEqual(target);
     expect(expectOk(parseDeeplink(buildDeeplink(target)))).toEqual(target);
   });
@@ -532,7 +532,7 @@ describe("parseDeeplink — linear-issue", () => {
   it("round-trips through buildDeeplink", () => {
     const target = { kind: "linear-issue" as const, issueIdentifier: "ADE-123", branch: "feat" };
     const ade = buildDeeplink(target, { form: "ade" });
-    expect(ade).toBe("ade://linear-issue/ADE-123?branch=feat");
+    expect(ade).toBe("daex://linear-issue/ADE-123?branch=feat");
     expect(expectOk(parseDeeplink(ade))).toEqual(target);
 
     const https = buildDeeplink(target);

@@ -9,8 +9,8 @@ import {
   type SdkLikeThread,
   type SdkProviderStatusRecord,
 } from "../src/adapters/sdkClient";
-import type { AdeChatClient } from "@ade-dev/sdk";
-import type { AdeIpcClient } from "@ade-dev/sdk/electron/renderer";
+import type { AdeChatClient } from "@daex-dev/sdk";
+import type { AdeIpcClient } from "@daex-dev/sdk/electron/renderer";
 import type { AgentChatEventEnvelope, ApprovalRequest, Unsubscribe } from "../src/sdkTypes";
 
 /**
@@ -271,11 +271,11 @@ describe("the shape adaptSdkClient accepts", () => {
   /**
    * A compile-time guard, not a runtime one. `SdkLikeChatClient` deliberately
    * relaxes parts of the SDK's own interface so proxies qualify, which means
-   * nothing else would catch `@ade-dev/sdk` growing a required argument or renaming
+   * nothing else would catch `@daex-dev/sdk` growing a required argument or renaming
    * a channel. This assignment fails `tsc` the moment a real client stops
    * fitting.
    */
-  it("still fits a real @ade-dev/sdk client", () => {
+  it("still fits a real @daex-dev/sdk client", () => {
     const real = null as unknown as AdeChatClient;
     const accepted: SdkLikeChatClient = real;
     expect(accepted).toBeNull();
@@ -289,7 +289,7 @@ describe("the shape adaptSdkClient accepts", () => {
    * NO cast. That promise is a type relationship, so nothing but `tsc` can hold
    * it, and it breaks silently the moment either side moves.
    *
-   * This resolves `@ade-dev/sdk/electron/renderer` through the package's
+   * This resolves `@daex-dev/sdk/electron/renderer` through the package's
    * `exports` map, so it also proves the subpath is declared and its types
    * ship. Build the SDK first: the check reads `dist`, not `src`.
    */

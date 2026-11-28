@@ -49,6 +49,7 @@ import {
   type FallForwardLogger,
 } from "./providerFallForward";
 import { detectCodexVersionRejectionInExecEvents, type CodexVersionRejection } from "./providerVersionRejection";
+import { BRAND } from "../../../shared/brand";
 
 const TOOL = "codex";
 const NPM_HOSTS = ["registry.npmjs.org"] as const;
@@ -204,7 +205,7 @@ async function attemptFallForward(args: {
   });
 
   // 1. The refused build, asked once more: only a repeat refusal goes on.
-  if (!rejected.path) return failed("confirm-failed", "ADE has no Codex to re-check");
+  if (!rejected.path) return failed("confirm-failed", `${BRAND.NAME} has no Codex to re-check`);
   modelProbes += 1;
   const confirm = await probeModel(rejected.path, model, accountEnv);
   if (confirm === "accepted") return failed("not-reproduced");
@@ -353,10 +354,10 @@ export function handleCodexVersionRejection(args: {
 }
 
 function codexLabel(version: string | null): string {
-  return version ? `Codex ${version}` : "ADE's Codex";
+  return version ? `Codex ${version}` : `${BRAND.NAME}'s Codex`;
 }
 
-const QUOTA_NOTE = "ADE checked with one short request per build, which uses a tiny amount of your Codex quota.";
+const QUOTA_NOTE = `${BRAND.NAME} checked with one short request per build, which uses a tiny amount of your Codex quota.`;
 
 /**
  * What ADE says about the refusal. `after`: the chat starts again by itself
@@ -370,7 +371,7 @@ export function codexFallForwardNotice(
   const quota = outcome.modelProbes > 0 ? ` ${QUOTA_NOTE}` : "";
   if (outcome.switched) {
     const switched = `OpenAI stopped supporting ${codexLabel(outcome.rejectedCodexVersion)} for ${outcome.model}; `
-      + `ADE switched to the untested Codex ${outcome.codexVersion}`;
+      + `${BRAND.NAME} switched to the untested Codex ${outcome.codexVersion}`;
     const next = options.after === "restart"
       ? " and is starting this chat again."
       : options.after === "resend" ? ". Send the message again." : ". Try again.";
@@ -379,24 +380,24 @@ export function codexFallForwardNotice(
   const refused = `OpenAI says ${outcome.model} needs a newer Codex than ${codexLabel(outcome.rejectedCodexVersion)}.`;
   switch (outcome.reason) {
     case "not-reproduced":
-      return `${refused} ADE asked again and ${codexLabel(outcome.rejectedCodexVersion)} was accepted, so it kept its tested Codex. Try again.${quota}`;
+      return `${refused} ${BRAND.NAME} asked again and ${codexLabel(outcome.rejectedCodexVersion)} was accepted, so it kept its tested Codex. Try again.${quota}`;
     case "newest-refused":
       return `${refused} OpenAI refuses ${outcome.newestCodexVersion ? `its newest Codex (${outcome.newestCodexVersion})` : "its newest Codex"} for this model too, `
         + `so the model needs a Codex release that does not exist yet. Pick another model for now.${quota}`;
     case "no-newer-build":
-      return `${refused} OpenAI has published no newer Codex yet, so ADE kept its tested one. Pick another model or update ADE later.${quota}`;
+      return `${refused} OpenAI has published no newer Codex yet, so ${BRAND.NAME} kept its tested one. Pick another model or update ${BRAND.NAME} later.${quota}`;
     default: {
       const words: Record<Exclude<CodexFallForwardFailure, "not-reproduced" | "newest-refused" | "no-newer-build">, string> = {
-        "not-allowed": "This ADE process does not download Codex builds, so it did not switch.",
-        "env-override": "This ADE runs a developer-set Codex (CODEX_EXECUTABLE), so it did not switch.",
-        "no-pin": "This ADE has no Codex for this machine.",
-        "confirm-failed": "ADE could not re-check the refusal, so it did not switch.",
-        "lookup-failed": "ADE could not look up OpenAI's newest Codex.",
-        "download-failed": "ADE could not download OpenAI's newest Codex.",
-        "probe-failed": "OpenAI's newest Codex did not pass ADE's check.",
-        "write-failed": "ADE could not record the switch.",
+        "not-allowed": `This ${BRAND.NAME} process does not download Codex builds, so it did not switch.`,
+        "env-override": `This ${BRAND.NAME} runs a developer-set Codex (CODEX_EXECUTABLE), so it did not switch.`,
+        "no-pin": `This ${BRAND.NAME} has no Codex for this machine.`,
+        "confirm-failed": `${BRAND.NAME} could not re-check the refusal, so it did not switch.`,
+        "lookup-failed": `${BRAND.NAME} could not look up OpenAI's newest Codex.`,
+        "download-failed": `${BRAND.NAME} could not download OpenAI's newest Codex.`,
+        "probe-failed": `OpenAI's newest Codex did not pass ${BRAND.NAME}'s check.`,
+        "write-failed": `${BRAND.NAME} could not record the switch.`,
       };
-      return `${refused} ${words[outcome.reason]} Update ADE to get a newer Codex.${quota}`;
+      return `${refused} ${words[outcome.reason]} Update ${BRAND.NAME} to get a newer Codex.${quota}`;
     }
   }
 }

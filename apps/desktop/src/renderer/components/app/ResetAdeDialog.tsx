@@ -8,18 +8,19 @@ import type {
 import { Dialog } from "../ui/dialog";
 import { ERROR_GHOST_BUTTON } from "./errorSurfaceKit";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { BRAND } from "../../../shared/brand";
 
 /** Typed by the person to arm the reset. One word, in capitals, so it is never typed by accident. */
 const CONFIRM_WORD = "RESET";
 
 /** What each kind of item means to the person, in their words, not ADE's. */
 const KIND_SUMMARY: Record<MachineResetItemKind, string> = {
-  process: "Everything ADE is running right now, including its terminals and agents.",
-  background_service: "The part of ADE that runs in the background.",
-  directory: "ADE's settings, caches and logs on this computer.",
-  file: "ADE's settings, caches and logs on this computer.",
-  keychain: "Your ADE sign-in and the keys you saved in ADE. Sign in again afterwards.",
-  config_entry: "Small changes ADE made to other apps, such as a line in your shell settings.",
+  process: `Everything ${BRAND.NAME} is running right now, including its terminals and agents.`,
+  background_service: `The part of ${BRAND.NAME} that runs in the background.`,
+  directory: `${BRAND.NAME}'s settings, caches and logs on this computer.`,
+  file: `${BRAND.NAME}'s settings, caches and logs on this computer.`,
+  keychain: `Your ${BRAND.NAME} sign-in and the keys you saved in ${BRAND.NAME}. Sign in again afterwards.`,
+  config_entry: `Small changes ${BRAND.NAME} made to other apps, such as a line in your shell settings.`,
 };
 
 type Stage =
@@ -32,12 +33,12 @@ const RESCUE_CHOICES: ReadonlyArray<{ mode: MachineResetRescueMode; title: strin
   {
     mode: "commit",
     title: "Keep the work on its branch",
-    detail: "ADE commits each lane's unsaved changes to the lane's own branch. The branches stay in your repositories; the lane folders are removed.",
+    detail: `${BRAND.NAME} commits each lane's unsaved changes to the lane's own branch. The branches stay in your repositories; the lane folders are removed.`,
   },
   {
     mode: "move",
     title: "Move the lane folders out",
-    detail: "ADE moves each lane folder, with git, into a folder you pick. Git still knows about them.",
+    detail: `${BRAND.NAME} moves each lane folder, with git, into a folder you pick. Git still knows about them.`,
   },
   {
     mode: "none",
@@ -67,7 +68,7 @@ export function ResetAdeDialog({ open, onOpenChange }: { open: boolean; onOpenCh
     setShowItems(false);
     const bridge = window.ade?.machineReset;
     if (!bridge) {
-      setStage({ kind: "error", message: "This version of ADE can't reset itself from here. Run `ade reset --all` in a terminal instead." });
+      setStage({ kind: "error", message: `This version of ${BRAND.NAME} can't reset itself from here. Run \`ade reset --all\` in a terminal instead.` });
       return;
     }
     bridge
@@ -124,7 +125,7 @@ export function ResetAdeDialog({ open, onOpenChange }: { open: boolean; onOpenCh
       const result = await window.ade.machineReset!.start({ rescue, rescueDir: rescue === "move" ? rescueDir : null });
       if (result.cancelled) return;
       if (!result.started) {
-        setStage({ kind: "error", message: result.error ?? "ADE could not start the reset." });
+        setStage({ kind: "error", message: result.error ?? `${BRAND.NAME} could not start the reset.` });
         return;
       }
       setStage({ kind: "started" });
@@ -143,8 +144,8 @@ export function ResetAdeDialog({ open, onOpenChange }: { open: boolean; onOpenCh
       onOpenChange={(next) => {
         if (!busy) onOpenChange(next);
       }}
-      title="Reset ADE completely"
-      description="Removes everything ADE put on this computer, then starts ADE fresh."
+      title={`Reset ${BRAND.NAME} completely`}
+      description={`Removes everything ${BRAND.NAME} put on this computer, then starts ${BRAND.NAME} fresh.`}
       tone="error"
       icon={<Trash size={16} weight="bold" />}
       size="md"
@@ -156,7 +157,7 @@ export function ResetAdeDialog({ open, onOpenChange }: { open: boolean; onOpenCh
         stage.kind === "review"
           ? [
             { label: "Cancel", variant: "secondary", onClick: () => onOpenChange(false) },
-            { label: "Reset and reopen ADE", variant: "solid", disabled: !armed || confirming, onClick: () => void start() },
+            { label: `Reset and reopen ${BRAND.NAME}`, variant: "solid", disabled: !armed || confirming, onClick: () => void start() },
           ]
           : stage.kind === "error"
             ? [{ label: "Close", variant: "secondary", onClick: () => onOpenChange(false) }]
@@ -164,7 +165,7 @@ export function ResetAdeDialog({ open, onOpenChange }: { open: boolean; onOpenCh
       }
     >
       {stage.kind === "loading" ? (
-        <p className="text-[12.5px] text-fg/60">Looking at what ADE put on this computer…</p>
+        <p className="text-[12.5px] text-fg/60">Looking at what {BRAND.NAME} put on this computer…</p>
       ) : null}
 
       {stage.kind === "error" ? (
@@ -173,7 +174,7 @@ export function ResetAdeDialog({ open, onOpenChange }: { open: boolean; onOpenCh
 
       {busy ? (
         <p className="text-[12.5px] leading-relaxed text-fg/70">
-          ADE is closing to finish the reset. It reopens by itself as a new install in a moment.
+          {BRAND.NAME} is closing to finish the reset. It reopens by itself as a new install in a moment.
         </p>
       ) : null}
 
@@ -184,7 +185,7 @@ export function ResetAdeDialog({ open, onOpenChange }: { open: boolean; onOpenCh
             <ul className="mt-1.5 flex list-disc flex-col gap-1 pl-4 marker:text-fg/25">
               {plan.projects.length ? (
                 <li>
-                  ADE&apos;s data and lanes in {plan.projects.length === 1 ? "1 project" : `${plan.projects.length} projects`}:{" "}
+                  {BRAND.NAME}&apos;s data and lanes in {plan.projects.length === 1 ? "1 project" : `${plan.projects.length} projects`}:{" "}
                   {plan.projects.slice(0, 6).map((p) => p.displayName).join(", ")}
                   {plan.projects.length > 6 ? ` and ${plan.projects.length - 6} more` : ""}.
                   {" "}Your code and your repositories stay.
@@ -284,7 +285,7 @@ export function ResetAdeDialog({ open, onOpenChange }: { open: boolean; onOpenCh
 }
 
 /** The quiet entry point recovery surfaces put beside "Report issue". */
-export function ResetAdeButton({ label = "Reset ADE…", className = ERROR_GHOST_BUTTON }: { label?: string; className?: string }) {
+export function ResetAdeButton({ label = `Reset ${BRAND.NAME}…`, className = ERROR_GHOST_BUTTON }: { label?: string; className?: string }) {
   const [open, setOpen] = useState(false);
   return (
     <>

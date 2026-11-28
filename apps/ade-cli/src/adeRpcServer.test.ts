@@ -964,7 +964,7 @@ describe("adeRpcServer", () => {
 
       const result = await callTool(handler, "preview_scene", { source: "<p>x</p>" });
       expect(result.isError).toBe(true);
-      expect(JSON.stringify(result.error)).toMatch(/needs the ADE desktop app/);
+      expect(JSON.stringify(result.error)).toMatch(/needs the DAEX desktop app/);
     });
 
     it("sends a data snapshot only for a scene that asked for one", async () => {
@@ -1629,7 +1629,7 @@ describe("adeRpcServer", () => {
     ]) {
       const result = await callTool(handler, name, {});
       const serialized = JSON.stringify(result ?? {});
-      expect(serialized).not.toContain(`Unsupported ADE action: ${name}`);
+      expect(serialized).not.toContain(`Unsupported DAEX action: ${name}`);
     }
   });
 
@@ -2955,20 +2955,20 @@ describe("adeRpcServer", () => {
     // The final arg concatenates ADE_CLI_INLINE_GUIDANCE with the user prompt; assert
     // it ends with the user prompt and carries the inline guidance preamble.
     const launchText = createCall.args?.at(-1) ?? createCall.startupCommand ?? "";
-    expect(launchText).toContain("CLI controls ADE state");
+    expect(launchText).toContain("CLI controls DAEX state");
     expect(launchText).toContain("PRs, proof, apps");
     expect(launchText).toContain("Stop processes you start");
-    expect(launchText).toContain("ade chat note");
-    expect(launchText).toContain("ade chat ask");
+    expect(launchText).toContain("daex chat note");
+    expect(launchText).toContain("daex chat ask");
     // Settling, the note's 72-character cut and the un-settle command are
     // manual detail in ade-cli-control-plane; the launch text keeps the index
     // that names it, so the rule is one skill away.
-    expect(launchText).toContain("`ade-cli-control-plane`");
+    expect(launchText).toContain("`daex-cli-control-plane`");
     expect(launchText).toContain("Implement API wiring");
     expect(response.structuredContent.startupCommand).toContain("claude");
     expect(response.structuredContent.startupCommand).toContain("--model");
     expect(response.structuredContent.startupCommand).toContain("--permission-mode");
-    expect(response.structuredContent.startupCommand).toContain("CLI controls ADE state");
+    expect(response.structuredContent.startupCommand).toContain("CLI controls DAEX state");
     expect(response.structuredContent.permissionMode).toBe("default");
     expect(response.structuredContent.contextRef?.path).toBeNull();
   });
@@ -2998,9 +2998,9 @@ describe("adeRpcServer", () => {
     const createCall = fixture.runtime.ptyService.create.mock.calls[0]?.[0] as { args?: string[]; startupCommand?: string };
     const launchText = createCall.args?.join(" ") ?? createCall.startupCommand ?? "";
     expect(launchText).toContain("--sandbox workspace-write -c sandbox_workspace_write.network_access=true --ask-for-approval on-request");
-    expect(launchText).toContain("ade chat note");
-    expect(launchText).toContain("ade chat ask");
-    expect(launchText).toContain("`ade-cli-control-plane`");
+    expect(launchText).toContain("daex chat note");
+    expect(launchText).toContain("daex chat ask");
+    expect(launchText).toContain("`daex-cli-control-plane`");
     expect(launchText).not.toContain("--full-auto");
     expect(createCall.startupCommand).toContain(`--sandbox workspace-write -c ${NETWORK_FLAG_PREVIEW} --ask-for-approval on-request`);
     expect(createCall.startupCommand).not.toContain("--full-auto");
@@ -3521,7 +3521,7 @@ describe("adeRpcServer", () => {
     expect(created.resumeMetadata).toMatchObject({ orchestrationParentSessionId: "parent-session-1", spawnKind: "subagent" });
     // A terminal has no turn end ADE can read, so the CLI itself is told to report.
     expect(JSON.stringify([created.args, created.startupCommand, created.initialInput]))
-      .toContain("You are a subagent of ADE chat parent-session-1");
+      .toContain("You are a subagent of DAEX chat parent-session-1");
   });
 
   it("preserves wide start_cli_session terminal dimensions", async () => {
@@ -3808,7 +3808,7 @@ describe("adeRpcServer", () => {
     expect(createCall?.startupCommand).not.toContain("fix failing tests");
     expect(createCall?.startupCommand).not.toContain("create-chat");
     expect(createCall?.startupCommand).not.toContain("--resume");
-    expect(createCall?.initialInput).toContain("ADE session guidance");
+    expect(createCall?.initialInput).toContain("DAEX session guidance");
     expect(createCall?.initialInput).toContain("fix failing tests");
     expect(createCall?.initialInputDelayMs).toBe(750);
     expect(fixture.runtime.ptyService.writeBySessionId).not.toHaveBeenCalled();
@@ -4067,7 +4067,7 @@ describe("adeRpcServer", () => {
     expect(response.structuredContent.permissionMode).toBe("plan");
     expect(response.structuredContent.startupCommand).toContain("--sandbox");
     expect(response.structuredContent.startupCommand).toContain("read-only");
-    expect(response.structuredContent.startupCommand).toContain("CLI controls ADE state");
+    expect(response.structuredContent.startupCommand).toContain("CLI controls DAEX state");
     const contextPath = response.structuredContent.contextRef?.path as string | null;
     expect(contextPath).toBeTruthy();
     expect(contextPath?.replace(/\\/g, "/")).toContain("/.ade/cache/orchestrator/agent-context/run-123/");
@@ -4568,7 +4568,7 @@ describe("adeRpcServer", () => {
     // Turning on PR chat transcripts publishes chats: refused, with the link to the setting.
     const publish = await save(agentHandler, { shared: {}, local: { ...local, github: { prTranscriptGists: { enabled: true } } } });
     expect(publish?.isError).toBe(true);
-    expect(JSON.stringify(publish)).toContain("ade://settings/lanes-git.pr-chat-transcripts");
+    expect(JSON.stringify(publish)).toContain("daex://settings/lanes-git.pr-chat-transcripts");
     // Save writes `local`; leaving it out would write an empty file and drop the key.
     const wipe = await save(agentHandler, { shared: {} });
     expect(wipe?.isError).toBe(true);
@@ -5131,7 +5131,7 @@ describe("adeRpcServer", () => {
 
     expect(result.isError).toBe(true);
     expect(JSON.stringify(result.error ?? result.structuredContent ?? {})).toContain(
-      "reserved for authenticated ADE user clients",
+      "reserved for authenticated DAEX user clients",
     );
     expect(fixture.runtime.productAnalyticsService.capture).not.toHaveBeenCalled();
   });
@@ -9338,7 +9338,7 @@ describe("ADE Cloud actions over the brain", () => {
 
         const response = await callAsCto("run_ade_action", { domain: "cloud", action: "create", args: { kind: "vm", shape: "4x8" } });
 
-        expect(JSON.stringify(response)).toMatch(/Agents don't make ADE Cloud computers/);
+        expect(JSON.stringify(response)).toMatch(/Agents don't make DAEX Cloud computers/);
         expect(create).not.toHaveBeenCalled();
       });
     } finally {

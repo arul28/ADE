@@ -272,7 +272,7 @@ export function createNomacDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
       // This phone's launch of an installed app takes its arguments (`value`, the tokens joined) and no env values:
       // said, never dropped quietly. A build takes them (`ade apple launch --env`).
       if (input.env) {
-        return textAnswer("This cloud iPhone takes env values only with a build: ade apple launch --env KEY=VALUE builds and starts the app with them. A launch of an installed app takes launch arguments (after --).", true);
+        return textAnswer("This cloud iPhone takes env values only with a build: daex apple launch --env KEY=VALUE builds and starts the app with them. A launch of an installed app takes launch arguments (after --).", true);
       }
       return tool(phone, "app_control", { action: input.action, ...(input.value !== undefined ? { value: input.value } : {}), ...(input.app ? { app: input.app } : {}) }, `The phone's ${input.action}`);
     },

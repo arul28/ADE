@@ -10,6 +10,7 @@
  * both together.
  */
 import { CLOUD_SMALL_UNLIMITED_SHORT, INVITE_RULES, UNIT } from "./cloudPricing";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 /** `CLOUD_INVITE_CODE_LENGTH` (8) characters of `CLOUD_INVITE_ALPHABET` (no 0/O/1/I/L); `parseCloudInviteCode` reads a code the same way. */
 const INVITE_CODE = /^[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{8}$/;
@@ -25,7 +26,7 @@ export function inviteCodeFrom(raw: string | undefined): string | null {
 }
 
 /** What "Open in ADE" opens (`CLOUD_INVITE_DEEPLINK_BASE`): the app fills the code in Settings › Account. */
-export const inviteAppLink = (code: string): string => `ade://invite/${code}`;
+export const inviteAppLink = (code: string): string => `${BRAND.LINK_SCHEME_FOR_NEW_LINKS}://invite/${code}`;
 
 /** What every plan includes, the free one too: "Unlimited Small computers". */
 export const FREE_OFFER = CLOUD_SMALL_UNLIMITED_SHORT;

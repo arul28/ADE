@@ -13,6 +13,7 @@ import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { useChatConfigToggle } from "./useChatConfigToggle";
 import { requirePin } from "../../state/repositoryScope";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 type HintMode = NonNullable<AiChatConfig["modelHintMode"]>;
 
@@ -90,7 +91,7 @@ export function SmartDecisionsSection() {
     } catch (error) {
       showToast({
         title: "Couldn't start the OpenCode sign-in",
-        message: plainErrorText(error, "ADE couldn't start the sign-in."),
+        message: plainErrorText(error, `${BRAND.NAME} couldn't start the sign-in.`),
         tone: "error",
       });
     } finally {
@@ -108,13 +109,13 @@ export function SmartDecisionsSection() {
     ? "Loading…"
     : status === "failed"
       ? "Couldn't load the configuration."
-      : "ADE asks the small Jev model quick questions, for example whether a finished turn asked you something. It's free through OpenCode, with no sign-in; when that day's free allowance is out, ADE's bonus answers for signed-in ADE accounts. When Jev is slow or unavailable, ADE's built-in rules decide.";
+      : `${BRAND.NAME} asks the small Jev model quick questions, for example whether a finished turn asked you something. It's free through OpenCode, with no sign-in; when that day's free allowance is out, ${BRAND.NAME}'s bonus answers for signed-in ${BRAND.NAME} accounts. When Jev is slow or unavailable, ${BRAND.NAME}'s built-in rules decide.`;
 
   return (
     <ModernSection
       group="Agent behavior"
       title="Smart decisions"
-      hint="Quick calls ADE makes about your chats and prompts."
+      hint={`Quick calls ${BRAND.NAME} makes about your chats and prompts.`}
       icon={<Brain size={16} weight="bold" />}
       tone="teal"
     >
@@ -177,15 +178,15 @@ export function SmartDecisionsSection() {
                   localOnly
                   icon={Wallet}
                   title="Use my OpenCode Zen credit"
-                  hint="Once the free allowance is out, spend your own OpenCode Zen balance on Jev before ADE's bonus. Jev costs about $0.04 per million input tokens: well under a cent a day."
+                  hint={`Once the free allowance is out, spend your own OpenCode Zen balance on Jev before ${BRAND.NAME}'s bonus. Jev costs about $0.04 per million input tokens: well under a cent a day.`}
                 />
               ) : (
                 <ModernRow
                   anchor="jev-zen-credit"
                   title={<GroupTitle icon={Wallet}>Use my OpenCode Zen credit</GroupTitle>}
                   hint={zen === "token_expired"
-                    ? "Your OpenCode Zen sign-in expired. Sign in again to spend your own Zen balance on Jev once the free allowance is out. Optional: the ADE bonus covers it otherwise."
-                    : "Optional: sign in to OpenCode Zen to spend your own balance on Jev once the free allowance is out, before ADE's bonus."}
+                    ? `Your OpenCode Zen sign-in expired. Sign in again to spend your own Zen balance on Jev once the free allowance is out. Optional: the ${BRAND.NAME} bonus covers it otherwise.`
+                    : `Optional: sign in to OpenCode Zen to spend your own balance on Jev once the free allowance is out, before ${BRAND.NAME}'s bonus.`}
                   control={signInButton}
                 />
               )}
@@ -305,7 +306,7 @@ function ModelHintRow() {
       setMode(previous);
       showToast({
         title: "Couldn't save the setting",
-        message: plainErrorText(error, "ADE couldn't save the setting."),
+        message: plainErrorText(error, `${BRAND.NAME} couldn't save the setting.`),
         tone: "error",
       });
     } finally {

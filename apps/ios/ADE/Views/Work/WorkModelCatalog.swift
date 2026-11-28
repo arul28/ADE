@@ -983,7 +983,7 @@ func workModelCatalogGroups(cloudCatalog: CloudModelCatalog) -> [WorkModelCatalo
       AgentChatModelInfo(
         id: model.id,
         displayName: model.displayName,
-        description: "Runs on ADE Cloud",
+        description: "Runs on \(Brand.cloudName)",
         isDefault: model.id == entry.defaultModelId,
         reasoningEfforts: model.reasoningTiers.map { AgentChatModelReasoningEffort(effort: $0, description: "") },
         defaultReasoningEffort: model.defaultReasoningEffort,

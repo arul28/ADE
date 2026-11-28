@@ -2,6 +2,7 @@ import type { AttentionItem } from "../../../shared/types/attention";
 import type { AutoUpdateSnapshot, NormalizedLinearIssue } from "../../../shared/types";
 import type { HomePr } from "../projects/ProjectWelcomeHome";
 import { normalizePathForComparison } from "../../lib/pathUtils";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The home feed: one timeline of what happened across projects and machines,
@@ -138,7 +139,7 @@ export function feedFromUpdate(snapshot: AutoUpdateSnapshot | null): HomeFeedEve
     id: `release:${installed.version}`,
     kind: "release",
     at,
-    title: `ADE ${installed.version} installed`,
+    title: `${BRAND.NAME} ${installed.version} installed`,
     detail: url ? "Release notes" : null,
     project: null,
     target: url ? { kind: "url", url } : { kind: "none" },
@@ -278,7 +279,7 @@ export function awaySummary(events: readonly HomeFeedEvent[], awaySince: number 
   add("pr_merged", (n) => `${plural(n, "PR")} merged`);
   add("chat_done", (n) => `${plural(n, "chat")} finished`);
   add("linear_assigned", (n) => `${plural(n, "Linear issue")} for you`);
-  add("release", () => "ADE updated");
+  add("release", () => `${BRAND.NAME} updated`);
   if (cameOnline.size > 0) parts.push(`${[...cameOnline].slice(0, 2).join(" and ")}${cameOnline.size > 2 ? ` and ${cameOnline.size - 2} more` : ""} came online`);
   add("machine_offline", (n) => `${plural(n, "machine")} went offline`);
   if (parts.length === 0) return null;

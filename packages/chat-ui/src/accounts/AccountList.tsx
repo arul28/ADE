@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 
-import type { AccountInfo, AdeChatClient } from "../sdkTypes";
+import type { AccountInfo, DaexChatClient } from "../sdkTypes";
 import { UsageMeter } from "./UsageMeter";
 
 export type AccountListProps = {
-  client?: AdeChatClient;
+  client?: DaexChatClient;
   accounts?: readonly AccountInfo[];
   onSelect?: (account: AccountInfo) => void | Promise<void>;
   className?: string;

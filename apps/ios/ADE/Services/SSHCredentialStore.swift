@@ -52,7 +52,7 @@ final class SSHCredentialStore {
 
   func load(host: String, port: Int, username: String) throws -> SSHStoredCredential? {
     let context = LAContext()
-    context.localizedReason = "Use your saved SSH key to pair this ADE machine."
+    context.localizedReason = "Use your saved SSH key to pair this \(Brand.name) machine."
     let query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
       kSecAttrService as String: service,

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Copy, Desktop, DeviceMobile, Lightning, Wrench } from "@phosphor-icons/react";
 import type { IosSimulatorDevice, IosSimulatorStatus, IosSimulatorToolStatus } from "../../../shared/types";
 import { cn } from "../ui/cn";
+import { BRAND } from "../../../shared/brand";
 
 export type IosSimChipState = "ok" | "warn" | "missing";
 
@@ -115,7 +116,7 @@ export function buildIosSimToolChips(
       // The helper ships with ADE, so a missing one is a broken build rather
       // than something the user forgot to install: warn, not missing.
       state: helperOk ? "ok" : "warn",
-      hint: helperOk ? null : helperHint ?? "The ADE simulator helper is missing from this build.",
+      hint: helperOk ? null : helperHint ?? `The ${BRAND.NAME} simulator helper is missing from this build.`,
       hintIsCommand: helperOk ? false : looksLikeCommand(helperHint),
     },
   ];

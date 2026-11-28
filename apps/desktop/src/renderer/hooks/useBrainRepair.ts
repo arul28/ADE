@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import { extractError } from "../lib/format";
 import { useAsyncAction } from "./useAsyncAction";
 import { isAdeAvailable } from "../lib/adeAvailability";
+import { BRAND } from "../../shared/brand";
 
 /** What a finished repair should tell the user, or null when there is nothing to say. */
 export type BrainRepairNotice = {
@@ -63,8 +64,8 @@ export function useBrainRepair(onSettled?: () => void): BrainRepair {
           tone: "warn",
           offerRestart: true,
           text: result.outcome === "repaired"
-            ? "Your sign-in is back, but ADE's background service didn't come back. Try Repair again, or restart ADE."
-            : "ADE's background service didn't come back. Try Repair again, or restart ADE.",
+            ? `Your sign-in is back, but ${BRAND.NAME}'s background service didn't come back. Try Repair again, or restart ${BRAND.NAME}.`
+            : `${BRAND.NAME}'s background service didn't come back. Try Repair again, or restart ${BRAND.NAME}.`,
         };
       }
       if (result.outcome === "repaired") {
@@ -75,7 +76,7 @@ export function useBrainRepair(onSettled?: () => void): BrainRepair {
     const restart = isAdeAvailable(window.ade?.app?.restartBackgroundService)
       ? window.ade.app.restartBackgroundService
       : undefined;
-    if (!restart) throw new Error("Repairing the ADE background service is not available here.");
+    if (!restart) throw new Error(`Repairing the ${BRAND.NAME} background service is not available here.`);
     await restart();
     return null;
   }, []);

@@ -1,386 +1,240 @@
 # Windows Desktop
 
 Each lane can own a Windows screen, the way it owns a private macOS screen. The
-service, the lease, window ownership, proof, streaming and the Work-tools pane
-are shared with [Mac Desktop](../mac-desktop/README.md); only the seat backend
-differs, so read that page first. This page covers what Windows adds or changes.
+service, lease, window ownership, proof, streaming and Work-tools pane are
+shared with [Mac Desktop](../mac-desktop/README.md); only the seat backend
+differs. Read that page first. This page covers what Windows adds or changes.
 
-The neutral command family is `ade screen`. `ade windows-desktop` and
-`ade mac-desktop` are aliases, and the verbs are the Mac Desktop verbs.
+Commands are `daex screen …` (`ade` still works; `windows-desktop` and
+`mac-desktop` are aliases), with the Mac verbs plus `focus`, `minimize`,
+`close`.
 
 ## Source file map
 
-Only the Windows-specific files; the shared service, lease, ownership,
-streaming and proof files are in the [Mac Desktop map](../mac-desktop/README.md#source-file-map).
+Windows-specific files only; the shared files are in the
+[Mac Desktop map](../mac-desktop/README.md#source-file-map).
 
 | Path | Role |
 |---|---|
-| `apps/desktop/native/ADEDesktopDriverWin/src/` | The native driver, `ade-desktop-driver.exe` (C++). Same NDJSON wire, ops and error codes as the Mac driver. |
-| `.../src/modes.h`, `main.cpp` | One binary, three process modes: `host` (the brain's child in the console session), `child` (the engine inside the private screen, serving it to the host over named pipes) and `setup-elevated` (the one-time admin step). |
-| `.../src/host.cpp`, `hostwindow.cpp/.h` | The console-side lifecycle and NDJSON bridge on an STA thread; the host's own window (the Remote Desktop control's frame, kept shown outside every monitor). The hard-deadline retire lives here. |
-| `.../src/rdp.cpp/.h` | The Remote Desktop ActiveX control that opens the private child session. |
-| `.../src/childtask.cpp/.h`, `child.cpp` | Starting the engine inside the child session through a one-use logon task (the Run entry is the fallback), and the child-mode engine process. |
-| `.../src/ownedchild.cpp/.h` | `owned-child.json`: the child session this driver started, so a replacement driver signs out exactly that one and never a session ADE did not start. |
-| `.../src/parkedwindows.cpp/.h` | `parked-windows.json`: the shared seat's parked windows on disk, so a host restores them at its hard deadline and at every start. |
-| `.../src/engine.cpp/.h`, `engineLane.h`, `engineInput.cpp`, `engineLaunch.cpp`, `engineMedia.cpp` | The per-lane op table for one session (Mode A private, Mode B shared): lifecycle, input, app launch (including apps that hand a second launch to a running instance), and capture/recording. |
-| `.../src/desk.cpp/.h` | Top-level windows, processes, app launch and `SendInput` for the session the process runs in. |
-| `.../src/uia.cpp/.h` | UI Automation: the cached element walk behind `observe`, and element actions. |
-| `.../src/background.cpp/.h` | Background input on the shared seat: which app frameworks drop posted input (`backgroundDrop`), the posted click, drag, scroll, key and text, the focused-control walk, and the foreground shield around UI Automation actions. Follows trycua/cua's cua-driver (MIT). |
-| `apps/desktop/src/main/services/macDesktop/macDesktopBackgroundInput.ts` | What the service does with a background row: real-input retry for keys and text, `forceBackground` for the rest, and the rate-limited report. |
-| `.../src/capture.cpp/.h`, `video.cpp/.h` | GDI `BitBlt` (private) and `PrintWindow` (shared) frames; Media Foundation H.264 for the live view and the MP4 recording. |
-| `.../src/credentials.cpp/.h`, `setup.cpp` | The saved Windows password in Credential Manager (never on the wire), and the bounded admin prompt that starts `setup-elevated`. |
-| `.../src/common.cpp/.h`, `json.cpp/.h` | Error codes, logging, the line writer, and the JSON value. |
-| `apps/desktop/scripts/build-windows-desktop-driver.mjs` | Builds `ade-desktop-driver.exe` into `resources/native`. |
-| `apps/desktop/src/main/services/native/nativeHelperPaths.ts` | `resolveWindowsDesktopDriverBinary`, beside the Mac resolver. |
-| `apps/desktop/src/main/services/windowsDesktop/windowsDesktopSeatProvider.ts` | The Windows `DesktopSeatProvider`: the Mac op set plus `windows.status` / `windows.setup` and the `seatMode` + consent fields on `display.create`. |
-| `apps/desktop/src/main/services/windowsDesktop/windowsDesktopDriverClient.ts` | The NDJSON client for the `.exe`, reusing the Mac client (`macDesktopDriverClient.ts`) for the protocol, backoff, health, and the retire (exit 75) restart that replays queued requests. |
-| `apps/desktop/src/main/services/windowsDesktop/windowsDesktopOperations.ts` | The Windows-only service parts: the setup / save-password / start operation record (`windowsDesktop.operation`, `phase`, `lastOperation`), the shared seat's per-host lease, and the window-verb gate. |
-| `apps/desktop/src/main/services/macDesktop/macDesktopLeaseFlow.ts` | `askChatAllowDeny`: the button-only Allow / Don't allow card behind both the Mac input lease and the shared-seat request. |
-| `apps/desktop/src/shared/desktopSeat.ts` | `desktopSeatKind`, `describeDesktopSeat` (the status JSON's `seat`) and `WINDOWS_DESKTOP_NEXT_STEP`; every text surface reads it. Re-exported from `shared/types/macDesktop.ts`, which also holds `isUserOnlyConsentCard`. |
+| `apps/desktop/native/ADEDesktopDriverWin/src/` | The native driver `ade-desktop-driver.exe` (C++). Same NDJSON wire, ops and error codes as the Mac driver. |
+| `…/modes.h`, `main.cpp` | One binary, three modes: `host` (the brain's child in the console session), `child` (the engine inside the private screen, serving the host over named pipes), `setup-elevated` (the one-time admin step). |
+| `…/host.cpp`, `hostwindow.cpp/.h` | Console-side lifecycle and NDJSON bridge on an STA thread; the host window that frames the Remote Desktop control (kept shown outside every monitor). The hard-deadline retire lives here. |
+| `…/rdp.cpp/.h` | The Remote Desktop ActiveX control that opens the private child session. |
+| `…/childtask.cpp/.h`, `child.cpp` | Starts the engine in the child session through a one-use logon task (startup entry and `child-launch.json` as fallback); the child-mode engine. |
+| `…/ownedchild.cpp/.h` | `owned-child.json`: the child session this driver started, so a replacement signs out exactly that one. |
+| `…/parkedwindows.cpp/.h` | `parked-windows.json`: the shared seat's parked windows, restored at the hard deadline and at every host start. |
+| `…/engine.cpp/.h`, `engineLane.h`, `engineInput.cpp`, `engineLaunch.cpp`, `engineMedia.cpp` | Per-lane op table for one session (private or shared): lifecycle, input, app launch (including hand-off to a running instance), capture and recording. |
+| `…/desk.cpp/.h` | Top-level windows, processes, app launch and `SendInput` for the process's session. |
+| `…/uia.cpp/.h` | UI Automation: the cached element walk behind `observe`, element actions. |
+| `…/background.cpp/.h` | Shared-seat background input: which frameworks drop posted input (`backgroundDrop`), posted click/drag/scroll/key/text, the focused-control walk, and the foreground shield. Follows trycua/cua's cua-driver (MIT). |
+| `…/capture.cpp/.h`, `video.cpp/.h` | GDI `BitBlt` (private) and `PrintWindow` (shared) frames; Media Foundation H.264 for live view and MP4. |
+| `…/credentials.cpp/.h`, `setup.cpp` | The saved Windows password in Credential Manager (never on the wire); the bounded admin prompt that starts `setup-elevated`. |
+| `…/common.cpp/.h`, `json.cpp/.h` | Error codes, logging, line writer, JSON value. |
+| `apps/desktop/scripts/build-windows-desktop-driver.mjs` | Builds the `.exe` into `resources/native`. |
+| `apps/desktop/src/main/services/native/nativeHelperPaths.ts` | `resolveWindowsDesktopDriverBinary`. |
+| `apps/desktop/src/main/services/windowsDesktop/windowsDesktopSeatProvider.ts` | The Windows `DesktopSeatProvider`: Mac ops plus `windows.status` / `windows.setup` and `seatMode` + consent on `display.create`. |
+| `apps/desktop/src/main/services/windowsDesktop/windowsDesktopDriverClient.ts` | NDJSON client; reuses `macDesktopDriverClient.ts` for protocol, backoff, health, and the retire (exit 75) restart that replays queued requests. |
+| `apps/desktop/src/main/services/windowsDesktop/windowsDesktopOperations.ts` | Setup / save-password / start operation record (`windowsDesktop.operation`, `phase`, `lastOperation`), the shared seat's per-host lease, the window-verb gate. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopBackgroundInput.ts` | What the service does with a background row: real-input retry for keys and text, `forceBackground` for the rest, the rate-limited report. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopLeaseFlow.ts` | `askChatAllowDeny`: the buttons-only Allow / Don't allow card for the Mac input lease and the shared-seat request (170 s wait). |
+| `apps/desktop/src/shared/desktopSeat.ts` | `desktopSeatKind`, `describeDesktopSeat` (the status JSON's `seat`), `WINDOWS_DESKTOP_NEXT_STEP`. Re-exported from `shared/types/macDesktop.ts`, which holds `isUserOnlyConsentCard`, `MAC_DESKTOP_USER_CLI_HOLDER_ID` and `WINDOWS_DESKTOP_MAX_TYPED_CHARS`. |
 | `apps/desktop/src/main/services/demoVideo/demoMp4Source.ts` | Reads the driver's MP4 for the desktop app's Chromium demo engine. |
-| `apps/ade-cli/src/cliMacDesktop.ts`, `cliMacDesktopFormat.ts` | The `ade screen` plan builder (`start --shared`, `focus`/`minimize`/`close`, `setup`, `takeover`) and the host-aware text formatters and error hints. |
-| `apps/desktop/src/renderer/components/chat/WindowsDesktopStateCard.tsx` | The pane's no-picture states: setup, password, sign-in progress, a failed step, held, locked, unavailable, ready. |
-| `apps/desktop/src/renderer/components/terminals/LaneMacDesktopMarker.tsx` | The lane mark: the Windows logo on a Windows host, with the seat in the tooltip. |
+| `apps/ade-cli/src/cliMacDesktop.ts`, `cliMacDesktopFormat.ts` | The `daex screen` plan builder (`start --shared`, window verbs, `setup`, `takeover`) and host-aware formatters and error hints (`macDesktopErrorHint`). |
+| `apps/desktop/src/renderer/components/chat/WindowsDesktopStateCard.tsx` | The pane's no-picture states: setup, password, sign-in progress, failed step, held, locked, unavailable, ready. |
+| `apps/desktop/src/renderer/components/terminals/LaneMacDesktopMarker.tsx` | The lane mark (Windows logo on a Windows host, seat in the tooltip). |
 | `apps/desktop/src/renderer/components/app/AppShell.tsx` | The elevated-app warning banner (`ade.app.getElevatedDesktop` / `elevatedDesktopChanged`). |
+
+## Gotchas / fragile areas
+
+- **The RDP control must stay shown.** It sits outside every monitor and off
+  the taskbar. Hidden, Windows treats the session as minimized and drops every
+  injected click and key.
+- **One private session per PC.** One lane holds it at a time. Shared seats are
+  independent and can run in other lanes.
+- **Elevated windows.** The private seat is a real sign-in of the same account,
+  so logon tasks and startup apps run there, and an elevated admin window can
+  take its foreground. Windows blocks the un-elevated driver from controlling
+  it (`WINDOWS_DESKTOP_ELEVATED_WINDOW`; `[admin]` in status and window lists).
+  DAEX never closes it; the user does.
+- **Elevated DAEX app.** A desktop app started as administrator cannot be
+  reached by the medium-integrity brain (pipe access is refused), so agents get
+  no built-in browser, App Control recording or demo videos. `AppShell` docks a
+  banner while it runs.
+- **Retire is not a crash.** The driver exits 75 when its UI thread is wedged
+  after a teardown or an operation passes its hard deadline. The brain restarts
+  it at once without backoff, replays queued requests, and reports only lanes
+  whose screen was lost.
+- **Parked windows never strand.** Each parked window (handle, pid, process
+  start, origin) is recorded atomically in
+  `<ADE home>\windows-desktop\parked-windows.json`. At the hard deadline the
+  host restores them if the record is free (never waiting on the stuck op),
+  then retires. Every host start restores any record that still matches a live
+  window exactly, then clears it. A window disabled by `ForegroundShield` is
+  marked there too, so it is re-enabled after a crash.
+- **Owned child session.** `owned-child.json` (session id, account, logon and
+  connect time) lets a new driver sign out exactly the session the old one
+  started. A child session DAEX did not start (Power Automate, a Windows agent
+  workspace) reads as `WINDOWS_DESKTOP_HELD` and is never signed out.
+- **Typing is slow on purpose.** Keystroke text is one character per
+  `SendInput` with a pause (WinUI editors like Windows 11 Notepad drop batched
+  characters). The brain allows 20 s + 25 ms per character, max 4,000
+  characters per `type`. Accessibility typing on the shared seat sets the value
+  or posts text at once.
+- **Posted input succeeds even when ignored.** `backgroundDrop` comes from
+  cua's measurements, not this PC's, so each affected delivery logs
+  `windows_desktop.background_unavailable` and a rate-limited Sentry Log
+  (`forwardSignalToSentry`) with exe, window class, fallback and whether the
+  screen changed.
+- **A UIA timeout stops the action** (`WINDOWS_DESKTOP_WINDOW_ACTION_FAILED`)
+  instead of falling through to a second delivery that could repeat it.
 
 ## The two seats
 
 | Seat | When | What the agent gets | Effect on the user |
 |---|---|---|---|
-| **Private** (default) | A Windows host in the console session, set up, with a free holder | A second Windows desktop of the user's own account (a Remote Desktop child session). Its own pointer, keyboard and foreground. | None while the PC is unlocked |
-| **Shared** (Mode B) | The user consents, and the private seat is out or unwanted | Windows windows parked off-screen, driven by UI Automation and background (posted) input first, real input under the lease when an app needs it. | Real keys and typing take the foreground for a moment; element actions and posted input do not |
+| **Private** (default) | A set-up host in the console session with a free holder | A second Windows desktop of the user's own account (a Remote Desktop child session) with its own pointer, keyboard and foreground | None while the PC is unlocked |
+| **Shared** | The user consents and the private seat is out or unwanted | The user's windows parked off-screen, driven by UI Automation and posted input first, real input under the lease when needed | Real keys and typing take the foreground for a moment |
 
-Only one private child session exists per PC, so one lane holds it at a time.
-Shared seats are independent of it and can run in other lanes.
-
-The private seat shows the user's wallpaper and taskbar, because it is the same
-account; every surface states the seat in words so an agent does not mistake it
-for the user's screen.
-
-It is a real sign-in. Logon tasks and startup apps run in the private session as
-well. An elevated administrator window can take its foreground, and Windows
-blocks the un-elevated driver from controlling it. `ade screen status --text`
-and `ade screen windows --text` mark elevated windows `[admin]` and explain the
-limit. Ask the user to close or minimize that window on the lane screen, or stop
-the task or app that opens it at sign-in; ADE does not close it because it may
-be a service they need.
+The private seat shows the user's wallpaper and taskbar (same account), so
+every surface states the seat in words. On a private screen the pane has no
+**Release**, **Add app** or **Bring to my screen**: a window cannot move
+between sessions.
 
 ### Real input and the lease
 
-- **Private:** real input (point clicks, drags, `--real`) needs no lease. The
-  seat has its own pointer and keyboard. A person who took control from the
-  pane, or another chat holding the lane's lease, still wins.
-- **Shared:** real input is under the lease, and the user's shared-seat consent
-  covers it: the acting chat takes the lane's lease on its first real action
-  instead of showing a second card. The consent covers the chats of that lane
-  and the user's own trusted `ade` (`ade --role cto screen …`, the same role
-  that may run `screen start --shared --consent`): with no chat, the RPC layer
-  gives it one stable holder of its own (`ade-cli-user`), so it drives the
-  shared seat it started, still one lane per host, and a person who took
-  control in the pane still wins. An agent cannot claim that holder: the RPC
-  scope strips `holderId` from every agent caller. Any other caller with no
-  chat (a plain `ade` shell, which may be an agent's) is refused with
-  `MAC_DESKTOP_INPUT_LEASE_REQUIRED`. Two shared lanes share one pointer and
-  foreground, so every action on a shared seat — Accessibility (UI Automation)
-  and background input as well as real input, opening an app, closing a
-  window — takes the lane's lease, and a lane is refused with
-  `MAC_DESKTOP_LEASE_HELD_BY_OTHER`, naming the other lane, while another
-  shared lane's lease is live (about a minute after its last action). Focus
-  and minimize raise without activating there, so they need no lease.
-- A private holder and a shared lane run at once without conflict: they are
-  different Windows sessions.
+- **Private:** real input needs no lease (own pointer). A person who took
+  control, or another chat holding the lease, still wins.
+- **Shared:** the user's shared-seat consent covers real input; the acting
+  chat takes the lane's lease on its first real action. The user's own trusted
+  CLI (`daex --role cto screen …`) gets the stable holder `ade-cli-user`; the
+  RPC scope strips `holderId` from agent callers. Any other chat-less caller
+  is refused with `MAC_DESKTOP_INPUT_LEASE_REQUIRED`. Two shared lanes share
+  one pointer, so every shared-seat action (UIA, posted, real, open, close)
+  takes the lease; another lane gets `MAC_DESKTOP_LEASE_HELD_BY_OTHER` while
+  it is live (about a minute after its last action). Focus and minimize do not
+  activate, so they need no lease.
+- A private holder and a shared lane run at once: different sessions.
 
 ### Asking for the shared seat
 
-`ade screen start --shared --reason "<why>"` (action
-`mac_desktop.requestSharedDesktop`) is agent-callable. It puts an Allow / Don't
-allow card in the calling chat, and starts the shared seat when the user allows
-it. The user's answer is the consent:
+`daex screen start --shared --reason "<why>"` (action
+`mac_desktop.requestSharedDesktop`) is agent-callable. It puts an Allow /
+Don't allow card in the calling chat; the answer is the consent.
 
-- The card has buttons only. The seat starts only when the answer is exactly
-  the **Allow** option; typed text, **Don't allow**, a dismissal or anything
-  else is a no. The real-input lease card on a Mac follows the same rule
-  (`askChatAllowDeny` in `macDesktopLeaseFlow.ts`).
-- Only a trusted user client (the desktop app, the phone, the web client) can
-  answer the shared-seat card or the real-input lease card. An agent caller —
-  session-bound, an unbound `ade` shell, or the CTO's approve tool — is refused
-  by `chat.respondToInput` and `chat.approveToolUse` (`policyDenied`) and told
-  to wait for the user (`isUserOnlyConsentCard`), whichever argument shape it
-  sends; a call whose session and card ids cannot be read is refused too.
-  `personalChats.call` never answers one either.
-- The card is withdrawn after about 170 seconds without an answer, before the
-  caller's own 180-second wait ends, so a late Allow cannot start a seat
-  nobody is waiting for; the request fails with
-  `WINDOWS_DESKTOP_CONSENT_REQUIRED`.
-- If a private screen started on the lane while the card was open, the request
-  fails with `WINDOWS_DESKTOP_CONSENT_REQUIRED` instead of reporting the
-  private screen as the shared one.
-
-A chat the user allowed is not asked again for that lane until the chat closes.
-A caller with no chat is refused with `WINDOWS_DESKTOP_CONSENT_REQUIRED`.
+- Buttons only. Only the exact **Allow** option starts the seat; anything else
+  is a no.
+- Only a trusted user client (desktop, phone, web) can answer it. Agent callers
+  (session-bound, an unbound shell, the CTO's approve tool) are refused by
+  `chat.respondToInput` and `chat.approveToolUse` (`policyDenied`,
+  `isUserOnlyConsentCard`); `personalChats.call` never answers one either.
+- The card is withdrawn after about 170 s, before the caller's 180 s wait ends,
+  so a late Allow cannot start an orphan seat
+  (`WINDOWS_DESKTOP_CONSENT_REQUIRED`). Same code if a private screen started
+  meanwhile, or the caller has no chat.
+- An allowed chat is not asked again for that lane until it closes.
 
 ### Background input on the shared seat
 
-The shared seat acts on a parked window without bringing it forward wherever
-it can:
-
-- **Element actions** (click, set value, toggle, select, expand, focus,
-  scroll by handle) go through UI Automation. UWP, WinUI and
-  Chromium/Electron apps activate themselves while handling one, so the
-  driver disables the window's root for the call (`ForegroundShield`); the
-  pattern still lands and the user's window stays in front. A hung window is
-  not shielded (disabling it would wait on it). The shielded window is marked
-  in `parked-windows.json`, so a driver that dies inside the call does not
-  leave the app disabled: the next host re-enables it when it puts the parked
-  windows back. A UI Automation call that times out stops the action
-  (`WINDOWS_DESKTOP_WINDOW_ACTION_FAILED`, observe first) rather than falling
-  through to a second delivery that could repeat it.
-- **Clicks, scrolls and drags at a point**, and the fallback for an element
-  with no pattern, are posted to the window (`WM_*BUTTON*`, `WM_MOUSEWHEEL`).
-- **Keys** (`press`, `type --submit`) are posted (`WM_KEYDOWN`/`WM_KEYUP`) to
-  the focused control, and **text** that no Value pattern takes is posted as
-  characters, with a line break sent as an Enter key. The focused control is
-  found across every UI thread of the window, so a WebView2 editor is reached.
-- Posting reports success whether or not the app acts on it, so the driver
-  knows which frameworks drop which posted input
-  (`backgroundDrop`, after cua): everything for Chromium and Electron; clicks,
-  drags and (when not in front) keys for WPF; clicks and drags for WinUI 3;
-  keys and text for UWP/XAML hosts (Windows 11 Notepad among them, not the
-  Windows 10 one); clicks, keys and text for Tk; clicks for GTK; keys for
-  LibreOffice; and the wheel and drags for a WebView2 inside a native frame.
-  An administrator window is refused with `WINDOWS_DESKTOP_ELEVATED_WINDOW`.
-- What the service does with a row (`macDesktopBackgroundInput.ts`), so
-  nothing that worked before stops working:
-  - **Keys and text with no mode named**: the driver refuses with
-    `WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE` and the service sends them again
-    as real input (the window comes forward for it and the user's goes back).
-  - **Everything else** (a click, scroll or drag, which have no real path on a
-    parked window; an explicit mode; a person's own takeover input): the
-    request carries `forceBackground`, the driver posts as before, and its
-    reply names the row (`backgroundRow`). When nothing then changes,
-    the action's next step says the app usually ignores that input.
-  - A key chord, or a key that needs Shift, cannot be posted at all; with an
-    explicit accessibility mode it stays refused.
-- The table comes from cua's measurements, not this PC's, so each delivery it
-  touches is reported: a `windows_desktop.background_unavailable` log line and
-  a Sentry Log on the signal budget (`forwardSignalToSentry`: a couple per
-  app, input and fallback an hour, 10 an hour in all), with the exe and window
-  class, the fallback taken and whether the screen then changed. A `posted`
-  row whose outcome is `observed` is a row that refuses input the app takes.
+- **Element actions** go through UI Automation. UWP, WinUI and
+  Chromium/Electron apps activate themselves during one, so the driver disables
+  the window's root for the call (`ForegroundShield`). Hung windows are not
+  shielded.
+- **Point clicks, scrolls and drags** (and elements with no pattern) are
+  posted (`WM_*BUTTON*`, `WM_MOUSEWHEEL`).
+- **Keys** are posted to the focused control (found across every UI thread, so
+  WebView2 editors work); **text** no Value pattern takes is posted as
+  characters.
+- `backgroundDrop` rows: everything for Chromium and Electron; clicks, drags and
+  (when not in front) keys for WPF; clicks and drags for WinUI 3; keys and text
+  for UWP/XAML hosts (Windows 11 Notepad); clicks, keys and text for Tk; clicks
+  for GTK; keys for LibreOffice; wheel and drags for WebView2 in a native frame.
+- The service (`macDesktopBackgroundInput.ts`): keys and text with no mode
+  named are refused by the driver (`WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE`)
+  and resent as real input. Everything else carries `forceBackground`, and the
+  reply names the row (`backgroundRow`); if nothing changes, the next step says
+  the app usually ignores that input. A key chord or Shift key cannot be
+  posted at all.
 
 ## Setup (once per PC, by the user)
 
-Setup needs the user's Windows admin prompt and their Windows sign-in; an agent
-cannot do it. The Windows Desktop pane's first card is the wizard, and an agent
-asks with an ask card:
+Setup needs the user's admin prompt and Windows sign-in; an agent cannot do it.
+The pane's first card is the wizard; an agent asks with an ask card.
 
-1. **Turn on private screens.** One admin prompt enables child sessions and
-   Remote Desktop on this PC; ADE connects to the private session on this PC.
-2. **Save your password.** Choose **Save Windows password** after setup. A
-   native Windows dialog asks for your Windows account and password, not your
-   PIN. ADE verifies a private sign-in, signs that test session out, and saves
-   the credential in your Windows Credential Manager on this PC. Nothing is
-   sent through the renderer, runtime RPC, logs, or sync. For a Microsoft
-   account, use `MicrosoftAccount\email` as the user name.
-   Private screens then use the saved credential. You can still start without
-   saving it; Windows asks for sign-in each time.
-3. **Keep the PC unlocked.** ADE holds the display awake while an agent works; a
-   locked PC pauses the agent, and `WINDOWS_DESKTOP_LOCKED` says so.
+1. **Turn on private screens.** One admin prompt (bounded to two minutes)
+   enables child sessions and Remote Desktop.
+2. **Save your password** (optional). A native Windows dialog asks for the
+   account and password (not the PIN; `MicrosoftAccount\email` for a Microsoft
+   account). DAEX verifies a private sign-in (30 s bound), signs it out, and
+   saves the credential in Credential Manager. Nothing goes through the
+   renderer, RPC, logs or sync. A rejected saved password is forgotten. CLI:
+   `daex screen setup --allow-prompt --save-password` /
+   `--forget-password`; password text is never an argument.
+3. **Keep the PC unlocked.** A locked PC pauses the agent
+   (`WINDOWS_DESKTOP_LOCKED`).
 
-**Forget saved password** removes ADE's credential. A rejected saved password
-is forgotten instead of retried; save your current password again in the pane.
-Saving or forgetting requires approval from a trusted ADE client. The CLI equivalents are
-`ade screen setup --allow-prompt --save-password` and
-`ade screen setup --allow-prompt --forget-password`; password text is never a
-CLI argument. Password verification requires the private session to be free.
-
-The private screen leaves the user's own startup apps alone. Use a dedicated
-blank test document or app for proof; restored tabs can contain private files.
-Setup and sign-in leave status/ping responsive. The setup prompt is bounded to
-two minutes; password verification is bounded to 30 seconds after entry.
-
-## How the private screen comes up
-
-The driver signs a child session of the user's account in through the Remote
-Desktop control, then starts its engine inside it with a one-use per-user
-logon task (the startup entry and `child-launch.json` are the fallback;
-Explorer delays startup entries until the new session is idle). The control
-stays shown, outside every monitor and off the taskbar: hidden, Windows treats
-the session as minimized and drops every injected click and key. A start takes
-a few seconds after sign-in.
+The private screen starts the user's own startup apps; use a blank test
+document for proof (restored tabs can hold private files). The service tracks
+setup, save and start progress (`windowsDesktop.operation`), so the pane shows
+the same progress after leaving and returning.
 
 ## Errors
 
-The driver's Windows-only codes are mirrored in `macDesktop.ts` and reach the
-CLI and the pane unchanged:
+Windows-only codes, mirrored in `shared/types/macDesktop.ts`:
 
-- `WINDOWS_DESKTOP_SETUP_REQUIRED` — setup has not been run.
-- `WINDOWS_DESKTOP_HELD` — another lane holds the private screen; the user can
-  take it over (a clean sign-out of the holder) or use the shared desktop. The
-  same code names a Windows child session ADE did not start (Power Automate, a
-  Windows agent workspace): ADE never signs those out, and the message tells
-  the user to sign it out in Task Manager › Users. The driver records the child
-  session it starts (`<ADE home>\windows-desktop\owned-child.json`: session
-  id, account, logon and connect time, written atomically, removed on sign-out),
-  so after a driver crash the next driver signs out exactly that session and
-  starts normally.
-- `WINDOWS_DESKTOP_LOCKED` — the PC is locked; unlock resumes.
-- `WINDOWS_DESKTOP_NOT_CONSOLE_SESSION` — the brain is not in the console
-  session (for example, it started while the user was on Remote Desktop, or
-  over SSH), so the private seat is unavailable. The brain itself runs there
-  normally; signing in at the PC brings that session back to the console.
-- `WINDOWS_DESKTOP_SIGN_IN_FAILED` / `WINDOWS_DESKTOP_WRONG_PASSWORD` /
-  `WINDOWS_DESKTOP_CANCELLED` — the interactive sign-in step.
-- `WINDOWS_DESKTOP_CONSENT_REQUIRED` — a shared seat was asked for without the
-  user's consent, or the user said no. Enforced in the service, not by prompt.
-- `WINDOWS_DESKTOP_ELEVATED_WINDOW` — an administrator window holds focus or is
-  the input target. Windows blocks an un-elevated driver from controlling it;
-  the user resolves it on the lane screen.
-- `WINDOWS_DESKTOP_WINDOW_ACTION_FAILED` — Windows could not focus or minimize
-  the requested window, and it is not known to be elevated; or an app did not
-  answer a UI Automation action in time, which may still have landed (observe
-  before trying again).
-- `WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE` — the shared seat would post input
-  that the window's app ignores (see [Background input](#background-input-on-the-shared-seat)).
-  The service retries keys and text as real input on its own; a caller sees
-  it only for a key chord or a Shift key sent with an explicit accessibility
+- `WINDOWS_DESKTOP_SETUP_REQUIRED`: setup not run.
+- `WINDOWS_DESKTOP_HELD`: another lane holds the private screen (take over, or
+  use the shared desktop), or a child session DAEX did not start exists (sign
+  it out in Task Manager › Users).
+- `WINDOWS_DESKTOP_LOCKED`: PC locked; unlock resumes.
+- `WINDOWS_DESKTOP_NOT_CONSOLE_SESSION`: the brain is not in the console
+  session (started over RDP or SSH), so no private seat.
+- `WINDOWS_DESKTOP_SIGN_IN_FAILED` / `_WRONG_PASSWORD` / `_CANCELLED`: the
+  sign-in step.
+- `WINDOWS_DESKTOP_CONSENT_REQUIRED`: shared seat without consent, or a no.
+  Enforced in the service.
+- `WINDOWS_DESKTOP_ELEVATED_WINDOW`: an admin window holds focus or is the
+  target.
+- `WINDOWS_DESKTOP_WINDOW_ACTION_FAILED`: focus/minimize failed, or a UIA
+  action timed out (it may still have landed; observe first).
+- `WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE`: the app would ignore posted input.
+  Callers see it only for a chord or Shift key with an explicit accessibility
   mode.
-
-Each code prints a one-line next step in the CLI (`macDesktopErrorHint`). The
-private-seat availability and consent next steps come from
-`WINDOWS_DESKTOP_NEXT_STEP` in `apps/desktop/src/shared/desktopSeat.ts`; window
-control errors carry their own screen-specific advice.
-
-The native driver retires itself (exit code 75) when its UI thread is wedged
-after a teardown, or an operation passes its hard deadline, after replying.
-That is not a crash: the brain starts a fresh driver at once, without backoff
-or a crash-loop count, sends it the requests the old one had queued, and tells
-the pane nothing unless a lane's screen went with it. A lane whose screen went
-with it is reported lost.
-
-Parked shared-seat windows never stay stranded off-screen. The host records
-each window it parks (handle, process id, process start time and where the
-window came from) in `<ADE home>\windows-desktop\parked-windows.json`,
-written atomically, and removes the entry when the window is released or
-closes. At the hard deadline the host first puts those windows back — only if
-the record is free at that moment, never by waiting on the stuck operation —
-then retires; its error says the host was reset and whether the windows were
-put back. Every host also puts back, at start, any recorded window that still
-matches a live window exactly (same handle, process and process start), then
-clears the record, so a driver that crashed or was retired before it could
-restore them leaves nothing behind.
 
 ## Policy
 
-Policy lives at the service and action boundaries, never in prompts:
+Enforced at the service and action boundaries, never in prompts:
 
 - `mac_desktop.setupWindows`, `mac_desktop.takeoverWindows` and
-  `mac_desktop.useSharedDesktop` are CTO-only actions. A session-bound agent
-  cannot reach them, so it cannot self-authorize an admin prompt, a takeover, or
-  Mode B by passing `allowPrompt: true` or `sharedDesktopConsent: true`.
+  `mac_desktop.useSharedDesktop` are CTO-only. A session-bound agent cannot
+  self-authorize with `allowPrompt: true` or `sharedDesktopConsent: true`.
 - `mac_desktop.start` refuses `seatMode: "shared"`; only `useSharedDesktop`
-  (CTO-only) and `requestSharedDesktop` (the user's answer on a card) carry
-  consent, and the service refuses a shared create without it.
-- The window verbs and `requestSharedDesktop` are agent-callable, scoped to the
-  caller's own lane like every `mac_desktop` action.
-- Trusted ADE clients on the Mac, phone, or web can approve setup, takeover,
-  and shared-desktop consent. Session-bound agents cannot approve these actions.
-- Saving a password requires a local native dialog and a successful sign-in;
-  otherwise a private screen requires the user's local sign-in. Setup requires
-  their local admin prompt.
+  and `requestSharedDesktop` carry consent.
+- Window verbs (`focusWindow`, `minimizeWindow`, `closeWindow`; driver ops
+  `window.*`) and `requestSharedDesktop` are agent-callable, scoped to the
+  caller's own lane. A Mac host refuses window verbs and `--win` with
+  `MAC_DESKTOP_UNSUPPORTED_PLATFORM`.
 
-## Tooling
+## Behavior notes
 
-- The brain runs one Windows driver per ADE home, shared by every open
-  project. A lane's driver events reach only the project that owns the lane,
-  and a project's cleanup keeps the other projects' screens.
-- On a private screen the pane has no **Release**, **Add app** or **Bring to
-  my screen**: a window cannot move between two Windows sessions. The shared
-  seat keeps them.
-- The proof viewer shows a demo video's steps as chapters; a click seeks the
-  video to that step.
-- The consent card for the main desktop explains, on its **Allow** option, what
-  the agent does there and why it asks.
-- The `ade` command returns the exit code of the CLI on Windows, so a failed
-  command is not zero.
+- One Windows driver per DAEX home, shared by every open project; a lane's
+  events reach only its project.
+- Modifiers: `--ctrl`, `--alt`, `--shift`, `--win`; `--cmd` is sent as Ctrl,
+  `--opt` as Alt.
+- `daex screen open` prints the windows that appeared, the resolved exe and
+  the lane browser profile, or why no window appeared (`handedOff`: an
+  existing instance took the request).
 - The Work tools pane shows **Windows Desktop** on a Windows host and **Mac
-  Desktop** on a Mac host; Browser and App Control show on both. Apple is
-  Mac-only. A tool for the other platform is not shown at all; a host of the
-  right platform that cannot run the tool (the driver is missing, say) keeps
-  the card, disabled, with the host's own reason. The command palette reads
-  the same host answer (`desktopToolContext`) and offers only the host's
-  desktop tool.
-- While a shared seat is live the pane keeps an inline reminder banner
-  ("Using your main Windows desktop") with a **Stop** action, so the user always
-  has the way out.
-- Setup, saving the password and starting the private screen are tracked by the
-  service (`windowsDesktop.operation`, `phase`, `lastOperation` on the status),
-  so the pane shows the same progress and clock after leaving and returning to
-  the chat — "Waiting for your password", "Checking your password…", "Finishing
-  up…" — and a failed step says what happened, whether anything was saved, and
-  offers **Try again**. **Save password and start** continues straight into the
-  private screen.
-- When another lane holds the private screen, **Use main desktop** on that card
-  starts the shared seat in one click (the card already says what it means);
-  **Take over** asks first. **Use main desktop** anywhere else asks first in a
-  confirm dialog.
-- **Stop** in the "Using your main Windows desktop" reminder asks first, like
-  every other Stop, because it quits the apps the lane opened.
-- The floating preview, the session card's lane mark and the chat header show
-  the Windows logo while the lane's screen is live, with "Private Windows
-  screen" or "Using your main Windows desktop" as the tooltip. The header mark
-  opens the pane.
-- `ade screen …` drives it. `ade screen status --text` leads with "ADE Windows
-  Desktop" and reports the seat in words, whether real input needs a lease,
-  whether private is available and why not, the holder lane, whether setup is
-  done and a password is saved, whether the PC is locked, an in-flight
-  operation, and a `next` line with the exact command or ask. The same summary
-  is on the status JSON as `seat` (`describeDesktopSeat`). Every observation,
-  action, recording, open, lease and window result names "Windows Desktop" on
-  a Windows host. `ade screen --help` is host-neutral and names both seats; on
-  a Windows host `ade mac-desktop --help` shows the same page.
-- `ade screen open` prints the windows that appeared, the resolved executable
-  and the lane-private browser profile when the driver added one, or one line
-  saying why no window appeared (for example `handedOff`: the request went to an
-  instance that was already running) and what to run next. A trailing `--text`
-  or `--json` after `--` is the CLI's output flag, not the app's argument.
-- `ade screen focus|minimize|close --window <id>` (actions `focusWindow`,
-  `minimizeWindow`, `closeWindow`; driver ops `window.focus`,
-  `window.minimize`, `window.close`) act on the lane's own windows only. A Mac
-  host refuses them with `MAC_DESKTOP_UNSUPPORTED_PLATFORM`.
-- Modifier keys are `--ctrl`, `--alt`, `--shift` and `--win`; `--cmd` is sent as
-  Ctrl and `--opt` as Alt. A Mac host refuses `--win`.
-- Keystroke text is typed one character per `SendInput` with a short pause (a
-  WinUI editor such as Windows 11 Notepad drops batched characters), so a long
-  `type` takes real time. That covers real-input typing and every `type` on the
-  private seat; Accessibility typing on the shared seat sets the value or
-  posts the text at once and has no such limit. For keystroke typing the brain
-  gives the driver 20 s plus 25 ms per character, and one `type` takes at most
-  4,000 characters (`WINDOWS_DESKTOP_MAX_TYPED_CHARS`; the driver refuses more
-  too). If the budget runs out the error says the driver may still be typing.
-- A watch-only client (the phone, or a browser tab without control) gets a
-  **Stop** for the lane's Windows screen on either seat, through the
-  viewer-allowed `macDesktop.stopSeat` command: it signs the private screen
-  out, or ends "Using your main Windows desktop", so the user always has the
-  way out from any trusted device. It asks first, with the desktop's words for
-  that seat. A Mac lane's display is refused (that stays the controller-only
-  `macDesktop.stop`), and so is a lane with no Windows screen. The older
-  `macDesktop.stopPrivate` (private screen only) stays for phones that predate
-  `stopSeat`; a host that advertises neither shows no **Stop**.
-- Proof, recording and streaming are the Mac Desktop contract, unchanged, so a
-  phone or browser can watch a Windows lane with the same viewers.
-- A recording's raw file is the driver's H.264 MP4. At the stop the desktop
-  app's Chromium demo engine makes the demo from it (cuts, speed-ups, zoom,
-  pointer, step captions, chapters), as `ade-media` does on macOS; see
-  [proof](../proof.md#how-it-works). With no desktop app attached it is filed
-  as recorded, with its real length, and `record stop` and the proof both say
-  "Filed as recorded: the ADE desktop app was not connected to make the demo";
-  an empty or unfinished one is not filed, and `record stop` exits non-zero
-  with the reason (text and JSON). A movie whose sample tables claim more
-  entries than the file holds is refused the same way, before anything is
-  allocated for it.
-- An ADE desktop app started as administrator cannot be reached by the
-  background service (Windows refuses the medium-integrity brain access to the
-  elevated app's pipe), so agents get no built-in browser, App Control
-  recording or demo videos. The app docks a warning banner saying so for as
-  long as it runs; quit ADE and open it normally.
+  Desktop** on a Mac; a host that cannot run its tool keeps a disabled card
+  with the reason. The command palette reads the same answer
+  (`desktopToolContext`).
+- While a shared seat is live the pane shows "Using your main Windows desktop"
+  with **Stop** (asks first; it quits the lane's apps).
+- Watch-only clients (phone, view-only browser) get **Stop** on either seat
+  through the viewer-allowed `macDesktop.stopSeat` remote command. A Mac
+  display is refused (that stays controller-only `macDesktop.stop`).
+  `macDesktop.stopPrivate` stays for older phones.
+- Recording: the driver writes H.264 MP4; the desktop app's Chromium demo
+  engine makes the demo at stop ([proof](../proof.md#how-it-works)). With no
+  desktop app attached it is filed as recorded. An empty, unfinished or
+  malformed MP4 is not filed and `record stop` exits non-zero.
+- The `daex` command returns the CLI's exit code on Windows.

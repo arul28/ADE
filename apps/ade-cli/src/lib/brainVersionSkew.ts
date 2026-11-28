@@ -30,6 +30,7 @@ import { isRuntimeProtocolCompatible } from "../../../desktop/src/shared/adeRunt
 import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
 import { isNativeAdeCliEntry } from "../services/runtime/adeCliShim";
 import { resolveCurrentCliEntry } from "./cliDelegation";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 export type BrainSkewDecision =
   /** This CLI's own stale build: repair as before. `compatible` says whether it may be used instead. */
@@ -150,9 +151,9 @@ function versionNote(input: BrainSkewInput): string | null {
   const fix = order > 0
     ? "; update ADE.app to match"
     : order < 0
-      ? "; run `ade brain update` (or restart ADE.app) to update the brain"
+      ? "; run `daex brain update` (or restart ADE.app) to update the brain"
       : "";
-  return `ade ${label(input.cliVersion, input.placeholderVersion)} is using the ADE brain ${label(brainVersion, input.placeholderVersion)}${where}${fix}.`;
+  return `This daex is ${label(input.cliVersion, input.placeholderVersion)} and is using the ${BRAND.NAME} brain ${label(brainVersion, input.placeholderVersion)}${where}${fix}.`;
 }
 
 function incompatibleMessage(input: BrainSkewInput): string {
@@ -163,10 +164,10 @@ function incompatibleMessage(input: BrainSkewInput): string {
     `protocol ${input.brain.minCompatibleProtocol ?? "?"}-${input.brain.protocolVersion ?? "?"}`,
   ].filter(Boolean).join(", ");
   const hint = matchingBrainCliHint(input);
-  return `This ade is ${label(input.cliVersion, input.placeholderVersion)}${input.cliEntry ? ` (${input.cliEntry})` : ""}, `
-    + `and the ADE brain on ${input.socketPath} is ${brainVersion} (${brainWhat}), which speaks a runtime protocol this ade does not. `
-    + "This ade did not start that brain, so it leaves it running. "
-    + `Use the ade that matches the brain${hint ? `: ${hint}` : ""}, or update ADE.app and the brain (\`ade brain update\`) to the same release.`;
+  return `This daex is ${label(input.cliVersion, input.placeholderVersion)}${input.cliEntry ? ` (${input.cliEntry})` : ""}, `
+    + `and the ${BRAND.NAME} brain on ${input.socketPath} is ${brainVersion} (${brainWhat}), which speaks a runtime protocol this daex does not. `
+    + "This daex did not start that brain, so it leaves it running. "
+    + `Use the daex that matches the brain${hint ? `: ${hint}` : ""}, or update ADE.app and the brain (\`daex brain update\`) to the same release.`;
 }
 
 /** What a reached machine brain reports about itself, as far as a skew needs. */
@@ -222,7 +223,7 @@ function noteBrainVersionSkewOnce(note: string): void {
   if (brainVersionSkewNoted) return;
   brainVersionSkewNoted = true;
   try {
-    process.stderr.write(`ade: note: ${note}\n`);
+    process.stderr.write(`daex: note: ${note}\n`);
   } catch {
     // A note must never fail the command.
   }

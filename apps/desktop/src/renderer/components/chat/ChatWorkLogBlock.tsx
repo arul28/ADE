@@ -29,6 +29,7 @@ import { computerUseEntryCommand, computerUseSummaryForEntry } from "./chatCompu
 import { computerUseActionText } from "../../../shared/computerUseActionPresentation";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { withChatPin } from "./chatMachinePin";
+import { BRAND } from "../../../shared/brand";
 
 const NAVIGATION_SURFACES = new Set(["work", "lanes", "cto"]);
 const WORK_LOG_DETAIL_TRUNCATE_LIMIT = 500;
@@ -251,13 +252,13 @@ function terminalizePrompt(args: {
   sessionId?: string | null;
 }): string {
   const lines = [
-    `Please reopen or move the local server for ${args.url.href} into this ADE chat terminal so I can watch the logs here.`,
+    `Please reopen or move the local server for ${args.url.href} into this ${BRAND.NAME} chat terminal so I can watch the logs here.`,
   ];
   if (args.command) lines.push("", `Detected command: \`${args.command}\``);
   if (args.sessionId) lines.push("", `Chat session: \`${args.sessionId}\``);
   lines.push(
     "",
-    "Use ADE CLI terminal/app-control commands where helpful, for example `ade terminal list --chat-session <id> --text`, `ade terminal read --chat-session <id> --text`, or `ade app-control launch --command \"<command>\" --text`.",
+    `Use ${BRAND.NAME} CLI terminal/app-control commands where helpful, for example \`${BRAND.CLI} terminal list --chat-session <id> --text\`, \`${BRAND.CLI} terminal read --chat-session <id> --text\`, or \`${BRAND.CLI} app-control launch --command "<command>" --text\`.`,
     "After it is running, verify the localhost URL and keep the process logs readable from the chat terminal.",
   );
   return lines.join("\n");
@@ -1296,8 +1297,8 @@ function LocalhostServersStrip({
   const extraCount = Math.max(0, urls.length - 1);
   const command = commandForLocalhostUrl(entries, primary);
   const openTitle = extraCount > 0
-    ? `Open ${primary.href} in ADE browser (${extraCount} more detected)`
-    : `Open ${primary.href} in ADE browser`;
+    ? `Open ${primary.href} in ${BRAND.NAME} browser (${extraCount} more detected)`
+    : `Open ${primary.href} in ${BRAND.NAME} browser`;
   const logsTitle = "Open the active chat terminal for logs. If there is no terminal yet, draft a request for the agent to run this server there.";
 
   async function handleTerminalClick() {

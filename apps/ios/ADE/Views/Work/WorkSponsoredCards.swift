@@ -3,10 +3,11 @@ import OSLog
 import SwiftUI
 import UIKit
 
-// Sponsored cards in an ADE Cloud chat (`docs/plans/pricing-v2-and-gravity.md`),
-// the phone's side of the desktop's `SponsoredReplySlot.tsx` and
-// `SponsoredPickCard.tsx`. The account server decides; these only ask at the
-// right moment and show what comes back (`CloudSponsored.swift`).
+// Sponsored cards in an ADE Cloud chat (`docs/features/ade-cloud/README.md`,
+// "Sponsored cards and the Index"), the phone's side of the desktop's
+// `SponsoredReplySlot.tsx` and `SponsoredPickCard.tsx`. The account server
+// decides; these only ask at the right moment and show what comes back
+// (`CloudSponsored.swift`).
 //
 // Only in a chat whose own machine is an ADE Cloud lane computer
 // (`WorkChatSessionView.sponsoredInstanceId`). Never in a subagent view, the
@@ -597,7 +598,7 @@ struct WorkSponsoredConsentCard: View {
       }
     }
     .accessibilityElement(children: .contain)
-    .accessibilityLabel("Sponsored cards on ADE Cloud Free")
+    .accessibilityLabel("Sponsored cards on \(Brand.cloudName) Free")
     .alert("Turn on sponsored cards?", isPresented: $confirming) {
       Button("Turn on") { answer(CloudSponsoredState.granted, confirmed: true, since: confirmGeneration) }
       Button("Keep them off", role: .cancel) {}
@@ -611,13 +612,13 @@ struct WorkSponsoredConsentCard: View {
   }
 
   private var lead: String {
-    guard smallNeedsCards else { return "Sponsored cards help keep ADE Cloud free." }
-    return notice ? "They keep your Small cloud computers free." : "Sponsored cards pay for Small computers on ADE Cloud Free."
+    guard smallNeedsCards else { return "Sponsored cards help keep \(Brand.cloudName) free." }
+    return notice ? "They keep your Small cloud computers free." : "Sponsored cards pay for Small computers on \(Brand.cloudName) Free."
   }
 
   /// What a no costs, and where to change it.
   private var costLine: String {
-    let change = "You can change this any time in Settings\u{00A0}›\u{00A0}ADE\u{00A0}Cloud."
+    let change = "You can change this any time in Settings\u{00A0}›\u{00A0}\(Brand.name)\u{00A0}Cloud."
     guard smallNeedsCards else { return change }
     return "\(notice ? "Turn them off" : "Say no") and \(words.smallWithoutCards). \(change)"
   }

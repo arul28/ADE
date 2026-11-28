@@ -2,6 +2,7 @@ import React from "react";
 import { CloudCheck, DesktopTower } from "@phosphor-icons/react";
 import { isMachineMarkerShown, type CrossMachineLaneMarker } from "../../state/crossMachineLanes";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Machine marker on a lane header, or on the card that stands in for one.
@@ -72,7 +73,7 @@ export function LaneCloudMarker({ provider }: { provider: "devin" | "cursor" }) 
       forceEnabled
       content={{
         label: name,
-        description: `This lane lives on ${name}. Its chats run on the cloud VM and push to the lane's branch; ADE keeps a synced copy here.`,
+        description: `This lane lives on ${name}. Its chats run on the cloud VM and push to the lane's branch; ${BRAND.NAME} keeps a synced copy here.`,
       }}
     >
       <span

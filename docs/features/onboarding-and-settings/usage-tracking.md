@@ -1,1427 +1,395 @@
-# Usage tracking strategy
+# Usage tracking
 
-ADE treats live provider limits and retrospective token/cost history as two
-different workloads. Live limits must remain fast enough for the desktop,
-terminal, CLI, and paired mobile clients; history scans may walk large local
-ledgers and therefore run only through the Activity path.
+DAEX treats **live provider limits** and **token/cost history** as two
+workloads. Live limits must stay fast for desktop, CLI, web and the phone;
+history scans walk large local ledgers and run only on the history path. The
+design follows [CodexBar](https://github.com/steipete/CodexBar).
 
-This design was reviewed against CodexBar `main` at
-[`8489002e19eed002016b29faa7de0f8c5371c65c`](https://github.com/steipete/CodexBar/tree/8489002e19eed002016b29faa7de0f8c5371c65c)
-on 2026-07-10. The relevant upstream references are
-[`claude.md`](https://github.com/steipete/CodexBar/blob/8489002e19eed002016b29faa7de0f8c5371c65c/docs/claude.md),
-[`codex.md`](https://github.com/steipete/CodexBar/blob/8489002e19eed002016b29faa7de0f8c5371c65c/docs/codex.md),
-[`providers.md`](https://github.com/steipete/CodexBar/blob/8489002e19eed002016b29faa7de0f8c5371c65c/docs/providers.md), and
-[`refresh-loop.md`](https://github.com/steipete/CodexBar/blob/8489002e19eed002016b29faa7de0f8c5371c65c/docs/refresh-loop.md).
+## Source file map
+
+Under `apps/desktop/src/main/services/usage/` unless noted.
+
+- `usageTrackingService.ts`: the live quota snapshot (poll, cadence, backoff,
+  carry-forward, cache) and `getAdeUsageStats`. `usageProviderStrategies.ts`:
+  per-provider quota polls. `providerQuotaParsers.ts`: payload normalization.
+  `extraProviderQuota.ts`, `museLiveQuota.ts`: Cursor, Copilot, Grok, OpenCode,
+  Kimi and Muse.
+- `sharedUsageTracking.ts`: one tracker per DAEX home. `bootedUsageScope.ts`:
+  unbound windows borrow a booted brain scope.
+- `accountBalance.ts`: smart balance. `windowAutoStart.ts`: auto-start windows.
+- `providerAccountIdentity.ts`: which account the numbers belong to (local
+  files only, no Keychain, no token stored). `usageAccountId.ts`: the one
+  account-id rule.
+- `usageLedgerWorkerClient.ts`, `usageLedgerWorker.ts`,
+  `usageLedgerScanners.ts`, `ledgers/`: history scans in a child process.
+  `providerUsageHomes.ts`: which config homes are scanned.
+- `usagePricing.ts`, `usagePriceOverrides.ts`, `usageModelDetail.ts`,
+  `usageCostBreakdown.ts`: prices and cost reads.
+- `accountUsageRollup.ts`, `accountUsageRollupStore.ts`,
+  `accountUsageLiveRefresh.ts`, `accountUsageSource.ts`, `peerLiveQuota.ts`:
+  account scope across machines.
+- `turnUsageLedger.ts`, `turnUsageReconcilers.ts`, `cursorDashboardUsage.ts`,
+  `cursorBilledUsageStore.ts`, `quotaBurnRate.ts`, `tokenSplit.ts`: the
+  per-turn ledger.
+- `usageResearchReport.ts`, `usageResearchUploader.ts`: the daily research
+  report; contract `shared/usageResearch.ts`.
+- `usageStatsStore.ts`: project-DB aggregates and `usage_events`. `localDay.ts`:
+  day keys in the user's timezone.
+- `claudeResetCredits.ts`, `shared/usageResetCredit.ts`: banked resets.
+- `main/services/router/`: the model router (shadow).
+- `shared/types/usage.ts`, `shared/usageLiveQuota.ts`,
+  `shared/usageLimitsReport.ts`: contracts.
+- Renderer: `renderer/components/usage/` (header popover, `UsageLimitsBand`,
+  `UsageAccountRow`, gauges, charts, `usageLimitModel.ts`, `usageDesign.ts`,
+  `providerColors.ts`), `settings/AdeUsageSection.tsx` (Settings › Usage).
+- iOS: `SettingsUsagePage.swift`, `WorkUsageLimitsModule.swift`,
+  `ADEUsageDesign.swift` (the counterpart of `usageDesign.ts`).
 
 ## One poller per machine
 
-Provider quota is a machine fact, not a project fact. The ADE brain polls it
-once per machine and every project scope in that process attaches to the same
-poller: one poll timer, one demand lease, one snapshot. Two ADE windows on one
-computer — on two projects, or one on a project and one on Welcome or the Hub —
-read the same numbers, and a refresh from any of them benefits all of them.
-
-Every snapshot carries a producer revision: `revision.producerId` names the
-service instance that built it and `revision.seq` counts the snapshots that
-instance has handed out. Consumers order by `seq` within one `producerId` and
-always accept a snapshot from a different producer, which is what stops two
-unrelated wall clocks from being compared. A snapshot returned to a caller was
-always also emitted to every subscriber, so no window ever holds a value the
-others could not receive.
-
-Project-scoped answers stay per project. Each scope brings its own project
-database and repository root, so ADE's own token/cost stats, GitHub activity,
-and the `project` scope of the Usage page are still about the project that
-asked — the transcript ledgers are simply walked once for the whole machine and
-projected per project root.
-
-A window with no local project — Welcome, the Hub, an Account page, a
-remote-machine tab — reads through the brain as well, borrowing a project scope
-the brain has already booted (`bootedUsageScopeRoot`). Desktop usage IPC
-proxies those reads to that scope, and `main.ts` relays the brain's usage
-events onto `ade.usage.event` so the window stays live without a runtime
-binding of its own. Bound windows ignore that channel and keep the runtime
-event stream. The in-process tracker is the fallback producer only when no
-brain scope is running, which is also the only time that tracker polls.
-
-## Smart balance and auto-start windows
-
-Smart balance applies to Claude and Codex when it is enabled for that provider.
-New chats consider only signed-in instances, and an account whose stored login
-is gone is skipped — old windows stay on screen after a login breaks, and they
-are not room. Each account is judged on its freshest reading from any machine
-([Quota belongs to the login](#quota-belongs-to-the-login)): a login this
-machine last saw full may have room again by another machine's read. A login
-signed in only on another machine is never a candidate here, and budget caps
-ignore its windows. A window whose reset has passed reads as empty with no
-reset, so a carried 95%-used reading from before the reset neither blocks an
-account that has all its room back nor ranks a stale one first. Weekly room left at the reset is lost, so the account that needs
-the most room spent is the default choice. For each account the service computes
-a required rate (weekly room ÷ hours until its reset), subtracts the burn
-already committed there, and sends the chat to the largest remaining deficit.
-Committed burn is the measured rate from consecutive quota readings — which
-includes the CLI and other clients on the login — or, before a rate exists, a
-prior from the chats mid-turn, scaled by model family (Haiku 0.3, Sonnet 1,
-Fable and Opus 2.4). The same scale sizes the first-turn gate. Measured
-movement always wins once a poll sees it. Open-but-idle chats add a
-reservation: a chat idle for hours is unlikely to resume before the reset, one
-idle for minutes probably will, and settled, snoozed and archived chats reserve
-nothing. A new chat is recorded as pending and decays over the next hour; the
-larger of that decaying commitment and the measured rate wins, so a burst is
-never hidden. Ten chats created together spread across accounts instead of all
-choosing the same one. The Settings **Next chat** mark previews that pick
-without placing a chat.
-
-The five-hour window is a gate, not a ranking. An account with less than 10% of
-its five-hour window, or less than 5% of its weekly room, left is out.
-Otherwise the service projects the measured
-five-hour burn over at most the next 1.5 hours and refuses an account whose
-projected room cannot cover a first turn plus a margin. A window about to reset
-does not get a free pass: the first turn still has to fit. When two accounts'
-deficits are within 0.15 points per hour, the sooner weekly reset wins, then the
-healthier five-hour window, then the default. When every account is blocked, the
-new chat still starts on the one that survives the five-hour projection longest.
-An account with a weekly reading and no five-hour window (idle, or a plan
-without one, such as a weekly-only Claude account) counts as full five-hour
-room. No usable readings fall back to the default, and
-`UsageSnapshot.balanceIssues` drives the amber top-bar pill that says balance
-could not run. An explicit account selection always wins over balancing.
-
-A chat that hits a usage limit with smart balance on moves to the other account
-in place: the provider thread file is copied into the other account's config
-home (`chat/providerThreadMove.ts`) and the same thread resumes there, so the
-model keeps the conversation. The chat's account changes, and the move runs
-once even when the provider reports the limit twice. An account the chat
-already left at a limit is excluded, a subagent never moves, and an account
-with no readable windows or a window already at 100% is not a candidate. The
-rescue prefers the account with the most projected five-hour room, then the
-most weekly room, so the chat is not moved onto an account that is also about
-to stop. If the thread cannot move — the chat has no provider thread yet, or
-the copy fails — ADE falls back to the usage-limit handoff: it starts a new
-chat on the other account in the same lane and sends the interrupted task
-there, and the original stops waiting to resume. With smart balance off, the
-same account is an offer on the usage-limit pill (Continue on that account),
-and pressing it runs the same in-place move. A chat created by that handoff
-does not hop again on its own.
-
-Auto-start windows are off by default. When enabled, the usage service arms one
-unref'd timer per Claude or Codex instance that has a future five-hour reset.
-Five seconds after that reset, ADE sends one small provider request through the
-instance's own config home, using Claude Haiku 5.5 (no tools) or Codex GPT-6 Luna at low effort and
-standard speed, then
-refreshes quota data. The timer is replaced when a newer reset arrives and is
-reconstructed from the next snapshot; no timer state is persisted. Accounts
-without a five-hour window, including API-key-only accounts, never run the
-request. ADE records only the provider, instance, model, success, whether the
-start was early, and duration, never the response text.
-
-Providers also end windows early: Codex hands out resets at random, and both
-providers let a banked reset be spent. While a timer waits, a fresh snapshot in
-which the five-hour window is gone, has no reset time, or (for a window seen
-above 0%) comes back at 0% with a different end starts the next window about
-five seconds later instead of dropping the timer. A moved window that is
-already in use is followed, not pinged. A poll with no reading for the account,
-or one landing between the reset and the timer, keeps the armed timer. A
-snapshot that has other windows for the account but no five-hour one means the
-account had none to reset (idle, or a plan without one), so a reset that cleared
-another window starts nothing. Spending
-a reset through ADE (`consumeResetCredit` returning `reset`) starts the next
-window directly. Early starts are limited to one per account per 15 minutes.
-
-Which providers qualify lives in `AUTOSTART_WINDOW_TYPE`
-(`shared/types/providerInstances.ts`), which also gates the settings toggle; the
-launch command for each lives in the scheduler's opener table. Only Claude and
-Codex five-hour windows start on the first request. OpenCode and Kimi report
-rolling windows, Copilot, Cursor and Grok calendar or billing periods, and
-Muse's short window has no confirmed start, so none of them is offered.
-
-## ADE versus CodexBar
-
-| Concern | ADE before ADE-117 | CodexBar reference | ADE after ADE-117 |
-|---|---|---|---|
-| Claude source | Anthropic OAuth usage endpoint only | App auto: OAuth → Claude PTY → web | OAuth first; explicit user refresh may use a bounded Claude PTY fallback, except after a 403/429 — there the CLI would read the same throttled endpoint with the same account, so it is not spawned. Automatic refresh never opens the interactive CLI. |
-| Claude auth | Every macOS credential lookup could invoke `security`, including background work | Explicit Keychain prompt policy; background reads can be no-UI | Background reads skip Keychain and use the credentials file/cache. Keychain repair is reserved for explicit user refresh. |
-| Codex source | HTTP quota endpoint, then redundant app-server work even when HTTP returned complete windows | OAuth HTTP or CLI RPC, with source-specific fallback and bounded subprocesses | HTTP success returns immediately. RPC runs only for 401 recovery or a successful but unrecognized HTTP schema. |
-| Cost/history source | Provider JSONL/SQLite scans could run as part of explicit quota refresh | Cost scans have separate caches and scheduling | `refreshHistory()` owns ledger invalidation/scans. `forceRefresh()` is quota-only. |
-| Refresh cadence | Fixed two-minute polling | Fixed or adaptive cadence with coalescing | Adaptive demand lease: 60 s while usage is visible/recently requested, 2 min normally, 5 min after 15 min idle. One provider batch is in flight at a time. |
-| Cache | Last snapshot plus provider/GitHub scan caches | Separate usage, cookie, and cost caches | Separate in-flight quota and history work. Each provider retains its last-good windows and last-success timestamp. |
-| Stale behavior | A failed refresh could leave source/freshness ambiguous | Stale/error state remains visible | Provider status carries `updatedAt`, `lastAttemptAt`, error kind, optional next retry, and the source when one is known. Unexpired last-good windows remain visible with their source and an explicit stale/re-auth state. |
-| Latency | User refresh could wait on every provider ledger and GitHub scan | Expensive storage scans do not block normal usage refresh | Quota refresh performs only provider credential/quota work. Large history scans can remain pending while a quota refresh completes. |
-| Errors | Mostly provider-prefixed strings | Provider-specific surfaced errors and bounded timeouts | Structured classification for auth, forbidden, conflict, rate limit, timeout, network, invalid response, and unavailable. `Retry-After` and exponential backoff prevent refresh storms, per account: a throttled account waits on its own clock while its siblings keep polling, and an account with nothing to show carries a per-account "Rate-limited — retrying" notice on the desktop rows instead of an empty "No usage yet". The `ade usage snapshot` text output and iOS keep their existing empty state and adopt the field when they next touch their usage rows. |
-
-Codex quota payloads are normalized in `providerQuotaParsers.ts`. Current HTTP
-responses can report only one weekly bucket in `primary_window`, while older
-responses and app-server snapshots may expose five-hour and weekly buckets in
-primary/secondary positions. ADE therefore prefers the bucket's advertised
-duration (`limit_window_seconds`, `window_duration_seconds`, or the equivalent
-minute fields) and uses position only when duration metadata is absent. This
-keeps the compact header and detailed Limits panel truthful when a provider
-omits one window or changes its ordering.
-
-Codex 0.145 also reports an account-level spending cap. `parseCodexRateLimitSnapshot`
-returns `{ windows, spendControlReached? }` (reading `spendControlReached` /
-`spend_control_reached` from any of the rate-limit envelope shapes), and both the
-HTTP and CLI-RPC poll paths carry the flag through `UsageProviderPollResult`.
-`parseCodexRateLimitWindows` is retained as a windows-only wrapper. The
-coordinator stores `spendControlReached` on the published `UsageSnapshot`; when
-Codex is skipped or returns no windows for a round, the last known value is
-carried forward rather than dropped. Surfaced state: the header warning line adds
-"Codex spending cap reached", the Codex card in the Limits panel shows a
-"Spending cap reached" banner, and the paired iOS `WorkUsageActivityCarousel`
-shows the same note under the Codex compact row (`MobileUsageQuotaSnapshot.spendControlReached`).
-
-## Why Claude appeared to take forever
-
-The slow path was not only Anthropic's endpoint. An explicit refresh invalidated
-cost caches and could wait for broad Claude, Codex, Cursor, OpenCode, Droid,
-Copilot, Gemini, and GitHub history scans. A macOS credential read could also
-spend five seconds in `security`, and overlapping UI/startup requests were
-coalesced behind whichever large operation started first. The result was a
-correct quota response queued behind unrelated disk and subprocess work.
-
-ADE now records a structured `usage.refresh.phase` entry for credentials,
-quota HTTP, CLI fallback, and history phases, including provider, trigger,
-duration, outcome, and error kind. These entries identify network/auth latency
-without logging credentials or quota payloads.
-
-## Bounded local ledger scanning
-
-Activity reads provider-owned history in place. ADE does not copy, rewrite, or
-delete Codex session JSONL under `~/.codex`; Codex remains the owner of chat
-history and retention. A single JSONL record can nevertheless be enormous when
-it contains embedded command or tool output. That is valid JSONL, but treating
-the whole physical line as one JavaScript string can exhaust the runtime before
-the parser has a chance to ignore the irrelevant payload.
-
-The Codex history reader is therefore a bounded byte-stream pipeline:
-
-- Codex compresses old rollouts to `.jsonl.zst`; ADE streams those through
-  Node's zstd decoder, counts a rollout once when both forms exist, and marks
-  the scan incomplete when a compressed file is corrupt or cut off (zstd ends a
-  cut-off frame with no output and no error);
-- candidate session and archived-session files are considered newest first,
-  with at most 5,000 files per root, 256 MiB per file, and 2 GiB distributed
-  across both roots;
-- physical JSONL lines are accumulated only up to 16 MiB. An oversized record
-  is discarded incrementally until its newline, then scanning resumes at the
-  next record instead of retaining or parsing the giant line;
-- detailed history stops at 250,000 token entries; and
-- concurrent production callers share one in-flight Codex scan, so two open
-  projects cannot duplicate the same CPU work and retained entry set.
-
-OpenCode keeps each whole message as JSON in `opencode.db`, and a user message
-with diffs can be tens of MB. The OpenCode scan never reads that column into
-JavaScript: SQLite selects only assistant rows and only the token, cost and
-model fields (`json_extract`), in pages of 5,000 rows by `time_created`, and
-skips a row whose JSON is invalid.
-
-These limits bound ADE's work; they do not truncate the source files. The
-tradeoff is intentionally visible in the data model: an extreme old record or
-history beyond the detail budget may be absent from per-day, per-model,
-per-project, and estimated-cost attribution.
-
-The all-time token headline has a separate reconciliation path. ADE opens the
-newest Codex `state_*.sqlite` read-only, computes the state index's authoritative
-thread total, point-looks up the bounded set of JSONL thread ids to avoid double
-counting, and treats the result as the union of JSONL history and the current
-state index. Per-thread remainders are added newest first within the remaining
-entry budget. If detail capacity is exhausted, one zero-cost `lifetimeOnly`
-remainder preserves the exact union total without inventing a timestamp,
-project, ADE-originated share, or recent-day activity. Daily charts skip that
-entry, while the all-time token breakdown includes it.
-
-SQLite reconciliation is bounded too: observed-thread lookups use batches of
-500, detailed state rows are capped at 250,000 and by remaining entry capacity,
-and the production scanner remains single-flight. History aggregation runs in a
-separate process, so filesystem and SQLite work cannot stall the desktop or
-headless runtime event loop while terminals, project switching, and remote sync
-remain active. Packaged desktop and ordinary CLI builds ship the worker as
-`usageLedgerWorker.cjs`; the static ADE runtime invokes the same worker through
-its hidden embedded entrypoint because a single-executable build cannot load a
-sidecar. Desktop packaging validation derives its required ADE CLI payload from
-`build.extraResources`, so a newly built worker cannot be omitted silently.
-This keeps Activity useful on large Codex histories without putting live Limits
-refreshes or the ADE runtime behind an unbounded disk/memory pass.
-
-`usageLedgerScanners.ts` is the one list of history scanners. The worker walks
-it one provider at a time. The in-process scan (a test harness that injects
-scanners by their `scan…Logs` names) walks the same list. The worker reads its
-whole stdin input as bytes and decodes it once, so a multi-byte character in a
-project path is not split at a chunk boundary.
-
-### The worker streams, so a timeout is partial rather than total
-
-The worker used to buffer every provider and write one JSON object at the very
-end, which meant a timeout — or any failure — threw away eight finished scans
-along with the one still running. It now writes NDJSON: a
-`ade-usage-ledger-stream/1` header naming the full roster it is about to walk,
-then one line per provider as that provider finishes. The header is what lets
-the client tell "this provider reported nothing" from "this provider never got
-to run" and mark the latter incomplete rather than removed. On timeout the
-client folds whatever arrived and returns it.
-
-`incompleteProviders` is the load-bearing half of that result. It carries both
-providers the scan reached but could not read in full and providers whose root
-exists and yielded nothing, and it is consumed in exactly one place: as
-`publishLocalRollup`'s `skipReconcileProviders`. Rows a round failed to produce
-must not be read as a deletion, or one partial scan would wipe replicated
-history on every peer; the same set carries the previous round's cost snapshots
-forward so a partial scan cannot lower a provider's totals.
-
-The worker's own ceiling (`LEDGER_WORKER_TIMEOUT_MS`, ten minutes) is a bound on
-a wedged child, not a budget for a normal scan — 32 GB of Codex sessions
-measured at 78 s for all nine providers. Every budget in front of it is derived
-from it rather than guessed, and increases monotonically outward: the remote
-JSON-RPC transport (`USAGE_REFRESH_HISTORY_REMOTE_TRANSPORT_TIMEOUT_MS`,
-worker + 15 s), then the renderer IPC and local-runtime action budget
-(`USAGE_REFRESH_HISTORY_TIMEOUT_MS`, worker + 30 s). On the old 30 s IPC default
-the renderer rejected with a raw timeout and blanked the page while the daemon
-kept scanning for another nine minutes.
-
-## Where a token price comes from
-
-Cost is an estimate, but it must be the *same* estimate everywhere: two machines
-reporting different dollars for identical usage is the failure the ordering in
-`usagePricing.ts` exists to prevent.
-
-models.dev (`https://models.dev/api.json`) is the single source of token prices.
-The same model is listed there by its vendor and by dozens of resellers at
-different prices, so a bare model id (`claude-sonnet-4-5`) always takes the
-vendor's own row (`pickModelsDevEntries` in `services/ai/modelsDevCatalog.ts`,
-shared with registry enrichment); a `provider/model` name
-(`openrouter/anthropic/claude-sonnet-4-5`) takes that provider's row.
-
-`resolveTokenPrice` answers, in order: an exact models.dev match; the
-registry's price for that exact model — which `model-manifest.json` can set for a
-launch-day model models.dev has not listed yet; the longest models.dev key the
-name extends (`claude-sonnet-4-5-thinking` → `claude-sonnet-4-5`); then zero.
-`tokenPriceSource(model)` reports `list` (models.dev) or `fallback`, so a
-headline cost figure can say where its rates came from. There is no
-hand-maintained rate table.
-
-Mechanics:
-
-- models.dev is fetched with a 10 s timeout, cached to
-  `~/.ade/models-dev-pricing.json`, and refreshed once a day; a failed refresh
-  keeps whatever is loaded.
-- a cached copy is dropped after 30 days, so a machine that went offline in
-  March does not price this year's usage at March's rates.
-- a models.dev `cost` gives USD per million tokens for `input`, `output`,
-  `cache_read`, and `cache_write`. A row with a read rate but no write rate
-  bills a first-time cached prefix at the plain input rate, unless the model's
-  vendor charges a write premium (Claude, and OpenAI from GPT-5.6 on), where a
-  missing write rate is `input × 1.25`. A row with neither cache rate falls back
-  to the `input × 0.1` / `input × 1.25` ratios. An entry with no usable input or
-  output rate is skipped.
-- long-context tiers come from `cost.tiers` (`{ tier: { type: "context",
-  size } }`), else `cost.context_over_200k`. OpenAI (GPT-5.4 and later, above
-  272k), xAI Grok (200k), Google Gemini Pro, Alibaba Qwen, and MiniMax bill a
-  whole request at the tier rate once its context passes the threshold. A tier
-  applies only to a ledger entry that records ONE request and carries
-  `requestContextTokens` (Claude, Codex per-response, Pi, Qwen, Copilot CLI);
-  turn and session aggregates are priced at the base rate.
-- DeepSeek rates double in DeepSeek's published peak window (UTC Monday–Friday
-  01:00–04:00 and 06:00–10:00); models.dev lists the off-peak price. Chinese
-  public holidays are not modelled. OpenCode entries carry OpenCode's own cost
-  figure, which uses the off-peak price, so the peak rule does not reach them.
-- a faster service tier bills at its own published rate. models.dev lists
-  them under `experimental.modes` (`fast` with `service_tier: "priority"` or
-  Anthropic's `speed: "fast"`, `ultrafast` with `service_tier: "ultrafast"`),
-  and `parseModelsDevModes` stores them as `TokenPrice.modes`. GPT-6 Astra's
-  Ultrafast is $60/$300 per MTok against $10/$50 standard, so pricing it at the
-  standard rate under-reports by 6×. Each request carries a `speed`
-  (`standard` | `fast` | `ultrafast`): the Claude scan reads `usage.speed`; the
-  Codex scan carries `thread_settings_applied.thread_settings.service_tier`
-  forward the way it carries the model (`priority` and `fast` are Fast,
-  `ultrafast` is Ultrafast; a missing field, `default`, `standard` and `flex`
-  are standard — `codexServiceTierSpeed`). `ratesForRequest` uses the published
-  mode rate scaled by the long-context tier's ratio; a Claude model with no
-  published fast rate falls back to `FAST_MODE_PRICE_MULTIPLIER` (2×), and any
-  other tier with no published rate bills at standard, because nothing prices
-  the premium. The per-turn ledger records the turn's `speed` (Codex from the
-  tier its thread reports, Claude from fast mode on a model that offers it)
-  and prices `apiEquivalentUsd` with it. `USAGE_SNAPSHOT_CACHE_VERSION` is
-  bumped when the rule changes so cached snapshots re-price once.
-- lookup tries the provider-prefixed name, then the canonical name, then an
-  alias, then the longest key the canonical name extends — so a dated model id
-  resolves to its family without a per-release table edit.
-
-The answer reaches the page rather than staying an implementation detail. Each
-provider's stats carry `pricingSource` (`list`, `fallback`, or `mixed` when its
-models resolved both ways) and the payload carries `pricingUpdatedAt` — when the
-loaded copy of the list was fetched, or null when nothing but the built-in table
-priced anything. Settings > Usage turns the two into one plain sentence under
-the cost figures. The number is the page's headline, and an unexplained headline
-cost has burned users before.
-
-## Every account home is scanned
-
-ADE runs a second Claude or Codex account under its own config home
-(`<adeHome>/provider-homes/claude/<id>`, and the `preset`, `credential` and
-`route` homes harness presets use). Each of those homes keeps its own
-transcripts, so a scan of `~/.claude` and `~/.codex` alone missed every chat ADE
-ran under another account. `adeProviderUsageHomes` lists them: every directory under
-`provider-homes/` (including homes whose account was removed, because their
-usage still happened) plus each registry instance's home. A home's provider
-comes from its namespace or registry entry; a preset, credential or route home
-is identified by the CLI's own files (`.claude.json`; Codex's `config.toml` or
-`auth.json`), because Claude keeps a `sessions/` folder too. The usage service
-passes them to the ledger worker as `ADE_USAGE_EXTRA_CLAUDE_HOMES` /
-`ADE_USAGE_EXTRA_CODEX_HOMES`; the scanners add them after the default home and
-dedupe by message id as before. The scanners never discover homes themselves,
-so a test that points `CODEX_HOME` at a fixture reads only the fixture.
-
-The service also passes each CLI's own default home (`~/.claude`, `~/.codex`)
-in the same list (`machineProviderUsageHomes`). A brain or `ade` started from an
-agent's shell inherits that agent's `CLAUDE_CONFIG_DIR` / `CODEX_HOME`, which
-the scanners take as the default; without the explicit default home, the
-machine's main history dropped out of every total that process reported.
-
-## Where the dollars went
-
-Every cost figure on the page can be split two ways, and the host computes the
-split so no client needs a rate table. `AdeUsageCostSplit` holds dollars by
-token type (`input`, `cacheRead`, `cacheWrite`, `output`, and `other` for a
-provider-reported cost no list rate can split, or a per-request fee) and the
-premium each faster tier added (`fastPremium`, `ultrafastPremium`, which sit
-inside the type fields, not on top). A provider-reported cost is split in
-proportion to what the list rates would have charged each type. The split
-rides on provider and model summaries and on each breakdown row as an extra
-field, never a bucket key, so merging and dedupe are unchanged and an older
-host's rows simply have none.
-
-Account scope merges the split only where every row carried one: the live
-`usage.getUsageRollup` response has it, but the replicated
-`usage_machine_rollups` table does not store it (adding a column to a
-replicated table would break peers on an older build), so a provider fed by a
-machine's saved rollup shows no split and the page says why.
-
-## Spend by chat, lane, and account
-
-`usage.getCostBreakdown {by: chat | lane | account, range, laneId?, rankBy?}`
-ranks ADE's per-turn ledger, by cost or (`rankBy: "tokens"`, the page's Tokens
-metric) by tokens, before the tail folds into Other. Each row carries the turns' value at list prices
-(`costUsd`, `apiEquivalentUsd` where the ledger has it), `billedUsd` — what API
-keys and routed-away accounts (keyed presets, redirected endpoints, Bedrock)
-were charged, the provider's own bill when it sent one — and `planValueUsd`,
-the list-price value of turns a subscription covered. A local model's turns
-are in neither. Chats and lanes are the calling project's (titles and lane
-names come from its database); accounts are the machine's, one row per login
-(the same email reached through two provider instances is one account).
-Deleted chats and lanes leave no name, so they fold into one "Deleted lanes
-(N)" / "Deleted chats (N)" row each. The ledger keeps three months. A turn
-records its list-price value when it ends; one whose model has a user price or
-"Map to" (below) is re-priced when read (`repriceTurnForUserPrices`), so a price
-set later reaches past chats too.
-
-The Usage page's hero adds one line from it — ADE chats billed to API keys and
-plan value — under the API-equivalent total, then the type and speed bars.
-
-## Model detail, Set price, and Map to
-
-`usage.getModelDetail` returns one model's cost, tokens, cost per million
-tokens, cache hit rate (cache reads over the whole input side), daily trend,
-split, the price ADE bills it at (`custom`, `list`, or `fallback`, with
-`unpriced` when nothing prices it), its own "Map to", and `mappedFrom`: the
-model ids mapped onto it. A mapped model no longer appears on its own, so its
-target's detail is where it is unmapped (desktop, web and the phone show an
-Unmap button; `ade usage stats --model` prints "Also here").
-
-`usage.setModelPriceOverride {model, models?, price?, mapTo?}` (CTO role; a
-controller action from the phone) writes this machine's
-`<adeHome>/usage-price-overrides.json` (`usagePriceOverrides.ts`). The change
-applies to `model` and every id in `models`: the dialog sends all the raw ids
-behind one display name (a dated id, a `[1m]` variant). Each write starts from
-the file on disk, so another process's change since is kept.
-
-- a **price** (USD per million input/output tokens; cache rates optional, a
-  blank one bills at the input rate, `0` means free) wins over every list in
-  `resolveTokenPrice`;
-- a **Map to** makes a model id count as another model: its usage is bucketed
-  and priced as the target (`applyUsageModelAlias`, before bucketing). Chains
-  resolve to their end, a loop leaves the model as itself, and mapping a model
-  drops its own price.
-
-The ledger worker reads the file when it starts, so a save re-prices history
-by starting a history refresh in the background; the page updates when that
-scan lands. A scan already running read the old prices, so the re-price runs
-after it finishes rather than joining it. `ade usage prices --text` lists both; `ade usage prices set` writes
-them.
-
-## Lifetime stats survive lane deletion
-
-Lane deletion cascades away `lanes`, `terminal_sessions`, `claude_sessions`,
-`session_deltas`, and the lane's `operations` rows, so every all-time ADE figure
-used to count only the lanes nobody had tidied up. Deleting a lane now writes one
-aggregate `lane_usage_tombstones` row first — integer counters, the created and
-deleted calendar days, and a hex active-day bitmap, and nothing that could
-reconstruct what the lane was doing. `usageStatsStore` range-filters those rows
-by the lane's active span, excludes duplicate-absorb rows from creation and
-deletion counts, and folds their decoded active days into streaks. AI token
-totals were never affected: they come from provider transcript files ADE does
-not own or delete. See
-[Lanes: what a deleted lane leaves behind](../lanes/README.md#what-a-deleted-lane-leaves-behind).
-
-## Account scope: usage across every machine
-
-`ADE_USAGE_SCOPES` is `account`, `machine`, `project` — one three-way control,
-not two independent axes. A project normally lives on one machine, so "this
-project across all machines" is a combination worth neither the second control
-nor the four states to test.
-
-Two rules shape the account scope:
-
-- **Aggregates only.** A machine publishes day × provider × model totals and
-  nothing else. Raw transcript records never leave the machine that scanned
-  them, never enter the sync layer, and are never held in memory by the merge.
-  A heavy year of use is a few thousand small rows.
-- **History merges; live quota pools.** Cost, tokens, and code history merge as
-  durable rows. Live quota windows travel only in memory, never stored, because
-  they change every poll and storing them would churn the CRR clock and reopen
-  the self-feeding refresh loop the store's no-op detection prevents (they are
-  absent from `usage_machine_rollups`). Provider rate limits belong to the
-  login, not the machine; see [Quota belongs to the login](#quota-belongs-to-the-login).
-  `poolLiveQuota` in `shared/usageLiveQuota.ts` pools the rollup's live windows
-  by account for the Usage page's "All machines" scope, with an environment
-  filter.
-- **Every stat about the user is account-wide.** The Settings activity card and
-  the Work composer's activity module read `getAdeStats` with `scope: "account"`,
-  so a remote-bound tab shows the user's numbers, not one computer's. Active
-  days count any day any machine used a model, not only days this project's
-  database saw. Requests count per Claude assistant message and per Codex turn
-  (`last_token_usage`), carried as `calls` on the per-model token breakdown; a
-  scanner that only sees aggregates leaves it absent rather than zero.
-
-### Chats, shells, commits and PRs across machines
-
-Each rollup also carries the machine's activity: per project database, per
-local day, `[chats, shells, commits, prs]` (`AdeUsageRollup.activity`). The
-counts come from the same rows the machine scope reads (`terminal_sessions`
-by start day with the same chat rule, succeeded `git_commit` / `pr_land`
-operations), plus each deleted lane's tombstone totals on its last active day.
-`collectDatabaseActivityDays` reads every attached project database on the
-ledger scan's publish (and once lazily before the first one), never per read;
-databases not attached right now keep their last counts.
-
-- **Stored in the retired `source_window` column** of
-  `usage_machine_rollup_meta`, as JSON, written only when it changes. Every
-  build since the table exists has that column and none reads or writes it,
-  so an older peer applies the replicated change, does not show it, and does
-  not clear it when it republishes a meta row. A new column would leave such a
-  peer with changes for a column it lacks, and sentinel rows in
-  `usage_machine_rollups` would show in its provider and model lists.
-- **Deduped by database, not summed by machine.** Desktops that sync one
-  project database hold the same session rows. A database's id is its oldest
-  `projects` row id, which every replica shares, so the merge groups counts by
-  that id and takes the larger count per day; separate databases add up. The
-  open project's fresh machine-scope counts join their database's group the
-  same way, so the page is not a scan behind for it.
-- **Unknown is not zero.** With no machine reporting activity, the session
-  counts stay unknown (the UI shows no session figure). A machine on an older
-  ADE that used a model in the range makes the counts a floor:
-  `summary.sessionCountsPartial`, shown as "12+", with a source note naming it.
-
-GitHub metrics are excluded from the merge for the same reason in a different
-direction: they are repo-scoped, so three machines with the same clone each
-report the same pull requests and summing them would triple work that happened
-once. The account page shows the local machine's GitHub numbers and says so in
-`sourceNotes`.
-
-### Transport: a durable floor plus an opportunistic refresh
-
-Each machine writes its own rollup to `usage_machine_rollups` and
-`usage_machine_rollup_meta`, and the existing cr-sqlite CRR pump replicates
-those tables desktop-to-desktop. That durable copy is the floor the page renders
-from, which is what lets an offline laptop still count toward account totals.
-On top of it, `accountUsageLiveRefresh.ts` asks whichever machines are reachable
-right now over a paired connection, capped at 12 machines per refresh so a large
-fleet cannot turn one page open into a fan-out storm. Two requests share the
-same reach rules (`reachablePeers`: online, not this machine, already paired,
-already connected):
-
-- `usage.getUsageRollup` returns the machine's whole day x provider x model
-  history (`createAccountRollupFetcher`).
-- `usage.getLiveQuota` returns only its live windows and accounts
-  (`createAccountLiveQuotaFetcher`), for the limits view.
-
-Two fan-outs feed one tracker. The desktop window's rides its remote-connection
-pool, so it reaches only machines that window is connected to. The brain has its
-own: `cli.ts` installs `setSharedAccountRollupFetcher` and
-`setSharedAccountLiveQuotaFetcher`, built lazily on the first account-scoped
-read over the agents' paired connections
-(`agentMachineBridge.fetchUsageMethod`). The brain only rides a connection that
-is already open; it never dials, pairs, or re-pairs a machine, and a machine
-without one keeps its durable rollup. Both methods are machine-level RPC in
-`multiProjectRpcServer.ts` (no project, answered from the shared tracker's
-`getUsageRollup()` / `getOwnLiveQuota()`) and are on the agent remote-method
-allowlist in `agentRemoteRpc.ts`. A brain that predates them answers "requires
-params.projectId", which the fetcher reads as "too old to share usage". The
-tracker's refresh failures are kept per machine and expire after 30 minutes
-unless a fan-out repeats them. Everything in that path is best effort: an
-asleep, unpaired, or slow machine produces a failure entry and keeps its
-published rollup rather than taking the other machines' numbers down with it.
-An account-scoped read has a rate floor because the read starts a refresh whose
-update causes another read; `force` (set only by the Refresh button) bypasses
-it.
-
-Both tables are in `MOBILE_CHANGESET_EXCLUDED_TABLES`. The phone reads its usage
-from the host over `usage.getAdeStats` and never queries them, so shipping every
-machine's rows to it would be pure churn.
-
-`usage_machine_rollups` carries its uniqueness in the composite primary key
-`(machine_key, day, provider, model)`: a CRR-converted table may not carry any
-UNIQUE index besides its primary key. Writers upsert on that key and skip no-op
-updates so republishing unchanged history does not churn the CRR clock.
-
-### Dedupe: one transcript source, counted once
-
-Two machines that mount the same home directory — a synced home, an SMB/NFS
-share, a roaming profile — scan the same transcript files and would otherwise
-double every token. Nothing about a machine's own identity detects that: both
-report distinct machine keys and hostnames, and usually the very same
-`/Users/<name>` path, so comparing paths is both a false-positive risk across
-separate machines with the same username and a false negative when one side
-mounts the share elsewhere.
-
-So the identity travels with the files: a `.ade-usage-source` marker id written
-once into the transcript home. `isSameTranscriptSource` is marker-then-roots and
-nothing else:
-
-- when both sides carry a marker, equal ids are the same source and different
-  ids are not — full stop;
-- when either side has no marker (a read-only mount, a locked-down profile), the
-  folded roots must match exactly.
-
-Roots are sha256 digests of `pathKey`-normalized paths, so no absolute path
-leaves the machine that scanned it, and no comparison uses `===` on a raw path.
-
-The marker is terminal. The trade it buys: two machines cloned from one disk
-image share a marker, merge, and under-count. That failure is visible — the
-Machines list shows the second machine as `deduped` against the first — and
-deleting `.ade-usage-source` on one of them mints a fresh id on its next scan.
-It is deliberately the opposite direction from silently doubling every number on
-the page.
-
-### What the Machines list reports
-
-Every machine appears with a state: `live` (refreshed while the page was open),
-`rollup` (counted from its last published rollup), `stale` (counted from a
-rollup older than the six-hour freshness horizon, with the lag stated),
-`deduped` (excluded, with the machine it was deduped against), or `failed`
-(reported nothing usable — missing from the totals, never an error that empties
-the page).
-
-### Quota belongs to the login
-
-A provider limit is tied to the login, so every screen shows each login's
-freshest reading from any machine on the ADE account. `peerLiveQuota.ts` holds
-what the peers last said, in memory only, and `poolPeerQuota` pools it with this
-machine's own snapshot into two views:
-
-- **For picking** (smart balance, budget caps, balance issues): this machine's
-  own logins, each with its freshest reading. A reading from a working token
-  beats one taken before that machine's login expired; within the same kind the
-  newer one wins. An unexpired reading only counts while its reset is in the
-  future.
-- **For display** (the popover, `ade usage limits`, Settings): that, plus logins
-  signed in only on another machine, marked `notSignedInHere`. They show as
-  **Not signed in here**, so every login's room is in one place. The machine
-  that read it is in the window's details ("Read on"). They can take no chat here, so smart balance never picks them
-  and budget caps ignore their windows.
-
-How fresh a reading is comes from the windows themselves: each window carries
-`readAt`, the time a live poll last read it (a carried-forward window keeps its
-real read time), and `stampAccountReadTimes` dates each account by its newest
-window rather than the provider's last poll. Without that, a stale carried
-login on this machine beat another machine's genuinely newer reading.
-`UsageAccount.readingFrom` names the machine a row's numbers came from.
-`lastSnapshot` stays this machine's own reading (polls carry it forward, the
-disk cache stores it, peers pool it); only the views mix peers in, and
-`usage.getLiveQuota` answers with the unpooled own reading so a peer's number is
-never echoed back as this machine's.
-
-The popover pulls the quota-only reading (`usage.getLiveQuota`) at most once a
-minute while it is open: recording quota demand calls
-`peerQuota.refresh()`, which is never awaited and floors itself at 60 s, and the
-Refresh button forces it. The rollup fan-out's live side channel feeds the same
-store. A peer reading is held for at most six hours and dropped sooner when its
-window passes its reset. The pooled view is memoized per (snapshot, peer
-readings) and rebuilt only when a window could cross its reset, so repeated
-reads of one published snapshot return one view.
-
-## Claude credential hygiene
-
-`~/.claude/.credentials.json` can be a stale leftover while the live login sits
-in the macOS Keychain (the Claude CLI's default store). ADE reads a login
-without ever changing it (`readClaudeLogin` returns `ok`, `expired`,
-`signed_out`, or `unreadable`). Anthropic rotates the refresh token on every
-refresh and the Claude CLI keeps the only saved copy, so ADE never spends it: a
-refresh here would leave the CLI's saved token dead and the CLI's next refresh
-would clear the login, which is how idle secondary accounts lost their
-sign-in. These rules keep a dead file token from turning into an OAuth storm
-that gets the whole client rate-limited (429) by Anthropic:
-
-- The default account's background polls do not touch the Keychain until a
-  poll in this process has read the default login from it (`ok` or `expired`;
-  an `unreadable` read resets this). After that, background polls may read it
-  again, because the cached token lasts about eight hours and the meters would
-  otherwise freeze until a user refresh. A scoped
-  account (`CLAUDE_CONFIG_DIR`) may open that account's namespaced Keychain
-  item; the successful read is cached for the process and later polls reuse it.
-- Claude Code namespaces the Keychain item per config directory: the machine's
-  default login is the bare `Claude Code-credentials`, and a
-  `CLAUDE_CONFIG_DIR` login (`~/.ade/provider-homes/claude/<id>`) appends the
-  first 8 hex characters of the SHA-256 of that directory. ADE reads the item
-  matching the account it is asking about, so a scoped login is never mistaken
-  for signed out — and never handed the default account's token.
-- Any successful Keychain read (explicit refresh, provider-status checks)
-  populates the in-memory credential cache *under that account's own key*, so
-  background polls reuse the live login instead of the file.
-- An expired token is reported as `expired` rather than returned or refreshed:
-  the CLI renews it the next time a chat runs on that account, and a user
-  refresh may run the CLI fallback. A background poll also runs the CLI
-  fallback, at most once every 30 minutes per account
-  (`refreshClaudeLoginInBackground`): smart balance does not send a chat to an
-  account it has no reading for, so an idle account's token (about eight
-  hours) would otherwise expire and leave the account unread. The base
-  account (no scoped config home) on macOS is left out until a poll has read
-  its Keychain item; before that its background poll skips the Keychain and
-  could not see the refreshed token. Off macOS the CLI rewrites the
-  credentials file the next poll reads, so the base account is refreshed too. A token with no refresh token at all is
-  `signed_out`, because the CLI cannot renew it either. A failed Keychain read
-  is `unreadable`, because a miss after it proves nothing about the login.
-- A 401 from the usage API drops only the cached access token
-  (`invalidateCachedClaudeCredentials`) and marks the account `expired`; the
-  next chat on the account, or an explicit refresh, lets the CLI refresh it. A
-  background poll runs the CLI on the same 30-minute allowance (not for the
-  base account on macOS), because re-reading the login returns the same token.
-
-## Reproducible baseline
-
-The pre-change baseline came from ADE structured logs for 2026-07-10. Measure
-the same events with:
-
-```sh
-rg 'usage\.(forceRefresh|getUsageSnapshot)' ~/.ade/logs -g '*.log'
-```
-
-Observed wall time:
-
-| Operation | Samples | min | p50 | p90 | max | mean |
-|---|---:|---:|---:|---:|---:|---:|
-| `forceRefresh` | 44 | 6.648 s | 19.138 s | 27.204 s | 30.002 s | 20.414 s |
-| `getUsageSnapshot` | 71 | 0.501 s | 7.359 s | 37.091 s | 121.395 s | 14.676 s |
-
-For regression coverage, run:
-
-```sh
-npm --prefix apps/desktop exec -- vitest run src/main/services/usage/usageTrackingService.test.ts
-```
-
-The suite fixes the behavioral baseline: quota-only refresh must not start any
-ledger scanner, must complete while a deliberately pending large-ledger scan is
-still unresolved, Codex HTTP success must not spawn the CLI, and 401/403/409/429,
-timeout, schema drift, `Retry-After`, stale carry-forward, and Claude CLI parsing
-must remain covered. Codex parser coverage also pins duration-based window
-classification so weekly-only and reordered five-hour/weekly responses cannot
-be mislabeled by their primary/secondary positions.
-
-## Provider strategy boundary
-
-`UsageProviderStrategy` defines the live-quota boundary, while the coordinator
-keeps four concerns separate:
-
-- `poll(context)` obtains a provider-authoritative limit snapshot.
-- local history scanners intentionally remain outside the strategy and never
-  run from the live refresh path.
-- source and auth behavior are provider-owned.
-- the coordinator owns coalescing, adaptive cadence, backoff, cache persistence,
-  stale carry-forward, phase timing, and publication to every client.
-
-Only provider-authoritative quota or billing data may create a live limit. Local
-token estimates remain Activity/history data and must not be presented as a
-personal subscription quota.
+Provider quota is a machine fact. The brain polls once per machine and every
+project scope attaches to the same poller (one timer, one demand lease, one
+snapshot). A window with no local project borrows a booted brain scope
+(`bootedUsageScopeRoot`), and `main.ts` relays brain usage events on
+`ade.usage.event`. The in-process tracker polls only when no brain scope runs.
+
+- **Ordering**: each snapshot has `revision.producerId` and `revision.seq`.
+  Consumers order by `seq` within one producer and always accept another
+  producer (`usage/usageSnapshotOrdering.ts`), so wall clocks are never
+  compared.
+- **Cadence**: an adaptive demand lease, 60 s while usage is visible, 2 min
+  normally, 5 min after 15 min idle. One provider batch at a time.
+- **Quota refresh never scans history.** `forceRefresh()` is quota-only;
+  `refreshHistory()` owns ledger scans.
+- **Stale is visible.** Each provider keeps unexpired last-good windows with
+  `updatedAt`, `lastAttemptAt`, error kind and next retry. Errors are classified
+  (auth, forbidden, conflict, rate limit, timeout, network, invalid response,
+  unavailable); `Retry-After` and backoff apply per account.
+- **Claude**: background polls never prompt the Keychain (see
+  [Claude credential hygiene](#claude-credential-hygiene)); an explicit refresh
+  may run a bounded CLI fallback, except after a 403/429.
+- **Codex**: HTTP success returns at once; app-server RPC runs only for 401
+  recovery or an unrecognized schema. Windows are classified by their advertised
+  duration, position only as a fallback. `spendControlReached` is carried
+  forward and shown as "Codex spending cap reached".
+- Only provider-authoritative data may create a live limit; local token
+  estimates stay history.
+- `usage.refresh.phase` log entries time each phase without credentials or
+  payloads.
 
 ## Live limits beyond Claude and Codex
 
-The top-bar usage control and the Limits popover list every live-quota provider
-that is signed in on this machine. Claude and Codex stay on their existing
-connection signal. Cursor, Copilot, Grok, OpenCode, and Kimi join in that order as
-soon as a local credential exists, and a provider with no credential is absent
-— it is not an error row and it does not take a mark. Each top-bar mark is the
-provider logo inside a thin ring, drawn tight around the mark. The pale arc
-is usage: it starts at 12 o'clock and grows clockwise. What is left is drawn
-in a headroom colour that is the same for every provider: green from 50% left,
-yellow from 25% to under 50%, red under 25% (`USAGE_HEADROOM_THRESHOLDS` and
-`usageHeadroomColor` in `usageDesign.ts`, on the theme's `--color-success`,
-`--color-warning`, `--color-error`). The pale tint is opaque and much lighter
-than the headroom colour. The ring is the week when the
-provider reports one, otherwise the month. The control's accessible name still says `wk`
-or `mo`, the percent left, and a five-hour window when that provider reports
-one. The popover rows keep their text meters. iOS has no top-bar
-ring; it keeps the text meters. Quota window bars in the popover use the
-same headroom colours; charts and the extra-usage spend bar keep the provider
-colour from `providerColors.ts` (Cursor slate, Copilot green, Grok gray,
-OpenCode purple).
+Cursor, Copilot, Grok, OpenCode and Kimi join the header as soon as a local
+credential exists; no credential means no row, not an error. Each HTTP call is
+bounded to 4 s; a failed refresh keeps unexpired windows as stale. They are one
+login per machine.
 
-The poller checks for a credential before any network call. The five extra
-providers run in the same parallel batch as Claude and Codex, each HTTP call
-bounded to 4 seconds. A missing credential returns immediately and clears any
-previous windows for that provider. A failed refresh of a provider that was
-signed in keeps the last unexpired windows and marks them stale, the same way
-Claude and Codex already do. These providers are one login per machine: there
-is no second account and no "continue on another account".
+| Provider | Credential | Request |
+|---|---|---|
+| Cursor | `cursorAuth/accessToken` in Cursor's `state.vscdb` (not refreshed) | `cursor.com/api/usage-summary` with the `WorkosCursorSessionToken` cookie |
+| Copilot | `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN`, Copilot `hosts.json`, else `gh auth token` (at most every 15 min) | `api.github.com/copilot_internal/user`; the SDK's account quota as fallback |
+| Grok | bearer in `~/.grok/auth.json` (`GROK_HOME`) or `GROK_OAUTH_TOKEN` | `cli-chat-proxy.grok.com/v1/billing?format=credits` |
+| OpenCode | `OPENCODE_API_KEY` or an OpenCode/Zen key in `auth.json`, else the Go console login in `opencode.db` | `opencode.ai/zen/go/v1/usage`, or the console status with `x-org-id` |
+| Kimi | Kimi Code's own token file, found as Kimi does (`shared/kimiCodeLogin.ts`); keyring logins not read | `{base}/usages` and `{base}/me` |
+| Muse | none; readings arrive over MSP from a running Muse chat (`usage/read`, `usage/changed`) | none (in-process only) |
 
-| Provider | Credential ADE reads | Quota request | What the bar shows |
-|---|---|---|---|
-| Cursor | `cursorAuth/accessToken` in the local Cursor `state.vscdb` (macOS `~/Library/Application Support/Cursor/User/globalStorage`, Linux `$XDG_CONFIG_HOME/Cursor/...` or `~/.config/Cursor/...`, Windows `%APPDATA%\Cursor\...`). A token whose JWT expiry is inside 60 seconds is skipped. ADE does not refresh it. | `GET https://cursor.com/api/usage-summary`. The `WorkosCursorSessionToken` cookie is `userId::accessToken`, with the user id taken from the JWT `sub` after the last `\|`. A bare access token is rejected as signed out. No browser-cookie import, and not the team Admin API. | Plan percent for the billing cycle, labeled monthly. |
-| Copilot | `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN`, else `oauth_token` in `github-copilot/hosts.json`. If those are empty and a Copilot config or `gh` hosts file exists, `gh auth token` runs at most once every 15 minutes (immediately on a user refresh). | `GET https://api.github.com/copilot_internal/user`. Premium interactions remaining becomes used percent. When that response has no counts or no plan, the Copilot SDK's account quota (`client.rpc.account.getQuota`) is read instead, at most once every 15 minutes unless the user refreshes. Its windows replace these when it has any. ADE reads account email from `GET https://api.github.com/user` with the same token. If that call fails, ADE keeps the last email it read with the same token; a different token gets no remembered email. | Monthly premium quota, including the top-level `quota_reset_date`/`quota_reset_date_utc` when present. |
-| Grok | Non-expired bearer in `~/.grok/auth.json` (`GROK_HOME` overrides the directory), else `GROK_OAUTH_TOKEN`. Management keys (`xai-…`) and cookie-shaped values are ignored. | `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits`. No grok.com cookie import. | `creditUsagePercent` for the current period, labeled weekly or monthly from the period length. |
-| OpenCode | `OPENCODE_API_KEY`, else an OpenCode or Zen key in the local OpenCode `auth.json`. Other providers' keys in that file are not sent. When neither exists, the Go plan's own console login is read from `opencode.db` (`account.access_token` plus `account_state.active_org_id`; skipped when past `token_expiry`). ADE refreshes neither credential. | `GET https://opencode.ai/zen/go/v1/usage` for an API key. For the console login, `GET https://opencode.ai/console/api/go/status` with the `x-org-id` header (the header the console requires). | Rolling 5-hour, weekly, and monthly percents. The API-key path reads the reported percents (a value of 1 is 1%, not 100%); the console path computes `100 × usedMicroCents / limitMicroCents` from the string meters and uses the subscription's `access.endsAt` for the month reset, which carries none of its own. An account without a Go plan answers `access: null` and shows no OpenCode row. Both paths are fixture-verified; the console path is live-verified against a Go account on the development machine. |
-| Muse | None read by ADE. The reading arrives over MSP from a running Muse chat's host — `usage/read` when the host starts, `usage/changed` after that. | No request of ADE's own. An older observation never replaces a newer one (two chats' hosts can report out of order), and a window whose reset has passed is dropped until Muse reports the next. | The rolling 5-hour window and the weekly percent Muse reports, with a window length when Muse sends one. In-process only, so a fresh app start shows no Muse row until a Muse chat runs again. |
-| Kimi | Non-expired `access_token` in the token file Kimi Code itself reads (`$KIMI_CODE_HOME`, `~/.kimi-code` by default). `shared/kimiCodeLogin.ts` finds it the way Kimi does. First it reads `[providers."managed:kimi-code"]` in `config.toml`, which holds the API base (`base_url`) and the credential slot (`oauth.key`). The mainland-China default slot is `credentials/kimi-code.json`. Any other host and base, including `kimi login --region global`, has its own `credentials/kimi-code-env-<hash>.json`. `KIMI_CODE_BASE_URL` and `KIMI_CODE_OAUTH_HOST`/`KIMI_OAUTH_HOST` override that entry, as they do for Kimi. With no entry, ADE reads `kimi-code.json`, and the `region` marker picks the mainland-China or global base. A login kept in the OS keyring is not read. ADE never refreshes the token. | `GET {base}/usages`, plus `GET {base}/me` with the same bearer token for email and nickname. The top-level `usage` block (`used`, `limit`, `resetTime`) is the weekly quota. Each `limits[]` row reads `used`, `limit`, and `resetTime` from its `detail`, and its length from `window.duration` times `window.timeUnit` (`TIME_UNIT_MINUTE`, `_HOUR`, `_DAY`, or `_WEEK`). Counts may arrive as numeric strings, and an omitted `used` is 0. If `/me` fails, ADE keeps the last email it read with the same token, so the account id does not fall back to `kimi:local`. A different token gets no remembered email, because it may belong to a different account. Kimi rotates its token when it refreshes, so a refresh that lands on a failed `/me` shows `kimi:local` for that one poll. | The weekly quota plus each limit, typed by length: 8 hours or less is the 5-hour window, 10 days or less is weekly, longer is monthly. The first window of each type is kept. The response shape matches Kimi Code's own client (`packages/oauth/src/managed-usage.ts`). ADE's parsing is fixture-verified. Kimi has not been live-verified on the development machine. |
+Gemini, Droid, Pi and Qwen have no remaining-quota source; their spend comes
+from history. Droid session credits come from the Factory API only with an
+optional Factory key. Kimi writes no token counts to disk, so it is not
+scanned.
 
-Gemini, Droid, Pi, and Qwen have no remaining-quota source, so ADE adds no
-limits card for them; their spend comes from local history. The history scan
-reads Pi (the session root Pi itself uses: `PI_CODING_AGENT_SESSION_DIR`,
-else the `sessionDir` in Pi's `settings.json` with `~` expanded, else
-`sessions/` under `PI_CODING_AGENT_DIR` or `~/.pi/agent`),
-Qwen (`QWEN_HOME` or `~/.qwen`, `usage/token-usage-YYYY-MM.jsonl`), and Grok
-(`GROK_HOME` or `~/.grok`, `sessions/**/updates.jsonl`) alongside Gemini and
-Droid, and reads Copilot CLI's measured `session-store.db` as well as the
-`session-state` event log and VS Code transcripts — a measured SQLite turn wins
-over the same session's estimated event-log turn. Kimi writes no token counts to
-disk, so it is not scanned; its spend appears in live chats only.
+**Cursor billed usage**: after a Cursor turn on a saved API key, DAEX asks
+`Agent.getUsage` (up to 12 s before `done`) and records one billed row in
+`cursorBilledUsageStore.ts`. A stored Cursor login never calls it; plans without
+the API answer `feature_unavailable`, which is not an error. The production
+history scan does not read billed rows.
 
-Droid writes session totals to a `.settings.json` file beside each session
-log. The history scan spreads those totals over the session's assistant calls.
-Droid's `thinkingTokens` are already inside `outputTokens`, so the scan bills
-the output count only and never adds thinking to it.
+## Smart balance and auto-start windows
 
-Primary references: [CodexBar Cursor](https://github.com/steipete/CodexBar/blob/main/docs/cursor.md),
-[CodexBar Copilot](https://github.com/steipete/CodexBar/blob/main/docs/copilot.md),
-[CodexBar Grok](https://github.com/steipete/CodexBar/blob/main/docs/grok.md), and
-[CodexBar OpenCode Go](https://github.com/steipete/CodexBar/blob/main/docs/opencodego.md).
+Smart balance (Claude and Codex, per provider, `accountBalance.ts`):
 
-Droid has no remaining-quota endpoint, and ADE shows no limits card for it.
-When the user supplies an optional Factory API key (`fk-…`) in Settings, ADE
-reads the credits that each Droid session used from the
-[Factory API](https://docs.factory.ai/api-reference). ADE reads per-session
-credits only. It does not read monthly consumption. Without the key, Droid
-reports no quota source, not an error.
+- Candidates are signed-in accounts on this machine, each judged on its
+  freshest reading from any machine
+  ([Quota belongs to the login](#quota-belongs-to-the-login)). A window past
+  its reset reads as empty.
+- Each account's required rate (weekly room ÷ hours to reset) minus its
+  committed burn (measured rate, else a model-weighted prior from chats
+  mid-turn, plus decaying pending assignments and reservations for idle open
+  chats) ranks it; the largest deficit wins. Ties within 0.15 points per hour go
+  to the sooner reset.
+- **The five-hour window is a gate**: under 10% five-hour or 5% weekly room is
+  out, and the projected five-hour burn over 1.5 h must cover a first turn. When
+  every account is blocked, the chat still starts on the one that lasts longest.
+  `UsageSnapshot.balanceIssues` drives the amber pill. An explicit account pick
+  always wins.
+- **At a usage limit** a chat moves in place: the provider thread file is copied
+  into the other account's home (`chat/providerThreadMove.ts`) and resumes
+  there, once. If the thread cannot move, a new chat on the other account takes
+  the task. With balance off, the limit pill offers the move.
 
-After each Cursor chat turn on a saved Cursor API key, ADE asks
-`Agent.getUsage` for the turn's usage. A cloud turn asks for its own run. The
-turn's `done` event waits for the answer, up to 12 s. ADE puts the run's tokens
-on `done` and records one billed row, `cursor:getUsage:<runId>`, in
-`usage.cursor.billedEntries.v1` (`cursorBilledUsageStore.ts`). The row keeps
-Cursor's `chargedCents` as its cost override. A stored Cursor login (no API
-key) never calls `getUsage`, and its `done` event is sent at once. Plans
-without the usage API answer
-`[feature_unavailable] This feature is not available for your account`. The
-worker returns a `CursorSdkUsageUnavailableResult` marker for that answer
-instead of an error. The marker has no usage, so the turn gets no billed row
-and its `done` event does not change. Every Cursor `done` event carries
-`account: { provider: "cursor", kind: "subscription", email? }`.
+Auto-start windows (off by default, `windowAutoStart.ts`): five seconds after a
+Claude or Codex five-hour reset, one small request through the account's own
+home (Haiku 5.5 / GPT-6 Luna, low effort), recording no response text. Early
+window ends (a random Codex reset, a spent credit) start the next window, at
+most once per account per 15 minutes. No timer state is persisted.
+`AUTOSTART_WINDOW_TYPE` (`shared/types/providerInstances.ts`) gates providers;
+other providers' windows are rolling or calendar periods with no first-request
+start.
 
-The Usage tab's production scan runs in the ledger worker, and the worker does
-not read the billed rows. For an ADE Cursor chat, the tab shows the `cursor-agent`
-character estimate from the chat's Cursor Agent transcript. Only the in-process
-scan (a test harness that injects scanners) adds the billed rows to the `cursor`
-provider, one row per message id.
+## History scans
 
-The per-turn ledger (see below) gets the Cursor turn's tokens and, when a hook
-named it, the served model from `done`. `done.costUsd` stays unset for Cursor.
-The dashboard reconcile adds Cursor's charge and the served model later. It
-reads the per-request Cursor dashboard feed
-(`cursor.com/api/dashboard/get-filtered-usage-events`) for the ledger only and
-writes no Usage rows.
+History reads provider-owned files in place and never copies or rewrites them.
 
-## Per-turn usage ledger (router input)
+- **Bounded Codex reader**: streams `.jsonl` and `.jsonl.zst` newest first, at
+  most 5,000 files per root, 256 MiB per file and 2 GiB total; lines over 16 MiB
+  are discarded incrementally; detail stops at 250,000 entries; callers share
+  one in-flight scan. The all-time headline reconciles with the newest
+  `state_*.sqlite` (read-only, bounded), adding a zero-cost `lifetimeOnly`
+  remainder so the total is exact without inventing attribution.
+- **OpenCode** selects only token, cost and model fields from `opencode.db`
+  (`json_extract`, paged).
+- **Other ledgers** (`ledgers/`): Pi, Qwen, Grok and Copilot CLI
+  (`acpProviderLedgers.ts`), Droid (session totals spread over calls;
+  `thinkingTokens` are already in output), Gemini.
+- **Every account home is scanned.** `adeProviderUsageHomes` lists every
+  directory under `provider-homes/` (removed accounts too) plus registry homes,
+  and `machineProviderUsageHomes` adds each CLI's own default home, so a brain
+  started from an agent shell with an inherited `CLAUDE_CONFIG_DIR` still counts
+  the machine's main history. They reach the worker as
+  `ADE_USAGE_EXTRA_<PROVIDER>_HOMES`; scanners never discover homes themselves.
+- **The worker runs in a separate process** (`usageLedgerWorker.cjs`, or a
+  hidden entrypoint in the static runtime) so disk and SQLite work never stall
+  the event loop.
+- **The worker streams NDJSON**: a roster header, then one line per provider,
+  so a timeout keeps finished providers. `incompleteProviders` becomes
+  `publishLocalRollup`'s `skipReconcileProviders` and carries previous totals
+  forward: **a partial round never deletes or lowers totals**, here or on
+  peers.
+- **Timeouts derive from one constant**: `LEDGER_WORKER_TIMEOUT_MS` (10 min, a
+  bound on a wedged child), then the remote transport (+15 s), then the
+  renderer IPC (+30 s).
+- **Lifetime stats survive lane deletion**: deleting a lane writes one
+  aggregate `lane_usage_tombstones` row first
+  ([Lanes](../lanes/README.md#what-a-deleted-lane-leaves-behind)).
 
-The usage page answers "what did this machine spend". A model router needs a
-finer answer: what one turn of each provider, account, and model costs here.
-`turnUsageLedger.ts` writes that answer as one JSON line for each finished
-chat turn.
+## Where a token price comes from
 
-- **Where.** The ledger lives in `<adeHome>/usage/turns-YYYY-MM.jsonl`, and the
-  quota readings live in `quota-YYYY-MM.jsonl` next to it. The files stay on
-  the machine and never enter the synced project database, so a new field
-  never has to reach an older phone or desktop. Files older than three months
-  are deleted on the first write of a month.
-- **What.** Each row holds the session, lane, provider, account key, requested
-  model, served model, token split, context size, request count, the
-  provider's cost (with its source), plan units, the number of context
-  compactions the provider finished in the turn (`compactions`), and
-  `apiEquivalentUsd`: the turn at the served model's public list price. That last figure is the one
-  currency that compares a subscription turn with an API-key turn. The ledger
-  writes every field on every row. A field it could not learn is null.
-- **Account key.** `usageAccountId.ts` holds the one rule for an account id:
-  `<provider>:<instanceId>`, else `<provider>:<email>`, else
-  `<provider>:local`. The quota poller uses the same rule, so a ledger row
-  always joins its quota window.
-- **One token meaning.** `inputTokens` is the uncached input for every
-  provider. Codex counts cached input inside its input figure and sends no
-  cache split on `done`, so the ledger takes Codex turn totals from the change
-  in the thread totals that `codex_token_usage` carries during the turn.
-- **Reasoning.** Most providers count reasoning inside `outputTokens`, so the
-  price does not add it again. OpenCode reports reasoning apart from output,
-  so its `apiEquivalentUsd` prices output plus reasoning at the output rate.
-  `reasoningBilledSeparately` in `tokenSplit.ts` names that set and cites the
-  evidence for each provider.
-- **Subagents.** `subagentTokens` holds the tokens of the turn's subagents.
-  It also holds the helper-agent usage that a provider reports on `done`
-  (`done.subagentUsage`, for example a Copilot subagent or a Qwen memory
-  extractor). These tokens are not in the main token fields.
-- **Observe only.** The chat service calls `observe` for each event and
-  `settle` on each `done` (in `notifyTurnSettled`). Both catch every error. A
-  ledger failure logs one warning and never reaches a turn. Hosts without a
-  ledger (tests, the in-process desktop fallback) pass none.
-- **Late corrections.** Two providers write their own record after the turn.
-  `turnUsageReconcilers.ts` reads it on a timer and appends an amendment line;
-  readers apply amendments in time order.
-  - Cursor: `cursorDashboardUsage.ts` reads Cursor's dashboard usage events
-    with the Cursor desktop login, 20 s, 90 s, and 300 s after the turn. ADE
-    does not send an expired login token. An event's `conversationId` is the
-    Cursor SDK agent id (verified live), so the match is exact. A turn takes
-    the events from 10 s before its first event up to 60 s after its `done`.
-    When the same chat starts its next turn sooner, the window stops just
-    before that turn starts. Each event goes to one turn only. The amendment
-    adds the served model (for example the model behind "auto"), Cursor's
-    charge, and the request cost. It also prices the dashboard's tokens again
-    at the served model's list price (`apiEquivalentUsd`), because the turn
-    priced its row from the requested model. It writes no Usage rows. The endpoint is
-    private: a shape change fails closed (no amendment, a `bad_body`
-    warning). Set `ADE_CURSOR_DASHBOARD_USAGE` to `0`, `false`, `off`, or
-    `no` to turn the read off.
-  - Droid: with a Factory key, ADE reads the session's Factory credits 15 s
-    after the turn. The row gets the session total, and the turn's own
-    `factory_credit` plan usage when the brain saw the session's previous
-    total. The reads for one session run in order, so a slow read cannot
-    replace a newer total.
-- **Quota readings.** The ledger writes a quota reading when the percent moves
-  by half a point or more, or when a new window instance starts. Reset times
-  less than five minutes apart name the same window instance. Claude's reset
-  time moves by microseconds on every poll, and this rule keeps one row for
-  that window instead of one row per poll.
-- **Burn rate.** `quotaBurnRate.ts` pairs the quota readings of the last 14
-  days with ledger rows. For each window instance (one reset time, within the
-  five-minute jitter), it divides the API-equivalent dollars of the matching
-  ADE turns by the percent the window moved. These rules apply:
-  - A span without an ADE turn does not count.
-  - A span with a turn that used tokens but has no list price does not count,
-    because its dollars are unknown.
-  - A turn with no tokens costs $0. It does not make its span unpriced.
-  - A turn billed to an API key or served by a local model does not count. A
-    turn whose account has `routedAway` set (a keyed preset, a redirected
-    endpoint, or a cloud route such as Bedrock) does not count either. These
-    turns cannot move a subscription window. `upstream` names only the model
-    vendor, so a turn with an `upstream` and no `routedAway` still counts.
-  - A row with no account comes from an older host and still counts.
-  - A turn counts for a window of its own account. When the provider has one
-    account in the readings, every turn of that provider counts, also a turn
-    keyed `<provider>:local`. A `<provider>:local` reading is not a second
-    account when the provider also has a named account. The poller writes that
-    reading when an identity call fails (after a restart or a token refresh),
-    so it is the same login without its name.
+Cost is an estimate, but the same estimate everywhere (`usagePricing.ts`).
 
-  Other clients on the same login (a terminal Claude Code, the Cursor IDE)
-  also move the percent, so the result is a lower bound on dollars per
-  percent, and `headroomUsd` is a safe minimum.
-- **Read it.** `ade usage turns --days 14 --text` (action
-  `usage.getTurnUsageSummary`) returns totals by provider, account, and model,
-  the cache hit ratio, the median context, served-model mismatches, and the
-  burn rates. `--group-by provider|provider_model|provider_account_model` is
-  optional; the default is `provider_account_model`. `--recent N` (up to 200
-  rows) adds the newest rows. The totals and burn rates cover the whole
-  machine. The recent rows come from the calling project only. The read is
-  asynchronous: it streams each month file line by line, so a 90-day read
-  does not block the brain. Only the per-turn append and the first quota
-  snapshot's small seed read are synchronous.
+- **models.dev is the single price source.** A bare model id takes the vendor's
+  own row (`pickModelsDevEntries`); a `provider/model` name takes that
+  provider's row. Fetched with a 10 s timeout, cached in
+  `~/.ade/models-dev-pricing.json`, refreshed daily, dropped after 30 days.
+- `resolveTokenPrice` order: a user price override; an exact models.dev match;
+  the registry price (`model-manifest.json` can set one for a launch-day model);
+  the longest models.dev key the name extends; then zero.
+  `tokenPriceSource(model)` reports `list` or `fallback`.
+- Cache rates: a missing write rate is the input rate, or `input × 1.25` for
+  vendors with a write premium; no cache rates at all fall back to `input × 0.1`
+  / `input × 1.25`.
+- Long-context tiers apply only to ledger entries that record one request with
+  `requestContextTokens`. DeepSeek peak hours double the rate. Faster tiers
+  (`fast`, `ultrafast`, from models.dev `experimental.modes`) bill at their own
+  rate; a Claude model with no published fast rate uses
+  `FAST_MODE_PRICE_MULTIPLIER`. Bump `USAGE_SNAPSHOT_CACHE_VERSION` when a
+  pricing rule changes.
+- Each provider's stats carry `pricingSource` and the payload
+  `pricingUpdatedAt`; Settings › Usage turns them into one sentence under the
+  cost.
+- **Set price / Map to** (`usage.setModelPriceOverride`, CTO role) write
+  `<adeHome>/usage-price-overrides.json`. A price wins over every list; a Map to
+  buckets and prices one model id as another. A save triggers a background
+  history refresh to re-price.
+- `AdeUsageCostSplit` splits dollars by token type and tier premium on the
+  host. The replicated rollup table does not store it, so a machine fed only by
+  its saved rollup shows no split.
+- `usage.getCostBreakdown {by: chat | lane | account}` ranks the per-turn ledger
+  with list-price value, `billedUsd` and `planValueUsd`.
+
+## Account scope: usage across every machine
+
+`ADE_USAGE_SCOPES` is `account`, `machine`, `project`, one three-way control.
+
+- **Aggregates only.** A machine publishes day × provider × model totals; no
+  transcript, session id or path leaves it.
+- **History merges; live quota pools.** Cost and tokens merge as durable rows;
+  live windows travel only in memory (storing them would churn the CRR clock).
+- **Every stat about the user is account-wide**: the activity module reads
+  `getAdeStats` with `scope: "account"`.
+- **Activity counts** (chats, shells, commits, PRs per database per day) ride
+  in the retired `source_window` column of `usage_machine_rollup_meta`, so
+  older peers ignore them safely. They dedupe by database id (oldest `projects`
+  row id), not by machine. No machine reporting means unknown, not zero; an
+  older machine makes counts a floor ("12+").
+- **GitHub is excluded** (repo-scoped; three clones would triple it).
+
+**Transport**: each machine writes `usage_machine_rollups` (primary key
+`(machine_key, day, provider, model)`; a CRR table allows no other UNIQUE
+index; no-op upserts skipped; 400 days kept) and the CRR pump replicates it.
+That durable copy is the floor. On top, `accountUsageLiveRefresh.ts` asks up to
+12 reachable machines (online, paired, already connected; never dials) for
+`usage.getUsageRollup` and `usage.getLiveQuota`. The brain has its own fan-out
+over the agents' connections (`cli.ts`). A machine without the methods is "too
+old to share usage". Failures are per machine and never empty the page. Both
+tables are in `MOBILE_CHANGESET_EXCLUDED_TABLES`.
+
+**Dedupe** (`accountUsageSource.ts`): two machines mounting the same home would
+double tokens. A `.ade-usage-source` marker id in the transcript home travels
+with the files; `isSameTranscriptSource` compares markers, else hashed roots.
+Machines cloned from one image share a marker and show as `deduped`; deleting
+the marker mints a new id.
+
+**Machines list** states: `live`, `rollup`, `stale` (older than six hours),
+`deduped`, `failed`.
+
+### Quota belongs to the login
+
+Every screen shows each login's freshest reading from any machine.
+`peerLiveQuota.ts` holds peers' readings in memory (pulled at most once a minute
+while limits show, held up to six hours), and `poolPeerQuota` builds two views:
+
+- **For picking** (smart balance, budget caps): this machine's logins, each
+  with its freshest reading. A working token's reading beats one from an
+  expired login.
+- **For display**: that plus logins signed in only elsewhere, marked
+  `notSignedInHere` ("Not signed in here"), never picked.
+
+Freshness comes from each window's `readAt`. `lastSnapshot` stays this
+machine's own reading, and `usage.getLiveQuota` answers unpooled, so a peer's
+number is never echoed back as this machine's.
+
+## Claude credential hygiene
+
+Anthropic rotates the refresh token on every refresh and the Claude CLI keeps
+the only copy, so **DAEX never spends a Claude refresh token**: it reads logins
+(`readClaudeLogin`: `ok`, `expired`, `signed_out`, `unreadable`) and lets the CLI
+renew.
+
+- Background polls do not touch the default login's Keychain item until a poll
+  in this process has read it. A scoped account (`CLAUDE_CONFIG_DIR`) reads its
+  own namespaced item (`Claude Code-credentials` plus the first 8 hex of the
+  directory's SHA-256), never the default's token.
+- An expired token is reported, not refreshed. A background poll may run the
+  CLI fallback at most every 30 minutes per account
+  (`refreshClaudeLoginInBackground`) so idle accounts stay readable; on macOS
+  the base account is left out until its Keychain item was read.
+- A 401 drops only the cached access token
+  (`invalidateCachedClaudeCredentials`).
+- "Couldn't refresh Claude — showing last reading" means a fresh poll returned
+  no windows while unexpired windows exist (a transient 5xx, timeout or 429); it
+  self-heals.
+
+## Banked resets
+
+Codex and Claude report banked reset credits (`parseCodexResetCredits`,
+`parseClaudeResetCredits`) onto `UsageAccount.resetCredits`, which gates **Use
+reset** (`ade.usage.consumeResetCredit`).
+
+- The spend goes to the machine that produced the row. When this machine cannot
+  read a login's credits, the freshest peer's count is shown
+  (`UsageAccount.resetCreditsOn`) and the spend runs on that peer
+  (`consumeOwnResetCredit`), carrying the email so a re-signed folder refuses.
+- A Claude spend holds its pending claim (grant id and request id) until Claude
+  answers, so a retry repeats the exact request.
+- A failed read is not a confirmed zero; last known credits stay.
+- **Codex app-server reads hold stdin open** until every response id arrives
+  (`runCodexAppServerJsonRpc`); closing it early aborts the request and once
+  cached a false zero.
+
+## Per-turn usage ledger
+
+`turnUsageLedger.ts` writes one JSON line per finished chat turn to
+`<adeHome>/usage/turns-YYYY-MM.jsonl`, with quota readings in
+`quota-YYYY-MM.jsonl`. Machine-local, never synced; three months kept.
+
+- **Fields**: session, lane, provider, account key (`usageAccountId.ts`:
+  `<provider>:<instanceId>`, else `:<email>`, else `:local`, the same rule as
+  the poller), requested and served model, token split, context, requests,
+  provider cost, plan units, compactions, and `apiEquivalentUsd` (the turn at
+  list price, the one currency comparing plan and API turns). Unknown fields are
+  null.
+- `inputTokens` is uncached input for every provider. OpenCode bills reasoning
+  separately (`reasoningBilledSeparately` in `tokenSplit.ts`).
+- **Observe only**: the chat service calls `observe` and `settle`; a ledger
+  failure never reaches a turn.
+- **Late corrections** (`turnUsageReconcilers.ts`): Cursor's dashboard events
+  (served model, charge; `ADE_CURSOR_DASHBOARD_USAGE=0` turns it off) and
+  Droid's Factory credits append amendment lines.
+- **Quota readings** are written when the percent moves half a point or a new
+  window starts (resets within five minutes are one window).
+- **Burn rate** (`quotaBurnRate.ts`): API-equivalent dollars of DAEX turns per
+  percent a window moved, over 14 days. API-key, local and `routedAway` turns do
+  not count. Other clients on the login also move the percent, so it is a lower
+  bound.
+- Read with `daex usage turns --days 14 --text` (`usage.getTurnUsageSummary`).
 
 ## Model router (shadow)
 
-The router answers "which route should run this task" for a subagent. A route is
-harness × model × effort (`claude`, `codex`, `opencode`, `cursor`), rated from
-the daily model registry — Artificial Analysis quality, cost, and speed plus
-models.dev prices — served by the account directory at `GET /router/registry` to
-signed-in accounts (see `apps/account-directory/README.md`, "Model registry").
-`modelRegistryStore` keeps this machine's copy at `<adeHome>/router/registry.json`
-and asks the Worker at most every 12 hours (30 minutes after a failure); a 304
-revalidates without reading the body, and `ADE_MODEL_REGISTRY_FILE` points the
-store at a local snapshot instead of the Worker.
+`main/services/router/` rates routes (harness × model × effort) from the daily
+model registry (`GET /router/registry` on the account directory, cached at
+`<adeHome>/router/registry.json`, refreshed at most every 12 h;
+`ADE_MODEL_REGISTRY_FILE` overrides). `routerCore` classifies a subagent's task
+from its type, label and brief and picks the cheapest route that keeps quality.
+It is **shadow**: it changes no turn and logs decisions to
+`<adeHome>/usage/router-shadow-YYYY-MM.jsonl` (`ADE_MODEL_ROUTER_SHADOW=0` turns
+it off).
 
-`routeCatalog` builds every route from the union of every open project's model
-list, newest project first — before, it read only the newest project's list,
-which dropped OpenCode routes whenever that project had never listed OpenCode
-models. `routerCore` classifies the task from its agent type, its short label,
-and its brief (the Agent tool's `prompt`, or an ADE child chat's first message).
-The brief decides most kinds: a brief that forbids edits ("Read-only", "Do not
-edit any files") is `review` or `read_only`, and an opening edit instruction
-("You implement", "Apply the verified fixes", "Fix …") is an edit. The label
-alone left about half the subagents `unknown`. It then picks the cheapest route that keeps
-the expected quality — within the task kind's tolerance of the model that would
-run it anyway, no more than 1.5× slower, and trusted (at least 30 own turns on the
-model, or a measured Artificial Analysis agent row). The efficiency replay
-gives a main chat thread the `lead` kind (tolerance 0.02) and a chat that another
-chat started the `unknown` kind (also 0.02), because the ledger holds no task
-description.
-Plan routes are priced from the ledger's burn rates (list dollars per percent of
-each live window), then in dollars of the plan's own price (`ROUTER_PLAN_MONTHLY_USD`,
-an assumed top-tier price per plan, divided over the window's share of a month),
-weighted by how fast the window is being used. A window at 95% or more blocks its
-plan. A cross-plan pick needs medium-or-better burn confidence
-on both plans.
-
-It is **shadow**: it changes no turn. Each subagent writes one decision line and one
-outcome line to `<adeHome>/usage/router-shadow-YYYY-MM.jsonl` when it finishes
-(or after 6 hours with no result). The decision waits for the finish because the
-facts arrive late: Claude reports a child's effort only from inside it (the
-`effort.level` of the PostToolUse and SubagentStop hooks), and the brief can arrive
-after the start. A v2 line records what ran (`requested`: harness, model, effort,
-and whether each was `reported` by the child, `inherited` from the parent, or
-`unknown`), where the kind came from (`kindSource`), the label, the brief's length,
-and three picks: the same model at another effort (`sameModel`), the best route in
-the same harness, and the best route anywhere. An unknown effort is priced at the
-model's default effort, not guessed as `high`. A follow-up message to a finished
-Claude subagent reuses its task id; that run is logged as `<key>#<run>` with the
-first run's brief. When the follow-up starts before the first run's result
-arrives (another tool call), the first run is logged without an outcome, and a
-late result that names the replaced tool call is dropped. An hourly timer, as
-well as each event, gives up on a subagent after 6 hours, so a quiet brain still
-logs it. Briefs come from any subagent-spawning tool (`Agent`, `Task`,
-`spawn_agent`, `subagent`; `prompt`, `message`, `instructions`, or `task`). Reports skip v1 lines (from older builds): they guessed
-`high` for a Claude subagent that named a model and classified from the label only. `routeCatalog` and `routerCore` are pure, and the service never
-throws into the chat. Read it with `ade router shadow --days 7` (action
-`usage.getRouterShadowSummary`), list routes with `ade router routes`, dry-run one
-task with `ade router pick`, and force a fetch with `ade router refresh`.
-`ADE_MODEL_ROUTER_SHADOW=0` turns the watcher off.
-
-**Your model catalogue.** `ade models catalog` (action `usage.getModelCatalog`,
-read-only, like the other usage reads it runs on the machine the CLI targets)
-lists every model this machine can run, one entry per harness × model, from the
-same model lists and the same registry mapping as the routes (`modelCatalog.ts`
-groups `buildModelRoutes`). Each entry says how the user reaches the model (the
-harness, and `plan`, `metered` with its channel, or `free`), its channel price,
-each effort level with the variant it rates from, and the full registry profile
-of the level it runs at by default (its default effort, else `high`): the
-Intelligence Index and every per-eval score, domain and personality indices,
-modalities, license, speed, list prices. Facts every level of a release shares
-(modalities, license, parameters, knowledge cutoff) come from another variant of
-the family when the default one's data lacks them. It also lists the Coding
-Agent Index rows and the speech leaderboard rows linked to the model's variants.
-A model the registry has no family for is listed with a null profile. `--text`
-prints one line per model with `MODEL_REGISTRY_AA_ATTRIBUTION`; without it the
-full profiles come back as JSON. It starts nothing and changes no routing.
-
-**Your model sheet.** `ade models sheet [--provider <p>] [--text]` (action
-`usage.getModelSheet`, read-only, same machine scoping as the catalogue)
-organizes the same catalogue by the kind of task each model suits.
-`modelSheet.ts` groups the runnable models by registry family and gives each
-family a 0-1 score per task kind (question, research, review, small edit,
-feature, debugging, refactor, writing, vision, audio): a weighted mean of
-benchmarks from `TASK_KIND_WEIGHTS`, each min-max normalized over the models
-Artificial Analysis lists today. A kind is left out when the model's measured
-benchmarks carry less than `MIN_WEIGHT_COVERAGE` (60%) of its weight, or when a
-required one (MMMU-Pro for vision, the speech index for audio) is missing.
-Headline scores use `high` where AA measured it, else AA's default variant;
-each model also lists its efforts with the variant measured at exactly that
-level (no neighbor fill-in) and the best measured effort per kind (within 0.02,
-the cheaper one). Speed and cost tiers (`fast/medium/slow`,
-`cheap/mid/premium`) come from time and cost per index task. Families are
-sorted by Intelligence Index. Each family also carries words, for people and
-for Jev: a summary, strengths, weaknesses, best-for and avoid-for kinds, and
-notes from the curated `modelSheetNotes.json` (each with the benchmark it rests
-on), or words generated from the scores when a family has none. Runnable
-models the router cannot map are resolved through the curated
-`modelSheetMatches.json` (`same`, `same-model-faster-serving`,
-`nearest-sibling`, `none`, with a confidence and a reason); a nearest sibling
-is shown as a note and never lends its scores. `--text` prints the task-kind
-table and then each family in words; without it the sheet comes back as JSON.
-It starts nothing and changes no routing.
-
-`ade router efficiency --days 7` (action `usage.getRouterEfficiency`) reports what
-the router would have saved. It reads the turn ledger, so the history starts on day
-one, not the day the router shipped. Each chat thread is one series of turns. The
-router may change a thread's route only at a free switch point, where the prompt
-cache is cold and a change costs no rebuild:
-
-- the first turn of the thread;
-- the turn after a context compaction;
-- a turn that starts after the cache expired;
-- a turn where the user changed the model or effort, or the chat moved to another
-  account.
-
-The turns from one switch point to the next are a segment. Each segment gets one
-router decision, and its list-price cost scales by the picked route's cost per task
-over the reference route's. A thread's cache TTL is one hour, except a Claude
-thread that writes only the 5-minute cache: that thread gets 5 minutes. The dollars
-are public list prices scaled by the benchmark cost per task. They are an estimate,
-not a measured run. The replay ignores today's blocked plan windows: it asks which
-route was cheaper at equal quality, and a window that has since reset says nothing
-about the past.
-
-Each segment has three picks: `sameModel` (only the effort changes, the lowest-risk
-switch), `sameHarness`, and `anyHarness`. The router picks plan routes in plan
-percent, not list dollars. So a move from a metered route onto a plan can raise
-list dollars and still be the cheaper pick. The `byBilling` part has one row for
-each plan account (`claude plan · claude:beats`), because each login has its own
-window and burn rate: the list dollars, and the percent of that account's longest
-window. Over a 7-day report a weekly window can reset, so a row above 100% means
-more than one window. Read the cross-plan rows with the burn-rate limit below in
-mind.
-
-The report also summarizes the subagents in the shadow log. Claude reports no
-per-subagent price, so Claude subagents are weighted by tokens instead of dollars.
-OpenCode reports a price, so those subagents carry dollars. The report also lists
-the segments that kept their route and why, the top moves by cost, and the threads
-with the most spend. `ade router efficiency --days 7 --text` prints the readable
-form.
-
-Known limits: burn rates count ADE turns only, so a plan also used outside ADE
-looks dearer than it is, and cross-plan picks are logged but not yet trustworthy.
-On the Mac Studio (2026-10-04) the Codex and OpenCode Go rows show more than 100% of
-a window in a week, so most of their window use happens outside ADE. The local
-history scans (`usageLedgerScanners`) see that use, but their entries carry no
-account yet; feeding them to the burn rate is the next step. Briefs are missing
-for about 9% of Claude subagents whose Agent tool call never reached the
-transcript; those classify from the label.
+- `daex router shadow | routes | pick | refresh | efficiency` and `daex models
+  catalog | sheet` read it (`usage.getRouterShadowSummary`,
+  `usage.getRouterEfficiency`, `usage.getModelCatalog`, `usage.getModelSheet`).
+  None changes routing.
+- Efficiency replays the turn ledger, changing route only at free switch points
+  (first turn, after compaction, after cache expiry, a user model change).
+- Known limits: burn rates count DAEX turns only, so cross-plan picks are not
+  yet trustworthy.
 
 ## Daily usage research report
 
-Each machine sends one compact report for each finished local day to ADE's
-account directory Worker (`POST /usage-research/daily`). ADE uses the reports
-to learn how to route turns between models: prices, models, times, and costs
-for each provider, mainly Claude and Codex. The wire contract is in
-`apps/desktop/src/shared/usageResearch.ts`. The Worker keeps its own copy.
+Each machine sends one compact report per finished local day to the account
+directory (`POST /usage-research/daily`; contract
+`apps/desktop/src/shared/usageResearch.ts`, checked by the Worker's
+`usageResearchContract.test.ts`).
 
-- **What is sent.** One body for each day. It has the schema version, an
-  install id, the local day, the app version, the platform, the CPU
-  architecture, the UTC offset, and the report. The report has:
-  - day totals (turns and dollars);
-  - groups of turns with the same provider, requested model, served model,
-    account kind, account ref, plan tier, `routedAway`, `upstream`, reasoning effort,
-    surface, and subagent-chat flag. Each group has turn counts by status,
-    token sums, requests, API-equivalent dollars, provider cost, list-price
-    cost, plan units, context and duration percentiles, usage confidence
-    counts, served-model mismatches, compactions, and a histogram of the local
-    hour each turn started;
-  - the day's quota readings for each window (lowest and highest percent,
-    window instances, readings);
-  - the burn rate of each window at the end of the day;
-  - the list price of each group's model, with long-context tiers.
-- **What is never sent.** Emails, account ids, provider instance ids, project
-  roots and other paths, lane ids, session and turn ids, prompts, file names,
-  hostnames, API keys, and tokens. A model, vendor, or effort name that looks
-  like a path, an email, or a URL is sent as `_redacted`.
-- **Ids.** `installId` is the first 32 hex characters of
-  sha256("ade-usage-research-install:" + salt). `accountRef` is the first 12
-  hex characters of sha256(salt + ":" + account key). The salt is random for
-  each install and stays on the machine. Nothing else ADE sends derives from
-  it, so `installId` is not linkable to analytics or the account, and the
-  hash alone does not join `accountRef`s across installs. Quota readings are
-  account-wide, though: two installs signed in to one account report the same
-  window percentages, which can correlate their refs. An unnamed login
-  (`<provider>:local`) has no ref. The upload is anonymous: it sends no
-  account token.
-- **Consent.** The report goes only while product analytics is on
-  (`productAnalyticsService.getStatus().effective`). Analytics is on by default
-  and has no Settings switch; `DO_NOT_TRACK=1` or an opt-out a previous build
-  stored stops the report. Turns and quota readings from before analytics was
-  last enabled are not read. To stop the report on a
-  machine, set `ADE_USAGE_RESEARCH` to `0`, `false`, `off`, or `no`. Both are
-  checked again before every request, so turning analytics off mid-run stops
-  the run, and stopping the uploader aborts the request in flight.
-- **Schedule.** The brain starts one uploader for each ADE home
-  (`usageResearchUploader.ts`, wired in `apps/ade-cli/src/bootstrap.ts`). It
-  runs 2 minutes after start, then each hour. Each run looks at the 7 local
-  days before today. It never sends today. It sends at most 7 requests, oldest
-  day first.
-- **Dedupe.** `<adeHome>/usage/research-uploads.json` holds the salt and the
-  outcome of each day (`sent` or `rejected`). A recorded day does not go again.
-  A day with no turns is not recorded and is not sent. A ledger read that
-  fails is not a day with no turns: the run stops and the next hour reads
-  again. Nothing is sent until the salt is on disk, because a new salt on
-  every start would re-send every day under a new install id. The file keeps
-  30 days and is written atomically. The Worker keeps one row for each
-  install and day and replaces it on a repeat.
-- **Answers.** 200 and 201 record `sent`. 400, 413, and 415 record
-  `rejected`. A 429 stops the run; the uploader waits for the `retry-after`
-  time (to the next UTC midnight for the identity, daily, and storage caps).
-  A 503, another 5xx, or a network error stops the run until the next hour.
-  The request times out after 15 s, the response body included. The uploader
-  never throws and logs one warning for each kind of failure.
-- **Size.** The whole body is 32 KB or less. A report has 150 groups or
-  fewer; the smallest groups past that merge into one `_other` group. When a
-  body is too large, the uploader first removes the hour histograms. Then it
-  merges the smallest groups into `_other`, keeping as many groups whole as
-  fit (a binary search on the count). When the body still does not fit, the
-  day is recorded as `rejected` and is not sent. A group's served-model
-  mismatches use the same rule as the chat's mismatch warning
-  (`isServedModelMismatch`), so a harness prefix, a dated snapshot, or a build
-  variant of the requested model is not a mismatch. The same
-  day always gives the same bytes. A busy day of 200 turns in 9 groups is
-  about 10 KB.
-- **Worker.** `apps/account-directory` stores the reports in its D1 database
-  (`migrations/0012_usage_research.sql`) and keys its per-caller quota on the
-  caller's address only (an IPv6 address counts as its /64); it reads no
-  account token. A stopped or spent fleet budget answers `429` from a read,
-  before any quota is claimed. Each row counts its report plus 256 bytes
-  against the storage ceiling, and each write is a compare-and-swap on the
-  row's previous size, so a write that loses a race gives back its claims and
-  answers `503`. The Worker's `usageResearchContract.test.ts` imports
-  `shared/usageResearch.ts` and checks both copies of the contract agree.
+- **Sent**: grouped turn counts, token sums, costs, percentiles, quota ranges
+  and burn rates per provider/model/plan tier, plus install id, day, version,
+  platform and UTC offset.
+- **Never sent**: emails, account or instance ids, paths, lane/session/turn ids,
+  prompts, file names, hostnames, keys or tokens. Path-, email- or URL-like
+  names become `_redacted`. `installId` and `accountRef` are salted hashes; the
+  salt never leaves the machine. The upload sends no account token.
+- **Consent**: only while product analytics is effective
+  (`productAnalyticsService.getStatus().effective`); `DO_NOT_TRACK=1`, a stored
+  opt-out or `ADE_USAGE_RESEARCH=0` stops it, checked before every request.
+- **Schedule** (`usageResearchUploader.ts`, started by
+  `apps/ade-cli/src/bootstrap.ts`): 2 minutes after start, then hourly, the 7
+  days before today, oldest first. `<adeHome>/usage/research-uploads.json` holds
+  the salt and per-day outcome; nothing is sent until the salt is on disk.
+- Body at most 32 KB (hour histograms dropped, then small groups merged into
+  `_other`); the same day always gives the same bytes.
 
-## Desktop, CLI, remote, and mobile parity
+## Surfaces
 
-- Desktop Settings > Usage is one scrolling page: headline totals with 14-day
-  trends, this machine's live rate limits as radial gauges (`UsageLimitGauges`,
-  shown for the This machine and This project scopes), the layered daily chart,
-  **Week over week** (`UsageWeekCompare`), per-provider and breakdown splits,
-  Activity, and — on the account scope only — pooled Live limits
-  (`UsagePooledLimits`). The gauges read cached live quota without starting a
-  ledger scan; the rest of the page owns the expensive history refresh
-  explicitly. The top-bar popover keeps the per-account meter rows
-  (`UsageLimitsBand` → `UsageAccountRow`), so one snapshot has a compact and a
-  gauge presentation.
-- `ade usage limits` (action `usage.getUsageLimits`, pure builder
-  `shared/usageLimitsReport.ts`) is the agent-sized read of the same cached
-  snapshot, about 2 KB instead of the snapshot's ~1 MB of history. One row per
-  account: named by its email, which `ade chat create --instance` takes (an id
-  works too; an account that has not signed in has no email, so its id is the
-  only handle), each window's percent
-  left, reset, and pace (the poll's `etaHours`, counted from the reading), the
-  reading's age, a state (`ok`, `stale`, `expired`, `signed_out`, `no_reading`,
-  `error`) with a short note, banked reset credits, and two marks: the asking
-  chat's account (`chatSessionId`, resolved through the provider-instance store
-  so a chat with no recorded account reads as the default) and smart balance's
-  next pick (`balanceNext`). A login only another machine holds is a row with
-  `notSignedInHere` and a note naming the machine that read it. A window whose reset passed since the reading reads
-  full; one with no reset time keeps its fill. A provider whose check failed with
-  nothing to show still gets a row, so "could not read" is not mistaken for "not
-  signed in". It never refreshes. `--machine` / `--all-machines` read other
-  machines (see `docs/features/sync-and-multi-device/cross-machine-agents.md`),
-  the ADE MCP typed tool `usage_limits` runs it locally, and `ade chat status`
-  shows the chat's own `account`. The `ade-cli-control-plane` skill tells agents
-  to read it only when the user asks about limits.
-- `ade usage refresh` refreshes quota only; `ade usage refresh --history` runs
-  the separate history path. `ade usage stats --text` prints the spend
-  summary with the type and speed split and the top models;
-  `--by chat|lane|account` prints the ledger breakdown, and
-  `--provider P --model M` one model's detail.
-- Settings > Usage: the totals card carries Estimated cost with the billed /
-  plan-value line, Tokens, Sessions and Active days, each with a 14-day
-  sparkline (cost, tokens, sessions) or an on/off day strip (active days) and
-  the change against the previous window; the type and speed bars sit under the
-  cost figure. Breakdown switches between Models (every session on the
-  machine), Chats, Lanes (a lane opens its chats) and Accounts (ADE chats).
-  Clicking a model opens its detail dialog with Set price and Map to. `C` / `T`
-  switch the Cost/Tokens metric, and ⌘⇧E (Ctrl+Shift+E) exports the visible
-  Breakdown view as CSV. The bars use the data-viz categorical order validated
-  for the light and dark surfaces, with grey for the remainder and every
-  segment named with its dollars.
-- Remote desktop/runtime calls use the same runtime actions as a local project.
-- Paired iOS devices request `usage.getQuotaSnapshot` for the host-cached
-  snapshot. Pull-to-refresh and Settings refresh use `usage.refreshQuota` and
-  therefore run a bounded provider flow on the paired host without interactive
-  Keychain prompts. The phone stores the last snapshot in a
-  host-scoped local cache, clears it when the active host changes to an
-  unsupported or unidentified machine, shows source/staleness, and never
-  receives provider credentials. Older hosts that do not advertise the two
-  quota actions remain connected in limited mode and show update guidance.
-- Paired iOS also has a full Usage page in Settings (`SettingsUsagePage.swift`),
-  composed in its own reading order: cost hero and
-  per-provider split (with the type and speed bars and the billed / plan-value
-  line), daily chart, Live limits, metric strip, breakdown. (The desktop page
-  has since added 14-day trends, radial rate-limit gauges and a week-over-week
-  card; iOS keeps the older shape.) Breakdown offers
-  Models, Chats, Lanes and Accounts when the host advertises
-  `usage.getCostBreakdown`; a model opens its detail screen, with Set price
-  and Map to when the host advertises `usage.setModelPriceOverride`. It
-  reads history through `usage.getAdeStats` and shows update guidance when the
-  host does not advertise it. Type, colour, and the chart's top-N/Other rule
-  come from `ADEUsageDesign.swift`, the iOS counterpart of `usageDesign.ts`, so
-  the page and the new-chat activity module read as one surface.
-- Every quota card names the account it describes, its plan, and links out to
-  the provider's own limits page. The poller resolves the signed-in email locally
-  (`providerAccountIdentity.ts`: Codex `~/.codex/auth.json` `id_token` payload and
-  account id, Claude `.claude.json` `oauthAccount.emailAddress`; both via
-  `os.homedir()`, no Keychain) and stamps it onto `UsageProviderStatus.accountEmail`, alongside
-  `accountPlan` (Codex `chatgpt_plan_type`, Claude `subscriptionType`/
-  `rateLimitTier`) and `accountUrl` from the single shared source
-  `usageProviderAccountUrl`. The same reader fills
-  `AiProviderConnectionStatus.accountEmail`/`accountPlan`, so Settings >
-  Providers says "Authenticated as <email> · <plan>" from the same source the
-  Limits cards use. Copilot reads `email`/`login` from GitHub `/user`, while Kimi
-  reads `email`/`name` from `/me`, using only the bearer already resolved for
-  quota. Pi reads only provider key names and `openai-codex.accountId`, then
-  matches that id to ADE's own Codex identity; Claude is unmatched because Pi
-  has no Claude account id. No token is read into the snapshot, logged, or persisted. Both fields are
-  optional: an unknown account shows no line, and a host that predates them
-  shows no external link.
-- Live limits reads as headroom, not consumption, and **the account is the
-  row**. Every signed-in Claude or Codex account is a row, including one that
-  has not reported a window yet: that row names the account and says `No usage
-  yet` instead of omitting it. **One login is one row**: two local config homes
-  that report the same account email are collapsed to the owner the account
-  registry names (`sameLoginOwner`: the default when its login works, else the
-  first working login), and the other account's windows are dropped with it,
-  so one quota is never counted twice. Logins on different emails stay two rows. Each row
-  names itself — provider mark, provider, `email · plan` — and
-  carries that account's windows side by side underneath as meters: a short
-  label (`5h` / `wk` / `mo`), a bar filled to the HEADROOM with the spent
-  remainder hatched, that same headroom in words ("82% left"), and the reset
-  countdown. One
-  provider with two logins on different emails is two rows, both named. Hovering, focusing, or
-  clicking a meter on desktop — tapping a row on iOS — opens that window's
-  details: plan, the machines reporting it, headroom, absolute reset time,
-  pace, the model split, what the reset restores to the pool, and the link out.
-  The desktop details panel is portalled above the usage popover and stays open
-  while the pointer crosses onto it, so the link can be clicked. The popover
-  lists each provider as a logo, a hairline, and the accounts under it, with no
-  rounded box around the provider.
-  The arithmetic is `usageLimitModel.ts` on desktop (`buildAccountRows`
-  transposes `buildLimitCards`, so one set of numbers feeds both shapes) and the
-  `adeUsageLimitCards` family in `ADEUsageDesign.swift` on iOS; both are pure
-  and clock-injected, and both are asserted against the same numbers. iOS
-  and `ade usage snapshot` name an account that has no
-  window yet as `No usage yet` (the snapshot text says `no windows yet`). The row
-  itself is `UsageAccountRow.tsx`, rendered by `UsageLimitsBand` in the header
-  popup. It replaced a per-window card stack that cost roughly 360px per
-  provider and hid the email; the popover ran about 720px tall for two
-  providers. Bars are coloured by headroom (`usageHeadroomColor`: green from
-  50% left, yellow from 25%, red below), the same rule as the top-bar rings —
-  accounts get no colour of their own, because hashing an account id into a
-  palette drew a Claude window in Gemini's blue. The neutral meters, the
-  Settings rate-limit gauges and the home rings use the separate
-  `usageLeftLevel` rule instead — amber at 20% left, red at 5% — so a window
-  that is nearly spent reads the same on the gauges as on the home card. On iOS
-  the same rows are the
-  Limits tab of the Work usage module (`WorkUsageLimitsModule.swift`, split out
-  of `WorkUsageActivityCarousel.swift`) as well as the Settings Usage page.
-- A row offers **Use reset** only while its account carries a banked reset
-  credit (`UsageAccount.resetCredits.availableCount > 0`). It calls
-  `ade.usage.consumeResetCredit` and reports what the host did, on the row, for
-  four seconds — "Reset applied. Your windows have cleared.", "Nothing to reset
-  right now.", "No reset credit left.", "That credit was already redeemed.", or
-  "Could not use the reset credit." A host whose usage service cannot spend
-  credits answers "Reset credits are not available on this host yet." rather
-  than reporting a reset it did not perform.
-- A machine reads a login's banked resets with that login's token. When it
-  cannot (its token expired, or the login is signed in only on another
-  machine), the account shows the credits of the freshest peer whose working
-  login reports a count. A newer count of zero beats an older positive one,
-  and the credits are lent whether or not that peer's windows are shown. Then `UsageAccount.resetCreditsOn` names that peer and
-  its id for the account (`poolPeerQuota`). **Use reset** then runs on that
-  peer: the host sends `usage.consumeResetCredit` over its agents' paired
-  connection, and the peer spends one of its own credits
-  (`consumeOwnResetCredit`), never forwarding again. The spend carries the
-  email the row showed, and the peer refuses it when its account now holds
-  another login (a new sign-in in the same folder keeps the id). After the
-  spend the host drops the peer's old count, then pulls the peers' quota
-  again, so a failed pull cannot offer the spent credit a second time. A peer too old for the method answers "Update ADE on
-  <machine> to spend its reset from here, or spend it there."
-- Accounts pool by email: the same login reported by two machines is one
-  account with two `Via` entries, freshest reading first, and its numbers are
-  the freshest reading from either ([Quota belongs to the login](#quota-belongs-to-the-login)).
-  The quota poller reads EVERY provider account on its own machine:
-  `listQuotaInstances` enumerates the provider-instance registry and polls each
-  account's own config home (default first, because its result decides the
-  provider-level facts that stay singular — the status line's account email, the
-  poll `source`, and the Codex spend-control / 7-day series). A machine with
-  three Claude logins therefore contributes as many accounts as it has
-  distinct logins — two config homes on one email are one account, and the
-  extra homes and their windows are dropped. A machine with no registry entry
-  falls back to the single ambient `CLAUDE_CONFIG_DIR` / `CODEX_HOME`. **Every
-  row names its account, always** — on desktop and iOS. The earlier rule
-  suppressed the email whenever a provider had one account, which is precisely
-  the case where the row IS that account and a machine shared between two
-  logins gives no other clue. A host with no account directory falls back to
-  `status.accountEmail`, then to "This machine".
-- An account is identified by its email. `providerAccountName`
-  (`shared/types/providerInstances.ts`) is the one naming rule: the email, else
-  "Signed in, no email" for a login that reports only a plan, else "Not signed
-  in". Ids are storage keys only, and two machines can give one email different
-  ids, so no surface shows one. The CLI takes `--instance <email>` everywhere
-  (`chat create`, `chat switch-account`, `providers accounts default|remove|login`);
-  the provider-instance store resolves an email to the login's owner (the
-  account that is not a copy, and among those the one whose login works), and
-  a chat asked to run on an email this machine has not signed in is refused
-  rather than started on a different login. An email both providers hold needs
-  an id, since those commands take no provider. A copy (`sameLoginAs`: a second
-  config home signed in to a login another account holds) adds no quota, so
-  every "N accounts" count, including the header's, counts real logins through
-  `countProviderLogins` and excludes copies.
-- The popover row is the email with the plan as a quiet second word, its pace
-  in words, then each window as a name-and-headroom line over a full-width bar.
-  Tags say what this machine can do with the login: **Last reading** (this
-  machine's token expired, so the bars are its last reading; the account still
-  takes chats) and **Not signed in here**. The row shows no tag for a reading
-  that another machine took; the window's details name it ("Read on"). A login with an expired token
-  and no bars reads "Login expired — renews on its next chat", not "No usage
-  yet". The header shows only the windows a provider reports, so a Claude
-  account without a five-hour window (weekly only) gets no phantom 5h slot; the
-  placeholder shows only before the first snapshot lands. "Use reset" is sent to
-  the machine that produced the row, through the row's pin.
-- Claude's per-model weekly caps come from the usage endpoint's
-  `limits[]` entries of kind `weekly_scoped` (the endpoint dropped
-  `seven_day_opus` / `seven_day_sonnet`). Each becomes a `modelBreakdown` entry
-  on the weekly window keyed by the model's display name (Fable, for one), shown
-  in the window's detail as "Model caps" with the percent left, including at 0%
-  used. Up to eight travel in a peer's reading.
-- The iOS quota rows are readings, not controls: the old tap-to-focus gesture
-  on a pace bar is gone. Tapping a row opens the account detail sheet.
-- Codex and Claude both report banked reset credits, and ADE parses them:
-  `parseCodexResetCredits` counts only credits whose status is still
-  `available` and reports the soonest expiry; `parseClaudeResetCredits` (Claude
-  Code's `cedar_ember` program) counts the grants the server marks usable and
-  unexpired and pins the one it names as next. Both land on
-  `UsageAccount.resetCredits`, which is what gates the row's **Use reset**
-  action, so an account with no banked credit shows no action at all.
-  `parseCodexRateLimitSnapshot` remains windows-and-spend-control only; the
-  Codex credits ride their own key in the same payload. Claude's read is the
-  OAuth usage endpoint with `cedar_ember=1&skip_spend=1`, sent with the OAuth
-  token from the quota poll's in-memory login when it is warm (so a token the
-  poll just refreshed is used, not the possibly-stale file) and the credentials
-  file otherwise. On macOS the token lives in the Keychain, which the reset
-  module never opens: it reuses the token the poll was already allowed to read,
-  so the control is offered there too, and an account whose poll could not read
-  its login keeps its last answer and sends nothing. Spending a credit is a
-  click, so it may read the Keychain when the cache is cold. A failed read is
-  not a confirmed zero: the last known credits are kept, and only a successful
-  response can replace them. Spending a Claude credit is
-  `POST /api/organizations/{org}/reset_rate_limits` with
-  `{ program, grant_id, request_id }`, one claim at a time with the pending
-  claim — its grant id and request id together — held until Claude answers, so
-  a retry after a timeout repeats the exact request instead of spending a
-  second credit on whatever grant a later probe selected; `cooldown`, `429`,
-  and a signed-out answer count as answers. Claude's `extra_usage` is paid
-  overage in dollars, which the extra usage card already shows.
-- Every Codex app-server read (`runCodexAppServerJsonRpc`: the quota fallback,
-  the reset-credit probe, and spending a credit) holds stdin open until every
-  requested response id has arrived, then closes it; only the timeout kills the
-  tree early. The app-server aborts an in-flight request the moment it sees
-  stdin EOF, and `account/rateLimits/read` is a network round-trip, so closing
-  stdin right after the write returned only the `initialize` reply and dropped
-  the credit payload — which ADE then cached as `availableCount: 0` and never
-  offered **Use reset**. Notifications interleaved between replies carry no
-  numeric id and are ignored.
-
-Claude's "Couldn't refresh Claude — showing last reading" is the generic
-stale-state line `buildProviderWindows` emits when a *fresh* Claude poll returns
-no windows while unexpired last-good windows exist: a transient usage-endpoint
-5xx/timeout/429 or an unrecognized response. It is not the credential path — a
-background poll that cannot read a login returns `preserve_previous` (silent,
-windows carried, no such message), and a rejected token produces the
-"reconnect" state instead. The next successful poll clears it and resets
-`providerFailureCount`, and `Retry-After`/exponential backoff bounds the retry
-storm, so it self-heals.
-
-## Compact header visibility
-
-The top-bar usage control shows all tracked providers by default. In the expanded
-Limits panel, each provider has an eye control to include or hide that provider
-from the compact header; provider rows remain available in the expanded panel.
-The AI providers settings page has a **Show usage in header** switch. Hiding the
-last provider hides the header control and turns that switch off. Turning it back
-on restores all providers to the header.
+- **Header popover** (`HeaderUsageControl.tsx` → `UsageLimitsBand` →
+  `UsageAccountRow`): one row per login named by email, windows as headroom
+  meters (`usageHeadroomColor`). Accounts get no colour of their own. Mount
+  reads the cached snapshot and records demand, never forcing a provider
+  request. Each provider can be hidden from the compact header (eye control;
+  **Show usage in header** on the providers page).
+- **One login is one row**: two config homes on one email collapse to the owner
+  (`sameLoginOwner`); copies add no quota (`countProviderLogins`). Accounts are
+  named by `providerAccountName` and selected by email (`--instance <email>`).
+- **Settings › Usage** (`AdeUsageSection.tsx`): totals with trends, rate-limit
+  gauges (`UsageLimitGauges`, `usageLeftLevel`: amber at 20% left, red at 5%),
+  the daily chart, breakdown by model, chat, lane or account, model detail with
+  Set price and Map to, and pooled live limits on the account scope.
+- **CLI**: `daex usage limits` (`usage.getUsageLimits`,
+  `shared/usageLimitsReport.ts`) is the small agent-sized read of the cached
+  snapshot, one row per account with state and marks, never refreshing;
+  `--machine` / `--all-machines` read others. `daex usage refresh [--history]`,
+  `daex usage stats [--by …] [--provider P --model M]`, `daex usage prices`.
+  The DAEX MCP tool `usage_limits` runs the same read.
+- **iOS** reads `usage.getQuotaSnapshot` and refreshes with `usage.refreshQuota`
+  (bounded, no Keychain prompts), caches per host, and never receives
+  credentials. Older hosts show update guidance.
+- **Web**: `usage.liveReadings()` is false when no computer answers; the band
+  says limits show while a computer is on.

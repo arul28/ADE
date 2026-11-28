@@ -827,7 +827,7 @@ describe("launchd service install", () => {
       serviceName: ADE_RUNTIME_SERVICE_NAME,
       action: "install",
       path: servicePath,
-      message: "ADE service launchd service is already installed and running.",
+      message: "DAEX service launchd service is already installed and running.",
     });
     expect(registered.get(ADE_RUNTIME_SERVICE_NAME)?.pid).toBe(1234);
     expect(registered.has(resolveWatchdogServiceName())).toBe(true);
@@ -1266,7 +1266,7 @@ describe("launchd service install", () => {
       action: "install",
       path: servicePath,
     });
-    expect(result.message).toContain("Another ADE brain is already hosting mobile sync on port 8801.");
+    expect(result.message).toContain("Another DAEX brain is already hosting mobile sync on port 8801.");
     expect(result.message).toContain(
       process.platform === "win32"
         ? `Stop-Process -Id ${existingPid}`
@@ -1381,7 +1381,7 @@ describe("launchd service install", () => {
       action: "install",
       path: servicePath,
     });
-    expect(result.message).toContain("Refusing to restart ADE brain");
+    expect(result.message).toContain("Refusing to restart DAEX brain");
     expect(registered.get(ADE_RUNTIME_SERVICE_NAME)?.pid).toBe(100);
     expect(fs.existsSync(servicePath)).toBe(false);
   });
@@ -1448,7 +1448,7 @@ describe("launchd service install", () => {
       action: "uninstall",
       path: servicePath,
     });
-    expect(result.message).toContain("Refusing to stop ADE brain");
+    expect(result.message).toContain("Refusing to stop DAEX brain");
     expect(calls).toEqual([
       { command: "launchctl", args: ["print", currentLaunchdDomain()] },
     ]);

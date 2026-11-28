@@ -437,7 +437,7 @@ final class WorkMcpAppController: NSObject, ObservableObject {
     ]
     context["locale"] = Locale.current.identifier.replacingOccurrences(of: "_", with: "-")
     context["timeZone"] = TimeZone.current.identifier
-    context["userAgent"] = "ADE"
+    context["userAgent"] = Brand.name
     context["platform"] = "mobile"
     context["deviceCapabilities"] = ["touch": true, "hover": false]
     return context
@@ -468,7 +468,7 @@ final class WorkMcpAppController: NSObject, ObservableObject {
       case "ui/initialize":
         post(["id": id, "result": [
           "protocolVersion": WorkMcpAppLimits.protocolVersion,
-          "hostInfo": ["name": "ADE", "version": "1"],
+          "hostInfo": ["name": Brand.name, "version": "1"],
           "hostCapabilities": [
             "openLinks": [String: Any](),
             "serverTools": [String: Any](),
@@ -488,7 +488,7 @@ final class WorkMcpAppController: NSObject, ObservableObject {
       case "tools/call", "resources/read":
         forward(id: id, method: method, params: params)
       default:
-        refuse(id, "ADE does not support this request from an app.", code: WorkMcpAppLimits.methodNotFoundCode)
+        refuse(id, "\(Brand.name) does not support this request from an app.", code: WorkMcpAppLimits.methodNotFoundCode)
       }
     }
   }

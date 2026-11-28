@@ -9,6 +9,7 @@ import type {
 import type { SyncChatEventPayload } from "../../../shared/types/sync";
 import { chatEventDedupKey } from "./infra/chatEventDedup";
 import type { AdapterInfra, AdeNamespace } from "./types";
+import { BRAND } from "../../../shared/brand";
 
 function fallbackFor(action: PersonalChatAction): unknown {
   if (action === "list" || action === "models") return [];
@@ -24,7 +25,7 @@ function fallbackFor(action: PersonalChatAction): unknown {
   }
   if (action === "getEventHistoryPage") {
     return () => {
-      throw new Error("Personal chat history paging is unavailable on the connected ADE host.");
+      throw new Error(`Personal chat history paging is unavailable on the connected ${BRAND.NAME} host.`);
     };
   }
   return null;

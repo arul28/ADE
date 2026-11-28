@@ -41,6 +41,7 @@ import type {
   GithubDirectRequestOptions,
   GithubDirectResult,
 } from "../types";
+import { BRAND } from "../brand";
 
 /** The `window.ade.githubDirect.request` contract. */
 export type AdeCloudGithubRequest = <O extends GithubDirectOp>(
@@ -71,7 +72,7 @@ export type AdeCloudReadAnswer = { handled: true; result: unknown } | { handled:
 
 /** What a tab bound to ADE Cloud says for an action that needs a computer. */
 export const ADE_CLOUD_NEEDS_LANE_SENTENCE =
-  "ADE Cloud runs this on a lane's own computer. Open a lane, or start one on ADE Cloud.";
+  `${BRAND.CLOUD_NAME} runs this on a lane's own computer. Open a lane, or start one on ${BRAND.CLOUD_NAME}.`;
 
 /** Workspace ids of cloud lanes in the Files tab: never the id of a real worktree. */
 const WORKSPACE_PREFIX = "ade-cloud-lane:";
@@ -106,19 +107,19 @@ export function githubRepoOfOrigin(origin: string | null | undefined): { owner: 
 export function githubReadSentence(error: GithubDirectError): string {
   switch (error.kind) {
     case "not_connected":
-      return "Connect GitHub to your ADE account to see this repository's files with no computer on.";
+      return `Connect GitHub to your ${BRAND.NAME} account to see this repository's files with no computer on.`;
     case "sign_in_expired":
-      return "Your GitHub sign-in for ADE expired. Sign in to GitHub again in Settings.";
+      return `Your GitHub sign-in for ${BRAND.NAME} expired. Sign in to GitHub again in Settings.`;
     case "app_not_installed":
-      return "ADE's GitHub App isn't installed for this repository's owner, so ADE can't read it with no computer on.";
+      return `${BRAND.NAME}'s GitHub App isn't installed for this repository's owner, so ${BRAND.NAME} can't read it with no computer on.`;
     case "repo_not_reachable":
       return error.sso
-        ? "This organization needs a single sign-on session on GitHub before ADE can read it."
-        : "ADE can't reach this repository on GitHub with your sign-in.";
+        ? `This organization needs a single sign-on session on GitHub before ${BRAND.NAME} can read it.`
+        : `${BRAND.NAME} can't reach this repository on GitHub with your sign-in.`;
     case "rights_not_accepted":
-      return "The repository's owner hasn't accepted ADE's GitHub App rights yet.";
+      return `The repository's owner hasn't accepted ${BRAND.NAME}'s GitHub App rights yet.`;
     case "rate_limited":
-      return "GitHub asked ADE to wait. Try again in a few minutes.";
+      return `GitHub asked ${BRAND.NAME} to wait. Try again in a few minutes.`;
     case "not_found":
       return "GitHub has no such branch or file. Push the lane's branch to see it here.";
     default:
@@ -215,13 +216,13 @@ export function createAdeCloudAccountReader(deps: AdeCloudAccountReaderDeps) {
 
   const overview = (origin: string): Promise<CloudProjectOverview | null> => {
     const cloud = deps.cloud();
-    if (!cloud) return Promise.reject(readFailure("Sign in to ADE to see this project's ADE Cloud lanes."));
+    if (!cloud) return Promise.reject(readFailure(`Sign in to ${BRAND.NAME} to see this project's ${BRAND.CLOUD_NAME} lanes.`));
     return cachedRead(overviews, origin, OVERVIEW_TTL_MS, () => cloud.projectOverview(origin));
   };
 
   const lanesOf = async (scope: AdeCloudReadScope): Promise<CloudLaneOverview[]> => {
     // No repository address: the account can't say which lanes are this project's.
-    if (!scope.origin) throw readFailure("ADE doesn't know this project's repository address, so it can't read its ADE Cloud lanes. Open the project on a computer once.");
+    if (!scope.origin) throw readFailure(`${BRAND.NAME} doesn't know this project's repository address, so it can't read its ${BRAND.CLOUD_NAME} lanes. Open the project on a computer once.`);
     const answer = await overview(scope.origin);
     const lanes = answer?.lanes ?? [];
     return scope.machineKey ? lanes.filter((lane) => lane.machineKey === scope.machineKey) : lanes;
@@ -229,7 +230,7 @@ export function createAdeCloudAccountReader(deps: AdeCloudAccountReaderDeps) {
 
   const laneFor = async (scope: AdeCloudReadScope, laneId: string): Promise<CloudLaneOverview> => {
     const lane = (await lanesOf(scope)).find((entry) => entry.laneId === laneId);
-    if (!lane) throw readFailure("ADE Cloud has no saved copy of this lane.");
+    if (!lane) throw readFailure(`${BRAND.CLOUD_NAME} has no saved copy of this lane.`);
     return lane;
   };
 
@@ -242,7 +243,7 @@ export function createAdeCloudAccountReader(deps: AdeCloudAccountReaderDeps) {
 
   const github = async <O extends GithubDirectOp>(request: Extract<GithubDirectRequest, { op: O }>): Promise<GithubDirectData[O]> => {
     const send = deps.github();
-    if (!send) throw readFailure("This version of ADE can't read GitHub directly.");
+    if (!send) throw readFailure(`This version of ${BRAND.NAME} can't read GitHub directly.`);
     const answer = await send<O>(request);
     if (!answer.ok) throw readFailure(githubReadSentence(answer.error));
     return answer.data;
@@ -251,7 +252,7 @@ export function createAdeCloudAccountReader(deps: AdeCloudAccountReaderDeps) {
   /** The repository and the branch a lane's files are read at; a lane with no pushed branch has none. */
   const repoAt = async (scope: AdeCloudReadScope, laneId: string) => {
     const repo = githubRepoOfOrigin(scope.origin);
-    if (!repo) throw readFailure("ADE reads files with no computer on only for repositories on GitHub.");
+    if (!repo) throw readFailure(`${BRAND.NAME} reads files with no computer on only for repositories on GitHub.`);
     const lane = await laneFor(scope, laneId);
     const summary = await summaryOf(lane).catch(() => null);
     const branch = lane.branch ?? summary?.branch ?? null;
@@ -267,7 +268,7 @@ export function createAdeCloudAccountReader(deps: AdeCloudAccountReaderDeps) {
   const refAt = async (scope: AdeCloudReadScope, laneId: string): Promise<{ repo: GithubDirectRepoRef; summary: CloudGitSummary | null; branch: string | undefined }> => {
     if (laneId !== DEFAULT_BRANCH_WORKSPACE) return await repoAt(scope, laneId);
     const repo = githubRepoOfOrigin(scope.origin);
-    if (!repo) throw readFailure("ADE reads files with no computer on only for repositories on GitHub.");
+    if (!repo) throw readFailure(`${BRAND.NAME} reads files with no computer on only for repositories on GitHub.`);
     return { repo, summary: null, branch: undefined };
   };
 
@@ -333,7 +334,7 @@ export function createAdeCloudAccountReader(deps: AdeCloudAccountReaderDeps) {
   const readFile = async (scope: AdeCloudReadScope, args: Record<string, unknown>): Promise<FileContent> => {
     const laneId = laneIdOfAdeCloudWorkspace(args.workspaceId);
     const path = stringField(args, "path");
-    if (!laneId || !path) throw readFailure("ADE Cloud can't find this file.");
+    if (!laneId || !path) throw readFailure(`${BRAND.CLOUD_NAME} can't find this file.`);
     const { repo, branch } = await refAt(scope, laneId);
     const file = await github({ op: "getFileContent", params: { ...repo, path, ref: branch } });
     const languageId = languageOf(path);
@@ -382,7 +383,7 @@ export function createAdeCloudAccountReader(deps: AdeCloudAccountReaderDeps) {
 
   const syncStatus = async (scope: AdeCloudReadScope, laneId: string): Promise<GitUpstreamSyncStatus> => {
     const summary = await summaryOf(await laneFor(scope, laneId));
-    if (!summary) throw readFailure("ADE Cloud has no saved Git state for this lane yet.");
+    if (!summary) throw readFailure(`${BRAND.CLOUD_NAME} has no saved Git state for this lane yet.`);
     const diverged = summary.ahead > 0 && summary.behind > 0;
     return {
       hasUpstream: Boolean(summary.upstream),
@@ -398,7 +399,7 @@ export function createAdeCloudAccountReader(deps: AdeCloudAccountReaderDeps) {
 
   const workingChanges = async (scope: AdeCloudReadScope, laneId: string): Promise<DiffChanges> => {
     const summary = await summaryOf(await laneFor(scope, laneId));
-    if (!summary) throw readFailure("ADE Cloud has no saved Git state for this lane yet.");
+    if (!summary) throw readFailure(`${BRAND.CLOUD_NAME} has no saved Git state for this lane yet.`);
     return {
       unstaged: summary.changed.map((entry) => ({
         path: entry.path,

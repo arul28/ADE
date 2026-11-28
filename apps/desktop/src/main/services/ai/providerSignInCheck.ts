@@ -20,6 +20,7 @@ import { resolvePiInstallation, type PiInstallation, type PiProfileInventory } f
 import type { CopilotSdkAuthProbe } from "./providerConnectionStatus";
 import { isRuntimeHealthProvider, noteProviderLoginChanged, noteProviderModelsChanged } from "./providerLoginChanged";
 import { getProviderRuntimeHealth, reportProviderRuntimeAuthFailure, reportProviderRuntimeReady } from "./providerRuntimeHealth";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The longest a one-provider sign-in check may take. A check that has not
@@ -89,7 +90,7 @@ export function createProviderSignInCheck(deps: ProviderSignInCheckDeps) {
       case "copilot": {
         const probe = await deps.copilotAuthStatus(await deps.detectAuth(), { limitMs: PROVIDER_SIGN_IN_CHECK_LIMIT_MS });
         if (probe.runtime.source === "fallback-command") {
-          return { state: "unknown", reason: "ADE's copy of Copilot is not on this computer yet, so it could not check." };
+          return { state: "unknown", reason: `${BRAND.NAME}'s copy of Copilot is not on this computer yet, so it could not check.` };
         }
         if (!probe.auth) return { state: "unknown", reason: deps.lastCopilotProbeFailure() ?? "Copilot did not answer." };
         if (probe.auth.isAuthenticated) {
@@ -126,7 +127,7 @@ export function createProviderSignInCheck(deps: ProviderSignInCheckDeps) {
       }
       default: {
         if (!(ACP_PROVIDER_IDS as readonly string[]).includes(provider)) {
-          return { state: "unknown", reason: `ADE has no sign-in check for ${provider}.` };
+          return { state: "unknown", reason: `${BRAND.NAME} has no sign-in check for ${provider}.` };
         }
         const acpProvider = provider as (typeof ACP_PROVIDER_IDS)[number];
         try {

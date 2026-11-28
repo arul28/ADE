@@ -47,6 +47,7 @@ import {
   lastOpenCodeDiscoveredLocalModels,
   probeOpenCodeProviderInventory,
 } from "./openCodeInventory";
+import { BRAND } from "../../../shared/brand";
 
 function errorMessage(error: unknown): string {
   if (error && typeof error === "object") {
@@ -294,7 +295,7 @@ export async function removeOpenCodeAccount(
     ? synced.filter((login) => cloudLoginKey(login) !== key)
     : null;
   if (remaining && !writeSyncedCloudLogins(deps, remaining)) {
-    return { ok: false, error: `ADE could not remove ${credential.label} from your ADE account, so it stays signed in. Try again.` };
+    return { ok: false, error: `${BRAND.NAME} could not remove ${credential.label} from your ${BRAND.NAME} account, so it stays signed in. Try again.` };
   }
   try {
     await withCredentialClient(deps, (client) => client.credential.remove({ credentialID: credential.id }));

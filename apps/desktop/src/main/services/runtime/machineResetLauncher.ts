@@ -13,6 +13,7 @@ import {
   buildLocalRuntimeNodeEnv,
   resolveCliScriptPath,
 } from "../localRuntime/localRuntimeConnectionPool";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The desktop's half of the hard reset. The work itself is the CLI's
@@ -78,7 +79,7 @@ export async function planMachineResetFromDesktop(appVersion: string): Promise<M
     let err = "";
     const timer = setTimeout(() => {
       try { child.kill("SIGKILL"); } catch { /* gone */ }
-      reject(new Error("ADE took too long to list what a reset would remove."));
+      reject(new Error(`${BRAND.NAME} took too long to list what a reset would remove.`));
     }, PLAN_TIMEOUT_MS);
     timer.unref?.();
     child.stdout?.on("data", (chunk: Buffer) => { out += chunk.toString("utf8"); });
@@ -114,7 +115,7 @@ export function startMachineResetFromDesktop(
   if (options.rescue === "move" && options.rescueDir && rescueDirIsRemovedByReset(options.rescueDir)) {
     // Checked here as well as in the engine: the engine runs after this app
     // has quit, where its refusal reaches nobody.
-    return { started: false, error: "That folder is one the reset removes. Choose a folder outside ADE's folders, for example in Documents." };
+    return { started: false, error: `That folder is one the reset removes. Choose a folder outside ${BRAND.NAME}'s folders, for example in Documents.` };
   }
   const args = [
     resolveCliScriptPath(),

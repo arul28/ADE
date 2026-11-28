@@ -47,7 +47,7 @@ Silently deliberate on what the user asked for. Pull out:
 
 ### Windows parity is functional scope
 
-ADE ships on Windows, and Windows parity is a **default requirement** for all new code — part of "done", never a follow-up. So it belongs in Round 1, where scope is decided, not in a later review.
+DAEX ships on Windows, and Windows parity is a **default requirement** for all new code — part of "done", never a follow-up. So it belongs in Round 1, where scope is decided, not in a later review.
 
 For each capability you are about to lock into **LockedFunctional**, silently check it against `../quality/references/windows-quirks.md` (paths, process launch/kill, local IPC, credentials, shells, capability gates). Three outcomes:
 
@@ -116,13 +116,13 @@ Call **AskUserQuestion** with `multiSelect: true` for the menu of extras. Each o
 
 Selected items → **LockedExtras**.
 
-Also settle how outside agents use the feature through ADE MCP
+Also settle how outside agents use the feature through DAEX MCP
 (`docs/features/ade-mcp/README.md`), as two choices in the same
-**AskUserQuestion** round: how they reach it (the `ade` tool as is, or a typed
+**AskUserQuestion** round: how they reach it (the `daex` tool as is, or a typed
 tool) and how they see it (plain text, or a card in the chat app; a card hangs
 off a typed tool, so a card means a typed tool too). Record both in
 **LockedFunctional**; a new tool or card is new behavior, so run the
-**Cascade rule** for it. `/test`'s ADE MCP parity pass checks the result.
+**Cascade rule** for it. `/test`'s DAEX MCP parity pass checks the result.
 
 If the user adds a new functional idea in free-text → **Cascade rule**.
 

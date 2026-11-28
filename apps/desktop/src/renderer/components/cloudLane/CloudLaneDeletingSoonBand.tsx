@@ -6,6 +6,7 @@ import { Banner } from "../ui/notice";
 import { idleHeldDetail } from "../settings/cloudDashboard/CloudIdleCleanupNotice";
 import { keepLaneComputer } from "./CloudLaneHeaderButton";
 import { cloudQueueSizeLabel } from "./cloudLanesWithoutComputer";
+import { BRAND } from "../../../shared/brand";
 
 const DAY_MS = 24 * 60 * 60_000;
 
@@ -20,7 +21,7 @@ function deletingSoonWords(deletesAt: number, now: number, sizeLabel: string): {
   const days = Math.max(1, Math.ceil((deletesAt - now) / DAY_MS));
   return {
     title: `This lane's cloud computer is deleted in ${days} ${days === 1 ? "day" : "days"}`,
-    detail: "It isn't being used. Its work that isn't on GitHub is saved in ADE Cloud first, and the lane and its chats stay. "
+    detail: `It isn't being used. Its work that isn't on GitHub is saved in ${BRAND.CLOUD_NAME} first, and the lane and its chats stay. `
       + "Files git ignores, such as .env, aren't saved. "
       + `Your next message makes a new computer at ${sizeLabel}.`,
   };
@@ -49,7 +50,7 @@ export function CloudLaneDeletingSoonBand({ laneId, style }: { laneId: string | 
   const now = Date.now();
   const words = due.held
     ? {
-      title: "This lane's computer wasn't deleted: ADE couldn't save its work",
+      title: `This lane's computer wasn't deleted: ${BRAND.NAME} couldn't save its work`,
       detail: idleHeldDetail({ ...due, held: due.held }, now),
     }
     : deletingSoonWords(due.deletesAt, now, cloudQueueSizeLabel(account));

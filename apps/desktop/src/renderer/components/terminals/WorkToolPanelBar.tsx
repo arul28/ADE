@@ -9,6 +9,7 @@ import { DEVICE_KINDS, machinesForKind, railMachineName } from "./workToolCatalo
 import type { CatalogCardView } from "./useWorkToolCatalog";
 import type { ToolMachine, ToolMachines } from "./useToolMachines";
 import { MachineOsMark } from "./workToolTileMarks";
+import { BRAND } from "../../../shared/brand";
 
 /** The tool as a note to the agent names it. */
 export function toolNoun(tile: Pick<CatalogCardView, "kind" | "label">): string {
@@ -169,7 +170,7 @@ function chatMachineName(machines: readonly ToolMachine[]): string {
 
 /** Why the ADE Cloud iPhone isn't offered: the chat's machine runs an older ADE. */
 export function cloudIphoneUpdateLine(machines: readonly ToolMachine[]): string {
-  return `The ADE Cloud iPhone needs a newer ADE on ${chatMachineName(machines)}. Update ADE there, then open this again.`;
+  return `The ${BRAND.CLOUD_NAME} iPhone needs a newer ${BRAND.NAME} on ${chatMachineName(machines)}. Update ${BRAND.NAME} there, then open this again.`;
 }
 
 function rowLabel(asking: boolean, viewOnly: boolean): string {
@@ -259,7 +260,7 @@ function MachineRow({
         {kind === "ios" && cloudIphoneNeedsUpdate ? (
           <span className="inline-flex h-6 shrink-0 items-center gap-1 px-1.5 font-sans text-[11.5px] text-muted-fg/70" title={cloudIphoneUpdateLine(machines)}>
             <CloudArrowUp size={12} weight="bold" aria-label={cloudIphoneUpdateLine(machines)} />
-            <span className="hidden @[480px]:inline">ADE Cloud: update {chatMachineName(machines)}</span>
+            <span className="hidden @[480px]:inline">{BRAND.CLOUD_NAME}: update {chatMachineName(machines)}</span>
           </span>
         ) : null}
       </div>

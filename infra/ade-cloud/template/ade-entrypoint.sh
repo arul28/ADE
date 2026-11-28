@@ -96,7 +96,7 @@ image_runtime=/opt/ade/runtime/linux-x64
 home_ade="$ADE_HOME/bin/ade"
 home_runtime="$ADE_HOME/runtime/linux-x64"
 ade_version() {
-  ADE_RUNTIME_ROOT="$2" "$1" --version 2>/dev/null | sed -n 's/^ade //p' | head -n 1
+  ADE_RUNTIME_ROOT="$2" "$1" --version 2>/dev/null | sed -n -E 's/^(ade|daex) //p' | head -n 1
 }
 # The newer of two versions.
 newest_version() {
@@ -127,10 +127,16 @@ if [ -n "${ADE_MIN_VERSION:-}" ] && [ "$(newest_version "$version" "$ADE_MIN_VER
     "$bin" brain update --version "$ADE_MIN_VERSION" --no-restart --foreground >> "$log" 2>&1 \
     || echo "$(date -u +%FT%TZ) installing ADE $ADE_MIN_VERSION failed; starting ${version:-the image ADE}" >> "$log"
 fi
+# `daex` beside the persistent-disk `ade`: the `--foreground` update above runs
+# in the old process, which only replaces `ade`. Anything already named `daex`
+# there (our link or someone else's file) is left alone.
+if [ -x "$home_ade" ] && [ ! -e "$ADE_HOME/bin/daex" ] && [ ! -L "$ADE_HOME/bin/daex" ]; then
+  ln -s ade "$ADE_HOME/bin/daex" 2>/dev/null || true
+fi
 
 base_path=$PATH
 delay=2
-# A server launch (docs/plans/cloud-6/c6-c8-launcher-spec.md, C6) sets
+# A server launch (docs/features/ade-cloud/README.md, server launcher) sets
 # ADE_LAUNCH_ID and its ADE_LAUNCH_JOIN code in this machine's env. They
 # reach the brain from here unchanged: it signs the machine in with the code
 # (30 minutes; a brain restarted mid-sign-in may join again with it while the

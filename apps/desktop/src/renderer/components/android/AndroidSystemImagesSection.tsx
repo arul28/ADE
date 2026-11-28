@@ -12,6 +12,7 @@ import { AndroidLicenseDialog } from "./AndroidLicenseDialog";
 import { formatAndroidBytes } from "../../../shared/androidFormat";
 import { androidInstallLine } from "./androidSdkFormat";
 import { useAndroidSystemImages } from "./useAndroidSystemImages";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * System images ▸, under Storage in the device picker (the Apple picker's
@@ -59,7 +60,7 @@ export function AndroidSystemImagesSection({
       title: `Remove ${entry.name}?`,
       message: names.length
         ? `${names.length === 1 ? "This device uses" : `These ${names.length} devices use`} it: ${names.join(", ")}. `
-          + "ADE keeps their files, but they cannot start until you install this image again."
+          + `${BRAND.NAME} keeps their files, but they cannot start until you install this image again.`
         : `No device uses it.${size ? ` This frees ${size}.` : ""}`,
       confirmLabel: size ? `Remove · ${size}` : "Remove",
       destructive: true,

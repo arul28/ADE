@@ -35,6 +35,7 @@ import {
   isSavedKeySource,
   type SyncShared,
 } from "./providerLoginSyncShared";
+import { BRAND } from "../../../shared/brand";
 
 export function createGate(s: SyncShared) {
   const { deps, now, ownerOff, ticks, jobs } = s;
@@ -151,7 +152,7 @@ export function createGate(s: SyncShared) {
         // This wait can take a while: one line for the chat, as the short wait has.
         told = true;
         try {
-          options.onWait?.("Getting this cloud computer's sign-ins from your ADE account…");
+          options.onWait?.(`Getting this cloud computer's sign-ins from your ${BRAND.NAME} account…`);
         } catch (error) {
           // The line is for the person; a caller's failure never holds the turn.
           deps.logger.warn("provider_login.gate_line_failed", { name: error instanceof Error ? error.name : "unknown" });
@@ -204,7 +205,7 @@ export function createGate(s: SyncShared) {
     return {
       severity: "info",
       status: "provider_login_first_cloud_chat",
-      message: `ADE Cloud uses your sign-ins from ${from}.`,
+      message: `${BRAND.CLOUD_NAME} uses your sign-ins from ${from}.`,
       providerLogin: { kind: "first_cloud_chat", origins },
     };
   }

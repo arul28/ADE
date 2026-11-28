@@ -138,7 +138,7 @@ struct LaneMoveReviewView: View {
         if !restores, target.hasRepository == false {
           LaneMoveFactRow(
             symbol: "square.and.arrow.down",
-            text: "\(target.name) doesn't have this project yet. ADE clones it from GitHub first, into the folder beside its newest project. To use another folder, open the project there first."
+            text: "\(target.name) doesn't have this project yet. \(Brand.name) clones it from GitHub first, into the folder beside its newest project. To use another folder, open the project there first."
           )
         }
         if restores, preview?.hasRepository == false {
@@ -161,18 +161,18 @@ struct LaneMoveReviewView: View {
         if savedCopyIncomplete {
           LaneMoveFactRow(
             symbol: "exclamationmark.triangle.fill",
-            text: "\(nonEmptyTrimmed(preview?.fromComputer?.reason) ?? "The computer's saved copy doesn't hold all of this lane's work.") So ADE wakes the computer and moves the lane from there. \(CloudBalanceWords(cloudStore.account).wakingUses)",
+            text: "\(nonEmptyTrimmed(preview?.fromComputer?.reason) ?? "The computer's saved copy doesn't hold all of this lane's work.") So \(Brand.name) wakes the computer and moves the lane from there. \(CloudBalanceWords(cloudStore.account).wakingUses)",
             tone: ADEColor.warning
           )
         } else if source.fromComputer != nil {
           LaneMoveFactRow(
             symbol: "trash",
-            text: "The \(ADECloudMachine.name) computer stays asleep. It saved all of this lane's work when it went to sleep, so ADE deletes it first and brings the lane back from that saved copy. If anything fails after that, the lane stays in your account and you can move it again."
+            text: "The \(ADECloudMachine.name) computer stays asleep. It saved all of this lane's work when it went to sleep, so \(Brand.name) deletes it first and brings the lane back from that saved copy. If anything fails after that, the lane stays in your account and you can move it again."
           )
         } else if deletesComputer {
           LaneMoveFactRow(
             symbol: "trash",
-            text: "When everything has arrived and ADE has checked it, ADE deletes this lane's \(ADECloudMachine.name) computer and the saved copies of the chats that moved. If anything fails, the computer stays."
+            text: "When everything has arrived and \(Brand.name) has checked it, \(Brand.name) deletes this lane's \(ADECloudMachine.name) computer and the saved copies of the chats that moved. If anything fails, the computer stays."
           )
         }
         if let ignoredNote {
@@ -272,7 +272,7 @@ struct LaneMoveReviewView: View {
   private func status(_ run: LaneMoveRun, arrived: Int, total: Int) -> String {
     let cloud = ADECloudMachine.name
     if run.wakesInstead {
-      return "ADE didn't use the saved copy, and nothing was deleted. Wake the \(cloud) computer to move the lane from there."
+      return "\(Brand.name) didn't use the saved copy, and nothing was deleted. Wake the \(cloud) computer to move the lane from there."
     }
     switch run.phase {
     case .moving:

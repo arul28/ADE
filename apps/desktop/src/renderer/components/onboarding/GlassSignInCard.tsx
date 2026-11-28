@@ -11,6 +11,7 @@ import { AdeWordmark } from "../ui/AdeWordmark";
 import { PRIVACY_URL, TERMS_URL } from "../../../shared/legalLinks";
 import { openExternalUrl } from "../../lib/openExternal";
 import { markPrivacyPolicyNoticeSeen } from "../../lib/privacyPolicyNotice";
+import { BRAND } from "../../../shared/brand";
 
 // The notice system (popover, issue report) loads only when a sign-in error
 // shows. Imported here eagerly, it added 7 requests and about 105 KB of JS to
@@ -42,7 +43,7 @@ function LegalLink({ href, children }: { href: string; children: string }) {
 function LegalAgreementLine() {
   return (
     <p className="ade-glass-legal" data-testid="sign-in-legal">
-      By continuing, you agree to ADE's <LegalLink href={TERMS_URL}>Terms</LegalLink> and{" "}
+      By continuing, you agree to {BRAND.NAME}'s <LegalLink href={TERMS_URL}>Terms</LegalLink> and{" "}
       <LegalLink href={PRIVACY_URL}>Privacy Policy</LegalLink>.
     </p>
   );
@@ -94,13 +95,13 @@ export function GlassSignInCard({
   return (
     <div className="ade-glass-card" data-testid="sign-in-glass-card">
       <span className="ade-glass-mark">
-        <AdeWordmark alt="ADE" draggable={false} />
+        <AdeWordmark alt={BRAND.NAME} draggable={false} />
       </span>
       <h1 className="ade-glass-title">
-        {unreadable || expired ? accountSessionTitle(sessionState) : "Sign in to ADE"}
+        {unreadable || expired ? accountSessionTitle(sessionState) : `Sign in to ${BRAND.NAME}`}
       </h1>
       <p className="ade-glass-sub">
-        {notice ?? subtitle ?? "One account for every computer and phone you run ADE on."}
+        {notice ?? subtitle ?? `One account for every computer and phone you run ${BRAND.NAME} on.`}
       </p>
 
       {!configured ? (

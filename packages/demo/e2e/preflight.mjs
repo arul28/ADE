@@ -7,7 +7,7 @@
  * discovering the answer is no.
  */
 
-import { createAdeChat } from "@ade-dev/sdk";
+import { createDaexChat } from "@daex-dev/sdk";
 import { check, summarize } from "./harness.mjs";
 import { makeIsolatedHome } from "../lib/isolatedHome.mjs";
 import { startMcpServer } from "../lib/mcpServer.mjs";
@@ -25,7 +25,7 @@ try {
   check("mcp.ready", Boolean(mcp.url), mcp.url);
 
   process.stdout.write(`isolated home: ${home}\nruntime binary: ${runtimeBinary}\n\n`);
-  client = await createAdeChat({
+  client = await createDaexChat({
     home,
     binaryPath: runtimeBinary,
     logger: verbose ? (line) => process.stderr.write(`${line}\n`) : undefined,

@@ -226,7 +226,7 @@ struct FilesDetailScreen: View {
         FilesContentFallback(
           symbol: binaryKind?.symbol ?? "doc.fill",
           title: binaryKind.map { "\($0.label) file" } ?? "Binary file",
-          message: "iPhone cannot preview this binary inline. Use ADE on the machine to preview it or open it with a local tool."
+          message: "iPhone cannot preview this binary inline. Use \(Brand.name) on the machine to preview it or open it with a local tool."
         )
         .padding(16)
       }
@@ -247,7 +247,7 @@ struct FilesDetailScreen: View {
             FilesCompactBanner(
               symbol: "doc.text.magnifyingglass",
               tint: ADEColor.warning,
-              title: "\(limit.title). Open it in ADE on your machine to read the rest.",
+              title: "\(limit.title). Open it in \(Brand.name) on your machine to read the rest.",
               actionTitle: nil,
               onAction: nil
             )

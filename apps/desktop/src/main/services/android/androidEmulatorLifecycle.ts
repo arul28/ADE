@@ -32,6 +32,7 @@ import type { AndroidEmulatorLifecycle as AndroidMachineEmulatorLifecycle } from
 import { assertAndroidDiskForStart } from "./androidDiskGuard";
 import { reserveAndroidMemoryForStart } from "./androidMemoryGuard";
 import type { AndroidEnv, ReadyAndroidSdk } from "./androidSdk";
+import { BRAND } from "../../../shared/brand";
 
 /*
  * The start and the stop of an emulator ADE runs for a lane, split out of
@@ -234,7 +235,7 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
       if (!options.refuseForeign) return;
       throw new AndroidEmulatorFailure(
         "ANDROID_AVD_RUNNING",
-        `${hooks.avdName} was started outside ADE, so ADE leaves it running. Close it where it was started.`,
+        `${hooks.avdName} was started outside ${BRAND.NAME}, so ${BRAND.NAME} leaves it running. Close it where it was started.`,
       );
     }
     const { adbPath } = await requireSdk({ emulator: false });
@@ -465,7 +466,7 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
         // No disk numbers: the pane offers no Grow for a grow already asked for.
         throw new AndroidEmulatorFailure(
           "ANDROID_LOW_DISK",
-          `ADE is growing this computer's disk to ${answer.toGb} GB for this device's first start. The computer restarts in a moment and ADE continues the chat; start the device again then.`,
+          `${BRAND.NAME} is growing this computer's disk to ${answer.toGb} GB for this device's first start. The computer restarts in a moment and ${BRAND.NAME} continues the chat; start the device again then.`,
         );
       }
       const said = answer ? ` ${answer.message}` : "";

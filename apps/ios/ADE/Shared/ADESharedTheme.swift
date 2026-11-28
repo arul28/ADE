@@ -169,7 +169,7 @@ public enum ADESharedTheme {
         case "copilot":             return "GitHub Copilot"
         case "devin":               return "Devin"
         case "antigravity":         return "Antigravity"
-        case "ade":                 return "ADE"
+        case "ade":                 return Brand.name
         default:
             let value = providerSlug.trimmingCharacters(in: .whitespacesAndNewlines)
             return value.isEmpty ? nil : value

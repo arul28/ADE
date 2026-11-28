@@ -41,10 +41,14 @@ import type { ClaudeContextCategoryKind } from "../claudeContextUsage";
 export type { AgentChatClaudeUsageArgs, ClaudeUsageReport } from "../claudeUsageReport";
 import type { CursorCloudServiceTier } from "./config";
 import type { ExternalSessionProvider } from "./externalSessions";
+import { BRAND } from "../brand";
 
 /** Plain-language causes the interrupted-turn card renders verbatim. */
-export const CHAT_STOP_REASON_BRAIN_RESTARTED = "the ADE brain restarted";
-export const CHAT_STOP_REASON_FOREIGN_BRAIN = "another ADE brain took over this chat";
+export const CHAT_STOP_REASON_BRAIN_RESTARTED = `the ${BRAND.NAME} brain restarted`;
+export const CHAT_STOP_REASON_FOREIGN_BRAIN = `another ${BRAND.NAME} brain took over this chat`;
+/** The same two causes as stored before the rename; readers compare both. */
+export const LEGACY_CHAT_STOP_REASON_BRAIN_RESTARTED = `the ${BRAND.FORMER_NAME} brain restarted`;
+export const LEGACY_CHAT_STOP_REASON_FOREIGN_BRAIN = `another ${BRAND.FORMER_NAME} brain took over this chat`;
 export const CHAT_STOP_REASON_RUNTIME_EXITED = "the runtime process exited";
 export const CHAT_STOP_REASON_PROVIDER_ENDED_TURN = "the provider ended the turn";
 /** A workflow reached its end with agent rows still open — nothing crashed. */
@@ -587,7 +591,7 @@ export function spawnParentGoneNoticeMessage(): string {
  * retries. Recovery commands stay in logs, not in this sentence.
  */
 export function spawnCompletionDeliveryFailedNoticeMessage(): string {
-  return "ADE couldn't send this turn's update to the chat that started this one. This chat will keep working here.";
+  return `${BRAND.NAME} couldn't send this turn's update to the chat that started this one. This chat will keep working here.`;
 }
 
 /**
@@ -687,7 +691,7 @@ export const HOST_CONTINUATION_REASON_LABEL: Readonly<Record<AgentChatHostContin
   interrupted_turn_recovery: "Resuming your last request after a restart",
   stall_nudge: "Asked for a status check",
   cto_stall_nudge: "A chat it started looks stuck",
-  continuity_recovery: "Rebuilt this chat's thread from ADE history",
+  continuity_recovery: `Rebuilt this chat's thread from ${BRAND.NAME} history`,
   plan_followup: "Sent your plan decision",
   background_work_ended: "A background job it was waiting on finished",
   background_work_lost: "Background work it was waiting on was lost",

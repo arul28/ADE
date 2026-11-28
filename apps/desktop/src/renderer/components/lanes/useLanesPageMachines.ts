@@ -32,6 +32,7 @@ import {
   type CloudLaneRowNote,
   type CloudLaneWithoutComputerRow,
 } from "../cloudLane/cloudLanesWithoutComputer";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The machine id of every ADE Cloud lane whose computer was deleted, in the
@@ -39,7 +40,7 @@ import {
  * no call can be routed to it: `resolveLaneTarget` refuses these rows.
  */
 export const DELETED_CLOUD_COMPUTER_MACHINE_ID = "ade-cloud-deleted";
-const DELETED_CLOUD_COMPUTER_REASON = "This lane's ADE Cloud computer was deleted.";
+const DELETED_CLOUD_COMPUTER_REASON = `This lane's ${BRAND.CLOUD_NAME} computer was deleted.`;
 
 /**
  * A lane on another machine is selected here, never in the store's

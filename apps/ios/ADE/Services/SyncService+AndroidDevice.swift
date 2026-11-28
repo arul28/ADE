@@ -194,12 +194,12 @@ let androidNotRunningCode = "ANDROID_NOT_RUNNING"
 let androidLowMemoryCode = "ANDROID_LOW_MEMORY"
 
 /// The sentence for a host that does not advertise the Android commands.
-let androidDeviceHostUnsupportedMessage = "Update ADE on the computer to watch its Android emulator from here."
+let androidDeviceHostUnsupportedMessage = "Update \(Brand.name) on the computer to watch its Android emulator from here."
 
 /// The sentence for a brain that reports the emulator but cannot send its
 /// live picture (`liveView` false).
 let androidDeviceNoLiveViewMessage =
-  "This computer can't send the emulator's live picture to the phone yet. Update ADE on it to watch here."
+  "This computer can't send the emulator's live picture to the phone yet. Update \(Brand.name) on it to watch here."
 
 /// The name a person reads: the AVD folder name with spaces for underscores
 /// (`Pixel_9_API_36` reads "Pixel 9 API 36"), or "Android device".
@@ -467,7 +467,7 @@ extension SyncService {
 
   private func requireAndroidControl(laneId: String) throws {
     guard supportsAndroidDeviceControl(laneId: laneId) else {
-      throw androidUnsupportedError("Controlling this emulator needs a newer ADE on the computer.")
+      throw androidUnsupportedError("Controlling this emulator needs a newer \(Brand.name) on the computer.")
     }
   }
 

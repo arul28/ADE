@@ -5,6 +5,7 @@ import {
   isChatRuntimeReleaseResult,
   type ChatRuntimeReleaseResult,
 } from "../../../../desktop/src/main/services/chat/chatRuntimeOwnership";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * How long the machine brain's send waits for a lane brain to hand a chat
@@ -31,7 +32,7 @@ export async function requestChatRuntimeReleaseFromBrain(args: {
   let settled = false;
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(
-      () => reject(new Error(`The other ADE did not hand the chat back within ${timeoutMs} ms.`)),
+      () => reject(new Error(`The other ${BRAND.NAME} did not hand the chat back within ${timeoutMs} ms.`)),
       timeoutMs,
     );
     timer.unref?.();
@@ -42,7 +43,7 @@ export async function requestChatRuntimeReleaseFromBrain(args: {
     // refused, so nothing may be released now.
     if (settled) {
       connected.close();
-      throw new Error("The other ADE answered after the send gave up.");
+      throw new Error(`The other ${BRAND.NAME} answered after the send gave up.`);
     }
     client = connected;
     await client.request("ade/initialize", chatRuntimeReclaimInitializeParams(args.version));
@@ -52,7 +53,7 @@ export async function requestChatRuntimeReleaseFromBrain(args: {
       withoutIcon: true,
     });
     const projectId = typeof registered?.projectId === "string" ? registered.projectId : null;
-    if (!projectId) throw new Error("The other ADE did not open this project.");
+    if (!projectId) throw new Error(`The other ${BRAND.NAME} did not open this project.`);
     const raw = await client.request("ade/actions/call", {
       name: "run_ade_action",
       arguments: { domain: "chat", action: "releaseChatRuntime", args: { sessionId: args.sessionId } },
@@ -80,9 +81,9 @@ export function readChatRuntimeReleaseAnswer(raw: unknown): ChatRuntimeReleaseRe
   const record = raw && typeof raw === "object" ? raw as Record<string, unknown> : null;
   if (record?.ok === false) {
     const error = record.error && typeof record.error === "object" ? record.error as { message?: unknown } : null;
-    throw new Error(typeof error?.message === "string" ? error.message : "The other ADE refused to hand the chat back.");
+    throw new Error(typeof error?.message === "string" ? error.message : `The other ${BRAND.NAME} refused to hand the chat back.`);
   }
   const answer = record && "result" in record ? record.result : raw;
-  if (!isChatRuntimeReleaseResult(answer)) throw new Error("The other ADE gave no release answer.");
+  if (!isChatRuntimeReleaseResult(answer)) throw new Error(`The other ${BRAND.NAME} gave no release answer.`);
   return answer;
 }

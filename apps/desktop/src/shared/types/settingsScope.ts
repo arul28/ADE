@@ -10,6 +10,7 @@
  */
 
 import { THIS_MACHINE_NAME } from "../machineIdentity";
+import { BRAND } from "../brand";
 
 /**
  * Where a setting is persisted, and therefore who it affects.
@@ -79,12 +80,12 @@ export type SettingScopeCopy = {
 export const SCOPE_COPY: Record<SettingScope, SettingScopeCopy> = {
   account: {
     label: "Account",
-    storedIn: "Your ADE account",
+    storedIn: `Your ${BRAND.NAME} account`,
     affects: "Every computer you sign in on.",
   },
   "account-repo": {
     label: "Account · this repo",
-    storedIn: "Your ADE account, filed under this repository",
+    storedIn: `Your ${BRAND.NAME} account, filed under this repository`,
     affects: "Every computer you sign in on, but only inside this repository.",
   },
   machine: {

@@ -24,6 +24,7 @@ import { ModernSection } from "./primitives";
 import { AppleMachineSection } from "./devices/AppleMachineSection";
 import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
 import { useSettingsMachines } from "./machines/settingsMachinesContext";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Presentation choices for Apple simulators and previews.
@@ -155,7 +156,7 @@ export function AppleDevicesSection() {
         group="Recordings storage"
         anchor="apple-recordings-warn"
         title="Recordings storage warning"
-        hint="Diagnostics warns past this size. ADE never deletes recordings."
+        hint={`Diagnostics warns past this size. ${BRAND.NAME} never deletes recordings.`}
       >
         <AppleStorageControl
           warnBytes={appleDevice.recordingsWarnBytes}

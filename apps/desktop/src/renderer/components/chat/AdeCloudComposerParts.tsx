@@ -21,6 +21,7 @@ import { Z_LAYERS } from "../ui/zLayers";
 import type { AdeCloudTrayAction, AdeCloudTrayNotice } from "./useAdeCloudDraft";
 import { LaneMoveControl } from "../laneMove/LaneMoveControl";
 import type { LaneMoveSource } from "../laneMove/laneMoveModel";
+import { BRAND } from "../../../shared/brand";
 
 
 /**
@@ -68,7 +69,7 @@ export function CloudSizeButton({
           label: `Computer size: ${label}`,
           description: current && currentFacts
             ? `${currentFacts.specs.join(", ")}. ${currentFacts.rateLine}.`
-            : "The size of the new ADE Cloud computer.",
+            : `The size of the new ${BRAND.CLOUD_NAME} computer.`,
         }}
       >
         <DropdownMenu.Trigger asChild>
@@ -349,13 +350,13 @@ export function AdeCloudMachineChip({
     label: ADE_CLOUD_NAME,
     description: lane.noComputer
       ? laneMove
-        ? "This lane has no computer now. ADE makes a new one when you send. Click to move the lane to one of your computers."
-        : "This lane has no computer now. ADE makes a new one when you send."
+        ? `This lane has no computer now. ${BRAND.NAME} makes a new one when you send. Click to move the lane to one of your computers.`
+        : `This lane has no computer now. ${BRAND.NAME} makes a new one when you send.`
       : laneMove
-        ? "This chat runs on its lane's own ADE Cloud computer. It wakes when you send. Click to move the lane or change its size."
+        ? `This chat runs on its lane's own ${BRAND.CLOUD_NAME} computer. It wakes when you send. Click to move the lane or change its size.`
         : canResize
-          ? "This chat runs on its lane's own ADE Cloud computer. It wakes when you send. Click to change its size."
-          : "This chat runs on its lane's own ADE Cloud computer. It wakes when you send.",
+          ? `This chat runs on its lane's own ${BRAND.CLOUD_NAME} computer. It wakes when you send. Click to change its size.`
+          : `This chat runs on its lane's own ${BRAND.CLOUD_NAME} computer. It wakes when you send.`,
   };
   const sizeDialog = sizing && lane.instanceId ? (
     <CloudTierChangeDialog instanceId={lane.instanceId} laneName={lane.laneName} onClose={() => setSizing(false)} />

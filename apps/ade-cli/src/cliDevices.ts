@@ -47,6 +47,8 @@ import {
   type JsonObject,
   type ParsedCli,
 } from "./cli";
+import { BRAND } from "../../desktop/src/shared/brand";
+import { PRODUCT_NAME_PATTERN } from "../../desktop/src/shared/brandNames";
 
 /* ──────────────────────────────────────────────────────────────────────────
    `ade devices` — every device this chat can use, on every machine, and the
@@ -134,7 +136,7 @@ function isAgentCliTerminal(chat: string): boolean {
 }
 
 const AGENT_CLI_KEEPS_NO_CHOICE =
-  "A device choice is kept for ADE chats; this session is an agent CLI in a terminal. Pass --machine <name> on each device command instead.";
+  `A device choice is kept for ${BRAND.NAME} chats; this session is an agent CLI in a terminal. Pass --machine <name> on each device command instead.`;
 
 export function isDevicesCommand(command: readonly string[]): boolean {
   const typed = command[0]?.toLowerCase() ?? "";
@@ -179,11 +181,13 @@ async function chatDeviceAction(
     return await callChatDeviceAction(options, action, args);
   } catch (error) {
     if (isOlderBrainAnswer(errorText(error))) {
-      throw new CliToolError("The ADE running on this machine is older than device choices (ade devices use). Update ADE, then run it again.", { action: `chat.${action}` });
+      throw new CliToolError(`The ${BRAND.NAME} running on this machine is older than device choices (daex devices use). Update ${BRAND.NAME}, then run it again.`, { action: `chat.${action}` });
     }
     throw error;
   }
 }
+
+const NOT_A_DEVICE_CHAT_ANSWER = new RegExp(`device choice is kept for ${PRODUCT_NAME_PATTERN} chats|sessionId is required|was not found|is not an agent chat session`, "i");
 
 /**
  * A device command (`ade apple|android|screen|app-control …`) from a chat
@@ -210,11 +214,11 @@ export async function withChatDeviceChoice(parsed: ParsedCli): Promise<{ parsed:
   if (!sub || sub === "help") return asTyped;
   let sources: ChatDeviceSources;
   try {
-    sources = await withTimeout(callChatDeviceAction(options, "getDeviceSources", {}, CHOICE_READ_TIMEOUT_MS), CHOICE_READ_TIMEOUT_MS + 1_000, "This machine's ADE");
+    sources = await withTimeout(callChatDeviceAction(options, "getDeviceSources", {}, CHOICE_READ_TIMEOUT_MS), CHOICE_READ_TIMEOUT_MS + 1_000, `This machine's ${BRAND.NAME}`);
   } catch (error) {
     const reason = errorText(error);
     // No choice can exist: an older brain, a session that is no ADE chat here.
-    if (isOlderBrainAnswer(reason) || /device choice is kept for ADE chats|sessionId is required|was not found|is not an agent chat session/i.test(reason)) {
+    if (isOlderBrainAnswer(reason) || NOT_A_DEVICE_CHAT_ANSWER.test(reason)) {
       return asTyped;
     }
     // Not "devices use …@here": that would undo the person's choice for a
@@ -227,10 +231,10 @@ export async function withChatDeviceChoice(parsed: ParsedCli): Promise<{ parsed:
   const choice = sources[kind];
   if (!choice) return asTyped;
   if (choice.kind === "cloud") {
-    process.stderr.write("· ios@cloud (this chat's device: the ADE Cloud iPhone; ade devices use ios@here for this machine)\n");
+    process.stderr.write(`· ios@cloud (this chat's device: the ${BRAND.CLOUD_NAME} iPhone; daex devices use ios@here for this machine)\n`);
     return { parsed, cloudIphone: true };
   }
-  process.stderr.write(`· ${formatDeviceId({ kind, source: { kind: "machine", machine: deviceIdMachineSource({ name: choice.machineName, key: choice.machineKey }) } })} (this chat's device; ade devices use ${kind}@here for this machine)\n`);
+  process.stderr.write(`· ${formatDeviceId({ kind, source: { kind: "machine", machine: deviceIdMachineSource({ name: choice.machineName, key: choice.machineKey }) } })} (this chat's device; daex devices use ${kind}@here for this machine)\n`);
   const end = parsed.command.indexOf("--");
   const command = end >= 0
     ? [...parsed.command.slice(0, end), "--machine", choice.machineKey, ...parsed.command.slice(end)]
@@ -258,7 +262,7 @@ async function readRoster(options: GlobalOptions, includeProjects: boolean): Pro
   try {
     client = await connectMachineRuntimeDaemon(options, options.socketPath?.trim() || null, { allowSpawn: false });
   } catch (error) {
-    throw new CliUsageError(`ADE's brain is not running on this machine, so no device can be read (${errorText(error)}). Open ADE, or run \`ade brain start\`.`);
+    throw new CliUsageError(`${BRAND.NAME}'s brain is not running on this machine, so no device can be read (${errorText(error)}). Open ${BRAND.NAME}, or run \`daex brain start\`.`);
   }
   try {
     const roster = await client.request("machines.list", includeProjects ? { includeProjects, projectsBudgetMs: MACHINE_PROJECTS_BUDGET_MS } : { includeProjects }).catch((error: unknown) => ({ state: "unavailable", message: errorText(error) }));
@@ -267,7 +271,7 @@ async function readRoster(options: GlobalOptions, includeProjects: boolean): Pro
       return {
         machines: [],
         note: state === "signed_out"
-          ? "Not signed in to an ADE account here, so only this machine is listed (ade login)."
+          ? `Not signed in to a ${BRAND.NAME} account here, so only this machine is listed (daex login).`
           : `Other machines are unavailable: ${asString(isRecord(roster) ? roster.message : null) ?? "no answer"}.`,
       };
     }
@@ -301,7 +305,7 @@ function matchMachine(machines: readonly RosterMachine[], query: string): Roster
   if (hits.length > 1) {
     throw new CliUsageError(`"${query}" names more than one machine: ${hits.map((machine) => `${machine.name} (${machine.key})`).join(", ")}. Use the key.`);
   }
-  throw new CliUsageError(`No machine on your ADE account is called "${query}". ade machines list --text names them.`);
+  throw new CliUsageError(`No machine on your ${BRAND.NAME} account is called "${query}". daex machines list --text names them.`);
 }
 
 /* ── one device per kind and source ────────────────────────────────────── */
@@ -383,7 +387,7 @@ function deviceRow(
     else if (session && remoteHolder) state = `in use by a chat on ${asString(remoteHolder.machineName) ?? "another machine"}`;
     else if (session) state = inUseBy(asString(session.chatSessionId), chat);
     else if (laneDevice) state = laneDeviceOn ? "on" : "off";
-    else state = "none yet: ade apple start makes this chat's";
+    else state = "none yet: daex apple start makes this chat's";
     const laneName = asString(laneDevice?.name) ?? (session ? asString(session.deviceName) : null);
     return {
       ...base,
@@ -532,7 +536,7 @@ async function listDevices(options: GlobalOptions, only: DeviceKind | null): Pro
       if (!repo) {
         const latest = [...live].sort((a, b) => Number(b.lastOpenedAt ?? 0) - Number(a.lastOpenedAt ?? 0))[0];
         const projectId = latest ? asString(latest.projectId) : null;
-        if (!projectId) return unavailable("no project open in ADE there, so its devices can't be read");
+        if (!projectId) return unavailable(`no project open in ${BRAND.NAME} there, so its devices can't be read`);
         machineProject = projectId;
         // With no origin here, nobody can tell whether the repository is there.
         repoMissing = localIdentity != null;
@@ -590,7 +594,7 @@ function formatDevicesList(value: DevicesList): string {
       row.state,
       row.needs ?? "",
     ]),
-    "ADE devices\n(no devices)",
+    `${BRAND.NAME} devices\n(no devices)`,
     { fullColumns: ["id", "state"] },
   );
   const footer = [
@@ -598,9 +602,9 @@ function formatDevicesList(value: DevicesList): string {
     value.devices.some((row) => row.id !== null && row.chosen) ? "* this chat's device for that kind." : null,
     // A Mac's simulators only: the ADE Cloud iPhone is one phone per account, not a lane's own.
     value.devices.some((row) => row.kind === "ios" && row.source !== "cloud")
-      ? "ios: a chat drives its lane's own simulator, never one a Mac has booted already: ade apple start makes it there (--udid <udid> attaches an installed one)."
+      ? "ios: a chat drives its lane's own simulator, never one a Mac has booted already: daex apple start makes it there (--udid <udid> attaches an installed one)."
       : null,
-    underRemoteMcp() ? MCP_DEVICE_HINT : "Pick one for this chat: ade devices use <id>. One command: --machine <name>.",
+    underRemoteMcp() ? MCP_DEVICE_HINT : "Pick one for this chat: daex devices use <id>. One command: --machine <name>.",
   ].filter(Boolean).join("\n");
   return `${table}\n${footer}\n`;
 }
@@ -615,7 +619,7 @@ function formatDevicesList(value: DevicesList): string {
 function choiceChat(): { chat: string } | { refusal: string } {
   const chat = chatIdentity();
   if (!chat) {
-    return { refusal: "ade devices use keeps a choice for a chat, and this terminal has no chat (ADE_CHAT_SESSION_ID is not set). Name the machine on each command instead: --machine <name>." };
+    return { refusal: "daex devices use keeps a choice for a chat, and this terminal has no chat (ADE_CHAT_SESSION_ID is not set). Name the machine on each command instead: --machine <name>." };
   }
   return isAgentCliTerminal(chat) ? { refusal: AGENT_CLI_KEEPS_NO_CHOICE } : { chat };
 }
@@ -623,36 +627,36 @@ function choiceChat(): { chat: string } | { refusal: string } {
 async function useDevice(options: GlobalOptions, typed: string): Promise<{ value: JsonObject; text: string }> {
   const owner = choiceChat();
   if ("refusal" in owner) throw new CliUsageError(owner.refusal);
-  if (!typed.trim()) throw new CliUsageError("ade devices use <kind>@<source>, e.g. ade devices use \"ios@MacBook Pro\" (ade devices --text lists them).");
+  if (!typed.trim()) throw new CliUsageError("daex devices use <kind>@<source>, e.g. daex devices use \"ios@MacBook Pro\" (daex devices --text lists them).");
   const parsed = parseDeviceId(typed);
   if (!parsed.ok) throw new CliUsageError(parsed.error);
   const { kind, source } = parsed.id;
   const single = thisMachineOnly(options);
   if (source.kind === "cloud") {
     const id = formatDeviceId(parsed.id);
-    if (kind !== "ios") throw new CliToolError(`ADE Cloud has no ${DEVICE_KIND_NOUN[kind]}; ${id} is not a device.`, { id });
+    if (kind !== "ios") throw new CliToolError(`${BRAND.CLOUD_NAME} has no ${DEVICE_KIND_NOUN[kind]}; ${id} is not a device.`, { id });
     const status = await readCloudIphoneStatus(single);
     if (!status.ok && isCloudPhoneMissingAnswer(status.error)) throw new CliToolError(ADE_CLOUD_IPHONE_NEEDS_UPDATE, { id });
-    if (!status.ok) throw new CliToolError(`The ADE Cloud iPhone couldn't be read (${firstSentence(status.error)}).`, { id });
+    if (!status.ok) throw new CliToolError(`The ${BRAND.CLOUD_NAME} iPhone couldn't be read (${firstSentence(status.error)}).`, { id });
     if (status.access !== "on") throw new CliToolError(status.reason ?? ADE_CLOUD_IPHONE_UNAVAILABLE, { id });
     const sources = await chatDeviceAction(single, "setDeviceSource", { kind, source: { kind: "cloud" } });
     // It draws from the account's credits: its minutes left are the credits left at its rate.
     const minutes = status.minutes ? ` Your credits left this period run it about ${status.minutes.left} more ${status.minutes.left === 1 ? "minute" : "minutes"}.` : "";
     // What this cloud iPhone does beyond the basics: an agent learns it here, where it picked the phone.
     const able = cloudPhoneAbilityLines(status, Boolean(status.phoneState && status.phoneState !== "ended")).trim().replace(/\n/g, " ");
-    const text = `This chat's iPhone is the ADE Cloud iPhone from now on: every later ade apple command drives it with no other flag, and spends your ADE Cloud credits while it runs.${minutes}${able ? ` ${able}` : ""} ade devices use ios@here brings it back.`;
+    const text = `This chat's iPhone is the ${BRAND.CLOUD_NAME} iPhone from now on: every later daex apple command drives it with no other flag, and spends your ${BRAND.CLOUD_NAME} credits while it runs.${minutes}${able ? ` ${able}` : ""} daex devices use ios@here brings it back.`;
     // The JSON answer says it too: an agent reading JSON switched every later command without a word.
     return { value: { ok: true, id, sources, note: text }, text };
   }
   let target: RosterMachine | null = null;
   if (source.kind === "machine") {
     const roster = await readRoster(single, false);
-    if (!roster.machines.length) throw new CliUsageError(roster.note ?? "No machines on your ADE account answered.");
+    if (!roster.machines.length) throw new CliUsageError(roster.note ?? `No machines on your ${BRAND.NAME} account answered.`);
     const machine = matchMachine(roster.machines, source.machine);
     if (!machine.isThisMachine) target = machine;
   }
   if (target && !deviceKindRunsOnPlatform(kind, target.platform)) {
-    throw new CliUsageError(`${target.name} can't run an ${DEVICE_KIND_NOUN[kind]}: they run on a Mac. ade devices --kind ${kind} --text lists the ones you can use.`);
+    throw new CliUsageError(`${target.name} can't run an ${DEVICE_KIND_NOUN[kind]}: they run on a Mac. daex devices --kind ${kind} --text lists the ones you can use.`);
   }
   const sources = await chatDeviceAction(single, "setDeviceSource", {
     kind,
@@ -662,7 +666,7 @@ async function useDevice(options: GlobalOptions, typed: string): Promise<{ value
   const noun = DEVICE_KIND_NOUN[kind];
   const text = target
     ? `This chat's ${noun} is on ${target.name} from now on: ade ${command} … goes there with no other flag.`
-      + `${target.online ? "" : ` ${target.name} is offline right now.`} ade devices use ${kind}@here brings it back.`
+      + `${target.online ? "" : ` ${target.name} is offline right now.`} daex devices use ${kind}@here brings it back.`
     : `This chat's ${noun} is on this machine.`;
   const id = formatDeviceId({ kind, source: target ? { kind: "machine", machine: deviceIdMachineSource(target) } : { kind: "here" } });
   return { value: { ok: true, id, sources, note: text }, text };
@@ -672,7 +676,7 @@ async function currentDevices(options: GlobalOptions): Promise<{ value: JsonObje
   const owner = choiceChat();
   if ("refusal" in owner) {
     const text = underRemoteMcp()
-      ? `An ADE MCP app keeps no device choice: the devices are those of the machine the tool's \`machine\` input picks. ${MCP_DEVICE_HINT}`
+      ? `A ${BRAND.NAME} MCP app keeps no device choice: the devices are those of the machine the tool's \`machine\` input picks. ${MCP_DEVICE_HINT}`
       : "This terminal keeps no device choice, so its devices are this machine's unless a command names --machine <name>.";
     return { value: { chat: null, sources: {} }, text };
   }
@@ -689,20 +693,20 @@ async function currentDevices(options: GlobalOptions): Promise<{ value: JsonObje
     }),
     "This chat's devices",
   );
-  return { value: { chat: owner.chat, sources }, text: `${table}\nChange one: ade devices use <kind>@<machine|here>, or ios@cloud for the ADE Cloud iPhone.\n` };
+  return { value: { chat: owner.chat, sources }, text: `${table}\nChange one: daex devices use <kind>@<machine|here>, or ios@cloud for the ${BRAND.CLOUD_NAME} iPhone.\n` };
 }
 
 export async function runDevicesCommand(parsed: ParsedCli): Promise<{ output: string; exitCode: number }> {
   const options = parsed.options;
   if (options.machine || options.allMachines) {
-    throw new CliUsageError("ade devices already lists every machine; leave out --machine.");
+    throw new CliUsageError("daex devices already lists every machine; leave out --machine.");
   }
   // Global flags are already out of the command here.
   const { sub, first, rest, kind, otherFlags } = devicesSubcommand(parsed.command.slice(1));
-  if (otherFlags.length) throw new CliUsageError(`ade devices does not take ${otherFlags[0]}. ade devices --help shows its options.`);
+  if (otherFlags.length) throw new CliUsageError(`daex devices does not take ${otherFlags[0]}. daex devices --help shows its options.`);
   const print = (value: unknown, text: string) => (options.text ? `${text.endsWith("\n") ? text : `${text}\n`}` : formatOutput(value, options, undefined));
   if (sub === "use") {
-    if (kind) throw new CliUsageError("ade devices use takes one device id, e.g. ade devices use android@here.");
+    if (kind) throw new CliUsageError("daex devices use takes one device id, e.g. daex devices use android@here.");
     const result = await useDevice(options, rest.join(" "));
     return { output: print(result.value, result.text), exitCode: 0 };
   }
@@ -711,7 +715,7 @@ export async function runDevicesCommand(parsed: ParsedCli): Promise<{ output: st
     return { output: print(result.value, result.text), exitCode: 0 };
   }
   if (sub === null || rest.length) {
-    throw new CliUsageError(`ade devices: unknown command "${sub === null ? first : rest[0]}". Use ade devices [--kind <kind>], use <id> or current.`);
+    throw new CliUsageError(`daex devices: unknown command "${sub === null ? first : rest[0]}". Use daex devices [--kind <kind>], use <id> or current.`);
   }
   const only = kind == null ? null : kind.trim().toLowerCase();
   if (only !== null && !isDeviceKind(only)) {
@@ -734,7 +738,7 @@ export async function readCloudIphoneStatus(options: GlobalOptions): Promise<Clo
     kind: "execute",
     label: "cloud iPhone status",
     steps: [actionStep("result", "cloud_phone", "getStatus", {})],
-    needsLiveRuntime: "the ADE Cloud iPhone",
+    needsLiveRuntime: `the ${BRAND.CLOUD_NAME} iPhone`,
     shapeResult: (values) => values.result,
   };
   try {
@@ -762,7 +766,7 @@ async function cloudIphoneRows(options: GlobalOptions, only: DeviceKind | null):
     // A brain older than the cloud iPhone has none to read: say so, an update fixes it.
     const note = isCloudPhoneMissingAnswer(status.error) || isOlderBrainAnswer(status.error)
       ? `ios@cloud: ${ADE_CLOUD_IPHONE_NEEDS_UPDATE}`
-      : `ios@cloud: the ADE Cloud iPhone couldn't be read (${firstSentence(status.error)}).`;
+      : `ios@cloud: the ${BRAND.CLOUD_NAME} iPhone couldn't be read (${firstSentence(status.error)}).`;
     return { rows: [], note };
   }
   if (status.access !== "on") return { rows: [], note: null };
@@ -772,9 +776,9 @@ async function cloudIphoneRows(options: GlobalOptions, only: DeviceKind | null):
     rows: [{
       id: formatDeviceId({ kind: "ios", source: { kind: "cloud" } }),
       kind: "ios",
-      what: `ADE Cloud iPhone${minutes}`,
+      what: `${BRAND.CLOUD_NAME} iPhone${minutes}`,
       source: "cloud",
-      machine: "ADE Cloud",
+      machine: BRAND.CLOUD_NAME,
       machineKey: null,
       state: status.phoneState === "ready" ? "on" : status.phoneState === "starting" ? "starting" : "off",
       // The status has the credits left only; extra credits (paid plans) may still start it.

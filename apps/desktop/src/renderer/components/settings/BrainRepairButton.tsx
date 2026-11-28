@@ -2,6 +2,7 @@ import type { BrainRepair } from "../../hooks/useBrainRepair";
 import { COLORS, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { ReportIssueButton } from "../app/ReportIssueButton";
 import { canRestartAde, restartAde } from "../app/restartAde";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The Repair control, shared by every surface that renders a brain-side
@@ -82,7 +83,7 @@ export function BrainRepairButton({
           onClick={() => void restartAde()}
           style={outlineButton({ height, padding: "0 9px", fontSize: 12, flexShrink: 0 })}
         >
-          Restart ADE
+          Restart {BRAND.NAME}
         </button>
       ) : null}
     </>

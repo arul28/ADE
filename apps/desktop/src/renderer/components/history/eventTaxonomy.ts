@@ -1,4 +1,5 @@
 import type { EventIconName } from "./eventIcons";
+import { BRAND } from "../../../shared/brand";
 
 // ── Event Categories ─────────────────────────────────────────────
 export type EventCategory =
@@ -202,7 +203,7 @@ export const EVENT_KIND_META: Record<string, EventKindMeta> = {
   "budget.exceeded":       { label: "Budget Exceeded",    category: "system", iconName: "Warning",        description: "Budget exceeded",          importance: "high" },
 
   // ── Unified ADE work feed ─────────────────────────────────
-  "chat.session":     { label: "Chat Session",    category: "session", iconName: "ChatCircleText", description: "ADE chat session activity",      importance: "medium" },
+  "chat.session":     { label: "Chat Session",    category: "session", iconName: "ChatCircleText", description: `${BRAND.NAME} chat session activity`,      importance: "medium" },
 
   // ── Noise-level events (hidden by default) ─────────────────
   "tool_call":         { label: "Tool Call",         category: "system", iconName: "Wrench",          description: "Tool invocation",              importance: "noise" },

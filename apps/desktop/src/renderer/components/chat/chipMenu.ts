@@ -34,6 +34,7 @@ import type { Chip } from "../../../shared/chips";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { copyTextToClipboard } from "../../lib/launchPromptClipboard";
 import type { ContextMenuEntry } from "../ui/ContextMenu";
+import { BRAND } from "../../../shared/brand";
 
 export type ChipMenuContext = {
   /** The pill's display label, after enrichment. */
@@ -74,7 +75,7 @@ function copyRows(chip: Chip): ContextMenuEntry[] {
     case "url":
       return [copyRow("copy-link", "Copy link", source.url, Link)];
     case "deeplink":
-      return [copyRow("copy-link", "Copy ADE link", source.url, Link)];
+      return [copyRow("copy-link", `Copy ${BRAND.NAME} link`, source.url, Link)];
     case "path":
       return [copyRow("copy-path", "Copy path", source.path)];
     case "mention":

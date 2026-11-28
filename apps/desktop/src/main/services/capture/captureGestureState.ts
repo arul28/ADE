@@ -9,6 +9,7 @@ import type {
   CaptureGestureHealth,
   CaptureGestureSource,
 } from "../../../shared/types/captureGesture";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Everything about the capture gesture that is a decision rather than an effect.
@@ -206,7 +207,7 @@ export function parseCaptureHelperOutput(line: string): CaptureHelperOutput | nu
  * in different words, which reads as two different problems.
  */
 export const MAC_OS_SCREEN_RECORDING_REMEDY =
-  "Grant Screen Recording to ADE in System Settings › Privacy & Security › Screen Recording, then restart ADE.";
+  `Grant Screen Recording to ${BRAND.NAME} in System Settings › Privacy & Security › Screen Recording, then restart ${BRAND.NAME}.`;
 
 /**
  * The macOS 27 remedy. The left/right Command bits stopped reaching the static
@@ -215,12 +216,12 @@ export const MAC_OS_SCREEN_RECORDING_REMEDY =
  * installs the tap again on Try again.
  */
 export const MAC_OS_INPUT_MONITORING_REMEDY =
-  "Grant Input Monitoring to ADE in System Settings › Privacy & Security › Input Monitoring, then choose Try again.";
+  `Grant Input Monitoring to ${BRAND.NAME} in System Settings › Privacy & Security › Input Monitoring, then choose Try again.`;
 
 /** One sentence for the refusal and the health card, like the Screen Recording remedy. */
 export function inputMonitoringMessageFor(platform: NodeJS.Platform): string {
   return platform === "darwin"
-    ? `ADE needs Input Monitoring permission to detect ${captureGestureChordLabel(platform)}. ${MAC_OS_INPUT_MONITORING_REMEDY}`
+    ? `${BRAND.NAME} needs Input Monitoring permission to detect ${captureGestureChordLabel(platform)}. ${MAC_OS_INPUT_MONITORING_REMEDY}`
     : "This system refused the key monitoring the capture gesture needs.";
 }
 
@@ -234,7 +235,7 @@ export function inputMonitoringMessageFor(platform: NodeJS.Platform): string {
 export const UNAVAILABLE_CAPTURE_GESTURE_HEALTH: CaptureGestureHealth = {
   state: "unsupported",
   title: "Screen capture gesture isn’t available here",
-  message: "This ADE build does not include the native capture helper.",
+  message: `This ${BRAND.NAME} build does not include the native capture helper.`,
   recovery: null,
 };
 
@@ -248,10 +249,10 @@ export const UNAVAILABLE_CAPTURE_GESTURE_HEALTH: CaptureGestureHealth = {
  */
 function permissionDeniedMessageFor(platform: string): string {
   if (platform === "darwin") {
-    return `ADE needs Screen Recording permission to capture a window. ${MAC_OS_SCREEN_RECORDING_REMEDY}`;
+    return `${BRAND.NAME} needs Screen Recording permission to capture a window. ${MAC_OS_SCREEN_RECORDING_REMEDY}`;
   }
   if (platform === "win32") {
-    return "Windows refused the keyboard hook the gesture needs. This is usually endpoint security or a group policy; ADE cannot grant it for you.";
+    return `Windows refused the keyboard hook the gesture needs. This is usually endpoint security or a group policy; ${BRAND.NAME} cannot grant it for you.`;
   }
   return "This system refused the permission the capture gesture needs.";
 }
@@ -326,14 +327,14 @@ export function captureGestureHealth(input: CaptureHealthInput): CaptureGestureH
     return {
       state: "missing",
       title: "The capture helper is missing",
-      message: "This ADE installation shipped without the native capture helper. Reinstall or update ADE, then restart the app.",
+      message: `This ${BRAND.NAME} installation shipped without the native capture helper. Reinstall or update ${BRAND.NAME}, then restart the app.`,
       recovery: "reinstall_or_update",
     };
   }
   if (input.inputMonitoringRequired) {
     return {
       state: "permission_denied",
-      title: "ADE can’t watch the Command keys",
+      title: `${BRAND.NAME} can’t watch the Command keys`,
       message: inputMonitoringMessageFor(input.platform),
       // The helper installs the tap again on retry, so granting the permission
       // does not require restarting ADE.
@@ -344,17 +345,17 @@ export function captureGestureHealth(input: CaptureHealthInput): CaptureGestureH
     return {
       state: "monitor_unavailable",
       title: "The capture gesture couldn’t start",
-      message: "ADE couldn’t start the key monitor. Choose Try again; if it keeps happening, restart ADE.",
+      message: `${BRAND.NAME} couldn’t start the key monitor. Choose Try again; if it keeps happening, restart ${BRAND.NAME}.`,
       recovery: "retry",
     };
   }
   if (input.permissionDenied) {
     return {
       state: "permission_denied",
-      title: "ADE can’t record the screen",
+      title: `${BRAND.NAME} can’t record the screen`,
       message: input.platform === "darwin"
         ? MAC_OS_SCREEN_RECORDING_REMEDY
-        : "Windows refused the screen capture. Restart ADE and try again.",
+        : `Windows refused the screen capture. Restart ${BRAND.NAME} and try again.`,
       recovery: "grant_permission",
     };
   }
@@ -370,14 +371,14 @@ export function captureGestureHealth(input: CaptureHealthInput): CaptureGestureH
     return {
       state: "crash_loop",
       title: "The capture helper stopped",
-      message: "The native helper repeatedly exited. Restart ADE; if it happens again, reinstall or update the app.",
+      message: `The native helper repeatedly exited. Restart ${BRAND.NAME}; if it happens again, reinstall or update the app.`,
       recovery: "retry",
     };
   }
   return {
     state: "starting",
     title: "Capture gesture is starting",
-    message: "ADE is preparing the native capture helper.",
+    message: `${BRAND.NAME} is preparing the native capture helper.`,
     recovery: "retry",
   };
 }

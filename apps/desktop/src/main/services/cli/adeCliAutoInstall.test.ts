@@ -91,6 +91,7 @@ describe("runAdeCliAutoInstall", () => {
           completedAt: "2026-08-01T00:00:00.000Z",
           outcome: "installed",
           command: "ade",
+          daexAliasCheckedAt: "2026-08-01T00:00:00.000Z",
         },
       },
     });
@@ -200,6 +201,7 @@ describe("runAdeCliAutoInstall", () => {
       completedAt: "2026-08-19T00:00:00.000Z",
       outcome: "installed",
       command: "ade",
+      daexAliasCheckedAt: "2026-08-19T00:00:00.000Z",
     });
 
     // Second launch: the marker alone stops it.

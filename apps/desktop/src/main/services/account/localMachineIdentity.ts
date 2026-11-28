@@ -25,6 +25,7 @@ import {
   readMachineIdFile,
   rememberMachineIdFile,
 } from "../../../../../ade-cli/src/services/sync/machineIdFile";
+import { BRAND } from "../../../shared/brand";
 
 /** Secrets directories whose device id this process has already made owner-only. */
 const preparedSecretsDirs = new Set<string>();
@@ -95,7 +96,7 @@ export function getOrCreateLocalAccountMachineIdentity(args: {
       if (deviceId) rememberMachineIdFile(deviceIdPath, deviceId);
     }
   }
-  if (!deviceId) throw new Error("Local ADE device identity is unavailable.");
+  if (!deviceId) throw new Error(`Local ${BRAND.NAME} device identity is unavailable.`);
   if (!prepared) {
     try {
       fs.chmodSync(deviceIdPath, 0o600);

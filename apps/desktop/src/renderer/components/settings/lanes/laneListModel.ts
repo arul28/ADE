@@ -1,6 +1,7 @@
 import { PRIMARY_LANE_DISPLAY_NAME } from "../../../../shared/laneDisplayName";
 import type { ProjectLaneHealth } from "../../../../shared/types/projectHealth";
 import type { LaneReclaimRisk } from "../../../../shared/types/lanes";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * The rules behind Project → Lanes: which bucket a lane counts in, what its
@@ -73,7 +74,7 @@ export function laneNotSelectableReason(lane: ProjectLaneHealth): string | null 
   if (lane.runningSessions > 0) return "A chat or terminal is running in it";
   if (lane.dirty) return "It has uncommitted changes";
   if ((lane.unpushedCommits ?? 0) > 0) return "It has commits that aren't pushed";
-  if (!lane.safeToArchive) return "ADE couldn't confirm nothing would be lost";
+  if (!lane.safeToArchive) return `${BRAND.NAME} couldn't confirm nothing would be lost`;
   return null;
 }
 

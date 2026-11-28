@@ -7,6 +7,7 @@ import {
 import { showToast } from "../app/toast/toastStore";
 import { plainErrorText } from "../../lib/plainError";
 import { isDegradedSyncSnapshot, readLocalSyncStatus } from "../../lib/localSyncStatusReader";
+import { BRAND } from "../../../shared/brand";
 
 export type SyncConnections = ReturnType<typeof useSyncConnections>;
 
@@ -27,7 +28,7 @@ function isRemoteBinding(
   );
 }
 
-function errorMessage(error: unknown, fallback = "ADE couldn't read the sync status."): string {
+function errorMessage(error: unknown, fallback = `${BRAND.NAME} couldn't read the sync status.`): string {
   return plainErrorText(error, fallback);
 }
 
@@ -138,7 +139,7 @@ export function useSyncConnections() {
       await work();
       await refresh({ force: true });
     } catch (actionError) {
-      showToast({ tone: "error", title: "That did not work", message: errorMessage(actionError, "ADE couldn't reach that computer's sync service.") });
+      showToast({ tone: "error", title: "That did not work", message: errorMessage(actionError, `${BRAND.NAME} couldn't reach that computer's sync service.`) });
     } finally {
       setBusy(false);
     }

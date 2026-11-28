@@ -46,6 +46,7 @@ import {
 } from "./cliAndroid";
 import { formatAndroidSdkInstallLine, record, records, withAsked } from "./cliAndroidFormat";
 import { appleLeaseAnswer, appleLeaseNotAcquired } from "./cliAppleFormat";
+import { BRAND } from "../../desktop/src/shared/brand";
 
 /** `ade android sdk <verb>`: the only flags each takes. */
 const ANDROID_SDK_VERB_FLAGS: Readonly<Record<string, readonly string[]>> = {
@@ -92,7 +93,7 @@ export function buildAndroidSuitePlan(
   const usage = (message: string) => new CliUsageError(`android ${sub}: ${message}`);
   const readPackage = (required: boolean): string | null => {
     const value = readValue(args, ["--package"]);
-    if (required && !value) throw usage("--package <name> is required (`ade android apps --text` lists them).");
+    if (required && !value) throw usage("--package <name> is required (`daex android apps --text` lists them).");
     return value;
   };
   const readInstallSource = (required: boolean): JsonObject => {
@@ -116,7 +117,7 @@ export function buildAndroidSuitePlan(
       if (value) query[key] = value;
     }
     if (Object.keys(query).length === 0) {
-      throw usage("name the element with --ref, --identifier, --label, --text or --role (`ade android snapshot --text` lists them).");
+      throw usage("name the element with --ref, --identifier, --label, --text or --role (`daex android snapshot --text` lists them).");
     }
     const index = readNumberOption(args, ["--index"]);
     if (index != null) query.index = index;
@@ -178,7 +179,7 @@ export function buildAndroidSuitePlan(
   }
   if (sub === "app-state") {
     const packageName = readValue(args, ["--package"]) ?? positionals()[0] ?? null;
-    if (!packageName) throw usage("pass the package: `ade android app-state <package>` (`ade android apps --text` lists them).");
+    if (!packageName) throw usage("pass the package: `daex android app-state <package>` (`daex android apps --text` lists them).");
     return androidAction("android app-state", "getAppState", { ...laneClaim(), packageName }, "android-app-state");
   }
   if (sub === "foreground") {
@@ -438,7 +439,7 @@ export function buildAndroidSuitePlan(
   }
   if (sub === "permission") {
     const [verb, permission] = positionals();
-    if (verb !== "grant" && verb !== "revoke") throw usage("say grant or revoke, then the permission: ade android permission grant camera --package <name>.");
+    if (verb !== "grant" && verb !== "revoke") throw usage("say grant or revoke, then the permission: daex android permission grant camera --package <name>.");
     if (!permission) {
       throw usage(`name the permission (${ANDROID_PERMISSIONS.map((entry) => entry.short).join(", ")}, or android.permission.<NAME>).`);
     }
@@ -588,7 +589,7 @@ function buildAndroidSdkPlan(
   const allowed = ANDROID_SDK_VERB_FLAGS[verb];
   if (!allowed) throw new CliUsageError(`android sdk: unknown verb '${verb}'. Use status, licenses, install, use, cancel, images or remove.`);
   const unknown = androidFlagNames(args, ctx.carriers).find((name) => name !== "--lane" && !allowed.includes(name));
-  if (unknown) throw new CliUsageError(`android sdk ${verb} does not take ${unknown}. Run 'ade android --help'.`);
+  if (unknown) throw new CliUsageError(`android sdk ${verb} does not take ${unknown}. Run 'daex android --help'.`);
   const setupArgs = (): JsonObject => {
     const folder = readValue(args, ["--folder"]);
     const withCli = readFlag(args, ["--with-cli"]);
@@ -636,8 +637,8 @@ function buildAndroidSdkPlan(
       throw new CliUsageError(
         "android sdk install needs --accept-license <id> for each licence the parts need. "
           + (image
-            ? "Run `ade android sdk images --text` to see each image's licence."
-            : "Run `ade android sdk status` to see them and `ade android sdk licenses` to read them."),
+            ? "Run `daex android sdk images --text` to see each image's licence."
+            : "Run `daex android sdk status` to see them and `daex android sdk licenses` to read them."),
       );
     }
     const plan = image
@@ -659,7 +660,7 @@ function buildAndroidSdkPlan(
   if (verb === "use") {
     const clear = readFlag(args, ["--clear"]);
     const folder = folderPositional ?? null;
-    if (clear === Boolean(folder)) throw new CliUsageError("android sdk use takes a folder, or --clear to go back to the SDK ADE finds.");
+    if (clear === Boolean(folder)) throw new CliUsageError(`android sdk use takes a folder, or --clear to go back to the SDK ${BRAND.NAME} finds.`);
     return ctx.androidAction("android sdk use", "setSdkPath", { path: folder ? localPath(folder, ctx.remote) : null }, "android-status");
   }
   return ctx.androidAction("android sdk cancel", "cancelSdkInstall", {}, "android-sdk-install");

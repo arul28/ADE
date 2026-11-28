@@ -1066,7 +1066,7 @@ struct WorkImportSessionScreen: View {
         await onChatImported(summary)
       } catch {
         ADEHaptics.error()
-        importError = "The imported ADE chat is not available yet. \(error.localizedDescription)"
+        importError = "The imported \(Brand.name) chat is not available yet. \(error.localizedDescription)"
       }
     } else if isRemoteSource {
       ADEHaptics.error()

@@ -8,6 +8,7 @@ import type {
   GitHubTokenType,
 } from "./types/git";
 import { getGitHubTokenAccessState } from "./githubScopes";
+import { BRAND } from "./brand";
 
 /**
  * How long a resolved GitHub credential is reused before it is read again.
@@ -488,10 +489,10 @@ export function selectGithubOperationCredential<T>(
 /** How an issue edit's credential reads in a sentence ("Edits use …"). */
 export function issueWriteSourceLabel(source: GithubOperationCredentialSource | null | undefined): string | null {
   switch (source) {
-    case "app": return "ADE's GitHub App";
+    case "app": return `${BRAND.NAME}'s GitHub App`;
     case "gh": return "your GitHub CLI login";
-    case "account_gh": return "your GitHub CLI login from your ADE account";
-    case "account_app": return "the GitHub sign-in of your ADE account";
+    case "account_gh": return `your GitHub CLI login from your ${BRAND.NAME} account`;
+    case "account_app": return `the GitHub sign-in of your ${BRAND.NAME} account`;
     case "pat":
     case "environment": return "your token";
     default: return null;

@@ -21,6 +21,7 @@ import {
   type ReportDraft,
   type ReportDraftState,
 } from "./reportDraft";
+import { BRAND } from "../../../shared/brand";
 
 export type SentReport = Extract<DiagnosticsManualSendResult, { ok: true }>;
 
@@ -228,13 +229,13 @@ function ReportIssueDialog({ draft, onClose }: { draft: ReportDraft; onClose: ()
       onOpenChange={(next) => {
         if (!next) onClose();
       }}
-      title={sent ? "Report sent" : "Report this error to ADE"}
+      title={sent ? "Report sent" : `Report this error to ${BRAND.NAME}`}
       description={
         sent
           ? undefined
           : canSend
-            ? "It goes to the ADE team, privately. Nothing is sent until you press Send."
-            : "This window can't send reports. You can copy the report and send it to the ADE team privately."
+            ? `It goes to the ${BRAND.NAME} team, privately. Nothing is sent until you press Send.`
+            : `This window can't send reports. You can copy the report and send it to the ${BRAND.NAME} team privately.`
       }
       size="md"
       // A fixed top edge: the body changes height from building to preview to
@@ -302,7 +303,7 @@ function DraftBody({
 
       {!canSend ? (
         <p data-ph-unmask="" style={{ margin: 0, flexShrink: 0, fontSize: 12, color: TEXT_2 }}>
-          Send it to the ADE team in a private message. Don't post it on a public page: it describes your computer.
+          Send it to the {BRAND.NAME} team in a private message. Don't post it on a public page: it describes your computer.
         </p>
       ) : null}
     </div>
@@ -333,7 +334,7 @@ function DraftStatus({ state, canSend }: { state: ReportDraftState; canSend: boo
   if (canSend && state.rebuilt && state.phase === "ready") {
     return (
       <p role="status" data-ph-unmask="" style={style}>
-        That report was out of date, so ADE made a new one. Check it, then press Send again.
+        That report was out of date, so {BRAND.NAME} made a new one. Check it, then press Send again.
       </p>
     );
   }
@@ -369,7 +370,7 @@ export function ReportPreview({
   const preparing = state.phase === "preparing" || state.phase === "idle";
   return (
     <section
-      aria-label="What ADE gets"
+      aria-label={`What ${BRAND.NAME} gets`}
       style={{
         // In a column parent this box gives up height first, down to its
         // header and a few lines; the text scrolls inside it.
@@ -394,7 +395,7 @@ export function ReportPreview({
           borderBottom: `1px solid ${EDGE}`,
         }}
       >
-        <span style={{ fontSize: 12, fontWeight: 600, color: "var(--color-fg)" }}>What ADE gets</span>
+        <span style={{ fontSize: 12, fontWeight: 600, color: "var(--color-fg)" }}>What {BRAND.NAME} gets</span>
         <span style={{ marginLeft: "auto", fontSize: 11.5, color: TEXT_2, fontVariantNumeric: "tabular-nums" }}>
           {prepared ? formatReportSize(prepared.bytes) : preparing ? "Building…" : ""}
         </span>
@@ -472,7 +473,7 @@ export function ReportPreview({
         </div>
       ) : (
         <div role="alert" data-ph-unmask="" style={{ padding: "12px", fontSize: 12, color: WARN }}>
-          ADE couldn't build the report.{" "}
+          {BRAND.NAME} couldn't build the report.{" "}
           <button type="button" onClick={onRetry} style={INLINE_LINK}>
             Try again
           </button>
@@ -520,7 +521,7 @@ function SentBody({ sent }: { sent: SentReport }): JSX.Element {
         </button>
       </div>
       <p style={{ margin: 0, fontSize: 12.5, color: "var(--color-secondary-fg, var(--color-fg))" }}>
-        The ADE team reads every report. If you contact ADE support, quote this reference.
+        The {BRAND.NAME} team reads every report. If you contact {BRAND.NAME} support, quote this reference.
       </p>
       {sent.publicIssueUrl ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 3, paddingTop: 10, borderTop: `1px solid ${EDGE}` }}>
@@ -532,7 +533,7 @@ function SentBody({ sent }: { sent: SentReport }): JSX.Element {
             Open a public GitHub issue
           </button>
           <span style={{ fontSize: 11.5, color: TEXT_2 }}>
-            Optional. Anyone can read it, so it holds only the reference, the ADE version and your OS.
+            Optional. Anyone can read it, so it holds only the reference, the {BRAND.NAME} version and your OS.
           </span>
           {issueFailed ? (
             <span role="alert" style={{ fontSize: 11.5, color: WARN }}>The GitHub page didn't open.</span>

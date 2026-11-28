@@ -4,6 +4,7 @@ import { WhatsNewFeature } from "./WhatsNewFeature";
 import pr from "./assets/phone-pr.webp";
 import comments from "./assets/phone-comments.webp";
 import checks from "./assets/phone-checks.webp";
+import { BRAND } from "../../../../shared/brand";
 
 /** Pull requests in the iPhone app: reactions, comments, live checks. */
 export default function PhonePullRequestsAnnouncement({ close }: AnnouncementPageProps) {
@@ -12,7 +13,7 @@ export default function PhonePullRequestsAnnouncement({ close }: AnnouncementPag
       close={close}
       place={{ icon: <DeviceMobile size={17} weight="fill" />, name: "iPhone app" }}
       headline="Review PRs from your phone."
-      sentence="Read, comment and watch checks in the ADE iPhone app."
+      sentence={`Read, comment and watch checks in the ${BRAND.NAME} iPhone app.`}
       action={{ tipId: "phone", label: "Pair your iPhone" }}
       media={{
         kind: "phones",

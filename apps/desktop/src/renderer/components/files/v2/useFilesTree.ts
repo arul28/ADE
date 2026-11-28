@@ -20,6 +20,7 @@ import {
 } from "./filesTreeCache";
 import type { PinnedFilesApi } from "./pinnedFilesApi";
 import { plainErrorText } from "../../../lib/plainError";
+import { BRAND } from "../../../../shared/brand";
 
 const TREE_PAGE_SIZE = 2_000;
 // The root listing is the first thing every visit needs. Fetching two levels
@@ -166,7 +167,7 @@ export function useFilesTree(args: FilesTreeArgs) {
       setRootStatus("ready");
     } catch (err) {
       if (workspaceIdRef.current !== reqId) return;
-      setError(plainErrorText(err, "ADE couldn't read the files."));
+      setError(plainErrorText(err, `${BRAND.NAME} couldn't read the files.`));
       setRootStatus("failed");
     }
   }, [files, workspaceId, fetchGitDecorations, projectCacheKey, setError, workspaceIdRef]);

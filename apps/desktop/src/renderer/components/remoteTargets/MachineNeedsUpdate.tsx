@@ -14,6 +14,7 @@ import {
 } from "./machineUpdates";
 import { connectedMachinesFromSnapshot, machineUpdateTargetVersion, type ConnectedMachine } from "./remoteMachineModel";
 import { describeMachineUpdateAttempt, type MachineUpdateStatus } from "./machineUpdateStatus";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * "Update & restart" for one connected machine, as a notice's actions: the
@@ -81,10 +82,10 @@ export function MachineNeedsUpdate({
   const known = useKnownAdeVersions();
   const ask = useMachineUpdateAsk(machine, machineName, machine ? machineUpdateTargetVersion(machine, known) : null);
   const detail = ask.askable
-    ? `${machineName} runs an older ADE. Update it ${unlocks}`
+    ? `${machineName} runs an older ${BRAND.NAME}. Update it ${unlocks}`
     : machine
-      ? `${machineName} runs an older ADE that can't be updated from here. Update it on that computer ${unlocks}`
-      : `${machineName} runs an older ADE. Connect to it to update it from here, or update it on that computer ${unlocks}`;
+      ? `${machineName} runs an older ${BRAND.NAME} that can't be updated from here. Update it on that computer ${unlocks}`
+      : `${machineName} runs an older ${BRAND.NAME}. Connect to it to update it from here, or update it on that computer ${unlocks}`;
   return (
     <Banner
       layout="inline"
@@ -92,7 +93,7 @@ export function MachineNeedsUpdate({
         id: `machine-needs-update:${machineKey}`,
         tone: "warning",
         icon: <ArrowsClockwise size={16} weight="bold" />,
-        title: `Update ADE on ${machineName}`,
+        title: `Update ${BRAND.NAME} on ${machineName}`,
         detail,
         actions: ask.actions,
         busy: ask.busy,

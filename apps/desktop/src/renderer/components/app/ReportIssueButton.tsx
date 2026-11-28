@@ -3,9 +3,10 @@ import type { DiagnosticReportRequestPayload } from "../../../shared/types/diagn
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { openPublicIssue, openReportDialog, useReportDialogFor } from "./ReportIssueDialog";
 import { reportBridge } from "./reportDraft";
+import { BRAND } from "../../../shared/brand";
 
 /** The full name of the control, also its accessible name where a notice shows a short label. */
-export const REPORT_ERROR_LABEL = "Report this error to ADE…";
+export const REPORT_ERROR_LABEL = `Report this error to ${BRAND.NAME}…`;
 
 /** The inline actions inside the result line: text links, not buttons in a row. */
 const REPORT_LINK_BUTTON =
@@ -119,7 +120,7 @@ export function ReportIssueResult({
         {link(copied ? "Copied" : "Copy", () => void copy(sent.reference), copied ? "Reference copied" : "Copy the reference")}
       </span>
       <span>
-        The ADE team reads it. Quote the reference if you contact support.
+        The {BRAND.NAME} team reads it. Quote the reference if you contact support.
         {sent.publicIssueUrl ? <>{" "}{link("Open a public GitHub issue", () => void openIssue())}</> : null}
         {issueFailed ? <span className="text-(color:--kit-warn)">{" "}The GitHub page didn't open.</span> : null}
       </span>

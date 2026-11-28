@@ -42,6 +42,7 @@ import { getModelById, resolveProviderGroupForModel } from "./modelRegistry";
 import { modelMentionChipLabel, parseModelMentions, type ModelMention } from "./modelMentions";
 import { findSmartLinks, type SmartLinkPreview } from "./smartLinks";
 import type { ChatMentionKind } from "./types/chatMentions";
+import { BRAND } from "./brand";
 
 /**
  * Every pill ADE can draw. Flat on purpose: the provider that produced a chip
@@ -310,7 +311,7 @@ export function chipFromDeeplinkTarget(url: string, target: DeeplinkTarget): Chi
       // a chip cannot claim to be a setting it is not. The renderer adds the
       // chat machine's name to a Computer page.
       const entry = settingsEntryById(target.entryId);
-      if (!entry) return { kind: "ade_link", token: url, label: `ADE · settings/${target.entryId}`, source };
+      if (!entry) return { kind: "ade_link", token: url, label: `${BRAND.NAME} · settings/${target.entryId}`, source };
       return { kind: "setting", token: url, label: settingsEntryLabel(entry), source };
     }
     case "lane-share":
@@ -320,11 +321,11 @@ export function chipFromDeeplinkTarget(url: string, target: DeeplinkTarget): Chi
       return { kind: "ade_link", token: url, label: "Automation run", source };
     case "open": {
       const place = openPlaceById(target.place);
-      if (!place) return { kind: "ade_link", token: url, label: `ADE · open/${target.place}`, source };
+      if (!place) return { kind: "ade_link", token: url, label: `${BRAND.NAME} · open/${target.place}`, source };
       return { kind: "place", token: url, label: place.label, source };
     }
     case "invite":
-      return { kind: "ade_link", token: url, label: "ADE Cloud invite", source };
+      return { kind: "ade_link", token: url, label: `${BRAND.CLOUD_NAME} invite`, source };
   }
 }
 

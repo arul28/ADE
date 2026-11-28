@@ -9,6 +9,7 @@
  * message a caller can act on; the CLI turns it into a usage error.
  */
 
+import { BRAND } from "../../desktop/src/shared/brand";
 type Row = Record<string, unknown>;
 
 const LINEAR_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -218,7 +219,7 @@ export function resolveLinearUserId(ctx: LinearLookupContext, value: string): st
   const trimmed = value.trim();
   if (isNoneValue(trimmed)) return null;
   if (trimmed.toLowerCase() === "me") {
-    if (!ctx.viewerId) throw new Error("ADE could not read your Linear user. Pass a name, email, or id instead of me.");
+    if (!ctx.viewerId) throw new Error(`${BRAND.NAME} could not read your Linear user. Pass a name, email, or id instead of me.`);
     return ctx.viewerId;
   }
   if (looksLikeLinearId(trimmed)) return trimmed;
@@ -236,7 +237,7 @@ export function resolveLinearUserId(ctx: LinearLookupContext, value: string): st
 export function resolveLinearLabelIds(ctx: LinearLookupContext, values: string[]): string[] {
   if (values.length === 0) return [];
   if (ctx.picker && !Array.isArray(ctx.picker.labels) && values.some((value) => !looksLikeLinearId(value))) {
-    throw new Error("This ADE brain does not send Linear labels. Update ADE, or pass label ids.");
+    throw new Error(`This ${BRAND.NAME} brain does not send Linear labels. Update ${BRAND.NAME}, or pass label ids.`);
   }
   const team = teamOf(ctx);
   const all = rows(ctx.picker?.labels);

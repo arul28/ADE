@@ -7,6 +7,7 @@ import { ipcErrorMessage } from "../../lib/format";
 import { useCloudAccount } from "../../state/cloudAccountStore";
 import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import type { ProjectMachine } from "../../state/projectMachines";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * "ADE Cloud" as the CTO's home, for the CTO page (`shared/ctoCloudHome.ts`).
@@ -125,7 +126,7 @@ export function useCtoCloudHome(args: {
         onChosen({ machine: linkMachine, adopted });
       } catch (err) {
         linkingRef.current = null;
-        setError(ipcErrorMessage(err) || "ADE couldn't make the new computer the CTO's home.");
+        setError(ipcErrorMessage(err) || `${BRAND.NAME} couldn't make the new computer the CTO's home.`);
       }
     })();
   }, [active, bridge, choose, job, linkMachine, onChosen]);
@@ -133,7 +134,7 @@ export function useCtoCloudHome(args: {
   const planKnown = account != null;
   const paid = account != null && isPaidPlanId(cloudPlanIdOf(account));
   const blocked = !bridge
-    ? "Set this up from the ADE app on a computer."
+    ? `Set this up from the ${BRAND.NAME} app on a computer.`
     : !identity
       ? CTO_CLOUD_HOME_NEEDS_GITHUB
       : null;
@@ -155,12 +156,12 @@ export function useCtoCloudHome(args: {
   const start = useCallback(async () => {
     if (!bridge || !identity) return;
     linkingRef.current = null;
-    await run(() => bridge({ method: "start", args: { originUrl: origin } }), "ADE couldn't start making the computer.");
+    await run(() => bridge({ method: "start", args: { originUrl: origin } }), `${BRAND.NAME} couldn't start making the computer.`);
   }, [bridge, identity, origin, run]);
 
   const retry = useCallback(async () => {
     if (!bridge || !job) return;
-    await run(() => bridge({ method: "retry", args: { jobId: job.jobId } }), "ADE couldn't try again.");
+    await run(() => bridge({ method: "retry", args: { jobId: job.jobId } }), `${BRAND.NAME} couldn't try again.`);
   }, [bridge, job, run]);
 
   const cancel = useCallback(async () => {
@@ -175,7 +176,7 @@ export function useCtoCloudHome(args: {
         return null;
       }
       return value;
-    }, "ADE couldn't cancel. Delete the computer in Settings › ADE Cloud.");
+    }, `${BRAND.NAME} couldn't cancel. Delete the computer in Settings › ${BRAND.CLOUD_NAME}.`);
   }, [bridge, job, run]);
 
   const upgrade = useCallback(async () => {
@@ -184,7 +185,7 @@ export function useCtoCloudHome(args: {
     await run(async () => {
       await open("plus");
       return null;
-    }, "ADE couldn't open the upgrade page.");
+    }, `${BRAND.NAME} couldn't open the upgrade page.`);
     // The plan changes when the checkout finishes; the account store reads it again.
   }, [api, run]);
 

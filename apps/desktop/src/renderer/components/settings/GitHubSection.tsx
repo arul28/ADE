@@ -52,8 +52,8 @@ function issueAccessHint(access: GitHubIssueWriteAccess): string {
   const via = issueWriteSourceLabel(access.writeSource);
   if (access.app?.needsApproval) {
     return via
-      ? `Edits go through ${via}. Approve the Issues permission for ADE for GitHub to edit with the app.`
-      : "Approve the Issues permission for ADE for GitHub on GitHub before ADE can edit issues.";
+      ? `Edits go through ${via}. Approve the Issues permission for ${BRAND.NAME} for GitHub to edit with the app.`
+      : `Approve the Issues permission for ${BRAND.NAME} for GitHub on GitHub before ${BRAND.NAME} can edit issues.`;
   }
   return via ? `Edits go through ${via}.` : "Sign in with the GitHub CLI or a token to edit issues.";
 }
@@ -63,15 +63,16 @@ import { Banner } from "../ui/notice";
 import { confirmDialog } from "../ui/dialog";
 import { plainErrorText } from "../../lib/plainError";
 import { requirePin } from "../../state/repositoryScope";
+import { BRAND } from "../../../shared/brand";
 
 type TokenType = "classic" | "fine-grained" | "unknown";
 
 const GH_AUTH_REFRESH_COMMAND = "gh auth refresh -h github.com -s repo -s workflow";
 const GH_AUTH_LOGIN_WITH_GIST_COMMAND = "gh auth login -h github.com -s repo -s workflow -s gist";
 const GH_AUTH_REFRESH_WITH_GIST_COMMAND = "gh auth refresh -h github.com -s repo -s workflow -s gist";
-const GITHUB_CLASSIC_TOKEN_NEW_URL = "https://github.com/settings/tokens/new?description=ADE%20desktop%20PR%20workflows&scopes=repo,workflow";
-const GITHUB_CLASSIC_TOKEN_WITH_GIST_NEW_URL = "https://github.com/settings/tokens/new?description=ADE%20desktop%20PR%20workflows&scopes=repo,workflow,gist";
-const GITHUB_FINE_GRAINED_TOKEN_NEW_URL = "https://github.com/settings/personal-access-tokens/new?name=ADE&description=ADE%20desktop%20PR%20workflows&contents=write&pull_requests=write&metadata=read&actions=write&checks=write&statuses=read&workflows=write";
+const GITHUB_CLASSIC_TOKEN_NEW_URL = `https://github.com/settings/tokens/new?description=${BRAND.NAME}%20desktop%20PR%20workflows&scopes=repo,workflow`;
+const GITHUB_CLASSIC_TOKEN_WITH_GIST_NEW_URL = `https://github.com/settings/tokens/new?description=${BRAND.NAME}%20desktop%20PR%20workflows&scopes=repo,workflow,gist`;
+const GITHUB_FINE_GRAINED_TOKEN_NEW_URL = `https://github.com/settings/personal-access-tokens/new?name=${BRAND.NAME}&description=${BRAND.NAME}%20desktop%20PR%20workflows&contents=write&pull_requests=write&metadata=read&actions=write&checks=write&statuses=read&workflows=write`;
 
 const REQUIRED_GITHUB_REPOSITORY_PERMISSIONS = [
   "Contents: Read and write",
@@ -97,14 +98,14 @@ function tokenTypeDetectionLabel(type: TokenType): string {
     case "fine-grained":
       return "Looks like a fine-grained token";
     default:
-      return "Not a format ADE recognizes; it will still try it";
+      return `Not a format ${BRAND.NAME} recognizes; it will still try it`;
   }
 }
 
 function credentialSourceLabel(source: GitHubStatus["authSource"] | undefined): string {
   switch (source) {
     case "app":
-      return "ADE for GitHub";
+      return `${BRAND.NAME} for GitHub`;
     case "gh":
       return "GitHub CLI";
     case "pat":
@@ -113,7 +114,7 @@ function credentialSourceLabel(source: GitHubStatus["authSource"] | undefined): 
       // Short enough for the hero's "Reads with" cell.
       return "GitHub CLI from account";
     case "account_app":
-      return "ADE for GitHub, from your ADE account";
+      return `${BRAND.NAME} for GitHub, from your ${BRAND.NAME} account`;
     case "environment":
       return "Environment token";
     default:
@@ -135,7 +136,7 @@ function credentialSourceDetail(
     case "gh":
       return "Your gh auth login";
     case "pat":
-      return account?.patFromAccount ? "From your ADE account" : "Saved in ADE on this machine";
+      return account?.patFromAccount ? `From your ${BRAND.NAME} account` : `Saved in ${BRAND.NAME} on this machine`;
     case "account_gh":
       return "Signed in with gh on another computer";
     case "account_app": {
@@ -143,9 +144,9 @@ function credentialSourceDetail(
       const grant = accountApp?.repoGrant ?? null;
       // Writes go through it only where the installation on the owner accepted them.
       if (grant && grant.installed && !grant.canWrite) {
-        return `Connected to your ADE account${login}. Reads only on ${grant.owner} until an owner approves the new permissions`;
+        return `Connected to your ${BRAND.NAME} account${login}. Reads only on ${grant.owner} until an owner approves the new permissions`;
       }
-      return `Connected to your ADE account${login}`;
+      return `Connected to your ${BRAND.NAME} account${login}`;
     }
     case "environment":
       return "GITHUB_TOKEN or GH_TOKEN variable";
@@ -173,10 +174,10 @@ function accountLine(
   switch (credential.source) {
     case "gh":
       if (account.ghSharedFromHere) {
-        return { note: "Shared with your ADE account, so your other computers can use it.", action: "remove-gh" };
+        return { note: `Shared with your ${BRAND.NAME} account, so your other computers can use it.`, action: "remove-gh" };
       }
       if (account.ghRemovedFromAccount && credential.available) {
-        return { note: "Not shared with your ADE account.", action: "share-gh" };
+        return { note: `Not shared with your ${BRAND.NAME} account.`, action: "share-gh" };
       }
       return null;
     case "pat":
@@ -194,12 +195,12 @@ function accountLine(
       }
       if (credential.failure?.kind === "permission_denied" || (missingScopes && credential.activeFor.length > 0)) {
         return {
-          note: "It is missing scopes ADE needs. Add them on the computer it came from:",
+          note: `It is missing scopes ${BRAND.NAME} needs. Add them on the computer it came from:`,
           command: GH_AUTH_REFRESH_COMMAND,
           action: "remove-gh",
         };
       }
-      return { note: "Shared with this computer through your ADE account.", action: "remove-gh" };
+      return { note: `Shared with this computer through your ${BRAND.NAME} account.`, action: "remove-gh" };
     default:
       return null;
   }
@@ -319,7 +320,7 @@ export function GitHubSection() {
       })
       .catch((error: unknown) => {
         if (statusRequestRef.current !== request) return;
-        setStatusError(plainErrorText(error, "ADE couldn't check GitHub on this computer."));
+        setStatusError(plainErrorText(error, `${BRAND.NAME} couldn't check GitHub on this computer.`));
       });
   }, []);
 
@@ -400,7 +401,7 @@ export function GitHubSection() {
       .then((status) => {
         setGithubStatus(status);
         setShowPatSetup(false);
-        showToast({ tone: "success", title: "Token removed", message: status.authSource === "gh" ? "ADE is using your GitHub CLI sign-in." : undefined });
+        showToast({ tone: "success", title: "Token removed", message: status.authSource === "gh" ? `${BRAND.NAME} is using your GitHub CLI sign-in.` : undefined });
       })
       .catch((err) => showToast({ tone: "error", title: "GitHub action failed", message: plainErrorText(err, "Try again in a moment.") }))
       .finally(() => setGithubBusy(false));
@@ -414,8 +415,8 @@ export function GitHubSection() {
     if (!setGhAccountSharing) return;
     if (!enabled) {
       const confirmed = await confirmDialog({
-        title: "Remove the GitHub CLI sign-in from your ADE account?",
-        message: "Every computer that uses it through your account stops, ADE Cloud computers too. A gh sign-in made on a computer stays on that computer.",
+        title: `Remove the GitHub CLI sign-in from your ${BRAND.NAME} account?`,
+        message: `Every computer that uses it through your account stops, ${BRAND.CLOUD_NAME} computers too. A gh sign-in made on a computer stays on that computer.`,
         confirmLabel: "Remove from my account",
         destructive: true,
       });
@@ -425,7 +426,7 @@ export function GitHubSection() {
     setGhAccountSharing({ enabled }, pin)
       .then((status) => {
         setGithubStatus(status);
-        showToast({ tone: "success", title: enabled ? "Shared with your ADE account" : "Removed from your ADE account" });
+        showToast({ tone: "success", title: enabled ? `Shared with your ${BRAND.NAME} account` : `Removed from your ${BRAND.NAME} account` });
       })
       .catch((err) => showToast({ tone: "error", title: "GitHub action failed", message: plainErrorText(err, "Try again in a moment.") }))
       .finally(() => setGithubBusy(false));
@@ -433,7 +434,7 @@ export function GitHubSection() {
 
   const handleRemovePatFromAccount = async () => {
     const confirmed = await confirmDialog({
-      title: "Remove the token from your ADE account?",
+      title: `Remove the token from your ${BRAND.NAME} account?`,
       message: "It is removed from this computer and from your other computers. A token pasted on another computer stays there.",
       confirmLabel: "Remove from my account",
       destructive: true,
@@ -603,7 +604,7 @@ export function GitHubSection() {
           label: "Pushes with",
           value: pushesWith,
           tone: "warn" as const,
-          title: "Git signs in on its own for push, pull and fetch. When this computer has no git sign-in, ADE lends git its GitHub credential.",
+          title: `Git signs in on its own for push, pull and fetch. When this computer has no git sign-in, ${BRAND.NAME} lends git its GitHub credential.`,
         }]
       : []),
     ...(issueAccessLabel
@@ -681,7 +682,7 @@ export function GitHubSection() {
     </div>
   ) : permissionMode === "fine-grained" && tokenAuthenticated ? (
     <div className="ade-ig-method-extra">
-      <span className="ade-ig-note">GitHub doesn&rsquo;t list a fine-grained token&rsquo;s permissions, so ADE checks the repository directly.</span>
+      <span className="ade-ig-note">GitHub doesn&rsquo;t list a fine-grained token&rsquo;s permissions, so {BRAND.NAME} checks the repository directly.</span>
     </div>
   ) : null;
 
@@ -716,7 +717,7 @@ export function GitHubSection() {
             model={{
               id: "github-status-error",
               tone: "warning",
-              title: "ADE couldn't read GitHub's status on this computer",
+              title: `${BRAND.NAME} couldn't read GitHub's status on this computer`,
               detail: statusError,
               actions: [{
                 label: "Retry",
@@ -748,7 +749,7 @@ export function GitHubSection() {
               tone: "warning",
               title: (
                 <span style={{ fontWeight: 500 }}>
-                  <strong>{credentialSourceLabel(credentialFallback.fromSource)}</strong> isn&rsquo;t answering, so ADE is using{" "}
+                  <strong>{credentialSourceLabel(credentialFallback.fromSource)}</strong> isn&rsquo;t answering, so {BRAND.NAME} is using{" "}
                   <strong>{credentialSourceLabel(credentialFallback.toSource)}</strong> for now. It switches back on its own
                   {credentialFallbackRetryAt ? ` after ${credentialFallbackRetryAt}` : ""}.
                 </span>
@@ -835,7 +836,7 @@ export function GitHubSection() {
             model={{
               id: "github-issues-approval",
               tone: "neutral",
-              title: "Approve the Issues permission for ADE for GitHub",
+              title: `Approve the Issues permission for ${BRAND.NAME} for GitHub`,
               detail: issueAccessHint(issueAccess),
               actions: [{
                 label: "Approve on GitHub",
@@ -855,7 +856,7 @@ export function GitHubSection() {
         icon={<TerminalWindow size={16} weight="duotone" />}
         title="How GitHub connects"
         hint={connectMode.error ?? (cliOnly
-          ? "Uses your GitHub CLI and git sign-ins on the computers on your ADE account."
+          ? `Uses your GitHub CLI and git sign-ins on the computers on your ${BRAND.NAME} account.`
           : "Pick GitHub CLI only if your organization blocks the App and personal access tokens.")}
         actions={(
           <SettingsSegmented<GithubConnectMode>
@@ -890,7 +891,7 @@ export function GitHubSection() {
           anchor="github-connection"
           icon={<Key size={16} weight="duotone" />}
           title="Your sign-in"
-          hint="ADE uses the first of these that works. Changes to GitHub go through one that can write."
+          hint={`${BRAND.NAME} uses the first of these that works. Changes to GitHub go through one that can write.`}
         >
           {shouldShowGhAuthInstructions ? (
             <div className="ade-ig-choice" data-primary="true">
@@ -972,12 +973,12 @@ export function GitHubSection() {
           <IntegrationCard
             anchor="github-cli-only"
             icon={<WebhooksLogo size={16} weight="duotone" />}
-            title="What needs ADE for GitHub"
+            title={`What needs ${BRAND.NAME} for GitHub`}
             hint="Pull requests, checks and issues use your GitHub CLI sign-in. Pushes and pulls use git."
           >
             <div className="ade-ig-choice" data-github-app-only-features="">
-              <p><b>Live pull request updates.</b> GitHub sends review and check updates to ADE immediately through the App. In CLI-only mode, ADE checks for changes periodically.</p>
-              <p><b>GitHub on ADE Cloud computers.</b> Share your GitHub CLI sign-in with your ADE account instead (on the GitHub CLI row).</p>
+              <p><b>Live pull request updates.</b> GitHub sends review and check updates to {BRAND.NAME} immediately through the App. In CLI-only mode, {BRAND.NAME} checks for changes periodically.</p>
+              <p><b>GitHub on {BRAND.CLOUD_NAME} computers.</b> Share your GitHub CLI sign-in with your {BRAND.NAME} account instead (on the GitHub CLI row).</p>
             </div>
           </IntegrationCard>
         ) : (

@@ -69,6 +69,7 @@ import {
 import { Banner } from "../ui/notice/Banner";
 import { Dialog } from "../ui/dialog";
 import { withChatPin } from "./chatMachinePin";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Setup for moving a chat to another machine. A thin client of the source
@@ -78,7 +79,7 @@ import { withChatPin } from "./chatMachinePin";
  * or packs the chat; the modal only collects choices and shows answers.
  */
 
-const ROUTE_LINE = "The move travels over your account's paired connection between the two ADE brains.";
+const ROUTE_LINE = `The move travels over your account's paired connection between the two ${BRAND.NAME} brains.`;
 
 function errorText(error: unknown): string {
   return stripElectronErrorWrapper(error instanceof Error ? error.message : String(error));
@@ -296,7 +297,7 @@ export function CrossMachineHandoffModal({
         return pickable.find(machineAvailable)?.machineKey ?? null;
       });
     } catch (loadError) {
-      if (request === loadRequestRef.current) setError(plainErrorText(loadError, "ADE couldn't read the move options."));
+      if (request === loadRequestRef.current) setError(plainErrorText(loadError, `${BRAND.NAME} couldn't read the move options.`));
     } finally {
       if (request === loadRequestRef.current) setLoading(false);
     }
@@ -357,11 +358,11 @@ export function CrossMachineHandoffModal({
       const fork = requestedMode === "fork" ? next.preflight?.forkHandoffSupport : undefined;
       if (requestedMode === "fork" && next.preflight && !fork?.supported) {
         // Absent = an older destination that predates fork handoff.
-        setForkFallbackReason(fork?.reason ?? `${next.machineName} needs an ADE update for fork handoff.`);
+        setForkFallbackReason(fork?.reason ?? `${next.machineName} needs a ${BRAND.NAME} update for fork handoff.`);
       }
       setStage(next.hasRepository ? "review" : "clone");
     } catch (previewError) {
-      setError(plainErrorText(previewError, "ADE couldn't preview the move."));
+      setError(plainErrorText(previewError, `${BRAND.NAME} couldn't preview the move.`));
     } finally {
       setBusyLabel(null);
     }
@@ -413,7 +414,7 @@ export function CrossMachineHandoffModal({
       // A fork that can't be packed still works as a brief: offer the swap.
       const fallbackReason = moveMode === "fork" ? forkFallbackReasonForPrepareError(message) : null;
       if (fallbackReason) setForkFallbackReason(fallbackReason);
-      else setError(plainErrorText(startError, "ADE couldn't start the move."));
+      else setError(plainErrorText(startError, `${BRAND.NAME} couldn't start the move.`));
     } finally {
       setBusyLabel(null);
     }
@@ -451,7 +452,7 @@ export function CrossMachineHandoffModal({
       await action(runtimePinRef.current);
       await loadOptions();
     } catch (fixError) {
-      setError(plainErrorText(fixError, "ADE couldn't fix that."));
+      setError(plainErrorText(fixError, `${BRAND.NAME} couldn't fix that.`));
     } finally {
       setBusyLabel(null);
     }
@@ -541,7 +542,7 @@ export function CrossMachineHandoffModal({
         title: "No machine selected",
         detail: machines.some(machineAvailable)
           ? "Pick which computer should continue this chat."
-          : "No other ADE machine on this account can take it right now.",
+          : `No other ${BRAND.NAME} machine on this account can take it right now.`,
       }]
       : []),
     // A busy chat is not a dead end: it can move once the turn ends.
@@ -560,7 +561,7 @@ export function CrossMachineHandoffModal({
       ? [{
         id: "queued-clone",
         title: `This repository isn't on ${selectedMachine?.name ?? "that machine"} yet`,
-        detail: "ADE clones it there from GitHub when the move starts.",
+        detail: `${BRAND.NAME} clones it there from GitHub when the move starts.`,
         fixes: [{ label: "Clone it there", onFix: () => setQueuedCloneApproved(true), busy: busyNow }],
       }]
       : []),
@@ -753,7 +754,7 @@ export function CrossMachineHandoffModal({
                 Continue on another computer
               </h2>
               <p className="mt-0.5 truncate whitespace-nowrap text-[11px] leading-4 text-fg/48">
-                ADE copies your branch there and picks up where this chat left off.
+                {BRAND.NAME} copies your branch there and picks up where this chat left off.
               </p>
             </div>
           </div>
@@ -805,7 +806,7 @@ export function CrossMachineHandoffModal({
                 <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg/38">Repository setup</div>
                 <h3 className="mt-1 text-[14px] font-semibold text-fg/88">Clone on {reviewMachineName}?</h3>
                 <p className="mt-1 text-[11px] leading-5 text-fg/48">
-                  This repository isn&rsquo;t on {reviewMachineName} yet. ADE clones it there from GitHub with that
+                  This repository isn&rsquo;t on {reviewMachineName} yet. {BRAND.NAME} clones it there from GitHub with that
                   machine&rsquo;s own Git sign-in, checks everything, then sends the chat.
                 </p>
               </div>
@@ -866,8 +867,8 @@ export function CrossMachineHandoffModal({
                   model={{
                     id: "handoff-bundle-unsupported",
                     tone: "warning",
-                    title: `${reviewMachineName} needs an ADE update to take uncommitted changes.`,
-                    detail: "Update ADE there, or go back and commit and publish instead.",
+                    title: `${reviewMachineName} needs a ${BRAND.NAME} update to take uncommitted changes.`,
+                    detail: `Update ${BRAND.NAME} there, or go back and commit and publish instead.`,
                   }}
                 />
               ) : null}
@@ -897,7 +898,7 @@ export function CrossMachineHandoffModal({
               model={{
                 id: "handoff-fork-fallback",
                 tone: "warning",
-                title: forkFallbackReason ?? `${reviewMachineName} needs an ADE update for fork handoff.`,
+                title: forkFallbackReason ?? `${reviewMachineName} needs a ${BRAND.NAME} update for fork handoff.`,
                 actions: [{ label: "Send as brief instead", disabled: busyNow, onClick: sendAsBrief }],
               }}
               layout="inline"

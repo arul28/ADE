@@ -3,6 +3,7 @@ import { getErrorMessage } from "../shared/utils";
 import { CONNECT_RETRY_MS, LaunchStepError, type Logger } from "./cloudLaneLaunchSteps";
 import { deleteCloudInstanceConfirmed } from "./cloudPendingCreates";
 import { CloudProviderError, type CloudInstance, type CloudProvider } from "./cloudProvider";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Steps a new ADE Cloud computer goes through on this machine, shared by a
@@ -48,7 +49,7 @@ export async function pairAndConnectWithRetry(args: {
     await args.sleep(CONNECT_RETRY_MS);
   }
   args.logger.warn(args.timedOutEvent, { ...args.logFields, error: lastError ? getErrorMessage(lastError) : null });
-  throw new LaunchStepError("ADE couldn't connect to the new computer in time.");
+  throw new LaunchStepError(`${BRAND.NAME} couldn't connect to the new computer in time.`);
 }
 
 /**

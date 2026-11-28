@@ -36,6 +36,7 @@ import {
   WHATS_NEW_OPEN_EVENT,
   type AfterUpdateDetail,
 } from "./whatsNewEvents";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The "What's new" modal. It opens three ways:
@@ -504,7 +505,7 @@ function AnnouncementsModal({
             <AdeWordmark alt="" draggable={false} />
           </span>
           <span className="ade-whats-new-title">
-            What's new in ADE
+            What's new in {BRAND.NAME}
             {version ? <span className="ade-whats-new-version">{version}</span> : null}
           </span>
         </p>

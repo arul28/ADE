@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { installedAdeHomes } from "../projects/machineLayout";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
  * A dev test machine: a brain built from a lane checkout that runs on this
@@ -103,7 +104,7 @@ function registeredRoots(adeHome: string): string[] {
 function unreadableRegistry(registryPath: string, cause: unknown): Error {
   const detail = cause instanceof Error ? cause.message : String(cause);
   return new Error(
-    `This dev test machine cannot check which projects the installed ADE uses: ${registryPath} could not be read (${detail}). `
+    `This dev test machine cannot check which projects the installed ${BRAND.NAME} uses: ${registryPath} could not be read (${detail}). `
       + "Make that file readable (fix its permissions, or restore it if it is damaged), then try again.",
   );
 }
@@ -122,7 +123,7 @@ export function assertDevTestMachineMayOpenProject(
     const shared = registeredRoots(home).find((root) => isSameOrInside(rootPath, root));
     if (shared) {
       throw new Error(
-        `This dev test machine cannot open ${rootPath}: the installed ADE (${home}) already uses ${shared}, `
+        `This dev test machine cannot open ${rootPath}: the installed ${BRAND.NAME} (${home}) already uses ${shared}, `
           + "and two machines would both write its project database. Give the test machine its own clone "
           + "(npm run dev:machine -- project --clone).",
       );

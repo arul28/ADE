@@ -14,6 +14,7 @@ import { repoMatchKey } from "../../../shared/cursorCloudRepoMatch";
 import type { createLaneService } from "../lanes/laneService";
 import { resolveGithubSshAliasUrl } from "../github/githubSshAlias";
 import { redactGitOutput } from "../../utils/redaction";
+import { BRAND } from "../../../shared/brand";
 
 export type CursorCloudIngressStatusLike = {
   state: CursorCloudFleetRelayState;
@@ -616,7 +617,7 @@ export function createCursorCloudFleetService(deps: FleetServiceDeps) {
       return { laneId: resolved.lane.id, laneName: resolved.lane.name, created: resolved.created };
     }
     throw new Error(
-      "This agent has no pushed branch yet, so ADE cannot tell which lane it belongs to. Pull it into a lane once it finishes.",
+      `This agent has no pushed branch yet, so ${BRAND.NAME} cannot tell which lane it belongs to. Pull it into a lane once it finishes.`,
     );
   };
 

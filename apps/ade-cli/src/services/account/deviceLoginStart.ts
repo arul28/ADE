@@ -6,13 +6,15 @@
  *
  * Every failure a retry may fix (no connection, a timeout, an answer without
  * JSON) is retried with a growing wait until the window is used up; then the
- * error names what happened and how long ADE kept trying. Its two prefixes
- * ("ADE account device service timed out" / "could not be reached") are
+ * error names what happened and how long DAEX kept trying. Its two prefixes
+ * ("DAEX account device service timed out" / "could not be reached") are
  * stable: the desktop maps them (`accountBridge.ts`), and the cloud setup card
- * reads "ADE kept trying" as this retry having run (`cloudBoxSignInStart.ts`).
+ * reads "DAEX kept trying" (or an older CLI's "ADE kept trying") as this retry
+ * having run (`cloudBoxSignInStart.ts`).
  */
 
 /** The longest a device sign-in start keeps retrying an unreachable account directory (`retryUnreachableForMs`). */
+import { BRAND } from "../../../../desktop/src/shared/brand";
 const DEVICE_START_RETRY_MAX_MS = 60_000;
 const DEVICE_START_RETRY_FIRST_DELAY_MS = 1_000;
 const DEVICE_START_RETRY_MAX_DELAY_MS = 8_000;
@@ -63,14 +65,14 @@ export function readDeviceStartRetryMs(value: unknown): number | undefined {
  * Only a network error code goes in, never a URL or a body.
  */
 function deviceBridgeStartError(failure: DeviceBridgeStartFailure, triedForMs: number): Error {
-  const tried = triedForMs >= 1_000 ? ` ADE kept trying for ${Math.round(triedForMs / 1_000)} s.` : "";
+  const tried = triedForMs >= 1_000 ? ` ${BRAND.NAME} kept trying for ${Math.round(triedForMs / 1_000)} s.` : "";
   if (failure.kind === "timeout") {
-    return new Error(`ADE account device service timed out.${tried} Check this computer's network connection and the account directory, then retry.`);
+    return new Error(`${BRAND.NAME} account device service timed out.${tried} Check this computer's network connection and the account directory, then retry.`);
   }
   const why = failure.kind === "not_json"
     ? ` (it answered HTTP ${failure.status} without JSON)`
     : failure.code ? ` (network error ${failure.code})` : " (network error)";
-  return new Error(`ADE account device service could not be reached${why}.${tried} Check this computer's network connection and the account directory, then retry.`);
+  return new Error(`${BRAND.NAME} account device service could not be reached${why}.${tried} Check this computer's network connection and the account directory, then retry.`);
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

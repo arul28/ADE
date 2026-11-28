@@ -15,8 +15,8 @@ export type LaunchModelSpelling = "--model" | "model" | "modelId";
 /** The commands that list model ids, as the next step of any model refusal. */
 export function unknownModelHint(provider?: string | null): string {
   const harness = provider?.trim();
-  const list = harness ? `ade chat models --provider ${harness} --text` : "ade chat models --text";
-  return `\`${list}\` lists the ids; \`ade harness routes --text\` lists every model each harness can reach.`;
+  const list = harness ? `daex chat models --provider ${harness} --text` : "daex chat models --text";
+  return `\`${list}\` lists the ids; \`daex harness routes --text\` lists every model each harness can reach.`;
 }
 
 function askFor(spelling: LaunchModelSpelling): string {
@@ -25,7 +25,7 @@ function askFor(spelling: LaunchModelSpelling): string {
 
 /** The refusal for a launch with no model. */
 export function launchModelRequiredMessage(provider?: string | null, spelling: LaunchModelSpelling = "--model"): string {
-  return `${askFor(spelling)}: ADE never picks a model for an agent. ${unknownModelHint(provider)}`;
+  return `${askFor(spelling)}: DAEX never picks a model for an agent. ${unknownModelHint(provider)}`;
 }
 
 /**

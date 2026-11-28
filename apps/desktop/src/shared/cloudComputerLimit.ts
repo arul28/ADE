@@ -1,5 +1,5 @@
 /**
- * The computer limit (`docs/plans/pricing-v2-and-gravity.md`): each plan has a
+ * The computer limit (`docs/features/ade-cloud/README.md`): each plan has a
  * number of cloud computers, asleep or not, and outside agents (ADE MCP) start
  * ADE Cloud work on paid plans only. `adeCloud.ts` re-exports all of it.
  */

@@ -103,7 +103,7 @@ struct SettingsMachine: Identifiable, Equatable {
       case .offline: return gaveUp ? "Offline" : "Can’t reach it · retrying"
       case .paused: return "Over the \(MachineFleet.liveMachineLimit)-machine limit"
       case .inactive: return "Paused in the background"
-      case .needsUpdate: return "Update ADE on this computer"
+      case .needsUpdate: return "Update \(Brand.name) on this computer"
       case .needsAttention(let message): return message
       }
     case .available:
@@ -582,7 +582,7 @@ final class SettingsMachineController: ObservableObject {
           errors[machine.id] = .connect(settingsMachineRowErrorMessage(
             attemptFailure: syncService.lastConnectAttemptFailure,
             lastError: syncService.lastError,
-            fallback: "ADE could not reach \(machine.name). Try again."
+            fallback: "\(Brand.name) could not reach \(machine.name). Try again."
           ))
         }
       }
@@ -1129,13 +1129,13 @@ struct SettingsMachinePageContent: View {
   private var offlineHelp: String? {
     guard !machine.isLive else { return nil }
     if case .connected(.needsUpdate, _) = machine.link {
-      return "This computer runs an older ADE. Update ADE there, then tap Retry."
+      return "This computer runs an older \(Brand.name). Update \(Brand.name) there, then tap Retry."
     }
     if machine.gaveUp {
-      return "The phone stopped trying after several attempts. It tries again when you open the app, when the network changes, or when the machine comes online. Make sure ADE is open on that computer."
+      return "The phone stopped trying after several attempts. It tries again when you open the app, when the network changes, or when the machine comes online. Make sure \(Brand.name) is open on that computer."
     }
     if !machine.online, machine.account != nil {
-      return "Open ADE on that computer. Away from its network, connect both devices through Tailscale or the ADE relay."
+      return "Open \(Brand.name) on that computer. Away from its network, connect both devices through Tailscale or the \(Brand.name) relay."
     }
     return nil
   }
@@ -1202,7 +1202,7 @@ struct SettingsCloudMachineRow: View {
   }
 
   private func hint(count: Int, awake: Int) -> String {
-    guard count > 0 else { return "No cloud lanes yet. A chat you start on ADE Cloud makes one." }
+    guard count > 0 else { return "No cloud lanes yet. A chat you start on \(Brand.cloudName) makes one." }
     let lanes = count == 1 ? "1 lane computer" : "\(count) lane computers"
     return "\(lanes), \(awake) awake. A computer wakes when you send it work."
   }

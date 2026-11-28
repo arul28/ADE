@@ -5,6 +5,7 @@ import type {
   MachineTailscaleState,
 } from "../../../shared/types";
 import { isTailnetHostname } from "../../../shared/tailnet";
+import { BRAND } from "../../../shared/brand";
 
 export type MachineRouteKind = "lan" | "tailscale" | "https" | "relay";
 
@@ -27,7 +28,7 @@ const ROUTE_NAMES: Record<MachineRouteKind, { label: string; short: string }> = 
   lan: { label: "Local network", short: "LAN" },
   tailscale: { label: "Tailscale", short: "Tailscale" },
   https: { label: "Tailscale HTTPS", short: "HTTPS" },
-  relay: { label: "ADE Relay", short: "Relay" },
+  relay: { label: `${BRAND.NAME} Relay`, short: "Relay" },
 };
 
 function route(

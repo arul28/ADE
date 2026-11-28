@@ -722,7 +722,7 @@ struct WorkModelPickerSheet: View {
       Spacer(minLength: 24)
       ProgressView()
         .tint(ADEColor.accent)
-      Text(cloudCatalog == nil ? "Loading models from the paired machine…" : "Loading ADE Cloud’s models…")
+      Text(cloudCatalog == nil ? "Loading models from the paired machine…" : "Loading \(Brand.cloudName)’s models…")
         .font(.footnote)
         .foregroundStyle(ADEColor.textSecondary)
       Spacer(minLength: 24)
@@ -736,7 +736,7 @@ struct WorkModelPickerSheet: View {
       Image(systemName: "exclamationmark.icloud")
         .font(.title3.weight(.semibold))
         .foregroundStyle(ADEColor.textMuted)
-      Text("Couldn't load ADE Cloud's models.")
+      Text("Couldn't load \(Brand.cloudName)'s models.")
         .font(.subheadline.weight(.semibold))
         .foregroundStyle(ADEColor.textPrimary)
       Text(message)
@@ -1757,7 +1757,7 @@ struct ModelPickerContentPane: View {
     }
     switch selection {
     case .favorites:
-      return "Tap the star on any model to pin it here. Favorites sync across your ADE account."
+      return "Tap the star on any model to pin it here. Favorites sync across your \(Brand.name) account."
     case .recents:
       return "Models you pick here will appear in the recents list, on every paired surface."
     case .free:

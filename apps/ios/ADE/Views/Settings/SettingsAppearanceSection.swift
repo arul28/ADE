@@ -106,11 +106,13 @@ private struct SettingsThemeMiniPage: View {
       page
       VStack(alignment: .leading, spacing: 6) {
         HStack(spacing: 4) {
-          // The app's mark, as its icon draws it: the wordmark on deep violet.
-          Image("BrandMark")
+          // The app's mark, as its icon draws it: the white glyph on deep violet.
+          Image("BrandGlyph")
             .resizable()
+            .renderingMode(.template)
             .scaledToFit()
-            .padding(2.5)
+            .foregroundStyle(.white)
+            .padding(3)
             .frame(width: 18, height: 18)
             .background(
               LinearGradient(colors: [Color(red: 0.30, green: 0.18, blue: 0.55), Color(red: 0.10, green: 0.06, blue: 0.20)], startPoint: .top, endPoint: .bottom),

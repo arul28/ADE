@@ -44,6 +44,7 @@ import type { CloudUnitWords } from "../../../shared/cloudUnitWords";
 import { LaneStartBranchField, LaneStartOnSwitch } from "./LaneStartPicker";
 import "./createLaneComposer.css";
 import { isImeComposing } from "../../lib/imeComposition";
+import { BRAND } from "../../../shared/brand";
 
 export type CreateLaneMode = "new" | "existing";
 
@@ -108,7 +109,7 @@ function defaultLaneNameForImportBranch(branchName: string, branches: LaneBranch
 }
 
 function submitLabel(mode: CreateLaneMode, onAdeCloud: boolean): string {
-  if (onAdeCloud) return "Create lane on ADE Cloud";
+  if (onAdeCloud) return `Create lane on ${BRAND.CLOUD_NAME}`;
   return mode === "existing" ? "Create lane on this branch" : "Create lane";
 }
 
@@ -697,7 +698,7 @@ export function CreateLaneDialog({
                 </ComposerPopover>
                 {cloudBranchUnpushed ? (
                   <span className="cl-hint" data-tone="warn">
-                    <b>{plainLaneStartBranch(createImportBranch)}</b> is only on this computer. Push it first: the new ADE Cloud computer gets the branch from GitHub.
+                    <b>{plainLaneStartBranch(createImportBranch)}</b> is only on this computer. Push it first: the new {BRAND.CLOUD_NAME} computer gets the branch from GitHub.
                   </span>
                 ) : importHolder ? (
                   <span className="cl-hint" data-tone="warn">
@@ -748,8 +749,8 @@ export function CreateLaneDialog({
                 />
                 <span className="cl-hint">
                   {adeCloud.fixed
-                    ? "The lane gets its own ADE Cloud computer when you send."
-                    : "The lane gets its own ADE Cloud computer. It starts from the pushed copy of its branch."}
+                    ? `The lane gets its own ${BRAND.CLOUD_NAME} computer when you send.`
+                    : `The lane gets its own ${BRAND.CLOUD_NAME} computer. It starts from the pushed copy of its branch.`}
                 </span>
               </div>
             </>
