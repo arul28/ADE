@@ -54,7 +54,7 @@ import { macMode, macReaches } from "./macSwitch";
 import { readCloudSettings } from "./settings";
 import { MAC_COST_MICROS_PER_MINUTE, MAC_CREDIT_MILLI_PER_MINUTE, cloudSizeFor } from "./plans";
 import { accountWithUnsettledPhones } from "./credits";
-import { macBootJoinCode } from "./launches";
+import { failMacLaunchAtBootCap, macBootJoinCode } from "./launches";
 import { errorOf, nomac, type NomacAnswer } from "./phoneNomac";
 import { CloudProviderError, TRY_AGAIN_CODE, createCloudProvider, type CloudCreateInput, type CloudProvider } from "./provider";
 import { earnedLeftForLimits, extraActiveForLimits, includedMilliOf, logCloud, readSetting, reportCloudFailure, statusChangeStatements, type CloudEnv, type ComputerRow } from "./store";
@@ -771,6 +771,7 @@ async function bootFailed(env: CloudEnv, row: ComputerRow, sessionId: string, no
   if (!counted || counted.mac_boot_failures < MAC_BOOT_ATTEMPTS) return;
   await stopMac(env, { ...row, mac_session_id: sessionId }, now, "boot_failed");
   await env.DB.prepare("update cloud_computers set mac_start_failed = 'unavailable' where instance_id = ?").bind(row.instance_id).run();
+  await failMacLaunchAtBootCap(env, row.instance_id, now);
   await sendOwnerAlert(env, {
     key: `nomac_mac_boot:${new Date(now).toISOString().slice(0, 10)}`,
     kind: "nomac_mac_boot_failed",

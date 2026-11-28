@@ -192,6 +192,21 @@ const notFound = () => fail("not_found", NOT_FOUND, 404);
 const JOIN_REFUSED = "This computer can't join with that code.";
 /** What a launch that never signed its computer in shows once its join window closed. */
 const JOIN_NEVER_FINISHED = "The new computer couldn't sign in.";
+/** What a Mac launch shows when DAEX failed to start on its Mac at every try (`bootFailed` in macProvider.ts). */
+const MAC_BOOT_NEVER_FINISHED = "DAEX didn't start on this Mac. Retry to start the lane on a new Mac.";
+
+/**
+ * A Mac whose DAEX failed to start at every try was stopped: its launch, still waiting for the join, fails now with
+ * what to do, rather than at the end of its join window. The cron deletes its computer (the failed launches below),
+ * so Retry makes a new one and the plan's computer slot is free meanwhile.
+ */
+export async function failMacLaunchAtBootCap(env: CloudEnv, instanceId: string, now: number): Promise<void> {
+  const failed = await env.DB.prepare(`
+    update cloud_launches set state = 'failed', error = ?, approval_url = null, updated_at = ?
+    where instance_id = ? and state in ('making', 'joining', 'needs_approval')
+  `).bind(MAC_BOOT_NEVER_FINISHED, now, instanceId).run();
+  if ((failed.meta?.changes ?? 0) > 0) logCloud("cloud.launch_mac_boot_failed", { instanceId });
+}
 /** How often a spent join code may join again: a brain whose earlier sign-in didn't finish, never a link mint without end. */
 const MAX_REJOINS = 5;
 /** What a person's start shows when nothing was made for it (`failUnjoinedLaunches`); Retry starts it again under the same id. */
@@ -1744,12 +1759,14 @@ export async function failUnjoinedLaunches(
   // computer that reported its own sign-in timeout): delete it.
   const left = (await env.DB.prepare(`
     select l.* from cloud_launches l join cloud_computers c on c.instance_id = l.instance_id and c.user_id = l.user_id
-    where l.state = 'failed' and l.error in (?, ?) and c.deleted_at is null limit ?
-  `).bind(JOIN_NEVER_FINISHED, SIGN_IN_NEVER_FINISHED, UNJOINED_PER_TICK).all<LaunchRow>()).results ?? [];
+    where l.state = 'failed' and l.error in (?, ?, ?) and c.deleted_at is null limit ?
+  `).bind(JOIN_NEVER_FINISHED, SIGN_IN_NEVER_FINISHED, MAC_BOOT_NEVER_FINISHED, UNJOINED_PER_TICK).all<LaunchRow>()).results ?? [];
   for (const row of left) {
     const why = row.error === SIGN_IN_NEVER_FINISHED
       ? { who: "launch_sign_in", reason: "launch_sign_in_never_finished" }
-      : { who: "launch_join", reason: "launch_never_joined" };
+      : row.error === MAC_BOOT_NEVER_FINISHED
+        ? { who: "launch_join", reason: "launch_mac_boot_failed" }
+        : { who: "launch_join", reason: "launch_never_joined" };
     await deleteLaunchComputer(env, provider, row, now, why).catch((error: unknown) => {
       reportCloudFailure("cloud.launch_never_joined_end_failed", { launchId: row.launch_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
     });
