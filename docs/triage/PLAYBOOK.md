@@ -6,7 +6,7 @@ redacted `context.md` and this file. Read both before you run anything. Commands
 
 DAEX is a local-first dev environment. The parts that break are: the **brain** (a background
 process holding the local RPC endpoint, the project catalog, and sync), the **login service**
-that keeps the brain running (launchd / systemd / a Windows scheduled task), the **credential
+that keeps the brain running (launchd / systemd / a Windows per-user Run entry), the **credential
 store**, the **project database** under `<project>/.ade/`, and the **pinned agent CLIs** under
 the machine tools cache.
 
@@ -319,9 +319,9 @@ daex brain status --text             # includes the same service block
 ```
 
 The service is a launchd LaunchAgent (`com.ade.runtime`, plus `.alpha`) on macOS, a
-user systemd unit on Linux, and a per-user scheduled task on Windows whose name carries a hash —
-which is exactly why you should read `daex runtime service-status --text` instead of guessing the
-task name in `schtasks`.
+user systemd unit on Linux, and on Windows a per-user, per-channel entry under
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run` that starts a PowerShell supervisor. Read
+`daex runtime service-status --text` instead of guessing the entry name.
 
 Register with `daex brain start`. Use that, not `daex serve --install-service`: only
 `daex brain start` pins the runtime's default role to `cto`, which is what `daex connect` and the
