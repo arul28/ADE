@@ -78737,28 +78737,31 @@ export function createAgentChatService(args: {
     return discoveredLocalModels;
   };
 
-  /** An ACP provider's rows as the registry holds them now (Qwen merges its own settings first). */
-  const listAcpModelInfos = async (provider: AcpChatProvider): Promise<AgentChatModelInfo[]> => {
-    if (provider === "qwen") {
-      const settings = await loadQwenUserSettings();
-      if (settings.models.length) {
-        mergeDynamicAcpModelDescriptors(
-          "qwen",
-          settings.models.map((model) => createDynamicAcpModelDescriptor("qwen", model.id, {
-            displayName: model.displayName,
-          })),
-        );
-      }
-      const descriptors = listAcpModelDescriptorsForProvider(provider, {
-        ...(settings.models.length
-          ? { configuredModelIds: settings.models.map((model) => model.id) }
-          : {}),
-      });
-      return descriptors.map((descriptor, index) => acpModelInfoFromDescriptor(descriptor, provider, index));
+  /** Qwen's own settings name its models: merge them into the registry and return their ids. */
+  const mergeQwenSettingsModels = async (): Promise<string[]> => {
+    const settings = await loadQwenUserSettings();
+    if (settings.models.length) {
+      mergeDynamicAcpModelDescriptors(
+        "qwen",
+        settings.models.map((model) => createDynamicAcpModelDescriptor("qwen", model.id, {
+          displayName: model.displayName,
+        })),
+      );
     }
-    const descriptors = listAcpModelDescriptorsForProvider(provider);
+    return settings.models.map((model) => model.id);
+  };
+
+  /** An ACP provider's rows as the registry holds them at this moment. Synchronous. */
+  const acpModelInfosNow = (provider: AcpChatProvider, qwenConfiguredIds: readonly string[] = []): AgentChatModelInfo[] => {
+    const descriptors = listAcpModelDescriptorsForProvider(
+      provider,
+      provider === "qwen" && qwenConfiguredIds.length ? { configuredModelIds: qwenConfiguredIds } : undefined,
+    );
     return descriptors.map((descriptor, index) => acpModelInfoFromDescriptor(descriptor, provider, index));
   };
+
+  const listAcpModelInfos = async (provider: AcpChatProvider): Promise<AgentChatModelInfo[]> =>
+    acpModelInfosNow(provider, provider === "qwen" ? await mergeQwenSettingsModels() : []);
 
   const loadAvailableModels = async (args: {
     provider: AgentChatProvider;
@@ -79306,19 +79309,22 @@ export function createAgentChatService(args: {
     // has to be ranked against another.
     const latestRead = (provider: ModelProviderGroup): AgentChatModelInfo[] =>
       latestProviderModelReads.get(providerModelReadKey(provider, catalogArgs?.cursorSource)) ?? [];
-    const acpRowsNow = new Map<ModelProviderGroup, AgentChatModelInfo[]>();
-    await Promise.all(readModelsByProvider.map(async ({ provider }) => {
-      const models = latestRead(provider);
-      if (isAcpChatProvider(provider) && models.length) {
-        acpRowsNow.set(provider, await listAcpModelInfos(provider).catch(() => models));
-      }
-    }));
-    // The snapshot is taken after the last await: nothing runs between it and
-    // the publish below, so a read that lands while this build waited (a
-    // Cursor refresh during Qwen's settings read) is what this build publishes.
+    // Qwen's settings are the one await left (they name its models), so they
+    // are read first. Everything after is taken with no await before the
+    // publish below: the latest completed read of every provider and each
+    // listed ACP provider's rows from the registry, so a read or a discovery
+    // that lands while this build waited is what this build publishes.
+    const qwenConfiguredIds = readModelsByProvider.some(({ provider }) => provider === "qwen" && latestRead(provider).length)
+      ? await mergeQwenSettingsModels().catch(() => [])
+      : [];
     const modelsByProvider = readModelsByProvider.map(({ provider }) => {
       const models = latestRead(provider);
-      return { provider, models: models.length ? acpRowsNow.get(provider) ?? models : models };
+      if (!isAcpChatProvider(provider) || !models.length) return { provider, models };
+      try {
+        return { provider, models: acpModelInfosNow(provider, qwenConfiguredIds) };
+      } catch {
+        return { provider, models };
+      }
     });
     for (const { provider, models } of modelsByProvider) {
       for (const info of models) {
