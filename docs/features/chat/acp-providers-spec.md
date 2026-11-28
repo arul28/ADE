@@ -62,7 +62,7 @@ Pins: `apps/ade-cli/scripts/pins/<tool>.json`.
 | grok | 1.0.46 | Handshake, live turn, cancel, permissions (write and execute), close, resume |
 | qwen | 0.25.0 | Handshake, config options, cancel, close; no live turn |
 | kimi | 2.3.1 | Handshake and unauthenticated methods only |
-| devin | 3000.11.3 | Handshake and unauthenticated methods only |
+| devin | 3000.15.14 | Handshake, `session/new`, set mode, unauthenticated prompt (auth error); no login |
 
 ## Architecture
 

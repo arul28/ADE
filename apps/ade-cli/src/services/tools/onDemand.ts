@@ -1,5 +1,5 @@
 import { pinnedToolFetchPending } from "./cacheLookup";
-import { asToolError, type ToolError, type ToolErrorKind } from "./errors";
+import { asToolError, isToolError, type ToolError, type ToolErrorKind } from "./errors";
 import type { ToolProgress, ToolsContext } from "./install";
 import { findToolPin, loadToolsManifest } from "./manifest";
 import { setToolsLogger, warnTools } from "./toolsLog";
@@ -43,6 +43,25 @@ let fetchDownloadOnly = false;
 let fetchLogger: FetchLogger | null = null;
 let installGeneration = 0;
 const inFlight = new Map<string, Promise<ToolError | null>>();
+/**
+ * What the brain does when a tool's pinned build is gone from its vendor's
+ * host (its download answers HTTP 403 or 404): install the vendor's current
+ * build as the pin's stand-in, or resolve false to keep the failure. Devin
+ * registers one (`devinFallForward.ts` in desktop); a network error, a 5xx or
+ * any other failure never reaches it.
+ */
+export type DeletedPinFallback = (failure: ToolError, context: ToolsContext) => Promise<boolean>;
+const deletedPinFallbacks = new Map<string, DeletedPinFallback>();
+
+export function registerDeletedPinFallback(name: string, fallback: DeletedPinFallback): void {
+  deletedPinFallbacks.set(name, fallback);
+}
+
+/** The vendor's host answered that the pinned build does not exist (S3 and CDNs answer 403 for a deleted object). */
+export function isDeletedPinFailure(error: unknown): error is ToolError {
+  return isToolError(error) && error.kind === "network" && (error.httpStatus === 403 || error.httpStatus === 404);
+}
+
 /** When each tool's last on-demand download failed; an offline machine must not retry on every status refresh. */
 const lastFailureAt = new Map<string, number>();
 const FAILED_FETCH_BACKOFF_MS = 2 * 60_000;
@@ -201,7 +220,13 @@ function startTrackedDownload(name: string, context: ToolsContext): Promise<Tool
     // Deep import, lazily: the resolvers reach this module on every spawn,
     // and only a real miss should load the download stack.
     const { ensureTools } = await import("./install");
-    await ensureTools([name], { ...context, onProgress: notePinnedToolProgress });
+    try {
+      await ensureTools([name], { ...context, onProgress: notePinnedToolProgress });
+    } catch (error) {
+      const fallback = deletedPinFallbacks.get(name);
+      if (fallback && isDeletedPinFailure(error) && await fallback(error, context).catch(() => false)) return;
+      throw error;
+    }
   }).then((error) => {
     if (error) {
       lastFailureAt.set(name, Date.now());

@@ -16,7 +16,13 @@
  * in the brain that owns the chat or lane: a remote chat downloads on its own
  * machine.
  */
-import { pinnedToolDownload, pinnedToolFetchAllowed, retryPinnedToolDownload, warnPinnedToolFetch } from "../../../../../ade-cli/src/services/tools/onDemand";
+import {
+  pinnedToolDownload,
+  pinnedToolFetchAllowed,
+  registerDeletedPinFallback,
+  retryPinnedToolDownload,
+  warnPinnedToolFetch,
+} from "../../../../../ade-cli/src/services/tools/onDemand";
 import { MUSE_TOOL_NAME } from "../../../../../ade-cli/src/services/tools/muse";
 import {
   getPinnedToolStatus,
@@ -34,7 +40,13 @@ import { claudeFallForwardStatusLine } from "./claudeFallForward";
 import { codexFallForwardStatusLine } from "./codexFallForward";
 import { museFallForwardStatusLine } from "./museFallForward";
 import { getMuseBinaryStatus, startMuseBinaryFetch } from "./museExecutable";
+import { devinDeletedPinFallback } from "./devinFallForward";
 import { BRAND } from "../../../shared/brand";
+
+// Every download of Devin (a chat, a CLI, a launch's prefetch, a Retry) goes
+// through the tools cache's on-demand path; when Devin's host no longer has
+// the pinned build, its current build stands in (devinFallForward.ts).
+registerDeletedPinFallback("devin", (failure, context) => devinDeletedPinFallback(failure, context));
 
 /** The pinned tool behind a provider id, or null for a provider ADE pins nothing for. */
 export function pinnedToolForProvider(provider: string): { tool: string; label: string } | null {
@@ -115,6 +127,24 @@ const ERROR_KIND_WORDS: Readonly<Partial<Record<ToolErrorKind, string>>> = {
   filesystem: "it could not be written to disk",
 };
 
+/**
+ * The step after a failed download, on every surface: the phone, the web, a
+ * terminal and Settings all have a way to try again, and the on-demand
+ * download holds back a retry for two minutes after a failure. Never a
+ * Settings page: the machine can be one the person cannot open (a DAEX Cloud
+ * computer seen from the phone).
+ */
+const FAILED_DOWNLOAD_HINT = "Try again in a couple of minutes.";
+/** The same step on a chat's card, which carries Download/Retry for the chat's machine. */
+const FAILED_DOWNLOAD_CHAT_HINT = "Use Retry on this card, or send your message again in a couple of minutes.";
+
+/** `message` with a failed download's step worded for a chat card; any other text unchanged. */
+export function pinnedToolChatErrorMessage(message: string): string {
+  return /\bCouldn't download .+?: /.test(message) && message.endsWith(FAILED_DOWNLOAD_HINT)
+    ? `${message.slice(0, -FAILED_DOWNLOAD_HINT.length)}${FAILED_DOWNLOAD_CHAT_HINT}`
+    : message;
+}
+
 function failureReason(errorKind: string | null): string {
   return (errorKind && ERROR_KIND_WORDS[errorKind as ToolErrorKind]) ?? errorKind ?? "unknown error";
 }
@@ -144,7 +174,7 @@ export function pinnedToolBlocker(label: string, status: PinnedToolStatus): stri
       if (isLiveLockTimeout(status)) {
         return `Another ${BRAND.NAME} on this machine is still installing ${label}. Try again when it finishes.`;
       }
-      return `Couldn't download ${label}: ${failureReason(status.errorKind)}. Retry from Settings > Providers.`;
+      return `Couldn't download ${label}: ${failureReason(status.errorKind)}. ${FAILED_DOWNLOAD_HINT}`;
     case "unavailable":
       return status.errorKind === "unsupported-target"
         ? `${capitalized(label)} is not available on this machine (${hostTarget()}).`
@@ -293,7 +323,7 @@ function museToolStatus(status: MuseBinaryStatus): PinnedProviderToolStatus {
     : state === "downloading"
       ? `${BRAND.NAME} is downloading ${label} for this machine. Chats with it start when it finishes.`
       : state === "failed"
-        ? `Couldn't download ${label}: ${failureReason(status.errorKind)}. Retry from Settings > Providers.`
+        ? `Couldn't download ${label}: ${failureReason(status.errorKind)}. ${FAILED_DOWNLOAD_HINT}`
         : state === "unavailable"
           ? `${label} is not available on this machine (${hostTarget()}).`
           : `${BRAND.NAME} has not downloaded ${label} for this machine yet. It downloads the first time this machine uses it.`;

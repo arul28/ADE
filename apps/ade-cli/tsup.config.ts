@@ -76,6 +76,11 @@ export default defineConfig([
     target: "node22",
     outDir: "dist",
     sourcemap: true,
+    // esbuild's record of what each bundle inlined and left external, which
+    // verify-built-cli.mjs checks against this package's own installs
+    // (scripts/bundle-packages-gate.mjs). Not shipped: the packaged app and the
+    // static runtime take named bundles only.
+    metafile: true,
     // V8 keeps every loaded script's source in the heap for the life of the
     // process, so a minified bundle is about half the memory of a readable
     // one. `keepNames` keeps function and class names in stack traces and in

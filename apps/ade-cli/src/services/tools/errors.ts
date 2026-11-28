@@ -39,6 +39,8 @@ export type ToolErrorContext = {
   lockHolderLive?: boolean;
   /** `lock-timeout` only: the process the lock named, so a later status can check it again. */
   lockHolder?: { pid: number; host: string };
+  /** `network` only: the HTTP status the server answered, when it answered one. */
+  httpStatus?: number;
   cause?: unknown;
 };
 
@@ -52,6 +54,7 @@ export class ToolError extends Error {
   readonly availableBytes?: number;
   readonly lockHolderLive?: boolean;
   readonly lockHolder?: { pid: number; host: string };
+  readonly httpStatus?: number;
 
   constructor(message: string, context: ToolErrorContext) {
     super(message, { cause: context.cause });
@@ -65,6 +68,7 @@ export class ToolError extends Error {
     this.availableBytes = context.availableBytes;
     this.lockHolderLive = context.lockHolderLive;
     this.lockHolder = context.lockHolder;
+    this.httpStatus = context.httpStatus;
   }
 }
 

@@ -17,6 +17,7 @@ import { isToolError, type ToolErrorKind } from "./errors";
 import { type ToolResolution, type ToolsContext, tryResolvePreviousTool, tryResolveTool } from "./install";
 import { isToolLockHolderLive } from "./lock";
 import { findToolTargetPin, loadToolsManifest } from "./manifest";
+import { resolveDeletedPinReplacement } from "./overrides";
 import {
   pinnedToolFetchAllowed,
   pinnedToolFetchInFlight,
@@ -97,7 +98,8 @@ function tryResolve(resolve: () => ToolResolution | null): ToolResolution | null
 
 /** The current pin when it is on disk. Never throws, never touches the network. */
 export function resolveCurrentPinnedTool(name: string, context: ToolsContext = {}): ToolResolution | null {
-  return tryResolve(() => tryResolveTool(name, context));
+  // A pin the vendor deleted can never install; its recorded stand-in is the pin.
+  return tryResolve(() => tryResolveTool(name, context)) ?? resolveDeletedPinReplacement(name, context);
 }
 
 /** The previous pin GC kept, when it is a finished install. Never throws. */
