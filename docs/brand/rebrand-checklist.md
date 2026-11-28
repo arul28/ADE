@@ -216,7 +216,7 @@ anywhere. Person-visible parts, by priority:
 | D2 | `getting-started/install.mdx`, `sdk/bundling.mdx`, `sdk/license.mdx`, `sdk/runtime.mdx`, `welcome.mdx` (one line each) | Check each; most are "formerly ADE" or legal names. | code |
 | D3 | `docs.json:236,264,318` GitHub `arul28/ADE`, `:263,322` X `x.com/ade_dev`, `:226,247` Download -> `ade-app.dev` | Change with owner decisions O9/O11 and the domain step. | owner then code |
 | D4 | `packages/sdk/README.md`, `packages/chat-ui/README.md`, `packages/demo/README.md`, package `description`s (`packages/*/package.json:4`, `apps/ade-cli/package.json:4`), SDK error text (`packages/sdk/src/accounts.ts:128-216`, `packages/chat-ui/src/adapters/sdkClient.ts:426`) | Rename prose with the `@daex-dev` publish step; npm shows the description. | code |
-| D5 | `RUNTIME-EMBEDDING-EXCEPTION.md` (15), `NOTICE`, `RUNTIME-SYNC-RECONCILIATION.md` | Legal text names "ADE". Owner decision O14: add a definition line ("DAEX, formerly ADE") rather than rewriting the grant. | owner |
+| D5 | `RUNTIME-EMBEDDING-EXCEPTION.md` (15), `NOTICE` | Legal text names "ADE". Owner decision O14: add a definition line ("DAEX, formerly ADE") rather than rewriting the grant. | owner |
 
 ---
 

@@ -15,7 +15,7 @@ Main (`apps/desktop/src/main/services/capture/`)
 - `captureShotFit.ts`: `fitCaptureShotToAttachmentLimit`, up to four width halvings to fit the attachment limit.
 - `captureGestureTarget.ts`: `pickCaptureGestureWindow` (focused → last-focused DAEX window → any live window).
 - `captureHelper.ts`: the NDJSON child supervisor. Line cap 64 KB, 3 restarts, 500 ms graceful shutdown, `captureNow()`, 8 s capture timeout, 48 MB read-back cap, `isAdeWindow` (helper `ownerPid` equals DAEX's pid). One boolean `captureInFlight` is the request latch; `settleCapture()` is the only place it is cleared.
-- `apps/desktop/src/main/services/analytics/captureGestureProductAnalytics.ts`: `reportCaptureGesture` (`delivered` / `failed` / `too_large`), deduped per outcome per minute. See [logging.md](../../logging.md#the-capture-gesture).
+- `apps/desktop/src/main/services/analytics/captureGestureProductAnalytics.ts`: `reportCaptureGesture` (`delivered` / `failed` / `too_large`), deduped per outcome per minute. See [logging.md](../../logging.md#product-analytics-posthog).
 - `apps/desktop/src/main/main.ts`: wires the helper, picks the window, focuses DAEX for a shot (not for a failure), and owns the temp dir.
 
 Native helpers

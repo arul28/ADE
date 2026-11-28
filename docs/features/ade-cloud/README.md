@@ -150,7 +150,7 @@ server with `ADE_ACCOUNT_DIRECTORY_URL`.
   (`webclient/adapter/cloud.ts`). Billing goes straight to the server.
 - **New lane on DAEX Cloud**: a chat launch with a `cloud` target makes one
   computer for one lane, then hands the launch to that computer's brain. See
-  [Chat › DAEX Cloud lanes](../chat/README.md#ade-cloud-lanes).
+  [Chat › DAEX Cloud lanes](../chat/README.md#daex-cloud-lanes).
 - **The composer**: one DAEX Cloud row in "Run on"; a size button (default
   `cloudDefaultTier`, Small); Send turns off when the account is out of credits,
   at its computer limit, or the disk is full.
