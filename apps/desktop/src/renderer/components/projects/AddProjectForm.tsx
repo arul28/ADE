@@ -119,8 +119,8 @@ function addOutcomeLine(state: {
   if (state.localNeedsFolder) return "Choose a folder on this computer for the copy.";
   if (state.opensProjectTab) {
     return state.tickedNames.length > 0
-      ? `Opens now. ADE clones it on ${listNames(state.tickedNames)} in the background.`
-      : "Opens now with no copy. When you start work on a computer, ADE clones it there.";
+      ? `Opens now. ${BRAND.NAME} clones it on ${listNames(state.tickedNames)} in the background.`
+      : `Opens now with no copy. When you start work on a computer, ${BRAND.NAME} clones it there.`;
   }
   if (state.tickedNames.length === 0) return "Pick a computer to put a copy on.";
   return `Opens on ${state.tickedNames[0]} when its copy is ready.`;

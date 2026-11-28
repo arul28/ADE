@@ -12,6 +12,7 @@ import {
   type AttentionDesktopAlert,
   type AttentionSnapshot,
 } from "../../../shared/types/attention";
+import { BRAND } from "../../../shared/brand";
 
 /** See `AttentionDesktopAlert`. */
 export type DesktopAlert = AttentionDesktopAlert;
@@ -207,7 +208,7 @@ export function createDesktopAlertPresenter(deps: DesktopAlertPresenterDeps) {
     if (alert.kind === "message") return { ...alert, body: null };
     if (alert.kind === "activity") {
       const event = alertEvent(alert);
-      return { ...alert, title: event ? ACTIVITY_EVENT_BY_KIND[event]?.label ?? "ADE update" : "ADE update", body: null };
+      return { ...alert, title: event ? ACTIVITY_EVENT_BY_KIND[event]?.label ?? `${BRAND.NAME} update` : `${BRAND.NAME} update`, body: null };
     }
     return { ...alert, title: `Agent: ${HIDDEN_DETAIL_TITLE[alert.kind]}`, body: null };
   };

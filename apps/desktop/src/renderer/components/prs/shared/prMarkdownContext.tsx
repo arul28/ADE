@@ -8,6 +8,7 @@ import { COLORS, fgTint } from "../../lanes/laneDesignTokens";
 import { noticeTone, type NoticeTone } from "../../ui/notice";
 import { openIssueRef } from "../../../lib/issueNavigation";
 import { openExternalUrl, openLinkFromUi } from "../../../lib/openExternal";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * What PR markdown knows about the PR it is rendered in. Provided by the PR
@@ -164,7 +165,7 @@ export function PrLinearIssueLink({ href, issue, branch, children }: { href: str
         }
         if (!openIssueRef({ ref: issue, branch, source: "pr" })) openExternalUrl(href);
       }}
-      title={`Open ${issue.identifier} in ADE`}
+      title={`Open ${issue.identifier} in ${BRAND.NAME}`}
       className="rounded-[4px] px-[3px] transition-colors"
       style={{ color: COLORS.accent, background: COLORS.accentSubtle, textDecoration: "none" }}
       data-pr-link-kind="linear-issue"

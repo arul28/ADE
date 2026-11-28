@@ -2,6 +2,7 @@ import type {
   AttentionDeliveryPolicy,
   AttentionPolicyEventKind,
 } from "./types/attention";
+import { BRAND } from "./brand";
 
 export type ActivityEventGroup = "agents" | "pull_requests" | "messages" | "ade";
 
@@ -45,7 +46,7 @@ export const ACTIVITY_EVENT_GROUPS = [
   { id: "agents", label: "Agents" },
   { id: "pull_requests", label: "Pull requests" },
   { id: "messages", label: "Messages" },
-  { id: "ade", label: "ADE" },
+  { id: "ade", label: BRAND.NAME },
 ] as const satisfies readonly { id: ActivityEventGroup; label: string }[];
 
 /**
@@ -219,7 +220,7 @@ export const ACTIVITY_EVENT_CATALOG = [
     kind: "agent_message",
     group: "messages",
     label: "Messages from agents and automations",
-    description: "An agent or automation sent you a note (ade notify).",
+    description: `An agent or automation sent you a note (${BRAND.CLI} notify).`,
     iconKey: "message",
     defaultPolicy: "notify",
     supportsAmbient: true,
@@ -231,7 +232,7 @@ export const ACTIVITY_EVENT_CATALOG = [
     kind: "ade_service",
     group: "ade",
     label: "Background service stops or recovers",
-    description: "ADE's background service on this computer went into fallback, or came back.",
+    description: `${BRAND.NAME}'s background service on this computer went into fallback, or came back.`,
     iconKey: "service",
     defaultPolicy: "notify",
     supportsAmbient: false,

@@ -16,6 +16,7 @@ import {
 import { parseLoopbackUrl } from "../../../../desktop/src/shared/remoteLoopbackUrl";
 import { DesktopBridgeUnavailableError } from "../builtInBrowser/desktopBridgeClient";
 import type { WorkToolsStateService } from "../workTools/workToolsStateService";
+import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /** The browser call this needs: open a tab, as the person would. */
 export type WorkToolsBrowserTabOpener = {
@@ -36,9 +37,9 @@ export type WorkToolsOpenBrowserTabResult = {
 };
 
 const NO_DESKTOP_FOR_PAGE_MESSAGE =
-  "No ADE desktop is open to show this page. Open ADE on a computer, or use the lane's Linux Desktop.";
+  `No ${BRAND.NAME} desktop is open to show this page. Open ${BRAND.NAME} on a computer, or use the lane's Linux Desktop.`;
 
-const NOT_A_LANE_PAGE_MESSAGE = "ADE only opens a lane's own dev servers from the phone";
+const NOT_A_LANE_PAGE_MESSAGE = `${BRAND.NAME} only opens a lane's own dev servers from the phone`;
 
 /**
  * The loopback URL a phone may ask for, with its port: http(s) on this
@@ -49,7 +50,7 @@ function loopbackPageUrl(raw: string): { url: URL; port: number } {
   try {
     new URL(raw.trim());
   } catch {
-    throw new Error("That isn't a web address ADE can open.");
+    throw new Error(`That isn't a web address ${BRAND.NAME} can open.`);
   }
   const parsed = parseLoopbackUrl(raw);
   if (!parsed) throw new Error(`${NOT_A_LANE_PAGE_MESSAGE}, on localhost.`);
@@ -115,7 +116,7 @@ export async function openLaneDevServerInBrowser(input: {
     if (error instanceof DesktopBridgeUnavailableError) throw new Error(NO_DESKTOP_FOR_PAGE_MESSAGE);
     const message = error instanceof Error ? error.message : String(error);
     if (isBuiltInBrowserNoProjectWindowMessage(message)) {
-      throw new Error("ADE on this computer doesn't have this project open, so it can't show the page. Open the project in ADE first.");
+      throw new Error(`${BRAND.NAME} on this computer doesn't have this project open, so it can't show the page. Open the project in ${BRAND.NAME} first.`);
     }
     throw error;
   }

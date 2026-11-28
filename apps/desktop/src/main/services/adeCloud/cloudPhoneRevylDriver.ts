@@ -550,7 +550,7 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
           const id = needApp();
           if (!id) return textAnswer("launch needs the app's bundle id (--app).", true);
           // This phone's launch takes no arguments: said, never dropped quietly.
-          if (value?.trim()) return textAnswer("This cloud iPhone can't pass launch arguments to an app. Launch it without them (ade apple relaunch --bundle-id <id>).", true);
+          if (value?.trim()) return textAnswer(`This cloud iPhone can't pass launch arguments to an app. Launch it without them (${BRAND.CLI} apple relaunch --bundle-id <id>).`, true);
           const failure = await act(phone, "launch", { bundle_id: id }, command());
           if (failure) return done(failure, `Launching ${id}`);
           return textAnswer(`Launched ${id}.\n\n${await settledScreen(phone)}`);

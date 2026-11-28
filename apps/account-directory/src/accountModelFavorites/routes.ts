@@ -83,7 +83,7 @@ export async function handleAccountModelFavoritesRequest(request: Request, env: 
   const allowedOrigin = trustedHttpsOrigin(env.WEB_CLIENT_ORIGIN, { requireExactOrigin: true });
   const corsOrigin = requestOrigin && allowedOrigin && requestOrigin === allowedOrigin ? allowedOrigin : null;
   if (request.method === "OPTIONS") {
-    if (!corsOrigin) return fail("origin_not_allowed", "This origin can't call ADE's model favorites.", 403);
+    if (!corsOrigin) return fail("origin_not_allowed", "This origin can't call DAEX's model favorites.", 403);
     const method = (request.headers.get("access-control-request-method") ?? "").toUpperCase();
     if (method !== "GET" && method !== "PUT") return fail("bad_request", "That method isn't allowed here.", 405);
     const requested = (request.headers.get("access-control-request-headers") ?? "").split(",").map((header) => header.trim().toLowerCase()).filter(Boolean);
@@ -99,14 +99,14 @@ export async function handleAccountModelFavoritesRequest(request: Request, env: 
       },
     });
   }
-  if (requestOrigin && !corsOrigin) return fail("origin_not_allowed", "This origin can't call ADE's model favorites.", 403);
-  if (request.method !== "GET" && request.method !== "PUT") return fail("not_found", "That route was not found on your ADE account.", 404);
+  if (requestOrigin && !corsOrigin) return fail("origin_not_allowed", "This origin can't call DAEX's model favorites.", 403);
+  if (request.method !== "GET" && request.method !== "PUT") return fail("not_found", "That route was not found on your DAEX account.", 404);
   const caller = await authenticate(request, env);
   // A sign-in refusal carries the CORS headers too, so the web client can read it.
   const response = !caller.ok
     ? caller.reason === "authentication unavailable"
-      ? fail("unavailable", "ADE can't check your sign-in right now. Try again soon.", 503)
-      : fail("unauthorized", "Sign in to ADE to see your favorite models.", 401)
+      ? fail("unavailable", "DAEX can't check your sign-in right now. Try again soon.", 503)
+      : fail("unauthorized", "Sign in to DAEX to see your favorite models.", 401)
     : request.method === "GET"
       ? json(await readRow(env.DB, caller.userId))
       : await handlePut(request, env, caller.userId, Date.now());
@@ -126,7 +126,7 @@ async function handlePut(request: Request, env: AccountModelFavoritesEnv, userId
     return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
   }
   if (body.account !== undefined && body.account !== userId) {
-    return fail("account_changed", "These favorites were changed under another ADE account.", 403);
+    return fail("account_changed", "These favorites were changed under another DAEX account.", 403);
   }
   const removed = new Set(remove);
   for (let attempt = 0; attempt < WRITE_ATTEMPTS; attempt += 1) {

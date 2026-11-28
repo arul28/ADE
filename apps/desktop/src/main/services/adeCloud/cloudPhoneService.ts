@@ -256,7 +256,7 @@ function cloudPhoneBuildFolder(files: readonly string[], requested: string | und
 
 /** Xcode 26 and later ship the Metal compiler as a separate download; a build host without it fails on any `.metal` file. */
 const MISSING_METAL = /missing Metal Toolchain/i;
-const METAL_SENTENCE = "The cloud iPhone's Xcode doesn't have Apple's Metal Toolchain, and this project compiles Metal shaders (a .metal file in the app or in one of its Swift packages), so it can't be built there yet. Build it on a Mac and send the app with ade apple install --app <path to the Simulator .app>.";
+const METAL_SENTENCE = `The cloud iPhone's Xcode doesn't have Apple's Metal Toolchain, and this project compiles Metal shaders (a .metal file in the app or in one of its Swift packages), so it can't be built there yet. Build it on a Mac and send the app with ${BRAND.CLI} apple install --app <path to the Simulator .app>.`;
 
 /** The line a build that moved to another phone for its Metal shaders starts with. */
 const METAL_MOVED = "Moved to another cloud iPhone: the first one's Xcode has no Metal Toolchain, which this project's Metal shaders need.";

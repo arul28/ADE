@@ -19235,7 +19235,7 @@ final class SyncService: ObservableObject {
   func listWorkToolsDevServers(laneId: String) async throws -> [WorkToolsDevServer] {
     let lane = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard supportsWorkToolsDevServers(laneId: lane) else {
-      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "Dev servers aren't listed by this machine's version of ADE.", "ADEErrorCode": "unsupported_action"])
+      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "Dev servers aren't listed by this machine's version of \(Brand.name).", "ADEErrorCode": "unsupported_action"])
     }
     guard !lane.isEmpty else { return [] }
     let result = try await sendCommand(
@@ -19270,7 +19270,7 @@ final class SyncService: ObservableObject {
         domain: "ADE",
         code: 17,
         userInfo: [
-          NSLocalizedDescriptionKey: "Opening pages from the phone needs a newer ADE on this lane's machine.",
+          NSLocalizedDescriptionKey: "Opening pages from the phone needs a newer \(Brand.name) on this lane's machine.",
           "ADEErrorCode": "unsupported_action",
         ]
       )

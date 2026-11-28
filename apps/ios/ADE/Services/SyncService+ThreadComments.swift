@@ -39,7 +39,7 @@ extension SyncService {
       throw NSError(
         domain: "ADE",
         code: 15,
-        userInfo: [NSLocalizedDescriptionKey: "This computer’s ADE cannot take comments from the phone. Update it to comment here."]
+        userInfo: [NSLocalizedDescriptionKey: "This computer’s \(Brand.name) cannot take comments from the phone. Update it to comment here."]
       )
     }
     let startedAt = threadCommentsWriteVersion[sessionId, default: 0]

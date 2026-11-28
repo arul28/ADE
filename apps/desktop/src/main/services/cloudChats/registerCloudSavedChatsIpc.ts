@@ -22,6 +22,7 @@ import { getSharedAccountAuthService, getSharedAccountDirectoryBaseUrl } from ".
 import { cloudAccessDepsFor, cloudServerFor, DESKTOP_CLOUD_TOKEN_WAIT_MS } from "../adeCloud/cloudAccess";
 import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
 import type { Logger } from "../logging/logger";
+import { BRAND } from "../../../shared/brand";
 
 export function registerCloudSavedChatsIpc(args: { logger: Logger }): void {
   const { logger } = args;
@@ -71,7 +72,7 @@ export function registerCloudSavedChatsIpc(args: { logger: Logger }): void {
     } catch (error) {
       // Thrown, not null: "none saved" is remembered, a failed read is not.
       logger.warn("cloud.saved_chat_proof_read_failed", { error: error instanceof Error ? error.name : "unknown" });
-      throw new Error("ADE couldn't read the saved proof.");
+      throw new Error(`${BRAND.NAME} couldn't read the saved proof.`);
     }
   });
 

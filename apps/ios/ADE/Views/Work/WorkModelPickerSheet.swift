@@ -1757,7 +1757,7 @@ struct ModelPickerContentPane: View {
     }
     switch selection {
     case .favorites:
-      return "Tap the star on any model to pin it here. Favorites sync across your ADE account."
+      return "Tap the star on any model to pin it here. Favorites sync across your \(Brand.name) account."
     case .recents:
       return "Models you pick here will appear in the recents list, on every paired surface."
     case .free:

@@ -80,10 +80,10 @@ struct WorkToolsDevServersCard: View {
           await watch(tabId)
         } else if let desktop = opened.openedOn {
           notice = opened.awaitingApproval == true
-            ? "Sent to ADE on \(desktop). Allow it there to load the page."
-            : "Opened in ADE on \(desktop). Watch it from there."
+            ? "Sent to \(Brand.name) on \(desktop). Allow it there to load the page."
+            : "Opened in \(Brand.name) on \(desktop). Watch it from there."
         } else {
-          notice = "Opened in ADE on another computer."
+          notice = "Opened in \(Brand.name) on another computer."
         }
       } catch {
         openError = error.localizedDescription

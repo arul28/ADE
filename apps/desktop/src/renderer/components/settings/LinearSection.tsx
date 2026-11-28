@@ -98,7 +98,7 @@ function rememberAdded(repoSlug: string, keyPrefix: string): void {
  */
 function refusedLinksNote(refusal: string, repoSlug: string | null, exampleIssueKey: string): string {
   if (GITHUB_AUTOLINKS_SIGN_IN_LACKS_ADMIN.test(refusal)) return refusal;
-  return `Only an admin of ${repoSlug ?? "this repository"} can add these on GitHub. In ADE's PR view, keys like ${exampleIssueKey} already open the issue.`;
+  return `Only an admin of ${repoSlug ?? "this repository"} can add these on GitHub. In ${BRAND.NAME}'s PR view, keys like ${exampleIssueKey} already open the issue.`;
 }
 
 export function LinearSection() {
@@ -505,7 +505,7 @@ export function LinearSection() {
     if (!missing.length) return;
     for (const candidate of missing) autoAddTriedRef.current.add(addedKey(githubRepoSlug, candidate.keyPrefix));
     void addAutolinks(missing).then((failure) => {
-      if (failure) setAutoAddFailure(`ADE couldn't add these on GitHub: ${failure.text}`);
+      if (failure) setAutoAddFailure(`${BRAND.NAME} couldn't add these on GitHub: ${failure.text}`);
     });
   }, [addAutolinks, autolinkCandidates, autolinkError, autolinksLoading, autolinksRead, creatingAutolinkId, githubRepoSlug, hasWorkspaceKey]);
 

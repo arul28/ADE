@@ -773,14 +773,14 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
       captureCloudPhone(env, waitUntil, userId, { step: "refused", plan, reason }, reason, now);
       return answer;
     };
-    if (env.CLOUD_PHONES_PAUSED?.trim() === "1") return refused(fail("phone_paused", "New ADE Cloud iPhones are paused for a moment. Try again soon.", 503), "paused");
+    if (env.CLOUD_PHONES_PAUSED?.trim() === "1") return refused(fail("phone_paused", "New DAEX Cloud iPhones are paused for a moment. Try again soon.", 503), "paused");
     const credits = startRefusal(context);
     if (credits) return refused(fail(credits.code, credits.message, 402, { minutes: minutesOf(context.usage) }), credits.code);
     const swap = await routeOfStart(env, userId, context, plan, picked, free, drives, now);
     const usable = swap instanceof Response ? swap : routeForBuilds(env, swap.route, { builds, gapped, needs, free, drives });
     if (usable instanceof Response) return refused(usable, await refusalCode(usable));
     if (!(await stopPhone(env, userId, session.id, now, "build_tool"))) {
-      return fail("phone_unavailable", "Your ADE Cloud iPhone couldn't be swapped for one that can build this app yet. Try again in a moment.", 503);
+      return fail("phone_unavailable", "Your DAEX Cloud iPhone couldn't be swapped for one that can build this app yet. Try again in a moment.", 503);
     }
     logCloud("cloud.phone_build_swap", { userId, phoneId: session.id, from: provider, builds });
     // The new phone is the same model as the one it replaces (a launch names none).

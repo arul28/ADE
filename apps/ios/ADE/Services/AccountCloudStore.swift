@@ -656,7 +656,7 @@ final class AccountCloudStore: ObservableObject {
       guard let client = await sync.cloudServerClient() else {
         // A read started for an account that has since signed out says nothing to the next one.
         guard generation == self.accountGeneration, !Task.isCancelled else { return }
-        sync.chatThreadRegistry.markSnapshotStalled(key, message: "Sign in to ADE to read this chat.")
+        sync.chatThreadRegistry.markSnapshotStalled(key, message: "Sign in to \(Brand.name) to read this chat.")
         return
       }
       var page: CloudChatTranscriptPage
@@ -673,7 +673,7 @@ final class AccountCloudStore: ObservableObject {
       } catch {
         accountCloudLog.notice("cloud_store read=transcript failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
         guard generation == self.accountGeneration, !Task.isCancelled else { return }
-        sync.chatThreadRegistry.markSnapshotStalled(key, message: "ADE couldn't read this chat's saved copy. \(cloudServerFailureMessage(error))")
+        sync.chatThreadRegistry.markSnapshotStalled(key, message: "\(Brand.name) couldn't read this chat's saved copy. \(cloudServerFailureMessage(error))")
         return
       }
       let sessionId = key.sessionId

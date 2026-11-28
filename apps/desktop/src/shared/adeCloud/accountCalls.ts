@@ -150,11 +150,11 @@ function limitsUpdate(value: unknown): CloudAgentLimitsUpdate {
 /** A list of model ids for a favorites change; an empty list when none was sent. */
 function modelIds(value: unknown): string[] {
   if (value == null) return [];
-  if (!Array.isArray(value) || value.length > ACCOUNT_MODEL_FAVORITES_MAX) throw new InvalidCall("ADE couldn't read the favorite models to save.");
+  if (!Array.isArray(value) || value.length > ACCOUNT_MODEL_FAVORITES_MAX) throw new InvalidCall(`${BRAND.NAME} couldn't read the favorite models to save.`);
   const out: string[] = [];
   for (const raw of value) {
     const id = text(raw, ACCOUNT_MODEL_FAVORITE_ID_MAX);
-    if (!id) throw new InvalidCall("ADE couldn't read the favorite models to save.");
+    if (!id) throw new InvalidCall(`${BRAND.NAME} couldn't read the favorite models to save.`);
     if (!out.includes(id)) out.push(id);
   }
   return out;
@@ -223,10 +223,10 @@ async function dispatch(api: CloudApiClient, call: Record<string, unknown>): Pro
     case "changeModelFavorites": {
       const add = modelIds(call.add);
       const remove = modelIds(call.remove);
-      if (!add.length && !remove.length) throw new InvalidCall("ADE couldn't read the favorite models to save.");
+      if (!add.length && !remove.length) throw new InvalidCall(`${BRAND.NAME} couldn't read the favorite models to save.`);
       // The server compares it with the caller's user id. A supplied account is always sent, never dropped.
       const account = call.account == null ? undefined : text(call.account, 512);
-      if (account === null) throw new InvalidCall("ADE couldn't read the account for these favorites.");
+      if (account === null) throw new InvalidCall(`${BRAND.NAME} couldn't read the account for these favorites.`);
       return await api.changeModelFavorites({ add, remove, ...(account ? { account } : {}) });
     }
     case "savedSession":

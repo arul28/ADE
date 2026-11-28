@@ -383,7 +383,7 @@ async function handlePutProof(request: Request, env: CloudEnv, userId: string, m
   if (Number.isFinite(declared) && declared > CLOUD_CHAT_PROOF_MAX_BYTES) return tooLarge();
   // Called from the computer: only its owner's computers save here.
   const computer = await callingComputer(env, request, userId, null);
-  if (!computer) return fail("not_found", "ADE Cloud has no such computer.", 404);
+  if (!computer) return fail("not_found", "DAEX Cloud has no such computer.", 404);
   const read = await readBoundedBytes(request, CLOUD_CHAT_PROOF_MAX_BYTES);
   if (!read.ok) return tooLarge();
   const plain = read.bytes;

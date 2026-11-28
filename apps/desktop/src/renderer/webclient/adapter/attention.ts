@@ -904,7 +904,7 @@ export function createAttentionNamespace(
     ) {
       const owner = accountClient.getSnapshot().userId?.trim() ?? "";
       if (!owner || owner !== accountOwnerId.trim()) {
-        throw new Error("The ADE account changed before Activity settings could be saved.");
+        throw new Error(`The ${BRAND.NAME} account changed before Activity settings could be saved.`);
       }
       const id = projectId.trim();
       if (!id) throw new Error("A project is required to change its notifications.");

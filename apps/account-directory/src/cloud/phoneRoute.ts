@@ -281,11 +281,11 @@ export function routeForBuilds(
   const what = buildWords(builds);
   const elsewhere = PROVIDER_ORDER.filter((provider) => !gapped.has(provider) && PHONE_PROVIDERS[provider].canStart(env) && drives(provider));
   if (elsewhere.length && free && elsewhere.some((provider) => cloudPhoneLacks(provider, needs).length === 0)) {
-    return fail("phone_needs_paid", `This app needs a cloud iPhone that can ${what}, and right now only the paid plans' iPhones can. Pick a plan in Settings › ADE Cloud, or build the app on a Mac and send it with ade apple install --app <path to the Simulator .app>.`, 402);
+    return fail("phone_needs_paid", `This app needs a cloud iPhone that can ${what}, and right now only the paid plans' iPhones can. Pick a plan in Settings › DAEX Cloud, or build the app on a Mac and send it with daex apple install --app <path to the Simulator .app>.`, 402);
   }
   const lacking = elsewhere.length && elsewhere.every((provider) => cloudPhoneLacks(provider, needs).length > 0) ? cloudPhoneLacks(elsewhere[0]!, needs) : [];
   if (lacking.length) {
-    return fail("phone_lacks", `The ADE Cloud iPhone can't ${what} and ${abilityWords(lacking)} at once right now. Leave out what needs the second, or build the app on a Mac and send it with ade apple install --app <path to the Simulator .app>.`, 409);
+    return fail("phone_lacks", `The DAEX Cloud iPhone can't ${what} and ${abilityWords(lacking)} at once right now. Leave out what needs the second, or build the app on a Mac and send it with daex apple install --app <path to the Simulator .app>.`, 409);
   }
-  return fail("phone_build_unavailable", `The ADE Cloud iPhone can't ${what} right now. Build the app on a Mac and send it with ade apple install --app <path to the Simulator .app>.`, 409);
+  return fail("phone_build_unavailable", `The DAEX Cloud iPhone can't ${what} right now. Build the app on a Mac and send it with daex apple install --app <path to the Simulator .app>.`, 409);
 }

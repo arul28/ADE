@@ -1877,7 +1877,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
       "notification", "alert", "turn complete", "question", "ci", "check",
       "review", "conflict", "desktop", "phone", "push", "silent", "matrix",
       "per project", "per machine", "per phone", "project", "computer", "iphone",
-      "message", "ade notify", "automation", "goal", "background service",
+      "message", "daex notify", "ade notify", "automation", "goal", "background service",
     ],
     tab: "notifications",
     anchor: "notification-events",
