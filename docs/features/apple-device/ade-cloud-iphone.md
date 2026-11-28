@@ -225,7 +225,9 @@ both used, without changing anything an agent or a person sees.
   its build step passes, while the app is packed), and stops a phone that
   start made (its own `origin` token: never one already up, one another chat
   or the person started meanwhile, nor one it found running) when the build
-  then failed or its follow-up threw. A failed build's answer says what it
+  then failed or its follow-up threw. It stops it by its id
+  (`DELETE /cloud/phone?phoneId=`, which stops nothing when the live phone is
+  another), so a phone another machine started since keeps running. A failed build's answer says what it
   cost in phone minutes. With a Revyl phone held, the build keeps it awake, so
   a long build is never installed on a fresh phone by building again.
   `build` spends no credits, so it skips the agents' spending guard; a chat in

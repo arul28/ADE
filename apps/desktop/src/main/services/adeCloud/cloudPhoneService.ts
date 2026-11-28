@@ -576,15 +576,15 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     return false;
   }
 
-  /** Stops the account's phone, which is this run's: its chat is told. */
+  /** Stops this run's phone by its id (never another the account started since): its chat is told. */
   async function stopRun(run: CloudPhoneRun<Held>): Promise<boolean> {
-    deps.logger?.info?.("cloud_phone.early_phone_stopped", { phoneId: run.phoneId });
     try {
-      await (await provider()).phoneStop!();
+      if (!(await (await provider()).phoneStop!({ phoneId: run.phoneId })).stopped) return false;
     } catch (error) {
       deps.logger?.warn?.("cloud_phone.early_phone_stop_failed", { error: error instanceof Error ? error.message : String(error) });
       return false;
     }
+    deps.logger?.info?.("cloud_phone.early_phone_stopped", { phoneId: run.phoneId });
     if (held?.phoneId === run.phoneId) held = null;
     if (liveRun === run) announceEnd(run, "stopped");
     return true;

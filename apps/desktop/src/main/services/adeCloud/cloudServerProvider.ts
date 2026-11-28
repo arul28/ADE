@@ -598,8 +598,8 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
       return { ok: true, provider: picked };
     },
 
-    async phoneStop(): Promise<{ stopped: boolean }> {
-      const answer = record(await request("DELETE", CLOUD_PATHS.phone));
+    async phoneStop(input?: { phoneId?: string }): Promise<{ stopped: boolean }> {
+      const answer = record(await request("DELETE", input?.phoneId ? `${CLOUD_PATHS.phone}?phoneId=${encodeURIComponent(input.phoneId)}` : CLOUD_PATHS.phone));
       return { stopped: answer?.stopped === true };
     },
 

@@ -4912,6 +4912,24 @@ describe("ADE Cloud iPhone", () => {
     expect(stops).toHaveLength(1);
   });
 
+  it("a stop that names a phone stops only that one: a phone another machine started since keeps running", async () => {
+    seedPhoneAccount();
+    seedPhone("ses_live", 2, clock - 2 * 60_000, "live");
+    liveNomacPhone("ses_live", clock - 2 * 60_000, 120);
+    const stops: string[] = [];
+    const network = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      if ((init?.method ?? "GET") !== "GET" && String(input instanceof Request ? input.url : input).includes("/simulator/sessions/ses_live")) stops.push(init?.method ?? "");
+      return network(input, init);
+    });
+    const stop = async (query: string) => (await (await harness.send(OWNER, "DELETE", `/cloud/phone${query}`)).json()) as { stopped: boolean };
+
+    expect(await stop("?phoneId=ses_gone")).toEqual({ ok: true, stopped: false });
+    expect(stops).toEqual([]);
+    expect(await stop("?phoneId=ses_live")).toEqual({ ok: true, stopped: true });
+    expect(stops.length).toBeGreaterThan(0);
+  });
+
   const BUILD_APP = "11111111-1111-4111-8111-111111111111";
   const BUILD_JOB = "22222222-2222-4222-8222-222222222222";
   /**

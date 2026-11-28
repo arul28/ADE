@@ -654,12 +654,15 @@ export async function routePhone(request: Request, path: string, env: CloudEnv, 
   }
 
   // Stopping your own phone is always allowed, whatever the access says now.
+  // `?phoneId=`: stop only that phone. A brain cleaning up after its own build names its phone, so a phone
+  // another machine started since is never stopped by mistake.
   if (path === CLOUD_PATHS.phone && request.method === "DELETE") {
     if (!anyProviderKey(env)) return json({ ok: true, stopped: false });
     const context = await phoneContext(env, userId, now);
     if (context instanceof Response) return context;
     const phoneId = context.live?.session.id ?? context.liveRowId;
-    if (!phoneId) return json({ ok: true, stopped: false });
+    const named = new URL(request.url).searchParams.get("phoneId");
+    if (!phoneId || (named && named !== phoneId)) return json({ ok: true, stopped: false });
     if (!(await stopPhone(env, userId, phoneId, now, "person"))) {
       return fail("phone_unavailable", "The ADE Cloud iPhone isn't answering right now. Try again in a moment.", 502);
     }

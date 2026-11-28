@@ -56,7 +56,9 @@ describe("ADE Cloud iPhone: a phone started for a build that fails", () => {
         live = phone;
         return { phone, reused: alreadyRunning, token: { token: "", expiresAt: Date.now() + 3_600_000 }, minutes: { included: 100, used: 0, left: 100 }, apiBase: "", provider: "revyl" };
       },
-      async phoneStop() {
+      async phoneStop(input?: { phoneId?: string }) {
+        // The server stops only the phone named, when it is the live one.
+        if (input?.phoneId && input.phoneId !== live?.id) return { stopped: false };
         stops.push(Date.now());
         live = null;
         return { stopped: true };
