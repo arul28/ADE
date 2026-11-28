@@ -1,26 +1,48 @@
-# ADE Architecture Reference
+# DAEX Architecture Reference
 
-Consolidated technical reference for the ADE (Agentic Development Environment) system. This document is the entry point for engineers and AI agents who need to understand the shape of the system before reading feature-specific docs. Deeper subsystem docs live under `docs/features/`.
+The technical entry point for engineers and agents: how the apps fit, where
+state lives, the IPC contract, and the cross-cutting rules. Each section points
+to the feature doc that holds the detail. Product scope is in
+[PRD.md](./PRD.md). The code is the source of truth.
+
+DAEX was called ADE until 2026-11-28. Code identifiers, `ADE_*` env vars,
+`.ade/` folders, `~/.ade`, file names and `window.ade` keep the old name on
+purpose; see [brand/README.md](./brand/README.md).
 
 ---
 
-## 1. System at a Glance
+## 1. System at a glance
 
-ADE is a development control plane that orchestrates AI-assisted software engineering across parallel worktrees and also hosts projectless personal chats. ADE works fully with no computer of your own: every account always has one machine, **ADE Cloud**, next to the person's own computers (section 1.1). On each machine, the center of the system is the **ADE brain**: the always-on, machine-owned ADE process for one channel. The brain hosts every project on that machine through a project registry, owns a separate machine-level personal-chat scope, exposes both through one JSON-RPC surface on the channel's local endpoint, serves the sync websocket for ADE Mobile, and carries executor authority. Desktop, the iOS app, hosted web, and SSH-attached desktop windows are all **clients** that attach to a local brain or remote runtime transport and invoke runtime-owned actions through that one surface.
+DAEX orchestrates AI-assisted software engineering across parallel git
+worktrees ("lanes") and also hosts projectless personal chats. It works fully
+with no computer of your own: every account always has one machine, **DAEX
+Cloud**, next to the person's own computers (section 1.1).
 
-The brain owns everything that needs to survive a client closing: worktree-per-lane git isolation, project and personal multi-provider agent chat, a persistent CTO agent with durable memory and a Linear read/write surface, rule-based automations, stacked pull requests with conflict simulation, computer-use proofs, the sync service that replicates projects to other devices, and the per-machine credential store and agent registry. AI work runs on the machine that owns the lane: through user-authenticated CLIs (Claude Code, Codex), API-key routes (OpenCode server), or local model endpoints (Ollama, LM Studio, vLLM). Model calls go from that machine to the provider, not through ADE's servers. ADE's servers (the Cloudflare Workers in section 2.6) hold the account: the machine list, ADE Cloud, saved copies of cloud work, account settings and the encrypted vault.
+On each machine the center is the **brain**: the always-on DAEX process for one
+channel (`apps/ade-cli/`). It hosts every project on that machine through a
+project registry, owns a separate personal-chat scope, exposes both through one
+JSON-RPC surface on the channel's local endpoint, serves the sync WebSocket,
+and carries executor authority. Desktop windows, the iPhone app, the hosted web
+client and SSH-attached desktop windows are **clients** that attach to a brain
+and call runtime-owned actions through that one surface.
 
-ADE ships as one computer install, the hosted web client, ADE Mobile, the account Workers, and the marketing site:
+The brain owns everything that must survive a client closing: lane worktrees,
+agent chats for 13 providers, the CTO agent, automations, PR actions, proof, the
+sync service, and the per-machine credential store. Agents run on the machine
+that owns the lane; model calls go from that machine to the provider, never
+through DAEX's servers. DAEX's servers (the Cloudflare Workers in section 2.6)
+hold the account: the machine list, DAEX Cloud, saved copies of cloud work,
+account settings and the encrypted vault.
 
 ### Brain and runtime topology
 
 ```mermaid
 flowchart TB
-  subgraph LocalMachine["One ADE computer install, one channel"]
+  subgraph LocalMachine["One DAEX computer install, one channel"]
     Desktop["Electron desktop app<br/>apps/desktop"]
-    Shell["ade CLI<br/>typed commands"]
-    Brain["ADE brain<br/>always-on runtime process<br/>$ADE_HOME/sock/ade.sock"]
-    Bridge["Desktop bridge<br/>~/.ade/sock/desktop-bridge.sock"]
+    Shell["daex CLI<br/>typed commands"]
+    Brain["DAEX brain<br/>always-on runtime process<br/>$ADE_HOME/sock/ade.sock"]
+    Bridge["Desktop bridge<br/>$ADE_HOME/sock/desktop-bridge.sock"]
   end
 
   Desktop -->|"local RPC attach"| Brain
@@ -31,7 +53,7 @@ flowchart TB
   subgraph ProjectState["Project .ade state"]
     Database[".ade/ade.db<br/>SQLite + cr-sqlite"]
     Lanes[".ade/worktrees/*<br/>lane worktrees"]
-    Artifacts[".ade/artifacts + cache<br/>proof, transcripts, packs"]
+    Artifacts[".ade/artifacts + cache<br/>proof, transcripts"]
   end
 
   Personal["$ADE_HOME/personal-chats<br/>hidden state + scratch workspace"]
@@ -41,22 +63,35 @@ flowchart TB
   Brain --> Artifacts
   Brain --> Personal
 
-  IOS["ADE Mobile<br/>controller client"] <-->|"machine pairing + sync WebSocket<br/>catalog, changesets, commands"| Brain
+  IOS["iPhone app<br/>controller client"] <-->|"pairing + sync WebSocket<br/>catalog, changesets, commands"| Brain
 
-  DesktopRemote["Desktop<br/>paired or SSH client"] <-->|"paired RPC WebSocket<br/>or ade rpc --stdio"| RemoteRuntime["Remote ADE brain / runtime<br/>machine project registry"]
+  DesktopRemote["Desktop<br/>paired or SSH client"] <-->|"paired RPC WebSocket<br/>or daex rpc --stdio"| RemoteRuntime["Remote DAEX brain<br/>machine project registry"]
   RemoteRuntime --> RemoteProject["Remote project .ade state"]
 ```
 
-Live runtime state is replicated between paired devices through cr-sqlite changesets carried over WebSocket; the **sync service runs inside the ADE brain**, not in the desktop app. ADE Mobile pairs with a machine — typically the user's primary desktop-class machine — and receives that machine's project catalog from the brain. The sync WebSocket is one brain-level listener on a stable port (default 8787, with preferred-port retry before any scan); when the hosted project switches, the new project's host service adopts the connected phones instead of dropping them. A second desktop on the same network is also a client of that brain, not a peer host. A desktop window can bind to a remote brain through the paired DPoP runtime channel (LAN → tailnet → relay) or, for an explicitly eligible target, through SSH `ade rpc --stdio`. The binding is per-window/client, and both transports route actions through the same multi-project JSON-RPC surface. See [features/remote-runtime/README.md](./features/remote-runtime/README.md).
+The **sync service runs inside the brain**, not in the desktop app. Live state
+replicates between paired devices as cr-sqlite changesets over WebSocket. The
+sync WebSocket is one brain-level listener on a stable port (default 8787,
+`DEFAULT_SYNC_HOST_PORT`); when the hosted project switches, the new project's
+host service adopts the connected phones. A second desktop is a client of that
+brain, not a peer host. A desktop window binds to a remote brain over the paired
+DPoP channel (LAN, then tailnet, then DAEX Relay) or, for an eligible target,
+over SSH `daex rpc --stdio`. The binding is per window, and both transports
+route through the same multi-project JSON-RPC surface. See
+[remote-runtime](./features/remote-runtime/README.md).
 
-Source code crosses machines through plain git. ADE does not own a git server.
+Source code crosses machines through plain git. DAEX does not host a git server.
 
-### 1.1 No computer of your own: ADE Cloud and the account
+### 1.1 No computer of your own: DAEX Cloud and the account
 
-ADE Cloud is one machine that every signed-in account always has. Every machine list and every "Run on" menu shows it, on the web, the iPhone and the desktop, next to the person's own computers. Its machine id is `__ade_cloud__` and its name is "ADE Cloud" (`apps/desktop/src/shared/adeCloudMachine.ts`). Each cloud lane has its own Linux computer underneath, with a brain like any other machine. No surface shows these computers as machines.
+DAEX Cloud is one machine every signed-in account always has. Every machine
+list and every "Run on" menu shows it, on web, iPhone and desktop. Its machine
+id is `__ade_cloud__` (`apps/desktop/src/shared/adeCloudMachine.ts`). Each cloud
+lane has its own Linux computer underneath, with a brain like any other
+machine. No surface shows these computers as machines.
 
 ```
-  web client · iPhone · desktop · ade CLI
+  web client · iPhone · desktop · daex CLI
       |                 |                       |
       | reads           | does (send, run, Git) | own computers
       v                 v                       v
@@ -69,10 +104,16 @@ ADE Cloud is one machine that every signed-in account always has. Every machine 
 
 **The rule for every surface.**
 
-- A tab shows the connected own computers plus ADE Cloud, always. A project tab with no own computer online binds to ADE Cloud and keeps the normal tabs and composer.
-- An offline own computer is hidden in Work, Lanes and the welcome page. An asleep cloud computer is not offline: its lanes and work stay listed.
-- Reading never wakes a computer. Reads come from the account Workers or from GitHub. Doing (send, run, open a changed file, a Git action, continue) wakes the lane's computer through the account (`cloudSleep.ts` `wakeCloudMachineForUse`), and the UI never waits on the wake.
-- Every action on a cloud lane still goes to that lane's own computer by its pin. Only the label and the grouping are shared.
+- A tab shows the connected own computers plus DAEX Cloud, always. A project
+  tab with no own computer online binds to DAEX Cloud and keeps the normal tabs
+  and composer.
+- An offline own computer is hidden in Work, Lanes and the welcome page. An
+  asleep cloud computer is not offline: its lanes and work stay listed.
+- Reading never wakes a computer. Reads come from the account Workers or from
+  GitHub. Doing (send, run, open a changed file, a Git action, continue) wakes
+  the lane's computer through the account (`cloudSleep.ts`
+  `wakeCloudMachineForUse`), and the UI never waits on the wake.
+- Every action on a cloud lane goes to that lane's own computer by its pin.
 
 **What the account keeps for cloud lanes** (`apps/account-directory/src/cloud/`):
 
@@ -82,1588 +123,1248 @@ ADE Cloud is one machine that every signed-in account always has. Every machine 
 | CLI sessions, shells (last 5,000 lines) and subagents | the computer at rest (`cloudRestSave.ts`; server `sessionCopies.ts`) | Work, read-only copies |
 | Git summary: branch, ahead/behind, changed files | the computer at rest (server `gitSummaries.ts`) | Files, Git, History, resting lane detail |
 | Fork capsules of each chat | idle cleanup's prepare step (server `forkCapsules.ts`) | the continue on a new computer |
-| Messages for an asleep or deleted chat or CLI | clients (`POST /cloud/chats/:m/:c/messages`, server `chatMessages.ts`) | the computer, which claims and reports each one once (`cloudChatMessageQueue.ts`) |
+| Messages for an asleep or deleted chat or CLI | clients (`POST /cloud/chats/:m/:c/messages`, server `chatMessages.ts`) | the computer, which claims and reports each once (`cloudChatMessageQueue.ts`) |
 | Account lane index: name, branch, machine, PR number | every machine (`accountLaneIndexPublisher.ts`; server `src/accountLanes/`) | mentions of a lane only (PR rows, notifications, CTO, search); never the Lanes tab |
 | CTO copy, automations, limits, sign-in status | brains and Settings | the CTO page, Automations, Settings with no computer |
 
-Only cloud computers upload chats and sessions. Own computers never do. Proof is never uploaded.
+Only cloud computers upload chats and sessions. Own computers never do. Proof
+is never uploaded.
 
-**Idle cleanup** deletes an unused cloud computer after a warning. Its order is prepare, push, save for rest, check (`planCleanup.ts`, `idleCleanup.ts`). The lane's chats show a "deleting soon" band with **Keep it** (`components/cloudLane/CloudLaneDeletingSoonBand.tsx`). The next message to a deleted computer's chat starts a new computer, which continues the chat **in the same chat row** (`cloudChatRestore.ts`). Claude, Codex and OpenCode restore their native session from the capsule. The other 10 providers replay the saved transcript.
+**Idle cleanup** deletes an unused cloud computer after a warning, in the order
+prepare, push, save for rest, check (`planCleanup.ts`, `idleCleanup.ts`). The
+lane's chats show a "deleting soon" band with **Keep it**
+(`components/cloudLane/CloudLaneDeletingSoonBand.tsx`). The next message to a
+deleted computer's chat starts a new computer that continues the chat **in the
+same chat row** (`cloudChatRestore.ts`). Claude, Codex and OpenCode restore
+their native session from the capsule; the other 10 providers replay the saved
+transcript.
 
-**Refusals.** The server refuses a wake or a create with a code and one sentence (out of hours, too many awake, blocked, deleting, over the plan's disk, `plan_past_due`, `too_many_messages`). Every client shows that sentence. A blocked account reads and exports its saved chats through a read-only allowlist, and cannot wake or create.
+**Refusals.** The server refuses a wake or a create with a code and one
+sentence (out of hours, too many awake, blocked, deleting, over the plan's disk,
+`plan_past_due`, `too_many_messages`). Every client shows that sentence. A
+blocked account reads and exports its saved chats and cannot wake or create.
 
-**Event wakes.** A Linear event or a webhook for an asleep computer wakes it: the webhook relay calls `/cloud/internal/event-wake` (`eventWakes.ts`), gated by `CLOUD_EVENT_WAKE_SECRET`.
+**Event wakes.** A Linear event or a webhook for an asleep computer wakes it:
+the webhook relay calls `/cloud/internal/event-wake` (`eventWakes.ts`), gated by
+`CLOUD_EVENT_WAKE_SECRET`.
 
-**Linear and Jira with no computer.** The account server reads Linear and Jira with the project's vault connection (`POST /cloud/integrations/linear/query`, `.../jira/search`, `.../jira/issue`; `apps/account-directory/src/cloud/integrations.ts`). Reads only, fixed Linear documents, Jira only at `https://<site>.atlassian.net`, 30 requests a minute per account. When a Linear grant from ADE's own OAuth app has run out, the server renews it under the same "one owner renews" rule as computers (`linearRenewal.ts`, owner `ade-cloud-directory`), and the request answers `linear_renewing` until then. A grant from a person's own OAuth app still needs a computer (`linear_needs_renewal`). See [features/linear-integration/README.md](./features/linear-integration/README.md#with-no-computer).
+**Linear and Jira with no computer.** The account server reads Linear and Jira
+with the project's vault connection (`POST /cloud/integrations/linear/query`,
+`.../jira/search`, `.../jira/issue`; `src/cloud/integrations.ts`). Reads only,
+30 requests a minute per account. An expired grant from DAEX's own Linear OAuth
+app is renewed by the server (`linearRenewal.ts`); a grant from a person's own
+OAuth app still needs a computer. See
+[linear-integration](./features/linear-integration/README.md#with-no-computer).
 
-**Account sync.** The account vault and settings reach every machine, ADE Cloud included:
+**Account sync.** The vault and account settings reach every machine, DAEX
+Cloud included: one API key store (`provider_api_key`), Passwords and secrets,
+provider sign-ins and DAEX proxy logins as access-only copies, launch defaults
+and quick slots, and DAEX Cloud agent limits (`/cloud/limits`). A browser never
+reads a secret value: the push relay answers a request with an `Origin` header
+only on `BROWSER_ACCOUNT_ROUTES` (`apps/push-relay/src/relay.ts`), and none of
+them returns a secret. Personal chats stay on their machine.
 
-- one API key store (`provider_api_key`), the same on "This computer" and "ADE Cloud" in Settings › Providers;
-- Passwords and secrets; Qwen's DashScope API key for ADE Cloud;
-- provider sign-ins, and ADE proxy logins as access-only copies;
-- launch defaults and quick slots;
-- ADE Cloud agent limits (`/cloud/limits`).
+**Git identity on a cloud computer.** The computer sets the account's GitHub
+noreply identity, else `DAEX Cloud <cloud@users.noreply.ade-app.dev>`
+(`apps/ade-cli/src/services/github/cloudGitIdentity.ts`). It never writes over
+a value a person set.
 
-A browser never reads a secret value. The push relay answers a browser (a request with an `Origin` header) only on the routes in `BROWSER_ACCOUNT_ROUTES` (`apps/push-relay/src/relay.ts`), and none of them returns a secret. Web Passwords shows only where to change Passwords. Personal chats stay on their machine.
+**Not built.** Moving a lane or a chat onto DAEX Cloud, and web push.
 
-**Git identity on a cloud computer.** At join, the computer sets the account's GitHub noreply identity, else `ADE Cloud <cloud@users.noreply.ade-app.dev>` (`apps/ade-cli/src/services/github/cloudGitIdentity.ts`). It never writes over a value a person set.
-
-**Not built.** Moving a lane or a chat onto ADE Cloud, and web push.
-
-The details are in [features/ade-cloud/README.md](./features/ade-cloud/README.md) and [features/web-client/README.md](./features/web-client/README.md).
-
-Product positioning and workflows live in [`docs/PRD.md`](../docs/PRD.md). This document is strictly technical.
+Details: [ade-cloud](./features/ade-cloud/README.md),
+[web-client](./features/web-client/README.md).
 
 ---
 
-## 2. Apps & Processes
+## 2. Apps and processes
 
-### 2.1 ADE brain and runtime (`apps/ade-cli/`)
+### 2.1 DAEX brain and runtime (`apps/ade-cli/`)
 
-`apps/ade-cli/` contains the brain process, manual runtime entry points, and the `ade` CLI surface. It ships as one Node binary that runs in several modes.
+`apps/ade-cli/` holds the brain, the manual runtime entry points and the `daex`
+CLI (`ade` is a permanent alias; both names are `bin` entries for
+`dist/cli.cjs`). It ships as one Node binary with several run modes:
 
-**Run modes:**
+- **Brain** (`daex serve`). Boots the multi-project JSON-RPC server, hosts
+  per-project services on demand, serves sync, and listens on the channel's
+  endpoint: POSIX `$ADE_HOME/sock/ade.sock` (directory `0700`, socket `0600`),
+  Windows `\\.\pipe\ade-runtime-<channel>-<hash>`. `machineLayout.ts` derives
+  the Windows hash from the canonical home, channel and the profile folder of
+  the process token's account, so users and channels never collide and every
+  session of one user reaches one brain. Installed as a login service with
+  `daex brain start` / `daex brain stop` (`src/serviceManager/`). A brain a
+  desktop connects to runs at role `cto` (`daex --role cto serve`).
+- **Manual runtime** (`daex runtime run --socket <path>`). A foreground runtime
+  on an explicit endpoint. Sync is always off, so it never claims brain
+  authority. `--profile embedded` marks it a guest of an external embedder
+  (`@daex-dev/sdk`): personal-chat scope, no automations, no machine-update or
+  power controls, and a parent-death watchdog (`parentDeathWatchdog.ts`,
+  `ADE_EMBEDDED_PARENT_PID`). See [SDK](./features/sdk/README.md).
+- **Single command** (`daex <command>`). Connects to the local brain, runs one
+  action and exits. `--headless` boots a project's services in process instead,
+  for CI and scripts; calls whose state lives in the brain (chats, sessions,
+  terminals, devices, browsers, schedules; `lib/liveRuntimeActions.ts`) then
+  fail with the reason instead of a stub answer. Version skew with a running
+  brain is handled by `lib/brainVersionSkew.ts`: a protocol-compatible brain is
+  used as it is and never replaced unless it runs this CLI's own entry file; an
+  incompatible one is refused in one line.
+- **SSH stdio bridge** (`daex rpc --stdio`). JSON-RPC over stdin/stdout. The
+  desktop's `RemoteConnectionPool` runs it over SSH after
+  `bootstrapRemoteRuntime` uploaded a matching `ade-<platform-arch>` binary.
 
-- **Brain** — the normal mode. Boots the multi-project JSON-RPC server, hosts the per-project services on demand, serves sync, and listens on the channel's local endpoint (POSIX: `$ADE_HOME/sock/ade.sock`; Windows: `\\.\pipe\ade-runtime-<channel>-<hash>`). `machineLayout.ts` derives the Windows hash from the canonical ADE home, runtime channel/service identity, and the profile folder of the process token's account (not `USERDOMAIN`, which differs between a desktop logon and SSH), so users and Stable/Beta/Alpha installs cannot collide and every session of one user reaches one brain. The brain also listens on the env-derived names ADE up to v1.2.125 used, and clients with no explicit socket fall back to those names when only an older brain listens (`resolveMachineEndpointNames`, `resolveReachableMachineRuntimeSocketPath`); see `docs/development/windows-support.md`. On POSIX the headless RPC socket directory is created `0700` and the socket itself chmodded `0600` so only the owning user can connect (named pipes skip the chmod). Installable / removable as a login service with `ade brain start` / `ade brain stop` (per-platform installers in `apps/ade-cli/src/serviceManager/`).
-- **Manual runtime (`ade runtime run`)** — starts a foreground runtime process on an explicit endpoint. Sync is always off so it cannot claim brain authority; use a separate `ADE_HOME` when you also want full machine-state isolation. `--profile embedded` is the only accepted profile value and marks the process a guest of an external embedder (`@ade-dev/sdk`): personal-chat scope, no automations, sync forced off, machine-update and power controls withheld, and a parent-death watchdog (`parentDeathWatchdog.ts`) that exits if `ADE_EMBEDDED_PARENT_PID` dies without unwinding. Unknown profile values are a usage error, not a silent fall back to a full brain. See [ADE SDK](./features/sdk/README.md).
-- **Single-session CLI** — `ade <command>` connects to the local brain over the machine endpoint, dispatches one project-scoped action, and exits. With `--headless`, the CLI bootstraps a project's services directly from the repository instead of going through the machine brain — used in CI and for one-off scripts. The in-process runtime serves project state on disk (lanes, git, PRs, settings) only: calls whose state lives in the brain (chats, sessions, terminals, devices, browsers, schedules; `lib/liveRuntimeActions.ts`) fail with the reason no brain was used, never a stub's answer. A brain that answers but is a different build is handled by `lib/brainVersionSkew.ts`: an `ade` repairs only a brain that runs its own entry file (an older brain that does not report `cliEntryPath` counts as its own only when its process command line names that file). Any other brain whose runtime protocol is compatible (`isRuntimeProtocolCompatible`, the desktop's rule) is used as it is, newer or older, and never stopped, replaced or uninstalled; when the versions differ the CLI prints one stderr note naming the brain and how to line the two up. Even its own stale build is used, when compatible, if this run could not replace it (inside an agent shell of that brain, for example). A protocol-incompatible brain is refused in one line naming both versions and the matching `ade`, and the CLI never falls back to the in-process runtime beside it.
-- **SSH stdio bridge (`ade rpc --stdio`)** — runs a single-session JSON-RPC runtime over stdin/stdout. This is what desktop's `RemoteConnectionPool` execs over SSH after `bootstrapRemoteRuntime` has uploaded a matching `ade-<platform-arch>` binary. Exits when the SSH channel closes.
+**Startup invariants.**
 
-**Brain startup ordering.** `ade serve` binds its RPC endpoint *before* starting the mobile sync host. `runServe` publishes the endpoint, then fires `runSyncHostStartupLoop` in the background (`void startSyncHostInBackground()`). The order matters because that loop retries forever by design (so mobile sync auto-recovers the moment a rival owner exits): while the bind sat behind it, anything the loop retried — a project scope slow to open, a busy sync port band, a stale lease from a just-killed predecessor — kept `ade.sock` unpublished, so desktop reachability was coupled to phone-sync hosting and a service-install handover budget could expire against a brain that was alive and healthy (0.4 s to socket versus 3.3 s measured). Ownership is still decided before the bind rather than after it: `assertBrainSocketUnowned` runs immediately ahead of `listen()`, and again on the Windows named-pipe path, under one contract (message, cause, and the `socket_owned_by_other` code project recovery keys on), so a brain that cannot own its socket fails fast instead of living on as a zombie — signed in, dialing the relay, and fighting the legitimate brain for the machine's relay slot; we found 18 of them stacked up on one dev socket. The bind is the claim; `monitorBrainSocketOwnership` covers the one remaining way to lose the path (a rival unlinking a socket it proved stale), and the shutdown that follows removes the socket file only when it still owns the inode it bound (`unlinkOwnedRuntimeSocket`), so it never deletes the winner's socket. A sync-host startup failure (a cross-channel conflict with another build's live brain) still ends the brain, but it now closes an already-published socket and records the failure, rather than refusing to publish one. Symmetrically, `apps/ade-cli/src/services/runtime/runtimeSpawnRecord.ts` stops the CLI from stacking up detached brains: every `ade` command that cannot reach the brain spawns one detached and forgets it. The record (under the ADE-owned `runtime/spawns` dir, keyed by a hash of the socket path, `0600`) suppresses a duplicate spawn while a previously spawned brain is still alive and within `RUNTIME_SPAWN_RECORD_GRACE_MS` (30 s), reports success so the caller proceeds to its connect-with-retry, expires so a genuinely wedged brain never blocks recovery, and is cleared explicitly on the deliberate-shutdown path whose whole purpose is to make room for a replacement.
+- The brain binds its RPC endpoint *before* the sync host starts
+  (`runServe`, `startSyncHostInBackground`), so desktop reachability never
+  waits on phone sync. `assertBrainSocketUnowned` runs right before `listen()`
+  so a brain that cannot own its socket fails fast; on shutdown
+  `unlinkOwnedRuntimeSocket` removes the socket only if it still owns that inode.
+- `runtimeSpawnRecord.ts` stops CLI runs from stacking detached brains: a spawn
+  is suppressed while an earlier spawned brain is alive and within
+  `RUNTIME_SPAWN_RECORD_GRACE_MS`.
+- `createAdeRuntime` registers each release as it acquires a resource
+  (`services/runtime/startupTeardown.ts`) and drains them in reverse on failure,
+  the same drain `runtime.dispose` uses.
+- `ProjectScopeRegistry` backs off a project that failed to boot (up to
+  `FAILED_SCOPE_BACKOFF_MAX_MS`) and rethrows the recorded error instead of
+  booting again.
 
-**A runtime that fails halfway up must not leak what it already acquired.** `createAdeRuntime` pushes every release onto a LIFO stack (`services/runtime/startupTeardown.ts`) at the point it acquires the thing, and drains that stack in reverse on any failure; a release that throws logs `runtime.teardown_step_failed` and neither halts the drain nor displaces the original startup error. `runtime.dispose` is the same drain, so the failure path and the shutdown path release the same services.
+**Machine and multi-project RPC.** Runtime-scoped methods (`projects.*`,
+`sync.*`, `runtime/info`, `machineInfo.get`, `machine.updateAndRestart`,
+`machine.reportPowerTransition`, `runtimeEvents.*`) are answered directly.
+Project-scoped work goes through `ade/actions/call` with a `projectId`.
+Personal chats use separate machine methods (`personalChats.call`,
+`personalChats.streamEvents`, `personalChats.subscribeEvents`) and never enter
+project dispatch. Per-project services boot lazily in `ProjectScopeRegistry`
+(`services/projects/projectScope.ts`); `PersonalChatScope`
+(`services/personalChats/personalChatScope.ts`) boots a chat-only runtime under
+`$ADE_HOME/personal-chats`. `projectRegistry.ts` is the durable project list;
+`machineLayout.ts` resolves every machine path under `$ADE_HOME`. Wire formats
+are in `multiProjectRpcServer.ts`.
 
-**A project that cannot boot must not be retried at full speed.** `ProjectScopeRegistry` records a failed scope boot and, inside a backoff window (`min(30 s, 1 s × 2^attempts)`, capped by `FAILED_SCOPE_BACKOFF_MAX_MS`), rethrows the recorded error verbatim instead of booting again — one field machine performed 41 full boots in 49 seconds, each re-opening the project database. Success clears the record and failure increments it only when the settling promise still owns the cache entry, so a late-settling abandoned boot can neither clear a backoff nor impose one. `dispose(projectId)` drops the record first, because a repair is explicitly a request for a clean slate.
+Event replay uses `eventBuffer.ts`, a bounded buffer that returns `eventEpoch`,
+`gap` and `oldestCursor` so clients detect a restart or evicted history.
+Transient events (App Control screencast frames) reach live listeners but are
+never retained. Each drain stops at a byte budget, and a local client too far
+behind is disconnected and reconnects from its cursor.
 
-**Machine and multi-project RPC.** The runtime exposes runtime-scoped methods (`projects.list/add/remove/touch`, `sync.*`, `runtime/info`, `machineInfo.get`, `machine.updateAndRestart`, `machine.reportPowerTransition`, `runtimeEvents.subscribe/unsubscribe`) directly. `sync.*` is answered by the project-scoped sync service when a project owns sync and by machine-level `ProjectlessSyncControls` when none does, so a machine that has never opened a project can still set its pairing PIN. Project-scoped operations dispatch through `ade/actions/call` with a `projectId`. Personal chats use the separate machine methods `personalChats.call`, `personalChats.streamEvents`, and `personalChats.subscribeEvents` / `unsubscribeEvents`; they never enter project dispatch and their capability/version (including optional `pushEvents` and `mcpServers`) is advertised by `runtime/info`. The desktop preload accepts an optional `{ machineId }` target on `personalChats.call` and `personalChats.streamEvents`: a named id routes to that local or remote machine, while an omitted target keeps the window's bound-machine behavior. The Chats rail names the owner for each machine's read and action. Create forwards caller-injected MCP. Per-project services are spun up lazily by `ProjectScopeRegistry` (`apps/ade-cli/src/services/projects/projectScope.ts`) which calls `createAdeRuntime({ projectRoot, ... })` the first time a project is touched. `PersonalChatScope` (`apps/ade-cli/src/services/personalChats/personalChatScope.ts`) lazily boots a chat-only runtime under `$ADE_HOME/personal-chats`, with distinct state and scratch roots and no project-registry entry. The project registry (`projectRegistry.ts`) is the durable list of known projects; `machineLayout.ts` resolves machine-wide paths under `$ADE_HOME`. Wire formats live in `apps/ade-cli/src/multiProjectRpcServer.ts`. Runtime-event replay is backed by `apps/ade-cli/src/eventBuffer.ts`, a bounded buffer (10k events, 16 MB total, 1 MB per retained event by default) that returns `eventEpoch`, `gap`, and `oldestCursor` so clients can detect daemon restarts or evicted history. Transient events — App Control screencast frames — take an id and reach live listeners but are never retained for replay: replaying a stale frame is useless, and retaining 80-350 KB frames evicted every real state change within a second. Because transient ids are never retained, ids are not contiguous and `gap` is judged against the newest id lost to eviction, not against the oldest retained id. Each drain is one RPC reply and stops at a 1 MiB byte budget (at least one event, with `hasMore`), so a burst of large events cannot fill a paired RPC channel. Local RPC writes are bounded as well, because they queue on the brain's heap: a client more than 64 MiB behind is disconnected (stderr `ade jsonrpc client dropped: <n> bytes unread`) and reconnects from its event cursor, and a droppable notification — a screencast frame — is skipped once the client has more than 1 MiB queued, with the newest skipped frame per subscription and lane sent when the socket drains. Two producers are also metered before they reach the buffer, because runtime RPC rides `rpc_data` over a paired sync transport — a *required* send the host buffers rather than drops, which closed the peer with 4001 "Required sync response backpressured" past 16 MiB: App Control screencast frames stream only while something shows or records the lane (`runtimeEventVolume.ts` marks them high-volume; `appControl.setFrameDemand` decides demand), and `sync-status` snapshots are coalesced to one per 250 ms with identical snapshots dropped outright (`services/sync/syncStatusEventPublisher.ts`). `projects.list` resolves at most 24 host-side project icons within 750 ms, with 128 KiB per-icon and 512 KiB aggregate wire caps; records outside those budgets get a null icon instead of blocking connection setup.
-
-**Runtime-side services** (under `apps/ade-cli/src/services/`):
+**Runtime-side services** (`apps/ade-cli/src/services/`), the ones a newcomer
+meets first:
 
 | Directory | Role |
 |-----------|------|
-| `projects/` | Project registry, project scope (per-project runtime), machine layout. |
-| `personalChats/` | Lazy machine-owned personal-chat runtime, allowlisted action/terminal/attachment ingress, durable transcript/event access outside the project registry, push event subscriptions, and caller-MCP forwarding. Under `runtimeProfile: "embedded"` the same scope runs as an SDK guest. |
-| `runtime/parentDeathWatchdog.ts` | Embedded-profile poll of `ADE_EMBEDDED_PARENT_PID`. POSIX assigns orphans to init rather than killing them; without this, a SIGKILL'd host leaks runtimes. |
-| `sync/` | Sync service, peer client, device registry, pairing store, PIN store, sync protocol, remote command service, Tailscale CLI resolver. The sync service now lives here; desktop's old in-process sync host is disabled by default (env-gated `ADE_ENABLE_DESKTOP_SYNC_HOST=1` for diagnostics only). |
-| `account/` | Required ADE account authentication. The machine brain owns loopback OAuth, the account-directory device-code bridge for SSH/display-less hosts, `account.session.v1` refresh storage, and in-memory `ADE_ACCOUNT_TOKEN` credentials for agents and CI. Interactive and token-provisioning actions are CTO-only, including `repairMachinePairing`, which re-pairs this machine after it was removed from the account and lifts the durable push gate only once the directory accepts. The device-code flow also carries the machine key so the directory can mint the single-use, 10-minute pairing grant that re-pair requires, and the machine's display name so the browser page can name the computer that asked. `showMachine` (`ade machines show`) is the one machine read open to every role: a read-only snapshot of one machine's presence plus the projects, lanes and recent chats it published to Activity, so a chat agent can read a machine the user @-mentioned without `listMachines`. `deleteMachine` is stricter than CTO-only: it refuses any caller whose identity names a chat, run, step or attempt, and it requires `confirmation: "REMOVE"`. `thisMachineRefusalText.ts` gives the CLI's words for a directory refusal of this computer (removal date, give-up, `ade machines reconnect`), which `ade auth status`, `ade sync status --text` and the `ade doctor` Publish health row show. |
-| `credentials/` | Per-machine credential store. `credentialStore.ts` holds the encrypted stores themselves; `credentialStoreRouting.ts` holds the two stores that stand in front of them (the per-key router and the store that refuses every call with the reason it cannot work); `credentialStoreAdoption.ts` is the one-way migration that moves file-backed credentials out of the Electron-only store; `updateCredentialKey.ts` is the shared ladder for "change one credential key"; `credentialChangeRelayRepair.ts` watches the shared file so the brain reacts to a repaired GitHub App credential. |
-| `agentRegistry.ts` | Per-machine agent registry. |
-| `runtime/adeCliShim.ts` | Body of the `ADE_CLI_PATH` shim a brain writes for the agents it launches. The shim names its brain: when the caller's env sets neither `ADE_HOME` nor `ADE_RUNTIME_SOCKET_PATH`, it sets both to that brain's values. See [features/agents/tool-registration.md](./features/agents/tool-registration.md). |
-| `proof/adeCaptureRegistry.ts` | The files that the RPC server's capture actions wrote, by path and hash. An `ingest_computer_use_artifacts` call is filed as ADE's capture only when each input matches an entry. Each match is one-shot. See [features/proof.md](./features/proof.md#already-filed-bytes-and-older-videos). |
-| `workTools/workToolShowRequests.ts` | `ade ui show <surface>` (and `ade apple show`) on the brain side. The brain publishes a `work_tool_show_request` event on the runtime event stream. The desktop renderer that shows that chat opens the surface (`apple`, `floating-apple`, `browser`, `proof`) and answers `shown` or `held`. No answer in the wait window gives `no_desktop`. |
+| `projects/` | Project registry, per-project scope, machine layout, account projects. |
+| `personalChats/` | Machine-owned personal-chat runtime and its allowlisted ingress. Runs as the SDK guest under `runtimeProfile: "embedded"`. |
+| `sync/` | Sync service, pairing, device registry, PIN store, protocol, remote commands, relay tunnel client, Tailscale resolver. The desktop's old in-process sync host is off unless `ADE_ENABLE_DESKTOP_SYNC_HOST=1`. |
+| `account/` | Required account sign-in: loopback OAuth, the device-code bridge for SSH and display-less hosts, `account.session.v1` refresh storage, `ADE_ACCOUNT_TOKEN`. The brain is the only refresher; desktop and CLI ask it for access tokens. |
+| `credentials/` | Per-machine credential store (section 8.1). |
+| `runtime/` | Watchdogs, heartbeat, spawn records, startup teardown, update and restart, the `ADE_CLI_PATH` shim (`adeCliShim.ts`). |
+| `remoteMcp/` | DAEX MCP: each computer as an MCP server through the relay. See [ade-mcp](./features/ade-mcp/README.md). |
+| `proof/adeCaptureRegistry.ts` | Files the brain's capture actions wrote; ingest counts as DAEX's own capture only on a match. See [proof.md](./features/proof.md). |
+| `workTools/workToolShowRequests.ts` | `daex ui show <surface>`: asks the desktop showing that chat to open a surface. |
 
-Outside `services/`, `src/lib/cliDelegation.ts` (loaded first by `cliDelegationEntry.ts`) hands an `ade` run to `ADE_CLI_PATH` when that path runs a different CLI entry. A shell rc that rebuilds `PATH` can hide ADE's shim and leave an older `ade` first on `PATH`; delegation re-runs the same argv through the CLI that ADE meant. It never delegates from a source-checkout build, and `ADE_CLI_DELEGATED=1` (set on the child) and `ADE_CLI_NO_DELEGATE=1` turn it off. `src/lib/cliGlobalArgs.ts` lists the global flags that take a value, so the delegation check and the CLI skip the same tokens. `src/help/` holds subcommand help text (`appleHelp.ts` for `ade apple`) and the shared `banner.ts`.
+`src/lib/cliDelegation.ts` hands a `daex` run to `ADE_CLI_PATH` when that path
+is a different CLI entry, so a shell rc that puts an older CLI first on `PATH`
+still reaches the one DAEX meant (`ADE_CLI_NO_DELEGATE=1` turns it off). The
+command families are documented in [`apps/ade-cli/README.md`](../apps/ade-cli/README.md).
 
-`ade new chat` and `ade new cli` accept `--prompt-file <path>` (or `-` for
-stdin) for the initial message; it cannot be combined with `--prompt`, and an
-empty file is rejected before creation. Service start, stop, and restart guard
-against a shell using a different ADE home from the installed service and
-provide a command for the installed home.
+**Service managers.** `installLaunchd.ts` (macOS), `installSystemd.ts` (Linux)
+and `installWindows.ts` (Windows) register the brain as a login service.
+Windows uses a per-user, per-channel `HKCU\...\Run` entry that starts a
+PowerShell supervisor (no administrator rights needed). All three share
+`serviceHandover.ts` and `runtimeServiceBudgets.ts`: a `ServiceManagerResult`
+can be `starting` (registered and alive, not answering yet), which callers
+treat as a slow start, not a failure. On macOS the brain runs as
+`Contents/MacOS/DAEX Brain` (the bundle keeps the old `ADE Brain` copy for
+launch agents an older build wrote), a signed copy of the app executable
+(`serviceManager/brainExecutable.ts`), so quitting the app leaves the brain
+serving. `brainFreshnessMonitor.ts` restarts an idle brain whose CLI entry on
+disk changed. See [remote-runtime](./features/remote-runtime/README.md).
 
-**Service managers.** `apps/ade-cli/src/serviceManager/installLaunchd.ts` (macOS), `installSystemd.ts` (Linux), and `installWindows.ts` (Windows) register the brain as a login-time service. `index.ts` is the platform router; `common.ts` carries shared types (`ServiceManagerResult`, `ServiceManagerStatusResult`). Windows uses a per-user, per-channel entry under `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run`, so installation does not require administrator access. The entry starts a UTF-8-with-BOM PowerShell supervisor under the channel's ADE home. It restores the complete resolved brain environment (including `ELECTRON_RUN_AS_NODE`, `NODE_PATH`, ADE paths/channel, and role), starts the executable with CRT-compatible argv quoting, and records supervisor/runtime PIDs plus restart count, last exit, and next-restart diagnostics. Unexpected exits restart with capped exponential backoff; a healthy runtime interval resets the counter. Install and status require runtime RPC readiness on the expected per-user/channel pipe and verify the recorded process's executable, entrypoint, and `serve` arguments, so a stale/reused PID or live-but-unready supervisor is never reported as a healthy brain. Service identity is resolved after packaged channel defaults are applied, keeping Stable and Beta Run entries and homes distinct. Install and uninstall also remove exact Scheduled Task registrations left by earlier Windows preview builds. From Electron main the described command is `ADE.exe <resources>\\ade-cli\\cli.cjs serve` (`electronMainCliScript`), and `readRecordedBrain` also accepts the command recorded in the launcher script; `checkWindowsServiceRemovable` is the read-only preflight an update runs before it stops the service.
+**Watchdogs.** Both write `event-loop-wedge.json`; the next boot reports it
+through `runtimeInfo.lastWedge`.
 
-**Installed is not the same as answering.** All three installers share one handover: `serviceHandover.ts` (`awaitServiceHandover`, `awaitYoungBrainStart` — responsiveness probe, young-brain age check, crash-loop veto, wait loop) and one set of numbers, `runtimeServiceBudgets.ts`, because the budgets only mean anything relative to each other (the desktop's post-install wait has to outlast the installer's). Each installer keeps only its own message text. A `ServiceManagerResult` therefore carries `starting` alongside `ok`: the service is registered and its child is alive, but it had not answered on the endpoint inside the installer's budget. That is a slow start, not a failed install, and every caller has to treat it as such — `ade connect` says "installed — the background service is still starting", `ade setup` waits for the endpoint (`services/runtime/awaitRuntimeServiceEndpoint.ts`) instead of failing its account step against a socket that was never given time to open, and `connectWhileServiceStarts.ts` keeps dialling and finally throws `RuntimeServiceStillStartingError` rather than returning a plain connect failure, because that failure is what let a caller spawn an unmanaged rival brain on a socket the supervisor already owns. A forced install (desktop **Repair**) that finds an unchanged agent whose child is younger than `RUNTIME_SERVICE_YOUNG_BRAIN_MS` and not answering yet waits for it instead of killing it; a recorded crash-loop streak vetoes that wait, since a brain that keeps dying is always young. See [features/remote-runtime/README.md](./features/remote-runtime/README.md) for the full lifecycle.
-On macOS, an unchanged loaded launch agent is retained only after a bounded
-runtime initialize probe succeeds. A failed probe takes the full unload,
-predecessor termination, stale-process reap, and load path; the install result
-is successful only after the old pid is gone, launchd reports a distinct new
-pid, and the replacement initializes over the machine socket. The running brain
-also stats its own CLI entrypoint every five minutes (configurable with
-`ADE_BRAIN_FRESHNESS_INTERVAL_MS`, disabled by
-`ADE_DISABLE_BRAIN_FRESHNESS=1`), hashes only after the stat changes, and uses
-the brain-update service restart path after an idle grace period when the disk
-hash no longer matches its baked runtime hash (`brainFreshnessMonitor.ts`).
+- In process: `services/runtime/brainLoopWatchdog.ts`, a worker thread that
+  kills the brain after a heartbeat stall past `ADE_LOOP_WATCHDOG_MS` (30 s)
+  with no sleep signal.
+- External: `daex runtime watchdog-check` (`brainWatchdogCheck.ts`) reads
+  `<home>/runtime/heartbeat.json` and kills only a confirmed stale beat from the
+  same process incarnation, never after the machine slept. macOS runs it from
+  the `com.ade.watchdog` launch agent; on Windows the supervisor applies the
+  same rules.
 
-**Watchdogs.** Two watchdogs restart a wedged brain; both write the same `event-loop-wedge.json` breadcrumb, and the next boot reports it through `runtimeInfo.lastWedge` (`brain.recovered_from_wedge`, the desktop `BrainRecoveryNotice`).
+Details: [storage-and-recovery](./features/storage-and-recovery/README.md).
 
-- The in-process event-loop watchdog (`services/runtime/brainLoopWatchdog.ts`) is a worker thread. A heartbeat stall past `ADE_LOOP_WATCHDOG_MS` (30 s) with no sleep signal writes the breadcrumb, samples the stacks on macOS, and `SIGKILL`s the brain. Shorter stalls log `brain.event_loop_near_miss` or `brain.suspend_gap`; `slowSyncSpawnMonitor.ts` logs `brain.slow_sync_spawn` for a synchronous child process of 1 s or more. `ADE_DISABLE_LOOP_WATCHDOG=1` turns it off.
-- The external watchdog reads `<ADE home>/runtime/heartbeat.json` (`brainHeartbeat.ts`, every 15 s) with `ade runtime watchdog-check` (`brainWatchdogCheck.ts`). It kills only when the beat is older than 90 s, the pid is the process that wrote it (start-time check, so a recycled pid is never killed), the watcher itself was awake (`machine_slept` otherwise), and a previous check saw the same beat (`stale_unconfirmed` otherwise). It never opens the runtime socket. On macOS the `com.ade.watchdog` launch agent runs it and `KeepAlive` restarts; on Windows the supervisor applies the same rules inline.
+**Session identity.** The runtime resolves a caller's role (`cto`, `agent`,
+`external`, `evaluator`) from DAEX context env vars and flags.
+`ADE_DEFAULT_ROLE` is a ceiling, not a grant: `resolveSessionBoundRole` clamps a
+chat-bound caller to `agent`. Chats get `ADE_CHAT_SESSION_ID` and
+`ADE_DEFAULT_ROLE=agent`. Brains launched from an agent shell scrub inherited
+session identity. Chat ownership is checked against a process registry shared
+across homes, so a separate home does not make a live chat adoptable; see
+[one brain per chat](./features/chat/README.md#one-brain-per-chat).
 
-Details: [remote-runtime](./features/remote-runtime/README.md) and [storage-and-recovery](./features/storage-and-recovery/README.md).
+**Trusted provenance on chat messages.** `chat.messageSession`,
+`chat.sendMessage` and `chat.steer` pass through `withTrustedAgentProvenance`
+in `adeRpcServer.ts`, which deletes caller-supplied provenance keys and
+re-derives them. That provenance decides whether a child's completion wakes its
+parent. See [mission ownership](./features/chat/README.md#mission-ownership-decides-the-wake).
 
-**Session identity.** The runtime resolves caller role from ADE context env vars and command flags. Role vocabulary: `cto`, `agent`, `external`, `evaluator`. `ADE_DEFAULT_ROLE` is an authority ceiling, not an identity grant: `resolveSessionBoundRole` clamps a chat-bound caller that would otherwise inherit a daemon-wide `cto` role to `agent`, preserves an explicitly declared lower role, and never accepts a requested role above the runtime ceiling. SDK-backed chats receive `ADE_CHAT_SESSION_ID` plus `ADE_DEFAULT_ROLE=agent`, and tracked provider CLI launch/resume does the same. Persistent SDK guidance names the concrete `--session <id>` for lifecycle commands so shared provider servers do not depend on process-global env inheritance. Browser automation needs no token: any local caller may drive it, and the runtime tags a chat's calls with that chat's own lane/project or personal tab collection so it owns its tabs (see the desktop bridge endpoint, below).
+**Action policy.** Every runtime action is allowlisted per role in
+`actionPolicy.ts` and declared `read` or `write` in
+`apps/desktop/src/shared/adeActionAccess.ts` (an unknown action counts as a
+write, and a test fails when the two disagree). Agents cannot settle their own
+sessions. Chats form a mesh: a bound agent may read, interrupt, stop or restart
+any chat (`CHAT_ACTION_SCOPE` entries marked `mesh`), while self-reporting,
+billing and scheduling stay limited to the caller's own session. User-only
+domains such as `lane_share` admit only a desktop client with no agent identity
+(`mayUseUserOnlyActions`). Account settings use `account_settings`; vault
+values use `account_vault`, which is host/CTO policy-gated.
 
-Brains launched from an agent shell scrub inherited caller/session identity,
-lane/project/workspace bindings, the agent's default role, Claude parent-session
-markers, and `CLAUDE_CONFIG_DIR` / `CODEX_HOME` values that point inside ADE's
-provider homes; the dev launcher applies the same cleanup. No shell-level env
-prefix is needed. Project chat ownership is checked against the shared process
-registry across ADE homes, so a separate home does not make a live chat
-adoptable. A brain on a non-machine socket yields chats it is not running to
-the installed machine brain when that brain is live on this project, including
-restart recovery, prewarm, and scheduled wakes. Other secondary brains do not
-make one another yield. See
-[Chat runtime ownership](./features/chat/README.md#one-brain-per-chat).
+**Bundled runtime artifacts.** Per-platform `ade-<platform-arch>` binaries and
+their native tarballs live under `apps/desktop/resources/runtime/`. A desktop
+package bundles only its own target
+(`apps/desktop/scripts/runtime-resource-targets.cjs`, `ADE_RUNTIME_TARGET`).
+`remoteSidecarCache.ts` fetches another target's pair from the desktop's exact
+release tag, checks it against `SHA256SUMS`, and caches it under
+`<home>/runtime-sidecars/<tag>/<target>/`, so any desktop can bootstrap macOS,
+Linux and Windows x64 machines over SSH. Windows bootstrap needs OpenSSH
+Server, PowerShell 5.1+ and `tar.exe`.
 
-**Trusted agent provenance on chat messages.** The three chat actions whose caller metadata is persisted onto a `user_message` — `chat.messageSession`, `chat.sendMessage`, `chat.steer` — pass through `withTrustedAgentProvenance` in `adeRpcServer.ts` before any role- or scope-specific branch. It deletes every host-authored provenance key (the list is exported from `apps/desktop/src/main/services/chat/spawnMissionOwnership.ts`), then re-derives `spawnDispatch` when the caller is the target's persisted direct parent, or `agentRelay` when any other bound agent is the caller. Positional invocation of those three actions is rejected outright — they take object arguments (`--input-json`) — so metadata cannot route around the re-derivation, and the automation service strips the same keys before dispatching a `chat` action from rule config. This provenance decides whether a spawned child's turn completion wakes its parent and for how long the parent keeps that claim, so no caller, elevated or not, may supply it. See [features/chat/README.md](./features/chat/README.md#mission-ownership-decides-the-wake).
+**Headless install and update.** `curl -fsSL https://ade-app.dev/install.sh | sh`
+(Windows: `irm https://ade-app.dev/install.ps1 | iex`) installs a standalone
+runtime; `daex brain update` updates it. Staging and backups sit next to what
+they replace under the home (never in `$TMPDIR`), the new binary is
+preflighted against the staged runtime, and a failure rolls back. Remotely,
+`machine.updateAndRestart` (`services/runtime/machineUpdateAndRestart.ts`,
+`cto` only; sync commands `machine.updateImpact` / `machine.updateAndRestart`)
+runs the same update; it refuses when the host is already on the named version,
+and its `restart` step answers `pending` because the process answering is the
+one being replaced. When the host's desktop app is open, the request goes to
+that app over the desktop bridge (`app_update.install`). Release tags carry a
+`v` prefix: `releaseAssetUrl` (`lib/releaseAssets.ts`) maps a bare version to
+its tag.
 
-**Required ADE account auth.** `ade login` preserves the local-browser loopback OAuth path, and selects the account-directory device authorization bridge alone for explicit `--headless`, SSH, display-less hosts, or a failed browser launch. On a machine with a browser it runs both at once: the loopback session opens the browser, a device session is started beside it, and the terminal prints the device link as a QR code (`lib/terminalQr.ts`; the device half of the flow is `commands/accountDeviceSignIn.ts`), a URL, and a user code, so the person can finish on that machine or on a phone or another computer. Whichever session completes first signs the machine in and the other is cancelled; a device session that cannot start leaves the loopback sign-in to continue alone. The desktop sign-in cards offer the same choice through **Sign in with your phone or another device** (`useAccountDeviceLogin` in `renderer/lib/accountLogin.ts`, `components/account/AnotherDeviceSignInPanel.tsx`), which starts a device session, opens no browser on that computer, and draws the link as a QR code. In production the link is `https://ade-app.dev/device?user_code=…` (`DEVICE_PAGE_ORIGIN` on the account directory): a universal link that opens ADE Mobile on an Approve sheet, and a redirect to the directory's `/device` page in a browser (`apps/web/api/device.ts`). A signed-in phone approves through the directory's `/device/approve`, which mints a one-time Clerk sign-in ticket for the verified caller (`CLERK_SECRET_KEY`), so the person types no password. The brain generates and retains the device redemption secret, polls the bridge, and persists the resulting refresh-capable session under `account.session.v1`. For a JWT access token, its decoded `exp` claim is authoritative over the OAuth `expires_in` bookkeeping: status reports that expiry, and `getAccessToken()` refreshes inside the two-minute skew even when an older stored session record claims a later expiry. Tokens without a usable JWT expiry retain the stored `expiresAt` fallback. The desktop and CLI do not independently exchange the rotating refresh credential: they install a refresh broker that asks the brain for an access token, with a local exchange only as the explicit unavailable-brain fallback. The brain persists successful rotation before best-effort enrichment, and raw tokens are never logged. `ADE_ACCOUNT_TOKEN` takes precedence without starting a login flow: JWT access credentials are used through their declared expiry, while refresh credentials are exchanged and rotated only in memory. `ade account token create` wraps the current interactive refresh credential with its public issuer/client context in a versioned secret envelope, so a newly provisioned agent or CI host needs no local Clerk configuration. Legacy raw opaque refresh tokens retain local-config compatibility and return migration guidance when that config is absent. Distributed CLI/brain binaries and packaged Electron set `ADE_RUNTIME_PACKAGED=1` before account services start. In that mode, a Clerk issuer or JWKS URL under `*.clerk.accounts.dev`, plus the exact ADE development directory override, is rejected atomically in favor of the complete built-in production OAuth, attestation, and directory configuration; a non-development custom issuer remains valid, and source checkouts retain their existing override behavior. Persisted sessions pinned to a development issuer/client, sessions carrying a development `iss` access-token claim, and equivalent `ADE_ACCOUNT_TOKEN` credentials are rejected before token return, refresh, userinfo, or directory use. A rejected environment credential is treated as absent by status, access-token resolution, interactive login, device login, and durable-token provisioning, so it cannot block a new production sign-in. When the credential store supports atomic updates (`supportsAtomicCredentialUpdate`, asked before the write because a compare-and-swap degraded to check-then-set is a different write that can clobber a peer), a persisted development session is compare-and-deleted through the shared `updateCredentialKeySync` ladder, then persistence is re-read exactly once: a peer-written acceptable production replacement is returned in the same status call. Without compare-and-delete support, ADE leaves the stored value untouched to avoid erasing a peer write but continues to report that development session as signed out. The audited outcome (`erased` or `rejected_locally`) reports what the write actually did rather than what the store claimed to support: the mutator declines when a peer replaced the record, and a store write that throws is logged as `account.session_write_failed` and treated as a write that did not happen — the local rejection still stops this process serving the session. `ADE_ALLOW_DEVELOPMENT_CLERK=1` is the explicit packaged-build escape hatch for controlled development testing. The desktop Account page exposes one honest browser continuation because the bridge opens the generic hosted account flow rather than selecting a provider; the browser presents whichever methods are enabled. Native iOS uses ClerkKit's transferable OAuth result to distinguish new accounts from returning users. Its identifier-first email path starts sign-in, falls back to sign-up only for Clerk's precise account-not-found codes, sends the sign-up email verification code, and verifies against the matching sign-in or sign-up attempt. Its sign-ups carry the legal acceptance the sheet's agreement line stands for (`legalAccepted`, also patched onto an OAuth transfer sign-up Clerk holds back for it), and a sign-up that still does not complete fails as a recorded sign-in failure. Account status exposes `loopback`, `device`, or `env-token`. ADE requires an account from the first run on every machine, headless included. A session lost afterwards never gates local projects, the `ade` CLI, local pairing, or PIN workflows: the launch gate offers a pass-through, and a permanent, non-dismissable shell bar nags on every surface until the user signs in. When product analytics is enabled, a known signed-in account produces one quota-counted PostHog `$identify` using only a one-way account hash plus plan, platform, and app version; explicit sign-out rotates the analytics anonymous identity.
+**CLI on PATH from the desktop.** macOS and Linux get a launcher at
+`$HOME/.local/bin/ade`; `ensureUserBinOnShellPath` adds a marked `PATH` line to
+the shell rc when needed. Windows gets `%LOCALAPPDATA%\ADE\bin\ade.cmd` (plus an
+extensionless `ade` for Git Bash) and an HKCU `Path` update. The launcher file
+names keep the old name.
 
-**Action surface.** First-class command families cover tracker-neutral issues (`ade issue …` across Linear, GitHub, and Jira) and Jira Cloud (`ade jira …`), lanes (including `ade lanes link-linear-issue` / `detach-linear-issue` for post-creation Linear issue linking, and `ade lanes create` to spin up one or many issue lanes — optionally launching an agent chat with `--start-chat`), git, diffs, files, PRs, shells, chats (including `ade chat create --prompt` for a persistent Work chat followed by an initial chat message, `ade chat send` / `message` / `steer` / `wait` for peer chat delivery and status polling, silent bounded `ade chat read <session>` / `--page --cursor <offset>` reads for any project-backed chat registered with the machine brain, `ade chat note` / `ask` / `activity` for the current Work row (settling is not agent-reachable — see below), `ade notify --title "<t>" [--body "<b>"] [--open <ade link>]` for a custom push to the account's phones (the machine-wide `notify.send` RPC, sharing its rules with the automations step's `attention.sendNotification`, capped at 60 an hour per account), `ade chat scheduled-work create --cron "<expr>" --prompt "<text>" [--once]` for durable provider-neutral scheduling, `ade chat create --from-linear-issue <id>`, `ade chat attach-linear-issue` / `detach-linear-issue` / `linear-issues` for session-scoped issue attachment, and `--parent <sessionId>` / `--no-parent` to control child-chat lineage — a chat or agent-provider CLI created inside a tracked agent shell defaults its parent to `$ADE_CHAT_SESSION_ID`; a parented launch with no `--type` is a `subagent` (reports back to the parent), `--no-report` (stored as `peer`; `--type peer` still accepted) posts nothing to the parent, and `--no-parent` creates a separate top-level session the user asked for), agents, CTO, Linear (the write bridge an attached CLI agent uses: `ade linear attach` / `detach` / `issues` / `issue` / `comment` / `set-state` / `assign` / `label`, with `--this-session` resolving the issue id from `$ADE_LINEAR_ISSUE_IDS` so a launched agent needs no Linear token — see [features/linear-integration/README.md](./features/linear-integration/README.md#session-scoped-issue-attachment-and-cli-context-injection)), tests, proof, settings, the iOS Simulator (`ade apple` — see [features/apple-device/README.md](./features/apple-device/README.md)), the Android emulator (`ade android` — see [features/android-device/README.md](./features/android-device/README.md)), the Cursor Cloud bridge (`ade cursor cloud agents | runs | artifacts | repos | models | me` — talks directly to `@cursor/sdk` without going through the ADE runtime endpoint), the App Control bridge for Electron apps (`ade app-control` / `ade app` / `ade electron` — `launch`, `connect`, `stop`, `status`, `screenshot`, `snapshot`, `inspect`, `select`, `click`, `type`, `scroll`, `key`, `targets`, `attach`, `logs`, `terminal write`, `terminal signal` — see [features/computer-use/app-control.md](./features/computer-use/app-control.md)), the chat-scoped terminal (`ade terminal list` / `read` / `write` / `signal` / `active`), universal search (`ade search "<query>"` over chats, terminals, PRs, commits, branches, lanes, files, and Linear — see [features/search/README.md](./features/search/README.md)), and a generic `ade actions run <domain.action>` escape hatch for every registered ADE service action. The chat action surface includes `chat.createSession`, `chat.sendMessage` (low-level normal-turn send), `chat.messageSession` (normalized peer delivery: auto, queue, wake, interrupt-replace), `chat.readTranscript`, `chat.readTranscriptPage`, `chat.createScheduledWork`, `chat.listScheduledWork`, `chat.getScheduledWorkState`, `chat.cancelScheduledWork`, `chat.setScheduledWorkPaused`, `chat.resumeUsageLimitNow` (send the usage-limit continue prompt now instead of waiting for the published reset; it refuses when there is no live limit or the row is already delivering, and throws — after restoring the armed state, its mirror and the durable row — when the dispatch itself fails), and model-catalog actions; `chat.getSessionSummary` answers with the summary plus the brain's IANA `timeZone`, so a CLI caller can render `usageLimitResume.fireAt` and `nextWakeAt` in the zone the brain schedules in; the session action surface includes caller-scoped `requestSessionAttention`, `setSessionStatusNote`, and `setSessionActivity`, the snooze family (`snoozeSession`, `snoozeSessions`, `wakeSession`, `wakeSessions`, `clearWokeMarker`; reachable by agents, but agent guidance leaves snoozing to the user), and a CTO-only settle family (`settleSession`, `unsettleSession`, `settleSessions`, `unsettleSessions`, `setSettleOverride`). Agents cannot settle their own sessions. The only settle writers are user surfaces (the desktop renderer's remote-runtime client, which authenticates at cto role) and the deterministic PR-merge policy, which calls `sessionService` directly. ADE chats form a mesh: a bound agent may read, interrupt, stop, or restart any chat (`CHAT_ACTION_SCOPE` entries marked `mesh` in `adeRpcServer.ts`); lineage only decides who gets a completion report. Self-reporting (Work row note/ask/activity), billing (usage-limit resume, account switch), sending or scheduling a prompt into a chat, and cancelling or pausing its schedule stay limited to the caller's own session (`self`), and an omitted target is injected from that binding. `chat.messageSession` remains the reviewed primitive for deliberately messaging another ADE chat through routing semantics. The action allow-list adds three domains for these surfaces: `app_control` (every public method on `AppControlService`), `terminal` (`list`, `read`, `write`, `signal`, `activeForChat` against `ptyService`), named iOS Simulator actions for launch, live view, inspection, input, Preview Lab, device sessions, device tools, the event log, semantic element actions, and proof bundles, and `search` (`query`, `indexStatus`, and the CTO-only `rebuildIndex` against `searchService`; the machine router searches the active project normally and aggregates bounded chat hits from every registered project for session-bound and unbound callers alike).
-
-Settings additionally use the brain action domains `account_settings` and
-`account_vault`. `account_settings` exposes non-secret per-key account
-preferences (`list`, `get`, `set`, `remove`, `sync`) to supported clients;
-`account_vault` has the same action names but its credential reads/writes are
-host/CTO policy-gated. The desktop renderer reaches settings through typed
-`window.ade.accountSettings.*` IPC, while main-process services use the vault
-bridge and the account migration runner.
-
-Lane sharing uses the `lane_share` action domain (`create`, `list`,
-`updateRights`, `revoke`, `resendInvite`, `listReceived`, `leave`, and the
-`move*` actions of moving a chat to the other person). It is user-only:
-`actionPolicy.ts` gives no agent role any of it, and `mayUseUserOnlyActions`
-in `adeRpcServer.ts` admits only a caller that names itself as an ADE desktop
-client and carries no agent identity. No `ade` command wraps it. A guest of
-another account never reaches it: its connection has no runtime RPC channel.
-See [features/lanes/lane-sharing.md](./features/lanes/lane-sharing.md).
-
-Fresh-chat kickoff uses `chat.messageSession(kind: "auto")` after creation. The runtime still accepts the ADE ≤1.2.41 `chat.sendMessage` across sessions only when the target is provably the caller's still-blank direct child; every other target keeps the session-scope denial. The chat, scheduled-work, session and proof command families are described in [`apps/ade-cli/README.md`](../apps/ade-cli/README.md).
-
-**Bundled runtime artifacts.** Per-platform `ade-<platform-arch>` binaries plus their native dep tarballs live under `apps/desktop/resources/runtime/`, with packaged ADE CLI resources providing the `ptyHostWorker.cjs` used by remote terminals. `release-core.yml` builds and validates the darwin/linux arm64/x64 pairs plus `ade-win32-x64.exe` and `ade-win32-x64.native.tar.gz`. A desktop package bundles only its own build target's sidecar pair — `apps/desktop/scripts/runtime-resource-targets.cjs` is the single source of truth, `ADE_RUNTIME_TARGET` pins each packaging job to one target, and a pre-build gate, the pre-package validator, and the electron-builder `afterPack` hook all fail on any other target's payload. Bundling all five is what pushed the macOS update ZIP past the 1 GiB Squirrel.Mac limit. Cross-platform bootstrap still works: `remoteSidecarCache.ts` fetches the missing `ade-<target>` pair from the desktop's *exact* release tag, verifies it against that release's `SHA256SUMS`, and caches it under `<ADE home>/runtime-sidecars/<tag>/<target>/`, so macOS, Linux and Windows clients can bootstrap macOS, Linux, and Windows 10 22H2/Windows 11 x64 machines over SSH. Windows bootstrap requires Windows OpenSSH Server, PowerShell 5.1 or newer, and the built-in `tar.exe`; WSL, ARM64, and Windows Server are excluded from Windows v1. The standalone Windows runtime, `install.ps1`, and its checksums are published: v1.2.52 shipped the first signed Windows installer and the website download gate (`VITE_ADE_WINDOWS_DOWNLOAD_ENABLED`) is retired. `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED` remains the live workflow-side publication gate. `bootstrapRemoteRuntime` uploads missing or hash-mismatched artifacts over SFTP, verifies their SHA-256 digests remotely, and starts the channel-separated runtime on first SSH connect.
-
-**Headless install + update.** `curl -fsSL https://ade-app.dev/install.sh | sh` installs a standalone runtime; `ade brain update [status] --text` updates it. `ADE_VERSION=vX.Y.Z` pins a release and `ADE_INSTALL_DIR` picks the destination.
-
-`$TMPDIR` holds the downloads and nothing else. The staged runtime (`<runtime dir>.new`), the runtime backup (`.previous`), the staged binary copy (`ade.new`) and the binary backup (`ade.bak`) all sit next to what they replace, under the ADE home, for two reasons: promotion and restore are then same-directory renames (a `mv` out of `$TMPDIR` crosses filesystems, and a half-copied `ade` or runtime tree is the broken install this staging exists to prevent), and a `noexec` `/tmp` — common on hardened Linux hosts and in containers — would otherwise fail the preflight on every install. The preflight runs the *new* binary against the *staged* runtime with the runtime sidecar env in place, so it exercises the same files the promoted install will `dlopen`; a download that cannot print its version never replaces `$dest_dir/ade`. What it printed is kept at `$ADE_HOME/install-failure.log` (deleted on success, so a leftover log is never a false alarm), and the failure message is stage-aware: before promotion it says the existing install was not touched, after a rollback it says the previous one was put back. Signal-trapped cleanup removes only scratch state, and restores a backup that is currently the machine's only copy, so an abort between the two renames never leaves a machine with nothing installed. `apps/ade-cli/scripts/install-runtime-rollback.test.mjs` drives these paths in CI. `ade brain update` stages the next release under `$ADE_HOME/runtime/updates/`, verifies the staged binary against the staged native deps, promotes the binary/deps into place, and restarts the per-user brain service.
-
-That same update path is reachable *remotely*, because a machine quietly running
-old code — or one no local desktop ever connects to — has to be fixable from
-wherever the user is. The runtime method `machine.updateAndRestart`
-(`services/runtime/machineUpdateAndRestart.ts`) requires the `cto` role and
-exists only on the authenticated runtime RPC endpoint; a paired phone or ADE Web
-runs the same transaction over the sync commands `machine.updateImpact` /
-`machine.updateAndRestart` (`services/sync/machineUpdateRemoteCommands.ts`), and
-one run per process is shared by every caller (`machineUpdateInFlight.ts`). It
-is never automatic. The
-caller names the version it believes is newest (`targetVersion`); a host already
-on that version or newer refuses to "update" and, for a versioned request,
-installs and restarts nothing (it answers "already current"), because a needless
-restart stops every agent on that machine; a request naming no version is the
-"fix a stuck machine" restart. The reply is step-attributed —
-`check`, `apply`, `restart` — and `restart` comes back `pending` by design: it
-tears down the process answering the call, so the client confirms by
-reconnecting and reading the version. A brain cannot report on its own
-replacement. Embedded/test runtimes have no installed service and refuse rather
-than pretend. The desktop surfaces this as **Update** on a connected
-machine that is behind, over `ade.remoteRuntime.updateAndRestart`. When the
-host's desktop app is open, the brain hands the request to that app over the
-desktop bridge (`app_update.install`) instead, because an open app owns the
-brain and would put its own runtime back over a standalone update; the app runs
-its own consented install and its post-update transaction restarts the brain.
-While a standalone brain update is in flight (`runtime/update-status.json`), the
-desktop's connection pool does not repair the service. See
-[remote runtime](./features/remote-runtime/README.md#machineupdateandrestart).
-
-Releases use `v`-prefixed tags while clients carry the bare app version, so `releaseAssetUrl` (`apps/ade-cli/src/lib/releaseAssets.ts`) maps a bare version onto its tag (`releaseTagForVersion`) before it builds a download URL; without it a remote update fails on a 404.
-
-Windows x64 uses `irm https://ade-app.dev/install.ps1 | iex`. It installs `ade-win32-x64.exe` as `%ADE_HOME%\bin\ade.exe`, updates the current-user `PATH`, and registers the same per-user/channel brain service. It stages like the POSIX installer (`<runtime dir>.new` / `.previous`, `ade.new.exe` / `ade.bak.exe` under the ADE home and the install dir, so every promotion is a same-directory rename; never execute from `%TEMP%`), and a failed self-update rolls back the executable, the native tree and the service.
-
-The CLI's own commands (`ade doctor`, `ade report-issue`, `ade github app-auth`, `ade proof`, `ade chat`, `ade session`) are described in [`apps/ade-cli/README.md`](../apps/ade-cli/README.md).
-
-**Install + PATH wiring (when the desktop ships `ade`).** On macOS / Linux the desktop installer drops the launcher at `$HOME/.local/bin/ade`; on Windows it lands at `%LOCALAPPDATA%\ADE\bin\ade.cmd`. After a successful install on Windows, the packaged `.cmd` installer adds the target directory to HKCU `Environment\Path` when needed and broadcasts an environment-change notification. After a successful install on POSIX, `ensureUserBinOnShellPath` appends a marked `export PATH="$HOME/.local/bin:$PATH"` block to the user's shell rc (`.zshrc` for zsh, `.bashrc` for bash, `.profile` otherwise) iff (a) the install dir isn't already on the inherited `PATH` and (b) the file doesn't already contain the marker / line / target dir. The install IPC reply tells the renderer which profile was edited so the Settings/Onboarding UI can prompt the user to open a new terminal or `source` it.
-
-**Windows packaging.** The installer lays down `ade-cli-windows-wrapper.cmd` plus an `ade-cli-install-path.cmd` helper alongside the bundled Electron Node runtime. The helper installs `%LOCALAPPDATA%\ADE\bin\ade.cmd`, updates the user PATH when needed, and then `ade` works from a new normal Windows shell without a global Node install. It also writes an extensionless `ade` (LF line ends) next to the `.cmd`, as npm does, for Git Bash: Git Bash never tries `ade.cmd`, and cmd.exe would end every argument at its first line break. That `ade` runs the packaged POSIX wrapper (`ade-cli/bin/ade`, from `ade-cli-macos-wrapper.sh`, which knows the Windows layout), so `"$@"` reaches the CLI whole. `.gitattributes` keeps `*.sh` LF, because the Windows package is built from a Windows checkout; `validate-win-artifacts.mjs` checks both files, and the uninstall cleanup removes the `ade` it owns. See §14.4 for the packaging flow.
-
-**Desktop bridge endpoint.** The ADE runtime runs `apps/ade-cli/dist/cli.cjs` as Node, under `ELECTRON_RUN_AS_NODE=1`; on macOS it runs as `Contents/MacOS/DAEX Brain` (`ADE Brain` before the rename; the bundle keeps that copy too, for launch agents an older build wrote), a copy of the app's executable signed with the app's identity (`serviceManager/brainExecutable.ts`, `scripts/mac-brain-copy.cjs`), so quitting the app leaves no `ADE` process and the brain keeps serving, so it has no access to renderer-side Electron APIs (`WebContentsView`, `nativeImage`, `session`, …). A small set of services own real desktop UI and therefore cannot live in the runtime — most notably `BuiltInBrowserService`, which drives the Browser pane's `WebContentsView`. The desktop main process hosts those services and exposes them to the runtime over a side-channel JSON-RPC Unix-domain socket / named pipe.
-
-The endpoint path is resolved by `apps/ade-cli/src/services/projects/machineLayout.ts`: `<adeHome>/sock/desktop-bridge.sock` on macOS / Linux (e.g. `~/.ade/sock/desktop-bridge.sock` stable, `~/.ade-alpha/sock/desktop-bridge.sock` alpha), and `\\.\pipe\ade-desktop-bridge-<channel>-<hash>` on Windows. The hash uses the same canonical ADE-home/channel/current-user identity as the runtime pipe; the desktop also listens on the older env-derived bridge names, and a brain dials whichever bridge name is listening when its project opens. `ADE_DESKTOP_BRIDGE_SOCKET_PATH` overrides it for dev launches against a non-default ADE home. The server lives in `apps/desktop/src/main/services/builtInBrowser/desktopBridgeServer.ts`, wired up from `main.ts` right after `builtInBrowserService` is constructed and torn down with it on app shutdown. The runtime-side proxy is `apps/ade-cli/src/services/builtInBrowser/desktopBridgeClient.ts`; `createAdeRuntime` in `bootstrap.ts` assigns it to `runtime.builtInBrowserService` so the existing action registry slot resolves transparently (skipped when `runtimeProfile === "chat"`). Both sides share the same method allowlist (`BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS` in `apps/ade-cli/src/services/builtInBrowser/desktopBridgeMethods.ts` — regenerate this line from there): `getStatus, getDevServers, requestOriginAccess, claim, startHandoff, waitForHandoff, startSession, listSessions, endSession, showPanel, setBounds, navigate, createTab, switchTab, closeTab, reload, goBack, goForward, stop, observe, getTrace, click, typeText, dispatchKey, scroll, fill, clear, wait, startInspect, stopInspect, captureScreenshot, selectPoint, selectCurrent, clearSelection, setEmulation, setZoom, findInPage, readText, stopFindInPage, setDevTools, setNetworkLogging, getNetworkLog, listDownloads, waitForDownload, readClipboard, writeClipboard, exportHar, hover, drag, selectOption, uploadFile, dropFiles, paste, startRecording, stopRecording, noteDemoStep`. `BUILT_IN_BROWSER_METHOD_ROUTES` in the same file gives each method the machine whose browser runs it when the chat's user sits at a desktop on another machine (see "The browser where the user sits" in `docs/features/remote-runtime/README.md`). Profile diagnostics and permission administration are deliberately absent, and so is `endHandoff` — hand-back is the human pressing a button in their own renderer, which reaches the service through local IPC and never through the bridge. One method is served by the bridge itself rather than dispatched onto `BuiltInBrowserService`: `getStatusForRuntime`, a read-only tab-list projection for the Work-tools pane that carries no cookies, no observation bytes and no way to act on a tab. Like every call it takes the client's runtime-scope rewrite: it carries the calling daemon's `projectRoot` and is answered out of that project's window collection, not the frontmost window's — the socket is machine-wide but the daemon asking is project-scoped, so an unscoped answer would show one project's tabs on another project's phone. No window open for that project yields `browserUnavailable: "desktop_not_attached_for_project"`; a window that has it open but has never used its Browser pane yields `"browser_pane_not_opened"` instead, because the read never materializes a collection and the two states carry opposite instructions.
-
-**No secret on the bridge, no per-chat token.** The socket is owner-only (`0600` in a `0700` directory; a per-account named pipe on Windows), which is the same boundary the runtime's own socket relies on: a process that can open it already runs as the user and could read the browser profile on disk. So any process on this machine may drive the browser, exactly like Mac Desktop. What remains is attribution, not authority: `adeRpcServer.ts` (`scopeBuiltInBrowserAdeActionArgs`) replaces caller-supplied routing with the calling chat's own id and lane (or `tabCollection: "personal"` when the caller's identity carries its `ADE_CHAT_SCOPE=personal` claim — a personal chat's call is routed to whatever runtime its scratch directory resolves to, which does not know the chat), keeps a chatless caller's requested lane, refuses calls arriving from another machine's brain, and forces `force: false`. The desktop trusts that scope, so a chat owns its tabs and lights its own presence; a chatless call (the user's own terminal) owns no tab. The chat id is a label, not a lock: the agent guards in `builtInBrowserService` (tab leases, an open login handoff, the "Agents can use the ADE browser" Block) apply to calls tagged with a chat or lane, and a call carrying neither is treated as the person. Whether a desktop is attached — which App Control recording, demo videos and scene previews read — is the brain's own probe of the socket (`probeDesktopBridge`), run at start, when the local desktop says hello, and in the background when the last answer is over 10 s old. Browser calls do not read it: each dials the socket. An earlier design minted a bridge token and per-chat `ADE_BROWSER_ACTOR_TOKEN`s at chat launch; any chat launched while the desktop was not attached went without a browser for its whole life, which is why it was removed.
-
-Today only the `built_in_browser` domain rides this bridge; the pattern is generic and other Electron-only domains can be added the same way. The client lazy-connects on first call and reconnects on the next call after any failure. When no desktop is running, each call surfaces a clear `No ADE Desktop browser is attached to this machine (bridge socket <path> is not listening)…` error and every other runtime domain stays functional. When the chat's user sits at a desktop on another machine, the chat's commands run in that desktop's browser instead (`remoteBrowserForwarder.ts`: opens and tab commands are published as `built_in_browser_remote_call`, answered through `built_in_browser.replyRemoteCall`; see "The browser where the user sits" in `docs/features/remote-runtime/README.md`). `navigate` / `createTab` / `showPanel` are the exception: on a headless machine they emit a `built_in_browser_remote_request` runtime event and return `{ status: "forwarded_to_desktop", requestId }`, so a desktop that has this machine's lane pinned can open the URL in its own browser over a port-forward and acknowledge through `built_in_browser.acknowledgeRemoteRequest`. With a desktop attached, a call that asks to show the user (`openPanel: true`) also goes out as that event, addressed to the desktop that sent the chat its last message (`docs/features/remote-runtime/README.md`, "Which desktop shows it"). This is distinct from the retired renderer-hosted RPC mode used before the multi-project runtime: the ADE runtime still owns the full action surface, and the bridge is narrowly scoped to services that physically require an Electron renderer host.
+**Desktop bridge.** The brain runs as Node (`ELECTRON_RUN_AS_NODE=1`), so it has
+no renderer-side Electron APIs. Services that own real desktop UI, mainly
+`BuiltInBrowserService` (the Browser pane's `WebContentsView`), live in desktop
+main and are reached over a side-channel JSON-RPC socket:
+`<home>/sock/desktop-bridge.sock` on POSIX, `\\.\pipe\ade-desktop-bridge-<channel>-<hash>`
+on Windows (`ADE_DESKTOP_BRIDGE_SOCKET_PATH` overrides). Server:
+`apps/desktop/src/main/services/builtInBrowser/desktopBridgeServer.ts`; client:
+`apps/ade-cli/src/services/builtInBrowser/desktopBridgeClient.ts`; the shared
+method allowlist is `BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS` in
+`desktopBridgeMethods.ts`. The socket is owner-only and carries no token: any
+process of this user may drive the browser. `adeRpcServer.ts`
+(`scopeBuiltInBrowserAdeActionArgs`) replaces caller routing with the calling
+chat's own id and lane, so a chat owns its tabs. With no desktop attached, a
+call fails with a clear "no desktop browser attached" error and every other
+domain keeps working. When the chat's user sits at a desktop on another
+machine, the command runs in that desktop's browser (`remoteBrowserForwarder.ts`;
+see "The browser where the user sits" in
+[remote-runtime](./features/remote-runtime/README.md)).
 
 ### 2.2 Electron desktop client (`apps/desktop/`)
 
-The desktop app is a **client of the runtime**. It owns a trusted main process, a narrow typed preload bridge, the React renderer, and the shared TypeScript contracts that the whole monorepo (including the ADE CLI runtime) consumes — but the data plane it operates on lives in the ADE runtime.
+The desktop app is a **client of the runtime**: a trusted main process, a typed
+preload bridge, the React renderer, and the shared TypeScript contracts the
+whole monorepo imports. The data plane lives in the brain.
 
 | Directory | Role |
 |-----------|------|
-| `apps/desktop/src/main/` | Node process with full OS access. Hosts windows, registers IPC handlers, routes runtime-backed APIs through local/remote runtime pools, spawns the local ADE runtime when needed, and owns Electron-only services that cannot run inside the runtime. Entry: `main.ts`. |
-| `apps/desktop/src/preload/` | Typed bridge. Entry: `preload.ts`. Uses `contextBridge.exposeInMainWorld("ade", { ... })`. Runtime-backed APIs route through `LocalRuntimeConnectionPool` (local) or `RemoteConnectionPool` (paired/SSH-bound window); file APIs are strict once a local/remote runtime is bound. Usage/budget reads follow the bound runtime when one exists; a window with no local project still goes through desktop usage IPC, which proxies to a booted brain project scope and falls back to the in-process tracker only when no brain scope is running. Usage push delivery follows the active binding too: unbound windows accept main-process usage events (main relays the brain's snapshots onto that channel), while bound windows accept only the runtime event stream. Whether a runtime action is a read or a write is declared, not guessed from its name: every allowlisted action is listed once as `read` or `write` in `shared/adeActionAccess.ts`, an action the table does not know counts as a write, and `actionPolicy.test.ts` fails when the allowlist and the table disagree. Preload publishes its own rebinds to the renderer so the usage feed and reads switch together instead of waiting for a later main-process push. During project switches, mutating runtime/sync calls that target the ambiguous active binding are blocked, read-only calls avoid refreshing stale bindings, chat reads that must answer from the chat's own host (drafts, thread comments, Codex realtime state) wait for the switch to settle instead of failing, active remote opens can be awaited before retrying reads, and remote lane preview URLs are localized through desktop-owned TCP forwards. Chat history reads are the exception to the local-IPC fallback: `isRemoteProjectRuntimeContext()` gives a synchronous, transition-safe answer to "is this window's runtime remote?" (live binding → in-flight remote open → the kind snapshotted by `detachProjectBindingForTransition()`), and a remote context returns `unavailable: true` rather than letting the local chat service answer a remote session id with a false `sessionFound: false` that would wipe the transcript. History runtime actions use one object envelope (`sessionId` plus caps/cursor) across preload and the CLI; the action registry still normalizes the legacy positional form for packaged-client compatibility. If a packaged local window is temporarily bound to an isolated runtime whose sync service is disabled, only the exact machine-level sync-unavailable/register-project failures retry through main-process sync IPC; remote-bound failures never fall back locally. Explicitly targeted work can pass an `OpenProjectBinding` pin through `callPinnedRuntimeAction` to route to the captured project during a switch, used by detached draft launches and rollback. The same pin is the per-session and detached-draft runtime routing mechanism: chat/session calls (including metadata regeneration), the PTY and terminal surface (`pty.create` / `resumeSession` / `sendToSession` / `write` / `resize` / `dispose` / `setDataSubscriptions` / `onData` / `onExit`, `terminal.preview`), plus machine-owned supporting APIs (AI discovery, slash commands, file search, attachments, lane management, parallel launch state, session deltas, and computer-use snapshots) accept an optional `OpenProjectBinding` so foreign work — a CLI or shell session as much as a chat — stays on its owning machine without rebinding the window's tab. The same trailing pin covers the machine-owned tool panels a chat drives: the iOS Simulator domain (`getStatus` / `listDevices` / `listLaunchTargets` / `launch` / `attachToChatSession` / `shutdown` / `screenshot` / `getScreenSnapshot` and the rest, through `callIosSimulatorActionOr`), App Control (`callAppControlActionOr`), the computer-use artifact mutations (`callComputerUseArtifactActionOr`: `deleteArtifacts` / `recoverArtifact` / `readArtifactPreview`), and the cross-machine handoff trio (`agentChat.prepareCrossMachineHandoff` / `validateCrossMachineSource` / `markCrossMachineHandoff`). The domain-bound wrappers exist so the domain string is not retyped at roughly fifty call sites — a typo there is a silent "unknown action" at runtime — while each method stays statically greppable. Pinned event subscriptions poll the selected runtime when Electron's bound event stream cannot represent a foreign machine, and also take main's pushes for that binding (deduplicated by event id) so they do not wait for the next poll, and preload releases a main-side subscription explicitly once its last pump stops reading; `iosSimulator.onEvent` and `appControl.onEvent` take the pin too, because a pinned panel that gets status reads without live updates is describing one simulator with another machine's stream. `builtInBrowser.*` is the deliberate exception: the built-in browser is hosted by *this* desktop's main process (it owns a `WebContentsView`), so every browser call and its event stream are local IPC scoped by `projectRoot`, whatever the pin; a remote pin only localizes loopback URLs onto a port forward. The runtime daemon's desktop-bridge proxy tags each call with the caller's own chat and lane, so a person's window acts on the tab it shows through local IPC instead. A pin that names the copy the window is bound to (`isBoundCopyPin`) gets what no pin gets: the bound read caches (`boundCopyCacheLoad`) and the active event stream, PTY id filter included. Because the active stream follows the window, a PTY listener on such a pin moves to its own copy's pump, with its PTY ids, when the window binds to another copy (`followBoundCopyPtyEvents`). In dev builds an unpinned call is logged once per method as `default_machine_route`. Preload read caches are namespaced by binding for the same reason: one preload process serves every machine a window talks to, so a cache keyed by arguments alone is machine-blind and one machine's rows could be served to — or overwritten by — another's. `boundReadCacheKey()` prefixes each cached read's key with `projectBindingKey(currentProjectBinding)` (space-separated, parsed back by `parseBoundReadCacheArgs`), the iOS Simulator status/device caches are keyed caches on the same grounds, and a pinned `getStatus` / `listDevices` bypasses the cache entirely through `callPinnedRuntimeAction`. Required foreign ownership fails closed; `callPinnedOrBoundRuntimeActionOr` retains the unchanged bound path only when no pin is required. The exposed object is contract-checked — `contextBridge.exposeInMainWorld("ade", adeBridge)` publishes a `const adeBridge = {...} satisfies Window["ade"]` (declared in `preload/global.d.ts`), so a preload signature that drifts from the declared contract, a dropped `pin` parameter above all, is a compile error rather than a renderer quietly talking to the wrong machine. |
-| `apps/desktop/src/renderer/` | React 18 SPA. No Node access, no filesystem access, no direct process/network. Everything goes through `window.ade`. Entry: `main.tsx`. |
-| `apps/desktop/src/shared/` | Types, IPC channel constants (`ipc.ts`), model registry (`modelRegistry.ts`), keybindings, and cross-client derivations such as `chatScheduledWork.ts`, `externalSessionPolicy.ts` (the one external-session import policy — per-provider lane rules, `planImport`, and the host guard `importRejectionReason` — shared by desktop and the host, with a Swift port on iOS), `externalSessionAffordances.ts` (import-row path and size display), `prChecksRollup.ts` (the one definition of whether a commit's CI actually verified it, imported by the desktop service and the renderer so no surface counts check rows on its own), and `chatEventCompaction.ts` (the one cap table for heavy chat-event payloads, imported by `agentChatService` for the stored transcript and by the ade-cli sync host for the mobile/web wire — two implementations with two cap tables is exactly what it replaced, and they had drifted). The project/machine model lives here too: `projectIdentity.ts` is the single definition of a binding key (`local:<root>` / `remote:<targetId>:<projectId>`) that every per-project cache and the repo tab join are keyed by, `machineIdentity.ts` is the single definition of "the machine ADE is running on" (`THIS_MACHINE_ID` / `THIS_MACHINE_NAME` / `isThisMachineId` / `machineDisplayName`, plus `machineNameForBinding(binding)` for the absolute name of the machine a routing binding targets — a null binding is the tab's own machine, the unpinned path, so it names "This computer" exactly like a local binding, while a remote binding prefers the runtime's own name and falls back to the project tab's display name; machines are named absolutely and "remote" is never used as a machine name), and `laneDivergence.ts` is the pure push-time guard against stranding another machine's unpushed commits. Imported by desktop, `apps/ade-cli`, and mobile contract generation paths. New runtime-facing types live in `shared/types/remoteRuntime.ts` and `shared/types/core.ts`. |
-| `apps/desktop/src/generated/` | Build-time generated code (e.g., bootstrap SQL snapshots). |
-| `apps/desktop/src/test/` | Shared vitest setup and fixtures. |
-| `apps/desktop/src/types/` | Ambient type declarations. |
+| `src/main/` | Node process with full OS access. Hosts windows, registers IPC, routes runtime-backed APIs through the local and remote pools, spawns the local brain when needed, and owns Electron-only services. Entry: `main.ts`. |
+| `src/preload/` | Typed bridge, `contextBridge.exposeInMainWorld("ade", adeBridge)` where `adeBridge` `satisfies Window["ade"]` (`preload/global.d.ts`), so a signature that drifts (a dropped `pin` above all) is a compile error. Entry: `preload.ts`. See section 5. |
+| `src/renderer/` | React SPA with no Node, filesystem or direct network access. Everything goes through `window.ade`. Entry: `main.tsx`. |
+| `src/shared/` | Types (`shared/types/`), IPC channel names (`ipc.ts`), the model registry, action access (`adeActionAccess.ts`), brand constants (`brand.ts`), and cross-client rules imported by desktop, CLI and web: `projectIdentity.ts` (binding keys `local:<root>` / `remote:<targetId>:<projectId>`), `machineIdentity.ts` (`THIS_MACHINE_ID`, `machineNameForBinding`), `cliLaunch.ts`, `chatEventCompaction.ts`, `prChecksRollup.ts`, `externalSessionPolicy.ts`, `laneDisplayName.ts`. |
+| `src/generated/`, `src/test/`, `src/types/` | Build-time generated code, shared Vitest setup, ambient types. |
 
-**Multi-window shell.** `main.ts` hosts multiple `BrowserWindow` instances; opening another project opens it in a dedicated window. Each window has its own runtime binding (local pool or a specific remote target). The global `/chats` route surfaces through a real machine-level **Chats** top tab (its existence tracked in session-only `personalChatsTabOpen` app state, active-ness derived from the route) that coexists with project tabs and survives project open/switch/close, or runs inside the current project tab without clearing that binding. Personal-chat IPC therefore targets the local brain from local/no-project windows and the remote brain from an SSH-bound project window. External controllers — for example the `ade` CLI — can drive desktop window navigation via the `app/navigate` JSON-RPC method against the runtime; the desktop's IPC tracing carries window ID so logs distinguish which renderer surface invoked a channel.
+**Multi-window shell.** `main.ts` hosts several `BrowserWindow`s; each has its
+own runtime binding. A window can hold several project tabs; a tab is the
+repository, not a machine (`components/app/useRepositoryTabs.ts`). The global
+`/chats` route is a machine-level **Chats** tab. External controllers (the CLI)
+can drive navigation with the `app/navigate` JSON-RPC method.
+`main/windowAppearance.ts` owns the window chrome (macOS `hiddenInset`, Windows
+title bar overlay). The packaged appId is `com.ade.desktop` (frozen).
 
-Every `BrowserWindow` installs the native menu for editable controls from `main/editorContextMenu.ts` in `createWindow`; renderer-owned menus keep their own behavior.
-
-**Platform window shell.** `main/windowAppearance.ts` owns the window chrome: macOS `hiddenInset` with traffic lights, and on Windows a hidden title bar with the native window-controls overlay (Snap Layouts stay native). Neither follows renderer zoom on its own, so every zoom change goes through `zoom.setTitleBarOverlay`: Windows resizes the caption strip to the zoomed header, and macOS moves the traffic lights (`macTrafficLightPosition`) to stay centred in it. The lights cannot be resized. The packaged Windows AppUserModelID is `com.ade.desktop`. The renderer stamps `data-platform` on the root element. iOS Simulator is hidden off macOS.
-
-**Account Activity is outside the project binding.** `attentionAccountCoordinator.ts` sends signed-in snapshot, acknowledgment, presence and preference calls straight to the account push relay, so Activity works whatever machine the window is bound to. A relay failure falls back only to this computer's labeled `getMachineSnapshot`. Changes are fenced on the account owner and on the alert fingerprint the caller saw. The global-header popover and `/activity` show the same `ActivityPanel`: agent items grouped by the Work board columns (`activityBoardColumn`), and pull requests and checks in a separate Inbox.
-
-The UI name is **Activity**, but the wire, IPC, relay, SQLite and telemetry names stay `attention` (`AttentionItem`, `attention.call`, `ade.attention.*`, `/attention/account/*`, `attention_*`). Do not rename them. `/attention` is an alias for `/activity`.
+**Account Activity is outside the project binding.**
+`attentionAccountCoordinator.ts` sends snapshot, acknowledgment, presence and
+preference calls straight to the account push relay, so Activity works whatever
+machine the window is bound to. The UI says **Activity**; the wire, IPC, relay,
+SQLite and telemetry names stay `attention` (`AttentionItem`, `ade.attention.*`,
+`/attention/account/*`). Do not rename them.
 
 **Runtime binding pools.**
 
-- `apps/desktop/src/main/services/localRuntime/localRuntimeConnectionPool.ts` — desktop-side client for the local brain endpoint. Spawns or attaches to the machine endpoint, registers local projects with `projects.add` (and registers a folder again, then retries the call once, when the brain answers "Unknown projectId" for the id the pool cached: at most once per folder every 30 s, while calls already in flight retry against the fresh record), dispatches local runtime actions, applies short per-call timeouts for project registration / file actions / event polling, emits a `local_runtime.action_slow` warning log when an action call exceeds 500 ms or throws (the log breaks the total into `ensureProjectMs` / `connectMs` / `daemonCallMs` so a stalled renderer call is debuggable before the IPC timeout fires) and records that call into a bounded (age + 5,000-sample) rolling 24 h window surfaced as `getRuntimeHealth()` (count + nearest-rank p95) behind the `ade.app.getRuntimeHealth` IPC, and best-effort installs the background service in packaged builds. Local project windows use this binding consistently outside unit tests. `probeMachineRuntimeIdentity()` answers what is on the endpoint precisely — version, build hash, pid, the expected build hash, and whether it is a compatible newer brain — replacing the older `probeMachineRuntimeHealth()`, whose `ok` could not distinguish the newly installed brain from the pre-update one that survived a service reinstall. Its opportunistic service repair is throttled (`serviceRepairBackoffMs`: 0 / 5 s / 15 s / 30 s / 60 s, then once a minute) and suppressible: `beginUpdateWindow` / `endUpdateWindow` bracket an applying update for at most `LOCAL_RUNTIME_UPDATE_WINDOW_MAX_MS` (2 min, self-expiring), during which a missing or incompatible endpoint is the updater's own doing rather than a fault to repair, and refused connects report `LOCAL_RUNTIME_UPDATE_IN_PROGRESS_MESSAGE`.
-- `apps/desktop/src/main/services/remoteRuntime/` — paired/SSH runtime pool. `remoteTargetRegistry.ts` stores saved machines under `~/.ade/secrets/remote-machines.json` (manual host plus an optional `routes[]` of Tailscale / Bonjour / manual addresses with per-route `lastSucceededAt` and manual-disconnect state); `sshTransport.ts` handles ssh-agent / key based transport with bounded connect/exec timeouts, normalized handshake errors, disabled SSH keepalives, and alternate routes ranked by most-recent success; `remoteBootstrap.ts` does first-connect runtime upload + version/hash negotiation against the bundled `ade-<platform-arch>` binary, native deps, and PTY host worker, and walks alternate ADE channel homes (`.ade` / `.ade-alpha`) when the preferred runtime is missing **or fails validated initialization** (including a just-uploaded Alpha), retaining the winning home for follow-up commands such as the JSON-stdin SSH-to-paired upgrade; version / channel / capability skew becomes `compatibilityWarnings`; `remoteConnectionPool.ts` keeps the per-window remote runtime binding alive, gates `projects.*` runtime calls against the connection's `capabilities.machineProjects` flags (missing capabilities reject the call with a self-describing error), reconnects safely on the actions `isReplaySafeAdeAction` (`shared/adeActionAccess.ts`) accepts after genuine connection failures (a call that only timed out drops the connection only when nothing arrived for 12 s and a `ping` also goes unanswered, so a busy machine keeps its in-flight actions; an action whose connection another call dropped gets `RemoteActionOutcomeUnknownError`), makes replay-safe reads conditional (it keeps the last result of 8 KB and up per target, project, action and arguments, at most 48 and 16 M characters, sends the host's hash back as `ifNoneMatch`, and reuses its copy when the host answers `notModified`; the host still runs the action, writes never go conditional, and older hosts and desktops ignore the fields; see `shared/conditionalActionResult.ts` and `ade-cli/src/conditionalActionResult.ts`), owns local TCP forwards for remote preview ports, memoizes optional-action fallbacks, and emits eviction notifications when the paired/SSH transport or JSON-RPC client closes; `remoteConnectionService.ts` listens for those evictions, marks targets as `error`, preserves explicit manual disconnects, pauses automatic reconnect after repeated implicit failures, surfaces the capabilities + compatibility warnings on every `RemoteRuntimeConnectionStatus`, and re-probes saved connections on `powerMonitor.resume` / `unlock-screen`; `runtimeRpcClient.ts` is the JSON-RPC client (per-call timeouts expire only the matching request without replay, while transport close/error or malformed JSON framing rejects every pending call; bounded oversized responses reject only the matching request, and remote errors preserve the original method plus the JSON-RPC `code` / `message` / `data`). A call sent with `waitWhileRunning` (every runtime action that does work, local and remote; a replay-safe read keeps its plain budget, `actionWaitsWhileRunning` in `shared/adeActionAccess.ts`) is not failed when its budget runs out: the client asks the same connection `ade/requests/status` (`shared/runningRequests.ts`), which the brain's JSON-RPC server answers from the requests it has not answered yet, and keeps waiting, rechecking every 15 s, while the id is listed, up to 30 minutes past the budget. An id the answer leaves out fails at once (the server writes a reply before it forgets a request, so that reply is not coming), a check with no answer fails as the plain timeout did, and an ADE from before the check gets the call's old budget (`timeoutWithoutCheckMs`: 10 minutes for remote work with no budget of its own). A request over 256 KB gets time to arrive (16 KB/s) before its first check, and checks go in groups of 1,000 ids; `runtimeDiscovery.ts` runs Bonjour + Tailscale in parallel and returns `{ machines, diagnostics }` so a missing or stuck `tailscale` CLI does not silently swallow LAN discovery. `remoteBrainStart.ts` starts a POSIX remote's brain (`ade brain start` over SSH, then dial again for up to 90 s) only on a connect a person asked for (`initiatedBy: "user"`); background reconnects, the event pump and autoconnect never do, and neither does a layout whose service install is disabled. `remoteEventSetup.ts` puts a 2-minute ceiling on an event read or subscribe setup that fails with `REMOTE_EVENT_SETUP_TIMEOUT` naming the step; the paired handshake, SSH handshake and project list each have their own shorter limits (30 s, 90 s, 30 s). See [features/remote-runtime/README.md](./features/remote-runtime/README.md#a-remote-machine-whose-brain-is-not-running).
+- `services/localRuntime/localRuntimeConnectionPool.ts`: client for the local
+  brain. Spawns or attaches, registers projects (`projects.add`, re-registering
+  once when the brain answers "Unknown projectId"), logs
+  `local_runtime.action_slow` past 500 ms, and repairs the background service
+  with backoff, suspended during an applying update (`beginUpdateWindow`).
+  `probeMachineRuntimeIdentity()` reports what is on the endpoint.
+- `services/remoteRuntime/`: the paired and SSH pool. `remoteTargetRegistry.ts`
+  stores saved machines in `~/.ade/secrets/remote-machines.json`;
+  `sshTransport.ts` is the SSH transport; `remoteBootstrap.ts` uploads and
+  version-checks the runtime; `remoteConnectionPool.ts` keeps each window's
+  binding alive, replays only actions `isReplaySafeAdeAction` accepts, and
+  makes repeated reads conditional (`shared/conditionalActionResult.ts`);
+  `remoteConnectionService.ts` tracks status and reconnects;
+  `runtimeRpcClient.ts` is the JSON-RPC client. An action that does work and
+  outlives its budget keeps waiting while the brain still lists it in
+  `ade/requests/status` (`shared/runningRequests.ts`). `remoteBrainStart.ts`
+  starts a POSIX remote's brain over SSH only on a connect a person asked for.
+  See [remote-runtime](./features/remote-runtime/README.md#a-remote-machine-whose-brain-is-not-running).
 
-Build outputs (configured in `apps/desktop/tsup.config.ts`):
-
-| Entry | Source | Purpose |
-|-------|--------|---------|
-| `main/main.cjs` | `src/main/main.ts` | Electron main process |
-| `main/packagedRuntimeSmoke.cjs` | `src/main/packagedRuntimeSmoke.ts` | Post-package smoke test for PTY spawn, Claude SDK init, Codex availability, and ADE CLI readiness. |
-| `preload/preload.cjs` | `src/preload/preload.ts` | Renderer bridge. |
-
-Both this build and `apps/ade-cli`'s run `scripts/build/asciiBundleSource.ts`, which keeps every bundle pure ASCII (V8 holds a script's source for the life of the process, at two bytes per character once one character is past ASCII) and returns esbuild's map with its columns moved past the escapes it adds. It returns the final map rather than one for tsup to compose: tsup's composition matched the chunk by a path that `source-map` lowercases on Windows, so Windows releases shipped maps from each bundle to itself.
+Build outputs (`apps/desktop/tsup.config.ts`): `main/main.cjs`,
+`main/packagedRuntimeSmoke.cjs` (post-package smoke test) and
+`preload/preload.cjs`. Desktop and CLI bundles stay pure ASCII
+(`scripts/build/asciiBundleSource.ts`) to halve V8's source memory.
 
 ### 2.3 iOS client (`apps/ios/`)
 
-Native SwiftUI app acting as a controller. With no computer awake, it reads the account (ADE Cloud lanes, saved chats and session copies, the Git summary, the CTO copy, Linear) through `CloudServerClient.swift`, and files from GitHub; ADE Cloud is one machine in its tabs and new-chat picker, preselected when the account has no own computer. With a connected machine, it pairs over WebSocket and reads live state from a local cr-sqlite-backed SQLite database that mirrors the project's `ade.db`. The phone never runs agents.
+Native SwiftUI controller; the phone never runs agents. With no computer awake
+it reads the account (DAEX Cloud lanes, saved chats and session copies, the Git
+summary, the CTO copy, Linear) through `CloudServerClient.swift`, and files
+from GitHub. With a connected machine it pairs over WebSocket and reads a local
+SQLite database that mirrors the project's `ade.db`.
 
-- Stack: native SwiftUI + `SQLite3` C API + iOS system SQLite.
-- CRDT: pure-SQL CRR emulation layer (trigger-based change tracking) since iOS blocks `sqlite3_load_extension()`/`sqlite3_auto_extension()`. Changesets are wire-compatible with desktop cr-sqlite.
-- Core services: `Database.swift`, `SyncService.swift`, `KeychainService.swift`, `DpopKeyService.swift` (Secure Enclave P-256 pairing proof), `PushNotificationService.swift`, `LiveActivityService.swift`, and `ProductAnalytics.swift` (default-on, content-free native analytics with an independent identity and 20-event daily ceiling).
-- Shipped project tabs: Lanes, Files, Work, PRs, CTO, Settings (including a Push delivery panel). The projectless Chats surface is entered only from the Hub, outside the project tab bar. It uses runtime-scoped commands and the same chat event union/Work transcript renderer while suppressing lane/project actions. The Work chat decodes the same chat event union as desktop for live transcripts, including scheduled-work updates and transcript retractions; scheduled work appears in a native Chat Info popup/sheet while the phone remains a controller only. Durable active rows expose Cancel and the Schedule header exposes per-chat Pause/Resume when the host advertises those actions. Project chats use `chat.cancelScheduledWork` / `chat.setScheduledWorkPaused`; Hub personal chats map the same UI to runtime-scoped `personalChats.*` actions. The host also advertises non-queueable schedule creation, but iOS does not render a create control. Native clients gate every implemented control on its descriptor, so transport availability does not make an older brain accept unsupported mutations.
-- Shipped Activity surfaces: a global account-wide Activity drawer with Sessions and Inbox buckets, project-scoped lenses over the same model, a Lock Screen widget, and one account-wide ActivityKit Live Activity + Dynamic Island prioritized across signed-in machines/projects (`ADEWidgets/ADEAgentActivityWidget.swift`).
-- Push: signed-in clients exchange account Activity snapshots/ACKs/presence/preferences and register APNs/Live-Activity tokens directly with the Cloudflare push relay (§2.7). The wire DTOs retain their `Attention*` names. Account device PUT/DELETE mutations carry a persisted monotonic `ownershipEpoch`; direct account switches commit old → unowned → new epochs, and the relay retains deletion tombstones so delayed requests cannot reclaim an installation. The same non-PII epoch is stamped into account-wide Live Activity attributes/content: the app ends an owner-mismatched activity, while the widget extension renders only a neutral Updating ADE state before cleanup. Legacy paired-machine registration remains for older clients. Alert pushes and every widget/Live-Activity row carry exact destinations with the source `accountMachineKey`; remote account items select/adopt that machine before navigation and never execute current-host-only intents.
-- Connection: ADE account sign-in is the primary PIN-less path; direct pairing uses a user-set 6-digit PIN after scanning the v3 smart-URL QR or choosing a Nearby machine. Both paths produce device-bound DPoP trust and reconnect with a LAN → Tailscale → Relay preference; the phone races every eligible candidate in one happy-eyeballs wave rather than exhausting direct routes before trying Relay. Sign-out disables account discovery and Relay but retains direct machine trust until the user explicitly forgets that machine.
-- Planned: Automations and History tabs; iPad layout; Spotlight.
-- Target: iOS 26+, iPhone + iPad.
+- CRDT: a pure-SQL CRR emulation (trigger-based change tracking), because iOS
+  blocks loadable extensions. Changesets are wire-compatible with cr-sqlite.
+- Core services: `Database.swift`, `SyncService.swift`, `KeychainService.swift`,
+  `DpopKeyService.swift` (Secure Enclave pairing proof),
+  `PushNotificationService.swift`, `LiveActivityService.swift`,
+  `ProductAnalytics.swift`.
+- Project tabs: Lanes, Files, Work, PRs, CTO, Settings. Personal chats open from
+  the Hub. Controls are gated on the host's advertised action descriptors, so an
+  older brain never receives a mutation it does not support.
+- Activity: an account-wide drawer, a Lock Screen widget and one account-wide
+  Live Activity (`ADEWidgets/ADEAgentActivityWidget.swift`).
+- Connection: account sign-in is the PIN-less path; direct pairing uses a
+  user-set 6-digit PIN after the QR or Nearby. Routes race LAN, Tailscale and
+  Relay in one wave.
+- Target: iOS 26+.
+
+Brand copy comes from `apps/ios/ADE/Shared/Brand.swift`. Details:
+[ios-companion](./features/sync-and-multi-device/ios-companion.md).
 
 ### 2.4 Hosted web client (`apps/desktop/src/renderer/webclient/`)
 
-Static Cloudflare Pages controller built from the desktop renderer package. It
-gives the full ADE with no computer of your own: after ADE account sign-in, a
-project tab with no own computer online binds to ADE Cloud and reads the
-account and GitHub (section 1.1). For a connected machine it adopts the
-machine from the account directory; the resulting credential is DPoP-bound. Endpoint ranking is
-still LAN → Tailscale → Relay, but a production HTTPS page cannot dial insecure
-`ws://` LAN/tailnet endpoints, so Relay is normally the only browser-eligible
-route. The client keeps no local ADE DB and installs a sync-backed subset of
-`window.ade`.
-Its static HTML paints the loading shell before React, while account bootstrap,
-directory loading, and transactional IndexedDB privacy cleanup do not serialize
-ordinary first paint. Vite preserves lazy feature boundaries, and the build
-fails when the generated entry graph exceeds 1000 KB or eagerly references a
-guarded heavy renderer chunk. Fingerprinted assets are immutable; the HTML
-entry remains uncached. Connected visible tabs enforce separate transport-open
-and authenticated-hello deadlines plus an inbound-traffic watchdog, then map
-Relay application close codes into stable retry/offline UI.
-
-The retired `/hub` route redirects to the welcome surface, which lists the
-account's projects, the connected machines and ADE Cloud. `WebMachineSessionManager` bounds the
-browser to four live `AdeSyncClient` objects; a fifth connection parks the
-least-recently-used non-active machine, retains its catalog/tab metadata, and
-reuses the released client slot when that machine resumes. A federated
-`window.ade` adapter persists Hub/project/Chats state per account and pins
-project calls to the exact machine + project binding. The shared top bar groups same-origin checkouts into one repository tab. Hosted mode mounts only the active project
-surface so an inactive subscription cannot dispatch through another machine's
-adapter.
-
-Project routes use remote commands plus file/chat/terminal sub-protocols;
-machine-scoped `/chats` uses runtime-scoped `personalChats.*` commands without
-selecting a project. The chat adapter implements the shared
-`agentChat.drafts` contract with an always-array list fallback and
-required create/delete mutations, so malformed or unsupported host results do
-not reach composer code as `null`. Account Activity is a separate direct push-relay read:
-the global header/pane snapshot does not follow the selected sync
-machine or project. Signed-out compatibility environments can instead ask only
-their explicitly paired host for a real machine snapshot; older hosts surface
-an update state. Product analytics is default-on and honors a browser-local
-opt-out; the adapter reasserts that peer-scoped choice on every sync connection
-and sends accepted events through the machine runtime rather than owning a
-browser PostHog transport. See [Web client](./features/web-client/README.md).
+A static Cloudflare Pages controller built from the desktop renderer, served at
+`app.ade-app.dev`. After account sign-in, a project tab with no own computer
+online binds to DAEX Cloud and reads the account and GitHub (section 1.1). For a
+connected machine it adopts the machine from the account directory with a
+DPoP-bound credential; an HTTPS page cannot dial `ws://` LAN endpoints, so Relay
+is normally its only route. It keeps no local database and installs a
+sync-backed subset of `window.ade`. `WebMachineSessionManager` holds at most
+four live machine connections and parks the least recently used one. A
+federated `window.ade` adapter pins project calls to the exact machine and
+project; `renderer/webclient/adapter/runtimePinGuard.ts` throws on a pin it
+cannot route instead of answering from the wrong host. See
+[web-client](./features/web-client/README.md).
 
 ### 2.5 Web app (`apps/web/`)
 
-A Vite/React SPA that serves the public marketing site, download page, the internal smart-QR/App Clip pairing handoff, deeplink landing page, privacy/terms pages, and not-found route. `apps/web/api/` holds the redirect functions: installers and downloads, and `/device`, the account sign-in link, which redirects a browser to the account directory's own page and forwards only a well-formed code. Independent package (`ade-web`), deployed via Vercel (`apps/web/vercel.json`). Not a runtime dependency of the desktop app. Shared-origin with the Mintlify docs site (`docs.json` at repo root).
+The public site at daex.dev: marketing, pricing, downloads, the smart-QR / App
+Clip pairing handoff, the deeplink landing page, privacy and terms. A Vite/React
+SPA deployed on Vercel (`apps/web/vercel.json`); not a runtime dependency of the
+desktop app. `apps/web/api/` holds the serverless functions: installers and
+downloads (`install.ts`, `download.ts`), `/device` (the account sign-in link,
+redirected to the account directory's page) and `/open` (`open.ts`, the HTTPS
+half of the deeplink scheme, which rewrites OpenGraph tags for link unfurls and
+then tries the `daex://` link in the browser; see
+[deeplinks](./features/deeplinks/README.md)). The homepage live demo
+(`/demo/`) is the desktop renderer built by `npm run build:demo` in
+`apps/desktop`. Public-site analytics is separately consented
+(`ade_marketing_*`, `marketingAnalytics.ts`); see [logging.md](./logging.md).
 
-The home page leads with ADE Cloud: price charts against the other agent apps that publish a cloud price (`lib/cloudCompetitors.ts`, each number with its vendor source and check date), the four plans, feature rows built from recordings in `public/film/`, and the agents and providers ADE runs. `/pricing` is live and linked from the navbar, footer and download section. Plan buttons link to the hosted web client with `?cloudPlan=<plan>` (`lib/planLinks.ts`), which signs the person in and opens ADE Cloud settings at that plan. A signed-in visitor to `ade-app.dev/` goes straight to the web app: ADE Web sets an `ade_signed_in=1` marker cookie on `.ade-app.dev` (no token), and an inline script in `index.html` redirects `/` only, never other paths or `/?home`.
+### 2.6 Cloudflare Workers (`apps/push-relay/`, `apps/tunnel-relay/`, `apps/account-directory/`, `apps/webhook-relay/`)
 
-Every file a page loads is one Vercel edge request, and the Hobby plan meters them, so the site keeps its request count low. The homepage's live demo (`/demo/`) is the desktop renderer built as a static site by `npm run build:demo` in `apps/desktop`. That script builds with `--mode demo`, which merges the small modules the app's lazy chunks share (one per icon) into one chunk, so the demo loads about 30 files instead of hundreds. The Electron build keeps its own chunking. `apps/web/vite.config.ts` inlines imported SVGs up to 12 KB (the provider logos) as data URLs, because Vite 4 emits every SVG as its own file. `vercel.json` lets browsers keep content-hashed files under `/assets/` and `/demo/assets/` for a year, and images, videos and film clips for a day. Everything else, HTML and `film.json` included, keeps the default and revalidates on every visit, so a deploy shows up right away.
+Four independent Workers, each with its own package, lockfile and
+`wrangler.jsonc`. Worker, D1, R2 and Durable Object names keep `ade-*` names
+(frozen: a rename is a new, empty resource).
 
-Public-site product analytics is separately consented and uses the `ade_marketing_*` namespace. `marketingAnalytics.ts` owns its closed taxonomy and durable 40-event browser/day budget; `marketingAnalyticsBrowser.ts` sends directly from the browser to PostHog's US Capture API with credentials and referrers omitted. It does not route through `apps/web/api/`, add a Vercel Function or Edge Function, enable Vercel Web Analytics, or create a log drain. The only Vercel impact is the small static JavaScript added to the normally cached site bundle. Production receives the public `VITE_POSTHOG_*` values; Preview and Development remain analytics-inert.
-
-The `/open` route is the HTTPS half of the ADE deeplink scheme (`https://ade-app.dev/open?type=...&...`). `apps/web/api/open.ts` is a Vercel serverless function that self-fetches `index.html`, rewrites OpenGraph + Twitter meta tags from the query params so chat-app unfurlers (Slack, Discord, iMessage, Gmail, Linear) show a rich card without executing JavaScript, then hands the SPA over to `OpenPage` which attempts the `ade://` upgrade in the browser and falls back to an install/marketing card if no handler is registered. Supported targets include lanes, Work sessions, repo branches, PRs, and Linear issues. See [features/deeplinks/README.md](./features/deeplinks/README.md).
-
-### 2.6 Cloudflare relay workers (`apps/push-relay/`, `apps/tunnel-relay/`, `apps/account-directory/`, `apps/webhook-relay/`)
-
-Four independent Cloudflare Workers, each its own npm package / lockfile / `wrangler.jsonc` with its own trust model. The brains and the clients talk to them over HTTPS/WebSocket. With no computer awake, the clients read everything from them (section 1.1).
-
-- **`apps/push-relay/`** — holds the account vault (provider keys, integration connections, sign-ins), account settings, and the sealed Passwords items with their wrapped key (`passwords.ts`, opened only on devices), and answers a browser only on the routes in `BROWSER_ACCOUNT_ROUTES`, none of which returns a secret. It also merges the bounded ADE Activity snapshots published by every signed-in brain, exposes an incremental account snapshot/ACK/presence/preferences/device API to desktop, hosted web, and iOS, and fans policy-selected events out as APNs alerts plus one prioritized account-wide Live Activity (Worker + one D1 database; free-plan compatible, no Durable Objects). Its routes, schema, payloads, and stored fields intentionally retain `attention` compatibility names. A machine publish requires both its existing HMAC signature and a verified Clerk account token; account routes require a verified Clerk bearer token. Primary and secondary identity domains are complete, distinct issuer/JWKS/OAuth-client triples selected by exact `iss`; OAuth audience metadata must match through `aud` or `azp`, and the D1 user key is namespaced by verified issuer. `npm run deploy` separates schema/trigger health from account-auth health: it requires both binding triples and short-lived issuer-specific smoke tokens, then checks `/health` and calls a real account snapshot with each token after deployment. The relay stores bounded attention previews/destinations/acknowledgments in addition to device tokens, revoked machines, and delivery receipts; it does not store chat transcripts or diff contents. Removing a machine is a real, terminal operation: `DELETE /attention/account/machines/:machineKey` tombstones and deletes that machine's items in one revision, records the revocation, and drops its push and Live-Activity delivery targets, after verifying the account actually knows the key. `POST /attention/account/machines/:machineKey/pairing` lifts it again and is gated on directory provenance (a constant-time `x-ade-directory-auth` comparison against the shared `DIRECTORY_AUTH_SECRET`) before it reads anything. The Live Activity projection lives in `liveActivity.ts` with the shared vocabulary in `attentionShared.ts`, and the expensive expiry and orphaned-machine sweeps are cron-only rather than hung off the request path. APNs auth is an ES256 provider JWT from the `.p8` (wrangler secrets `APNS_KEY` / `APNS_KEY_ID` / `APNS_TEAM_ID`). Brain-side publisher lives at `apps/ade-cli/src/services/push/`; desktop also launches a native AppKit/SwiftUI ADE Notch helper which consumes the renderer's account snapshot through typed IPC instead of polling the relay independently. Physical-notch Macs merge the surface with the hardware cutout; other Macs keep the real ADE icon in the menu bar and open an anchored transient panel instead of a permanent imitation notch. The helper has two reveal modes (always / hover) that render an identical state-glyph strip, and a click — in either mode — opens the Agents/Events panel. See [features/sync-and-multi-device/push-notifications.md](./features/sync-and-multi-device/push-notifications.md).
-- **`apps/tunnel-relay/`** — pipes ADE **sync** WebSocket frames between a controller and a brain when there is no direct LAN/Tailscale path (Worker + Durable Object with SQLite storage, one instance per `machineKey`, WebSocket Hibernation API). The brain holds a persistent HMAC-signed outbound control socket while the machine has a valid ADE account session; a controller dials `/connect/:machineKey`; the DO pairs it with a dedicated brain-side pipe socket and passes bytes through 1:1 with no frame wrapping, so the normal ADE hello / pairing / DPoP handshake is unchanged. Native 30-second ping / 10-second pong transport liveness is the primary keepalive; because a hibernated or wedged DO can leave the edge answering those transport pings after the machine's control registration is dead, the brain adds a low-frequency application-level `{t:"ping"}`/`{t:"pong"}` keepalive (180 s interval, 30 s deadline) to catch such "zombie" controls, and verifies the path end-to-end with a self-probe (`syncRelaySelfProbe`) that dials `/connect/:machineKey?ready=2` like a real controller. The account directory advertises a `relay` endpoint only after that self-probe round-trips (honest relay publication); an at-capacity `4503` close is treated as liveness proof, not failure. Failed bridge opens are rejected explicitly; application close codes and bounded sanitized reasons survive the phone/pipe/local boundaries. Early controller frames are bounded by both 64 frames and 256 KiB, and idle-sweep alarms run only while a client or pipe exists. Brain-side client is `apps/ade-cli/src/services/sync/syncTunnelClientService.ts`, shared one-per-machine and handed the shared sync listener by `attachHostListener()` from whichever runtime actually owns that listener (which is often not the runtime that constructed the client). Because the DO keeps exactly one host control socket per `machineKey` and evicts the previous holder with close code `4505`, dialing it is gated on holding the machine-wide sync host lease (`relayTunnelAuthorityGate` + `syncHostSingleton`, §3.4) — not on merely having a listener. A `4505` close is treated as a machine-local ownership conflict rather than a network fault: the client retries on a 60 s floor at most three times, then stops and reports `routeHealth.relay.relayControlSuppressed` with an actionable reason, re-arming once after 10 minutes or immediately when it (re)acquires the lease. Ordinary reconnect backoff uses decorrelated jitter with a 1 s floor and 60 s cap, so two clients that collide once do not keep colliding. The same Durable Object also carries **ADE MCP** (`docs/features/ade-mcp/README.md`): HTTP under `/m/:machineKey/` (plus OAuth discovery and one fixed `/oauth/callback`) rides the existing control socket as `{t:"http"}` / `{t:"http_res"}`, and the brain's `{t:"mcp_state"}` flag lets the relay answer 404 for a machine with it off without waking it; all MCP, OAuth and token logic runs on the brain (`apps/ade-cli/src/services/remoteMcp/`). There is no user relay toggle: sign-in starts and advertises Relay, while sign-out closes it. It remains the lowest-priority `relay` address candidate after LAN and Tailscale. TLS terminates at the Worker, so this is a trusted-operator plaintext path rather than end-to-end encryption; relay payload E2E encryption is planned security work.
-- **`apps/account-directory/`** — Clerk-authenticated machine directory and OAuth device-authorization bridge (Worker + D1). The machine brain publishes a health-filtered registration through `accountMachinePublisherService.ts`: a 60-second heartbeat keeps the row inside the Worker's 150-second online window, while sign-in and publish-relevant relay-route changes trigger coalesced immediate writes and reset the heartbeat deadline. The Worker scopes rows by Clerk `sub`, selects at most the 500 most recently seen machines, then returns online-first order. Its additive `custom_name` column is owned by the account user rather than the publisher: authenticated `PATCH /account/machines/:machineKey` sets or clears the bounded display override, while registration continues updating the reported hostname without clobbering it. Machine-list responses expose separate auth and D1 durations through `Server-Timing`, including auth failures. Authentication failures return only fixed classifications such as `token expired`, `invalid issuer`, and `invalid audience`; directory clients consume at most 512 response bytes before exposing the short reason in machine-list results and publisher health. Clients attach `X-ADE-Correlation-ID`; the Worker reflects and CORS-exposes it and logs it with route, method, status, and duration so a connection attempt can be followed without recording account tokens or full endpoint URLs. Desktop, hosted web, and iOS use the compiled HTTPS Worker origin by default. Headless login binds each short-lived device code to a daemon secret, uses Clerk OAuth + PKCE in any browser, and atomically burns the approved token pair on redemption; a device code may also carry the machine key, in which case the winning redemption mints a single-use pairing grant, and an optional machine name that the confirmation page shows as a claim ("A computer named … asked to sign in to ADE"). The confirmation POST is accepted only from the page's own origin (`Origin`, or `Sec-Fetch-Site: same-origin` when a browser sends no `Origin` or `Origin: null`), and it answers with a page that opens the Clerk sign-in, not a redirect. Machine rows also carry the install (`channel`, `ade_home`), so two installs on one computer are told apart. `DELETE /account/machines/:machineKey` is terminal: it records a revocation, deletes the row, and then asks the push relay to purge that machine's Activity, answering `502 activity_purge_failed` with `machineRemoved: true` rather than reporting a clean removal it did not achieve. Re-registering afterwards requires `pairing: true` plus proof of a freshly completed interactive sign-in — either a 10-minute-fresh `auth_time`/`fva` claim (fails closed when neither is present) or that single-use pairing grant, stored only as a SHA-256 digest, bound to the user and machine key, and redeemed by a single conditional delete so two concurrent registrations cannot both spend it. Both the relay purge and the pairing restore are directory-authenticated with the shared `DIRECTORY_AUTH_SECRET`, and deployment refuses to start without that secret and `PUSH_RELAY_URL`. Each published row also carries the machine's long-lived Ed25519 identity as `pubkey`; a same-account desktop/iOS client verifies that key during the sealed `ade-adopt-v1` handshake to adopt a machine over a direct LAN/Tailscale route (LAN → Tailscale → Relay fallback) without exposing the account bearer in plaintext — see [features/sync-and-multi-device/README.md](./features/sync-and-multi-device/README.md). It is also the index and revocation list of lane shares (`src/laneShares/`, migrations 0019–0021): invites to a verified address, grants, and one-use connection tickets bound to a guest's DPoP key, which the host machine redeems with its owner's token. It holds no detailed rights and never opens a machine; see [features/lanes/lane-sharing.md](./features/lanes/lane-sharing.md). It is also ADE Cloud's server (`src/cloud/`, every `/cloud/*` route): plans and hours, launches, sleep and wake, the message queue, saved chats and session copies, Git summaries, fork capsules, idle cleanup, limits, the CTO copy, Linear and Jira reads with the account's sign-ins, and event wakes. It keeps the account's projects (`src/accountProjects/`) and the account lane index (`src/accountLanes/`, `/account/lanes`). A resting cloud computer reads `online: false`, `sleepState: "asleep"` with `cloud: { state, stateAt }` in the machine list. See section 1.1 and [features/ade-cloud/README.md](./features/ade-cloud/README.md).
-- **`apps/webhook-relay/`** — the GitHub and automation webhook relay (different trust model and lifecycle again). For an asleep cloud computer with work for a delivery, it asks the account directory to wake it (`CLOUD_EVENT_WAKE_SECRET`). See its own docs.
+- **`apps/account-directory/`**: Clerk-authenticated machine directory (D1),
+  the OAuth device-authorization bridge, and DAEX Cloud's server (`src/cloud/`,
+  every `/cloud/*` route: plans, launches, sleep and wake, the message queue,
+  saved chats and session copies, Git summaries, fork capsules, idle cleanup,
+  limits, the CTO copy, Linear and Jira reads, event wakes). It also keeps the
+  account's projects (`src/accountProjects/`), the account lane index
+  (`src/accountLanes/`) and lane shares (`src/laneShares/`). Brains publish
+  through `accountMachinePublisherService.ts` (60 s heartbeat; 150 s online
+  window). `DELETE /account/machines/:machineKey` is terminal; re-registering
+  needs a fresh interactive sign-in or a single-use pairing grant. A resting
+  cloud computer reads `sleepState: "asleep"`, not offline.
+- **`apps/push-relay/`**: the account vault, account settings, sealed Passwords
+  items, and account Activity (it merges the snapshots every signed-in brain
+  publishes and fans out APNs alerts and one account-wide Live Activity). D1, no
+  Durable Objects. Machine publishes need an HMAC signature and a Clerk token.
+  Its routes and stored fields keep `attention` names. Brain-side publisher:
+  `apps/ade-cli/src/services/push/`. See
+  [push-notifications](./features/sync-and-multi-device/push-notifications.md).
+- **`apps/tunnel-relay/`**: DAEX Relay. Pipes sync WebSocket frames between a
+  controller and a brain when no LAN or Tailscale route works (a Durable Object
+  per `machineKey`). The brain holds an HMAC-signed control socket while signed
+  in, and the directory advertises a `relay` endpoint only after a self-probe
+  (`syncRelaySelfProbe`) round-trips. Bytes pass through unchanged, so the
+  normal hello, pairing and DPoP handshake applies. Dialing is gated on holding
+  the machine-wide sync host lease (section 3.4), because the relay keeps one
+  control socket per machine and evicts the previous one (`4505`). The same
+  object carries DAEX MCP HTTP under `/m/:machineKey/`. TLS ends at the Worker:
+  a trusted-operator path, not end-to-end encryption. Brain client:
+  `apps/ade-cli/src/services/sync/syncTunnelClientService.ts`.
+- **`apps/webhook-relay/`**: the GitHub and automation webhook relay. For an
+  asleep cloud computer with work for a delivery, it asks the directory to wake
+  it.
 
 ---
 
-## 3. Data Plane
+## 3. Data plane
 
 ### 3.1 SQLite + cr-sqlite CRDT layer
 
-ADE uses Node's native `node:sqlite` driver (no better-sqlite3 dependency) with a vendored cr-sqlite loadable extension:
+DAEX uses Node's `node:sqlite` with a vendored cr-sqlite extension
+(`apps/desktop/vendor/crsqlite/<platform>/`).
 
-- **Engine source**: `apps/desktop/src/main/services/state/kvDb.ts` (schema bootstrap, CRR enablement, sync API) and `crsqliteExtension.ts` (extension loader). Both the desktop main process and the ADE CLI runtime import the same engine module from here; they do not maintain parallel schemas. The database is owned by whichever process opened it first for a given project; in normal desktop operation that owner is the ADE runtime, while desktop in-process users are limited to pre-binding flows, diagnostics, tests, and Electron-only work.
-- **Database file**: `<project_root>/.ade/ade.db`.
-- **WAL mode**: `openRawDatabase` sets `PRAGMA journal_mode = WAL` + `PRAGMA synchronous = NORMAL` at open. `flushNow()` forces pending WAL frames onto the main file with a `wal_checkpoint(TRUNCATE)` (used before shutdown and after a vacuum).
-- **CRRs**: eligible tables are marked via `SELECT crsql_as_crr('table_name')` at startup. Virtual/internal tables (`sqlite_%`, `crsql_%`) are excluded. Marking is dynamic — new tables are picked up automatically unless excluded.
-- **Native extension payloads**: macOS loads `crsqlite.dylib`, Windows x64 loads `crsqlite.dll`, and Linux x64/arm64 load `crsqlite.so`. All five published runtime targets vendor the matching extension so `install.sh` / `install.ps1` + `ade connect` produces a first-class sync peer. A missing/unloadable extension disables device sync (the brain logs `db.crsqlite_unavailable` and skips CRR triggers) and is surfaced in Connections with reinstall/restart guidance instead of remaining a log-only warning. Windows package validation loads the installed DLL into an in-memory `node:sqlite` database, converts a table to a CRR, writes one row, and requires at least one `crsql_changes` record; Linux and macOS runtime builds run the same probe against the native tarball.
-- **Sync API** (`AdeDb.sync`): `getSiteId()`, `getDbVersion()`, `exportChangesSince(version, { maxRows?, throughDbVersion?, excludeTables?, rejectOversizedVersionGroup? })`, `exportChangesSinceOffThread(...)` (the same export on a helper connection in a worker thread), `applyChanges(changes)`. Used by the sync transport.
-- **Merge semantics**: last-writer-wins per column with Lamport timestamps; each device has a site ID at `.ade/secrets/sync-site-id`.
-- **Engineering rule under CRR retrofit**: app-level `ON CONFLICT(...)` upserts must target PK only; secondary UNIQUE constraints do not survive CRR marking.
-- **Restart-safe recovery**: table rebuilds are transactional, and
-  `recoverInterruptedTableRebuilds()` classifies legacy staging tables before
-  schema migration. `rebuildTableInTransaction` drops any leftover
-  `__ade_crr_repair_<name>` staging table (and its cr-sqlite siblings) before its
-  bare `CREATE`, and `sweepOrphanedRepairStagingTables()` runs at open to clear
-  orphans recovery could not reconcile — without these, a staging table left by a
-  killed/aborted rebuild makes every retrofit throw "table already exists" and
-  wedges the sync host in an infinite repair loop. Durable JSON uses atomic
-  replace plus one `.lkg`; typed open failures flow through `lastFailureStore`
-  and the brain-independent `projectRecoveryService`. See
-  [Storage and recovery](./features/storage-and-recovery/README.md) and
-  [CRDT model](./features/sync-and-multi-device/crdt-model.md).
-- **Maintenance hooks**: `openKvDb` attaches an optional `maintenance`
-  (`DbMaintenanceApi`, from `state/dbMaintenanceApi.ts`) handle — retention
-  prunes for `automation_ingress_events` / `pull_request_snapshots`, a
-  zero-peers-only cr-sqlite tombstone compaction, and
-  a fragmentation-gated vacuum that activates `auto_vacuum = INCREMENTAL` so later
-  sweeps stay bounded. `automation_ingress_events` pruning is two-tier: an
-  active-row cap (newest 2,000 non-dispatched rows) plus a hard cap on TOTAL rows
-  (10,000 per project, any status) so an always-on brain dispatching high webhook
-  volume cannot bloat the table inside the 7-day window and abort the cr-sqlite
-  rebuild. The shared `pruneIngressEventRowsForProject` helper is the single
-  source of truth for that SQL, called by both the ingress writer and the
-  storage-doctor mirror so the caps can't drift. The storage doctor in
-  `storageInsightsService` invokes these on a schedule; the retention constants
-  are imported by the ingress writer and the storage ledger alike.
+- **Engine**: `apps/desktop/src/main/services/state/kvDb.ts` (schema, CRR
+  enablement, sync API) and `crsqliteExtension.ts` (loader). The brain and the
+  desktop import the same module; there are no parallel schemas. In normal use
+  the brain owns the project database.
+- **File**: `<project_root>/.ade/ade.db`, WAL mode with `synchronous = NORMAL`.
+- **CRRs**: eligible tables are marked with `crsql_as_crr` at startup;
+  `sqlite_%` and `crsql_%` tables are excluded. Machine-local tables (for
+  example `runtime_processes`, `local_crr_change_suppressions`,
+  `usage_events`) are excluded from replication.
+- **Missing extension**: device sync is disabled (`db.crsqlite_unavailable`)
+  and Connections shows reinstall guidance.
+- **Sync API** (`AdeDb.sync`): `getSiteId`, `getDbVersion`,
+  `exportChangesSince`, `exportChangesSinceOffThread`, `applyChanges`.
+- **Merge**: last-writer-wins per column with Lamport timestamps; each device
+  has a site id at `.ade/secrets/sync-site-id`.
+- **Rule**: `ON CONFLICT(...)` upserts target the primary key only, and a table
+  may have no unique index other than the primary key; secondary UNIQUE
+  constraints do not survive CRR marking.
+- **Recovery**: table rebuilds are transactional;
+  `recoverInterruptedTableRebuilds()` and `sweepOrphanedRepairStagingTables()`
+  clear staging tables a killed rebuild left. See
+  [storage-and-recovery](./features/storage-and-recovery/README.md) and
+  [crdt-model](./features/sync-and-multi-device/crdt-model.md).
+- **Maintenance**: `DbMaintenanceApi` (`state/dbMaintenanceApi.ts`) gives
+  retention prunes, tombstone compaction with zero peers, and a
+  fragmentation-gated vacuum, run by the storage doctor.
 
 ### 3.2 Schema highlights
 
-Schema bootstrap in `kvDb.ts` creates ~104 tables. Anchor tables for agents reading this doc:
+Anchor tables (schema in `kvDb.ts`; types in `apps/desktop/src/shared/types/`):
 
 | Table | Purpose |
 |-------|---------|
-| `projects` | One row per opened repo. Keyed by `root_path`. |
-| `lanes` | Worktree-backed units of work. Types: `primary`, `worktree`, `attached`. Supports parent/child stacks, color/icon/tags. |
-| `lane_usage_tombstones` | One row per removed lane, written by `cleanupLaneDatabaseRows` before the delete cascade so lifetime activity stats are not survivor stats. Integer counters, the created/deleted calendar days, and a hex active-day bitmap only — no transcript text, path, branch, lane name, or per-day breakdown. `absorbed` duplicates are recorded without counting a second lane created; a lane that failed to finish being created is not tombstoned at all. Read back by `usageStatsStore`. |
-| `local_worktree_residual_cleanups` | Machine-local lane-delete cleanup debt for residual managed worktree directories. Stores absolute paths and is excluded from CRR replication because only the runtime on that machine can safely retry removal. |
-| `terminal_sessions` | Tracked PTY sessions per lane with transcript path and head SHAs. The `chat_session_id` column (indexed) marks terminals owned by a chat (chat terminal drawer, App Control launch terminal); `ptyService` exposes them through the `ade.terminal.*` IPC and the `terminal` ADE action domain. The `owner_pid` column (indexed) identifies the ADE OS process that owns the live runtime for the row — cross-process reconcile/dispose paths check it before sweeping so concurrent surfaces don't mark each other's live sessions dead. See §3.5. Lifecycle lives in five nullable text columns: `settle_override` (tri-state `settled` / `active` / null, consulted before the derived exit-0 settle) and the snooze visibility overlay `snoozed_until` / `snoozed_at` with its `woke_at` / `woke_reason` marker. None of them carry a unique index — the table replicates to iOS through cr-sqlite, and `crsql_as_crr` rejects any non-primary-key unique index — and all five lifecycle columns are mirrored in both iOS schema halves (`DatabaseBootstrap.sql` and `Database.swift`'s `ensureColumn` migrations). The separate `activity_status_json` column stores the fixed-value agent-reported card detail and is also present in both iOS schema halves. The settle columns (`settled_at`, `settle_override`, `settle_source`) are host-authoritative: only `sessionService` may decide them, so the sync host drops them from inbound phone changesets and iOS renders an in-flight settle through a local overlay rather than a replicating write. |
-| `runtime_processes` | Machine-local process-liveness registry. Every ADE process (desktop main, brain process, chat-only runtime) inserts a row on boot keyed by the process incarnation (`pid`, `started_at`) and refreshes `last_seen` on a 15 s heartbeat. The table is excluded from CRR replication because PIDs are only meaningful on the current OS; reconcile / dispose paths cross-reference `terminal_sessions.owner_pid` and `owner_process_started_at` against locally known and live rows to tell "row whose local owner crashed" from "row a sibling process is actively managing" without detaching sessions owned by another synced machine. See §3.5. |
-| `session_deltas` | Post-session diff stats + touched files + failure lines. Input to pack generation. |
-| `operations` | Audit log of every significant mutation (git, pack updates). Pre/post HEAD SHAs enable undo. |
-| `usage_events` | Low-volume local ledger of successful user mutations, attributed to `desktop`, `mobile`, `cli`, `web`, or `api` (rows from before the rename say `tui` and are rewritten to `cli` on open). It is excluded from CRR replication; controllers read its aggregates through `usage.getAdeStats` instead of syncing raw events. |
-| `usage_machine_rollups` / `usage_machine_rollup_meta` | Per-machine day × provider × model usage aggregates plus one identity row per machine (label, platform, capture time, transcript-source marker, and in the retired `source_window` column the machine's per-day chats/shells/commits/PRs per project database as JSON). Aggregates only — no transcript record, session id, prompt, or path is ever written here, and roots are stored as digests. They replicate desktop-to-desktop through CRR so an offline machine still counts toward account totals, and are in `MOBILE_CHANGESET_EXCLUDED_TABLES` because the phone reads usage from its host over `usage.getAdeStats` instead. Uniqueness is the composite primary key `(machine_key, day, provider, model)`, since `crsql_as_crr` rejects any UNIQUE index other than the primary key; writers skip no-op upserts so republishing unchanged history does not churn the CRR clock. |
-| `test_suites` / `test_runs` | Declared test suites and their execution history. |
-| `pull_requests` / `pr_review_threads` / `pr_checks` | GitHub PR projections with queue and stack metadata. `pull_requests` also stores the checks rollup's explanation (`checks_reason`) and the required contexts that never reported (`checks_missing_required`, JSON), so every device renders the same verdict without re-deriving it. Both columns were added through `crrAwareDb`'s `crsql_begin_alter` / `crsql_commit_alter` wrapper and replicate like the rest of the table. |
-| `computer_use_artifacts` + `computer_use_artifact_links` | Canonical proof-artifact records and cross-domain ownership. |
-| `prompt_stashes` | Project-scoped desktop drafts and scheduled sends. The runtime owns create/get/list/update/delete/claim, caps plain drafts at 20 and armed sends separately at 50 (armed sends are exempt from the draft prune so a busy week cannot evict one), and CRR replication makes entries available to connected desktops. Local-image bytes stay on the runtime that staged them. The name is kept because cr-sqlite cannot rename a CRR wholesale and every paired machine holds the table. |
-| `devices` + `sync_cluster_state` | Device registry and singleton host-authority row (host is `brain_device_id` internally; legacy naming). |
-| `local_crr_change_suppressions` | Local-only (excluded from CRR replication) high-water marks per `(table_name, site_id)`. `AdeDb.sync.exportChangesSince` filters local-site rows for any listed table at or below `through_db_version` so a viewer-join wipe of `devices` / `sync_cluster_state` cannot leak DELETE rows back to the host. See §13.1. |
-| `kv` | Generic key-value store for UI layout, project-config content hashes used for change detection, misc settings, short-lived recovery records such as `agent-chat-parallel-launch:<projectRoot>:<laneId>`, and versioned durable chat schedule state at `agent-chat:scheduled-work:v1`. The schedule value contains ADE action rows plus Claude-owned armed/terminal records, optional exact Claude SDK-session ownership and provider ids, expiry and terminal timestamps, and paused session ids; Electron-main and headless runtimes restore the same state. Every successful Claude `CronCreate` is mirrored here with ADE durability even when the tool omits `durable`; `durable: true` separately persists Claude's advisory provider copy. `chat.createScheduledWork` writes a provider-neutral row that wakes a chat through `messageSession(kind: "wake")` or a tracked provider CLI through its verified composer boundary. Provider snapshots reconcile only rows owned by that exact SDK session, so an empty snapshot from a fresh session cannot cancel a prior owner's active rows. Startup drops legacy `cron-tool:` intent placeholders, quarantines older provider rows without ownership metadata as paused, and prunes terminal history after seven days or 200 rows. |
+| `projects` | One row per opened repo, keyed by `root_path`. |
+| `lanes` | Worktree-backed units of work. Types `primary`, `worktree`, `attached` (legacy, behaves like `worktree`). |
+| `terminal_sessions` | Tracked PTY, CLI and chat sessions with lifecycle columns (`settled_at`, `settle_override`, `snoozed_until`, `woke_at`, …). `owner_pid` / `owner_process_started_at` say which local process owns the live runtime (section 3.4). Settle columns are host-authoritative. |
+| `runtime_processes` | Machine-local process liveness registry (not replicated). |
+| `operations` | Audit log of mutations with pre/post HEAD SHAs (undo). |
+| `pull_requests` / `pr_review_threads` / `pr_checks` | GitHub PR projections; `pull_requests` stores the checks verdict so every device shows the same one. |
+| `computer_use_artifacts` + `computer_use_artifact_links` | Proof records and their owners. |
+| `prompt_stashes` | Desktop drafts and scheduled sends. |
+| `devices` + `sync_cluster_state` | Device registry and the host-authority row (`brain_device_id`). |
+| `usage_events`, `usage_machine_rollups` | Local activity ledger (not replicated) and per-machine usage aggregates (replicated between desktops, not to phones). |
+| `kv` | Key-value store for layout, config hashes, recovery records and durable chat schedules (`agent-chat:scheduled-work:v1`). |
 
-Types for these tables are split into domain modules under `apps/desktop/src/shared/types/`. The barrel `index.ts` re-exports `core`, `models`, `git`, `lanes`, `conflicts`, `prs`, `files`, `sessions`, `chat`, `config`, `automations`, `packs`, `budget`, `usage`, and more. Feature docs under `docs/features/` call out the table subsets that are load-bearing for each surface.
+New columns go through `crsql_begin_alter` / `crsql_commit_alter`. The iOS
+bootstrap schema is exported to `apps/ios/ADE/Resources/DatabaseBootstrap.sql`;
+a replicated column must exist in both iOS schema halves.
 
 ### 3.3 Filesystem state
 
 ```
-<project-root>/
-├── .ade/
-│   ├── .gitignore               # Tracked; ignores machine-local ADE state
-│   ├── local.yaml               # Personal overrides (ignored)
-│   ├── local.secret.yaml        # Secret integration config (ignored)
-│   ├── ade.db                   # SQLite + cr-sqlite (runtime, ignored)
-│   ├── worktrees/<slug>-<uuid>/ # Lane worktrees (ignored)
-│   ├── transcripts/             # PTY transcripts (ignored)
-│   ├── cache/                   # Runtime scratch (ignored)
-│   ├── artifacts/               # Pack exports, history artifacts (ignored)
-│   ├── cto/
-│   │   ├── identity.yaml        # Local CTO identity (ignored)
-│   │   ├── MEMORY.md            # CTO project notes, one note per line (ignored)
-│   │   ├── open-work.json       # What the CTO started and has not finished (ignored)
-│   │   ├── discoveries.md       # Worker findings awaiting the CTO (ignored)
-│   │   └── legacy-v1/           # v1 files moved aside by the one-time migration (ignored)
-│   ├── templates/               # Lane and automation templates (tracked when human-authored)
-│   ├── skills/                  # Exported skill markdown (tracked when human-authored)
-│   ├── workflows/linear/        # Reserved scaffold dir; the legacy Linear workflow-config subsystem was removed and nothing writes here anymore
-│   ├── project-icons/           # Imported project icon overrides (tracked when project.iconPath points at one)
-│   ├── ade.sock                 # Unix socket for ADE RPC (runtime)
-│   └── secrets/                 # Machine-local secret material (ignored)
-│       ├── github/*.bin         # safeStorage-encrypted tokens
-│       ├── sync-site-id
-│       ├── sync-device-id
-│       └── sync-bootstrap-token
-└── ~/.ade/                      # Stable-channel ADE home (alpha uses its own home)
-    ├── global-state.json        # Recent projects list
-    ├── projects.json            # Machine project registry (written under projects.json.lock)
-    ├── projects.journal.jsonl   # One line per registry write: who, what, ids added/removed
-    ├── personal-chats/
-    │   ├── state/               # Hidden chat runtime DB, transcripts, attachments
-    │   └── workspaces/          # Separate provider cwd + personal terminal scratch
-    └── runtime/
-        ├── brain.jsonl          # Brain log stream (10 MiB rotation)
-        ├── desktop-main.jsonl   # Desktop main-process machine log (10 MiB rotation)
-        ├── account-trust.jsonl  # Machine-scoped paired-credential mutations
-        ├── heartbeat.json       # Brain liveness beat read by the external watchdog
-        ├── watchdog-check.json  # The watchdog's own last-run time and last stale beat seen
-        ├── event-loop-wedge.json / last-wedge.json  # Wedge breadcrumb, promoted on next boot
-        ├── event-loop-wedge-sample.txt / last-wedge-sample.txt  # macOS native stack sample of the wedged brain
-        ├── spawns/              # Detached-brain spawn records (0600)
-        └── updates/             # Staged `ade brain update` payloads
+<project-root>/.ade/
+├── .gitignore                 # tracked: `*` plus the scaffold allowlist
+├── local.yaml                 # machine-local project config (ignored)
+├── local.secret.yaml          # secret integration config (ignored)
+├── ade.db                     # SQLite + cr-sqlite (ignored)
+├── worktrees/<slug>-<uuid>/   # lane worktrees (ignored)
+├── transcripts/               # PTY transcripts and logs/main.jsonl (ignored)
+├── cache/                     # scratch, search-index.db, storage doctor journal (ignored)
+├── artifacts/                 # proof and exports (ignored)
+├── cto/                       # CTO identity, MEMORY.md, open-work.json (ignored)
+├── templates/, skills/        # tracked when human-authored
+├── project-icons/             # tracked when project.iconPath points at one
+└── secrets/                   # machine-local secrets (ignored)
+
+~/.ade/                        # stable-channel home ($ADE_HOME; alpha uses ~/.ade-alpha)
+├── projects.json              # machine project registry (+ projects.journal.jsonl)
+├── global-state.json          # recent projects
+├── personal-chats/            # state/ and workspaces/
+├── sock/                      # ade.sock, desktop-bridge.sock
+└── runtime/                   # brain.jsonl, desktop-main.jsonl, heartbeat.json,
+                               # event-loop-wedge.json, spawns/, updates/
 ```
 
-**Portability buckets** (intentionally distinct):
+Three buckets stay distinct: the git-tracked scaffold (the only `.ade/` subset
+that flows through clone and pull), replicated `ade.db` tables, and
+machine-local state (worktrees, caches, secrets, sockets, personal chats) that
+never leaves the device. `initializeOrRepairAdeProject(projectRoot, { mode })`
+picks `shared`, `auto` (the `openProject` default: local-only until scaffold
+files exist, with `.ade/` in `.git/info/exclude`) or `local`. No config arrives
+from a repository: a committed `.ade/ade.yaml` is carried into `local.yaml` once
+and then deleted.
 
-1. **Git-tracked shared scaffold** — `.ade/.gitignore`, human-authored `templates/**`, `skills/**`, `workflows/linear/**`, `project-icons/**`. This is the only `.ade/` subset that flows through normal clone/pull. The shared `.ade/.gitignore` is now `*` with explicit allowlist entries for those scaffold files (so the next time someone touches `.ade/` from a fresh tool the runtime state stays out of git automatically).
-2. **ADE sync state** — the replicated `ade.db` tables that flow through cr-sqlite over WebSocket when devices join the same host.
-3. **Machine-local runtime** — worktrees, caches, transcripts, artifacts, secrets, sockets, generated context markdown, and the channel-local personal-chat state/scratch roots. Never leaves the device. Personal chats can still be controlled from another client connected to that machine brain; they are not CRR rows in an active project's database.
-
-The storage domain lives under
-`apps/desktop/src/main/services/storage/`: `diskPressure` gates new
-write-producing work, `storageInsightsService` provides categorized and
-preview-confirmed cleanup without following links plus the scheduled **storage
-doctor** maintenance sweep (`runMaintenanceNow` + post-boot/daily timers), and
-`historyCompression` compresses inactive history only after byte-for-byte
-verification. `storageLedger` declares the bounding policy for every table and
-directory (with a CI coverage cross-check against `ADE_LAYOUT_DEFINITIONS`) and
-the doctor journals each run to `.ade/cache/storage-doctor-journal.json`.
-Renderer surfaces are `StoragePressureIndicator`, `StorageSection` (with its
-diagnostics strip + maintenance journal), and `ProjectRecoveryScreen`. See
-[Storage and recovery](./features/storage-and-recovery/README.md).
-
-**Project scaffold modes.** `initializeOrRepairAdeProject(projectRoot, { mode })` controls whether a project gets the full shared scaffold or stays local-only:
-
-- `mode: "shared"` always materializes the canonical files (`.ade/.gitignore`, the tracked placeholder `.gitkeep`s, plus local-only CTO identity state) and scrubs any leftover `.ade/` ignore lines from `.gitignore` / `.git/info/exclude`. Triggered automatically from `createLocalProject`, every shared-config save, and any helper that calls `ensureSharedAdeProjectScaffold(projectRoot)` (e.g. `setProjectIconOverrideFromSelection`).
-- `mode: "auto"` (the default for `openProject`) keeps the project local-only when no shared scaffold files exist yet — it ensures `.git/info/exclude` has a `.ade/` entry so a brand-new clone or a personal-only setup never accidentally promotes runtime state into git, and only flips to the shared layout when shared scaffold files are already present (or after a save call promotes them).
-- `mode: "local"` is reserved for force-local repair flows.
+The storage domain (`apps/desktop/src/main/services/storage/`) gates writes on
+disk pressure and runs the storage doctor; `storageLedger` declares a bounding
+policy for every table and directory. See
+[storage-and-recovery](./features/storage-and-recovery/README.md).
 
 ### 3.4 Cross-process ownership
 
-ADE is a multi-process system on a single machine: the desktop main process, the brain process, and any number of manual runtimes can all be live against the same project DB simultaneously. To prevent one process from disposing or reconciling another's live PTYs and SDK sessions, every long-lived row gets an `owner_pid` / `owner_process_started_at` identity and every process maintains a heartbeat in the machine-local `runtime_processes` table.
+Several processes can hold one project database at once: desktop main, the
+brain, and manual runtimes. Each long-lived row carries `owner_pid` /
+`owner_process_started_at`, and each process heartbeats a row in
+`runtime_processes` through
+`apps/desktop/src/main/services/runtime/processRegistryService.ts` (15 s beat,
+45 s liveness window, row cleared on graceful stop).
+`sessionService.reconcileStaleRunningSessions()` sweeps only rows whose local
+owner is known and dead; rows with an unknown owner may come from another
+machine and are kept. Roles: `desktop-main`, `ade-serve-daemon` (the brain;
+the literal is kept in stored rows), `chat-runtime`.
 
-`apps/desktop/src/main/services/runtime/processRegistryService.ts` is the per-process registrar.
-
-- On `start()` it inserts/refreshes its own process-incarnation row in `runtime_processes` (`pid`, `role`, optional `projectRoot`, `startedAt`, `lastSeen`) and runs an idempotent `pruneStale()` over rows older than 10× the liveness window.
-- A 15 s heartbeat (`heartbeatIntervalMs`, configurable) writes `last_seen` so siblings can see this process is alive. The interval `unref()`s so it never blocks shutdown.
-- Liveness checks (`isPidLive(pid)`, `listLivePids()`, `listLiveProcessIdentities()`) consider a row live when `last_seen` is within `livenessWindowMs` (default 45 s = 3× heartbeat) so a single missed heartbeat doesn't false-positive a sibling as dead. `listKnownPids()` and `listKnownProcessIdentities()` expose all locally recorded owners regardless of heartbeat age. The registrar's own pid is always reported as live and known.
-- `stop()` clears its row outright on graceful shutdown so siblings don't have to wait the liveness window to free up ownership.
-
-`ptyService.create()` records `processRegistry.pid` and `processRegistry.startedAt` on the new `terminal_sessions` row's owner columns. `sessionService.reconcileStaleRunningSessions()` accepts both live owners and known local owners: rows with live local owners are left alone, rows with known but no-longer-live local owners can be swept to `detached`, and rows with unknown owner identity are preserved because they may have been synced from another machine. Dispose paths run the same ownership check before tearing down runtimes a sibling still manages.
-
-**Machine-exclusive subsystems** use a separate mechanism, because "which process owns the machine's phone sync" is a single-winner question rather than a per-row one. `apps/ade-cli/src/services/sync/syncHostSingleton.ts` holds an advisory lock file at `$TMPDIR/ade-sync-host-<uid>.json` (override `ADE_SYNC_HOST_LOCK_PATH`) naming the owning pid, channel, project root, and bound sync port, and pairs it with a process-wide authority registry: `holdsSyncHostSingleton()` answers "is it me", and `onSyncHostSingletonAuthorityChanged()` publishes none-held → held and held → none-held transitions. The relay tunnel (`relayTunnelAuthorityGate` → `syncTunnelClientService`) and the account-directory publisher both gate on that registry, because relay registration is one control socket per `machineKey` at the Durable Object and directory publication advertises "reach me here". Merely binding a sync listener is not authority — a dev `ade serve`, a headless one-shot, or an embedded fallback can bind one without ever winning the lease. Loss of authority is honored only after `SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS` (5 s), since `ProjectScopeRegistry.performSyncHostSwitch` deactivates the outgoing sync host before activating the target and authority legitimately reads false for the width of a project switch. See [Sync and multi-device](./features/sync-and-multi-device/README.md).
-
-Roles are open-ended strings; today's vocabulary is `desktop-main`, `ade-serve-daemon` for the brain process role, and `chat-runtime` (a chat-only or embedded runtime). The desktop main process constructs the registry in `main.ts` and threads it into `ptyService`, `sessionService`, and reconcile callers via the per-project context. The `ade-serve-daemon` literal is retained in live `runtime_processes` rows until the internal role vocabulary is migrated.
+Machine-exclusive work uses a separate lease. `apps/ade-cli/src/services/sync/syncHostSingleton.ts`
+holds a lock file (`$TMPDIR/ade-sync-host-<uid>.json`, override
+`ADE_SYNC_HOST_LOCK_PATH`) plus an in-process authority registry
+(`holdsSyncHostSingleton()`, `onSyncHostSingletonAuthorityChanged()`). The relay
+tunnel (`relayTunnelAuthorityGate`) and the directory publisher gate on it.
+Binding a sync listener is not authority. Loss of authority counts only after
+`SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS`, because a project switch drops it
+briefly.
 
 ### 3.5 Migration strategy
 
-- Schema is defined idempotently — `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS`.
-- One-time schema-compat migration at startup: retrofits `NOT NULL` on PKs and strips UNIQUE/FK constraints incompatible with cr-sqlite CRRs. A pre-cr-sqlite backup (`<db>.pre-crsqlite-w1.bak`) is written on first CRR enablement.
-- Feature migrations add columns via `ALTER TABLE ADD COLUMN`, wrapped by `crsql_begin_alter`/`crsql_commit_alter` to stay CRR-safe.
-- Targeted per-domain migrations live in `kvDb.migrations.test.ts`, which covers the consolidated upgrade path plus later CRR-safe schema cleanups.
-- The canonical iOS bootstrap schema is exported from desktop `kvDb.ts` to `apps/ios/ADE/Resources/DatabaseBootstrap.sql` so iOS stays schema-compatible.
+- Schema is idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`).
+- A one-time compat migration strips constraints cr-sqlite cannot hold and
+  writes `<db>.pre-crsqlite-w1.bak` first.
+- Column additions use `ALTER TABLE ADD COLUMN` inside
+  `crsql_begin_alter` / `crsql_commit_alter`.
+- Upgrade paths are covered by `kvDb.migrations.test.ts`.
 
 ---
 
-## 4. AI Integration Layer
+## 4. AI integration layer
 
-Service entry points live under `apps/desktop/src/main/services/ai/`. The subsystem has three parts: provider-routed execution, permission profiles, and ADE CLI-backed tool surfaces.
+Entry points live under `apps/desktop/src/main/services/ai/` and
+`services/chat/`. Every provider and both surfaces (chat and CLI) are listed in
+`AgentChatProvider` (`shared/types/chat.ts`) and `LAUNCH_PROFILE_TOOL_TYPE`
+(`shared/cliLaunch.ts`); see the **Every provider, both surfaces** rule in
+`AGENTS.md`.
 
 ### 4.1 Provider routing
 
-- **Router** — `aiIntegrationService.ts` resolves a task → model → provider class and dispatches.
-- **Model registry** — `apps/desktop/src/shared/modelRegistry.ts` is the single source of truth. Each `ModelDescriptor` carries identity (`id`, `shortId`, `providerRoute`, `providerModelId`), capabilities, pricing, context sizing, auth type (`cli-subscription`, `api-key`, `openrouter`, `local`), optional reasoning tiers plus `defaultReasoningEffort`, and optional `harnessProfile`/`discoverySource` for safety metadata.
-- **Classes**:
-  - **CLI-wrapped** (Claude via `@anthropic-ai/claude-agent-sdk`, Codex via the pinned `@openai/codex` package) — spawned as subprocesses; Claude uses the SDK `query()` stream with ADE's async input pump and ADE's pinned Claude Code binary, while Codex uses its app-server JSON-RPC bridge. Desktop and runtime packages pin Codex `0.167.0`, including the matching native app-server binary. The binary is always ADE's own pinned, checksum-verified copy from the machine tools cache, downloaded on demand and run with vendor self-update off; ADE never runs a CLI from the user's PATH (see [agent tools cache](features/onboarding-and-settings/agent-tools-cache.md)). Authentication still inherits from the user's own CLI login: ADE's copy reads the default config homes (`~/.claude`, `~/.codex`, …) and never writes them. ADE context is exposed through environment variables, and agents can call back into ADE with the `ade` CLI.
-  - **API-key / OpenRouter** (Anthropic, OpenAI, Google, Mistral, DeepSeek, xAI, Groq, Together AI, OpenRouter) — routed through the **OpenCode server** (ADE's pinned `opencode` binary). Discovery via `openCodeInventory.ts`; replaces dynamic portion of the registry.
-  - **Local** (Ollama, LM Studio, vLLM) — OpenAI-compatible local endpoints through OpenCode. Discovery via `localModelDiscovery.ts`.
-  - **Library-in-worker** (Pi) — ADE's pinned Pi package (an npm-tree pin in the tools cache) is resolved at runtime and loaded inside a forked Node worker (`piSdkPool.ts` / `piSdkWorker.ts`), never statically imported. The worker owns the Pi agent session, model runtime, tool registry, extension binding, and sign-in; the desktop process owns the cards that session blocks on, over a validated protocol-v2 channel (`piSdkProtocol.ts`). Installation resolution and blockers live in `services/ai/piInstallation.ts`; in-app provider sign-in lives in `services/ai/piAuthService.ts` and drives Pi's own `ModelRuntime.login` — Pi's `AuthStorage` writes `auth.json`, and ADE never receives, stores, or logs a credential. Pi is also the one runtime whose chat sessions share a native store with a tracked CLI: `piSessionStore.ts` resolves that one store (and refuses to honour a checkout's `.pi/settings.json`), `piSessionLease.ts` holds the live-writer lock, and `piSessionOwnership.ts` records the durable claim that keeps a terminal from adopting a chat's session. See [Agent Routing › Session store](features/chat/agent-routing.md#session-store).
-- **Detection pipeline**:
-  - `authDetector.ts` — detects subscriptions, API keys, OpenRouter, local endpoints.
-  - `providerCredentialSources.ts` — reads Claude OAuth credentials, Codex tokens, macOS Keychain.
-  - `providerConnectionStatus.ts` — builds the `AiProviderConnections` snapshot surfaced to the renderer, including the signed-in account and plan for Claude and Codex, read through `usage/providerAccountIdentity.ts` so Settings > Providers and the live quota cards name one account.
-  - `providerRuntimeHealth.ts` — per-provider health (`ready`, `auth-failed`, `runtime-failed`).
-  - `claudeRuntimeProbe.ts` — lightweight SDK probe on force-refresh to distinguish pinned Claude binary readiness (including "still downloading") from authentication readiness.
-  - `modelsDevService.ts` — non-blocking 6-hour refresh that enriches pricing and context-window metadata in the registry from `models.dev`.
-  - `modelManifestService.ts` — keeps `shared/model-manifest.json` (models, aliases, prices, app-wide and per-provider defaults, ADE-version gates) current from GitHub `main` with a 10-minute conditional poll plus a picker-open re-check; bundled and disk copies are the floor. See `docs/features/chat/agent-routing.md` → Model manifest.
-- **ADE action status surface**: `ai.getStatus`, `ai.listApiKeys`, and
-  `ai.getOpenCodeRuntimeDiagnostics` expose the same provider readiness,
-  stored-key, and OpenCode runtime health data to renderer settings and
-  CLI model setup through the shared ADE action registry.
+- **Model registry**: `apps/desktop/src/shared/modelRegistry.ts` is the single
+  source for model descriptors (identity, capabilities, pricing, context, auth
+  type, reasoning tiers, `serviceTiers`). `modelManifestService.ts` keeps
+  `shared/model-manifest.json` (models, aliases, prices, defaults) current from
+  GitHub `main`; the bundled copy is the floor. See
+  [agent-routing](./features/chat/agent-routing.md).
+- **How each provider runs**:
+  - Claude through `@anthropic-ai/claude-agent-sdk`, Codex through
+    `codex app-server` JSON-RPC. DAEX runs its own pinned, checksum-verified
+    binary from the machine tools cache, never one from `PATH`, and never writes
+    the provider's config homes (see
+    [agent-tools-cache](./features/onboarding-and-settings/agent-tools-cache.md)).
+  - API-key, OpenRouter and local models (Ollama, LM Studio, vLLM) through the
+    pinned **OpenCode server** (`services/opencode/`; discovery in
+    `openCodeInventory.ts`, `localModelDiscovery.ts`).
+  - Pi as a library in a forked worker (`piSdkPool.ts`, `piSdkWorker.ts`,
+    protocol `piSdkProtocol.ts`); Pi's own `AuthStorage` keeps credentials.
+  - Cursor, Droid and the ACP providers (Qwen, Kimi, Grok, Devin, Antigravity)
+    through their SDK workers or `services/chat/acpHost/`.
+- **Detection**: `authDetector.ts`, `providerCredentialSources.ts`,
+  `providerConnectionStatus.ts`, `providerRuntimeHealth.ts`,
+  `claudeRuntimeProbe.ts`.
+- **Provider accounts**: `apps/ade-cli/src/services/providerInstances/providerInstanceStore.ts`
+  keeps Claude and Codex account identities machine-scoped (config-home
+  references, not tokens). Harness presets pair a body with an account, key or
+  subscription source; see
+  [harness-presets](./features/onboarding-and-settings/harness-presets.md).
+- **Delivery and health**: every adapter publishes the same contract: message
+  resolution state, `turn_health` / `turn_recovery` / `turn_diagnostics`,
+  `chat.recoverTurn` and `chat.resolveUnprocessedMessage`.
+- **No provider**: deterministic features (diffs, conflicts) keep working and AI
+  surfaces explain why they are off.
 
-**Machine provider identity and harness routing.** The runtime-owned
-`apps/ade-cli/src/services/providerInstances/providerInstanceStore.ts` keeps
-Claude and Codex account identities, default selection, and smart-balance /
-auto-start settings machine-scoped; it stores config-home references, not
-provider tokens. The shared contracts in
-`apps/desktop/src/shared/types/providerInstances.ts`, `apiCredentials.ts`,
-`subscriptionProxy.ts`, and `machineInventory.ts` keep account rows, stored-key
-summaries, subscription-proxy status, and paired-machine inventory secret-free
-across the action, preload, renderer, and sync boundaries. Harness presets then
-pair a body with one of those account/key/subscription sources; their launch
-resolver owns isolated config homes and only supplies a provider-shaped proxy
-environment. See [onboarding and settings](./features/onboarding-and-settings/README.md)
-and [harness presets](./features/onboarding-and-settings/harness-presets.md).
+### 4.2 Permission modes
 
-Agent-chat adapters publish a provider-neutral delivery and health contract:
-accepted user messages retain processed/unprocessed resolution state;
-`turn_health`, `turn_recovery`, and `turn_diagnostics` describe stalls,
-recovery, and aggregated diagnostics; `chat.recoverTurn` and
-`chat.resolveUnprocessedMessage` are the shared action surfaces. Provider-native
-events remain compatibility inputs, not client UI contracts. Repeated raw
-moderation checks are collapsed into one quiet per-turn diagnostics summary.
-- **Fallback**: if no usable provider is present, ADE runs in **guest mode** — deterministic features (packs, diffs, conflicts) continue; AI surfaces are disabled with explanatory UI.
-
-### 4.2 Permission modes (provider-native + ADE)
-
-Permission configuration is class-based, not provider-bucketed:
-
-- `permissionConfig.cli` — for CLI-wrapped models. Claude uses `claudePermissionMode` (`default`, `auto`, `acceptEdits`, `bypassPermissions`, `plan`); Codex uses `approvalMode` (`untrusted`, `on-request`, `on-failure`, `never`) + `sandboxPermissions` (`read-only`, `workspace-write`, `danger-full-access`).
-- `permissionConfig.inProcess` — for API/local models. ADE-defined planning/coding tool profiles constitute the full tool surface.
-- **Pi** has no native permission field. The abstract mode becomes a tool allowlist plus a per-call approval list (`piSdkToolPolicyForPermissionMode` in `shared/cliLaunch.ts`), because ADE can hold each Pi tool call behind an approval card. `default` therefore means "ask before anything that changes the workspace" in a Pi chat, not read-only. Tracked Pi CLI terminals, which have no such gate, keep the stricter allowlist-only mapping (`piToolsForPermissionMode`). A built-in ADE cannot rebuild behind the gate is withheld rather than granted ungated.
-- **ADE-owned tools** (repo mutation, context export, proof registration) always enforce ADE's own permission and policy layers regardless of provider mode — preserving the audit boundary.
-- **Sandbox budgets**: `maxBudgetUsd` per-session cap for Claude; per-task daily budgets for narratives, conflict proposals, terminal summaries, and initial context.
-- **The permission ladder** (`apps/desktop/src/shared/permissionLadder.ts`) is the cross-family layer above all of this: four ordered levels (`plan` → `ask` → `auto-edit` → `full-auto`) mapped onto every provider's own vocabulary, so switching model family keeps the level instead of landing on that family's default. A family that cannot express a level gets the **nearest lower** one. It is deliberately a separate vocabulary from the abstract `AgentChatPermissionMode` words (`plan | default | edit | full-auto`) that `ade --permission-mode` and persisted sessions speak — in *that* vocabulary `edit` is the cautious editing tier — and **no code path converts between them**. See [Agent Routing](features/chat/agent-routing.md#the-permission-ladder).
-- **A configured default has one home.** `ai.permissions.providers.*` is the only per-provider permission source, for every provider, and is what Settings writes. `resolveChatConfig` reads it per provider; the parallel `ai.chat.*` permission keys have no writer and are not read.
+- Each provider keeps its own vocabulary (Claude `claudePermissionMode`, Codex
+  `approvalMode` + `sandboxPermissions`, Pi a tool allowlist plus a per-call
+  approval list from `piSdkToolPolicyForPermissionMode`).
+- **The permission ladder** (`apps/desktop/src/shared/permissionLadder.ts`):
+  four levels (`plan`, `ask`, `auto-edit`, `full-auto`) mapped onto each
+  provider, so switching family keeps the level; a family that cannot express a
+  level gets the nearest lower one. It is a separate vocabulary from
+  `AgentChatPermissionMode` (`plan | default | edit | full-auto`), and no code
+  converts between them. See
+  [agent-routing](./features/chat/agent-routing.md#the-permission-ladder).
+- `ai.permissions.providers.*` is the one per-provider permission setting.
+- DAEX-owned tools (repo mutation, proof) always enforce DAEX's own policy,
+  whatever the provider mode.
 
 ### 4.3 Tool system
 
-Agent tools are split by domain:
-
-| File | Domain |
+| File (`services/ai/tools/`) | Domain |
 |------|--------|
-| `ai/tools/universalTools.ts` | Mutating tools (`bash`, `writeFile`, `editFile`), read/search tools, web tools, todos, and ask-user. |
-| `ai/tools/ctoOperatorTools.ts` | CTO-only operator tools. Registered on the live session via `createCtoRuntimeToolMap` through the per-provider transports (`daex-cto` SDK MCP server for Claude, the `daex_cto` dynamic-tool namespace for Codex, a dedicated HTTP MCP lease for Cursor/Droid/OpenCode). Git mutations require an explicit `laneId` and are refused for the CTO, whose session is pinned to the primary lane. |
-| `ai/tools/webFetch.ts` / `webSearch.ts` | Outbound web access. |
-| `ai/tools/readFileRange.ts` / `globSearch.ts` / `grepSearch.ts` | Read-only file tools shared across all roles. |
-| `ai/tools/editFile.ts` | Edit-path tool wired to ADE-controlled write flow. |
-| `ai/tools/systemPrompt.ts` | Base system prompt; adapts wording based on exposed tool names. |
+| `universalTools.ts` | Mutating tools (`bash`, `writeFile`, `editFile`), read and search tools, web tools, todos, ask-user. |
+| `ctoOperatorTools.ts` | CTO-only tools, registered through `createCtoRuntimeToolMap` (the `daex-cto` SDK MCP server for Claude, the `daex_cto` namespace for Codex, an HTTP MCP lease for Cursor, Droid and OpenCode). Git mutations need an explicit `laneId`. |
+| `readFileRange.ts`, `globSearch.ts`, `grepSearch.ts` | Read-only file tools. |
+| `webFetch.ts`, `webSearch.ts` | Outbound web access. |
+| `systemPrompt.ts` | Base system prompt. |
 
-**ADE CLI is the cross-process action surface.** Workers spawned as CLI children inherit ADE context env vars and can call the `ade` command to invoke ADE-owned actions layered on top of their native provider tools.
-
-### 4.4 Model registry specifics
-
-`apps/desktop/src/shared/modelRegistry.ts` + `apps/desktop/src/shared/modelProfiles.ts`:
-
-- `MODEL_REGISTRY` — static CLI-wrapped entries + dynamically populated API-key/local entries. The OpenAI/Codex block follows the Codex catalog: GPT-6.1 Sol, GPT-6 Astra, GPT-6.1 Terra, GPT-6 Sol, GPT-6 Luna, GPT-5.6 Sol, GPT-5.6 Luna, then the retained GPT-5.5 and deprecated older rows (GPT-5.6 Terra included); the manifest's Codex default is GPT-6.1 Sol and `pickDefaultCodexModel` falls back to the newest Sol row, so new Codex sessions default to GPT-6.1 Sol. The GPT-6.x descriptors have a 1,050,000 context window and the GPT-5.6 ones 372k; all advertise Fast. The Lunas expose `low | medium | high | xhigh | max`; Astra, the Sols and Terra expose `low | medium | high | xhigh | max | ultra`. The product labels those tiers Light, Medium, High, Extra High, Max, and Ultra. Runtime app-server ladders pass through in their advertised order, including Max. `defaultReasoningEffort` is `low` for Astra, GPT-6.1 Sol, GPT-6.1 Terra and GPT-5.6 Sol and `medium` for GPT-6 Sol and the Lunas and is honored by desktop, iOS, CTO, and handoff pickers. The Claude block is ordered for every picker as Fable 5.2, Opus 5.5, Sonnet 5.5, Haiku 5.5, Fable 5.1, then the retained Sonnet 5 and Opus 5. Claude and Codex are the two providers whose default is not hoisted to the front of `listModelDescriptorsForProvider`, so the desktop picker catalog, Settings, and the CTO picker all show this same order. Fable 5.2 uses provider model `claude-fable-5-2` (1,000,000 context / 128,000 max output), defaults to `medium` effort, advertises Fast plus `ultracode`, and prices at $8 / $40 per million input / output tokens. Fable 5.1 uses provider model `claude-fable-5-1` (1,000,000 context / 128,000 max output), defaults to `high` effort, and advertises Fast plus `ultracode`. Opus 5.5 uses provider model `claude-opus-5-5` (1,000,000 context / 128,000 max output), defaults to `medium` effort, and advertises Fast at $4 / $20 per million input / output tokens. Sonnet 5.5 uses provider model `claude-sonnet-5-5` (1,000,000 context / 128,000 max output), defaults to `high` effort, exposes `low | medium | high | xhigh | max`, advertises no Fast tier, and prices at $2 / $10 per million input / output tokens. Opus 5 uses provider model `claude-opus-5` (1,000,000 context / 128,000 max output), defaults to `high` effort, and advertises Fast. Sonnet 5 uses provider model `claude-sonnet-5` (1,000,000 context / 128,000 max output); removed Sonnet 4.6, Fable 5, Opus 4.8, basic Opus 4.7, and Opus 4.7 1M ids resolve forward as compatibility aliases but do not appear as selectable rows. The generic `opus` alias resolves to Opus 5.5 and the generic `sonnet` alias resolves to Sonnet 5.5. Sonnet 5 and Opus 5 remain selectable below Haiku; retired `opus[1m]` / `claude-opus-4-8` / `claude-opus-4-7[1m]` aliases resolve to it. `ModelDescriptor.serviceTiers?: string[]` advertises optional service tiers (today: `"fast"`, set on Fable/Opus, GPT-6 Astra, GPT-5.6 and older fast-capable Codex entries, and dynamic Cursor SDK/CLI rows) that the UI's Fast Mode toggle keys off. Codex maps it to the JSON-RPC `serviceTier` argument; Cursor SDK maps it through discovered model parameters, and Cursor CLI launches use the matching fast model alias when present.
-- `ModelProviderGroup` = `"claude" | "codex" | "opencode" | "cursor" | "droid" | "pi"`. Cursor, Droid, and Pi each have their own top-level provider group used by the model picker, identity routing, and tracked CLI provider catalog.
-- Helpers: `getModelById`, `getModelPricing`, `updateModelPricingInRegistry`, `replaceDynamicOpenCodeModelDescriptors`, `resolveProviderGroupForModel`, `resolveModelDescriptorForProvider`, `getRuntimeModelRefForDescriptor`, `modelSupportsServiceTier(descriptor, tier)` / `modelSupportsFastMode(descriptor)`.
-- Reasoning tier passthrough (`providerOptions.ts`) maps tier strings directly to each provider's native config (`thinking.type`, `reasoningEffort`, `thinkingConfig.thinkingLevel`, etc.) — no arbitrary token budgets. Claude Opus 5.5 and Opus 5 advertise `low | medium | high | xhigh | max`; Fable 5.2 and Fable 5.1 advertise `low | medium | high | xhigh | max | ultracode`; Sonnet 5.5 advertises `low | medium | high | xhigh | max`; Sonnet 5 advertises `low | medium | high | max`. Opus 5.5's default effort is `medium`.
-Interactive chat (Terminals, Work), CTO delegation, and automation-launched agent sessions flow through the unified executor with the same permission plumbing.
-
-Related feature docs: [Chat](./features/chat/README.md), [Agents](./features/agents/README.md), [CTO](./features/cto/README.md), and [Automations](./features/automations/README.md).
+Agents running as CLI children inherit DAEX context env vars and call DAEX-owned
+actions through the `daex` CLI on top of their native tools. See
+[tool-registration](./features/agents/tool-registration.md).
 
 ---
 
-## 5. IPC Contract (the glue)
+## 5. IPC contract
 
 ### 5.1 Typed preload
 
-`apps/desktop/src/preload/preload.ts` (~8,545 lines) exposes ~550 methods on `window.ade`:
+`apps/desktop/src/preload/preload.ts` exposes `window.ade` (the name is frozen),
+typed by `preload/global.d.ts` and `shared/types/`.
 
-- `contextBridge.exposeInMainWorld("ade", { ... })` — the only cross-isolated-world surface.
-- Methods are typed via TypeScript imports from `apps/desktop/src/shared/types/`.
-- Two categories: **invoke methods** (`ipcRenderer.invoke(channel, args)` returning `Promise<T>`) and **event subscriptions** (`ipcRenderer.on(channel, handler)`).
-- Runtime-backed event subscriptions can merge local Electron IPC and the runtime event stream behind one renderer API. For example, `window.ade.lanes.onLifecycleEvent` listens to `ade.lanes.lifecycle.event` for desktop-local fallback paths and to runtime `lane_lifecycle_event` payloads for local-brain or SSH-bound windows. Runtime stream results (`RemoteRuntimeStreamEventsResult` in `apps/desktop/src/shared/types/remoteRuntime.ts`) carry `eventEpoch`, `gap`, and `oldestCursor`; preload resets cursors/dedupe on epoch changes and notifies project-binding refresh paths when a gap means replay history was evicted.
-- **Runtime-only namespaces.** `window.ade.chatLaunch` (`start` / `get` / `list` / `cancel` / `retry` / `startNow` / `queueMessage` / `completeClient` / `onEvent`, each with an optional trailing `OpenProjectBinding` pin) has no Electron IPC channel and no in-process implementation: every call goes to the bound or pinned runtime's `chat` action domain (`startLaunch` … `completeLaunchClient`) through `callChatLaunchAction`, and an unbound window rejects with "New-lane launches need a connected ADE runtime." The launch actions are declared `write` in `shared/adeActionAccess.ts`, so a project switch refuses them. `onEvent` subscribes to the runtime event type `chat_launch_event` (`{ type: "chat_launch_event", event: ChatLaunchEvent }`) through a pinned pump when a pin is given, otherwise through the `remoteChatLaunchEventFanout` entry in `REMOTE_RUNTIME_FANOUTS`. The hosted web adapter implements the same namespace over the `chat.startLaunch` … sync commands and the pushed `chat_launch_event` envelope (`renderer/webclient/adapter/chatLaunch.ts`, `webclient/sync/chatLaunchEvents.ts`). See [features/chat/README.md](./features/chat/README.md#new-lane-launches). `window.ade.jira` works the same way: each method (`getConnectionStatus`, `connect`, `listIssues`, `getIssue`, `createIssue`, and the rest) takes an optional trailing `OpenProjectBinding` pin, goes to the bound or pinned runtime's `jira` action domain, and an unbound window rejects with "Jira needs a connected ADE runtime." Its reads and writes are declared in `shared/adeActionAccess.ts`, and `connect` and `disconnect` are CTO-only in `actionPolicy.ts`, because the Jira credential is machine-wide. The hosted web client has a matching adapter (`renderer/webclient/adapter/jira.ts`). See [features/issues/README.md](./features/issues/README.md#jira).
-- **Pinned event pumps.** A window runs several independent event pumps at once: the active binding's pump (in `preload.ts`) plus, for every binding the window has open but is *not* bound to, the pumps in `apps/desktop/src/preload/pinnedRuntimeEvents.ts`. That module owns one shared PTY pump per pinned binding (fed by both polling and `ade.runtime.event` push notifications, with its own cursor, epoch generation, dedupe ring, and failure backoff) and a per-listener generic pump used by pinned chat/project subscriptions; the active pump shares its epoch-normalization, stale-event, and dedupe helpers. Each pinned binding's PTY pump cannot share the active pump's single mutable cursor — switching the window binding would reset it, and polling two machines through it would cross-contaminate epoch and dedup state. Main-side subscriptions are reference-counted per `(binding, category)` so several pumps on the same binding share one, and preload sends `ade.runtime.events.release` when the last of them goes away (see [§5.4](#54-event-subscriptions-push-not-poll)). A pushed event announcing a *new* epoch is not dispatched: it rewinds the cursor so a local pin replays the restarted buffer and a remote pin re-anchors to the live head with `{ cursor: 0, replay: false }`.
-- **One registration per remote event domain.** `apps/desktop/src/preload/remoteRuntimeFanout.ts` is the one array of remote event domains; a new domain is one entry in it. A domain missing from it gets no events, with no error. A fanout owns its `eventType`, a live `hasSubscribers` flag, `subscribe` (which runs the shared pump's `onSubscribe`), and `dispatch`, which returns whether the payload belonged to it. Defaults cover the ordinary `{ type, event }` envelope; the few domains carrying a different shape (auth status, sync/usage snapshots, automations) pass their own `extract`, and optional `invalidate` (renderer caches this event stales, run once per matched event before delivery) and `shouldDeliver` (the per-id `pty_data` subscription filter) hooks cover the rest.
-- Pinned APIs are opt-in trailing arguments, never a mode switch: `pty.create` / `resumeSession` / `sendToSession` / `write` / `resize` / `dispose` / `setDataSubscriptions` / `onData` / `onExit`, `terminal.preview`, `sessions.get` / `list` / `readTranscriptTail`, the chat/session APIs, the iOS Simulator and App Control domains with their `onEvent` subscriptions, the computer-use artifact mutations, the cross-machine handoff trio (`agentChat.prepareCrossMachineHandoff` / `validateCrossMachineSource` / `markCrossMachineHandoff`), and the pinned event subscriptions `sessions.onChanged`, and `files.onChange` all accept an optional `OpenProjectBinding`. Omitting it takes the byte-for-byte unchanged bound path plus its local IPC fallback (`callPinnedOrBoundRuntimeActionOr`). The hosted web adapter cannot route a pin to a second host, so `renderer/webclient/adapter/runtimePinGuard.ts` guards every leaf of the federated adapter — not a couple of shims — with a typed `RuntimePinArg = OpenProjectBinding | null | undefined` that each pinned member takes. `assertWebRuntimePinRoutable` lets a pin naming the host and project the adapter is already bound to proceed unpinned (it restates the call's existing destination) and throws loudly on anything else instead of silently answering from the single web host. A `kind: "local"` pin gets its own message — "This chat runs on a machine ADE Web can't reach directly" — because the browser has no path to a desktop-local runtime at all and a local binding carries no `targetId` the remote comparison could use. The handoff trio is genuinely implemented in the web adapter over the registered sync remote commands `chat.prepareCrossMachineHandoff` / `chat.validateCrossMachineSource` / `chat.markCrossMachineHandoff`, rather than falling through to the proxy that answered `undefined` and made the handoff modal look like it had succeeded.
-- The `pr` read surface is pinned the same way, because a lane's PR row lives in the `.ade` database of the machine that owns the lane. `callPrReadRuntimeActionOr(pin, action, request, local)` delegates to `callPinnedOrBoundRuntimeActionOr`, and `prs.getForLane` / `syncLanePr` / `reconcileOnFocus` / `listAll` / `refresh` / `getStatus` / `getChecks` / `getComments` / `getReviews` plus the `prs.onEvent` subscription all take the trailing pin. The Graph's bound-machine `prs.getDetailBundle` read groups status, checks, reviews, and comments into one response while retaining the existing sidecar shapes and successful values on partial failure. Here `pin: null` is a stated choice rather than an absence — it means "the machine the project tab is bound to", which keeps tab-level reads on the active machine while the workspace joins machine-owned rows — so every tab-scoped call site passes it explicitly rather than relying on the default. A pinned subscription must follow its reads: the bound runtime's `prs-updated` feed describes a different database and would leave a pinned PR pill permanently stale. See [features/pull-requests/README.md](./features/pull-requests/README.md#which-machine-answers-a-pr-read).
-- The `files` surface is pinned the same way, because a file lives on the disk of the machine that owns the lane. Every `window.ade.files.*` method takes an optional **second positional** `pin?: OpenProjectBinding | null` routed by `callPinnedFileActionOr`: absent or `null` keeps the bound path byte for byte (remote route, strict local route, local IPC fallback, project-transition guard); a binding targets that machine and, being explicitly targeted work, bypasses the transition guard and the fallback. Reads *and* writes honour it — `writeText` / `writeTextAtomic` / `createFile` / `createDirectory` / `rename` / `delete` / `watchChanges` / `stopWatching` / `onChange` included — which is what lets a file from a chat on another machine open fully editable without rebinding the window. Two exceptions: `openExternalPath` takes no pin (the path comes from this machine's Finder/drag-drop and no runtime exposes an action for it), and `external-local:*` workspaces deliberately drop a supplied pin so a caller that pins uniformly still gets local behaviour. Coverage has to be total: a Files workspace id *is* a lane id and lane rows sync across machines, so an unpinned write while pinned elsewhere does not fail — it silently writes this machine's worktree for that lane. See [features/files-and-editor/README.md](./features/files-and-editor/README.md#which-machine-answers-a-file-call).
-- **Project tabs across machines.** `renderer/state/projectMachines.ts` and `laneMachineRouting.ts` derive one shared list of machine-owned lanes. Lane calls use the owning machine's `OpenProjectBinding`, the tab's own copy included (it routes as `pinned` with `isActiveBinding`); a null pin means the address is unknown, and unknown and unroutable lanes are refused. Files, History, PR workflows, Automations, and per-machine Settings use the same ownership rule rather than adding tab-local machine polling.
-- `contextIsolation: true`, `nodeIntegration: false`, `sandbox: false` (required for preload functionality).
-- Global window type: `apps/desktop/src/preload/global.d.ts`.
-- `window.ade.sessions.settle(sessionId, { outcome?,
-  dismissPendingInput? })` routes through the same
-  `settleTerminalSession` transaction for local fallback and runtime-bound
-  projects. Pending-input dismissal completes before `settled_at` is written;
-  it is not a renderer-side pair of mutations.
-- `window.ade.sessions.snooze` / `.snoozeMany` / `.wake` / `.wakeMany` /
-  `.setSettleOverride` / `.clearWokeMarker` are the desktop half of the session
-  lifecycle surface. `setSettleOverride` takes the tri-state
-  `"settled" | "active" | null` pin consulted before the derived exit-0 settle;
-  snooze/wake write the `snoozed_until` / `snoozed_at` visibility overlay and
-  its `woke_at` / `woke_reason` marker. The overlay is deliberately outside
-  `canonicalSessionState()` — it changes only where a surface files a row. The
-  same operations are exposed to every other client as the `session` ADE action
-  domain and the `session.*` sync remote commands. See
-  [Terminals and sessions](./features/terminals-and-sessions/README.md#session-lifecycle).
-- `window.ade.sessions.moveOnBoard(sessionId, to, pin?)` and
-  `.undoBoardMove(sessionId, moveId, pin?)` are the Work-board drag. A move is
-  two writes that land together — the lifecycle columns for the target column,
-  plus a host-authored message telling the agent what the user did, staged for
-  five seconds so the drag stays reversible. They are registered as
-  `ade.sessions.moveOnBoard` / `ade.sessions.undoBoardMove`, as the CTO-only
-  `session.moveOnBoard` / `session.undoBoardMove` ADE actions, and as
-  non-queueable sync remote commands — non-queueable because a move's whole
-  contract is a five-second reversible window, and a command replayed minutes
-  later after a reconnect would move a card the user stopped looking at long
-  ago. The web adapter deliberately applies no optimistic patch: a move writes
-  several lifecycle columns at once and one of them raises the attention hand.
-  The staged message is drained on graceful shutdown before the services it
-  needs are torn down. See
-  [Terminals and sessions › The Work board](./features/terminals-and-sessions/README.md#the-work-board).
-- `window.ade.project.getDroppedPath(file)` wraps Electron's `webUtils.getPathForFile()` so renderer drag-drop handlers can resolve the absolute path of a `File` payload without the renderer needing Node APIs. Used by the Command Palette project browser to accept dropped folders.
-- `window.ade.updateGetPreferences()` /
-  `window.ade.updateSetPreferences(preferences)` expose the machine-local
-  automatic-install policy. The main process normalizes the two booleans,
-  persists them in the Electron user-data `ade-state.json`, and returns the
-  stored contract; the renderer never writes that file directly.
+- Invoke methods (`ipcRenderer.invoke`) and event subscriptions. Runtime-backed
+  subscriptions merge local IPC and the runtime event stream behind one API;
+  stream results carry `eventEpoch`, `gap` and `oldestCursor`.
+- **Pins.** Methods that act on a chat, session, lane, terminal, file, PR read
+  or machine tool take an optional trailing `pin?: OpenProjectBinding | null`.
+  A pin routes through `callPinnedRuntimeAction` /
+  `callPinnedOrBoundRuntimeActionOr`; no pin takes the bound path unchanged. A
+  pin naming the window's own copy (`isBoundCopyPin`) costs what no pin costs.
+  `files.*` takes the pin as its second argument (`callPinnedFileActionOr`);
+  PR reads use `callPrReadRuntimeActionOr`. `builtInBrowser.*` is the exception:
+  the browser lives in this desktop, so calls stay local IPC. In dev builds an
+  unpinned call is logged once per method as `default_machine_route`. The rule
+  is in `AGENTS.md` (**Built for remote machines**).
+- **Runtime-only namespaces** such as `window.ade.chatLaunch` and
+  `window.ade.jira` have no Electron IPC channel: every call goes to the bound
+  or pinned runtime, and an unbound window rejects.
+- **Pinned event pumps.** `preload/pinnedRuntimeEvents.ts` runs one pump per
+  pinned binding beside the active binding's pump, each with its own cursor and
+  epoch. Remote event domains register once in `preload/remoteRuntimeFanout.ts`;
+  a domain missing there gets no events.
+- **Read caches** are keyed by binding (`boundReadCacheKey()`), because one
+  preload serves every machine a window talks to.
+- During a project switch, mutating calls that target the ambiguous active
+  binding are refused; explicitly pinned work proceeds.
+- `contextIsolation: true`, `nodeIntegration: false`, `sandbox: false`.
 
 ### 5.2 Channel design
 
-`apps/desktop/src/shared/ipc.ts` defines the single `IPC` const with about 550 named channel strings in an `ade.<domain>.<action>` namespace. The file is the list; each domain's feature doc says what its channels do.
+`apps/desktop/src/shared/ipc.ts` defines the `IPC` const, every channel as
+`ade.<domain>.<action>` (frozen names). Each domain's feature doc says what its
+channels do:
 
 | Namespaces | Feature doc |
 |---|---|
-| `ade.app.*`, `ade.project.*`, `ade.onboarding.*`, `ade.projectConfig.*`, `ade.keybindings.*`, `ade.layout.*`, `ade.update.*`, `ade.keepAwake.*` | `onboarding-and-settings/` |
+| `ade.app.*`, `ade.project.*`, `ade.onboarding.*`, `ade.projectConfig.*`, `ade.keybindings.*`, `ade.layout.*`, `ade.update.*` | `onboarding-and-settings/` |
 | `ade.recovery.*`, `ade.diagnostics.*`, `ade.storage.*` | `storage-and-recovery/` |
-| `ade.lanes.*`, `ade.laneShareGuest.*` | `lanes/` (`lane-sharing.md`) |
+| `ade.lanes.*`, `ade.laneShareGuest.*` | `lanes/` |
 | `ade.files.*`, `ade.diff.*` | `files-and-editor/` |
 | `ade.pty.*`, `ade.sessions.*`, `ade.terminal.*` | `terminals-and-sessions/` |
-| `ade.git.*`, `ade.github.*`, `ade.prs.*`, `ade.conflicts.*` | `pull-requests/`, `conflicts/`, §9 |
-| `ade.agentChat.*`, `ade.ai.*`, `ade.ai.cursorCloud.*`, `ade.cloudAgents.*`, `ade.usage.*` | `chat/`, `onboarding-and-settings/usage-tracking.md` |
+| `ade.git.*`, `ade.github.*`, `ade.prs.*`, `ade.conflicts.*` | `pull-requests/`, `conflicts/`, section 9 |
+| `ade.agentChat.*`, `ade.ai.*`, `ade.usage.*` | `chat/`, `onboarding-and-settings/usage-tracking.md` |
 | `ade.personalChats.*` | `personal-chats/` |
 | `ade.cto.*` | `cto/`, `linear-integration/` |
 | `ade.automations.*`, `ade.tests.*` | `automations/` |
 | `ade.sync.*`, `ade.runtime.*`, `ade.remoteRuntime.*` | `sync-and-multi-device/`, `remote-runtime/` |
 | `ade.computerUse.*`, `ade.appControl.*`, `ade.iosSimulator.*` | `computer-use/`, `apple-device/` |
-| `ade.builtInBrowser.*` | `chat/README.md` (the Browser) |
-| `ade.home.*`, `ade.music.*` | `plans/ade-dev-home.md`, `music/` |
-| `ade.cloud.*`, `ade.adeCloud.*`, `ade.account.*`, `ade.accountSettings.*` | `ade-cloud/`, §1.1 |
+| `ade.builtInBrowser.*` | `chat/` (the Browser) |
+| `ade.cloud.*`, `ade.adeCloud.*`, `ade.account.*`, `ade.accountSettings.*` | `ade-cloud/`, section 1.1 |
 | `ade.passwords.*`, `ade.apiCredentials.*`, `ade.providerLogins.*` | `passwords/`, `onboarding-and-settings/` |
 | `ade.macDesktop.*`, `ade.androidEmulator.*`, `ade.captureGesture.*`, `ade.history.*` | `mac-desktop/`, `android-device/`, `capture-gesture/`, `history/` |
-| Every other namespace | the feature doc of the same area; `ipc.ts` is the full list |
 
-Rules that cross channels:
+Cross-channel rules:
 
-- Main validates every renderer-supplied project root against `services/ipc/knownProjectRoots.ts`.
-- A channel with an unusual duration has its own budget in `ipcTimeouts.ts` (for example the chat attachment upload, 6 min, above the upload client's 5 min; the Pi login, `PI_LOGIN_IPC_TIMEOUT_MS`).
-- `ade.diagnostics.prepareReport` builds and redacts with no upload and no budget; `sendReport` uploads that exact text and claims the budget.
-- `ade.laneShareGuest.*` asks the account directory with this computer's account token and takes no pin. The owner's side has no IPC channel: `window.ade.laneShare.*` calls the `lane_share` runtime action domain with the lane's pin.
-- Account-level ADE Cloud calls take no pin; an action on a cloud lane goes to that lane's computer by its pin (§1.1).
+- Main validates every renderer-supplied project root against
+  `services/ipc/knownProjectRoots.ts`, and splits a window's renderer-supplied
+  tab list into display roots and authorized local roots
+  (`services/projects/windowTabRootAuthorization.ts`).
+- Account-level calls (DAEX Cloud account reads, `ade.laneShareGuest.*`) take no
+  pin; an action on a cloud lane goes to that lane's computer by its pin.
 
 ### 5.3 Main-process handlers
 
-`apps/desktop/src/main/services/ipc/registerIpc.ts` (~14,400 lines) is the single registration point:
+`apps/desktop/src/main/services/ipc/registerIpc.ts` is the registration point.
 
-- `ipcMain.handle(IPC.channelName, async (event, args) => { ... })` for invoke channels.
-- Every channel registered through `registerIpc` or `runtimeBridge` is deny-by-default through `createTrustedIpcHandle` (`services/ipc/trustedRendererSender.ts`): only ADE's own renderer in a live ADE window may call it. A closing window is an expected refusal; a live foreign frame is rejected and logged as `ipc.untrusted_sender`. The few channels `main.ts` registers directly make the same check with `isTrustedAdeRendererSender`, and the startup-recovery window keeps its own window-identity gate on its separate preload.
-- Every handler is wrapped with a timeout — 30 seconds by default, with explicit longer budgets for known long operations such as direct lane delete, iOS Simulator launch/control, App Control, built-in browser actions, large downloads (the speech model, the agent tools cache, an update check), and channels that wait on a native dialog a person may leave open. A direct channel is never shorter than the daemon budget its runtime-action twin gets, because a project that is not runtime-backed calls the direct channel for the same work. The timeout only stops the renderer waiting — the handler keeps running — so a too-short budget reports a failure for work that then succeeds. For the two runtime `callAction` channels, an action that does work waits while the brain still runs it (see `runtimeRpcClient.ts` above), so `ipcHandlerTimeoutMs` gives its handler timer the budget plus that 30-minute wait plus one unanswered check and a late timer's grace: the call's answer, or its own legible timeout, always lands first. Reads and every other channel keep `ipcInvokeTimeoutMs`. Only handlers registered after `registerIpc` installs the wrapper are timed; the few `main.ts` registers earlier (media base URL, proof video Save As) have no timeout at all. The two runtime `callAction` channels are generic, so `ipcTimeouts.ts` reads `{ request: { domain, action } }` off the raw invoke arguments through the shared `readRuntimeActionRequest` decoder and derives the budget from the action itself (`localRuntimeActionIpcTimeoutMs` for the local pool; the equivalent direct channel's budget, else the retryable-remote budget, for the remote one). A local-pool payload it cannot read falls back to the project-completion budget rather than the 30-second default, because a `callAction` invoke can be waiting on cold project setup.
-- That same decoder is what attributes a failed brain call. Every action the app performs reaches the daemon through the one `ade.localRuntime.callAction` channel, so its error path reports `action_domain` plus a structured `error_code` — see [logging.md](./logging.md#desktop-runtime-and-hosted-web-client) for why the channel is deliberately kept out of `MEANINGFUL_ACTIONS`. One decoder rather than two matters here: readers that disagreed about what a well-formed request looks like would attribute a timeout to one action and its failure to another.
-- Every handler emits structured tracing: `ipc.invoke.begin`, `ipc.invoke.done`, `ipc.invoke.failed` with call ID, channel, window ID, duration, and summarized args/results.
-- `AppContext` indirection: handlers close over a context pointer that swaps atomically on project switch, so IPC channels remain registered across project transitions.
-- Lane branch-drift handlers (`ade.lanes.getBranchDrift`, `ade.lanes.resolveBranchDrift`) are registered here with the rest of `ade.lanes.*` and delegate to `laneService`. Preload prefers the `lane` runtime action of the same name, so a remote-bound window resolves drift on the machine that owns the worktree and falls back to these handlers only when no runtime is bound.
-- **Multi-window shell** — the app can host multiple `BrowserWindow` instances (for example when opening another project in a dedicated window). Handler tracing already carries **window ID** so logs and diagnostics distinguish which renderer surface invoked a channel; `main.ts` ties each window to its **set** of open project roots before routing into services. Three maps in `main.ts` drive this: `windowProjectRoots` tracks the active foreground project per window, `windowProjectTabRoots` tracks every project root that window currently has open as a tab, and `windowKnownLocalProjectRoots` accumulates every local root the window has actually opened this session. Project-scoped event broadcasts (`emitToProjectWindows`) deliver to any window whose active **or** open-tab set contains the project, so background tabs keep receiving live updates. `ade.app.getWindowSession` returns `{ project, binding, openProjectTabs, pendingLocalProjectRoots, knownLocalProjectRoots }` for the requesting window; the renderer mirrors its open-tab list back to main with `ade.app.setWindowProjectTabs({ rootPaths })` so the main process can keep those project contexts warm and clean up on window close.
-
-  That mirrored list is renderer-supplied, so `services/projects/windowTabRootAuthorization.ts` (`resolveWindowTabRoots`) splits it into two different things before anything acts on it: `tabRoots`, what the window is displaying, only ever used to look projects back up, where an unknown path is harmless; and `authorizedLocalRoots`, the window's local runtime scope, which `runtimeBridge` reads as "this window opened this checkout". A path that never opened must not earn local-runtime access merely by appearing in a tab list, so only roots resolving to a project this process actually opened pass through. `windowKnownLocalProjectRoots` exists because neither of the other two maps can answer "was this window ever working in this local checkout?" — `windowProjectTabRoots` is replaced wholesale by the renderer on every tab change, and `windowProjectRoots` is nulled the moment the tab binds to a remote machine. A chat pinned to "This computer" asks exactly that question: its lane lives on this machine no matter which machine the tab is currently bound to, and rejecting it leaves a cross-machine Work view unable to act on its own local sessions. The set surfaces on the window session as `knownLocalProjectRoots` and `runtimeBridge.collectAuthorizedLocalRuntimeRoots` folds it into the authorized set. Membership is granted only by the window opening the project itself, never by a renderer-supplied path. Renderer tab switches use cached project/lane snapshots for warm activation, retain caches for every open tab root even if a project is absent from recents, keep Work and Lanes mounted after first visit, and cover cold switches with a project-transition veil.
-- **Project context retention.** `MAX_WARM_IDLE_PROJECT_CONTEXTS = 100` is a soft cap for project contexts with no user work. `hasActiveProjectWorkloads(ctx)` protects any context that has live chat sessions (via `agentChatService.hasRetainableSessions()` — any session the user hasn't explicitly closed or deleted, not just mid-turn ones), live PTYs (`ptyService.hasLiveSessions()`), or queued tests. Eviction is best-effort and never tears down a context with work; the cap exists only as a safety valve against opening hundreds of empty projects in a long session.
+- Every channel is deny-by-default through `createTrustedIpcHandle`
+  (`services/ipc/trustedRendererSender.ts`): only DAEX's own renderer in a live
+  window may call it; a foreign frame is logged as `ipc.untrusted_sender`.
+- Every handler has a timeout (30 s default; overrides in `ipcTimeouts.ts`). The
+  timeout only stops the renderer waiting; the handler keeps running.
+- Every handler emits `ipc.invoke.begin` / `ipc.invoke.done` /
+  `ipc.invoke.failed` with call id, channel, window id and duration.
+- Handlers close over an `AppContext` pointer that swaps on project switch, so
+  channels stay registered across switches.
+- Project-scoped broadcasts reach every window whose active project or open
+  tabs (`windowProjectTabRoots` in `main.ts`) contain the project.
+- Project contexts with no work are evicted past
+  `MAX_WARM_IDLE_PROJECT_CONTEXTS`; a context with live chats, PTYs or queued
+  tests is never torn down.
 
 ### 5.4 Event subscriptions (push, not poll)
 
-High-frequency events flow from main → renderer via `webContents.send(channel, payload)`. Partial list:
+Main pushes high-frequency events with `webContents.send`, for example
+`ade.pty.data` / `ade.pty.exit`, `ade.files.change`, `ade.prs.event`,
+`ade.lanes.lifecycle.event`, `ade.sync.*` and `ade.app.command`.
 
-| Event | Producer | Consumer |
-|-------|----------|----------|
-| `ade.pty.data` / `ade.pty.exit` | ptyService | TerminalView, Work tab |
-| `ade.files.change` | fileWatcherService | Files tree, diff views |
-| `ade.tests.event` | testService | Test panel |
-| `ade.conflicts.event` | conflictService | Conflicts page, Graph overlay |
-| `ade.prs.event` | prPollingService | PRs page, stacked queue |
-| `ade.lanes.lifecycle.event` | laneService / runtime `lane_lifecycle_event` | AppShell toast stack |
-| `ade.lanes.rebase.event` | rebase services | Lanes rebase events |
-| `ade.project.missing` | projectService | Shell banner |
-| `ade.project.state.event` | projectState | Startup flow |
-| `ade.sync.*` events | syncService | Top-bar Connections panel |
-| `ade.ai.opencodeOAuthStatus` / `ade.ai.piAuthStatus` | openCodeAuthService / piAuthService | Settings › Providers connect + sign-in flows |
-| `ade.app.command` | native menu, via `main/appCommandDispatch.ts` | `TopBar`, and whichever surface claimed the command |
+Runtime-backed events reach the renderer as `ade.runtime.event`. Subscriptions
+live in `services/ipc/runtimeEventSubscriptionRegistry.ts`, keyed by
+`(sender, requestKey)` with request key `<bindingKey>:<category|*>:<replay|live>`,
+because one renderer runs several pumps at once. Each poll refreshes its
+subscription; an idle sweep drops stale ones, and the renderer's
+`ade.runtime.events.release` drops one at once.
 
-**Native-menu commands (`IPC.appCommand`).** Electron consumes accelerators — ⌘+/−/0, ⌘F, ⌘W — in the browser process *before* any renderer keydown fires, and the built-in browser's page has focus in a different `WebContents` entirely, so a pane that binds them with `onKeyDown` is shadowed on the packaged app while passing every jsdom test. The menu therefore sends one command down. `createAppCommandSender` in `apps/desktop/src/main/appCommandDispatch.ts` is the single sender for both kinds (`{ kind: "zoom" | "menu", command }`), replacing two channels, two preload bridges, and two near-identical helpers in `main.ts`.
+**Native-menu commands.** Electron consumes accelerators (⌘+/−/0, ⌘F, ⌘W) before
+any renderer keydown, so the menu sends one command down:
+`createAppCommandSender` in `main/appCommandDispatch.ts` (`{ kind: "zoom" | "menu", command }`)
+with a liveness probe and a fallback for windows with no live DAEX renderer. In
+the renderer, `lib/appCommandClaims.ts` lets a surface claim a command; claims
+stack newest-first and may decline.
 
-Three cases a naive `webContents.send` gets wrong, and this owns. A window ADE did not open (a DevTools window, a native panel) has no ADE renderer, so the command would vanish — those run the caller's `fallback`. A window whose renderer has crashed or is wedged in a long task also swallows it, and for ⌘W that matters because ⌘W is the escape hatch for exactly that window: liveness is probed with a round-trip scheduled on the renderer's own event loop (a crashed one rejects, a wedged one never resolves, a healthy one is back within a frame), bounded by `APP_COMMAND_LIVENESS_TIMEOUT_MS` (1,200 ms) — long enough that a busy-but-healthy renderer always wins, short enough that a wedged window still feels like a keystroke. And a window whose renderer has not yet *mounted* its subscriber swallows it invisibly, because `executeJavaScript` resolves as soon as the JS context exists, a second or more before React mounts `TopBar`; readiness is therefore **announced** (`hasCommandSubscriber`) rather than inferred, and until that ack arrives a command with a fallback runs the fallback.
-
-The View menu also carries hidden twins for the numeric keypad (`CmdOrCtrl+numadd`, `numsub`, `num0`), and Ctrl/Cmd + mouse wheel on an ADE window arrives as the page's `zoom-changed` event, which `main.ts` turns into the same zoom command (one step per 100 ms). A page that handles the wheel itself (a viewer's pan and zoom, the built-in browser's page) never raises it.
-
-**Main window placement.** `services/state/mainWindowState.ts` keeps the last window's normal bounds plus maximized/full-screen state under `mainWindow` in the desktop's `ade-state.json`. The first window of a launch reopens there, fitted by `fitMainWindowBounds` to the connected display it overlaps most (shrunk and moved inside its work area); a spot on a display that is gone opens at the default size. Later windows open at the default spot, and a window dragged out of a tab strip never records its place. The write is debounced and goes through `readGlobalStateForUpdate`, so an unreadable state file is skipped rather than replaced.
-
-On the renderer side, `lib/appCommandClaims.ts` is the claim registry both command kinds instantiate (`appMenuCommands.ts`, `appZoomCommands.ts`). A claim is a *chance* to handle, not a takeover: handlers stack newest-first and return `false` when it is not the right moment (the browser pane is mounted but the composer has focus), and the app-wide default in `TopBar` then runs as before.
-
-Runtime-backed events reach the renderer through `ade.runtime.event` instead, and their subscriptions are held by `apps/desktop/src/main/services/ipc/runtimeEventSubscriptionRegistry.ts`. Subscriptions are keyed by **(sender, requestKey)** — the request key being `<bindingKey>:<category|*>:<replay|live>` — because one renderer legitimately runs several pumps at once (the active binding, one pinned PTY pump per foreign lane, one pinned chat pump), and keying by sender alone would let each new pump tear down its siblings. Since key-per-sender no longer doubles as garbage collection, a stale entry is reclaimed by idle expiry: every live pump refreshes its subscription on each poll (750 ms–5 s normally, 30 s at the slowest failure backoff), a 60 s sweep drops anything unrefreshed for 180 s or whose sender is destroyed, and the renderer's explicit `ade.runtime.events.release` is the fast path so a switched-away binding stops streaming immediately rather than at expiry. A release covers the whole `(binding, category)` prefix, because a pump's replay flag flips from `live` to `replay` once it is caught up and it can therefore own both key variants. Removal has exactly one implementation (`removeRuntimeEventSubscription`), used by release, the ended callback, remote disconnect, sender death, and the sweep, so disposal and registry pruning cannot drift apart; disconnecting a remote target drops **every** subscription that window holds against it, not just the newest.
-
-Renderer telemetry events flow back to main: `renderer.route_change`, `renderer.tab_change`, `renderer.window_error`, `renderer.unhandled_rejection`, `renderer.event_loop_stall`.
+Renderer lifecycle events flow back to main: `renderer.route_change`,
+`renderer.tab_change`, `renderer.window_error`,
+`renderer.unhandled_rejection`, `renderer.event_loop_stall`.
 
 ---
 
-## 6. Services Catalog (Desktop Client Main Process)
+## 6. Services catalog (desktop main process)
 
-Most services described here live under `apps/desktop/src/main/services/<domain>/` in the desktop client's main process. Some are runtime delegations: they front a runtime-owned subsystem (project registry, sync service, agent registry, credential store, multi-project RPC) through a thin local or remote pool. The runtime-side equivalents live under `apps/ade-cli/src/services/`. Summary:
+Services live under `apps/desktop/src/main/services/<domain>/`. Many front a
+brain-owned subsystem through the local or remote pool; the brain's side lives
+under `apps/ade-cli/src/services/`. Most of these modules are also loaded by
+the brain itself. The main domains:
 
-| Domain | Key files | Role |
-|--------|-----------|------|
-| `ai/` | `aiIntegrationService.ts`, `authDetector.ts`, `providerConnectionStatus.ts`, `claudeRuntimeProbe.ts`, `modelsDevService.ts`, `tools/*` | Provider routing, detection, tool definitions. Compaction lives in `chat/` (`agentChatService.ts`, `contextCompactionEmitter.ts`) and `shared/contextCompaction.ts`, `shared/compactionSettings.ts`, `shared/compactFirst.ts`. |
-| `adeCloud/` | `cloudAccess.ts`, `cloudServerProvider.ts`, `cloudSleep.ts`, `adeCloudReadIpc.ts`, `registerCloudIpc.ts`, `cloudLaneLaunchService.ts`, `cloudSignInStore.ts` | ADE Cloud for the signed-in account (see §1.1). `getCloudProvider` is the one place that picks the provider; `cloudServerProvider.ts` calls the account directory's `/cloud/*` routes. `cloudSleep.ts` wakes a lane's computer for an action and keeps every server refusal sentence. `adeCloudReadIpc.ts` binds a window to an ADE Cloud project tab (it dials nothing), holds the account token for the account reads (project overview, Git summaries, CLI and shell copies; the reader is `shared/adeCloud/accountReader.ts` in the preload), and reads or takes back queued messages of a cloud chat. Account-level calls, so they take no pin; actions on a cloud lane still go to that lane's computer by its pin. |
-| `agentTools/` | `agentToolsService.ts` | Agent tool registry metadata surfaced to the renderer. |
-| `analytics/` | `productAnalyticsService.ts`, `productAnalyticsPolicy.ts`, `usageProductAnalyticsExporter.ts`, `dailyUsageAnalytics.ts`, `agentTurnProductAnalytics.ts` | Machine-scoped privacy-bounded product analytics: direct PostHog capture transport, consent/kill switches, closed sanitizer, salted identifier hashing, once-only install/activation milestones, pseudonymous account identification, durable quotas/deduplication, usage-ledger export, and coarse aggregate/work-session producers. See [logging.md](./logging.md). |
-| `attention/` | `attentionAccountCoordinator.ts`, `attentionItemRouting.ts`, `remoteProjectIdentity.ts`, `attentionOpenErrors.ts` | Account-first desktop Activity boundary. The internal directory and service names remain part of the established compatibility vocabulary. The coordinator reads the relay independently of the selected project/remote binding, permits only an explicit local-machine fallback, fences mutations by loaded account owner plus a per-item alert fingerprint, and chunks bulk acknowledgments at the relay's 64-id bound with a three-way acknowledged/stale/unreached outcome. `attentionItemRouting.ts` validates an Activity item handed over IPC (`parseAttentionItem`), turns it into an app navigation request, and decides whether an open remote window already shows its project (`remoteBindingMatchesProject`). `remoteProjectIdentity.ts` reconciles the publisher's per-machine project uuid against a runtime's `project_<hash>` registry id by falling back to the project root both sides carry, and `attentionOpenErrors.ts` names which of pair/connect/open failed in the user's own terms. |
-| `appControl/` | `appControlService.ts`, `appControlLaunchCommand.ts` | Chrome DevTools Protocol bridge for developer-owned Electron apps. Launches a chat-owned PTY running the user's dev command (or connects to an existing `--remote-debugging-port`), polls `/json` for ready CDP targets, attaches a long-lived `CdpClient` WebSocket, and exposes screenshot / DOM snapshot / hit-test / click / type / scroll / key dispatch / screencast frames. `appControlLaunchCommand.ts` owns the shell-command detection and debug-flag injection helpers for direct Electron and package-script launches. `inspectPoint` and `selectPoint` produce `AppControlContextItem`s for the chat composer (DOM packet + screenshot + source-file candidates resolved by `findSourceMatches` over an indexed tree of project source files). See [features/computer-use/app-control.md](./features/computer-use/app-control.md). |
-| `browsers/` | `browserDetection.ts`, `browserIcons.ts`, `browserLauncher.ts` | The "open this link somewhere else" catalog for chat links: detects the browsers installed on this machine from `BROWSER_TARGETS` in `shared/browserTargets.ts` (macOS app-bundle search + `open -Ra`, Windows install-dir expansion of `{{ProgramFiles}}`/`{{ProgramFilesX86}}`/`{{LocalAppData}}` paths, Linux `which`), reads each one's real app icon on macOS straight out of the bundle's `.icns` (`app.getFileIcon` returns the same generic application glyph for every app, so it is only used on Windows), and launches a URL in a chosen one (`open -a <bundle>` on macOS, a detached spawn elsewhere). Renderer UI: `OpenLinkInSubmenu` / `BrowserTargetLogo`, reached from the chat link right-click menu. IPC: `ade.app.getInstalledBrowsers`, `ade.app.openInBrowser`. |
-| `apps/` | `appIcons.ts`, `macAppIconFile.ts` | An installed app's icon by the name a transcript row knows it by ("Xcode", "Notes"), read from the fixed application folders on macOS only and cached per name; a name with a path separator or `..` is refused. IPC: `ade.app.getAppIcon`. `macAppIconFile.ts` is the leaf that reads a bundle's icon out of its `.icns` for this, the browser catalog and Home's Now Playing widget; it is used instead of `app.getFileIcon`, which at `size: "large"` takes the app down on macOS 27. |
-| `userBrowser/` | `userBrowserDiscovery.ts`, `userBrowserAttachService.ts` | `ade browser attach` / `detach`: a chat drives one tab of the user's own Chromium browser over CDP, from the runtime host, no desktop involved. See [computer-use](./features/computer-use/README.md#attach-to-the-users-own-browser). |
-| `builtInBrowser/` | `builtInBrowserService.ts`, `builtInBrowserAgentDispatch.ts`, `builtInBrowserRemoteCalls.ts`, `builtInBrowserRecordingViewport.ts`, `builtInBrowserPanelRectSettler.ts`, `builtInBrowserAgentAccess.ts`, `builtInBrowserSettings.ts`, `builtInBrowserClipboard.ts`, `builtInBrowserDownloads.ts`, `builtInBrowserTabCapabilities.ts`, `builtInBrowserCapabilities.ts`, `builtInBrowserAuthentication.ts`, `builtInBrowserCertificateTrust.ts`, `builtInBrowserContextMenu.ts`, `builtInBrowserProfileMigration.ts`, `builtInBrowserStateStore.ts`, `builtInBrowserNavigation.ts`, `builtInBrowserPermissions.ts`, `builtInBrowserIsolation.ts`, `builtInBrowserWebAuthn.ts`, `builtInBrowserCdp.ts`, `builtInBrowserFind.ts`, `builtInBrowserPreviewStream.ts`, `builtInBrowserRecording.ts`, `builtInBrowserHandoff.ts`, `builtInBrowserHandoffSession.ts`, `remoteTunnelOrigins.ts`, `remoteRequestClaims.ts`, `builtInBrowserPresence.ts`, `builtInBrowserPresenceRouter.ts`, `loginImport/`, `desktopBridgeServer.ts` | In-app web browser owned by the main process (one `builtInBrowser*.ts` module per concern). Every tab uses the one persistent `persist:ade-browser` profile; an isolated tab (`--isolated` / `--profile`) gets an in-memory partition (`builtInBrowserIsolation.ts`) that is never restored and is wiped with its last tab. `builtInBrowserAgentAccess.ts` decides which agents may drive the browser (master switch on by default; all agents or approved lanes/chats); off refuses with `built_in_browser_agents_disabled`. Permission requests deny by default; standing camera/microphone/location grants are off by default and a per-site Block wins. The runtime tags each agent call with the caller's chat and lane and forces `force: false`; there is no per-chat token and no bridge secret. `builtInBrowserRemoteCalls.ts` runs a command from an agent on another machine. `loginImport/` is human-only. Details: [chat → the Browser](./features/chat/README.md). |
-| `automations/` | `automationService.ts`, `automationPlannerService.ts`, `automationIngressService.ts`, `automationSecretService.ts`, `automationRuleAccountStore.ts`, `automationRuleAccountSync.ts` | Rule lifecycle, NL → rule planner, inbound triggers, per-rule secrets, and rules that follow the account per repository (each run by one home computer; see [features/automations/README.md](./features/automations/README.md#rules-follow-the-account)). |
-| `capture/` | `captureHelper.ts`, `captureGestureState.ts`, `captureGestureTarget.ts`, `captureShotFit.ts` | The global capture chord (both ⌘ / both Ctrl) and the supervised native helper behind it. `captureHelper.ts` is the NDJSON child supervisor, deliberately the same shape as `AttentionNotchHelper` (line cap, restart budget, graceful-shutdown window); the other three are the pure halves — chord admission and protocol decoding, the focused → last-focused → any-live window pick, and the four-halvings downscale that keeps a large display's PNG inside the chat-attachment limit. macOS and Windows only; Linux ships no helper. See [features/capture-gesture/README.md](./features/capture-gesture/README.md). |
-| `chat/` | `agentChatService.ts`, `draftService.ts`, `draftDelivery.ts`, `draftScheduler.ts`, `chatScheduledWorkScheduler.ts`, `runtimeEvents.ts`, `claudeStructuredActivity.ts`, `openCodeStructuredActivity.ts`, `codexMcpElicitation.ts`, `buildClaudeV2Message.ts`, `markdownSlashCommandDiscovery.ts`, `claudeSlashCommandDiscovery.ts`, `codexSlashCommandDiscovery.ts`, `cursorSlashCommandDiscovery.ts`, `projectSlashCommandDiscovery.ts`, `slashCommandPromptExpansion.ts`, `cursorSdk*` (`cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkWorkerGuards.ts`, `cursorSdkWorkerOrphans.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`, `cursorSdkErrors.ts`), `droidSdkEventMapper.ts`, `crossProviderReplayFork.ts`, `claudeReplayOverflowRecovery.ts`, `identitySessionPolicy.ts`, `sessionRecovery.ts`, `cursorCloudFleetService.ts`, `laneShareMoveChat.ts`, `laneShareMoveTransfer.ts` | Agent chat sessions for every provider: the shared event vocabulary, message delivery state, runtime-backed drafts and scheduled sends (the owning machine claims `scheduled`→`sending` exactly once), turn health and recovery, restart recovery, and title/lane-name generation. A finished subagent steers its active parent (Claude `priority: "next"`, Codex `turn/steer`, the provider steer fallback otherwise). Scheduled work (`chat.createScheduledWork`, five-field cron, `chatScheduledWorkScheduler.ts`) is ADE-owned for delivery: Claude stays authoritative for its own schedule tools, ADE backstops after a 90 s grace, a row that comes due mid-turn retries after 20 s, recurring crons expire after seven days, and there is no spend cap. Cursor local turns have a 90 s first-event watchdog and one thread recycle. `cursorCloudFleetService.ts` backs the Cursor Cloud fleet view. Details: [chat](./features/chat/README.md). |
-| `computerUse/` | `computerUseArtifactBrokerService.ts`, `controlPlane.ts`, `localComputerUse.ts`, `syntheticToolResult.ts` | Proof-artifact broker (batch-safe ingest, owner/lane attribution, availability, deletion/recovery, compatibility review state, and artifact-root-confined preview reads capped at 10 MiB), control-plane snapshot helpers, macOS capture capability descriptor, and the synthetic-tool-result helper used by the Claude compaction path. There is no passive auto-ingest and no payload-shape parser. Direct Codex Computer Use executable resolution lives outside this folder in `main/utils/codexComputerUse.ts` because it configures provider runtimes rather than ingesting proof. |
-| `config/` | `projectConfigService.ts`, `laneOverlayMatcher.ts` | Load/save `.ade/local.yaml` (the committed `ade.yaml` is carried over once, then deleted); lane overlays. |
-| `conflicts/` | `conflictService.ts` | Pairwise dry-merge simulation, risk matrix, proposal generation. |
-| `cto/` | `ctoStateService.ts`, `ctoMemoryService.ts`, `ctoPromptContent.ts`, `linearClient.ts`, `linearIssueTracker.ts`, `linearCredentialService.ts`, `linearOAuthService.ts`, `linearTokenRefresh.ts`, `linearLaneCardService.ts`, `linearLiveStatusService.ts` | CTO identity, the notes and open-work store, and the Linear read/credential/OAuth surface. `linearLaneCardService` posts the Linear attachment card and builds the cross-machine ADE deeplink that backs the card's URL; `linearLiveStatusService` is the optional launch/PR/merge status round-trip. |
-| `deeplinks/` | `protocolHandler.ts`, `ownerAwareNavigation.ts`, `localProjectResolution.ts`, `projectNavigationWindowSelection.ts` | Registers the `ade://` OS protocol handler for the packaged Stable desktop build, owns the single-instance lock, buffers cold-start URLs until `app.whenReady()`, and dispatches parsed URLs through `IPC.appNavigate` to the focused window. Beta, Alpha, and source builds can receive explicitly delivered links but do not claim the OS-default handler. Re-used by the iOS Send-to-Mac sync command (`syncRemoteCommandService.deeplinks.open`). Account-owned targets route first through `ownerAwareNavigation.ts`: `localProjectResolution.ts` resolves the link's project against this machine (exact id, then the carried root path, then a recomputed canonical id), and `projectNavigationWindowSelection.ts` picks a window for a remote project without ever rebinding the one the user is working in. Shared parser + builder live in `apps/desktop/src/shared/deeplinks.ts`; the PR "Open in ADE" footer is in `apps/desktop/src/shared/adeDeeplinkFooter.ts`. See [features/deeplinks/README.md](./features/deeplinks/README.md). |
-| `devServers/` | `devServerRegistry.ts` | Passive dev-server discovery. Rides `ptyService`'s existing output pass with one bounded regex per chunk (plus a carry for lines split across chunks) over the ready lines frameworks already print, and publishes `{ port, url, source: { sessionId, laneId, projectRoot }, detectedAt }` into an in-memory registry. Nothing here opens a socket or makes a request, and nothing is persisted — a port that was live last week says nothing about this app session. Feeds the built-in browser's launchpad list and, when `browser.autoOpenDevServer` is on, one background tab that never steals focus. |
-| `devTools/` | `devToolsService.ts` | Probe for git + `gh` CLI availability. |
-| `diffs/` | `diffService.ts` | Diff computation for file panes. |
-| `diagnostics/` | `diagnosticReportService.ts` | Assembles the redacted diagnostic report behind every error surface's **Report this error to ADE…** dialog: the shared machine sources (`ade-cli/src/services/diagnostics/`) plus the desktop-only extras — its own jsonl logs, the local runtime status snapshot, the recovery diagnosis for the open project, the typed last-failure store, and an Electron-aware volume reader. The dialog shows it before any send; a send saves it `0600` under `<userData>/diagnostic-reports/` and uploads it to ADE privately. Never runs `ade doctor` and never starts the brain: the report has to be collectable on a machine whose brain will not start. |
-| `editors/` | `editorDetection.ts`, `openPathInEditor.ts`, `editorProcessEnv.ts` | Detects installed editors from `EDITOR_TARGETS` in `shared/editorTargets.ts` (`which` / `where.exe`, plus macOS `open -Ra` with duplicate `macAppName` collapsed) and opens a local workspace by spawning the editor CLI / `open -a`, or a remote SSH workspace by minting an OS URL (`vscode://vscode-remote/ssh-remote+host/path`, `zed://ssh/host/path`) that `openEditorExternalUrl` allowlists. Paired remotes (`transport: "paired"`) cannot mint those URLs and are excluded by `isRemoteEditorOpenRequest`. IPC: `ade.app.getInstalledEditors`, `ade.app.openPathInEditor`. Renderer UI: `OpenInSubmenu`. See [files-and-editor](./features/files-and-editor/README.md#opening-in-an-external-editor). |
-| `files/` | `fileService.ts`, `fileWatcherService.ts`, `fileWatchLedger.ts`, `fileSearchIndexService.ts` | Workspace file tree, read/write, watch, index. The ledger holds the watches a client has not stopped, so they are released when its page or connection goes away. |
-| `git/` | `git.ts`, `gitOperationsService.ts`, `gitConflictState.ts`, `gitWorktreeRoot.ts` | Low-level git runner, high-level lane-scoped ops, conflict state queries, and worktree-root validation. `gitOperationsService.getSyncStatuses` batches lane-id keyed sync reads while preserving the single-lane `getSyncStatus` response shape. |
-| `github/` | `githubService.ts` | GitHub REST/GraphQL access; PR CRUD; checks; reviewers. |
-| `history/` | `operationService.ts` | Operation audit records (one row per mutation). |
-| `ios/` | `iosSimulatorService.ts`, `simHelperClient.ts`, `appleStreamRelay.ts`, `appleLocalViewers.ts`, `recording/simRecordingService.ts`, `iosDeviceHub.ts`, `iosDeviceTools.ts`, `iosEventLog.ts`, `iosSemanticActions.ts` | macOS-only iOS Simulator backend: readiness probes, `simctl` discovery, build/install/launch, screenshots and the accessibility tree, lane devices, and the single-owner chat lock. `simHelperClient.ts` talks NDJSON to the Swift helper (`native/ADESimHelper`), which owns capture, H.264 encode and input. `iosDeviceHub.ts` owns device sessions, tools, the event log and semantic actions. `appleStreamRelay.ts` forwards the live view to remote viewers. Every device-hub method rejects off macOS; `getStatus` and the chat-close release run everywhere. Details: [apple-device](./features/apple-device/README.md). |
-| `android/` | `androidEmulatorService.ts`, `androidSdk.ts`, `androidAvds.ts`, `androidEmulatorProcess.ts`, `androidLaneRelease.ts`, `androidStream.ts`, `scrcpyServer.ts`, `androidActionDomain.ts` | The per-lane Android emulator (P0) on macOS, Windows and Linux, all in Node in the brain: SDK and acceleration detection on every use, AVD create/attach/delete with ADE's marker in `config.ini`, headless boot and stop of only the emulators ADE started (`started-emulators.json`), the local-only `lane_android_devices` rows, lane archive/delete release, the brain hand-off and start-up cleanup, and a chat's work copy standing in for a lane (`remote-work-…`). The bundled scrcpy server (v5.0.1, `resources/android/`) encodes H.264 on the device; `androidStream.ts` wraps it in the shared video records and serves it on a token-guarded loopback endpoint, and input goes through the scrcpy control socket or `adb shell input`. The `android_emulator` action domain carries `ANDROID_AGENT_ACTIONS` for agents and `ANDROID_USER_ONLY_ACTIONS` for viewers. See [features/android-device/README.md](./features/android-device/README.md). |
-| `media/` | `videoRecords.ts`, `loopbackTokenServer.ts`, `h264AnnexB.ts` | Shared by the device live views (iOS simulator, Mac Desktop, Android emulator): ADE's video record framing, the token-guarded loopback stream endpoint, and the pure Annex-B H.264 parser that turns a byte stream into whole access units. |
-| `ipc/` | `registerIpc.ts`, `runtimeBridge.ts`, `runtimeEventSubscriptionRegistry.ts`, `knownProjectRoots.ts`, `ipcTimeouts.ts`, `builtInBrowserIpcArgs.ts` | Single registration point for all IPC handlers. `builtInBrowserIpcArgs.ts` holds the pure payload parsers for `ade.builtInBrowser.*`. `runtimeEventSubscriptionRegistry.ts` keys runtime-event subscriptions by (sender, requestKey) with idle expiry (§5.4). `knownProjectRoots.ts` validates renderer-supplied roots (the open project, a recent, or a root main recently tried to open). `runtimeBridge.ts` routes runtime calls through `LocalRuntimeConnectionPool` or `RemoteConnectionPool` by the window binding, keeps replay-gap metadata (`gap`, `oldestCursor`, `eventEpoch`), generation-guards remote project opens, and probes saved SSH connections on `resume` / `unlock-screen`. `ade.sync.getLocalStatus` always reads this computer; device and pairing changes follow the binding. `ipcTimeouts.ts` holds the 30 s default, the per-channel overrides and `readRuntimeActionRequest`. |
-| `jobs/` | `jobEngine.ts` | Event-driven background scheduler for lane refresh + conflict prediction. Coalesced, debounced. |
-| `keybindings/` | `keybindingsService.ts` | User keybindings read/write. |
-| `lanes/` | `laneService.ts`, `laneEnvironmentService.ts`, `laneTemplateService.ts`, `laneProxyService.ts`, `portAllocationService.ts`, `laneLaunchContext.ts`, `oauthRedirectService.ts`, `runtimeDiagnosticsService.ts`, `laneUsageTombstone.ts`, `laneShareRightsStore.ts` | Worktree lifecycle, env bootstrap, templates, reverse proxy, port leases, rebase status, OAuth redirect, diagnostics. `laneUsageTombstone.ts` writes the one aggregate row a deleted lane leaves behind (`lane_usage_tombstones`) so lifetime activity survives lane deletion. `laneShareRightsStore.ts` keeps the host's own rights and guest message counters of each lane share in local-only tables (see [features/lanes/lane-sharing.md](./features/lanes/lane-sharing.md)). |
-| `logging/` | `logger.ts` | File-backed structured logger. |
-| `localRuntime/` | `localRuntimeConnectionPool.ts` | Desktop-side client for the local brain endpoint. Spawns or attaches to the machine endpoint, registers local projects with `projects.add`, dispatches local runtime actions with per-call timeouts where needed, emits `local_runtime.action_slow` warn logs (with `ensureProjectMs` / `connectMs` / `daemonCallMs` breakdown) whenever a call exceeds 500 ms or throws and aggregates those calls into a bounded rolling 24 h window exposed as `getRuntimeHealth()` (count + p95) for the `ade.app.getRuntimeHealth` IPC / Storage diagnostics tile, polls/subscribes to runtime events while preserving `eventEpoch`/gap metadata, and installs the background service best-effort in packaged builds. `callSync` takes a per-call `timeoutMs` so a caller standing in for a live stream can opt out of the long default; `callAttention` uses it to run every Attention poll under the 30 s sync-domain timeout, because a snapshot poll inheriting the ten-minute action budget pins the renderer on syncing long after the account stream has wedged. Also owns the runtime-identity probe the update transaction verifies restarts against (`probeMachineRuntimeIdentity`, `getStaleMismatchedRuntime`) and the update window that suppresses its own service repair while an update applies (`beginUpdateWindow` / `endUpdateWindow`). |
-| `macDesktop/` | `macDesktopService.ts`, `macDesktopDriverLifecycle.ts`, `macDesktopDriverClient.ts`, `macDesktopStreaming.ts` | Per-lane macOS virtual display. The service runs in the brain; `macDesktopDriverLifecycle.ts` owns the `ade-desktop-driver` process, and the client's stderr lines are logged as `mac_desktop.driver_stderr` into `brain.jsonl`. Hidden on a runtime host that is neither macOS nor Windows; every client of a hosted lane can still see it. See [features/mac-desktop/README.md](./features/mac-desktop/README.md). |
-| `native/` | `nativeHelperPaths.ts`, `runningAppImage.ts`, `appImageDesktopEntry.ts`, `desktopUpdateInstallMode.ts` | Finds bundled helpers and the installed desktop app. On Linux it also identifies the running AppImage, writes its menu entry and `ade://` handler at launch, and reports whether this install updates in place or by manual download. `localRuntime/appImageRuntime.ts` promotes the AppImage's bundled brain to `~/.ade`. |
-| `windowsDesktop/` | `windowsDesktopSeatProvider.ts`, `windowsDesktopDriverClient.ts`, `windowsDesktopOperations.ts` | The Windows seat backend of the same service: the private Remote Desktop child session or the user's main desktop by consent, driven by `ade-desktop-driver.exe` (same NDJSON wire as the Mac driver). See [features/windows-desktop/README.md](./features/windows-desktop/README.md). |
-| `onboarding/` | `onboardingService.ts`, `onboardingSuggestedConfig.ts` | First-run flow, defaults detection, existing lane discovery. `onboardingSuggestedConfig.ts` contains pure workflow parsing and suggested project config generation. |
-| `opencode/` | `openCodeServer.ts`, `openCodeConfig.ts`, `openCodeSession.ts`, `openCodeBinaryManager.ts`, `openCodeInventory.ts`, `openCodeAuthService.ts` | OpenCode 2.0 server spawn, config generation, session lifecycle, binary resolution, model discovery, and provider auth. See [OpenCode integration](features/chat/opencode-integration.md). |
-| `power/` | `powerStateService.ts`, `keepAwakeService.ts`, `systemSleepConfig.ts`, `machinePowerBrainBridge.ts` | This machine's power and sleep truth. `powerStateService` is a process singleton wrapping the shared `MachinePowerSource` from `apps/ade-cli/src/services/power/` with Electron's `powerMonitor`; `machinePowerBrainBridge` forwards suspend/resume to the brain as `machine.reportPowerTransition` on a 2-second budget so the directory learns about a closed lid in the beat before the machine goes dark. `keepAwakeService` supplies the local macOS authorization prompt and the old-brain in-process fallback; `systemSleepConfig` reads and fixes the OS's own idle-sleep timer. The brain-owned lock and preference live in `apps/ade-cli/src/services/power/brainKeepAwakeService.ts`. See [onboarding and settings](./features/onboarding-and-settings/README.md#keeping-the-machine-awake). |
-| `projects/` | `adeProjectService.ts`, `configReloadService.ts`, `projectService.ts`, `logIntegrityService.ts`, `recentProjectSummary.ts`, `projectBrowserService.ts`, `projectDetailService.ts`, `windowTabRootAuthorization.ts`, `desktopProjectRecords.ts`, `projectRecordHost.ts`, `desktopProjectRemoval.ts`, `projectRemovalState.ts`, `projectRemovalGuard.ts`, `projectCopyCheck.ts` | Project detection, `.ade` repair and bootstrap, config reload, recents. `recentProjectSummary.ts` never inspects remote paths and reads each local `origin` URL from git config (cached on the config mtime); the top bar joins checkouts of one repository on that URL. `projectBrowserService` and `projectDetailService` back the palette's project browser. `windowTabRootAuthorization.ts` splits a tab list into shown roots and the window's authorized scope. The shared project record (`shared/projectRecord.ts`) and removing this computer's copy live here ([onboarding-and-settings](./features/onboarding-and-settings/README.md)). |
-| `prs/` | `prService.ts`, `prCommentMutations.ts`, `prPollingService.ts`, `requiredChecks.ts`, `githubStackStore.ts`, `integrationPlanning.ts`, `integrationValidation.ts` | PR CRUD, polling (with per-PR `last_polled_at` cursor), timeline comment PATCH + reaction decoding (`prCommentMutations.ts`; IPC `ade.prs.updateComment` / `ade.prs.reactToComment`), AI summary cache keyed by `(prId, head_sha)`, required-status-check resolution (rulesets → classic protection → `mergeStateStatus` corroboration, cached per repo+base branch), native GitHub stack reconciliation, integration planning, and the PR reads/mutations behind the agent-facing `pr_*` RPC tools (`pr_get_checks`, `pr_get_review_comments`, `pr_rerun_failed_checks`, `pr_reply_to_review_thread`, `pr_resolve_review_thread`) — those tools are dispatched from `apps/ade-cli/src/adeRpcServer.ts`, not from this directory, and `pr_get_checks` deliberately returns the persisted verdict over a row-level rollup so an agent cannot read "passing" while every human surface says "not run", and merge-into-existing-lane proposal adoption. The checks verdict itself is derived by the shared `prChecksRollup.ts`, not here. See [features/pull-requests/README.md](./features/pull-requests/README.md#checks-rollup-what-counts-as-a-pass). |
-| `pty/` | `ptyService.ts` | `node-pty` spawn, PTY I/O bridging, transcript writing. Its single output pass is also where passive dev-server discovery rides (`devServers/devServerRegistry.ts`), so no second observer is attached to terminal output. |
-| `remoteRuntime/` | `remoteTargetRegistry.ts`, `sshTransport.ts`, `remoteBootstrap.ts`, `remoteConnectionPool.ts`, `remoteConnectionService.ts`, `runtimeRpcClient.ts`, `runtimeDiscovery.ts` | Saved SSH machines (manual host + alternate `routes[]` with `lastSucceededAt` and manual-disconnect state), ssh-agent/key transport with bounded connect/exec timeouts and multi-route fallback, first-connect runtime upload/version/SHA verification with channel-home fallback (`.ade` / `.ade-alpha`) and capability/version skew demoted from fatal errors to `RemoteRuntimeConnectResult.compatibilityWarnings`, remote project catalog, action dispatch (with a `projects.*` capability gate against `RemoteRuntimeCapabilities.machineProjects`), handoff storage/Git preflight, route-pinned sensitive calls, local TCP forwards for remote preview ports, reconnect/eviction with pool eviction listeners and implicit reconnect backoff, `powerMonitor` resume probe, and LAN + Tailscale discovery that returns diagnostics alongside machines. The JSON-RPC client formats remote errors with the original method name plus the JSON-RPC `code` / `message` / `data` for clearer diagnostics. A relay's `brain_connection_lost` answer (structured fields only) is reported as `remote.brain_connection_lost`. See [Cross-machine session handoff](./features/sync-and-multi-device/cross-machine-session-handoff.md). |
-| `runtime/` | `tempCleanupService.ts`, `processRegistryService.ts`, `machineStateMigration.ts`, `packagedNodePath.ts`, `lastFailureStore.ts`, `projectRecoveryService.ts` | Runtime temp cleanup. `processRegistryService` is the per-process heartbeat registrar against machine-local `runtime_processes` (see §3.4); reconcile/dispose paths in `sessionService` and `ptyService` consult live and known owner sets before sweeping `terminal_sessions` rows so sibling processes and synced remote-machine owners are preserved. `machineStateMigration` carries one-shot migrations of the per-machine state files under `~/.ade/`. `packagedNodePath.ts` centralizes the `Resources/app*.asar(.unpacked)/node_modules` search path used by packaged runtime children. `lastFailureStore` records bounded typed project/machine failure reports and crash-loop backoff; `projectRecoveryService` runs the brain-independent diagnose/repair sequence behind `ade.recovery.*` (see [features/storage-and-recovery/README.md](./features/storage-and-recovery/README.md)). |
-| `scenes/` | `sceneDocumentStore.ts`, `sceneSnapshot.ts`, `sceneSnapshotIngest.ts` | Agent-authored generated UI. `sceneDocumentStore.ts` holds prepared scene documents **in memory** (capped at 64) and serves them over the `ade-scene:` scheme — the id in `ade-scene://view/<id>` is a map key, never a path, so the scheme has no filesystem reach by construction. `sceneSnapshot.ts` owns `clampSceneCaptureRect`, the freeze-to-a-picture geometry; `sceneSnapshotIngest.ts` is the CTO-only `computer_use_artifacts.ingestSceneSnapshot` runtime action that files a snapshot as proof on a runtime-backed build, repeating the artifact-store jail against the services it actually owns. See [features/chat/README.md › Scenes](./features/chat/README.md#scenes). |
-| `search/` | `searchService.ts`, `searchIndexDb.ts`, `searchIndexQuery.ts`, `searchQueryParser.ts`, `searchRanking.ts`, `terminalChunking.ts`, `searchServiceWiring.ts` | Universal search over chat/terminal/PR/commit/branch text via a disposable FTS5 index (`.ade/cache/search-index.db`, never inside `ade.db`, never synced), unioned at query time with delegated lanes/files/artifacts/Linear. Accepted chat messages own the searchable document while processed/unprocessed events remain lifecycle-only; an exact `session:<id>` query reads live ownership state, overrides stale same-document FTS metadata, and deduplicates totals. Debounced off-hot-path ingestion with cursor-based incremental reads, deterministic ranking tiers, and the `search` ADE action domain (`query`/`indexStatus`/`rebuildIndex`). `searchServiceWiring.ts` is shared with the `ade` runtime so wiring can't drift. See [features/search/README.md](./features/search/README.md). |
-| `sessions/` | `sessionService.ts`, `sessionDeltaService.ts`, `chatSessionProjection.ts`, `settleTerminalSession.ts` | Terminal session CRUD, post-session delta computation, provider-chat runtime projection onto resumable terminal rows, and the atomic settle/dismiss-pending-input boundary shared by IPC and ADE actions. |
-| `shared/` | `utils.ts`, `imageDimensions.ts`, `remoteTrackingBranch.ts`, `packLegacyUtils.ts`, `transcriptInsights.ts`, `pathCompare.ts`, `providerConfigHomes.ts`, `agentObservationCache.ts`, `processExecution.ts`, `processOrphans.ts`, `cdpClient.ts`, `cdpPageDiagnostics.ts`, `withTimeout.ts` | Cross-domain utilities: the one CDP client (`cdpClient.ts`, `cdpPageDiagnostics.ts`), path comparison, image dimensions. `agentObservationCache.ts` is the one copy of the observation-file sweeps (a fork deletes files). `providerConfigHomes.ts` knows each provider CLI's config home and carries the rule: name a key only when ADE owns it ([provider config ownership](./features/chat/agent-routing.md#provider-config-ownership)). `processExecution.ts` holds the spawn helpers and the trusted System32 PowerShell and `taskkill` calls; `processOrphans.ts` is the shared orphan-sweep kill ladder. |
-| `state/` | `kvDb.ts`, `crsqliteExtension.ts`, `crsqlExport.ts`, `dbMaintenanceApi.ts`, `globalState.ts`, `projectState.ts`, `onConflictAudit.ts` | SQLite schema and open (WAL, `synchronous = NORMAL`), the CRR extension loader, global and per-project state. `ade-state.json` holds machine-local shell state. `kvDb` attaches `maintenance` (`DbMaintenanceApi`: retention prunes, zero-peers-only compaction, gated vacuum) for the storage doctor. Recent projects are keyed by root path, or `remote:<targetId>:<projectId>`; pinned rows stay on top. `AdeDb.sync.discardUnpublishedChangesForTables` clears local CRR state without sending the clears to peers (`local_crr_change_suppressions`). Local-only tables include the snapshot caches, `local_worktree_residual_cleanups`, `pr_auto_link_ignores`, `pull_request_ai_summaries` and `runtime_processes`. A read-only-table error from a `crsql_changes` DELETE logs `db.crr_changes_cleanup_skipped` and does not fail the migration. |
-| `sync/` | `syncService.ts`, `syncHostService.ts`, `syncPeerService.ts`, `syncRemoteCommandService.ts`, `syncProtocol.ts`, `deviceRegistryService.ts`, `syncPairingStore.ts` | **Thin delegation to the ADE runtime's sync service.** The authoritative sync service now lives in `apps/ade-cli/src/services/sync/`; the desktop main-process instances default to a non-host viewer role for legacy state and tests. The old in-process host is disabled unless `ADE_ENABLE_DESKTOP_SYNC_HOST=1` (diagnostics only). Wire formats — WebSocket envelope, remote command routing, device registry, pairing secrets — are the same across both implementations. Viewer joins clear the local `devices` + `sync_cluster_state` rows and then call `db.sync.discardUnpublishedChangesForTables(["devices", "sync_cluster_state"])` so the resulting DELETE rows do not leak back to other peers; the peer client follows up with `syncPeerService.acknowledgeLocalDbVersion()` to advance the outbound cursor past the suppressed range. |
-| `tests/` | `testService.ts` | Test-suite execution + run history. |
-| `updates/` | `autoUpdateService.ts`, `autoUpdateVersions.ts` | Electron auto-update wrapper around `electron-updater`. Owns `AutoUpdateSnapshot` (`idle \| checking \| downloading \| ready \| installing \| error`) and compares versions with `compareUpdateVersions`. A strictly newer feed answer replaces a staged update. Downloads start after a disk-space preflight; a `ready` update whose file is gone downloads again before install. A consent that aborts lands in `snapshot.parked` with a retry. Automatic restart is a machine-local preference, off by default, and waits for idle agents; `ADE_DISABLE_AUTO_UPDATE_APPLY=1` turns it off. Details: [desktop auto-update](./features/onboarding-and-settings/desktop-auto-update.md). |
-| `storage/` | `diskPressure.ts`, `volume.ts`, `storageInsightsService.ts`, `historyCompression.ts`, `storageLedger.ts`, `storageDbBreakdown.ts`, `storageMaintenanceJournal.ts` | Disk-full/recovery hardening + the storage doctor. `diskPressure` samples all ADE storage roots, classifies pressure with recovery hysteresis, and gates write-producing operation classes via `canPerform(kind)` (enforced at each start boundary in `agentChatService` / `ptyService` and the compressor). `storageInsightsService` builds the categorized Settings > Storage snapshot and preview-confirmed, link-safe cleanup, and runs the scheduled **storage doctor** maintenance sweep (`runMaintenanceNow` + post-boot/daily timers) that compresses history, reaps safe staging/backups/iOS build data, and invokes the kvDb DB-maintenance hooks. `storageLedger` is the declared bounding policy for every table/directory (with a CI coverage cross-check against `ADE_LAYOUT_DEFINITIONS`); `storageDbBreakdown` maps `dbstat` rows into the project-database breakdown; `storageMaintenanceJournal` reads/writes the 30-run doctor journal. `historyCompression` losslessly gzip-compresses inactive old transcripts/logs after byte-identity verification and exposes the transparent `.gz` read/reinflate helpers. Constructed in both `main.ts` and the `ade` runtime `bootstrap.ts`. See [features/storage-and-recovery/README.md](./features/storage-and-recovery/README.md). |
-| `usage/` | `usageTrackingService.ts`, `sharedUsageTracking.ts`, `bootedUsageScope.ts`, `providerQuotaParsers.ts`, `providerAccountIdentity.ts`, `usageStatsStore.ts`, `usageLedgerWorkerClient.ts`, `usageLedgerScanners.ts`, `budgetCapService.ts`, `ledgers/localUsageLedgers.ts`, `ledgers/ledgerScanCore.ts`, `ledgers/acpProviderLedgers.ts`, `providerLedgerFormats.ts`, `tokenSplit.ts`, `usagePricing.ts`, `usageAccountId.ts`, `turnUsageLedger.ts`, `quotaBurnRate.ts`, `turnUsageReconcilers.ts`, `cursorBilledUsageStore.ts`, `cursorDashboardUsage.ts`, `githubActivityStats.ts`, `accountUsageRollup.ts`, `accountUsageRollupStore.ts`, `accountUsageSource.ts`, `accountUsageLiveRefresh.ts`, `peerLiveQuota.ts` | Provider quota, cost and activity stats. The machine brain is the only quota poller (`sharedUsageTracking.ts`, one per ADE home); the renderer takes its pushed snapshot, ordered by `revision.producerId`/`seq`. `providerQuotaParsers.ts` normalizes the quota payloads; `providerAccountIdentity.ts` names the login from provider files, never the Keychain, and returns `undefined` rather than a guess. Local ledger scans run in a separate process (`usageLedgerWorkerClient.ts`, NDJSON per provider; every caller budget derives from `LEDGER_WORKER_TIMEOUT_MS`). `turnUsageLedger.ts` writes one line per finished chat turn under `<adeHome>/usage/`. Account scope: each machine publishes day × provider × model rollups (never a transcript) to `usage_machine_rollups`; live quota is pooled per login in memory, and a login only on another machine is `notSignedInHere`. Main dedups threshold events per `provider:threshold:resetCycle` for 10 minutes. Details: [usage tracking](./features/onboarding-and-settings/README.md). |
-| `perf/` | `perfLog.ts`, `perfIpc.ts`, `metricsSampler.ts`, `chatTextProbe.ts`, `aggregator.ts` | Opt-in local performance harness. `ADE_PERF_RUN_ID` opens a JSONL event log, samples Electron process metrics (including main-process event-loop delay and V8 heap size), records IPC durations, accepts renderer perf marks/web-vitals/`streamSmoothness` windows, records `chatTextFlush` events from the assistant-text coalescer, and aggregates each run into `summary.json`. `perfLog.ts` holds the single `PERF_EVENT_KINDS` list that both the `PerfEventKind` type and the `isPerfEventKind` IPC guard derive from, so a new kind cannot be added to one and forgotten in the other. More than one process can append to the same log — Electron main and the `ade` runtime daemon both host chat sessions — so `appendEvent` must stay one `appendFileSync` of one already newline-terminated string (one `O_APPEND` write the kernel will not interleave). |
+| Domain | Role |
+|--------|------|
+| `ai/` | Provider routing, detection, tool definitions. |
+| `adeCloud/` | DAEX Cloud for the signed-in account (section 1.1): `getCloudProvider`, `cloudServerProvider.ts`, `cloudSleep.ts`, `adeCloudReadIpc.ts`. Account-level calls take no pin. |
+| `analytics/` | Privacy-bounded product analytics (see [logging.md](./logging.md)). |
+| `attention/` | Account Activity boundary (keeps the `attention` name). |
+| `appControl/` | CDP bridge for developer-owned Electron apps. |
+| `automations/` | Rules, triggers, actions, per-rule secrets. |
+| `builtInBrowser/` | The in-app browser and the desktop bridge server. |
+| `capture/` | The global capture chord and its native helper. |
+| `chat/` | Agent chat for every provider: event vocabulary, delivery, drafts and scheduled sends, turn health, the ACP host. |
+| `computerUse/` | The proof artifact broker (section 12). |
+| `config/` | `.ade/local.yaml` and lane overlays. |
+| `conflicts/` | Pairwise dry-merge simulation and proposals. |
+| `cto/` | CTO identity, notes, open work, and the Linear surface. |
+| `deeplinks/` | The `daex://` and `ade://` protocol handlers, the single-instance lock, cold-start URL buffering. |
+| `diagnostics/` | The redacted report behind every **Report this error** dialog. |
+| `files/` | File tree, read/write, watch, index. |
+| `git/`, `github/`, `prs/` | Git runner and lane ops (section 9), GitHub access, PR projections and polling. |
+| `ios/`, `android/`, `macDesktop/`, `windowsDesktop/`, `linuxDesktop/`, `media/` | Device and lane-screen backends and their shared video pipeline. |
+| `ipc/` | IPC registration, trust, timeouts, runtime event subscriptions. |
+| `lanes/` | Worktree lifecycle, env bootstrap, proxy, port leases, OAuth redirect, diagnostics. |
+| `localRuntime/`, `remoteRuntime/` | The runtime binding pools (section 2.2). |
+| `logging/` | File-backed structured logger. |
+| `opencode/` | OpenCode server spawn, config, sessions, auth. |
+| `passwords/` | The account vault client (logins, codes, passkeys, secrets). |
+| `projects/` | Project detection, `.ade` repair, recents. |
+| `pty/`, `sessions/` | PTY spawn and I/O; session rows, deltas, settle. |
+| `search/` | Universal search over a disposable FTS5 index (`.ade/cache/search-index.db`). |
+| `state/` | SQLite open, schema, CRR loader, global state. |
+| `storage/` | Disk pressure and the storage doctor. |
+| `sync/` | Thin delegation to the brain's sync service. |
+| `updates/` | `electron-updater` wrapper. |
+| `usage/` | Provider quotas, cost and activity stats. |
 
-**Cross-cutting personal-chat paths.** Personal chat reuses `chat/agentChatService.ts` with `surface: "personal"`, a light session profile, a neutral general-assistant prompt, project/lane environment variables removed, and project slash-command/ADE-guidance injection disabled. The hidden runtime also disables project push publication. Desktop Browser calls from that surface pass `tabCollection: "personal"`; `builtInBrowserService.ts` uses it only to select an independent visible tab collection. The persistent authentication partition remains global. See [Personal chats](./features/personal-chats/README.md) for the complete source map and invariants.
+The full list is the directory itself. Main-process lifecycle notes:
 
-Startup sequencing: every background service goes through `scheduleBackgroundProjectTask()` in `main.ts`, which provides explicit labels, `ADE_ENABLE_*` env gates, `project.startup_task_begin`/`_done`/`_enabled`/`_skipped` telemetry, and per-task delays. Integrations stay **dormant-until-configured**.
-
-Project-init step timing goes through `measureProjectInitStep(step, task)` — a wrapper that logs `project.init_step { projectRoot, step, durationMs }` around each hot-path operation (`db_open`, `lane.ensure_primary`, `ade_rpc.socket_server_start`, `sync.initialize`, etc.) so cold-start latency shows up in the logs by phase. Sync-service initialization is scheduled through `scheduleBackgroundProjectTask` rather than awaited inline, gated by `ADE_ENABLE_SYNC_INIT`.
-
-Shutdown pipeline: every quit path (`before-quit`, window close, `SIGINT`, `SIGTERM`, `will-quit`, `uncaughtException`) goes through `requestAppShutdown` in `main.ts`. It flushes the browser profile, then `runImmediateProcessCleanup()` disposes automations, tests, PTYs, chat runtimes and the DB, and stops OpenCode servers. `forceAfterMs` (8 s, 5 s for signals) hard-exits a hung cleanup. A user quit asks `services/runtime/quitPrompt.ts`. With the background service, agents survive the quit and the prompt offers "Don't ask again" (`askBeforeQuit`). When the desktop runs the agents itself (`app_fallback`, `isolated`), the prompt always asks and can offer "Repair service". The renderer answers through `ade.app.quitPrompt*`; with no answer in 1.5 s, main asks with a native box (`shared/quitPromptModel.ts`). "Stop and quit ADE" (`ade.app.stopBackgroundServiceAndQuit`, packaged builds only) fails closed when ADE cannot read what is running or a delete, repair or restart is in progress. Every handler checks `isTrustedAdeRendererSender`.
-
-Crash-resistance at the process boundary: `main.ts` installs an `error` listener on `process.stdout` and `process.stderr` before any other module loads, and adds `EPIPE` / `ERR_STREAM_DESTROYED` to the set of `uncaughtException` codes that are swallowed (alongside the `EMFILE` / `ENFILE` file-limit codes). When ADE is launched from a terminal and that terminal goes away, the next write to stdout or stderr raises `EPIPE`; without a listener Node surfaces it as an `uncaughtException`, which funnels into `requestAppShutdown` and tears the whole app down. A dead logging pipe must never kill the app. Any other stream error is still re-thrown.
-
-Renderer crash recovery (`main/rendererCrashRecovery.ts`, the `render-process-gone` handler): every reason except `clean-exit` reloads the canonical `getRendererUrl()` after 500 ms, at most 3 times in a rolling 60 s (`performance.now()` clock). State comes back from main. A spent budget leaves the window down and logs `window.render_process_recovery_abandoned`. Each crash reports `ade_renderer_recovered` with a coarse `crash_reason`.
-
-On startup the main process also invokes `recoverManagedOpenCodeOrphans({ force: true })` (see `services/opencode/openCodeServer.ts`) to reap previous-run OpenCode processes left behind after a crash. Orphan detection matches processes by the managed marker env (`ADE_OPENCODE_MANAGED=1`) and/or the shared XDG config root, and confirms orphaning either by dead owner PID (`ADE_OPENCODE_OWNER_PID`) or assignment to init. Next to it, main and the brain (`ade serve`) each run `recoverCursorSdkWorkerOrphans` once (`services/chat/cursorSdkWorkerOrphans.ts`). It terminates Cursor SDK workers whose `--ade-owner-pid` owner is dead, and it never touches a worker whose owner is alive, because that owner can be another brain. Both sweeps share the listing parser and the SIGTERM → SIGKILL (Windows: `taskkill /T /F` twice) ladder in `services/shared/processOrphans.ts`. See [Cursor worker orphan guard](./features/chat/README.md#cursor-worker-orphan-guard).
+- Every quit path goes through `requestAppShutdown` in `main.ts`; each cleanup
+  step is isolated so one failure cannot block shutdown, and SQLite is flushed
+  before services are disposed.
+- `main/rendererCrashRecovery.ts` reloads a crashed renderer at most 3 times in
+  60 s.
+- Startup reaps OpenCode processes a crash left behind
+  (`recoverManagedOpenCodeOrphans`, marker env `ADE_OPENCODE_MANAGED=1`).
 
 ---
 
-## 7. UI Framework
+## 7. UI framework
 
 ### 7.1 Stack
 
-| Layer | Tech |
-|-------|------|
-| Framework | React 18 |
-| Language | TypeScript |
-| Router | React Router |
-| State | Zustand (global + per-domain) |
-| Styling | Tailwind CSS 4 + CSS custom properties |
-| Primitives | Radix UI |
-| Icons | Lucide React |
-| Terminal | xterm.js |
-| Editor/Diff | Monaco Editor |
-| Graph canvas | React Flow |
-| Pane layouts | `react-resizable-panels`, in-house `PaneTilingLayout` |
-| Virtualization | `@tanstack/react-virtual` |
-
-Electron renderer runtime does **not** wrap the app in `React.StrictMode`. Browser-mock development (outside Electron) still uses Strict Mode. The app uses `BrowserRouter` on normal `http(s)` origins and `HashRouter` inside Electron/file-like contexts; `App.tsx` also bridges legacy `#/route` fragments into BrowserRouter paths so old ADE deep links keep working in the browser-hosted dev shell.
+React 18, TypeScript, React Router, Zustand, Tailwind CSS 4 with CSS custom
+properties, Radix UI, xterm.js, Monaco, React Flow (`@xyflow/react`),
+`react-resizable-panels` plus the in-house `PaneTilingLayout`,
+`@tanstack/react-virtual`. Electron does not wrap the app in
+`React.StrictMode`.
 
 ### 7.2 Global store
 
-`apps/desktop/src/renderer/state/appStore.ts` — Zustand store holding project, lanes, selected lane, theme, provider mode, keybindings, per-project work-view state. Built as a `createStore<AppState>()(createAppState)` factory so multiple stores can be instantiated; the module exposes a default `rootAppStore` plus a per-project factory and React context:
+`apps/desktop/src/renderer/state/appStore.ts` is a Zustand store built as a
+factory: a root store plus one store per project surface
+(`createProjectAppStore(project, binding)`), scoped by `AppStoreProvider`;
+`useAppStore` reads the nearest one. Per-project view state is keyed by binding
+identity. `crossMachineLanesByMachineId` (fed by
+`renderer/state/crossMachineLanes.ts`) holds other connected machines' lanes and
+sessions for the repository the tab shows, so Work lists work from every
+machine. `appearanceStore.ts` holds theme, fonts and motion. Theming:
+[design/theming.md](./design/theming.md).
 
-`apps/desktop/src/renderer/state/appearanceStore.ts` holds the appearance values (theme, scene, fonts, motion, tooltips) and the code that reads them from saved preferences; `appStore` imports that code and registers its root store there. The components that paint the look (`AppearanceRoot`, `ThemeDocumentSync`, the mesh backdrop, `SmartTooltip`, `useScene`) read through `useAppearanceStore`, which resolves the project store in context, then the root store, then a stand-in built from the same saved preferences. The stand-in exists for the hosted client's sign-in screen, which draws with those components before `appStore` is downloaded. A component that screen renders must not import `appStore`.
-
-- `createProjectAppStore(project, projectBinding?)` returns a fresh per-surface store pre-hydrated with the local or remote project binding, any binding-scoped Work/lane/session snapshot, and a copy of root-store user preferences. It re-reads that project's persisted Work/lane scopes directly from storage rather than trusting the root store's older copied maps. Setters for theme/terminal/chat preferences point at the root store so user preferences mutate in one place and are then mirrored into every project store via `hydrateProjectAppStore` whenever `rootPrefs` change in `ProjectTabHost`. This is what lets two open project tabs share a theme even though they have independent lane/chat state.
-- `AppStoreProvider` + `AppStoreContext` scope the active store to a `ProjectSurface` subtree. The `useAppStore` hook reads from `useContext(AppStoreContext) ?? rootAppStore`, and `useAppStoreApi()` returns the bare `StoreApi` for components that want imperative `getState()` access without subscribing. `useAppStore.getState / setState / subscribe` still point at the root store so code that needs cross-window globals (recent projects, user preferences, the root binding) can continue to call it directly.
-- Narrow selectors on components to minimize re-renders.
-- `refreshLanes` accepts independent lane-status and lane-snapshot flags. Callers can refresh cheap runtime snapshot decorations without recomputing git status, or update git status without rebuilding conflict overlays; statusless refreshes preserve the previous `LaneStatus`/`parentStatus` in store so the UI does not flicker to unknown git state.
-- Per-project work-view state keyed by project identity (`WorkProjectViewState`): local bindings use their root path, while remote bindings use `OpenProjectBinding.key` (`remote:<targetId>:<projectId>`). Alongside Work filters, collapsed section ids, and right-sidebar state, version 3 includes the Lanes tab's filter, pinned lane ids, and expanded lane id. Version 4 adds the Work-sidebar-only `workPinnedLaneIds`, lane sort mode, sparse manual lane order, and structured session chips; normalization is additive, so a v3 blob retains the former Created order with no Work pins or chips. Version 5 replaces the fixed `workSidebarTab` with a nullable `workSidebarTool` (`null` = the tools picker) resolved **per lane** through `laneWorkViewByScope`, keyed `"<projectKey>::<laneId>"` by the single `laneWorkViewScopeKey` helper, and adds the floating live-preview card's project-scoped `workLiveCardPosition` and `workLiveCardWidth` (shapes and normalizers live in `state/workLiveCardState.ts` so the store never imports a component module); the card's closed/floated flags are per chat and live in `components/chat/chatCompanionUiState.ts`, not in the lane view state. A v4 blob's `workSidebarTab` is deliberately not migrated forward; `workSidebarOpen` and `workSidebarWidthPct` are untouched, and the width is normalized against the same 26–55 % clamp the pane's `workSidebarSplitter.ts` enforces in pixels. It keeps Settled reachable as a quiet collapsed tail: Status/Time mode use `status:settled`, Lane mode uses explicit `settled-open:<laneId>` markers, and a fully quiet lane uses the inverted `lane-open:<laneId>` marker. There is no independent Tiers/Show settled filter. The one-time status-collapse migration is gated against its own version-2 threshold, so later additive schema bumps do not re-collapse a section the user expanded. Persistence under `ade.workViewState.v1` is a scoped delta read-modify-write: every mounted project store upserts or deletes only the project/lane keys it owns instead of flushing its stale copy of the whole map. `refreshLanes` prunes lane scopes only from a non-empty lane inventory and only inside that store's project scope. `registerProjectSurfaceStore` / `workViewStoreForProject` route project-specific writes made by `AppShell` and `TopBar`, which render above `AppStoreProvider`, to the owning surface store. Lane/status deeplinks are transient view overrides and user filter, grouping, chip, pin, or ordering changes return to and then update the saved base. The right-edge fields are `workSidebarOpen`, `workSidebarTool` (`null` for the picker, otherwise a `WorkSidebarTab` from `shared/types/workTools.ts`: `"terminal"`, `"git"`, `"files"`, `"ios"`, `"app-control"`, `"browser"`, `"mac-desktop"`, `"windows-desktop"`, or `"pr"`), and `workSidebarWidthPct` (clamped 26–55). The sidebar holds the lane-scoped tools; per-chat iOS / App Control drawers still exist on `AgentChatPane` but are suppressed when the chat is mounted as a Work tile so the sidebar owns those surfaces at lane scope. Remote-bound Work sidebars expose only the runtime-backed Git and Files tabs; local-only iOS Simulator, App Control, and Browser panes stay hidden. The `browser` tab is not lane-scoped on local bindings: each ADE window/project keeps its own tab collection and inspect state, while browser authentication storage is global to the installation/channel through `persist:ade-browser`. `mac-desktop` is a lane tool on that same list. It is hidden only when the lane's runtime host cannot host a display; a Windows desktop, the hosted web client, and the phone still show it for a Mac-hosted lane. A Windows-hosted lane shows the same screen as `windows-desktop` instead. See [features/mac-desktop/README.md](./features/mac-desktop/README.md) and [features/windows-desktop/README.md](./features/windows-desktop/README.md).
-- Cross-machine Work union. `crossMachineLanesByMachineId` + `crossMachineLaneScopeKey` (fed by `renderer/state/crossMachineLanes.ts`) hold every *other* connected machine's lanes, sessions, and mapped PR rows for the repository the active tab is showing, so the Work sidebar can list work in flight anywhere — chats and CLI/shell sessions alike, each with its own PR badge — without changing the tab's binding. Keyed by machine because a lane owns its machine (`lanes.worktree_path` is an absolute path on exactly one machine) and both sessions and PR rows inherit theirs through `laneId` — there is no per-session or per-PR machine field. PRs are read on the lane cadence rather than the chat cadence and ride along with the lane read (see [features/pull-requests/README.md](./features/pull-requests/README.md#which-machine-answers-a-pr-read)). `mergeCrossMachineLanes` retains omitted `lanes`/`sessions`/`prs` so a failed read leaves the machine's rows on screen, and `setCrossMachineMachinesOnline` flags rather than deletes an entry that goes offline. Work and Lanes do not list an own computer that stays offline after its short reconnect window (`SessionListPane.tsx`, `useLanesPageMachines.ts`); during that window its group renders dimmed and collapsed. An asleep ADE Cloud computer is never treated as offline. The retained slice also backs the push-divergence guard. Presence is decided in one place, `applyReachability`, from connection state alone: a drop is believed only after a reconnect attempt has completed and failed (`connecting` observed, then a non-connected state) plus a 45 s floor, with a 120 s ceiling for a dial that never finishes. Two states have no attempt left to wait for and dim on the floor alone: `idle`, which will not redial on its own, and `connected` but unable to re-prove this repository, which answers yet is never read for it. The floor and the ceiling are one deadline, not two rules. The `connecting`/`error` states a redial or sleep/wake publishes therefore do not reflow the sidebar, and reconnecting is applied instantly. The verdict belongs to the store rather than the tick: a machine that is already dimmed stays dimmed until it is eligible again, so a Work-tab remount — which tears down the shared runtime and its drop records while the store slice survives — cannot re-brighten it for another floor; the retention deadline is re-anchored to that machine's last successful read instead. Only `dropCrossMachineLanes` deletes, and only for a target gone from the snapshot, a connected machine that positively reports the repository missing *and* has a resolvable origin to prove it by (`repoMatchFor` will say "missing" off a folder-name mismatch alone, and the scope's origin is transiently null while the bound machine blips), or 24 hours unreachable. The scope key is per repository, so a project-tab switch invalidates the union wholesale. A detached chat launch whose runtime pin differs from the active binding seeds an optimistic summary directly into the owning machine slice; the binding/session-keyed pending record survives stale in-flight list responses and is replaced by the authoritative row with the same stable session id (or pruned on delete/expiry). This keeps the active binding free of foreign UUID-lane placeholders while avoiding a blank interval before the next remote list arrives. `buildCrossMachineLaneRows` also takes the active binding's own session ids and holds one claim set across every machine slice, so a session is contributed by exactly one list — local first, then the first machine that reports the lane it names — and neither an optimistic launch nor two slices naming the same session can render it twice; the hook stabilizes that id set by content, since the roster array is replaced by every session poll. Foreign lanes use the same `effectiveSessionFilingBuckets` active/snoozed/settled partition (which wraps the base `sessionFilingBucket` rule), fully quiet collapsed header, and quiet-tail renderer as local lanes, with composite machine/lane persistence keys. Their **Manage lane** dialog and mutations carry the same owning binding. Sessions whose referenced lane is absent render as explicit warning-tinted **Orphaned sessions** groups with a refresh-only recovery action; ADE preserves the sessions and never interprets unknown ownership as permission to mutate the active machine. Refreshes ride the connection-snapshot subscription plus existing lane-lifecycle/session-changed events (coalesced, bounded, timed out, capped in parallelism) and a fallback loop for machines with no renderer change feed; that loop is paused entirely while the window is hidden, re-reads chats every 10 s, and re-reads lanes on a 30 s cadence, because `lane.list` with `includeStatus` costs a git status per lane on the other machine. A chat naming a lane that machine has never reported forces the lane read immediately, but only once: lane ids a completed read did not explain are remembered until the next one, because `session.list` does not filter on lane status while `lane.list` excludes archived lanes, so a chat on an archived lane is permanently unresolvable and would otherwise demand the expensive read on every tick forever. A surface that is about to *route* work at a machine can pull that read forward with `requestCrossMachineLanesForMachine(machineId)`, which forgets both of that machine's lane-read clocks (the plain read and the status read are one fact and are never forgotten separately) and schedules a status-depth refresh; it is a no-op when nothing is subscribed, and the refresh it asks for is still the shared coalesced tick, so it is safe to call from a render effect. The Work composer uses it so picking a machine does not leave the lane list empty for up to the 30 s foreign cadence. Foreign reads never gate the local list. `selectOtherMachineBranchStates` is the memoized selector the push-divergence guard reads at click time.
-  The union's pin-resolution hooks live with the store rather than in the components that consume them: `machineEntryForBinding(state, pin)` / `useMachineEntryForBinding(pin)` join by binding **key**, not machine id, because `machineId` is only known once a machine has answered while a pin carries its routing target from the moment a chat is selected; `useLanesForPin(pin)` resolves the lane list for a pin; `useForeignSessionLaneId(sessionId, presentLocally)` names the lane a foreign session belongs to. `crossMachineLanesByMachineId` is written only to the ROOT store (`rootAppStoreApi`) and `createProjectAppStore` does not copy it, so a project-scoped `useAppStore` read of it sees an empty record forever — `useMachineEntryForBinding` and `useForeignSessionLaneId` therefore read `useRootAppStore`, and `useLanesForPin` reads each half from the store that owns it (the union from the root store, then the retained Work slices while a same-repo tab switch has emptied that map, then the warm `laneCacheByProject` lane cache from the surrounding project-scoped store). `useLanesForPin` is the only list a pinned lane id may be resolved against. Never `state.lanes`: lane ids are unique per machine rather than globally, so falling back to the tab-bound machine's list can match a *different* lane sharing the id and hand its worktree path to a tool about to drive the other machine. An unread machine yields an empty list, which surfaces as "not found" instead of as the wrong lane, and the hook returns `null` for an absent pin so callers keep their own unpinned source (`state.lanes`, `availableLanes`) explicitly rather than by accident.
-- Project tab bookkeeping. `openProjectTabRoots: string[]` tracks local roots open in the window (mirrored to the main process via `ade.app.setWindowProjectTabs` so background services keep those projects warm); `openRemoteProjectTabs` tracks full remote bindings so inactive remote tabs remain first-class retained surfaces. `ProjectTabHost` applies one shared eight-surface LRU across local and remote tabs: inactive mounted surfaces are parked (`lib/parkedSurface.ts`: `content-visibility: hidden` and animation-paused), while an open surface that falls outside the bound snapshots its scoped state back into the root caches before unmounting. `projectInfoByRoot: Record<string, ProjectInfo>` caches local `ProjectInfo` payloads for tab favicons and offline tab rendering. A window restores every local tab root it had: `app.getWindowSession` returns `openProjectTabRoots` (the window's whole tab set) beside `openProjectTabs` (only the projects with a live context), because an idle project's context can be released while its tab stays open.
-- A project tab is the repository, not a machine (`components/app/useRepositoryTabs.ts`). The tab shows one copy of the repository at a time; `useRepositoryIdentity` joins an origin to the account project, so a renamed repository and its old address are one tab. When a switch opens another copy of a repository whose tab is open, the copy the tab showed before closes in place (same position, view state kept). A repository the account knows with no own computer online binds to ADE Cloud (section 1.1): the normal tabs read from the account and GitHub, and a new chat runs on ADE Cloud. Nothing moves a tab to this computer's copy on its own. Which machine takes new work is the "Start on" rule (`resolveStartOn`), which offers the machine this client last started work on first. Every renderer call names its machine with a pin (`OpenProjectBinding`); no call falls back to the tab's machine. The Chats page lists personal chats from every connected machine and routes each row to its owner; its machine picker chooses where a new chat runs and does not rebind the project tab. Opening another machine's lane or chat never rebinds the tab: Work, the lane menu and the command palette route to `/lanes?laneId&machineId` (`openLaneOnMachinePath`) or a Work draft with `draftMachineId`. The welcome page's recent card for a repository (`groupRecentProjects`) opens this computer's checkout first and another machine's only when this computer has none reachable. Remote tabs carry no machine chrome; only reconnecting and disconnected states are marked.
-- Stale-while-revalidate switch caches. `laneSelectionByProject` remembers the `{ laneId, sessionId }` selection per project identity so switching tabs lands on the lane/chat the user last had open instead of "first lane". `laneCacheByProject` mirrors the last good `{ lanes, laneSnapshots }`; local and remote switches apply it immediately (no spinner, no chat-pane unmount) and refresh silently in the background. `sessionsCacheByProject` does the same for `useWorkSessions` so chat tabs and terminal grids do not blank during a tab swap. `projectRouteStorage.ts` persists the last route under the binding key, independent of whether the surface is currently mounted. Cache pruning retains every open local root and remote binding key; tab close and target disconnect deliberately evict only their affected remote state. The two eviction paths are distinct: `evictProjectState(key)` + `removeStoredProjectRoute(key)` is the full "forget this surface" wipe used by an explicit tab close and by removing a machine, while `evictProjectDataCaches(key)` is the disconnect-only sibling that drops just the snapshots that can go stale while a remote is unreachable (`laneCacheByProject`, `laneSelectionByProject`, `sessionsCacheByProject`, and the persisted lane cache) and preserves `workViewByProject` / `laneWorkViewByScope` plus the stored route so reconnecting restores the chat or tile that was open. `closeProject({ preserveRemoteViewState: true })` applies the same narrower rule when a disconnect closes the last remaining tab.
-- `projectRevision` is a monotonically incrementing counter bumped inside `setProject` whenever the active project root actually changes. Long-lived renderer-side caches (most notably the module-level xterm runtime cache in `TerminalView.tsx`, whose key also carries the session's runtime pin) combine it with the project identity key, so identical paths on different remote targets cannot share PTY runtimes. All project-transition paths (`refreshProject`, `openRepo`, `switchProjectToPath`, `closeProject`) go through `setProject` to keep the counter honest.
-
-Domain stores co-located with their pages follow the same factory + context pattern when they need per-page isolation:
-
-- `chatDraftStore.ts` — draft messages per chat session.
-
-**Cross-surface request channels.** State a surface owns cannot be written by a
-surface that does not know its scope, so the caller files a request instead.
-`renderer/lib/pendingRequestChannel.ts` is the one implementation of that
-pattern, in two shapes that are deliberately not one primitive:
-`createPendingRequestChannel` (broadcast to live listeners **and** hold one
-request, so a consumer that has not mounted yet drains it on mount; a live
-consumer clears the hold so the next mount does not re-open something nobody
-asked for; a nonce makes asking twice two requests rather than one swallowed
-duplicate) backs `workToolRequests.ts`, `filesOpenRequests.ts`,
-`issueNavigation.ts` (tool tab and sheet), `linearLaunchRequests.ts`, and
-`linearIssueQuickViewNavigation.ts`; `createKeyedPendingStore` (no listeners,
-one held value per key, taken by the surface that owns that key when it mounts)
-backs `pendingReveals.ts` and `pendingSessionAnchors.ts`.
-
-**Zoom accelerators.** ⌘/Ctrl `+`, `-`, and `0` are native View-menu
-accelerators, and Electron consumes an accelerator in the browser process
-*before* the renderer sees the keydown — so a panel binding them with
-`onKeyDown` is shadowed on the packaged app while passing every jsdom test. The
-menu sends one `zoom` command into the renderer and
-`renderer/lib/appZoomCommands.ts` decides who answers it. A claim is a *chance*
-to handle, not a takeover: a handler returns false when it is not the right
-moment (the browser pane is mounted but the composer has focus) and app zoom
-happens as before. Claims stack newest-first, so two mounted browser panes
-cannot fight over one keystroke.
+`renderer/lib/pendingRequestChannel.ts` is the one way a surface asks another
+surface to open something it owns (`createPendingRequestChannel`,
+`createKeyedPendingStore`).
 
 ### 7.3 Component organization
 
-Feature-grouped under `apps/desktop/src/renderer/components/`:
+Feature folders under `apps/desktop/src/renderer/components/` (`app/`, `lanes/`,
+`files/`, `terminals/`, `chat/`, `prs/`, `cto/`, `settings/`, `ui/`, …).
 
-```
-app/            # shell, App.tsx, TopBar, projectSidebar/ (one project sidebar: tab strip, portal slots, CTO/History/settings footer), LinearIssueBrowser (multi-select + batch actions), LinearIssueResolveModals (single + batch), LinearQuickViewButton, startup, splash
-project/        # Play tab, run/test/process controls
-lanes/          # list/detail/inspector, stacks, laneDesignTokens.ts
-files/          # tree, editor, diffs
-terminals/      # TerminalView, WorkViewArea (PaneTilingLayout-backed grid), WorkSidebar, workSessionTiling, LaneCombobox
-conflicts/      # risk matrix, simulation, resolution
-prs/            # PR list/detail, stacked queue, shared/
-history/        # operation timeline
-automations/    # rule list, action editor, templates
-cto/            # CTO page (header pill, side panel, welcome), settings page, chat pieces, avatar/
-onboarding/     # first-run flows
-settings/       # keybindings, agents, data, context, sync
-chat/           # AgentChatPane + composer + subpanels, ChatRuntimeScope.tsx
-personalChats/  # global projectless chat list/transcript/composer + personal PTY panel
-shared/         # MentionInput, shared interactive bits
-ui/             # pure presentation primitives
-```
+**Every chat-scoped surface routes to the chat's machine, not the tab's.**
+`chat/ChatRuntimeScope.tsx` is the one derivation (`useChatRuntimeScope()`
+yields the pin and `isActiveBinding`). On Lanes, `renderer/state/projectMachines.ts`
+and `laneMachineRouting.ts` give each lane its owning machine's binding.
 
-**Every chat-scoped surface routes to the chat's machine, not the tab's.** A chat's runtime actions belong to the machine the chat's lane lives on, which is frequently not the machine the globally selected project tab is bound to; `chat/ChatRuntimeScope.tsx` is the one derivation of that scope (`useChatRuntimeScope()` yields binding, `isRemote`, machine name, lane, lane worktree path, and root path, with `useChatRuntimeScopeForPin` for an explicitly supplied pin), and the resulting binding is what components pass as the trailing preload pin. `apps/desktop/eslint.config.mjs` enforces the rule inside `src/renderer/components/chat/**`: `no-restricted-syntax` selectors flag `useAppStore` / `useRootAppStore` reads of `projectBinding` or `lanes` — subscribed or through `getState()`, since an imperative read of the tab's binding is the same wrong answer as a subscribed one — and reads of `project.rootPath`, each message pointing at `useChatRuntimeScope()`; `no-restricted-imports` bans importing `selectActiveProjectRoot` from `state/appStore` as a path pattern, because files in `chat/codex`, `chat/hooks`, and `chat/usage` reach that module at different depths. `AgentChatPane.tsx` is exempt because it owns the tab-versus-chat distinction, `ChatRuntimeScope.tsx` because it *is* the derivation, and tests are exempt. Pin-taking components outside `components/chat` — `lanes/LaneGitActionsPane.tsx`, `lanes/LaneDiffPane.tsx`, `lanes/CommitTimeline.tsx`, `terminals/WorkSidebar.tsx` — carry the same invariant but are deliberately not lint-enforced, because each still makes intentional tab-scoped reads the selectors would flag; treat their pin handling as unenforced until those reads are audited and marked. `ChatRuntimeScope.tsx` also exports `chatRunsOnThisComputer(scope)` (`!isRemote && pin == null`) — the one predicate a foreign chat uses to hide affordances that would open or file onto this computer, such as the Scene frame's **Proof** button and the Codex generated-image **Open** button.
-
-Design tokens have been intentionally trimmed. The house style is the surface kit in `apps/desktop/src/renderer/styles/surfaceKit.css` (`.kit-card`, `.kit-card-head`, `.kit-eyebrow`, `.kit-meter`, `.kit-seg`, `.kit-tag`, `.kit-dot`), the modern settings primitives in `components/settings/primitives/SettingsModern.tsx` (`ModernPage`, `ModernSection`, `ModernRows`, `ModernRow`), and the scene backdrop in `renderer/scene/`; the guide is `docs/design/visual-language.md`. The CTO page and settings use that kit and those primitives; they keep no token file of their own. Lane design tokens live at `lanes/laneDesignTokens.ts` and are imported across lanes/PRs/settings. Notices and overlays have one primitive each. `ui/notice/` provides `Banner` (docked, floating, or inline layout), the `useAppBanner` registry rendered by the single `AppBannerHost` in `AppShell`, `ToastCard` for `showToast` toasts in `app/toast/ToastViewport`, and the shared `noticeTone` palette. `ui/dialog/` provides the `Dialog` modal shell and the imperative `confirmDialog` / `promptDialog`, rendered by `DialogHost`. `app/HeaderSheet.tsx` is the one top-bar dropdown. `ui/zLayers.ts` (`Z_LAYERS`) is the one stacking scale. The local ESLint plugin `apps/desktop/eslint-rules/ade-ui.mjs` warns on code that bypasses these primitives. `npm run lint:ci` fails CI when any file's warning count grows past `apps/desktop/lint-baseline.json`. The guide is `docs/design/notices.md`.
+The look of every surface follows [design/visual-language.md](./design/visual-language.md)
+(surface kit `styles/surfaceKit.css`, settings primitives
+`components/settings/primitives/SettingsModern.tsx`).
 
 ### 7.4 Layout patterns
 
-- `PaneTilingLayout` — recursive pane trees for high-density workspaces, backed by pure ops in `paneTreeOps.ts` (`reconcilePaneTree`, `splitPaneAtEdge`, `swapPanes`, `detectDropEdge`). Trees persist per `layoutId` on this client (`ui/clientLayoutStore.ts`); panel sizes persist separately via `DockLayoutState` and are reset whenever the tree mutates.
-- `SplitPane` / resizable panels — structured 2/3-pane views.
-- Work view's grid mode is `PaneTilingLayout` seeded by `buildWorkSessionTilingTree(sessionIds)` (in `renderer/components/terminals/workSessionTiling.ts`); every session becomes a `FloatingPane` leaf with `grid-tile` chrome.
-- Project tab hosting: `App.tsx`'s `ProjectTabHost` mounts one persistent `ProjectSurface` per open project tab inside a single window, keyed by the runtime binding (`local:<root>` or the remote binding key) so a local and remote view of the same path cannot share renderer state accidentally. Each `ProjectSurface` owns its own zustand store instance (`createProjectAppStore(project, projectBinding)`), pre-hydrated with the project binding plus a copy of root-store user preferences (theme, terminal preferences, chat font, sound, density, etc.). User-preference setters point at the **root** store, so changes flow to one place and are then mirrored into every project store on the next `rootPrefs` change. A LRU sorts mounted surfaces and caps the warm-mounted set at `WARM_PROJECT_SURFACE_LIMIT = 8`; surfaces beyond that limit are dropped from the React tree (their store entry is GC'd) but the persisted lane/chat caches in the root store keep their data live so a re-mount is cheap.
-- Global personal-chat routing: `/chats` sits outside the project route set. On desktop, the rail reads and acts on chats from every connected machine through explicit personal-chat machine targets; the window binding remains the default for calls without a target and for the Browser tab's docked chat. From the welcome surface, Chats renders under a real machine-level top tab whose existence is tracked in session-only `personalChatsTabOpen` app state. In hosted web, the rail reads chats from every live machine, while the new-chat picker connects to and selects the machine where a new chat runs. The Chats tab's active state is derived from the route, and project-only tabs remain disabled while it is active.
-- Per-surface routing: each surface remembers its own route (`/work`, `/lanes`, `/files`, `/prs`, `/cto`, `/automations`, `/settings`, …) under `ade:project-route:<bindingKey>` in `localStorage`. `ProjectTabHost` swaps which surface is `active` based on the foreground project tab, stashing the outgoing route and replaying the incoming surface's last route via `navigate(..., { replace: true })`. Inactive surfaces stay in the tree, parked by `lib/parkedSurface.ts` (`aria-hidden`, `data-ade-surface-hidden`, absolutely positioned at `z-index: -1`, opacity 0, `content-visibility: hidden`), so chats / terminals / live polling don't tear down on tab swap. `content-visibility: hidden` keeps rendering state, removes the surface from hit-testing and focus, and toggles in a few milliseconds. Do not hide a surface with `inert`, `pointer-events: none`, or a `[attr] *` rule: each restyles every element of the surface, which froze project switches for hundreds of milliseconds when a surface held a long chat. Only a browser without `content-visibility` falls back to `inert`. Mounted surfaces keep a stable DOM order (tab order, not recency), because moving a surface node resets its scroll positions and restyles it. Code that must know whether it is on screen calls `isInParkedSurface(element)`. The host also marks parked project, Work, and Lanes surfaces with `data-ade-animation-state="paused"`; the global renderer stylesheet pauses descendant CSS animations (including pseudo-elements) until the surface becomes active again, avoiding hidden compositor work without discarding UI state.
-- Parked surfaces do not follow the router. Every mounted project sits under the one router, and most of a Work surface reads its location and route match. `ProjectSurfaceRouterScope` (`App.tsx`) holds those two contexts at their last on-screen value for a parked project and for the parked Work surface of the visible project, and the Work element is the same object while it is parked. Without it, one project switch rendered the Work surface of every mounted project (12,950 component renders with four projects open; 4,890 now), and each tab switch rendered the hidden Work surface. A surface gets the live values again in the render that shows it. `setProject` and the tab host also keep the stored `ProjectInfo` and binding objects when a switch reports the same project, and the shell renders a memoized top bar.
-- Work-surface reveal: `ProjectRouteContent` keeps the `/work` route mounted lazily inside each project surface. When the surface itself becomes active **and** the route is a work route, it dispatches the `WORK_SURFACE_REVEALED_EVENT` window event so terminal tiles can clear their texture atlas, force-fit, and refocus.
-- Page-level active gating: lazy feature pages (`LanesPage`, `FilesTab`, `PRsPage`, `HistoryPage`, `AutomationsPage`, `AutomationsTemplatesPage`, `CtoPage`, `SettingsPage`) accept an `active?: boolean` prop and gate every `useEffect` that fires IPC polling, event subscriptions, or initial data fetches behind it. Desktop inactive surfaces render their last state but do not poll. Hosted web is stricter: only the active project surface mounts, because an inactive renderer subscription must never outlive the federated machine/project adapter it was created against.
-- The desktop TopBar project tab strip resolves a per-project favicon via `window.ade.project.resolveIcon(rootPath)` and caches the result in a module-local `Map`. Tabs without an icon (or a missing project root) fall back to the `Folder` Phosphor glyph; the same component drives the loading-pulse animation when a tab is being switched into or closed.
-- Layout state belongs to this client, not to a machine (`ui/clientLayoutStore.ts`, `localStorage`). Entries are keyed by the repository (its account address, or the checkout path when it has no remote), so the same repository on two computers shows the same panes. A layout this client never saved is read once from the tab's copy (the old `layout` and `tilingTree` domains in the project's `kv` table); a failed read saves nothing, so the next mount tries again. Nothing writes back to a machine.
+- `PaneTilingLayout` with pure tree ops in `paneTreeOps.ts`; layouts persist per
+  client and per repository (`ui/clientLayoutStore.ts`), not per machine.
+- `App.tsx`'s `ProjectTabHost` mounts one persistent `ProjectSurface` per open
+  tab, keyed by binding. Each surface remembers its own route
+  (`ade:project-route:<bindingKey>` in `localStorage`).
+- Lazy pages take an `active` prop and gate polling, subscriptions and fetches
+  on it, so a parked tab does no work.
 
 ### 7.5 Performance contract
 
-Enforced rules (from the stability overhaul):
+The measured budget and its rules are in
+[perf/macos-baseline.md](./perf/macos-baseline.md) (see **Performance budget**
+in `AGENTS.md`). Standing rules:
 
-1. All background services go through `scheduleBackgroundProjectTask()` — no raw `setTimeout` for service startup.
-2. New integrations are dormant-until-configured.
-3. Feature pages stage data: cheapest (list/summary/topology) first, heavy (dashboard/settings/model metadata/overlays) on delay.
-4. Never mount expensive trees eagerly — settings dialogs, advanced launcher sections unmount when closed.
-5. Renderer polling is route-scoped except application-wide session attention. `useAppWideSessionAttention` stays mounted in `AppShell` across Work, Files, PRs, and other project routes; it refreshes on PTY/chat/session events, focus, and a visible-window 15-second recovery interval so a `Needs you` transition can update the global highlight and Dock badge off the Work route. `useCtoAttention` sits beside it on the same cadence for the roster-hidden CTO thread, and debounces its probe behind `shouldRefreshSessionListForChatEvent` so a streaming turn does not re-run a full identity-session scan in main per delta. Project-switch/close cleanup generation-guards stale async results. Lane panels still poll only while live sessions exist. The plain PR list does not fire a GitHub refresh on mount, renders active-repository PR snapshots only, skips conflict analysis, and defers rebase-needs / rebase polling until the user opens a workflow tab or selects a PR. Selected PR detail reads apply progressively so slow comments or action-run hydration do not block status/checks/files from painting. Workflow PR views batch merge contexts and conflict analysis against metadata-only lane rows instead of running per-PR git/status work. Run's `LaneRuntimeBar` keeps health/process refreshes separate from preview routing / port / OAuth refreshes so process events do not reread routing state. The Work top-bar sync chip refreshes on focus and on `sync-status` events instead of a 5 s interval. The chat composer's Cursor model inventory is fetched lazily — `ProviderModelSelector` calls `onOpen` on first open of the model catalog, and `AgentChatPane.refreshCursorModelInventory` is the only entry point that hits `cursor` with `activateRuntime: true`.
-6. Shared caches for high-frequency calls (`sessionListCache`, GitHub fingerprint-based snapshots, and the renderer's project-scoped `aiDiscoveryCache`). ModelPicker provider-auth reads join the cache's single in-flight `ade.ai.getStatus` request and react to cache update/invalidation events; picker instances do not poll, and call sites that already supply auth status skip the full-status read.
-7. Memoize expensive renderer computations (`useMemo`, `React.memo`); isolate frequently-refreshing subtrees (e.g., budget footers).
-8. `Promise.allSettled` over `Promise.all` for parallel startup — one failing service must not block others.
-9. Usage surfaces never block first paint on provider-ledger or GitHub scans. The quota popup reads `ade.usage.getSnapshot` before an explicit refresh; retrospective Stats calls `ade.usage.getAdeStats`, which returns cached expensive sources plus live DB aggregates and refreshes stale sources in the background. An explicit Refresh remains available for a forced recompute.
-10. Persistence callbacks dedupe against the last-saved value so a load that writes the same preference back does not persist a no-op.
-
-CLI-launcher and shell-quoting helpers (`cliLaunch.ts`, `shell.ts`) live under
-`apps/desktop/src/shared/` so the desktop renderer, chat launch helpers, ADE CLI
-action surface, and sync remote-command service share one provider launch
-contract. Resume builders preserve provider-native model/permission state when
-an import supplies no explicit override. `externalSessionPolicy.ts`
-similarly centralizes the external-session import policy for desktop, ADE
-Code, and the host import guard (iOS has a Swift port). Renderer imports go through thin re-export shims under
-`apps/desktop/src/renderer/`. The mobile launcher path
-(`work.startCliSession`) uses the shared launch helpers on the host side, while
-iOS mirrors the external-import action policy natively in
-`WorkExternalSessionAffordances.swift`.
-
-Themes: six shipped themes (`e-paper`, `bloomberg`, `github`, `rainbow`, `sky`, `pats`), persisted in `localStorage.ade.theme`, applied via `data-theme` on root. Token-based palettes in `apps/desktop/src/renderer/index.css`.
+1. Background services start through `scheduleBackgroundProjectTask()`.
+2. Integrations stay dormant until configured.
+3. Pages load the cheapest data first and heavy data later.
+4. Expensive trees (settings dialogs, advanced sections) unmount when closed.
+5. Renderer polling is route-scoped, except app-wide session attention
+   (`useAppWideSessionAttention`).
+6. High-frequency calls share caches (`sessionListCache`, `aiDiscoveryCache`).
+7. `Promise.allSettled` for parallel startup.
 
 ### 7.6 Renderer primitives
 
-- `renderer/lib/dialogBus.ts` — tiny pub/sub that lets shared UI open/close dialogs by a stable id (`lanes.create`, `settings.ai`, etc.) without prop-drilling. Dialogs subscribe by id; a `subscribeAll` channel exists for devtools. Default singleton export `dialogBus`.
-- `renderer/components/app/toast/` - shared renderer-only toast primitive. `toastStore.ts` owns stack order, timers, hover pause/resume, sticky toasts, and in-place replacement; `ToastStack.tsx` renders toast cards inside the single `ToastViewport` mounted by `AppShell`. Lane lifecycle and automated rebase terminal events subscribe through `useLaneEventToasts.ts`.
-- `renderer/components/ui/notice/` — shared banner and notice primitives. `Banner` provides the docked, floating, and inline layouts; `AppBannerHost` is mounted once in `AppShell` and controls app-wide placement, order, and overflow. `IntegrationBanners` registers project integration states with that host. Dismissal is durable and fingerprint-aware via `renderer/lib/bannerDismiss.ts` (localStorage-backed, so a dismissal survives restart and project reopen; a dismissed banner auto-resurfaces after ~2 weeks or the moment its underlying state changes/regresses to a different fingerprint). GitHub App health is derived in `renderer/lib/githubIntegrationStatus.ts` (see [Onboarding and settings](./features/onboarding-and-settings/README.md)), so the banner and Settings never disagree. A `blocked` account credential — ADE renewing its own authorization, or GitHub pausing the renewal — raises **no** banner at all: ADE retries on its own, there is nothing the user can do, and every repo reading taken while it is paused is unproven. Only `missing` and `needs_reauth` reach the banner. When `describeGithubOutage` reports a githubstatus.com-corroborated incident, the three GitHub banners are suppressed and replaced by a single neutral `info` notice linking the live incident — three separate accusations against the user's setup would all be symptoms of one cause they cannot fix, and re-authorizing during a GitHub outage is how a working credential gets destroyed. The suppression is gated on the same condition that renders the replacement, and the notice is pinned ahead of severity ordering so the slice into overflow can never hide the explanation while it is still silencing the banners; only the GitHub family is affected. See [Pull requests](./features/pull-requests/README.md#telling-a-github-outage-apart-from-a-broken-credential). The relay banner reads `routeHealth.relay` from `AppShell`'s `sync-status` subscription seeded by `sync.getLocalStatus` (relay belongs to the physical machine, not to whichever runtime a remote-bound project routes to): a deliberate suppression is reported immediately, while a plain outage waits out `RELAY_OUTAGE_GRACE_MS` (2 minutes) of uninterrupted failure on a single armed timer rather than a poll. When the relay is down that long and the account-directory request also gets no reply, one "This computer is offline" banner replaces the relay banner and GitHub's network-failure banner (`renderer/lib/thisComputerOffline.ts`). See [Sync and multi-device](./features/sync-and-multi-device/README.md).
-- `renderer/components/device/` — the live view that the iOS simulator, Mac Desktop and the Android emulator share. `videoRecordParser.ts` reads the video records (`shared/types/videoRecords.ts`), `h264StreamPlayer.ts` and `h264FrameGate.ts` decode them with WebCodecs, `H264StreamView` draws the canvas, and `DeviceFlatView` fits the screen in the pane and maps a pointer to device points. The iOS and Android panes also share the rail (`DeviceRail`), the loading card (`DeviceLoadingCard`), the top strips (`DeviceStatusStrip`), the picker page (`DevicePickerPage`), the stream lease table (`streamLease.ts`), and the stream hooks (`useStreamRecovery`, `useGracefulStreamLease`). The generic panel pieces those tools share (`Spinner`, `DangerConfirmMenuItem`, `drawerPrimitives`) live in `renderer/components/ui/`.
-- `renderer/onboarding/docsLinks.ts` — typed registry of internal/public doc URLs (`docs.lanes`, `docs.cto`, …) used by `SmartTooltip`, the welcome surface, account help, and the `HelpMenu`.
-- `renderer/components/onboarding/LaunchGate.tsx` — fresh-process account gate. New installs see the welcome card first, then sign-in. ADE requires an account, so a first run offers no way past; `accountGateMode` reports `required` for a machine that has never held a session. A machine whose session later expired or became unreadable reports `recoverable` and always offers **Continue to your work**, because local work must never be blocked — `AccountSignedOutBanner` then nags on every surface until the user signs in. Resolving the gate is process-local so extra windows and renderer reloads do not repeat it.
-- `renderer/components/onboarding/FirstRunFlow.tsx` — first-run setup on a computer: the welcome card, "Connect your agents" (`FirstRunAgents.tsx`) and "Bring your projects in" (projects found from the history of every provider ADE imports from by `main/services/onboarding/onboardingProjectDiscovery.ts`, each with its own chat-import pill, plus the phone QR). `tour/OnboardingTourHost.tsx` runs the guided tour that follows it. `LaunchGate.tsx` runs it around sign-in and `OnboardingBootstrap.tsx` replays it. Seen/skipped state is stored in the global app state file, separate from per-project setup onboarding.
+Notices and overlays have exactly one implementation each; read
+[design/notices.md](./design/notices.md) before adding one.
 
-### 7.7 Shared renderer hooks
+- Banners: `Banner` / `useAppBanner` (`components/ui/notice/`).
+- Toasts: `showToast()` (`components/app/toast/toastStore.ts`).
+- Dialogs: `confirmDialog()` / `promptDialog()` / `<Dialog>` (`components/ui/dialog`).
+- Stacking: `Z_LAYERS` (`components/ui/zLayers.ts`).
+- `renderer/lib/dialogBus.ts`: open a dialog by id without prop-drilling.
+- `components/device/`: the live view shared by the iOS simulator, Mac Desktop
+  and the Android emulator.
+- `components/onboarding/LaunchGate.tsx` (account gate) and `FirstRunFlow.tsx`
+  (first-run setup).
+- Hooks: `useCopyToClipboard.ts`, `useAsyncAction.ts`; `lib/pressActivation.ts`
+  for controls that act on press.
 
-Cross-cutting interaction behaviour lives in `apps/desktop/src/renderer/hooks/` rather than being re-derived per component. Two hooks (both adapted from the MIT-licensed interior.dev component set) own interactions that hand-rolled copies kept getting subtly wrong:
+### 7.7 Cross-surface shared models
 
-- `useCopyToClipboard.ts` — the single owner of "copy, then flash **Copied**". It holds a monotonic run ticket so a slow write resolving after a newer one cannot clobber the newer flash, a mounted guard so a late resolve is a no-op, and one timer that is always cleared. It serves both shapes in the renderer: an unkeyed button (`copied`) and a keyed list where exactly one row may flash (`copiedKey` / `isCopied`). The default transport is `navigator.clipboard` with a hidden-textarea fallback for the Electron case where the document is not focused; panes that must write through the main process pass a `write` override, which then owns the whole write with no fallback behind it. Two contracts matter at call sites: copying empty text is a no-op that returns `false` rather than clearing the clipboard, and a failed write returns `false` instead of throwing — anything that shows a success message must gate on the returned boolean. All copy affordances across chat, PRs, settings, automations, CTO, onboarding, and remote-target surfaces route through it.
-- `useAsyncAction.ts` — `run`/`pending` for a user-initiated async action. The re-entrancy guard is a ref set synchronously, so a double-click within one tick cannot double-submit (a `busy` state flag flips a render too late), and a settle after unmount is dropped. It models no success/error phase: callers keep their own error state and fill it from `onError`.
-
-The pre-existing `hooks/usePrefersReducedMotion.ts` remains for controls that need to change *what* renders under reduced motion. For animation itself, the policy is global rather than per-site: `main.tsx` wraps the root in `<MotionConfig reducedMotion="user">`, so every `motion` element honours the OS setting without opting in — transform and layout animations are skipped while opacity still animates, meaning the information still arrives and only the trip is dropped.
-
-**Controls that act on the press.** `renderer/lib/pressActivation.ts` gives a control that only changes what is on screen its `onPointerDown` and `onClick`: `pressActivation(action, actOnPress?)`. A plain mouse press (primary button, no modifier key, on the control itself and not on a nested control or a portal of it) acts at once, and the click of that press is dropped. Touch, pen, the keyboard, assistive technology and modified clicks act on the click as before. `action` may return an undo, which runs when the press becomes a native drag of the control. It is on the chat rows of the Work list, the page tabs and footer items of the project sidebar, the machine tabs of the top bar (`ShellNavTab`: Chats, Browser, Music, Settings, New Tab), and the project tabs. A project tab has no undo: a project switch writes the recent-project order and resets per-project state, so a drag of a background tab (reorder or tear-off) also brings its project to the front, as a browser tab does. A project tab acts on the press only when the switch is immediate: a local tab that is not the current one, is not missing or relocating, and has a loaded project, from the plain state (a project in front; no machine, account or hub page, new tab or Settings tab; nothing in transition). Every other case keeps the click, and so does a tab of another machine's project: those switches are transitions, and a transition stops a tear-off. A tear-off waits for the switch that its press started before it closes the tab in the source window. Measured with `scripts/perf/ui/press-to-paint.mjs`; numbers in `docs/perf/macos-baseline.md`.
-
-### 7.8 Cross-surface shared models
-
-Some UI vocabulary has to be identical on clients that do not share a
-runtime. `apps/desktop/src/shared/` is the home for it: the desktop main and
-renderer processes import it, the hosted web client ships the same bundle,
-and iOS re-implements it in Swift because it cannot import any of it.
-
-`shared/chips.ts` is the current example. One `Chip`
-(`{ kind, token, label, detail, source }`) combines chat mentions
-(`@chat:` / `@lane:` / `@term:` / `@pr:` / `@mac:` / `@mcp:` / `@person:`), model and
-permission mentions, URL-shaped smart links, file paths, and folders. It routes
-`ade://` URLs through the real `deeplinks.ts` parser instead of one opaque kind.
-The canonical `token` travelling next to the display `label` is what lets a
-chip survive copy, paste into a *different* chat, a send, and a re-render on
-another device. See
-[Chips](./features/chat/composer-and-ui.md#chips).
-
-`shared/threadEntities.ts` is the newer one. It holds the pure rules that find
-the ADE things an agent names in its replies — a lane, a chat, a model, a
-permission mode, a slash command, a PR, a commit, a Linear issue, a zoned
-timestamp — and hands each surface an entity to draw (the desktop
-`remarkThreadEntities` plugin and the iOS
-`WorkThreadEntityRules.swift` port). The grammar is shared; only the drawing is
-per-client, so a lane named in one client's reply resolves to the same id
-everywhere. See [Chips](./features/chat/composer-and-ui.md#entities-an-agents-reply-names).
-
-Where one surface must re-implement a shared model, the parity is a **test
-fixture**, not a promise. `shared/__fixtures__/chipCases.json` is asserted by
-`shared/chips.test.ts` and, read from disk, by the iOS suite; adding a row fails
-the Swift tests until Swift matches. CI closes the last hole: the `test-ios` job
-in `.github/workflows/ci.yml` normally skips a PR that does not touch
-`apps/ios/**`, so its gate includes the fixture directory too — otherwise a
-desktop-only PR could add a case, merge green, and break main.
-
-Related UI docs: [Terminals UI surfaces](./features/terminals-and-sessions/ui-surfaces.md), [Files and editor](./features/files-and-editor/README.md), and [Onboarding and settings](./features/onboarding-and-settings/README.md).
+UI vocabulary that must match across clients lives in
+`apps/desktop/src/shared/` (desktop and web import it; iOS ports it to Swift).
+`shared/chips.ts` (chat mentions and smart links, routed through the real
+`deeplinks.ts` parser) and `shared/threadEntities.ts` (lanes, chats, PRs and
+other entities an agent names in a reply) are the main examples. Parity with the
+Swift port is a test fixture (`shared/__fixtures__/chipCases.json`), and the
+`test-ios` CI gate includes that fixture directory. See
+[composer-and-ui](./features/chat/composer-and-ui.md#chips).
 
 ---
 
-## 8. Security & Trust Boundaries
+## 8. Security and trust boundaries
 
 ### 8.1 Electron safeStorage for secrets
 
 | Secret | Location | Protection |
 |--------|----------|-----------|
-| GitHub PAT | `.ade/secrets/github/*.bin` | `safeStorage.encryptString` (OS-backed) |
-| API provider keys (project) | `.ade/secrets/api-keys.v1.bin` plus account vault | Credential store, then the macOS Keychain, then the environment. Account/device provenance; legacy plaintext `api-keys.json` is imported and removed |
-| API provider keys (machine) | `~/.ade/secrets/` via `resolveMachineAdeLayout` | Same store, machine scope, device-only. A key here follows the machine rather than the project |
-| Account settings cache | `~/.ade/account-settings.json` | Non-secret settings only; owner-tagged `0600` cache that survives sign-out and is discarded on account switch |
-| Account vault cache | `~/.ade/account-vault.json.enc` | Atomic `0600` machine-key-encrypted cache; legacy plaintext is accepted only for migration and removed after encrypted write succeeds |
-| Passwords & Secrets | `~/.ade/passwords/passwords.v1.enc` (+ the relay's sealed items) | Each item sealed under the account's vault key; this file is the machine-key-encrypted cache. "This computer only" secrets live in the same file, never synced. A project's old `.ade/secrets/project-secrets.v1.enc` is moved in and deleted on first open (`projectSecretService.migrateLegacy`) |
-| Machine credential store (shared) | `.ade/secrets/credentials.json.enc` + `.machine-key` | AES-GCM file store sealed with the machine key. Read and written by the brain, the `ade` CLI, and desktop |
-| Machine credential store (Electron) | `.ade/secrets/credentials.safe.enc` | `safeStorage.encryptString`; readable only by Electron |
-| Claude OAuth creds | Claude's own store | Inherited |
-| Codex auth tokens | Codex's own store | Inherited |
-| macOS Keychain entries | OS Keychain | OS-backed |
-| Sync site ID | `.ade/secrets/sync-site-id` | Plaintext, never syncs |
-| Sync device ID | `.ade/secrets/sync-device-id` | Plaintext, never syncs |
-| Sync bootstrap token | `.ade/secrets/sync-bootstrap-token` | Plaintext, never syncs |
-| External-ADE CLI secrets | `.ade/local.secret.yaml` | Plaintext, never syncs |
+| GitHub token | `.ade/secrets/github/*.bin` | `safeStorage` |
+| Provider API keys (project) | `.ade/secrets/api-keys.v1.bin` plus the account vault | Credential store with account/device provenance (`apiKeyStore.ts`) |
+| Provider API keys (machine) | `~/.ade/secrets/` | Same store, machine scope |
+| Account settings cache | `~/.ade/account-settings.json` | Non-secret, owner-tagged `0600` |
+| Account vault cache | `~/.ade/account-vault.json.enc` | Machine-key-encrypted `0600` |
+| Passwords & Secrets | `~/.ade/passwords/passwords.v1.enc` (+ the relay's sealed items) | Each item sealed under the account vault key |
+| Machine credential store (shared) | `.ade/secrets/credentials.json.enc` + `.machine-key` | AES-GCM file store; read by the brain, the CLI and desktop |
+| Machine credential store (Electron) | `.ade/secrets/credentials.safe.enc` | `safeStorage`; Electron only |
+| Claude, Codex credentials | the provider's own store | Inherited, never written |
+| Sync site id, device id, bootstrap token | `.ade/secrets/` | Plaintext, never synced |
 
-Rules for the credential stores (`main/services/credentials/`, `apps/ade-cli/src/services/credentials/`):
+Credential store rules (`apps/ade-cli/src/services/credentials/`):
 
-- Only the AES file store is shared across processes; `safeStorage` is Electron-only. `FILE_BACKED_CREDENTIAL_KEYS` pins every key that more than one process owns to the file store: `account.session.v1`, `account.session.rotation.v1`, `sync.bootstrapToken.v1` and `github.appUserToken.v1`. Two copies of the GitHub App record mean two processes refresh one rotating token, and GitHub revokes the grant ([automations](./features/automations/README.md#how-ade-stops-a-github-app-refresh-storm)). A write of a pinned key through `safeStorage` throws.
-- `createDesktopCredentialStore` wraps the Electron store in `createRoutedCredentialStore`, which reads and writes pinned keys in the shared file. The router has no whole-map `updateSync`; it routes `updateKeySync` per key. When `safeStorage` is unavailable, `createUnavailableCredentialStore` throws the reason on every call instead of answering "no value".
-- `adoptFileBackedCredentials` moves a pinned key that an older build left in the Electron store back to the file, once per secrets directory per process. The fresher record (`updatedAt` / `obtainedAt`) wins; an undated stranded record stays where it is; a pass that could not read the Electron store is retried.
-- `credentialStoreIdentity()` names a store by `credentialPathKey`, which folds separators, `.`/`..`, and case on Windows and macOS. The GitHub App refresh lease uses this identity.
-- On macOS the `safeStorage` key is the Keychain item `ade-desktop Safe Storage`. `resolveSafeStorageKeyName` (`main/safeStorageKeyName.ts`) gives a channel build `ade-desktop-<channel>` only on a first launch with nothing sealed, and records the choice in `safe-storage-key.json`. Windows (DPAPI, one user-data folder per channel) and Linux keep the shared name.
-- Every single-key write goes through `updateCredentialKeySync` (`updateKeySync`, then `updateSync`, then get/set). A caller that must not fall to get/set asks `supportsAtomicCredentialUpdate` first.
-- The shared file is sealed with the bare machine key (`binding: "machine"`), because the brain runs with no UI and cannot read a Keychain item that belongs to the app. Readers try both keys and re-seal only toward `machine`. `osBoundKeyMaterial.ts` never mints a replacement secret on an inconclusive `security` result.
-- An unreadable store never stops a process. Reads report `decrypt_failure`, `no_os_key_material` or `store_format`. A write copies the ciphertext to a timestamped sibling with a `credentials.json.enc.quarantine.json` marker and starts a fresh store; the first process that can decrypt a recoverable quarantine merges back the keys the live store lacks. `ade doctor` reads this from disk. A brain that cannot read the store publishes nothing to the account directory; Connections repairs it, and `ade_account_session_unreadable` reports it once per episode.
+- Only the AES file store is shared across processes. `FILE_BACKED_CREDENTIAL_KEYS`
+  pins every key more than one process owns (`account.session.v1`,
+  `sync.bootstrapToken.v1`, `github.appUserToken.v1`, …) to the file store;
+  `createRoutedCredentialStore` routes them, and `adoptFileBackedCredentials`
+  moves keys an older build left in the Electron store.
+- Every single-key write goes through `updateCredentialKeySync`; a caller that
+  needs a true compare-and-swap asks `supportsAtomicCredentialUpdate` first.
+- The shared file is sealed with the bare machine key, because the brain has no
+  UI and cannot read the app's Keychain item.
+- Keychain and service names are frozen (`ade-desktop Safe Storage`,
+  `com.ade.runtime.credentials.v1`, …): renaming them makes every stored secret
+  unreadable.
+- An unreadable store never stops a process: reads report the cause, and a
+  write quarantines the old file and starts fresh.
 
-Settings › Passwords & Secrets imports a `.env` file the person picks (1 MB cap; the dialog shows each value's length, never the value) through `passwords.importSecrets`. `passwords.exportSecrets` asks for Touch ID or Windows Hello and writes a new `0600` file in this computer's Downloads.
+### 8.2 Preload as the only cross-boundary surface
 
-### 8.2 Preload as only cross-boundary surface
+The renderer has no `require`, Node or network; its only path is `window.ade.*`
+plus a strict CSP (`rendererCsp.ts`: `script-src 'self'`, no eval, a host-scoped
+image allowlist). `main.ts` also guards subframe navigation against the same
+allowlist. Every IPC handler validates its arguments and returns structured
+errors.
 
-```
-┌──────────────── Main process (trusted) ──────────────┐
-│  Full Node access: git, fs, PTY, sqlite, process     │
-│  ┌────────────────────────────────────────────────┐  │
-│  │ Preload bridge (contextBridge)                 │  │
-│  │ window.ade = { /* ~550 typed methods */ }      │  │
-│  └────────────────────────────────────────────────┘  │
-├──────────────── Renderer (untrusted) ────────────────┤
-│  React app · no require() · no node · no net         │
-│  Only path: window.ade.*  + CSP                      │
-└──────────────────────────────────────────────────────┘
-```
+Bridge rules:
 
-`BrowserWindow` hardening:
+- Most `window.ade.sync.*` calls follow the binding; `sync.getLocalStatus`
+  reads this computer's brain on purpose.
+- `window.ade.attention.*` does not follow the binding (section 2.2).
+- `window.ade.accountSettings.*` carries non-secret settings only; no vault
+  value crosses the bridge.
 
-```typescript
-webPreferences: {
-  nodeIntegration: false,
-  contextIsolation: true,
-  sandbox: false,        // required for preload functionality
-  preload: "preload.cjs",
-}
-```
+### 8.3 CLI auth and API-key storage
 
-**CSP** (`rendererCsp.ts`): `default-src 'self'`; `script-src 'self'` (no eval, no inline scripts); `style-src 'self' 'unsafe-inline'` (required for Tailwind); `connect-src 'self'`; `img-src 'self' data:` plus a host-scoped allowlist (no blanket `https:`) for the image origins PR/README surfaces actually load — the GitHub avatar/asset hosts (`*.githubusercontent.com`, `github.githubassets.com`, …) and `www.gravatar.com` / `secure.gravatar.com` (commit-author identicon fallback). `frame-src` is `'self'` plus local sources plus `FRAME_SRC_EXTRA_SCHEMES` (`ade-scene:`, `blob:`, `about:`); there is no external frame host, because the welcome video is now a thumbnail that hands off to the system browser. `ade-scene:` and `blob:` are there for agent-authored scenes and are deliberately absent from `img-src`, `media-src`, and `connect-src` — ADE's own document has no reason to fetch one (see [features/chat/README.md › Scenes](./features/chat/README.md#scenes)). The Electron header hook applies this policy only to ADE renderer main-frame documents; external subframes keep their own response CSP so embedded players can execute their host-provided scripts.
-
-**Subframe navigation is a second door on the same allowlist.** `frame-src` bounds where a nested context may be *loaded from*; it says nothing about a frame navigating itself, which is how a sandboxed scene could exfiltrate by `location =` rather than by `fetch`. So `main.ts` registers a `will-frame-navigate` handler that ignores main frames and answers every subframe with `isRendererFrameNavigationAllowed(url, { rendererUrl, devServerUrl })` from `rendererCsp.ts` — the same `FRAME_SRC_EXTRA_SCHEMES` / `PACKAGED_FRAME_SCHEMES` literals `frame-src` is built from, so there is no hand-copied list to drift, and the refusal is logged as `window.frame_navigation_blocked`. It is tighter than `frame-src` in exactly one place on purpose: other local http ports are allowed only while a dev server is configured, because a packaged renderer frames nothing over http. A door narrower than the CSP is its own bug — the handler first shipped without `file:`/`app:`, which blanked every packaged spec preview.
-
-Every IPC handler **validates** its arguments; invalid args return structured errors, never crash. Every handler has a **30s timeout** by default; `ipcTimeouts.ts` carries per-channel overrides for long-running operations (`ade.iosSimulator.launch` → 10 min) and reads the `{ domain, action }` payload of `localRuntime.callAction` / `remoteRuntime.callAction` so action-specific timeouts (e.g. `lane.delete` → 4 min) apply even when the channel itself is generic. `ade.remoteRuntime.streamEvents` gets 2.5 minutes, just above the 2-minute event-setup ceiling in `remoteEventSetup.ts`, so main names the step that hung before the IPC deadline fires. Every handler emits structured tracing.
-
-Bridge rules that cross channels:
-
-- Most `window.ade.sync.*` methods follow the project binding. `window.ade.sync.getLocalStatus` reads this computer's brain on purpose (the Connections identity, pairing code and device lists). Renderers read it only through `renderer/lib/localSyncStatusReader.ts`, which shares one invoke per `sync-status` broadcast and backs off on a `degradedReason` snapshot. Main logs `sync.local_status_degraded` at most once a minute per reason.
-- `window.ade.attention.*` does not follow the binding. Main calls the account relay through `AttentionAccountCoordinator`, with a labeled local fallback; the web adapter does the same. Both chunk acknowledgments through `runAcknowledgmentChunks` (`shared/types/attention.ts`): 64 ids a batch, stop on the first failed chunk.
-- `window.ade.account.*` has the device-login trio (`startDeviceLogin` / `pollDeviceLogin` / `cancelDeviceLogin`) and `repairMachinePairing`, which backs "Reconnect this computer". Only the device flow goes through the account directory, so only it can mint a pairing grant for a removed machine.
-- `window.ade.accountSettings.*` (`list`, `get`, `set`, `remove`, `sync`) carries non-secret settings and answers "unavailable" when the brain is offline. No vault value crosses the bridge: credentials use the `account_vault` action domain, policy-gated apart from `account_settings`. Main services use `accountVaultBridge`; the account migration runner fills provider keys and Linear credentials after sign-in.
-- The Dock badge has one writer, `useAppWideSessionAttention`, which counts loud projected session rows and calls `window.ade.app.setDockBadgeCount`; main validates the count. The CTO thread is not in any roster, so `useCtoAttention` reads `window.ade.cto.getAttention()` (`idle`, `awaiting-input`, `unknown`) and the hook folds it in. A client keeps its last badge on `unknown`. The probe has no side effects on every transport, because creating the CTO session would create a main checkout lane. See [features/cto/README.md](./features/cto/README.md#hidden-from-rosters-but-never-silent).
-
-### 8.3 ADE CLI auth + API-key storage
-
-- ADE CLI session identity is resolved from env vars and the `initialize` handshake.
-- Role validation: only `cto`, `agent`, `external`, `evaluator` accepted.
-- A session binding cannot elevate authority. The runtime default role is a
-  ceiling; a bound caller that would otherwise resolve to `cto` is clamped to
-  `agent` unless it explicitly declares a lower role.
-- API keys for provider-routed (non-CLI) models are stored via `apiKeyStore.ts`.
-- `apiKeyStore.ts` keys are project-scoped: they live in the project's `.ade/secrets` and carry account/device provenance. Account-origin keys are mirrored to the encrypted account vault and hydrated or purged at the account boundary; a key the account reports deleted is dropped locally without re-issuing the vault delete; device-only keys stay local.
-- The account settings and vault action domains are `account_settings` and `account_vault`, with the latter's secret reads/writes restricted to the host/CTO policy. Both stores keep a delete as a tombstone rather than dropping the row, because the row is the only evidence a key was deleted on another machine — and the only thing a stale page from a pre-delete cursor loses against.
-- The brain is the sole refresh-token refresher. Desktop and `ade` install a broker that asks the brain for access tokens; a local exchange is only the explicit fallback when the brain cannot be reached. This prevents rotating refresh credentials from being exchanged concurrently by multiple processes.
+- Session identity comes from env vars and the `initialize` handshake; roles
+  are `cto`, `agent`, `external`, `evaluator`, and a binding can never raise a
+  caller above the runtime ceiling.
+- The brain is the only refresher of the account refresh token; desktop and CLI
+  ask it for access tokens, with a local exchange only when the brain is
+  unreachable.
+- Account settings and vault deletes are kept as tombstones so a delete on
+  another machine is not undone.
 
 ### 8.4 Sensitive-data handling
 
-- **Redaction** (`shared/utils.ts` `redactSecrets()`) scrubs Bearer tokens, every key of a known shape, and JSON-embedded sensitive key-value pairs before any log write or AI-context serialization. The key shapes (OpenAI/Anthropic `sk-`, GitHub, GitLab, Slack, AWS, Google, Stripe, Linear, Sentry, xAI, Groq, npm, Hugging Face, Google OAuth, JWTs, private-key blocks) are one list, `shared/secretTokenShapes.ts`, shared by `redactSecrets()`, the conflict resolver's AI context (`main/utils/redaction.ts`), command-line masking (`shared/secretRedaction.ts`) and error reports (`shared/sentry/scrub.ts`); each keeps its own context rules (`password=…`, `Bearer …`, URL credentials), because how far they may reach depends on the text. `shared/secretText.ts` (does a copy look like a secret?) and the relays' own `sentryScrub.ts` copies keep separate lists.
-- **Sanitization** (`sanitizeStructuredData()`) enforces depth limits, redacts sensitive keys, and truncates oversized arrays/strings.
-- **Child-process output** (`main/utils/redaction.ts`): `redactProcessOutput()` applies the error-report secret shapes (`shared/sentry/scrub.ts`, no length cap) to agent stderr (ACP hosts, Muse) before it reaches a log line or a chat error. `redactGitOutput()` also drops every URL's query and fragment, because git repeats a remote URL query and all (it strips only `user:password@`); it runs in `formatGitExecutionError()` (so every `runGitOrThrow` failure) and on the clone, fetch, push and `ls-remote` errors that reach the UI. A caller that words its own git error message passes the output through it.
-- **Company networks** (`services/shared/outboundNetwork.ts`): the desktop main process and every `ade` CLI run (the brain included) apply the proxy named in `HTTPS_PROXY`/`HTTP_PROXY` to Node's `fetch` and `http`/`https` through `http.setGlobalProxyFromEnv`, keeping the user's `NO_PROXY` and always adding loopback (`localhost`, `127.0.0.1`, `::1`, `[::1]`). They also add the certificates the OS trusts (a company or TLS-inspecting proxy's root) to Node's default CA set, read in a worker thread because the store read takes ~140 ms on macOS. Main and the brain always do; a short CLI command does only behind a proxy. The proxy API needs Node 24.14+ (the CA read is also in 22.19+): Electron and the release runtime ship it, and the `ade` CLI on an older Node logs `network.proxy_unsupported` and runs as before. Nothing is added to child-process environments. `ws` WebSockets open their own sockets and are not proxied, and the streamed attachment upload to a paired machine passes `agent: false`, since a LAN or tailnet host is never reachable through the proxy. Electron's `net.fetch` already follows the OS for both.
-- **Bounded AI payloads** — narrative/proposal calls use `LaneExportStandard` or `LaneExportLite` + `ConflictExportStandard` (token-budgeted), not raw pack dumps or transcript slabs.
-- **Path validation** (`resolvePathWithinRoot()`) resolves symlinks via `realpathSync` before containment checks. Applied to lane env init, coordinator tools, process working dirs, sync artifact paths, ADE CLI context file resolution, computer-use artifact ingestion.
-- **No config arrives from a repository**: `.ade/ade.yaml` is not read. A legacy committed file is carried over into `local.yaml` once — only `project`, `environments`, `github`, `ai`, `linearSync`, `ui`, and `browser`; executable `testSuites`, `laneOverlayPolicies`, `automations`, `laneEnvInit`, `laneTemplates`, `defaultLaneTemplate`, `git`, and `laneCleanup` are dropped — and then deleted. A clone therefore cannot supply a `command`, a `setupScript`, or an agent prompt, and there is no trust gate to approve.
-- **Provider sign-in relays, never stores**: Pi sign-in runs Pi's own `ModelRuntime.login` in a worker; Pi's `AuthStorage` writes `auth.json` under its cross-process lock. ADE receives prompt text only, passes the user's answer straight back, and keeps nothing on the status event. `ade.ai.piLoginSubmit`'s `value` argument is in the per-channel redaction map because for an API-key prompt that argument *is* the credential. That map lives in `services/ipc/ipcChannelRedaction.ts` (`ipcChannelRedactionMap` + `redactIpcArgsForChannel`) rather than inside `registerIpc.ts` so the contract is reachable from a test — a channel silently dropping out of it leaks into verbose IPC traces and nothing else fails.
-- **IPC trace redaction is two rules, kept visibly apart.** `ipcChannelRedactionMap` is the specific statement, and it names the two key-store channels (`ai.storeApiKey` and `ai.setOpencodeProviderKey`, both on `key`) and `passwords.call` on `args` (a saved secret's value or a `.env` import travels inside it) alongside the terminal, browser, and app-control channels. `shouldRedactIpcKey` is the backstop for a channel nobody remembered to list: a SUBSTRING match for a family of names (`token`, `secret`, `password`, `authorization`) and an EXACT match for one that would over-match (`apikey`, `api_key`, `pairingpin`, `pairing_pin`). A bare `key` is deliberately **not** in the backstop — it is a credential on the key-store channels, which the map names outright, and the ordinary word for a lookup key everywhere else, where blanking it generically would empty the traces that exist to explain those calls.
-- **Untrusted project code stays unexecuted**: the Pi worker constructs Pi's `SettingsManager` with `projectTrusted: false` and passes it to both the resource loader and the session, so only the user's own `~/.pi/agent/extensions` can load — never a checked-out repository's `.pi/extensions`. If a Pi build will not accept that flag, extensions are disabled rather than loaded unconstrained.
+- `redactSecrets()` (`shared/utils.ts`) scrubs bearer tokens and known key
+  shapes before any log write or AI context; `sanitizeStructuredData()` bounds
+  depth and size.
+- `main/utils/redaction.ts` redacts agent stderr and git output.
+- `services/shared/outboundNetwork.ts` applies `HTTPS_PROXY` / `HTTP_PROXY` to
+  every desktop and CLI process, keeping `NO_PROXY`.
+- `resolvePathWithinRoot()` resolves symlinks before containment checks.
+- No config arrives from a repository (section 3.3), and the Pi worker never
+  loads a checkout's `.pi/extensions`.
+- Provider sign-ins relay, never store: Pi's own `AuthStorage` writes its
+  credentials.
 
-Related trust-boundary docs: [Computer-use artifact broker](./features/computer-use/artifact-broker.md), [Computer-use backends](./features/computer-use/backends.md), and [Configuration schema](./features/onboarding-and-settings/configuration-schema.md).
+Related: [artifact-broker](./features/computer-use/artifact-broker.md),
+[configuration-schema](./features/onboarding-and-settings/configuration-schema.md).
 
 ---
 
-## 9. Git Engine
+## 9. Git engine
 
 ### 9.1 Strategy
 
-- ADE **shells out** to the system `git` binary (not isomorphic-git). Rationale: full feature parity, hook compatibility, native credential handling, performance.
-- Remote commands (push, fetch, pull, `ls-remote`) go through `runGitWithGithubAuthFallback` (`git/gitTransportAuth.ts`): git's own credential first, then, for an https GitHub remote, ADE's GitHub credential as an `http.extraheader` in git's config environment, never on the command line or on disk. Clones from older ADE versions saved that header in `.git/config`; on project open, the brain removes it once (`savedGithubHeaderCleanup.ts`: only the `http.https://github.com/.extraheader` key, only an `x-access-token` credential, so a header the person set stays).
-- All commands go through `runGit` / `runGitOrThrow` in `apps/desktop/src/main/services/git/git.ts` (timeout support, structured output parsing, index-lock retry). Every git process gets `GIT_READ_ENV` (`git/gitReadEnv.ts`, `GIT_OPTIONAL_LOCKS=0`), so a status read does not take `.git/index.lock` beside the user's own git command; the file search and the agent git tools, which spawn git themselves, spread the same constant. `runGit` is also where the shared concurrency ceiling and cache invalidation live — see [Process budget](#92-process-budget-concurrency-ceiling-and-the-repo-scoped-cache).
-- Git reads override configuration that changes parsed status and diff output.
-  Push, pull, and fetch request English messages for reliable error handling;
-  staging all files supports sparse checkouts. `git/gitWorktreeRoot.ts` verifies
-  that a lane is a worktree root before operations that require one.
-- `GitRunOptions` also takes `onStderrLine` and `signal`. `onStderrLine` receives each stderr line as it arrives, splitting on both `\r` and `\n` because git redraws progress in place; a throwing observer never breaks the git call, and an unterminated line is capped so it cannot grow without bound. `parseGitCheckoutProgressLine` turns `Updating files:  78% (2104/2700)` into `{ percent, completed, total }` — lane creation uses it with `GIT_PROGRESS_DELAY=0` so checkout progress streams through a pipe. Aborting `signal` kills the git process tree (`SIGKILL`) and resolves with exit code 130 only after the process has exited (or a 2 s safety window), so a caller cleaning up after a cancelled `worktree add` never races a git still writing files; an already-aborted signal (e.g. cancelled while queued for a git slot) never spawns git. `resolveGitCommit(ref, cwd)` returns the sha `ref^{commit}` resolves to, or null.
-- Executable discovery reuses `ai/cliExecutableResolver.ts` to inspect PATH and known installation directories. On macOS, ADE prefers an independently installed Git over Apple's `/usr/bin/git` and probes the login shell before accepting `/usr/bin/git`; this keeps project opening usable when Apple's Git is blocked by an unaccepted Xcode license. If Apple's Git is the only available option, the surfaced error explains that accepting the license is a Git prerequisite, not an iOS Simulator or code-signing requirement, and points to installing Git separately as the alternative. The login-shell PATH and npm-prefix reads that build an agent's environment are memoized for 60 s, and a failed read is retried; the shell read spawns a login shell synchronously, so reading it on every turn stalled the brain's event loop.
-- High-level ops in `gitOperationsService.ts` — wrap every mutation in `runLaneOperation()`: resolve lane, capture pre-HEAD, record operation, execute, capture post-HEAD, finalize record, fire `onHeadChanged` if needed. Its `getSyncStatuses` method accepts lane IDs once and returns the existing `getSyncStatus` shape keyed by lane ID.
+- DAEX shells out to the system `git`. Every call goes through `runGit` /
+  `runGitOrThrow` in `apps/desktop/src/main/services/git/git.ts` (timeouts,
+  parsing, index-lock retry) with `GIT_READ_ENV` (`GIT_OPTIONAL_LOCKS=0`), so a
+  status read never takes `.git/index.lock`.
+- Remote commands use `runGitWithGithubAuthFallback`
+  (`git/gitTransportAuth.ts`): git's own credential first, then DAEX's GitHub
+  credential as an `http.extraheader` in the environment, never on disk.
+- On macOS DAEX prefers an installed Git over Apple's `/usr/bin/git`.
+- `gitOperationsService.ts` wraps every mutation in `runLaneOperation()`, which
+  records an operation with pre and post HEAD.
 
 ### 9.2 Process budget: concurrency ceiling and the repo-scoped cache
 
-Every git question is a process spawn, and lane refreshes fan out over lanes. Two mechanisms in `services/git/git.ts` bound that. Both sit inside `runGit`, so every caller gets them.
+Both live inside `runGit`, so every caller gets them.
 
-- **Concurrency ceiling.** One process-wide semaphore, `MAX_CONCURRENT_GIT_PROCESSES = 12`. Mutating commands skip the queue, so a Commit never waits behind a bulk read. `isRefAffectingGitCommand` (`gitRepoCache.ts`) finds the verb past git's global options and treats read-only forms (`config --get`, `remote get-url`, `worktree list`, `branch --list`) as reads.
-- **Repo-scoped cache** (`services/git/gitRepoCache.ts`). Entries are keyed by the repository's common git dir, so every lane worktree of one repo shares one answer. `gitCommonDirFor(cwd)` uses bare `git rev-parse --git-common-dir` (not `--path-format=absolute`, which needs git 2.31), memoizes it, and retries a failed probe after 60 s. An empty key means "do not cache".
-
-| Class | TTL | Used for |
-|-------|-----|----------|
-| `volatile` | 1.5 s | Resolved ref SHAs. Shorter than the 10 s lane-list cache it feeds. |
-| `stable` | 5 min | Config answers: `origin` URL, committer identity. |
-
-- A failure is cached too, always on the volatile window. Concurrent misses for one key share one load.
-- `runGitRepoCached(args, opts, { key, cacheClass })` is the read path. The key names the question, not the caller: `getHeadSha` and `conflictService.readHeadSha` both use `rev-parse:<cwd>:<ref>`.
-- After any ref-affecting verb, `runGit` drops that repository's entries, also when the command failed. If the repo is not resolved yet, it drops every repository. Invalidation is epoch-guarded: a read that started before it answers its caller but cannot store its result.
-- Git run outside `runGit` (a commit in an ADE terminal) invalidates nothing; the 1.5 s TTL is the only defense.
+- **Concurrency ceiling**: one semaphore, `MAX_CONCURRENT_GIT_PROCESSES = 12`.
+  Mutating commands skip the queue.
+- **Repo-scoped cache** (`services/git/gitRepoCache.ts`): keyed by the
+  repository's common git dir, so all lanes of one repo share answers.
+  `volatile` entries (resolved refs) live 1.5 s, `stable` entries (config) 5
+  min. `runGitRepoCached(args, opts, { key, cacheClass })` is the read path. Any
+  ref-affecting command drops that repository's entries, even on failure. Git
+  run outside `runGit` (a commit in a terminal) invalidates nothing; the 1.5 s
+  TTL is the only defense.
 
 ### 9.3 Worktree-per-lane isolation
 
-Each non-primary lane maps to a dedicated worktree:
-
 ```bash
-git worktree add -b ade/<slug>-<uuid8> .ade/worktrees/<slug>-<uuid8> <base_ref>
+git worktree add -b <branch> .ade/worktrees/<slug>-<uuid8> <base_ref>
 ```
 
-Lane types (per `lanes.lane_type`):
-
-| Type | Worktree location | Notes |
-|------|-------------------|-------|
-| `primary` | Project root | The main repo checkout (e.g., `main`). |
-| `worktree` | `.ade/worktrees/<slug>-<uuid8>` for lanes ADE created, or wherever the user made theirs | Every non-primary lane. Worktrees are adopted automatically — there is no attach step. |
-| `attached` | User-specified path (`attached_root_path` column) | **Legacy only.** Nothing writes this value anymore; existing rows behave exactly like `worktree` lanes. |
-
-Worktree lifecycle: create (60s timeout), archive (DB status only, worktree remains on disk), delete (`git worktree remove` + optional `git branch -D`), cascade-delete dependent rows (deltas, sessions, operations, pack index).
-
-Lane rows are not the authority on which worktrees exist — git is. Every `lanes.list` reconciles the two from a single `git worktree list`, inserting a lane for any worktree of this repository that no row claims and deleting the row for any non-primary, non-archived lane whose worktree is gone from both git and disk. There is no register or attach step. The reconcile is scoped by ownership (`git rev-parse --git-common-dir`): a project root that is itself a linked worktree sees the whole repository in that listing and therefore adopts and reaps only under its own `.ade/worktrees`. All of it runs in realpath space, because git resolves symlinks and ADE's stored paths do not. See [Lanes › Every git worktree is a lane](./features/lanes/README.md#every-git-worktree-is-a-lane).
+The branch name comes from the project's lane branch pattern (default
+`ade/{slug}`, `DEFAULT_LANE_BRANCH_PATTERN` in `shared/laneBranchName.ts`; the
+default keeps the old name on purpose). Lane types:
+`primary` (the project root, shown as **Main checkout** through
+`laneDisplayName`), `worktree` (every other lane, including worktrees the user
+made, adopted automatically), `attached` (legacy, behaves like `worktree`).
+Archive changes only the DB status; delete runs `git worktree remove` and
+cascades dependent rows. Git is the authority on which worktrees exist: every
+`lanes.list` reconciles rows against one `git worktree list`.
 
 ### 9.4 Lane status
 
-- Lanes compare to their open PR base or the project default branch.
-- `computeLaneStatus()` returns `{ dirty, ahead, behind }` on demand, no caching. Status derivation uses `git status --porcelain=v2 --branch` and `git rev-list --left-right --count`. The `--branch` header (`# branch.head`) carries the branch HEAD is actually on, so the same call that computes dirty state also yields `headBranchRef` — which is what makes HEAD-vs-`lanes.branch_ref` drift detection (`services/lanes/laneBranchDrift.ts`) cost no extra process spawn and need no timer of its own. Ignored files are still not listed (no `--ignored`), so dirty semantics are identical to the porcelain v1 form this replaced. See [Lanes › Branch drift](./features/lanes/README.md#branch-drift).
+`computeLaneStatus()` returns `{ dirty, ahead, behind }` against the open PR's
+base or the default branch, from `git status --porcelain=v2 --branch` and
+`git rev-list --left-right --count`.
 
-### 9.5 Queue + conflict simulation
+### 9.5 Conflict simulation and stacks
 
-- **GitHub stacked PRs** (`githubStackStore.ts`) — repository-scoped stack reconciliation and membership snapshots.
-- **Conflict prediction** — `conflictService.ts` uses `runGitMergeTree()`:
-  ```bash
-  git merge-tree --write-tree --messages --merge-base <base> <branchA> <branchB>
-  ```
-- Pairwise dry-merge simulation across all active lanes; output parsed into structured `ConflictOverlap` entries.
-- Triggered on debounced lane/head changes via the job engine; periodic prediction is off by default in dev stability mode.
-- Result: lane conflict badges plus a risk matrix available through the conflicts tools/actions (`getConflictRiskMatrix`, `conflicts.getBatchAssessment`; no matrix view), confidence-scored proposals (`high`/`medium`/`low`) with apply/discard UI.
+- `conflictService.ts` runs pairwise `git merge-tree --write-tree` across active
+  lanes, on debounced head changes, and produces lane badges, a risk matrix and
+  confidence-scored proposals.
+- `githubStackStore.ts` reconciles GitHub stacked PRs.
 
 ### 9.6 Safety
 
-- `ensureRelativeRepoPath()` rejects empty, null-byte, absolute, and traversal paths.
-- Force push uses `--force-with-lease`, never `--force`.
-- Branch-protection support on primary lane.
-- Destructive ops (discard, hard reset) require UI confirmation.
+- `ensureRelativeRepoPath()` rejects empty, absolute and traversal paths.
+- Force push uses `--force-with-lease`.
+- Destructive operations need UI confirmation.
 
 ### 9.7 Open-PR lookup for a lane branch
 
-`gh pr list --head <branch>` matches on branch **name only**, across every fork of the repository. A PR opened from somebody else's fork that happens to use the same branch name is returned by that query and, unfiltered, attaches itself to the lane. Filtering the result by head repository is therefore a correctness invariant, not an optimization.
+`gh pr list --head <branch>` matches the branch name across every fork, so
+`services/git/ghOpenPrLookup.ts` (`lookupOpenPrForBranch`) filters by the head
+repository's owner (`ghPrHeadRepo.ts`). An absent head-repo field (older `gh`)
+means "cannot verify, accept".
 
-- `services/git/ghOpenPrLookup.ts` is the single lookup: `lookupOpenPrForBranch({ worktreePath, branch })` resolves the `origin` owner from `git remote get-url origin` + `parseGithubRemoteUrl`, spawns `gh pr list --head <branch> --state open --json <fields> --limit 10` with an 8 s timeout, and picks the row whose head-repo owner matches. Because `--head` matches across forks the wanted row is not necessarily first, hence a small page rather than `--limit 1`. Both `gitOperationsService.ts` (`getOpenPrForBranch`, behind `ade.git.getOpenPrForBranch`) and the ADE action registry call it instead of open-coding the `gh` invocation.
-- `services/git/ghPrHeadRepo.ts` holds the pure parsing/selection: `GH_PR_LIST_JSON_FIELDS`, `parseGhPrListEntry`, `ghPrHeadRepoMatchesLane`, `selectOwnRepoOpenPr`, `EMPTY_GH_OPEN_PR_SUMMARY`.
-- **Decode leniently, and fall back for old `gh`.** `headRepositoryOwner` / `headRepository` are only emitted by `gh >= 2.47`, and `gh` renders them as objects (`{"login":"acme"}` / `{"name":"widgets"}`) though a bare string is also accepted. An **absent** field means "cannot verify — accept", never "reject"; a strict decode would silently drop every PR for anyone on an older CLI. `gh` also rejects an unknown `--json` field with a non-zero exit rather than omitting it, so requesting the newer fields against an old CLI fails the *entire* lookup — hence `GH_PR_LIST_LEGACY_JSON_FIELDS` (`url,number,title,headRefName`, present for as long as `pr list --json` has existed) as a one-shot retry. The runner distinguishes three outcomes so the caller knows whether that retry can help: JSON on success, `""` when `gh` ran and exited non-zero (bad flag, not authenticated, not a repo), and `null` when `gh` could not be run at all or timed out.
-
-Related Git docs: [Lanes](./features/lanes/README.md), [Lane runtime isolation](./features/lanes/runtime.md), and [Pull requests](./features/pull-requests/README.md).
+Related: [lanes](./features/lanes/README.md),
+[pull-requests](./features/pull-requests/README.md).
 
 ---
 
-## 10. Context Continuity
+## 10. Context continuity
 
-ADE carries continuity through the records owned by each runtime surface:
-chat transcripts (including every older CTO session, which `readHistory` reads),
-the CTO's notes and open-work files, and explicit context documents. These are
-read directly by the services that need them; there is no separate retrieval
-layer in between.
+Continuity lives in the records each surface owns: chat transcripts (older CTO
+sessions are read with `readHistory`), the CTO's notes and open-work files, and
+explicit context documents. There is no separate retrieval layer.
 
 ---
 
 ## 11. Runtime context
 
-ADE does not generate PRD or architecture bootstrap documents. Agent prompts tell models to inspect the repository directly when they need product or architecture context, starting with `AGENTS.md`, `README.md`, `docs/`, package manifests, and relevant source files.
-
-### 11.1 What gets shipped to each AI call
-
-| Call type | Payload |
-|-----------|---------|
-| Narrative generation | `LaneExportStandard` (lane, bounded) |
-| Conflict proposal | `LaneExportLite` (lane) + `LaneExportLite` (peer, optional) + `ConflictExportStandard` |
-| Initial context (repo scan) | Targeted file/commit digests |
+DAEX does not generate PRD or architecture documents for agents. Prompts tell
+models to read the repository (`AGENTS.md`, `docs/`, the source) when they need
+product or architecture context.
 
 ---
 
-## 12. Proof (Computer-Use Artifacts)
+## 12. Proof (computer-use artifacts)
 
 ### 12.1 Principle
 
-Proof is **intentional**. Agents run computer use through their provider tool — including direct Codex Computer Use, Claude's `computer_use`, a scripted browser, a headless Playwright run, or a local screenshot. ADE may provision the provider tool, but it does not passively promote every tool result into proof. When the agent reaches a checkpoint worth showing, it files an artifact through the broker (directly or via `ade proof capture` / `attach`), optionally with a caption. That record is what the drawer UI renders and what reviewers see.
+Proof is **intentional**: agents capture with their provider tool or `daex proof
+capture`, then file it through the broker. Nothing is promoted passively from
+chat tool results.
 
-There is **one path** for proof: intentional ingest through the broker. There is no computer-use policy and no passive ingest from chat `tool_result` events.
+### 12.2 Broker
 
-### 12.2 Broker and backends
-
-`apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts` is the ingest boundary. It accepts `ComputerUseArtifactInput[]` (path, remote URI, inline text, inline JSON), materializes on-disk sources into the project artifacts dir via `secureCopyFromDescriptor` (uses `O_NOFOLLOW` + atomic rename to resist symlink tricks), writes the canonical `computer_use_artifacts` row, and links to one or more owners (`lane`, `chat_session`, `automation_run`, `github_pr`, `linear_issue`).
-
-Allowed import roots include `.ade/artifacts`, `.ade/cache`, `.ade/tmp`,
-managed lane worktrees, the project root, both temp conventions (`os.tmpdir()`
-and, on posix, `/tmp` with its realpath), `~/.agent-browser`,
-and narrowly injected runtime-owned scratch roots. `.ade/secrets` is always
-denied, both allow and deny checks use real paths, and an extension allow-list
-rejects project-local secrets/database/key material even though the project root
-itself is trusted. Relative paths resolve from the caller's lane worktree before
-the project root. Every input in a batch resolves before any row is inserted.
-
-Supporting files in the same directory:
-
-- `controlPlane.ts` — builds `ComputerUseOwnerSnapshot` (recent artifacts + activity) and `ComputerUseSettingsSnapshot` (backend readiness, capabilities) over the broker.
-- `localComputerUse.ts` — exports `getLocalProofCaptureCapabilities()`, a macOS-only descriptor reporting whether `screencapture`, app launch, and GUI-interaction commands are available.
-Direct Codex Computer Use is a separate execution path. On macOS,
-`apps/desktop/src/main/utils/codexComputerUse.ts` requires an explicit
-`computer-use@openai-bundled` plugin or `mcp_servers.computer_use` opt-in,
-finds the standalone `SkyComputerUseClient`, verifies the full code signature
-plus OpenAI team/bundle identifiers, and injects it as the canonical
-`computer_use` MCP server into native Work chats and tracked Codex CLI
-start/resume commands. It does not replace the proof broker or bypass MCP
-elicitation prompts.
+`apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts`
+is the ingest boundary. It copies sources into the project artifacts directory
+with no-follow reads, allows only known import roots (artifacts, cache, lane
+worktrees, the project root, temp), always denies `.ade/secrets`, and resolves
+every input in a batch before inserting any row. Direct Codex Computer Use
+(`main/utils/codexComputerUse.ts`) is a separate path that verifies OpenAI's
+signed client before injecting it as an MCP server.
 
 ### 12.3 Artifact record
 
-Canonical proof kinds: `screenshot`, `video_recording`, `browser_trace`, `browser_verification`, `console_logs`.
+Kinds: `screenshot`, `video_recording`, `browser_trace`,
+`browser_verification`, `console_logs`. Tables: `computer_use_artifacts` and
+`computer_use_artifact_links` (owners given at ingest). File-backed views report
+`available`, `missing_file` or `unimported`.
 
-Canonical tables:
+### 12.4 Surfaces
 
-- `computer_use_artifacts` — proof kind, backend name/style, source tool metadata, title/description, URI, storage kind, MIME type, optional lane id, compatibility review/workflow state, timestamps.
-- `computer_use_artifact_links` — cross-domain ownership supplied at ingest. The removed `routeArtifact` mutation no longer appends owners later.
-
-File-backed views derive `available`, `missing_file`, or `unimported`
-availability. Broker deletion is idempotent and can remove selected artifacts,
-all broken records, lane-attributed proof during destructive lane teardown, all
-project proof during local-data reset, or rows below a Settings storage-cleanup
-path. Files are unlinked only after realpath confinement to the artifact store;
-archive remains non-destructive.
-
-### 12.4 IPC + UI
-
-Channels (under `ade.computerUse.*`; preload namespace `window.ade.computerUse`):
-
-- `ade.computerUse.listArtifacts`, `ade.computerUse.getOwnerSnapshot`, `ade.computerUse.deleteArtifacts`, `ade.computerUse.listBrokenArtifacts`, `ade.computerUse.pruneBrokenArtifacts`, `ade.computerUse.recoverArtifact`, `ade.computerUse.updateArtifactReview`, `ade.computerUse.readArtifactPreview`, plus a `ade.computerUse.event` push channel.
-- `ade.computerUse.mediaBaseUrl` returns the base URL of main's loopback media server (`artifactMediaServer.ts`). Proof videos play from it, because Electron's `protocol.handle` cannot serve the Range reads a seekable `<video>` makes. The server listens on `127.0.0.1` and every path starts with a per-launch token.
-- `ade proof capture` / `attach` / `list` / `rm` / `broken` / `prune` /
-  `recover` in the ADE CLI are the cross-process surface; they call into the
-  broker.
-
-Renderer surfaces:
-
-- `AgentChatMessageList` buckets artifacts by capture time into the completed
-  turn that produced them. The turn rule and the turn's fold line show a
-  "N proof filed" count that opens the drawer narrowed to those records
-  (`ProofDrawerFocus`, with a "This turn · N" chip that clears it); the
-  drawer drops the narrowing when it closes or the chat changes. The thread
-  draws pictures only under the "Filed proof" action rows, as a small
-  thumbnail that enlarges in place. Proof is never a thread-tail footer.
-- `ChatComputerUsePanel` supplies the in-app image lightbox and complete chat
-  drawer, including availability states and irreversible deletion. Local media
-  uses the range-capable artifact protocol; remote-runtime media uses bounded
-  `readArtifactPreview` responses.
-- Chat and iOS proof surfaces are collection views, not review workflows.
-  Broker review/workflow fields remain available for compatibility with
-  downstream integrations but are not user-facing controls.
-- Computer-use readiness moved into `IntegrationsSettingsSection` — the standalone `ComputerUseSection.tsx` is gone.
+`ade.computerUse.*` IPC, `daex proof capture | attach | list | rm | broken |
+prune | recover`, and the chat proof drawer (`ChatComputerUsePanel`). Videos
+play from main's loopback media server (`artifactMediaServer.ts`). Proof links
+in text use `ade-proof://<id>` (frozen scheme). See
+[proof.md](./features/proof.md) and [computer-use](./features/computer-use/README.md).
 
 ---
 
-## 13. Multi-Device Sync
+## 13. Multi-device sync
 
-Sync between a client and a machine is **owned by the ADE runtime** (`apps/ade-cli/src/services/sync/`). Account data (ADE Cloud, saved cloud work, settings, the vault) does not use this path: clients read it from the account Workers (section 1.1). When a project is opened, its scope creates a sync service inside the runtime; that runtime is the sync authority. The desktop client and iOS client both connect to the same service. Desktop's old in-process host code path is disabled by default and only re-enabled with `ADE_ENABLE_DESKTOP_SYNC_HOST=1` for diagnostics.
+Sync between a client and a machine is owned by the brain
+(`apps/ade-cli/src/services/sync/`). Account data (DAEX Cloud, saved cloud work,
+settings, the vault) does not use this path; clients read it from the Workers.
 
 ### 13.1 cr-sqlite CRDT + WebSocket
 
-- **Runtime / desktop**: native cr-sqlite loadable extension (`.dylib` / `.dll`) loaded via `openKvDb(...)` in `kvDb.ts`.
-- **iOS**: pure-SQL CRR emulation in `apps/ios/ADE/Services/Database.swift` — `crsql_master`, `crsql_site_id`, `crsql_changes`, per-table `<table>__crsql_clock` tables replicated as plain SQLite, with INSERT/UPDATE/DELETE triggers writing Lamport-versioned rows to `crsql_changes`. Custom SQLite functions (`ade_next_db_version()`, `ade_local_site_id()`, `ade_capture_local_changes()`) provide trigger context. Changesets are wire-compatible with the runtime's cr-sqlite.
-- **Merge**: last-writer-wins per column. Each device has a unique site ID; Lamport timestamps per column.
-- **Sync API** (`AdeDb.sync`): `getSiteId`, `getDbVersion`, `exportChangesSince(version, { maxRows?, throughDbVersion?, excludeTables?, rejectOversizedVersionGroup? })`, `exportChangesSinceOffThread(...)`, `applyChanges(changes)`, `discardUnpublishedChangesForTables(tableNames)`.
-- **Bounded, snapshot-isolated exports**: `exportChangesSince` scans bounded `db_version` windows (the sync pump walks 250k-version windows per poll) inside a read transaction that pins the WAL snapshot — the `crsql_changes` vtab aborts on concurrent commits and a bare `LIMIT` cannot bound a vtab scan. Callers can exclude tables in SQL before limiting and reject a single oversized version group with `crsql_export_version_group_too_large` rather than materializing it. The export algorithm is one plan in `state/crsqlExport.ts` that yields its statements: `exportChangesSince` answers them on the main connection, and `exportChangesSinceOffThread` (the sync host's changeset pump) on a second connection with cr-sqlite loaded, in a worker thread, so a batch does not hold the brain's event loop. The helper starts on first use (after the open settles the site id, which cr-sqlite reads at load), runs one export at a time in its own read snapshot, and is finalized and closed before the main connection closes; any helper failure logs `db.export_helper_failed` once and later exports run on the main connection. The host drops an off-thread result when its peer moved on during the read. Startup self-heals orphaned `__crsql_clock`/`__crsql_pks` shadow tables (base table dropped, shadows left behind), which otherwise abort every `crsql_changes` scan.
-- **Fair, acknowledged delivery**: host/desktop-peer batches normally target 250 rows / 256 KB; active chat peers get a 64 KB target and at most 2 seconds of background deferral above the 512 KB socket watermark. The sender advances only after `changeset_ack`. Six failed sends abandon the encoded batch but keep its `fromDbVersion`, then re-export progressively smaller windows (down to 16 rows / 16 KB) after bounded backoff. An iOS replica with ACK + chunk support and a gap strictly over 5,000 versions receives one ACK-gated compact current-state reseed, built at most 1,000 rows per poll and capped at 10,000 rows / 4 MiB; oversized state falls back to incremental replay. iOS persists its last-acked cursor/pending batch and performs the same no-skip recovery from 64 rows / 64 KB down to one row / 4 KB.
-- **Suppression**: `discardUnpublishedChangesForTables` writes a per-table, per-site high-water mark into the local-only `local_crr_change_suppressions` table. Subsequent `exportChangesSince` calls drop local-site rows for those tables at or below that mark, so a local wipe (e.g. clearing `devices` and `sync_cluster_state` when joining another host as a viewer) cannot leak back as DELETE rows. The viewer-join path follows the wipe with `syncPeerService.acknowledgeLocalDbVersion()` to advance the outbound cursor past the suppressed range.
-- **Transport**: one brain-level WebSocket listener on port 8787 by default (preferred-port retry for ~3 s only when the holder cannot be identified; port diagnosis uses asynchronous `lsof`/`ps`, and a confirmed live holder skips the remaining duplicate attempts and emits one conflict warning before the listener advances. ADE's own stale `ade serve` holder is identity-revalidated and reaped once. Each tailnet publish also retires ADE's own leftover `tailscale serve` entries, which otherwise hold the low ports through `tailscaled` and ratchet the listener upward on every restart); JSON-framed changesets + zlib compression for large batches; encoded envelopes >720 KB are sliced into `envelope_chunk` frames for peers declaring the `chunkedEnvelopes` capability; 60s ping/pong. Controllers adopt the host-advertised interval and postpone their fallback heartbeat whenever any inbound envelope proves the socket is alive, avoiding redundant application frames on relay-backed connections. Relay controllers use ready-v2 (`accepted` then `ready`) and send no ADE hello before the machine pipe/local listener exists; a non-v2 Worker is retried on a fresh legacy socket, never downgraded in place. iOS races up to three authenticated candidates and shares monotonic `connectionAttempt` metadata so the host rejects late losing routes; `hello_ok.connectionTransport` is the host-observed direct/relay truth. The same envelope channel carries project catalog, project-switch, and runtime-scoped project-action messages (browse/open/create/clone/list GitHub repos/default parent directory); on a hosted-project switch the new host service adopts the open sockets, so connected phones survive the swap. A machine-wide fallback handler serves catalog/project actions when no project host owns the listener, while handoff-time reconnects still park for adoption by the next host. Phones keep per-host-DB sync cursors keyed by the `serverDbSiteId` from `hello_ok`, and the host filters high-churn tables the phone never reads (transcripts, operations, usage logs, automation runs) from phone changesets.
+- Brain and desktop load the native extension (section 3.1); iOS uses its SQL
+  emulation (`apps/ios/ADE/Services/Database.swift`).
+- Exports are bounded, snapshot-isolated `db_version` windows; batches are
+  acknowledged, with smaller targets for active chat peers.
+- `discardUnpublishedChangesForTables` writes per-table high-water marks into
+  the local-only `local_crr_change_suppressions`, so a viewer-join wipe of
+  `devices` / `sync_cluster_state` never leaks back to the host.
+- Transport: one brain-level WebSocket listener, port 8787 by default.
 
 ### 13.2 Device model
 
-- **Sync authority**: a runtime on one reachable machine owns live execution side effects (agents and PTYs) for a given project. Stored in the synced `sync_cluster_state` singleton row (`brain_device_id` is the legacy internal column name). Transfer requires a clean preflight with no running turns or live PTYs. CTO history and idle chats are durable and survive handoff.
-- **Controllers**: other connected devices (phones always; a second desktop optionally). Controllers read synced state and send commands to the authority runtime.
-- **Lane share guests**: devices of another ADE account that the owner shared one lane with. A guest connects over Relay with a `guest` hello (a one-use directory ticket and a DPoP proof), is never a sync client, and reaches only a default-refuse list of envelopes and commands for the granted lane, checked against the host's own rights table. See [features/lanes/lane-sharing.md](./features/lanes/lane-sharing.md).
-- **Machine power and sleep**: a host publishes its own battery/wall-power reading and an explicit `awake`/`asleep` state into the account directory (`power`, `sleep_state`, `sleep_state_at`, migration `0006`), so clients never have to infer a closed lid from silence. Detection is deliberately two-tier: the OS pre-suspend event where one exists (Electron `powerMonitor` on the desktop, forwarded to the brain as `machine.reportPowerTransition`), plus a heartbeat-gap detector as the universal fallback — a 15-second tick that fires more than 60 seconds late means the machine was out. The gap detector needs no platform-specific code, which is what gives a headless brain and Linux sleep detection at all. `resolveMachinePresence` (`apps/desktop/src/shared/types/power.ts`) is the single presence decision every client renders from, and a fresh `asleep` announcement outranks `connected`, because a channel to a sleeping machine does not report itself closed. See [sync and multi-device](./features/sync-and-multi-device/README.md#account-directory-and-connection-leases).
-- **Independent desktops**: a second computer can run its own ADE runtime and work independently through git without joining an ADE sync session. The tracked `.ade/` scaffold/config layer makes a clone look like an ADE project immediately.
+- **Authority**: one brain owns execution (agents, PTYs) for a project, recorded
+  in `sync_cluster_state`.
+- **Controllers**: phones always, a second desktop optionally. They read synced
+  state and send commands; the host validates and runs every command.
+- **Lane share guests**: devices of another account with access to one lane,
+  connected over Relay with a one-use ticket and a DPoP proof. See
+  [lane-sharing](./features/lanes/lane-sharing.md).
+- **Independent desktops**: a second computer can run its own brain and work
+  through git without joining a sync session.
 
-### 13.3 iOS companion sync model
+### 13.3 iOS sync
 
-Details live in [ios-companion.md](./features/sync-and-multi-device/ios-companion.md). The rules that cross clients:
+Connect races LAN, Tailscale and Relay; only `hello_ok` wins. Chat events carry
+a per-session `seq` used as a resume cursor (unique only within one runtime
+life). Writes go through `command` / `command_ack` / `command_result`. Pairing
+uses a 6-digit PIN once (`.ade/secrets/sync-pin.json`), then a per-device
+secret; the QR is a v3 URL. Details:
+[ios-companion](./features/sync-and-multi-device/ios-companion.md).
 
-- **Launch.** A signed-out launch starts at sign-in (no PIN, through the account directory and Relay). A phone already paired to a computer also offers **Continue to your work** (QR + PIN, Nearby + PIN, SSH); an unreadable credential offers **Pair again**. There is no pairing-link paste and no manual address + PIN.
-- **Directory presence** is a 90 s discovery lease, not a transport verdict: a verified secure endpoint stays dialable after `online` ends. A directory call retries one 401 with a forced refresh. Adoption checks the account owner and session generation, so a sign-out cannot race trust back into storage.
-- **Connect.** Direct LAN, then Tailscale, then Relay, with a 250 ms stagger and a bounded budget; only `hello_ok` wins. The phone sends `db_version` and `remoteDbVersionBySite`; a gap over 5,000 versions gets one ACK-gated catch-up batch. Inbound apply runs off the main actor. After a disconnect the phone backs off, then retries about every 30 s and never gives up.
-- **Projects.** `hello_ok` can carry the project catalog; the phone switches with `project_switch_request` / `project_switch_result` on the same port.
-- **Chat stream.** Each `chat_event` has a per-session `seq`, and `chat_subscribe` passes `sinceSeq`. `seq` is a resume cursor, not an identity: it is unique only within one runtime life, so a client pairs it with the event timestamp or `itemId` ([fragile wiring](./features/chat/composer-and-ui.md#fragile-and-tricky-wiring)). A hydration barrier holds the live stream until the snapshot ack. `chatHistoryPaging` hosts serve 256 KiB `chat_history` pages for the authorized subscription only. `crossProjectChat` hosts stream another project's transcript read-only from its files; personal chats use `chatScope: "personal"`.
-- **Messages and turns.** Unprocessed messages offer Run next / Edit / Dismiss through idempotent `chat.resolveUnprocessedMessage`. Turn stalls use `turn_health`, `turn_recovery` and `chat.recoverTurn`.
-- **Session lifecycle columns** (`settled_at`, `status_note`, `attention_requested_at`, `attention_message`, `last_turn_failed_at`) replicate with `terminal_sessions`, so desktop and iOS group Work from the same facts.
-- **Reads and writes.** Reads are local and scoped to the active project. User writes apply locally and replicate; execution goes through `command` / `command_ack` / `command_result` (including `work.startCliSession`, which builds commands with `shared/cliLaunch.ts`). `chat_launch_event` goes to every peer of the project. Personal chat creates need a live host; only personal sends may wait in the offline queue.
-- **Terminals.** Logical UTF-8 offsets over a rolling 16 MiB transcript; the phone resubscribes once on a gap. Input is one at a time, deduped by stable input ids.
-- **Pairing** uses a user-set 6-digit PIN (`.ade/secrets/sync-pin.json`) once, then a per-device secret. The QR payload is a v3 URL (`https://ade-app.dev/pair#…`, no pairing code). Every paired hello carries a Secure Enclave DPoP proof (`requireDpop` / `ADE_SYNC_REQUIRE_DPOP`).
-- **Relay** (`apps/tunnel-relay`, §2.7) is the lowest-priority route, on whenever the host is signed in with a current lease. Both ends must be signed in to the same account; sign-out closes Relay but keeps direct trust until Forget. Only an exact `409` from the claim endpoint permits one identity rotation. Relay TLS ends at the operator; payloads are not end-to-end encrypted.
-- **Push** goes through `apps/push-relay` (§2.7); signed-in iOS registers APNs and push-to-start tokens with the account relay.
-- **Widgets** prefer the account Activity snapshot, fall back to the App Group `WorkspaceSnapshot`, and grade age as fresh / aging (10 min) / untrusted (2 h). `ADEAgentActivityWidget` is the Live Activity and Dynamic Island.
-- **Tabs:** Lanes, Files, Work, PRs, CTO, Settings.
+### 13.4 Secret isolation
 
+- `.ade/local.secret.yaml`, sync site id, device id and bootstrap token never
+  sync.
+- Each device keeps its pairing secret in its OS keychain. Direct pairing
+  secrets survive sign-out; Relay always needs a fresh account proof.
+- Account-owned provider keys and Linear credentials follow the account through
+  the vault and are purged locally on sign-out or account switch. GitHub tokens
+  and vendor CLI credentials stay on the host.
+- A browser never reads a vault value (section 1.1).
 
-### 13.4 Conflict resolution semantics
-
-- LWW per column via Lamport timestamps is the default merge.
-- `ON CONFLICT(...)` upserts must target PK only (non-PK UNIQUE does not survive CRR retrofit).
-- Non-PK merge cases use explicit select-then-update.
-
-### 13.5 Secret isolation
-
-- `.ade/local.secret.yaml` (API keys, ADE CLI configs), sync site ID, sync device ID, sync bootstrap token: **never sync**.
-- Each device stores its own pairing secret in OS Keychain.
-- Device-bound direct pairing secrets survive account sign-out and are removed
-  only by explicit machine forget or the versioned trust-reset policy; Relay
-  authorization always requires a fresh matching account proof.
-- A pairing made by hand at the machine (QR/Nearby-PIN/SSH) can be adopted into
-  an account when the same device presents a DPoP proof against the key already
-  pinned on that record plus a verified same-account attestation; a keyless
-  record or one owned by another account is refused. Adoption records
-  `localTrustOrigin`, so signing out or switching accounts demotes the record
-  back to purely local trust rather than deleting it. Signing in never makes a
-  hand-paired machine destructible.
-- Account-owned provider keys and Linear OAuth refresh credentials follow the
-  signed-in account through the encrypted vault, and secrets through Passwords
-  & Secrets;
-  local stores retain provenance and purge account-origin values on sign-out or
-  account switch. GitHub tokens, vendor CLI refresh credentials, and other
-  device-only credentials remain on the host.
-- Commands from non-host devices validated and executed by the host only.
-- A browser never reads a vault value. The push relay answers a request with an `Origin` header only on `BROWSER_ACCOUNT_ROUTES`; every vault and Passwords route is native-only. The web client gets status-only routes (`GET /cloud/sign-ins`, `/cloud/account-secrets`) from the account directory.
-- The release's versioned trust reset clears only saved connection grants:
-  packaged desktop target/pairing files, iOS connection tokens and
-  machine-scoped profile/cursor/queue state, and hosted-web IndexedDB
-  environments/selection. It preserves account sessions, stable machine/device
-  and DPoP identities, PINs, projects, SSH files, analytics preferences, and
-  unrelated browser state. Each surface writes a one-time marker; desktop waits
-  for the forced background-service restart before committing its marker.
-
-Related sync docs: [Sync and multi-device](./features/sync-and-multi-device/README.md), [iOS companion](./features/sync-and-multi-device/ios-companion.md), and [Remote commands](./features/sync-and-multi-device/remote-commands.md).
+Related: [sync-and-multi-device](./features/sync-and-multi-device/README.md),
+[remote commands](./features/sync-and-multi-device/remote-commands.md).
 
 ---
 
-## 14. Build, Test, Deploy
+## 14. Build, test, deploy
 
 ### 14.1 Monorepo layout
 
 ```
-ADE/
-├── apps/
-│   ├── ade-cli/        # ADE brain, manual runtime entry points, `ade` CLI
-│   ├── desktop/        # Electron client (multi-window; local + SSH-bound runtime bindings)
-│   ├── ios/            # Native SwiftUI controller (WebSocket to ADE machine)
-│   ├── web/            # Marketing + download landing (Vite + React)
-│   ├── push-relay/     # Cloudflare Worker + D1: APNs push + Live Activity relay
-│   ├── tunnel-relay/   # Cloudflare Worker + Durable Object: off-LAN sync tunnel
-│   ├── account-directory/ # Cloudflare Worker + D1: account machines + device login
-│   └── webhook-relay/  # Cloudflare Worker: GitHub webhook relay
-├── packages/
-│   ├── sdk/            # `@ade-dev/sdk` embeddable sidecar client
-│   ├── chat-ui/        # `@ade-dev/chat-ui` React chat components
-│   └── demo/           # DataDesk reference app + live e2e (not in root `npm test`)
-├── docs/
-│   ├── PRD.md
-│   ├── features/
-│   ├── perf/
-│   ├── plans/
-│   └── playbooks/
-├── scripts/            # Release, validate, notarize, after-pack (per-platform)
-│                       # Platform-specific: validate-mac-artifacts.mjs,
-│                       # validate-win-artifacts.mjs, ade-cli-windows-wrapper.cmd, etc.
-├── apps/desktop/vendor/crsqlite/
-│   ├── darwin-arm64/
-│   ├── darwin-x64/
-│   ├── linux-arm64/
-│   ├── linux-x64/
-│   └── win32-x64/      # Prebuilt cr-sqlite native binaries per platform
-├── .github/workflows/
-│   ├── ci.yml
-│   ├── prepare-release.yml
-│   ├── release.yml
-│   └── release-core.yml
-├── docs.json           # Mintlify public docs config (separate site)
-├── package.json        # Root test aggregator
-└── .ade/               # Self-hosted ADE project state (ignored subset)
+apps/
+  ade-cli/            # brain, manual runtime, `daex` CLI
+  desktop/            # Electron client; also builds the hosted web client and /demo
+  ios/                # SwiftUI controller (Xcode project ADE.xcodeproj, scheme ADE)
+  web/                # public site (Vite + React, Vercel)
+  account-directory/  # Worker + D1: machines, device login, DAEX Cloud
+  push-relay/         # Worker + D1: vault, settings, Activity, APNs
+  tunnel-relay/       # Worker + Durable Object: DAEX Relay, DAEX MCP transport
+  webhook-relay/      # Worker: GitHub and automation webhooks
+packages/
+  sdk/                # @daex-dev/sdk embeddable sidecar client
+  chat-ui/            # @daex-dev/chat-ui React chat components
+  demo/               # reference app + live e2e (not in root `npm test`)
+docs/                 # internal docs (this folder)
+scripts/              # dev, release, validation scripts
+.github/workflows/    # ci.yml, release.yml, release-core.yml, prepare-release.yml, …
+docs.json             # public Mintlify docs site config
 ```
 
-Root `package.json` is a thin aggregator: `npm test` and `npm run test:ci` run the desktop suite in CI-style shards, the ade-cli suite, then `test:sdk` and `test:chat-ui`. `packages/demo` is deliberately excluded — its live e2e spends provider tokens; `e2e:preflight` is the CI-safe check. `npm run install:apps` covers `apps/*` plus `packages/sdk` and `packages/chat-ui`. `npm run test:coverage` runs desktop coverage plus the ade-cli suite.
-
-Per-app scripts:
-
-| App | Key scripts |
-|-----|-------------|
-| `apps/desktop` | `dev`, `build` (tsup + vite), `typecheck`, `test` (vitest), `lint` (ESLint), `dist:mac`, `dist:mac:universal:signed:zip`, `notarize:mac:dmg`, `validate:mac:artifacts`, `rebuild:native`, `version:ci`, `version:release`, `ade:dev`, `ade:build`, `ade:test`. |
-| `apps/ade-cli` | `dev`, `build`, `typecheck`, `test` (typed CLI commands and the headless runtime). |
-| `packages/sdk` | `build`, `typecheck`, `test` (hermetic). Live fixture is `test:live` / `ADE_SDK_LIVE_BINARY`. |
-| `packages/chat-ui` | `build`, `typecheck`, `test`. CI builds `packages/sdk` first because `dist/` is gitignored. |
-| `apps/web` | `dev`, `build`, `preview`, `typecheck`. |
-| `apps/ios` | Xcode project; tests via `xcodebuild test` / Xcode. |
-| `apps/push-relay`, `apps/tunnel-relay`, `apps/account-directory`, `apps/webhook-relay` | Cloudflare Workers: `typecheck`, `test` (vitest), `deploy` (wrangler). |
+There are no npm workspaces: each app has its own `node_modules` and lockfile
+(`npm run install:apps` installs them all). The root `package.json` aggregates
+tests (`npm run test:desktop:sharded`, the CLI suite, the SDK and chat-ui
+suites). Commands for each app are in `AGENTS.md` (**Validation**).
 
 ### 14.2 CI (`.github/workflows/ci.yml`)
 
-Stages:
-
-1. **Install** (`install` job) — checkout, setup Node 24, and a parallel `npm ci` for each dependency group whose cache misses: core (desktop + ade-cli), web, webhook-relay, push-relay, `packages/sdk` and `packages/chat-ui`. Each group has its own cache entry keyed on its lockfiles, and each job restores only the groups it uses. This job is the only one that saves the entries. The jobs that use the core group (`typecheck`, `lint-desktop`, `test-desktop`, `test-ade-cli`, `build`) do not wait for it: they restore the entry through `.github/actions/restore-core-node-modules` with `install-on-miss`, and on a miss they run the same `scripts/ci/install-core-node-modules.sh` the install job runs (`build` also installs the web group on a miss). `services` and `packages` still wait for it. (`apps/tunnel-relay`, `apps/account-directory` and `apps/password-key-service` install inline in the `services` job.)
-2. **Parallel checks**:
-   - `secret-scan` — gitleaks on the pull request's commits (`main..HEAD` on a dispatch).
-   - `typecheck` — `npm run typecheck` in apps/desktop (in the background) and apps/ade-cli at the same time, then a `node --test` release-guards step covering the runtime archive/packaging validators, the docs validator, and the POSIX standalone installer's staging and rollback paths (`install-runtime-rollback.test.mjs`). Each check is its own step. Both tsc runs use `--incremental`: a pull request restores the build info that the newest push to `main` with the same TypeScript version, lockfiles and tsconfigs saved (`tsc-v1-` cache key), so tsc checks again only the changed files and the files they affect, and still reports the errors recorded for the others. A push to `main` and a dispatch restore nothing and run the full check; a push to `main` saves the fresh build info. A missing or unreadable build info means a full check.
-   - `lint-desktop` — the lint-tooling tests, then `npm run lint:ci` (`scripts/lint-ratchet.mjs`: ESLint on `src/**/*.{ts,tsx}` split across worker threads, then the `ade-ui/*` ratchet against `lint-baseline.json`), then the iOS scene-shell and settings-catalog drift checks.
-   - `test-desktop` — **8-way shard matrix**: `npx vitest run --shard=${{ matrix.shard }}/8` across shards 1–8.
-   - `test-ade-cli` — the full ade-cli vitest in a **2-way shard matrix** (`npm test -- --shard=${{ matrix.shard }}/2`; checks `test-ade-cli (1)` and `test-ade-cli (2)`). It covers the brain push publisher and tunnel client under `services/push/` + `services/sync/`.
-   - Shard balance: each package's `vitest.config.ts` sets a sequencer (`scripts/ci/test-shards.mjs`) that splits the files Vitest finds by the durations in the package's `vitest.durations.json` (greedy: the heaviest file first, into the lightest shard; a file with no recorded duration weighs the median), instead of Vitest's split by a hash of the path. Every shard computes the same split from the same file list, so each file runs in exactly one shard; a stale durations file only makes the shards less even. `scripts/ci/update-test-durations.mjs` rebuilds the durations file from the CI logs of the shards or from Vitest JSON reports; its header has the commands.
-   - `services` — the five Cloudflare Workers (webhook-relay, push-relay, tunnel-relay, account-directory, password-key-service): typecheck and test for each, plus account-directory's Wrangler dry-run build. One step per check; every step runs even when an earlier one failed.
-   - `docs` — the docs and source validators (`validate-docs.mjs`, `validate-platform-gates.mjs`, the NUL-byte, Worker Sentry scrubber and analytics tracking-plan checks). They use Node built-ins only, so the job needs no install and runs even when `install` fails. One step per check, every step runs; full history checkout, because `validate-docs.mjs` reads the release tags. `scripts/require-release-ci-pass.sh` reads this job's result as the check of a release-notes-only commit, and counts a failed, skipped or missing `docs` job as failed.
-   - `packages` — hermetic `@ade-dev/sdk` typecheck + wire types + package licenses + test + build, `@ade-dev/chat-ui` typecheck + test + build (after the sdk build, because `dist/` is gitignored and chat-ui's `file:../sdk` exports point at it), and the web typecheck, analytics tests and PostHog provisioning check. One step per check, every step runs. The sdk live fixture (`test/live.integration.test.ts`) skips unless `ADE_SDK_LIVE_BINARY` is set.
-   - `build-runtime-binaries` — builds and smoke-tests the static runtime binary and its native archive. `runtime-binaries-gate` picks the targets: all five (darwin-arm64, darwin-x64, linux-x64, linux-arm64, win32-x64) on a push to `main`, on dispatch, and on a pull request that changes a packaging file (the ade-cli manifest, lockfile and tsup config, the `build:static` scripts, the vendored cr-sqlite and native helpers, `scripts/build/`, or `ci.yml`) or carries the `runtime-binaries` label; linux-x64 alone on any other pull request. A dispatch on a `pins/*` branch (the update PRs `agent-tool-pins.yml` opens and starts CI for) follows the pull request rule, on its diff from main's merge base; every other dispatch builds all five. A failed or empty diff builds all five. `scripts/ci/changed-files.sh` gives the diff to this gate, to `ios-gate` and to `linux-desktop-driver`; a rename counts at its old and its new path.
-   - `test-ios` — builds the `ADE` scheme and runs `ADETests` on GitHub's hosted `xcode-27` macOS image, with the steps of the composite action `.github/actions/ios-build-test`. A path gate (`ios-gate`, decided by `scripts/ci/ios-gate.sh`) skips it with a printed reason unless the diff touches `apps/ios/**`, the shared fixtures the Swift tests read, or the iOS part of CI: the composite action, `ios-main.yml`, the gate scripts, and in `ci.yml` every line outside the bodies of the non-iOS jobs (the triggers and any top-level key, plus `ios-gate`, `test-ios` and any job whose id contains `ios`), compared between base and head, so an edit to another job does not build iOS. When the gate cannot tell, it builds: an unknown diff, a `ci.yml` that lacks `ios-gate` or `test-ios`, or a `ci.yml` with a YAML anchor or alias. A skipped run reports success from an Ubuntu runner. A pull request also skips the build when an earlier run of the same pull request passed `test-ios` with the same iOS inputs: `ios-gate.sh --fingerprint` hashes every file the path list matches, with its blob id, plus the whole `ci.yml`, in the merge commit, and a passing `test-ios` saves a tiny `ios-pass-v1-<hash>` cache entry that only that pull request sees (and `cache-cleanup.yml` deletes when it closes). So a follow-up push that changes only docs or desktop code reuses the pass (its `test-ios` runs on Ubuntu and `ios-gate`'s log says why), while a change on `main` that touches iOS gives a new hash and builds again. A dispatch builds, except on a `pins/*` branch, which is gated on its diff from main like a pull request. A push to `main` never builds here (see `ios-main.yml` below). The build restores Xcode's build folder (`ios-dd-v1-<Xcode build>-<sha>`) and the Swift packages (`spm-v1-`) from `main`, sets `IgnoreFileSystemDeviceInodeChanges`, and gives every unchanged input the file time recorded with the build folder (`scripts/ci/ios-mtimes.py`), so only changed Swift files and their dependents recompile. It builds only the package versions in `Package.resolved`, and when the Swift packages restored on their exact key, it skips the remote update check. Bump `v1` in the build-folder key, or dispatch `ios-main.yml` with `cold`, to force one full build. The simulator is pinned by name so every run builds the same screen. A pull request saves no build folder and no Swift packages; it saves only its tiny pass entry.
-   - `ios-main.yml` (its own workflow, not part of `ci-pass`) — builds and tests each push to `main` that `scripts/ci/ios-gate.sh` says touches iOS (a dispatch always builds; its `cold` input skips the build-folder restore and saves under `<key>-cold-<run id>`, because an existing cache key cannot be replaced). The pull request already passed `test-ios`, so `ci-pass` (and the beta that waits for it) does not wait for a second iOS build. On `main` it saves the build folder and the Swift packages and deletes the entries they replace, so the repository keeps one of each. It then checks that the build folder is listed: a missed save waits a minute, saves once more under `<key>-retry-<run id>`, and errors in the log when that fails too; a dispatch from another branch saves nothing. It catches a break that two green iOS pull requests make together. A failure turns the `main` commit red and blocks neither `ci-pass`, a desktop beta nor a release. It opens (or comments on) the "iOS main failed" issue, which the next passing build closes; a result that a newer run on `main` has already replaced changes nothing. `ios-testflight.yml` makes no TestFlight build while the newest finished `build-and-test` job of `ios-main.yml` on `main`, among the newest 100 runs, failed. A forced TestFlight dispatch still builds, and so does a failed lookup or no build in those runs. For this check, the `ios` job of `beta.yml` grants `actions: read`. It lives outside `ci.yml` because `beta.yml` starts when the CI workflow completes.
-   - Pruning on save — the jobs that save a large lockfile-keyed entry (`install`'s core `node_modules`, `windows-foundation`'s Windows copy, each `build-runtime-binaries` target's npm download cache, and `typecheck`'s build info) first run `scripts/ci/prune-cache-entries.sh <prefix> <key>`, which deletes the entries of the same ref under that prefix. Nothing deleted them before: the space normally holds ~8.5 GB of 10, so one lockfile change (3.4-6.5 GB of new entries) went over the limit, and GitHub evicted or refused the iOS build folder and Swift packages instead. A pull request prunes only its own entries, so one that changes its lockfile twice keeps one ~2 GB copy, not two. On `main` only the run of the newest commit prunes and saves (the script writes `save=false` for an older run), so an older, slower run can neither delete the entry a newer lockfile just saved nor write its own old entry back beside it. Those jobs get `actions: write` for it.
-   - `cache-cleanup.yml` (not part of `ci-pass`) — when a pull request closes, deletes its Actions cache entries (`refs/pull/<number>/merge`) and, for a branch of this repository other than `main`, the entries of `refs/heads/<branch>`. Those entries are visible to nobody else, and they push `main`'s entries out of the 10 GB cache space. A `pins/*` branch loses its entries when its CI run ends (`workflow_run`), because each SDK bump saves a 1.9 GB copy of the core `node_modules` that only that run reads; "Re-run failed jobs" on such a run finds no `node_modules`, so use "Re-run all jobs". The workflow checks out nothing and has only `actions: write`.
-   - `build` — desktop, ade-cli, and web built one after the other.
-   - `linux-desktop-driver` — builds and pings the Linux lane-screen helper when a pull request (or a dispatch on a `pins/*` branch) touches it; always on `main` and on any other dispatch.
-3. **Windows foundation proof** (`windows-foundation`) — runs on every push to `main`, on dispatch, and on a pull request only when it carries the `windows` label. Its test steps are split over three parallel `windows-latest` matrix jobs (`ade-cli`, `desktop-sync`, `desktop-platform`, balanced by measured step time; checks `windows-foundation (<group>)`), and `ci-pass` reads the matrix as one result. A native `windows-latest` runner exercises the per-user/channel service, filesystem layout, process/executable, named-pipe, PTY, packaged CR-SQLite, and platform-capability contracts. It also runs the Windows standalone-installer and uninstall-cleanup script suite, which parses `install-runtime.ps1` through `[Parser]::ParseFile` and exercises the path normalizer it shares with the uninstall cleanup: nothing off a Windows host can parse or execute PowerShell, so a syntax error or a broken staging path in that installer would otherwise reach a user's machine before it reached CI. Its POSIX twin (`apps/ade-cli/scripts/install-runtime-rollback.test.mjs`) runs in the `typecheck` job's release-guards step instead.
-4. **Gate** (`ci-pass`) — every job in its `needs:` list must succeed; a `skipped` result counts as failure, except `windows-foundation` on an unlabeled pull request so a conditional job can never pass green while dead (`if: always()`, results derived from `toJSON(needs)`).
-
-Release packaging (macOS DMG/ZIP, Linux AppImage/deb and the signed Windows NSIS installer, including the installed-product lifecycle smoke: install, repair, reinstall, deep-link/file-association/startup/PATH registration, uninstall cleanup) is coordinated by `release-core.yml`; consult the workflow for the current CI and release jobs.
-
-Sharding is required because the desktop suite is large enough to be slow in a single process.
+An `install` job restores or installs each dependency group, then parallel
+jobs: secret scan, typecheck (desktop and CLI), `lint-desktop`
+(`npm run lint:ci`, the `ade-ui/*` ratchet), sharded desktop tests, CLI tests,
+`packages`, runtime binaries, `test-ios` (path-gated by `scripts/ci/ios-gate.sh`),
+`build`, and the label-gated `windows-foundation`. The `ci-pass` gate requires
+every job; a skipped job counts as a failure except the unlabeled Windows job.
 
 ### 14.3 Test organization
 
-- **Tooling**: Vitest with `node` environment, `pool: "forks"`, `maxForks: 4`, 20s test/hook timeouts.
-- **Config**: `apps/desktop/vitest.workspace.ts` defines the `unit-main`, `unit-renderer`, and `unit-shared` projects. The pinned Vitest version does not support CLI `--project`, so `test:unit` is plain `vitest run`, `test:integration` filters `*.integration.test.*`, and `test:component` filters `src/renderer/**/*.test.*`. Root desktop sharding uses `scripts/run-desktop-test-shards.mjs`, which runs `vitest run --shard=N/8` for shards 1-8 (split by recorded duration, as in CI).
-- **Test locations**: colocated with source (`*.test.ts` / `*.test.tsx`) under `src/**`.
-- **Setup**: `apps/desktop/src/test/setup.ts` (browser/DOM mocks via `browserMock.ts`).
-- **Philosophy**: keep tests that carry real value; aggressively remove brittle UI/render tests; keep mutation + integration coverage solid.
-- **Smoke tests**: `packagedRuntimeSmoke.test.ts` for packaged runtime.
+Vitest (`apps/desktop/vitest.workspace.ts`: `unit-main`, `unit-renderer`,
+`unit-shared`), forks pool with 4 forks, 20 s timeouts, tests colocated as
+`*.test.ts(x)`, setup in `apps/desktop/src/test/setup.ts`. What deserves a test
+is decided by **Writing tests** in `AGENTS.md`.
 
 ### 14.4 Packaging (Electron Builder)
 
-macOS:
+- macOS: DMG and ZIP, signed and notarized in CI (`after-sign-notarize.cjs`).
+  The x64 build is cross-packaged on Apple Silicon and validated on Intel.
+- Linux: AppImage and deb for x64 and arm64, unsigned.
+- Windows: a per-user NSIS installer signed through Azure Artifact Signing
+  (`dist:win:signed`), published when `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED` is
+  `1`. Maintainer steps:
+  [playbooks/windows-signed-release.md](./playbooks/windows-signed-release.md).
+- Post-packaging scripts in `apps/desktop/scripts/`:
+  `after-pack-runtime-fixes.cjs`, `runtimeBinaryPermissions.cjs`,
+  `validate-mac-artifacts.mjs` / `validate-win-artifacts.mjs` (sharing
+  `validate-packaged-tree.mjs`), `artifact-size-budget.cjs`.
+- The app bundle is `ADE.app` / `ADE.exe` on disk (`productName`), a frozen
+  name.
 
-- `npm run dist:mac` — notarized .dmg for local distribution.
-- `npm run dist:mac:universal:signed` — universal x64+arm64 signed builds.
-- `npm run dist:mac:universal:signed:zip` — zip archive variant.
-
-Linux:
-
-- The release target is AppImage and deb for x64 and arm64, with architecture-specific updater metadata and checksums. AppImage updates in place; deb users download the new package. Linux artifacts are unsigned. The release workflow and artifact validation are owned by the packaging track; see `docs/development/linux-support.md` for the required proof and limits.
-
-Windows:
-
-- `npm run dist:win` — unsigned x64 preview installer via the guarded `run-electron-builder.mjs` wrapper, with `validate:win:artifacts` (preflight) and `validate:win:release` (post-build) checks in `apps/desktop/scripts/validate-win-artifacts.mjs`.
-- `npm run dist:win:signed` — production path, signing through [Azure Artifact Signing](https://learn.microsoft.com/en-us/azure/artifact-signing/overview). The service holds the private key and never releases the certificate, so there is no PFX: the wrapper requires the `AZURE_TENANT_ID`/`AZURE_CLIENT_ID`/`AZURE_CLIENT_SECRET` service-principal triple that Azure.Identity's `EnvironmentCredential` reads, maps it only into the isolated electron-builder child process, and configures `win.azureSignOptions` plus fail-closed code signing. electron-builder 26 selects the Azure signing manager above the single chokepoint every Windows artifact passes through, so one configuration covers the channel executable, its DLLs, the NSIS installer, and the uninstaller. Post-build validation requires a trusted RFC3161 timestamp against `http://timestamp.acs.microsoft.com`, the canonical `WINDOWS_SIGNING_EXPECTED_SUBJECT` identity, and the same signer on the NSIS installer and installed channel executable. Those four names are the complete Windows signing-secret contract; the existing generic `CSC_*` secrets remain macOS-only and are stripped from the packaging environment.
-- The service renews its certificate daily and expires it after 72 hours, so the approved publisher is pinned by certificate Subject and thumbprint pinning is unsupported. Every layer — `verify`, `prepare-release.yml`, `run-electron-builder.mjs`, `validate-win-artifacts.mjs`, and `apps/ade-cli/scripts/sign-windows-runtime.ps1` — fails while `WINDOWS_SIGNING_EXPECTED_THUMBPRINT` is set rather than ignoring it, so a pin cannot silently stop pinning. The pinned Subject is also the `publisherName` electron-builder writes into `app-update.yml`, which electron-updater parses as a Distinguished Name before running a downloaded installer.
-- Windows-only wrappers for the bundled `ade` CLI ship in `apps/desktop/scripts/`: `ade-cli-windows-wrapper.cmd` (channel-aware launcher), `ade-cli-install-path.cmd` (idempotent PATH install helper), and `windows-install-setup.ps1` (post-install CLI/service setup). The platform-agnostic `.sh` wrapper covers macOS/Linux.
-- The Windows installer is an assisted, per-user, non-elevating NSIS install, compiled with NSIS 3.12 (`build.toolsets.nsis: "1.2.1"`; electron-builder's default 3.0.4.1 crashed in `System.dll` on roughly one release in three). Proof dry runs (`windows_proof`) also install it ten times in a row and count failures without retrying. It bundles the prebuilt `cr-sqlite` native binary from `apps/desktop/vendor/crsqlite/win32-x64/`, a Windows node-pty ConPTY worker, and — since the target-only packaging change — the `win32-x64` remote-runtime sidecar alone; other targets are fetched from the release on demand. `validate-win-artifacts.mjs` asserts each one is unpacked and executes a real CRR change through the installed DLL. The custom install step repairs the channel-specific CLI shim, user PATH, and brain startup registration; uninstall removes only registry/PATH/protocol/startup state owned by that exact installation.
-- Electron-builder generates `resources/app-update.yml` from the GitHub publish configuration. The source default remains the upstream `arul28/ADE`; CI sets `ADE_RELEASE_REPOSITORY=${{ github.repository }}` so fork package validation proves the installed updater authority matches the repository that built it without changing upstream release behavior.
-- Both macOS jobs in `build-mac-release` run on Apple Silicon; x64 is cross-packaged and then validated on an Intel runner by `smoke-mac-x64`, which gates the macOS result. The darwin-x64 standalone runtime is built on Apple Silicon too (`build-runtime-binaries`, 520 s on the Intel runner, which every macOS and Linux package job waited for): the native arm64 Node bundles it, the official darwin-x64 Node of the same version (checked against nodejs.org's `SHASUMS256.txt`, `scripts/release-tools/officialNodeBinary.mjs`) is the SEA host, `package-native-deps.mjs` adds the x64 platform package the archive carries from the lockfile, and Rosetta 2 runs the x64 Node to write the SEA blob and runs every check that executes the binary. The SEA config keeps `useCodeCache` and `useSnapshot` off, which is what keeps the blob portable across architectures. The smoke reruns the full validator on the published zip, opens the last stable release's database with this build's brain, and runs the app's darwin-x64 runtime sidecar (its version and a cr-sqlite load by an x64 Node), side by side; it takes the CLI build files the validator lists from the x64 build job's `ade-cli-dist` artifact (it builds the CLI itself only when that artifact is missing) and installs its dependencies while the update zip downloads. Each macOS build uploads its update zip and its DMG as separate, uncompressed artifacts (`ade-mac-release-<tag>-<arch>` and `…-<arch>-dmg`), so the smoke downloads only the zip; `publish-release` takes both by pattern. The runtime, mac, Linux and Windows build jobs check out one commit (`fetch-depth: 1`); nothing they run reads git history, and `verify` keeps the full clone. A release-notes-only release commit borrows its parent's green `ci-pass` in `verify` (`scripts/require-release-ci-pass.sh`).
-- Windows builds fresh on the release tag, the same shape as macOS. `build-win-release` mirrors `build-mac-release`: it builds, signs and validates on a `windows-latest` runner in-run, and `publish-release` attaches its output. `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1` is the only Windows repository variable and the only maintainer-facing switch; with it off the Windows jobs skip cleanly and do not block the macOS release, and with it on a failed or skipped Windows build blocks the draft exactly as a failed macOS build does. Signing is fail-closed at every layer: the job-level secret requirement, `--require-signing` in `run-electron-builder.mjs`, and `--require-signed` Authenticode verification in `validate-win-artifacts.mjs` covering valid status, trusted RFC3161 timestamp, and the pinned publisher subject. `verify` re-checks that the signing secrets exist before any runner spins up, so a misconfigured gate fails in about a minute.
-- Publication no longer depends on promoting a previously approved proof run. That model, and the four repository variables that bound it, are gone. The accepted tradeoff is that a release may publish Windows bytes that never went through a manual clean-host proof sweep; the machine-checkable gates above all still apply, and the priority is that every desktop and CLI release also publishes Windows automatically.
-- `prepare-release.yml` is the platform-neutral non-publishing dry run and stays invokable in every flag state. Its `windows_proof` dispatch input is threaded through `release-core.yml` and turns on deliberate clean-host evidence collection: it builds and signs Windows even while the publication gate is off, and gates the proof staging, manifest generation, manifest validation, and bundle upload. Proof mode reads no repository variable, so evidence can be collected before Windows is enabled and again as a regression check afterwards. It emits `windows-proof-manifest.json` for the exact 40-character source SHA and hashes the installer, blockmap, updater manifest, standalone executable, native archive, `install.ps1`, `SHA256SUMS`, full-system scenario inventory, and #999 provenance index, and verifies that the checksum manifest binds the standalone files. The website download is permanently on since v1.2.52; the old `VITE_ADE_WINDOWS_DOWNLOAD_ENABLED` flag is retired. See `docs/development/windows-release-proof.md`.
-- The `ade-win-proof-<tag>` evidence bundle is uploaded with an explicit 90-day `retention-days` so a lowered repository or organization default cannot expire it mid-review. It bounds how long the evidence stays downloadable, not when a release may be tagged.
-- Every published asset comes from the run that built it. The cross-platform standalone set (`install.sh`, `ade-darwin-*`, `ade-linux-*`) and the Windows standalone set (`install.ps1`, `ade-win32-x64.exe` and its native archive) all come from that run's `build-runtime-binaries` jobs, which is what keeps them byte-identical to the copies bundled inside the desktop installers published beside them. The published `SHA256SUMS` is regenerated over the merged standalone set, so the digests the runtime installers verify always describe the bytes actually uploaded. A cross-platform runtime allowlist rejects any extra or missing `ade-*` sidecar in every flag state, the Windows standalone bytes are cross-checked against the digests computed on the signing runner, and `latest.yml` must reference the installer published beside it.
-- Standalone macOS runtimes are hardened Node.js single-executable applications. Their Developer ID signature uses `apps/ade-cli/build/entitlements.mac.plist` to grant only `com.apple.security.cs.allow-jit`; `notarize-static-runtime.mjs` reads the entitlements back from the signed executable and fails before notarization if that permission is absent. Native archive payloads remain hardened without inheriting the runtime's JIT exception.
-- Ongoing Windows integration lane (rebase with `main`, smoke tests, backlog): `docs/development/windows-port-lane.md`.
-
-Post-packaging hardening (`apps/desktop/scripts/`):
-
-- `runtimeBinaryPermissions.cjs` — restores exec bits on `node-pty` spawn helpers, Codex vendor binaries, Claude SDK ripgrep helpers; patches `node-pty` `unixTerminal.js` for ASAR-unpacked paths.
-- `after-pack-runtime-fixes.cjs` — electron-builder after-pack hook. Covers both platforms: runs the permissions pass on macOS and stages CLI wrappers + runtime shims on Windows.
-- `validate-mac-artifacts.mjs` / `validate-win-artifacts.mjs` — per-platform artifact validators; confirm expected binaries, release signing state, bundled ADE CLI help, PTY/provider resolution, CR-SQLite mutation, updater authority, and every required bundled ADE Agent Skill `SKILL.md`. Windows signing verification is mandatory in `dist:win:signed` and opt-in for lower-level validation with `--require-signed` or `ADE_REQUIRE_WIN_SIGNING=1`.
-- `validate-packaged-tree.mjs` — the assertions both per-platform validators share, extracted so they cannot drift: artifact size budgets, the bundled agent-skill roster, the node-pty addon search, and the rule that no runtime-fetched agent-tool package may ship (checked in `app.asar.unpacked` *and* inside `app.asar`). Each validator injects its own `fail` so its CI output keeps its own prefix.
-- `runtime-resource-targets.cjs` / `assert-runtime-resource-target.mjs` — the runtime sidecar target set and its pre-build gate (see 2.1 "Bundled runtime artifacts").
-- `runtime-fetched-tool-packages.mjs` — the exact-name set of agent-tool platform packages that are fetched at runtime rather than bundled; `after-pack-runtime-fixes.cjs` prunes them and then throws if any survives. See `docs/features/onboarding-and-settings/agent-tools-cache.md`.
-- `artifact-size-budget.cjs` / `assert-artifact-size-budget.mjs` — post-packaging size ceilings (800 MiB per macOS ZIP, 900 MiB per Windows installer), run by `npm run assert:artifact-size` in both release jobs. The macOS number is a crash guard, not hygiene: Squirrel.Mac buffers the whole ZIP and dies past ~1 GiB. See `docs/features/onboarding-and-settings/desktop-auto-update.md`.
-- `after-sign-notarize.cjs` — electron-builder `afterSign` hook (`mac.notarize` is `false`): notarizes and staples the signed app with retries on Apple network errors. CI does not notarize the DMG separately; the app inside it is notarized and stapled.
-- `notarize-mac-dmg.mjs` — DMG notarization for the local recovery path (`release-mac-local.mjs`) only.
-- `release-retry.mjs` — the shared retry for steps that fail outside the build (Apple network drops, `hdiutil` "Resource busy", downloads).
-- `install-cross-arch-packages.mjs` — lets the Apple Silicon runner package the x64 app: adds the darwin-x64 npm platform packages from the lockfile (integrity-checked) and recompiles install-built addons for x64. `validate-macho-arch.mjs` then rejects any Mach-O without x64 code or an x64 twin, and the `smoke-mac-x64` job runs the full validator on an Intel runner.
-- `prefetch-electron.mjs` — downloads Electron into `ELECTRON_CACHE` with retries before electron-builder runs.
-- `native-helper-cache.mjs` — reuses the universal Swift helpers that release jobs restore from the cache filled by `warm-release-caches.yml` (keys in `.github/actions/release-cache-keys`). When the cache has dropped them, `scripts/fetch-warm-release-build.sh` takes the same files from that workflow's newest artifact (named by the cache key; the workflow runs weekly so one never expires); `scripts/verify-cached-release-builds.sh` then checks the warm workflow's attestation on either source, and anything else is built from source.
+The release flow (tag `vX.Y.Z` on `main`, draft release, publish) is in
+`AGENTS.md` (**Desktop release**).
 
 ### 14.5 Documentation
 
-- **Internal docs** (this directory + `docs/`) — for engineers and agents. Not published.
-- **Public docs site** — Mintlify, configured in `docs.json` at repo root. Content lives alongside the repo (`introduction.mdx`, `quickstart.mdx`, `welcome.mdx`, `key-concepts.mdx`, plus subdirs `getting-started/`, `guides/`, `lanes/`, `chat/`, `cto/`, `pull-requests/`, `configuration/`, `tools/`, `computer-use/`, `automations/`, `ai-tools/`). Theme `maple`, brand primary `#7C3AED`.
-- **Doc validation**: `scripts/validate-docs.mjs` runs in CI to catch broken links / structure drift.
+- Internal docs (`docs/`): for engineers and agents, not published. Index:
+  [README.md](./README.md).
+- Public docs: Mintlify, configured in `docs.json`. `docs-areas.json` maps
+  source trees to pages; `node scripts/validate-docs.mjs` runs in CI.
 
 ---
 
-## 15. Cross-Cutting Concerns
+## 15. Cross-cutting concerns
 
 ### 15.1 Logging
 
-- **Main-process project logger** — `apps/desktop/src/main/services/logging/logger.ts` (`createFileLogger`). Writes structured JSONL to `<projectRoot>/.ade/transcripts/logs/main.jsonl`, created when a project opens. Categories: `ipc.*`, `project.startup_task_*`, `renderer.*`, per-service telemetry.
-- **Main-process machine logger** — `apps/desktop/src/main/services/logging/machineLogger.ts` reuses `createFileLogger` to write `~/.ade/runtime/desktop-main.jsonl` with the same 10 MiB `.1` rotation, opened in `main.ts`'s first executable statement so events that precede (or never reach) a project are durable. Categories: `desktop.main_started`, `deeplink.*`, `app_navigation.*`, `app.hardware_acceleration`, `machine_trust_reset.*`, `ade_cli.auto_install*`. See [logging.md](./logging.md) for the machine-versus-project rule.
-- **Machine-brain logger** — the headless runtime reuses `createFileLogger` through `apps/ade-cli/src/services/runtime/brainLogger.ts`, writes `~/.ade/runtime/brain.jsonl` with 10 MiB `.1` rotation, and mirrors timestamped warnings/errors to stderr.
-- **Redaction** — all log writes pass through `redactSecrets()` / `sanitizeStructuredData()`.
-- **Retention** — local, indefinite until user clears.
-- **Error tracking** — `createFileLogger` hands every `warn` and `error` line to `shared/sentry/logBridge.ts`, which mirrors it to Sentry when a Sentry client is running in that process (packaged builds). Info and debug lines never leave the machine.
+- Project log: `createFileLogger` (`services/logging/logger.ts`) writes JSONL to
+  `<project>/.ade/transcripts/logs/main.jsonl`.
+- Machine logs: `~/.ade/runtime/desktop-main.jsonl` (`machineLogger.ts`) and
+  `~/.ade/runtime/brain.jsonl` (`apps/ade-cli/src/services/runtime/brainLogger.ts`),
+  10 MiB rotation.
+- Every write passes through `redactSecrets()` / `sanitizeStructuredData()`.
+- Warn and error lines are mirrored to Sentry where a Sentry client runs
+  (`shared/sentry/logBridge.ts`).
 
 ### 15.2 Telemetry
 
-The normative privacy, consent, taxonomy, quota, configuration, and instrumentation rules are in [logging.md](./logging.md). This section is only the architecture summary.
-
-- **Error tracking (Sentry)** — five projects in the `ade-app` organization, one per surface: Electron main and renderer (`main/sentry/initMain.ts`, renderer events travel to main over IPC), the brain (`apps/ade-cli/src/sentry/initBrain.ts`), the hosted web client (`renderer/webclient/sentry.ts`), the four Workers (each `src/sentry.ts`) and iOS (`CrashReporting.swift`). Shared scrubbing, the per-process event budget and the capture helpers live in `apps/desktop/src/shared/sentry/`. Failed `ipcMain.handle` calls, failed brain actions, `logger.error` lines and provider runtime failures become issues; error toasts, provider sign-outs and expected outcomes ("Lane not found", a paired machine asleep) become Sentry Logs. The SDKs are bundled into `main.cjs` and `cli.cjs` (devDependencies, nothing shipped in `node_modules`). See [logging.md](./logging.md#error-tracking-sentry).
-
-- **IPC tracing** — every handler emits `ipc.invoke.begin` / `ipc.invoke.done` / `ipc.invoke.failed` with call ID, channel, window ID, duration, summarized args. Mandatory for new handlers.
-- **Renderer lifecycle** — `renderer.route_change`, `renderer.tab_change`, `renderer.window_error`, `renderer.unhandled_rejection`, `renderer.event_loop_stall`. Mandatory for new surfaces that introduce novel lifecycle transitions.
-- **Startup tasks** — `project.startup_task_enabled`, `project.startup_task_skipped`, `project.startup_task_begin`, `project.startup_task_done` with durations.
-- **Usage tracking** — `usageTrackingService.ts` + `sharedUsageTracking.ts` + `usageStatsStore.ts` + `usage/ledgers/*` + `budgetCapService.ts` account for provider quotas/cost and retrospective ADE activity. The top-bar Usage popup (`HeaderUsageControl` → `UsageLimitsBand` + collapsible `BudgetCapEditor`) shows live quota windows as one meter row per account, and Settings > Usage draws the same snapshot as radial `UsageLimitGauges` for its This machine / This project scopes, with a pooled band on the account scope; that page and the empty Work composer otherwise use the cached cross-client activity projection. After a successful meaningful mutation, desktop IPC, ADE action RPC, and paired sync-command ingress record one local `usage_events` row with client attribution; reads, polling, background work, and failed calls do not count. The brain polls provider quota once per machine. Production `main.ts` does not start a second project-context tracker; it relays the brain's snapshots onto `ade.usage.event` so Welcome/Hub/remote-machine windows stay live, and those windows' usage IPC proxies to a booted brain scope. The in-process tracker is the fallback producer only when no brain scope is running (and in in-process tests). Bound windows take the runtime event stream; preload publishes its own rebinds so the renderer switches feeds with the binding. The compact header and open panel order snapshots by `revision` (`producerId` + `seq`) and reset when the binding changes.
-- **Local perf runs** — `scripts/perf-launch.mjs` / `scripts/run-perf-scenario.mjs` launch ADE with a run id, feed renderer scenarios, and collect JSONL events plus `summary.json` under `~/.ade/perf-runs/<runId>/`. This is local-only diagnostics, not external telemetry. `perf-launch.mjs` first stops any listening dev runtime daemon: `ensureRuntime` reuses a healthy daemon untouched, and a daemon only ever sees `ADE_PERF_RUN_ID` if it inherits it at spawn, so a reused daemon is exactly how a run ends up with zero `chatTextFlush` events. Beyond the process/IPC/web-vitals basics, a run summary carries `chatText` (assistant-text flush cadence — flushes, chars per flush, deltas coalesced, gap percentiles, per-session breakdown, and a count per flush reason), `mainLoop` (main-process event-loop delay), and `streamSmoothness` (how smoothly streaming text actually painted). Read `streamSmoothness` carefully: `advancedRatio` is frames-advanced over frames-total and therefore display-dependent — a 240 Hz machine floors it near 0.25 for a stream a 60 Hz machine scores at 1.0 — so compare runs only within the same `estimatedHz`, or use the display-independent `advancedPerSecond` / `advancedRatio60`.
-- **Privacy-bounded product analytics** — configured builds manually capture a strict allowlist of PostHog events for a once-only install milestone, app opens, activation, key normalized screen arrivals, successful feature actions, truthful persisted work-session completions, update-prompt decisions, coarse error categories, daily aggregate usage, and analytics-budget health. Canonical desktop/runtime/hosted-client events, direct native-mobile UI events (`ade_mobile_*`), and public-site events (`ade_marketing_*`) use separate namespaces so marketing visits and the phone's own installation identity cannot inflate product activation or retention. Ordinary events salt/hash project and session identifiers, disable GeoIP and person profiles, and reject arbitrary properties. Once ADE knows a signed-in account, the shared service may send one quota-counted `$identify` that links anonymous history to a one-way account hash and sets only plan, platform, and app version; explicit sign-out rotates the anonymous identity. It never sends prompts, code, file or terminal content, repository names or paths, command arguments, URLs, branch names, raw account IDs, email addresses, error messages, stack traces, or recordings. Session replay, autocapture, automatic pageviews, surveys, and feature flags are disabled or absent.
-- **Quota controls** — analytics is lazy and batched, with a hard 200-event installation-wide UTC-day budget, tighter per-event and per-minute caps, deduplication windows, bounded queues, and a summarized budget event. Persisted `usage_events` are exported only after successful user mutations; reads, render loops, polling, streams, terminal bytes, and retries do not generate product events. Native mobile and public-web clients apply still-lower local ceilings. Budget `sent_count` is the legacy wire name for attempts accepted/enqueued locally, not confirmed PostHog delivery.
-- **Choice and configuration** — product analytics remains inert when no valid public `phc_` PostHog project token is configured. Product analytics is default-on on the desktop/runtime, native iOS, and hosted-web surfaces, with no Settings or first-run control. `DO_NOT_TRACK=1` and a persisted explicit opt-out from an earlier build are honored silently everywhere. The public marketing site keeps its own browser-local choice, separate from product analytics. `ADE_DISABLE_PRODUCT_ANALYTICS=1` is the runtime kill-switch, and development builds require explicit `ADE_ENABLE_PRODUCT_ANALYTICS_IN_DEVELOPMENT=1`. Release builds inject only the public project token and ingestion host. The personal `phx_` provisioning key is never bundled and is accepted only by `scripts/posthog/provision.mjs`; dashboard definitions and the credential-safe provisioner live under `scripts/posthog/`.
+The privacy, consent, taxonomy and instrumentation rules are in
+[logging.md](./logging.md). In short: Sentry error tracking per surface,
+mandatory IPC tracing for new handlers, renderer lifecycle events, and
+privacy-bounded PostHog product analytics with a daily event budget.
 
 ### 15.3 Error surfaces
 
-- Every cleanup step is `try/catch` isolated — one failing service must not block shutdown.
-- IPC handlers return structured errors, never crash the renderer.
-- CTO and AI UI components use try/catch around async loads with `isLoading`/`error` state and retry actions.
-- Graceful degradation: when no provider is configured, AI surfaces show explanatory disabled state rather than spinning.
-- Explicit fallbacks: Linear sync skips when no credentials/workflows; Linear ingress stays dormant without config; trivial session summaries skip AI entirely.
-- The full-screen error surfaces share one kit (`renderer/components/app/errorSurfaceKit.tsx`: `ErrorSurfaceCard`, `TechnicalDetailsFold`, `ERROR_PRIMARY_BUTTON`), so the recovery screen, the renderer/page error boundaries, and the CTO wake failure all say what happened and what is safe, with the raw text behind a fold rather than on the headline. Each one carries "Report this error to ADE…"; on the recovery screen and the crash boundaries it is the card's last row (`ReportIssueFooter`: a rule, the button and one hint line, and on a crash card "ADE got an error report automatically" once Sentry confirms it has the crash). A failure pane with no way out is a dead end, so each also carries a retry.
-
-### 15.4 Observability / dev tools
-
-- **Dev tools probe** — `devToolsService.ts` checks for `git` and `gh` CLI availability at startup, surfacing warnings in UI.
-- **Port allocation** — `portAllocationService.ts` manages per-lane port leases with orphan recovery.
-- **Runtime diagnostics** — `runtimeDiagnosticsService.ts` surfaces lane launch context and runtime state.
-- **Sync telemetry** — `sync_cluster_state` + device registry surfaced in the
-  top-bar Connections panel.
-- **Operation timeline** — `operationService.ts` + History page provide full audit trail for debugging and undo.
-- **Shutdown sequence**:
-  1. Stop head watcher + background timers.
-  2. Dispose pollers and ingress services.
-  3. Stop file watchers and tests.
-  4. Dispose PTYs and agent chat sessions.
-  5. Dispose sync service (stop host, disconnect peer).
-  6. **Flush SQLite before service disposal begins** (durable writes first).
-  7. Per-service `try/catch`-isolated dispose.
-  8. Final SQLite flush + close.
+- IPC handlers return structured errors and never crash the renderer.
+- Surfaces that load data show "couldn't load" with a retry, never a false
+  empty state.
+- Full-screen error surfaces share one kit
+  (`renderer/components/app/errorSurfaceKit.tsx`).
 
 ---
 
 ## Cross-reference index
 
 - Product spec · [PRD.md](./PRD.md)
-- Runtime and remote bindings · [Remote runtime](./features/remote-runtime/README.md)
-- Lanes and Git isolation · [Lanes](./features/lanes/README.md)
-- Agent chat · [Chat](./features/chat/README.md)
-- Projectless AI conversations · [Personal chats](./features/personal-chats/README.md)
-- Embeddable sidecar · [ADE SDK](./features/sdk/README.md)
-- Pull requests and queues · [Pull Requests](./features/pull-requests/README.md)
-- Multi-device sync and iOS · [Sync and Multi-device](./features/sync-and-multi-device/README.md)
-- Cross-machine Work chat continuation · [Cross-machine session handoff](./features/sync-and-multi-device/cross-machine-session-handoff.md)
-- Terminal sessions and Work · [Terminals and Sessions](./features/terminals-and-sessions/README.md)
-- Computer-use proof · [Computer Use](./features/computer-use/README.md)
-- Per-lane macOS screen · [Mac Desktop](./features/mac-desktop/README.md)
-- Per-lane Windows screen · [Windows Desktop](./features/windows-desktop/README.md)
-- Deeplinks · [Deeplinks](./features/deeplinks/README.md)
-- Settings and onboarding · [Onboarding and Settings](./features/onboarding-and-settings/README.md)
-- Feature index · [features/](./features/)
+- Brand rules · [brand/README.md](./brand/README.md)
+- DAEX Cloud · [ade-cloud](./features/ade-cloud/README.md)
+- Runtime and remote bindings · [remote-runtime](./features/remote-runtime/README.md)
+- Lanes and Git isolation · [lanes](./features/lanes/README.md)
+- Agent chat · [chat](./features/chat/README.md)
+- Personal chats · [personal-chats](./features/personal-chats/README.md)
+- SDK · [sdk](./features/sdk/README.md)
+- Pull requests · [pull-requests](./features/pull-requests/README.md)
+- Sync and iOS · [sync-and-multi-device](./features/sync-and-multi-device/README.md)
+- Terminals and Work · [terminals-and-sessions](./features/terminals-and-sessions/README.md)
+- Proof · [computer-use](./features/computer-use/README.md)
+- Deeplinks · [deeplinks](./features/deeplinks/README.md)
+- Settings and onboarding · [onboarding-and-settings](./features/onboarding-and-settings/README.md)
+- Logging and analytics · [logging.md](./logging.md)
