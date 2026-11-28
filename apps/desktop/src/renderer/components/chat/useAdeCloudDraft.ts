@@ -29,6 +29,7 @@ import { settingsRouteFor } from "../settings/settingsManifest";
 import { ADE_CLOUD_FREE_SPACE_ANCHOR, ADE_CLOUD_PLAN_ANCHOR, adeCloudSettingsRoute } from "../settings/settingsHash";
 import { isAutoCreateLaneOptionId } from "../terminals/LaneCombobox";
 import { AUTO_CREATE_DRAFT_LANE_OPTION as AUTO_CREATE_LANE_OPTION, type RoutedDraftLane } from "./useDraftMachineRouting";
+import { freePlanGithubHold, type CloudFreeGithubHoldFacts } from "../settings/cloudDashboard/CloudFreeGithubNotice";
 
 const NO_MACHINES: readonly CloudMachine[] = [];
 
@@ -56,6 +57,12 @@ export type AdeCloudTrayNotice = {
   /** One short line for a narrow prompt box, so the label never wraps there. */
   short: string;
   actions: AdeCloudTrayAction[];
+  /**
+   * The free plan's GitHub rule is why the hours are 0 (not hours spent):
+   * the tray shows the hold, with "Add a card (no charge)" or "Connect
+   * GitHub", instead of an out-of-credits line.
+   */
+  hold?: CloudFreeGithubHoldFacts;
 };
 
 /**
@@ -70,6 +77,9 @@ export function adeCloudAccountBlock(
   // One wording with `cloud.status` and the launch's early refusal.
   const block = cloudLaneStartBlock(account, options);
   if (!account || !block) return null;
+  // Out of hours because the GitHub rule holds the free plan's: the hold, not "out of credits".
+  const hold = block.code === "out_of_hours" ? freePlanGithubHold(account) : null;
+  if (hold) return { tone: "blocked", message: block.message, short: block.short, actions: [], hold };
   const upgrade: AdeCloudTrayAction[] = account.rules === "free" ? ["upgrade"] : [];
   const actions: AdeCloudTrayAction[] = block.code === "computer_limit"
     ? ["computer-limit"]

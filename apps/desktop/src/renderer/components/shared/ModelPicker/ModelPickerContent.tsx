@@ -14,6 +14,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { MagnifyingGlass } from "@phosphor-icons/react";
 import {
   MODEL_REGISTRY,
+  getModelById,
   modelSupportsFastMode,
   type FastTier,
   modelSupportsServiceTier,
@@ -60,6 +61,7 @@ import { CustomPickerPane } from "./CustomPickerPane";
 import { FreeModelsEmptyState } from "./FreeModelsEmptyState";
 import { useFreeModelsStatus } from "./useFreeModelsStatus";
 import { freeModelEntry, freeModelSourceLabel, isFreeModel } from "../../../../shared/freeModels";
+import { isAdeFreeModelId } from "../../../../shared/adeFreeModels";
 import { useSmartBalanceProviders } from "../../settings/providers/accounts/useProviderInstances";
 import { isImeComposing } from "../../../lib/imeComposition";
 
@@ -265,7 +267,28 @@ export type ModelPickerContentProps = {
   onCopilotContextTierChange?: (modelId: string, next: "default" | "long_context") => void;
   /** Prompt-box / chat machine for OpenCode-installed and auth probes. */
   runtimePin?: OpenProjectBinding | null;
+  /**
+   * The ADE Free Models this picker offers (`shared/adeFreeModels.ts`): the
+   * ids the account lists as available here, already narrowed to chat. They
+   * come from the account, not the machine's OpenCode list, so they show on
+   * every machine; every other ADE Free Models row is left out.
+   */
+  adeFreeModelIds?: readonly string[];
+  /**
+   * The ADE Free Models are locked for this account (the GitHub rule): their
+   * rows stay listed with a lock and this short line in place of their
+   * details, and picking one opens the unlock sheet (`ModelPicker`).
+   */
+  adeFreeLockedLine?: string | null;
+  /**
+   * The chat runs where OpenCode is always there (a new chat on ADE Cloud):
+   * never "OpenCode needed", and no probe of the picker's machine for free
+   * models.
+   */
+  openCodeAssumed?: boolean;
 };
+
+const NO_ADE_FREE_MODELS: readonly string[] = [];
 
 export const ModelPickerContent = memo(function ModelPickerContent({
   value,
@@ -304,6 +327,9 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   copilotContextTier = "default",
   onCopilotContextTierChange,
   runtimePin = null,
+  adeFreeModelIds = NO_ADE_FREE_MODELS,
+  adeFreeLockedLine = null,
+  openCodeAssumed = false,
 }: ModelPickerContentProps) {
   // hidePermissionRail is currently a forward-compat hook (see prop docs).
   // Reference it so unused-var lint stays quiet, and so future code paths
@@ -323,7 +349,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     ...(runtimePin ? { runtimePin } : {}),
   });
 
-  const { status: freeModels, refresh: refreshFreeModelsMachine } = useFreeModelsStatus(runtimePin);
+  const { status: freeModels, refresh: refreshFreeModelsMachine } = useFreeModelsStatus(runtimePin, !openCodeAssumed);
   const recentSet = useMemo(() => new Set(recents), [recents]);
   const favoriteSet = useMemo(() => new Set(favorites), [favorites]);
 
@@ -341,8 +367,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   // window.
   const opencodeBinaryInstalled = internalAuth.opencodeBinaryInstalled;
   const opencodeBinaryKnown = internalAuth.binaryProbed;
-  /** The probe answered and OpenCode is not on the machine. */
-  const opencodeMissing = opencodeBinaryKnown && !opencodeBinaryInstalled;
+  /** The probe answered and OpenCode is not on the machine (never where OpenCode is assumed). */
+  const opencodeMissing = !openCodeAssumed && opencodeBinaryKnown && !opencodeBinaryInstalled;
   const isOpencodeRequiredFamily = useCallback(
     (family: ProviderFamily): family is "opencode" | "ollama" | "lmstudio" =>
       family === "opencode" || family === "ollama" || family === "lmstudio",
@@ -384,8 +410,28 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     [cursorAvailabilityMode],
   );
 
+  // ADE Free Models are the account's to offer: only the ids it lists here,
+  // added when the machine's list lacks them, and none in CLI mode.
+  const adeFreeModelIdsKey = adeFreeModelIds.join("\n");
+  const withAdeFreeModels = useCallback(
+    (list: readonly ModelDescriptor[]): readonly ModelDescriptor[] => {
+      const allowed = new Set(adeFreeModelIds);
+      const out = list.filter((m) => !isAdeFreeModelId(m.id) || allowed.has(m.id));
+      if (allowed.size === 0) return out.length === list.length ? list : out;
+      const present = new Set(out.map((m) => m.id));
+      for (const id of adeFreeModelIds) {
+        if (present.has(id)) continue;
+        const descriptor = getModelById(id);
+        if (descriptor) out.push(descriptor);
+      }
+      return out;
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the ids, not the array's identity.
+    [adeFreeModelIdsKey],
+  );
+
   const expandedModels = useMemo<readonly ModelDescriptor[]>(() => {
-    if (!allowRegistryExpansion) return models;
+    if (!allowRegistryExpansion) return withAdeFreeModels(models);
     const merged = new Map<string, ModelDescriptor>();
     for (const m of models) merged.set(m.id, m);
     for (const m of MODEL_REGISTRY) {
@@ -403,8 +449,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       (model): model is RuntimeCatalogModelDescriptor =>
         (model as RuntimeCatalogModelDescriptor).catalogAvailable === true,
     );
-    return filterFallbackModelsToRuntimeCatalog([...merged.values()], runtimeCatalogModels);
-  }, [allowRegistryExpansion, authOnly, familyIsReady, models, registryFilter]);
+    return withAdeFreeModels(filterFallbackModelsToRuntimeCatalog([...merged.values()], runtimeCatalogModels));
+  }, [allowRegistryExpansion, authOnly, familyIsReady, models, registryFilter, withAdeFreeModels]);
 
   const providersPresent = useMemo<ProviderFamily[]>(() => {
     // Cursor drops out of the rail on Windows on ARM, where @cursor/sdk has no
@@ -1344,11 +1390,12 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                 // One instance per machine: its re-read belongs to one machine.
                 key={runtimePin?.key ?? "tab"}
                 runtimePin={runtimePin}
-                opencodeInstalled={opencodeBinaryKnown ? opencodeBinaryInstalled : null}
-                catalogRefreshing={activeProviderRefreshing}
-                catalogRefreshFailed={activeProviderRefreshFailed}
+                // Where OpenCode is assumed (ADE Cloud), no download and no reload of this machine's list.
+                opencodeInstalled={openCodeAssumed ? true : opencodeBinaryKnown ? opencodeBinaryInstalled : null}
+                catalogRefreshing={openCodeAssumed ? false : activeProviderRefreshing}
+                catalogRefreshFailed={openCodeAssumed ? false : activeProviderRefreshFailed}
                 onReady={refreshFreeModelsMachine}
-                {...(onProviderRailSelect ? { onRefresh: () => onProviderRailSelect("opencode", { force: true }) } : {})}
+                {...(onProviderRailSelect && !openCodeAssumed ? { onRefresh: () => onProviderRailSelect("opencode", { force: true }) } : {})}
               />
             ) : isEmpty ? (
               <ModelPickerEmptyState
@@ -1425,6 +1472,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                         } : {})}
                         omitProviderInDetail={providerScopedList && m.family === activeProviderFamily}
                         freeBadge={freeModelEntry(m)?.badge ?? null}
+                        {...(adeFreeLockedLine && isAdeFreeModelId(m.id) ? { lockedLine: adeFreeLockedLine } : {})}
                         {...(onOpenSignIn && !hideSignInFamilies?.includes(pickerFamilyForModel(m))
                           ? { onSignIn: () => onOpenSignIn(pickerFamilyForModel(m), m.authTypes) }
                           : {})}

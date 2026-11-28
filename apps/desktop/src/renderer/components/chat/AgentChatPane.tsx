@@ -1,6 +1,8 @@
 import { peekLocalSyncStatus } from "../../lib/localSyncStatusReader";
 import { SponsoredReplySlot } from "./sponsored/SponsoredReplySlot";
 import { SponsoredDockOutlet, SponsoredOutletsContext, useNewSponsoredOutlets } from "./sponsored/sponsoredOutlets";
+import { noteFreeModelChatSend, useFreeModelViewer } from "./sponsored/useSponsoredViewer";
+import { isAdeFreeModelId } from "../../../shared/adeFreeModels";
 import { msToNextBeat } from "../../lib/workBeat";
 import { sentenceCase } from "../../lib/format";
 import { useServeRemoteBrowserCalls } from "../../lib/remoteBrowserCallHost";
@@ -409,6 +411,7 @@ import {
 } from "../../../shared/codexComposerCommands";
 import { ChatActionsDrawerPanel } from "./ChatActionsDrawerPanel";
 import { ChatAccountNote } from "./ChatAccountNote";
+import { AdeFreeModelsComposerNote } from "./AdeFreeModelsComposerNote";
 import { ChatHandoffDialogs } from "./ChatHandoffDialogs";
 import { ChatSourcesPanel } from "./ChatSourcesPanel";
 import { deriveChatSources } from "../../../shared/chatSources";
@@ -7540,6 +7543,16 @@ export function AgentChatPane({
   // A subagent's transcript, or a chat ADE started under another one: nobody's to show a card in.
   const isSubagentView = subagentView != null || Boolean(selectedSession?.orchestrationParentSessionId) || selectedSession?.spawnKind === "subagent";
   const chatCloudInstanceId = chatCloudLane?.instanceId ?? null;
+  // An ADE Free Models chat (`shared/adeFreeModels.ts`), on any machine: it
+  // runs only while someone has it open, so the open pane tells the account
+  // server (account level, by chat id), and its replies get sponsored cards.
+  const freeModelChatId = selectedSessionId
+    && renderedSessionId === selectedSessionId
+    && isAdeFreeModelId(selectedSessionModelId)
+    ? selectedSessionId
+    : null;
+  useFreeModelViewer(freeModelChatId, isTileVisible);
+  const freeModelChat = freeModelChatId != null;
   // The dock above the prompt box and the reply ends a sponsored card may draw into (`sponsoredOutlets.tsx`).
   const sponsoredOutlets = useNewSponsoredOutlets();
   const sponsoredSlot = useMemo(
@@ -7551,9 +7564,10 @@ export function AgentChatPane({
         events={selectedEventsForDisplay}
         turnActive={turnActive}
         paneVisible={isTileVisible}
+        freeModelChat={freeModelChat}
       />
     )),
-    [isSubagentView, chatCloudInstanceId, renderedSessionId, selectedEventsForDisplay, turnActive, isTileVisible],
+    [isSubagentView, chatCloudInstanceId, renderedSessionId, selectedEventsForDisplay, turnActive, isTileVisible, freeModelChat],
   );
   // A live turn that has gone quiet is worth saying out loud (see
   // `turnStallSilenceMs`). The tick runs only while a turn is active, so a
@@ -14623,6 +14637,9 @@ export function AgentChatPane({
     sendTiming?.mark("createCalled");
     sendTiming?.mark("sendCalled");
     let session: AgentChatSession | null;
+    // An ADE Free Models chat answers only while someone has it open: its
+    // first request finds the look this reports under the new chat's id.
+    if (isAdeFreeModelId(request.createArgs.modelId)) await noteFreeModelChatSend(sessionId);
     onOpeningMessageOut?.(true);
     try {
       session = await createAndSend(
@@ -14736,6 +14753,7 @@ export function AgentChatPane({
         };
         sendTiming?.attach(createdSession.id);
         sendTiming?.mark("sendCalled");
+        if (isAdeFreeModelId(createdSession.modelId)) await noteFreeModelChatSend(createdSession.id);
         await agentChatApiRef.current.send(sendArgs, requireChatPin(pin));
         sendTiming?.mark("sendResolved");
       }
@@ -18038,6 +18056,10 @@ export function AgentChatPane({
           }
           const sendInteractionMode: AgentChatInteractionMode | null =
             sessionProvider === "claude" ? interactionMode : null;
+          // An ADE Free Models chat whose last look is old (the window sat hidden): report it first.
+          if (isAdeFreeModelId(composerModelIdRef.current) || isAdeFreeModelId(selectedSessionModelRef.current.modelId)) {
+            await noteFreeModelChatSend(sessionId);
+          }
           sendTiming.attach(sessionId);
           sendTiming.mark("sendCalled");
           await withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.send({
@@ -20232,6 +20254,7 @@ export function AgentChatPane({
   } = useAdeCloudSignInNeed({
     enabled: !isWebClientMode() && !selectedSessionId && adeCloudMode && !turnActive && !subagentView && !chatScope && !parallelDraftActive,
     provider: signInLoginProvider,
+    modelId,
     navigate,
   });
   // One status read at a time for the sign-in checks below.
@@ -20495,17 +20518,20 @@ export function AgentChatPane({
     const tierRequests = selectedSessionId && cloudTierRequestCards.length > 0
       ? <CloudTierRequestsAboveComposer cards={cloudTierRequestCards} sessionId={selectedSessionId} />
       : null;
-    if (!cloudTray && !laneStatus && !tierRequests && !aboveComposer) return providerSignInSlot;
+    // An ADE Free Models chat (or a draft on one) that the account locked, slowed or paused: one calm line (it renders nothing otherwise).
+    const freeModelsNote = freeModelChat || isAdeFreeModelId(modelId) ? <AdeFreeModelsComposerNote active={isTileVisible} /> : null;
+    if (!cloudTray && !laneStatus && !tierRequests && !aboveComposer && !freeModelsNote) return providerSignInSlot;
     return (
       <>
         {providerSignInSlot}
         {tierRequests}
         {cloudTray}
         {laneStatus}
+        {freeModelsNote}
         {aboveComposer}
       </>
     );
-  }, [aboveComposer, adeCloudNotice, chatLaneJob, cloudTierRequestCards, openAdeCloudSettings, providerSignInSlot, selectedSessionId]);
+  }, [aboveComposer, adeCloudNotice, chatLaneJob, cloudTierRequestCards, freeModelChat, isTileVisible, modelId, openAdeCloudSettings, providerSignInSlot, selectedSessionId]);
   // Layout effect, not effect: this publishes the machine the model memos above
   // read from, so running it after paint would show one frame of the previous
   // machine's model list when the composer switches machines. Setting the same
@@ -22072,6 +22098,18 @@ export function AgentChatPane({
     ? adeCloudProviderAuthStatus
     : null;
   const composerConstrainModelSelection = modelSelectionConstrained || cursorCloudSessionActive || adeCloudDraftAuthStatus != null;
+  // ADE Free Models (`shared/adeFreeModels.ts`) come from the account, on any
+  // machine: offered in a chat a person watches, never in CLI mode, a
+  // subagent's composer, a parallel set, Cursor Cloud or the CTO (which runs
+  // unattended, and these models answer only while someone has the chat open).
+  const offersAdeFreeModels = workDraftKind !== "cli"
+    && !subagentView
+    && !parallelChatMode
+    && !cursorCloudSessionActive
+    && !isPersistentIdentitySurface;
+  // A new chat on ADE Cloud runs OpenCode on its new computer, not on the
+  // tab's machine: the picker never says OpenCode is needed there.
+  const composerOpenCodeAssumed = adeCloudMode && !selectedSessionId;
 
   const compactionIdleMode = selectedSession?.compactionIdleMode;
   const selectedProvider = selectedSession?.provider ?? "";
@@ -22119,7 +22157,9 @@ export function AgentChatPane({
     // A Custom pick is validated by the picker against what its
     // harness can reach; its model is often not in this provider
     // list at all (a DeepSeek model run in Claude Code).
-    const modelAllowed = options?.presetId
+    // An ADE Free Model is the account's to offer, on any machine: the picker
+    // lists it only when the account does, after the one-time sheet.
+    const modelAllowed = options?.presetId || (offersAdeFreeModels && isAdeFreeModelId(nextModelId))
       ? true
       : composerConstrainModelSelection
       ? composerAvailableModelIds.includes(nextModelId)
@@ -22338,6 +22378,8 @@ export function AgentChatPane({
                 ...(modelPickerProviderRuntimeMissing && !restingModelPicker ? { providerRuntimeMissing: modelPickerProviderRuntimeMissing } : {}),
               })}
             allowCliOnlyModels={workDraftKind === "cli" && !cursorCloudSessionActive}
+            offersAdeFreeModels={offersAdeFreeModels}
+            openCodeAssumed={composerOpenCodeAssumed}
             reasoningEffort={subagentComposerModel ? subagentComposerModel.effort : reasoningEffort}
             effectiveReasoningEffort={subagentComposerModel ? subagentComposerModel.effort : effectiveReasoningEffort}
             fastMode={subagentComposerModel ? false : fastMode}

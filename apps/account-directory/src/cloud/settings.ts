@@ -26,6 +26,12 @@ export const CLOUD_SETTINGS = {
    * the arm it was first given (`cloud_sponsored_formats`).
    */
   gravity_format_split: ["70-20-10", "80-15-5", "60-25-15", "50-30-20", "34-33-33"],
+  /**
+   * ADE Free Models (`freeModels.ts`), Gravity's hosted models; held under
+   * `GRAVITY_INFERENCE`. `all` reaches accounts that aren't testers only
+   * while `gravity_live` is in force: no free inference behind test ads.
+   */
+  gravity_inference: ["off", "testers", "all"],
 } as const satisfies Record<string, readonly [string, ...string[]]>;
 
 export type CloudSettingKey = keyof typeof CLOUD_SETTINGS;

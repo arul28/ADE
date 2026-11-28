@@ -6,10 +6,11 @@ import SwiftUI
 /// starts new chats on one, and a new person's sign-in card offers them.
 ///
 /// Mirrors `apps/desktop/src/shared/freeModels.ts` (the rule, badges, sources
-/// and `pickFreeDefaultModelId`); keep the two together. Today there is one
-/// source, OpenCode Zen's free tier, served only to OpenCode. Rows carry a
-/// source and a badge so another source (an ad-supported one) adds rows, and a
-/// tab on the Free page, without changing the page.
+/// and `pickFreeDefaultModelId`) and `apps/desktop/src/shared/adeFreeModels.ts`
+/// (the ADE Free Models table); keep them together. Two sources: OpenCode Zen's
+/// free tier, served only to OpenCode, and ADE Free Models (Gravity's models,
+/// paid for by the sponsored cards in their chats, so they are ad-supported).
+/// Rows carry a source and a badge, so each source is a tab on the Free page.
 
 // MARK: - The rule
 
@@ -33,12 +34,61 @@ struct WorkFreeModelEntry: Equatable {
   let badge: WorkFreeModelBadge
 }
 
+/// The Free page source of the ADE Free Models (`ADE_FREE_MODELS_SOURCE_ID`).
+let workAdeFreeModelsSource = "ade-free"
+
 private let workFreeModelSourceLabels: [String: String] = [
   "opencode-zen": "OpenCode Zen",
+  workAdeFreeModelsSource: "\(Brand.name) Free Models",
 ]
 
 func workFreeModelSourceLabel(_ source: String) -> String {
   workFreeModelSourceLabels[source] ?? source
+}
+
+/// One ADE Free Model (`ADE_FREE_MODELS` in `shared/adeFreeModels.ts`).
+struct WorkAdeFreeModel: Equatable {
+  let alias: String
+  let displayName: String
+
+  /// The ADE registry id a chat's model names.
+  var id: String { "opencode/\(workAdeFreeOpenCodeProviderId)/\(alias)" }
+}
+
+/// The OpenCode provider every ADE Free Model runs under (`ADE_FREE_OPENCODE_PROVIDER_ID`).
+let workAdeFreeOpenCodeProviderId = "ade-free"
+
+let workAdeFreeModels: [WorkAdeFreeModel] = [
+  WorkAdeFreeModel(alias: "deepseek-v4.1-flash", displayName: "DeepSeek V4.1 Flash"),
+  WorkAdeFreeModel(alias: "glm-5.3-flash", displayName: "GLM 5.3 Flash"),
+]
+
+/// The ADE Free Model a model id names: the registry id
+/// (`opencode/ade-free/<alias>`) or OpenCode's own (`ade-free/<alias>`).
+func workAdeFreeModel(modelId: String?) -> WorkAdeFreeModel? {
+  guard let modelId else { return nil }
+  let id = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
+  let registryPrefix = "opencode/\(workAdeFreeOpenCodeProviderId)/"
+  let ownPrefix = "\(workAdeFreeOpenCodeProviderId)/"
+  let alias: String
+  if id.hasPrefix(registryPrefix) {
+    alias = String(id.dropFirst(registryPrefix.count))
+  } else if id.hasPrefix(ownPrefix) {
+    alias = String(id.dropFirst(ownPrefix.count))
+  } else {
+    return nil
+  }
+  return workAdeFreeModels.first { $0.alias == alias }
+}
+
+func workIsAdeFreeModel(_ modelId: String?) -> Bool {
+  workAdeFreeModel(modelId: modelId) != nil
+}
+
+/// A free model that shows sponsored cards in its chats: never picked for a
+/// person who did not choose it (`isAdSupportedFreeModelId`).
+func workIsAdSupportedFreeModel(_ modelId: String) -> Bool {
+  workFreeModelEntry(modelId: modelId)?.badge == .adSupported
 }
 
 /// OpenCode Zen's free models that do not end in `-free`
@@ -49,6 +99,7 @@ private let workOpenCodeZenFreeTierIds: Set<String> = ["big-pickle"]
 /// when the model is not free.
 func workFreeModelEntry(modelId: String) -> WorkFreeModelEntry? {
   let id = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
+  if workIsAdeFreeModel(id) { return WorkFreeModelEntry(source: workAdeFreeModelsSource, badge: .adSupported) }
   let prefix = "opencode/"
   guard id.lowercased().hasPrefix(prefix) else { return nil }
   let rest = id.dropFirst(prefix.count)
@@ -66,9 +117,12 @@ func workIsFreeModel(_ modelId: String) -> Bool {
 
 /// The free model a new chat starts on when nothing is signed in: the first
 /// of `preferred` that is listed now, else the first listed free model.
+/// Ad-supported models are never picked here: their chats show cards, which
+/// the person agrees to when they pick one themselves.
 func workPickFreeDefaultModelId(freeModelIds: [String], preferred: [String]) -> String? {
-  for id in preferred where freeModelIds.contains(id) { return id }
-  return freeModelIds.first
+  let candidates = freeModelIds.filter { !workIsAdSupportedFreeModel($0) }
+  for id in preferred where candidates.contains(id) { return id }
+  return candidates.first
 }
 
 /// Search finds a free model by its badge ("free") and its source ("zen").
@@ -87,29 +141,94 @@ struct WorkFreeModelGroup: Identifiable, Equatable {
 }
 
 /// Every free model in the catalog, grouped by source in first-seen order.
-func workFreeModelGroups(_ catalog: [WorkModelCatalogGroup]) -> [WorkFreeModelGroup] {
+///
+/// The ADE Free Models come from the account, not from a machine: their rows
+/// show only while `adeFree` lists them and says they are available, on any
+/// machine, and a row the account lists but the catalog lacks is added from the
+/// account. `cloudFree` is ADE Cloud's own marking (`free` on a `/cloud/models`
+/// model), which wins over the id rule. `includeAdeFree` is false for a CLI
+/// launch (a terminal can't show a card). `fillFromAccount` is false on a
+/// surface that narrows the models (a fixed list, a filter): it then shows
+/// only the ones its own catalog kept.
+func workFreeModelGroups(
+  _ catalog: [WorkModelCatalogGroup],
+  adeFree: CloudFreeModelsState? = nil,
+  cloudFree: [String: WorkFreeModelEntry] = [:],
+  includeAdeFree: Bool = true,
+  fillFromAccount: Bool = true
+) -> [WorkFreeModelGroup] {
   var order: [String] = []
   var bySource: [String: [WorkModelOption]] = [:]
   var seen = Set<String>()
+  func add(_ model: WorkModelOption, _ entry: WorkFreeModelEntry) {
+    guard seen.insert(model.id).inserted else { return }
+    if bySource[entry.source] == nil { order.append(entry.source) }
+    bySource[entry.source, default: []].append(model)
+  }
   for group in catalog {
     for provider in group.providers {
       for model in provider.models {
-        guard let entry = workFreeModelEntry(modelId: model.id), seen.insert(model.id).inserted else { continue }
-        if bySource[entry.source] == nil { order.append(entry.source) }
-        bySource[entry.source, default: []].append(model)
+        guard let entry = cloudFree[model.id] ?? workFreeModelEntry(modelId: model.id) else { continue }
+        if entry.badge == .adSupported || entry.source == workAdeFreeModelsSource {
+          guard includeAdeFree, adeFree?.lists(model.id) == true else { continue }
+        }
+        add(model, entry)
       }
+    }
+  }
+  if includeAdeFree, fillFromAccount, let adeFree, adeFree.available {
+    for option in workAdeFreeAccountModelOptions(adeFree) {
+      add(option, WorkFreeModelEntry(source: workAdeFreeModelsSource, badge: .adSupported))
     }
   }
   return order.map { WorkFreeModelGroup(source: $0, label: workFreeModelSourceLabel($0), models: bySource[$0] ?? []) }
 }
 
-/// The free model ids a host catalog lists that the machine can run now.
+/// ADE Cloud's own free marking of its models, by model id.
+func workCloudFreeEntries(_ catalog: CloudModelCatalog) -> [String: WorkFreeModelEntry] {
+  var entries: [String: WorkFreeModelEntry] = [:]
+  for provider in catalog.providers {
+    for model in provider.models {
+      if let entry = model.free?.entry { entries[model.id] = entry }
+    }
+  }
+  return entries
+}
+
+/// The ADE Free Models the account lists, as picker rows, for a machine whose
+/// own catalog doesn't list them.
+func workAdeFreeAccountModelOptions(_ state: CloudFreeModelsState) -> [WorkModelOption] {
+  guard state.available else { return [] }
+  var infos: [AgentChatModelInfo] = []
+  for id in state.modelIds {
+    guard let model = workAdeFreeModel(modelId: id), !infos.contains(where: { $0.id == model.id }) else { continue }
+    infos.append(
+      AgentChatModelInfo(
+        id: model.id,
+        displayName: model.displayName,
+        description: "Ad-supported, free on any plan",
+        isDefault: false,
+        reasoningEfforts: [],
+        defaultReasoningEffort: nil,
+        serviceTiers: []
+      )
+    )
+  }
+  guard !infos.isEmpty else { return [] }
+  return workModelCatalogGroups(availableModelsByProvider: ["opencode": infos], currentModelId: "", currentProvider: "")
+    .flatMap { $0.providers.flatMap { $0.models } }
+    .filter { workIsAdeFreeModel($0.id) }
+}
+
+/// The free model ids a host catalog lists that the machine can run now. The
+/// ADE Free Models are not counted: they come from the account, and a machine
+/// that lists only them still has no OpenCode Zen to offer.
 func workFreeModelIds(in catalog: AgentChatModelCatalog) -> [String] {
   var ids: [String] = []
   for group in catalog.groups {
     for provider in group.providers {
       for subsection in provider.subsections {
-        for model in subsection.models where model.isAvailable && workIsFreeModel(model.id) && !ids.contains(model.id) {
+        for model in subsection.models where model.isAvailable && workIsFreeModel(model.id) && !workIsAdSupportedFreeModel(model.id) && !ids.contains(model.id) {
           ids.append(model.id)
         }
       }
@@ -611,6 +730,302 @@ struct WorkFreeModelsSetupPane: View {
         .buttonStyle(ADEKitButtonStyle())
     default:
       EmptyView()
+    }
+  }
+}
+
+/// The one-time sheet before a person's first ADE Free Model: they are free
+/// because each chat that uses one shows sponsored cards, and what Gravity
+/// receives. Agree saves the account's yes (`PUT /cloud/free-models/consent`),
+/// on every device at once; Not now picks nothing.
+struct WorkFreeModelsConsentSheet: View {
+  let modelName: String
+  /// Saves the yes: nil when it worked, else the sentence to show.
+  let onAgree: @MainActor () async -> String?
+  let onNotNow: () -> Void
+  @State private var busy = false
+  @State private var error: String?
+
+  var body: some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 14) {
+        HStack(alignment: .center, spacing: 10) {
+          Image(systemName: "megaphone.fill")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(ADEColor.accent)
+            .frame(width: 30, height: 30)
+            .background(ADEColor.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .accessibilityHidden(true)
+          VStack(alignment: .leading, spacing: 1) {
+            Text(CloudFreeModelsState.sheetTitle)
+              .font(.system(size: 15, weight: .semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+            Text(modelName)
+              .font(.system(size: 12.5))
+              .foregroundStyle(ADEColor.textSecondary)
+          }
+          .fixedSize(horizontal: false, vertical: true)
+        }
+        VStack(alignment: .leading, spacing: 8) {
+          fact("eye", CloudFreeModelsState.sheetLead)
+          fact("point.3.connected.trianglepath.dotted", CloudFreeModelsState.sheetReceives)
+          fact("globe.americas", CloudFreeModelsState.sheetRegion)
+        }
+        if let error {
+          Text(error)
+            .font(.system(size: 11.5))
+            .foregroundStyle(ADEColor.danger)
+        }
+        HStack(spacing: 8) {
+          WorkSponsoredCTA(title: "Agree", primary: true) { agree() }
+            .disabled(busy)
+          WorkSponsoredCTA(title: "Not now") { onNotNow() }
+            .disabled(busy)
+        }
+      }
+      .padding(20)
+      .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    .adeScreenBackground()
+    .presentationDetents([.medium, .large])
+    .presentationDragIndicator(.visible)
+    .interactiveDismissDisabled(busy)
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("\(Brand.name) Free Models and ads")
+  }
+
+  private func fact(_ symbol: String, _ text: String) -> some View {
+    HStack(alignment: .firstTextBaseline, spacing: 8) {
+      Image(systemName: symbol)
+        .font(.system(size: 11.5, weight: .medium))
+        .foregroundStyle(ADEColor.textMuted)
+        .frame(width: 15)
+        .accessibilityHidden(true)
+      Text(text)
+        .font(.system(size: 12.5))
+        .foregroundStyle(ADEColor.textSecondary)
+        .lineSpacing(1.5)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+  }
+
+  private func agree() {
+    guard !busy else { return }
+    busy = true
+    error = nil
+    Task { @MainActor in
+      error = await onAgree()
+      busy = false
+    }
+  }
+}
+
+/// The one sheet an ADE Free Model opens before it's picked. It reads the
+/// account as it changes: while the GitHub rule holds the models it shows the
+/// lock, and once they unlock (a card saved on another device, the GitHub
+/// account turned 30 days old) it goes on to the consent, or straight to the
+/// pick when the person already agreed. A model the account no longer
+/// lists closes it.
+struct WorkFreeModelsGateSheet: View {
+  let modelId: String
+  let modelName: String
+  /// Saves the yes: nil when it worked, else the sentence to show.
+  let onAgree: @MainActor () async -> String?
+  /// Unlocked, and the person already agreed: pick the model.
+  let onReady: () -> Void
+  let onClose: () -> Void
+  @ObservedObject private var accountStore = AccountCloudStore.shared
+
+  private enum Phase: Equatable {
+    case locked(CloudFreeModelsLock)
+    case consent
+    case ready
+    case gone
+
+    var key: String {
+      switch self {
+      case .locked: return "locked"
+      case .consent: return "consent"
+      case .ready: return "ready"
+      case .gone: return "gone"
+      }
+    }
+  }
+
+  private var phase: Phase {
+    guard let state = accountStore.account?.freeModels, state.lists(modelId) else { return .gone }
+    if let lock = state.locked { return .locked(lock) }
+    return state.granted ? .ready : .consent
+  }
+
+  var body: some View {
+    let phase = phase
+    Group {
+      switch phase {
+      case .locked(let lock):
+        WorkFreeModelsLockSheet(lock: lock, modelName: modelName, onDone: onClose)
+      case .consent:
+        WorkFreeModelsConsentSheet(modelName: modelName, onAgree: onAgree, onNotNow: onClose)
+      case .ready, .gone:
+        ProgressView()
+          .controlSize(.small)
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .adeScreenBackground()
+          .presentationDetents([.medium])
+      }
+    }
+    .animation(.smooth(duration: 0.2), value: phase.key)
+    .task(id: phase.key) {
+      switch phase {
+      case .ready: onReady()
+      case .gone: onClose()
+      default: break
+      }
+    }
+  }
+}
+
+/// ADE Free Models are locked by the Free plan's GitHub rule: what holds
+/// them, and how to unlock them. The phone has no card action, and a link
+/// out to payment from the app is an App Store risk, so the card is named in
+/// words only (`cloudCardElsewhereLine`), with no button or link. Connect
+/// GitHub (the phone's own GitHub sign-in) shows when none is connected.
+/// While open, the account is read again when the app comes to the front and
+/// about every 30 s, so a card saved elsewhere (or a check that finished)
+/// moves the sheet on by itself (`WorkFreeModelsGateSheet`).
+struct WorkFreeModelsLockSheet: View {
+  let lock: CloudFreeModelsLock
+  let modelName: String
+  let onDone: () -> Void
+  @ObservedObject private var github = GitHubAccountConnection.shared
+  @Environment(\.scenePhase) private var scenePhase
+
+  private static let recheckEvery: Duration = .seconds(30)
+
+  var body: some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 14) {
+        HStack(alignment: .center, spacing: 10) {
+          Group {
+            if lock.isChecking {
+              ProgressView().controlSize(.small)
+            } else {
+              Image(systemName: "lock.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(ADEColor.textSecondary)
+            }
+          }
+          .frame(width: 30, height: 30)
+          .background(ADEColor.textPrimary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+          .accessibilityHidden(true)
+          VStack(alignment: .leading, spacing: 1) {
+            Text(lock.title)
+              .font(.system(size: 15, weight: .semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+            Text(modelName)
+              .font(.system(size: 12.5))
+              .foregroundStyle(ADEColor.textSecondary)
+          }
+          .fixedSize(horizontal: false, vertical: true)
+        }
+        VStack(alignment: .leading, spacing: 8) {
+          fact("person.badge.shield.checkmark", lock.reasonLine)
+          if lock.canUnlockWithCard {
+            fact("laptopcomputer", "\(cloudCardElsewhereLine) It unlocks them on every device.")
+          }
+        }
+        if let problem = github.problem, lock.reason == CloudFreeModelsLock.noGithub {
+          Text(problem)
+            .font(.system(size: 11.5))
+            .foregroundStyle(ADEColor.danger)
+        }
+        HStack(spacing: 8) {
+          if lock.reason == CloudFreeModelsLock.noGithub {
+            WorkSponsoredCTA(title: github.connecting ? "Connecting…" : "Connect GitHub", primary: true) { connectGitHub() }
+              .disabled(github.connecting)
+              .accessibilityIdentifier("Work.FreeModelsLock.ConnectGitHub")
+          }
+          WorkSponsoredCTA(title: "OK", primary: lock.reason != CloudFreeModelsLock.noGithub) { onDone() }
+            .accessibilityIdentifier("Work.FreeModelsLock.OK")
+        }
+      }
+      .padding(20)
+      .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    .adeScreenBackground()
+    .presentationDetents([.medium, .large])
+    .presentationDragIndicator(.visible)
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("\(Brand.name) Free Models are locked")
+    // Read once on open (the copy may be old), then cheaply while it waits.
+    .task {
+      SyncMenuSafePublisher.shared.service.refreshCloudServerIfStale(force: true)
+      while !Task.isCancelled {
+        try? await Task.sleep(for: Self.recheckEvery)
+        guard !Task.isCancelled else { return }
+        SyncMenuSafePublisher.shared.service.refreshCloudServerIfStale()
+      }
+    }
+    .onChange(of: scenePhase) { _, phase in
+      // Back from the computer or the browser where the card was saved.
+      if phase == .active { SyncMenuSafePublisher.shared.service.refreshCloudServerIfStale(force: true) }
+    }
+  }
+
+  private func fact(_ symbol: String, _ text: String) -> some View {
+    HStack(alignment: .firstTextBaseline, spacing: 8) {
+      Image(systemName: symbol)
+        .font(.system(size: 11.5, weight: .medium))
+        .foregroundStyle(ADEColor.textMuted)
+        .frame(width: 15)
+        .accessibilityHidden(true)
+      Text(text)
+        .font(.system(size: 12.5))
+        .foregroundStyle(ADEColor.textSecondary)
+        .lineSpacing(1.5)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+  }
+
+  private func connectGitHub() {
+    Task { @MainActor in
+      await github.connect()
+      // The account settles its GitHub rule on the next read.
+      if github.state.isConnected { await SyncMenuSafePublisher.shared.service.refreshCloudServerInstances() }
+    }
+  }
+}
+
+/// One calm line above the prompt box of a chat that runs an ADE Free Model:
+/// the account is locked (its next request is refused) or throttled for
+/// using them with no card on screen. Nothing otherwise.
+struct WorkFreeModelsChatNotice: View {
+  let state: CloudFreeModelsState
+
+  private var line: (symbol: String, text: String)? {
+    if let lock = state.locked { return ("lock.fill", lock.chatLine) }
+    if state.throttle == CloudFreeModelsState.paused { return ("pause.circle", CloudFreeModelsState.pausedLine) }
+    if state.throttle != nil { return ("rectangle.on.rectangle", CloudFreeModelsState.throttleLine) }
+    return nil
+  }
+
+  var body: some View {
+    if let line {
+      HStack(alignment: .firstTextBaseline, spacing: 6) {
+        Image(systemName: line.symbol)
+          .font(.system(size: 10.5, weight: .medium))
+          .foregroundStyle(ADEColor.textMuted)
+          .accessibilityHidden(true)
+        Text(line.text)
+          .font(.system(size: 12))
+          .foregroundStyle(ADEColor.textSecondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.horizontal, 6)
+      .padding(.bottom, 8)
+      .accessibilityElement(children: .combine)
+      .accessibilityIdentifier("Work.FreeModels.ChatNotice")
     }
   }
 }

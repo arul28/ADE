@@ -26,7 +26,7 @@ import {
 import { type CloudSignInStatus } from "../../../shared/cloudSignIns";
 import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
 import { IPC } from "../../../shared/ipc";
-import { isGravityUrl, type CloudSponsoredAdAnswer, type CloudSponsoredAdRequest, type CloudSponsoredHideRequest, type CloudSponsoredSeenRequest, type CloudSponsoredState } from "../../../shared/adeCloud";
+import { isGravityUrl, type CloudFreeModelsSeenRequest, type CloudFreeModelsState, type CloudSponsoredAdAnswer, type CloudSponsoredAdRequest, type CloudSponsoredHideRequest, type CloudSponsoredSeenRequest, type CloudSponsoredState } from "../../../shared/adeCloud";
 import { CloudApiError, createCloudApiClient } from "../../../shared/cloudApiClient";
 import { CLOUD_CHAT_MESSAGE_ID_PATTERN, type CloudChatSendAnswer } from "../../../shared/adeCloudMachine";
 import { isCloudTierId } from "../../../shared/cloudTiers";
@@ -312,12 +312,37 @@ export function registerCloudIpc(args: {
   });
   ipcMain.handle(IPC.cloudSponsoredAd, async (event, arg: CloudSponsoredAdRequest | undefined): Promise<CloudSponsoredAdAnswer> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSponsoredAd)) return { ad: null, reason: "unavailable" };
-    if (!arg || typeof arg.instanceId !== "string" || typeof arg.chatId !== "string" || typeof arg.turnId !== "string") return { ad: null, reason: "unavailable" };
+    // An ADE Free Models chat on any machine asks with no ADE Cloud computer (null).
+    if (!arg || (arg.instanceId !== null && typeof arg.instanceId !== "string") || typeof arg.chatId !== "string" || typeof arg.turnId !== "string") {
+      return { ad: null, reason: "unavailable" };
+    }
     try {
       return await accountApi().sponsoredAd(arg);
     } catch (error) {
       logger.info("cloud.sponsored_ad_failed", { error: getErrorMessage(error) });
       return { ad: null, reason: "unavailable" };
+    }
+  });
+  // ADE Free Models (`freeModels.ts`): account level, so no pin. The chat may
+  // run on any machine; the server checks the answer, the country, and that
+  // someone has the chat open before it serves a request.
+  ipcMain.handle(IPC.cloudFreeModelsConsent, async (event, arg: { consent?: unknown } | undefined): Promise<CloudFreeModelsState | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudFreeModelsConsent)) return null;
+    if (arg?.consent !== "granted" && arg?.consent !== "declined") throw new AdeExpectedError("Pick yes or no.", "user");
+    const state = await accountApi().freeModelsConsent(arg.consent);
+    logger.info("cloud.free_models_consent", { consent: arg.consent });
+    sendToAllWindows(IPC.cloudStatusChanged);
+    return state;
+  });
+  ipcMain.handle(IPC.cloudFreeModelsSeen, async (event, arg: CloudFreeModelsSeenRequest | undefined): Promise<boolean> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudFreeModelsSeen)) return false;
+    if (!arg || typeof arg.chatId !== "string" || !arg.chatId.trim() || !arg.device || typeof arg.device !== "object") return false;
+    try {
+      await accountApi().freeModelsSeen({ chatId: arg.chatId, device: arg.device });
+      return true;
+    } catch (error) {
+      logger.info("cloud.free_models_seen_failed", { error: getErrorMessage(error) });
+      return false;
     }
   });
   // The page may not reach outside hosts (`rendererCsp.ts`), so its card's view

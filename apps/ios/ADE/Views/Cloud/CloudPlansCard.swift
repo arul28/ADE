@@ -384,3 +384,63 @@ struct CloudSponsoredCard: View {
     }
   }
 }
+
+/// DAEX Free Models' own switch, apart from sponsored cards: on is the
+/// account's yes (`CloudFreeModelsState.consent`). Turning it off here stops
+/// them on every device; turning them on is the one-time sheet in the model
+/// picker, which says what Gravity receives before the yes.
+struct CloudFreeModelsCard: View {
+  let pageAccount: CloudPhoneAccount?
+  @ObservedObject private var accountStore = AccountCloudStore.shared
+  @State private var saving = false
+  @State private var failure: String?
+
+  private var state: CloudFreeModelsState? { (accountStore.account ?? pageAccount)?.freeModels }
+
+  var body: some View {
+    if let state {
+      VStack(alignment: .leading, spacing: 0) {
+        ADESettingsRow(title: "\(Brand.name) Free Models", symbol: "gift") {
+          if state.granted {
+            Toggle("\(Brand.name) Free Models", isOn: Binding(
+              get: { !saving },
+              set: { on in if !on { turnOff() } }
+            ))
+            .labelsHidden()
+            .tint(ADEColor.accent)
+            .disabled(saving)
+          } else {
+            Text("Off").font(.system(size: 13)).foregroundStyle(ADEColor.textSecondary)
+          }
+        }
+        Text(state.granted
+          ? "On. Free models in the model picker, on any computer and any plan; each chat that uses one shows an ad. Turning this off stops them on every device."
+          : "Off. To turn them on, pick one of them in the model picker.")
+          .font(.system(size: 13))
+          .foregroundStyle(ADEColor.textSecondary)
+          .fixedSize(horizontal: false, vertical: true)
+          .padding(.horizontal, ADEKit.inset)
+          .padding(.top, -2)
+          .padding(.bottom, failure == nil ? 12 : 4)
+        if let failure {
+          Text(failure)
+            .font(.system(size: 12.5))
+            .foregroundStyle(ADEColor.danger)
+            .padding(.horizontal, ADEKit.inset)
+            .padding(.bottom, 12)
+        }
+      }
+    }
+  }
+
+  private func turnOff() {
+    saving = true
+    failure = nil
+    Task { @MainActor in
+      if case .failure(let error) = await cloudSaveFreeModelsConsent(CloudSponsoredState.declined) {
+        failure = error.message
+      }
+      saving = false
+    }
+  }
+}

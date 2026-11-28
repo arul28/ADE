@@ -733,6 +733,15 @@ struct WorkSessionDestinationView: View {
     return syncService.cloudServerInstance(fleetKey: sessionCloudMachineKey)?.id
   }
 
+  /// The account's ADE Free Models state, while this chat runs an ADE Free
+  /// Model the person agreed to: on any machine, any plan. Its cards and the
+  /// "someone is watching" reports follow it (`WorkChatSessionView.sponsoredFreeModels`).
+  var sponsoredFreeModels: CloudFreeModelsState? {
+    guard let state = accountCloud.account?.freeModels, state.available, state.granted,
+          let summary = composerChatSummary else { return nil }
+    return state.lists(summary.modelId ?? "") || state.lists(summary.model) ? state : nil
+  }
+
   var sessionCloudMachineKey: String? {
     crossProjectContext?.machineKey
       ?? syncService.remoteChatMachineKey(sessionId: sessionId)
@@ -2835,6 +2844,7 @@ struct WorkSessionDestinationView: View {
     chatView.onReactToAssistantMessage = assistantReactionAction
     chatView.cloudHeld = cloudHeldThread(frame: thread.frame)
     chatView.sponsoredInstanceId = sponsoredInstanceId
+    chatView.sponsoredFreeModels = sponsoredFreeModels
     chatView.modelPickerCloudCatalog = restingCloudModelCatalog
     chatView.sendBlockedReason = cloudNewComputerBlockedReason
     return chatView

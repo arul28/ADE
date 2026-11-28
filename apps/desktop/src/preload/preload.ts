@@ -161,7 +161,7 @@ import type {
   CtoCloudHomeEvent,
   CtoCloudHomeMethod,
 } from "../shared/ctoCloudHome";
-import type { CloudAccountState, CloudAgentLimits, CloudComputerStatus, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudSponsoredAdAnswer, CloudSponsoredAdRequest, CloudSponsoredChoice, CloudSponsoredHideRequest, CloudSponsoredSeenRequest, CloudSponsoredState, CloudStatus } from "../shared/adeCloud";
+import type { CloudAccountState, CloudAgentLimits, CloudComputerStatus, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudSponsoredAdAnswer, CloudSponsoredAdRequest, CloudSponsoredChoice, CloudSponsoredConsent, CloudSponsoredHideRequest, CloudSponsoredSeenRequest, CloudSponsoredState, CloudStatus, CloudFreeModelsSeenRequest, CloudFreeModelsState } from "../shared/adeCloud";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatProofArgs, CloudSavedChatProofResult, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { CloudAccessIpcAnswer, CloudChatSendAnswer, CloudChatSendRequest } from "../shared/adeCloudMachine";
@@ -14625,6 +14625,10 @@ const adeBridge = {
     sponsoredHide: (input: CloudSponsoredHideRequest): Promise<void> => ipcRenderer.invoke(IPC.cloudSponsoredHide, input),
     sponsoredAd: (input: CloudSponsoredAdRequest): Promise<CloudSponsoredAdAnswer> => ipcRenderer.invoke(IPC.cloudSponsoredAd, input),
     sponsoredViewed: (impUrl: string): Promise<boolean> => ipcRenderer.invoke(IPC.cloudSponsoredViewed, { impUrl }),
+    // ADE Free Models: account level, no pin (the chat may be on any machine).
+    setFreeModelsConsent: (consent: CloudSponsoredConsent): Promise<CloudFreeModelsState | null> =>
+      ipcRenderer.invoke(IPC.cloudFreeModelsConsent, { consent }),
+    freeModelsSeen: (input: CloudFreeModelsSeenRequest): Promise<boolean> => ipcRenderer.invoke(IPC.cloudFreeModelsSeen, input),
     openCheckout: (plan?: CloudPaidPlanId, cleanup?: CloudPlanCleanupPick): Promise<CloudOpenCheckoutResult> =>
       ipcRenderer.invoke(IPC.cloudOpenCheckout, plan ? { plan, ...(cleanup ? { cleanup } : {}) } : undefined),
     pickPlanCleanup: (input: { planId: CloudPlanId } & CloudPlanCleanupPick): Promise<CloudAccountState | null> =>

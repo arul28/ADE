@@ -1,5 +1,5 @@
 import { useEffect, useSyncExternalStore } from "react";
-import type { CloudAccountState, CloudMachinesResult, CloudSponsoredChoice, CloudSponsoredState } from "../../shared/adeCloud";
+import type { CloudAccountState, CloudFreeModelsState, CloudMachinesResult, CloudSponsoredChoice, CloudSponsoredConsent, CloudSponsoredState } from "../../shared/adeCloud";
 import { useAdeCloudEnabled } from "./cloudAccess";
 import { BRAND } from "../../shared/brand";
 
@@ -108,6 +108,31 @@ export async function setCloudSponsoredConsent(consent: CloudSponsoredChoice, co
   if (next.smallNeedsCards || next.smallOutsideUS) refreshCloudAccount();
 }
 
+/**
+ * Saves the account's answer to the ADE Free Models sheet on the server, then
+ * every surface here sees it. Throws when it couldn't save. Account level: the
+ * answer holds on every machine, the phone and the web.
+ */
+export async function setCloudFreeModelsConsent(consent: CloudSponsoredConsent): Promise<CloudFreeModelsState> {
+  const set = window.ade?.cloud?.setFreeModelsConsent;
+  if (!set) throw new Error(`${BRAND.NAME} can't save that here.`);
+  const current = generation;
+  let next: CloudFreeModelsState | null;
+  try {
+    next = await set(consent);
+  } catch (error) {
+    if (current === generation) refreshCloudAccount();
+    throw error;
+  }
+  if (!next) throw new Error(`${BRAND.NAME} couldn't reach your account. Try again in a moment.`);
+  // Another account signed in meanwhile: this answer was the old account's.
+  if (current === generation) {
+    if (account) publish({ ...account, freeModels: next });
+    else refreshCloudAccount();
+  }
+  return next;
+}
+
 let noticeSave: Promise<void> | null = null;
 
 /**
@@ -207,11 +232,13 @@ const none = () => null;
  * needs the account only in one state, such as a chat whose computer was deleted).
  */
 export function useCloudAccount(active = true): CloudAccountState | null {
-  const cloudOn = useAdeCloudEnabled();
+  // Inactive, it watches nothing: a picker that may never offer DAEX Free Models costs no subscription.
+  const cloudOn = useAdeCloudEnabled(active);
   const enabled = cloudOn && active;
   const value = useSyncExternalStore(enabled ? subscribe : noop, enabled ? snapshot : none, none);
   useEffect(() => {
-    if (!cloudOn) forget();
-  }, [cloudOn]);
+    // Only a watching reader may drop the account: an idle one reads a stale answer.
+    if (active && !cloudOn) forget();
+  }, [active, cloudOn]);
   return enabled ? value : null;
 }

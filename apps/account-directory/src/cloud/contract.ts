@@ -266,7 +266,7 @@ export const CLOUD_PATHS = {
    * (`gravity.ts`). `PUT /consent` `{ consent: CloudSponsoredChoice }` records
    * the account's answer, or the notice that cards are on, and answers
    * `CloudSponsoredState` (409 for a notice where cards don't start on); `POST /seen` `CloudSponsoredSeenRequest` says a
-   * person has one of the account's cloud chats open; `POST /ad`
+   * person has one of the account's cloud chats open (for the Index only); `POST /ad`
    * `CloudSponsoredAdRequest` answers `CloudSponsoredAdAnswer`; `POST /index`
    * `CloudSponsoredIndexRequest` answers `CloudSponsoredIndexAnswer`.
    */
@@ -275,7 +275,23 @@ export const CLOUD_PATHS = {
   sponsoredAd: "/cloud/sponsored/ad",
   sponsoredIndex: "/cloud/sponsored/index",
   sponsoredHide: "/cloud/sponsored/hide",
+  /**
+   * ADE Free Models (`freeModels.ts`): Gravity's hosted models, paid for by
+   * the sponsored cards in the chats that use them, on any plan and machine.
+   * `PUT /consent` `CloudFreeModelsConsentRequest` answers `CloudFreeModelsState`;
+   * `POST /seen` `CloudFreeModelsSeenRequest` says a person has that chat open
+   * (inference runs only while someone does); `/v1/models` and
+   * `/v1/chat/completions` are OpenAI-compatible, for the OpenCode provider
+   * `ade-free`, with the chat in the `X-ADE-Chat-Id` header.
+   */
+  freeModelsConsent: "/cloud/free-models/consent",
+  freeModelsSeen: "/cloud/free-models/seen",
+  freeModelsModels: "/cloud/free-models/v1/models",
+  freeModelsChat: "/cloud/free-models/v1/chat/completions",
 } as const;
+
+/** The header an ADE Free Models request names its chat in. */
+export const CLOUD_FREE_MODELS_CHAT_HEADER = "X-ADE-Chat-Id";
 
 /** `/cloud/chats/:machine/:chat/messages[/:msg]`: the person's queue for an existing cloud chat. */
 export const cloudChatMessagesPath = (machineKey: string, chatId: string, messageId?: string): string =>
@@ -734,6 +750,12 @@ export type CloudAccountState = {
    * absent, a client shows nothing of them, not even the question.
    */
   sponsored?: CloudSponsoredState;
+  /**
+   * ADE Free Models (`freeModels.ts`), for any plan. Sent only when the
+   * server's switch reaches this account and its keys are set; absent, a
+   * client shows none of them.
+   */
+  freeModels?: CloudFreeModelsState;
   /**
    * Credits: `hours` is one balance of credits (the same numbers: a Medium
    * computer uses one an hour), and the ADE Cloud iPhone draws from it at
@@ -1206,6 +1228,18 @@ export function overPlanLimitsMoveSentence(cleanup: Pick<CloudPlanCleanup, "plan
 
 /** "1 cloud computer", "3 cloud computers". */
 export const cloudComputersPhrase = (count: number): string => `${count} cloud ${count === 1 ? "computer" : "computers"}`;
+
+/**
+ * What an `out_of_hours` refusal (a create, copy, wake, start or launch)
+ * carries next to `code` and `message` when a GitHub rule holds the Free
+ * plan's credits (`CloudFreePlanGithub`, `freePlanGithub.ts`): the hold is
+ * the reason, not credits spent. `message` is then `freeGithub.sentence`. A
+ * client shows the hold (with "Add a card (no charge)" when
+ * `canUnlockWithCard`, "Connect GitHub" for `no_github`) instead of an
+ * out-of-credits notice. Absent otherwise. The account state's
+ * `freePlan.github` says the same before any refusal.
+ */
+export type CloudOutOfHoursDetail = { freeGithub?: CloudFreePlanGithub };
 
 /* ---- The computer limit (Pricing v2) ---- */
 
@@ -2953,6 +2987,8 @@ export type CloudCatalogModel = {
   defaultReasoningEffort: string | null;
   /** The model has a fast mode (`chat.fast`). */
   fast: boolean;
+  /** A free model: the Free page's group and tag (`shared/freeModels.ts`). Absent: not free. */
+  free?: { source: string; badge: "free" | "ad-supported" };
 };
 export type CloudCatalogProvider = {
   /** The launch's `chat.provider`. */
@@ -3561,11 +3597,12 @@ export type CloudSponsoredState = {
    */
   smallNeedsCards?: boolean;
   /**
-   * The account said yes, but neither that yes nor a look at one of its ADE
-   * Cloud chats (or terminals) came from the US in the last 7 days (plus
-   * the hour a look's save may lag; away, or a yes given from
-   * elsewhere): Small uses credits until the next such chat. Read in the US
-   * only. Settings says so. Absent otherwise.
+   * The account said yes, but no card was asked for under a finished reply
+   * in one of its ADE Cloud chats from the US in the last 7 days (plus the
+   * hour a look's save may lag; a new yes, away, or only terminals and
+   * empty chats open): Small uses credits until the next such card. The yes
+   * itself, an open chat or a terminal is no look. Read in the US only.
+   * Settings says so. Absent otherwise.
    */
   smallNeedsLook?: boolean;
   /**
@@ -3621,15 +3658,104 @@ export const CLOUD_SPONSORED_OSES = ["macos", "windows", "linux", "ios", "androi
 /** `POST /cloud/sponsored/seen`: a person has a chat or terminal of this ADE Cloud computer open now. */
 export type CloudSponsoredSeenRequest = { instanceId: string; device: CloudSponsoredDevice };
 
+/* ---- ADE Free Models (`freeModels.ts`) ---- */
+
+/** Bumped when what a person agrees to for ADE Free Models changes: an older yes is asked again. */
+export const CLOUD_FREE_MODELS_TERMS_VERSION = 1;
+
+/**
+ * ADE Free Models for this account, as `CloudAccountState.freeModels`.
+ * - `modelIds`: the ADE model ids it may pick (`opencode/ade-free/<alias>`).
+ * - `available`: they run for this person from where they are now; false
+ *   with `reason` (`country`: outside the countries Gravity serves).
+ * - `consent`: the person's answer to the one-time sheet (cards in these
+ *   chats, and what Gravity receives). Null: never asked, or asked for an
+ *   older `CLOUD_FREE_MODELS_TERMS_VERSION`.
+ * - `format`: where cards show in these chats.
+ * - `test`: Gravity's test ads (nothing paid). True until go-live.
+ */
+export type CloudFreeModelsState = {
+  modelIds: string[];
+  available: boolean;
+  reason?: "country" | "unavailable";
+  consent: CloudSponsoredConsent | null;
+  format: CloudSponsoredFormat;
+  test: boolean;
+  /** Absent: unlocked. */
+  locked?: CloudFreeModelsLock;
+  /** Absent: running normally. */
+  throttle?: CloudFreeModelsThrottle;
+};
+/**
+ * Why ADE Free Models are locked for this account, as `CloudFreeModelsState.locked`:
+ * the Free plan's GitHub rule (`freePlanGithub.ts`). A card saved with no
+ * charge (or a paid plan) unlocks them. The rows stay listed, shown locked.
+ */
+export type CloudFreeModelsLock = {
+  reason: "no_github" | "too_new" | "used" | "checking";
+  /** `too_new`: when the GitHub account turns old enough (ms), unlocking them with no card. */
+  oldEnoughAt?: number | null;
+  githubLogin?: string | null;
+  /** A card saved with no charge unlocks them now (false only while `checking`). */
+  canUnlockWithCard: boolean;
+  /** What to tell the person, one sentence. */
+  sentence: string;
+};
+/**
+ * ADE Free Models are paid for by the cards in their chats. An account that
+ * keeps using them with no card asked for in those chats (a finished reply
+ * on screen asks for one) is `slowed` (2 requests a minute across them,
+ * answered 429 with `retry-after`), then `paused` (refused
+ * `free_models_no_cards`) until the next card request, whatever Gravity
+ * answers.
+ */
+export type CloudFreeModelsThrottle = "slowed" | "paused";
+/** `PUT /cloud/free-models/consent`. */
+export type CloudFreeModelsConsentRequest = { consent: CloudSponsoredConsent };
+/** `POST /cloud/free-models/seen`: a person has this ADE Free Models chat open now, on this device. */
+export type CloudFreeModelsSeenRequest = { chatId: string; device: CloudSponsoredDevice };
+/**
+ * Why the server refused an ADE Free Models request (the `error.code` of
+ * its OpenAI-shaped error, and the `code` of the others):
+ * - `free_models_off`: the switch doesn't reach this account, or a key is missing.
+ * - `free_models_consent`: the person hasn't agreed to the sheet.
+ * - `free_models_country`: outside the countries Gravity serves.
+ * - `free_models_not_watched`: nobody has the chat open in ADE (automations, a chat left running).
+ * - `free_models_limit`: the person's or ADE's share of Gravity's limits is used up for now.
+ * - `free_models_unknown_model`: not an ADE Free Model.
+ * - `free_models_too_large`: past Gravity's request size.
+ * - `free_models_unavailable`: Gravity refused or failed.
+ * - `free_models_locked`: the GitHub rule holds them (`CloudFreeModelsLock`); a card unlocks them.
+ * - `free_models_no_cards`: used too long with no card on screen (`CloudFreeModelsThrottle` `paused`).
+ */
+export type CloudFreeModelsErrorCode =
+  | "free_models_off"
+  | "free_models_consent"
+  | "free_models_country"
+  | "free_models_not_watched"
+  | "free_models_limit"
+  | "free_models_unknown_model"
+  | "free_models_too_large"
+  | "free_models_unavailable"
+  | "free_models_locked"
+  | "free_models_no_cards";
+
 /** One message of the chat as an ad request sends it: the latest request and reply only. */
 export type CloudSponsoredMessage = { role: "user" | "assistant"; content: string };
 /** Gravity reads at most this much of each message. */
 export const CLOUD_SPONSORED_MESSAGE_MAX_CHARS = 4_000;
 
-/** `POST /cloud/sponsored/ad`: one card under a finished reply of a chat on an ADE Cloud computer. */
+/**
+ * `POST /cloud/sponsored/ad`: one card under a finished reply of a chat on an
+ * ADE Cloud computer, or of an ADE Free Models chat on any machine.
+ */
 export type CloudSponsoredAdRequest = {
-  /** The ADE Cloud computer the chat runs on: the server checks it is the account's own. */
-  instanceId: string;
+  /**
+   * The ADE Cloud computer the chat runs on: the server checks it is the
+   * account's own. Null for an ADE Free Models chat on another machine: the
+   * server checks it served that chat instead.
+   */
+  instanceId: string | null;
   chatId: string;
   /** The finished reply the card goes under. Asking again for it answers the same card, with no new request to Gravity. */
   turnId: string;

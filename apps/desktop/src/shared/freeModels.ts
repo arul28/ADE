@@ -4,13 +4,15 @@
  * signed in starts new chats on one, and a new person's sign-in strip offers
  * them.
  *
- * Today there is one source, OpenCode Zen's free tier: no account, no key,
- * served only to OpenCode (`modelOnlyRunsInOpenCode`). The row shape carries a
- * source and a badge so other sources (ad-supported ones included) add rows
- * without changing the page.
+ * Two sources: OpenCode Zen's free tier (no account, no key, served only to
+ * OpenCode, `modelOnlyRunsInOpenCode`), and ADE Free Models (`adeFreeModels.ts`:
+ * Gravity's models, paid for by the sponsored cards in their chats, so they
+ * carry the `ad-supported` badge).
  *
  * iOS mirrors these rules in `WorkFreeModels.swift`; keep the two together.
  */
+import { BRAND } from "./brand";
+import { ADE_FREE_MODELS_SOURCE_ID, ADE_FREE_OPENCODE_PROVIDER_ID, adeFreeModelByAlias } from "./adeFreeModels";
 import { modelOnlyRunsInOpenCode } from "./harnessRoutes";
 
 /** The tag a Free page row shows. */
@@ -22,10 +24,11 @@ export const FREE_MODEL_BADGE_LABELS: Record<FreeModelBadge, string> = {
 };
 
 /** Where a free model comes from. Each source is one group (tab) on the Free page. */
-export type FreeModelSourceId = "opencode-zen" | (string & {});
+export type FreeModelSourceId = "opencode-zen" | typeof ADE_FREE_MODELS_SOURCE_ID | (string & {});
 
 export const FREE_MODEL_SOURCE_LABELS: Record<string, string> = {
   "opencode-zen": "OpenCode Zen",
+  [ADE_FREE_MODELS_SOURCE_ID]: `${BRAND.NAME} Free Models`,
 };
 
 export function freeModelSourceLabel(source: FreeModelSourceId): string {
@@ -65,6 +68,9 @@ function openCodeParts(model: FreeModelCandidate): { provider: string; model: st
 /** The Free page row for a model, or null when the model is not free. */
 export function freeModelEntry(model: FreeModelCandidate): FreeModelEntry | null {
   const parts = openCodeParts(model);
+  if (parts?.provider === ADE_FREE_OPENCODE_PROVIDER_ID) {
+    return adeFreeModelByAlias(parts.model) ? { source: ADE_FREE_MODELS_SOURCE_ID, badge: "ad-supported" } : null;
+  }
   if (parts && modelOnlyRunsInOpenCode(parts.provider, parts.model)) {
     return { source: "opencode-zen", badge: "free" };
   }
@@ -91,20 +97,29 @@ export function isFreeModelId(modelId: string | null | undefined): boolean {
   return isFreeModel({ id, openCodeProviderId: id.slice(0, slash), openCodeModelId: id.slice(slash + 1) });
 }
 
+/** A free model that shows sponsored cards in its chats: never picked for a person who didn't choose it. */
+export function isAdSupportedFreeModelId(modelId: string | null | undefined): boolean {
+  const id = modelId?.trim();
+  return Boolean(id) && freeModelEntry({ id: id! })?.badge === "ad-supported";
+}
+
 /**
  * The free model a new chat starts on when nothing is signed in: the first of
  * `preferred` (the model manifest's `defaults.free`) that is listed now, else
  * the first listed free model. Zen's free models come and go, so a preferred
  * id that left the list never strands a new person on a model that is gone.
+ * Ad-supported models are never picked here: their chats show cards, which
+ * the person agrees to when they pick one themselves.
  */
 export function pickFreeDefaultModelId(
   freeModelIds: readonly string[],
   preferred: readonly string[],
 ): string | null {
+  const candidates = freeModelIds.filter((id) => !isAdSupportedFreeModelId(id));
   for (const id of preferred) {
-    if (freeModelIds.includes(id)) return id;
+    if (candidates.includes(id)) return id;
   }
-  return freeModelIds[0] ?? null;
+  return candidates[0] ?? null;
 }
 
 export { FREE_MODEL_FALLBACK_DEFAULT_ID, getFreeModelDefaultIds } from "./modelRegistry";

@@ -65,6 +65,8 @@ export type CloudChatQueueDeps = {
   locateChat: (message: CloudComputerQueuedMessage) => Promise<{ projectId: string; rootPath: string } | null>;
   /** The chat's provider here; null when the chat is gone. */
   chatProvider: (projectId: string, sessionId: string) => Promise<string | null>;
+  /** The chat's current model, for a message that names none: a free model needs no sign-in. */
+  chatModelId?: (projectId: string, sessionId: string) => Promise<string | null>;
   /** Resolves when the chat has no running turn (an event wait, never a poll); false at the wait's limit. */
   waitForChatIdle: (projectId: string, sessionId: string) => Promise<boolean>;
   sendChatMessage: (projectId: string, sessionId: string, message: { text: string; clientSendId: string; attachments?: QueuedFile[]; compactFirst?: boolean }) => Promise<void>;
@@ -205,6 +207,7 @@ export function createCloudChatMessageQueue(deps: CloudChatQueueDeps): CloudChat
           const provider = message.provider ?? await deps.chatProvider(where.projectId, sessionId).catch(() => null);
           if (!provider) return { kind: "failed", error: "This chat is not on its computer any more. Send the message again." };
           if (!deps.signIn) return { kind: "go" };
+          const modelId = message.modelId ?? await deps.chatModelId?.(where.projectId, sessionId).catch(() => null) ?? null;
           const waited = await holdFor("chat_message_sign_in", SIGN_IN_WAIT_MS + 10 * 60_000, () => waitForSignIn(deps.signIn!, provider, {
             show: async (signIn) => {
               try {
@@ -222,7 +225,7 @@ export function createCloudChatMessageQueue(deps: CloudChatQueueDeps): CloudChat
               });
             },
             logMeta,
-          }, sleep));
+          }, sleep, modelId));
           if (waited.kind === "ready") return { kind: "go" };
           if (waited.kind === "cancelled") return { kind: "stop" };
           return { kind: "failed", error: waited.error };

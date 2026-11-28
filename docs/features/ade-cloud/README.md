@@ -358,9 +358,117 @@ Chats on the person's own machines never get a card.
   day. iOS asks App Tracking Transparency once before the first card.
 - **Small on Free** needs cards: without a recent US look and a yes, Small costs
   half a credit an hour (`sponsoredSmall.ts`, `SMALL_NO_CARDS_RATE_MILLI`). A
-  tripwire alerts the owner when looks come from DAEX Cloud's own network.
+  look is a reply's first ad request in the account's own DAEX Cloud chat
+  (`noteCardRequest`, any answer, a no-fill too); an open chat or terminal
+  (`/seen`), the US notice and a yes in Settings never count. A tripwire
+  alerts the owner when looks come from DAEX Cloud's own network.
 - Consent rules by law (`sponsoredConsent.ts`) are written once in
   [account-test-tool.md](account-test-tool.md#where-cards-start-on).
+
+### DAEX Free Models (any plan, behind a switch)
+
+Gravity's hosted models (`apps/account-directory/src/cloud/freeModels.ts`;
+consent and country rules in `freeModelsConsent.ts`; migration `0071`), paid
+for by the ads in the chats that use them. Any plan, any machine
+(the person's own computer, their other machines, DAEX Cloud), chat only,
+through OpenCode's provider `ade-free` (`opencode/ade-free/<alias>`,
+`apps/desktop/src/shared/adeFreeModels.ts`). The account server holds
+Gravity's inference key (`GRAVITY_INFERENCE_KEY`, a Worker secret) and is
+the only caller of `inference.trygravity.ai`.
+
+- **Switch:** the instant `gravity_inference` setting (`off` | `testers` |
+  `all`, starts `off`), held under the deploy variable `GRAVITY_INFERENCE`
+  (unset or `off`: a hard off), and off without both `GRAVITY_INFERENCE_KEY`
+  and `GRAVITY_API_KEY`. `all` reaches non-testers only while real ads are on
+  (`gravity_live` under `GRAVITY_LIVE=1`): no free inference behind test ads.
+  Off, the account state leaves `freeModels` out and every route answers
+  `free_models_off`.
+- **Routes** (`CLOUD_PATHS.freeModels*`, the account's own sign-in):
+  `PUT /cloud/free-models/consent` (`granted` | `declined`, per account, with
+  the hashed email and `CLOUD_FREE_MODELS_TERMS_VERSION`; an older version
+  reads as no answer; a no clears the viewer rows; Global Privacy Control
+  from the US turns a yes not given from such a browser into a no);
+  `POST /cloud/free-models/seen` (`chatId`, `device`: someone has that chat
+  open, kept with Cloudflare's `cf-connecting-ip`, user agent, device and
+  country, only while the yes holds); OpenAI-compatible
+  `GET /cloud/free-models/v1/models` and `POST /cloud/free-models/v1/chat/completions`
+  with the chat in `X-ADE-Chat-Id`.
+- **Each call** is checked in order: the switch, the GitHub lock, the yes, the chat id, a
+  viewer record no older than 10 minutes (or a call in the last 5 minutes
+  with a record no older than an hour: a turn that runs on; a person's DAEX
+  Cloud launch on one of these models leaves a stand-in record,
+  `launch:<launchId>`, that the first unreported chat of the account takes
+  over once within 10 minutes; an automation's or agent's launch leaves
+  none), the viewer's
+  country (`GRAVITY_INFERENCE_COUNTRIES`, default `US,CA`), the hashed email
+  (an iPhone viewer without tracking allowed has none), then 50 a minute per
+  account, 550 a minute for every account together and 2,900 a UTC day per
+  account (`fm_request`), the no-ads meter (below), and Gravity's 8 MiB. The alias becomes Gravity's
+  model id, `n` and audio go, the output limit is held to 1-65,536, and the
+  server adds `session_id` (the chat's ad session, the same hash the ads
+  send), `email_hash`, `user_ip` (the viewer's address, never the chat
+  machine's) and `stream_options.include_usage`. The stream passes through;
+  its usage chunk is added to `cloud_free_model_chats`.
+- **Locked by the GitHub rule** (`freePlanGithub.ts` `freeModelsHoldOf`, the
+  same rule as the Free plan's credits): a Free account (a `past_due` paid one
+  too) with no card on file (`free_card_unlocked_at`, or a subscription
+  before) is locked while its `free_github_hold` is set: `no_github`,
+  `too_new`, `used` (the GitHub account gave its free plan to another DAEX
+  account) or `checking` (GitHub's age read pending; it clears on its own,
+  with the settle's backoff). A paid plan is never locked. A card saved with
+  no charge (`POST /cloud/billing/free-unlock`, now also for `no_github` and
+  `used`; never for `checking`) unlocks them at once; for `no_github` and
+  `used` it leaves the free credits held (a card unlocks those only for a
+  too-new GitHub account), and the card's fingerprint still unlocks one
+  account. The proxy reads the stored hold (no GitHub call per model call)
+  and refuses `free_models_locked` (403); the hold is settled at the account
+  read, at each `/cloud/free-models/seen` and at the consent, so an account
+  that never reads its state is held before its first call. The account
+  state's `freeModels.locked` (`CloudFreeModelsLock`: `reason`,
+  `oldEnoughAt`, `githubLogin`, `canUnlockWithCard`, `sentence`) says so;
+  `modelIds` stay listed and clients show them locked. The yes can be given
+  while locked: the order is the client's (card first, then the sheet).
+- **No ads, no free tokens** (`freeModelsMeter.ts`, migration `0072`
+  `cloud_free_model_meters`, one row per account, never per chat): model
+  calls and input tokens since the account's last ad request in a chat
+  these models served (any answer, once per reply, as for Small's look). At
+  200 calls or 16M input tokens the account is `slowed`: 2 calls a minute
+  across every one of these chats (`free_models_slowed` bucket), the rest
+  answered 429 `free_models_no_cards` with `retry-after` (the next minute),
+  which OpenCode waits out, so the turn goes on slowly. At 400 calls or 32M it
+  is `paused`: 403 `free_models_no_cards` until the next ad request, or a
+  day with no call going through (`METER_QUIET_RESET_MS`: a paused chat can
+  age out of the day its ads count in, so a pause never holds for good).
+  The lines allow two of the longest replies (100-200 OpenCode steps each,
+  50-100K input tokens a step) with no ad between them; a person in the app
+  asks for an ad after every reply. The account state's `freeModels.throttle`
+  says `slowed` or `paused`. The daily report counts accounts slowed and
+  paused (`fm_slowed`, `fm_paused`, once a stretch).
+- **Errors** are OpenAI-shaped (`{error: {message, type, code}}`,
+  `CloudFreeModelsErrorCode`). Only Gravity's retry-safe
+  `provider_rate_limited` and a slowed account's 429 are 429s; every other
+  refusal is a 4xx OpenCode doesn't retry (Gravity failing is 424). A context too long is OpenAI's
+  `context_length_exceeded`, which OpenCode compacts on. A refused key or a
+  suspended account reaches Sentry (`cloud.free_models.gravity_refused`)
+  and reads as unavailable; Gravity's words pass only for a request it found
+  wrong.
+- **Ads:** a chat the proxy served in the last day gets ads on any plan
+  and machine (`POST /cloud/sponsored/ad` with `instanceId: null`), under the
+  DAEX Free Models yes and countries instead of the Free plan's, with their
+  own day (`fm_ad`, 400 per account). The last call's usage rides on the
+  ad request (Gravity's `usage`). Inference doesn't stop when the ads'
+  day is used.
+- **Not for unattended work:** a DAEX Cloud automation can't be saved with
+  one of these models, and a run of an older rule fails with the reason.
+- **Clean-up and report:** viewer rows go after a day, served chats after a
+  week (minutes 23 and 53). The daily report has a line: requests, accounts,
+  tokens, ads asked and filled in these chats, accounts slowed and paused
+  for no ads, and refusals by reason.
+- **Catalog:** `GET /cloud/models` lists them in OpenCode's group with
+  `free: {source: "ade-free", badge: "ad-supported"}`, beside OpenCode Zen's
+  free tier (`source: "opencode-zen"`) from the newest models.dev snapshot.
+  The list is the same for every account; clients show DAEX Free Models only
+  with `freeModels` in the account state.
 
 ## Referrals and the free plan
 
@@ -374,7 +482,11 @@ All server-enforced (`referrals.ts`, `freePlan.ts`, `freePlanGithub.ts`).
   claimed computer gets 0 free credits (`free_refused_at`).
 - **One free plan per GitHub account**: free credits need a connected GitHub
   account at least 30 days old (`free_github_hold` otherwise); a too-new account
-  can unlock with a saved card (`POST /cloud/billing/free-unlock`).
+  can unlock with a saved card (`POST /cloud/billing/free-unlock`). A held
+  account's `out_of_hours` refusal carries the hold (`freeGithub`,
+  `CloudOutOfHoursDetail`), so clients show it, not "out of credits". The same
+  rule locks DAEX Free Models; for them a saved card also unlocks `no_github`
+  and `used` (`freeModelsLockOf`).
 - **Referrals**: one code per account (`https://ade-app.dev/invite/<CODE>`,
   `daex://invite/<CODE>`); 20 credits to both when the friend's first chat runs
   on DAEX Cloud; cap 10; refused when the two shared a computer. Redeeming is

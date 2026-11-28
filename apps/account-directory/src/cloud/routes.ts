@@ -8,9 +8,10 @@ import { parseSustainedCpuReport, recordSustainedCpu } from "./abuseSignals";
 import { buildAccountState } from "./accountState";
 import { deleteSavedChatsForLaneEverywhere, routeSavedChats } from "./chats";
 import { readComputerSignal, settleFreePlanComputer } from "./freePlan";
-import { settleFreePlanGithub } from "./freePlanGithub";
+import { freePlanGithubOf, settleFreePlanGithub } from "./freePlanGithub";
 import { routeReferrals } from "./referrals";
 import { routeSponsored } from "./gravity";
+import { routeFreeModels } from "./freeModels";
 import { noteComputerNetwork, rateMilliFor, smallUsesNoHours } from "./sponsoredSmall";
 import { requestNetwork } from "./sponsoredConsent";
 import { trustedHttpsOrigin } from "../trustedOrigin";
@@ -70,6 +71,8 @@ import {
   type CloudComputerLimitDetail,
   type CloudComputerLimitLane,
   type CloudDiskRefusalReason,
+  type CloudFreePlanGithub,
+  type CloudOutOfHoursDetail,
   type CloudInstance,
   type CloudPlanId,
   CLOUD_INSTANCE_ID,
@@ -184,14 +187,18 @@ const notFound = () => fail("not_found", NOT_FOUND_MESSAGE, 404);
 /**
  * At 0 hours only the sizes that use hours are refused, so the sentence says
  * Small keeps working; an account with no free plan (`hasNoFreePlan`), or
- * whose Small uses hours (`smallUsesNoHours`), hears the plain sentence.
+ * whose Small uses hours (`smallUsesNoHours`), hears the plain sentence. A
+ * GitHub rule holding the free credits is the reason itself: its sentence,
+ * with the hold for the client (`CloudOutOfHoursDetail`).
  */
-const outOfHours = (account?: Pick<AccountRow, "plan" | "free_refused_at" | "free_github_hold">, smallFree = true) => fail(
+const outOfHours = (account?: Pick<AccountRow, "plan" | "free_refused_at" | "free_github_hold">, smallFree = true, freeGithub: CloudFreePlanGithub | null = null) => fail(
   "out_of_hours",
-  account && smallFree && !hasNoFreePlan(account)
-    ? "You're out of DAEX Cloud credits for this period. Small computers don't use credits, so they keep working."
-    : "You're out of DAEX Cloud credits for this period.",
+  freeGithub?.sentence
+    ?? (account && smallFree && !hasNoFreePlan(account)
+      ? "You're out of DAEX Cloud credits for this period. Small computers don't use credits, so they keep working."
+      : "You're out of DAEX Cloud credits for this period."),
   402,
+  freeGithub?.sentence ? { freeGithub } satisfies CloudOutOfHoursDetail : undefined,
 );
 const badDiskStep = () => badRequest(`Disk grows in steps of ${DISK_STEP_GB} GB.`);
 const noProviderKey = () => fail("unavailable", cloudErrorMessage("no_provider_key", 503), 503);
@@ -459,13 +466,16 @@ async function getAccountContext(env: CloudEnv, userId: string, now: number): Pr
   const liveUsed = await liveUsedWithPhones(env, account, now);
   // A Small that uses hours on Free (no sponsored cards, `smallUsesNoHours`) stops at 0 like any other size.
   const smallFree = await smallUsesNoHours(env, account);
+  // A free plan a GitHub rule holds: a refusal names the hold, not credits spent. Read only for a held account.
+  const freeGithub = account.free_github_hold != null ? await freePlanGithubOf(env, account).catch(() => null) : null;
+  const held = freeGithub && freeGithub.state !== "ok" ? freeGithub : null;
   return {
     account,
     computers,
     smallFree,
     outOfHoursFor: (multiplierMilli) => {
       const rate = multiplierMilli === 0 && !smallFree ? SMALL_NO_CARDS_RATE_MILLI : multiplierMilli;
-      return isOutOfHoursFor(account, liveUsed, rate) ? { response: outOfHours(account, smallFree), refusal: "out_of_hours" } : null;
+      return isOutOfHoursFor(account, liveUsed, rate) ? { response: outOfHours(account, smallFree, held), refusal: "out_of_hours" } : null;
     },
   };
 }
@@ -2162,6 +2172,11 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
     const sponsored = await routeSponsored(request, path, env, caller.userId, now, waitUntil);
     if (sponsored) return sponsored;
   }
+  // ADE Free Models (`freeModels.ts`): rows and Gravity only, no provider. Each route takes its own minute.
+  if (path.startsWith("/cloud/free-models/")) {
+    const freeModels = await routeFreeModels(request, path, env, caller.userId, now, waitUntil);
+    if (freeModels) return freeModels;
+  }
   // ADE without a computer: rows and R2 only; a send wakes or launches through the provider.
   const writeBucket = writeBucketOf(path, request.method);
   if (writeBucket && !await takeRequest(env, caller.userId, writeBucket, now)) return tooManyRequests();
@@ -2215,7 +2230,7 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   if (path === CLOUD_EDGE_PATHS.jiraIssue) return routeJiraIssue(request, env, caller.userId, now);
   const eventWakes = EVENT_WAKES_ROUTE.exec(path);
   if (eventWakes) return CLOUD_INSTANCE_ID.test(eventWakes[1]!) ? routeEventWakeSubscription(request, env, caller.userId, eventWakes[1]!, now) : notFound();
-  if (path === CLOUD_PATHS.models) return handleCloudModels(request);
+  if (path === CLOUD_PATHS.models) return handleCloudModels(request, env);
   // The server launcher: a launch's record reads with no provider; only the start and a cancel need it.
   if (path === CLOUD_PATHS.launches || path.startsWith(`${CLOUD_PATHS.launches}/`)) {
     return providerCall(() => routeLaunches(request, path, env, caller.userId, launchDepsFor(request, env, caller.userId, provider, ctx)));

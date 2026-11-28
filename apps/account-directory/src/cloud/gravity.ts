@@ -1,4 +1,4 @@
-import { gravityAds } from "@gravity-ai/api";
+import { gravityAds, type ModelUsage } from "@gravity-ai/api";
 import { sha256Hex } from "../sinkUtils";
 import {
   CLOUD_PATHS,
@@ -43,9 +43,11 @@ import {
   type ConsentRow,
   type SponsoredRequester,
 } from "./sponsoredConsent";
-import { lookKeepsSmallFree, noteSmallLook, smallFreeFrom, smallLookNetwork, smallLookTripwire, smallStateOf, syncSmallRates } from "./sponsoredSmall";
+import { noteSmallLook, smallStateOf, syncSmallRates } from "./sponsoredSmall";
+import { resetFreeModelMeter } from "./freeModelsMeter";
 import type { CloudWaitUntil } from "./analytics";
-import { gravitySwitches, isTester, switchReaches, type Switches } from "./sponsoredSwitch";
+import { gravitySwitches, inferenceReaches, inferenceSwitch, isTester, switchReaches, type Switches } from "./sponsoredSwitch";
+import { freeYesHolds, honorFreeGpc, outsideInferenceCountries, readFreeConsent, readFreeModelChat } from "./freeModelsConsent";
 import {
   loadAccount,
   logCloud,
@@ -80,6 +82,10 @@ import { PRODUCT_NAME_PATTERN } from "../../../desktop/src/shared/brandNames";
  * - a chat on one of the account's own ADE Cloud computers: never a chat on
  *   the person's own machine, whatever the plan.
  *
+ * A chat ADE Free Models served (`freeModels.ts`) is the exception: its cards
+ * pay for its model, so it gets them on any plan and any machine, with the
+ * account's yes to ADE Free Models instead (`freeModelAdGate`).
+ *
  * Gravity's test ads (`testAd`) are on until the `gravity_live` setting is
  * `on` and the deploy variable `GRAVITY_LIVE` is `1`: free, never counted
  * against the daily limit, never paid.
@@ -111,6 +117,14 @@ export type GravityEnv = CloudEnv & {
   GRAVITY_DEFAULT_ON_COUNTRIES?: string;
   /** Optional: live requests a UTC day, ads and Index together, before ADE stops asking. Unset: no ceiling (the contract has no daily limit). */
   GRAVITY_DAILY_LIMIT?: string;
+  /** Secret. Gravity's inference key (`gr_inf_…`) for ADE Free Models (`freeModels.ts`). Unset: ADE Free Models are off. */
+  GRAVITY_INFERENCE_KEY?: string;
+  /** The highest the `gravity_inference` setting may go: `off` (default, a hard off), `testers` or `all`. */
+  GRAVITY_INFERENCE?: string;
+  /** Countries (ISO alpha-2, comma-separated) where ADE Free Models run. Default `US,CA`, where Gravity serves them. */
+  GRAVITY_INFERENCE_COUNTRIES?: string;
+  /** Gravity's inference API. Default `https://inference.trygravity.ai/v1`. */
+  GRAVITY_INFERENCE_BASE?: string;
 };
 
 const INDEX_URL = "https://index.trygravity.com/search";
@@ -123,6 +137,8 @@ const SPONSORED_VIEWER_FRESH_MS = 10 * 60_000;
 const ACCOUNT_DAILY_ADS = 120;
 /** Index searches one account may make a UTC day. */
 const ACCOUNT_DAILY_INDEX = 20;
+/** Card requests one account may make a UTC day in ADE Free Models chats (their own count, `fm_ad`). */
+const ACCOUNT_DAILY_FREE_MODEL_ADS = 400;
 /** A turn's stored answer lives this long. */
 export const TURN_TTL_MS = 24 * 60 * 60_000;
 export const ALL = "*";
@@ -254,7 +270,7 @@ export async function sponsoredAccountState(env: GravityEnv, account: AccountRow
  * first time ads reach it (`assign`), one drawn by its id at the split's
  * weights and kept, the same on every machine.
  */
-async function sponsoredFormatOf(env: GravityEnv, userId: string, settings: CloudSettings, now: number, assign: boolean): Promise<CloudSponsoredFormat> {
+export async function sponsoredFormatOf(env: GravityEnv, userId: string, settings: CloudSettings, now: number, assign: boolean): Promise<CloudSponsoredFormat> {
   const row = await env.DB.prepare("select format, source from cloud_sponsored_formats where user_id = ?").bind(userId).first<{ format: string; source: string }>();
   if (row?.source === "owner" && isSponsoredFormat(row.format)) return row.format;
   if (settings.gravity_format !== "split") return settings.gravity_format;
@@ -301,7 +317,7 @@ function surfaceOf(value: unknown, device: CloudSponsoredDevice): CloudSponsored
 
 /* ---- Counting ---- */
 
-function countStatement(env: GravityEnv, day: string, userId: string, kind: string) {
+export function countStatement(env: GravityEnv, day: string, userId: string, kind: string) {
   return env.DB.prepare(`
     insert into cloud_sponsored_days (day, user_id, kind, count) values (?, ?, ?, 1)
     on conflict (day, user_id, kind) do update set count = count + 1
@@ -320,7 +336,7 @@ const liveDailyLimit = (env: GravityEnv): number | null => {
 };
 
 /** Adds one to a day's count only while it is under `limit`, in one write: true when it did. */
-async function countUnder(env: GravityEnv, day: string, userId: string, kind: string, limit: number): Promise<boolean> {
+export async function countUnder(env: GravityEnv, day: string, userId: string, kind: string, limit: number): Promise<boolean> {
   const result = await env.DB.prepare(`
     insert into cloud_sponsored_days (day, user_id, kind, count) values (?, ?, ?, 1)
     on conflict (day, user_id, kind) do update set count = count + 1 where count < ?
@@ -328,17 +344,24 @@ async function countUnder(env: GravityEnv, day: string, userId: string, kind: st
   return (result.meta?.changes ?? 0) === 1;
 }
 
+/** Each request kind's daily count and its limit for one account. */
+const DAILY_REQUESTS = {
+  ad: { kind: "ad_request", limit: ACCOUNT_DAILY_ADS },
+  index: { kind: "index_request", limit: ACCOUNT_DAILY_INDEX },
+  free_model_ad: { kind: "fm_ad", limit: ACCOUNT_DAILY_FREE_MODEL_ADS },
+} as const;
+
 /**
  * Takes one of the day's requests for this account, and one of Gravity's
  * live ones when live, before the request goes. False when either limit is
  * reached; then nothing is counted. Test requests never count against Gravity's.
  */
-async function reserveRequest(env: GravityEnv, now: number, userId: string, kind: "ad" | "index", switches: Switches): Promise<boolean> {
+async function reserveRequest(env: GravityEnv, now: number, userId: string, kind: keyof typeof DAILY_REQUESTS, liveAds: boolean): Promise<boolean> {
   const day = utcDay(now);
-  const request = `${kind}_request`;
-  if (!(await countUnder(env, day, userId, request, kind === "ad" ? ACCOUNT_DAILY_ADS : ACCOUNT_DAILY_INDEX))) return false;
+  const { kind: request, limit } = DAILY_REQUESTS[kind];
+  if (!(await countUnder(env, day, userId, request, limit))) return false;
   // The Index has no test mode: every search is a live one.
-  const live = switches.live || kind === "index";
+  const live = liveAds || kind === "index";
   const ceiling = live ? liveDailyLimit(env) : null;
   if (ceiling !== null && !(await countUnder(env, day, ALL, "live_request", ceiling))) {
     await env.DB.prepare("update cloud_sponsored_days set count = count - 1 where day = ? and user_id = ? and kind = ? and count > 0")
@@ -351,7 +374,7 @@ async function reserveRequest(env: GravityEnv, now: number, userId: string, kind
 
 /* ---- Reading requests ---- */
 
-function readDevice(value: unknown): CloudSponsoredDevice | null {
+export function readDevice(value: unknown): CloudSponsoredDevice | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;
   const type = CLOUD_SPONSORED_DEVICE_TYPES.find((entry) => entry === raw.type);
@@ -371,7 +394,7 @@ const IOS_APP_USER_AGENT = new RegExp(String.raw`^${PRODUCT_NAME_PATTERN}-iOS\/`
  * any other answer, or none from an older app, leaves it out. Desktop and the
  * web, a browser on an iPhone included, have no such prompt and send it.
  */
-function hashedEmailFor(device: { os: string; ua?: string | null; tracking?: string | null } | null, emailHash: string | null): string | null {
+export function hashedEmailFor(device: { os: string | null; ua?: string | null; tracking?: string | null } | null, emailHash: string | null): string | null {
   if (!emailHash) return null;
   const iosApp = device?.os === "ios" && IOS_APP_USER_AGENT.test(device.ua ?? "");
   if (iosApp && device?.tracking !== "authorized") return null;
@@ -389,25 +412,25 @@ function readMessages(value: unknown, keep: number): CloudSponsoredMessage[] {
 }
 
 /** The person's own address: Cloudflare's, never a header a client could set. */
-const clientIp = (request: Request): string | null => request.headers.get("cf-connecting-ip")?.trim() || null;
+export const clientIp = (request: Request): string | null => request.headers.get("cf-connecting-ip")?.trim() || null;
 /** A browser's own user agent wins; an app sends its own in `device.ua`. */
-function clientUa(request: Request, device: CloudSponsoredDevice): string | null {
+export function clientUa(request: Request, device: CloudSponsoredDevice): string | null {
   const header = request.headers.get("user-agent")?.trim() ?? "";
   return /Mozilla\//.test(header) ? header.slice(0, 512) : device.ua ?? (header ? header.slice(0, 512) : null);
 }
 
 /** Gravity's stable id for the account: never the account id itself. */
-const gravityUserId = async (userId: string): Promise<string> => `ade_${(await sha256Hex(`ade.gravity.user\0${userId}`)).slice(0, 32)}`;
+export const gravityUserId = async (userId: string): Promise<string> => `ade_${(await sha256Hex(`ade.gravity.user\0${userId}`)).slice(0, 32)}`;
 /** Gravity's session for one chat, the same for ads and the Index. */
-const gravitySessionId = async (userId: string, chatId: string): Promise<string> => `ade_${(await sha256Hex(`ade.gravity.session\0${userId}\0${chatId}`)).slice(0, 32)}`;
+export const gravitySessionId = async (userId: string, chatId: string): Promise<string> => `ade_${(await sha256Hex(`ade.gravity.session\0${userId}\0${chatId}`)).slice(0, 32)}`;
 
 /* ---- Routes ---- */
 
 /** `/cloud/sponsored/*`, or null for any other path. */
 export async function routeSponsored(request: Request, path: string, env: GravityEnv, userId: string, now: number, waitUntil?: CloudWaitUntil): Promise<Response | null> {
   if (path === CLOUD_PATHS.sponsoredConsent) return request.method === "PUT" ? handleConsent(request, env, userId, now, waitUntil) : notFound();
-  if (path === CLOUD_PATHS.sponsoredSeen) return request.method === "POST" ? handleSeen(request, env, userId, now, waitUntil) : notFound();
-  if (path === CLOUD_PATHS.sponsoredAd) return request.method === "POST" ? handleAd(request, env, userId, now) : notFound();
+  if (path === CLOUD_PATHS.sponsoredSeen) return request.method === "POST" ? handleSeen(request, env, userId, now) : notFound();
+  if (path === CLOUD_PATHS.sponsoredAd) return request.method === "POST" ? handleAd(request, env, userId, now, waitUntil) : notFound();
   if (path === CLOUD_PATHS.sponsoredIndex) return request.method === "POST" ? handleIndex(request, env, userId, now) : notFound();
   if (path === CLOUD_PATHS.sponsoredHide) return request.method === "POST" ? handleHide(request, env, userId, now) : notFound();
   return null;
@@ -453,37 +476,25 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
     // An answer that holds, or any no (even one run out), stands: the person is asked, never told.
     if (!startsOnNow(env, before, await shownAnswer(env, before, who, now), who)) return answered();
   }
-  let emailHash: string | null = null;
-  if (consent === "granted") {
-    const email = await readClerkUser(env, userId).then((user) => user?.email ?? null).catch((error: unknown) => {
-      // The yes still counts; Gravity just gets no hashed email for this account.
-      reportCloudFailure("cloud.sponsored.email_read_failed", { error: error instanceof Error ? error.message : String(error) });
-      return null;
-    });
-    emailHash = email ? await sha256Hex(email.trim().toLowerCase()) : null;
-  }
+  const emailHash = consent === "granted" ? await accountEmailHash(env, userId) : null;
   // A yes (a notice's, or the person's own) saves only over the row it read: a no saved meanwhile,
   // say on another screen while the email was read, holds. With no row read, any answer saved
   // meanwhile holds. A no always saves.
   const guard = consent === "declined" ? "" : before ? " where cloud_sponsored_consent.decided_at = ?" : " where 0";
-  // A yes from the US makes Small free from now, like a look, and keeps the network it came from
-  // (Free Small's tripwire). Over a yes, the later of this and the row's look when it is written holds
-  // (a trip's, or one saved while the email was read), with its network: never moved back. A no keeps neither.
-  const lookedAt = consent === "granted" && smallFreeFrom(who.country) ? now : null;
-  const lookedAsn = lookedAt == null ? null : smallLookNetwork(account, requestNetwork(request));
-  const heldLook = "case when cloud_sponsored_consent.consent = 'granted' then coalesce(cloud_sponsored_consent.looked_at, 0) else 0 end";
+  // A yes is no look: Small is free only from the next card asked for in a cloud chat from the US
+  // (`handleAd`). Over a yes, the row's look and its network stay (a trip's, or one saved while the
+  // email was read); a no keeps neither.
+  const heldYes = "cloud_sponsored_consent.consent = 'granted' and excluded.consent = 'granted'";
   const write = env.DB.prepare(`
-    insert into cloud_sponsored_consent (user_id, consent, email_hash, decided_at, source, country, gpc, looked_at, looked_asn) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    insert into cloud_sponsored_consent (user_id, consent, email_hash, decided_at, source, country, gpc, looked_at, looked_asn) values (?, ?, ?, ?, ?, ?, ?, null, null)
     on conflict (user_id) do update set consent = excluded.consent, email_hash = excluded.email_hash, decided_at = excluded.decided_at,
       source = excluded.source, country = excluded.country, gpc = excluded.gpc,
-      looked_at = case when excluded.consent = 'granted' then nullif(max(coalesce(excluded.looked_at, 0), ${heldLook}), 0) end,
-      looked_asn = case when excluded.consent = 'granted' then
-        case when coalesce(excluded.looked_at, 0) >= ${heldLook} then excluded.looked_asn else cloud_sponsored_consent.looked_asn end end${guard}
+      looked_at = case when ${heldYes} then cloud_sponsored_consent.looked_at end,
+      looked_asn = case when ${heldYes} then cloud_sponsored_consent.looked_asn end${guard}
   `).bind(
     userId, consent, emailHash, now, choice === "notice" ? "notice" : "answer", who.country,
     // A yes from a browser that sends Global Privacy Control, past the second confirm: it holds there.
     choice === "granted" && gpcOptsOut(who) ? 1 : 0,
-    lookedAt, lookedAsn,
     ...(guard && before ? [before.decided_at] : []),
   );
   // A no keeps nothing of where the person watched from: their address and device go too, in the same transaction.
@@ -491,12 +502,23 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
   // Lost to an answer saved meanwhile: that one holds, and the state says so.
   if (!saved?.meta?.changes) return answered();
   logCloud("cloud.sponsored.consent", { consent: choice });
-  // Small's rate follows the answer at once (`smallUsesNoHours`). A US yes over a yes whose looks
-  // lapsed frees Small again, as a look does.
-  await syncSmallRates(env, account, now, { waitUntil, restore: lookedAt != null && before?.consent === "granted" && !lookKeepsSmallFree(before, now) });
-  // A yes from the US restarts Small's week, so a script could send yeses instead of looks: the same tripwire.
-  if (lookedAt != null) await smallLookTripwire(env, account, lookedAsn, now, waitUntil);
+  // Small's rate follows the answer at once (`smallUsesNoHours`): a no has it use credits; a yes
+  // over a yes keeps its look.
+  await syncSmallRates(env, account, now, { waitUntil });
   return answered();
+}
+
+/**
+ * The SHA-256 of the account's email, lowercased and trimmed (Gravity's
+ * hashed email), or null when Clerk can't say. The yes it goes with still
+ * counts; Gravity just gets no hashed email for this account.
+ */
+export async function accountEmailHash(env: GravityEnv, userId: string): Promise<string | null> {
+  const email = await readClerkUser(env, userId).then((user) => user?.email ?? null).catch((error: unknown) => {
+    reportCloudFailure("cloud.sponsored.email_read_failed", { error: error instanceof Error ? error.message : String(error) });
+    return null;
+  });
+  return email ? sha256Hex(email.trim().toLowerCase()) : null;
 }
 
 /** The computer, when it is the account's own live ADE Cloud computer. */
@@ -509,8 +531,9 @@ async function ownCloudComputer(env: GravityEnv, userId: string, value: unknown)
  * A person has one of this computer's chats or terminals open. Kept only for
  * an account that may see cards and said yes: it is the address and device
  * the Index sends with an agent's search, and the proof someone watches.
+ * It keeps nothing free: a look is a card request (`handleAd`).
  */
-async function handleSeen(request: Request, env: GravityEnv, userId: string, now: number, waitUntil?: CloudWaitUntil): Promise<Response> {
+async function handleSeen(request: Request, env: GravityEnv, userId: string, now: number): Promise<Response> {
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   const device = readDevice(body.device);
@@ -540,8 +563,7 @@ async function handleSeen(request: Request, env: GravityEnv, userId: string, now
       os = excluded.os, os_version = excluded.os_version, tracking = excluded.tracking, country = excluded.country,
       region = excluded.region, seen_at = excluded.seen_at
   `).bind(userId, computer.instance_id, clientIp(request), clientUa(request, device), device.type, device.os, device.osVersion ?? null, device.tracking ?? null, country, who.region, now, userId).run();
-  // From the US, the look keeps Free's Small free (`sponsoredSmall.ts`); its network feeds the tripwire.
-  await noteSmallLook(env, account, consent, country, requestNetwork(request), now, waitUntil);
+  // An open chat or terminal is no look for Free's Small: only a card asked for under a reply is (`handleAd`).
   return json({ ok: true });
 }
 
@@ -597,12 +619,51 @@ async function releaseTurn(env: GravityEnv, userId: string, chatId: string, turn
     .bind(userId, chatId, turnId, PENDING_TURN).run();
 }
 
+type FreeModelAdGate = { reason: CloudSponsoredNoAdReason } | { live: boolean; emailHash: string | null; usage: ModelUsage | null };
+
+/**
+ * The rules for a card in a chat ADE Free Models served in the last day
+ * (`freeModels.ts`), or null for any other chat (and for one of them once the
+ * switch no longer reaches the account: it is like any other chat then). Any
+ * plan and any machine: no plan check and no ADE Cloud computer. Their own
+ * yes (`cloud_free_model_consent`) and Gravity's inference countries.
+ */
+async function freeModelAdGate(env: GravityEnv, userId: string, chatId: string, who: SponsoredRequester, now: number): Promise<FreeModelAdGate | null> {
+  const chat = await readFreeModelChat(env, userId, chatId, now - TURN_TTL_MS);
+  if (!chat) return null;
+  const inference = await inferenceSwitch(env);
+  if (!(await inferenceReaches(env, userId, inference))) return null;
+  // A browser's Global Privacy Control from the US opts the account out of ADE Free Models too.
+  const consent = await honorFreeGpc(env, userId, await readFreeConsent(env, userId), who, now);
+  if (!freeYesHolds(consent, who)) return { reason: "consent" };
+  if (outsideInferenceCountries(env, who.country)) return { reason: "country" };
+  return { live: inference.live, emailHash: consent.email_hash, usage: modelUsageOf(chat.last_usage_json) };
+}
+
+/** The usage the proxy saved (`freeModels.ts`), in Gravity's `usage` shape, or null. */
+function modelUsageOf(text: string | null): ModelUsage | null {
+  if (!text) return null;
+  try {
+    const raw = JSON.parse(text) as Record<string, unknown>;
+    const count = (value: unknown) => (typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined);
+    const usage: ModelUsage = {
+      ...(typeof raw.model === "string" ? { model: raw.model.slice(0, 120) } : {}),
+      ...(count(raw.inputTokens) !== undefined ? { inputTokens: count(raw.inputTokens) } : {}),
+      ...(count(raw.cachedInputTokens) !== undefined ? { cachedInputTokens: count(raw.cachedInputTokens) } : {}),
+      ...(count(raw.outputTokens) !== undefined ? { outputTokens: count(raw.outputTokens) } : {}),
+    };
+    return Object.keys(usage).length ? usage : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * One card under a finished reply. The client asks only while a person has
  * the chat open; every rule is checked again here. An answer of no card is a
  * 200 with its reason, never an error: the client shows nothing either way.
  */
-async function handleAd(request: Request, env: GravityEnv, userId: string, now: number): Promise<Response> {
+async function handleAd(request: Request, env: GravityEnv, userId: string, now: number, waitUntil?: CloudWaitUntil): Promise<Response> {
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   const chatId = shortString(body.chatId, 160);
@@ -612,22 +673,40 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
   const none = (reason: CloudSponsoredNoAdReason) => json({ ad: null, reason } satisfies CloudSponsoredAdAnswer);
 
   const account = await loadAccount(env, userId, now);
-  const switches = await gravitySwitches(env);
   const who = sponsoredRequester(request);
-  const blocked = await blockedReason(env, account, who.country, switches);
-  if (blocked) return none(blocked);
-  // A browser's Global Privacy Control from the US opts the whole account out, not just this card.
-  const consent = await honorGpc(env, account, await readConsent(env, userId), who, now);
-  if (!yesHolds(env, consent, who)) return none("consent");
-  // Only a chat on one of the account's own ADE Cloud computers: never one on the person's own machine.
-  const computer = await ownCloudComputer(env, userId, body.instanceId);
-  if (!computer) return none("not_cloud");
-  // And the chat itself runs there: that computer saved a copy of it after a
-  // turn (`chats.ts`), and it is a person's chat, not a subagent's. Never
-  // stored, so the first reply's ask may come again once its copy is saved.
-  const copy = await env.DB.prepare("select parent_chat_id from cloud_chat_copies where user_id = ? and chat_id = ? and instance_id = ? limit 1")
-    .bind(userId, chatId, computer.instance_id).first<{ parent_chat_id: string | null }>();
-  if (!copy || copy.parent_chat_id) return none("not_cloud");
+  // A chat ADE Free Models served lately, on any machine and plan, has its own rules.
+  const free = await freeModelAdGate(env, userId, chatId, who, now);
+  /** The DAEX Cloud computer the chat runs on, once the cloud path checked it is the account's own. */
+  let cloudInstanceId: string | null = null;
+  if (free && "reason" in free) return none(free.reason);
+  let live: boolean;
+  let emailHash: string | null;
+  // The yes a real ADE Cloud chat's card request counts as a look under (Free's Small).
+  let lookUnder: ConsentRow | null = null;
+  if (free) {
+    live = free.live;
+    emailHash = free.emailHash;
+  } else {
+    const switches = await gravitySwitches(env);
+    const blocked = await blockedReason(env, account, who.country, switches);
+    if (blocked) return none(blocked);
+    // A browser's Global Privacy Control from the US opts the whole account out, not just this card.
+    const consent = await honorGpc(env, account, await readConsent(env, userId), who, now);
+    if (!yesHolds(env, consent, who)) return none("consent");
+    // Only a chat on one of the account's own ADE Cloud computers: never one on the person's own machine.
+    const computer = await ownCloudComputer(env, userId, body.instanceId);
+    if (!computer) return none("not_cloud");
+    cloudInstanceId = computer.instance_id;
+    // And the chat itself runs there: that computer saved a copy of it after a
+    // turn (`chats.ts`), and it is a person's chat, not a subagent's. Never
+    // stored, so the first reply's ask may come again once its copy is saved.
+    const copy = await env.DB.prepare("select parent_chat_id from cloud_chat_copies where user_id = ? and chat_id = ? and instance_id = ? limit 1")
+      .bind(userId, chatId, computer.instance_id).first<{ parent_chat_id: string | null }>();
+    if (!copy || copy.parent_chat_id) return none("not_cloud");
+    live = switches.live;
+    emailHash = consent.email_hash;
+    lookUnder = consent;
+  }
   const format = isSponsoredFormat(body.format) ? body.format : "below_reply";
   // The inline format is ADE's own linked sentence at the reply's end, never a
   // card, so it never asks for Gravity's design.
@@ -642,17 +721,17 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
   const messages = readMessages(body.messages, 2);
   if (!messages.length) return none("no_fill");
   if (!(await claimTurn(env, userId, chatId, turnId, format, placementId, now))) return none("no_fill");
-  if (!(await reserveRequest(env, now, userId, "ad", switches))) {
+  if (!(await reserveRequest(env, now, userId, free ? "free_model_ad" : "ad", live))) {
     await releaseTurn(env, userId, chatId, turnId);
     return none("limit");
   }
+  await noteCardRequest(env, account, request, who, { chatId, turnId, instanceId: cloudInstanceId }, free != null, lookUnder, now, waitUntil);
 
-  const live = switches.live;
   const ip = clientIp(request);
   // The A/B test's counts: requests, fills and hides per format.
   // A failed count never holds the reply's claim: the ad is asked for all the same.
   await count(env, now, userId, [`ad_request:${format}`]).catch(() => reportCloudFailure("cloud.sponsored.count_failed", {}));
-  const hashedEmail = hashedEmailFor(device, consent.email_hash);
+  const hashedEmail = hashedEmailFor(device, emailHash);
   const result = await gravityAds(
     {
       body: {
@@ -689,6 +768,8 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
       ...(renderer ? { specCapabilities: renderer } : {}),
       enableFrames: false,
       timeoutMs: REQUEST_TIMEOUT_MS,
+      // The chat's last model call, for Gravity's dashboard (ADE Free Models only).
+      ...(free?.usage ? { usage: free.usage } : {}),
     },
   ).catch(() => null);
   if (!result || (result.status !== 200 && result.status !== 204 && result.status !== 202)) {
@@ -704,9 +785,42 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
     else delete ad.gravity.favicon;
   }
   const answer: CloudSponsoredAdAnswer = ad ? { ad } : { ad: null, reason: "no_fill" };
-  if (ad) await count(env, now, userId, ["ad_fill", `ad_fill:${format}`]);
+  if (ad) await count(env, now, userId, ["ad_fill", `ad_fill:${format}`, ...(free ? ["fm_ad_fill"] : [])]);
   await saveTurn(env, userId, chatId, turnId, answer);
   return json(answer);
+}
+
+/**
+ * The one card event, at a reply's first card request that goes to Gravity,
+ * whatever it answers (a card, a test card, or none to show): ADE's apps ask
+ * only while the card's spot is on screen in a window in front, and nothing
+ * rewards a view or a click. A chat ADE Free Models served starts their
+ * no-cards meter over (`freeModelsMeter.ts`); a real ADE Cloud chat's request
+ * from the US is a look that keeps Free's Small free, its network read by the
+ * tripwire (`sponsoredSmall.ts`). An ask refused at the daily limit is none.
+ * Never fails the card.
+ */
+async function noteCardRequest(
+  env: GravityEnv,
+  account: AccountRow,
+  request: Request,
+  who: SponsoredRequester,
+  /** The reply the ad was asked for, and the account's own DAEX Cloud computer it runs on (null for a free-model chat elsewhere). */
+  reply: { chatId: string; turnId: string; instanceId: string | null },
+  freeModelChat: boolean,
+  lookUnder: ConsentRow | null,
+  now: number,
+  waitUntil?: CloudWaitUntil,
+): Promise<void> {
+  try {
+    if (freeModelChat) await resetFreeModelMeter(env, account.user_id, now);
+    else if (lookUnder) await noteSmallLook(env, account, lookUnder, who.country, requestNetwork(request), now, waitUntil);
+  } catch (error) {
+    reportCloudFailure("cloud.sponsored.card_event_failed", {
+      message: error instanceof Error ? error.message : "unknown",
+      onCloudComputer: reply.instanceId != null,
+    });
+  }
 }
 
 /**
@@ -825,7 +939,7 @@ async function handleIndex(request: Request, env: GravityEnv, userId: string, no
     `).bind(computer.instance_id, userId, chatId).first<{ total: number; child: number; here: number }>();
     if (copies && copies.total > 0 && (copies.child || !copies.here)) return none("not_cloud");
   }
-  if (!(await reserveRequest(env, now, userId, "index", switches))) return none("limit");
+  if (!(await reserveRequest(env, now, userId, "index", switches.live))) return none("limit");
   const messages = readMessages(body.messages, INDEX_CONTEXT_MESSAGES);
   // The person's own device decides, as for a card: an iPhone without tracking allowed sends no email.
   const hashedEmail = hashedEmailFor(viewer, consent.email_hash);

@@ -13,7 +13,7 @@ import type {
   ProjectRemovalRequest,
   RemoteProjectRemovalInspection,
 } from "../shared/projectRemoval";
-import type { CloudAccountState, CloudAgentLimits, CloudComputerStatus, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudSponsoredAdAnswer, CloudSponsoredAdRequest, CloudSponsoredChoice, CloudSponsoredHideRequest, CloudSponsoredSeenRequest, CloudSponsoredState, CloudStatus } from "../shared/adeCloud";
+import type { CloudAccountState, CloudAgentLimits, CloudComputerStatus, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudSponsoredAdAnswer, CloudSponsoredAdRequest, CloudSponsoredChoice, CloudSponsoredConsent, CloudSponsoredHideRequest, CloudSponsoredSeenRequest, CloudSponsoredState, CloudStatus, CloudFreeModelsSeenRequest, CloudFreeModelsState } from "../shared/adeCloud";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { CloudAccessIpcAnswer, CloudChatSendAnswer, CloudChatSendRequest } from "../shared/adeCloudMachine";
 import type { AdeCloudBridge } from "../shared/adeCloud/chatQueue";
@@ -5302,6 +5302,13 @@ declare global {
         /** A card's view link, once half of the card was on screen. */
         /** True once Gravity has the view; false when it should be sent again. */
         sponsoredViewed?: (impUrl: string) => Promise<boolean>;
+        /**
+         * ADE Free Models (account level, no pin): the answer to the one-time
+         * sheet, and a person's look at a chat that uses them (true once the
+         * server has it). A missing method means the feature is off here.
+         */
+        setFreeModelsConsent?: (consent: CloudSponsoredConsent) => Promise<CloudFreeModelsState | null>;
+        freeModelsSeen?: (input: CloudFreeModelsSeenRequest) => Promise<boolean>;
         /**
          * A tester's pick of who runs their ADE Cloud iPhones (account level,
          * no pin). Refused for an account not on the iPhone's beta list.

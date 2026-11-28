@@ -595,6 +595,13 @@ export function createWebCloudNamespace(
       // An opaque answer is all a page gets; only a network failure is worth sending again.
       return fetch(impUrl, { mode: "no-cors", credentials: "omit", keepalive: true }).then(() => true, () => false);
     },
+    // ADE Free Models: account level, no pin, straight to the account server like the cards.
+    setFreeModelsConsent: async (consent) => (await accountClient.cloudApi()?.freeModelsConsent(consent)) ?? null,
+    freeModelsSeen: async (input) => {
+      const api = accountClient.cloudApi();
+      if (!api) return false;
+      return api.freeModelsSeen(input).then(() => true, () => false);
+    },
     setPhoneProvider: (provider) => billing.setPhoneProvider(provider),
     pickPlanCleanup: (input) => billing.pickPlanCleanup(input),
   };

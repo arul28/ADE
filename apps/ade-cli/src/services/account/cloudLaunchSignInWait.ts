@@ -18,6 +18,7 @@ import {
 } from "../../../../account-directory/src/cloud/contract";
 import type { DetectedAuth } from "../../../../desktop/src/main/services/ai/authDetector";
 import { cloudSignInSpec } from "../../../../desktop/src/shared/cloudSignIns";
+import { isFreeModelId } from "../../../../desktop/src/shared/freeModels";
 import type { CloudBootLaunchDeps, ReportStages } from "./cloudBootLaunch";
 
 /** How long a launch waits for its provider's sign-in; the server ends it a little later (`SIGN_IN_WAIT_MS` in launches.ts). */
@@ -32,8 +33,11 @@ const SIGN_IN_RESTARTS = 5;
 export const SIGN_IN_STAGE = "sign_in";
 
 export type ProviderReadiness = "ready" | "missing" | "unknown";
-/** `fresh` drops the cached sign-in reads first; the wait asks for it once, not on every poll. */
-export type ProviderReady = (provider: string, options?: { fresh?: boolean }) => Promise<ProviderReadiness>;
+/**
+ * `fresh` drops the cached sign-in reads first; the wait asks for it once, not on every poll.
+ * `model` is the chat's model: a free one (OpenCode Zen's, or an ADE Free Model) needs no sign-in.
+ */
+export type ProviderReady = (provider: string, options?: { fresh?: boolean; model?: string | null }) => Promise<ProviderReadiness>;
 type DetectAuth = (options: { force: boolean; skipCliAuthProbe: true }) => Promise<DetectedAuth[]>;
 
 const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
@@ -56,9 +60,12 @@ async function defaultCodexHome(): Promise<string | null> {
  * Codex's saved sign-in on disk, the OpenRouter key for OpenCode and Pi,
  * Cursor's key. For the other CLIs, a status read only guesses "signed in"
  * (it never runs the CLI), so that reads as `unknown`, never `ready`.
+ * OpenCode on a free model is ready with no key: Zen's free models need none,
+ * and an ADE Free Model runs on the computer's ADE account.
  */
 export function createProviderReady(detectAuth: DetectAuth, env: NodeJS.ProcessEnv = process.env): ProviderReady {
   return async (provider, options) => {
+    if (provider === "opencode" && isFreeModelId(options?.model)) return "ready";
     const row = cloudRemoteSignInOf(provider);
     const spec = row?.accountSignIn ? cloudSignInSpec(row.accountSignIn) : null;
     if (spec && env[spec.env]?.trim()) return "ready";
@@ -137,6 +144,7 @@ export async function waitForProviderSignIn(
   report: ReportStages,
   stages: CloudLaunchStage[],
   sleep: (ms: number) => Promise<void>,
+  model?: string | null,
 ): Promise<SignInWait> {
   const { launchId, logger } = deps;
   return await waitForSignIn(deps, provider, {
@@ -156,7 +164,7 @@ export async function waitForProviderSignIn(
       return record?.state === "cancelled";
     },
     logMeta: { launchId },
-  }, sleep);
+  }, sleep, model);
 }
 
 /** The wait itself, for a launch or a queued chat message (`SignInWaitHooks`). */
@@ -165,13 +173,15 @@ export async function waitForSignIn(
   provider: string,
   hooks: SignInWaitHooks,
   sleep: (ms: number) => Promise<void>,
+  /** The chat's model: a free one needs no sign-in (`createProviderReady`). */
+  model?: string | null,
 ): Promise<SignInWait> {
   const { logger } = deps;
   const meta = hooks.logMeta;
   const providerReady = deps.providerReady;
   if (!providerReady) return { kind: "ready", waited: false };
   // A read that fails: the first one goes on (as `unknown`), a later one keeps waiting.
-  const readiness = async (fresh: boolean): Promise<ProviderReadiness> => await providerReady(provider, { fresh }).catch((error: unknown) => {
+  const readiness = async (fresh: boolean): Promise<ProviderReadiness> => await providerReady(provider, { fresh, model }).catch((error: unknown) => {
     logger.warn("cloud_boot_launch.provider_ready_failed", { ...meta, provider, error: errorText(error) });
     return fresh ? "unknown" : "missing";
   });

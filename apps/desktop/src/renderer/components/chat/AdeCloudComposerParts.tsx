@@ -19,6 +19,13 @@ import { usePortalContainer } from "../ui/portalContainer";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { Z_LAYERS } from "../ui/zLayers";
 import type { AdeCloudTrayAction, AdeCloudTrayNotice } from "./useAdeCloudDraft";
+import {
+  CloudFreeGithubHold,
+  cloudFreeCreditsHoldActions,
+  useCloudFreeUnlock,
+  type CloudFreeGithubHoldFacts,
+} from "../settings/cloudDashboard/CloudFreeGithubNotice";
+import { refreshCloudAccount, useCloudAccount } from "../../state/cloudAccountStore";
 import { LaneMoveControl } from "../laneMove/LaneMoveControl";
 import type { LaneMoveSource } from "../laneMove/laneMoveModel";
 import { BRAND } from "../../../shared/brand";
@@ -186,6 +193,43 @@ export const TRAY_ACTION_LABEL: Record<AdeCloudTrayAction, string> = {
  * Tray and sign-in strip can both show: the tray is nearest the box.
  */
 export function AdeCloudTray({
+  notice,
+  onAction,
+}: {
+  notice: AdeCloudTrayNotice;
+  onAction: (action: AdeCloudTrayAction) => void;
+}) {
+  if (notice.hold) return <AdeCloudGithubHoldTray hold={notice.hold} onAction={onAction} />;
+  return <AdeCloudTrayLine notice={notice} onAction={onAction} />;
+}
+
+/**
+ * A held free plan where ADE Cloud is used: the GitHub rule is why its hours
+ * are 0, so the prompt box shows that hold (Settings' look and wording) with
+ * its way out, never "out of credits". Send stays off until it lifts.
+ */
+function AdeCloudGithubHoldTray({ hold, onAction }: { hold: CloudFreeGithubHoldFacts; onAction: (action: AdeCloudTrayAction) => void }) {
+  const plusIncludedMilli = useCloudAccount(true)?.catalog?.plans?.plus?.includedMilli ?? null;
+  const { busy, addCard } = useCloudFreeUnlock({ purpose: "credits" });
+  return (
+    <div className="adec-hold-tray" data-ade-cloud-tray data-ade-cloud-hold={hold.reason}>
+      <CloudFreeGithubHold
+        hold={hold}
+        purpose="credits"
+        plusIncludedMilli={plusIncludedMilli}
+        actions={cloudFreeCreditsHoldActions(hold, {
+          addCard: () => void addCard(),
+          cardBusy: busy,
+          connectGithub: () => onAction("github"),
+          seePlans: () => onAction("upgrade"),
+          checkAgain: refreshCloudAccount,
+        })}
+      />
+    </div>
+  );
+}
+
+function AdeCloudTrayLine({
   notice,
   onAction,
 }: {

@@ -22,6 +22,9 @@ Accounts (an email, or a Clerk user id that starts with user_):
   tester <account> <on|off>              on the sponsored testers list (ads switch "testers")
   ad-format <account> <below_reply|above_prompt|inline|switch>
                                          where this account's sponsored cards show (switch: gravity_format's)
+  free-models-meter <account> <slowed|paused|reset>
+                                         puts its ADE Free Models no-cards meter at that line, to see the
+                                         notices; its next card request in those chats resets it
   reset <account>                        back to the real plan: every test field cleared
 
   Options for act-as and limits: --days N (how long the test lasts, default 7, at most 90),
@@ -30,6 +33,7 @@ Accounts (an email, or a Clerk user id that starts with user_):
 Switches:
   settings                               every switch, its deploy ceiling and what is in force
   set <key> <value> [--note "why"]       gravity_ads off|testers|all, gravity_live off|on,
+                                         gravity_inference off|testers|all (ADE Free Models),
                                          gravity_format below_reply|above_prompt|inline|split,
                                          gravity_format_split 70-20-10|80-15-5|60-25-15|50-30-20|34-33-33
                                          (under the reply - inline - above the prompt box)
@@ -131,6 +135,11 @@ function printAccount({ account, warnings = [] }) {
     `  In force:   ${account.inForce.plan} · ${account.inForce.computers} computers · ${account.inForce.hours} credits (${account.inForce.usedHours} used) · Small ${account.inForce.smallUsesHours ? "uses credits" : "unlimited"}`,
     `  Sponsored:  switch ${account.sponsored.mode} · ${account.sponsored.tester ? "on the testers list" : "not a tester"} · answer ${account.sponsored.consent ?? "never asked"} · format ${account.sponsored.format ?? "the switch's"}`,
   ];
+  // An older server answers no `freeModels`.
+  if (account.freeModels) {
+    const fm = account.freeModels;
+    lines.push(`  Free models: switch ${fm.mode} · ${fm.locked ? `locked (${fm.locked})` : "unlocked"} · ${fm.throttle ?? "running"} · ${fm.callsSinceCard} calls, ${fm.inputTokensSinceCard} input tokens since the last card request`);
+  }
   if (account.log.length) {
     lines.push("  Changes:");
     for (const row of account.log) lines.push(`    ${when(row.at)}  ${row.action}  ${JSON.stringify(row.detail)}`);
@@ -181,6 +190,11 @@ switch (command) {
     const formats = ["below_reply", "above_prompt", "inline", "switch"];
     if (!formats.includes(rest[1])) fail(`ad-format takes ${formats.join(", ")}.\n\n${USAGE}`);
     printAccount(await call("account", { ...accountRef(rest[0]), adFormat: rest[1] === "switch" ? null : rest[1] }));
+    break;
+  }
+  case "free-models-meter": {
+    if (!["slowed", "paused", "reset"].includes(rest[1])) fail(`free-models-meter takes slowed, paused or reset.\n\n${USAGE}`);
+    printAccount(await call("account", { ...accountRef(rest[0]), freeModelsMeter: rest[1] }));
     break;
   }
   case "tester": {

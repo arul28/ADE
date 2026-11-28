@@ -35,6 +35,8 @@ import {
   CLOUD_MACHINE_DEFAULT_NAME,
   cloudFreeGithubSentence,
   cloudFreePlanRefusedSentence,
+  formatCloudFreeGithubDay,
+  type CloudFreeModelsLock,
   type CloudFreePlanGithubState,
   planCleanupSentence,
   type CloudAccountState,
@@ -45,6 +47,7 @@ import {
   type CloudSponsoredChoice,
   type CloudSponsoredConsent,
 } from "../shared/adeCloud";
+import { ADE_FREE_MODELS } from "../shared/adeFreeModels";
 import { githubRepoOf, type CloudLaneMachine, type CloudLaneWithoutComputer } from "../shared/cloudLaneLaunch";
 import type {
   CloudKeptLaneRestoreArgs,
@@ -428,6 +431,24 @@ function mockGithub(kind: string | null, now: number): Record<string, unknown> |
   return null;
 }
 
+/** `?mockFreeModels=locked-*|checking`: ADE Free Models under the GitHub rule, with the server's sentences. */
+function mockFreeModelsLock(kind: string | null, now: number): CloudFreeModelsLock | null {
+  const at = now + 19 * DAY;
+  if (kind === "locked-too-new" || kind === "locked-on") {
+    return { reason: "too_new", oldEnoughAt: at, githubLogin: "octo-new", canUnlockWithCard: true, sentence: `Your GitHub account is new, so ${BRAND.NAME} Free Models unlock on ${formatCloudFreeGithubDay(at)}. Add a card (no charge) to unlock them now.` };
+  }
+  if (kind === "locked-no-github") {
+    return { reason: "no_github", oldEnoughAt: null, githubLogin: null, canUnlockWithCard: true, sentence: `${BRAND.NAME} Free Models need a GitHub account at least 30 days old, or a payment card. Connect GitHub, or add a card (no charge) to unlock them.` };
+  }
+  if (kind === "locked-used") {
+    return { reason: "used", oldEnoughAt: null, githubLogin: "octo-shared", canUnlockWithCard: true, sentence: `This GitHub account already unlocked ${BRAND.NAME} Free Models on another ${BRAND.NAME} account. Add a card (no charge) to unlock them here.` };
+  }
+  if (kind === "checking") {
+    return { reason: "checking", oldEnoughAt: null, githubLogin: null, canUnlockWithCard: false, sentence: `Checking your GitHub account… ${BRAND.NAME} Free Models unlock once that's done.` };
+  }
+  return null;
+}
+
 function periodBounds(now: number): { start: number; end: number } {
   const date = new Date(now);
   return {
@@ -663,6 +684,30 @@ export function applyBrowserMockCloud(ade: any): void {
   if (state.sponsored && (formatParam === "below_reply" || formatParam === "above_prompt" || formatParam === "inline")) {
     state = { ...state, sponsored: { ...state.sponsored, format: formatParam } };
   }
+  // `&mockFreeModels=ask|on|declined|abroad`: ADE Free Models for this account, test ads only, on any
+  // plan. `ask` opens the one-time sheet on the first pick; `abroad` lists them as unavailable (country).
+  // `locked-too-new|locked-no-github|locked-used|checking`: the GitHub rule locks them (not yet asked);
+  // "Add a card" unlocks them 6 s later, as a card saved in the browser would. `slowed|paused`: on,
+  // with the no-cards throttle (`locked-on` is locked after an earlier yes).
+  const freeModelsParam = param("mockFreeModels");
+  const freeLock = mockFreeModelsLock(freeModelsParam, now);
+  const freeThrottle = freeModelsParam === "slowed" || freeModelsParam === "paused" ? freeModelsParam : null;
+  if (freeModelsParam === "ask" || freeModelsParam === "on" || freeModelsParam === "declined" || freeModelsParam === "abroad" || freeLock || freeThrottle) {
+    const granted = freeModelsParam === "on" || freeModelsParam === "locked-on" || freeThrottle != null;
+    state = {
+      ...state,
+      freeModels: {
+        modelIds: ADE_FREE_MODELS.map((model) => model.id),
+        available: freeModelsParam !== "abroad",
+        ...(freeModelsParam === "abroad" ? { reason: "country" as const } : {}),
+        consent: granted ? "granted" : freeModelsParam === "declined" ? "declined" : null,
+        format: state.sponsored?.format ?? "below_reply",
+        test: true,
+        ...(freeLock ? { locked: freeLock } : {}),
+        ...(freeThrottle ? { throttle: freeThrottle } : {}),
+      },
+    };
+  }
   // `upgraded`: this computer last saw the account on Free, a period ago, with 79.1 hours left
   // (once per tab, as a real checkout coming back is seen once).
   if (scenario === "upgraded") {
@@ -737,11 +782,20 @@ export function applyBrowserMockCloud(ade: any): void {
       return state.sponsored ?? null;
     },
     sponsoredSeen: async () => undefined,
+    setFreeModelsConsent: async (consent: CloudSponsoredConsent) => {
+      if (!state.freeModels) return null;
+      state = { ...state, freeModels: { ...state.freeModels, consent } };
+      for (const listener of statusListeners) listener();
+      return state.freeModels ?? null;
+    },
+    freeModelsSeen: async () => true,
     sponsoredHide: async () => undefined,
     sponsoredViewed: async () => true,
-    sponsoredAd: async () => {
+    sponsoredAd: async (input?: { instanceId: string | null }) => {
       await new Promise((resolve) => window.setTimeout(resolve, 600));
-      if (state.sponsored?.consent !== "granted") return { ad: null, reason: "consent" as const };
+      // An ADE Free Models chat (no computer) shows cards on the free-models answer.
+      const consented = input?.instanceId === null ? state.freeModels?.consent === "granted" : state.sponsored?.consent === "granted";
+      if (!consented) return { ad: null, reason: "consent" as const };
       return {
         ad: {
           id: "mock-ad-1",
@@ -900,6 +954,22 @@ export function applyBrowserMockCloud(ade: any): void {
     },
     openFreeUnlock: async () => {
       console.info("[browser mock] cloud.openFreeUnlock");
+      // As a card saved in the browser: the account reads unlocked a few seconds later.
+      window.setTimeout(() => {
+        if (state.freeModels?.locked) {
+          const { locked: _locked, ...freeModels } = state.freeModels;
+          state = { ...state, freeModels };
+        }
+        const freePlan = state.freePlan;
+        if (freePlan?.github && freePlan.github.state !== "ok" && freePlan.github.canUnlockWithCard) {
+          state = {
+            ...state,
+            freePlan: { ...freePlan, github: { state: "ok", oldEnoughAt: null, canUnlockWithCard: false, githubLogin: null, sentence: null } },
+            hours: { ...state.hours, includedMilli: CATALOG.plans.free!.includedMilli, leftMilli: CATALOG.plans.free!.includedMilli, percentUsed: 0, state: "none" },
+          };
+        }
+        for (const listener of statusListeners) listener();
+      }, 6_000);
       return { opened: true, unlocked: false };
     },
     // `idle`: saved chats of computers ADE deleted, so Work and the chat show
