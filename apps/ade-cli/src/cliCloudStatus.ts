@@ -15,7 +15,9 @@ import { BRAND } from "../../desktop/src/shared/brand";
 
 /** "12.5" from a number of hours, "—" when unknown. */
 /** Hours to the tenth, rounded down, as the desktop writes them: 299.8 left reads "299.8", never "300". */
-function cloudHoursText(value: unknown): string {
+function cloudHoursText(value: unknown, whole = false): string {
+  // Pricing v3 (whole): balances and used amounts are whole credits, rounded down, as the desktop writes them.
+  if (whole && typeof value === "number" && Number.isFinite(value)) return Math.floor(Math.max(0, value) + 1e-9).toLocaleString("en-US");
   return typeof value === "number" && Number.isFinite(value)
     ? (Math.floor(Math.max(0, value) * 10 + 1e-9) / 10).toLocaleString("en-US", { maximumFractionDigits: 1 })
     : "—";
@@ -82,7 +84,7 @@ function dollarsText(cents: unknown): string {
 
 /** The iPhone row: its rate from the credits and what it used this period. */
 function cloudIphoneText(iphone: Record<string, unknown>, words: CloudUnitWords, scale = 1): string {
-  const used = typeof iphone.creditsUsed === "number" ? ` · ${cloudHoursText(iphone.creditsUsed * scale)} credits used this period` : "";
+  const used = typeof iphone.creditsUsed === "number" ? ` · ${cloudHoursText(iphone.creditsUsed * scale, scale !== 1)} credits used this period` : "";
   return `uses ${words.count(words.phoneMilliPerMinute / 1000)} a minute from your credits${used}`;
 }
 
@@ -98,7 +100,7 @@ export function formatCloudStatus(value: unknown): string {
   // Pricing v3: the counts below are Medium-hour units; shown as credits at the server's scale.
   const pricing = statusPricing(status);
   const scale = typeof pricing?.creditScale === "number" ? pricing.creditScale : 1;
-  const creditsText = (units: unknown) => cloudHoursText(typeof units === "number" ? units * scale : units);
+  const creditsText = (units: unknown) => cloudHoursText(typeof units === "number" ? units * scale : units, scale !== 1);
   const ads = pricing && isRecord(pricing.ads) ? pricing.ads : null;
   const priceList = (key: "sizes" | "computers") => (pricing && Array.isArray(pricing[key]) ? (pricing[key] as unknown[]).filter(isRecord) : []);
   const sizePrices = new Map(priceList("sizes").map((entry) => [String(entry.id), entry]));
@@ -234,8 +236,9 @@ export function formatCloudStatus(value: unknown): string {
       `${words.extra.toLowerCase()}: ${typeof plan.extraHourCents === "number" ? pricing ? words.extraPrice(plan.extraHourCents) : `${plan.extraHourCents}¢ each` : "none"}`,
       plan.outsideAgents === false ? "no outside agents" : "outside agents ok",
     ])));
-    if (pricing) lines.push(`  ${words.unitSentence}`);
-    else if (typeof hours?.unit === "string") lines.push(`  ${hours.unit}`);
+    if (pricing) {
+      // Pricing v3: each rate is on its size row; no credit sentence.
+    } else if (typeof hours?.unit === "string") lines.push(`  ${hours.unit}`);
   }
   return lines.join("\n");
 }

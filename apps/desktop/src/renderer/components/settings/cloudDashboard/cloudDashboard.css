@@ -488,7 +488,7 @@ html[data-motion="reduced"] .adecd-hero-plan[data-celebrate] { animation: none !
 .adecd-hero-parts {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(220px, 300px);
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   margin-top: 18px;
 }
@@ -573,16 +573,6 @@ html[data-motion="reduced"] .adecd-hero-plan[data-celebrate] { animation: none !
 .adecd-hours-notes li[data-tone="warn"] { color: #fcd34d; }
 .adecd-hours-notes li[data-tone="lamp"] { color: var(--adec-lamp); }
 
-.adecd-part-num { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 8px; }
-.adecd-part-num b { font-size: 30px; line-height: 36px; font-weight: 500; letter-spacing: -0.03em; color: var(--adecd-fg); }
-.adecd-part-num span { font-size: 13px; color: var(--adecd-fg-2); }
-.adecd-part-line { font-size: 12px; line-height: 1.45; color: var(--adecd-fg-2); }
-.adecd-part-state { display: flex; align-items: center; gap: 8px; }
-.adecd-part-state b { font-size: 22px; line-height: 36px; font-weight: 500; color: var(--adecd-fg); }
-.adecd-part-state i { flex: none; width: 8px; height: 8px; border-radius: 50%; background: rgba(255, 255, 255, 0.3); }
-.adecd-part-state[data-on] i { background: var(--adec-lamp); box-shadow: 0 0 8px rgba(255, 210, 122, 0.8); }
-.adecd-linkish.adecd-part-link { align-self: flex-start; margin-top: auto; padding-top: 4px; font-size: 12px; color: var(--adec-lamp); }
-.adecd-part-link:focus-visible { outline: 2px solid var(--adec-lamp); outline-offset: 2px; border-radius: 3px; }
 
 .adecd-linkish {
   padding: 0;
@@ -594,23 +584,6 @@ html[data-motion="reduced"] .adecd-hero-plan[data-celebrate] { animation: none !
   text-underline-offset: 2px;
   cursor: pointer;
 }
-
-/* The right rail: the computers and what happens past the plan, two short glass rows sized to what they say. */
-.adecd-hero-rail { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
-.adecd-hero-stat {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-  padding: 12px 14px 13px;
-  border: 1px solid var(--adecd-glass-edge);
-  border-radius: 14px;
-  background: rgba(14, 10, 40, 0.42);
-  backdrop-filter: blur(10px);
-}
-.adecd-hero-rail > .adecd-hero-stat:last-child { flex: 1; }
-.adecd-stat-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; }
-.adecd-stat-row .adecd-linkish.adecd-part-link { margin-top: 0; padding-top: 0; align-self: center; white-space: nowrap; }
 
 /* The plan's computers as lit windows: lamp-gold when awake, dim violet when asleep, dark when free. */
 .adecd-windows {
@@ -628,15 +601,13 @@ html[data-motion="reduced"] .adecd-hero-plan[data-celebrate] { animation: none !
 .adecd-windows i[data-state="asleep"] { background: rgba(167, 139, 250, 0.55); }
 .adecd-windows i[data-state="awake"] { background: var(--adec-lamp); box-shadow: 0 0 6px rgba(255, 210, 122, 0.7); }
 
-/* Narrow: the balance on top, the two rail rows side by side under it, then one column. */
-@container adecdhero (max-width: 760px) {
-  .adecd-hero-parts { grid-template-columns: minmax(0, 1fr); }
-  .adecd-hero-rail { flex-direction: row; }
-  .adecd-hero-rail > .adecd-hero-stat { flex: 1 1 0; }
-}
+/* The lit windows sit at the number row's right end, as art (aria-hidden). */
+.adecd-hours-num .adecd-windows { margin-left: auto; align-self: center; }
 @container adecdhero (max-width: 480px) {
-  .adecd-hero-rail { flex-direction: column; }
+  .adecd-hours-num .adecd-windows { display: none; }
 }
+/* What happens at zero: a line among the notes, its label a touch brighter. */
+.adecd-hero-when .adecd-linkish { white-space: nowrap; }
 @container adecdhero (max-width: 460px) {
   .adecd-hero { padding: 16px 14px 18px; }
   .adecd-hero .adecd-sky-moon { right: 16px; width: 22px; height: 22px; }
@@ -775,6 +746,16 @@ html[data-motion="reduced"] .adecd-hero-plan[data-celebrate] { animation: none !
 
 /* While the account is read, or when it can't be. */
 .adecd-pagestate { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 24px 0; }
+/* Before the first read in this window: the page's shape, the reading line centred in the hero's place. */
+.adecd-skeleton-hero { display: flex; align-items: center; justify-content: center; min-height: 300px; }
+.adecd-skeleton-hero .adecd-pagestate-line { position: relative; color: var(--adecd-fg-2); }
+.adecd-skeleton-card { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border-radius: var(--radius-lg); border: 1px solid var(--kit-card-edge); background: var(--kit-card-bg); }
+.adecd-skeleton-card i, .adecd-skeleton-plans i { display: block; border-radius: 8px; background: color-mix(in srgb, var(--color-fg) 5%, transparent); }
+.adecd-skeleton-card i { height: 34px; }
+.adecd-skeleton-card i:first-child { width: 160px; height: 14px; }
+.adecd-skeleton-plans { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.adecd-skeleton-plans i { height: 260px; border-radius: var(--radius-lg); }
+@container adecd (max-width: 640px) { .adecd-skeleton-plans { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .adecd-pagestate-line { display: inline-flex; align-items: center; gap: 8px; margin: 0; font-size: 12.5px; color: var(--kit-text-2); }
 
 /* What agents may do alone: one row per limit, like the billing panel's. */
@@ -867,7 +848,6 @@ html[data-motion="reduced"] .adecd-hero-plan[data-celebrate] { animation: none !
 .adecd-ads[data-on] .adecd-ads-icon { color: var(--adec-lamp); }
 .adecd-ads-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .adecd-ads-sentence { margin: 0; font-size: 14px; line-height: 1.4; font-weight: 500; color: var(--adecd-fg); }
-.adecd-ads-example { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--adecd-fg); opacity: 0.9; }
 .adecd-ads-fine { font-size: 11.5px; line-height: 1.45; color: var(--adecd-fg-2); }
 .adecd-ads-fine[data-quiet] { opacity: 0.75; }
 .adecd-ads-fine .adecd-linkish { display: inline-flex; align-items: center; gap: 2px; color: var(--adec-lamp); }

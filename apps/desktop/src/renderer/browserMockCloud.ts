@@ -830,9 +830,14 @@ export function applyBrowserMockCloud(ade: any): void {
       // Pricing v3: the switch and the notice's answers move the account's ads, and every price with them.
       if (state.pricing) {
         const ads = state.pricing.ads;
+        // As the server (US rules): after a no, a yes needs the second confirm (409 `sponsored_confirm`).
+        if (choice === "granted" && state.sponsored.confirmYes && !confirmed) {
+          throw new Error("Turning ads back on takes a second confirm. Try again.");
+        }
         const on = ads.available && (choice === "granted" || choice === "notice");
+        const { confirmYes: _wasConfirmYes, ...rest } = state.sponsored;
         state = pricedState(
-          { ...state, sponsored: { ...state.sponsored, consent: on ? "granted" : "declined" } },
+          { ...state, sponsored: { ...rest, consent: on ? "granted" : "declined", ...(on ? {} : { confirmYes: true }) } },
           { ...ads, on, noticeSeen: ads.noticeSeen || noticeSeen === true },
         );
         for (const listener of statusListeners) listener();

@@ -127,53 +127,6 @@
   .adecd-plancards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
-
-/* How hours and disk work: the one place for the explanations, plus the account's own notes. */
-.adecd-howto { margin-top: 12px; }
-/* Two by two: what the hours buy, sleep, disk, and the iOS Simulator minutes. */
-.adecd-howto-items { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.adecd-howto-item { display: flex; align-items: flex-start; gap: 10px; min-width: 0; padding: 12px 14px; }
-.adecd-howto-item:nth-child(2n) { border-left: 1px solid var(--kit-rule); }
-.adecd-howto-item:nth-child(n + 3) { border-top: 1px solid var(--kit-rule); }
-.adecd-howto-fineprint { margin: 0; padding: 8px 14px 10px; border-top: 1px solid var(--kit-rule); font-size: 10.5px; line-height: 1.45; color: var(--kit-text-3); }
-.adecd-howto-icon {
-  display: grid;
-  place-items: center;
-  flex: none;
-  width: 26px;
-  height: 26px;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--adec-500) 14%, transparent);
-  color: var(--adec-mark);
-}
-.adecd-howto-item p { margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--kit-text-3); }
-.adecd-howto-item p b { font-weight: 600; color: var(--kit-text-2); }
-/* Credits: what each thing uses, one row each. */
-.adecd-howto-rates { grid-row: span 2; }
-.adecd-howto-rates > div { min-width: 0; flex: 1; }
-.adecd-rates { width: 100%; margin-top: 6px; border-collapse: collapse; font-size: 11.5px; line-height: 1.5; }
-.adecd-rates th, .adecd-rates td { padding: 3px 0; border-top: 1px solid var(--kit-rule); vertical-align: baseline; }
-.adecd-rates tr:first-child th, .adecd-rates tr:first-child td { border-top: 0; }
-.adecd-rates th { font-weight: 500; text-align: left; color: var(--kit-text-2); padding-right: 12px; }
-.adecd-rates td { text-align: right; color: var(--kit-text-3); font-variant-numeric: tabular-nums; }
-.adecd-howto-notes {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin: 0;
-  padding: 10px 14px 11px;
-  border-top: 1px solid var(--kit-rule);
-  list-style: none;
-}
-.adecd-howto-notes li { display: flex; align-items: flex-start; gap: 7px; font-size: 11.5px; line-height: 1.5; color: var(--kit-text-3); }
-.adecd-howto-notes svg { flex: none; margin-top: 3px; color: var(--adec-mark); }
-@container adecd (max-width: 760px) {
-  .adecd-howto-items { grid-template-columns: 1fr; }
-  .adecd-howto-item:nth-child(2n) { border-left: 0; }
-  .adecd-howto-item + .adecd-howto-item { border-top: 1px solid var(--kit-rule); }
-  .adecd-howto-rates { grid-row: auto; }
-}
-
 /* Extra credits: tiles in the cards' language. */
 .adecd-addons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
 @container adecd (max-width: 700px) { .adecd-addons { grid-template-columns: 1fr; } }
@@ -220,7 +173,8 @@
   .adecd-plancard[data-new] { animation: none !important; }
 }
 html[data-motion="reduced"] .adecd-plancard[data-new] { animation: none !important; }
-/* Pricing v3: one column a price; the head names them, the first column is what the person pays now. */
-.adecd-rates[data-columns] thead th { font-size: 10.5px; font-weight: 500; text-align: right; color: var(--kit-text-3); padding-left: 12px; }
-.adecd-rates[data-columns] td { padding-left: 12px; white-space: nowrap; }
-.adecd-rates[data-columns] tbody td:first-of-type { color: var(--kit-text-2); }
+/* The plans' fine print: what is true of every plan, the account's own notes, fair use. */
+.adecd-plans-fine { display: flex; flex-direction: column; gap: 5px; margin-top: 12px; padding: 0 2px; }
+.adecd-plans-fine p { display: flex; align-items: flex-start; gap: 7px; margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--kit-text-3); }
+.adecd-plans-fine p svg { flex: none; margin-top: 3px; color: var(--adec-mark); }
+.adecd-plans-fine p[data-quiet] { font-size: 10.5px; padding-left: 19px; }

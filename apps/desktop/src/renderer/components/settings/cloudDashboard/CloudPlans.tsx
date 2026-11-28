@@ -35,7 +35,7 @@ import { showToast } from "../../app/toast/toastStore";
 import { confirmDialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
 import { cloudHoursOnSizesLine, cloudTiers } from "../../../../shared/cloudTiers";
-import { cloudAdsViewOf, cloudPricingOf, cloudRateText, cloudTierRatePair, type CloudRatePair } from "../../../../shared/cloudAdPriceWords";
+import { cloudAdsViewOf, cloudPricingOf } from "../../../../shared/cloudAdPriceWords";
 import { cloudUnitWords } from "../../../../shared/cloudUnitWords";
 import { CloudPhoneProviderPick } from "./CloudPhoneProviderPick";
 import { SettingsToggle } from "../primitives/SettingsControls";
@@ -149,15 +149,8 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
   const freeSmallNeedsCards = !priced && sponsored != null;
   // Pricing v3: Free's Small is free with ads where ads are (its ad rate 0).
   const freeSmallWithAds = priced && view?.available === true;
-  // Pricing v3's price table in columns, when at least one row has a second price.
-  const rateRows: Array<{ label: string; pair: CloudRatePair; unit: "hour" | "minute" }> = [
-    ...tiers.map((tier) => ({ label: tier.label, pair: cloudTierRatePair(tier), unit: "hour" as const })),
-    ...(account.phone?.access === "on" && catalog.phone ? [{ label: `${BRAND.CLOUD_NAME} iPhone`, pair: { fullMilli: catalog.phone.milliPerMinute, adMilli: catalog.phone.adMilliPerMinute }, unit: "minute" as const }] : []),
-  ];
-  const rateColumns: Array<"ad" | "full"> | null = priced && view?.available && rateRows.some((row) => row.pair.adMilli != null && row.pair.adMilli !== row.pair.fullMilli)
-    ? view.on ? ["ad", "full"] : ["full", "ad"]
-    : null;
-  const rateCell = (milli: number, unit: "hour" | "minute") => (milli > 0 ? `${words.count(milli / 1000)} ${unit === "hour" ? "an hour" : "a minute"}` : "Free");
+  // Free's Small where no ads are offered under Pricing v3: its rate, when this account's catalog is Free's.
+  const freeSmallMilli = current === "free" ? tiers.find((tier) => tier.id === "small")?.multiplierMilli ?? 0 : 0;
   const nextPlanId = pro ? billing.nextPlanId ?? null : null;
   // A paid plan with a move down waiting: its own column undoes the move (uncharged).
   const canStay = paid && !pastDue && !billing.cancelAtPeriodEnd && current !== "free" && nextPlanId != null && nextPlanId !== current;
@@ -380,7 +373,9 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                 </div>
                 <ul className="adecd-plancard-facts">
                   <li title="Cloud computers your account may have, asleep or not: one per lane"><Desktop size={13} /><span><b className="kit-num" data-face="ui">{computers}</b> cloud {computers === 1 ? "computer" : "computers"} <span className="adecd-nowrap">(asleep or not)</span></span></li>
-                  <li title={column.id === "free" && freeSmallNeedsCards ? `In the US, Small computers use no ${noun} while sponsored cards are on and you open a ${BRAND.CLOUD_NAME} chat there at least once a week. Elsewhere, with them off, or after a week without one, they use half a credit for each hour awake.` : CLOUD_SMALL_UNLIMITED_SENTENCE}><Sparkle size={13} /><span>{column.id === "free" && freeSmallWithAds ? <><b>Free</b> Small computers with ads</> : <><b>Unlimited</b> Small computers{column.id === "free" && freeSmallNeedsCards ? " with sponsored cards" : ""}</>}</span></li>
+                  <li title={column.id === "free" && freeSmallNeedsCards ? `In the US, Small computers use no ${noun} while sponsored cards are on and you open a ${BRAND.CLOUD_NAME} chat there at least once a week. Elsewhere, with them off, or after a week without one, they use half a credit for each hour awake.` : CLOUD_SMALL_UNLIMITED_SENTENCE}><Sparkle size={13} /><span>{column.id === "free" && freeSmallWithAds ? <><b>Free</b> Small computers with ads</>
+                    : column.id === "free" && priced ? freeSmallMilli > 0 ? <>Small: <b className="kit-num" data-face="ui">{words.count(freeSmallMilli / 1000)}</b> an hour</> : <>Small computers use credits</>
+                    : <><b>Unlimited</b> Small computers{column.id === "free" && freeSmallNeedsCards ? " with sponsored cards" : ""}</>}</span></li>
                   {isCurrent && oldTerms?.hoursMilli != null ? (
                     <li title={`${words.num(column.facts.includedMilli)} ${noun} from ${until}`}><Clock size={13} /><span><b className="kit-num" data-face="ui">{words.num(oldTerms.hoursMilli)}</b> credits until {until}</span></li>
                   ) : (
@@ -418,74 +413,17 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
           })}
         </div>
 
-        <div className="kit-panel adecd-howto" aria-label="What every plan includes">
-          <div className="adecd-howto-items">
-            <div className="adecd-howto-item">
-              <span className="adecd-howto-icon"><Sparkle size={14} /></span>
-              <p><b>{freeSmallWithAds ? `Small computers are free on paid plans, and on Free with ads.` : freeSmallNeedsCards ? `Unlimited Small computers on paid plans, and on Free in the US with sponsored cards on and a ${BRAND.CLOUD_NAME} chat opened there each week.` : CLOUD_SMALL_UNLIMITED_SENTENCE}</b> Each plan has a number of cloud computers, asleep or not: one per lane.</p>
-            </div>
-            <div className="adecd-howto-item adecd-howto-rates">
-              <span className="adecd-howto-icon"><Clock size={14} /></span>
-              <div>
-                <p><b>Credits</b> renew every month and pay for everything past Small.</p>
-                {rateColumns ? (
-                  // Pricing v3 with a second price: one column a price, the one the person pays now first.
-                  <table className="adecd-rates" data-columns="" aria-label="What uses credits">
-                    <thead>
-                      <tr>
-                        <td />
-                        {rateColumns.map((column) => <th key={column} scope="col">{column === "ad" ? "With ads" : "No ads"}</th>)}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {rateRows.map((row) => (
-                        <tr key={row.label}>
-                          <th scope="row">{row.label}</th>
-                          {rateColumns.map((column) => (
-                            <td key={column} className="kit-num" data-face="ui">{rateCell(column === "ad" ? row.pair.adMilli ?? row.pair.fullMilli : row.pair.fullMilli, row.unit)}</td>
-                          ))}
-                        </tr>
-                      ))}
-                      {extraHours.available && currentExtraCents != null ? (
-                        <tr><th scope="row">Extra credits</th><td className="kit-num" data-face="ui" colSpan={2}>{words.extraPrice(currentExtraCents)}</td></tr>
-                      ) : null}
-                    </tbody>
-                  </table>
-                ) : (
-                <table className="adecd-rates" aria-label="What uses credits">
-                  <tbody>
-                    {tiers.map((tier) => (
-                      <tr key={tier.id}>
-                        <th scope="row">{tier.label}</th>
-                        <td className="kit-num">{priced
-                          ? cloudRateText(cloudTierRatePair(tier), view, words)
-                          : tier.multiplierMilli > 0 ? `${words.count(tier.multiplierMilli / 1000)} an hour` : "Uses no credits"}</td>
-                      </tr>
-                    ))}
-                    {phoneOn ? (
-                      <tr><th scope="row">{BRAND.CLOUD_NAME} iPhone</th><td className="kit-num">{priced && catalog.phone
-                        ? cloudRateText({ fullMilli: catalog.phone.milliPerMinute, adMilli: catalog.phone.adMilliPerMinute }, view, words, "minute")
-                        : `${words.count(words.phoneMilliPerMinute / 1000)} a minute`}</td></tr>
-                    ) : null}
-                    {extraHours.available && currentExtraCents != null ? (
-                      <tr><th scope="row">Extra credits</th><td className="kit-num">{words.extraPrice(currentExtraCents)}</td></tr>
-                    ) : null}
-                  </tbody>
-                </table>
-                )}
-              </div>
-            </div>
-            <div className="adecd-howto-item">
-              <span className="adecd-howto-icon"><MoonStars size={14} /></span>
-              <p><b>Computers sleep on their own</b> a few minutes after work stops, so your {noun} only go to real work.</p>
-            </div>
-          </div>
-          {notes.length ? (
-            <ul className="adecd-howto-notes">
-              {notes.map((note) => <li key={note}><Info size={12} />{note}</li>)}
-            </ul>
-          ) : null}
-          <p className="adecd-howto-fineprint">{CLOUD_SMALL_FAIR_USE_SENTENCE}</p>
+        {/* Every rate lives in "Sizes and prices"; the plans keep what is true of every plan. */}
+        <div className="adecd-plans-fine" aria-label="What every plan includes">
+          <p>
+            <MoonStars size={12} aria-hidden />
+            <span>
+              {freeSmallNeedsCards ? `Unlimited Small computers on paid plans, and on Free in the US with sponsored cards on and a ${BRAND.CLOUD_NAME} chat opened there each week. ` : ""}
+              Each plan has a number of cloud computers, asleep or not: one per lane. Credits renew every month and pay for everything past Small. Computers sleep on their own a few minutes after work stops, so your {noun} only go to real work.
+            </span>
+          </p>
+          {notes.map((note) => <p key={note}><Info size={12} aria-hidden /><span>{note}</span></p>)}
+          <p data-quiet=""><span>{CLOUD_SMALL_FAIR_USE_SENTENCE}</span></p>
         </div>
 
         {extraHours.available || sponsoredToggle || providerPick || freeModels ? (

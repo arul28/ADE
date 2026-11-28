@@ -11,7 +11,6 @@ import {
   cloudExtraHourCentsOf,
   cloudFreePlanOf,
   cloudCatalogOf,
-  cloudHoursLeftMilli,
   cloudPlanIdOf,
   cloudPlanLabelOf,
   cloudSmallHoursSentence,
@@ -26,7 +25,6 @@ import {
   type CloudPlanCleanupPick,
 } from "../../../../shared/adeCloud";
 import type { CloudLaneMachine } from "../../../../shared/cloudLaneLaunch";
-import { cloudTierHoursAt } from "../../../../shared/cloudTiers";
 import { cloudUnitWords } from "../../../../shared/cloudUnitWords";
 import { resolveSettingsHash } from "../../../../shared/settingsManifest";
 import { useLocation } from "react-router-dom";
@@ -338,10 +336,8 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
         </div>
       </section>
 
-      <CloudSavedLaneWorkCard shownLaneIds={shownLaneIds} />
-
-      <CloudPlans account={account} onChanged={refresh} newPlanId={moment?.planId ?? null} />
       <CloudSizes account={account} />
+      <CloudPlans account={account} onChanged={refresh} newPlanId={moment?.planId ?? null} />
 
       {/* Sign-ins on the left; the shorter agent limits and the invite card
           stack on the right, so the two columns end near one height (B14-2). */}
@@ -349,6 +345,7 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
           "Providers on ADE Cloud" below this page instead. The web app reads
           the agent limits from the account; on a server without that route
           they need a connected computer (an ADE Cloud one will do). */}
+      <CloudSavedLaneWorkCard shownLaneIds={shownLaneIds} />
       {ownComputer ? (
         <div className="adecd-pair">
           <CloudSignIns />
@@ -442,8 +439,8 @@ function CloudHero({
       ? "Your earned credits run your computers. Once they're used, cloud computers wait until the free plan's check clears, or you pick a paid plan."
       : "Cloud computers wait until the free plan's check clears, or you pick a paid plan."
     : smallRateMilli > 0
-    ? `Cloud computers pause until ${formatCloudDate(account.billing.periodEnd)}.`
-    : `Bigger computers pause until ${formatCloudDate(account.billing.periodEnd)}. Small keeps working.`;
+    ? `When credits run out, cloud computers pause until the plan renews on ${formatCloudDate(account.billing.periodEnd)}.`
+    : `When credits run out, bigger computers pause until the plan renews on ${formatCloudDate(account.billing.periodEnd)}. Small keeps working.`;
   return (
     <section ref={heroRef} className="adecd-citycard adecd-hero" aria-label={`${ADE_CLOUD_NAME}, ${planName(account)}`}>
       <CloudSky />
@@ -457,11 +454,13 @@ function CloudHero({
       </header>
       <div className="adecd-hero-parts">
         <div className="adecd-hero-part adecd-hero-balance" role="group" aria-label={leftLabel} data-level={level}>
-          <span className="adecd-label" title={`${cloudSmallHoursSentence(catalog, words)} ${words.unitSentence}`}>{leftLabel}</span>
+          <span className="adecd-label" title={`${cloudSmallHoursSentence(catalog, words)} ${words.unitSentence}`.trim()}>{leftLabel}</span>
           <div className="adecd-hours-num">
             <b className="kit-num" data-face="ui">{words.num(hours.leftMilli)}</b>
             {/* Free hours held (GitHub rules, or another account used them here): the plan's own number, on hold, never "of 0". */}
             <span>{held ? `of ${words.num(planTotal)}, on hold` : `of ${words.num(planTotal)}`}</span>
+            {/* The plan's lit windows, as art: the computers' count lives in the lanes card's head. */}
+            <ComputerWindows total={computers.total} limit={computers.limit} awake={account.computers.awake} />
           </div>
           <div className="adecd-bar" role="img" aria-label={barAria}>
             {barParts.map((part) => (
@@ -480,47 +479,18 @@ function CloudHero({
             {earned > 0 ? <li data-tone="lamp">{words.scale === 1
               ? `${words.milli(earned)} earned from invites, used after your plan's. They never expire.`
               : `${words.milli(earned)} from invites, used after your plan's. They never expire.`}</li> : null}
-            {smallRateMilli > 0 ? (
-              <li>
-                {`${cloudSmallHoursSentence(catalog, words)} ${cloudTierHoursAt({ multiplierMilli: smallRateMilli }, cloudHoursLeftMilli(account))} left at that size.`}
-                {account.sponsored?.smallNeedsLook
-                  ? ` Opening a ${BRAND.CLOUD_NAME} chat in the US makes it unlimited again.`
-                  : account.sponsored?.smallNeedsCards ? " Sponsored cards make it unlimited." : ""}
-              </li>
-            ) : null}
-          </ul>
-        </div>
-        <div className="adecd-hero-rail">
-          <div className="adecd-hero-stat" role="group" aria-label="Cloud computers" title="Every cloud computer counts toward your plan, asleep or not.">
-            <span className="adecd-label">Cloud computers</span>
-            <div className="adecd-stat-row">
-              <div className="adecd-part-num">
-                <b className="kit-num" data-face="ui">{computers.total}</b>
-                <span>of {computers.limit}</span>
-              </div>
-              <ComputerWindows total={computers.total} limit={computers.limit} awake={account.computers.awake} />
-            </div>
-            <span className="adecd-part-line">{account.computers.awake} awake now</span>
-          </div>
-          <div className="adecd-hero-stat" role="group" aria-label={WHEN_CREDITS_RUN_OUT}>
-            <span className="adecd-label">{WHEN_CREDITS_RUN_OUT}</span>
-            <div className="adecd-stat-row">
-              <div className="adecd-part-state" data-on={keepsGoing || undefined}>
-                <i aria-hidden="true" />
-                <b>{keepsGoing ? "Keep going" : "Pause"}</b>
-              </div>
-              {extra.available ? (
-                <button type="button" className="adecd-linkish adecd-part-link" onClick={toExtra}>{extra.enabled ? "Change" : "Turn on"}</button>
-              ) : account.plan === "free" ? (
-                <button type="button" className="adecd-linkish adecd-part-link" onClick={toPlans}>See paid plans</button>
-              ) : null}
-            </div>
-            <span className="adecd-part-line">
+            {/* What happens at zero: one line, with the same link the old card had. */}
+            <li className="adecd-hero-when" data-on={keepsGoing || undefined}>
               {keepsGoing
-                ? `${words.scale === 1 ? `Extra credits at ${formatCloudCentsPerHour(extraCents)} each` : `Extra credits at ${words.extraPrice(extraCents)}`}, billed after use.${extra.usedMilli > 0 ? ` ${words.milli(extra.usedMilli)} extra this month.` : ""}`
+                ? `When credits run out, computers keep going on extra credits at ${words.scale === 1 ? `${formatCloudCentsPerHour(extraCents)} each` : words.extraPrice(extraCents)}, billed after use.${extra.usedMilli > 0 ? ` ${words.milli(extra.usedMilli)} extra this month.` : ""}`
                 : `${pauseLine}${account.plan === "free" && !held ? ` Paid plans can keep going ${words.scale === 1 ? `for ${formatCloudCentsPerHour(catalog.extraHourCents)} ${words.perUnit}` : `at ${words.extraPrice(catalog.extraHourCents)}`}.` : ""}`}
-            </span>
-          </div>
+              {extra.available ? (
+                <> <button type="button" className="adecd-linkish" onClick={toExtra}>{extra.enabled ? "Change" : "Turn on"}</button></>
+              ) : account.plan === "free" ? (
+                <> <button type="button" className="adecd-linkish" onClick={toPlans}>See paid plans</button></>
+              ) : null}
+            </li>
+          </ul>
         </div>
       </div>
       <CloudAdsBand account={account} />
@@ -582,8 +552,6 @@ function statusActions(
   if (!extra.available) return [{ label: "Compare plans", onClick: to.onPlans }];
   return extra.enabled ? [] : [{ label: `Turn on ${cloudUnitWords(account).extra.toLowerCase()}`, onClick: to.onExtra }];
 }
-
-const WHEN_CREDITS_RUN_OUT = "When credits run out";
 
 /**
  * The web app's server list of computers failed (`computersUnread`): the plan

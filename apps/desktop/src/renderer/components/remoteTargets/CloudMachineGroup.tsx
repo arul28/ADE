@@ -64,7 +64,7 @@ export function CloudGroupHead({
       {ADE_CLOUD_NAME}
       {loading ? <CircleNotch size={11} className="animate-spin" aria-label={`Checking ${BRAND.CLOUD_NAME}`} /> : null}
       {totals.hoursRate > 0 ? (
-        <span className="ade-cx-cloud-head-facts kit-num" title={`How fast the computers awake now use your ${words.noun}. ${words.unitSentence}`}>
+        <span className="ade-cx-cloud-head-facts kit-num" title={`How fast the computers awake now use your ${words.noun}. ${words.unitSentence}`.trim()}>
           Now: {formatCloudHoursRate(totals.hoursRate, words)}
         </span>
       ) : null}

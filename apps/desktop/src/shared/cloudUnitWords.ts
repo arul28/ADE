@@ -1,4 +1,3 @@
-import { BRAND } from "./brand";
 import { CLOUD_CREDIT_UNIT_SENTENCE, type CloudAccountState, type CloudPricingState } from "../../../account-directory/src/cloud/contract";
 
 /**
@@ -30,7 +29,7 @@ export type CloudUnitWords = {
   extra: "Extra credits";
   /** "a credit": what one extra unit is priced per ("2¢ a credit"). */
   perUnit: "a credit";
-  /** What one credit is (`CLOUD_CREDIT_UNIT_SENTENCE`). */
+  /** What one credit is (`CLOUD_CREDIT_UNIT_SENTENCE`); empty under Pricing v3, where the rates table says it. */
   unitSentence: string;
   /** Thousandths of a credit the iPhone uses a minute. */
   phoneMilliPerMinute: number;
@@ -116,9 +115,8 @@ function wordsFor(phoneMilliPerMinute: number, scale = 1): CloudUnitWords {
     rateLine: (rate) => (rate > 0 ? `1 hour of work uses ${count(rate)}` : "Never uses your credits"),
     extra: "Extra credits",
     perUnit: "a credit",
-    unitSentence: scale === 1
-      ? CLOUD_CREDIT_UNIT_SENTENCE
-      : `A Medium computer uses ${count(1)} an hour and the ${BRAND.CLOUD_NAME} iPhone ${count(phoneMilliPerMinute / 1000)} a minute.`,
+    // Pricing v3 has no such sentence: "Sizes and prices" (the CLI's size rows) is the home of each rate.
+    unitSentence: scale === 1 ? CLOUD_CREDIT_UNIT_SENTENCE : "",
     phoneMilliPerMinute,
     scale,
     num,

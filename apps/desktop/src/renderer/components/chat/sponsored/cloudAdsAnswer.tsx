@@ -1,7 +1,7 @@
 import { Megaphone } from "@phosphor-icons/react";
 import type { CloudAccountState } from "../../../../shared/adeCloud";
 import { CLOUD_ADS_WORDS } from "../../../../shared/cloudAdPriceWords";
-import { cloudAccountGeneration, setCloudSponsoredConsent } from "../../../state/cloudAccountStore";
+import { cloudAccountGeneration, cloudAccountNow, setCloudSponsoredConsent } from "../../../state/cloudAccountStore";
 import { confirmDialog } from "../../ui/dialog";
 
 /**
@@ -20,7 +20,9 @@ export async function setCloudAdsOn(on: boolean, account: Pick<CloudAccountState
     await setCloudSponsoredConsent("declined", false, since, true);
     return;
   }
-  const confirmYes = account.sponsored?.confirmYes === true;
+  // The store holds the server's newest answer (a "no" just given there marks `confirmYes` at once);
+  // the caller's copy can be a list read older than that no.
+  const confirmYes = cloudAccountNow()?.sponsored?.confirmYes === true || account.sponsored?.confirmYes === true;
   if (confirmYes) {
     const ok = await confirmDialog({
       title: CLOUD_ADS_WORDS.confirmTitle,

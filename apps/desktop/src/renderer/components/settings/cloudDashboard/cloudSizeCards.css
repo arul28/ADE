@@ -47,3 +47,48 @@
 
 /* Pricing v3: the size's two prices, under the time it lasts. */
 .adecd-sizecard-price { font-size: 11.5px; line-height: 1.4; color: var(--kit-text); white-space: normal; }
+
+/*
+ * Settings › DAEX Cloud's "Sizes and prices" table (CloudSizes): one row a
+ * size, the iPhone last. The price the person pays now leads, bright, under
+ * a "You pay" tag; the other price stays labelled in the secondary text
+ * colour. A swap (the ads switch) lights the new lead column once.
+ */
+.adecd-sizetable {
+  container: adecdsizetable / inline-size;
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  line-height: 1.45;
+  --kit-tag-accent: var(--adec-300);
+}
+[data-theme="light"] .adecd-sizetable { --kit-tag-accent: var(--adec-600); }
+.adecd-sizetable th, .adecd-sizetable td { padding: 9px 12px; border-top: 1px solid var(--kit-rule); text-align: left; vertical-align: middle; }
+.adecd-sizetable thead th { border-top: 0; padding-top: 8px; padding-bottom: 6px; font-size: 11px; font-weight: 500; color: var(--kit-text-3); white-space: nowrap; }
+.adecd-sizetable thead th[data-lead] { color: var(--kit-text); }
+.adecd-sizetable-now { margin-left: 6px; vertical-align: 1px; }
+.adecd-sizetable tbody th { font-weight: 400; }
+.adecd-sizetable-pick { width: 1%; padding-right: 0 !important; text-align: center !important; }
+.adecd-sizetable thead .adecd-sizetable-pick { white-space: normal; line-height: 1.2; min-width: 44px; }
+.adecd-sizetable-pick input { accent-color: var(--adec-500); width: 14px; height: 14px; margin: 0; cursor: pointer; }
+.adecd-sizetable-name { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.adecd-sizetable-name b { font-weight: 600; color: var(--kit-text); }
+.adecd-sizetable-specs { display: block; margin-top: 2px; font-size: 11.5px; color: var(--kit-text-3); }
+.adecd-sizetable-num { text-align: right !important; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--kit-text-2); }
+.adecd-sizetable td.adecd-sizetable-num[data-lead] { color: var(--kit-text); font-weight: 500; }
+.adecd-sizetable tbody tr[data-picked] { background: color-mix(in srgb, var(--adec-500) 7%, transparent); }
+.adecd-sizetable-note { margin: 0; padding: 8px 12px 10px; border-top: 1px solid var(--kit-rule); font-size: 11.5px; color: var(--kit-text-3); }
+.adecd-sizetable[data-swap] [data-lead] { animation: adecd-lead-swap 1.4s ease-out 1; }
+@keyframes adecd-lead-swap {
+  0%, 30% { background: color-mix(in srgb, var(--adec-500) 22%, transparent); }
+  100% { background: transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .adecd-sizetable[data-swap] [data-lead] { animation: none; }
+}
+/* Narrow: tighter cells; the headers wrap. */
+@container adecd (max-width: 560px) {
+  .adecd-sizetable th, .adecd-sizetable td { padding-left: 7px; padding-right: 7px; }
+  .adecd-sizetable thead th { white-space: normal; }
+  .adecd-sizetable-num { white-space: normal; }
+}

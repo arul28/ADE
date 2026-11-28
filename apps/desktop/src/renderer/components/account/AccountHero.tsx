@@ -1,4 +1,5 @@
-import type { CSSProperties } from "react";
+import { useState, type CSSProperties } from "react";
+import { Check, Copy } from "@phosphor-icons/react";
 import type { AdeAccountStatus } from "../../../shared/types";
 import { accountInitials } from "../../lib/account";
 import { isWebClientMode } from "../../lib/webClientMode";
@@ -145,9 +146,40 @@ export function AccountHero({
           <div className="ade-ah-name">{status.name || status.email || "Your account"}</div>
           {status.name && status.email ? <div className="ade-ah-email">{status.email}</div> : null}
           {providerCaption ? <div className="ade-ah-caption">{providerCaption}</div> : null}
+          {status.userId ? (
+            <div className="ade-ah-caption ade-ah-account-id">
+              <span>Account ID</span>
+              <span className="ade-net-mono" title={status.userId}>{status.userId}</span>
+              <CopyIdButton value={status.userId} />
+            </div>
+          ) : null}
         </div>
         <ThisComputerCard computer={thisComputer} />
       </div>
     </section>
+  );
+}
+
+/** Copies the account ID, the one place it shows (the banner). */
+function CopyIdButton({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false);
+  const write = window.ade?.app?.writeClipboardText;
+  if (!write) return null;
+  return (
+    <button
+      type="button"
+      className="ade-acct-btn ade-acct-icon-btn"
+      data-variant="ghost"
+      aria-label={copied ? "Copied" : "Copy account ID"}
+      title={copied ? "Copied" : "Copy account ID"}
+      onClick={() => {
+        void write(value).then(() => {
+          setCopied(true);
+          window.setTimeout(() => setCopied(false), 1_500);
+        }).catch(() => {});
+      }}
+    >
+      {copied ? <Check size={13} weight="bold" /> : <Copy size={13} weight="bold" />}
+    </button>
   );
 }

@@ -254,8 +254,8 @@ export function heroBalanceParts(account: CloudAccountState): HeroBarPart[] {
  * credits left buy. The iPhone part only for an account that has it.
  */
 export function heroCreditsWorth(account: CloudAccountState, words: CloudUnitWords = cloudUnitWords(account)): string | null {
-  // The plan's own credits left, the hero's big number (earned ones are shown apart).
-  const left = Math.max(0, account.hours.leftMilli);
+  // Every credit the person can spend (the plan's and invites'), as "Left at this size" counts them (`cloudHoursLeftMilli`).
+  const left = Math.max(0, cloudHoursLeftMilli(account));
   const medium = cloudTiers(cloudCatalogOf(account)).find((tier) => tier.id === "medium");
   const mediumHours = medium ? cloudTierHoursAt(medium, left).replace(/ h$/, "") : null;
   // "About 0 hours" says nothing: with (nearly) nothing left the hero's own notice says what stops.

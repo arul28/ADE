@@ -1,15 +1,7 @@
 import { useState } from "react";
 import { ArrowUpRight, Megaphone } from "@phosphor-icons/react";
-import { cloudCatalogOf, type CloudAccountState } from "../../../../shared/adeCloud";
-import {
-  CLOUD_ADS_WORDS,
-  cloudAdsSentence,
-  cloudAdsViewOf,
-  cloudRateText,
-  cloudTierRatePair,
-} from "../../../../shared/cloudAdPriceWords";
-import { cloudTiers } from "../../../../shared/cloudTiers";
-import { cloudUnitWords } from "../../../../shared/cloudUnitWords";
+import type { CloudAccountState } from "../../../../shared/adeCloud";
+import { CLOUD_ADS_WORDS, cloudAdsSentence, cloudAdsViewOf } from "../../../../shared/cloudAdPriceWords";
 import { ipcErrorMessage } from "../../../lib/format";
 import { openExternalUrl } from "../../../lib/openExternal";
 import { showToast } from "../../app/toast/toastStore";
@@ -18,10 +10,10 @@ import { setCloudAdsOn } from "../../chat/sponsored/cloudAdsAnswer";
 
 /**
  * Settings › DAEX Cloud's one ads switch (Pricing v3), across the hero under
- * the balance: the switch, the sentence the first chat says, and one size's
- * two prices so the effect reads at a glance ("Medium: 8 credits an hour
- * with ads · 10 with no ads"). Off is one click, no dialog; a yes asks a
- * second time only when the server says so (`confirmYes`).
+ * the balance: the switch, the sentence the first chat says, where ads show
+ * and what is sent. The prices live in "Sizes and prices" (the swap of its
+ * columns shows the switch's effect). Off is one click, no dialog; a yes asks
+ * a second time only when the server says so (`confirmYes`).
  *
  * Shows only while the account has `pricing` and the person's country has
  * ads (`pricing.ads.available`); elsewhere nothing about ads shows. Account
@@ -31,14 +23,6 @@ export function CloudAdsBand({ account }: { account: CloudAccountState }) {
   const view = cloudAdsViewOf(account);
   const [busy, setBusy] = useState(false);
   if (!view || !view.available) return null;
-  const words = cloudUnitWords(account);
-  const tiers = cloudTiers(cloudCatalogOf(account));
-  // Free: Small is the plan's main offer with ads. Paid: Medium, the size a credit is counted in.
-  const example = tiers.find((tier) => tier.id === (view.freePlan ? "small" : "medium") && tier.adMultiplierMilli != null) ?? null;
-  // Only a size whose two prices differ shows: at a discount of 0 that is only Free's Small.
-  const exampleText = example && example.adMultiplierMilli !== example.multiplierMilli
-    ? `${example.label}: ${cloudRateText(cloudTierRatePair(example), view, words)}`
-    : null;
   const flip = (on: boolean) => {
     setBusy(true);
     void setCloudAdsOn(on, account)
@@ -54,7 +38,6 @@ export function CloudAdsBand({ account }: { account: CloudAccountState }) {
       </div>
       <div className="adecd-ads-body">
         <p className="adecd-ads-sentence">{cloudAdsSentence(view, view.on ? "on" : "ask")}</p>
-        {exampleText ? <p className="adecd-ads-example kit-num" data-face="ui">{exampleText}</p> : null}
         <small className="adecd-ads-fine">{CLOUD_ADS_WORDS.whereShown}</small>
         <small className="adecd-ads-fine" data-quiet="">
           {CLOUD_ADS_WORDS.sends}{" "}
