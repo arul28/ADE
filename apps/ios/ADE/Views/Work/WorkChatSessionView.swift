@@ -2791,6 +2791,10 @@ struct WorkChatSessionView: View {
             slot: sponsoredSlot,
             freeModels: sponsoredChatFreeModels
           )
+          // An ADE Free Models chat whose account is locked or throttled: one calm line.
+          if let freeModels = sponsoredChatFreeModels {
+            WorkFreeModelsChatNotice(state: freeModels)
+          }
           WorkChatComposerCard(
             chatSummary: chatSummaryContext,
             contextMeter: composerContextMeter,

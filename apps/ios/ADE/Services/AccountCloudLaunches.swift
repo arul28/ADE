@@ -367,7 +367,7 @@ func cloudServerFailureMessage(_ error: Error) -> String {
   switch error as? CloudServerClient.Failure {
   case .noAccess: return "\(Brand.cloudName) isn't open for this account."
   case .unauthorized: return "Sign in to \(Brand.name) again, then try again."
-  case .refused(_, let message): return message
+  case .refused(let code, let message): return cloudFreeGithubHoldRefusal(code: code) ?? message
   case .computerLimit(let limit): return limit.headline
   case .server(_, let message?): return message
   case .server(let status, nil): return "\(Brand.cloudName) answered with an error (\(status)). Try again soon."

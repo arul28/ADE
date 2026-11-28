@@ -308,6 +308,13 @@ private func workSponsoredAsk(instanceId: String?, sessionId: String, turn: Clou
   }
   while !Task.isCancelled {
     let answer = await store.askAd(turnKey: key, ask: ask)
+    // In a throttled ADE Free Models chat this ask is the card event that
+    // lifts the throttle on the server: read the account again (once per
+    // turn, only while throttled) so the chat's notice goes.
+    if instanceId == nil, AccountCloudStore.shared.account?.freeModels?.throttle != nil,
+       workSponsoredThrottleReads.insert(key).inserted {
+      SyncMenuSafePublisher.shared.service.refreshCloudServerIfStale(force: true)
+    }
     guard answer.shownAd == nil, answer.reason == "not_cloud" else { return }
     try? await Task.sleep(for: workSponsoredNotCloudRetry)
     guard !Task.isCancelled, store.takeNotCloudRetry(turnKey: key) else { return }
@@ -316,6 +323,10 @@ private func workSponsoredAsk(instanceId: String?, sessionId: String, turn: Clou
 }
 
 private let workSponsoredNotCloudRetry: Duration = .seconds(12)
+
+/// Turns whose ask already read the account again for a throttle: an answer
+/// asked again (scrolled back, no card) doesn't read it again.
+@MainActor private var workSponsoredThrottleReads: Set<String> = []
 
 /// Whether a card drawn away from the slot may show now: the store still
 /// holds it (an account change clears the store, so another account's card

@@ -36,6 +36,8 @@ enum CloudRefusalCode {
     "linear_needs_renewal", "plan_past_due", "too_many_messages", "message_taken",
     "computer_limit", "outside_agent_free_plan", "phone_needs_update", "phone_cant",
     "phone_busy", "phone_credits_out", "phone_not_on_account",
+    // A held Free account's refusal, should a server send it apart from `out_of_hours`.
+    "free_github_hold",
   ]
 
   /// Refusals of the Linear, Jira and limits routes (`CLOUD_INTEGRATION_ERROR_CODES`,

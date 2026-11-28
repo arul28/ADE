@@ -58,6 +58,18 @@ func cloudFreeGithubLine(_ account: CloudPhoneAccount) -> String? {
   }
 }
 
+/// The GitHub rule holds this Free account's credits: the hold, said where
+/// the person tries to use ADE Cloud (a new cloud chat, a lane's state, a
+/// refused send) instead of "out of credits". The card is named in words
+/// only (`cloudCardElsewhereLine`): no button or link to payment from the
+/// app. Nil on a paid plan and when nothing is held.
+func cloudFreeGithubHoldLine(_ account: CloudPhoneAccount) -> String? {
+  guard account.plan == "free", let github = account.freePlan?.github,
+        let state = github.state, state != "ok", let line = cloudFreeGithubLine(account) else { return nil }
+  guard state == "too_new", github.canUnlockWithCard != false else { return line }
+  return "\(line) You can start them sooner from ADE on your computer."
+}
+
 /// "December 13", in UTC like the server and the desktop, so every screen names the same day.
 func cloudFreeGithubDay(_ ms: Double) -> String {
   let formatter = DateFormatter()

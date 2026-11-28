@@ -268,6 +268,8 @@ struct CloudPhoneAccount: Decodable, Equatable {
     let state: String?
     let oldEnoughAt: Double?
     let githubLogin: String?
+    /// A card saved with no charge starts the free credits now (`too_new` only).
+    let canUnlockWithCard: Bool?
   }
 
   /// What goes over a cheaper plan's limits (`CloudPlanCleanup`). ADE frees

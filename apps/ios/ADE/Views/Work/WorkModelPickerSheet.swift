@@ -134,7 +134,8 @@ struct WorkModelPickerSheet: View {
   @ObservedObject private var accountStore = AccountCloudStore.shared
   /// ADE Cloud's own free marking of its models, by id.
   @State private var cloudFreeEntries: [String: WorkFreeModelEntry] = [:]
-  /// The ADE Free Model the person picked before agreeing to the sheet.
+  /// The ADE Free Model the person picked while it is locked or before
+  /// agreeing to the sheet: the one sheet shows the lock, then the consent.
   @State private var consentModel: WorkModelOption?
   @State private var selection: ModelPickerRailSelection = .favorites
   @State private var searchText: String = ""
@@ -444,7 +445,11 @@ struct WorkModelPickerSheet: View {
                 onGetFreeModels: {
                   Task { await freeSetup.start(host: freeModelsHost, onReady: refreshFreeCatalog) }
                 },
-                onRefreshFreeModels: { Task { await refreshFreeCatalog() } }
+                onRefreshFreeModels: { Task { await refreshFreeCatalog() } },
+                freeModelsLockLine: { model in
+                  guard let state = accountStore.account?.freeModels, state.isLocked(model.id) else { return nil }
+                  return state.locked?.rowLine
+                }
               )
               .task(id: freeSetupTaskKey) { await checkFreeSetupIfNeeded() }
             }
@@ -489,7 +494,7 @@ struct WorkModelPickerSheet: View {
     // The account's ADE Free Models answer (a consent, a country) moves their rows.
     .onChange(of: accountStore.account?.freeModels) { _, _ in rescopeCatalog() }
     .sheet(item: $consentModel) { model in
-      WorkFreeModelsConsentSheet(modelName: model.displayName) {
+      WorkFreeModelsGateSheet(modelId: model.id, modelName: model.displayName) {
         let result = await cloudSaveFreeModelsConsent(CloudSponsoredState.granted)
         switch result {
         case .success(let state):
@@ -500,7 +505,13 @@ struct WorkModelPickerSheet: View {
         case .failure(let failure):
           return failure.message
         }
-      } onNotNow: {
+      } onReady: {
+        // Unlocked while the sheet was open, and already agreed: picked now.
+        // An Agree above already picked it and closed the sheet: nothing twice.
+        guard consentModel != nil else { return }
+        consentModel = nil
+        select(model: model, consentConfirmed: true)
+      } onClose: {
         consentModel = nil
       }
     }
@@ -1143,8 +1154,16 @@ struct WorkModelPickerSheet: View {
     }
   }
 
+  /// An ADE Free Model the GitHub rule holds: its sheet opens (the lock,
+  /// then the consent once unlocked) and nothing is picked.
+  private func opensFreeModelsLock(_ model: WorkModelOption) -> Bool {
+    guard workIsAdeFreeModel(model.id), accountStore.account?.freeModels?.isLocked(model.id) == true else { return false }
+    consentModel = model
+    return true
+  }
+
   private func select(model: WorkModelOption, consentConfirmed: Bool = false) {
-    guard model.isAvailable else { return }
+    guard model.isAvailable, !opensFreeModelsLock(model) else { return }
     // An ADE Free Model shows sponsored cards in its chats: the one-time sheet
     // comes first, and the model is not picked until the person agrees.
     if workIsAdeFreeModel(model.id), !consentConfirmed, accountStore.account?.freeModels?.granted != true {
@@ -1160,7 +1179,7 @@ struct WorkModelPickerSheet: View {
   }
 
   private func select(reasoningEffort: String, for model: WorkModelOption) {
-    guard model.isAvailable else { return }
+    guard model.isAvailable, !opensFreeModelsLock(model) else { return }
     if !workModelIdsEquivalent(model.id, selectedModelId) {
       selectedModelId = model.id
       selectedRuntimeProvider = runtimeProvider(for: model)
@@ -1171,7 +1190,7 @@ struct WorkModelPickerSheet: View {
   }
 
   private func select(fastMode enabled: Bool, for model: WorkModelOption) {
-    guard model.isAvailable else { return }
+    guard model.isAvailable, !opensFreeModelsLock(model) else { return }
     if !workModelIdsEquivalent(model.id, selectedModelId) {
       selectedModelId = model.id
       selectedRuntimeProvider = runtimeProvider(for: model)
@@ -1423,6 +1442,8 @@ struct ModelPickerContentPane: View {
   var freeCatalogRefreshing = false
   var onGetFreeModels: () -> Void = {}
   var onRefreshFreeModels: () -> Void = {}
+  /// A locked ADE Free Model's short line (`CloudFreeModelsLock.rowLine`); nil for every other row.
+  var freeModelsLockLine: (WorkModelOption) -> String? = { _ in nil }
 
   private var favoritesSet: Set<String> { Set(favorites) }
 
@@ -1515,7 +1536,8 @@ struct ModelPickerContentPane: View {
                     onClaudeLogin: onClaudeLogin,
                     isClaudeLoginBusy: isClaudeLoginBusy,
                     onPiLogin: onPiLogin,
-                    isPiLoginBusy: isPiLoginBusy
+                    isPiLoginBusy: isPiLoginBusy,
+                    lockLine: freeModelsLockLine(model)
                   )
                 }
                 }
@@ -1871,6 +1893,9 @@ struct ModelPickerListRow: View {
   let isClaudeLoginBusy: Bool
   let onPiLogin: (() -> Void)?
   let isPiLoginBusy: Bool
+  /// A locked ADE Free Model: a small lock and this line under its name.
+  /// Still tappable: the tap opens the lock sheet, never picks it.
+  var lockLine: String? = nil
 
   private var isHighlighted: Bool {
     isSelected
@@ -1995,6 +2020,9 @@ struct ModelPickerListRow: View {
             .foregroundStyle(ADEColor.textMuted)
             .lineLimit(1)
         }
+        if let lockLine {
+          lockLineView(lockLine)
+        }
       }
       Spacer(minLength: 4)
     }
@@ -2023,11 +2051,26 @@ struct ModelPickerListRow: View {
             .foregroundStyle(ADEColor.textMuted)
             .lineLimit(1)
         }
+        if let lockLine {
+          lockLineView(lockLine)
+        }
       }
       Spacer(minLength: 6)
       favoriteButton
     }
     .accessibilityLabel(modelAccessibilityLabel)
+  }
+
+  private func lockLineView(_ line: String) -> some View {
+    HStack(spacing: 4) {
+      Image(systemName: "lock.fill")
+        .font(.system(size: 9, weight: .semibold))
+        .accessibilityHidden(true)
+      Text(line)
+        .lineLimit(1)
+    }
+    .font(.caption2.weight(.medium))
+    .foregroundStyle(ADEColor.textSecondary)
   }
 
   /// A free model's badge, wherever the row shows.
@@ -2040,6 +2083,7 @@ struct ModelPickerListRow: View {
       model.displayName,
       freeEntry?.badge.label,
       piContextLabel,
+      lockLine,
       model.isAvailable ? "Available" : "Unavailable",
       isSelected ? "Selected" : nil,
     ]

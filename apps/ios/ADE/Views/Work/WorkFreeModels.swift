@@ -820,6 +820,215 @@ struct WorkFreeModelsConsentSheet: View {
   }
 }
 
+/// The one sheet an ADE Free Model opens before it's picked. It reads the
+/// account as it changes: while the GitHub rule holds the models it shows the
+/// lock, and once they unlock (a card saved on another device, the GitHub
+/// account turned 30 days old) it goes on to the consent, or straight to the
+/// pick when the person already agreed. A model the account no longer
+/// lists closes it.
+struct WorkFreeModelsGateSheet: View {
+  let modelId: String
+  let modelName: String
+  /// Saves the yes: nil when it worked, else the sentence to show.
+  let onAgree: @MainActor () async -> String?
+  /// Unlocked, and the person already agreed: pick the model.
+  let onReady: () -> Void
+  let onClose: () -> Void
+  @ObservedObject private var accountStore = AccountCloudStore.shared
+
+  private enum Phase: Equatable {
+    case locked(CloudFreeModelsLock)
+    case consent
+    case ready
+    case gone
+
+    var key: String {
+      switch self {
+      case .locked: return "locked"
+      case .consent: return "consent"
+      case .ready: return "ready"
+      case .gone: return "gone"
+      }
+    }
+  }
+
+  private var phase: Phase {
+    guard let state = accountStore.account?.freeModels, state.lists(modelId) else { return .gone }
+    if let lock = state.locked { return .locked(lock) }
+    return state.granted ? .ready : .consent
+  }
+
+  var body: some View {
+    let phase = phase
+    Group {
+      switch phase {
+      case .locked(let lock):
+        WorkFreeModelsLockSheet(lock: lock, modelName: modelName, onDone: onClose)
+      case .consent:
+        WorkFreeModelsConsentSheet(modelName: modelName, onAgree: onAgree, onNotNow: onClose)
+      case .ready, .gone:
+        ProgressView()
+          .controlSize(.small)
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .adeScreenBackground()
+          .presentationDetents([.medium])
+      }
+    }
+    .animation(.smooth(duration: 0.2), value: phase.key)
+    .task(id: phase.key) {
+      switch phase {
+      case .ready: onReady()
+      case .gone: onClose()
+      default: break
+      }
+    }
+  }
+}
+
+/// ADE Free Models are locked by the Free plan's GitHub rule: what holds
+/// them, and how to unlock them. The phone has no card action, and a link
+/// out to payment from the app is an App Store risk, so the card is named in
+/// words only (`cloudCardElsewhereLine`), with no button or link. Connect
+/// GitHub (the phone's own GitHub sign-in) shows when none is connected.
+/// While open, the account is read again when the app comes to the front and
+/// about every 30 s, so a card saved elsewhere (or a check that finished)
+/// moves the sheet on by itself (`WorkFreeModelsGateSheet`).
+struct WorkFreeModelsLockSheet: View {
+  let lock: CloudFreeModelsLock
+  let modelName: String
+  let onDone: () -> Void
+  @ObservedObject private var github = GitHubAccountConnection.shared
+  @Environment(\.scenePhase) private var scenePhase
+
+  private static let recheckEvery: Duration = .seconds(30)
+
+  var body: some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 14) {
+        HStack(alignment: .center, spacing: 10) {
+          Group {
+            if lock.isChecking {
+              ProgressView().controlSize(.small)
+            } else {
+              Image(systemName: "lock.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(ADEColor.textSecondary)
+            }
+          }
+          .frame(width: 30, height: 30)
+          .background(ADEColor.textPrimary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+          .accessibilityHidden(true)
+          VStack(alignment: .leading, spacing: 1) {
+            Text(lock.title)
+              .font(.system(size: 15, weight: .semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+            Text(modelName)
+              .font(.system(size: 12.5))
+              .foregroundStyle(ADEColor.textSecondary)
+          }
+          .fixedSize(horizontal: false, vertical: true)
+        }
+        VStack(alignment: .leading, spacing: 8) {
+          fact("person.badge.shield.checkmark", lock.reasonLine)
+          if lock.canUnlockWithCard {
+            fact("creditcard", "\(cloudCardElsewhereLine) It unlocks them on every device.")
+          }
+        }
+        if let problem = github.problem, lock.reason == CloudFreeModelsLock.noGithub {
+          Text(problem)
+            .font(.system(size: 11.5))
+            .foregroundStyle(ADEColor.danger)
+        }
+        HStack(spacing: 8) {
+          if lock.reason == CloudFreeModelsLock.noGithub {
+            WorkSponsoredCTA(title: github.connecting ? "Connecting…" : "Connect GitHub", primary: true) { connectGitHub() }
+              .disabled(github.connecting)
+              .accessibilityIdentifier("Work.FreeModelsLock.ConnectGitHub")
+          }
+          WorkSponsoredCTA(title: "OK", primary: lock.reason != CloudFreeModelsLock.noGithub) { onDone() }
+            .accessibilityIdentifier("Work.FreeModelsLock.OK")
+        }
+      }
+      .padding(20)
+      .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    .adeScreenBackground()
+    .presentationDetents([.medium, .large])
+    .presentationDragIndicator(.visible)
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("ADE Free Models are locked")
+    // Read once on open (the copy may be old), then cheaply while it waits.
+    .task {
+      SyncMenuSafePublisher.shared.service.refreshCloudServerIfStale(force: true)
+      while !Task.isCancelled {
+        try? await Task.sleep(for: Self.recheckEvery)
+        guard !Task.isCancelled else { return }
+        SyncMenuSafePublisher.shared.service.refreshCloudServerIfStale()
+      }
+    }
+    .onChange(of: scenePhase) { _, phase in
+      // Back from the computer or the browser where the card was saved.
+      if phase == .active { SyncMenuSafePublisher.shared.service.refreshCloudServerIfStale(force: true) }
+    }
+  }
+
+  private func fact(_ symbol: String, _ text: String) -> some View {
+    HStack(alignment: .firstTextBaseline, spacing: 8) {
+      Image(systemName: symbol)
+        .font(.system(size: 11.5, weight: .medium))
+        .foregroundStyle(ADEColor.textMuted)
+        .frame(width: 15)
+        .accessibilityHidden(true)
+      Text(text)
+        .font(.system(size: 12.5))
+        .foregroundStyle(ADEColor.textSecondary)
+        .lineSpacing(1.5)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+  }
+
+  private func connectGitHub() {
+    Task { @MainActor in
+      await github.connect()
+      // The account settles its GitHub rule on the next read.
+      if github.state.isConnected { await SyncMenuSafePublisher.shared.service.refreshCloudServerInstances() }
+    }
+  }
+}
+
+/// One calm line above the prompt box of a chat that runs an ADE Free Model:
+/// the account is locked (its next request is refused) or throttled for
+/// using them with no card on screen. Nothing otherwise.
+struct WorkFreeModelsChatNotice: View {
+  let state: CloudFreeModelsState
+
+  private var line: (symbol: String, text: String)? {
+    if let lock = state.locked { return ("lock.fill", lock.chatLine) }
+    if state.throttle != nil { return ("rectangle.on.rectangle", CloudFreeModelsState.throttleLine) }
+    return nil
+  }
+
+  var body: some View {
+    if let line {
+      HStack(alignment: .firstTextBaseline, spacing: 6) {
+        Image(systemName: line.symbol)
+          .font(.system(size: 10.5, weight: .medium))
+          .foregroundStyle(ADEColor.textMuted)
+          .accessibilityHidden(true)
+        Text(line.text)
+          .font(.system(size: 12))
+          .foregroundStyle(ADEColor.textSecondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.horizontal, 6)
+      .padding(.bottom, 8)
+      .accessibilityElement(children: .combine)
+      .accessibilityIdentifier("Work.FreeModels.ChatNotice")
+    }
+  }
+}
+
 /// "12 of 48 MB", or nil before the size is known.
 func workFreeModelsProgressText(received: Double?, total: Double?) -> String? {
   guard let received, let total, total > 0 else { return nil }

@@ -485,12 +485,28 @@ struct CloudMiniMeter: View {
 /// failure (the desktop's `PlanNotices`, in its words).
 struct CloudNotices: View {
   @ObservedObject var store: CloudPaneStore
+  @ObservedObject private var github = GitHubAccountConnection.shared
 
   var body: some View {
     VStack(spacing: 8) {
       if let account = store.account {
         if account.billing?.notice == "past_due" {
           ADESettingsNotice(message: "A payment didn't go through, so your plan follows the free plan's limits until it's paid.", tone: .crit)
+        } else if account.outOfHours, cloudFreeGithubHoldLine(account) != nil {
+          // The GitHub rule holds the free credits, and the hero says why:
+          // never "out of credits" here. With no GitHub, its one action.
+          if account.freePlan?.github?.state == "no_github" {
+            ADESettingsNotice(
+              message: "Connect GitHub to start your \(CloudBalanceWords(account).free).",
+              tone: .neutral,
+              actionTitle: github.connecting ? "Connecting…" : "Connect GitHub"
+            ) {
+              Task { @MainActor in
+                await github.connect()
+                if github.state.isConnected { await store.refresh() }
+              }
+            }
+          }
         } else if account.outOfHours {
           ADESettingsNotice(message: CloudBalanceWords(account).outNotice(smallUsesBalance: cloudSmallTierUsingHours(account) != nil), tone: .warn)
         }
