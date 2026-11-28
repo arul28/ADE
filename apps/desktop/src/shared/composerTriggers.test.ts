@@ -113,6 +113,17 @@ describe("replaceComposerTriggerSpan", () => {
     });
   });
 
+  it.each([
+    ["ask @chat Deploy notes about this", "Deploy notes", "ask @chat:chat-1 about this"],
+    // A title equal to the filter word never eats it and leaves the search behind.
+    ["ask @lane up", "lane", "ask @chat:chat-1 "],
+    ["ask @lane up", "upload-fix", "ask @chat:chat-1 "],
+  ])("matches an entity title after a kind filter word: %s picking %s", (text, title, expected) => {
+    const trigger = detectComposerTrigger(text, text.length)!;
+    const selected = composerTriggerForSelection(trigger, title, "mention");
+    expect(replaceComposerTriggerSpan(text, selected, "@chat:chat-1 ").text).toBe(expected);
+  });
+
   it("does not shorten a partial or non-prefix selection", () => {
     const trigger = detectComposerTrigger("@abc", 4)!;
     expect(composerTriggerForSelection(trigger, "a b c")).toEqual(trigger);

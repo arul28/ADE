@@ -134,6 +134,12 @@ function composerPathPrefixForSelection(
  * that prose. Whitespace after the label belongs to the selected trigger so
  * the replacement can add its own single separator.
  */
+/** A leading kind filter word and its spaces (`chat ` in `chat Deploy notes`), or "". */
+function composerMentionFilterPrefix(query: string): string {
+  const match = /^([A-Za-z]+)[ \t]+/.exec(query);
+  return match && parseChatMentionKindFilter(match[1]!).kind ? match[0] : "";
+}
+
 export function composerTriggerForSelection(
   trigger: ComposerTrigger,
   label: string,
@@ -168,16 +174,21 @@ export function composerTriggerForSelection(
     selectionKind === "file",
   ));
 
+  // A kind filter word (`@chat Deploy notes about this`) goes with the
+  // splice, never with the title: the menu searched the words after it, so
+  // an entity's title is matched there.
+  const filterPrefix = selectionKind === "mention" ? composerMentionFilterPrefix(trigger.query) : "";
+  const typed = trigger.query.slice(filterPrefix.length);
   for (const candidateLabel of candidateLabels) {
-    const matchedPrefix = trigger.query.slice(0, candidateLabel.length);
+    const matchedPrefix = typed.slice(0, candidateLabel.length);
     if (matchedPrefix.toLowerCase() !== candidateLabel.toLowerCase()) continue;
 
-    const remainder = trigger.query.slice(candidateLabel.length);
+    const remainder = typed.slice(candidateLabel.length);
     if (remainder.length > 0 && !/^[ \t]/.test(remainder)) continue;
     const separator = remainder.match(/^[ \t]*/)?.[0] ?? "";
     return {
       ...trigger,
-      query: `${matchedPrefix}${separator}`,
+      query: `${filterPrefix}${matchedPrefix}${separator}`,
     };
   }
   return trigger;

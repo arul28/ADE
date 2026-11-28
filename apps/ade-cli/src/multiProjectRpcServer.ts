@@ -689,12 +689,13 @@ export async function rearmMachineTimersAfterWake(args: BootedRuntimeSources & {
       // One project's chats never hold the others back; the next timer re-arms it.
     }
   };
+  // The personal chats' lookup never holds the projects back.
   const personal = typeof args.personalChatScope.bootedRuntime === "function"
-    ? await args.personalChatScope.bootedRuntime().catch(() => null)
-    : null;
+    ? args.personalChatScope.bootedRuntime().catch(() => null).then((runtime) => (runtime ? rearm(runtime) : undefined))
+    : undefined;
   await Promise.all([
     mapBootedProjectRuntimes(args, rearm).catch(() => []),
-    personal ? rearm(personal) : null,
+    personal,
   ]);
 }
 

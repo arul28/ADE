@@ -103,6 +103,10 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
       ("ask @lane up", "upload-fix", "@lane:f98c22fb", .lane, "ask @lane:f98c22fb "),
       ("ask @chat dep", "Deploy notes", "@chat:96cf2ea7", .chat, "ask @chat:96cf2ea7 "),
       ("ask @Deploy notes about this", "Deploy notes", "@chat:96cf2ea7", .chat, "ask @chat:96cf2ea7 about this"),
+      // The title is matched after the filter word, so prose after it stays.
+      ("ask @chat Deploy notes about this", "Deploy notes", "@chat:96cf2ea7", .chat, "ask @chat:96cf2ea7 about this"),
+      // A title equal to the filter word never eats it and leaves the search behind.
+      ("ask @lane up", "lane", "@lane:f98c22fb", .lane, "ask @lane:f98c22fb "),
     ]
     for item in cases {
       let match = try! XCTUnwrap(detect(item.text))

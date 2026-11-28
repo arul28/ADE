@@ -158,6 +158,7 @@ export async function runCloudWakes(env: CloudWakeEnv, options: { now?: number; 
   failed += givenUp.length;
   await Promise.all(allowed.map(async (row) => {
     let reached = false;
+    let outcome: TimedWakeOutcome | null = null;
     if (WAKE_URL.test(row.wake_url)) {
       try {
         // Any answer, a 502 included, means the request reached the machine.
@@ -180,15 +181,17 @@ export async function runCloudWakes(env: CloudWakeEnv, options: { now?: number; 
           return true;
         });
       if (slept) logCloud("cloud.timed_wake_recorded", { userId: row.user_id, instanceId: row.instance_id });
-      await logTimedWake(env, row, slept ? "woke" : "awake", now);
+      outcome = slept ? "woke" : "awake";
     } else failed += 1;
     const givingUp = !reached && (!WAKE_URL.test(row.wake_url) || now - row.wake_at > GIVE_UP_AFTER_MS);
-    if (reached || givingUp) {
+    if (givingUp) outcome = "gave_up_unreachable";
+    if (outcome) {
       // Only the row this tick read: a newer time the machine sent meanwhile stays.
       await env.DB.prepare("delete from cloud_wakes where user_id = ? and instance_id = ? and wake_at = ?")
         .bind(row.user_id, row.instance_id, row.wake_at).run();
+      // Logged once the wake is settled: a failed delete leaves it pending, and its next tick logs it.
+      await logTimedWake(env, row, outcome, now);
     }
-    if (givingUp) await logTimedWake(env, row, "gave_up_unreachable", now);
   }));
   return { woken, failed };
 }
