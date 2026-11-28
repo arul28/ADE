@@ -46,9 +46,9 @@ Evidence run ids used so far:
 | prs.github.filter.merged | Select Merged filter | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.github.filters-and-scopes` |
 | prs.github.filter.closed | Select Closed filter | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.github.filters-and-scopes`; closed/all history fetch is intentionally opt-in |
 | prs.github.filter.all | Select All filter | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.github.filters-and-scopes` |
-| prs.github.scope.ade | Select ADE scope | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.github.filters-and-scopes` |
+| prs.github.scope.ade | Select DAEX scope | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.github.filters-and-scopes` |
 | prs.github.scope.external | Select External scope | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.github.filters-and-scopes` |
-| prs.github.card.select.local | Select a local ADE PR card | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs-ptm-open-local-pr` |
+| prs.github.card.select.local | Select a local DAEX PR card | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs-ptm-open-local-pr` |
 | prs.github.card.select.external | Select an external PR card | measured | `prs-ui-coverage-closeout-20260512-074602`, marker `prs.github.card.select.external` |
 | prs.github.card.open-github | Click PR card Open on GitHub | external-skip | `GitHubTab.tsx` |
 

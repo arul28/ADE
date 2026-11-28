@@ -15,7 +15,7 @@ the macOS columns (see **Performance budget** in `AGENTS.md` and `CLAUDE.md`).
 | Node | 22.13.1 (via fnm; the default `node` on this PC is 24 and is not used) |
 | Build | dev build, `npm run dev:desktop` with its own runtime pipe `\\.\pipe\ade-runtime-perfwin`, sync OFF (isolation report: `sync : off (--no-sync)`) |
 | Project | the ADE repository (primary checkout), one project tab open, 2 chats in the Work list, 6 projects registered, a background image scene as the app backdrop |
-| Background | the installed ADE (its brain, three renderers and agent chats, including the chat that ran these measurements) and the Versic runtime. No chat was streaming in the dev app during the idle rows, and the PR had no running checks |
+| Background | the installed DAEX (its brain, three renderers and agent chats, including the chat that ran these measurements) and the Versic runtime. No chat was streaming in the dev app during the idle rows, and the PR had no running checks |
 | Measured | 2026-10-13, branch `ade/friend-feedback-bug-triage` at `3137fc9b9` (no product changes) |
 
 Every row was measured twice; both runs are in the Baseline column as
@@ -390,7 +390,7 @@ or compare builds with and without the SDK.
 | Sentry start in the brain (`initBrainSentry`) | - | 51-55 ms, once per brain start | *new* 70 ms |
 | `apps/desktop/dist/main/main.cjs` | 15.53 MB | 16.34 MB (+5%) | *new* 17 MB |
 | `apps/ade-cli/dist/cli.cjs` | 17.10 MB | 18.43 MB (+8%, includes the branch's other code) | *new* 19 MB |
-| `ade --version` (median of 9, three interleaved rounds) | 627-651 ms | 653-675 ms (+3-5%) | *new* 700 ms |
+| `daex --version` (median of 9, three interleaved rounds) | 627-651 ms | 653-675 ms (+3-5%) | *new* 700 ms |
 | Web client: JS needed for first paint | 320.9 KB | 321.2 KB | 950 KB cold JS (macOS) |
 | Web client: cold signed-out JS, whole load | 598 KB | 693 KB (+16%; the Sentry chunk, 63 KB on disk, loads after first paint) | 950 KB |
 | Web client: cold requests / transfer / heap | 53 / 816 KB / 2.5 MB | 56 / 911 KB / 2.7 MB | 60 / 2,000 KB / 3.5 MB |
@@ -398,7 +398,7 @@ or compare builds with and without the SDK.
 The web client first shipped with Sentry's browser tracing as well: 761 KB of
 cold JS, 27% over the baseline. It reports errors only now. Loading the
 Sentry Node SDK lazily in the CLI was tried and made no measurable difference
-to `ade --version` (the extra time is the larger bundle), so it loads
+to `daex --version` (the extra time is the larger bundle), so it loads
 statically.
 
 ### New open item
@@ -475,8 +475,8 @@ dev-app rows above are not re-measured yet (see **Not measured in round 1**).
 | Machine | as in **Machine and conditions** (Ryzen 9 7950X3D, 63 GB, Windows 11 Pro 10.0.26200) |
 | Build | `ade/speed-and-windows-competitive-review-windows` at `535985e76`: `main` `76a509deb` plus the bench scripts, no product change |
 | Node | 22.13.1 (fnm); search fan-out on 24.13.1, because the 22.13 SQLite build has no FTS5 |
-| Data | a copy of this PC's ADE project made with `make-real-load-copy.mts`: 13.3 MB `ade.db`, 3.76 M database versions, 5 active lanes with worktrees, 583 chat records, 136 transcripts, the biggest chat 20.7 MB uncompressed (the two largest have 27k events). The live project and the installed ADE were never opened |
-| Load | the installed ADE idle beside it; no other benches. Windows reports no load average |
+| Data | a copy of this PC's ADE project made with `make-real-load-copy.mts`: 13.3 MB `ade.db`, 3.76 M database versions, 5 active lanes with worktrees, 583 chat records, 136 transcripts, the biggest chat 20.7 MB uncompressed (the two largest have 27k events). The live project and the installed DAEX were never opened |
+| Load | the installed DAEX idle beside it; no other benches. Windows reports no load average |
 | Method | each bench 5 times (or 5 runs inside one bench); the median, with the worst run in brackets |
 
 An **outside target** is a number another coding app published for the same
@@ -597,7 +597,7 @@ What changed:
   background refresh of every lane (10 `git status`, `ls-remote`) landing in
   the burst window in one run of five; it is the next thing to look at.
 - **S192** (#1977). A normal Git for Windows install puts only its launcher
-  (`<Git>\cmd\git.exe`) on PATH, and the installed ADE on this PC resolved it,
+  (`<Git>\cmd\git.exe`) on PATH, and the installed DAEX on this PC resolved it,
   so every git run started two processes. `runGit` now runs the real
   `<Git>\<build>\bin\git.exe` when `MSYSTEM` is unset (a desktop-started
   brain). A `#!/bin/sh` pre-commit hook ran through it with the installed
@@ -606,7 +606,7 @@ What changed:
 ### Not measured in round 1
 
 - **Every dev-app row** (tab and chat switches, typing, idle frames, process
-  memory, cold start): waiting on the owner's choice of an ADE home for a dev
+  memory, cold start): waiting on the owner's choice of a DAEX home for a dev
   app on the copy (a scratch home needs a sign-in; the shared home would add
   the copy to the owner's project list).
 - **E2 launch, E3 startup JS, E4 thread-switch renders, D1-D7**: dev-app or
@@ -624,7 +624,7 @@ both through `--cli`).
 
 ### Chat actions through the brain (#1980)
 
-`chat-status.bench.mts`: `getChatStatus` (what `ade chat status` and an agent's
+`chat-status.bench.mts`: `getChatStatus` (what `daex chat status` and an agent's
 chat tools ask) for the 5 newest chats, 10 calls each per run, on a measurement
 brain that settled 45 s first. 2 rounds x 3 runs per build.
 
@@ -663,7 +663,7 @@ PowerShell power read costs 240-370 ms wall and about 300 ms CPU here. The
 stack entries, chat-session links and dismissals) and a Linear link check (53).
 
 Two things make these idle numbers higher than a connected install's. The
-measurement brain cannot reach ADE's cloud (the port guard blocks it), so its
+measurement brain cannot reach DAEX's cloud (the port guard blocks it), so its
 GitHub relay is never healthy and the PR poller refreshes the open PRs every
 tick; with a healthy relay it refreshes them only on a 15-minute sweep. And
 its GitHub calls fail (no token in the stand-in home), so the poller backs
@@ -810,7 +810,7 @@ Most of the renderer is not JavaScript: its heap is 118 MB of the 561. The rest 
 | Row | Windows | Notes |
 |---|---|---|
 | Brain cold start, `cli.cjs serve` to listening (`brain-start.bench.mts`, 7 pairs) | 798.1 ms (802.4) without the compile cache; 523.3 ms (536.4) with it | `main` `d60747404`; every run stopped gracefully |
-| Installed app: first window / app mounted / settled | 1.11-1.22 s / 1.79-1.91 s / 2.65-5.67 s | last measured 2026-10-19, before the speed work. Not re-measured: it means installing a build over the owner's ADE |
+| Installed app: first window / app mounted / settled | 1.11-1.22 s / 1.79-1.91 s / 2.65-5.67 s | last measured 2026-10-19, before the speed work. Not re-measured: it means installing a build over the owner's DAEX |
 
 ### F4's worst run: cause and two attempts
 
@@ -855,7 +855,7 @@ wall and a 7-13 ms gap. A spawn trace (`scripts/perf/ui/spawn-trace.cjs`) shows
 one process start per scan either way: `ade-port-scan.exe listeners` (175 KB)
 instead of `powershell.exe -NoProfile ...`.
 
-Both outputs, compared after the parse ADE applies: 27 of 27 listening pids
+Both outputs, compared after the parse DAEX applies: 27 of 27 listening pids
 identical in ports, name, command line and ancestors; 494 of 495 process-table
 rows identical in parent and start time (the other started between the two
 reads). Command lines are read with the access `Win32_Process` needs, so an
@@ -915,8 +915,8 @@ Then:
   memory or process numbers.
 
 Stop the app with its whole tree, then confirm its brain is gone. Check that
-every process in the tree runs from this worktree first; the installed ADE
-runs from `AppData\Local\Programs\ADE` and must not be touched:
+every process in the tree runs from this worktree first; the installed DAEX
+runs from `AppData\Local\Programs\DAEX` and must not be touched:
 
 ```powershell
 taskkill /T /F /PID <pid printed at launch>
@@ -955,7 +955,7 @@ node scripts/perf/ui/process-cpu.mjs 15 '\\.\pipe\ade-runtime-perfwin'
   On Windows it samples `Win32_Process` (kernel plus user time, working set,
   private bytes) twice; elsewhere `ps`. It finds the dev Electron main by its
   `--remote-debugging-port`, its GPU, renderer and utility children, and the
-  brain by `cli.cjs serve` plus the pipe, so the installed ADE is never
+  brain by `cli.cjs serve` plus the pipe, so the installed DAEX is never
   matched. `process-cpu.sh` is unchanged.
 - `scripts/perf/ui/cold-start.mjs` (new): times a dev launch.
 - `scripts/perf/ui/cdp.mjs`: a `gc` command (heap before and after a forced GC).
@@ -977,7 +977,7 @@ Raw outputs of this pass: `%TEMP%\ade-perf-windows\before\`.
   blocks `wmic process`, and stands in `cmd.exe /d /c exit 0` for
   `/usr/bin/true`.
 - `scripts/perf/ui/spawn-trace.cjs`: writes to the OS temp folder and keeps 16
-  arguments (ADE puts ten `-c` arguments before every git verb).
+  arguments (DAEX puts ten `-c` arguments before every git verb).
 - `scripts/perf/net/measure-brain.mjs`: `ADE_PERF_EXTRA_REQUIRE` preloads.
 - `conflict-sweep` and `branch-file-diff` count git processes through
   `git-count.mts`: a wrapper script elsewhere, `spawn-trace.cjs` on Windows,
