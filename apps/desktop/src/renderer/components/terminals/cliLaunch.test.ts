@@ -664,7 +664,9 @@ describe("resolveCleanShellLaunchFields", () => {
 describe("piSdkToolPolicyForPermissionMode", () => {
   it("keeps plan mode read-only and states it, rather than leaving it inferred", () => {
     const plan = piSdkToolPolicyForPermissionMode("plan", "linux");
-    expect(plan.tools).toEqual(["read", "grep", "find", "ls"]);
+    // The shells come along; a read-only worker runs only commands that read.
+    expect(plan.tools).toEqual(["read", "grep", "find", "ls", "bash"]);
+    expect(piSdkToolPolicyForPermissionMode("plan", "win32").tools).toEqual(["read", "grep", "find", "ls", "bash", "powershell"]);
     expect(plan.approvalTools).toEqual([]);
     // Chat gates real capabilities (extension loading) on this flag, so it must
     // not be re-derived from the tool list.

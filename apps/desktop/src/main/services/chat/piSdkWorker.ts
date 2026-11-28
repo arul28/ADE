@@ -6,6 +6,7 @@ import {
   PI_SDK_MIN_NODE,
   PI_SDK_PROTOCOL_VERSION,
   PI_READ_ONLY_TOOLS,
+  PI_SHELL_TOOLS,
   normalizePiSdkContextUsage,
   parsePiSdkWorkerRequest,
   piSupportedThinkingLevels,
@@ -49,6 +50,7 @@ import {
   type PiUiBridge,
 } from "./piSdkUiBridge";
 import { errorMessage, nonEmpty, record, type Callable, type PiModule } from "./piSdkWorkerValues";
+import { shellCommandIsReadOnly } from "./readOnlyShellCommand";
 
 // Deliberately no static import (or type import) from Pi. This process is
 // started by ADE and loads the user's installation only after init validation.
@@ -87,6 +89,7 @@ const PI_TOOL_DEFINITION_FACTORIES: Record<string, string> = {
 /** Derived so the gateable set and the factory map cannot drift apart. */
 const PI_GATEABLE_TOOLS = new Set(Object.keys(PI_TOOL_DEFINITION_FACTORIES));
 const PI_READ_ONLY_TOOL_SET = new Set<string>(PI_READ_ONLY_TOOLS);
+const PI_SHELL_TOOL_SET = new Set<string>(PI_SHELL_TOOLS);
 /** The built-ins a caller may grant: the gateable ones, plus Pi's read-only search tools, which need no gate. */
 const PI_GRANTABLE_TOOLS = new Set([...PI_GATEABLE_TOOLS, ...PI_READ_ONLY_TOOLS]);
 /**
@@ -362,6 +365,33 @@ function makeResourceLoader(
   });
 }
 
+/** Never consulted: a read-only session's shells use `withPiReadOnlyShell`. */
+const readOnlyShellGate: PiApprovalGate = { check: async () => false };
+
+/**
+ * A shell for a read-only (plan or side chat) session: a command that only
+ * reads runs (`shellCommandIsReadOnly`), any other is refused without a card.
+ */
+function withPiReadOnlyShell(definition: PiToolDefinitionLike, shellPath: string | null): PiToolDefinitionLike {
+  // `bash` runs through the user's configured shell, which may be PowerShell;
+  // a command must then read under both dialects (`a\;b` splits differently).
+  const shellName = (shellPath?.split(/[\\/]/).pop() ?? "").replace(/\.exe$/i, "").toLowerCase();
+  const dialects: Array<"bash" | "powershell"> = definition.name === "powershell"
+    ? ["powershell"]
+    : shellPath && !["bash", "sh", "zsh", "dash"].includes(shellName) ? ["bash", "powershell"] : ["bash"];
+  return {
+    ...definition,
+    execute: async (toolCallId, params, signal, onUpdate, ctx) => {
+      const command = (params && typeof params === "object" ? (params as Record<string, unknown>).command : undefined);
+      if (!dialects.every((dialect) => shellCommandIsReadOnly(command, dialect))) {
+        // Pi marks a tool call failed only when execute throws.
+        throw new Error("This chat is read-only (plan mode): only commands that read can run. Present the plan before making changes.");
+      }
+      return definition.execute(toolCallId, params, signal, onUpdate, ctx);
+    },
+  };
+}
+
 /**
  * Assemble ADE's custom tools: `ask_user`, plus approval-gated rebuilds of the
  * built-ins the caller wants gated.
@@ -389,9 +419,14 @@ function buildCustomTools(
   // allowlist to drop an unrequested wrapper would make the gate depend on
   // resolution order rather than on ADE's permission mode.
   const requested = new Set(requestedTools);
-  const gated = (init.approvalTools ?? []).filter((tool) => PI_GATEABLE_TOOLS.has(tool) && requested.has(tool));
+  // A read-only session's shells run behind the read-only command check, not
+  // an approval card: a command that reads runs, any other is refused.
+  const readOnlyShells = init.readOnly === true ? requestedTools.filter((tool) => PI_SHELL_TOOL_SET.has(tool)) : [];
+  const gated = init.readOnly === true
+    ? readOnlyShells
+    : (init.approvalTools ?? []).filter((tool) => PI_GATEABLE_TOOLS.has(tool) && requested.has(tool));
   if (!gated.length) return { tools, ungateable };
-  const gate = sharedApprovalGate();
+  const gate = init.readOnly === true ? readOnlyShellGate : sharedApprovalGate();
   const settings = record(settingsManager);
   const shellPath = typeof settings?.getShellPath === "function"
     ? nonEmpty((settings.getShellPath as Callable).call(settings))
@@ -408,14 +443,16 @@ function buildCustomTools(
       ungateable.push(toolName);
       continue;
     }
+    // A read-only shell runs without the user's `shellCommandPrefix`: the
+    // prefix runs ahead of every command, and the read-only check never sees it.
     const options = toolName === "bash"
       ? {
           ...(shellPath ? { shellPath } : {}),
-          ...(commandPrefix ? { commandPrefix } : {}),
+          ...(commandPrefix && init.readOnly !== true ? { commandPrefix } : {}),
         }
       : undefined;
     const definition = (factory as Callable).call(null, init.cwd, options) as PiToolDefinitionLike;
-    tools.push(finish(withPiApproval(definition, gate)));
+    tools.push(finish(init.readOnly === true ? withPiReadOnlyShell(definition, toolName === "bash" ? shellPath : null) : withPiApproval(definition, gate)));
   }
   return { tools, ungateable };
 }
@@ -562,9 +599,11 @@ async function initWorker(init: PiSdkWorkerInit): Promise<PiSdkReady> {
   if (readOnly) {
     // Refused rather than trimmed: a caller that asked for a write tool and
     // a read-only session at once has a bug that a quiet trim would hide.
-    const writable = askedTools.filter((tool) => !PI_READ_ONLY_TOOL_SET.has(tool));
+    // A shell is allowed: in a read-only session it runs only commands that
+    // read (`buildCustomTools`), never asking and never writing.
+    const writable = askedTools.filter((tool) => !PI_READ_ONLY_TOOL_SET.has(tool) && !PI_SHELL_TOOL_SET.has(tool));
     if (writable.length) {
-      throw new Error(`A read-only Pi session can only use ${PI_READ_ONLY_TOOLS.join(", ")}; received ${writable.join(", ")}.`);
+      throw new Error(`A read-only Pi session can only use ${[...PI_READ_ONLY_TOOLS, ...PI_SHELL_TOOLS].join(", ")}; received ${writable.join(", ")}.`);
     }
     if (init.approvalTools?.length) {
       throw new Error("A read-only Pi session has no tools to approve; approvalTools must be empty.");

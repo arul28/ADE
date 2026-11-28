@@ -3,8 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   CLAUDE_READ_ONLY_TOOLS,
   claudeBuiltInIsReadOnly,
-  claudeSideChatBashIsReadOnly,
   claudeToolAllowedInPlanMode,
+  claudeToolCallAllowedInPlanMode,
+  claudeToolCallAllowedInSideChat,
   claudeToolInputPaths,
   claudeToolNeedsApproval,
   normalizeToolNameForApproval,
@@ -54,37 +55,6 @@ describe("claudeBuiltInIsReadOnly", () => {
     for (const tool of ["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "Task"]) {
       expect(claudeBuiltInIsReadOnly(tool)).toBe(false);
     }
-  });
-});
-
-describe("claudeSideChatBashIsReadOnly", () => {
-  // A side chat refuses every command this does not call read-only, even one
-  // the user's own Claude allow rules would run unasked: a false "read-only"
-  // is a write the side chat was promised not to make.
-  it.each([
-    ["ls -la", true],
-    ["git status", true],
-    ["git log --oneline | head -5", true],
-    ["rg foo src | wc -l", true],
-    ["find . -name '*.ts'", true],
-    ["git commit -m x", false],
-    ["git push", false],
-    ["rm -rf build", false],
-    ["npm install", false],
-    ["echo hi > notes.txt", false],
-    ["cat a; rm b", false],
-    ["ls && rm x", false],
-    ["echo $(rm x)", false],
-    ["cat a | xargs rm", false],
-    ["find . -name x -delete", false],
-    ["find . -exec rm {} +", false],
-    ["git diff --output=patch.diff", false],
-    ["sort -o out.txt in.txt", false],
-    ["rg --pre ./run.sh foo", false],
-    ["ls\nrm x", false],
-    ["", false],
-  ])("%j is read-only: %s", (command, readOnly) => {
-    expect(claudeSideChatBashIsReadOnly(command)).toBe(readOnly);
   });
 });
 
@@ -177,5 +147,28 @@ describe("claudeToolAllowedInPlanMode", () => {
   it("does not infer membership from a substring", () => {
     expect(claudeToolAllowedInPlanMode("mcp__srv__read")).toBe(false);
     expect(claudeToolAllowedInPlanMode("ReadTheDatabase")).toBe(false);
+  });
+});
+
+describe("claude tool CALL fences", () => {
+  // The plan and side-chat fences judge a shell call by its command: a read
+  // runs, anything else is refused. Both shells Claude has are judged.
+  it.each([
+    ["Bash", "ade linear issue ADE-296 --text", true],
+    ["Bash", "git log --oneline | head -5", true],
+    ["PowerShell", "& \"$env:ADE_CLI_PATH\" linear issue ADE-296 --text", true],
+    ["Bash", "ade linear comment ADE-296 \"done\"", false],
+    ["Bash", "rm -rf build", false],
+    ["PowerShell", "Remove-Item -Recurse build", false],
+    ["Write", "", false],
+  ])("%s %j allowed: %s", (tool, command, allowed) => {
+    expect(claudeToolCallAllowedInPlanMode(tool, { command })).toBe(allowed);
+    expect(claudeToolCallAllowedInSideChat(tool, { command })).toBe(allowed);
+  });
+
+  it("keeps the plan allowlist and side-chat list for non-shell tools", () => {
+    expect(claudeToolCallAllowedInPlanMode("Agent", {})).toBe(true);
+    expect(claudeToolCallAllowedInSideChat("Agent", {})).toBe(false);
+    expect(claudeToolCallAllowedInPlanMode("Bash", {})).toBe(false);
   });
 });
