@@ -38,6 +38,8 @@ import {
   type CrossMachineLaneMarker,
   type CrossMachineLaneRow,
 } from "../../state/crossMachineLanes";
+import { withOptimisticLifecycle } from "../../state/sessionLifecycleOptimism";
+import { UNSETTLE_LIFECYCLE_PATCH, settleLifecyclePatch } from "../../webclient/adapter/sessionLifecycleOverlay";
 import { resolveLaneAccentColor } from "../../../shared/laneColorPalette";
 import { resolveOpenInTarget } from "../../../shared/editorTargets";
 import { LaneCloudMarker } from "./LaneMachineMarker";
@@ -1844,7 +1846,14 @@ export const SessionListPane = React.memo(function SessionListPane({
       machineName: settleMachineName(pin),
       ids: items.map((session) => session.id),
     }));
-    const results = await Promise.allSettled(groups.map((group) => window.ade.sessions.settleMany(group.ids, group.pin)));
+    // Each row shows settled at once; a machine that refuses a row (or fails)
+    // puts it back. `settleMany` answers with the ids it changed.
+    const results = await Promise.allSettled(groups.map((group) => withOptimisticLifecycle(
+      group.ids,
+      settleLifecyclePatch(),
+      () => window.ade.sessions.settleMany(group.ids, group.pin),
+      { action: "settle", applied: (changed) => (Array.isArray(changed) ? changed as string[] : null) },
+    )));
     const settledGroups: SettleMachineGroup[] = [];
     results.forEach((result, index) => {
       if (result.status === "fulfilled" && result.value.length > 0) {
@@ -1860,7 +1869,12 @@ export const SessionListPane = React.memo(function SessionListPane({
     const groups = settleUndo?.groups ?? [];
     if (!groups.length) return;
     setSettleUndo(null);
-    const results = await Promise.allSettled(groups.map((group) => window.ade.sessions.unsettleMany(group.ids, group.pin)));
+    const results = await Promise.allSettled(groups.map((group) => withOptimisticLifecycle(
+      group.ids,
+      UNSETTLE_LIFECYCLE_PATCH,
+      () => window.ade.sessions.unsettleMany(group.ids, group.pin),
+      { action: "unsettle" },
+    )));
     rereadForeignMachines(groups);
     reportSettleFailures("Undo settle", groups, results);
   }, [rereadForeignMachines, settleUndo]);

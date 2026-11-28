@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import type { TerminalSessionSummary } from "../../../shared/types";
 import { selectActiveProjectStateKey, useAppStore, useRootAppStore } from "../../state/appStore";
 import { isSessionSnoozed, nextSnoozeDeadlineMs } from "../../lib/sessionSnooze";
 import { canonicalInputFromSummary, sessionCanonicalUiState } from "../../lib/terminalAttention";
+import { useLifecycleRowDecorator } from "../../state/sessionLifecycleOptimism";
 
 const LIFECYCLE_TICK_MAX_DELAY_MS = 10 * 60 * 1000;
 
@@ -62,7 +63,10 @@ export function useSessionLifecycleSnapshot(
   const foreign = useRootAppStore((state) => (
     id && !local ? findForeignSession(state.crossMachineLanesByMachineId, id) : null
   ));
-  const snapshot = local ?? foreign;
+  // A settle or snooze pressed a moment ago reads here as it does on the row.
+  const decorateLifecycle = useLifecycleRowDecorator();
+  const raw = local ?? foreign;
+  const snapshot = useMemo(() => (raw ? decorateLifecycle.row(raw) : null), [decorateLifecycle, raw]);
   useSnoozeDeadlineTick(snapshot?.snoozedUntil);
   return snapshot;
 }
@@ -85,14 +89,20 @@ function lifecyclePillInputs(session: TerminalSessionSummary | null | undefined)
 export function useSessionLifecyclePillVisible(sessionId: string | null | undefined): boolean {
   const id = sessionId?.trim() || null;
   const projectStateKey = useAppStore(selectActiveProjectStateKey);
+  // The selectors re-run when a pending settle or snooze changes, so the pill
+  // shows with the row instead of after the host's re-read.
+  const decorateLifecycle = useLifecycleRowDecorator();
+  const pillInputs = (session: TerminalSessionSummary | null | undefined) => (
+    lifecyclePillInputs(session ? decorateLifecycle.row(session) : session)
+  );
   const localInputs = useAppStore((state) => (
     id && projectStateKey
-      ? lifecyclePillInputs(state.sessionsCacheByProject[projectStateKey]?.find((session) => session.id === id))
+      ? pillInputs(state.sessionsCacheByProject[projectStateKey]?.find((session) => session.id === id))
       : null
   ));
   const foreignInputs = useRootAppStore((state) => (
     id && localInputs == null
-      ? lifecyclePillInputs(findForeignSession(state.crossMachineLanesByMachineId, id))
+      ? pillInputs(findForeignSession(state.crossMachineLanesByMachineId, id))
       : null
   ));
   const inputs = localInputs ?? foreignInputs;

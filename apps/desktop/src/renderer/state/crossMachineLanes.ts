@@ -28,6 +28,7 @@
 
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { remoteProjectBindingKey } from "../../shared/projectIdentity";
+import { reconcileLifecycleRows, useLifecycleRowDecorator } from "./sessionLifecycleOptimism";
 import { forwardSignalToSentry } from "../../shared/sentry/logBridge";
 import type {
   AgentChatSession,
@@ -444,8 +445,9 @@ export function useRetainedCrossMachineSlices(): readonly CrossMachineMachineLan
   const crossMachineLanesByMachineId = useRootAppStore((s) => s.crossMachineLanesByMachineId) ?? {};
   const intendedMachineIds = useRootAppStore((s) => s.crossMachineLaneIntendedMachineIds);
   const unionScopeKey = useRootAppStore((s) => s.crossMachineLaneScopeKey);
+  const decorateLifecycle = useLifecycleRowDecorator();
 
-  return useMemo(() => {
+  const retainedSlices = useMemo(() => {
     const nextRepoKey = repoKeyForBinding(projectBinding);
     let retained = retainedSlotFor(nextRepoKey, projectStateKey);
     // The live union is one repository. A background tab for another repo must
@@ -513,6 +515,23 @@ export function useRetainedCrossMachineSlices(): readonly CrossMachineMachineLan
     const slices = Array.from(retained.machinesById.values());
     return slices;
   }, [crossMachineLanesByMachineId, intendedMachineIds, projectBinding, projectStateKey, unionScopeKey]);
+
+  // A settle, snooze or wake pressed on another machine's row shows at once
+  // (`sessionLifecycleOptimism`); the union re-reads foreign machines on a
+  // slower cadence than this machine's change feed.
+  useEffect(() => {
+    for (const machine of retainedSlices) reconcileLifecycleRows(machine.sessions);
+  }, [retainedSlices]);
+  return useMemo(() => {
+    let painted = false;
+    const shown = retainedSlices.map((machine) => {
+      const sessions = decorateLifecycle.rows(machine.sessions);
+      if (sessions.every((row, index) => row === machine.sessions[index])) return machine;
+      painted = true;
+      return { ...machine, sessions };
+    });
+    return painted ? shown : retainedSlices;
+  }, [decorateLifecycle, retainedSlices]);
 }
 
 function pickPinnedMachineEntry(

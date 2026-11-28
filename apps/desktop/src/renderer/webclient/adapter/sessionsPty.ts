@@ -21,6 +21,11 @@ import { chatTerminalFromSummary } from "./infra/registries";
 import { stableCacheKey } from "./infra/cacheKey";
 import {
   SessionLifecycleOverlay,
+  CLEAR_WOKE_LIFECYCLE_PATCH,
+  UNSETTLE_LIFECYCLE_PATCH,
+  settleLifecyclePatch,
+  snoozeLifecyclePatch,
+  wakeLifecyclePatch,
   type SessionLifecyclePatch,
 } from "./sessionLifecycleOverlay";
 import { SessionLifecycleUnavailableError } from "./sessionLifecycleSupport";
@@ -807,47 +812,13 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
   };
 }
 
-/**
- * The optimistic column writes, mirroring exactly what the host's
- * `sessionService` does for each command. Instants the HOST stamps are filled in
- * with the browser clock and reconciled by PRESENCE, never by value — the
- * machine's instant is the real one. The snooze deadline is the exception: the
- * client computes it and the host echoes it back, so it reconciles by value.
- */
+/** Host-mirroring patches live beside the overlay, shared with the desktop's. */
+const settlePatch = (): SessionLifecyclePatch => settleLifecyclePatch();
+const UNSETTLE_PATCH = UNSETTLE_LIFECYCLE_PATCH;
+const snoozePatch = snoozeLifecyclePatch;
+const wakePatch = (reason?: string): SessionLifecyclePatch => wakeLifecyclePatch(normalizeWakeReason(reason));
 
-/** Host: `settled_at = coalesce(settled_at, now)`, `settle_override = null`. */
-function settlePatch(): SessionLifecyclePatch {
-  return { settledAt: new Date().toISOString(), settleOverride: null };
-}
-
-/**
- * Host: `settled_at = null`, and it clears a `"settled"` override only. An
- * `"active"` pin survives, so this patch deliberately leaves the column alone
- * rather than claiming a clear the machine may not make.
- */
-const UNSETTLE_PATCH: SessionLifecyclePatch = { settledAt: null };
-
-/** Host: sets both snooze columns and drops any previous woke marker. */
-function snoozePatch(untilIso: string): SessionLifecyclePatch {
-  return {
-    snoozedUntil: untilIso,
-    snoozedAt: new Date().toISOString(),
-    wokeAt: null,
-    wokeReason: null,
-  };
-}
-
-/** Host: clears both snooze columns and records why the row came back. */
-function wakePatch(reason?: string): SessionLifecyclePatch {
-  return {
-    snoozedUntil: null,
-    snoozedAt: null,
-    wokeAt: new Date().toISOString(),
-    wokeReason: normalizeWakeReason(reason),
-  };
-}
-
-const CLEAR_WOKE_PATCH: SessionLifecyclePatch = { wokeAt: null, wokeReason: null };
+const CLEAR_WOKE_PATCH = CLEAR_WOKE_LIFECYCLE_PATCH;
 
 const WAKE_REASONS = new Set<SessionWakeReason>(["timer", "needs_you", "error", "turn_complete", "manual"]);
 

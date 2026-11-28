@@ -30,7 +30,18 @@ import type { TerminalSessionSummary } from "../../../shared/types";
 export type SessionLifecyclePatch = Partial<
   Pick<
     TerminalSessionSummary,
-    "settledAt" | "settleOverride" | "snoozedUntil" | "snoozedAt" | "wokeAt" | "wokeReason"
+    | "settledAt"
+    | "settleOverride"
+    | "snoozedUntil"
+    | "snoozedAt"
+    | "wokeAt"
+    | "wokeReason"
+    // Painted only, never reconciled: a settle that dismisses a needs-you row
+    // clears these on the host, and the row must not read "Needs you" until
+    // the host says so. Agreement is judged on `settledAt` alone.
+    | "pendingInputItemId"
+    | "attentionRequestedAt"
+    | "attentionSource"
   >
 >;
 
@@ -84,6 +95,12 @@ type PendingEntry = {
 
 export type SessionLifecycleOverlayOptions = {
   now?: () => number;
+  /**
+   * How long an acked patch keeps painting while the authoritative row travels
+   * back. Defaults to {@link RECONCILE_GRACE_MS}; the desktop passes longer,
+   * because another machine's rows re-read on a slower cadence than that.
+   */
+  confirmGraceMs?: number;
 };
 
 export type SessionLifecycleReconcileReport = {
@@ -102,9 +119,11 @@ export class SessionLifecycleOverlay {
   private readonly pending = new Map<string, PendingEntry>();
   private nextToken = 1;
   private readonly now: () => number;
+  private readonly confirmGraceMs: number;
 
   constructor(options: SessionLifecycleOverlayOptions = {}) {
     this.now = options.now ?? (() => Date.now());
+    this.confirmGraceMs = options.confirmGraceMs ?? RECONCILE_GRACE_MS;
   }
 
   /** Apply a patch immediately and return the token used to settle it later. */
@@ -123,7 +142,7 @@ export class SessionLifecycleOverlay {
   confirm(sessionId: string, token: number): void {
     const entry = this.pending.get(sessionId);
     if (!entry || entry.token !== token) return;
-    entry.expiresAtMs = this.now() + RECONCILE_GRACE_MS;
+    entry.expiresAtMs = this.now() + this.confirmGraceMs;
   }
 
   /** Host rejected (or the transport did): drop the patch so the row rolls back. */
@@ -139,6 +158,15 @@ export class SessionLifecycleOverlay {
 
   get size(): number {
     return this.pending.size;
+  }
+
+  /** When the soonest pending patch runs out, or null with nothing pending. */
+  nextExpiryMs(): number | null {
+    let soonest: number | null = null;
+    for (const entry of this.pending.values()) {
+      if (soonest == null || entry.expiresAtMs < soonest) soonest = entry.expiresAtMs;
+    }
+    return soonest;
   }
 
   clear(): void {
@@ -233,4 +261,73 @@ function sameInstant(left: string | null | undefined, right: string | null | und
 
 function normalizeNullish<T>(value: T | null | undefined): T | null {
   return value ?? null;
+}
+
+/**
+ * The optimistic column writes, mirroring exactly what the host's
+ * `sessionService` does for each command. Instants the HOST stamps are filled in
+ * with this client's clock and reconciled by PRESENCE, never by value — the
+ * machine's instant is the real one. The snooze deadline is the exception: the
+ * client computes it and the host echoes it back, so it reconciles by value.
+ */
+
+/** Host: `settled_at = coalesce(settled_at, now)`, `settle_override = null`. */
+export function settleLifecyclePatch(options: { dismissPendingInput?: boolean } = {}): SessionLifecyclePatch {
+  return {
+    settledAt: new Date().toISOString(),
+    settleOverride: null,
+    // The host dismisses what the row was blocked on before it settles it.
+    ...(options.dismissPendingInput
+      ? { pendingInputItemId: null, attentionRequestedAt: null, attentionSource: null }
+      : {}),
+  };
+}
+
+/**
+ * Host: `settled_at = null`, and it clears a `"settled"` override only. An
+ * `"active"` pin survives, so this patch deliberately leaves the column alone
+ * rather than claiming a clear the machine may not make.
+ */
+export const UNSETTLE_LIFECYCLE_PATCH: SessionLifecyclePatch = { settledAt: null };
+
+/**
+ * The same un-settle, for a caller that knows the row: a `"settled"` override
+ * (set from the operator tools or `ade`) is the one override the host clears,
+ * and leaving it painted would keep the row filed as settled until the host's
+ * row came back.
+ */
+export function unsettleLifecyclePatch(
+  current: TerminalSessionSummary["settleOverride"] | undefined,
+): SessionLifecyclePatch {
+  return current === "settled" ? { settledAt: null, settleOverride: null } : UNSETTLE_LIFECYCLE_PATCH;
+}
+
+/** Host: writes `settle_override` and nothing else of the settle tuple. */
+export function settleOverrideLifecyclePatch(
+  override: TerminalSessionSummary["settleOverride"],
+): SessionLifecyclePatch {
+  return { settleOverride: override ?? null };
+}
+
+/** Host: drops the "woke" marker once the row has been looked at. */
+export const CLEAR_WOKE_LIFECYCLE_PATCH: SessionLifecyclePatch = { wokeAt: null, wokeReason: null };
+
+/** Host: sets both snooze columns and drops any previous woke marker. */
+export function snoozeLifecyclePatch(untilIso: string): SessionLifecyclePatch {
+  return {
+    snoozedUntil: untilIso,
+    snoozedAt: new Date().toISOString(),
+    wokeAt: null,
+    wokeReason: null,
+  };
+}
+
+/** Host: clears both snooze columns and records why the row came back. */
+export function wakeLifecyclePatch(reason: TerminalSessionSummary["wokeReason"]): SessionLifecyclePatch {
+  return {
+    snoozedUntil: null,
+    snoozedAt: null,
+    wokeAt: new Date().toISOString(),
+    wokeReason: reason ?? null,
+  };
 }

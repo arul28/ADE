@@ -78,6 +78,7 @@ import {
 } from "./cliLaunch";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { setPendingSessionAnchor } from "./pendingSessionAnchors";
+import { reconcileLifecycleRows, useLifecycleRowDecorator } from "../../state/sessionLifecycleOptimism";
 import { patchCrossMachineSessionsPinned, requestCrossMachineLanesForMachine, seedCrossMachineOptimisticSession, unionSlotIdForBinding, useRetainedCrossMachineSlices } from "../../state/crossMachineLanes";
 import { cachedGitRemoteIdentity, originUrlForBinding } from "../lanes/laneMachines";
 import { useWorkMachineRouter } from "./useWorkMachineRouter";
@@ -874,18 +875,27 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     }
     return ids;
   }, [hostSessions, retainedCrossMachineSlices]);
+  // A settle, snooze or wake pressed a moment ago shows on its row before the
+  // host's re-read lands (`sessionLifecycleOptimism`). Retired against the raw
+  // host rows once they are committed.
+  const decorateLifecycle = useLifecycleRowDecorator();
+  useEffect(() => {
+    reconcileLifecycleRows(hostSessions);
+  }, [hostSessions]);
   const sessions = useMemo(() => {
     const launches = selectRosterChatLaunches(
       chatLaunchRowSources,
       activeChatLaunchBindingKey,
       crossMachineBindingKeys,
     );
-    if (launches.length === 0) return hostSessions;
-    return mergeChatLaunchRows(hostSessions, launches, listedChatSessionIds);
+    const shownHostSessions = decorateLifecycle.rows(hostSessions);
+    if (launches.length === 0) return shownHostSessions;
+    return mergeChatLaunchRows(shownHostSessions, launches, listedChatSessionIds);
   }, [
     activeChatLaunchBindingKey,
     chatLaunchRowSources,
     crossMachineBindingKeys,
+    decorateLifecycle,
     hostSessions,
     listedChatSessionIds,
   ]);
