@@ -31,6 +31,34 @@ const MAX_ENTRIES = 40;
 const WRITE_DELAY_MS = 450;
 const READ_TTL_MS = 60_000;
 
+type DisplayControl = "grouping" | "ordering" | "nesting" | "fields" | "completed" | "hidden_groups";
+
+function changedControl(patch: LinearDisplayPatch): DisplayControl | null {
+  if (patch.grouping !== undefined || patch.subGrouping !== undefined) return "grouping";
+  if (patch.ordering !== undefined || patch.orderingDirection !== undefined) return "ordering";
+  if (patch.nesting !== undefined || patch.showEmptyGroups !== undefined) return "nesting";
+  if (patch.showCompletedIssues !== undefined) return "completed";
+  if (patch.hiddenGroups !== undefined) return "hidden_groups";
+  if (patch.fields && Object.keys(patch.fields).length > 0) return "fields";
+  return null;
+}
+
+/**
+ * One coarse product fact per Display control a person changes: which control,
+ * never the value, view, team or issue. At most once an hour per control,
+ * inside the `ade_feature_used` 140-per-day / 30-per-minute limits.
+ */
+function captureDisplayChange(patch: LinearDisplayPatch): void {
+  const control = changedControl(patch);
+  if (!control) return;
+  void window.ade?.analytics?.capture({
+    event: "ade_feature_used",
+    properties: { feature: "issues", action: "issue_display_changed", outcome: `display_${control}`, source: "renderer_route" },
+    dedupeKey: `issue_display_changed:${control}`,
+    minimumIntervalMs: 60 * 60_000,
+  }).catch(() => undefined);
+}
+
 /** `savedAt`: when Linear confirmed it while there was no read to fold it into. */
 type LocalChange = { id: number; patch: LinearDisplayPatch; savedAt: number | null };
 
@@ -49,6 +77,8 @@ type CacheEntry = {
 };
 
 const cache = new Map<string, CacheEntry>();
+/** Changes whose write never reached the brain, per view: sent again with the next write. */
+const unsent = new Map<string, { ids: number[]; patch: LinearDisplayPatch }>();
 const listeners = new Set<() => void>();
 let version = 0;
 let nextChangeId = 1;
@@ -182,26 +212,36 @@ export function useLinearDisplayPreferences({
       .then((result) => {
         entry.savedToLinear = result.savedToLinear;
         entry.reason = result.savedToLinear ? null : result.reason ?? null;
-        // Linear has these now: fold them into its copy. Before the first read
-        // they stay on top (so the read's other values still come through),
-        // marked saved so the first read that started after this drops them.
+        // Linear has these now: fold them into its copy. The brain sends
+        // earlier refused changes along with this one, so a saved write covers
+        // every change made up to its newest; changes made after it started
+        // stay on top. Before the first read they stay on top (so the read's
+        // other values still come through), marked saved so the first read
+        // that started after this drops them.
         if (result.savedToLinear) {
-          const sent = new Set(pending.ids);
+          const newestSent = Math.max(...pending.ids);
+          const covered = (change: LocalChange) => change.id <= newestSent;
           if (entry.base) {
             for (const change of entry.local) {
-              if (sent.has(change.id)) entry.base = applyLinearDisplayPatch(entry.base, change.patch);
+              if (covered(change)) entry.base = applyLinearDisplayPatch(entry.base, change.patch);
             }
-            entry.local = entry.local.filter((change) => !sent.has(change.id));
+            entry.local = entry.local.filter((change) => !covered(change));
           } else {
             const savedAt = Date.now();
             for (const change of entry.local) {
-              if (sent.has(change.id)) change.savedAt = savedAt;
+              if (covered(change)) change.savedAt = savedAt;
             }
           }
         }
       })
       .catch((error: unknown) => {
         console.warn("[linear] saving display settings failed", error);
+        // The brain never got these: the next write for this view carries them.
+        const earlier = unsent.get(pending.key);
+        unsent.set(pending.key, {
+          ids: [...(earlier?.ids ?? []), ...pending.ids],
+          patch: mergeLinearDisplayPatches(earlier?.patch ?? null, pending.patch),
+        });
         entry.savedToLinear = false;
         entry.reason = error instanceof Error ? error.message : null;
       })
@@ -220,17 +260,21 @@ export function useLinearDisplayPreferences({
     entry.local.push(change);
     rebuild(entry);
     notify();
+    captureDisplayChange(patch);
     const writePin = pinRef.current;
     if (!writePin) return;
     if (pendingRef.current && pendingRef.current.key !== key) flush();
+    // Changes whose earlier write never arrived go first, so this one wins.
+    const lost = unsent.get(key) ?? null;
+    unsent.delete(key);
     const previous = pendingRef.current;
     pendingRef.current = {
       key,
       pin: writePin,
       viewType,
       customViewId,
-      ids: [...(previous?.ids ?? []), change.id],
-      patch: mergeLinearDisplayPatches(previous?.patch ?? null, patch),
+      ids: [...(lost?.ids ?? []), ...(previous?.ids ?? []), change.id],
+      patch: mergeLinearDisplayPatches(mergeLinearDisplayPatches(lost?.patch ?? null, previous?.patch ?? null), patch),
     };
     if (timerRef.current != null) window.clearTimeout(timerRef.current);
     timerRef.current = window.setTimeout(flush, WRITE_DELAY_MS);

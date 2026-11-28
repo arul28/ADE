@@ -349,6 +349,10 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // An issue made in ADE's create composer, by tracker. Never the repository,
   // team, title, labels, or the issue's number or id.
   "issue_created",
+  // Which control of the Linear issue window's Display menu a person changed
+  // (outcome display_<control>), at most once an hour per control. Never the
+  // value chosen, the view, team, project, or any issue.
+  "issue_display_changed",
   // Whether an installation uses the Work tab's Focus view (busy lanes folded)
   // and its Focus grid (every waiting chat side by side). Two coarse modes,
   // never a lane, chat, count, or page.
@@ -807,6 +811,9 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "tool_side_chat", "tool_android",
     // Which tracker an issue made in ADE went to. Prefixed like the tool ids.
     "tracker_linear", "tracker_github", "tracker_jira",
+    // Which Display menu control changed (action "issue_display_changed").
+    "display_grouping", "display_ordering", "display_nesting", "display_fields",
+    "display_completed", "display_hidden_groups",
     // The two Work Focus modes, prefixed like the tool ids so they cannot be
     // confused with another action's outcome.
     "mode_focus", "mode_focus_grid",

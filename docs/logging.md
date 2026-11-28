@@ -1689,6 +1689,20 @@ burst into one event, so the worst case is three events a minute, inside the
 existing `ade_feature_used` 140-per-day / 30-per-minute limits; no ceiling was
 raised and no dashboard card asks this yet.
 
+A change in the Linear issue window's Display menu records the same event with
+`feature: "issues"`, `action: "issue_display_changed"`,
+`source: "renderer_route"`, and which control changed on a closed `outcome`:
+`display_grouping`, `display_ordering`, `display_nesting`, `display_fields`,
+`display_completed` or `display_hidden_groups`. It is captured at the window's
+single display writer (`useLinearDisplayPreferences`' `update` in
+`renderer/components/app/linear/linearDisplayPreferences.ts`), so the question
+it answers is which controls people use. Nothing about the value crosses: not
+the grouping or ordering chosen, the fields shown, the view, team, project or
+any issue, and not whether Linear stored the change. A per-control one-hour
+deduplication key bounds it at six events an hour, inside the existing
+`ade_feature_used` 140-per-day / 30-per-minute limits; no ceiling was raised
+and no dashboard card asks this yet.
+
 Which tool an installation opens in the Work tools pane records the existing
 `ade_feature_used` event at the pane's single writer (`useWorkSidebarTool`'s
 `setTool`, which every entry point funnels through — a picker card, the command

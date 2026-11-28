@@ -108,3 +108,76 @@ describe("createIssueTrackerService bare-key resolution", () => {
     }
   });
 });
+
+describe("Linear display preferences", () => {
+  type GraphQLBody = { query: string; variables?: Record<string, unknown> };
+  const STORED = {
+    issueGrouping: "workflowState",
+    viewOrdering: "manual",
+    // Keys ADE never edits: a write must keep them (Linear replaces the JSON).
+    openInSplitView: true,
+    timelineZoomScale: 3,
+  };
+
+  function trackerWith(handle: (body: GraphQLBody) => Promise<Response> | Response) {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => handle(JSON.parse(String(init?.body)) as GraphQLBody));
+    const credentials = createLinearCredentialService({
+      adeDir: "/tmp/ade-issue-tracker-linear-prefs-test",
+      credentialStore: new MemoryCredentialStore(),
+    });
+    credentials.setToken("linear-test-token");
+    return createLinearIssueTracker({ client: createLinearClient({ credentials, fetchImpl }) });
+  }
+
+  it("writes a display change over Linear's stored record and keeps every key ADE does not edit", async () => {
+    const writes: GraphQLBody[] = [];
+    const tracker = trackerWith((body) => {
+      if (body.query.includes("AdeLinearViewPreferencesUpdate")) {
+        writes.push(body);
+        return jsonResponse({ data: { viewPreferencesUpdate: { success: true, viewPreferences: { id: "vp-1" } } } });
+      }
+      if (body.query.includes("AdeLinearViewPreferences")) {
+        return jsonResponse({ data: { userViewPreferences: { id: "vp-1", preferences: STORED } } });
+      }
+      throw new Error(`Unexpected Linear request: ${body.query.slice(0, 80)}`);
+    });
+
+    const result = await tracker.updateViewPreferences({ viewType: "myIssues", patch: { grouping: "priority" } });
+
+    expect(result.savedToLinear).toBe(true);
+    expect(result.preferences.grouping).toBe("priority");
+    expect(writes).toHaveLength(1);
+    expect(writes[0]!.variables).toMatchObject({ id: "vp-1" });
+    expect((writes[0]!.variables as { input: { preferences: Record<string, unknown> } }).input.preferences).toEqual({
+      ...STORED,
+      issueGrouping: "priority",
+    });
+  });
+
+  it("does not let a read that started before a save overwrite the saved values", async () => {
+    let releaseSlowRead: (() => void) | null = null;
+    let reads = 0;
+    const tracker = trackerWith(async (body) => {
+      if (body.query.includes("AdeLinearViewPreferencesUpdate")) {
+        return jsonResponse({ data: { viewPreferencesUpdate: { success: true, viewPreferences: { id: "vp-1" } } } });
+      }
+      if (body.query.includes("AdeLinearViewPreferences")) {
+        reads += 1;
+        // The first read answers late, with what Linear held before the save.
+        if (reads === 1) await new Promise<void>((resolve) => { releaseSlowRead = resolve; });
+        return jsonResponse({ data: { userViewPreferences: { id: "vp-1", preferences: STORED } } });
+      }
+      throw new Error(`Unexpected Linear request: ${body.query.slice(0, 80)}`);
+    });
+
+    const slowRead = tracker.getViewPreferences({ viewType: "myIssues" });
+    await vi.waitFor(() => expect(releaseSlowRead).not.toBeNull());
+    const saved = await tracker.updateViewPreferences({ viewType: "myIssues", patch: { grouping: "priority" } });
+    expect(saved.savedToLinear).toBe(true);
+    releaseSlowRead!();
+
+    expect((await slowRead).grouping).toBe("priority");
+    expect((await tracker.getViewPreferences({ viewType: "myIssues" })).grouping).toBe("priority");
+    expect(reads).toBe(2);
+  });
+});

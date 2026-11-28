@@ -22,6 +22,7 @@ them.
 | `linearOAuthService.ts`, `linearOAuthRefreshLock.ts`, `linearTokenRefresh.ts` | Sign-in (loopback and worker bounce), the cross-process renewal lock, the token exchange. |
 | `linearClient.ts`, `linearClientShared.ts`, `linearQuickView.ts`, `linearIssueSearch.ts`, `linearInbox.ts` | The GraphQL client: reads, writes, the quick view, search, counts and the inbox. |
 | `linearIssueTracker.ts`, `issueTracker.ts`, `linearGraphQLInput.ts` | Normalized reads and the write helpers. |
+| `linearViewData.ts` | The list's display settings (reads and writes Linear's view preferences), the rail data (teams, projects, cycles, labels, initiatives, views, documents) and a document's content. |
 | `linearLaneCardService.ts` | "Open in ADE" attachments for lanes, PRs and chats. |
 | `linearLiveStatusService.ts` | The optional launch → PR → merge status writes. |
 | `linearAgentService.ts`, `linearAgentRuntime.ts`, `linearAgentRelayClient.ts` | The ADE agent in Linear. |
@@ -35,7 +36,13 @@ Also:
   `apps/ade-cli/src/headlessLinearServices.ts`: the same connection in the
   headless brain (ADE Cloud computers too).
 - `apps/desktop/src/shared/linearIssueNormalize.ts`: issue normalization,
-  shared by the desktop client and the account reads. Pure.
+  shared by the desktop client and the account reads. Pure. It also holds the
+  shared rules: which state types count as closed, the list's state-type
+  order and the PR URL check.
+- `apps/desktop/src/shared/linearDisplayPreferences.ts`: Linear's default
+  display, the patch a change travels as and how patches merge. One copy for
+  main, the CLI brain, the account reads, the browser mock and the renderer.
+  Pure.
 
 ### Account server and relay
 
@@ -54,15 +61,30 @@ Also:
   `LinearIssueBrowser.tsx` (with `linearIssueBrowserModel.ts`,
   `LinearIssueBrowserRows.tsx`, `LinearIssueDetailPane.tsx`,
   `LinearIssuePropertyPickers.tsx`), `LinearPaneHeader.tsx`,
-  `LinearIssueSelectModal.tsx`, `LinearIssueResolveModals.tsx`,
-  `IssueLaunchHost.tsx`, `BatchLaunchStatusToast.tsx`.
+  `LinearPaneModal.tsx`, `LinearIssueSelectModal.tsx`,
+  `LinearIssueResolveModals.tsx`, `IssueLaunchHost.tsx`,
+  `BatchLaunchStatusToast.tsx`.
+- `renderer/components/app/linear/`: the list's parts.
+  - Model and state: `linearListModel.ts` (groups, nesting, ordering, hidden
+    groups), `linearDisplayPreferences.ts` (the display settings hook),
+    `linearScope.ts` (the rail's scopes), `linearIssueBrowserData.ts` (search
+    args, caches, counts), `linearPaneLayout.ts`, `linearPaneNavigation.ts`,
+    `useLinearBrowserData.ts`, `useLinearCheckedIssues.ts`,
+    `useLinearIssueDetails.ts`, `useLinearListKeyboard.ts`,
+    `useLinearRailScope.ts`.
+  - Views: `LinearListToolbar.tsx`, `LinearDisplayMenu.tsx`,
+    `LinearPopover.tsx`, `LinearVirtualRows.tsx`, `LinearSelectionBar.tsx`,
+    `LinearBrowserRail.tsx`, `LinearRailSections.tsx`,
+    `LinearDocumentReader.tsx`, `LinearPrChips.tsx`.
+  - ADE status column: `adeStatus.tsx`, `adeStatusIndex.ts`.
 - `renderer/lib/linearBatchLaunch.ts`, `issueLaunchRequests.ts`,
   `launchedLanesHighlight.ts`; `renderer/components/shared/SessionLaunchModelControls.tsx`.
 - `renderer/components/settings/LinearSection.tsx`: Settings › Integrations.
 - `renderer/components/lanes/LinearIssueBadge.tsx`, `linearBrand.tsx`,
   `linearIssueDisplay.ts`, `linearProjectIcon.tsx`.
 - `apps/ios/ADE/Views/Linear/`: the Work top-bar Linear pane
-  (`LinearPaneSheet`, `LinearIssueListScreen`, `LinearIssueDetailScreen`,
+  (`LinearPaneSheet`, `LinearIssueListScreen`, `LinearIssueListMenus`,
+  `LinearIssueGrouping`, `LinearIssueListPreviews` (DEBUG), `LinearIssueDetailScreen`,
   `LinearLaunchScreen`/`LinearLaunchModel`, `LinearPaneStore`,
   `LinearPaneToolbarButton`, `LinearBrand`, `LinearSVGPath`),
   `LinearConnectionScreen.swift` and `LinearOAuthRunner.swift`.
@@ -76,7 +98,9 @@ Also:
 - `apps/ade-cli/src/cli.ts` (`buildLinearPlan`) and
   `apps/ade-cli/src/issueCliFields.ts`: `ade linear`.
 
-IPC channels: `apps/desktop/src/shared/ipc.ts` (`window.ade.cto.*`; session
+IPC channels: `apps/desktop/src/shared/ipc.ts` (`window.ade.cto.*`, including
+`getLinearViewPreferences`, `updateLinearViewPreferences`,
+`getLinearRailData` and `getLinearDocument`; session
 attach on `window.ade.lane.*`).
 
 ## The connection
@@ -212,6 +236,9 @@ Other rules:
 
 `linearClient.ts` serves desktop and the headless brain.
 
+- **SDK.** `@linear/sdk` (^104) supplies generated types only; ADE sends its
+  own GraphQL. Its webhook helper is not used: it rejects deliveries older
+  than 60 s.
 - **Reads:** `fetchIssueById`, `listProjects`, `searchIssues` (paged),
   `countIssues`, `listCustomViews`, `getQuickView`, `fetchIssueComments`,
   `listLabels`, `listUsers`, inbox notifications.
@@ -229,12 +256,50 @@ Other rules:
 - **Quick view.** One set of parallel GraphQL queries (viewer, organization,
   projects, teams), not the SDK's lazy relations.
 
-The desktop pane is `LinearIssueBrowser` (filter rail, multi-select,
-virtualized list, detail pane; keys `j`/`k`, `x`, `Enter`, `/`, `Esc`). One
+The desktop pane is `LinearIssueBrowser` (filter rail, toolbar with a Display
+menu, multi-select, virtualized list, detail pane; keys `j`/`k`, `x`, `Enter`, `/`, `Esc`). One
 issue opens in the Work tools pane or the issue sheet
 ([Issues](../issues/README.md)). The iPhone pane is `apps/ios/ADE/Views/Linear/`;
 `DeepLinkRouter.swift` routes `ade://linear-issue/<IDENT>` to it and ignores
 the `linear-oauth` host.
+
+## The issue list
+
+The list is shaped like Linear's own. Tabs: Active (Todo and In Progress),
+Backlog, All, plus the rail's teams, projects, cycles, labels, initiatives,
+views and documents.
+
+- **Group and nest.** The Display menu picks a grouping (status, assignee,
+  project, priority, label, cycle, milestone, team or none), nesting
+  (sub-issues under their parent, inside the same group; a parent in another
+  group shows as a muted context row), ordering (manual, updated, created,
+  priority, due date, title, each with its natural direction) and the fields
+  a row shows. A group header's "+" opens a new issue form prefilled for that
+  group. That form is fresh: it never loads or overwrites the saved draft.
+- **Display settings come from Linear.** `getLinearViewPreferences` reads
+  Linear's view preferences for the tab or view; `updateLinearViewPreferences`
+  writes a patch back and keeps the keys ADE does not edit. When Linear
+  refuses a team-scoped tab, ADE keeps that project's settings itself (the
+  "ADE" source in the menu). The renderer re-reads after 60 s and on window
+  focus, and keeps unsaved or refused changes as a patch over every read.
+  Defaults live in `linearDisplayPreferences.ts`.
+- **Hidden groups** are named by Linear's ids for the active grouping (state,
+  user, project, label, cycle, milestone or team id; priority `"0"` to `"4"`;
+  "No X" groups use ADE keys such as `assignee:none`). The menu shows "N
+  hidden groups" with Show all. Desktop and iPhone match on the same ids.
+- **Completed issues** are off by default. The server leaves them out (state
+  types in the query and in the counts); the list pages until it fills, and
+  "Load more" shows even when no row is visible.
+- **ADE status column.** Each issue shows its lanes, chats and PRs. A Linear
+  lane card without a session lists only the lane; a card with a session adds
+  that chat. A bare lane id from an attachment counts only when it is unique
+  across machines. Linear's PR attachments are joined to ADE's PRs.
+- **Rail and documents.** `getLinearRailData` fills the rail and
+  `getLinearDocument` feeds `LinearDocumentReader`. An older brain without
+  them shows a "needs a newer ADE" message.
+- **iPhone.** The pane groups, nests and has a display menu the same way
+  (`LinearIssueGrouping.swift`, `LinearIssueListMenus.swift`). Its Active tab
+  is Todo and In Progress; Backlog is its own tab.
 
 ## Lanes, commits and PRs
 
