@@ -116,12 +116,18 @@ export function usePersonalChatPaneScope(
     const readCatalog = (mode: "refresh-stale" | "force") => (targetMachineId
       ? callPersonalOn<AgentChatModelCatalog>(targetMachineId, "modelCatalog", { mode })
       : callPersonal<AgentChatModelCatalog>("modelCatalog", { mode }));
-    let next = await readCatalog("refresh-stale");
-    if (!current()) return;
-    setCatalog(next);
-    if (next.stale === true || !agentChatModelCatalogHasAvailableModels(next)) {
-      next = await readCatalog("force");
-      if (current()) setCatalog(next);
+    try {
+      let next = await readCatalog("refresh-stale");
+      if (!current()) return;
+      setCatalog(next);
+      if (next.stale === true || !agentChatModelCatalogHasAvailableModels(next)) {
+        next = await readCatalog("force");
+        if (current()) setCatalog(next);
+      }
+    } catch (error) {
+      // A load another answer replaced (a newer load, a Refresh the pane
+      // took) reports nothing: its failure is not the pane's state.
+      if (current()) throw error;
     }
   }, []);
 

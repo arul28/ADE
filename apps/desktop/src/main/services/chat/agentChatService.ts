@@ -78521,6 +78521,13 @@ export function createAgentChatService(args: {
   const MODEL_CATALOG_REFRESH_TTL_MS = 30 * 60_000;
   const MODEL_CATALOG_LOCAL_REFRESH_TTL_MS = 30_000;
   let modelCatalogCache: AgentChatModelCatalog | null = null;
+  /**
+   * The latest completed model read per provider, across catalog builds that
+   * run side by side. A build that took long (a Refresh waiting on a
+   * provider's discovery) publishes these, not the reads it made when it
+   * started, so it cannot put back a list another build has since replaced.
+   */
+  const latestProviderModelReads = new Map<ModelProviderGroup, AgentChatModelInfo[]>();
   // A newly applied model manifest can add, hide, or re-default models, so the
   // cached catalog is stale until the next rebuild — served once more while a
   // background refresh picks up the change, never rebuilt on the caller.
@@ -79236,10 +79243,9 @@ export function createAgentChatService(args: {
     ] as ModelProviderGroup[]).filter((provider) => !providerIsDisabled(provider));
     const readModelsByProvider = await Promise.all(
       catalogProviders.map(async (provider) => {
-        try {
-          return {
-            provider,
-            models: await getAvailableModels({
+        const read = await (async () => {
+          try {
+            return await getAvailableModels({
               provider,
               activateRuntime:
                 (provider === "cursor" && shouldRefreshProvider("cursor"))
@@ -79257,11 +79263,14 @@ export function createAgentChatService(args: {
               ...(provider === "cursor" && catalogArgs?.cursorSource
                 ? { cursorSource: catalogArgs.cursorSource }
                 : {}),
-            }),
-          };
-        } catch {
-          return { provider, models: [] };
-        }
+            });
+          } catch {
+            return [];
+          }
+        })();
+        // Recorded as it lands, so the map holds the last read to complete.
+        latestProviderModelReads.set(provider, read);
+        return { provider, models: read };
       }),
     );
 
@@ -79287,15 +79296,17 @@ export function createAgentChatService(args: {
     const descriptorInfo = new Map<string, { provider: ModelProviderGroup; info: AgentChatModelInfo }>();
     const descriptors: ModelDescriptor[] = [];
     // Builds run side by side, and a Refresh waiting on a provider's discovery
-    // can finish after another build already read that provider's older list.
-    // So an ACP provider that listed models takes its list again from the
-    // registry now: whichever build publishes last carries the newest lists,
-    // and no build has to be ranked against another.
-    const modelsByProvider = await Promise.all(readModelsByProvider.map(async (entry) => (
-      isAcpChatProvider(entry.provider) && entry.models.length
-        ? { ...entry, models: await listAcpModelInfos(entry.provider).catch(() => entry.models) }
-        : entry
-    )));
+    // can finish after another build already read some provider again. So each
+    // provider publishes its last completed read across builds, and an ACP
+    // provider that listed models takes its rows again from the registry now:
+    // whichever build publishes last carries the newest lists, and no build
+    // has to be ranked against another.
+    const modelsByProvider = await Promise.all(readModelsByProvider.map(async ({ provider }) => {
+      const models = latestProviderModelReads.get(provider) ?? [];
+      return isAcpChatProvider(provider) && models.length
+        ? { provider, models: await listAcpModelInfos(provider).catch(() => models) }
+        : { provider, models };
+    }));
     for (const { provider, models } of modelsByProvider) {
       for (const info of models) {
         const descriptor =
