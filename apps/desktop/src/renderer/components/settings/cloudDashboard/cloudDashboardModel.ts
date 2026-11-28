@@ -69,6 +69,8 @@ export type DashLane = {
   idle: CloudIdleCleanupEntry | null;
   /** A DAEX Cloud Mac's own state, from the server's `mac` (null on Linux and for a lane without a computer). */
   mac: DashMac | null;
+  /** The server's sentence for a computer it can't wake or send to now (`CloudMachine.unavailable`). */
+  unavailable: string | null;
   /** A Mac computer, or a lane whose next computer is a Mac (`type: "mac"`, sent only while the server offers one). */
   isMac: boolean;
 };
@@ -163,6 +165,7 @@ export function dashLanes(input: {
         idle: idle.get(machine.instanceId) ?? null,
         mac,
         isMac: mac != null,
+        unavailable: machine.unavailable ?? null,
       };
     });
   const known = new Set(withComputer.map((lane) => lane.machine?.lane?.laneId));
@@ -191,6 +194,7 @@ export function dashLanes(input: {
         idle: null,
         mac: null,
         isMac: lane.type === "mac" && macOffer != null,
+        unavailable: null,
       };
     });
   // Lanes first (awake, then the most recent), then lanes without a computer, then computers with no lane.

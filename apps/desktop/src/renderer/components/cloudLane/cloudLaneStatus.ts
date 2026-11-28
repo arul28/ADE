@@ -11,6 +11,7 @@ import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import { cloudLaneJobIsLive, type CloudLaneJobSnapshot } from "../../../shared/cloudLaneLife";
 import { cloudUnitWords } from "../../../shared/cloudUnitWords";
 import {
+  CLOUD_COMPUTER_UNAVAILABLE_LABEL,
   CLOUD_MAC_PHASE_LABEL,
   cloudMacDriveText,
   cloudMacOfferOf,
@@ -60,9 +61,12 @@ export function cloudLanePower(input: {
   online: boolean;
   /** A DAEX Cloud Mac's phase (`LaneComputer.macPhase`): a start that failed or a lost drive needs a look. */
   macPhase?: CloudMacPhase | null;
+  /** The server can't wake it now (`computer_unavailable`): no wake to offer. */
+  unavailable?: boolean;
 }): CloudLanePower {
   if (input.waking) return "waking";
   if (input.online) return "awake";
+  if (input.unavailable) return "trouble";
   if (input.macPhase === "start_failed" || input.macPhase === "drive_lost") return "trouble";
   if (input.macPhase === "queued" || input.macPhase === "starting") return "waking";
   if (input.resting) return input.state === "starting" ? "waking" : input.state === "stopping" ? "stopping" : "asleep";
@@ -172,7 +176,7 @@ export function cloudLaneStatusModel(input: {
     ? { key: "job", text: presented.title, detail: presented.stepLine, tone: failed ? "warn" : null, hint: presented.stepLine ?? undefined }
     : null;
   const awakeSince = power === "awake" ? status?.awakeSince ?? box?.awakeSinceMs ?? null : null;
-  const powerWord = cloudLanePowerText(power, macPhase);
+  const powerWord = box?.unavailable ? CLOUD_COMPUTER_UNAVAILABLE_LABEL : cloudLanePowerText(power, macPhase);
   const stateText = power === "awake" && awakeSince != null && awakeSince <= now
     ? `${powerWord} · up ${formatUptime(now - awakeSince)}`
     : power === "waking" ? `${powerWord}…` : powerWord;
@@ -217,6 +221,8 @@ export function cloudLaneStatusModel(input: {
     : null;
 
   const lines: CloudLaneStatusLine[] = [];
+  // The server's sentence for a computer it can't wake now; nothing here can start it.
+  if (box?.unavailable) lines.push({ key: "unavailable", text: box.unavailable, tone: "warn" });
   if (mac && macPhase) {
     // The server's sentence for where the Mac is; failures say what to do.
     const sentence = cloudMacSentence(mac.mac);

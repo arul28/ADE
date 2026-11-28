@@ -111,7 +111,7 @@ try {
 
 function signature(computers: readonly AdeCloudLaneComputer[], cloudComputers: readonly AdeCloudComputerId[]): string {
   return [
-    ...computers.map((computer) => [computer.instanceId, computer.laneId, computer.laneName, computer.projectOrigin ?? "", computer.machineKey ?? "", computer.state, computer.os ?? "", computer.macPhase ?? "", computer.unsupported?.join(",") ?? ""].join("\u0001")),
+    ...computers.map((computer) => [computer.instanceId, computer.laneId, computer.laneName, computer.projectOrigin ?? "", computer.machineKey ?? "", computer.state, computer.os ?? "", computer.macPhase ?? "", computer.unsupported?.join(",") ?? "", computer.unavailable ? 1 : 0].join("\u0001")),
     ...cloudComputers.map((computer) => `box\u0001${computer.instanceId}\u0001${computer.machineKey ?? ""}\u0001${computer.hasLane ? "lane" : ""}`),
   ].join("\u0002");
 }
@@ -208,7 +208,15 @@ export function useCloudLaneComputer(laneId: string | null | undefined): AdeClou
 }
 
 /** A chat's ADE Cloud lane, and its computer's ADE Cloud id once known. */
-export type AdeCloudLaneOfBinding = { laneId: string; laneName: string; instanceId: string | null };
+export type AdeCloudLaneOfBinding = {
+  laneId: string;
+  laneName: string;
+  instanceId: string | null;
+  /** A DAEX Cloud Mac (the index's, or the launch's while it makes one). */
+  os?: "mac";
+  /** What the server refuses on the computer (`LaneComputer.unsupported`). */
+  unsupported?: LaneComputer["unsupported"];
+};
 
 /**
  * The ADE Cloud lane a chat's binding points at, or null for any other
@@ -221,11 +229,19 @@ function adeCloudLaneForBinding(
 ): AdeCloudLaneOfBinding | null {
   if (!binding || binding.kind !== "remote") return null;
   const computer = adeCloudLaneComputerForMachine({ hostname: binding.hostname, targetId: binding.targetId }, computers);
-  if (computer) return { laneId: computer.laneId, laneName: computer.laneName, instanceId: computer.instanceId };
+  if (computer) {
+    return {
+      laneId: computer.laneId,
+      laneName: computer.laneName,
+      instanceId: computer.instanceId,
+      ...(computer.os ? { os: computer.os } : {}),
+      ...(computer.unsupported?.length ? { unsupported: computer.unsupported } : {}),
+    };
+  }
   for (const entry of Object.values(chatLaunchStore.getState().entries)) {
     const cloud = entry.snapshot.cloud;
     if (cloud?.binding && cloud.binding.targetId === binding.targetId) {
-      return { laneId: entry.snapshot.laneId, laneName: entry.snapshot.laneName, instanceId: cloud.instanceId ?? null };
+      return { laneId: entry.snapshot.laneId, laneName: entry.snapshot.laneName, instanceId: cloud.instanceId ?? null, ...(cloud.os === "mac" ? { os: "mac" as const } : {}) };
     }
   }
   return null;

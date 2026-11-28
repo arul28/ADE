@@ -98,6 +98,9 @@ export function cloudMacPhaseOf(mac: CloudMacState | null | undefined, status?: 
   return "stopped";
 }
 
+/** The state word for a computer the server can't wake or send to now (`CloudMachine.unavailable`). */
+export const CLOUD_COMPUTER_UNAVAILABLE_LABEL = "Not available";
+
 /** The short word for each phase: the state column, the header's mark, the phone's row. */
 export const CLOUD_MAC_PHASE_LABEL: Readonly<Record<CloudMacPhase, string>> = {
   queued: "Waiting for a Mac",

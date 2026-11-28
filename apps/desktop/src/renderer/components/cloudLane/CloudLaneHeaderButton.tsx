@@ -19,7 +19,7 @@ import { cloudLaneChangesAvailable, cloudLaneMovesAvailable } from "./cloudLaneA
 import { cloudLaneJobFor, openCloudLaneJobBar, useCloudLaneJobs } from "./cloudLaneStores";
 import { cloudLanePower, cloudLanePowerText, cloudLaneStatusModel, type CloudLanePower, type CloudLaneStatusLine } from "./cloudLaneStatus";
 import { useCloudMacFirstStopLine } from "./useCloudMacFirstStopLine";
-import { CLOUD_MAC_NAME, cloudMachineAllows, cloudMacPhaseOf, type CloudComputerAction } from "../../../shared/cloudMac";
+import { CLOUD_COMPUTER_UNAVAILABLE_LABEL, CLOUD_MAC_NAME, cloudMachineAllows, cloudMacPhaseOf, type CloudComputerAction } from "../../../shared/cloudMac";
 import { deleteCloudLaneWithCheck } from "./deleteCloudLane";
 import { forgetCloudComputerStatus, useCloudComputerStatus } from "./useCloudComputerStatus";
 import "../remoteTargets/cloudBrand.css";
@@ -62,8 +62,9 @@ export function CloudLaneHeaderButton({ laneId, turnRunning }: { laneId: string 
     resting: machine.resting,
     online: scope.isRemote && scope.online,
     macPhase: computer.macPhase ?? null,
+    unavailable: computer.unavailable === true,
   });
-  const powerText = cloudLanePowerText(power, computer.macPhase);
+  const powerText = computer.unavailable && power === "trouble" ? CLOUD_COMPUTER_UNAVAILABLE_LABEL : cloudLanePowerText(power, computer.macPhase);
   const noun = computer.os === "mac" ? CLOUD_MAC_NAME : `${BRAND.CLOUD_NAME} computer`;
   const title = [
     `${noun} · ${powerText}`,

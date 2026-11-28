@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 import { AppleLogo, ArrowLeft, Broom, Cpu, Desktop, MagnifyingGlass, Trash } from "@phosphor-icons/react";
-import { CLOUD_MAC_NAME, cloudMachineAllows, cloudMacOfferOf, type CloudComputerAction } from "../../../../shared/cloudMac";
+import { CLOUD_COMPUTER_UNAVAILABLE_LABEL, CLOUD_MAC_NAME, cloudMachineAllows, cloudMacOfferOf, type CloudComputerAction } from "../../../../shared/cloudMac";
 import { useCloudMacFirstStopLine } from "../../cloudLane/useCloudMacFirstStopLine";
 import {
   CLOUD_FREE_GITHUB_BANNER_ID,
@@ -705,12 +705,15 @@ function LaneTable({
               {status ? (
                 <span className="adecd-state" data-state={status.state} title={status.title ?? undefined}><i />{status.label}</span>
               ) : (
-                <span className="adecd-state" data-state={lane.state} title={lane.mac?.label}><i />{lane.mac?.label ?? STATE_LABEL[lane.state]}</span>
+                <span className="adecd-state" data-state={lane.unavailable ? "failed" : lane.state} title={lane.mac?.label}>
+                  <i />{lane.unavailable ? CLOUD_COMPUTER_UNAVAILABLE_LABEL : lane.mac?.label ?? STATE_LABEL[lane.state]}
+                </span>
               )}
               <span className="adecd-when" title={removedReasonText(lane) ?? undefined}>{lastRunText(lane, now)}</span>
               {/* The ⋯ menu's column; the menu itself sits beside the option, never inside it. */}
               <span aria-hidden="true" />
             </div>
+            {lane.unavailable && !status ? <div className="adecd-row-note" data-tone="warn" role="presentation">{lane.unavailable}</div> : null}
             {lane.mac && !status ? <MacRowNote mac={lane.mac} now={now} keeps={macFirstStop && lane.mac.phase === "stopped" ? macKeepsOf(lane) : null} /> : null}
             {actions.length ? (
               <span className="adecd-row-menu">

@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { CLOUD_COMPUTER_UNAVAILABLE_SENTENCE } from "../../../../../account-directory/src/cloud/contract";
 import { WOKEN_MACHINE_CONNECT_WAIT_MS } from "../../../shared/wokenMachine";
 import { isCloudConnectionTarget, isSavedChatsMachineId, savedChatComputerGone } from "../../state/cloudSavedChats";
 import { useCloudViewOnScreen } from "../../state/crossMachineLanes";
@@ -218,6 +219,8 @@ export function ChatMachineWakeProvider({ children }: { children: ReactNode }) {
  */
 export function cloudWakeFailureSentence(error: unknown, mac = false): string {
   const reason = ipcErrorMessage(error).trim();
+  // The server's whole sentence for a computer it can't wake now: shown as it is.
+  if (reason.includes(CLOUD_COMPUTER_UNAVAILABLE_SENTENCE)) return CLOUD_COMPUTER_UNAVAILABLE_SENTENCE;
   if (mac) return reason ? `Can't start the Mac: ${reason}` : `${BRAND.NAME} couldn't start your ${BRAND.CLOUD_NAME} Mac. Try again.`;
   return reason ? `Can't wake: ${reason}` : `${BRAND.NAME} couldn't wake your ${BRAND.CLOUD_NAME} computer. Try again.`;
 }

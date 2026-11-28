@@ -22,7 +22,8 @@ import type { AdeCloudTrayAction, AdeCloudTrayNotice } from "./useAdeCloudDraft"
 import { LaneMoveControl } from "../laneMove/LaneMoveControl";
 import type { LaneMoveSource } from "../laneMove/laneMoveModel";
 import { BRAND } from "../../../shared/brand";
-import { cloudMacRateText, cloudMacShapeText, cloudMacTimeAt, type CloudComputerOs, type CloudMacOffer } from "../../../shared/cloudMac";
+import { CLOUD_MAC_UNSUPPORTED } from "../../../../../account-directory/src/cloud/contract";
+import { CLOUD_MAC_NAME, cloudMachineAllows, cloudMacRateText, cloudMacShapeText, cloudMacTimeAt, type CloudComputerOs, type CloudMacOffer } from "../../../shared/cloudMac";
 
 
 /**
@@ -333,6 +334,11 @@ export type ComposerAdeCloudLane = {
   instanceId: string | null;
   /** The lane has no computer now (freed or removed): the next send makes one. */
   noComputer: boolean;
+  /** Its computer is a DAEX Cloud Mac. */
+  mac: boolean;
+  /** The server lets its computer change size / move (`unsupported`); a Mac does neither. */
+  canChangeSize: boolean;
+  canMove: boolean;
 };
 
 /**
@@ -368,9 +374,14 @@ export function useComposerAdeCloudLane(
   const laneName = withComputer?.laneName ?? without?.laneName ?? null;
   const instanceId = withComputer?.instanceId ?? null;
   const noComputer = !withComputer && without != null;
+  const mac = withComputer?.os === "mac";
+  // A Mac the launch is still making has no list read yet: the contract's Mac list stands in until it does.
+  const refused = withComputer?.unsupported ?? (mac ? CLOUD_MAC_UNSUPPORTED : null);
+  const canChangeSize = cloudMachineAllows({ unsupported: refused }, "resize");
+  const canMove = cloudMachineAllows({ unsupported: refused }, "move");
   return useMemo(
-    () => (laneName ? { laneName, instanceId, noComputer } : null),
-    [laneName, instanceId, noComputer],
+    () => (laneName ? { laneName, instanceId, noComputer, mac, canChangeSize, canMove } : null),
+    [laneName, instanceId, noComputer, mac, canChangeSize, canMove],
   );
 }
 
@@ -382,7 +393,7 @@ export function useComposerAdeCloudLane(
 export function AdeCloudMachineChip({
   machineName,
   lane,
-  laneMove = null,
+  laneMove: laneMoveSource = null,
   wrapperClassName,
 }: {
   machineName: string;
@@ -393,7 +404,11 @@ export function AdeCloudMachineChip({
   const [sizing, setSizing] = useState(false);
   // A person changes the lane's size here; the change is account level (no pin), by the computer's id.
   // ADE Web opens the same picker: a move to the other kind runs on the server there.
-  const canResize = !lane.noComputer && Boolean(lane.instanceId) && (cloudLaneChangesAvailable() || cloudLaneMovesAvailable());
+  const canResize = !lane.noComputer && lane.canChangeSize && Boolean(lane.instanceId) && (cloudLaneChangesAvailable() || cloudLaneMovesAvailable());
+  // A computer the server won't move (a Mac) offers no move.
+  const laneMove = lane.canMove ? laneMoveSource : null;
+  const computerNoun = lane.mac ? CLOUD_MAC_NAME : `${BRAND.CLOUD_NAME} computer`;
+  const wakes = lane.mac ? "It starts when you send." : "It wakes when you send.";
   const pressable = canResize || Boolean(laneMove);
   // The same chip as every other machine: plain text and its icon, no box.
   const chipClass = cn(
@@ -418,10 +433,10 @@ export function AdeCloudMachineChip({
         ? `This lane has no computer now. ${BRAND.NAME} makes a new one when you send. Click to move the lane to one of your computers.`
         : `This lane has no computer now. ${BRAND.NAME} makes a new one when you send.`
       : laneMove
-        ? `This chat runs on its lane's own ${BRAND.CLOUD_NAME} computer. It wakes when you send. Click to move the lane or change its size.`
+        ? `This chat runs on its lane's own ${computerNoun}. ${wakes} Click to move the lane${canResize ? " or change its size" : ""}.`
         : canResize
-          ? `This chat runs on its lane's own ${BRAND.CLOUD_NAME} computer. It wakes when you send. Click to change its size.`
-          : `This chat runs on its lane's own ${BRAND.CLOUD_NAME} computer. It wakes when you send.`,
+          ? `This chat runs on its lane's own ${computerNoun}. ${wakes} Click to change its size.`
+          : `This chat runs on its lane's own ${computerNoun}. ${wakes}`,
   };
   const sizeDialog = sizing && lane.instanceId ? (
     <CloudTierChangeDialog instanceId={lane.instanceId} laneName={lane.laneName} onClose={() => setSizing(false)} />

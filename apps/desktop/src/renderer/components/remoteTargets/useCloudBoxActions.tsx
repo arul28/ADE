@@ -451,7 +451,8 @@ export function useCloudBoxActions(args: {
       // A Mac's sleep is its stop: the server saves its drive and lets the Mac go.
       items.push({ key: "cloud-sleep", label: mac ? "Stop now" : "Sleep", icon: <Moon size={14} />, disabled: busy, onSelect: () => void sleep(ctx) });
     }
-    if ((box.state === "asleep" || box.state === "stopped") && !suspended) {
+    // A computer the server can't wake now says why on its row (`unavailable`), with no Wake.
+    if ((box.state === "asleep" || box.state === "stopped") && !suspended && !box.unavailable) {
       items.push({
         key: "cloud-wake",
         label: box.state === "stopped" ? "Start" : "Wake",

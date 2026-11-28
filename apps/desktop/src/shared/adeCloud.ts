@@ -549,6 +549,12 @@ export type CloudMachine = {
   pastDue: boolean;
   /** the provider's reason for the last failed lifecycle action. */
   failure: string | null;
+  /**
+   * The server's sentence for a computer it can't wake or send to now
+   * (`statusReason.code` `computer_unavailable`, e.g. a Mac the switch no
+   * longer reaches). It reads as stopped; every wake and send is refused.
+   */
+  unavailable?: string;
   /** The box's ADE machine (account row), when ADE recorded it on the box. */
   machineKey: string | null;
   /**

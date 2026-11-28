@@ -5,7 +5,7 @@
  * no computer of the person's own is online.
  */
 
-import type { CloudInstance } from "../../../account-directory/src/cloud/contract";
+import { CLOUD_COMPUTER_UNAVAILABLE_SENTENCE, type CloudInstance } from "../../../account-directory/src/cloud/contract";
 import {
   cloudDiskFullMessage,
   cloudHoursRate,
@@ -53,6 +53,9 @@ export function cloudMachineOfInstance(instance: CloudInstance, catalog: CloudCa
     hoursRate: shape ? cloudHoursRate(cloudMachineKindOf(type), shape.id, catalog) : null,
     pastDue: instance.pastDue,
     failure: instance.status === "failed" ? instance.statusReason?.message ?? null : null,
+    ...(instance.statusReason?.code === "computer_unavailable"
+      ? { unavailable: instance.statusReason.message?.trim() || CLOUD_COMPUTER_UNAVAILABLE_SENTENCE }
+      : {}),
     machineKey: instance.metadata[CLOUD_MACHINE_KEY_METADATA] ?? null,
     createdAtMs: instance.created != null ? instance.created * 1000 : null,
     sleep: cloudSleepPolicyOf(instance),

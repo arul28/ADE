@@ -28,6 +28,8 @@ export type LaneComputer = CloudMachineLaneFacts & {
   os?: "mac";
   /** A Mac's own phase (queued, starting, …, drive lost), from the server's `mac` state; absent on Linux. */
   macPhase?: CloudMacPhase;
+  /** The server can't wake it or send to it now (`CloudMachine.unavailable`). */
+  unavailable?: true;
   /** What the server refuses on it (`CloudInstance.unsupported`); absent: nothing. */
   unsupported?: CloudComputerAction[];
 };
@@ -59,6 +61,7 @@ export type LaneComputerSource = Pick<CloudLaneMachine, "instanceId" | "machineK
   os?: CloudLaneMachine["os"];
   mac?: CloudLaneMachine["mac"];
   unsupported?: CloudLaneMachine["unsupported"];
+  unavailable?: CloudLaneMachine["unavailable"];
 };
 
 /**
@@ -80,6 +83,7 @@ export function laneComputersOf(machines: readonly LaneComputerSource[]): LaneCo
       state: machine.state,
       ...(machine.os === "mac" ? { os: "mac" as const, macPhase: cloudMacPhaseOf(machine.mac, machine.status) } : {}),
       ...(machine.unsupported?.length ? { unsupported: [...machine.unsupported] } : {}),
+      ...(machine.unavailable ? { unavailable: true as const } : {}),
     };
     const createdAtMs = machine.createdAtMs ?? 0;
     const current = byLane.get(computer.laneId);
