@@ -146,61 +146,61 @@ function describe(target: OpenTarget): { title: string; description: string } {
   switch (target.kind) {
     case "lane":
       return {
-        title: "Open lane in Daex",
-        description: `Open this Daex lane (${target.laneId.slice(0, 8)}…).`,
+        title: "Open lane in DAEX",
+        description: `Open this DAEX lane (${target.laneId.slice(0, 8)}…).`,
       };
     case "session":
       return {
-        title: "Open chat in Daex",
+        title: "Open chat in DAEX",
         description: target.laneId
-          ? `Open this Daex chat in lane ${target.laneId.slice(0, 8)}…`
-          : "Open this Daex chat.",
+          ? `Open this DAEX chat in lane ${target.laneId.slice(0, 8)}…`
+          : "Open this DAEX chat.",
       };
     case "file":
       return {
-        title: "Open file in Daex",
+        title: "Open file in DAEX",
         description: target.line
-          ? `Open ${target.path} at line ${target.line} in Daex.`
-          : `Open ${target.path} in Daex.`,
+          ? `Open ${target.path} at line ${target.line} in DAEX.`
+          : `Open ${target.path} in DAEX.`,
       };
     case "commit":
       return {
-        title: "Open commit in Daex",
-        description: `Open commit ${target.sha.slice(0, 12)} in Daex.`,
+        title: "Open commit in DAEX",
+        description: `Open commit ${target.sha.slice(0, 12)} in DAEX.`,
       };
     case "artifact":
       return {
-        title: "Open artifact in Daex",
-        description: `Open proof artifact ${target.artifactId} in Daex.`,
+        title: "Open artifact in DAEX",
+        description: `Open proof artifact ${target.artifactId} in DAEX.`,
       };
     case "branch":
       return {
-        title: `${target.repo} · ${target.branch} — Open in Daex`,
+        title: `${target.repo} · ${target.branch} — Open in DAEX`,
         description: target.pr
-          ? `Branch ${target.branch} (PR #${target.pr}) shared via Daex. One click to open its worktree.`
-          : `Branch ${target.branch} shared via Daex. One click to open its worktree.`,
+          ? `Branch ${target.branch} (PR #${target.pr}) shared via DAEX. One click to open its worktree.`
+          : `Branch ${target.branch} shared via DAEX. One click to open its worktree.`,
       };
     case "pr":
       return {
-        title: `${target.repo} #${target.number} — Open in Daex`,
-        description: `Pull request #${target.number} in ${target.repo}. Open it in Daex.`,
+        title: `${target.repo} #${target.number} — Open in DAEX`,
+        description: `Pull request #${target.number} in ${target.repo}. Open it in DAEX.`,
       };
     case "linear-issue":
       return {
-        title: `${target.issue} — Open in Daex`,
+        title: `${target.issue} — Open in DAEX`,
         description: target.branch
-          ? `Linear issue ${target.issue} on branch ${target.branch}. Click to open in Daex.`
-          : `Open Linear issue ${target.issue} in Daex.`,
+          ? `Linear issue ${target.issue} on branch ${target.branch}. Click to open in DAEX.`
+          : `Open Linear issue ${target.issue} in DAEX.`,
       };
     case "settings":
       return {
-        title: "Open a setting in Daex",
-        description: "Opens this setting in Daex's Settings.",
+        title: "Open a setting in DAEX",
+        description: "Opens this setting in DAEX's Settings.",
       };
     case "unknown":
       return {
-        title: "Open in Daex",
-        description: "Daex is a local-first desktop app for orchestrating parallel AI coding agents.",
+        title: "Open in DAEX",
+        description: "DAEX is a local-first desktop app for orchestrating parallel AI coding agents.",
       };
   }
 }
