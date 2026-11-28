@@ -231,7 +231,7 @@ struct AccountSignInView: View {
   /// Every sign-up on the phone passes this step, so the agreement lives here.
   private var legalAgreement: some View {
     // A literal, so SwiftUI reads the Markdown links (an interpolated URL is not parsed).
-    Text("By continuing, you agree to Daex's [Terms](https://ade-app.dev/terms) and [Privacy Policy](https://ade-app.dev/privacy).")
+    Text("By continuing, you agree to DAEX's [Terms](https://ade-app.dev/terms) and [Privacy Policy](https://ade-app.dev/privacy).")
       .font(.caption)
       .foregroundStyle(ADEColor.textMuted)
       .tint(ADEColor.accent)

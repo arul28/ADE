@@ -113,7 +113,7 @@ struct CloudPhoneMachine: Decodable, Identifiable, Equatable, Hashable {
   var id: String { instanceId }
   var displayName: String {
     if let laneName = lane?.laneName, !laneName.isEmpty { return laneName }
-    // The name Daex gives a computer with no lane, under either product name, is no name.
+    // The name DAEX gives a computer with no lane, under either product name, is no name.
     if let name, !name.isEmpty, name != "\(Brand.cloudName) computer", name != "\(Brand.formerName) Cloud computer" { return name }
     return "Computer \(instanceId.prefix(6))"
   }

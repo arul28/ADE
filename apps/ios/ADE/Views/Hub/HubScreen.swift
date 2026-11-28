@@ -38,7 +38,7 @@ struct HubScreen: View {
   @State private var locationTarget: HubAccountHomeTarget?
   /// The Hub notice waiting for a covering pane to close.
   @State private var heldHubNoticeId: UUID?
-  /// "ADE is now Daex", shown on the Hub until it is closed, once per install,
+  /// "ADE is now DAEX", shown on the Hub until it is closed, once per install,
   /// and only to an install that ran before the rename: `BrandRenameNotice`
   /// writes `false` for those at launch. Unset (not decided yet) hides it.
   @AppStorage(BrandRenameNotice.seenKey) private var renameNoticeSeen = true
@@ -1471,7 +1471,7 @@ struct HubScreen: View {
   }
 }
 
-/// Who sees the Hub's "ADE is now Daex" notice: only an install that ran
+/// Who sees the Hub's "ADE is now DAEX" notice: only an install that ran
 /// before the rename. A new install starts with it already seen.
 enum BrandRenameNotice {
   static let seenKey = "ade.brand.renameNoticeSeen.v1"

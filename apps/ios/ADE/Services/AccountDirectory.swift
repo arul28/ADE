@@ -2,8 +2,8 @@ import Foundation
 import SwiftUI
 
 /// A stored machine or computer name with an old default's product name read
-/// as Daex ("ADE Cloud computer 2" → "Daex Cloud computer 2", "ADE CLI on
-/// mac" → "Daex CLI on mac"); any other name, including every name a person
+/// as DAEX ("ADE Cloud computer 2" → "DAEX Cloud computer 2", "ADE CLI on
+/// mac" → "DAEX CLI on mac"); any other name, including every name a person
 /// typed, comes back unchanged. Display only: stored rows keep the old name.
 /// Mirrors `displayLegacyDefaultName` in apps/desktop/src/shared/legacyDefaultNames.ts.
 func displayLegacyDefaultName(_ name: String) -> String {

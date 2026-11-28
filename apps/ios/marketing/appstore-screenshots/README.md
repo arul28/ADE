@@ -1,4 +1,4 @@
-# Daex — App Store screenshot generator
+# DAEX — App Store screenshot generator
 
 Single-file generator (`index.html`, no build) that composes App Store marketing
 slides from real app screenshots. Adapted from the Versic generator.
