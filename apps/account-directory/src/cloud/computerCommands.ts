@@ -507,8 +507,13 @@ export type PushWorkLane = {
   /** Uncommitted files / commits GitHub doesn't have, as read; null when the ADE didn't say. */
   dirty: boolean | null;
   ahead: number | null;
-  /** Why GitHub stopped a failed lane (`github_refused`, `github_unreachable`); null when it didn't, or the ADE didn't say. */
+  /**
+   * Why a lane failed: GitHub stopped it (`github_refused`, `github_unreachable`),
+   * or ADE found what looks like a secret in what it would push (`secret_found`,
+   * with `secretFiles`). Null when neither, or the ADE didn't say.
+   */
   reason: string | null;
+  secretFiles: string[] | null;
 };
 
 /** `push-work`'s or `work-state`'s answer; `lanes` is null from an ADE too old to list them. Null when unreadable. */
@@ -530,6 +535,9 @@ export function readPushWorkTally(stdout: string): { pushed: number; failed: num
           dirty: typeof lane.dirty === "boolean" ? lane.dirty : null,
           ahead: typeof lane.ahead === "number" ? lane.ahead : null,
           reason: typeof lane.reason === "string" ? lane.reason : null,
+          secretFiles: Array.isArray(lane.secretFiles)
+            ? lane.secretFiles.filter((file): file is string => typeof file === "string").slice(0, 6).map((file) => file.slice(0, 200))
+            : null,
         }];
       })
       : null;

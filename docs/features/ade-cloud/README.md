@@ -1604,6 +1604,20 @@ account, never a pin.
     lane". A refusal is the person's to fix, so the free logs it and sends no
     Sentry event. An older ADE on the computer sends no `reason`, and the
     older sentences stay.
+  - **What looks like a secret.** Nobody reads what a free's push sends, so
+    before it commits a lane push-work reads the staged changes and every
+    commit no remote has (`cloudPushSecretCheck.ts`). An added line holding
+    one of the project's ADE secrets (8 characters or longer, plain or
+    base64/base64url/URL-encoded), a token with a known shape (GitHub, AWS,
+    a private key block, Stripe, Slack, Anthropic, OpenAI, Google, npm), or a
+    new file named like a key file (`.env`, `.env.local` but not
+    `.env.example`, `id_rsa`, `.netrc`, a `.p12`) stops the lane: nothing is
+    committed or pushed, its changes are unstaged again, and the lane reads
+    `failed` with `reason: "secret_found"` and up to 5 `secretFiles`. The
+    free says where and keeps the computer, as a refusal. A read that can't
+    finish (30 s each, 64 MB) keeps the work too. It can't see a secret in any
+    other form (split, encrypted, in a binary or an archive), a password with
+    no known shape, or a value ADE doesn't hold.
   - **A lane that isn't on the computer.** A launch that failed before it
     made the lane (a provider refused its key) leaves a computer with only its
     main checkout. A free there finds no lane in the tally and no branch, so

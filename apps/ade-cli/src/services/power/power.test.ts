@@ -2,7 +2,8 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 const { spawnMock, execFileOverride } = vi.hoisted(() => ({
   spawnMock: vi.fn(),
   execFileOverride: { current: null as ((...args: any[]) => unknown) | null },
@@ -1509,25 +1510,51 @@ describe("cloud prepare-stop before a delete", () => {
 
 describe("cloud push-work tally reasons", () => {
   // The free and the delete on the server name the cause from `reason`; a lane
-  // with no reason gets "open the lane". Only GitHub's own refusal or silence
-  // earns one.
-  const lanes = [
-    { id: "main", name: "Primary", branchRef: "main", laneType: "primary" },
-    { id: "lane-1", name: "Fix login", branchRef: "ade/fix-login", laneType: "worktree" },
+  // with no reason gets "open the lane". Only GitHub's own refusal or silence,
+  // or what looks like a secret in what it would push, earns one.
+  // A lane's folder is a real repository: push-work reads what it would push.
+  let root = "";
+  const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.test", ...args], { cwd, stdio: "pipe" }).toString();
+  const repo = (name: string): string => {
+    const work = path.join(root, name);
+    git(root, "init", "-q", "--bare", `${name}.git`);
+    git(root, "init", "-q", name);
+    fs.writeFileSync(path.join(work, "README.md"), "hello\n");
+    git(work, "add", "-A");
+    git(work, "commit", "-qm", "base");
+    git(work, "push", "-q", path.join(root, `${name}.git`), "HEAD:refs/heads/main");
+    git(work, "fetch", "-q", path.join(root, `${name}.git`), "+refs/heads/*:refs/remotes/origin/*");
+    return work;
+  };
+  beforeAll(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-push-work-"));
+    repo("clean");
+    const { spawn } = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    spawnMock.mockImplementation(spawn);
+  });
+  afterAll(() => {
+    spawnMock.mockReset();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const lanes = (folder = "clean") => [
+    { id: "main", name: "Primary", branchRef: "main", laneType: "primary", worktreePath: path.join(root, "clean") },
+    { id: "lane-1", name: "Fix login", branchRef: "ade/fix-login", laneType: "worktree", worktreePath: path.join(root, folder) },
   ];
-  const project = (fail: { fetch?: Error; commit?: Error; push?: Error }) => async () =>
+  const calls: string[] = [];
+  const project = (fail: { fetch?: Error; commit?: Error; push?: Error }, folder?: string, secrets: Record<string, string> = {}) => async () =>
     ({
       laneService: {
         invalidateListCache() {},
-        list: async () => lanes,
+        list: async () => lanes(folder),
         readUnsavedWork: async (id: string) => ({ dirty: id === "lane-1", unpushedCommits: 0 }),
       },
       gitService: {
         fetch: async () => { if (fail.fetch) throw fail.fetch; },
         stageAll: async () => {},
-        commit: async () => { if (fail.commit) throw fail.commit; },
-        push: async () => { if (fail.push) throw fail.push; },
+        commit: async () => { calls.push("commit"); if (fail.commit) throw fail.commit; },
+        push: async () => { calls.push("push"); if (fail.push) throw fail.push; },
       },
+      projectSecretService: { valuesForProcess: () => secrets },
     }) as never;
 
   it.each<[string, { fetch?: Error; commit?: Error; push?: Error }, string[]]>([
@@ -1579,5 +1606,19 @@ describe("cloud push-work tally reasons", () => {
     const tally = await pushCloudComputerWork({ projects: [project(fail)] });
 
     expect(tally.lanes.map((lane) => `${lane.laneId}:${lane.state}:${lane.reason ?? "-"}`)).toEqual(expected);
+  });
+
+  it("a lane whose changes hold one of the project's secrets is neither committed nor pushed, and its changes are unstaged again", async () => {
+    const value = "value-of-a-project-secret";
+    const work = repo("leaky");
+    fs.writeFileSync(path.join(work, "config.ts"), `export const key = "${Buffer.from(value).toString("base64")}";\n`);
+    git(work, "add", "-A");
+    calls.length = 0;
+
+    const tally = await pushCloudComputerWork({ projects: [project({}, "leaky", { API_KEY: value })] });
+
+    expect(tally.lanes[1]).toMatchObject({ state: "failed", reason: "secret_found", secretFiles: ["config.ts"] });
+    expect(calls).toEqual([]);
+    expect(git(work, "diff", "--cached", "--name-only")).toBe("");
   });
 });

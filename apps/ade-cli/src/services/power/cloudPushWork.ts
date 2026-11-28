@@ -5,7 +5,9 @@
  */
 
 import type { AdeRuntime } from "../../bootstrap";
+import { runGit } from "../../../../desktop/src/main/services/git/git";
 import { classifyGitPushFailure } from "../../../../desktop/src/main/services/git/gitPushFailure";
+import { checkPushForSecrets } from "./cloudPushSecretCheck";
 
 const COMMIT_MESSAGE = "Work saved from ADE Cloud";
 /**
@@ -22,7 +24,10 @@ const FETCH_STEP_TIMEOUT_MS = 60_000;
  * GitHub now. `clean`: read now, nothing GitHub doesn't have. `ahead` counts
  * commits no remote has (not commits past the lane's base). `reason` says why
  * GitHub stopped a `failed` lane's fetch or push, when it did: the free and the
- * delete name that cause instead of "open the lane".
+ * delete name that cause instead of "open the lane". `secret_found`: ADE found
+ * what looks like a key or a password in what the push would send
+ * (`cloudPushSecretCheck.ts`), so it committed and pushed nothing;
+ * `secretFiles` names where (at most 5, then `+N more`).
  */
 export type CloudPushWorkLane = {
   laneId: string;
@@ -33,14 +38,15 @@ export type CloudPushWorkLane = {
   ahead: number;
   state: "clean" | "pushed" | "failed" | "unpushed";
   reason?: CloudPushWorkFailReason;
+  secretFiles?: string[];
 };
 
 /**
  * `github_refused`: the repository is gone, or the computer's GitHub access
  * can't see or write it, so trying again won't help. `github_unreachable`: no
- * answer from GitHub in time.
+ * answer from GitHub in time. `secret_found`: not GitHub's, see `CloudPushWorkLane`.
  */
-export type CloudPushWorkFailReason = "github_refused" | "github_unreachable";
+export type CloudPushWorkFailReason = "github_refused" | "github_unreachable" | "secret_found";
 
 /**
  * `readsRemotes: true` marks a tally from this read (`ade cloud push-work` and
@@ -80,26 +86,37 @@ function githubFailReason(error: unknown): CloudPushWorkFailReason | undefined {
 
 type Logger = { info(event: string, data?: unknown): void; warn(event: string, data?: unknown): void };
 
+type PushRuntime = Pick<AdeRuntime, "gitService"> & Partial<Pick<AdeRuntime, "projectSecretService">>;
+
 /**
  * Commits a dirty lane, then pushes it; null when both went through. Only the
  * push talks to GitHub, so only its failure carries GitHub's reason: a slow
- * commit hook is the lane's own.
+ * commit hook is the lane's own. Nobody reads an unattended push, so what it
+ * would send is read first: a secret in it, or a read that fails, stops the
+ * lane before its commit, with its changes unstaged again.
  */
 async function pushLane(
-  runtime: Pick<AdeRuntime, "gitService">,
-  laneId: string,
+  runtime: PushRuntime,
+  lane: { id: string; worktreePath: string },
   dirty: boolean,
   message: string,
-): Promise<{ error: unknown; reason?: CloudPushWorkFailReason } | null> {
-  if (dirty) {
-    try {
-      // `git add -A` honours .gitignore: files git ignores are never committed or pushed.
-      await runtime.gitService.stageAll({ laneId, paths: [] });
-      // A computer with no git identity commits with ADE's (the runtime's `commitIdentityFallback`).
-      await runtime.gitService.commit({ laneId, message });
-    } catch (error) {
-      return { error };
+): Promise<{ error: unknown; reason?: CloudPushWorkFailReason; secretFiles?: string[] } | null> {
+  const laneId = lane.id;
+  try {
+    const secretValues = Object.values(runtime.projectSecretService?.valuesForProcess() ?? {});
+    // `git add -A` honours .gitignore: files git ignores are never committed or pushed.
+    if (dirty) await runtime.gitService.stageAll({ laneId, paths: [] });
+    const check = await checkPushForSecrets(lane.worktreePath, secretValues);
+    if (!check.ok) {
+      if (dirty) await runGit(["reset", "-q"], { cwd: lane.worktreePath, timeoutMs: 30_000 }).catch(() => undefined);
+      if (!check.found) return { error: new Error(check.error) };
+      const secretFiles = check.more > 0 ? [...check.files, `+${check.more} more`] : check.files;
+      return { error: new Error(`ADE found what looks like a secret in ${secretFiles.join(", ")}, so it didn't push this lane.`), reason: "secret_found", secretFiles };
     }
+    // A computer with no git identity commits with ADE's (the runtime's `commitIdentityFallback`).
+    if (dirty) await runtime.gitService.commit({ laneId, message });
+  } catch (error) {
+    return { error };
   }
   try {
     await runtime.gitService.push({ laneId });
@@ -111,7 +128,7 @@ async function pushLane(
 
 export async function pushCloudComputerWork(args: {
   /** One loader per project, so a project that won't open doesn't stop the rest. */
-  projects: ReadonlyArray<() => Promise<Pick<AdeRuntime, "laneService" | "gitService">>>;
+  projects: ReadonlyArray<() => Promise<PushRuntime & Pick<AdeRuntime, "laneService">>>;
   /**
    * Only read which lanes have work that isn't on GitHub; change nothing.
    * Delete lane asks this first so it can warn. Archived lanes count either
@@ -188,7 +205,7 @@ export async function pushCloudComputerWork(args: {
           if (primary) tally.skipped += 1;
           continue;
         }
-        const failure = await pushLane(runtime, lane.id, dirty, message);
+        const failure = await pushLane(runtime, lane, dirty, message);
         if (!failure) {
           entry.state = "pushed";
           tally.pushed += 1;
@@ -196,8 +213,9 @@ export async function pushCloudComputerWork(args: {
         }
         entry.state = "failed";
         if (failure.reason) entry.reason = failure.reason;
+        if (failure.secretFiles) entry.secretFiles = failure.secretFiles;
         tally.failed += 1;
-        args.logger?.warn("cloud.push_work_lane_failed", { laneId: lane.id, error: errorText(failure.error) });
+        args.logger?.warn(failure.secretFiles ? "cloud.push_work_secret_found" : "cloud.push_work_lane_failed", { laneId: lane.id, error: errorText(failure.error) });
       }
     } catch (error) {
       // A project that couldn't be read wasn't saved; the tally must not say it was.

@@ -5682,6 +5682,9 @@ describe("ADE Cloud server frees (the computer deleted, its lane kept)", () => {
         lane("failed", { laneId: "main", laneName: "Primary", branchRef: "main", primary: true, dirty: false, ahead: 0, reason: "github_refused" }),
       ] });
     }, "GitHub refused this computer access to the lane's repository, so nothing was deleted. The repository may have moved, or your GitHub connection (Settings › GitHub) can't reach it. Fix that, then try again."],
+    ["the computer found what looks like a secret in what it would push", () => {
+      shell.push = JSON.stringify({ pushed: 0, failed: 1, skipped: 0, lanes: [lane("failed", { dirty: true, ahead: 0, reason: "secret_found", secretFiles: ["config.ts", ".env.local"] })] });
+    }, "ADE found what looks like a key or a password in config.ts, .env.local (Fix login), so it didn't push that work and the computer stays. Open the lane, take it out (from its commits too, if one has it), then try again."],
     ["GitHub didn't answer the check after the push", () => {
       shell.check = JSON.stringify({ pushed: 0, failed: 1, skipped: 0, lanes: [lane("failed", { dirty: false, ahead: 0, reason: "github_unreachable" })] });
     }, "This computer couldn't reach GitHub to check the lane's work, so nothing was deleted. Try again in a minute."],
