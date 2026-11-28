@@ -80,7 +80,7 @@ struct CloudPlansCard: View {
       howRow("infinity", adWords != nil ? "Each lane has its own computer." : (freeSmallNeedsCards ? "Unlimited Small computers on paid plans, and on Free in the US with sponsored cards on and a \(Brand.cloudName) chat opened there each week." : words.smallUnlimitedSentence), adWords != nil ? "A Linux computer your agents work on. \(cloudSmallFairUseSentence)" : "Each lane has its own Linux computer your agents work on. \(cloudSmallFairUseSentence)")
       Divider().overlay(ADEKit.edge)
       // Pricing v3: the rates live in Sizes and prices, each plan's hours on its card.
-      howRow("clock", "\(words.title) run the bigger sizes", adWords != nil ? "and renew every month." : "and renew every month. \(words.unitSentence)\(currentHoursLine.map { " Your plan: \($0)." } ?? "")")
+      howRow("clock", "\(words.title) run the bigger sizes", "and renew every month.\(adWords == nil ? unitLine : "")")
       Divider().overlay(ADEKit.edge)
       howRow("desktopcomputer", "Cloud computers", "count every lane's computer, asleep or awake. Free one up and its lane and chats stay.")
       Divider().overlay(ADEKit.edge)
@@ -232,18 +232,22 @@ struct CloudPlansCard: View {
     return column.id != "free"
   }
 
+  /// The old unit's sentence and the current plan's hours, after "and renew every month."; empty under Pricing v3.
+  private var unitLine: String {
+    words.unitSentence.map { " \($0)\(currentHoursLine.map { " Your plan: \($0)." } ?? "")" } ?? ""
+  }
+
   /// "100 hours on a Medium · 40 on a Large · 25 on an X-Large": the account's plan's hours.
   private var currentHoursLine: String? {
     guard let facts = columns.first(where: { $0.id == account.currentPlanId })?.facts else { return nil }
     return cloudHoursOnSizes(facts.includedMilli, tiers: tiers)
   }
 
-
   private func accessibilityLabel(_ column: Column, current: Bool, isNew: Bool) -> String {
     var parts: [String] = []
     if let computers = computerLimit(column) {
       parts.append(cloudComputersPhrase(computers))
-      parts.append(column.id == "free" && freeSmallNeedsCards ? "unlimited Small computers with sponsored cards, in the US, with a \(Brand.cloudName) chat there each week" : "unlimited Small computers")
+      parts.append(adWords != nil ? smallFact(column) : column.id == "free" && freeSmallNeedsCards ? "unlimited Small computers with sponsored cards, in the US, with a \(Brand.cloudName) chat there each week" : "unlimited Small computers")
       parts.append(words.planSentence(column.facts.includedMilli))
       parts.append(cloudHoursOnSizes(column.facts.includedMilli, tiers: tiers) ?? "\(words.number(column.facts.includedMilli)) credits a month")
     } else {
@@ -461,7 +465,7 @@ struct CloudFreeModelsCard: View {
   }
 }
 
-/// Pricing v3's one switch for the account (`copy.md`, "The switch"): "Ads",
+/// Pricing v3's one switch for the account: "Ads",
 /// the plan's sentence, then the full-price rule and the data line. It sits
 /// under the credits on the DAEX Cloud page because it changes every price
 /// below it. Off is one tap with no dialog; on asks a second time only when
@@ -539,11 +543,9 @@ struct CloudAdsCard: View {
     pendingOn = consent == CloudSponsoredState.granted
     error = nil
     Task {
+      // The save reads the account again before it returns, so every price on the page changes at once.
       if case .failure(let failure) = await cloudSaveSponsoredConsent(consent, confirmed: confirmed, since: since, noticeSeen: true) {
         error = failure.message
-      } else {
-        // The server moved the prices when it answered: read them now, so every price on the page changes at once.
-        await SyncMenuSafePublisher.shared.service.refreshCloudServerInstances()
       }
       saving = false
       pendingOn = nil

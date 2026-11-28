@@ -624,10 +624,15 @@ func cloudSaveSponsoredConsent(_ consent: String, confirmed: Bool = false, since
     // Small's rate in the account's catalog (here, or abroad within a week of a
     // US look): read the account again so Small's hours show it. A read already
     // out may predate the answer, so it ends first and then the account is read.
-    // Pricing v3: the server already moved the prices and the notice; read `pricing` again so they show at once.
-    if state.smallNeedsCards == true || state.smallOutsideUS || noticeSeen || AccountCloudStore.shared.account?.pricing != nil,
-       generation == AccountCloudStore.shared.generation {
-      Task { await SyncMenuSafePublisher.shared.service.refreshCloudServerInstances() }
+    // Pricing v3: the server already moved the prices and the notice, so the
+    // read ends before this returns: every price changes when the caller's
+    // switch or notice settles.
+    if generation == AccountCloudStore.shared.generation {
+      if noticeSeen || AccountCloudStore.shared.account?.pricing != nil {
+        await SyncMenuSafePublisher.shared.service.refreshCloudServerInstances()
+      } else if state.smallNeedsCards == true || state.smallOutsideUS {
+        Task { await SyncMenuSafePublisher.shared.service.refreshCloudServerInstances() }
+      }
     }
     return .success(state)
   } catch {

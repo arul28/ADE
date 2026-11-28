@@ -265,7 +265,7 @@ struct WorkSponsoredReplySlot: View {
     // The notice, seen (on screen): kept on this reply and saved once as the account's yes.
     .task(id: "\(turnKey)|\(store.holder == sessionId && showing == .consent(notice: true))|\(sponsored?.toldOn == true)|\(slot.onScreen)") {
       // Pricing v3 counts the notice only with an answer (`noticeSeen`), never by being seen.
-    guard pricing == nil, store.holder == sessionId, showing == .consent(notice: true), sponsored?.toldOn == true, slot.onScreen else { return }
+      guard pricing == nil, store.holder == sessionId, showing == .consent(notice: true), sponsored?.toldOn == true, slot.onScreen else { return }
       store.showNotice(turnKey: turnKey)
       store.noteNoticeShown()
     }
@@ -606,7 +606,7 @@ struct WorkSponsoredConsentCard: View {
   var words: CloudBalanceWords = .credits
   /// The notice that cards are on, not the question.
   var notice = false
-  /// Pricing v3: the ads notice (`copy.md`), on every plan; nil keeps today's Free-plan question.
+  /// Pricing v3: the ads notice, on every plan; nil keeps today's Free-plan question.
   var adWords: CloudAdPriceWords? = nil
   /// Got it: the notice goes from this reply.
   var onDismiss: () -> Void = {}
@@ -781,11 +781,8 @@ struct WorkSponsoredConsentCard: View {
       switch await cloudSaveSponsoredConsent(consent, confirmed: confirmed, since: since, noticeSeen: v3) {
       case .failure(let failure): error = failure.message
       case .success:
-        // Pricing v3: one answer for the account; the notice goes now and the prices are read again.
-        if v3 {
-          CloudSponsoredStore.shared.noteAdsNoticeAnswered()
-          await SyncMenuSafePublisher.shared.service.refreshCloudServerInstances()
-        }
+        // Pricing v3: one answer for the account; the save already read the prices again.
+        if v3 { CloudSponsoredStore.shared.noteAdsNoticeAnswered() }
       }
       busy = false
     }

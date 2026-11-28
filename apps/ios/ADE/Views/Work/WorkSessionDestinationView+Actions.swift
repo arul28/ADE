@@ -343,14 +343,6 @@ extension WorkSessionDestinationView {
     }
   }
 
-  /// Runs the post-send refresh cascade (transcript → artifacts → summary →
-  /// session) behind the composer instead of in front of it.
-  ///
-  /// The host has already accepted the message at this point; holding `sending`
-  /// through four serial round-trips kept the spinner up and the composer gated
-  /// for the whole cascade. Chained onto the previous post-send refresh so two
-  /// quick sends can't interleave two transcript loads.
-  @MainActor
   /// Pricing v3: a person sent this message from the chat's composer, so the
   /// chat's DAEX Cloud computer (or the cloud iPhone it holds) is in use. The
   /// computer is this chat's own machine, never the tab's (`sessionCloudMachineKey`).
@@ -360,6 +352,14 @@ extension WorkSessionDestinationView {
     cloudNoteMessageSent(instanceId: instanceId, sessionId: sessionId, messageId: messageId)
   }
 
+  /// Runs the post-send refresh cascade (transcript → artifacts → summary →
+  /// session) behind the composer instead of in front of it.
+  ///
+  /// The host has already accepted the message at this point; holding `sending`
+  /// through four serial round-trips kept the spinner up and the composer gated
+  /// for the whole cascade. Chained onto the previous post-send refresh so two
+  /// quick sends can't interleave two transcript loads.
+  @MainActor
   func schedulePostSendReconciliation(reconcileLocalEchoes: Bool = true) {
     let previous = postSendRefreshTask
     postSendRefreshTask = Task { @MainActor in

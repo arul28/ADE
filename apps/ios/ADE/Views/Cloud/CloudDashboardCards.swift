@@ -4,9 +4,9 @@ import UIKit
 // The ADE Cloud page's cards (`CloudDashboardScreen`), top to bottom: the
 // hero with the ads switch and the notices, lanes and computers, sizes and
 // prices, plans, invite friends, sign-ins and what agents may do. A wide page
-// puts the money (credits, plans, invites) left and the computers right. The plans card is `CloudPlansCard.swift`, the
-// sign-ins card `CloudSignInsCard.swift`; the words they share are
-// `CloudPhoneFormat.swift`.
+// puts the money (credits, plans, invites) left and the computers right. The
+// plans card is `CloudPlansCard.swift`, the sign-ins card
+// `CloudSignInsCard.swift`; the words they share are `CloudPhoneFormat.swift`.
 
 // MARK: - The page
 
@@ -419,8 +419,8 @@ struct CloudHero: View {
     .fixedSize(horizontal: false, vertical: true)
   }
 
-  /// Pricing v3: what happens past the credits, as one sentence under them
-  /// (copy.md "When credits run out"). The phone drops the date and, for App
+  /// Pricing v3: what happens when credits run out, as one sentence under
+  /// them. The phone drops the date and, for App
   /// Store 3.1.1, the extra credits' price and its link; the words are
   /// otherwise the desktop's.
   private func runOutSentence(_ account: CloudPhoneAccount, words: CloudBalanceWords) -> String? {
@@ -842,9 +842,9 @@ struct CloudSizesCard: View {
             row(tier)
           }
           // Pricing v3: the iPhone's price lives here too, while the account has the iPhone.
-          if let phone = phoneRow {
+          if account.phoneOn, let adWords = CloudAdPriceWords(account), let rates = account.catalog?.phone {
             ADESettingsHairline()
-            phone
+            phoneRow(adWords, pair: CloudRatePair(fullMilli: rates.milliPerMinute, adMilli: rates.adMilliPerMinute))
           }
         }
       }
@@ -858,13 +858,11 @@ struct CloudSizesCard: View {
   /// The DAEX Cloud iPhone as a row: both prices from the catalog, and the
   /// minutes the credits left buy at the price it has now (a live phone's own
   /// price, else the ad price while ads are on).
-  private var phoneRow: AnyView? {
-    guard account.phoneOn, let adWords = CloudAdPriceWords(account), let rates = account.catalog?.phone else { return nil }
-    let pair = CloudRatePair(fullMilli: rates.milliPerMinute, adMilli: rates.adMilliPerMinute)
+  private func phoneRow(_ adWords: CloudAdPriceWords, pair: CloudRatePair) -> some View {
     let ads = adWords.pricing.showsTwoPrices && adWords.pricing.ads.on
     let rateNow = adWords.pricing.phone?.rateMilli ?? (ads ? pair.adMilli : pair.fullMilli)
     let minutes = rateNow > 0 ? leftMilli / rateNow : nil
-    return AnyView(HStack(alignment: .center, spacing: 12) {
+    return HStack(alignment: .center, spacing: 12) {
       Image(systemName: "iphone")
         .font(.system(size: 13, weight: .medium))
         .foregroundStyle(CloudBrandColor.mark)
@@ -900,7 +898,7 @@ struct CloudSizesCard: View {
     .padding(.horizontal, ADEKit.inset)
     .padding(.vertical, 11)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .accessibilityElement(children: .combine))
+    .accessibilityElement(children: .combine)
   }
 
   private func row(_ tier: CloudPhoneTier) -> some View {

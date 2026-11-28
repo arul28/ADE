@@ -3,8 +3,8 @@ import Foundation
 // Pricing v3: the ad price (`CloudAccountState.pricing`, `adPrice.ts` on the
 // account server). The server decides every price, the discount and who sees
 // ads; this file only reads its answer and says it in the words every DAEX
-// surface uses (`/Volumes/Dev/scratch/pricing-v3/copy.md`, mirrored by the
-// desktop's `shared/cloudAdPriceWords.ts`). Nothing here computes a price.
+// surface uses (docs/features/ade-cloud/README.md, "The ad price"). Nothing
+// here computes a price.
 
 /// The header the phone sends on every account-server call to say it knows
 /// Pricing v3 (`CLOUD_PRICING_HEADER`, `CLOUD_PRICING_VERSION`). Without it,
@@ -109,7 +109,8 @@ struct CloudPricingState: Decodable, Equatable {
     let scale = c.lenient(Int.self, forKey: .creditScale) ?? 1
     creditScale = scale > 0 ? scale : 1
     ads = try c.decode(Ads.self, forKey: .ads)
-    computers = (c.lenient([Price].self, forKey: .computers) ?? []).filter { $0.instanceId != nil }
+    // One malformed row drops only itself, never the other computers' prices.
+    computers = (c.lenient([ChatLaunchLossy<Price>].self, forKey: .computers) ?? []).compactMap(\.value).filter { $0.instanceId != nil }
     phone = c.lenient(Price.self, forKey: .phone)
   }
 
@@ -145,7 +146,7 @@ enum CloudRateUnit {
   var short: String { self == .hour ? "/h" : "/min" }
 }
 
-/// Every Pricing v3 word on the phone (`copy.md`). Built from the account's
+/// Every Pricing v3 word on the phone. Built from the account's
 /// `pricing`; nil wherever `pricing` is absent, so a caller shows today's words.
 struct CloudAdPriceWords: Equatable {
   let pricing: CloudPricingState
@@ -353,7 +354,7 @@ private func cloudHoursCount(_ hours: Int) -> String {
 }
 
 /// "for an hour", "for 30 minutes", "for 2 hours", "for a day"; nil for a
-/// window `copy.md` has no words for (the line then says "lately").
+/// window with no words of its own (the line then says "lately").
 func cloudAdWindowPhrase(_ minutes: Int) -> String? {
   switch minutes {
   case 5, 10, 15, 30, 45: return "for \(minutes) minutes"

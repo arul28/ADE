@@ -988,7 +988,7 @@ struct WorkNewChatScreen: View {
   }
 
   /// The CLI start notice is due: a person starts an agent CLI on a DAEX Cloud
-  /// computer while ads are on (`copy.md`). The CLI uses the full price. Never
+  /// computer while ads are on. The CLI uses the full price. Never
   /// for an agent's or an automation's CLI: only this composer asks.
   private var cliPriceNoticeText: String? {
     guard sessionMode == .cli, isCloudSelected || syncService.isCloudFleetKey(selectedMachineKey ?? syncService.focusedMachineKey) else { return nil }

@@ -495,7 +495,7 @@ struct CloudBalanceWords: Equatable {
   }
 
   /// A balance or used amount at the account's scale: "4,180". Under Pricing
-  /// v3 (scale above 1) always whole credits, rounded down (`copy.md`); at the
+  /// v3 (scale above 1) always whole credits, rounded down; at the
   /// old unit today's tenths ("2.5"). Rates use `CloudAdPriceWords`.
   func number(_ milli: Int) -> String {
     guard scale > 1 else { return cloudCredits(milli, scale: scale) }
@@ -506,7 +506,7 @@ struct CloudBalanceWords: Equatable {
   func wholeCredits(_ milli: Int) -> Int { max(0, milli) * scale / 1000 }
 
   /// The parts of one total in whole credits that add up to the total's
-  /// whole credits (largest remainder, `copy.md`). `fixed` keeps its own
+  /// whole credits (largest remainder). `fixed` keeps its own
   /// rounded-down value (the balance the big number shows); the others share
   /// what is left of the total. At the old unit each part is shown as is.
   func wholeParts(_ millis: [Int], total: Int, fixed: Int?) -> [String] {
@@ -588,12 +588,11 @@ struct CloudBalanceWords: Equatable {
   var smallUnlimitedSentence: String { "Unlimited Small computers. \(theyNeverUse)." }
 
   /// What one of them is (`CLOUD_CREDIT_UNIT_SENTENCE`).
-  var unitSentence: String {
-    guard scale > 1 else {
-      return "A credit is an hour on a Medium computer or a minute on the \(Brand.cloudName) iPhone. Small computers use none."
-    }
-    // Pricing v3: a credit is a tenth of a Medium-hour, so say the rates, not the unit.
-    return "A Medium computer uses \(spelled(1000)) an hour and the \(Brand.cloudName) iPhone \(phoneRate)."
+  /// What one credit is at the old unit; nil under Pricing v3 (scale above 1),
+  /// whose plans card names the rates instead of a unit.
+  var unitSentence: String? {
+    guard scale == 1 else { return nil }
+    return "A credit is an hour on a Medium computer or a minute on the \(Brand.cloudName) iPhone. Small computers use none."
   }
 
   /// A plan's month: "100 credits a month".
