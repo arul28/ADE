@@ -249,6 +249,7 @@ are in
 | Saved chats | `chats.ts` |
 | CLI and shell copies (a shell keeps its last 5,000 lines) | `sessionCopies.ts` |
 | Git summaries saved at rest | `gitSummaries.ts` |
+| The `@` menu saved at rest (rows and file names, migration `0071`) | `mentionSnapshots.ts` |
 | Lane backups: each lane's work not on GitHub (a patch to download) | `laneBackups.ts` |
 | One project's overview | `projectOverview.ts` |
 | The account lane index (name, branch, machine, PR; only for mentions) | `accountLanes/routes.ts` |
@@ -2174,16 +2175,43 @@ One busy list, `decideCloudBusy` in
   each overview lane. The desktop, ADE Web and the phone paint the resting
   lane with it. Rows from an older computer carry none, and the lane shows
   grey until that computer updates.
-- **The @ menu while it rests.** The menu never asks a resting or deleted
-  computer, since a read must not wake it. It shows the account's machines
-  (an account read, kept 15 s) and the computer's saved chats, lanes and open
-  PRs from its Work slice (`chatMentionClientRows.ts`). While the computer is
-  awake, its own answer comes first, and the account's machines fill the
-  menu only when that answer has no machine rows. The phone builds the same
-  menu for a chat with no live link to its computer
-  (`restingCloudChatMentionRows`): the saved chats and lanes Work lists for
-  it, and the account's machines. It has no copy of the computer's PRs, so
-  PRs are left out there, and it lists no files.
+- **The @ menu while it rests.** The menu reads the same asleep as awake.
+  The menu never asks a resting or deleted computer, since a read must not
+  wake it, so the computer saves its menu before it rests: at the idle step,
+  at prepare-stop and on `ade cloud save-for-rest`, the rest save
+  (`cloudRestSave.ts`) asks each project for every kind's candidates but
+  machines (`listMentionSnapshotRows`: chats, lanes, terminals, PRs, MCP
+  servers, people) and each lane's file and folder names in browse order
+  (`listQuickOpenPaths`, the composer's own index and filters), builds one
+  copy (`cloudMentionSnapshot.ts`, at most 900 KB, 500 rows a kind, lanes
+  share the file budget evenly) and uploads it to `PUT /cloud/mentions/:m`
+  when it changed. A client answers each query from that copy with the
+  computer's own rankers: `rankChatMentionMenu` for rows and
+  `rankQuickOpenPaths` (`quickOpenScore.ts`, shared with the file index) for
+  files. Machines come live from the account (an account read, kept 15 s), as
+  the computer's own menu reads them. Desktop and ADE Web read the copy
+  through the account call `mentionSnapshot`
+  (`cloudMentionSnapshotCache.ts`); the phone through
+  `CloudAtRestStore.mentionSnapshot`, with Swift twins of both rankers
+  (`WorkChatMentionMenuRanker`, `CloudMentionSnapshotMenu`). A client
+  downloads the copy once per sleep: it asks again at most every 30 s, with
+  the saved time it holds, and the server answers "unchanged". A copy it
+  holds answers at once while it is checked; the first read waits at most
+  800 ms. A save goes out only when every roster read worked (a failed read
+  keeps the copy saved before) and within the rest save's own time. A copy
+  that fits its cap as UTF-8 keeps everything; past it, rows keep 40% (more
+  when the file names need less) and lanes share the rest, a small lane
+  keeping all its names. A deleted saved
+  chat leaves the copies that list it, and a computer deleted with its lane
+  takes its copies. A deleted computer's chat lists no files: it continues
+  on a new computer through the account queue, which takes text only. Until
+  the copy arrives, and for a computer from before this (no copy saved), the
+  menu shows what it showed before: the computer's saved chats, lanes and
+  open PRs from its Work slice (`chatMentionClientRows.ts`; on the phone
+  `restingCloudChatMentionRows`, with no PRs and no files). Ignored files
+  (`.env`, build output) are not saved, as the desktop composer's index
+  leaves them out; the phone's live menu lists them, its resting menu does
+  not.
 - **A deleted computer's chat** shows no running turn: nothing runs there.
 - **Comments wait on the device.** A thread comment written in a chat whose
   computer rests stays on the device that wrote it (desktop and ADE Web,

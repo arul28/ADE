@@ -13,6 +13,7 @@
  */
 
 import { CloudApiError, type CloudApiClient } from "../cloudApiClient";
+import type { CloudMentionSnapshot } from "../cloudMentionSnapshot";
 import {
   ACCOUNT_MODEL_FAVORITE_ID_MAX,
   ACCOUNT_MODEL_FAVORITES_MAX,
@@ -50,6 +51,8 @@ export type AdeCloudAccountCall =
   | { call: "modelFavorites" }
   | { call: "changeModelFavorites"; add?: string[]; remove?: string[]; account?: string }
   | { call: "savedSession"; machineKey: string; sessionId: string }
+  /** The `@` menu a resting computer saved for one project (`cloudMentionSnapshot.ts`). */
+  | { call: "mentionSnapshot"; machineKey: string; projectKey: string; laneId?: string | null; since?: number | null }
   | { call: "linearQuery"; origin: string; op: CloudLinearOp; vars?: Record<string, unknown> }
   | { call: "jiraSearch"; origin: string; jql: string; fields?: string[]; maxResults?: number; nextPageToken?: string | null }
   | { call: "jiraIssue"; origin: string; key: string };
@@ -68,6 +71,7 @@ export type AdeCloudAccountResults = {
   modelFavorites: AccountModelFavorites | null;
   changeModelFavorites: AccountModelFavorites | null;
   savedSession: CloudSessionCopy | null;
+  mentionSnapshot: { unchanged: true; savedAt: number } | { unchanged?: false; snapshot: CloudMentionSnapshot } | null;
   linearQuery: CloudLinearQueryResult | null;
   jiraSearch: CloudJiraSearchResult | null;
   jiraIssue: CloudJiraIssueResult | null;
@@ -230,6 +234,12 @@ async function dispatch(api: CloudApiClient, call: Record<string, unknown>): Pro
     }
     case "savedSession":
       return await api.savedSession(id(call.machineKey, "computer"), id(call.sessionId, "session"));
+    case "mentionSnapshot":
+      return await api.mentionSnapshot(id(call.machineKey, "computer"), {
+        projectKey: required(call.projectKey, ORIGIN_MAX, "repository"),
+        laneId: call.laneId ? id(call.laneId, "lane") : null,
+        since: typeof call.since === "number" && Number.isFinite(call.since) ? call.since : null,
+      });
     case "linearQuery": {
       const op = typeof call.op === "string" && (CLOUD_LINEAR_OPS as readonly string[]).includes(call.op) ? call.op as CloudLinearOp : null;
       if (!op) throw new InvalidCall("ADE can't run that Linear request.");

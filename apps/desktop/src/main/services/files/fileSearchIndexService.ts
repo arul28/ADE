@@ -2,6 +2,7 @@ import type fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import type { FilesQuickOpenItem, FilesSearchTextMatch } from "../../../shared/types";
+import { scoreQuickOpenPath as scorePath } from "../../../shared/quickOpenScore";
 import { destroyChildProcessStreams, hasNullByte, normalizeRelative } from "../shared/utils";
 import { terminateProcessTree } from "../shared/processExecution";
 import { pathKey } from "../shared/pathCompare";
@@ -102,57 +103,6 @@ function shouldSkipPathPrefix(relPath: string, includeIgnored: boolean): boolean
   if (isVolatileAdeRuntimePath(relPath)) return true;
   if (includeIgnored) return false;
   return relPath === ".ade" || relPath.startsWith(".ade/");
-}
-
-/** Starting score for the empty-query browse ranking; one point per path segment is deducted. */
-const BROWSE_BASE_SCORE = 100;
-
-/**
- * Empty query browses the workspace: rank shallower paths first. Both
- * separators count so Windows-style paths depth-rank identically.
- */
-function scoreBrowseDepth(normalizedPath: string): number {
-  let depth = 0;
-  for (const ch of normalizedPath) if (ch === "/" || ch === "\\") depth += 1;
-  return Math.max(1, BROWSE_BASE_SCORE - depth);
-}
-
-function scorePathForNeedle(normalized: string, needle: string): number {
-  if (normalized === needle) return 1000;
-  if (normalized.endsWith(`/${needle}`) || normalized.endsWith(`\\${needle}`)) return 900;
-  const idx = normalized.indexOf(needle);
-  return idx < 0 ? -1 : 600 - idx;
-}
-
-function scorePath(pathValue: string, query: string, allowComposerPrefixFallback: boolean): number {
-  const normalized = pathValue.toLowerCase();
-  const needle = query.toLowerCase().trim();
-  if (!needle) return scoreBrowseDepth(normalized);
-  const directScore = scorePathForNeedle(normalized, needle);
-  if (directScore >= 0) return directScore;
-
-  if (!allowComposerPrefixFallback) return -1;
-
-  // Composer @-file queries can contain ordinary prose after an extensionless
-  // path whose filename or directory contains spaces. A path index cannot
-  // know that boundary from the string alone, so try progressively shorter
-  // space-delimited prefixes and keep the longest matching one. This is kept
-  // behind an explicit composer-only mode so generic quick-open searches keep
-  // their whole-query semantics.
-  const isRootLevelPath = !normalized.includes("/") && !normalized.includes("\\");
-  const words = needle.split(/[ \t]+/);
-  let best = -1;
-  for (let end = words.length - 1; end > 0; end -= 1) {
-    const prefix = words.slice(0, end).join(" ");
-    const score = isRootLevelPath
-      ? (normalized.startsWith(prefix) ? 600 : -1)
-      : scorePathForNeedle(normalized, prefix);
-    if (score < 0) continue;
-    // Prefer a longer path prefix when multiple indexed paths share the same
-    // beginning. The tiny fractional tie-break preserves existing score tiers.
-    best = Math.max(best, score + Math.min(prefix.length, 999) / 1000);
-  }
-  return best;
 }
 
 async function cooperativeYield(): Promise<void> {

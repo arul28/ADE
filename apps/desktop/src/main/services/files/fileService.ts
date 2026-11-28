@@ -1629,6 +1629,26 @@ export function createFileService({
       });
     },
 
+    /**
+     * Every file and folder the composer's `@` menu can list, in its browse
+     * order (shallowest first), at most `limit`: what an ADE Cloud computer
+     * saves before it rests, so the menu lists the same files while it sleeps
+     * (`cloudMentionSnapshot.ts`). The same index and filters as `quickOpen`.
+     */
+    async listQuickOpenPaths(args: { workspaceId: string; limit: number }): Promise<FilesQuickOpenItem[]> {
+      const workspace = resolveWorkspace(args.workspaceId);
+      return await indexService.quickOpen({
+        workspaceId: args.workspaceId,
+        rootPath: workspace.rootPath,
+        query: "",
+        limit: Math.max(1, Math.min(50_000, args.limit)),
+        includeIgnored: false,
+        allowComposerPrefixFallback: true,
+        includeDirectories: true,
+        ...indexIgnoreOptions(workspace.rootPath),
+      });
+    },
+
     async warmQuickOpenIndex(args: { workspaceId: string; includeIgnored?: boolean }): Promise<void> {
       try {
         const workspace = resolveWorkspace(args.workspaceId);

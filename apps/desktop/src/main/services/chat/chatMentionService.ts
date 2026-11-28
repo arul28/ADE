@@ -486,7 +486,7 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
     };
   };
 
-  const buildPersonCandidates = async (args: ChatMentionSuggestArgs): Promise<ChatMentionSuggestion[]> => {
+  const buildPersonCandidates = async (args: ChatMentionSuggestArgs, full = false): Promise<ChatMentionSuggestion[]> => {
     const sources = peopleSources();
     if (!sources.length) return [];
     // Only a bare `@` gives a cold source a short wait, like machines: an
@@ -495,7 +495,7 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
     // lookup waits for the read itself (bounded by its timeout): an answer
     // without people there would read as "no matches", and the composer closes
     // the menu on that and keeps it closed while the user keeps typing.
-    const fullRead = Boolean(args.ids?.length) || (args.query ?? "").trim().length > 0;
+    const fullRead = full || Boolean(args.ids?.length) || (args.query ?? "").trim().length > 0;
     const reads = await Promise.all(sources.map(async ([source, read]) => {
       if (fullRead) return await loadPeople(source, read);
       let budgetTimer: ReturnType<typeof setTimeout> | null = null;
@@ -562,6 +562,31 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
       return { suggestions: perKind.flat().filter((row) => wanted.has(row.id)) };
     }
     return { suggestions: rankChatMentionMenu(perKind, rawQuery) };
+  };
+
+  /**
+   * Every candidate of each kind but machines, unranked: the rows an ADE Cloud
+   * computer saves before it rests (`cloudMentionSnapshot.ts`), so its chats'
+   * menus read the same while it sleeps. People get a full read (the rest save
+   * can wait). A kind whose read throws (the chat, lane or terminal roster) is
+   * left out and the answer is `complete: false`, so the rest save keeps the
+   * menu it saved before. A people source that answers "failed" is left out
+   * as the live menu leaves it out: a broken sign-in fails every read, and
+   * would otherwise hold the whole saved menu back.
+   */
+  const listMentionSnapshotRows = async (): Promise<{ rows: ChatMentionSuggestion[]; complete: boolean }> => {
+    const kinds = CHAT_MENTION_KINDS.filter((kind) => kind !== "machine");
+    let complete = true;
+    const perKind = await Promise.all(kinds.map(async (kind) => {
+      try {
+        return kind === "person" ? await buildPersonCandidates({}, true) : await candidateBuildersByKind[kind]({});
+      } catch (error) {
+        complete = false;
+        deps.logger?.warn?.("chat mention snapshot rows failed for kind", { kind, error });
+        return [] as ChatMentionSuggestion[];
+      }
+    }));
+    return { rows: perKind.flat(), complete };
   };
 
   // -------------------------------------------------------------------------
@@ -1057,6 +1082,7 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
 
   return {
     listChatMentionSuggestions,
+    listMentionSnapshotRows,
     resolveChatMentionDetails,
     expandChatMentionsForSend,
     applyChatMentionExpansion,

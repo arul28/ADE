@@ -28,6 +28,7 @@ import { logCloud, moveQueuedMessagesStatement, ownMachineMoveTarget, ownedCompu
 import { digestFor, openBytes, openText, sealBytes, sealText, userKeys, type UserKeys } from "./seal";
 import { deleteCapsule, deleteCapsulesForLane } from "./forkCapsules";
 import { deleteGitSummaryForLaneStatement } from "./gitSummaries";
+import { deleteMentionSnapshotsForMachineStatement, dropChatFromMentionSnapshots } from "./mentionSnapshots";
 import { callingComputer, deleteSessionCopiesForLane, readCappedJson } from "./sessionCopies";
 import { readBoundedBytes } from "../sinkUtils";
 import { publishedStatement, storageGeneration, sweep, sweepStatement, unclaimedUpload } from "./storageSweeps";
@@ -801,7 +802,7 @@ async function deleteObjectsUnder(bucket: R2Bucket, prefix: string): Promise<num
  * where it is now, as its read does (`handleGetChat`); a lane's cleanup
  * (`followMove: false`) deletes only the row under the key it listed.
  */
-export async function deleteSavedChat(env: CloudEnv, userId: string, namedMachineKey: string, chatId: string, options: { followMove?: boolean } = {}): Promise<boolean> {
+export async function deleteSavedChat(env: CloudEnv, userId: string, namedMachineKey: string, chatId: string, options: { followMove?: boolean; keepOwnMenus?: boolean } = {}): Promise<boolean> {
   const bucket = bucketFor(env);
   if (!bucket) throw new Error("cloud_chats_bucket_missing");
   const row = await copyRow(env, userId, namedMachineKey, chatId)
@@ -823,6 +824,11 @@ export async function deleteSavedChat(env: CloudEnv, userId: string, namedMachin
     env.DB.prepare("delete from cloud_chat_copies where user_id = ? and machine_key = ? and chat_id = ? and r2_key = ?").bind(userId, machineKey, chatId, row.r2_key),
   ]);
   if ((deleted[2]?.meta?.changes ?? 0) !== 1) return false;
+  // The saved @ menus that list it drop it first, before the cleanup below that can fail (a retry finds no row).
+  // A caller deleting the whole lane deletes this computer's menus after; the computer it moved from still drops it.
+  const now = Date.now();
+  if (!options.keepOwnMenus) await dropChatFromMentionSnapshots(env, userId, machineKey, chatId, now);
+  if (row.forked_from_machine_key && row.forked_from_machine_key !== machineKey) await dropChatFromMentionSnapshots(env, userId, row.forked_from_machine_key, chatId, now);
   // Its fork capsule goes too: under this key, and under the key it moved from.
   await deleteCapsule(env, userId, machineKey, chatId);
   if (row.forked_from_machine_key && row.forked_from_machine_key !== machineKey) await deleteCapsule(env, userId, row.forked_from_machine_key, chatId);
@@ -907,19 +913,22 @@ export async function deleteSavedChatsForLane(env: CloudEnv, userId: string, mac
     .bind(userId, machineKey, laneId).all<{ chat_id: string }>();
   let removed = 0;
   for (const row of rows.results ?? []) {
-    if (await deleteSavedChat(env, userId, machineKey, row.chat_id, { followMove: false })) removed += 1;
+    if (await deleteSavedChat(env, userId, machineKey, row.chat_id, { followMove: false, keepOwnMenus: true })) removed += 1;
   }
   // The lane's CLI and shell copies, Git summary and left capsules go with it.
   await deleteSessionCopiesForLane(env, userId, machineKey, laneId);
   await deleteCapsulesForLane(env, userId, machineKey, laneId);
   await deleteGitSummaryForLaneStatement(env, userId, machineKey, laneId).run();
+  // So does the computer's saved `@` menu: a cloud computer holds one lane, and the menu lists its files.
+  await deleteMentionSnapshotsForMachineStatement(env, userId, machineKey).run();
   return removed;
 }
 
 /**
  * Deletes a lane's saved chats under every computer they were filed under: a
  * lane kept without a computer can have had several (a move, a new computer),
- * and a client sees only the keys of the chats it listed.
+ * and a client sees only the keys of the chats it listed. The lane's deleted
+ * computers count too, so one that left only a saved `@` menu loses it.
  */
 export async function deleteSavedChatsForLaneEverywhere(env: CloudEnv, userId: string, laneId: string, keepMachineKey: string | null = null): Promise<number> {
   const keys = await env.DB.prepare(`
@@ -927,7 +936,9 @@ export async function deleteSavedChatsForLaneEverywhere(env: CloudEnv, userId: s
     union select machine_key from cloud_session_copies where user_id = ? and lane_id = ?
     union select machine_key from cloud_fork_capsules where user_id = ? and lane_id = ?
     union select machine_key from cloud_git_summaries where user_id = ? and lane_id = ?
-  `).bind(userId, laneId, userId, laneId, userId, laneId, userId, laneId).all<{ machine_key: string }>();
+    union select machine_key from cloud_computers where user_id = ? and lane_id = ? and deleted_at is not null and machine_key is not null
+      and machine_key not in (select machine_key from cloud_computers where user_id = ? and deleted_at is null and machine_key is not null)
+  `).bind(userId, laneId, userId, laneId, userId, laneId, userId, laneId, userId, laneId, userId).all<{ machine_key: string }>();
   let removed = 0;
   for (const row of keys.results ?? []) {
     // A lane moved to the person's own machine keeps what moved there.
@@ -953,6 +964,7 @@ export async function deleteAllAccountChats(env: Pick<CloudEnv, "DB" | "CLOUD_CH
     env.DB.prepare("delete from cloud_chat_messages where user_id = ?").bind(userId),
     env.DB.prepare("delete from cloud_session_copies where user_id = ?").bind(userId),
     env.DB.prepare("delete from cloud_git_summaries where user_id = ?").bind(userId),
+    env.DB.prepare("delete from cloud_mention_snapshots where user_id = ?").bind(userId),
     env.DB.prepare("delete from cloud_fork_capsules where user_id = ?").bind(userId),
     env.DB.prepare("delete from cloud_lane_backups where user_id = ?").bind(userId),
     env.DB.prepare("delete from cloud_user_keys where user_id = ?").bind(userId),

@@ -228,3 +228,93 @@ describe("createCloudRestSave capsules", () => {
     expect(unpack(forkTransport.sideFiles[2]!)).toMatch(/^\{"ok":true\}\n[\s\S]*\nafter\n$/);
   });
 });
+
+describe("createCloudRestSave @ menu", () => {
+  it("saves each project's @ menu once and again only after it changes; a refused, unkept or partial save keeps the menu saved before and tries again", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-rest-mentions-"));
+    fs.mkdirSync(path.join(root, ".git"));
+    fs.writeFileSync(path.join(root, ".git", "config"), '[remote "origin"]\n\turl = https://github.com/acme/widgets.git\n');
+    const worktree = fs.mkdtempSync(path.join(os.tmpdir(), "ade-rest-mentions-lane-"));
+    let title = "upload-fix";
+    let complete = true;
+    const runtime = {
+      projectId: "project-1",
+      projectRoot: root,
+      sessionService: { list: () => [] },
+      laneService: {
+        list: async () => [
+          { id: "lane-main", laneType: "primary", worktreePath: root },
+          { id: "lane-1", laneType: "worktree", worktreePath: worktree },
+        ],
+      },
+      agentChatService: { listMentionSnapshotRows: async () => ({ rows: [{ kind: "lane", id: "lane-1", title }], complete }) },
+      fileService: {
+        listQuickOpenPaths: vi.fn(async () => [
+          { path: "src", score: 99, isDirectory: true },
+          { path: "src/app.ts", score: 98 },
+        ]),
+      },
+    } as unknown as AdeRuntime;
+    let refuse = false;
+    let kept = false;
+    const saved: Array<{ projectKey: string; snapshot: Record<string, unknown> }> = [];
+    const api = {
+      putMentionSnapshot: vi.fn(async (_machine: string, body: { projectKey: string; snapshot: Record<string, unknown> }) => {
+        if (refuse) throw new Error("ADE Cloud has no such computer.");
+        saved.push(body);
+        return { ok: true, kept };
+      }),
+      putGitSummary: async () => ({ kept: false }),
+      putEventWakes: async () => null,
+    } as unknown as CloudApiClient;
+    const options = {
+      adeHome: fs.mkdtempSync(path.join(os.tmpdir(), "ade-rest-save-")),
+      instanceId: "instance-1",
+      logger: { info: () => {}, warn: () => {} },
+      api: async () => api,
+      machineKey: () => "machine-1",
+      openRuntimes: async () => [{ projectId: "project-1", runtime }],
+      flushChats: async () => ({}) as CloudChatUploadPendingResult,
+      accountUserId: () => null,
+    };
+    const saver = createCloudRestSave(options);
+    const save = () => saver.save({ budgetMs: 60_000, reason: "idle", stillIdle: () => true });
+
+    await save();
+    // The computer's own lane: its main checkout is left out, as the lane lists leave it out.
+    expect(saved).toEqual([{
+      instanceId: "instance-1",
+      projectKey: "github.com/acme/widgets",
+      snapshot: expect.objectContaining({
+        rows: [{ kind: "lane", id: "lane-1", title: "upload-fix" }],
+        files: { "lane-1": { files: ["src/app.ts"], directories: ["src"], truncated: false } },
+      }),
+    }]);
+    await save();
+    expect(api.putMentionSnapshot).toHaveBeenCalledTimes(1);
+
+    // A roster that failed to read never replaces the menu saved before.
+    title = "upload-fix-2";
+    complete = false;
+    await save();
+    expect(api.putMentionSnapshot).toHaveBeenCalledTimes(1);
+    complete = true;
+    refuse = true;
+    await save();
+    refuse = false;
+    // The server already holds a newer copy (the clock went back): not recorded, so it goes again.
+    kept = true;
+    await save();
+    kept = false;
+    await save();
+    await save();
+    expect(api.putMentionSnapshot).toHaveBeenCalledTimes(4);
+    expect(saved.map((body) => (body.snapshot.rows as Array<{ title: string }>)[0]!.title)).toEqual(["upload-fix", "upload-fix-2", "upload-fix-2"]);
+
+    // A computer that lost its record still sends a failed roster only marked partial: the server keeps what it holds.
+    complete = false;
+    await createCloudRestSave({ ...options, adeHome: fs.mkdtempSync(path.join(os.tmpdir(), "ade-rest-save-")) })
+      .save({ budgetMs: 60_000, reason: "idle", stillIdle: () => true });
+    expect(saved.map((body) => (body as { partial?: boolean }).partial ?? false)).toEqual([false, false, false, true]);
+  });
+});

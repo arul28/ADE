@@ -1300,6 +1300,19 @@ extension SyncService {
     return rows
   }
 
+  /// Where a resting cloud chat's saved `@` menu is: its computer's account
+  /// key, its project and its lane, from the chat's saved copy. Nil for a
+  /// chat with a live link, or one saved with no repository.
+  func restingCloudMentionAddress(sessionId: String) -> (machineKey: String, projectKey: String, laneId: String?)? {
+    guard chatSendsThroughCloudAccount(sessionId: sessionId),
+          let key = chatThreadKey(for: sessionId),
+          let machineKey = cloudAccountMachineKey(fleetKey: key.machineKey),
+          let row = cloudSavedChats.first(where: { $0.machineKey == machineKey && $0.chatId == key.sessionId }),
+          let projectKey = row.projectKey.flatMap({ nonEmptyTrimmed($0) })
+    else { return nil }
+    return (machineKey, projectKey, row.laneId.flatMap { nonEmptyTrimmed($0) })
+  }
+
   /// The saved copies of one ADE Cloud computer's account-server rows as roster
   /// projects, for a connection whose own roster is still empty.
   func cloudSavedRosterProjects(fleetKey: String) -> [RemoteRosterProject] {

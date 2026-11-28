@@ -4,13 +4,16 @@
  * A chat's menu normally comes from the chat's own machine
  * (`listMentionSuggestions` by its pin). An ADE Cloud chat whose computer
  * rests answers nothing, and a read must never wake it. So the window builds
- * the rows from what it already has: the account's machines (an account
- * read, no pin) and the resting computer's saved chats, lanes and PRs (its
- * Work slice). While the computer is awake, its answer comes first and the
- * account's machines fill only a kind it left empty.
+ * the rows from the menu the computer saved before it rested (every kind it
+ * lists awake, `cloudMentionSnapshot.ts`) and the account's machines (an
+ * account read, no pin). A computer that saved none (an older ADE) falls back
+ * to its saved chats, lanes and PRs (its Work slice). While the computer is
+ * awake, its answer comes first and the account's machines fill only a kind
+ * it left empty.
  */
 
 import { accountMachineMentionSuggestion } from "../../../shared/accountMachineSnapshot";
+import { cloudMentionSnapshotRows, type CloudMentionSnapshot } from "../../../shared/cloudMentionSnapshot";
 import {
   chatMentionTitle,
   isMentionablePr,
@@ -119,11 +122,21 @@ export async function chatMentionMenu(args: {
   excludeSessionId: string | null;
   /** The chat's own machine, labeled "this machine". */
   localMachineKey: string | null;
+  /**
+   * While `away`: the menu the computer saved before it rested
+   * (`cloudMentionSnapshot.ts`), so the rows are the ones it lists awake.
+   * Null (none saved, an older computer) falls back to the Work slice.
+   */
+  restingSnapshot?: () => Promise<CloudMentionSnapshot | null>;
 }): Promise<ChatMentionSuggestion[]> {
   const query = args.query.trim();
   const kind = parseChatMentionKindFilter(query).kind;
   // Started with the machine's read, so a fill never waits after it.
   const accountRead = kind == null || kind === "machine" ? accountMachineMentionRows(args.localMachineKey) : null;
+  const saved = args.away && args.restingSnapshot ? await args.restingSnapshot().catch(() => null) : null;
+  if (saved) {
+    return cloudMentionSnapshotRows(saved, { query, excludeSessionId: args.excludeSessionId, machines: accountRead ? await accountRead : [] });
+  }
   const fromMachine = args.away ? [] : await args.machineRows();
   const accountMachines = accountRead && !fromMachine.some((row) => row.kind === "machine") ? await accountRead : [];
   const windowRows = args.away
