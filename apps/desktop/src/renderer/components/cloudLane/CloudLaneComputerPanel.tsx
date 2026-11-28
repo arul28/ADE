@@ -15,6 +15,7 @@ import { cloudLaneChangesAvailable, cloudLaneComputerOfLane, cloudLaneMovesAvail
 import { CLOUD_MACHINE_STATE_TEXT } from "./CloudLaneConnectionRow";
 import { cloudLanePowerOfState } from "./cloudLaneStatus";
 import { freeCloudLaneWithConfirm } from "./deleteCloudLane";
+import { canDeleteIdleComputerAnyway, deleteIdleComputerAnyway, heldIdleEntry, heldIdleSentences } from "./cloudIdleHeld";
 import "./cloudLane.css";
 import "./cloudLaneStatus.css";
 import { BRAND } from "../../../shared/brand";
@@ -52,12 +53,14 @@ export function CloudLaneComputerPanel({
   ], laneId)).split(" ").filter(Boolean).length;
   const [sizing, setSizing] = useState(false);
   const [freeing, setFreeing] = useState(false);
+  const [deletingAnyway, setDeletingAnyway] = useState(false);
   if (!computer) {
     return <p className="adecl-muted">{BRAND.NAME} can&apos;t find this lane&apos;s computer right now. Open the {BRAND.CLOUD_NAME} page to see it.</p>;
   }
   const life = cloudLaneChangesAvailable();
   const awake = computer.state === "running";
   const idle = account?.dueForDeletion?.find((entry) => entry.instanceId === computer.instanceId) ?? null;
+  const held = heldIdleEntry(idle);
 
   const free = async () => {
     setFreeing(true);
@@ -65,6 +68,16 @@ export function CloudLaneComputerPanel({
       if (await freeCloudLaneWithConfirm({ instanceId: computer.instanceId, laneName, onDone: refreshCloudMachines })) onClose();
     } finally {
       setFreeing(false);
+    }
+  };
+
+  /** A computer the idle cleanup kept: only the computer goes, after one confirm. */
+  const deleteAnyway = async (entry: NonNullable<typeof held>) => {
+    setDeletingAnyway(true);
+    try {
+      if (await deleteIdleComputerAnyway(entry)) onClose();
+    } finally {
+      setDeletingAnyway(false);
     }
   };
 
@@ -84,10 +97,17 @@ export function CloudLaneComputerPanel({
           <ManageRow
             icon={<Clock size={14} />}
             title="Keep this computer"
-            hint={idle.held ? `${BRAND.NAME} couldn't save its work, so it wasn't deleted.` : `It isn't used, so it is ${idleCleanupWhen(idle.deletesAt, Date.now())}.`}
+            hint={held ? heldIdleSentences(held, Date.now()) : `It isn't used, so it is ${idleCleanupWhen(idle.deletesAt, Date.now())}.`}
             tone="warn"
           >
             <button type="button" className="kit-btn" data-size="sm" onClick={() => void keepLaneComputer(computer.instanceId, laneName)}>Keep it</button>
+          </ManageRow>
+        ) : null}
+        {held && canDeleteIdleComputerAnyway() ? (
+          <ManageRow icon={<Trash size={14} />} title="Delete only the computer" hint="The lane and its chats stay. Your next message makes a new computer." tone="crit">
+            <button type="button" className="kit-btn" data-size="sm" data-tone="crit" disabled={deletingAnyway} onClick={() => void deleteAnyway(held)}>
+              {deletingAnyway ? "Deleting…" : "Delete anyway"}
+            </button>
           </ManageRow>
         ) : null}
         {life || cloudLaneMovesAvailable() ? (

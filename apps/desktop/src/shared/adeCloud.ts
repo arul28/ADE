@@ -111,12 +111,13 @@ export type { CloudComputerLimitDetail, CloudComputerLimitLane, CloudDiskRefusal
 export {
   CLOUD_BACKUP_NOT_SAVED_SENTENCE,
   CLOUD_IGNORED_FILES_MAX_PATHS,
-  idleCleanupHeldNext,
   idleCleanupSaveSentence,
   idleCleanupWhen,
   ignoredFilesList,
   ignoredFilesSentence,
+  idleHeldWords,
 } from "../../../account-directory/src/cloud/contract";
+export type { CloudIdleHeldKind, CloudIdleHeldWords } from "../../../account-directory/src/cloud/contract";
 
 export { formatCloudCents };
 /** The disk-grow rules live in `cloudDiskGrowRules.ts`. */

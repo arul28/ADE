@@ -398,7 +398,7 @@ export function createWebCloudNamespace(
         case "workState":
           return await life.workState(needInstance());
         case "deleteLane":
-          return await life.deleteLane({ instanceId: needInstance(), skipCheck: record.skipCheck === true, keepChats: record.keepChats === true });
+          return await life.deleteLane({ instanceId: needInstance(), skipCheck: record.skipCheck === true, keepChats: record.keepChats === true, keepLane: record.keepLane === true });
         case "freeLane":
           return await life.freeLane({ instanceId: needInstance() });
         case "lanesWithoutComputer":

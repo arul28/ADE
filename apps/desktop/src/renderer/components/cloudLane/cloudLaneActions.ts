@@ -80,6 +80,7 @@ export async function deleteCloudLane(instanceId: string, options: CloudLaneDele
     skipCheck: options.skipCheck,
     keepChats: options.keepChats === true,
     ...(options.onlyChats ? { onlyChats: [...options.onlyChats] } : {}),
+    ...(options.keepLane ? { keepLane: true } : {}),
   });
   if (done.ok) forgetCloudLaneComputer(instanceId);
   return done;

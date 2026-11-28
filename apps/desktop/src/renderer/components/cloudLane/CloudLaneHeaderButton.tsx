@@ -19,6 +19,7 @@ import { cloudLaneChangesAvailable, cloudLaneMovesAvailable } from "./cloudLaneA
 import { cloudLaneJobFor, openCloudLaneJobBar, useCloudLaneJobs } from "./cloudLaneStores";
 import { CLOUD_LANE_POWER_TEXT, cloudLanePower, cloudLaneStatusModel, type CloudLanePower, type CloudLaneStatusLine } from "./cloudLaneStatus";
 import { deleteCloudLaneWithCheck } from "./deleteCloudLane";
+import { canDeleteIdleComputerAnyway, deleteIdleComputerAnyway, heldIdleEntry, heldIdleSentences } from "./cloudIdleHeld";
 import { forgetCloudComputerStatus, useCloudComputerStatus } from "./useCloudComputerStatus";
 import "../remoteTargets/cloudBrand.css";
 import "../remoteTargets/connections.css";
@@ -54,6 +55,7 @@ export function CloudLaneHeaderButton({ laneId, turnRunning }: { laneId: string 
   if (!computer) return null;
   const name = computer.laneName || "this lane";
   const idle = account?.dueForDeletion?.find((entry) => entry.instanceId === computer.instanceId) ?? null;
+  const held = heldIdleEntry(idle);
   const power = cloudLanePower({
     state: computer.state,
     waking: machine.waking,
@@ -62,7 +64,7 @@ export function CloudLaneHeaderButton({ laneId, turnRunning }: { laneId: string 
   });
   const title = [
     `${BRAND.CLOUD_NAME} computer · ${CLOUD_LANE_POWER_TEXT[power]}`,
-    idle ? (idle.held ? `It wasn't deleted: ${BRAND.NAME} couldn't save its work` : `It will be ${idleCleanupWhen(idle.deletesAt, Date.now())} because it isn't used`) : null,
+    idle ? (held ? heldIdleSentences(held, Date.now()) : `It will be ${idleCleanupWhen(idle.deletesAt, Date.now())} because it isn't used`) : null,
   ].filter(Boolean).join(". ");
 
   const wakeNow = async () => {
@@ -157,6 +159,7 @@ function CloudLaneStatusMenu({
   const job = cloudLaneJobFor(jobs, { instanceId: computer.instanceId, laneId: computer.laneId });
   const model = cloudLaneStatusModel({ power, box, status, account, now, job });
   const life = cloudLaneChangesAvailable();
+  const held = heldIdleEntry(idle);
 
   const { run } = menu;
 
@@ -230,6 +233,19 @@ function CloudLaneStatusMenu({
           >
             <span className="ade-cx-menu-icon"><Clock size={13} /></span>
             Keep this computer
+          </button>
+        ) : null}
+        {held && canDeleteIdleComputerAnyway() ? (
+          <button
+            type="button"
+            role="menuitem"
+            className="ade-cx-menu-item"
+            data-tone="danger"
+            aria-label="Delete this computer anyway. The lane and its chats stay."
+            onClick={run(() => void deleteIdleComputerAnyway(held))}
+          >
+            <span className="ade-cx-menu-icon"><Trash size={13} /></span>
+            Delete anyway
           </button>
         ) : null}
         <div className="adecl-status-actions">

@@ -133,21 +133,30 @@ describe("cloud lane life: the work check", () => {
   });
 
   // A person's delete takes the lane's saved chats, after the computer is gone; "keep its chats" and a failed delete leave every one.
-  it.each<[string, { keepChats?: boolean; onlyChats?: string[]; arrange?: () => void }, { deleted: string[]; chatsKept: boolean }]>([
+  it.each<[string, { keepChats?: boolean; onlyChats?: string[]; keepLane?: boolean; skipCheck?: boolean; arrange?: () => void }, { deleted: string[]; chatsKept: boolean; keepsLane?: boolean }]>([
     ["by default", {}, { deleted: ["chat_a", "chat_b", "chat_d"], chatsKept: false }],
     // A lane move: only the chats that arrived, under the computer's key and a replaced one's; the chat it left stays.
     ["after a lane move", { onlyChats: ["chat_b", "chat_d"] }, { deleted: ["chat_b", "chat_d"], chatsKept: false }],
     ["when the person keeps its chats", { keepChats: true }, { deleted: [], chatsKept: true }],
     ["when the computer's delete fails", { arrange: () => { run.mockResolvedValue({ ok: false, message: "no" }); } }, { deleted: [], chatsKept: true }],
     ["when ADE Cloud refuses a chat's delete", { arrange: () => { deleteSavedChat.mockRejectedValue(new Error("503")); } }, { deleted: [], chatsKept: true }],
-  ])("deleting a lane %s", async (_label, { keepChats, onlyChats, arrange }, expected) => {
+    // "Delete anyway" on a computer the idle cleanup kept: only the computer goes. No check, no push; the lane and every chat stay.
+    ["with Delete anyway", { keepLane: true, skipCheck: false }, { deleted: [], chatsKept: true, keepsLane: true }],
+  ])("deleting a lane %s", async (_label, { keepChats, onlyChats, keepLane, skipCheck = true, arrange }, expected) => {
     arrange?.();
-    const { lane } = build();
+    const { lane, machines } = build();
 
-    const result = await lane.deleteLane({ instanceId: INSTANCE, skipCheck: true, keepChats, onlyChats });
+    const result = await lane.deleteLane({ instanceId: INSTANCE, skipCheck, keepChats, onlyChats, keepLane });
 
     expect(deletedChats).toEqual(expected.deleted);
     expect(result.chatsKept).toBe(expected.chatsKept);
+    const deleteCall = run.mock.calls[0]?.[0] as { action: string; keepLane?: unknown };
+    expect(deleteCall.action).toBe("delete");
+    expect(deleteCall.keepLane ?? null).toEqual(expected.keepsLane ? { branchRef: null } : null);
+    if (expected.keepsLane) {
+      expect(machines.runPushWork).not.toHaveBeenCalled();
+      expect(exec).not.toHaveBeenCalled();
+    }
     // The chats go only after the computer is gone.
     if (listSavedChats.mock.calls.length) expect(run.mock.invocationCallOrder[0]!).toBeLessThan(listSavedChats.mock.invocationCallOrder[0]!);
     if (keepChats || !result.ok) expect(listSavedChats).not.toHaveBeenCalled();
