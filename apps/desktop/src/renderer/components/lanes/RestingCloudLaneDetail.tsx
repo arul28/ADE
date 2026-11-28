@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { CLOUD_MAC_NAME } from "../../../shared/cloudMac";
+import { useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
 import { CircleNotch, GearSix, Lightning } from "@phosphor-icons/react";
 import type { CloudGitSummaryCounts } from "../../../../../account-directory/src/cloud/contract";
 import type { OpenProjectBinding } from "../../../shared/types/core";
@@ -108,11 +110,14 @@ export function RestingCloudLaneDetail({ laneName, machine, onManage }: {
 }) {
   const pin = machine.binding ?? null;
   const laneWake = useAdeCloudLaneWake(pin);
+  // A DAEX Cloud Mac stops and starts; it never sleeps.
+  const mac = useAdeCloudLaneForBinding(pin)?.os === "mac";
+  const noun = mac ? CLOUD_MAC_NAME : `${BRAND.CLOUD_NAME} computer`;
   const listWaking = useCloudMachineWakeInFlight(restingCloudMachineKey(machine));
   const waking = laneWake.state === "waking" || listWaking;
   const read = useRestingLaneRead(machine);
   const wake = () => {
-    if (!laneWake.wake()) wakeRestingCloudMachine({ ...machine, machineName: `your ${BRAND.CLOUD_NAME} computer` });
+    if (!laneWake.wake()) wakeRestingCloudMachine({ ...machine, machineName: `your ${noun}` });
   };
 
   const summary = read.status === "ready" ? read.summary : null;
@@ -130,8 +135,8 @@ export function RestingCloudLaneDetail({ laneName, machine, onManage }: {
           <div className="truncate text-[13px] font-medium" style={{ color: COLORS.textPrimary }}>{laneName}</div>
           <div className="mt-0.5 text-[12px]" style={{ color: COLORS.textMuted }}>
             {waking
-              ? `Waking your ${BRAND.CLOUD_NAME} computer. The lane opens when it is connected.`
-              : `Your ${BRAND.CLOUD_NAME} computer is asleep. This is the lane as it was last saved.`}
+              ? `${mac ? "Starting" : "Waking"} your ${noun}. The lane opens when it is connected.`
+              : `Your ${noun} is ${mac ? "stopped" : "asleep"}. This is the lane as it was last saved.`}
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
@@ -154,7 +159,7 @@ export function RestingCloudLaneDetail({ laneName, machine, onManage }: {
             data-testid="lane-detail-cloud-wake"
           >
             {waking ? <CircleNotch size={12} className="animate-spin" /> : <Lightning size={12} />}
-            {waking ? "Waking…" : "Wake to run"}
+            {waking ? (mac ? "Starting…" : "Waking…") : mac ? "Start to run" : "Wake to run"}
           </button>
         </div>
       </div>
@@ -214,7 +219,7 @@ export function RestingCloudLaneDetail({ laneName, machine, onManage }: {
                   ))}
                   {files.length > listed.length ? (
                     <div className="pt-1 text-[12px]" style={{ color: COLORS.textDim }}>
-                      {files.length - listed.length} more. Wake the computer to see all of them.
+                      {files.length - listed.length} more. {mac ? "Start the Mac" : "Wake the computer"} to see all of them.
                     </div>
                   ) : null}
                 </div>

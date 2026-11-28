@@ -675,6 +675,8 @@ html[data-motion="reduced"] .adecd-hero-plan[data-celebrate] { animation: none !
 .adecd-name-text { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
 .adecd-name .kit-tag { flex: none; }
 /* The size, then its rate; a rate that doesn't fit goes under the size, and wraps there too, never cut. */
+/* A Mac's state ("Stopped · drive kept", "Waiting for a Mac") wraps to a second line instead of losing its end. */
+.adecd-tr > .adecd-state { white-space: normal; text-overflow: clip; line-height: 1.3; }
 .adecd-tr > .adecd-tsize { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 6px; white-space: normal; color: var(--kit-text-2); }
 .adecd-tsize em { min-width: 0; font-style: normal; color: var(--kit-text-3); }
 .adecd-when { color: var(--kit-text-3); }
@@ -839,3 +841,49 @@ html[data-motion="reduced"] .adecd-hero-plan[data-celebrate] { animation: none !
   box-shadow: 0 6px 18px -10px rgba(139, 92, 246, 0.8);
 }
 .kit-btn.kit-btn-primary.adecd-brandbtn:hover:not(:disabled) { filter: brightness(1.08); }
+
+/* The DAEX Cloud Mac: a row's line under it, and the explainer above the table. */
+.adecd-mac-mark { color: var(--color-fg); opacity: 0.82; flex: none; }
+.adecd-row-note {
+  padding: 0 16px 9px 42px;
+  margin-top: -4px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--kit-text-3);
+}
+.adecd-row-note[data-tone="warn"] { color: color-mix(in srgb, var(--kit-crit) 80%, var(--kit-text-2)); }
+.adecd-mac-explainer {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin: 12px 16px 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--kit-rule);
+  border-radius: var(--radius-md, 8px);
+  background: color-mix(in srgb, var(--color-fg) 3%, transparent);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--kit-text-2);
+}
+.adecd-mac-explainer svg { flex: none; margin-top: 2px; color: var(--color-fg); opacity: 0.8; }
+.adecd-mac-explainer p { margin: 0; flex: 1; min-width: 0; }
+.adecd-mac-explainer .kit-btn { flex: none; align-self: center; }
+.adecd-mac-explainer b { color: var(--color-fg); font-weight: 600; }
+.adecd-mac-size {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--kit-rule);
+  border-radius: var(--radius-lg, 10px);
+}
+.adecd-mac-size[data-picked] { border-color: color-mix(in srgb, var(--adec-400) 60%, var(--kit-rule)); }
+.adecd-mac-size > svg { flex: none; color: var(--color-fg); opacity: 0.85; }
+.adecd-mac-size-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.adecd-mac-size-text b { font-size: 13px; }
+.adecd-mac-size-text span { font-size: 12px; color: var(--kit-text-2); }
+.adecd-mac-size-text small { font-size: 11.5px; color: var(--kit-text-3); line-height: 1.45; }
+.adecd-mac-size-side { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex: none; text-align: right; }
+.adecd-mac-size-side b { font-size: 18px; }
+.adecd-mac-size-side span { font-size: 11px; color: var(--kit-text-3); }

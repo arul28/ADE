@@ -50,7 +50,7 @@ export type LaneMachineTarget = {
  * broadcast, both only while `open`. No polling. ADE Cloud adds the shared
  * cloud computer list while `open` (`useAdeCloudLaneTarget`).
  */
-export function useLaneMachineChoice(open: boolean) {
+export function useLaneMachineChoice(open: boolean, options: { savedOs?: boolean } = {}) {
   const projectBinding = useAppStore((s) => s.projectBinding);
   const project = useAppStore((s) => s.project);
   const openProjectTabRoots = useAppStore((s) => s.openProjectTabRoots);
@@ -229,7 +229,7 @@ export function useLaneMachineChoice(open: boolean) {
       .map((machine) => machine.id),
     [machineTargets, machines],
   );
-  const adeCloud = useAdeCloudLaneTarget(open, repoOriginUrl);
+  const adeCloud = useAdeCloudLaneTarget(open, repoOriginUrl, { savedOs: options.savedOs ?? true });
   // "Start on": the default place for new work in this repository.
   const { choices: startOnChoices, defaultChoice: startOnChoice } = useActiveStartOn(open);
   const startOnMachineId = startOnChoice?.kind === "copy"

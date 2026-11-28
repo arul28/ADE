@@ -13,7 +13,8 @@ import { CloudSizeButton, TRAY_ACTION_LABEL } from "../chat/AdeCloudComposerPart
 import { adeCloudAccountBlock, type AdeCloudTrayAction } from "../chat/useAdeCloudDraft";
 import { CloudMark } from "../remoteTargets/cloudBrand";
 import { Banner, NoticePopover, type NoticeAction } from "../ui/notice";
-import { cloudLaneRestartProblem, cloudLaneRestartTier, useStartLaneOnNewComputer } from "./CloudLaneWithoutComputer";
+import { cloudLaneRestartOs, cloudLaneRestartProblem, cloudLaneRestartTier, useStartLaneOnNewComputer } from "./CloudLaneWithoutComputer";
+import { CLOUD_MAC_NAME } from "../../../shared/cloudMac";
 import { cloudUnitWords } from "../../../shared/cloudUnitWords";
 import {
   CLOUD_LANE_WITHOUT_COMPUTER_DELETE_LABEL,
@@ -60,6 +61,8 @@ export type CloudLaneComputerDeleted = {
   branch: string | null;
   /** The size a new computer starts at, as the catalog names it. */
   sizeLabel: string;
+  /** The new computer is a Mac (a kept Mac lane's own start): no size, the Mac's words. */
+  mac: boolean;
   /** Why no new computer can start now, and the fixes that reason implies. */
   blocked: { message: string; actions: AdeCloudTrayAction[] } | null;
   kept: CloudLaneWithoutComputer | null;
@@ -89,7 +92,9 @@ export function cloudLaneComputerDeletedFacts(input: {
   const { kept, account } = input;
   const fate = kept ? cloudLaneWithoutComputerFate({ kept, computer: null }) : savedChatFateSentence(input.computer);
   const branch = cloudLaneWithoutComputerBranch(kept, input.branch ?? null);
-  const accountBlock = adeCloudAccountBlock(account, { newLane: true });
+  // A kept Mac lane continues on a Mac: its own start and a send through the queue both make one.
+  const mac = kept != null && cloudLaneRestartOs(kept, account) === "mac";
+  const accountBlock = adeCloudAccountBlock(account, { newLane: true, os: mac ? "mac" : null });
   // Without the queue, the new computer starts from this window: a kept lane's own start, or nothing.
   const localProblem = input.viaQueue
     ? null
@@ -104,7 +109,8 @@ export function cloudLaneComputerDeletedFacts(input: {
     laneName: kept?.laneName ?? input.laneName,
     fate,
     branch,
-    sizeLabel: input.viaQueue || !kept ? cloudQueueSizeLabel(account) : cloudTierLabel(account, cloudLaneRestartTier(kept, account, input.defaultTier)),
+    sizeLabel: mac ? CLOUD_MAC_NAME : input.viaQueue || !kept ? cloudQueueSizeLabel(account) : cloudTierLabel(account, cloudLaneRestartTier(kept, account, input.defaultTier)),
+    mac,
     blocked,
     kept,
   };
@@ -219,7 +225,7 @@ export function CloudLaneComputerDeletedBanner({
   const picked = useNewComputerSize(sizeMachineKey);
   const account = useCloudAccount(Boolean(sizeMachineKey));
   const branch = facts.branch ?? "the lane's branch";
-  const sizeLabel = picked ? cloudTierLabel(account, picked) : facts.sizeLabel;
+  const sizeLabel = picked && !facts.mac ? cloudTierLabel(account, picked) : facts.sizeLabel;
   // In Lanes, a lane with no kept record is only its saved chats: say so, so its Delete reads plainly.
   const onlyChats = where === "lane" && !facts.kept && row && row.sessions.length > 0 ? onlyChatsLeftSentence(row.sessions.length) : null;
   if (facts.blocked) {
@@ -243,12 +249,16 @@ export function CloudLaneComputerDeletedBanner({
     );
   }
   const next = where === "chat"
-    ? `Your next message makes a new computer on ${branch}, at ${sizeLabel}, and continues this chat there.`
+    ? facts.mac
+      ? `Your next message starts a new Mac on ${branch} and continues this chat there.`
+      : `Your next message makes a new computer on ${branch}, at ${sizeLabel}, and continues this chat there.`
     : newComputer
-      ? `A new computer for it starts on ${branch}, at ${facts.sizeLabel}.`
-      : `A message in its chat makes a new computer on ${branch}, at ${facts.sizeLabel}, and continues the chat there.`;
+      ? facts.mac ? `A new Mac for it starts on ${branch}.` : `A new computer for it starts on ${branch}, at ${facts.sizeLabel}.`
+      : facts.mac
+        ? `A message in its chat starts a new Mac on ${branch} and continues the chat there.`
+        : `A message in its chat makes a new computer on ${branch}, at ${facts.sizeLabel}, and continues the chat there.`;
   const primary: NoticeAction[] = newComputer
-    ? [{ label: newComputer.busy ? "Starting…" : "New computer", busy: newComputer.busy, onClick: newComputer.start }]
+    ? [{ label: newComputer.busy ? "Starting…" : facts.mac ? "Start the Mac" : "New computer", busy: newComputer.busy, onClick: newComputer.start }]
     : onOpenChat ? [{ label: "Open chat", onClick: onOpenChat }] : [];
   return (
     <Banner
@@ -267,7 +277,7 @@ export function CloudLaneComputerDeletedBanner({
           </>
         ),
         actions: [...primary, ...(deleteAction ? [deleteAction] : [])],
-        extra: sizeMachineKey ? <NewComputerSizeChip machineKey={sizeMachineKey} account={account} picked={picked} /> : undefined,
+        extra: sizeMachineKey && !facts.mac ? <NewComputerSizeChip machineKey={sizeMachineKey} account={account} picked={picked} /> : undefined,
       }}
     />
   );

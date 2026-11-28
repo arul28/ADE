@@ -859,6 +859,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
         cloud: {
           sizeId: cloud.sizeId,
           ...(cloud.sizeChoice ? { sizeChoice: cloud.sizeChoice } : {}),
+          ...(cloud.os === "mac" ? { os: "mac" as const } : {}),
           projectOrigin: project.identity,
           instanceId: null,
           machineKey: null,

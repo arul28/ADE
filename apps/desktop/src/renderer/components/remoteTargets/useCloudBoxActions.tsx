@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState, type ReactNode } from "react";
+import { cloudMacPhaseOf, cloudMachineAllows, isCloudMacMachine, type CloudComputerAction } from "../../../shared/cloudMac";
 import { ArrowClockwise, ArrowsOutSimple, ArrowsLeftRight, CloudArrowUp, Copy, Moon, PlugsConnected, Sun, Trash, UserMinus } from "@phosphor-icons/react";
 import {
   CLOUD_SHAPES,
@@ -104,8 +105,16 @@ function chatsLine(count: number, name: string): string {
  * everything, so a turn in progress may fail. True with nothing running.
  * Every Sleep asks this way (the machine list, a cloud lane's chat header).
  */
-export async function confirmCloudSleep(name: string, runningChats: number): Promise<boolean> {
+export async function confirmCloudSleep(name: string, runningChats: number, mac = false): Promise<boolean> {
   if (runningChats <= 0) return true;
+  // A Mac's sleep is its stop: its drive is saved, and the next message starts a new Mac with it.
+  if (mac) {
+    return await confirmDialog({
+      title: `Stop ${name}?`,
+      message: `${chatsLine(runningChats, name)} Stopping ends the turns in progress, and they show as Stopped. The drive is saved; your next message starts the Mac again.`,
+      confirmLabel: "Stop",
+    });
+  }
   return await confirmDialog({
     title: `Sleep ${name}?`,
     message: `${chatsLine(runningChats, name)} Sleep stops the turns in progress first, and they show as Stopped. Send again after it wakes. It uses no credits while asleep.`,
@@ -213,7 +222,7 @@ export function useCloudBoxActions(args: {
   }, [refresh, setError, setPending]);
 
   const sleep = useCallback(async (ctx: CloudBoxContext) => {
-    if (!(await confirmCloudSleep(ctx.name, ctx.work.runningChats))) return;
+    if (!(await confirmCloudSleep(ctx.name, ctx.work.runningChats, isCloudMacMachine(ctx.box)))) return;
     await run(ctx, "sleep");
   }, [run]);
 
@@ -435,10 +444,18 @@ export function useCloudBoxActions(args: {
     const busy = pendingById[box.instanceId] != null;
     const suspended = box.pastDue;
     const items: MachineAction[] = [];
+    // The server lists what this computer refuses (a Mac: size, copy, move, update, backups).
+    const allows = (action: CloudComputerAction) => cloudMachineAllows(box, action);
+    const mac = isCloudMacMachine(box);
     if (box.state === "running") {
-      items.push({ key: "cloud-sleep", label: "Sleep", icon: <Moon size={14} />, disabled: busy, onSelect: () => void sleep(ctx) });
+      // A Mac's sleep is its stop: the server saves its drive and lets the Mac go.
+      items.push({ key: "cloud-sleep", label: mac ? "Stop now" : "Sleep", icon: <Moon size={14} />, disabled: busy, onSelect: () => void sleep(ctx) });
     }
-    if ((box.state === "asleep" || box.state === "stopped") && !suspended) {
+    // A computer the server can't wake now says why on its row (`unavailable`), with no Wake;
+    // so does a Mac whose drive is gone or that is still saving it.
+    const macPhase = mac ? cloudMacPhaseOf(box.mac, box.state) : null;
+    const macCantStart = macPhase === "drive_lost" || macPhase === "stopping";
+    if ((box.state === "asleep" || box.state === "stopped") && !suspended && !box.unavailable && !macCantStart) {
       items.push({
         key: "cloud-wake",
         label: box.state === "stopped" ? "Start" : "Wake",
@@ -447,11 +464,13 @@ export function useCloudBoxActions(args: {
         onSelect: () => void run(ctx, "wake"),
       });
     }
-    if (box.state === "running" && box.resources) {
+    if (box.state === "running" && box.resources && allows("resize")) {
       items.push({ key: "cloud-resize", label: "Resize…", icon: <ArrowsOutSimple size={14} />, disabled: busy, onSelect: () => setResizing(ctx) });
     }
-    if (box.machineKey && (box.state === "running" || box.state === "asleep" || box.state === "stopped")) {
+    if (box.machineKey && allows("copy") && (box.state === "running" || box.state === "asleep" || box.state === "stopped")) {
       items.push({ key: "cloud-copy", label: "Copy…", icon: <Copy size={14} />, disabled: busy, onSelect: () => void copyBox(ctx) });
+    }
+    if (box.machineKey && allows("move") && (box.state === "running" || box.state === "asleep" || box.state === "stopped")) {
       items.push({
         key: "cloud-move",
         label: box.type === "vm" ? "Move to a standard computer…" : "Move to a full computer…",
@@ -460,10 +479,10 @@ export function useCloudBoxActions(args: {
         onSelect: () => void moveBox(ctx),
       });
     }
-    if (box.state === "running" || box.state === "asleep" || box.state === "stopped") {
+    if (allows("update") && (box.state === "running" || box.state === "asleep" || box.state === "stopped")) {
       items.push({ key: "cloud-update", label: "Update this computer", icon: <ArrowClockwise size={14} />, disabled: busy, onSelect: () => void updateBox(ctx) });
     }
-    if (box.state === "running" || box.state === "asleep" || box.state === "stopped") {
+    if (allows("backup") && (box.state === "running" || box.state === "asleep" || box.state === "stopped")) {
       items.push({ key: "cloud-backup", label: "Back up now", icon: <CloudArrowUp size={14} />, disabled: busy, onSelect: () => void run(ctx, "backup") });
     }
     // A box that joined once (it carries its machine key) and left the account.

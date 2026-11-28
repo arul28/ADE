@@ -5,6 +5,7 @@ import {
   cloudSmallUsesHours,
   cloudAccountComputers,
   cloudCatalogOf,
+  cloudHoursLeftMilli,
   cloudPlanComputerLimitOf,
   cloudExtraHourCentsOf,
   cloudLimitsPresetOf,
@@ -26,6 +27,21 @@ import {
 import { cloudLaneStartBlock, type CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import { cloudHoursOnSizesLine, cloudTierOfMachine, cloudTierUsesHours, cloudTiers, type CloudTierId } from "../../../shared/cloudTiers";
 import { cloudUnitWords } from "../../../shared/cloudUnitWords";
+import {
+  CLOUD_MAC_PHASE_LABEL,
+  CLOUD_MAC_START_WORDS,
+  cloudMacDriveText,
+  cloudMacOfferOf,
+  cloudMacPhaseOf,
+  cloudMacPlanLine,
+  cloudMacRateText,
+  cloudMacSentence,
+  cloudMacShapeText,
+  cloudMacTimeAt,
+  type CloudComputerAction,
+  type CloudMacOffer,
+  type CloudMacPhase,
+} from "../../../shared/cloudMac";
 import { NO_PROVIDER_SENTENCE } from "./cloudAccess";
 import { BRAND } from "../../../shared/brand";
 
@@ -91,6 +107,15 @@ export type CloudStatusComputer = {
    * `failed` with why. Null from a server before updates.
    */
   update: { image: string | null; channel: "stable" | "beta"; target: string | null; state: "auto" | "updating" | "failed"; error: string | null } | null;
+  /**
+   * A DAEX Cloud Mac's own state (absent on Linux): its phase and word, the
+   * server's sentence, its drive as the last stop saved it, and what it refuses.
+   */
+  mac?: { phase: CloudMacPhase; label: string; sentence: string | null; drive: string | null; unsupported: CloudComputerAction[] };
+  /** Credits a minute while a Mac runs (absent on Linux: `hoursRate` is per hour). */
+  ratePerMinute?: number;
+  /** The server can't wake it or send to it now (`computer_unavailable`): its sentence. */
+  unavailable?: string;
 };
 
 /** `cloud.status`: the whole account in one read, with no wake and no spend. */
@@ -153,6 +178,8 @@ export type CloudAccountStatus = {
     hours: number;
     /** The same hours as time on each size: "50 hours on a Medium · 20 on a Large · 12 on an X-Large". */
     hoursOnSizes: string;
+    /** The plan's credits as time on a Mac ("1 h 40 min of Mac"), only while the account is offered one. */
+    macTime?: string;
     /** Whether outside agents (ADE MCP) may start ADE Cloud work on it. */
     outsideAgents: boolean;
     /** Cents an hour past the plan, null where the bigger sizes stop (Free). */
@@ -161,6 +188,21 @@ export type CloudAccountStatus = {
   }>;
   /** "Unlimited Small computers. They never use your credits.", or what Small uses when this account's catalog rates it. */
   smallComputers: string;
+  /**
+   * The DAEX Cloud Mac this account is offered (the catalog's `mac`, sent only
+   * while the server's switch reaches it); absent otherwise. `timeLeft` is the
+   * credits left as time on a Mac. A Mac starts only with `--os mac`.
+   */
+  mac?: {
+    label: string;
+    shape: string;
+    ratePerMinute: number;
+    rate: string;
+    timeLeft: string | null;
+    startsIn: string;
+    summary: string;
+    keeps: string;
+  };
   /** How many computers the account has (asleep or not), how many are awake, and the plan's limit. */
   computers: { inUse: number; awake: number; limit: number } | null;
   /** Every computer of the account, lanes first. */
@@ -200,7 +242,7 @@ export type CloudAccountStatus = {
 const PLAN_ORDER: readonly CloudPlanId[] = ["free", "plus", "pro", "max"];
 
 /** The plans the server sells, from its catalog (`plus` is `paid` on a server before Pro). */
-function plansOf(catalog: CloudCatalog, current: CloudPlanId | null): CloudAccountStatus["plans"] {
+function plansOf(catalog: CloudCatalog, current: CloudPlanId | null, macOffer: CloudMacOffer | null): CloudAccountStatus["plans"] {
   const tiers = cloudTiers(catalog);
   return PLAN_ORDER.flatMap((id) => {
     const facts = id === "plus" ? catalog.plans.plus ?? catalog.plans.paid : catalog.plans[id];
@@ -212,6 +254,7 @@ function plansOf(catalog: CloudCatalog, current: CloudPlanId | null): CloudAccou
       computers: cloudPlanComputerLimitOf(facts),
       hours: milliToHours(facts.includedMilli),
       hoursOnSizes: cloudHoursOnSizesLine(facts.includedMilli, tiers),
+      ...(macOffer && cloudMacPlanLine(macOffer, facts.includedMilli) ? { macTime: cloudMacPlanLine(macOffer, facts.includedMilli)! } : {}),
       outsideAgents: facts.outsideAgents !== false,
       extraHourCents: cloudExtraHourCentsOf(id, catalog),
       current: id === current,
@@ -252,7 +295,28 @@ export function buildCloudAccountStatus(input: {
   const catalog = cloudCatalogOf(account);
   const tiers = cloudTiers(catalog);
   const deletesAt = new Map((account?.dueForDeletion ?? []).map((entry) => [entry.instanceId, new Date(entry.deletesAt).toISOString()]));
+  const macOffer = cloudMacOfferOf(account);
   const lanes: CloudStatusComputer[] = (result.machines as CloudLaneMachine[]).map((box) => {
+    if (box.os === "mac") {
+      const phase = cloudMacPhaseOf(box.mac, box.status);
+      return {
+        instanceId: box.instanceId,
+        name: box.name,
+        machineKey: box.machineKey,
+        lane: box.lane ? { id: box.lane.laneId, name: box.lane.laneName, projectOrigin: box.lane.projectOrigin } : null,
+        size: null,
+        sizeLabel: macOffer ? `Mac · ${cloudMacShapeText(macOffer)}` : "Mac",
+        hoursRate: null,
+        ...(macOffer ? { ratePerMinute: macOffer.creditMilliPerMinute / 1000 } : {}),
+        state: box.state,
+        lastUsedAt: box.lastActiveAtMs != null ? new Date(box.lastActiveAtMs).toISOString() : null,
+        deletesAt: deletesAt.get(box.instanceId) ?? null,
+        disk: { sizeGb: box.mac?.drive?.sizeGb ?? null, full: box.diskFull, usage: box.diskUsage ?? null },
+        update: null,
+        mac: { phase, label: CLOUD_MAC_PHASE_LABEL[phase], sentence: cloudMacSentence(box.mac), drive: cloudMacDriveText(box.mac), unsupported: [...(box.unsupported ?? [])] },
+        ...(box.unavailable ? { unavailable: box.unavailable } : {}),
+      };
+    }
     const tier = cloudTierOfMachine(box, tiers);
     return {
       instanceId: box.instanceId,
@@ -272,6 +336,7 @@ export function buildCloudAccountStatus(input: {
       update: box.update
         ? { image: box.update.image, channel: box.update.channel, target: box.update.target, state: box.update.state, error: box.update.error }
         : null,
+      ...(box.unavailable ? { unavailable: box.unavailable } : {}),
     };
   }).sort((left, right) => Number(right.lane != null) - Number(left.lane != null));
   // A paid plan with a failed payment follows the free plan's rules until paid.
@@ -318,9 +383,23 @@ export function buildCloudAccountStatus(input: {
           resetsAt: part.billing ? new Date(part.billing.periodEnd).toISOString() : null,
         }
       : null,
-    plans: plansOf(catalog, account ? cloudPlanIdOf(account) : null),
+    plans: plansOf(catalog, account ? cloudPlanIdOf(account) : null, macOffer),
     // Free with sponsored cards off (the server's `smallNeedsCards` rule): Small uses credits, as the catalog rates it.
     smallComputers: cloudSmallHoursSentence(catalog, words),
+    ...(macOffer
+      ? {
+          mac: {
+            label: macOffer.label,
+            shape: cloudMacShapeText(macOffer),
+            ratePerMinute: macOffer.creditMilliPerMinute / 1000,
+            rate: cloudMacRateText(macOffer, words),
+            timeLeft: account ? cloudMacTimeAt(macOffer, cloudHoursLeftMilli(account)) : null,
+            startsIn: CLOUD_MAC_START_WORDS,
+            summary: macOffer.summary,
+            keeps: macOffer.keeps,
+          },
+        }
+      : {}),
     computers: part.computers && account ? { inUse: part.computers.total, awake: part.computers.awake, limit: cloudAccountComputers(account).limit } : null,
     lanes,
     sizes: tiers.map((tier) => ({

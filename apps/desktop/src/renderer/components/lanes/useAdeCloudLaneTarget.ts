@@ -11,8 +11,8 @@ export { ADE_CLOUD_MACHINE_ID } from "../chat/useAdeCloudDraft";
  * computers from the one shared list (`useCloudMachines`, while `open`), the
  * catalog's sizes and the saved default size. No read of its own.
  */
-export function useAdeCloudLaneTarget(open: boolean, originUrl: string | null) {
-  const draft = useAdeCloudDraft({ enabled: open, originUrl });
+export function useAdeCloudLaneTarget(open: boolean, originUrl: string | null, options: { savedOs?: boolean } = {}) {
+  const draft = useAdeCloudDraft({ enabled: open, originUrl, savedOs: options.savedOs ?? true });
   // A lane on ADE Cloud clones the project from GitHub: without a GitHub
   // origin the choice is shown, off, with the reason.
   const originProblem = useMemo(
@@ -38,6 +38,10 @@ export function useAdeCloudLaneTarget(open: boolean, originUrl: string | null) {
     setDefaultTier: draft.setDefaultTier,
     /** The account's words (`cloudUnitWords`). */
     words: draft.words,
+    /** The DAEX Cloud Mac offer, or null; `os` is always `linux` without one. */
+    macOffer: draft.macOffer,
+    os: draft.os,
+    chooseOs: draft.chooseOs,
     /** The line under the name in a machine list. Each plan allows a number of computers (the limit card says so when it's reached). */
     detail: "A new computer for each lane",
   };

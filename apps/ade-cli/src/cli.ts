@@ -895,6 +895,8 @@ export type GlobalOptions = {
   machineClone?: boolean;
   /** `--size` with `--machine cloud`: the new ADE Cloud computer's size (the person's saved size for new lanes when unset). */
   cloudSize?: string | null;
+  /** `--os mac` with `--machine cloud`: a DAEX Cloud Mac for this start only (never a saved default). */
+  cloudOs?: "linux" | "mac" | null;
   /**
    * Set by `cliMachineTargeting` when a `--machine` shell start or Apple call
    * runs in this chat's work copy there (no `--lane`): how a sync readies it
@@ -1862,14 +1864,17 @@ const CHAT_CLOUD_HELP = `    $ daex chat create --machine cloud --size medium --
                                                     whose setup needs more memory moves to Medium once, and the
                                                     repo starts at Medium after that). --lane-name <name>
                                                     names the lane and its computer (default: from the prompt).
-                                                    Asks you first. Ctrl-C stops only the waiting; the
+                                                    --os mac starts a ${BRAND.CLOUD_NAME} Mac instead (one size, no
+                                                    --size; only where daex cloud status offers a Mac). With no
+                                                    --os it is Linux. Asks you first. Ctrl-C stops only the waiting; the
                                                     same --launch-id <id> again follows it or goes on from a
                                                     failed step. daex chat launch-status|launch-cancel <id>
                                                     --machine cloud checks it or stops it.
 `;
 
-const LANES_CLOUD_HELP = `  daex lanes create --machine cloud [--size small|medium|large|xlarge] [--launch-id <id>] --name <name> [...]
+const LANES_CLOUD_HELP = `  daex lanes create --machine cloud [--size small|medium|large|xlarge | --os mac] [--launch-id <id>] --name <name> [...]
                    (the lane alone, with no chat, on its own new ${BRAND.CLOUD_NAME} computer; asks you first.
+                   --os mac: a ${BRAND.CLOUD_NAME} Mac, one size; no --os is Linux.
                    No --size: the size you saved for new lanes (a Small whose setup needs more memory moves
                    to Medium once, and the repo starts at Medium after that). The same --launch-id again follows it or
                    goes on from a failed step. A Linear issue needs its whole JSON. No --description

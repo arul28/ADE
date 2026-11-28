@@ -1,4 +1,7 @@
 import type {
+  CloudComputerAction,
+  CloudComputerOs,
+  CloudMacState,
   CloudAccountState,
   CloudCatalog,
   CloudComputerActivityReport,
@@ -546,6 +549,12 @@ export type CloudMachine = {
   pastDue: boolean;
   /** the provider's reason for the last failed lifecycle action. */
   failure: string | null;
+  /**
+   * The server's sentence for a computer it can't wake or send to now
+   * (`statusReason.code` `computer_unavailable`, e.g. a Mac the switch no
+   * longer reaches). It reads as stopped; every wake and send is refused.
+   */
+  unavailable?: string;
   /** The box's ADE machine (account row), when ADE recorded it on the box. */
   machineKey: string | null;
   /**
@@ -569,6 +578,12 @@ export type CloudMachine = {
   laneWork?: CloudLaneWork | null;
   /** The files git ignores on it, as it last read them: a delete loses them. Null before its first read. */
   ignoredFiles?: CloudIgnoredFiles | null;
+  /** What runs it (`CloudInstance.os`); absent is Linux. */
+  os?: CloudComputerOs;
+  /** A DAEX Cloud Mac's own state (queue, start, drive); null on Linux. */
+  mac?: CloudMacState | null;
+  /** What the server refuses on it (`CloudInstance.unsupported`): hide those controls. */
+  unsupported?: CloudComputerAction[];
 };
 
 /**

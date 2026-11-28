@@ -62,7 +62,8 @@ function laneCells(lane: Row): string[] {
   const due = computer && typeof computer.deletesAt === "string" ? `computer deleted ${day(computer.deletesAt)} unless used or kept` : "";
   return [
     str(lane.name) || str(lane.laneId),
-    STATE_TEXT[str(lane.state)] ?? str(lane.state),
+    // A Mac says its own state (stopped, waiting for a Mac), never asleep.
+    computer && isRecord(computer.mac) && str(computer.mac.label) ? str(computer.mac.label).toLowerCase() : STATE_TEXT[str(lane.state)] ?? str(lane.state),
     computer ? str(computer.sizeLabel) : "",
     plural(chats, "chat"),
     [due, deleted ? str(deleted.sentence) : "", backupText(lane.backup)].filter(Boolean).join(" · "),

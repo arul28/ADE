@@ -120,7 +120,7 @@ export function IssueLaunchHost() {
       if (!projectBinding) throw new Error(`Open a project to start lanes on ${BRAND.CLOUD_NAME}.`);
       for (const entry of entries) {
         const args = issueAdeCloudLaunchArgs(entry, { launchId: crypto.randomUUID(), laneId: crypto.randomUUID() });
-        void startAdeCloudLaunch({ args, sizeId: cloud.sizeId, originUrl: cloud.originUrl, binding: projectBinding });
+        void startAdeCloudLaunch({ args, sizeId: cloud.sizeId, ...(cloud.os === "mac" ? { os: "mac" as const } : {}), originUrl: cloud.originUrl, binding: projectBinding });
       }
       return;
     }

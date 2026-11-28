@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { CloudAccountState, CloudAgentLimits } from "../../../shared/adeCloud";
+import { cloudCatalog } from "../../../../../account-directory/src/cloud/plans";
 import type { PermissionLevel } from "../../../shared/permissionLadder";
 import { buildCloudAgentActions, type CloudAgentActionDeps, type CloudApproval } from "./cloudAgentActions";
 
@@ -11,6 +12,12 @@ import { buildCloudAgentActions, type CloudAgentActionDeps, type CloudApproval }
  * A computer that is no new lane's (a make, a copy, a move) is the person's
  * alone: an agent asks on a card, and with nobody to ask the answer is no.
  */
+/** The DAEX Cloud Mac offer, as the catalog sends it. */
+const MAC_OFFER = {
+  label: "Mac", cpu: 6, memoryGb: 8, driveGb: 20, creditMilliPerMinute: 500, stopAfterIdleMinutes: 5,
+  startSeconds: { min: 20, max: 60 }, summary: "A macOS computer.", keeps: "Only its drive is kept.", providers: [],
+};
+
 describe("ADE Cloud agent actions: approvals", () => {
   function setup(options: {
     level?: PermissionLevel | null;
@@ -29,6 +36,10 @@ describe("ADE Cloud agent actions: approvals", () => {
     maxShape?: string;
     /** The person's limits can't be read (the account vault doesn't answer). */
     limitsUnreadable?: boolean;
+    /** The catalog offers the DAEX Cloud Mac (`catalog.mac`). */
+    macOffered?: boolean;
+    /** That launch was started on a Mac. */
+    savedOs?: "mac";
   } = {}) {
     const ran: string[] = [];
     const cards: string[] = [];
@@ -46,7 +57,9 @@ describe("ADE Cloud agent actions: approvals", () => {
         list: async () => ({ state: "ok", machines: [box], account: null }),
         account: async () => {
           if (options.spendUnreadable) throw new Error("ADE Cloud account read timed out");
-          return { hours: { state: "none" } } as unknown as CloudAccountState;
+          return (options.macOffered
+            ? { hours: { state: "none" }, catalog: { ...cloudCatalog({ pro: false, max: false }), mac: MAC_OFFER } }
+            : { hours: { state: "none" } }) as unknown as CloudAccountState;
         },
         run: async (action: { action: string }) => {
           ran.push(action.action);
@@ -83,7 +96,7 @@ describe("ADE Cloud agent actions: approvals", () => {
       }),
       laneLaunch: () => ({
         status: async (launchId: string) => (options.launchPhase
-          ? { launch: { launchId, kind: "chat", phase: options.launchPhase, cloud: { handedOff: false, sizeId: options.savedSize ?? "small", sizeChoice: options.savedChoice } }, madeByChat: "chat_1" }
+          ? { launch: { launchId, kind: "chat", phase: options.launchPhase, cloud: { handedOff: false, sizeId: options.savedSize ?? "small", sizeChoice: options.savedChoice, ...(options.savedOs ? { os: options.savedOs } : {}) } }, madeByChat: "chat_1" }
           : null),
         start: async (input: { args: { cloud?: unknown } }) => {
           starts.push(input);
@@ -132,6 +145,10 @@ describe("ADE Cloud agent actions: approvals", () => {
   const person: CloudApproval = { by: "person" };
   const agent: CloudApproval = { by: "agent", chatSessionId: "chat_1" };
   const shell: CloudApproval = { by: "agent", chatSessionId: null };
+  const macLaunchArgs = {
+    originUrl: "https://github.com/acme/widgets.git",
+    launch: { launchId: "4c7c2f4e-9a51-4d0e-8c1a-3f6b2d9e7a10", kind: "lane", laneName: "Fix login", cloud: { os: "mac" } },
+  };
   const laneLaunchArgs = {
     originUrl: "https://github.com/acme/widgets.git",
     launch: { launchId: "0b7c2f4e-9a51-4d0e-8c1a-3f6b2d9e7a10", kind: "lane", laneName: "Fix login", cloud: { sizeId: "small" } },
@@ -187,6 +204,11 @@ describe("ADE Cloud agent actions: approvals", () => {
     ["a full-auto agent asks the person even for a lane whose computer its chat made (its saved chats go too)", agent, { level: "full-auto", madeBy: "chat_1" }, "lane_delete", { lane: "Fix login" }, null, 1],
     ["an automation run may not delete a lane whose computer it didn't make", { by: "agent", chatSessionId: null, automation: true }, { madeBy: "chat_other" }, "lane_delete", { lane: "Fix login" }, null, 0],
     ["a shell with no chat may not delete a lane", shell, {}, "lane_delete", { lane: "Fix login" }, null, 0],
+    // A DAEX Cloud Mac uses credits by the minute: only the person's yes starts one, so a full-auto chat asks on a
+    // card within the limits too (nobody-to-ask callers are refused like any new computer). A failed Mac launch starts again as a Mac.
+    ["a full-auto chat asks the person on a card to start a Mac, within the limits too", agent, { level: "full-auto", macOffered: true }, "lane_launch", macLaunchArgs, null, 1],
+    ["the person's yes on that card starts the Mac", agent, { level: "full-auto", macOffered: true, answer: "yes" }, "lane_launch", macLaunchArgs, "lane_launch", 1],
+    ["a full-auto agent's retry of a failed Mac launch asks the person again", agent, { level: "full-auto", macOffered: true, launchPhase: "failed", savedOs: "mac" }, "lane_launch", laneLaunchArgs, null, 1],
   ] as const)("%s", async (_label, approval, options, verb, args, expectedRun, expectedCards) => {
     const { actions, ran, cards, checks } = setup(options);
     const call = (actions as unknown as Record<string, (args: unknown) => Promise<unknown>>)[verb]!({ ...args, approval });
@@ -222,6 +244,19 @@ describe("ADE Cloud agent actions: approvals", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // Only the start that names a Mac makes one: a launch without `os` goes to Linux, whatever the person saved.
+  it.each([
+    ["a launch that names a Mac starts a Mac", macLaunchArgs, "mac"],
+    ["a launch without os starts Linux", laneLaunchArgs, undefined],
+  ] as const)("%s", async (_label, args, os) => {
+    const { actions, starts } = setup({ macOffered: true });
+
+    await actions.lane_launch!({ ...args, approval: person } as never);
+
+    expect(starts).toHaveLength(1);
+    expect((starts[0]!.args.cloud as { os?: string }).os).toBe(os);
   });
 
   it("parallel new lanes by full-auto agents stay within the day's limit, counted on top of the account's", async () => {

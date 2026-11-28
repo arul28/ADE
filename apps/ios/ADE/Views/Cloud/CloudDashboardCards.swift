@@ -629,7 +629,7 @@ struct CloudMachineRow: View {
 
   var body: some View {
     HStack(spacing: 12) {
-      Image(systemName: tier?.symbol ?? "cloud")
+      Image(systemName: machine.isMac ? "apple.logo" : tier?.symbol ?? "cloud")
         .font(.system(size: 13, weight: .medium))
         .foregroundStyle(ADEColor.textSecondary)
         .frame(width: 28, height: 28)
@@ -701,9 +701,55 @@ struct CloudSizesCard: View {
             if index > 0 { ADESettingsHairline() }
             row(tier)
           }
+          if let offer = account.macOffer {
+            ADESettingsHairline()
+            macRow(offer)
+          }
         }
       }
     }
+  }
+
+  /// The DAEX Cloud Mac beside the sizes, only while the catalog offers one:
+  /// its one shape, its rate, and the credits left as time on it.
+  private func macRow(_ offer: CloudMacOffer) -> some View {
+    HStack(alignment: .center, spacing: 12) {
+      Image(systemName: "apple.logo")
+        .font(.system(size: 13, weight: .medium))
+        .foregroundStyle(CloudBrandColor.mark)
+        .frame(width: 28, height: 28)
+        .background(CloudBrandColor.violet.opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+      VStack(alignment: .leading, spacing: 3) {
+        Text("Mac")
+          .font(.system(size: 15, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+        Text(CloudMacWords.shapeText(offer))
+          .font(.system(size: 12.5))
+          .foregroundStyle(ADEColor.textSecondary)
+        Text("Uses \(CloudMacWords.rateText(offer, words: words)) · starts \(CloudMacWords.startWords)")
+          .font(.system(size: 12))
+          .foregroundStyle(ADEColor.textMuted)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      Spacer(minLength: 8)
+      VStack(alignment: .trailing, spacing: 0) {
+        Text(CloudMacWords.timeAt(offer, leftMilli: leftMilli))
+          .font(.system(size: 20, weight: .semibold))
+          .monospacedDigit()
+          .foregroundStyle(CloudBrandColor.mark)
+          .lineLimit(1)
+          .minimumScaleFactor(0.6)
+        Text("left on it")
+          .font(.system(size: 11))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+    }
+    .padding(.horizontal, ADEKit.inset)
+    .padding(.vertical, 11)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .accessibilityElement(children: .combine)
+    .accessibilityHint(offer.summary ?? CloudMacWords.name)
   }
 
   private func facts(_ tier: CloudPhoneTier) -> String {

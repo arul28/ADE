@@ -1,11 +1,13 @@
 import { useMemo } from "react";
 import { Cpu } from "@phosphor-icons/react";
+import { cloudMacOfferOf } from "../../../../shared/cloudMac";
 import { cloudCatalogOf, cloudHoursLeftMilli, cloudSmallHoursSentence, cloudSmallRateMilli, type CloudAccountState } from "../../../../shared/adeCloud";
 import { cloudTiers } from "../../../../shared/cloudTiers";
 import { cloudUnitWords } from "../../../../shared/cloudUnitWords";
 import { pickCloudDefaultTier } from "../../../lib/cloudDefaultTier";
 import { useRootAppStore } from "../../../state/appStore";
 import { CloudSizeCards } from "./CloudSizeCards";
+import { CloudMacSizeCard } from "./CloudMacSizeCard";
 
 /**
  * The four sizes, side by side: CPU, memory, what each runs, and how long
@@ -22,12 +24,20 @@ export function CloudSizes({ account }: { account: CloudAccountState }) {
   const words = cloudUnitWords(account);
   // The Small card already says it is unlimited; the note names Small's rate only when it has one.
   const smallNote = cloudSmallRateMilli(catalog) > 0 ? ` ${cloudSmallHoursSentence(catalog, words)}` : "";
+  // The DAEX Cloud Mac, only while the catalog offers one: its one shape, and what new lanes a person starts run on.
+  const mac = cloudMacOfferOf(account);
+  const defaultOs = useRootAppStore((state) => state.cloudDefaultOs);
+  const onMac = Boolean(mac) && defaultOs === "mac";
   return (
     <section id="cloud-sizes" className="kit-card adecd-card" aria-label="Sizes">
       <header className="kit-card-head">
         <Cpu size={14} />
         Sizes
-        <span className="adecd-head-note">New cloud lanes start on {current?.label ?? "Small"}; each can change size later. Every size has a desktop screen the agent can use.{smallNote}</span>
+        <span className="adecd-head-note">
+          {onMac
+            ? "New cloud lanes you start begin on a Mac. Agents and automations start on Linux unless they ask for a Mac."
+            : `New cloud lanes start on ${current?.label ?? "Small"}; each can change size later. Every size has a desktop screen the agent can use.${smallNote}`}
+        </span>
       </header>
       <div className="kit-card-body">
         <CloudSizeCards
@@ -40,6 +50,7 @@ export function CloudSizes({ account }: { account: CloudAccountState }) {
           ariaLabel="Size for new cloud lanes"
           words={words}
         />
+        {mac ? <CloudMacSizeCard offer={mac} leftMilli={leftMilli} onMac={onMac} /> : null}
       </div>
     </section>
   );

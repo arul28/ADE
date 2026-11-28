@@ -26,6 +26,11 @@
  * Every account answers in credits (one balance the iPhone draws from too);
  * `&mockPhone=on` gives a Free account the ADE Cloud iPhone; and
  * `&mockPhoneProvider=auto|nomac|revyl` makes the account a tester with that pick.
+ * `&mockMac=1` offers the DAEX Cloud Mac (`catalog.mac`) and adds a Mac lane in
+ * each state (waiting, starting, on, stopping, stopped, a failed start, a lost
+ * drive); `&mockMac=offer` offers it with no Mac lane yet; `&mockMac=broke` offers it at zero credits.
+ * `&mockMacLane=running|queued|starting|stopped` (with `mockCloudLaneMachine=1`) makes the chat's
+ * lane computer (checkout-redesign) a Mac in that state.
  *
  * It runs after the sign-ins preview (`?mockSignIns=`), keeping its sign-in
  * calls and replacing only the account and computer reads.
@@ -46,6 +51,15 @@ import {
   type CloudSponsoredConsent,
 } from "../shared/adeCloud";
 import { githubRepoOf, type CloudLaneMachine, type CloudLaneWithoutComputer } from "../shared/cloudLaneLaunch";
+import {
+  CLOUD_MAC_SHAPE,
+  CLOUD_MAC_START_FAILED_SENTENCES,
+  CLOUD_MAC_STATE_SENTENCES,
+  CLOUD_MAC_UNSUPPORTED,
+  type CloudMacOffer,
+  type CloudMacStartFailure,
+  type CloudMacStateName,
+} from "../../../account-directory/src/cloud/contract";
 import type {
   CloudKeptLaneRestoreArgs,
   CloudKeptLaneRestorePreview,
@@ -181,6 +195,62 @@ function machine(spec: LaneSpec, now: number): CloudLaneMachine {
 }
 
 const round = (gb: number) => Math.round(gb * 10) / 10;
+
+/** The DAEX Cloud Mac offer as the server sends it (`CloudMacOffer`), at Pricing v2's scale. */
+const MOCK_MAC_OFFER: CloudMacOffer = {
+  label: "Mac",
+  ...CLOUD_MAC_SHAPE,
+  creditMilliPerMinute: 500,
+  stopAfterIdleMinutes: 5,
+  startSeconds: { min: 20, max: 45 },
+  summary: "A macOS computer for Xcode and the iOS Simulator.",
+  keeps: "A Mac stops 5 minutes after work ends. Only its 20 GB drive is kept; anything outside it is gone.",
+};
+
+/** One Mac lane per state, for `&mockMac=1`. */
+function mockMacMachines(now: number): CloudLaneMachine[] {
+  const specs: Array<{ id: string; lane: string; state: CloudMacStateName; status: string; failure?: CloudMacStartFailure; usedGb: number | null; agoMs: number }> = [
+    { id: "mac-q1", lane: "ios-onboarding", state: "queued", status: "starting", usedGb: 7.4, agoMs: 2 * 60_000 },
+    { id: "mac-s1", lane: "widget-extension", state: "starting", status: "starting", usedGb: 3.1, agoMs: 20_000 },
+    { id: "mac-r1", lane: "swiftui-previews", state: "running", status: "running", usedGb: 9.8, agoMs: 12 * 60_000 },
+    { id: "mac-x1", lane: "watch-app", state: "stopping", status: "stopped", usedGb: 5.2, agoMs: 60_000 },
+    { id: "mac-z1", lane: "app-store-shots", state: "stopped", status: "stopped", usedGb: 7.4, agoMs: 3 * HOUR },
+    { id: "mac-f1", lane: "testflight-fix", state: "stopped", status: "stopped", failure: "queue_expired", usedGb: 4.0, agoMs: 70 * 60_000 },
+    { id: "mac-l1", lane: "old-mac-lane", state: "stopped", status: "stopped", failure: "drive_lost", usedGb: null, agoMs: 2 * DAY },
+  ];
+  return specs.map((spec) => asMockMac(
+    machine({ id: spec.id, lane: spec.lane, tier: "medium", diskGb: 20, state: spec.status === "running" ? "running" : spec.status === "starting" ? "starting" : "stopped", lastActiveAgoMs: spec.agoMs, createdAgoMs: 4 * DAY }, now),
+    spec,
+    now,
+  ));
+}
+
+/** A mock computer as a DAEX Cloud Mac in one state (`mac` as the server sends it). */
+function asMockMac(
+  base: CloudLaneMachine,
+  spec: { state: CloudMacStateName; status: string; failure?: CloudMacStartFailure; usedGb: number | null; agoMs: number },
+  now: number,
+): CloudLaneMachine {
+  return {
+    ...base,
+    status: spec.status,
+    type: "box",
+    resources: { cpu: CLOUD_MAC_SHAPE.cpu, memoryGb: CLOUD_MAC_SHAPE.memoryGb, diskGb: CLOUD_MAC_SHAPE.driveGb },
+    shapeId: null,
+    hoursRate: null,
+    diskUsage: null,
+    awakeSinceMs: spec.state === "running" ? now - spec.agoMs : null,
+    os: "mac",
+    unsupported: [...CLOUD_MAC_UNSUPPORTED],
+    mac: {
+      state: spec.state,
+      since: now - spec.agoMs,
+      message: spec.failure ? CLOUD_MAC_START_FAILED_SENTENCES[spec.failure] : CLOUD_MAC_STATE_SENTENCES[spec.state],
+      ...(spec.failure ? { startFailed: true, failure: spec.failure } : {}),
+      drive: { sizeGb: CLOUD_MAC_SHAPE.driveGb, usedGb: spec.usedGb, savedAt: spec.usedGb == null ? null : now - spec.agoMs },
+    },
+  };
+}
 
 type Fixture = {
   planId: "free" | "plus" | "pro";
@@ -603,9 +673,23 @@ export function applyBrowserMockCloud(ade: any): void {
   // Read once: the app routes away from the first URL and drops its query.
   const savedParam = param("mockCloudSaved");
   const now = Date.now();
-  const fix = fixture(scenario);
-  const machines = fix.lanes.map((spec) => machine(spec, now));
+  const macParam = param("mockMac");
+  // `&mockMac=broke`: the Mac offered, no credits left and no extra credits (the pick's zero-credit notice).
+  const fix = macParam === "broke"
+    ? { ...fixture(scenario), usedMilli: 1_000_000_000, extraHours: false, earnedMilli: undefined }
+    : fixture(scenario);
+  // `&mockMacLane=running|queued|starting|stopped`: the computer of the `mockCloudLaneMachine=1` chat (checkout-redesign) is a Mac.
+  const macLaneParam = param("mockMacLane") as CloudMacStateName | null;
+  const macLaneState = macLaneParam && macLaneParam in CLOUD_MAC_STATE_SENTENCES ? macLaneParam : null;
+  const machines = fix.lanes.map((spec) => {
+    const box = machine(spec, now);
+    if (!macLaneState || spec.lane !== "checkout-redesign") return box;
+    const status = macLaneState === "running" ? "running" : macLaneState === "queued" || macLaneState === "starting" ? "starting" : "stopped";
+    return asMockMac({ ...box, state: status === "running" ? "running" : status === "starting" ? "starting" : "stopped" }, { state: macLaneState, status, usedGb: 7.4, agoMs: 3 * 60_000 }, now);
+  });
+  if (macParam === "1") machines.push(...mockMacMachines(now));
   let state = account(fix, machines, now);
+  if (macParam === "1" || macParam === "offer" || macParam === "broke" || macLaneState) state = { ...state, catalog: { ...state.catalog, mac: MOCK_MAC_OFFER } };
   // Credits: the iPhone has used some of the balance.
   const withCredits = (next: CloudAccountState): CloudAccountState => {
     let out = next;
@@ -710,11 +794,20 @@ export function applyBrowserMockCloud(ade: any): void {
     deletedInstanceIds: [],
     message: null,
   });
+  // `&mockCloudLatency=400`: each account read answers after this many ms, as the account server does (load timing).
+  const latency = Math.max(0, Number(param("mockCloudLatency")) || 0);
+  const lag = () => (latency ? new Promise<void>((resolve) => window.setTimeout(resolve, latency)) : Promise.resolve());
   const base = ade.cloud ?? {};
   ade.cloud = {
     ...base,
-    getStatus: async () => ({ connected: true, signedOut: false, instanceCount: machines.length, runningCount: result().runningCount, error: null }),
-    listMachines: async () => result(),
+    getStatus: async () => {
+      await lag();
+      return { connected: true, signedOut: false, instanceCount: machines.length, runningCount: result().runningCount, error: null };
+    },
+    listMachines: async () => {
+      await lag();
+      return result();
+    },
     onStatusChanged: (cb: () => void) => {
       statusListeners.add(cb);
       return () => statusListeners.delete(cb);

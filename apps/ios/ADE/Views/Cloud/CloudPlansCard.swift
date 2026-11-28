@@ -140,6 +140,10 @@ struct CloudPlansCard: View {
         } else {
           fact("clock", words.planLine(column.facts.includedMilli), current: current)
         }
+        // A plan's credits as time on a DAEX Cloud Mac, from the catalog's rate; only while the catalog offers one.
+        if let offer = account.macOffer, let macLine = CloudMacWords.planLine(offer, includedMilli: column.facts.includedMilli) {
+          fact("apple.logo", macLine, current: current)
+        }
         fact("bolt", extraHoursSold(column) ? "\(words.extra) if on" : "No \(words.extra.lowercased())", current: current, quiet: !extraHoursSold(column))
       }
     }
@@ -232,6 +236,9 @@ struct CloudPlansCard: View {
       parts.append(cloudHoursOnSizes(column.facts.includedMilli, tiers: tiers) ?? "\(cloudHours(column.facts.includedMilli)) credits a month")
     } else {
       parts.append("\(cloudHours(column.facts.includedMilli)) \(words.perMonth)")
+    }
+    if let offer = account.macOffer, let macLine = CloudMacWords.planLine(offer, includedMilli: column.facts.includedMilli) {
+      parts.append(macLine)
     }
     parts.append(extraHoursSold(column) ? "\(words.extra.lowercased()) if on" : "no \(words.extra.lowercased())")
     return "\(column.label)\(current ? ", your plan" : "")\(isNew ? ", new" : ""): \(parts.joined(separator: ", "))"

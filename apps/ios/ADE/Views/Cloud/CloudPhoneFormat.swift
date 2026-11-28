@@ -238,6 +238,11 @@ func cloudMachineOld(_ machine: CloudPhoneMachine, now: Date) -> Bool {
 /// hours are time on a size, and disk shows only on a computer whose disk is
 /// nearly full.
 func cloudMachineLine(_ machine: CloudPhoneMachine, tier: CloudPhoneTier?, now: Date, words: CloudBalanceWords) -> String {
+  // A Mac has one shape and no tier: "Mac · 6 CPU · 8 GB".
+  if machine.isMac {
+    guard let resources = machine.resources else { return "Mac" }
+    return "Mac · \(resources.cpu) CPU · \(cloudGbText(resources.memoryGb)) GB"
+  }
   guard let tier else { return machine.size ?? "" }
   if !tier.usesHours { return "\(tier.label) · \(words.smallNever)" }
   return tier.full ? "\(tier.label) · Full computer" : tier.label
@@ -245,11 +250,15 @@ func cloudMachineLine(_ machine: CloudPhoneMachine, tier: CloudPhoneTier?, now: 
 
 func cloudLastRun(_ machine: CloudPhoneMachine, now: Date) -> String {
   if machine.isAwake { return "Running now" }
+  // A Mac on its way: its state word says it (the sentence is on its page).
+  if let phase = machine.macPhase, phase != .stopped { return "" }
   guard let last = machine.lastActiveAtMs else { return machine.resources == nil ? "" : "Not used yet" }
   return "Ran \(cloudAgo(last, now: now))"
 }
 
 func cloudStateTone(_ machine: CloudPhoneMachine) -> ADEKitTone {
+  if machine.unavailable != nil, !machine.isAwake { return .warn }
+  if let phase = machine.macPhase { return phase.tone }
   if machine.isAwake { return .ok }
   if machine.isMoving { return .warn }
   if machine.isAsleep { return .neutral }
@@ -820,4 +829,147 @@ func cloudCapitalized(_ phrase: String) -> String {
 extension CloudPhoneAccount {
   /// The credits left, the plan's and the earned ones, as the ADE Cloud page counts them (`cloudHoursLeftMilli`).
   var hoursLeftMilli: Int { hours.leftMilli + max(0, earnedHours?.leftMilli ?? 0) }
+}
+
+// MARK: - DAEX Cloud Mac
+
+/// Where a Mac is (`cloudMacPhaseOf` on desktop): the server's `mac` state,
+/// with a start that ended with no Mac and a lost drive as their own phases.
+enum CloudMacPhase: String, Equatable {
+  case queued, starting, running, stopping, stopped
+  case startFailed = "start_failed"
+  case driveLost = "drive_lost"
+
+  /// `state` is the phone's computer state (`running`, `starting`, `asleep`, …), read while `mac` is absent.
+  init(_ mac: CloudMacState?, state: String?) {
+    if let mac {
+      if mac.failure == "drive_lost" { self = .driveLost; return }
+      if mac.startFailed == true, !["running", "starting", "queued"].contains(mac.state) { self = .startFailed; return }
+      self = CloudMacPhase(rawValue: mac.state) ?? .stopped
+      return
+    }
+    switch state {
+    case "running": self = .running
+    case "starting", "provisioning", "waking": self = .starting
+    case "stopping": self = .stopping
+    default: self = .stopped
+    }
+  }
+
+  /// The short word (`CLOUD_MAC_PHASE_LABEL`).
+  var label: String {
+    switch self {
+    case .queued: return "Waiting for a Mac"
+    case .starting: return "Starting"
+    case .running: return "On"
+    case .stopping: return "Stopping"
+    case .stopped: return "Stopped"
+    case .startFailed: return "Couldn't start"
+    case .driveLost: return "Drive lost"
+    }
+  }
+
+  var tone: ADEKitTone {
+    switch self {
+    case .running: return .ok
+    case .queued, .starting, .stopping: return .warn
+    case .stopped: return .neutral
+    case .startFailed, .driveLost: return .crit
+    }
+  }
+
+  /// On its way up or down: no Start and no Stop now.
+  var isMoving: Bool { self == .queued || self == .starting || self == .stopping }
+}
+
+/// Every word the phone says about a DAEX Cloud Mac (`shared/cloudMac.ts`).
+/// The server decides each fact; this only words them. Change both together.
+enum CloudMacWords {
+  static let name = "\(Brand.cloudName) Mac"
+  /// `CLOUD_MAC_START_WORDS`: how long a start takes, never the catalog's seconds.
+  static let startWords = "in under a minute"
+  /// `CLOUD_COMPUTER_UNAVAILABLE_SENTENCE`, for a server that sent no message.
+  static let unavailableSentence = "This lane's computer isn't available right now, so \(Brand.name) can't wake it or send it messages. The lane, its work and its chats are kept."
+  static let unavailableLabel = "Not available"
+
+  /// `CLOUD_MAC_STATE_SENTENCES`, for a state the server sent no message with.
+  static func stateSentence(_ state: String) -> String? {
+    switch state {
+    case "queued": return "Waiting for a free Mac. It starts as soon as one is free, and nothing is charged while it waits."
+    case "starting": return "Starting the Mac with this lane's drive. It's ready \(startWords)."
+    case "running": return "The Mac is on."
+    case "stopping": return "Work stopped, so the Mac is saving its drive and stopping."
+    case "stopped": return "The Mac is stopped and its drive is kept. The next message starts it again \(startWords)."
+    default: return nil
+    }
+  }
+
+  /// Why the server refuses `action` on a Mac (`CLOUD_MAC_UNSUPPORTED_SENTENCES`).
+  static func unsupportedSentence(_ action: String) -> String {
+    switch action {
+    case "resize": return "A \(name) has one size, so it can't change size."
+    case "disk_grow": return "A \(name)'s drive can't grow. Free up space on it instead."
+    case "copy": return "A \(name) can't be copied. Start a new Mac lane from the same branch instead."
+    case "move": return "A lane on a \(name) can't move to another computer. Push its branch and start a new lane there."
+    case "update": return "A \(name) updates \(Brand.name) each time it starts, so there is nothing to update now."
+    case "backup": return "A \(name) keeps its drive between starts and has no snapshots. Your lane's work is saved as for any cloud lane."
+    default: return "A \(name) can't do this."
+    }
+  }
+
+  /// The server's sentence for the state (or why the start failed).
+  static func sentence(_ mac: CloudMacState?) -> String? {
+    guard let mac else { return nil }
+    if let message = mac.message { return message }
+    return mac.startFailed == true ? nil : stateSentence(mac.state)
+  }
+
+  /// "7.4 of 20 GB": the drive as the last stop saved it, or its size before the first save.
+  static func driveText(_ mac: CloudMacState?) -> String? {
+    guard let drive = mac?.drive else { return nil }
+    guard let used = drive.usedGb else { return "\(cloudGbText(drive.sizeGb)) GB drive" }
+    let shown = used >= 10 ? used.rounded() : (used * 10).rounded() / 10
+    return "\(cloudGbText(shown)) of \(cloudGbText(drive.sizeGb)) GB"
+  }
+
+  /// "6 CPU · 8 GB · 20 GB drive".
+  static func shapeText(_ offer: CloudMacOffer) -> String {
+    "\(offer.cpu) CPU · \(cloudGbText(offer.memoryGb)) GB · \(cloudGbText(offer.driveGb)) GB drive"
+  }
+
+  /// "0.5 credits a minute", from the catalog's rate.
+  static func rateText(_ offer: CloudMacOffer, words: CloudBalanceWords) -> String {
+    "\(words.amount(Int(offer.creditMilliPerMinute.rounded()))) a minute"
+  }
+
+  /// How long `leftMilli` lasts on a Mac, rounded down: "1 h 40 min", "45 min", "20 h".
+  static func timeAt(_ offer: CloudMacOffer, leftMilli: Int) -> String {
+    let minutes = Int((Double(max(0, leftMilli)) / offer.creditMilliPerMinute).rounded(.down))
+    let hours = minutes / 60
+    let rest = minutes % 60
+    if hours == 0 { return "\(minutes) min" }
+    let h = hours.formatted(.number.locale(Locale(identifier: "en_US")))
+    return rest > 0 ? "\(h) h \(rest) min" : "\(h) h"
+  }
+
+  /// "1 h 40 min of Mac": a plan's credits as time on a Mac.
+  static func planLine(_ offer: CloudMacOffer, includedMilli: Int) -> String? {
+    includedMilli > 0 ? "\(timeAt(offer, leftMilli: includedMilli)) of Mac" : nil
+  }
+
+  /// Why `provider` can't start on a Mac (`cloudMacProviderRefusal`), or nil.
+  static func providerRefusal(_ offer: CloudMacOffer?, provider: String?, cli: Bool, label: String? = nil) -> String? {
+    guard let offer, let provider, let entry = offer.providers.first(where: { $0.provider == provider }) else { return nil }
+    if cli ? entry.cli : entry.chat { return nil }
+    if let sentence = entry.sentence.flatMap({ nonEmptyTrimmed($0) }) { return sentence }
+    let shown = label.flatMap { nonEmptyTrimmed($0) } ?? provider
+    return cli
+      ? "\(shown) CLI sessions don't run on a \(name) yet. Pick Linux, or another CLI."
+      : "\(shown) doesn't run on a \(name) yet. Pick Linux, or another model."
+  }
+}
+
+extension CloudPhoneAccount {
+  /// The account's Mac offer, or nil: no Mac shows while the catalog leaves it out.
+  var macOffer: CloudMacOffer? { catalog?.mac }
 }

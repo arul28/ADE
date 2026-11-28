@@ -41,6 +41,7 @@ import { ComposerPopover, LaneCloudSizeChip, LaneMachineChip, LaneTemplateChip }
 import type { AdeCloudLaneChoice } from "./useAdeCloudLaneTarget";
 import type { CloudTier, CloudTierId } from "../../../shared/cloudTiers";
 import type { CloudUnitWords } from "../../../shared/cloudUnitWords";
+import type { CloudComputerOs, CloudMacOffer } from "../../../shared/cloudMac";
 import { LaneStartBranchField, LaneStartOnSwitch } from "./LaneStartPicker";
 import "./createLaneComposer.css";
 import { isImeComposing } from "../../lib/imeComposition";
@@ -89,6 +90,10 @@ export type CreateLaneAdeCloud = {
   onSetDefaultTier: (tier: CloudTierId) => void;
   /** The account's words. */
   words: CloudUnitWords;
+  /** The DAEX Cloud Mac offer, or null: nothing about a Mac shows. */
+  macOffer: CloudMacOffer | null;
+  os: CloudComputerOs;
+  onChooseOs: (os: CloudComputerOs) => void;
   /** Why the lane can't start on ADE Cloud now (a fact of the account), or null. */
   problem: string | null;
 };
@@ -736,7 +741,7 @@ export function CreateLaneDialog({
           {/* ADE Cloud: the size of the lane's new computer */}
           {onAdeCloud && adeCloud ? (
             <>
-              <span className="cl-label">Size</span>
+              <span className="cl-label">{adeCloud.macOffer ? "Computer" : "Size"}</span>
               <div className="cl-cell">
                 <LaneCloudSizeChip
                   popover={chipProps("size")}
@@ -746,6 +751,9 @@ export function CreateLaneDialog({
                   onChoose={adeCloud.onChooseTier}
                   onSetDefault={adeCloud.onSetDefaultTier}
                   words={adeCloud.words}
+                  macOffer={adeCloud.macOffer}
+                  os={adeCloud.os}
+                  onChooseOs={adeCloud.onChooseOs}
                 />
                 <span className="cl-hint">
                   {adeCloud.fixed

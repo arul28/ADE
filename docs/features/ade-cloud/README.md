@@ -183,6 +183,19 @@ NoMac, everything else to Agent 37. Contract shapes: `CloudMacOffer`,
 - **Not on a Mac.** Resize, disk grow, copy, move, update, backups, public
   ports, signed URLs, auto-sleep settings: `409 mac_unsupported` with the
   sentence in `CLOUD_MAC_UNSUPPORTED_SENTENCES`.
+- **Clients.** With no catalog `mac`, no client shows a Mac. Desktop and web
+  word it in `shared/cloudMac.ts`; the phone in `CloudMacWords` and
+  `CloudMacPhase` (`CloudPhoneFormat.swift`). Each client hides what the
+  instance's `unsupported` lists, and shows the catalog's provider refusal
+  (`providers`) before a start. A person picks Linux or Mac for a new lane;
+  the saved `cloudDefaultOs` (synced account setting) applies only to a
+  person's own picks on desktop and web. Agents, DAEX MCP, automations and
+  `daex` without `--os mac` start Linux, and an agent's Mac start needs the
+  person's yes. A kept Mac lane continues on a Mac. Settings' Mac pieces are
+  their own components (`CloudMacRowNote`, `CloudMacExplainer`,
+  `CloudMacSizeCard`, `CloudMacRateRow`), each fact in one of them.
+- **Known limit.** The phone doesn't read the synced `cloudDefaultOs`: its
+  pick starts on Linux each time, until that setting reaches iOS.
 
 ## Access
 
