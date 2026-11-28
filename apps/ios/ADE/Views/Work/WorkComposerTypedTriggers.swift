@@ -1734,13 +1734,28 @@ enum WorkComposerTriggerDetector {
   /// The trigger detector intentionally accepts spaces for multi-word names;
   /// this second pass uses the selected row's label to distinguish that name
   /// from a trailing sentence.
+  /// A leading kind filter word and its `:` or spaces (`chat ` in
+  /// `chat Deploy notes`), or "" when the query has none (`parseAtQuery`).
+  static func mentionFilterPrefix(_ query: String) -> String {
+    guard WorkComposerSuggestionSection.parseAtQuery(query).filter != nil else { return "" }
+    let text = query as NSString
+    var end = 0
+    while end < text.length, let scalar = UnicodeScalar(text.character(at: end)), CharacterSet.letters.contains(scalar) { end += 1 }
+    if end < text.length, text.character(at: end) == 0x3A { end += 1 }
+    while end < text.length, text.character(at: end) == 0x20 || text.character(at: end) == 0x09 { end += 1 }
+    return text.substring(to: end)
+  }
+
   static func matchForSelection(
     _ match: WorkComposerTriggerMatch,
     suggestion: WorkComposerSuggestion
   ) -> WorkComposerTriggerMatch {
     guard match.kind == .at else { return match }
-    // A model row's token is not what the user typed; its name is.
-    let rawLabel = suggestion.modelId == nil && suggestion.insertText.hasPrefix("@")
+    // A file row's label is its path, which is what the user typed toward. Any
+    // other row's token (`@lane:<id>`, a model's) is not typed; its name is,
+    // as on desktop (`composerTriggerForSelection`).
+    let isFileRow = suggestion.mentionKind == nil && suggestion.modelId == nil
+    let rawLabel = isFileRow && suggestion.insertText.hasPrefix("@")
       ? String(suggestion.insertText.dropFirst())
       : suggestion.title
     let label = rawLabel.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1753,19 +1768,27 @@ enum WorkComposerTriggerDetector {
         candidateLabels.append(basenameString)
       }
     }
-    let searchableQuery = fileSearchQuery(for: match.query)
-    if searchableQuery != match.query,
+    // A kind filter word (`@chat Deploy notes about this`) goes with the
+    // splice, never with the title: the menu searched the words after it, so
+    // an entity's title is matched there, as on desktop.
+    let filterPrefix = isFileRow ? "" : mentionFilterPrefix(match.query)
+    let typed = (match.query as NSString).substring(from: (filterPrefix as NSString).length)
+    let searchableQuery = fileSearchQuery(for: typed)
+    if searchableQuery != typed,
        label.lowercased().hasSuffix(searchableQuery.lowercased()),
        !candidateLabels.contains(where: { $0.lowercased() == searchableQuery.lowercased() }) {
       candidateLabels.append(searchableQuery)
     }
-    let pathPrefix = pathPrefixForSelection(query: match.query, selectedLabel: label)
+    // Only a file's path may continue past the words typed before prose. For a
+    // chat or a lane it would match the filter word (`@lane up` against
+    // `lane:<id>`) and leave the typed word behind the chip.
+    let pathPrefix = isFileRow ? pathPrefixForSelection(query: match.query, selectedLabel: label) : ""
     if !pathPrefix.isEmpty,
        !candidateLabels.contains(where: { $0.lowercased() == pathPrefix.lowercased() }) {
       candidateLabels.append(pathPrefix)
     }
 
-    let query = match.query as NSString
+    let query = typed as NSString
     for candidateLabel in candidateLabels {
       let labelLength = (candidateLabel as NSString).length
       guard query.length >= labelLength else { continue }
@@ -1782,7 +1805,7 @@ enum WorkComposerTriggerDetector {
         guard character == 0x20 || character == 0x09 else { break }
         separatorLength += 1
       }
-      let consumedQuery = query.substring(to: labelLength + separatorLength)
+      let consumedQuery = filterPrefix + query.substring(to: labelLength + separatorLength)
       return WorkComposerTriggerMatch(
         kind: match.kind,
         query: consumedQuery,

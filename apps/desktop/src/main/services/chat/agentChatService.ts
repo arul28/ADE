@@ -76174,6 +76174,13 @@ export function createAgentChatService(args: {
     await scheduledWorkScheduler?.refreshGlobalPause();
   };
 
+  /** After the machine thawed (an ADE Cloud computer woke): timers armed again from the wall clock. */
+  const rearmScheduledWorkAfterFreeze = async (): Promise<void> => {
+    await scheduledWorkReady;
+    scheduledWorkScheduler?.rearmAfterFreeze();
+    draftScheduler.refresh();
+  };
+
   /**
    * Is this chat's auto-resume row paused?
    *
@@ -86882,6 +86889,7 @@ ${schedule.prompt}`
       };
     },
     refreshScheduledWork,
+    rearmScheduledWorkAfterFreeze,
     readTranscript,
     getCodexGoal,
     setCodexGoal,

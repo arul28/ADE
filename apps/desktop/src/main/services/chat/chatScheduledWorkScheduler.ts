@@ -262,6 +262,13 @@ export type ChatScheduledWorkScheduler = {
   runNow(scheduleId: string): Promise<{ fired: boolean; reason?: string }>;
   setSessionPaused(sessionId: string, paused: boolean): Promise<void>;
   refreshGlobalPause(): Promise<void>;
+  /**
+   * Arms every waiting row again from the wall clock. A timer counts the
+   * monotonic clock, which stops while a Linux machine is frozen (an ADE
+   * Cloud computer asleep), so after a thaw each would fire late by the
+   * time frozen. Rows in any other state keep their timers.
+   */
+  rearmAfterFreeze(): void;
   list(sessionId?: string): ChatScheduledWorkRecord[];
   isSessionPaused(sessionId: string): boolean;
   /**
@@ -1263,6 +1270,13 @@ export function createChatScheduledWorkScheduler(
     async refreshGlobalPause(): Promise<void> {
       await start();
       await updatePauseStatuses();
+    },
+
+    rearmAfterFreeze(): void {
+      // Only waiting rows: a fired row's settle timer or a running one's state stays as it is.
+      for (const schedule of schedules.values()) {
+        if (schedule.status === "scheduled") arm(schedule);
+      }
     },
 
     list(sessionId): ChatScheduledWorkRecord[] {

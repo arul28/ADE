@@ -81,6 +81,22 @@ export async function handleCloudWakeRequest(
   return json({ ok: true, wakeAt: at - CLOUD_WAKE_LEAD_MS }, 200);
 }
 
+/** What the tick did with one timed wake, as the power log keeps it (`timed_wake`). */
+type TimedWakeOutcome = "woke" | "awake" | "gave_up_capped" | "gave_up_unreachable";
+
+/**
+ * One `cloud_power_log` row per timed wake the tick settled, so a wake for a
+ * scheduled check can be told from the provider's own. `timed_wake` is not a
+ * power change (the daily count reads only wake, sleep, stop and start): the
+ * tick still logs the wake itself when it sees the computer running. A failed
+ * write never holds a wake back.
+ */
+async function logTimedWake(env: CloudWakeEnv, row: { user_id: string; instance_id: string }, outcome: TimedWakeOutcome, now: number): Promise<void> {
+  await env.DB.prepare("insert into cloud_power_log (instance_id, user_id, action, reason, created_at) values (?, ?, 'timed_wake', ?, ?)")
+    .bind(row.instance_id, row.user_id, outcome, now).run()
+    .catch((error: unknown) => reportCloudFailure("cloud.timed_wake_log_failed", { instanceId: row.instance_id, message: error instanceof Error ? error.message : "unknown" }));
+}
+
 /**
  * The minute cron: wakes every machine whose time is within the lead, and
  * forgets each once woken. One that doesn't answer is tried each minute until
@@ -134,11 +150,15 @@ export async function runCloudWakes(env: CloudWakeEnv, options: { now?: number; 
     } else logCloud("cloud.timed_wake_waits_for_cap", { userId: row.user_id, instanceId: row.instance_id, awake });
     return false;
   });
-  await Promise.all(givenUp.map((row) => env.DB.prepare("delete from cloud_wakes where user_id = ? and instance_id = ? and wake_at = ?")
-    .bind(row.user_id, row.instance_id, row.wake_at).run()));
+  await Promise.all(givenUp.map(async (row) => {
+    await env.DB.prepare("delete from cloud_wakes where user_id = ? and instance_id = ? and wake_at = ?")
+      .bind(row.user_id, row.instance_id, row.wake_at).run();
+    await logTimedWake(env, row, "gave_up_capped", now);
+  }));
   failed += givenUp.length;
   await Promise.all(allowed.map(async (row) => {
     let reached = false;
+    let outcome: TimedWakeOutcome | null = null;
     if (WAKE_URL.test(row.wake_url)) {
       try {
         // Any answer, a 502 included, means the request reached the machine.
@@ -151,18 +171,26 @@ export async function runCloudWakes(env: CloudWakeEnv, options: { now?: number; 
     if (reached) {
       woken += 1;
       // The request wakes it: the row says so at once, so the awake cap and every client read it as waking (the tick reads the provider next).
-      await env.DB.prepare(`
+      const slept = await env.DB.prepare(`
         update cloud_computers set status = 'waking', status_changed_at = ?
         where instance_id = ? and user_id = ? and deleted_at is null and status = 'sleeping'
       `).bind(now, row.instance_id, row.user_id).run()
-        .then((result) => {
-          if ((result.meta?.changes ?? 0) > 0) logCloud("cloud.timed_wake_recorded", { userId: row.user_id, instanceId: row.instance_id });
-        }, (error: unknown) => reportCloudFailure("cloud.timed_wake_record_failed", { instanceId: row.instance_id, message: error instanceof Error ? error.message : "unknown" }));
+        .then((result) => (result.meta?.changes ?? 0) > 0, (error: unknown) => {
+          reportCloudFailure("cloud.timed_wake_record_failed", { instanceId: row.instance_id, message: error instanceof Error ? error.message : "unknown" });
+          // Unknown: the request reached it, so it is read as woken.
+          return true;
+        });
+      if (slept) logCloud("cloud.timed_wake_recorded", { userId: row.user_id, instanceId: row.instance_id });
+      outcome = slept ? "woke" : "awake";
     } else failed += 1;
-    if (reached || !WAKE_URL.test(row.wake_url) || now - row.wake_at > GIVE_UP_AFTER_MS) {
+    const givingUp = !reached && (!WAKE_URL.test(row.wake_url) || now - row.wake_at > GIVE_UP_AFTER_MS);
+    if (givingUp) outcome = "gave_up_unreachable";
+    if (outcome) {
       // Only the row this tick read: a newer time the machine sent meanwhile stays.
       await env.DB.prepare("delete from cloud_wakes where user_id = ? and instance_id = ? and wake_at = ?")
         .bind(row.user_id, row.instance_id, row.wake_at).run();
+      // Logged once the wake is settled: a failed delete leaves it pending, and its next tick logs it.
+      await logTimedWake(env, row, outcome, now);
     }
   }));
   return { woken, failed };

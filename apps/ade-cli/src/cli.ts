@@ -30514,6 +30514,7 @@ async function runServe(
       readMachineBusyFacts,
       readMachineNextScheduledWakeAt,
       readMachineUpdateImpact,
+      rearmMachineTimersAfterWake,
     },
     { createSharedSyncListener },
     { createLaneShareGuestRouter },
@@ -31430,9 +31431,21 @@ async function runServe(
         // Copies and Git summaries before the sleep: the lane reads the same with no computer awake.
         saveForRest: async (stillIdle: () => boolean): Promise<string | null> => (cloudRest ? await cloudRest.saveAtIdle(stillIdle) : null),
         // Messages queued for its chats while it slept go now. The freeze of the person's Sleep ends first.
+        // Its chats' timers stopped with the machine: armed again, a check due after the timed wake fires on time.
         onWoke: () => {
           if (liftCloudSleepFreeze()) headlessProjectLogger.info("cloud.sleep_freeze_lifted", { at: "woke" });
           cloudRest?.drain("woke");
+          // Ready projects only: one still opening arms its timers from the wall clock when it starts.
+          void rearmMachineTimersAfterWake({
+            projectRegistry,
+            scopeRegistry: {
+              getIfBooted: (projectId) => {
+                const scope = scopeRegistry.getIfReady(projectId);
+                return scope ? Promise.resolve(scope) : null;
+              },
+            },
+            personalChatScope,
+          });
         },
         // Idle and behind its channel's checked image: update now (it restarts), not sleep.
         updateIfBehind: async (stillIdle) => await cloudComputerReports?.updateIfBehind(stillIdle) ?? false,
