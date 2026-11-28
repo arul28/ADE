@@ -197,6 +197,16 @@ struct LinearDisplayMenu: View {
         Label("Show completed issues", systemImage: "checkmark.circle")
       }
 
+      // Groups Linear's display settings hide, with a way to show them.
+      if store.hiddenGroupCount > 0 {
+        Button {
+          store.showAllGroups()
+        } label: {
+          Label("Show all groups", systemImage: "eye")
+          Text(store.hiddenGroupCount == 1 ? "1 group hidden" : "\(store.hiddenGroupCount) groups hidden")
+        }
+      }
+
       Section {
         Text(sourceLine)
       }

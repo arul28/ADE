@@ -136,7 +136,17 @@ private final class PhoneLinearFixtureSync: LinearPaneSyncing {
           sortOrder: 5, daysAgo: 30),
     issue("d-1", 355, "PR checks graph on phone", type: "completed", priority: 3, assignee: "Arul", labels: ["ios"],
           prs: [pr(2412, "merged", "Checks graph")], sortOrder: 6, daysAgo: 40),
+    // A Done parent with an open child: the child lists in its own status group.
+    issue("d-2", 340, "Ship the Linear pane", type: "completed", priority: 2, assignee: "Arul", labels: ["ios"],
+          children: [ref("dc-1", "ADE-341", "Follow-up: empty states", "started")],
+          sortOrder: 7, daysAgo: 20),
+    issue("dc-1", 341, "Follow-up: empty states", type: "started", priority: 3, assignee: "Arul", labels: ["design"],
+          parent: ref("d-2", "ADE-340", "Ship the Linear pane", "completed"), sortOrder: 3, daysAgo: 2),
   ]
+
+  /// `-linearDisplay paged`: the first page says more follow and the next page
+  /// brings nothing new, so the footer stops on a "Load more" button.
+  var paged = ProcessInfo.processInfo.arguments.contains("paged")
 
   func attachedLinearIssueIds() -> Set<String> { ["p-2"] }
 
@@ -154,13 +164,22 @@ private final class PhoneLinearFixtureSync: LinearPaneSyncing {
       (args.stateTypes == nil || args.stateTypes!.contains(issue.stateType ?? ""))
         && (term == nil || issue.title.lowercased().contains(term!) || issue.identifier.lowercased().contains(term!))
     }
+    guard paged else {
+      return LinearIssueSearchResult(
+        issues: matched,
+        pageInfo: LinearIssueSearchResultPageInfo(hasNextPage: false, endCursor: nil)
+      )
+    }
+    // Every page answers the same issues and a fresh cursor.
+    let page = (args.after.flatMap { Int($0.replacingOccurrences(of: "page-", with: "")) } ?? 1) + 1
     return LinearIssueSearchResult(
       issues: matched,
-      pageInfo: LinearIssueSearchResultPageInfo(hasNextPage: false, endCursor: nil)
+      pageInfo: LinearIssueSearchResultPageInfo(hasNextPage: true, endCursor: "page-\(page)")
     )
   }
 
-  /// `-linearDisplay assignee|priority|label|none|flat` picks the fixture's display.
+  /// `-linearDisplay assignee|priority|label|none|flat|hidden|paged` picks the
+  /// fixture's display (`hidden` hides the Backlog group, as Linear can).
   func fetchLinearViewPreferences(viewType: String, customViewId: String?) async throws -> LinearDisplayPreferences? {
     var preferences = LinearDisplayPreferences()
     let arguments = ProcessInfo.processInfo.arguments
@@ -168,6 +187,8 @@ private final class PhoneLinearFixtureSync: LinearPaneSyncing {
       let value = arguments[arguments.index(after: index)]
       if value == "flat" {
         preferences.nesting = .none
+      } else if value == "hidden" {
+        preferences.hiddenGroups = ["s-backlog"]
       } else if let grouping = LinearIssueGrouping(rawValue: value) {
         preferences.grouping = grouping
       }

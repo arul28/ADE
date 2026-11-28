@@ -27810,7 +27810,7 @@ final class LinearPaneTests: XCTestCase {
 
   func testLinearStatePresetsMatchDesktopIssueBrowser() {
     XCTAssertNil(LinearPaneStore.StatePreset.all.stateTypes)
-    XCTAssertEqual(LinearPaneStore.StatePreset.active.stateTypes, ["backlog", "unstarted", "started"])
+    XCTAssertEqual(LinearPaneStore.StatePreset.active.stateTypes, ["unstarted", "started"])
     XCTAssertEqual(LinearPaneStore.StatePreset.backlog.stateTypes, ["backlog"])
   }
 
