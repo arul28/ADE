@@ -99,7 +99,8 @@ const SUPPORTED_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "
 const TOOL_NAME = "daex";
 /**
  * The tool's name before the DAEX rename. Still answered (never listed), so an
- * app holding an older tool list keeps working; drop it a release later.
+ * app holding an older tool list keeps working, and forwarded run-tool calls
+ * are sent under it (`forwardedCall`); keep it until the `ade` alias is dropped.
  */
 const LEGACY_TOOL_NAME = "ade";
 const COMMANDS_RESOURCE_URI = "daex://commands";
@@ -647,6 +648,24 @@ export function createRemoteMcpProtocol(deps: {
   const firstText = (result: RemoteMcpToolResult): string =>
     result.content.find((item) => item?.type === "text" && typeof item.text === "string")?.text ?? "";
 
+  /**
+   * The run tool as another machine is sent it. Released machines know only
+   * the tool `ade` and strip only a leading `ade` from the command, and brains
+   * are not behind the client minimum version, so a forwarded run-tool call
+   * goes out as `ade` with a leading `daex` sent as `ade`. New machines map
+   * `ade` to `daex`. Keep until the `ade` alias is dropped.
+   */
+  const forwardedCall = (name: string, input: Record<string, unknown>): { name: string; arguments: Record<string, unknown> } => {
+    if (name !== TOOL_NAME) return { name, arguments: input };
+    let args = input;
+    if (Array.isArray(input.args)) {
+      if (input.args[0] === "daex") args = { ...input, args: ["ade", ...input.args.slice(1)] };
+    } else if (typeof input.command === "string" && /^\s*daex(?=\s|$)/.test(input.command)) {
+      args = { ...input, command: input.command.replace(/^(\s*)daex/, "$1ade") };
+    }
+    return { name: LEGACY_TOOL_NAME, arguments: args };
+  };
+
   const forwardTo = async (
     connection: RemoteMcpConnectionSummary,
     name: string,
@@ -656,7 +675,7 @@ export function createRemoteMcpProtocol(deps: {
     timeoutMs: number,
   ): Promise<RemoteMcpToolResult> => {
     const started = Date.now();
-    const result = await deps.machines.forward(machine, { name, arguments: input }, context, timeoutMs);
+    const result = await deps.machines.forward(machine, forwardedCall(name, input), context, timeoutMs);
     deps.record({
       ...logBaseFor(connection, name),
       command: commandForLog(name, input),

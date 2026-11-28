@@ -83,7 +83,7 @@ outside service.
 | Project and home folders | `.ade/` in each project, `~/.ade` | `apps/ade-cli/src/services/projects/machineLayout.ts` | Existing projects, lanes, worktrees, settings and state live there. |
 | Env var names | `ADE_HOME`, `ADE_*` | throughout `apps/ade-cli/src`, `apps/desktop/src/main` | Scripts, services and agent environments already set them. A later step adds `DAEX_*` aliases. |
 | Code identifiers | `window.ade`, `AdeFoo`, `adeFoo`, `ADESharedTheme` | `apps/desktop/src/preload/preload.ts` (`exposeInMainWorld("ade", ...)`), everywhere | Never seen by users. Renaming is churn with merge conflicts and no benefit. |
-| MCP typed tool names, the MCP App resource `ui://ade/app-….html`, `_meta` keys (`ade/source`, `dev.ade/unreadMachines`), the forwarding headers `x-ade-mcp-*` | the typed tools ADE MCP exposes (`lanes_list`, `chat_start`, …) | `apps/ade-cli/src/services/remoteMcp/` | Agents and saved prompts call the typed tools by name; the rest is wire. Renamed instead (owner, 2026-11-27, accepting one re-approval in apps that had "always allow"): the server `serverInfo.name` and its run tool `ade` → `daex` (a call to `ade` still runs for one release, not listed), the commands resource `ade://commands` → `daex://commands` (old still reads), and the CTO's in-process server `ade-cto` → `daex-cto` (Codex namespace `ade_cto` → `daex_cto`; permission policies keep `ade-cto` as an alias, both names stay reserved). |
+| MCP typed tool names, the MCP App resource `ui://ade/app-….html`, `_meta` keys (`ade/source`, `dev.ade/unreadMachines`), the forwarding headers `x-ade-mcp-*` | the typed tools ADE MCP exposes (`lanes_list`, `chat_start`, …) | `apps/ade-cli/src/services/remoteMcp/` | Agents and saved prompts call the typed tools by name; the rest is wire. Renamed instead (owner, 2026-11-27, accepting one re-approval in apps that had "always allow"): the server `serverInfo.name` and its run tool `ade` → `daex` (a call to `ade` still runs, not listed, and forwarded run-tool calls use `ade` until the `ade` alias is dropped: see **Old names in output**), the commands resource `ade://commands` → `daex://commands` (old still reads), and the CTO's in-process server `ade-cto` → `daex-cto` (Codex namespace `ade_cto` → `daex_cto`; permission policies keep `ade-cto` as an alias, both names stay reserved). |
 
 ## Sunset identifiers
 
@@ -126,7 +126,6 @@ What flipped, with the reader that still accepts the old form:
 | Handoff default prompt (`another DAEX machine`) | `another ADE machine` | `isCrossMachineHandoffDefaultPrompt` |
 | Sync skipReason `Another DAEX app …`; autolinks `DAEX's GitHub sign-in` | ADE | `readCompetingSyncHostOwner`, `GITHUB_AUTOLINKS_SIGN_IN_LACKS_ADMIN` |
 | `daex:` CLI error prefix (CLI and desktop-written lines) | `ade:` | `computerUseActionOutput.ts`, `runtimeRpcClient.ts`, iOS `WorkComputerUseOutput.swift` |
-| `daex --version` output (`daex X.Y.Z`) | `ade X.Y.Z` | desktop and CLI version checks |
 | Brain messages `DAEX brain listening on`, `Failed to initialize the DAEX brain …`, `DAEX kept trying` | ADE | `old-database-launch-check.mjs`, `cloudBoxSignInStart.ts` |
 | `Unknown DAEX action: …`, `… not exposed through DAEX actions` | ADE | `codedError.ts`, `chatLaunchActions.ts`, `ProvidersSection.tsx`, `useGitHubPrFilterSearch.ts` |
 | Bonjour instance name `DAEX Sync <host> <port>` (type `_ade-sync._tcp` stays) | `ADE Sync …` | `syncHostService.ts` orphan cleanup |
@@ -140,7 +139,20 @@ What flipped, with the reader that still accepts the old form:
 Kept on purpose: the lowercase machine tokens (`ade-desktop`, `ade-cli`,
 `ade-harness-test` user agents and RPC client names), `TERM_PROGRAM=ADE`
 (outside tools detect terminals by it), and everything in **Frozen
-identifiers**.
+identifiers**. Also kept, because brains are not behind the client minimum
+version:
+
+- **`--version` output stays `ade X.Y.Z`** (`versionOutput` in
+  `apps/ade-cli/src/cli.ts`). Released `ade brain update`s, DAEX Cloud image
+  entrypoints (`ade-entrypoint.sh`) and SSH bootstraps
+  (`normalizeRuntimeVersion`) strip only `^ade ` and would read `daex X.Y.Z`
+  as the version, silently skipping the update. New readers strip either name.
+- **Forwarded run-tool calls use `ade`.** When DAEX MCP forwards its run tool
+  to another machine (`forwardTo` in `remoteMcpProtocol.ts`), it sends the
+  tool name `ade` and rewrites a leading `daex` in the command to `ade`:
+  released machines reject `Unknown tool "daex"` and their policy strips only
+  a leading `ade`. New machines map `ade` to `daex`. This stays until the
+  `ade` alias is dropped.
 
 ## Launch steps
 
