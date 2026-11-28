@@ -43,8 +43,9 @@ scheme helpers are in `apps/desktop/src/shared/deeplinkSchemes.ts`.
 
 Swift: `apps/ios/ADE/Shared/Brand.swift` (in the app, widget and App Clip
 targets). `Brand.name`, `Brand.formerName`, `Brand.introName`,
-`Brand.cliName`, `Brand.siteURL`, `Brand.cloudName`, `Brand.betaName`. Change
-it together with `brand.ts`.
+`Brand.cliName`, `Brand.legacyCLI`, `Brand.cliCommandNames`, `Brand.siteURL`,
+`Brand.legacyDomain`, `Brand.cloudName`, `Brand.betaName`, `Brand.linkSchemes`.
+Change it together with `brand.ts`.
 
 Lint: `ade-ui/no-legacy-brand-name` (`apps/desktop/eslint-rules/ade-ui.mjs`)
 warns on the word `ADE` in user-facing copy in `apps/desktop/src/renderer/**/*.tsx`:
