@@ -752,6 +752,7 @@ struct WorkNewChatScreen: View {
   /// An older version picked by hand: its pair is turned down once the
   /// machine's list is read (`refreshModelUpgrade`).
   @State private var modelUpgradeHandPicked: String?
+  @State private var modelUpgradeHandPickedScope: String?
   /// The machine and mode the offer was read for (`modelUpgradeScope`): a
   /// suggestion from one list never shows, or switches, on another.
   @State private var modelUpgradeReadScope: String?
@@ -1329,19 +1330,30 @@ struct WorkNewChatScreen: View {
   // MARK: Newer model version (ADE-300)
 
   private var modelUpgradeTaskKey: String {
-    [modelId, selectedMachineKey ?? "primary", "\(sessionMode)", selectedPreset?.id ?? ""].joined(separator: "|")
+    [modelId, modelUpgradeMachineKey, "\(sessionMode)", selectedPreset?.id ?? ""].joined(separator: "|")
+  }
+
+  /// The machine the chat launches on, by its key: the chosen one, else the
+  /// focused one, so a focus that moves to another host reads that host's list.
+  private var modelUpgradeMachineKey: String {
+    selectedMachineKey ?? syncService.focusedMachineKey ?? "primary"
+  }
+
+  /// ADE Cloud starts chats only in Chat mode: no suggestion for a CLI start there.
+  private var modelUpgradeSupported: Bool {
+    !(isCloudSelected && sessionMode == .cli)
   }
 
   /// The machine (the primary one, another, ADE Cloud) and mode the
   /// composer launches on now.
   private var modelUpgradeScope: String {
-    "\(selectedMachineKey ?? "primary")|\(isCloudSelected ? "cloud" : "local")|\(sessionMode)"
+    "\(modelUpgradeMachineKey)|\(isCloudSelected ? "cloud" : "local")|\(sessionMode)"
   }
 
   /// The suggestion while the composer is still on the older version, read
   /// from the list of the machine and mode it launches on now.
   private var shownModelUpgrade: WorkModelUpgrade? {
-    guard let modelUpgrade, modelUpgrade.fromModelId == modelId, selectedPreset == nil,
+    guard modelUpgradeSupported, let modelUpgrade, modelUpgrade.fromModelId == modelId, selectedPreset == nil,
           modelUpgradeReadScope == modelUpgradeScope else { return nil }
     return modelUpgrade
   }
@@ -1353,7 +1365,7 @@ struct WorkNewChatScreen: View {
   private func refreshModelUpgrade() async {
     let from = modelId
     let scope = modelUpgradeScope
-    guard selectedPreset == nil, workModelNewerVersionName(from) != nil else {
+    guard modelUpgradeSupported, selectedPreset == nil, workModelNewerVersionName(from) != nil else {
       modelUpgrade = nil
       return
     }
@@ -1363,9 +1375,14 @@ struct WorkNewChatScreen: View {
       return
     }
     modelUpgradeAvailable = available
-    if modelUpgradeHandPicked == from {
-      WorkModelUpgradeMemory.notePicked(from, available: available)
-      modelUpgradeHandPicked = nil
+    if let picked = modelUpgradeHandPicked {
+      if picked != from || modelUpgradeHandPickedScope != scope {
+        // Another model or machine since the pick: it no longer answers this one.
+        modelUpgradeHandPicked = nil
+      } else if WorkModelUpgradeMemory.notePicked(from, available: available) {
+        // Kept until a newer version is listed and the answer recorded.
+        modelUpgradeHandPicked = nil
+      }
     }
     modelUpgrade = WorkModelUpgradeMemory.suggestion(for: from, available: available)
     modelUpgradeReadScope = scope
@@ -1374,12 +1391,17 @@ struct WorkNewChatScreen: View {
   /// A model picked by hand: when it is an older version, its pair is turned
   /// down, now if it is the one the strip offers for, else once the list is read.
   private func noteModelHandPicked(_ pickedId: String) {
-    guard workModelNewerVersionName(pickedId) != nil else { return }
-    if let shown = modelUpgrade, shown.fromModelId == pickedId {
+    guard workModelNewerVersionName(pickedId) != nil else {
+      modelUpgradeHandPicked = nil
+      return
+    }
+    if let shown = shownModelUpgrade, shown.fromModelId == pickedId {
       WorkModelUpgradeMemory.dismiss(shown)
       modelUpgrade = nil
+      modelUpgradeHandPicked = nil
     } else {
       modelUpgradeHandPicked = pickedId
+      modelUpgradeHandPickedScope = modelUpgradeScope
     }
   }
 
@@ -1400,6 +1422,7 @@ struct WorkNewChatScreen: View {
   private func switchToNewerModelVersion(_ upgrade: WorkModelUpgrade) {
     guard !busy, modelId == upgrade.fromModelId, shownModelUpgrade == upgrade else { return }
     modelPickedByPerson = true
+    modelUpgradeHandPicked = nil
     // A saved Custom harness still loading must not land over the switch.
     restoredPresetId = nil
     freeDefaultSelection = nil

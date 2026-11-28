@@ -3487,6 +3487,7 @@ struct WorkChatSessionView: View {
         }
         .onChange(of: session.id) { _, _ in
           pendingCodexFastMode = nil
+          modelUpgradeHandPicked = nil
           lastBlockingPendingInputId = nil
           blockingPendingHapticToken = 0
           lastLiveQuotaCardId = nil
@@ -3649,7 +3650,8 @@ struct WorkChatSessionView: View {
                 if !wasCurrentModel {
                   // An older version picked by hand turns its newer-version pair down.
                   noteModelHandPicked(option.id)
-                  _ = await onSelectModel(option.id)
+                  // A change the machine refused is no answer.
+                  if await !onSelectModel(option.id) { modelUpgradeHandPicked = nil }
                 } else if (pickedReasoning ?? "") == chatSummaryContext.reasoningEffort,
                           pickedFastMode == chatSummaryContext.effectiveFastMode {
                   // The current older version picked again, no setting changed:

@@ -281,8 +281,12 @@ enum WorkModelUpgradeMemory {
   private static let dismissedKey = "ade.chat.dismissedModelUpgrades.v1"
   private static let dismissedMax = 64
 
+  /// `from>to`. A model named directly is keyed by its version's registry
+  /// id, so a chat saved as `fable` and one saved as `claude-fable-5-1` share
+  /// one answer; an id another harness wraps stays as it is.
   private static func pairKey(_ upgrade: WorkModelUpgrade) -> String {
-    "\(upgrade.fromModelId)>\(upgrade.toModelId)"
+    func canonical(_ id: String) -> String { workModelVersionRow(for: id)?.id ?? id }
+    return "\(canonical(upgrade.fromModelId))>\(canonical(upgrade.toModelId))"
   }
 
   static func isDismissed(_ upgrade: WorkModelUpgrade) -> Bool {
@@ -305,9 +309,13 @@ enum WorkModelUpgradeMemory {
   }
 
   /// A model picked by hand (the picker, the `@` menu): when it is an older
-  /// version, the pair it would be offered now is turned down.
-  static func notePicked(_ modelId: String, available: [String]) {
-    if let upgrade = workFindModelUpgrade(modelId: modelId, available: available) { dismiss(upgrade) }
+  /// version, the pair it would be offered now is turned down. False when
+  /// `available` lists no newer version yet, so nothing was recorded.
+  @discardableResult
+  static func notePicked(_ modelId: String, available: [String]) -> Bool {
+    guard let upgrade = workFindModelUpgrade(modelId: modelId, available: available) else { return false }
+    dismiss(upgrade)
+    return true
   }
 }
 
@@ -389,8 +397,10 @@ extension WorkChatSessionView {
     guard let available = await load(), !Task.isCancelled,
           chatSummaryContext.currentModelId == modelId else { return }
     modelUpgradeAvailable = available
-    if let picked = modelUpgradeHandPicked, workModelIdsEquivalent(picked, modelId) {
-      WorkModelUpgradeMemory.notePicked(modelId, available: available)
+    // Kept until a newer version is listed and the answer recorded, so a
+    // later list that gains it does not offer it back.
+    if let picked = modelUpgradeHandPicked, workModelIdsEquivalent(picked, modelId),
+       WorkModelUpgradeMemory.notePicked(modelId, available: available) {
       modelUpgradeHandPicked = nil
     }
     modelUpgradeOffer = WorkModelUpgradeMemory.suggestion(for: modelId, available: available)
@@ -398,8 +408,8 @@ extension WorkChatSessionView {
 
   /// A model picked by hand in the picker, before the chat changes to it.
   func noteModelHandPicked(_ modelId: String) {
-    guard workModelNewerVersionName(modelId) != nil else { return }
-    modelUpgradeHandPicked = modelId
+    // A later pick replaces an earlier one, also with a model that has no newer version.
+    modelUpgradeHandPicked = workModelNewerVersionName(modelId) != nil ? modelId : nil
   }
 
   /// "Switch": the same model change the picker makes, on the chat's machine.
